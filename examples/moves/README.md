@@ -39,3 +39,13 @@ every move is a release by one host and an open by the next, and the recording h
 The live runner needs a scratch Archil disk and its key, a Modal account, and an Anthropic key (see `demo.json`). The run is the same job: the disk package's `archilPlace` over a host that starts the
 first and third process on this machine and the second on a Modal VM (`modalHost`, VM runtime, the disk mounted), with the model key and the VM session's Modal token passed as Modal Secrets
 by name. It ends every VM, sandbox, token user and the run's directory by exact id and searches what it left for the keys' values.
+
+```sh
+npm install --no-save modal@0.11.0          # the Modal SDK is not a dependency of this repository
+# Two Modal Secrets, made by you and deleted by you: one holding ANTHROPIC_API_KEY, one holding MODAL_TOKEN_ID and MODAL_TOKEN_SECRET.
+# The runner reads the names only (MOVES_SECRET_ANTHROPIC, MOVES_SECRET_MODAL; default moves-take-anthropic and moves-take-modal).
+MOVES_LIVE=1 MOVES_LIVE_MAX_USD=8 node examples/moves/live.ts <record-dir>
+```
+
+Its environment holds `ARCHIL_API_KEY`, `PDA_LIVE_DISK`, `PDA_LIVE_REGION`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and `ANTHROPIC_API_KEY`; the runner takes the last three out of it before anything starts. It ends with
+`ok: one run moved from this machine to a Modal VM and back; ...` and exit 0, or lists what went wrong and exits 1. The Modal Secrets are yours to delete.
