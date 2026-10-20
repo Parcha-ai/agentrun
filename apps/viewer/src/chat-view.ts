@@ -994,6 +994,6 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
   const linked = /^#look=(.+)$/.exec(location.hash);
   const look = linked ? decodeURIComponent(linked[1]!) : undefined;
   if (look && model.sources[look]) showLook(look, undefined, false);
-  else if (workflowHost && location.hash === '#workflow') setView('workflow');
+  else if (workflowHost && location.hash === '#workflow') openWorkflow();
   else setView('report');
 }

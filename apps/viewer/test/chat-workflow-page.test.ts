@@ -21,6 +21,8 @@ const HARNESS = `<!doctype html><body style="margin:0">
 <iframe id="wide" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=two-workflows"></iframe>
 <iframe id="phone" style="position:absolute;top:0;left:0;width:390px;height:844px;border:0" src="chat.html?r=two-workflows"></iframe>
 <iframe id="none" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=no-workflow"></iframe>
+<iframe id="linked" style="position:absolute;top:0;left:0;width:390px;height:844px;border:0" src="chat.html?r=two-workflows#workflow"></iframe>
+<iframe id="linkedwide" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=two-workflows#workflow"></iframe>
 <script>
 const doc = (id) => document.getElementById(id).contentDocument;
 const ready = (id) => !!doc(id)?.querySelector('main#chat-root > .app .thread');
@@ -70,7 +72,13 @@ test('in Chrome: the Workflow view beside the report, a graph per run, its nodes
   const ENDED = `({ a: doc(ID).querySelector('#${A} .wf-outcome')?.textContent, b: doc(ID).querySelector('#${B} .wf-outcome')?.textContent, title: doc(ID).querySelector('#${B} .wf-outcome')?.title,
     counts: [...doc(ID).querySelectorAll('#${B} .wf-count')].map((each) => each.textContent) })`;
   const ESCALATED = { a: 'complete', b: `escalated at misspelt: ${SUMMARY.slice(0, 139).trimEnd()}…`, title: SUMMARY, counts: ['1 done', '1 escalated', '1 stopped', '1 not run'] };
-  await until(`['wide', 'phone', 'none'].every(ready)`, 'every chat page drawn');
+  await until(`['wide', 'phone', 'none', 'linked', 'linkedwide'].every(ready)`, 'every chat page drawn');
+
+  // A #workflow link opens the Workflow view: on a phone, in the bottom sheet, open.
+  const linked = (id: string) => `({ open: doc('${id}').querySelector('.art').classList.contains('open'), view: doc('${id}').querySelector('.art').dataset.view, host: shown(doc('${id}').querySelector('.wf-host')),
+    scrim: doc('${id}').querySelector('.scrim').classList.contains('on'), runs: doc('${id}').querySelectorAll('.wf-run').length, hash: doc('${id}').defaultView.location.hash })`;
+  assert.deepEqual(await value(linked('linked')), { open: true, view: 'workflow', host: true, scrim: true, runs: 2, hash: '#workflow' }, 'at 390 the sheet opens on the graph');
+  assert.deepEqual(await value(linked('linkedwide')), { open: false, view: 'workflow', host: true, scrim: false, runs: 2, hash: '#workflow' }, 'at 1440 the pane shows it, no sheet');
 
   // 1440: the switch, the report first, then the Workflow view with a graph per run, in run order, each at its end.
   assert.deepEqual(await value(`[...doc('wide').querySelectorAll('.views .view')].map((each) => [each.textContent, each.getAttribute('aria-pressed')])`), [['Report', 'true'], ['Workflow', 'false']]);
