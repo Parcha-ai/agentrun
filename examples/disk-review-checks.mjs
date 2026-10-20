@@ -9,6 +9,24 @@ import { readEvents } from '../scripts/recording/fold.mjs';
 export const PAID = [['INV-001', 1250], ['INV-002', 1425], ['INV-003', 1600], ['INV-005', 1950], ['INV-006', 2125], ['INV-008', 2475], ['INV-009', 2650], ['INV-010', 2825]];
 export const HELD = ['INV-004', 'INV-007'];
 
+const ATTRIBUTE = /([A-Za-z_:][-\w:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
+/**
+ * Every anchor of `html` that carries `data-receipt`, whatever the order and quoting of its attributes: its cite when the link is `PATH#line=FROM,TO` with a receipt, else the anchor as written, a cite
+ * the checks cannot read (which is a problem, never skipped).
+ */
+export function citesOf(html) {
+  const cites = [];
+  const unreadable = [];
+  for (const [tag, attributes] of html.matchAll(/<a\b([^>]*)>/gi)) {
+    const at = Object.fromEntries([...attributes.matchAll(ATTRIBUTE)].map(([, name, double, single, bare]) => [name.toLowerCase(), double ?? single ?? bare ?? '']));
+    if (!('data-receipt' in at)) continue;
+    const link = /^([^#]+)#line=(\d+),(\d+)$/.exec(at.href ?? '');
+    if (!link || !at['data-receipt']) unreadable.push(tag.slice(0, 120));
+    else cites.push({ path: link[1], from: Number(link[2]), to: Number(link[3]), receipt: at['data-receipt'] });
+  }
+  return { cites, unreadable };
+}
+
 const rowsOf = (file) => (existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []);
 const lineCount = (text) => { const parts = text.split('\n'); if (parts.at(-1) === '') parts.pop(); return parts.length; };
 
@@ -64,10 +82,15 @@ export function reviewProblems({ recording, dir, record, live = false }) {
     if (/<script/i.test(html)) problems.push('the report holds a script');
     for (const [invoice] of [...PAID, ...HELD.map((held) => [held])]) if (!html.includes(invoice)) problems.push(`the report has no row for ${invoice}`);
     const rows = html.split(/<tr>/i).slice(1);
-    for (const row of rows) if (!/data-receipt="/.test(row)) problems.push(`a row of the report has no cite: ${row.replace(/<[^>]+>/g, ' ').trim().slice(0, 60)}`);
+    for (const row of rows) if (citesOf(row).cites.length === 0) problems.push(`a row of the report has no cite: ${row.replace(/<[^>]+>/g, ' ').trim().slice(0, 60)}`);
     const byReceipt = new Map(reads.map((read) => [read.receipt, read]));
-    for (const match of html.matchAll(/<a href="([^"#]+)#line=(\d+),(\d+)" data-receipt="([^"]+)"/g)) {
-      const [, path, a, b, receipt] = match;
+    const { cites, unreadable } = citesOf(html);
+    for (const anchor of unreadable) problems.push(`a cite the checks cannot read (its link is not PATH#line=FROM,TO with a receipt): ${anchor}`);
+    for (const cite of cites) {
+      const { path, receipt } = cite;
+      const [a, b] = [String(cite.from), String(cite.to)];
+      // A cite links a file beside the page: a path that climbs out of report/ or starts at the root names no file the report carries.
+      if (path.startsWith('/') || path.split('/').includes('..')) { problems.push(`a cite links ${path}, outside the report's folder`); continue; }
       const read = byReceipt.get(receipt);
       if (!read) { problems.push(`a cite names receipt ${receipt}, which no read stated`); continue; }
       if (read.path !== path) problems.push(`a cite of ${path} names receipt ${receipt}, a read of ${read.path}`);

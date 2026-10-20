@@ -215,11 +215,32 @@ clearTimeout(cap);
 clearInterval(logTimer);
 const redact = (text: string) => text.replaceAll(`${MOUNT_ROOT}/runs/${runId}`, '<mp>').replaceAll(runId, '<run>');
 for (const [id, text] of boxLogs) console.log(`--- launcher log of a sandbox (${id.slice(0, 8)}) ---\n${redact(text).slice(-12000)}`);
-// The by-code checks of the review (no model judges these), on the recording and the run's files brought home, before anything is published.
+// The by-code checks of the review (no model judges these), on the recording and the run's files brought home, before anything is published. The sweep runs whatever they do.
 const runDir = runDirOf();
-const { reviewProblems } = (await import(new URL('../disk-review-checks.mjs', import.meta.url).href)) as { reviewProblems: (input: { recording: string; dir: string; record: unknown; live: boolean }) => string[] };
-const checks = outcome && existsSync(join(record, 'events.jsonl')) ? reviewProblems({ recording: record, dir: runDir, record: outcome.record, live: Boolean(secret) }) : null;
-if (checks) console.log(checks.length ? `by-code checks: ${checks.length} problem(s)\n${checks.map((problem) => `  - ${problem}`).join('\n')}` : 'by-code checks: none failed');
-const report = await sweep();
-console.log(JSON.stringify({ run: runId, minutes: Math.round((Date.now() - startedAt) / 6000) / 10, spendUsd: ledger.spend(), ...(failure ? { failure: String((failure as Error).message).slice(0, 300) } : {}), mode, live: Boolean(secret), kills: outcome?.kills ?? null, handoffs: outcome?.handoffs ?? null, failedHandoffs: outcome?.failedHandoffs ?? null, processes: outcome?.processes.map((p) => ({ exit: p.exit, status: p.outcome?.status ?? null })) ?? null, usd: outcome?.usd ?? null, overBudget: outcome?.overBudget ?? null, checks, report }));
-process.exit(failure ? 1 : 0);
+let checks: string[] | null = null;
+let checkError: string | undefined;
+let report: Awaited<ReturnType<typeof sweep>>;
+try {
+  const { reviewProblems } = (await import(new URL('../disk-review-checks.mjs', import.meta.url).href)) as { reviewProblems: (input: { recording: string; dir: string; record: unknown; live: boolean }) => string[] };
+  checks = outcome && existsSync(join(record, 'events.jsonl')) ? reviewProblems({ recording: record, dir: runDir, record: outcome.record, live: Boolean(secret) }) : null;
+  if (checks) console.log(checks.length ? `by-code checks: ${checks.length} problem(s)\n${checks.map((problem) => `  - ${problem}`).join('\n')}` : 'by-code checks: none failed');
+} catch (error) {
+  checkError = String((error as Error).message).slice(0, 300);
+  console.log(`by-code checks could not run: ${checkError}`);
+} finally {
+  report = await sweep();
+}
+// A take succeeds only when the run delivered, every planned handoff landed, nothing went over the cap or failed to stop, the checks ran and found nothing, and the sweep left nothing behind.
+const why = [
+  ...(failure ? [`the run threw: ${String((failure as Error).message).slice(0, 120)}`] : []),
+  ...(outcome && outcome.processes.at(-1)?.outcome?.status !== 'complete' ? [`the last process ended ${outcome.processes.at(-1)?.outcome?.status ?? 'with no outcome'}`] : []),
+  ...(outcome?.failedHandoffs.length ? [`${outcome.failedHandoffs.length} planned handoff(s) did not land`] : []),
+  ...(outcome?.failedKills.length || outcome?.failedSignals.length || outcome?.unlanded.length ? ['a planned kill or signal did not land'] : []),
+  ...(outcome?.overBudget ? ['the run went over --max-usd'] : []),
+  ...(checkError ? ['the by-code checks could not run'] : checks === null ? ['the by-code checks had no recording to read'] : checks.length ? [`the by-code checks found ${checks.length} problem(s)`] : []),
+  ...((report.aliveAfter as unknown[] | undefined)?.length ? ['a sandbox is still alive after the sweep'] : []),
+  ...(report.releaseError ? ['the place did not release cleanly'] : []),
+  ...(((report.disk as { left?: number; error?: string } | undefined)?.left ?? 0) > 0 || (report.disk as { error?: string } | undefined)?.error ? ["the run's directory is still on the disk"] : []),
+];
+console.log(JSON.stringify({ run: runId, minutes: Math.round((Date.now() - startedAt) / 6000) / 10, spendUsd: ledger.spend(), ...(failure ? { failure: String((failure as Error).message).slice(0, 300) } : {}), mode, live: Boolean(secret), kills: outcome?.kills ?? null, handoffs: outcome?.handoffs ?? null, failedHandoffs: outcome?.failedHandoffs ?? null, processes: outcome?.processes.map((p) => ({ exit: p.exit, status: p.outcome?.status ?? null })) ?? null, usd: outcome?.usd ?? null, overBudget: outcome?.overBudget ?? null, checks, ok: why.length === 0, ...(why.length ? { why } : {}), report }));
+process.exit(why.length ? 1 : 0);

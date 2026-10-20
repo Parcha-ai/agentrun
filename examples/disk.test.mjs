@@ -251,3 +251,20 @@ test('the live part: each process is held to its model calls and its answer size
   assert.deepEqual(parts.models, { lead: 'google/gemini-3.8-flash' });
   assert.deepEqual(parts.host.models.lead, { provider: 'google', modelId: 'gemini-3.8-flash' });
 });
+
+test('the by-code checks read a cite in any attribute order and quoting, and never skip one they cannot read', async () => {
+  const { citesOf } = await import('./disk-review-checks.mjs');
+  const html = `<tr><td><a href="invoices/INV-001.txt#line=4,5" data-receipt="rl-a">line 5</a>
+    <a data-receipt="rl-b" class="cite" href="policy.md#line=99,100">line 100</a>
+    <a data-receipt='rl-c' href='policy.md#line=2,3'>line 3</a>
+    <a data-receipt="rl-d" href="policy.md">no window</a>
+    <a href="https://example.com/">an outside link, not a cite</a></td></tr>`;
+  const { cites, unreadable } = citesOf(html);
+  assert.deepEqual(cites, [
+    { path: 'invoices/INV-001.txt', from: 4, to: 5, receipt: 'rl-a' },
+    { path: 'policy.md', from: 99, to: 100, receipt: 'rl-b' },
+    { path: 'policy.md', from: 2, to: 3, receipt: 'rl-c' },
+  ]);
+  assert.equal(unreadable.length, 1, 'a cite with no window is reported, not skipped');
+  assert.match(unreadable[0], /rl-d/);
+});
