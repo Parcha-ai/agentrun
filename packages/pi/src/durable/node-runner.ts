@@ -18,6 +18,7 @@ import {
 import type { Message } from "@earendil-works/pi-ai";
 import type { WorkflowDeps } from "@parcha/agentrun-dsl";
 import { canonicalSha256, runStopOf, type RecoveryNodeParams } from "@parcha/agentrun-dsl/recovery";
+import { nodeThinking } from "../thinking.js";
 import { closeNodeAttempt, runNodeAttempt, type NodeScope } from "./node.js";
 import { DELIVERY_ATTEMPTS, lintRecordRoot, submitFooter, type Disagreement, type RecordContract, type Reviewer } from "./record.js";
 import { workspaceRecordFile } from "./record-file.js";
@@ -44,7 +45,9 @@ export type NodeRecord = Pick<RecordContract, "contracts" | "checks"> & {
 
 export type NodeHost = {
   /** The agent a node's conversation runs with: its model, thinking level, working directory and the host's own
-   *  extensions and tools. The runner adds its extension and `submit` where the host did not place them. */
+   *  extensions and tools. The runner adds its extension and `submit` where the host did not place them. The node's
+   *  own thinking level outranks the host's; when neither names one, the node thinks at medium (never at the level its
+   *  conversation would copy from its owner's, and never off). */
   agent(node: NodeRequest): AgentChange | Promise<AgentChange>;
   /** Duty text for a node's system prompt, after the interpreter's. `offered` names the tools the agent lists. */
   stance?(node: NodeRequest, offered: { tools: readonly string[] }): string | undefined;
@@ -162,6 +165,9 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
     sections: [section("task", async (input, context) => (await input.read.snapshot(NodeDoc, input.conversationId, context))?.system || undefined, { tag: false })],
     hooks: [hook(GenerationTask, { beforeRequest: present }), nudge],
   });
+  /** The host's agent at the node's thinking level. A level left unset would follow the conversation's creation: a
+   *  task's node copies its owner's level, and a node no task owns starts off. */
+  const leveled = (agent: AgentChange, node: NodeRequest): AgentChange => ({ ...agent, thinkingLevel: nodeThinking(node.thinking, agent.thinkingLevel) });
   /** The host's agent with the runner's extension first and `submit` last, unless the host placed them. */
   const withNodes = (agent: AgentChange): AgentChange => ({
     ...agent,
@@ -190,7 +196,7 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
         const lint = lintRecordRoot(node.schema);
         if (lint.length) throw fail(`${node.kind} node "${node.label}" cannot deliver a record of its schema: ${lint.join("; ")}`, true);
         // The host's own answers are awaited under the stop too: one that lands meanwhile opens no conversation.
-        const { agent, record } = await underStop(signal, async () => ({ agent: await host.agent(node), record: await host.record?.(node) ?? {} }));
+        const { agent, record } = await underStop(signal, async () => ({ agent: leveled(await host.agent(node), node), record: await host.record?.(node) ?? {} }));
         const label = record.label ?? `the ${node.label} record`;
         const offered = (listed<ToolRegistration>(agent.tools) ? agent.tools : listed<Extension>(agent.extensions) ? agent.extensions.flatMap((selected) => selected.tools ?? []) : [])
           .map((offer) => offer.name).filter((name) => name !== "submit");
