@@ -108,7 +108,7 @@ test('in Chrome: a workflow run opens with its input as the person\'s first mess
 });
 
 test('in Chrome: the opening request is the question in words, its other fields as lines and its files as chips (an address is its file name, never the whole address, in the chip and in its title)', IN_CHROME, async (t) => {
-  const { value, until } = await served(t, { fixture: 'reference-job', edit: (dir) => givenInput(dir, { question: 'Is the filing at https://registry.example.test/acme current?', files: ['filing.pdf', 'https://files.example.test/reports/summary.pdf?token=abc#page=2'], company: 'Acme Ltd' }) });
+  const { value, until } = await served(t, { fixture: 'reference-job', edit: (dir) => givenInput(dir, { question: 'Is the filing at https://registry.example.test/acme current?', files: ['filing.pdf', 'https://files.example.test/reports/summary.pdf?x=1#page=2'], company: 'Acme Ltd' }) });
   await until(`!!d()?.querySelector('.mu-chat .mu-row')`, 'the page drawn');
   assert.deepEqual(await value(`(() => { const first = d().querySelector('.mu-chat').firstElementChild; return [first.className, [...first.querySelectorAll('.mu-bubble p')].map((p) => p.textContent), [...first.querySelectorAll('.mu-file')].map((f) => [f.textContent, f.title])]; })()`),
   ['mu-row person', ['Is the filing at registry.example.test current?', 'company: Acme Ltd'], [['filing.pdf', 'filing.pdf'], ['summary.pdf', 'summary.pdf']]]);
