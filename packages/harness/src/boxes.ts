@@ -32,29 +32,65 @@ export const BOX_CROSSINGS = ['transport.box.create', 'transport.box.created', '
 /** The label every box of a run carries, so one run's cleanup finds its own boxes and no other run's. */
 export const RUN_LABEL = 'agentrun-run';
 
+/** pi-transport's `BoxError` shape (`code` `unknown`), without a runtime import of the optional peer. */
+const boxError = (message: string) => Object.assign(new Error(message), { name: 'BoxError', code: 'unknown' as const });
+
 /** One labeller for a process's boxes: `box-N` by first appearance, kept with each box's provider and id in `file` (outside the recording), so the next process of the run
- *  numbers on past them and a person can find a box a run left. The file is read at the first label, never before: a run on a disk not yet mounted has nothing to read. Without
- *  a file the labels live only in this process. Receipts: a box `open`ed here is `end`ed or, at `finish`, written as still open. */
+ *  numbers on past them and a person can find a box a run left. The file is read at its first use, never before: a run on a disk not yet mounted has nothing to read. Only a missing
+ *  file is a new ledger; one that cannot be read or parsed is refused, so no label is ever given twice. Without a file the labels live only in this process.
+ *  Receipts: a box `open`ed here is `end`ed or, at `finish`, written as still open; its state is kept in the file, so a process that starts after one was killed writes the receipt of each
+ *  box that process left open (`recover`). */
 export type BoxLedger = {
   label(provider: string, id: string): string;
   open(label: string, receipt: { provider: string; kind: string; from: string }): void;
   end(label: string): void;
   /** Every receipt of a box still open: written when the process is done with the run. */
   finish(): void;
+  /** The receipts of boxes an earlier process opened and never closed (it was killed): written by the process that starts next, with `to` and `seconds` null. */
+  recover(): void;
 };
 
+type LedgerEntry = { provider: string; id: string; kind?: string; from?: string; receipt?: 'open' | 'written' };
+
 export function boxLedger(options: { file?: string; recorder?: Recorder } = {}): BoxLedger {
-  let ids: Record<string, { provider: string; id: string }> | undefined;
-  const read = () => {
+  const { file } = options;
+  let ids: Record<string, LedgerEntry> | undefined;
+  const read = (): Record<string, LedgerEntry> => {
     if (ids) return ids;
-    try { ids = options.file ? (JSON.parse(readFileSync(options.file, 'utf8')) as Record<string, { provider: string; id: string }>) : {}; } catch { ids = {}; }
-    return ids;
+    if (!file) return (ids = {});
+    let text: string;
+    try { text = readFileSync(file, 'utf8'); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return (ids = {});
+      throw new Error(`the box ids file ${file} cannot be read (${(error as Error).message}): refused, so no box label is given twice`);
+    }
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch (error) { throw new Error(`the box ids file ${file} cannot be read (${(error as Error).message}): refused, so no box label is given twice`); }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`the box ids file ${file} cannot be read (it is not an object of labels): refused, so no box label is given twice`);
+    return (ids = parsed as Record<string, LedgerEntry>);
   };
-  const open = new Map<string, { provider: string; kind: string; from: string }>();
-  const receipt = (label: string, made: { provider: string; kind: string; from: string }, to: string | null) => {
+  const save = () => {
+    if (!file) return;
     try {
-      options.recorder?.host('box.receipt', { box: label, provider: made.provider, kind: made.kind, from: made.from, to, seconds: to === null ? null : Math.max(0, (Date.parse(to) - Date.parse(made.from)) / 1000), usd_per_second: null, cost_usd: null, source: null, priced: null });
+      mkdirSync(dirname(file), { recursive: true });
+      const temporary = `${file}.tmp-${process.pid}`;
+      writeFileSync(temporary, `${JSON.stringify(read(), null, 2)}\n`);
+      renameSync(temporary, file);
+    } catch (error) { throw new Error(`the box ids file ${file} cannot be written (${(error as Error).message})`); }
+  };
+  // The labels this process opened a receipt for.
+  const opened = new Set<string>();
+  const receipt = (label: string, entry: LedgerEntry, to: string | null) => {
+    try {
+      const from = entry.from ?? null;
+      options.recorder?.host('box.receipt', { box: label, provider: entry.provider, kind: entry.kind ?? null, from, to, seconds: to === null || from === null ? null : Math.max(0, (Date.parse(to) - Date.parse(from)) / 1000), usd_per_second: null, cost_usd: null, source: null, priced: null });
     } catch { /* a recording line never fails a call */ }
+  };
+  const close = (label: string, to: string | null) => {
+    const entry = read()[label];
+    if (!entry || entry.receipt === 'written') return;
+    receipt(label, entry, to);
+    entry.receipt = 'written';
+    try { save(); } catch { /* the receipt is written; a later process may write it again only if this save failed */ }
   };
   return {
     label(provider, id) {
@@ -63,24 +99,25 @@ export function boxLedger(options: { file?: string; recorder?: Recorder } = {}):
       if (had) return had;
       const label = `box-${Math.max(0, ...Object.keys(known).map((each) => Number(/^box-(\d+)$/.exec(each)?.[1] ?? 0))) + 1}`;
       known[label] = { provider, id };
-      if (options.file) {
-        mkdirSync(dirname(options.file), { recursive: true });
-        const temporary = `${options.file}.tmp-${process.pid}`;
-        writeFileSync(temporary, `${JSON.stringify(known, null, 2)}\n`);
-        renameSync(temporary, options.file);
-      }
+      try { save(); } catch (error) { delete known[label]; throw error; }
       return label;
     },
-    open(label, made) { open.set(label, made); },
+    open(label, made) {
+      const entry = read()[label];
+      if (!entry) return;
+      Object.assign(entry, { kind: made.kind, from: made.from, receipt: 'open' });
+      opened.add(label);
+      save();
+    },
     end(label) {
-      const made = open.get(label);
-      if (!made) return;
-      open.delete(label);
-      receipt(label, made, new Date().toISOString());
+      if (!opened.delete(label)) return;
+      close(label, new Date().toISOString());
     },
     finish() {
-      for (const [label, made] of open) receipt(label, made, null);
-      open.clear();
+      for (const label of [...opened]) { opened.delete(label); close(label, null); }
+    },
+    recover() {
+      for (const [label, entry] of Object.entries(read())) if (entry.receipt === 'open' && !opened.has(label)) close(label, null);
     },
   };
 }
@@ -148,17 +185,27 @@ export function tapBox(boxes: Boxes, options: {
     // A box a tool reconnects to is the run's too: it is wrapped, so its commands are crossings and its life is on the recording, under the label it already has.
     attach: async (id, context) => {
       const found = await provider.attach(id, context);
-      return found.ok && found.value ? { ok: true, value: wrap(found.value, ledger.label(provider.name, found.value.id)).box } as typeof found : found;
+      if (!found.ok || !found.value) return found;
+      let label: string;
+      try { label = ledger.label(provider.name, found.value.id); } catch (error) { return { ok: false, error: boxError((error as Error).message) } as unknown as typeof found; }
+      return { ok: true, value: wrap(found.value, label).box } as typeof found;
     },
     create: async (spec, context) => {
       const lostAtCreate = taken('transport.box.create');
       const made = await provider.create(labelled(spec), context);
       if (!made.ok) return made;
-      const label = ledger.label(provider.name, made.value.id);
       const facts = made.value.facts();
+      let label: string;
+      try {
+        label = ledger.label(provider.name, made.value.id);
+        if (options.receipts) ledger.open(label, { provider: provider.name, kind: facts.gpu !== null ? `gpu:${facts.gpu}` : facts.isolation, from: new Date().toISOString() });
+      } catch (error) {
+        // A box whose label cannot be kept would run with no label and no receipt, and no cleanup knows it: it is destroyed, and the create fails.
+        await made.value.destroy(ctx);
+        return { ok: false, error: boxError((error as Error).message) } as unknown as typeof made;
+      }
       const role = spec.labels?.role;
       line('box.created', { box: label, provider: provider.name, facts: { isolation: facts.isolation, cpus: facts.cpus, gpu: facts.gpu }, ...(role ? { role } : {}) });
-      if (options.receipts) ledger.open(label, { provider: provider.name, kind: facts.gpu !== null ? `gpu:${facts.gpu}` : facts.isolation, from: new Date().toISOString() });
       const wrapped = wrap(made.value, label);
       // The box a planned loss at the create crossing was about to make is made and lost at once; `created` is the next crossing. Each is recorded as a loss.
       if (lostAtCreate) await wrapped.lose('transport.box.create');

@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync,
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
@@ -292,6 +292,8 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   // What writes under the run's directory waits for `open()`: the recorder, the fetched files, the box. Nothing before it touches the disk (on a disk the run has not mounted yet, a write would land on the bare mountpoint).
   const open = async () => {
     lazy?.start();
+    // The receipts of boxes a killed process left open, written by this one (to and seconds null): a SIGKILL runs no finally.
+    ledger.recover();
     local.touchLogs();
     // The checked files the job reads, fetched into work/ and verified: on --live and with --fetch-sources (a no-key run uses the files the demo commits). A fetched file is cached by its hash (`--cache`), so a re-run does not fetch it again.
     if (wanted && (live || env.FETCH_SOURCES === '1')) {
@@ -434,7 +436,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // The provider ids of the run's boxes go to a file outside the recording, never inside it (a link that resolves into it included): `--box-ids`, else `box-ids.internal.json` in the run's
   // directory, checked the same way. A demo's own place keeps its default in the place's own directory.
   const real = (path: string): string => { try { return realpathSync(path); } catch { return dirname(path) === path ? path : join(real(dirname(path)), basename(path)); } };
-  const inRecording = (path: string) => { const from = relative(real(recordDir), real(path)); return from === '' || (!from.startsWith('..') && !isAbsolute(from)); };
+  // Outside the recording means a parent step (`..` or `../`) or another root, never a name that only starts with two dots (`..ids.json`).
+  const inRecording = (path: string) => { const from = relative(real(recordDir), real(path)); return !(from === '..' || from.startsWith(`..${sep}`) || isAbsolute(from)); };
   const boxIdsGiven = values['box-ids'] ?? options.boxIds;
   const boxIds = boxIdsGiven !== undefined ? resolve(boxIdsGiven) : options.place ? undefined : join(resolve(dir), 'box-ids.internal.json');
   if (boxIds !== undefined && inRecording(boxIds)) {
