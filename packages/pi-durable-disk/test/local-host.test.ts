@@ -561,7 +561,7 @@ function filesystemRunner(dir: string, answer: (argv: string[]) => Ran | undefin
 }
 
 function hostWithSecret(w: ReturnType<typeof world>, exec: Runner, extra: Partial<Parameters<typeof localHost>[0]> = {}) {
-  return localHost({ exec, mountRoot: w.mountRoot, procMounts: w.procMounts, hostName: "host-a", user: "1000", group: "1000", command: ["/n", "/c"], unitPrefix: "pda-t-", env: { DB_PASSWORD: ENV_SECRET }, ...extra });
+  return localHost({ exec, mountRoot: w.mountRoot, procMounts: w.procMounts, hostName: "host-a", user: "1000", group: "1000", command: ["/n", "/c"], unitPrefix: "pda-t-", env: { DB_DSN: ENV_SECRET }, ...extra });
 }
 
 test("systemd start: a secret in the environment is in no command line, and reaches the unit through a root-only EnvironmentFile", async () => {
@@ -579,7 +579,7 @@ test("systemd start: a secret in the environment is in no command line, and reac
   const envFile = file(unit, ".env");
   assert.equal(statSync(envFile).mode & 0o777, 0o600, "root-only");
   const text = readFileSync(envFile, "utf8");
-  assert.match(text, new RegExp(`^DB_PASSWORD="${ENV_SECRET}"$`, "m"));
+  assert.match(text, new RegExp(`^DB_DSN="${ENV_SECRET}"$`, "m"));
   assert.match(text, new RegExp(`^PER_START_SECRET="${ENV_SECRET}-attempt"$`, "m"));
   assert.match(text, /^PATH="\/usr\/local\/sbin:/m);
   const holder = /^PDA_HOLDER="(.*)"$/m.exec(text)?.[1];
@@ -606,6 +606,37 @@ test("the environment file is removed by stop, and by a start that fails", async
   const unitFailed = failing.calls.find((c) => c.argv.includes("/usr/bin/systemd-run"))!.argv.find((x) => x.startsWith("--unit="))!.slice("--unit=".length);
   assert.ok(!existsSync(failing.file(unitFailed, ".env")), "a failed start leaves no environment file");
   assert.ok(!existsSync(failing.file(unitFailed, ".mount-token")), "nor a token file");
+});
+
+test("a unit that ends for good removes its own environment file, and one systemd will restart keeps it", async () => {
+  const w = world();
+  const dir = scratch("pda-envfile-");
+  const { calls, exec, file } = filesystemRunner(dir);
+  const handle = await hostWithSecret(w, exec).start(REF, TOKEN);
+  const unit = String(handle.unit);
+  const stopPost = calls.find((c) => c.argv.includes("/usr/bin/systemd-run"))!.argv.find((x) => x.startsWith("ExecStopPost="));
+  assert.ok(stopPost, "the unit carries an ExecStopPost for its environment file");
+  const m = /^ExecStopPost=\+\/bin\/sh -c '(.*)' sh (\S+)$/.exec(stopPost!);
+  assert.ok(m, stopPost);
+  assert.equal(m![2], `${TOKEN_DIR}/${unit}.env`, "it names the file under the token directory");
+  // systemd turns $$ into $ and hands the script its own SERVICE_RESULT and EXIT_STATUS; do the same here.
+  const script = m![1].replaceAll("$$", "$");
+  const after = (env: Record<string, string>) => {
+    writeFileSync(file(unit, ".env"), 'K="v"\n');
+    spawnSync("/bin/sh", ["-c", script, "sh", file(unit, ".env")], { env: { PATH: "/usr/bin:/bin", ...env } });
+    return existsSync(file(unit, ".env"));
+  };
+  for (const [result, status] of [["success", "0"], ["exit-code", "65"], ["exit-code", "70"], ["exit-code", "75"], ["exit-code", "76"]]) {
+    assert.equal(after({ SERVICE_RESULT: result, EXIT_STATUS: status }), false, `${result}/${status}: the instance parked, finished or cannot be restarted: the file goes`);
+  }
+  for (const [result, status] of [["exit-code", "1"], ["exit-code", "137"], ["signal", "KILL"], ["timeout", "TERM"], ["core-dump", "SEGV"]]) {
+    assert.equal(after({ SERVICE_RESULT: result, EXIT_STATUS: status }), true, `${result}/${status}: systemd restarts it and the restart loads the file again`);
+  }
+
+  const noRestart = filesystemRunner(dir);
+  const h2 = await hostWithSecret(w, noRestart.exec, { restart: false }).start(REF, TOKEN);
+  const argv = noRestart.calls.find((c) => c.argv.includes("/usr/bin/systemd-run"))!.argv;
+  assert.ok(argv.includes(`ExecStopPost=+/bin/rm -f ${TOKEN_DIR}/${String(h2.unit)}.env`), "with no restart every exit is the last one");
 });
 
 test("an environment value that cannot be written into the file faithfully is refused before anything runs, and a hostile one is written escaped", async () => {
