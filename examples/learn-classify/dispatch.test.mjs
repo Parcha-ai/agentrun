@@ -313,3 +313,37 @@ test('v4: a website the input schema makes optional but a node interpolates is r
   assert.equal(answered.dispatch.outcome, 'complete');
   assert.deepEqual(nodeOnly.requests, []);
 });
+
+/** Probe 1 run 3's classify-company as it was saved (its v4 answer keys aside): Input { name; ticker?, website? }, one agent
+ *  node whose state interpolates {ticker} and {website}. */
+const PROBE1_RUN3 = Object.freeze({
+  v: 2, name: WORKFLOW,
+  schemas: {
+    Input: { type: 'object', properties: { name: { type: 'string', minLength: 1 }, ticker: { type: 'string' }, website: { type: 'string' } }, required: ['name'], additionalProperties: false },
+    Result: CLASSIFY_WORKFLOW_V4.schemas.Answer,
+  },
+  input: { schemaId: 'Input' },
+  output: { schemaId: 'Result', path: 'answer' },
+  root: {
+    node: 'agent', label: 'research-and-classify', as: 'answer', out: 'Result',
+    state: { company: '{name}', ticker: '{ticker}', website: '{website}' },
+    instructions: 'Classify the named company as the SEC would file it. Use the provided website if supplied, otherwise search for the official site and investor relations.',
+    tools: ['search_web', 'fetch_page', 'browse', 'read_document', 'sic2_groups', 'sic_codes'],
+  },
+});
+
+test('v4: probe 1 run 3\'s shape (website optional, {website} in the node\'s state) on a job with no website: refused before any task, no use, the root agent asked', async (t) => {
+  assert.equal(answersTheJob(PROBE1_RUN3, answer4.parameters, SETS.v4.input(bluefin)), true, 'Ajv passes it: website is optional');
+  const { repo, home, run, job } = await setUp(t, { set: SETS.v4, workflow: PROBE1_RUN3, job: bluefin });
+  const dispatch = await promotedFor({ repo, run, answer: answer4, input: SETS.v4.input(job) });
+  assert.equal(dispatch?.name, WORKFLOW);
+  const model = v4Model(job, { root: [{ call: 'answer', args: answerOfV4(truth4[job.name]) }, { say: 'Answered by hand.' }] });
+  const measure = await runJob({ run, job, model, judge: meteredJudge(v4.judge()), effects: await v4Effects(job, run), answer: answer4, text: SETS.v4.text, dispatch });
+  assert.deepEqual(tasksOf(run), [], 'no task');
+  assert.equal(measure.dispatch.outcome, 'refused');
+  assert.match(measure.dispatch.detail, /root \(research-and-classify\): interpolates \{website\} but no upstream node produces "website"/);
+  assert.ok(model.requests.length > 0, 'the root agent was asked');
+  assert.deepEqual(model.seen.filter((r) => r.who === 'node'), [], 'no node ran');
+  const finished = await finishJob({ home, repo, run, job, measure, propose: false });
+  assert.deepEqual(finished.uses, []);
+});
