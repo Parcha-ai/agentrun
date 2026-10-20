@@ -192,3 +192,25 @@ test('the gallery embeds exactly the recordings beside it, and an empty gallery 
   const empty = built(t, (dir) => { rmSync(dir, { recursive: true }); mkdirSync(dir); });
   assert.ok(paths(empty).includes('recordings/: holds no recording: an empty gallery is never published'), paths(empty).join('\n'));
 });
+
+test('the built index carries the lock\'s title and view for an id it names, and the gate refuses an index that drifts from the lock', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'gallery-lock-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(referenceJob, join(dir, 'recordings', 'reference-job'), { recursive: true });
+  withKilled(join(dir, 'recordings'));
+  const lock = { asset: 'recordings.tar', sha256: 'a'.repeat(64), ids: [{ id: 'reference-job', title: 'The reference job, in words of its own', view: ['muse'] }, { id: 'ten-kills-seed21' }] };
+  const lockPath = join(dir, 'recordings.lock.json');
+  writeFileSync(lockPath, JSON.stringify(lock));
+  for (const files of [false, true]) {
+    // The same function the deploy runs, given the lock as its input.
+    build(join(dir, 'dist'), join(dir, 'recordings'), { files, lock: lockPath });
+    const gallery = files ? JSON.parse(readFileSync(join(dir, 'dist', 'recordings', 'index.json'), 'utf8')) : JSON.parse(readFileSync(join(dir, 'dist', 'gallery.js'), 'utf8').slice('window.AGENTRUN_GALLERY = '.length, -2));
+    assert.deepEqual(gallery.map((entry) => [entry.id, entry.title ?? null, entry.view ?? null]), [['reference-job', 'The reference job, in words of its own', ['muse']], ['ten-kills-seed21', null, null]], `an id the lock names carries its fields, one it does not is as recorded (files: ${files})`);
+    assert.deepEqual(gateProblems(join(dir, 'dist'), lock), [], 'the index equals the lock');
+    const drifted = (change) => gateProblems(join(dir, 'dist'), { ...lock, ids: lock.ids.map((each) => (each.id === 'reference-job' ? { ...each, ...change } : each)) }).map(({ message }) => message);
+    assert.match(drifted({ title: 'Another title' })[0], /^holds the title "The reference job, in words of its own" for reference-job, not the lock's "Another title"$/);
+    assert.match(drifted({ view: [] })[0] ?? '', /^holds the view \["muse"\] for reference-job, not the lock's \[\]$/);
+    const bare = { ...lock, ids: [{ id: 'reference-job' }, { id: 'ten-kills-seed21' }] };
+    assert.match(gateProblems(join(dir, 'dist'), bare).map(({ message }) => message)[0], /^holds the title "The reference job, in words of its own" for reference-job, not the lock's undefined$/, 'an index whose entry carries fields the lock does not name is refused too');
+  }
+});

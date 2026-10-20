@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.0-beta.20 (2026-10-20)
+
+- A start mark keeper whose rewrite fails because the run's directory moved after its check now warns that the directory is no longer the one it started on, and stops. Before, the `PDA_START_MARK` warning said the rewrite failed (ENOENT or ENOTDIR). Nothing is written in either case; only the stated reason changes.
+- The local-disk env conformance cases watch with a 100 ms poll, so pi's fixed 3 s wait for a report keeps seconds of slack on a loaded runner; the product's 1 s watch default is unchanged.
+
 ## 0.1.0-beta.19 (2026-10-20)
 
 - An instance whose app released the run ends by itself: `pi-durable-disk run --app` exits 0 once `onOpen` has returned and the run is released, so the unit does not stay up with no mount.

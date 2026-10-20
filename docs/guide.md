@@ -203,6 +203,31 @@ console.log((await repo.log()).map((c) => c.subject).join(" | "));
 
 It prints `run-1 proposes | seed`: the run's branch reached `main` as a fast-forward. Until the package is published, the README's [quickstart](../packages/pi-git-remote/README.md#quickstart-no-key-no-network) runs the same steps from a checkout of this repository. The [README](../packages/pi-git-remote/README.md) has every method, what never runs, the path limits and the remotes.
 
+<a id="transport"></a>
+## Run an agent's tools where each step needs them
+
+[`@parcha/pi-transport`](../packages/pi-transport/README.md) (not yet published) runs a pi agent's tools on another machine: this machine, a Docker container, or a Daytona or Modal sandbox, behind one `Box` interface. The session, its store and its model calls stay with the host; only the tools go to the box. Use it when a step needs a machine the host is not: a GPU, more memory, or a sandbox apart from the host for code the agent writes and runs. Jev can choose the machine for each step from a one-line purpose you give each environment.
+
+This runs with no key and no Docker. The box is a directory on this machine, with no isolation:
+
+```js
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { localBoxes } from "@parcha/pi-transport/box/local";
+import { boxEnv } from "@parcha/pi-transport/hands";
+
+const created = await localBoxes({ root: "./boxes" }).create({ maxLifetimeMs: 10 * 60_000 }, BACKGROUND_CONTEXT);
+if (!created.ok) throw created.error;
+const box = created.value;
+
+const env = boxEnv(box);
+await env.writeFile("notes/a.txt", "hello from the box\n", BACKGROUND_CONTEXT);
+const ran = await env.exec("cat notes/a.txt", { timeout: 10, onOutput: (text) => process.stdout.write(text) }, BACKGROUND_CONTEXT);
+console.log(ran.ok ? `exit ${ran.value.exitCode}` : ran.error);
+await box.destroy(BACKGROUND_CONTEXT);
+```
+
+`boxEnv` is pi's `ExecutionEnv`, so a pi-durable Harness given it as `env` runs the agent's `read`, `write`, `edit` and `bash` in the box. For a container, use `dockerBoxes()` from `@parcha/pi-transport/box/docker`. The [package README](../packages/pi-transport/README.md) covers the providers, the config that sends each conversation's tools to an environment, and Jev's placement.
+
 <a id="primitives"></a>
 ## The primitives
 
