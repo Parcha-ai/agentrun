@@ -113,7 +113,7 @@ test('in Chrome: with connect-src \'self\' an embedded recording\'s cited answer
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const page = await drivenPage(`${origin}/chat.html?r=reference-job`, join(out, 'profile'), { signal: t.signal });
   held.page = page;
-  await page.once(`!!document.querySelector('main#chat-root > .app .thread') && !!document.querySelector('.kicker')`, 'true', 20_000, 'the chat page and the right side drawn');
+  await page.once(`!!document.querySelector('main#chat-root > .app .thread') && !!document.querySelector('.kicker')`, 'true', 20_000, 'the right side drew the run\'s answer (its cited result was read under connect-src \'self\')');
   assert.equal(JSON.parse(String(await page.evaluate(`JSON.stringify(document.querySelector('.kicker').textContent)`))), 'The run\'s answer', 'the cited result was read under connect-src \'self\'');
 });
 
