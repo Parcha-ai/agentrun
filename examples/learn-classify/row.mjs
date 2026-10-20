@@ -45,7 +45,8 @@ export function spendOf(measure, curateJudge = { costUsd: 0, unknown: 0 }, tools
 
 /** `run` is the job's place in the order (1 to 100; for a sealed pass, its place in that pass); `runId` the attempt's id.
  *  `curateJudge` is the curate call's Jev meter (none for a sealed run). `convention` is the filing convention the truth
- *  set's build report puts the company under, or null; the agent never sees it. */
+ *  set's build report puts the company under, or null; the agent never sees it. A run the host dispatched a promoted
+ *  workflow in carries `dispatch`, how that ended (dispatch.mjs). */
 export function rowOf({ run, runId, job, seedSha, afterSha, offered, measure, finished, curated, curateJudge, recording, convention, key = 'sic2', tools = [] }) {
   const answer = measure.answer?.[key] ?? null;
   const candidates = finished?.candidates ?? [];
@@ -66,6 +67,7 @@ export function rowOf({ run, runId, job, seedSha, afterSha, offered, measure, fi
     workflowsOffered: offered,
     workflowsUsed: measure.workflowRuns.map(({ name, revision, outcome, classifiedBy }) => ({ name, revision, outcome, ...(classifiedBy ? { classifiedBy } : {}) })),
     byWorkflow: byWorkflowOf(measure, key),
+    ...(measure.dispatch ? { dispatch: measure.dispatch } : {}),
     workflowsSaved: [...new Set((finished?.saved ?? []).map((w) => w.name))],
     notes: {
       new: candidates.filter((c) => NEW_TYPES.has(c.type)).length,

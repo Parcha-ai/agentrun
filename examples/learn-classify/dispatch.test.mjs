@@ -1,6 +1,7 @@
-// The host's dispatch at $0 (CLASSIFY-CONTRACT.md "Dispatch"): a promoted workflow whose output is the whole answer
-// runs first, by the host, with no call to the root agent's model; complete is the answer, escalated or failed hands the
-// job to the root agent with what the workflow returned; every one is a use in pi-agent-learn's uses file.
+// The host's dispatch at $0 (CLASSIFY-CONTRACT.md "Dispatch"): a promoted workflow whose input schema accepts the job and
+// whose output schema has every key of the answer runs first, by the host, with no call to the root agent's model; a valid
+// answer is the answer, and anything else (escalated, failed, an output the answer refuses) hands the job to the root
+// agent with what the workflow returned; every one is a use in pi-agent-learn's uses file.
 import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -9,13 +10,15 @@ import { test } from 'node:test';
 import { recordingLines } from '@parcha/agentrun-pi/durable';
 import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
 import { renderSkill, renderTrial, skillPath, trialPath } from '@parcha/pi-agent-learn';
-import { answersTheJob, HOST_WORKFLOW, promotedFor, runPromoted } from './dispatch.mjs';
+import Ajv from 'ajv';
+import { answersTheJob, HOST_WORKFLOW, hostRecord, promotedFor, runPromoted } from './dispatch.mjs';
 import { agentHomeFor, answerV1, finishJob, groupsOf, jobInput, meteredJudge, prepareRun, runJob, sic2GroupsTool } from './host.mjs';
 import { jobRecordOf } from './job-record.mjs';
 import { PRICES } from './models.mjs';
 import { rowOf } from './row.mjs';
 import { openOut, runLoop, scriptedParts } from './runner.mjs';
-import { CLASSIFY_WORKFLOW, extractAnswer, FIXTURES, fixtureFetch, readJson, scriptedJev, scriptedModel, WORKFLOW } from './scripted.mjs';
+import { agentScriptV4, answerOfV4, CLASSIFY_WORKFLOW, CLASSIFY_WORKFLOW_V4, extractAnswer, FIXTURES, FIXTURES_V4, fixtureFetch, readJson, scriptedJev, scriptedModel, WORKFLOW } from './scripted.mjs';
+import { SETS } from './sets.mjs';
 
 const labels = readJson(join(FIXTURES, 'sic2.json'));
 const companies = readJson(join(FIXTURES, 'companies.json'));
@@ -49,23 +52,29 @@ async function commitWorkflow(repo, dir, name, workflow, status) {
 }
 
 /** A pass's directory with the agent repository, an agent home, and one run prepared for `job`. */
-async function setUp(t, { status = 'active', workflow = CLASSIFY_WORKFLOW, job = companies[0] } = {}) {
+async function setUp(t, { set = SETS.v1, status = 'active', workflow = CLASSIFY_WORKFLOW, job = companies[0] } = {}) {
   const root = await scratch(t);
   const out = join(root, 'out');
-  const { repo } = await openOut(out, { mode: 'scripted' });
+  const { repo } = await openOut(out, { mode: 'scripted', set });
   const digest = await commitWorkflow(repo, join(root, 'store'), WORKFLOW, workflow, status);
   const home = await agentHomeFor({ dir: join(out, 'home'), repo });
-  const run = await prepareRun({ home, repo, host: 'test', runId: 'run-dispatch', input: jobInput(job) });
+  const run = await prepareRun({ home, repo, host: 'test', runId: 'run-dispatch', input: set.input(job) });
   return { out, repo, home, run, job, digest };
 }
 
 const twoModels = { root: { id: 'claude-opus-5-5', thinking: 'high', cost: PRICES['claude-opus-5-5'] }, node: { id: 'gpt-6-luna', thinking: 'medium', cost: PRICES['gpt-6-luna'] } };
 
-test('the promoted workflow is the one whose live revision is active and whose output is the whole answer', async (t) => {
-  assert.equal(answersTheJob(CLASSIFY_WORKFLOW, answer.parameters), true);
+test('the promoted workflow is the one whose live revision is active and whose output has every key of the answer', async (t) => {
+  const input = jobInput(companies[0]);
+  assert.equal(answersTheJob(CLASSIFY_WORKFLOW, answer.parameters, input), true);
+  const optional = structuredClone(CLASSIFY_WORKFLOW);
+  optional.schemas.Answer.required = ['sic2'];
+  assert.equal(answersTheJob(optional, answer.parameters, input), true, 'the keys are there; the answer checks the output when it comes');
   const partial = structuredClone(CLASSIFY_WORKFLOW);
+  delete partial.schemas.Answer.properties.url;
   partial.schemas.Answer.required = ['sic2', 'evidence'];
-  assert.equal(answersTheJob(partial, answer.parameters), false, 'an output that may leave out the url is not the whole answer');
+  assert.equal(answersTheJob(partial, answer.parameters, input), false, 'an output with no url is not the whole answer');
+  assert.equal(answersTheJob(CLASSIFY_WORKFLOW, answer.parameters, { name: companies[0].name }), false, 'its input schema needs the website');
 
   const promoted = await setUp(t);
   assert.deepEqual(promoted.run.workflows.loaded.map((w) => w.name), [WORKFLOW]);
@@ -85,7 +94,8 @@ test('complete: the host runs the promoted workflow on the node model, Opus is n
   assert.deepEqual([...new Set(model.seen.map((r) => `${r.who} ${r.model} ${r.thinking}`))], ['node gpt-6-luna medium']);
   assert.equal(measure.status, HOST_WORKFLOW);
   assert.deepEqual(measure.answer, extractAnswer({ group: { code: job.sic2 }, text: pages[job.website].text, url: job.website }));
-  assert.deepEqual(measure.dispatch, { name: WORKFLOW, revision: dispatch.sha256, outcome: 'complete' });
+  assert.deepEqual(measure.dispatch, { name: WORKFLOW, revision: dispatch.sha256, key: measure.dispatch.key, outcome: 'complete' });
+  assert.match(measure.dispatch.key, /^host:classify-company:/);
   assert.deepEqual(measure.workflowRuns.map(({ name, outcome, classifiedBy }) => ({ name, outcome, classifiedBy })), [{ name: WORKFLOW, outcome: 'complete', classifiedBy: HOST_WORKFLOW }]);
   assert.ok(measure.usage.costUsd > 0, 'the node conversation is priced at Luna\'s rates');
 
@@ -147,4 +157,110 @@ test('a pass dispatches through the runner: the row says host-workflow; with dis
     assert.equal(rows[0].byWorkflow, true);
     assert.deepEqual(rows[0].workflowsUsed.map((u) => [u.name, u.outcome, u.classifiedBy ?? null]), [[WORKFLOW, 'complete', dispatchOn ? HOST_WORKFLOW : null]], `dispatch ${dispatchOn}`);
   }
+});
+
+// ---- v4: the six-part answer ---------------------------------------------------------------------------------------------
+
+const v4 = scriptedParts({ set: SETS.v4 });
+const answer4 = SETS.v4.answer(v4.data);
+const truth4 = readJson(join(FIXTURES_V4, 'answers.json'));
+const [harbor, bluefin] = v4.companies;
+const isAnswer4 = new Ajv({ strict: false, allErrors: true }).compile(answer4.parameters);
+
+/** The scripted v4 models: the root agent `root`, and the workflow's agent nodes as agentScriptV4's with `sic4` as given. */
+function v4Model(job, { root, sic4 } = {}) {
+  const { node } = agentScriptV4({ job, offered: [WORKFLOW], fixtures: { truth: truth4 } });
+  const nodeWith = (state, more) => {
+    const next = node(state, more);
+    return sic4 !== undefined && next.submit?.sic4 !== undefined ? { submit: { ...next.submit, sic4 } } : next;
+  };
+  return scriptedModel({ root, node: nodeWith, models: twoModels });
+}
+
+const v4Effects = async (job, run) => [...(await v4.toolsFor(job, run)), ...SETS.v4.labelTools(v4.data)];
+
+test('v4: a workflow with every key of the answer, however loosely typed, is eligible for a job its input schema accepts', async (t) => {
+  const loose = CLASSIFY_WORKFLOW_V4.schemas.Answer.properties;
+  assert.equal(loose.sic4.enum, undefined, 'its sic4 is any string');
+  assert.equal(loose.cites.maxItems, undefined, 'and its cites have no bound');
+  assert.equal(answersTheJob(CLASSIFY_WORKFLOW_V4, answer4.parameters, SETS.v4.input(harbor)), true);
+  assert.equal(answersTheJob(CLASSIFY_WORKFLOW_V4, answer4.parameters, SETS.v4.input(bluefin)), false, 'a company with no website: its input schema refuses it');
+  const noCites = structuredClone(CLASSIFY_WORKFLOW_V4);
+  delete noCites.schemas.Answer.properties.cites;
+  noCites.schemas.Answer.required = noCites.schemas.Answer.required.filter((key) => key !== 'cites');
+  assert.equal(answersTheJob(noCites, answer4.parameters, SETS.v4.input(harbor)), false, 'an output with no cites is not the whole answer');
+  assert.equal(answersTheJob(CLASSIFY_WORKFLOW, answer4.parameters, jobInput(companies[0])), false, "v1's three keys are not v4's six");
+
+  const promoted = await setUp(t, { set: SETS.v4, workflow: CLASSIFY_WORKFLOW_V4, job: harbor });
+  assert.equal((await promotedFor({ repo: promoted.repo, run: promoted.run, answer: answer4, input: SETS.v4.input(harbor) }))?.name, WORKFLOW);
+  const noSite = await setUp(t, { set: SETS.v4, workflow: CLASSIFY_WORKFLOW_V4, job: bluefin });
+  assert.equal(await promotedFor({ repo: noSite.repo, run: noSite.run, answer: answer4, input: SETS.v4.input(bluefin) }), null);
+});
+
+test('v4: a valid answer from the loosely typed workflow is the answer, and Opus is never asked', async (t) => {
+  const { repo, home, run, job } = await setUp(t, { set: SETS.v4, workflow: CLASSIFY_WORKFLOW_V4, job: harbor });
+  const dispatch = await promotedFor({ repo, run, answer: answer4, input: SETS.v4.input(job) });
+  const model = v4Model(job, { root: [{ say: 'The root agent should not be asked.' }] });
+  const measure = await runJob({ run, job, model, judge: meteredJudge(v4.judge()), effects: await v4Effects(job, run), answer: answer4, text: SETS.v4.text, dispatch });
+  assert.deepEqual(model.requests, []);
+  assert.equal(measure.status, HOST_WORKFLOW);
+  assert.equal(isAnswer4(measure.answer), true);
+  assert.equal(measure.answer.sic4, truth4[job.name].sic4);
+  assert.equal(measure.dispatch.outcome, 'complete');
+  const finished = await finishJob({ home, repo, run, job, measure, propose: false });
+  assert.deepEqual(finished.uses.map((u) => [u.name, u.outcome]), [[WORKFLOW, 'frozen']]);
+});
+
+test('v4: an output the answer refuses (sic4 not in the enum) is an escalation: Opus gets it with the errors, and the use counts as escalated', async (t) => {
+  const { repo, home, run, job } = await setUp(t, { set: SETS.v4, workflow: CLASSIFY_WORKFLOW_V4, job: harbor });
+  const dispatch = await promotedFor({ repo, run, answer: answer4, input: SETS.v4.input(job) });
+  assert.ok(dispatch, 'the loosely typed workflow is dispatched');
+  const byHand = answerOfV4(truth4[job.name]);
+  const model = v4Model(job, { sic4: '9999', root: [{ call: 'answer', args: byHand }, { say: 'Answered with the code fixed.' }] });
+  const measure = await runJob({ run, job, model, judge: meteredJudge(v4.judge()), effects: await v4Effects(job, run), answer: answer4, text: SETS.v4.text, dispatch });
+
+  assert.equal(measure.dispatch.outcome, 'escalated');
+  assert.ok(measure.dispatch.invalid.includes('/sic4 must be equal to one of the allowed values'), measure.dispatch.invalid.join('; '));
+  assert.match(measure.dispatch.key, /^host:classify-company:[0-9a-f]{64}:[0-9a-f]{64}$/);
+  assert.match(measure.dispatch.at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+  // Opus starts with the job, what the workflow returned, and why it was not taken.
+  assert.ok(model.requests.length > 0, 'the root agent took the job');
+  const asked = model.requests[0].messages.find((m) => m.role === 'user');
+  const said = typeof asked.content === 'string' ? asked.content : asked.content.map((c) => c.text ?? '').join('');
+  assert.ok(said.includes(`The proven workflow ${WORKFLOW} ran first on this company, without you, and did not finish the job: it escalated: its output is not a valid answer (/sic4 must be equal to one of the allowed values`), said);
+  assert.ok(said.includes('"sic4":"9999"'), 'the output is in hand');
+  assert.deepEqual([...new Set(model.seen.map((r) => `${r.who} ${r.model} ${r.thinking}`))].sort(), ['node gpt-6-luna medium', 'root claude-opus-5-5 high']);
+  assert.deepEqual(measure.answer, byHand);
+
+  // Every reader of the run sees an escalation: the row, the chart record and the uses file.
+  assert.deepEqual(measure.workflowRuns.map(({ name, outcome, classifiedBy }) => ({ name, outcome, classifiedBy })), [{ name: WORKFLOW, outcome: 'escalated', classifiedBy: HOST_WORKFLOW }]);
+  const row = rowOf({ run: 1, runId: run.runId, job, seedSha: run.sha, afterSha: run.sha, offered: [WORKFLOW], measure, finished: null, curated: null, recording: null, key: 'sic4' });
+  assert.equal(row.byWorkflow, false);
+  assert.equal(row.dispatch.outcome, 'escalated');
+  const record = jobRecordOf(recordingLines(run.storePath).lines);
+  assert.equal(record.executions[0].outcome, 'complete', 'the store says the workflow completed');
+  assert.equal(hostRecord(record, measure.dispatch).executions[0].outcome, 'escalated');
+  const finished = await finishJob({ home, repo, run, job, measure });
+  assert.deepEqual(finished.uses.map((u) => [u.name, u.outcome]), [[WORKFLOW, 'escalated']]);
+  assert.equal(finished.proposal.status, 'proposed');
+  const usesFile = JSON.parse(await repo.read(`uses/${run.runId}.json`, finished.proposal.sha));
+  assert.deepEqual(usesFile.uses.map((u) => [u.name, u.outcome, u.at]), [[WORKFLOW, 'escalated', measure.dispatch.at]]);
+});
+
+test('v4: a pass dispatches the loosely typed workflow; its bad output goes to Opus, and the row and its executions say escalated', async (t) => {
+  const root = await scratch(t);
+  const out = join(root, 'out');
+  const parts = scriptedParts({ set: SETS.v4 });
+  parts.modelFor = (job) => v4Model(job, { sic4: '9999', root: [{ call: 'answer', args: answerOfV4(truth4[job.name]) }, { say: 'Answered with the code fixed.' }] });
+  const { repo } = await openOut(out, { mode: 'scripted', set: SETS.v4 });
+  await commitWorkflow(repo, join(root, 'store'), WORKFLOW, CLASSIFY_WORKFLOW_V4, 'active');
+  const { rows } = await runLoop({ out, parts, jobs: 1, record: false });
+  assert.equal(rows.length, 1);
+  const [row] = rows;
+  assert.equal(row.answer, truth4[harbor.name].sic4);
+  assert.equal(row.correct, true);
+  assert.equal(row.byWorkflow, false);
+  assert.deepEqual(row.workflowsUsed.map((u) => [u.name, u.outcome, u.classifiedBy]), [[WORKFLOW, 'escalated', HOST_WORKFLOW]]);
+  assert.deepEqual(row.executions.map((e) => [e.name, e.outcome]), [[WORKFLOW, 'escalated']]);
+  assert.equal(row.dispatch.outcome, 'escalated');
 });

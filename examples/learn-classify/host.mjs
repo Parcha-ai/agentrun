@@ -13,7 +13,7 @@ import { carryBack } from '@parcha/pi-durable-agent';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { learnExtension } from '../agent-learn/host.mjs';
-import { HOST_WORKFLOW, handoffText, hostRunName, runPromoted } from './dispatch.mjs';
+import { HOST_WORKFLOW, handoffText, hostRunName, hostUses, runPromoted } from './dispatch.mjs';
 import { gatedAdmitter } from './gates.mjs';
 
 export { agentHomeFor, prepareRun, readAgentAt } from '../agent-learn/host.mjs';
@@ -391,9 +391,8 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
     // A promoted workflow that answers the whole job runs first, by the host (dispatch.mjs): a complete run with a valid
     // answer is the run's answer and the root agent is never asked; any other ending is handed to it with the job.
     const hostRun = dispatch ? await runPromoted({ harness, workflows: workflowTool.workflow, dispatch, toolNames: tools.workflowTools.map((t) => t.name), answer, context: ctx }) : null;
-    const byHost = hostRun?.outcome === 'complete' && !hostRun.invalid;
-    const dispatched = hostRun ? { dispatch: { name: hostRun.name, revision: hostRun.revision, outcome: hostRun.outcome, ...(hostRun.invalid ? { invalid: hostRun.invalid } : {}) } } : {};
-    if (byHost) {
+    const dispatched = hostRun ? { dispatch: { name: hostRun.name, revision: hostRun.revision, key: hostRun.key, outcome: hostRun.outcome, ...(hostRun.invalid ? { invalid: hostRun.invalid } : {}) } } : {};
+    if (hostRun?.outcome === 'complete') {
       measured = { answer: hostRun.output, answers: 1, toolCalls: {}, status: HOST_WORKFLOW, usage: usageTotals(await harness.usage(ctx)), finalText: '', calls: [], results: new Map(), ...dispatched };
     } else {
       const prompt = hostRun ? `${text(job)}\n\n${handoffText(hostRun)}` : text(job);
@@ -418,8 +417,15 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
   // The task records are read once the store is closed: every task's final record, the cut-off ones included.
   const { lines } = recordingLines(run.storePath);
   const { calls, results, ...rest } = measured;
+  let workflowRuns = readWorkflowRuns({ calls, results, lines });
+  if (rest.dispatch?.invalid) {
+    // The host's run completed in the store with an output the answer refused: an escalation, whose use is at its task's end.
+    const ended = lines.findLast((line) => line.kind === 'agentrun.workflow' && line.data?.input?.key === rest.dispatch.key)?.data?.endedAt;
+    rest.dispatch = { ...rest.dispatch, at: typeof ended === 'number' ? new Date(ended).toISOString() : null };
+    workflowRuns = workflowRuns.map((r) => (r.classifiedBy === HOST_WORKFLOW ? { ...r, outcome: 'escalated' } : r));
+  }
   return {
-    ...rest, stopped, workflowRuns: readWorkflowRuns({ calls, results, lines }), unpricedAnswers: unpricedAnswers(lines),
+    ...rest, stopped, workflowRuns, unpricedAnswers: unpricedAnswers(lines),
     judge: { ...judge.meter }, toolSpend: { ...toolSpend }, durationMs: Date.now() - started, reports,
   };
 }
@@ -443,10 +449,10 @@ export async function finishJob({ home, repo, run, job, measure, propose = true 
   await carryBack(home, run, { outcome: measure.stopped ? 'stopped' : 'completed', cost: measure.usage.costUsd + measure.judge.costUsd });
   return inRunStore(run, async (target) => {
     const candidates = await collectCandidates(target);
-    const uses = await collectUses({ target, workDir: run.workspace, run: run.runId });
+    const uses = hostUses(await collectUses({ target, workDir: run.workspace, run: run.runId }), measure.dispatch);
     const saved = await collectWorkflows({ repo, workDir: run.workspace, target });
     // A saved workflow that copies a page the run read is withheld here; a package without `read` proposes it.
-    const proposal = propose ? await proposeLearning({ repo, runId: run.runId, target, workDir: run.workspace, caseValues, untrusted: true, read: pagesRead(run.storePath) }) : { status: 'not proposed' };
+    const proposal = propose ? await proposeLearning({ repo, runId: run.runId, target, workDir: run.workspace, caseValues, untrusted: true, read: pagesRead(run.storePath), uses: () => uses }) : { status: 'not proposed' };
     return { candidates, uses: uses?.uses ?? [], saved: saved.found.map((w) => ({ name: w.name, sha256: w.sha256 })), proposal };
   });
 }

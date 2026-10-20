@@ -274,12 +274,15 @@ Every workflow agent node runs the host's model, `NODE` in `models.mjs` (`gpt-6-
 model's catalog entry carries its price (`PRICES`), so each conversation is priced by its own model in the rows, the
 executions and the guard. `--model` and `--thinking` name another root model.
 
-When the agent repository holds a promoted workflow (its live revision active) whose output is the whole answer, the
-host runs it first (`dispatch.mjs`), as a durable workflow task of the run, before the root agent says anything. A complete
-run with a valid answer is the run's answer, and Opus is never called; its row's `workflowsUsed` entry has `classifiedBy`
-`host-workflow`. A run that escalates or fails hands the job to the root agent with what the workflow returned. Either
-way the task is a use in pi-agent-learn's uses file, so promotion and demotion count it. A workflow on trial still runs
-through the agent. `--no-dispatch` turns it off.
+When the agent repository holds a promoted workflow (its live revision active) whose input schema accepts the job's input
+and whose output schema has every top-level key the answer requires (their types are not compared), the host runs it
+first (`dispatch.mjs`), as a durable workflow task of the run, before the root agent says anything. A complete run whose
+output validates against the answer is the run's answer, and Opus is never called; its row's `workflowsUsed` entry has
+`classifiedBy` `host-workflow`. Any other ending is an escalation to the root agent, which gets the job with what the
+workflow returned: an escalation or failure of the workflow, or an output the answer refuses, with the validation errors.
+Either way the task is a use in pi-agent-learn's uses file, so promotion and demotion count it; an output the answer
+refused is counted escalated there, in the row (`dispatch`, `workflowsUsed`) and in its executions, though the store says
+the workflow completed. A workflow on trial still runs through the agent. `--no-dispatch` turns it off.
 
 ## Files
 

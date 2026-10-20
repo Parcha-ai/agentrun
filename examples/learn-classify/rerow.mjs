@@ -7,6 +7,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { hostRecord } from './dispatch.mjs';
 import { jobRecordOf } from './job-record.mjs';
 import { bareRepoReader, lineageOf } from './lineage.mjs';
 
@@ -23,7 +24,7 @@ async function v3Of(row, { companies, reader, seedSha, recordings }) {
   const sealed = row.split === 'sealed';
   const lineage = sealed ? { born: [], rewritten: [] } : await lineageOf({ admitted: row.curate?.admitted ?? [], seedSha: row.seedSha, afterSha: row.afterSha, ...reader });
   const events = row.recording ? join(recordings, row.recording, 'events.jsonl') : undefined;
-  const record = events && existsSync(events) ? jobRecordOf(readRows(events)) : undefined;
+  const record = events && existsSync(events) ? hostRecord(jobRecordOf(readRows(events)), row.dispatch) : undefined;
   return {
     ...row, ...(sealed ? { phase: row.seedSha === seedSha ? 'before' : 'after' } : {}), company: company?.name ?? null, ticker: company?.ticker ?? null, ...lineage,
     ...(record ? { executions: record.executions, workflowShare: record.workflowShare, agentFallback: record.agentFallback } : {}),

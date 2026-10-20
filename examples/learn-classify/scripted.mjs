@@ -468,7 +468,7 @@ export const CLASSIFY_WORKFLOW_V4 = Object.freeze({
 });
 
 /** The v4 answer for a fixture case, its cites on the site and the report as read in the run. */
-function answerOfV4(t, { sic4 = t.sic4, site = t.site, report = t.document } = {}) {
+export function answerOfV4(t, { sic4 = t.sic4, site = t.site, report = t.document } = {}) {
   return {
     sic4, segments: t.segments, hq: t.hq, subsidiaries: t.subsidiaries, annualReport: { ...t.annualReport, url: report },
     cites: [
