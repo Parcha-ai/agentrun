@@ -57,6 +57,18 @@ test('schema and semantic repairs happen in one session; host tools/context are 
     assert.doesNotMatch(seen.options.resourceLoader.getSystemPrompt(), /AMBIENT/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+test('a node that names no thinking level thinks at medium; a named level, or the runner\'s own option, is kept; off is never a level', async () => {
+  const level = async (extra, asked = {}) => {
+    const { options, seen } = scripted([{ count: 1 }], extra);
+    await createPiRunner(options)({ ...request, ...asked });
+    return seen.options.thinkingLevel;
+  };
+  assert.equal(await level({}), 'medium');
+  assert.equal(await level({}, { thinking: 'low' }), 'low');
+  assert.equal(await level({ thinkingLevel: 'high' }), 'high', 'the runner\'s own option is the caller\'s override');
+  assert.equal(await level({ thinkingLevel: 'high' }, { thinking: 'low' }), 'low', 'the node\'s level outranks it');
+  assert.equal(await level({ thinkingLevel: 'off' }), 'medium');
+});
 test('submission supports primitive schemas through the value envelope', async () => {
   const { options } = scripted([true]);
   assert.equal(await createPiRunner(options)({ ...request, schema: { type: 'boolean' } }), true);

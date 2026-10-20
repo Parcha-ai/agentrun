@@ -26,7 +26,7 @@ async function host(responses) {
   return { ctx, faux, calls };
 }
 
-test('native child Agent uses host transport, explicit tools, inherited thinking, and repairs rejected submission', async () => {
+test('native child Agent uses host transport, explicit tools, medium thinking, and repairs rejected submission', async () => {
   const source = fauxToolCall('source_search', { query: 'apples' });
   const { ctx, calls, faux } = await host([
     fauxAssistantMessage(source),
@@ -60,7 +60,7 @@ test('native child Agent uses host transport, explicit tools, inherited thinking
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.model, ctx.model);
-    assert.equal(call.options.reasoning, 'high');
+    assert.equal(call.options.reasoning, 'medium', 'a node that names no level thinks at medium, not at the host session\'s high');
   }
   assert.equal(events.filter(event => event.type === 'turn_start').length, 3);
   assert(events.some(event => event.type === 'tool_execution_end'));
@@ -73,6 +73,15 @@ test('host thinking can be narrowed by a node and unregistered tools fail before
   assert.equal(calls.length, 0);
   assert.deepEqual(await run({ ...request, thinking: 'low' }), { count: 2 });
   assert.equal(calls[0].options.reasoning, 'low');
+});
+
+test('a node that names no level thinks at medium whatever the host session\'s level, off included; the runner\'s own option is the caller\'s override', async () => {
+  const { ctx, calls } = await host([1, 2, 3].map(() => fauxAssistantMessage(fauxToolCall('submit', { value: { count: 2 } }))));
+  await createPiHostRunner(ctx, { timeoutMs: 10_000 })(request);
+  ctx.thinkingLevel = 'off';
+  await createPiHostRunner(ctx, { timeoutMs: 10_000 })(request);
+  await createPiHostRunner(ctx, { timeoutMs: 10_000, thinkingLevel: 'high' })(request);
+  assert.deepEqual(calls.map((call) => call.options.reasoning), ['medium', 'medium', 'high']);
 });
 
 test('missing or unknown active host models fail closed without transport or fallback', async () => {
