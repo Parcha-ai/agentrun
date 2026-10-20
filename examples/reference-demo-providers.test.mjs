@@ -240,6 +240,16 @@ for (let i = 0; i < 50; i += 1) ledger.label(process.argv[3], process.argv[3] + 
   assert.equal(new Set(Object.values(ids).map((entry) => `${entry.provider}:${entry.id}`)).size, 100, 'every claimed box once');
 });
 
+test('a place that reports host boxes and has no labelBox, in a run with no providers, keeps the supervisor\'s own numbering: its home box is box-1, with its receipt', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, {}, ['--json'], { DEMO_WITH_PLACE: 'reporting' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(receipts(recording).map((line) => [line.box, line.provider, line.kind, line.to]), [['box-1', 'home', 'host', null]]);
+});
+
+test('the same place with providers is refused: the lifted refusal needs labelBox', async (t) => {
+  await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'reporting' }), /labelBox/);
+});
+
 test('one run, two labellers: the place\'s home box and the tools\' two boxes are box-1, box-2 and box-3 run-wide, never a repeat', { timeout: 300_000 }, async (t) => {
   const { result, recording } = await run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'labelled' });
   assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));

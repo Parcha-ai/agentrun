@@ -93,13 +93,14 @@ const extLead = (messages: readonly Message[]) => {
 // And a place of the demo's own beside its tools' boxes (`DEMO_WITH_PLACE`): `labelled` is the local place that also starts a home box (it reports one in `status()`) and hands the
 // run's process its identity (`HOST_BOX`), which that process claims first; the place only reads the label back (`labelBox`). `unclaimed` reports the home box but never hands it
 // over, so no process claims it. `unreadable` hands it over but its `labelBox` cannot read the run's ids (it throws); `slow` hands it over but its `labelBox` answers only after 40 s,
-// past the supervisor's bound on a read. Any other value is the local place with no `labelBox`.
+// past the supervisor's bound on a read. `reporting` reports the home box but has no `labelBox` and hands nothing over. Any other value is the local place, which has neither.
 const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: string; root: string }; self: string; requestFile: (attempt: number) => string }) => {
   const { localPlace, hostBoxLabel } = await import('@parcha/agentrun-harness');
   const inner = localPlace({ self: context.self, paths: context.paths as never, requestFile: context.requestFile });
   const mode = process.env.DEMO_WITH_PLACE;
-  if (mode !== 'labelled' && mode !== 'unclaimed' && mode !== 'unreadable' && mode !== 'slow') { const { labelBox: _none, ...bare } = inner as typeof inner & { labelBox?: unknown }; return bare; }
   const from = new Date().toISOString();
+  if (mode === 'reporting') return { ...inner, status: async () => ({ boxes: [{ provider: 'home', kind: 'host', from, to: null }] }) };
+  if (mode !== 'labelled' && mode !== 'unclaimed' && mode !== 'unreadable' && mode !== 'slow') return inner;
   const handOver = (order: Parameters<typeof inner.start>[0]) => (mode !== 'unclaimed' ? { ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ provider: 'home', key: '0', run: order.env.RUN_LABEL }) } } : order);
   return {
     ...inner,

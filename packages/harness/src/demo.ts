@@ -607,7 +607,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // Metering: the recording's lines as they stand, folded; past the cap the supervisor stops the run.
   const meterTimer = maxUsd === null ? undefined : setInterval(() => { if (meterKnown(recordDir) > maxUsd) overBudget = true; }, 250);
   try {
-    place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(boxIds !== undefined ? { boxIds } : {}), ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
+    place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
     // A place of the demo's own that cannot read the run's labels (no `labelBox`) cannot share one numbering with the tools' boxes: refused, never two boxes with one label.
     if (options.providers && options.place && !place.labelBox) {
       throw new Error(`${spec.name} has a place of its own with no labelBox and tool-made boxes (providers): the place's boxes cannot take labels from the run's one labeller, so the run is refused rather than give two boxes one label`);

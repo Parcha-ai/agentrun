@@ -273,10 +273,12 @@ numbering run-wide.
 - The place hands each runner its host box as `HOST_BOX` in the order's environment, JSON `{ provider, key, run }`: `key` is the box's start index in the place's list, and `run` is this
   supervisor life's `RUN_LABEL`.
 - The runner claims that label first, before any model call or tool box. The place never writes a label: `labelBox` reads it back with a bounded read, and returns `undefined` when it is not there
-  yet. The supervisor asks again on its next read. The local place's `labelBox` reads the default directory.
+  yet. The supervisor asks again on its next read. `labelBox` comes only with the `HOST_BOX` handover (`hostBoxLabel(dir, box)` is the read); the local place starts no host box and
+  has neither.
 - At the run's end, a host box that any read listed and that has no label refuses the recording (`host box <key> on <provider> has no label: ...`), also when the final read did not finish
   inside its bound.
-- A place without `labelBox` is refused with `providers`.
+- A place without `labelBox` (one that hands over no `HOST_BOX`, like a place that adds `status()` boxes to the local place): in a run with no `providers` the supervisor numbers its
+  host boxes itself (`box-1`, `box-2` in start order), as before; with `providers` it is refused.
 
 Before its first claim the ledger checks that the disk gives an exclusive link (a second link to one name must fail). These refuse the run, so no label is given twice:
 
