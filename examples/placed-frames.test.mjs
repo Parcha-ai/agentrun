@@ -73,6 +73,10 @@ test('the zoom on fakes: the agent asks for one placed tool call a frame, each a
     assert.ok(box.execs.every((exec) => exec.start <= exec.end && exec.exitCode === 0), `${box.box}: every command has its start, end and exit code`);
   }
   assert.equal(log.boxes.flatMap((box) => box.execs).filter((exec) => exec.what.startsWith('tile ')).length, FRAMES * 4, 'four tiles a frame');
+  // The ids stay in their own internal file in the run's directory: by label, with the provider's id, never in boxes.json or the recording.
+  const ids = JSON.parse(readFileSync(join(run.dir, 'work', 'frames', 'box-ids.internal.json'), 'utf8'));
+  assert.deepEqual(Object.keys(ids.boxes), ['box-1', 'box-2']);
+  assert.ok(Object.values(ids.boxes).every((box) => box.provider === 'local' && /^local-[0-9a-f]{12}$/.test(box.id)), 'each label maps to its provider id');
   assert.doesNotMatch(boxesText, /local-[0-9a-f]{12}|\/home\/|\/tmp\/|\/var\/|https?:/, 'no provider id, path or address');
   // The agent's own answer says what the results say.
   assert.deepEqual(run.record, { answer: '(scripted) Drew 12 frames: 7 on daytona and 5 on modal.' });

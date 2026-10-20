@@ -81,7 +81,7 @@ async function sh(env: ExecutionEnv, command: string, timeoutS: number): Promise
 type Made = { box: Box; env: ExecutionEnv; label: string; provider: string };
 /** What the run's boxes did, by the box's label: when it was made, each command's start and end (what it was, its exit code), and when it ended. No id, address or path. */
 type BoxLog = { box: string; provider: string; created: string; ended?: string; execs: Array<{ what: string; start: string; end: string; exitCode: number }> };
-type State = { log: Map<string, BoxLog>; providers: Record<string, BoxProvider>; labelOf(provider: string, id: string): string | undefined; receipts: BoxReceipt[]; placer: Placer; boxes: Map<string, Promise<Made>> };
+type State = { ids: Map<string, { provider: string; id: string }>; idsWritten: Promise<unknown>; log: Map<string, BoxLog>; providers: Record<string, BoxProvider>; labelOf(provider: string, id: string): string | undefined; receipts: BoxReceipt[]; placer: Placer; boxes: Map<string, Promise<Made>> };
 
 /** A tool's answer as pi keeps it: the JSON text in both the result's `content` and its `output`, so a reader of either sees it. */
 function answered(value: unknown): ToolExecutionResult {
@@ -106,7 +106,7 @@ export function placedFrames(hosting: Hosting): Extension {
         }));
         const placer = await jevPlacer(hosting.models, JEV, { rest: REST, timeoutMs: 30_000 });
         if (!placer.ok) throw placer.error;
-        return { log: new Map(), providers, labelOf: (provider: string, id: string) => ledger.labelOf(provider, id), receipts, placer: placer.value, boxes: new Map() } satisfies State;
+        return { ids: new Map(), idsWritten: Promise.resolve(), log: new Map(), providers, labelOf: (provider: string, id: string) => ledger.labelOf(provider, id), receipts, placer: placer.value, boxes: new Map() } satisfies State;
       })();
       runs.set(place.work, state);
     }
@@ -132,6 +132,7 @@ export function placedFrames(hosting: Hosting): Extension {
       const box = created.value;
       const env = boxEnv(box);
       const made = { box, env, label: s.labelOf(provider.name, box.id) ?? 'box-?', provider: provider.name };
+      s.ids.set(made.label, { provider: made.provider, id: box.id });
       s.log.set(made.label, { box: made.label, provider: made.provider, created: new Date().toISOString(), execs: [] });
       const node = await logged(s, made, 'check node', () => sh(env, 'node -v', 60));
       if (node.exitCode !== 0) {
@@ -155,6 +156,9 @@ export function placedFrames(hosting: Hosting): Extension {
     if (!work.ok) throw work.error;
     return { work: work.value, root: dirname(work.value) };
   };
+  /** The provider's id of each box the run made, by label, in a file that stays in the run's directory (`frames/box-ids.internal.json`): for whoever checks the accounts after a run, never for a recording or a card. */
+  const keepIds = (env: ExecutionEnv, s: State) => (s.idsWritten = s.idsWritten.catch(() => undefined).then(() => keep(env, 'frames/box-ids.internal.json', JSON.stringify({ format: 'placed-frames.box-ids/1', internal: true, boxes: Object.fromEntries([...s.ids].sort(([a], [b]) => a.localeCompare(b, 'en', { numeric: true }))) }))));
+
   /** A file in the run's work directory, written whole or not at all. */
   const keep = async (env: ExecutionEnv, path: string, bytes: Uint8Array | string) => {
     const wrote = await env.writeFile(`${path}.partial`, bytes, ctx);
@@ -195,6 +199,7 @@ export function placedFrames(hosting: Hosting): Extension {
         sha256: createHash('sha256').update(pixels).digest('hex'), iterations: iterationsOf(f),
       };
       await keep(env!, `frames/f${f}.call.json`, JSON.stringify({ tool: 'frame', args: { f, frames }, answer }));
+      await keepIds(env!, s);
       return answered(answer);
     },
   });
@@ -225,6 +230,7 @@ export function placedFrames(hosting: Hosting): Extension {
       // The boxes' own log, for whoever draws the run: by label, never by the provider's id.
       const boxes = [...s.log.values()].sort((a, b) => a.box.localeCompare(b.box, 'en', { numeric: true }));
       await keep(env!, 'frames/boxes.json', JSON.stringify({ format: 'placed-frames.boxes/1', boxes }));
+      await keepIds(env!, s);
       return answered(answer);
     },
   });
