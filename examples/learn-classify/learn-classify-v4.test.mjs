@@ -2,17 +2,20 @@
 // end to end with fakes of lane C3's tools, scored from what each run's store says it read.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { chmod, mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import Ajv from 'ajv';
+import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
+import { renderSkill, renderTrial, skillPath, trialPath } from '@parcha/pi-agent-learn';
 import { renderCurve } from './curve.mjs';
+import { HOST_WORKFLOW } from './dispatch.mjs';
 import { answerV4 } from './host.mjs';
 import { rerow } from './rerow.mjs';
-import { readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
+import { openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { countryCode, entityName, MAX_SUBSIDIARIES, scoreHq, scoreSegments, scoreSubsidiaries, scoreV4, SEGMENT_PICK } from './score-v4.mjs';
-import { FIXTURES_V2, FIXTURES_V4, readJson, WORKFLOW } from './scripted.mjs';
+import { CLASSIFY_WORKFLOW_V4, FIXTURES_V2, FIXTURES_V4, readJson, WORKFLOW } from './scripted.mjs';
 import { SETS } from './sets.mjs';
 
 async function scratch(t) {
@@ -125,7 +128,21 @@ test('one segment is right only against one filed segment; no filed segments is 
   assert.deepEqual(await scoreSegments({ answer: one, truth: [filed[0]], judge: judge().run }), { segmentsF1: 1, shareErrorMean: null });
   assert.deepEqual(await scoreSegments({ answer: one, truth: filed, judge: judge().run }), { segmentsF1: 0, shareErrorMean: null });
   assert.deepEqual(await scoreSegments({ answer: one, truth: [], judge: judge().run }), { segmentsF1: null, shareErrorMean: null });
+  assert.deepEqual(await scoreSegments({ answer: one, truth: null, judge: judge().run }), { segmentsF1: null, shareErrorMean: null });
   assert.deepEqual(await scoreSegments({ answer: null, truth: filed, judge: judge().run }), { segmentsF1: 0, shareErrorMean: null });
+});
+
+test('one-segment truth (a filer that reports one segment): oneSegment or the one segment named matches, more segments match one of them', async () => {
+  const truth = { oneSegment: true };
+  const j = judge();
+  assert.deepEqual(await scoreSegments({ answer: { segments: { oneSegment: true } }, truth, judge: j.run }), { segmentsF1: 1, shareErrorMean: null });
+  assert.deepEqual(await scoreSegments({ answer: { segments: [{ name: 'Retail grocery', share: 1 }] }, truth, judge: j.run }), { segmentsF1: 1, shareErrorMean: null });
+  const two = await scoreSegments({ answer: { segments: [{ name: 'Stores', share: 0.8 }, { name: 'Online', share: 0.2 }] }, truth, judge: j.run });
+  assert.ok(Math.abs(two.segmentsF1 - 2 / 3) < 1e-12, String(two.segmentsF1));
+  assert.deepEqual(await scoreSegments({ answer: null, truth, judge: j.run }), { segmentsF1: 0, shareErrorMean: null });
+  assert.equal(j.asked.length, 0, 'no name to match: nothing is asked');
+  const score = await scoreV4({ answer: { sic4: '5411', segments: { oneSegment: true } }, company: { sic: '5411', segments: truth, hq: null }, read: [], codes: {}, judge: j.run });
+  assert.deepEqual([score.segmentsTruth, score.segmentsF1, score.correct, score.correctOver], [{ oneSegment: true }, 1, true, ['sic4', 'segments']]);
 });
 
 test('the headquarters: the city folded and the country as its ISO code without a question, an alias by Jev, no truth not scored', async () => {
@@ -161,7 +178,7 @@ test('subsidiaries: names match once the legal form is left out, the rest are Je
   assert.deepEqual([entityName('Summit Ridge Software (US) Inc.'), entityName('Cedar Lane Bank, N.A.')], ['summit ridge software us', 'cedar lane bank n a']);
 });
 
-test('the report: the fiscal year against the latest annual filing, read when a cite names a PDF page of its URL; correct is code, segments and HQ', async () => {
+test('the report: the fiscal year against the latest annual filing, read when a cite names a PDF page of its URL; correct is every part with truth', async () => {
   const report = 'https://www.harborvalve.example/annual-report-2025.pdf';
   const company = { sic: '3561', segments: filed, hq: { city: 'PITTSBURGH', state: 'PA', country: 'US' }, latestAnnual: { form: '10-K', fy: 2025, period: '20251231', adsh: 'x' }, subsidiaries: null };
   const answer = {
@@ -175,7 +192,7 @@ test('the report: the fiscal year against the latest annual filing, read when a 
   const read = [{ tool: 'read_document', url: report, text: '[page 1] Headquarters: Pittsburgh, United States.' }];
   const j = judge({ cites: { 'https://harborvalve.example/annual-report-2025.pdf#page=1': 0.9 } });
   const score = await scoreV4({ answer, company, read, codes: {}, judge: j.run });
-  assert.deepEqual([score.reportYearCorrect, score.reportRead, score.evidenceSupported, score.correct], [true, true, 0.5, true]);
+  assert.deepEqual([score.reportYearCorrect, score.reportRead, score.evidenceSupported, score.correct, score.correctOver], [true, true, 0.5, true, ['sic4', 'segments', 'hq']]);
   assert.match(j.asked.find((a) => a.label === 'score/cite').state.claim, /headquarters are in Pittsburgh, US/);
   assert.deepEqual([score.subsidiariesRecall, score.subsidiariesTruthCount], [null, null]);
   assert.deepEqual(score.segmentsTruth, [{ label: 'Water Systems', member: 'WaterSystemsMember', share: 0.61 }, { label: 'Industrial Flow', member: 'IndustrialFlowMember', share: 0.39 }]);
@@ -188,11 +205,16 @@ test('the report: the fiscal year against the latest annual filing, read when a 
   assert.equal((await again({ sic4: '3562' })).correct, false);
   assert.equal((await again({ segments: [{ name: 'Water Systems', share: 1 }] })).correct, false, 'F1 2/3');
   assert.equal((await again({ hq: { city: 'Boston', country: 'US' } })).correct, false);
-  // No filed segments: segmentsF1 is null and correct, read literally, is false.
+  // A part with no truth is left out of correct, never failed: correctOver names the parts that counted.
   const noSegments = await again({ segments: { oneSegment: true } }, { ...company, segments: [] });
-  assert.deepEqual([noSegments.segmentsF1, noSegments.correct], [null, false]);
+  assert.deepEqual([noSegments.segmentsF1, noSegments.correct, noSegments.correctOver], [null, true, ['sic4', 'hq']]);
+  const noHq = await again({ hq: { city: 'Boston', country: 'US' } }, { ...company, hq: { city: 'PITTSBURGH', state: 'PA', country: null } });
+  assert.deepEqual([noHq.hqCorrect, noHq.correct, noHq.correctOver], [null, true, ['sic4', 'segments']]);
+  const codeOnly = await again({ sic4: '3562' }, { ...company, segments: null, hq: null });
+  assert.deepEqual([codeOnly.correct, codeOnly.correctOver], [false, ['sic4']], 'the code always counts');
+  assert.deepEqual((await again({ hq: { city: 'Boston', country: 'US' } })).correctOver, ['sic4', 'segments', 'hq'], 'a wrong part with truth counts');
   const none = await scoreV4({ answer: null, company, read, codes: {}, judge: judge().run });
-  assert.deepEqual([none.sic4Answer, none.sicCorrect4, none.segmentsF1, none.hqCorrect, none.reportYearCorrect, none.reportRead, none.evidenceSupported, none.correct], [null, false, 0, false, false, false, null, false]);
+  assert.deepEqual([none.sic4Answer, none.sicCorrect4, none.segmentsF1, none.hqCorrect, none.reportYearCorrect, none.reportRead, none.evidenceSupported, none.correct, none.correctOver], [null, false, 0, false, false, false, null, false, ['sic4', 'segments', 'hq']]);
 });
 
 // ---- the agent home ------------------------------------------------------------------------------------------------------
@@ -219,7 +241,7 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
 
 // ---- scripted passes -----------------------------------------------------------------------------------------------------
 
-const V4_FIELDS = ['segmentsAnswer', 'segmentsTruth', 'segmentsF1', 'shareErrorMean', 'hqAnswer', 'hqTruth', 'hqCorrect', 'subsidiariesAnswer', 'subsidiariesTruthCount',
+const V4_FIELDS = ['dispatched', 'correctOver', 'segmentsAnswer', 'segmentsTruth', 'segmentsF1', 'shareErrorMean', 'hqAnswer', 'hqTruth', 'hqCorrect', 'subsidiariesAnswer', 'subsidiariesTruthCount',
   'subsidiariesRecall', 'subsidiariesPrecision', 'reportAnswer', 'reportTruth', 'reportYearCorrect', 'reportRead'];
 const V3_FIELDS = ['company', 'ticker', 'born', 'rewritten', 'executions', 'workflowShare', 'agentFallback', 'scoreCostUsd'];
 const V2_TOOL_FIELDS = ['set', 'categories', 'websiteGiven', 'sic4Answer', 'sic4Truth', 'sicCorrect4', 'sicCorrect2', 'evidenceSupported', 'toolCalls', 'browserMinutes', 'visionPages', 'browserCostUsd'];
@@ -236,17 +258,19 @@ test('a scripted v4 pass: by hand, then the whole-job workflow on site and repor
   for (const row of rows) for (const field of ['segmentAnswer', 'segmentTruth', 'segmentCorrect', 'shareError']) assert.ok(!(field in row), `v2's ${field} is not a v4 field`);
   assert.deepEqual(rows.map((r) => r.set), ['v4', 'v4', 'v4', 'v4']);
   assert.deepEqual(rows.map((r) => [r.sic4Answer, r.sicCorrect4]), [['3561', true], ['5411', true], ['7372', true], ['5812', true]]);
-  // Bluefin reports one segment and answered so; Summit's "Cloud Software" is the filed "Cloud" by Jev; Lantern Hall has no filed segments.
+  // Bluefin reports one segment and answered so; Summit's "Cloud Software" is the filed "Cloud" by Jev; Lantern Hall has no segment truth.
   assert.deepEqual(rows.map((r) => r.segmentsF1), [1, 1, 1, null]);
   assert.deepEqual(rows.map((r) => r.hqCorrect), [true, true, true, true]);
   assert.deepEqual(rows.map((r) => [r.subsidiariesTruthCount, r.subsidiariesRecall, r.subsidiariesPrecision]), [[3, 1, 1], [null, null, null], [2, 1, 1], [1, 1, 1]]);
   assert.deepEqual(rows.map((r) => [r.reportYearCorrect, r.reportRead]), [[true, true], [true, true], [true, true], [true, true]]);
   assert.ok(rows.every((r) => r.evidenceSupported === 1), JSON.stringify(rows.map((r) => r.evidenceSupported)));
-  assert.deepEqual(rows.map((r) => r.correct), [true, true, true, false], 'run 4: no filed segments, so not correct');
+  assert.deepEqual(rows.map((r) => r.correct), [true, true, true, true]);
+  assert.deepEqual(rows.map((r) => r.correctOver), [['sic4', 'segments', 'hq'], ['sic4', 'segments', 'hq'], ['sic4', 'segments', 'hq'], ['sic4', 'hq']], 'run 4: no segment truth, left out');
   assert.equal(asked.filter((l) => l === 'score/segments').length, 1, 'only Summit\'s segment needed Jev');
   assert.equal(asked.filter((l) => l === 'score/hq' || l === 'score/subsidiary').length, 0);
 
   assert.deepEqual(rows.map((r) => r.byWorkflow), [false, false, true, true]);
+  assert.deepEqual(rows.map((r) => r.dispatched), [false, false, false, false], 'a workflow on trial runs through the agent');
   assert.deepEqual(rows[0].workflowsSaved, [WORKFLOW]);
   assert.deepEqual(rows[0].born.map((b) => b.name), [WORKFLOW]);
   assert.deepEqual(rows[1].toolCalls, { search: 1, browse: 1, fetch: 0, read_document: 1 });
@@ -269,6 +293,7 @@ test('a v4 sealed pass scores the sealed companies at a commit, and rerow backfi
   const sealed = await runSealed({ out, parts: scriptedParts({ set: SETS.v4 }), at: 'seed' });
   const companies = readJson(join(FIXTURES_V4, 'companies-v4.json')).filter((c) => c.split === 'sealed');
   assert.deepEqual(sealed.rows.map((r) => [r.set, r.split, r.phase, r.company, r.correct]), companies.map((c) => ['v4', 'sealed', 'before', c.name, true]));
+  assert.deepEqual([sealed.rows[0].segmentsTruth, sealed.rows[0].segmentsF1], [{ oneSegment: true }, 1], 'a one-segment filer, its one segment named');
   assert.ok(sealed.rows.every((r) => V4_FIELDS.every((f) => f in r)));
   assert.equal(sealed.rows[1].subsidiariesRecall, null, 'a 40-F filer with no exhibit list');
   await assert.rejects(runLoop({ out, parts: scriptedParts({ set: SETS.v2 }), jobs: 1 }), /holds a v4 pass; a v2 pass needs its own --out/);
@@ -278,3 +303,37 @@ test('a v4 sealed pass scores the sealed companies at a commit, and rerow backfi
   const v3 = readRows(join(out, 'runs.v3.jsonl'));
   assert.deepEqual(v3.map((r) => [r.company, r.ticker, r.born, r.executions, r.workflowShare, r.agentFallback]), rows.map((r) => [r.company, r.ticker, r.born, r.executions, r.workflowShare, r.agentFallback]));
 }, { timeout: 240_000 });
+
+test('the host dispatches a promoted v4 workflow: its output passes the v4 answer and is the run\'s; a company without a website goes to the agent', async (t) => {
+  const root = await scratch(t);
+  const out = join(root, 'out');
+  const { repo } = await openOut(out, { mode: 'scripted', set: SETS.v4 });
+  // CLASSIFY_WORKFLOW_V4 on main, promoted: its live revision active.
+  const store = join(root, 'store');
+  await mkdir(store, { recursive: true });
+  const saved = await new WorkflowStore(store).save(WORKFLOW, CLASSIFY_WORKFLOW_V4);
+  const trial = { name: WORKFLOW, status: 'active', when: [], revisions: [{ sha256: saved.digest, status: 'active', since: '2026-10-20T00:00:00.000Z', run: 'run-000', after: 0 }], uses: [] };
+  const commit = await repo.commitTo('main', {
+    files: {
+      [`.pi/agentrun/workflows/${WORKFLOW}/${saved.digest}.json`]: await readFile(join(store, '.pi/agentrun/workflows', WORKFLOW, `${saved.digest}.json`), 'utf8'),
+      [`.pi/agentrun/workflows/${WORKFLOW}/latest`]: `${saved.digest}\n`,
+      [skillPath(WORKFLOW)]: renderSkill(WORKFLOW, 'Use it for any company whose website is given.'),
+      [trialPath(WORKFLOW)]: renderTrial(trial),
+    },
+    message: 'test: classify-company promoted',
+  });
+  await repo.push(commit.sha, 'main');
+
+  const { rows } = await runLoop({ out, parts: scriptedParts({ set: SETS.v4 }), jobs: 2, record: false });
+  assert.deepEqual(rows.map((r) => r.dispatched), [true, false]);
+  // Harbor Valve: the host's run answered, with no root-agent call and no tool call of the agent's own.
+  assert.deepEqual([rows[0].byWorkflow, rows[0].correct, rows[0].correctOver], [true, true, ['sic4', 'segments', 'hq']]);
+  assert.deepEqual(rows[0].workflowsUsed.map((u) => [u.name, u.outcome, u.classifiedBy ?? null]), [[WORKFLOW, 'complete', HOST_WORKFLOW]]);
+  assert.deepEqual([rows[0].reportRead, rows[0].evidenceSupported, rows[0].subsidiariesRecall], [true, 1, 1]);
+  assert.deepEqual(rows[0].toolCalls, { search: 0, browse: 0, fetch: 1, read_document: 1 }, 'the workflow\'s call nodes');
+  assert.deepEqual([rows[0].workflowShare, rows[0].agentFallback], [1, null]);
+  // Bluefin has no website: the workflow's input schema refuses its input, so the host does not run it, and the agent does
+  // the job by hand.
+  assert.deepEqual([rows[1].byWorkflow, rows[1].correct], [false, true]);
+  assert.deepEqual(rows[1].toolCalls, { search: 1, browse: 1, fetch: 0, read_document: 1 });
+}, { timeout: 180_000 });

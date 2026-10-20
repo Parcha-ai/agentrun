@@ -249,7 +249,9 @@ company lists them in a 10-K's Exhibit 21 or a 20-F's Exhibit 8), `annualReport`
   `label`, `share`). A label or member in the same words matches at once; the rest go to Jev in one request, a choice
   per answer segment over the filed segments not yet taken, and the surest choices pair first. F1 is over both sides;
   `shareErrorMean` is the mean distance of the matched shares, in points. `oneSegment` scores 1 against one filed
-  segment and 0 against more. No filed segments: both `null`.
+  segment and 0 against more. A filer that reports one segment has the truth `{ oneSegment: true }` (from its own
+  one-segment statement or a lone segment member): `oneSegment` or any one named segment scores 1 there, n segments
+  2/(n+1). No segment truth (`null`): both `null`.
 - `hqCorrect`: the city (folded: case, accents, punctuation) and the country (as its ISO code) match at once; anything
   else is Jev's, for another name of the same city or country. No truth: `null`.
 - `subsidiariesRecall` and `subsidiariesPrecision` against the exhibit list: a name the same once its legal form (Inc.,
@@ -258,10 +260,11 @@ company lists them in a 10-K's Exhibit 21 or a 20-F's Exhibit 8), `annualReport`
 - `reportYearCorrect`: the fiscal year against the latest annual filing's (`latestAnnual.fy`). `reportRead`: a cite on
   the report's URL locates a page of it as "pdf p. N".
 - `evidenceSupported` as v2, each cite's claim stated for its kind.
-- `correct`, the curve's headline: the code exact, `segmentsF1` 0.8 or better and `hqCorrect`. A company with no filed
-  segments or no headquarters truth is not correct.
+- `correct`, the curve's headline: every part with truth right. The code always counts; `segmentsF1` 0.8 or better
+  counts when there is segment truth, and `hqCorrect` when there is headquarters truth. A part with no truth is left
+  out, never failed, and `correctOver` names the parts that counted (`["sic4", "segments", "hq"]` at most).
 
-A v4 row is a v2 row (v3's chart fields included) with v2's four segment fields replaced by `segmentsAnswer`,
+A v4 row is a v2 row (v3's chart fields included) with v2's four segment fields replaced by `correctOver`, `segmentsAnswer`,
 `segmentsTruth`, `segmentsF1`, `shareErrorMean`, `hqAnswer`, `hqTruth`, `hqCorrect`, `subsidiariesAnswer`,
 `subsidiariesTruthCount`, `subsidiariesRecall`, `subsidiariesPrecision`, `reportAnswer`, `reportTruth`,
 `reportYearCorrect` and `reportRead`. `rerow.mjs` backfills a v4 pass as it does a v2 one.
@@ -282,7 +285,8 @@ output validates against the answer is the run's answer, and Opus is never calle
 workflow returned: an escalation or failure of the workflow, or an output the answer refuses, with the validation errors.
 Either way the task is a use in pi-agent-learn's uses file, so promotion and demotion count it; an output the answer
 refused is counted escalated there, in the row (`dispatch`, `workflowsUsed`) and in its executions, though the store says
-the workflow completed. A workflow on trial still runs through the agent. `--no-dispatch` turns it off.
+the workflow completed. A workflow on trial still runs through the agent. `--no-dispatch` turns it off. A v2 or v4 row's
+`dispatched` says whether the host ran a promoted workflow first, however it ended; a row's `dispatch` says how.
 
 ## Files
 

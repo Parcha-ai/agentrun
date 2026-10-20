@@ -99,6 +99,8 @@ export function rowOfV2({ score, stats, scoringJudge, lineage, phase, jobRecord,
     rewritten: lineage?.rewritten ?? [],
     // As job-record.mjs returns them from the run's recording lines, never recomputed here.
     ...(jobRecord ? { executions: jobRecord.executions, workflowShare: jobRecord.workflowShare, agentFallback: jobRecord.agentFallback } : {}),
+    // Whether the host ran a promoted workflow before the root agent (dispatch.mjs), however it ended.
+    dispatched: Boolean(v1.measure?.dispatch),
     correct: score.correct,
     convention: null,
     set: 'v2',
@@ -125,7 +127,7 @@ export function rowOfV2({ score, stats, scoringJudge, lineage, phase, jobRecord,
 /**
  * A v4 row (CLASSIFY-CONTRACT.md v4, the dollar job): v1's and v3's fields as rowOfV2 gives them, the v2 tool facts, and
  * the v4 score in place of v2's segment fields. `answer`, `truth` and `correct` are the 4-digit codes and the v4 headline
- * (the code exact, segments F1 0.8 or better, the headquarters right).
+ * (every part with truth right: the code exact, segments F1 0.8 or better, the headquarters), `correctOver` its parts.
  */
 export function rowOfV4({ score, ...rest }) {
   const { segmentAnswer, segmentTruth, segmentCorrect, shareError, ...row } = rowOfV2({ ...rest, score: { ...score, segmentAnswer: null, segmentTruth: null, segmentCorrect: null, shareError: null } });
@@ -133,6 +135,7 @@ export function rowOfV4({ score, ...rest }) {
     ...row,
     set: 'v4',
     correct: score.correct,
+    correctOver: score.correctOver,
     segmentsAnswer: score.segmentsAnswer,
     segmentsTruth: score.segmentsTruth,
     segmentsF1: score.segmentsF1,
