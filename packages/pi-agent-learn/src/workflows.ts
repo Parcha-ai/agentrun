@@ -583,6 +583,14 @@ export async function revisionOf(name: string, records: Readonly<Record<string, 
   }
 }
 
+/** A revision's workflow from its record in the agent repository at `ref`, read back through the DSL's store, which checks
+ *  the document against its digest; undefined when the record is missing or is not that revision. */
+export async function readRevision(repo: Pick<Repo, "read">, name: string, sha256: string, ref: string): Promise<unknown | undefined> {
+  if (!WORKFLOW_NAME.test(name) || !/^[0-9a-f]{64}$/.test(sha256)) return undefined;
+  const record = await repo.read(`${workflowDir(name)}/${sha256}.json`, ref);
+  return record === undefined ? undefined : (await revisionOf(name, { latest: `${sha256}\n`, [`${sha256}.json`]: record }))?.workflow;
+}
+
 export async function readTrialIn(dir: string, name: string): Promise<Trial | undefined> {
   const text = await readRegular(path.join(absolute(dir, "dir"), trialPath(name)));
   return text === undefined ? undefined : parseTrial(text, name);

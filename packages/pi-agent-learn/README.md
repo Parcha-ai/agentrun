@@ -151,7 +151,9 @@ never the value, so the model can restate it as a general rule at once. The resu
 `output`, so pi-durable 1.1, 1.2 and 1.3 all show it to the model.
 
 The `<learned>` section says that the rules win, lists the active learnings at the seeded commit (most used first, the
-first line of each), names the workflows to try for this input, and tells the agent when to call `learn`. It renders
+first line of each), names the workflows to try for this input (when one is on trial, it says to run it before doing the
+job by hand and to change it only after it escalates or fails: only its own clean runs earn it trust), and tells the
+agent when to call `learn`. It renders
 from the run's `learn.seed` record, so it is the same on every request of a run and the same for every run seeded from
 one commit. It holds at most 4,096 bytes: learnings that do not fit are not loaded, the section says how many, and their
 ids are in the record. A learning whose first line holds the section's tag is never loaded. Without `learn` among the
@@ -384,6 +386,16 @@ equal, an enumeration of scalars must contain the value, a number's bounds hold)
 and `trial.json` are at the commit, whose live revision is a trial or active and whose record is there, and whose checks hold
 on the input: active first, then by name, at most 8. The file stays under the curator's cap at every limit: 32 revisions, 30
 uses, 16 checks of at most 1,536 characters printed.
+
+**Serving.** A host that runs a proven workflow itself, before the agent, asks `servingRevision(trial, { unrunnable })`
+which revision to run: the live revision when it is active; while the live revision is on trial, the most recent superseded
+revision that can still run (`unrunnable` names those the host cannot load), with the trial named and `canary` true, so the
+trial is still what the agent is offered and earns its uses on the inputs the served revision does not finish. A first
+trial, with nothing proven before it, gives none, and a retired or demoted revision is never served. `readRevision(repo,
+name, sha256, ref)` returns a revision's workflow from its record at a commit, through the DSL's store, undefined when the
+record is missing or is not that revision. When the served revision escalates or fails and a trial is live,
+`trialFirstText({ name, served, trial })` is what to tell the agent: the trial is named, and asked to run first, the job
+done by hand only if it escalates too.
 
 **Uses.** A use is one `agentrun.workflow` task in the run's store (`@parcha/agentrun-pi/durable`'s `createWorkflowExtension`),
 read from the store file with `recordingLines` (one read transaction, never written; open or closed) or from the open Session. It counts when the

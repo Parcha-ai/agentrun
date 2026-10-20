@@ -35,16 +35,46 @@ export function periodUses(trial: Trial, revision: Revision): Use[] {
   return trial.uses.slice(revision.after).filter((use) => use.sha256 === revision.sha256);
 }
 
+/** The superseded revisions, the most recent first: by when each was superseded, then the later in the list. */
+function supersededNewestFirst(trial: Trial): Revision[] {
+  return trial.revisions.map((revision, index) => ({ revision, index })).filter(({ revision }) => revision.status === "superseded")
+    .sort((a, b) => (a.revision.since < b.revision.since ? 1 : a.revision.since > b.revision.since ? -1 : b.index - a.index))
+    .map(({ revision }) => revision);
+}
+
 /** The most recent superseded revision that can still run, and the newer superseded ones passed over. */
 function rollbackSearch(trial: Trial, unrunnable: ReadonlySet<string>): { target: string | null; skipped: string[] } {
   const skipped: string[] = [];
-  const candidates = trial.revisions.map((revision, index) => ({ revision, index })).filter(({ revision }) => revision.status === "superseded")
-    .sort((a, b) => (a.revision.since < b.revision.since ? 1 : a.revision.since > b.revision.since ? -1 : b.index - a.index));
-  for (const { revision } of candidates) {
+  for (const revision of supersededNewestFirst(trial)) {
     if (!unrunnable.has(revision.sha256)) return { target: revision.sha256, skipped };
     skipped.push(revision.sha256);
   }
   return { target: null, skipped };
+}
+
+export type Serving = {
+  /** The revision the host runs first. */
+  readonly serve: Revision;
+  /** The live revision on trial, when `serve` is one it superseded. */
+  readonly trial?: Revision;
+  /** True when `serve` stands in for a trial: the trial is still what the agent is offered, and earns its uses on the inputs
+   *  `serve` does not finish. */
+  readonly canary: boolean;
+};
+
+/**
+ * Which revision of a workflow a host runs first, before the agent: the live revision when it is active; while the live
+ * revision is on trial, the most recent superseded revision that can still run (`unrunnable` names those the host cannot
+ * load), with the trial named. A first trial, with nothing proven before it, gives none: the agent runs the trial itself. A
+ * retired or demoted revision is never served.
+ */
+export function servingRevision(trial: Trial, options: { readonly unrunnable?: ReadonlySet<string> } = {}): Serving | undefined {
+  const live = currentRevision(trial);
+  if (!live) return undefined;
+  if (live.status === "active") return { serve: live, canary: false };
+  const unrunnable = options.unrunnable ?? new Set<string>();
+  const serve = supersededNewestFirst(trial).find((revision) => !unrunnable.has(revision.sha256));
+  return serve ? { serve, trial: live, canary: true } : undefined;
 }
 
 /**

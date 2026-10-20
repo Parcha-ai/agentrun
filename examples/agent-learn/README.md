@@ -67,7 +67,7 @@ It takes about ten seconds and prints the story (the shas differ on every run; s
 
 7. Run 3 starts at main 5bce08b. Its first model request carries:
      Nothing learned yet (your repo at 5bce08befafb).
-     Workflows to try first for this input: triage-crash (trial). Run one with the agentrun tool; if it escalates, continue yourself.
+     Workflows to try first for this input: triage-crash (trial). Run one with the agentrun tool; if it escalates, continue yourself. A workflow on trial earns trust only from its own clean runs: run it before doing the job yourself, and change it only after it escalates or fails.
    triage-crash 2bfc0cd79680 is in the run's own workflow store for the agentrun tool to load
    same issue as run 2; this scripted run does not try the workflow; answer: bug: the body is a crash trace.
 
