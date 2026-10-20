@@ -41,10 +41,12 @@ test('in Chrome: an answer the run saved (manifest.result) is the agent\'s last 
   assert.equal(await value<string>(`[...d().querySelector('.mu-chat').children].filter((n) => n.classList.contains('mu-row') || n.classList.contains('mu-card')).at(-2).className`), 'mu-row agent', 'as the last bubble, before What I remember');
 });
 
-test('in Chrome: a saved answer the conversation already said is not said twice', IN_CHROME, async (t) => {
-  const { value, until } = await served(t, { files: true, edit: (dir) => { finalText(dir, 'The balance is 42 dollars.'); savedAnswer(dir, { answer: 'The balance is 42 dollars.' }); } });
+test('in Chrome: a saved answer is always drawn as the last bubble, even when a message says the same words (a short row such as "Yes" is no reason to hide it)', IN_CHROME, async (t) => {
+  const { value, until } = await served(t, { files: true, edit: (dir) => { finalText(dir, 'Yes, 35.'); savedAnswer(dir, { answer: 'Yes', amount: '35' }); } });
   await until(`!!d()?.querySelector('.mu-memory .mu-rh')`, 'the page drawn');
-  assert.equal((await value<string[]>(bubbles)).filter((text) => /The balance is 42 dollars\./.test(text)).length, 1, 'once');
+  const said = await value<string[]>(bubbles);
+  assert.equal(said.length, 2, `the message and the saved answer, got ${JSON.stringify(said)}`);
+  assert.match(said[1]!, /answer: Yes\s*amount: 35/, 'the saved answer is the last bubble, its rows as lines');
 });
 
 test('in Chrome: a file an answer names only by its address still gets its chip, and the address is shortened to its host', IN_CHROME, async (t) => {
