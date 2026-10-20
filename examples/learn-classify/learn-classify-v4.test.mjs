@@ -326,6 +326,8 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   assert.deepEqual(parameters, ['sic4', 'segments', 'hq', 'subsidiaries', 'annualReport', 'cites']);
   const job = `${text(v4, 'AGENTS.md')}\n${text(v4, 'skills', 'classify', 'SKILL.md')}`;
   for (const words of [/Exhibit 21/, /Exhibit 8/, /read_document/, /pdf p\. N/, /principal executive offices/, /every reportable (operating )?segment/i]) assert.match(job, words);
+  // The segment table is looked at (vision) on its page, and a page with no text is looked at, not skipped.
+  for (const words of [/`pages: \[N\]`/, /`question: "the segment\s+revenue table as laid out"`/, /no text \(a scan or a chart\) is not skipped/]) assert.match(job, words);
   const fixtures = [...readJson(join(FIXTURES_V4, 'companies-v4.json')), ...readJson(join(FIXTURES_V2, 'companies-v2.json'))];
   for (const c of fixtures) for (const word of [c.name.split(' ')[0], c.ticker]) assert.doesNotMatch(job, new RegExp(`\\b${word}\\b`), word);
 });
@@ -364,7 +366,11 @@ test('a scripted v4 pass: by hand, then the whole-job workflow on site and repor
   assert.deepEqual(rows.map((r) => r.dispatched), [false, false, false, false], 'a workflow on trial runs through the agent');
   assert.deepEqual(rows[0].workflowsSaved, [WORKFLOW]);
   assert.deepEqual(rows[0].born.map((b) => b.name), [WORKFLOW]);
-  assert.deepEqual(rows[1].toolCalls, { search: 1, browse: 1, fetch: 0, read_document: 1 });
+  // By hand the report is read twice: find the segment note, then a look at its page with a question (vision).
+  assert.deepEqual(rows[1].toolCalls, { search: 1, browse: 1, fetch: 0, read_document: 2 });
+  assert.deepEqual(rows.map((r) => r.visionPages), [1, 1, 1, 1]);
+  const reads = parts.fakeCalls.filter((c) => c.tool === 'read_document');
+  assert.deepEqual(reads.slice(0, 2).map((c) => [Boolean(c.find), c.pages ?? null, Boolean(c.question)]), [[true, null, false], [false, [4], true]], 'find, then look at the page it found');
   assert.deepEqual(rows[2].toolCalls, { search: 0, browse: 0, fetch: 1, read_document: 1 }, 'the workflow read the site and the report through its call nodes');
   for (const r of rows.slice(2)) {
     assert.deepEqual(r.executions.map((e) => [e.name, e.outcome, e.toolCalls]), [[WORKFLOW, 'complete', 4]], 'fetch_page, sic2_groups, sic_codes, read_document');
@@ -426,7 +432,7 @@ test('the host dispatches a promoted v4 workflow: its output passes the v4 answe
   // Bluefin has no website: the workflow's input schema refuses its input, so the host does not run it, and the agent does
   // the job by hand.
   assert.deepEqual([rows[1].byWorkflow, rows[1].correct], [false, true]);
-  assert.deepEqual(rows[1].toolCalls, { search: 1, browse: 1, fetch: 0, read_document: 1 });
+  assert.deepEqual(rows[1].toolCalls, { search: 1, browse: 1, fetch: 0, read_document: 2 });
   // No dispatch and no use: nothing in the row or the uses file counts against the promoted workflow.
   assert.deepEqual(['dispatch' in rows[1], rows[1].workflowsUsed], [false, []]);
   assert.deepEqual(JSON.parse(readFileSync(join(out, 'progress', 'run-002.json'), 'utf8')).finished.uses, []);

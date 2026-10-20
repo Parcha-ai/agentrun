@@ -95,7 +95,7 @@ export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 ? FIXTURES
   const fakes = hard ? fakeHardTools({ pages, documents: readJsonIf(join(data, 'documents.json')) ?? {}, search: readJsonIf(join(data, 'search.json')) ?? {} }) : undefined;
   const truth = readJsonIf(join(data, 'answers.json')) ?? {};
   return {
-    mode: 'scripted', providers: 'scripted', modelName: 'faux/scripted', set, data: d, labels: d.labels, companies: d.companies, conventions: conventionsOf(d.report),
+    mode: 'scripted', providers: 'scripted', modelName: 'faux/scripted', set, data: d, labels: d.labels, companies: d.companies, conventions: conventionsOf(d.report), fakeCalls: fakes?.calls,
     judge: () => scriptedJev({ truthByName, groups: groupsOf(hard ? d.codes : d.labels), segments: hard ? readJsonIf(join(data, 'judge.json')) ?? {} : {} }),
     toolsFor: async (job) => [fetchPageTool({ allowDomain: allowedDomain(job, set), fetch: fixtureWeb(pages), lookup: fixtureLookup }), ...(fakes ? fakes.tools() : [])],
     modelFor: (job, run) => {

@@ -288,7 +288,7 @@ const DOCUMENT_SCHEMA = {
 
 /** Fakes of lane C3's search_web, browse and read_document over fixtures, with their names and result shapes: search
  *  answers a query naming a fixture company with its results, browse a fixture page (30 billed seconds), read_document a
- *  fixture document (one look). Every fake's call is collected in `calls`. */
+ *  fixture document (and one look when a question is asked). Every fake's call is collected in `calls`. */
 export function fakeHardTools({ pages = {}, documents = {}, search = {}, calls = [] } = {}) {
   const page = (url) => pages[url] ?? pages[new URL(url).href] ?? Object.entries(pages).find(([u]) => new URL(u).href === new URL(url).href)?.[1];
   return {
@@ -315,11 +315,15 @@ export function fakeHardTools({ pages = {}, documents = {}, search = {}, calls =
       },
       {
         name: 'read_document', description: 'Read a PDF or image: its text, and what a vision model sees on the pages a question needs.', resultSchema: DOCUMENT_SCHEMA,
-        parameters: { type: 'object', additionalProperties: false, required: ['url'], properties: { url: { type: 'string' }, question: { type: 'string' } } },
-        run: async ({ url, question }) => {
-          calls.push({ tool: 'read_document', url, question });
+        parameters: {
+          type: 'object', additionalProperties: false, required: ['url'],
+          properties: { url: { type: 'string' }, question: { type: 'string' }, pages: { type: 'array', items: { type: 'integer', minimum: 1 } }, find: { type: 'string' } },
+        },
+        // A look (vision) only when a question is asked, at the first page named, else at the document's own page.
+        run: async ({ url, question, pages, find }) => {
+          calls.push({ tool: 'read_document', url, question, pages, find });
           const doc = documents[url];
-          return doc ? { ok: true, source: url, kind: 'pdf', text: doc.text, pageCount: doc.pages ?? 1, looks: [{ page: doc.page ?? 1, answer: doc.look ?? '' }], costUsd: 0.001 }
+          return doc ? { ok: true, source: url, kind: 'pdf', text: doc.text, pageCount: doc.pages ?? 1, looks: question ? [{ page: pages?.[0] ?? doc.page ?? 1, answer: doc.look ?? '' }] : [], costUsd: 0.001 }
             : { ok: false, source: url, kind: 'unknown', text: '', looks: [], costUsd: 0 };
         },
       },
@@ -512,7 +516,9 @@ export function agentScriptV4({ job, offered, fixtures }) {
     root: [
       ...(job.website ? [] : [{ call: 'search_web', args: { query: `${job.name} ${job.ticker ?? ''} investor relations`.trim() } }]),
       { call: job.website ? 'fetch_page' : 'browse', args: { url: site } },
-      { call: 'read_document', args: { url: truth.document, question: 'revenue by reportable segment, the headquarters, and the list of subsidiaries' } },
+      // Find the segment note, then look at its page (vision) for the table as laid out.
+      { call: 'read_document', args: { url: truth.document, find: 'segment information' } },
+      { call: 'read_document', args: { url: truth.document, pages: [4], question: 'the segment revenue table as laid out' } },
       { call: 'sic2_groups', args: {} },
       { call: 'sic_codes', args: { group: truth.sic4.slice(0, 2) } },
       { call: 'answer', args: answerOfV4(truth) },
