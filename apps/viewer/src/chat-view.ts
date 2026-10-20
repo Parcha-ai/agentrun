@@ -2,8 +2,9 @@
 // recorded, the thinking its own model wrote and one card per tool call; the session timeline under the title; and on
 // the right the report (chat-report.ts) or the source a citation or a card points at, its region drawn from an address
 // alone. On a phone the right side is a bottom sheet.
-import type { ChatBrowser, ChatCall, ChatDecision, ChatItem, ChatModel, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
+import type { ChatBrowser, ChatCall, ChatDecision, ChatItem, ChatModel, ChatRow, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
 import type { Recording } from './format.ts';
+import type { ReportOpen } from './chat-report.ts';
 import { drawReport, reportCiteLabel, reportClock, reportEl, reportFragmentOf, reportHeldFile, reportHowHref, reportInline, reportParagraphs } from './chat-report.ts';
 
 type ToolItem = Extract<ChatItem, { kind: 'tool' }>;
@@ -528,6 +529,63 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
     calls.length > 0 && reportEl('div', { class: 'calls' }, ...calls, more));
 }
 
+/** One cite of the answer, as the model holds it. */
+type AnswerCite = ChatRow['cites'][number];
+
+/** The words a cite carries beyond its own address: a label whose numbers are only the numbers of the cite's box or second ("box 38,29,8,8",
+ *  "84 s") says nothing the address does not, so it is no words. */
+const evidenceSaid = (cite: AnswerCite): string | undefined => {
+  if (!cite.label) return undefined;
+  const digits = (text: string) => text.replace(/[^\d.]/g, '');
+  const at = reportFragmentOf(cite.href);
+  const own = [at.get('xywh')?.replace(/^(?:percent|pixel):/, ''), at.get('t')].filter((part): part is string => !!part).map(digits);
+  return /[A-Za-z]/.test(cite.label.replace(/\b(?:box|s)\b/gi, '')) || !own.includes(digits(cite.label)) ? cite.label : undefined;
+};
+const evidenceClip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
+
+/** A row's cites drawn as the evidence they are: one card per cited look (or cited picture), the picture first and as wide as
+ *  the pane, with the boxes the cites name over it at once (a cite's own words label its box, else "cited here"), under it what
+ *  the look found, and one chip that opens the look as the cites' chips always did. A cite that names no picture stays a chip. */
+function evidenceOf(recording: Recording, model: ChatModel, cites: AnswerCite[], open: ReportOpen): { node: HTMLElement; drawn: Set<AnswerCite> } | undefined {
+  const groups = new Map<string, { look?: string; blob?: string; cites: AnswerCite[] }>();
+  for (const cite of cites) {
+    const look = cite.look && model.sources[cite.look] ? cite.look : undefined;
+    const key = look ? `look:${look}` : cite.blob && recording.blobUrl(cite.blob) && /^(?:image|video)\//.test(recording.blobType(cite.blob) ?? '') ? `blob:${cite.blob}` : undefined;
+    if (!key) continue;
+    const group = groups.get(key) ?? { ...(look ? { look } : { blob: cite.blob }), cites: [] };
+    group.cites.push(cite);
+    groups.set(key, group);
+  }
+  const drawn = new Set<AnswerCite>();
+  const cards: HTMLElement[] = [];
+  for (const group of groups.values()) {
+    const source = group.look ? model.sources[group.look] : undefined;
+    const first = group.cites[0]!;
+    const second = parseFloat(reportFragmentOf(first.href).get('t') ?? '');
+    let sha = group.blob;
+    if (source) {
+      const pictures = source.pictures;
+      sha = pictures?.length ? sourcePictureFor(pictures, pictures.find((each) => each.href === first.href) ?? pictures[0]!, first.href).sha
+        : (source.media[sourceFrameAt(source.href, source.media.length, Number.isFinite(second) ? second : undefined)] ?? source.media[0]);
+    }
+    if (!sha) continue;
+    // The cites' own boxes first (with their words), then the look's boxes that are not the same box.
+    const near = (a: SourceRegion, b: SourceRegion) => a.unit === b.unit && [a.x - b.x, a.y - b.y, a.w - b.w, a.h - b.h].every((delta) => Math.abs(delta) < 0.05);
+    const regions: SourceRegion[] = group.cites.flatMap((cite) => sourceRegionOf(cite.href, evidenceSaid(cite)) ?? []);
+    for (const own of (source?.regions ?? []).flatMap((region) => sourceRegionOf(region.href, region.label) ?? [])) if (!regions.some((each) => near(each, own))) regions.push(own);
+    const medium = sourceMedium(recording, sha, evidenceSaid(first) ?? (source ? threadPlace(sourceAddresses(source)) : 'The picture cited'), regions, 'evidence-pic');
+    if (!medium) continue;
+    const decisions = source ? sourceDecisions(source).join(' · ') : '';
+    const found = source?.takeaway && source.takeaway !== decisions ? evidenceClip(source.takeaway, 260) : '';
+    const chip = reportEl('button', { class: 'cite', type: 'button', 'data-look': group.look, 'data-item': first.item, title: first.href || undefined, text: evidenceSaid(first) ?? 'Open the look' });
+    chip.addEventListener('click', () => open(first.href, group.look, group.blob ? { blob: group.blob, label: first.label } : undefined));
+    for (const cite of group.cites) drawn.add(cite);
+    cards.push(reportEl('figure', { class: 'ev-card' }, medium,
+      reportEl('figcaption', { class: 'ev-cap' }, found !== '' && reportEl('p', { class: 'ev-said', text: found }), decisions !== '' && reportEl('p', { class: 'ev-dec', text: decisions }), chip)));
+  }
+  return cards.length ? { node: reportEl('div', { class: 'evidence' }, ...cards), drawn } : undefined;
+}
+
 /** The session timeline, collapsed under the title: a lane per span lane, a call made inside a tool on a lane under its
  *  tool's; each span at its recorded times (one time is a tick), spans at once on rows of their own; the answer a point
  *  at the time it was delivered. A click calls `go` with the span's card or thread, or 'answer'. */
@@ -796,7 +854,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     const item = toolOf(key ? model.sources[key]!.item : undefined);
     const region = sourceRegionOf(href);
     showSource({ ...(key ? { look: key } : {}), ...(item ? { item } : {}), ...(picture ? { picture } : {}), href, regions: region ? [region] : [] });
-  });
+  }, (cites, open) => evidenceOf(recording, model, cites, open));
 
   let settling: AbortController | undefined;
   const scrollToItem = (id: string) => {

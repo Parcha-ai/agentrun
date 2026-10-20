@@ -151,7 +151,9 @@ details.fold>.fold-body{color:var(--ink);font-size:15px;margin-top:12px}
 .plumb-line:hover{color:var(--muted)}
 .plumb-steps{display:flex;flex-direction:column;gap:6px;margin-top:6px;min-width:0}
 .call-at{font:400 10.5px var(--mono);color:var(--muted);overflow:hidden;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
-.call details.raw summary{font:400 10.5px var(--mono);color:var(--dim);cursor:pointer}
+.call details.raw{margin-top:2px}
+.call details.raw summary{font:400 10.5px var(--mono);color:var(--dim);cursor:pointer;opacity:.65}
+.call details.raw summary:hover,.call details.raw[open] summary{opacity:1}
 .call details.raw pre{margin:4px 0 0;max-height:240px;overflow:auto;font:400 11px/1.45 var(--mono);color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere;background:#0b0b0d;border:1px solid var(--line);padding:6px 8px}
 .calls>.more{align-self:flex-start}
 .call.flash{animation:flash 1.4s ease-out}
@@ -216,6 +218,13 @@ a.addr[href]{color:var(--acc);text-decoration:underline dotted}
 .arow p{margin:0 0 8px;overflow-wrap:anywhere}
 .arow p.anote{font-size:13px;color:var(--muted)}
 .cites{display:flex;flex-wrap:wrap;gap:6px}
+.evidence{display:flex;flex-direction:column;gap:26px;margin-top:22px}
+.ev-card{margin:0;min-width:0}
+.ev-card .media img{width:100%;height:auto}
+.ev-cap{display:flex;flex-direction:column;gap:6px;padding:10px 0 0}
+.ev-said{margin:0;font:400 13.5px/1.55 var(--sans);color:var(--muted);overflow-wrap:anywhere}
+.ev-dec{margin:0;font:400 11.5px var(--mono);color:var(--dim)}
+.ev-cap .cite{align-self:flex-start}
 .cite{font:400 11.5px var(--mono);color:var(--muted);border:1px solid var(--line);padding:1px 7px;background:var(--panel);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cite:hover{color:var(--ink);border-color:var(--acc)}
 .report-none{color:var(--muted)}
