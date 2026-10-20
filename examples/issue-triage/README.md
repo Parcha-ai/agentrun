@@ -56,8 +56,10 @@ The agent drafts the workflow itself. `session.ts` gives a lead model the `agent
 export TYPESAFE_API_KEY=...      # Jev's judge
 export GEMINI_API_KEY=...        # the lead model, google/gemini-3.8-flash (or OPENAI_API_KEY, or VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY for an OpenAI-compatible gateway)
 node examples/issue-triage/pick-issues.mjs expressjs/express 14 > input.json    # the 14 newest open issues that carry a maintainers' type label, and the commit their code is read at (stderr: the composition)
-node --no-warnings=ExperimentalWarning examples/issue-triage/session.ts --dir "$(mktemp -d)" --input input.json --record <dir>
+node --no-warnings=ExperimentalWarning examples/issue-triage/session.ts --dir "$(mktemp -d)" --input input.json --max-usd 1.5 --record <dir>
 ```
+
+`--max-usd` is a hard stop: the spend is metered on the recording as the run goes, and once it reaches the cap the run is ended and says so (`over_budget`; a call already in flight may still be billed). The agreement is counted by the host from the rows the agent returns (its `type` against the maintainers' `labels`), not by the agent: the summary line and the recording's result carry it.
 
 The lead is pi-ai's own catalog entry (its price included), through your key or through a gateway that serves it under its public id; Jev's judge is `createJevRunner` on `TYPESAFE_API_KEY`, through the gateway's `/typesafe` when a gateway is set. The research nodes run at low thinking and are given the file tools only; the lead runs at medium. The run is read-only on GitHub.
 

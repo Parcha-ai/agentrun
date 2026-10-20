@@ -1,9 +1,9 @@
 // The issue-triage session, live: an agent in a pi-durable run drafts the workflow with the agentrun tool, checks it (inspect), dry-runs it for free, and runs it as one durable task: a map over a
 // repository's newest labelled issues, a research agent per issue, one Jev request per issue. `--record <dir>` keeps the run as an agentrun.recording/1 directory.
-//   node --no-warnings=ExperimentalWarning examples/issue-triage/session.ts --dir <empty run dir> --input <input.json> [--record <dir>] [--plain] [--transcript <file>]
+//   node --no-warnings=ExperimentalWarning examples/issue-triage/session.ts --dir <empty run dir> --input <input.json> [--record <dir>] [--max-usd <n>] [--plain] [--transcript <file>]
 // input.json is `pick-issues.mjs`'s output. The lead model and Jev come from `live.ts` (your own keys, or a gateway: VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY); GitHub needs no token (see github.ts).
 // The scripted counterpart, `npm run demo:issue-triage`, runs the same workflow on fakes with no agent.
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,13 +26,13 @@ type Input = { repo: string; sha: string; numbers: number[]; label_map: Record<s
 
 /** What the person says: one sentence, with the host's pick of the issues and the commit the code is read at. */
 export const sentenceFor = (input: Input) =>
-  `Triage ${input.repo} issues ${input.numbers.map((n) => `#${n}`).join(', ')} (read their code at commit ${input.sha}): give each one a type (bug, feature, docs or question), say whether it is a good first issue and whether a maintainer could act on it as written, and tell me how often your type matched the maintainers' own labels (${Object.entries(input.label_map).map(([label, type]) => `"${label}" counts as ${type}`).join(', ')}).`;
+  `Triage ${input.repo} issues ${input.numbers.map((n) => `#${n}`).join(', ')} (read their code at commit ${input.sha}): give each one a type (bug, feature, docs or question), say whether it is a good first issue and whether a maintainer could act on it as written. Return one row per issue with its number, title, type, good_first_issue, actionable, and the maintainers' own labels exactly as github_labels returned them (labels); I count how often the type matches them myself.`;
 
 const INSTRUCTIONS = [
   'You build and run AgentRun workflows with the agentrun tool. Call describe first and use exactly the tools and nodes it lists; its language reference says what a workflow document is.',
   'Work until the job is done: inspect your complete draft; when inspect reports problems, read every one, fix the draft and inspect again; when inspect passes, dry-run it; when the dry run passes, run it. Do not stop on an error and do not answer until the run has ended.',
-  'Shape of this job, in order, for each issue number (a map over the numbers, one chain per issue, no parallel node): read the issue (github_issue), its pull requests (github_linked_prs) and the files it names (github_code, which also takes the commit sha); a research agent node that reads those files with the read tool and cites what it read; ONE judge node that asks Jev three typed questions about the issue in a single request (its type as a choice among bug, feature, docs, question; good first issue; actionable as written); then the maintainers\' labels (github_labels); then a code node that makes the row. After the map, a code node counts how often the type matched the maintainers\' label and returns the rows and that count. The input is { repo, sha, numbers, label_map }. A workflow document has exactly these top-level members: v (2), name, schemas, input ({ schemaId }), output ({ schemaId, path }) and root; each schema a node or the input names must be defined in schemas. Inspect the complete document every time, not a fragment.',
-  'The maintainers\' labels are the answer key: github_labels runs only after the issue\'s judgment, and its result goes only into the row\'s comparison, never into a research state, a judge or a model.',
+  'Shape of this job, in order, for each issue number (a map over the numbers, one chain per issue, no parallel node): read the issue (github_issue), its pull requests (github_linked_prs) and the files it names (github_code, which also takes the commit sha); a research agent node that reads those files with the read tool and cites what it read; ONE judge node that asks Jev three typed questions about the issue in a single request (its type as a choice among bug, feature, docs, question; good first issue; actionable as written); then the maintainers\' labels (github_labels); then a code node that makes the row. After the map, the workflow returns the rows, each with number, title, type, good_first_issue, actionable and labels (the maintainers\' labels as github_labels returned them); it counts nothing, because the host compares the type with the labels. The input is { repo, sha, numbers }. A workflow document has exactly these top-level members: v (2), name, schemas, input ({ schemaId }), output ({ schemaId, path }) and root; each schema a node or the input names must be defined in schemas. Inspect the complete document every time, not a fragment.',
+  'The maintainers\' labels are the answer key: github_labels runs only after the issue\'s judgment, and its result goes only into the row\'s labels, never into a research state, a judge or a model.',
   'A diff lists at most its first ten paths, so github_linked_prs gives at most ten paths per pull request; say so in the report if a pull request\'s files look cut short.',
 ].join('\n\n');
 
@@ -99,20 +99,53 @@ export function ranWorkflow(messages: readonly Message[]): { workflow: unknown; 
   return found;
 }
 
-async function session(options: { dir: string; input: Input; record?: string; plain: boolean; transcript?: string }) {
+/** The recording's spool lines as they stand: what a still-running recording holds. */
+const spoolLines = (dir: string): Array<Record<string, unknown>> => {
+  const spool = join(dir, '.spool');
+  if (!existsSync(spool)) return [];
+  return readdirSync(spool).filter((name) => name.endsWith('.jsonl')).flatMap((name) => readFileSync(join(spool, name), 'utf8').split('\n').filter(Boolean).flatMap((line) => { try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; } }));
+};
+/** What is known to have been spent: the priced parts of the lines summed, so a part whose price is unknown never switches the cap off. */
+export const spentOf = (lines: Parameters<typeof cost>[0]): number => Object.values(cost(lines).parts).reduce<number>((sum, part) => sum + (part ?? 0), 0);
+
+/** How often the type the agent gave matches the maintainers' label, counted by the host from the rows (the agent does not count its own matches). A row is compared when it carries one of the maintainers' type labels (`label_map`); the rest are left out and said so. Null when the result has no rows. */
+export function agreementOf(rows: unknown, labelMap: Record<string, string>): { matched: number; compared: number; total: number; summary: string } | null {
+  if (!Array.isArray(rows)) return null;
+  let matched = 0, compared = 0;
+  for (const row of rows as Array<{ type?: unknown; labels?: unknown }>) {
+    const label = Array.isArray(row?.labels) ? row.labels.find((each) => typeof each === 'string' && Object.hasOwn(labelMap, each)) : undefined;
+    if (label === undefined) continue;
+    compared += 1;
+    if (row.type === labelMap[label as string]) matched += 1;
+  }
+  return { matched, compared, total: rows.length, summary: `The type matched the maintainers' label on ${matched} of ${compared} issues${compared < rows.length ? ` (${rows.length - compared} carried no type label)` : ''}` };
+}
+
+/** `maxUsd` is a hard stop: once the known spend reaches it the run stops before the next paid call and says so (`over_budget`). `parts` is `live(process.env)` unless a test supplies its own. */
+export async function session(options: { dir: string; input: Input; record?: string; plain: boolean; transcript?: string; maxUsd?: number; parts?: ReturnType<typeof live> }) {
   const say = (text: string, cls = 'info') => {
     console.log(options.plain ? text : `\x1b[${COLORS[cls] ?? '0'}m${text}\x1b[0m`);
     if (options.transcript) appendFileSync(options.transcript, `${JSON.stringify({ say: text, cls })}\n`);
   };
   const { input } = options;
   const place = await placeAt(options.dir, 'issue-triage');
-  const recorder = options.record ? openRecorder({ dir: options.record, commits: await packageCommitRecorder() }) : undefined;
+  // The recording's spool is what the spend is metered on, so a run with no --record still keeps one (under the run directory, never finished).
+  const meterDir = options.record ?? join(options.dir, 'meter');
+  const recorder = openRecorder({ dir: meterDir, commits: await packageCommitRecorder() });
   const supervisor = options.record ? openSupervisor({ dir: options.record }) : undefined;
   supervisor?.host('process.started', { gen: 1, pid: process.pid });
-  const parts = live({ env: process.env });
+  const parts = options.parts ?? live({ env: process.env });
   const github = githubTools(process.env);
+  const cap = options.maxUsd;
+  let overBudget = false;
+  let trip!: () => void;
+  const tripped = new Promise<void>((resolve) => { trip = resolve; });
+  const meterTimer = cap === undefined ? undefined : setInterval(() => { if (!overBudget && spentOf(spoolLines(meterDir)) >= cap) { overBudget = true; trip(); } }, 250);
+  // A Jev question past the cap is not asked.
+  const runJudge = parts.host!.decisions!.runJudge as (request: never) => Promise<unknown>;
+  const guardedJudge = async (request: never) => { if (overBudget) throw new Error(`the spend cap of $${cap} is reached`); return runJudge(request); };
   // The host's functions: the example's local host, with the real tools, the real judge and the real model put in.
-  const local = localHost(place, { model: () => { throw new Error('no scripted model'); }, tools: github as never, judge: parts.host!.decisions!.runJudge as never, pages: {}, start: '', responses: 0 }, { ...(recorder ? { recorder } : {}) });
+  const local = localHost(place, { model: () => { throw new Error('no scripted model'); }, tools: github as never, judge: guardedJudge as never, pages: {}, start: '', responses: 0 }, { ...(recorder ? { recorder } : {}) });
   const host = local.host;
   host.models = parts.host!.models as never;
   const lead = parts.host!.models!.lead!;
@@ -184,26 +217,37 @@ async function session(options: { dir: string; input: Input; record?: string; pl
         }
       } catch { /* the next tick */ }
     }, 400);
-    await (await root.submit({ type: 'input', content: prompt, requestId: 'author-1' } as never, ctx)).wait(ctx);
+    const submitted = await root.submit({ type: 'input', content: prompt, requestId: 'author-1' } as never, ctx);
+    await Promise.race([submitted.wait(ctx), tripped]);
     clearInterval(follow);
     follow = undefined;
-    const { messages } = await root.context(ctx) as unknown as { messages: Array<{ role: string; content: unknown; toolName?: string }> };
-    const runs = messages.filter((m) => m.role === 'toolResult' && m.toolName === 'agentrun').map((m) => textOf(m.content)).flatMap((t) => { try { const j = JSON.parse(t); return j.outcome ? [j] : []; } catch { return []; } });
-    const last = runs.at(-1);
-    job = ranWorkflow(messages as Parameters<typeof ranWorkflow>[0]);
-    const answer = textOf(messages.findLast((m) => m.role === 'assistant')?.content).trim();
-    if (last?.outcome?.status === 'complete') await host.deliver({ record: last.outcome.output });
-    await recorder?.detach();
-    outcome = { status: last?.outcome?.status ?? 'no-run', answer: answer.slice(0, 600) };
+    if (overBudget) {
+      const spent = spentOf(spoolLines(meterDir));
+      say(`stopped: the known spend, $${spent.toFixed(4)}, reached --max-usd $${cap}; the run was ended here (a call already in flight may still have been billed)`, 'error');
+      outcome = { status: 'over_budget', message: `the spend reached --max-usd $${cap}` };
+    } else {
+      const { messages } = await root.context(ctx) as unknown as { messages: Array<{ role: string; content: unknown; toolName?: string }> };
+      const runs = messages.filter((m) => m.role === 'toolResult' && m.toolName === 'agentrun').map((m) => textOf(m.content)).flatMap((t) => { try { const j = JSON.parse(t); return j.outcome ? [j] : []; } catch { return []; } });
+      const last = runs.at(-1);
+      job = ranWorkflow(messages as Parameters<typeof ranWorkflow>[0]);
+      const answer = textOf(messages.findLast((m) => m.role === 'assistant')?.content).trim();
+      if (last?.outcome?.status === 'complete') await host.deliver({ record: last.outcome.output });
+      await recorder?.detach();
+      outcome = { status: last?.outcome?.status ?? 'no-run', answer: answer.slice(0, 600) };
+    }
   } catch (error) {
     outcome = { status: 'error', message: String((error as Error).message).slice(0, 500) };
   } finally {
     clearTimeout(patience);
     clearInterval(follow);
+    clearInterval(meterTimer);
     await harness.close(ctx).catch(() => undefined);
     await durable.release().catch(() => undefined);
   }
-  const recorded = (() => { try { return JSON.parse(readFileSync(join(options.dir, 'out', 'record.json'), 'utf8')).record as { rows: unknown[]; agreement: { summary: string } }; } catch { return null; } })();
+  const raw = (() => { try { return JSON.parse(readFileSync(join(options.dir, 'out', 'record.json'), 'utf8')).record as { rows?: unknown[] } & Record<string, unknown>; } catch { return null; } })();
+  // The agreement is the host's count over the agent's rows, never the agent's own (any `agreement` it wrote is replaced).
+  const agreement = raw ? agreementOf(raw.rows, input.label_map) : null;
+  const recorded = raw ? { ...raw, agreement } : null;
   if (options.record) {
     const title = 'An agent writes the workflow, and runs it';
     const blob = openRecorder({ dir: options.record }).blob(JSON.stringify(recorded ?? { error: 'no result' }), 'json');
@@ -211,18 +255,20 @@ async function session(options: { dir: string; input: Input; record?: string; pl
     const jobBlob = job ? openRecorder({ dir: options.record }).blob(JSON.stringify({ ...job, files: [] }), 'json') : undefined;
     finishRecording(options.record, { ...(jobBlob ? { job: { blob: jobBlob, sha256: jobBlob } } : {}), title, task: 'issue-triage', model: 'live', generations: 1, kills: 0, code: codeOf(ROOT), cost, source: { run: 'issue-triage', store: join(options.dir, 'store', 'run.sqlite') }, result: { blob, title }, providers: 'real' } as never);
   }
-  console.log(JSON.stringify({ outcome: outcome.status, agreement: recorded?.agreement?.summary ?? null, rows: recorded?.rows.length ?? 0, ...(options.record ? { recording: options.record } : {}), ...(outcome.message ? { message: outcome.message } : {}) }));
+  console.log(JSON.stringify({ outcome: outcome.status, agreement: agreement?.summary ?? null, rows: Array.isArray(raw?.rows) ? raw.rows.length : 0, spentUsd: Number(spentOf(spoolLines(meterDir)).toFixed(4)), ...(options.record ? { recording: options.record } : {}), ...(outcome.message ? { message: outcome.message } : {}) }));
   if (outcome.status !== 'complete') process.exitCode = 1;
 }
 
 async function main() {
-  const { values } = parseArgs({ options: { dir: { type: 'string' }, record: { type: 'string' }, input: { type: 'string' }, plain: { type: 'boolean' }, transcript: { type: 'string' } } });
-  if (!values.dir || !values.input) throw new Error('usage: session.ts --dir <empty run dir> --input <input.json> [--record <dir>] [--plain] [--transcript <file>]');
+  const { values } = parseArgs({ options: { dir: { type: 'string' }, record: { type: 'string' }, input: { type: 'string' }, plain: { type: 'boolean' }, transcript: { type: 'string' }, 'max-usd': { type: 'string' } } });
+  if (!values.dir || !values.input) throw new Error('usage: session.ts --dir <empty run dir> --input <input.json> [--record <dir>] [--max-usd <n>] [--plain] [--transcript <file>]');
   const input = JSON.parse(readFileSync(values.input, 'utf8')) as Input;
   if (!input.sha) throw new Error('the input has no sha: make it with pick-issues.mjs');
   const record = values.record ? resolve(values.record) : undefined;
   if (record && (existsSync(join(record, '.spool')) || existsSync(join(record, 'manifest.json')))) throw new Error(`${record} already holds a recording`);
-  await session({ dir: resolve(values.dir), input, ...(record ? { record } : {}), plain: values.plain === true, ...(values.transcript ? { transcript: resolve(values.transcript) } : {}) });
+  const maxUsd = values['max-usd'] === undefined ? undefined : Number(values['max-usd']);
+  if (maxUsd !== undefined && !(maxUsd > 0)) throw new Error('--max-usd is a positive number of dollars');
+  await session({ dir: resolve(values.dir), input, ...(maxUsd === undefined ? {} : { maxUsd }), ...(record ? { record } : {}), plain: values.plain === true, ...(values.transcript ? { transcript: resolve(values.transcript) } : {}) });
 }
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) await main();
