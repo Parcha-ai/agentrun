@@ -137,14 +137,15 @@ test('a read the DSL refuses inside a route branch, past a route or past a paral
   const chain = (...steps) => ({ node: 'chain', steps });
   const schemas = { Any: { type: 'object' }, In: { type: 'object', properties: { topic: { type: 'string' } } } };
   const cases = {
-    'inside a route branch': chain(route(fetch('read'), agent('other'))),
-    'past a route': chain(route(agent('one'), agent('two')), fetch('read')),
-    'past a parallel': chain({ node: 'parallel', label: 'p', branches: [agent('one'), agent('two')] }, fetch('read')),
+    // Each case's root, and the pointer of the read the DSL refuses (STATE_PATH_UNPRODUCED at that node).
+    'inside a route branch': [chain(route(fetch('read'), agent('other'))), '/root/workflow/root/steps/0/branches/a/body'],
+    'past a route': [chain(route(agent('one'), agent('two')), fetch('read')), '/root/workflow/root/steps/1'],
+    'past a parallel': [chain({ node: 'parallel', label: 'p', branches: [agent('one'), agent('two')] }, fetch('read')), '/root/workflow/root/steps/1'],
   };
-  for (const [where, root] of Object.entries(cases)) {
+  for (const [where, [root, read]] of Object.entries(cases)) {
     const child = { v: 2, name: 'child', schemas, input: { schemaId: 'In' }, output: { schemaId: 'Any' }, root };
     const result = validateWorkflow({ v: 2, name: 'p', schemas, input: { schemaId: 'In' }, output: { schemaId: 'Any' }, root: { node: 'workflow', label: 'kid', workflow: child, input: { topic: 'a' }, out: 'Any', as: 'k' } });
-    const unread = result.ok ? [] : result.issues.filter((issue) => issue.message.includes('interpolates {url} but no upstream node produces "url"'));
+    const unread = result.ok ? [] : result.issues.filter((issue) => issue.code === 'STATE_PATH_UNPRODUCED' && issue.path === read);
     assert.ok(unread.length > 0, `${where}: the DSL refuses the read`);
     for (const { path } of result.issues) for (const text of [path, JSON.stringify({ issues: [{ path }] })]) assert.equal(credentialIn(text), undefined, `${where}: ${text}`);
   }
