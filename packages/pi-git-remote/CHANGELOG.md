@@ -26,3 +26,4 @@
 - `branches(prefix)` lists the branches under a prefix (`runs/`), here and on the remote, at the commit `resolve` gives;
   `commitTo(branch, { allowEmpty: true })` makes a commit that changes no file, for a commit whose message and trailers are
   the record.
+- The hostile-corpus control for `limit-git-config-filter` triggers the planted clean filter with `git add --renormalize`, so it no longer depends on whether the freshly cloned file is racily clean; it failed a required check on a slow runner.
