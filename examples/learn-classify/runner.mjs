@@ -24,6 +24,7 @@ import { scoreV2 } from './score-v2.mjs';
 import { agentScript, agentScriptV2, FIXTURES, FIXTURES_V2, fakeHardTools, fixtureWeb, scriptedJev, scriptedModel } from './scripted.mjs';
 import { SETS } from './sets.mjs';
 import { ANY_HOST, domainOf, fetchPageTool } from './tools.mjs';
+import { passSelfTest } from './selftest.mjs';
 import { writeHosts } from './tools-v2.mjs';
 
 export const DATA = join(import.meta.dirname, 'data');
@@ -117,16 +118,15 @@ export async function liveParts({ set = SETS.v1, data = DATA, model = 'gpt-6-lun
       ...(hard ? await hard.hardJobTools({ root: join(run.dir, 'evidence'), profileRoot: join(run.dir, 'chrome'), eyes: await hard.gatewayEyes(gateway), env }) : []),
     ],
     modelFor: () => gatewayModel(gateway, { model, thinking }),
-    // The browser's guard on the browser the pass will use, before its first job.
-    ...(hard ? { selfTest: (dir) => hard.guardSelfTest({ root: dir, profileRoot: join(dir, 'chrome'), env }) } : {}),
+    // The browser's guard on the browser the pass will use, checked by the pass's self-test.
+    ...(hard ? { browserCheck: (dir) => hard.guardSelfTest({ root: dir, profileRoot: join(dir, 'chrome'), env }) } : {}),
   };
 }
 
-/** A live pass's checks before its first job; a failure stops the pass there. */
-async function selfTest({ out, parts, log }) {
-  if (!parts.selfTest) return;
-  const result = await parts.selfTest(join(out, 'self-test', String(Date.now())));
-  log(`self-test: the browser's guard refused ${result.blocked.join(', ')} on ${result.browser} (${usd(result.costUsd)})`);
+/** Every live pass checks itself before its first job (selftest.mjs): no tool runs a command or code, a code node is
+ *  refused, and its browser refuses a redirect to sec.gov. A failure stops the pass there. */
+async function selfTest({ out, repo, parts, log }) {
+  if (parts.mode === 'live') await passSelfTest({ out, repo, parts, log });
 }
 
 /** One run of the agent with the set's tools, answer and job text. */
@@ -239,7 +239,7 @@ export async function runLoop({ out, parts, jobs, capUsd, runCapUsd, record = tr
   writeFileSync(join(out, 'conventions.json'), `${JSON.stringify(parts.conventions ?? {}, null, 2)}\n`);
   let stoppedBy = null;
   log(`learn-classify: ${parts.mode} pass in ${out}, seed ${short(meta.seedSha)}, ${queue.length} job(s)${capUsd === undefined ? '' : `, cap ${usd(capUsd)}`}`);
-  if (queue.some((job) => !done.has(job.order))) await selfTest({ out, parts, log });
+  if (queue.some((job) => !done.has(job.order))) await selfTest({ out, repo, parts, log });
   for (const job of queue) {
     if (done.has(job.order)) continue;
     if (capUsd !== undefined && spentNow() >= capUsd) { stoppedBy = `spent ${usd(spentNow())}, at or over the cap of ${usd(capUsd)}`; break; }
@@ -278,7 +278,7 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
   let spent = rows.reduce((sum, r) => sum + (r.costUsd ?? 0) + (r.scoreCostUsd ?? 0), 0);
   let stoppedBy = null;
   log(`learn-classify: sealed pass at ${label}${sha === meta.seedSha ? ' (the seed: nothing learned)' : ''}, ${queue.length} companies`);
-  if (queue.some((job) => !done.has(job.cik))) await selfTest({ out, parts, log });
+  if (queue.some((job) => !done.has(job.cik))) await selfTest({ out, repo, parts, log });
   for (const [i, job] of queue.entries()) {
     if (done.has(job.cik)) continue;
     if (capUsd !== undefined && spent >= capUsd) { stoppedBy = `spent ${usd(spent)}, at or over the cap of ${usd(capUsd)}`; break; }

@@ -713,7 +713,7 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
       const walled = WALL_STATUS.has(got.status) || (got.bytes && !kindOf(got.bytes) && /html/.test(got.type));
       if (walled && browser) {
         const viaBrowser = await throughBrowser(url, signal);
-        used.browser = viaBrowser.spent;
+        if (viaBrowser.spent.browser) used.browser = viaBrowser.spent;
         if (viaBrowser.refused || viaBrowser.error) return empty(viaBrowser.refused ? { refused: viaBrowser.refused } : { error: `${got.error ?? 'a page, not a file'}; ${viaBrowser.error}` });
         got = viaBrowser;
       }

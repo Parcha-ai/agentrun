@@ -8,8 +8,13 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
-import { machineSecrets, redactorOf, scanRecording, scrubOf } from '../../packages/harness/src/secrets.ts';
+import { readFileSync } from 'node:fs';
+import { redactorOf, scanRecording, scrubOf, secretsOf } from '../../packages/harness/src/secrets.ts';
 import { SECRET_NAMES } from './tools-v2.mjs';
+
+/** The demo spec (demo.json): the keys a live pass is given, each registered as a secret value as the reference
+ *  recorder registers a demo's (#562). */
+export const DEMO_SPEC = JSON.parse(readFileSync(join(import.meta.dirname, 'demo.json'), 'utf8'));
 
 const require = createRequire(import.meta.url);
 const PACKAGES = ['@earendil-works/pi-durable', '@earendil-works/pi-ai', '@parcha/agentrun-dsl', '@parcha/agentrun-pi', '@parcha/agentrun-jev', '@parcha/pi-agent-learn'];
@@ -22,13 +27,18 @@ function codeCommit() {
   try { return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: import.meta.dirname, encoding: 'utf8' }).trim(); } catch { return 'unknown'; }
 }
 
-/** What a recording must not hold, as the reference recorder takes it (packages/harness/src/secrets.ts): the values of
- *  the names a take passes in (`SECRET_NAMES`: the Browserbase key and project, the gateway's key) and this machine's
- *  host name and boot id. */
-export const recordingSecrets = (env = process.env) => [
-  ...SECRET_NAMES.flatMap((key) => (typeof env[key] === 'string' && env[key].trim().length >= 12 ? [{ key, value: env[key].trim() }] : [])),
-  ...machineSecrets(),
-];
+/** What a recording must not hold. First, as the reference recorder takes it (packages/harness/src/secrets.ts
+ *  `secretsOf`): the values of the keys `spec` declares, the sign-in's tokens, this machine's host name and boot id.
+ *  Second, the names these tools read (`SECRET_NAMES`), whatever the spec says. */
+export function recordingSecrets(env = process.env, spec = DEMO_SPEC) {
+  const found = secretsOf(env, spec);
+  const seen = new Set(found.map((secret) => secret.value));
+  for (const key of SECRET_NAMES) {
+    const value = typeof env[key] === 'string' ? env[key].trim() : '';
+    if (value.length >= 12 && !seen.has(value)) { seen.add(value); found.push({ key, value }); }
+  }
+  return found;
+}
 
 /** Writes `<into>/<run id>/` and returns its name. */
 /** `spend` is the row's (`spendOf`); `modelUsd` the model part, null when unknown. Every line and the manifest have the

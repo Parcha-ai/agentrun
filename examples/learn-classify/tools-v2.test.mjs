@@ -17,9 +17,9 @@ import {
   agentHomeFor, answerV1, groupsOf, jobInput, meteredJudge, prepareRun, runJob, sic2GroupsTool, sicCodesTool, textsRead, toolResultsOf, toolStats,
 } from './host.mjs';
 import { gatewayOf } from './models.mjs';
-import { recordingSecrets, writeRecording } from './recording.mjs';
+import { DEMO_SPEC, recordingSecrets, writeRecording } from './recording.mjs';
 import { validateRecording } from '../../scripts/recording/validate.mjs';
-import { openOut, runLoop, scriptedParts } from './runner.mjs';
+import { openOut, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { SETS } from './sets.mjs';
 import { FIXTURES, fixtureFetch, readJson, scriptedJev, scriptedModel } from './scripted.mjs';
 import {
@@ -490,6 +490,10 @@ test('read_document asks again through the browser when a host turns a plain req
 
   const plain = readDocumentTool({ root, vision: await visionFor({ root, eyes: fakeEyes() }), fetch: web.fetch, lookup: publicLookup });
   assert.equal((await plain.run({ url: 'https://ir.walled.example/ar.pdf' })).error, 'HTTP 403');
+  const nobrowser = readDocumentTool({ root, vision: await visionFor({ root, eyes: fakeEyes() }), browser: async () => { throw new Error('no Chrome here'); }, fetch: web.fetch, lookup: publicLookup });
+  const unopened = conforms(nobrowser, await nobrowser.run({ url: 'https://ir.walled.example/ar.pdf' }));
+  assert.equal(unopened.error, 'HTTP 403; through the browser: no browser: no Chrome here');
+  assert.equal(unopened.via, 'direct');
 });
 
 test('the eyes reach the model gateway: Google\'s model over its OpenAI-compatible chat completions at <gateway>/v1, with the gateway\'s key and thinking on', async (t) => {
@@ -625,8 +629,12 @@ test('a run offers the three tools to the root agent, to a workflow\'s call node
   assert.deepEqual(JSON.parse(await readFile(join(out, 'hosts', `${run.runId}.json`), 'utf8')), { run: run.runId, ...hosts });
 
   // The recording holds neither value nor the run's path, and passes the gallery's validation and the record-time scan.
-  const env = { BROWSERBASE_API_KEY: ` ${key} `, BROWSERBASE_PROJECT_ID: project, LEARN_CLASSIFY_GATEWAY_KEY: 'placeholder' };
-  assert.deepEqual(recordingSecrets(env).filter((s) => !s.key.startsWith('this machine')), [{ key: 'BROWSERBASE_API_KEY', value: key }, { key: 'BROWSERBASE_PROJECT_ID', value: project }]);
+  // The two Browserbase values are registered through the demo spec (demo.json), as the reference recorder registers a
+  // demo's keys; BB_API_KEY, which the spec does not declare, through the tools' own list.
+  const other = 'bb_other_SENTINEL_9876543210';
+  const env = { AGENTRUN_HOME: join(out, 'no-sign-in'), BROWSERBASE_API_KEY: key, BROWSERBASE_PROJECT_ID: project, BB_API_KEY: other, LEARN_CLASSIFY_GATEWAY_KEY: 'placeholder' };
+  assert.deepEqual(DEMO_SPEC.keys[0].oneOf[0].map((k) => k.env), ['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID']);
+  assert.deepEqual(recordingSecrets(env).filter((s) => !s.key.startsWith('this machine')), [{ key: 'BROWSERBASE_API_KEY', value: key }, { key: 'BROWSERBASE_PROJECT_ID', value: project }, { key: 'BB_API_KEY', value: other }]);
   const into = join(out, 'recordings');
   await writeRecording({ into, run: { ...run, runId: run.runId }, job, model: 'faux/scripted', providers: 'scripted', started: 0, ended: 1, spend: { costUsd: null, judgeCostUsd: 0 }, modelUsd: null, env });
   const events = await readFile(join(into, run.runId, 'events.jsonl'), 'utf8');
@@ -636,7 +644,7 @@ test('a run offers the three tools to the root agent, to a workflow\'s call node
   assert.ok(existsSync(join(into, run.runId, 'manifest.json')));
 });
 
-test('the guard self-test passes when a redirect to sec.gov comes back refused and blocked, and stops a pass before its first job when not', async (t) => {
+test('the guard self-test passes when a redirect to sec.gov comes back refused and blocked, and throws when it comes back open', async (t) => {
   const root = await scratch(t);
   const held = scriptedBrowser({ pages: {}, redirects: { [SELF_TEST_URL]: 'https://www.sec.gov/' } });
   const passed = await guardSelfTest({ root, browser: held.browser, driver: held.driver, guard: held.guard, lookup: publicLookup });
@@ -648,13 +656,55 @@ test('the guard self-test passes when a redirect to sec.gov comes back refused a
   const open = scriptedBrowser({ pages: { 'https://www.sec.gov/': { title: 'SEC', text: 'EDGAR full-text search' } }, redirects: { [SELF_TEST_URL]: 'https://www.sec.gov/' } });
   const leaky = async (target, options) => Object.assign(await open.guard(target, { check: async () => null }), { check: async () => null });
   await assert.rejects(guardSelfTest({ root, browser: open.browser, driver: open.driver, guard: leaky, lookup: publicLookup }), /failed its self-test on fake: .*must come back refused/);
+});
 
-  // The pass stops before its first job: no row, no run.
-  const out = join(root, 'out');
-  const parts = { ...scriptedParts({ set: SETS.v2 }), selfTest: async () => { throw new Error('the browser\'s request guard failed its self-test'); } };
-  await assert.rejects(runLoop({ out, parts, jobs: 1 }), /failed its self-test/);
-  assert.equal(existsSync(join(out, 'runs.jsonl')), false);
-  assert.deepEqual(await readdir(join(out, 'home', 'runs')).catch(() => []), []);
+/** A live pass's parts at $0: the scripted v2 pass's tools and model, marked live, with a browser check on the scripted
+ *  browser (one whose guard holds, or one that lets the redirect through). */
+function liveScripted({ leaky = false, browserCheck = true, extra = [] } = {}) {
+  const base = scriptedParts({ set: SETS.v2 });
+  const held = scriptedBrowser({ pages: leaky ? { 'https://www.sec.gov/': { title: 'SEC', text: 'EDGAR' } } : {}, redirects: { [SELF_TEST_URL]: 'https://www.sec.gov/' } });
+  const guard = leaky ? async (target) => Object.assign(await held.guard(target, { check: async () => null }), { check: async () => null }) : held.guard;
+  return {
+    ...base,
+    mode: 'live',
+    toolsFor: async (job, run) => [...(await base.toolsFor(job, run)), ...extra],
+    ...(browserCheck ? { browserCheck: (dir) => guardSelfTest({ root: dir, browser: held.browser, driver: held.driver, guard, lookup: publicLookup }) } : {}),
+  };
+}
+
+test('every live pass checks itself before job 1: the tools offered, a refused code node and the browser guard, recorded in selftest.json', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const { rows } = await runLoop({ out, parts: liveScripted(), jobs: 1 });
+  assert.equal(rows.length, 1, 'the pass went on to its job');
+  const report = JSON.parse(await readFile(join(out, 'selftest.json'), 'utf8'));
+  assert.equal(report.ok, true, JSON.stringify(report.problems));
+  assert.deepEqual(report.tools.root, ['agentrun', 'answer', 'browse', 'fetch_page', 'learn', 'read_document', 'search_web', 'sic2_groups', 'sic_codes']);
+  assert.deepEqual(report.tools.callNode, ['browse', 'fetch_page', 'read_document', 'search_web', 'sic2_groups', 'sic_codes']);
+  assert.deepEqual(report.tools.agentNode, ['browse', 'fetch_page', 'read_document', 'search_web', 'sic2_groups', 'sic_codes', 'submit']);
+  assert.equal(report.codeNode.outcome, 'refused');
+  assert.deepEqual(report.browser.blocked, ['https://www.sec.gov/']);
+  // The self-test's own run lives in a home of its own: the pass's home holds only the pass's run.
+  assert.deepEqual(await readdir(join(out, 'home', 'runs')), ['run-001']);
+});
+
+test('a live pass whose agent could run a command, or whose browser lets a sec.gov redirect through, stops before job 1', async (t) => {
+  const root = await scratch(t);
+  const shell = { name: 'bash', description: 'Run a shell command.', parameters: { type: 'object', properties: { command: { type: 'string' } } }, resultSchema: { type: 'object' }, run: async () => ({}) };
+  for (const [name, parts, why] of [
+    ['bash', liveScripted({ extra: [shell] }), /root offers bash, not known to run neither a command nor code/],
+    ['leaky', liveScripted({ leaky: true }), /failed its self-test on fake/],
+    ['unchecked', liveScripted({ browserCheck: false }), /the pass has a browser and no browser check/],
+  ]) {
+    const out = join(root, name);
+    await assert.rejects(runLoop({ out, parts, jobs: 1 }), why, name);
+    assert.equal(existsSync(join(out, 'runs.jsonl')), false, name);
+    assert.deepEqual(await readdir(join(out, 'home', 'runs')).catch(() => []), [], name);
+    const report = JSON.parse(await readFile(join(out, 'selftest.json'), 'utf8'));
+    assert.equal(report.ok, false, name);
+  }
+  // A sealed pass checks itself the same way.
+  const sealedOut = join(root, 'bash');
+  await assert.rejects(runSealed({ out: sealedOut, parts: liveScripted({ extra: [shell] }), at: 'seed' }), /root offers bash/);
 });
 
 // A real headless Chrome (its own profile under the test's directory, killed by exact pid), against a 127.0.0.1 server
