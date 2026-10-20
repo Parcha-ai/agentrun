@@ -10,6 +10,7 @@ const here = (path) => new URL(path, import.meta.url).pathname;
 const recordings = {
   'midstream-kill': readEvents(here('./fixtures/midstream-kill')),
   'reference-killed': readEvents(here('../../apps/viewer/test/fixtures/reference-killed')),
+  'reference-job': readEvents(here('../../apps/viewer/test/fixtures/reference-job')),
   'ten-kills-seed21': readEvents(here('../../apps/viewer/test/fixtures/ten-kills-seed21')),
   'spacedeck-asks': readFileSync(here('../../apps/viewer/test/fixtures/spacedeck-asks/events.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)),
   // and every recording the viewer's gallery bundles
