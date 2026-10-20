@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { coverAddress, readSubsidiaries } from './build-truth-v4.mjs';
+import { coverAddress, HQ_OVERRIDES, readSubsidiaries } from './build-truth-v4.mjs';
 
 const read = (name) => JSON.parse(readFileSync(new URL(`./data/${name}`, import.meta.url), 'utf8'));
 const v2 = read('companies-v2.json');
@@ -101,12 +101,25 @@ test('every field has the v4 shape, and the coverage the report states is the se
   for (const r of report.companies) {
     const c = v4.find((x) => x.cik === r.cik);
     if (!c.hq) continue;
-    assert.ok(['cover', 'sub.txt'].includes(r.hq.source), r.cik);
-    if (r.hq.source === 'cover') assert.deepEqual(c.hq, r.hq.cover, r.cik);
-    else assert.ok(r.hq.why, r.cik);
+    assert.ok(['cover', 'cover+override', 'sub.txt'].includes(r.hq.source), r.cik);
+    if (r.hq.source === 'sub.txt') assert.ok(r.hq.why, r.cik);
+    else assert.deepEqual(c.hq, r.hq.cover, r.cik);
   }
-  assert.equal(coverage.hqSource.cover + coverage.hqSource['sub.txt'], v4.filter((c) => c.hq).length);
+  assert.equal(coverage.hqSource.cover + coverage.hqSource['cover+override'] + coverage.hqSource['sub.txt'], v4.filter((c) => c.hq).length);
   // A null segment truth always has its reason; oneSegment only from a one-segment report.
   for (const c of v4) if (!c.segments && c.latestAnnual) assert.ok(report.companies.find((r) => r.cik === c.cik).segments, c.cik);
   for (const c of report.companies) if (!v4.find((x) => x.cik === c.cik).subsidiaries) assert.ok(c.subsidiaries?.why || c.latestAnnual, c.cik);
+});
+
+test('the three reviewed cover tags are overridden, each with its reason, and nothing else is', () => {
+  const pinned = { '0001611005': ['Singapore', 'Millenia Tower', 'SG'], '0001892274': ['Toronto', 'Ontario', 'CA'], '0001355444': ['São Paulo', 'Pinheiros, São Paulo, SP,', 'BR'] };
+  assert.deepEqual(Object.keys(HQ_OVERRIDES).sort(), Object.keys(pinned).sort());
+  for (const [cik, [city, tagged, country]] of Object.entries(pinned)) {
+    assert.deepEqual([v4.find((c) => c.cik === cik).hq.city, v4.find((c) => c.cik === cik).hq.country], [city, country], cik);
+    const r = report.companies.find((c) => c.cik === cik).hq;
+    assert.equal(r.source, 'cover+override', cik);
+    assert.equal(r.override.taggedCity, tagged, cik);
+    assert.ok(r.override.reason.length > 20, cik);
+  }
+  assert.equal(report.companies.filter((c) => c.hq?.source === 'cover+override').length, 3);
 });

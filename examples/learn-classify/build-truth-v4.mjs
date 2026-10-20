@@ -216,6 +216,13 @@ export function coverAddress(html) {
   return { city, state, country, ...(countryTag ? { countryTag } : {}) };
 }
 
+// Cover city tags the TL reviewed and ruled wrong, one by one (2026-10-20): the city the row uses instead, and why.
+export const HQ_OVERRIDES = Object.freeze({
+  '0001611005': { city: 'Singapore', reason: 'the cover tags a building, "Millenia Tower", as the city; sub.txt gives Singapore' },
+  '0001892274': { city: 'Toronto', reason: 'the cover tags a province, "Ontario", as the city; sub.txt gives Toronto' },
+  '0001355444': { city: 'São Paulo', reason: 'the cover tag reads "Pinheiros, São Paulo, SP,"; Pinheiros is a district of São Paulo' },
+});
+
 async function hqOf(cik, filing, sub) {
   const fromSub = sub.cityba || sub.countryba ? { city: sub.cityba || null, state: sub.stprba || null, country: sub.countryba || null } : null;
   const { base, index, documents } = await filingIndex(cik, filing);
@@ -225,8 +232,14 @@ async function hqOf(cik, filing, sub) {
   if (copy.status !== 200) return { hq: fromSub, source: 'sub.txt', why: `no copy of ${primary.file} (${copy.status})` };
   const cover = coverAddress(copy.body.toString('utf8'));
   if (!cover) return { hq: fromSub, source: 'sub.txt', why: `${primary.file} tags no cover address`, document: { url: copy.url, copy: copy.copy } };
-  const { countryTag, ...hq } = cover;
-  return { hq, source: 'cover', document: { url: copy.url, copy: copy.copy }, ...(countryTag && !hq.country ? { why: `the cover's country "${countryTag}" has no ISO code here` } : {}), sub: fromSub };
+  const { countryTag, ...tagged } = cover;
+  const override = HQ_OVERRIDES[cik];
+  const hq = override ? { ...tagged, city: override.city } : tagged;
+  return {
+    hq, source: override ? 'cover+override' : 'cover', document: { url: copy.url, copy: copy.copy }, sub: fromSub,
+    ...(override ? { override: { reason: override.reason, taggedCity: tagged.city } } : {}),
+    ...(countryTag && !hq.country ? { why: `the cover's country "${countryTag}" has no ISO code here` } : {}),
+  };
 }
 
 async function subsidiariesOf(cik, filing) {
@@ -260,7 +273,7 @@ function newerPossible(period) {
 // Where each head office came from, and how many cover addresses differ from sub.txt's business address.
 function hqSources(report) {
   const plain = (text) => (text ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-  const counts = { cover: 0, 'sub.txt': 0, coverDiffersFromSub: 0, subTxtWhy: {} };
+  const counts = { cover: 0, 'cover+override': 0, 'sub.txt': 0, coverDiffersFromSub: 0, subTxtWhy: {} };
   for (const r of report) {
     if (!r.hq) continue;
     counts[r.hq.source]++;
@@ -269,7 +282,7 @@ function hqSources(report) {
       counts.subTxtWhy[why] = (counts.subTxtWhy[why] ?? 0) + 1;
     }
     const { cover, sub } = r.hq;
-    if (r.hq.source === 'cover' && sub && (plain(cover.city) !== plain(sub.city) || (cover.country && sub.country && cover.country !== sub.country))) counts.coverDiffersFromSub++;
+    if (r.hq.source !== 'sub.txt' && sub && (plain(cover.city) !== plain(sub.city) || (cover.country && sub.country && cover.country !== sub.country))) counts.coverDiffersFromSub++;
   }
   return counts;
 }
@@ -327,7 +340,7 @@ async function main() {
       row.hq = place.hq;
       notes.hq = {
         source: place.source, ...(place.why ? { why: place.why } : {}), ...(place.document ? { document: place.document } : {}),
-        ...(place.source === 'cover' ? { cover: place.hq, sub: place.sub } : {}),
+        ...(place.source !== 'sub.txt' ? { cover: place.hq, sub: place.sub } : {}), ...(place.override ? { override: place.override } : {}),
       };
       notes.source = { quarter: provenance.secFiles[f.quarter]?.fetchedFrom ?? f.quarter };
       const seg = segmentTruth({ adsh: f.adsh, form: f.form, period: f.period }, facts.get(f.adsh) ?? []);
