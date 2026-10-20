@@ -226,6 +226,46 @@ The holding category is a name pattern (Holding(s), Enterprises, Diversified) or
 which companies are sampled and misses holding companies without such a name, e.g. Berkshire Hathaway; no answer is
 scored from it.
 
+## v4: the dollar job
+
+`--set v4` runs the job of `CLASSIFY-CONTRACT.md` v4 on `data/companies-v4.json`, with v2's input and tools: the agent
+finds the company's latest annual report, reads it page by page with `read_document`, and answers in six parts. Its rules
+are `agent-v4/AGENTS.md` (v2's learning rules, word for word) and its skills `classify` (the six parts by hand) and v2's
+`workflows`, unchanged. The whole-job `classify-company` returns the answer's own shape.
+
+```sh
+node examples/learn-classify/runner.mjs --set v4 --scripted --out /tmp/lc-v4-dry --jobs 4
+```
+
+The answer is the typed `answer` tool: `sic4` (as v2), `segments` (every reportable operating segment, `[{ name, share }]`,
+or `{ oneSegment: true }`), `hq` (`{ city, state?, country }`), `subsidiaries` (1 to 15 `{ name, country? }`, as the
+company lists them in a 10-K's Exhibit 21 or a 20-F's Exhibit 8), `annualReport` (`{ url, fiscalYear }`) and 1 to 12 cites
+(`{ claim: "sic" | "segment" | "hq" | "subsidiary" | "report", url, locator, quote }`).
+
+`score-v4.mjs` scores each run after it ends, from the run's own store; nothing is fetched again:
+
+- `sicCorrect4` and `sicCorrect2` as v2.
+- `segmentsF1`: the answer's segments matched one to one with the filed ones (`segments[]` of the truth row: `member`,
+  `label`, `share`). A label or member in the same words matches at once; the rest go to Jev in one request, a choice
+  per answer segment over the filed segments not yet taken, and the surest choices pair first. F1 is over both sides;
+  `shareErrorMean` is the mean distance of the matched shares, in points. `oneSegment` scores 1 against one filed
+  segment and 0 against more. No filed segments: both `null`.
+- `hqCorrect`: the city (folded: case, accents, punctuation) and the country (as its ISO code) match at once; anything
+  else is Jev's, for another name of the same city or country. No truth: `null`.
+- `subsidiariesRecall` and `subsidiariesPrecision` against the exhibit list: a name the same once its legal form (Inc.,
+  GmbH, Ltd ...) is left out matches at once, any other is Jev's against the whole list. Recall is over at most 15 listed
+  names, the most an answer may give. No list: both `null`.
+- `reportYearCorrect`: the fiscal year against the latest annual filing's (`latestAnnual.fy`). `reportRead`: a cite on
+  the report's URL locates a page of it as "pdf p. N".
+- `evidenceSupported` as v2, each cite's claim stated for its kind.
+- `correct`, the curve's headline: the code exact, `segmentsF1` 0.8 or better and `hqCorrect`. A company with no filed
+  segments or no headquarters truth is not correct.
+
+A v4 row is a v2 row (v3's chart fields included) with v2's four segment fields replaced by `segmentsAnswer`,
+`segmentsTruth`, `segmentsF1`, `shareErrorMean`, `hqAnswer`, `hqTruth`, `hqCorrect`, `subsidiariesAnswer`,
+`subsidiariesTruthCount`, `subsidiariesRecall`, `subsidiariesPrecision`, `reportAnswer`, `reportTruth`,
+`reportYearCorrect` and `reportRead`. `rerow.mjs` backfills a v4 pass as it does a v2 one.
+
 ## Files
 
 | File | What |
@@ -238,11 +278,12 @@ scored from it.
 | `recording.mjs` | a run's store as an `agentrun.recording/1` directory |
 | `curve.mjs` | `curve.html` from the rows: static, no build step |
 | `models.mjs` | the live model and Jev, through the gateway |
-| `scripted.mjs` | the $0 doubles: the scripted agent and Jev, the fixture web `fetch_page` reads, and v2's fakes of search_web, browse and read_document |
-| `sets.mjs` | the two jobs, v1 and v2: what the agent is given, its label tools and its answer |
-| `score-v2.mjs` | the v2 scorer |
+| `scripted.mjs` | the $0 doubles: the scripted agent and Jev, the fixture web `fetch_page` reads, and the hard jobs' fakes of search_web, browse and read_document |
+| `sets.mjs` | the jobs, v1, v2 and v4: what the agent is given, its label tools and its answer |
+| `score-v2.mjs`, `score-v4.mjs` | the v2 and v4 scorers |
 | `lineage.mjs`, `rerow.mjs` | which workflows a run gave main (`born`, `rewritten`), and the v3 backfill of a finished pass |
 | `agent-v2/`, `fixtures-v2/` | the v2 agent, and v2's made-up companies, pages, documents and answers for the scripted pass |
+| `agent-v4/`, `fixtures-v4/` | the v4 agent, and v4's made-up companies, pages, annual reports, answers and scorer answers for the scripted pass |
 | `fixtures/` | five made-up companies, their pages and ten groups, for the scripted pass and the tests |
 | `tools.mjs`, `data/` | `fetch_page` and the truth set (lane C1) |
 | `tools-v2.mjs` | v2's `search_web`, `browse` (pi-browser) and `read_document` (pi-vision), and the vision model's route (lane C3) |

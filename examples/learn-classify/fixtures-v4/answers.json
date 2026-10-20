@@ -1,0 +1,197 @@
+{
+  "Harbor Valve Works Inc.": {
+    "sic4": "3561",
+    "segments": [
+      {
+        "name": "Water Systems",
+        "share": 0.61
+      },
+      {
+        "name": "Industrial Flow",
+        "share": 0.39
+      }
+    ],
+    "hq": {
+      "city": "Pittsburgh",
+      "state": "Pennsylvania",
+      "country": "United States"
+    },
+    "subsidiaries": [
+      {
+        "name": "Harbor Valve Europe GmbH"
+      },
+      {
+        "name": "Harbor Flow Systems LLC"
+      },
+      {
+        "name": "HVW Pumps Ltd"
+      }
+    ],
+    "annualReport": {
+      "url": "https://www.harborvalve.example/annual-report-2025.pdf",
+      "fiscalYear": 2025
+    },
+    "site": "https://www.harborvalve.example",
+    "siteQuote": "We design and manufacture centrifugal pumps and control valves for water utilities and refineries",
+    "document": "https://www.harborvalve.example/annual-report-2025.pdf",
+    "segmentQuote": "Revenue by reportable segment: Water Systems 61% of revenue; Industrial Flow 39% of revenue.",
+    "hqQuote": "Headquarters: Pittsburgh, United States.",
+    "subsidiaryQuote": "Exhibit 21: subsidiaries of the registrant: Harbor Valve Europe GmbH, Harbor Flow Systems LLC, HVW Pumps Ltd.",
+    "reportQuote": "Harbor Valve Works Inc. Annual Report for fiscal year 2025."
+  },
+  "Bluefin Markets Inc.": {
+    "sic4": "5411",
+    "segments": {
+      "oneSegment": true
+    },
+    "hq": {
+      "city": "Seattle",
+      "state": "WA",
+      "country": "USA"
+    },
+    "subsidiaries": [
+      {
+        "name": "Bluefin Operating Company"
+      }
+    ],
+    "annualReport": {
+      "url": "https://www.bluefinmarkets.example/annual-report-2025.pdf",
+      "fiscalYear": 2025
+    },
+    "site": "https://www.bluefinmarkets.example",
+    "siteQuote": "Bluefin Markets runs 212 neighborhood grocery stores selling fresh produce, seafood and pantry staples",
+    "document": "https://www.bluefinmarkets.example/annual-report-2025.pdf",
+    "segmentQuote": "Revenue by reportable segment: one reportable segment.",
+    "hqQuote": "Headquarters: Seattle, USA.",
+    "subsidiaryQuote": "Exhibit 21: subsidiaries of the registrant: Bluefin Operating Company.",
+    "reportQuote": "Bluefin Markets Inc. Annual Report for fiscal year 2025."
+  },
+  "Summit Ridge Software Corp.": {
+    "sic4": "7372",
+    "segments": [
+      {
+        "name": "Cloud Software",
+        "share": 0.7
+      },
+      {
+        "name": "Licenses",
+        "share": 0.3
+      }
+    ],
+    "hq": {
+      "city": "Toronto",
+      "state": "Ontario",
+      "country": "Canada"
+    },
+    "subsidiaries": [
+      {
+        "name": "Summit Ridge Software (US) Inc."
+      },
+      {
+        "name": "Summit Ridge Cloud Ltd"
+      }
+    ],
+    "annualReport": {
+      "url": "https://www.summitridge.example/annual-report-2025.pdf",
+      "fiscalYear": 2025
+    },
+    "site": "https://www.summitridge.example",
+    "siteQuote": "Summit Ridge builds accounting and payroll software that mid-size companies license by the seat",
+    "document": "https://www.summitridge.example/annual-report-2025.pdf",
+    "segmentQuote": "Revenue by reportable segment: Cloud Software 70% of revenue; Licenses 30% of revenue.",
+    "hqQuote": "Headquarters: Toronto, Canada.",
+    "subsidiaryQuote": "Exhibit 8: subsidiaries of the registrant: Summit Ridge Software (US) Inc., Summit Ridge Cloud Ltd.",
+    "reportQuote": "Summit Ridge Software Corp. Annual Report for fiscal year 2025."
+  },
+  "Lantern Hall Restaurants Inc.": {
+    "sic4": "5812",
+    "segments": {
+      "oneSegment": true
+    },
+    "hq": {
+      "city": "Columbus",
+      "state": "Ohio",
+      "country": "United States"
+    },
+    "subsidiaries": [
+      {
+        "name": "Lantern Hall Kitchens LLC"
+      }
+    ],
+    "annualReport": {
+      "url": "https://www.lanternhall.example/annual-report-2025.pdf",
+      "fiscalYear": 2025
+    },
+    "site": "https://www.lanternhall.example",
+    "siteQuote": "Lantern Hall runs 38 family restaurants serving breakfast, lunch and dinner across the Midwest",
+    "document": "https://www.lanternhall.example/annual-report-2025.pdf",
+    "segmentQuote": "Revenue by reportable segment: one reportable segment.",
+    "hqQuote": "Headquarters: Columbus, United States.",
+    "subsidiaryQuote": "Exhibit 21: subsidiaries of the registrant: Lantern Hall Kitchens LLC.",
+    "reportQuote": "Lantern Hall Restaurants Inc. Annual Report for fiscal year 2025."
+  },
+  "Cedar Lane Bancorp": {
+    "sic4": "6022",
+    "segments": [
+      {
+        "name": "Banking",
+        "share": 1
+      }
+    ],
+    "hq": {
+      "city": "Richmond",
+      "state": "Virginia",
+      "country": "United States"
+    },
+    "subsidiaries": [
+      {
+        "name": "Cedar Lane Bank"
+      }
+    ],
+    "annualReport": {
+      "url": "https://www.cedarlanebank.example/annual-report-2025.pdf",
+      "fiscalYear": 2025
+    },
+    "site": "https://www.cedarlanebank.example",
+    "siteQuote": "Cedar Lane Bank takes deposits and makes home and small-business loans through 40 branches",
+    "document": "https://www.cedarlanebank.example/annual-report-2025.pdf",
+    "segmentQuote": "Revenue by reportable segment: Banking 100% of revenue.",
+    "hqQuote": "Headquarters: Richmond, United States.",
+    "subsidiaryQuote": "Exhibit 21: subsidiaries of the registrant: Cedar Lane Bank.",
+    "reportQuote": "Cedar Lane Bancorp Annual Report for fiscal year 2025."
+  },
+  "Ironclad Freight Lines Inc.": {
+    "sic4": "4213",
+    "segments": [
+      {
+        "name": "Truckload",
+        "share": 0.8
+      },
+      {
+        "name": "Logistics",
+        "share": 0.2
+      }
+    ],
+    "hq": {
+      "city": "Montr\u00e9al",
+      "state": "Quebec",
+      "country": "Canada"
+    },
+    "subsidiaries": [
+      {
+        "name": "Ironclad Operating Company"
+      }
+    ],
+    "annualReport": {
+      "url": "https://www.ironcladfreight.example/annual-report-2025.pdf",
+      "fiscalYear": 2025
+    },
+    "site": "https://www.ironcladfreight.example",
+    "siteQuote": "Ironclad hauls full truckload freight across the lower 48 states with a fleet of 1,900 tractors",
+    "document": "https://www.ironcladfreight.example/annual-report-2025.pdf",
+    "segmentQuote": "Revenue by reportable segment: Truckload 80% of revenue; Logistics 20% of revenue.",
+    "hqQuote": "Headquarters: Montr\u00e9al, Canada.",
+    "subsidiaryQuote": "Exhibit 21: subsidiaries of the registrant: Ironclad Operating Company.",
+    "reportQuote": "Ironclad Freight Lines Inc. Annual Report for fiscal year 2025."
+  }
+}

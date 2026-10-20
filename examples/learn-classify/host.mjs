@@ -143,6 +143,44 @@ export function answerV2(codes) {
   };
 }
 
+/** The v4 answer (CLASSIFY-CONTRACT.md v4, the dollar job): the 4-digit SIC code, every reportable operating segment with
+ *  its share of revenue (or that the company reports one), the headquarters, up to 15 operating subsidiaries as the company
+ *  lists them, the latest annual report with its fiscal year, and 1 to 12 cites. */
+export function answerV4(codes) {
+  const text = (max) => ({ type: 'string', minLength: 1, maxLength: max });
+  return {
+    description: 'Give the final answer, once: the company\'s 4-digit SIC code as the SEC would file it; every reportable operating segment with its share of revenue from the latest annual report (or that the company reports one segment); its headquarters; up to 15 of its operating subsidiaries as the company lists them (the 10-K\'s Exhibit 21, the 20-F\'s Exhibit 8); that annual report with its fiscal year; and 1 to 12 cites from pages and documents read in this run.',
+    parameters: {
+      type: 'object', additionalProperties: false, required: ['sic4', 'segments', 'hq', 'subsidiaries', 'annualReport', 'cites'],
+      properties: {
+        sic4: { type: 'string', enum: groupsOf(codes).map((c) => c.code), description: 'A code from sic_codes.' },
+        segments: {
+          anyOf: [
+            { type: 'array', minItems: 1, maxItems: 30, items: { type: 'object', additionalProperties: false, required: ['name', 'share'], properties: { name: text(200), share: { type: 'number', minimum: 0, maximum: 1, description: 'Its share of total revenue, 0 to 1.' } } } },
+            { type: 'object', additionalProperties: false, required: ['oneSegment'], properties: { oneSegment: { const: true } } },
+          ],
+        },
+        hq: { type: 'object', additionalProperties: false, required: ['city', 'country'], properties: { city: text(100), state: text(100), country: text(100) } },
+        subsidiaries: { type: 'array', minItems: 1, maxItems: 15, items: { type: 'object', additionalProperties: false, required: ['name'], properties: { name: text(200), country: text(100) } } },
+        annualReport: { type: 'object', additionalProperties: false, required: ['url', 'fiscalYear'], properties: { url: text(600), fiscalYear: { type: 'integer', minimum: 1990, maximum: 2100 } } },
+        cites: {
+          type: 'array', minItems: 1, maxItems: 12,
+          items: {
+            type: 'object', additionalProperties: false, required: ['claim', 'url', 'locator', 'quote'],
+            properties: {
+              claim: { type: 'string', enum: ['sic', 'segment', 'hq', 'subsidiary', 'report'] },
+              url: { type: 'string', minLength: 1, maxLength: 600, description: 'The page or document, as read in this run.' },
+              locator: { type: 'string', minLength: 1, maxLength: 200, description: 'Where on it: a section, or "pdf p. N".' },
+              quote: text(300),
+            },
+          },
+        },
+      },
+    },
+    recorded: (args) => args.sic4,
+  };
+}
+
 /** The host's tools for one job: `effects` are the tools the root agent, a workflow's call nodes and its agent nodes may
  *  use (fetch_page, the label tools, and in v2 lane C3's search_web, browse and read_document), each
  *  `{ name, description?, parameters, resultSchema, run(args, { signal }) }`; `answer` is the root agent's final answer. */

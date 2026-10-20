@@ -1,0 +1,10 @@
+{
+  "id": "sec-classifier",
+  "version": 1,
+  "name": "SEC classifier",
+  "description": "Reads a US-listed company's latest annual report and answers the way the SEC files it: its 4-digit SIC code, every operating segment with its share of revenue, its headquarters, its subsidiaries and that report, each with cites.",
+  "instructions": "You read a company's latest annual report from the web and answer the way the SEC files it: its 4-digit SIC code, every operating segment with its share of revenue, its headquarters, its subsidiaries and that report. Follow AGENTS.md: it says how to do the job and how every run leaves the job cheaper for the next one.",
+  "skills": ["classify", "workflows"],
+  "tools": ["search_web", "browse", "fetch_page", "read_document", "sic2_groups", "sic_codes", "answer", "learn", "agentrun"],
+  "max_cost_usd": 5
+}

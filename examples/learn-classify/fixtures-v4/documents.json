@@ -1,0 +1,38 @@
+{
+  "https://www.harborvalve.example/annual-report-2025.pdf": {
+    "text": "[page 1] Harbor Valve Works Inc. Annual Report for fiscal year 2025. Headquarters: Pittsburgh, United States.\n[page 4] Revenue by reportable segment: Water Systems 61% of revenue; Industrial Flow 39% of revenue.\n[page 9] Exhibit 21: subsidiaries of the registrant: Harbor Valve Europe GmbH, Harbor Flow Systems LLC, HVW Pumps Ltd.",
+    "pages": 9,
+    "page": 4,
+    "look": "The segment table: Water Systems 61% of revenue; Industrial Flow 39% of revenue."
+  },
+  "https://www.bluefinmarkets.example/annual-report-2025.pdf": {
+    "text": "[page 1] Bluefin Markets Inc. Annual Report for fiscal year 2025. Headquarters: Seattle, USA.\n[page 4] Revenue by reportable segment: one reportable segment.\n[page 9] Exhibit 21: subsidiaries of the registrant: Bluefin Operating Company.",
+    "pages": 9,
+    "page": 4,
+    "look": "The segment table: one reportable segment."
+  },
+  "https://www.summitridge.example/annual-report-2025.pdf": {
+    "text": "[page 1] Summit Ridge Software Corp. Annual Report for fiscal year 2025. Headquarters: Toronto, Canada.\n[page 4] Revenue by reportable segment: Cloud Software 70% of revenue; Licenses 30% of revenue.\n[page 9] Exhibit 8: subsidiaries of the registrant: Summit Ridge Software (US) Inc., Summit Ridge Cloud Ltd.",
+    "pages": 9,
+    "page": 4,
+    "look": "The segment table: Cloud Software 70% of revenue; Licenses 30% of revenue."
+  },
+  "https://www.lanternhall.example/annual-report-2025.pdf": {
+    "text": "[page 1] Lantern Hall Restaurants Inc. Annual Report for fiscal year 2025. Headquarters: Columbus, United States.\n[page 4] Revenue by reportable segment: one reportable segment.\n[page 9] Exhibit 21: subsidiaries of the registrant: Lantern Hall Kitchens LLC.",
+    "pages": 9,
+    "page": 4,
+    "look": "The segment table: one reportable segment."
+  },
+  "https://www.cedarlanebank.example/annual-report-2025.pdf": {
+    "text": "[page 1] Cedar Lane Bancorp Annual Report for fiscal year 2025. Headquarters: Richmond, United States.\n[page 4] Revenue by reportable segment: Banking 100% of revenue.\n[page 9] Exhibit 21: subsidiaries of the registrant: Cedar Lane Bank.",
+    "pages": 9,
+    "page": 4,
+    "look": "The segment table: Banking 100% of revenue."
+  },
+  "https://www.ironcladfreight.example/annual-report-2025.pdf": {
+    "text": "[page 1] Ironclad Freight Lines Inc. Annual Report for fiscal year 2025. Headquarters: Montr\u00e9al, Canada.\n[page 4] Revenue by reportable segment: Truckload 80% of revenue; Logistics 20% of revenue.\n[page 9] Exhibit 21: subsidiaries of the registrant: Ironclad Operating Company.",
+    "pages": 9,
+    "page": 4,
+    "look": "The segment table: Truckload 80% of revenue; Logistics 20% of revenue."
+  }
+}

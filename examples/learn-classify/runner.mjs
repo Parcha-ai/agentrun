@@ -22,10 +22,11 @@ import { writeRecording } from './recording.mjs';
 import { recordingLines } from '@parcha/agentrun-pi/durable';
 import { jobRecordOf } from './job-record.mjs';
 import { lineageOf } from './lineage.mjs';
-import { curateOf, rowOf, rowOfV2, spendOf } from './row.mjs';
+import { curateOf, rowOf, rowOfV2, rowOfV4, spendOf } from './row.mjs';
 import { scoreV2 } from './score-v2.mjs';
-import { agentScript, agentScriptV2, FIXTURES, FIXTURES_V2, fakeHardTools, fixtureWeb, scriptedJev, scriptedModel } from './scripted.mjs';
-import { SETS } from './sets.mjs';
+import { scoreV4 } from './score-v4.mjs';
+import { agentScript, agentScriptV2, agentScriptV4, FIXTURES, FIXTURES_V2, FIXTURES_V4, fakeHardTools, fixtureWeb, scriptedJev, scriptedModel } from './scripted.mjs';
+import { isHard, SETS } from './sets.mjs';
 import { ANY_HOST, domainOf, fetchPageTool } from './tools.mjs';
 import { passSelfTest } from './selftest.mjs';
 import { writeHosts } from './tools-v2.mjs';
@@ -79,25 +80,29 @@ const conventionsOf = (report) => Object.fromEntries((report?.conventions ?? [])
 
 /** Where fetch_page may go: in v1 the company's domain and Wikipedia; in v2 any public host but the refused list, so a
  *  workflow that has to find the official site reads it without the paid browser. */
-const allowedDomain = (job, set) => (set === SETS.v2 ? ANY_HOST : domainOf(job.website));
+const allowedDomain = (job, set) => (isHard(set) ? ANY_HOST : domainOf(job.website));
 /** The scripted pass's DNS: every fixture host is a public address, and nothing is looked up. */
 const fixtureLookup = async () => [{ address: '93.184.216.34', family: 4 }];
 
-/** The $0 parts: the scripted agent and Jev, lane C1's fetch_page reading fixture pages instead of the web, and in v2
- *  fakes of lane C3's tools over the fixtures. A data directory without pages.json gets 404s. */
-export function scriptedParts({ set = SETS.v1, data = set === SETS.v2 ? FIXTURES_V2 : FIXTURES } = {}) {
+/** The $0 parts: the scripted agent and Jev, lane C1's fetch_page reading fixture pages instead of the web, and in v2 and
+ *  v4 fakes of lane C3's tools over the fixtures. A data directory without pages.json gets 404s. */
+export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 ? FIXTURES_V4 : set === SETS.v2 ? FIXTURES_V2 : FIXTURES } = {}) {
   const d = set.load(data);
   const pages = readJsonIf(join(data, 'pages.json')) ?? {};
-  const v2 = set === SETS.v2;
-  const truthByName = Object.fromEntries(d.companies.map((c) => [c.name, v2 ? c.sic : c.sic2]));
-  const fakes = v2 ? fakeHardTools({ pages, documents: readJsonIf(join(data, 'documents.json')) ?? {}, search: readJsonIf(join(data, 'search.json')) ?? {} }) : undefined;
+  const hard = isHard(set);
+  const truthByName = Object.fromEntries(d.companies.map((c) => [c.name, hard ? c.sic : c.sic2]));
+  const fakes = hard ? fakeHardTools({ pages, documents: readJsonIf(join(data, 'documents.json')) ?? {}, search: readJsonIf(join(data, 'search.json')) ?? {} }) : undefined;
+  const truth = readJsonIf(join(data, 'answers.json')) ?? {};
   return {
     mode: 'scripted', providers: 'scripted', modelName: 'faux/scripted', set, data: d, labels: d.labels, companies: d.companies, conventions: conventionsOf(d.report),
-    judge: () => scriptedJev({ truthByName, groups: groupsOf(v2 ? d.codes : d.labels), segments: v2 ? readJsonIf(join(data, 'judge.json')) ?? {} : {} }),
+    judge: () => scriptedJev({ truthByName, groups: groupsOf(hard ? d.codes : d.labels), segments: hard ? readJsonIf(join(data, 'judge.json')) ?? {} : {} }),
     toolsFor: async (job) => [fetchPageTool({ allowDomain: allowedDomain(job, set), fetch: fixtureWeb(pages), lookup: fixtureLookup }), ...(fakes ? fakes.tools() : [])],
-    modelFor: (job, run) => scriptedModel(v2
-      ? agentScriptV2({ job, offered: run.workflows.loaded.map((w) => w.name), fixtures: { truth: readJsonIf(join(data, 'answers.json')) ?? {} } })
-      : { root: agentScript({ job, offered: run.workflows.loaded.map((w) => w.name), truth: job.sic2, page: pages[job.website] }) }),
+    modelFor: (job, run) => {
+      const offered = run.workflows.loaded.map((w) => w.name);
+      if (set === SETS.v4) return scriptedModel(agentScriptV4({ job, offered, fixtures: { truth } }));
+      if (set === SETS.v2) return scriptedModel(agentScriptV2({ job, offered, fixtures: { truth } }));
+      return scriptedModel({ root: agentScript({ job, offered, truth: job.sic2, page: pages[job.website] }) });
+    },
   };
 }
 
@@ -110,8 +115,8 @@ export async function liveParts({ set = SETS.v1, data = DATA, model = 'gpt-6-lun
   const d = set.load(data);
   const jev = gatewayJev(gateway);
   let hard;
-  if (set === SETS.v2) {
-    try { hard = await import('./tools-v2.mjs'); } catch (error) { throw new Error(`--set v2 --live needs lane C3's tools-v2.mjs: ${error.message}`); }
+  if (isHard(set)) {
+    try { hard = await import('./tools-v2.mjs'); } catch (error) { throw new Error(`--set ${set.name} --live needs lane C3's tools-v2.mjs: ${error.message}`); }
   }
   return {
     mode: 'live', providers: 'real', modelName: `gateway/${model}`, set, data: d, labels: d.labels, companies: d.companies, conventions: conventionsOf(d.report),
@@ -146,7 +151,9 @@ async function scoreRun({ parts, run, job, measure, hostsDir }) {
   await writeHosts({ dir: hostsDir, runId: run.runId, results });
   const judge = meteredJudge(parts.judge());
   const report = data.report?.companies?.find((c) => c.cik === job.cik);
-  const score = await scoreV2({ answer: measure.answer, company: job, report, rules: data.report?.scoring ?? [], read: textsRead(results), codes: data.codes, judge: judge.run });
+  const score = parts.set === SETS.v4
+    ? await scoreV4({ answer: measure.answer, company: job, read: textsRead(results), codes: data.codes, judge: judge.run })
+    : await scoreV2({ answer: measure.answer, company: job, report, rules: data.report?.scoring ?? [], read: textsRead(results), codes: data.codes, judge: judge.run });
   return { score, stats: toolStats(results), scoringJudge: { ...judge.meter } };
 }
 
@@ -211,7 +218,7 @@ async function oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, l
   const run = { runId, ...runPaths(home, runId) };
   if (p.phase === 'ran') {
     const finished = await finishJob({ home, repo, run, job, measure: p.measure });
-    save({ ...p, phase: 'proposed', finished, ...(parts.set === SETS.v2 ? await scoreRun({ parts, run, job, measure: p.measure, hostsDir: join(out, 'hosts') }) : {}) });
+    save({ ...p, phase: 'proposed', finished, ...(isHard(parts.set) ? await scoreRun({ parts, run, job, measure: p.measure, hostsDir: join(out, 'hosts') }) : {}) });
   }
   if (p.phase === 'proposed') {
     const curateJudge = meteredJudge(judge);
@@ -229,7 +236,8 @@ async function oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, l
     ? await writeRecording({ into: join(out, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started: p.started, ended: p.ended, spend, modelUsd: p.measure.unpricedAnswers ? null : p.measure.usage.costUsd })
     : null;
   const v1 = { run: job.order, runId, job, seedSha: p.seedSha, afterSha: p.afterSha, offered: p.offered, measure: p.measure, finished: p.finished, curated: p.curated, curateJudge: p.curateJudge, recording, convention: parts.conventions?.[job.cik] };
-  return parts.set === SETS.v2 ? rowOfV2({ ...v1, score: p.score, stats: p.stats, scoringJudge: p.scoringJudge, lineage: p.lineage, jobRecord: jobRecordOf(recordingLines(run.storePath).lines) }) : rowOf(v1);
+  if (!isHard(parts.set)) return rowOf(v1);
+  return (parts.set === SETS.v4 ? rowOfV4 : rowOfV2)({ ...v1, score: p.score, stats: p.stats, scoringJudge: p.scoringJudge, lineage: p.lineage, jobRecord: jobRecordOf(recordingLines(run.storePath).lines) });
 }
 
 /** The learning pass: the first `jobs` companies of split "run", in order, until the spend reaches `capUsd`. */
@@ -301,14 +309,14 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
     const measure = await runSet({ parts, run: prepared, job, judge: runJudge, limitUsd: runCapUsd });
     const run = { runId: prepared.runId, ...runPaths(home, prepared.runId) };
     const finished = await finishJob({ home, repo, run, job, measure, propose: false });
-    const scored = parts.set === SETS.v2 ? await scoreRun({ parts, run, job, measure, hostsDir: join(out, 'sealed', label, 'hosts') }) : undefined;
+    const scored = isHard(parts.set) ? await scoreRun({ parts, run, job, measure, hostsDir: join(out, 'sealed', label, 'hosts') }) : undefined;
     const tools = scored ? [scored.stats.browserCostUsd, scored.stats.searchCostUsd, scored.stats.documentCostUsd] : [];
     const recording = record
       ? await writeRecording({ into: join(out, 'sealed', label, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started, ended: Date.now(), spend: spendOf(measure, undefined, tools), modelUsd: measure.unpricedAnswers ? null : measure.usage.costUsd })
       : null;
     const v1 = { run: i + 1, runId: prepared.runId, job, seedSha: sha, afterSha: sha, offered: prepared.workflows.loaded.map((w) => w.name), measure, finished, curated: null, recording, convention: parts.conventions?.[job.cik] };
     const phase = sha === meta.seedSha ? 'before' : 'after';
-    const row = scored ? rowOfV2({ ...v1, score: scored.score, stats: scored.stats, scoringJudge: scored.scoringJudge, phase, jobRecord: jobRecordOf(recordingLines(run.storePath).lines) }) : { ...rowOf(v1), phase };
+    const row = scored ? (parts.set === SETS.v4 ? rowOfV4 : rowOfV2)({ ...v1, score: scored.score, stats: scored.stats, scoringJudge: scored.scoringJudge, phase, jobRecord: jobRecordOf(recordingLines(run.storePath).lines) }) : { ...rowOf(v1), phase };
     spent += spendOf(measure, undefined, tools).knownUsd + (scored?.scoringJudge.costUsd ?? 0);
     appendFileSync(rowsPath, `${JSON.stringify(row)}\n`);
     rows.push(row);
@@ -320,7 +328,7 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <id>] [--thinking <level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--sealed --at seed|main|<sha>]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <id>] [--thinking <level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--sealed --at seed|main|<sha>]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -349,7 +357,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   if (values.thinking === 'off') { console.error('--thinking off is not allowed: every model call thinks'); process.exit(2); }
   try {
     const set = SETS[values.set ?? 'v1'];
-    if (!set) { console.error(`--set is v1 or v2\n${USAGE}`); process.exit(2); }
+    if (!set) { console.error(`--set is v1, v2 or v4\n${USAGE}`); process.exit(2); }
     const parts = values.live
       ? await liveParts({ set, ...(values.data ? { data: resolve(values.data) } : {}), ...(values.model ? { model: values.model } : {}), ...(values.thinking ? { thinking: values.thinking } : {}) })
       : scriptedParts({ set, ...(values.data ? { data: resolve(values.data) } : {}) });
