@@ -11,6 +11,7 @@ import {
   PDF_MAX_DPI, POINTS_PER_INCH, RESULT_BYTES_SHARE, TILE_ASPECT, TILE_KEEP_BELOW, TILE_MAX_EDGE, TILE_OVERLAP, VIDEO_FRAMES_PER_READ,
 } from "./limits.js";
 import type { Limits } from "./limits.js";
+import { base64Chars } from "./primitives.js";
 
 /** What is known of a source for free: no render, no decode beyond a header. */
 export type SourceFacts = {
@@ -32,11 +33,13 @@ export type SourceFacts = {
  *  carry text (a `read` with a question); a plan for the eyes always renders. */
 export type Selector = { readonly pages?: PageSpan; readonly fromS?: number; readonly toS?: number; readonly region?: Region; readonly render?: boolean };
 
+/** `show`: what the lead is shown in a tool result. `ask`: what the eyes are asked about, in requests that fit the model. */
 export type PlanMode = "show" | "ask";
 
 /** A host's own caps on one plan for the eyes (`ask`): the pages, and the frames or clips, it may take. None by default. */
 export type PlanCaps = { readonly pages?: number; readonly frames?: number };
 
+/** How a plan reduced its source to fit: not at all, shrunk, tiled, sampled, cut to a window, to text only, or refused. */
 export type Reduction = "as_is" | "downscaled" | "tiled" | "sampled" | "windowed" | "text_only" | "refused";
 
 /** What a plan did to fit, with the numbers a receipt and the model's first line carry. */
@@ -70,6 +73,7 @@ export type PlannedPart = {
   readonly maxBytes?: number;
 };
 
+/** The parts to derive, in order, and what the plan did to fit them. */
 export type Plan = { readonly parts: readonly PlannedPart[]; readonly fit: Fit };
 
 /** A derived part, ready for a model. `data` is base64. `fragment` is the citation form of where it came from. */
@@ -92,7 +96,6 @@ const WHOLE: Box = Object.freeze({ x0: 0, y0: 0, x1: 1, y1: 1 });
 const IMAGE_DERIVES: ReadonlySet<PlannedPart["derive"]> = new Set(["image", "tile", "page", "frame"]);
 const PRECEDENCE: readonly Reduction[] = ["windowed", "sampled", "tiled", "downscaled"];
 const grouped = (n: number): string => n.toLocaleString("en-US");
-const base64 = (raw: number): number => Math.ceil(raw / 3) * 4;
 /** Seconds are planned to the millisecond, the resolution of a fragment. */
 const ms = (seconds: number): number => Math.round(seconds * 1000) / 1000;
 const reduced = (applies: Partial<Record<Reduction, boolean>>): Reduction => PRECEDENCE.find((r) => applies[r]) ?? "as_is";
@@ -232,7 +235,7 @@ function planImage(facts: SourceFacts, selector: Selector, limits: Limits, mode:
   if (typeof laid === "string") return refuse("over_budget", laid, original);
   const parts = withBytes(cutParts(laid, {}, "image", box === WHOLE), limits, mode);
   if (typeof parts === "string") return refuse("over_budget", parts, original);
-  const fitsBytes = base64(facts.bytes) <= (parts[0].maxBytes ?? 0);
+  const fitsBytes = base64Chars(facts.bytes) <= (parts[0].maxBytes ?? 0);
   const asIs = box === WHOLE && parts.length === 1 && !laid.shrunk && fitsBytes;
   const first = laid.cuts[0];
   const shown: Shown = parts.length > 1 ? { width: first.raster.width, height: first.raster.height, tiles: parts.length } : { width: first.crop.width, height: first.crop.height };
@@ -285,7 +288,7 @@ function planVideo(facts: SourceFacts, selector: Selector, limits: Limits, mode:
   const native = limits.video.native && inline >= 1 && !selector.region;
   const windowed = selector.fromS !== undefined || selector.toS !== undefined;
   if (native && !windowed && facts.bytes <= inline) {
-    return { parts: [{ fragment: {}, derive: "as_is", maxBytes: base64(inline) }], fit: { reduction: "as_is", original, shown: { bytes: facts.bytes } } };
+    return { parts: [{ fragment: {}, derive: "as_is", maxBytes: base64Chars(inline) }], fit: { reduction: "as_is", original, shown: { bytes: facts.bytes } } };
   }
   if (!(duration !== undefined && duration > 0)) return refuse("unreadable", "its duration is not known, so no window or frame can be chosen", original);
   const from = ms(selector.fromS ?? 0), to = ms(Math.min(selector.toS ?? duration, duration)), span = to - from;
@@ -295,7 +298,7 @@ function planVideo(facts: SourceFacts, selector: Selector, limits: Limits, mode:
     const windows = mode === "show" ? 1 : Math.min(Math.round(span * 1000), Math.max(1, Math.ceil((facts.bytes * span) / duration / inline)));
     if (caps.frames !== undefined && windows > caps.frames) return refuse("over_budget", `${from}..${to} s is ${windows} clips of ${grouped(inline)} bytes, over the ${caps.frames} video parts one look takes; ask about a shorter window`, original);
     const edge = (i: number) => (i === windows ? to : ms(from + (i * span) / windows));
-    const parts = Array.from({ length: windows }, (_, i): PlannedPart => ({ fragment: { t: { from: edge(i), to: edge(i + 1) } }, derive: "clip", maxBytes: base64(inline) }));
+    const parts = Array.from({ length: windows }, (_, i): PlannedPart => ({ fragment: { t: { from: edge(i), to: edge(i + 1) } }, derive: "clip", maxBytes: base64Chars(inline) }));
     return { parts, fit: { reduction: "windowed", original, shown: {} } };
   }
   const frames = mode === "show"
@@ -318,6 +321,8 @@ function planVideo(facts: SourceFacts, selector: Selector, limits: Limits, mode:
   return { parts: sized, fit: { reduction: "sampled", original, shown } };
 }
 
+/** What a source's parts are, and how they fit `limits`, by its kind: shown to the lead (`show`) or asked of the eyes (`ask`).
+ *  A source no kind reads is a plan with no parts and `fit.reduction` `refused`. */
 export function plan(facts: SourceFacts, selector: Selector, limits: Limits, mode: PlanMode, caps: PlanCaps = {}): Plan {
   switch (facts.kind) {
     case "image": return planImage(facts, selector, limits, mode);

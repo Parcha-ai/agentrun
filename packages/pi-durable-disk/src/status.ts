@@ -6,8 +6,10 @@ import { constants } from "node:fs";
 import { open, readFile, rename, rm, stat, type FileHandle } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import type { JsonValue } from "@earendil-works/chord";
 import { FencedError, ownWriteFenced, PdaError } from "./errors.ts";
+import { fdPath, hold } from "./held-fd.ts";
 import { thisBoot } from "./process-table.ts";
 
 export const RUN_JSON = "run.json";
@@ -189,6 +191,127 @@ export async function writeRunRecord(root: string | ClaimDir, record: RunRecord,
   }
 }
 
+// ---- the supervisor's start mark --------------------------------------------------------------------------------------
+
+/**
+ * The supervisor's record of its last start of a run, in the run's directory: the generation the instance will write,
+ * when, by whom, and the failed starts right before it (`failures`; `lastExit`, what the decision saw of the last one).
+ */
+export const START_MARK = "start.json";
+export type StartMark = { generation: number; at: string; by: string | null; failures: number; lastExit: string | null };
+
+/** A start mark's text as a mark, or null when it is not one (an unreadable mark gives no grace). */
+export function parseStartMark(text: string): StartMark | null {
+  try {
+    const v = JSON.parse(text) as Partial<StartMark>;
+    if (!Number.isSafeInteger(v.generation) || (v.generation as number) < 1 || typeof v.at !== "string" || !Number.isFinite(Date.parse(v.at))) return null;
+    const failures = Number.isSafeInteger(v.failures) && (v.failures as number) >= 0 ? (v.failures as number) : 0;
+    const lastExit = typeof v.lastExit === "string" ? v.lastExit : null;
+    return { generation: v.generation as number, at: v.at, by: typeof v.by === "string" ? v.by : null, failures, lastExit };
+  } catch {
+    return null;
+  }
+}
+
+// The keeper's code is plain CommonJS in a string, started with `eval: true` and no inherited Node flags, as the lease
+// watchdog's is (src/watchdog.ts says why). One refresh at a time, all synchronous: a stop (the message) is handled only
+// between two refreshes, so none is still writing once the thread has exited. It writes only while `dir` is still the
+// directory it first saw (its device and inode, read on this thread, so a stalled mount never holds the caller's): a path
+// that names another (a descriptor number reused) or none is never written, and the keeper stops. Its first failure goes
+// to the main thread, once.
+const KEEPER_SOURCE = `"use strict";
+const fs = require("node:fs");
+const path = require("node:path");
+const { parentPort, workerData } = require("node:worker_threads");
+const { dir, name, everyMs } = workerData;
+const file = path.join(dir, name);
+let first;
+let stopped = false;
+let reported = false;
+const report = (message) => {
+  if (reported) return;
+  reported = true;
+  parentPort.postMessage(message);
+};
+function refresh() {
+  if (stopped) return;
+  let now;
+  try {
+    now = fs.statSync(dir, { bigint: true });
+  } catch (error) {
+    stopped = true;
+    return report("its directory cannot be reached (" + (error.code || error.message) + "), so it is no longer the directory the keeper started on");
+  }
+  first ??= { dev: now.dev, ino: now.ino };
+  if (now.dev !== first.dev || now.ino !== first.ino) {
+    stopped = true;
+    return report("its directory is no longer the directory the keeper started on");
+  }
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return; // no mark: nothing to keep
+    return report("reading it failed (" + (error.code || error.message) + ")");
+  }
+  let mark;
+  try {
+    mark = JSON.parse(text);
+  } catch {
+    return; // not a mark: nothing to keep
+  }
+  if (mark === null || typeof mark !== "object" || mark.generation !== 1 || typeof mark.at !== "string" || !Number.isFinite(Date.parse(mark.at))) return;
+  try {
+    const temp = file + ".tmp";
+    const fd = fs.openSync(temp, "w", 0o644);
+    try {
+      fs.writeSync(fd, JSON.stringify({ ...mark, at: new Date().toISOString() }));
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(temp, file);
+    const handle = fs.openSync(dir, "r");
+    try {
+      fs.fsyncSync(handle);
+    } finally {
+      fs.closeSync(handle);
+    }
+  } catch (error) {
+    report("rewriting it failed (" + (error.code || error.message) + ")");
+  }
+}
+const timer = setInterval(refresh, everyMs);
+refresh();
+parentPort.once("message", () => {
+  clearInterval(timer);
+  parentPort.close();
+});
+`;
+
+/**
+ * Keeps a supervisor's start mark for generation 1 in `dir` fresh: its `at` rewritten every `everyMs` (temp file, fsync,
+ * rename, fsync the directory), the rest of it as the supervisor wrote it; nothing is made when there is none. On a thread of
+ * its own, so a caller whose thread is blocked (a synchronous import) is kept fresh too. Only while `dir` is the directory
+ * the keeper first saw there. Best effort: a failure leaves the mark as it was, and the first one is a process warning
+ * (`PDA_START_MARK`) naming `label`; the grace then runs out as for any start. Returns the stop, which resolves once the
+ * thread has exited, so no write outlives it.
+ */
+export function keepStartMark(dir: string, everyMs: number, label = dir): () => Promise<void> {
+  const warn = (why: string) =>
+    process.emitWarning(`the start mark of ${label} is no longer kept fresh: ${why}; a supervisor's start grace runs out as for any start`, { code: "PDA_START_MARK" });
+  const worker = new Worker(KEEPER_SOURCE, { eval: true, workerData: { dir, name: START_MARK, everyMs }, execArgv: [] });
+  worker.on("message", (why: string) => warn(why));
+  worker.on("error", (error) => warn(`its thread failed (${error.message})`));
+  worker.unref();
+  const exited = new Promise<void>((resolve) => worker.once("exit", () => resolve()));
+  return () => {
+    worker.ref();
+    worker.postMessage("stop");
+    return exited;
+  };
+}
+
 // ---- the claim directory ----------------------------------------------------------------------------------------------
 
 /** The FencedError code of a claim root that is no longer the mount the instance opened (unmounted, lazily or not). */
@@ -290,7 +413,8 @@ export async function openClaimDir(root: string, options: OpenClaimDirOptions = 
     throw error instanceof FencedError ? error : unmounted(`checking the claim root ${root} failed: ${(error as Error).message}`, error);
   }
   const byPath = options.byPath ?? process.platform === "darwin";
-  const at = byPath ? root : `/proc/self/fd/${handle.fd}`;
+  // Held until close(): `at` names the directory by its number, and a collection must never free that number.
+  const at = byPath ? (hold(handle), root) : fdPath(handle);
   let closed = false;
   const same = (path: string, now: { dev: bigint; ino: bigint }, claims: { dev: bigint; ino: bigint }) => {
     if (now.dev === claims.dev && now.ino === claims.ino) return;

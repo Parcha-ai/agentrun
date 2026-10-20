@@ -4,6 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { visionContext, type VisionResult, type VisionEnvError } from "../core/env.js";
 import { VIDEO_REENCODE_EDGE, VIDEO_REENCODE_FPS } from "../core/limits.js";
+import { argvPath } from "../core/paths.js";
 import { detectOnce, type MadeBy, type ProviderCall, type ProviderSource } from "../core/provider.js";
 import { VideoMiss, type VideoFacts, type VideoProvider } from "../core/video.js";
 
@@ -15,6 +16,8 @@ const CLIP_TIMEOUT_S = 180;
 const FRAME_QSCALE = 4;
 /** The constant rate factor of the one re-encode (x264, 1280 px, 6 fps: measured on synthetic video, 2026-10-09). */
 const REENCODE_CRF = 26;
+/** A window keeps its sound: copied as it is, or in the re-encode as mono AAC at 48 kbit/s, small beside the picture. */
+const REENCODE_AUDIO = ["-c:a", "aac", "-b:a", "48k", "-ac", "1"];
 const NEEDS = "ffmpeg and ffprobe (6.1 or later)";
 /** Options for every read of a source: local files only, and only the containers cameras, screen recorders and editors
  *  write, so a playlist or concat script posing as a video cannot make ffmpeg open other files or addresses. */
@@ -38,6 +41,7 @@ function jpegSize(b: Uint8Array): { width: number; height: number } | null {
   return null;
 }
 
+/** Video through ffmpeg and ffprobe in the environment: the probe, frames by seek, and a window by stream copy or one re-encode. */
 export function ffmpegProvider(): VideoProvider {
   const ctx = (call: ProviderCall) => visionContext(call.signal);
   const at = (call: ProviderCall, name: string) => `${call.tempDir.replace(/\/+$/, "")}/${name}`;
@@ -69,7 +73,7 @@ export function ffmpegProvider(): VideoProvider {
 
   /** One frame at `t`, found by seek, as a file. */
   const grab = (call: ProviderCall, source: ProviderSource, t: number, edge: number) =>
-    derive(call, source, `at${sec(t)}-${edge}`, "jpg", ["-ss", sec(t), ...INPUT_GUARD, "-i", source.path, "-frames:v", "1", "-vf", fit(edge), "-q:v", String(FRAME_QSCALE)], FRAME_TIMEOUT_S);
+    derive(call, source, `at${sec(t)}-${edge}`, "jpg", ["-ss", sec(t), ...INPUT_GUARD, "-i", argvPath(source.path), "-frames:v", "1", "-vf", fit(edge), "-q:v", String(FRAME_QSCALE)], FRAME_TIMEOUT_S);
 
   const provider: VideoProvider = {
     name: "ffmpeg",
@@ -99,7 +103,7 @@ export function ffmpegProvider(): VideoProvider {
       const madeBy = await ready(call);
       const report = at(call, `probe-${randomUUID()}.json`);
       try {
-        await run(call, ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate:format=duration", "-of", "json", "-o", report, ...INPUT_GUARD, "-i", source.path], PROBE_TIMEOUT_S);
+        await run(call, ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate:format=duration", "-of", "json", "-o", report, ...INPUT_GUARD, "-i", argvPath(source.path)], PROBE_TIMEOUT_S);
         const parsed = JSON.parse(Buffer.from(unwrap(await call.env.readBinaryFile(report, ctx(call)))).toString("utf8"));
         const stream = parsed.streams?.[0];
         if (!stream) throw new VideoMiss("unreadable", "it holds no video stream");
@@ -127,8 +131,8 @@ export function ffmpegProvider(): VideoProvider {
     async clip(source, { fromS, toS, maxBytes }, call) {
       const madeBy = await ready(call);
       const cut = (mode: "copy" | "encode") => derive(call, source, `w${sec(fromS)}-${sec(toS)}-${mode}`, "mp4", [
-        "-ss", sec(fromS), ...INPUT_GUARD, "-i", source.path, "-t", sec(toS - fromS), "-an",
-        ...(mode === "copy" ? ["-c", "copy"] : ["-vf", `${fit(VIDEO_REENCODE_EDGE)},fps=${VIDEO_REENCODE_FPS}`, "-c:v", "libx264", "-preset", "veryfast", "-crf", String(REENCODE_CRF), "-pix_fmt", "yuv420p"]),
+        "-ss", sec(fromS), ...INPUT_GUARD, "-i", argvPath(source.path), "-t", sec(toS - fromS),
+        ...(mode === "copy" ? ["-c", "copy"] : ["-vf", `${fit(VIDEO_REENCODE_EDGE)},fps=${VIDEO_REENCODE_FPS}`, "-c:v", "libx264", "-preset", "veryfast", "-crf", String(REENCODE_CRF), "-pix_fmt", "yuv420p", ...REENCODE_AUDIO]),
         // The size limit stops a window that cannot fit as soon as it passes the budget, so no window is ever encoded whole.
         "-movflags", "+faststart", "-fs", String(maxBytes + 1),
       ], CLIP_TIMEOUT_S);

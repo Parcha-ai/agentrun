@@ -13,7 +13,7 @@ import { registerFauxProvider, fauxAssistantMessage } from "@earendil-works/pi-a
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { DEFAULT_LIMITS, citation, detectOnce, firstLine, formatFragment, guardResult, imageHeader, limitsFromModel, linkSafe, notBuilt, packRequests, parseCitation, parseFragment, plan, readMedia, reportMiss, resolveLimits, see, visionContext, visionSection, withReadMedia } from "@parcha/pi-vision";
+import { DEFAULT_LIMITS, citation, detectOnce, firstLine, formatFragment, guardResult, imageHeader, judge, limitsFromModel, linkSafe, notBuilt, packRequests, parseCitation, parseFragment, plan, readMedia, reportMiss, resolveLimits, see, transcribe, visionContext, visionSection, withReadMedia } from "@parcha/pi-vision";
 import { callContext, createVisionExtension, modelsEyes, modelsOf, packageProviders, piResult } from "@parcha/pi-vision/durable";
 import { piAiEyes } from "@parcha/pi-vision/eyes/pi-ai";
 import { childEnvOf, inheritedEnv, nodeVisionEnv } from "@parcha/pi-vision/node";
@@ -44,10 +44,17 @@ const withoutEchoes = (value, echoes) => (echoes.length && value !== undefined &
   ? JSON.parse(echoes.reduce((json, text) => json.replaceAll(JSON.stringify(text).slice(1, -1), "<echoed>"), JSON.stringify(value)))
   : value);
 
+/** What a program sees of its own run (its environment, its directory) is the host's to show it; the scan for the
+ *  workspace's path does not read these. */
+const HOST_VIEWS = new Set(["programs started", "inherited", "by default", "named", "env"]);
+
 /** Runs each case with a sink that scans what the case gives it. A case ends `swept`; or `skipped` when a part it needs
- *  is not built; or `threw`, the error scanned too and listed. Findings and limit violations are the suite's failures. */
+ *  is not built; or `threw`, the error scanned too and listed. Findings and limit violations are the suite's failures.
+ *  A second scan looks for the workspace's absolute path, by its directory's own name, in all that a run tells anyone:
+ *  a miss names a file as its caller did, never where the host keeps it. */
 async function sweep(cases, deriveDir, workDir) {
   const scan = new LeakScan();
+  const hostPaths = new LeakScan({ workspace: basename(workDir) });
   const violations = [];
   const rows = [];
   for (const spec of cases) {
@@ -57,9 +64,13 @@ async function sweep(cases, deriveDir, workDir) {
       deriveDir,
       workDir,
       echoes,
-      out: (label, value) => scan.value(`${spec.id}:${label}`, withoutEchoes(value, echoes)),
+      out: (label, value) => {
+        scan.value(`${spec.id}:${label}`, withoutEchoes(value, echoes));
+        if (!HOST_VIEWS.has(label)) hostPaths.value(`${spec.id}:${label}`, withoutEchoes(value, echoes));
+      },
       result: (label, result, limits) => {
         scan.value(`${spec.id}:${label}`, withoutEchoes(result, echoes));
+        hostPaths.value(`${spec.id}:${label}`, withoutEchoes(result, echoes));
         violations.push(...limitViolations(result, limits).map((v) => `${spec.id} ${label}: ${v}`));
       },
     };
@@ -70,12 +81,13 @@ async function sweep(cases, deriveDir, workDir) {
       if (error?.code === "not_built") rows.push({ id: spec.id, outcome: "skipped", detail: `${error.part} is not built` });
       else {
         scan.value(`${spec.id}:thrown`, error);
+        hostPaths.value(`${spec.id}:thrown`, error);
         rows.push({ id: spec.id, outcome: "threw", detail: `${error?.name}: ${String(error?.message).split("\n")[0]}` });
       }
     }
   }
   scan.dir("derived", deriveDir);
-  return { rows, scan, violations };
+  return { rows, scan, hostPaths, violations };
 }
 
 // What an SDK error carries: the request, with its credential and its link, beside a clean message.
@@ -239,6 +251,33 @@ const CASES = [
       for (let i = 0; i < FIRST_LINES.length; i++) sink.out("thrown", await see({ ask: "what is it?", images: [png(40, 30 + i)] }, undefined, CALL, guardSetup(sink, LIMITS, eyes)).catch((error) => error));
     },
   },
+  {
+    // Each request to a Jev whose errors carry the key and links: the miss `vision.judge` throws, its receipt and event.
+    id: ".#judge",
+    run: async (sink) => {
+      let n = 0;
+      const jev = { judge: async () => { throw failure(FIRST_LINES[n++]); } };
+      for (let i = 0; i < FIRST_LINES.length; i++) sink.out("thrown", await judge({ images: [png(300, 300 + i)], questions: { q: { type: "noul", instructions: "Is it a chart?" } } }, undefined, CALL, { ...guardSetup(sink, LIMITS), jev }).catch((error) => error));
+    },
+  },
+  {
+    // A file that is not there, asked for as the script named it, inside a workspace deep under the host's directories:
+    // the miss each of the three code-mode calls throws says so by the name it was given.
+    id: ".#missingFile",
+    run: async (sink) => {
+      const reader = nodeVisionEnv({ cwd: sink.workDir });
+      const setup = guardSetup(sink, LIMITS, fakeEyes());
+      const never = async () => { throw new Error("not reached"); };
+      const asked = [
+        see({ ask: "what is it?", paths: ["shots/gone.png"] }, reader, CALL, setup),
+        judge({ paths: ["shots/gone.png"], questions: { q: { type: "noul", instructions: "Is it a chart?" } } }, reader, CALL, { ...setup, jev: { judge: never } }),
+        transcribe({ path: "shots/gone.mp3" }, reader, CALL, { ...setup, transcriber: { provider: "stt", model: "stt-1", transcribe: never } }),
+      ];
+      const thrown = (await Promise.allSettled(asked)).map((one) => (one.status === "rejected" ? one.reason : new Error("it was answered")));
+      assert.ok(thrown.every((error) => error.code === "unreadable" && /gone\.(png|mp3) is not a file that opens/.test(error.message)), "each says why, by a name it was given");
+      sink.out("thrown", thrown);
+    },
+  },
   { id: ".#SeeMiss", exempt: "an error class" },
   { id: ".#NotBuiltError", exempt: "an error class" },
   { id: ".#notBuilt", exempt: "names a part chosen in source" },
@@ -269,6 +308,20 @@ const CASES = [
       const global = (await handle(sink)).see(nodeVisionEnv({ cwd: sink.workDir }), CALL);
       sink.out("thrown", await global.execute({ ask: "what is the total?", paths: [path] }).catch((error) => error));
       sink.out("answer", await global.execute({ ask: "what is the total?", paths: [path] }));
+    },
+  },
+  {
+    id: "./durable#VisionHandle.judge",
+    run: async (sink) => {
+      const path = `${sink.workDir}/frame.png?${SENTINEL_LINK_QUERY}`;
+      sink.echoes.push(path, basename(path));
+      await writeFile(path, pngBytes(3000, 1000));
+      let calls = 0;
+      const judge = async () => { if (calls++ === 0) throw failure(lineWith(1, 1)); return { model: "jev-1.14.0", answers: { where: { type: "box", box: { top: 0, bottom: 1, left: 0, right: 0.5 }, confidence: 0.5 } }, usage: { input_tokens: 10, output_tokens: 0 }, cost_usd: null }; };
+      const global = createVisionExtension({ jev: { judge }, evidence: { file: async (label, record) => { sink.out("receipt", { label, record }); return { path: `evidence/${label}.md` }; } }, scope: () => ({ label: "sweep", deriveDir: sink.deriveDir }), onLook: (event) => sink.out("look event", event), onMiss: (event) => sink.out("miss event", event) }).judge(nodeVisionEnv({ cwd: sink.workDir }), CALL);
+      const ask = { paths: [path], questions: { where: { type: "box", instructions: "the total" } } };
+      sink.out("thrown", await global.execute(ask).catch((error) => error));
+      sink.out("answer", await global.execute(ask));
     },
   },
   { id: "./node#nodeVisionEnv", run: ({ out, workDir }) => { const node = nodeVisionEnv({ cwd: workDir }); out("env", { id: node.id, cwd: node.cwd }); } },
@@ -419,9 +472,9 @@ const CASES = [
 
 /** What is built today; the sweep must run these to the end, never skip them. */
 const BUILT = [
-  ".#limitsFromModel", ".#resolveLimits", ".#detectOnce", ".#linkSafe", ".#firstLine", ".#guardResult", ".#readMedia", ".#visionContext", ".#parseFragment",
+  ".#limitsFromModel", ".#resolveLimits", ".#detectOnce", ".#linkSafe", ".#firstLine", ".#guardResult", ".#readMedia", ".#missingFile", ".#visionContext", ".#parseFragment",
   ".#formatFragment", ".#citation", ".#parseCitation", ".#withReadMedia", ".#visionSection", ".#plan", ".#packRequests", ".#see",
-  "./durable#createVisionExtension", "./durable#createVisionExtension.env", "./durable#VisionHandle.fit", "./durable#VisionHandle.pdfText", "./durable#VisionHandle.read", "./durable#VisionHandle.see",
+  "./durable#createVisionExtension", "./durable#createVisionExtension.env", "./durable#VisionHandle.fit", "./durable#VisionHandle.pdfText", "./durable#VisionHandle.read", "./durable#VisionHandle.see", "./durable#VisionHandle.judge", ".#judge",
   "./durable#callContext", "./durable#piResult", "./durable#modelsEyes", "./durable#modelsOf", "./durable#packageProviders",
   "./node#nodeVisionEnv", "./node#nodeVisionEnv.env", "./node#inheritedEnv", "./node#childEnvOf", "./eyes/pi-ai#piAiEyes",
   "./providers/unpdf#unpdfProvider", "./providers/pdfium#pdfiumProvider", "./providers/office-js#officeJsProvider", "./providers/photon#photonImages",
@@ -441,13 +494,15 @@ test("every public function is swept, skipped as not built, or exempt, and nothi
   const derived = await fixtureDir("pi-vision-sweep-derived-");
   const work = await fixtureDir("pi-vision-sweep-work-");
   try {
-    const { rows, scan, violations } = await sweep(CASES, derived.path, work.path);
+    const { rows, scan, hostPaths, violations } = await sweep(CASES, derived.path, work.path);
     const known = new Set(CASES.map((c) => c.id));
     const gaps = (await declared()).filter((id) => !known.has(id) && !known.has(`${id.split("#")[0]}#*`));
     t.diagnostic(`${rows.filter((r) => r.outcome === "swept").length} swept, ${rows.filter((r) => r.outcome === "skipped").length} not built, ${rows.filter((r) => r.outcome === "threw").length} threw, ${rows.filter((r) => r.outcome === "exempt").length} exempt, ${gaps.length} with no case yet`);
     for (const row of rows.filter((r) => r.outcome !== "swept")) t.diagnostic(`${row.outcome === "skipped" ? "not built" : row.outcome}: ${row.id}${row.detail ? ` (${row.detail})` : ""}`);
     for (const id of gaps) t.diagnostic(`no case yet: ${id}`);
     assert.equal(scan.report(), "no sentinel found");
+    assert.equal(hostPaths.report(), "no sentinel found", "no result, receipt, event or error holds the workspace's path");
+    assert.ok(hostPaths.covered("").records >= BUILT.length, "and they were read");
     assert.deepEqual(violations, []);
     assert.deepEqual(rows.filter((r) => BUILT.includes(r.id) && r.outcome !== "swept"), [], "a built function runs to the end");
     assert.ok(rows.filter((r) => r.outcome === "swept").length >= BUILT.length);
@@ -474,6 +529,8 @@ test("the sweep is red on a leak in a result, an error, a derived name and a der
       // A miss whose reason keeps an error's first line as it came, and the same miss through `firstLine`.
       { id: "x#unsafeFirstLine", run: (sink) => filedMiss(sink, `the vision route failed: ${String(failure(lineWith(0, 0)).message).split("\n")[0]}`) },
       { id: "x#unsafeQuoted", run: (sink) => filedMiss(sink, `the vision route failed: ${String(failure(lineWith(1, 1)).message).split("\n")[0]}`) },
+      // A miss that names the file where the host keeps it, not as it was asked for.
+      { id: "x#hostPath", run: (sink) => filedMiss(sink, `a.png is not a file that opens (ENOENT: no such file or directory, lstat '${sink.workDir}/a.png')`) },
       { id: "x#unsafeBareKey", run: (sink) => filedMiss(sink, `the vision route failed: ${BARE_KEY_LINES[0]}`) },
       // A program given pi's own environment, which is the whole of this process's; and one given what a host passed.
       { id: "x#piEnvDirect", run: (sink) => programsGiven(sink, { piDirect: true }) },
@@ -490,19 +547,20 @@ test("the sweep is red on a leak in a result, an error, a derived name and a der
       { id: "x#exempt", exempt: "why" },
       { id: "x#clean", run: ({ result }) => result("r", { content: [{ type: "text", text: "fine" }, png(1500, 900)] }, LIMITS) },
     ];
-    const { rows, scan, violations } = await sweep(cases, dir.path, dir.path);
-    assert.deepEqual([...new Set(scan.findings.map((f) => `${f.sentinel} ${f.source}`))].sort(), [
+    const { rows, scan, hostPaths, violations } = await sweep(cases, dir.path, dir.path);
+    assert.deepEqual([...new Set([...scan.findings, ...hostPaths.findings].map((f) => `${f.sentinel} ${f.source}`))].sort(), [
       "eyesKey derived", "eyesKey x#echoKey:c", "eyesKey x#hostPassedKey:programs started", "eyesKey x#leakDetail:d", "eyesKey x#leakError:thrown", "eyesKey x#leakResult:r",
       "eyesKey x#piEnvDirect:programs started", "eyesKey x#unsafeBareKey:miss event", "eyesKey x#unsafeBareKey:receipt", "eyesKey x#unsafeQuoted:miss event", "eyesKey x#unsafeQuoted:receipt",
       "linkSignature derived", "linkSignature x#echoQuery:c", "linkSignature x#leakDetail:d", "linkSignature x#leakError:thrown", "linkSignature x#piEnvDirect:programs started",
       "linkSignature x#savedUnderTheLink:r", "linkSignature x#unsafeFirstLine:miss event", "linkSignature x#unsafeFirstLine:receipt",
       "linkToken derived", "linkToken x#echoPart:r", "linkToken x#echoQuery:c", "linkToken x#leakDetail:d", "linkToken x#leakError:thrown", "linkToken x#piEnvDirect:programs started",
       "linkToken x#savedUnderTheLink:r", "linkToken x#unsafeFirstLine:miss event", "linkToken x#unsafeFirstLine:receipt",
+      "workspace x#hostPath:miss event", "workspace x#hostPath:receipt",
     ], "a caller's own string may come back verbatim; any part of it elsewhere, and the key anywhere, is a finding");
     assert.deepEqual(violations, ["x#oversize r: content[0]: 3000x10, over 1600x1600"]);
     assert.deepEqual(rows.map((r) => `${r.id} ${r.outcome}`), [
       "x#leakResult swept", "x#leakError threw", "x#leakDetail swept", "x#leakDerived swept", "x#leakDerivedFile swept", "x#oversize swept",
-      "x#unsafeFirstLine swept", "x#unsafeQuoted swept", "x#unsafeBareKey swept", "x#piEnvDirect swept", "x#hostPassedKey swept", "x#savedUnderTheLink swept", "x#safeFirstLine swept", "x#stub skipped", "x#broken threw", "x#echo swept", "x#echoKey swept", "x#echoPart swept", "x#echoQuery swept", "x#exempt exempt", "x#clean swept",
+      "x#unsafeFirstLine swept", "x#unsafeQuoted swept", "x#hostPath swept", "x#unsafeBareKey swept", "x#piEnvDirect swept", "x#hostPassedKey swept", "x#savedUnderTheLink swept", "x#safeFirstLine swept", "x#stub skipped", "x#broken threw", "x#echo swept", "x#echoKey swept", "x#echoPart swept", "x#echoQuery swept", "x#exempt exempt", "x#clean swept",
     ]);
     assert.equal(rows.find((r) => r.id === "x#stub").detail, "a stub is not built");
     assert.equal(rows.find((r) => r.id === "x#broken").detail, "TypeError: not what this case expected");

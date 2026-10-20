@@ -85,8 +85,8 @@ acme/                        the agent home
 Every call opens `agent.sqlite` as its only writer and closes it before it returns, so an `AgentHome` handle holds
 nothing open. Writers queue in the process, then take `owner.lock`: an exclusive SQLite lock on an empty file, which
 the kernel drops when its holder dies, so a writer that crashed never leaves it behind. A writer waits up to 5 seconds
-for another process's, then fails with `AgentHomeError` (`busy`). A home lives on one machine's file system; a network
-disk needs its own claim around the writer, which this release does not take.
+for another process's, then fails with `AgentHomeError` (`busy`). On a disk that one machine claims at a time, the host
+passes the claim as a `HomeAccess` and the lock is taken inside it ([An agent home on a disk](#an-agent-home-on-a-disk)).
 
 ## A run
 
@@ -128,6 +128,9 @@ lowercase hex digits, a SHA-1 or a SHA-256 commit).
 - `refreshAgentHome(home, { sha, from, ... })` is a compare-and-swap: the home must be at `from` (`null`: no sha yet),
   or the refresh is refused (`stale`) before anything is written. A host that read an older commit then cannot move
   the cache back over a newer one; whether one commit follows another is for the host to judge, from git.
+- `refreshAgentHome(home, { ..., ifRevision })` is a compare-and-swap on `homeRevision`: a home whose head commit is
+  not `ifRevision` is refused (`stale`) before anything is written. An API checks an `If-Match` this way, under the
+  home's lock, instead of racing a separate read. The order is: the input, `ifRevision`, `from`, the same-sha no-op.
 - `startRun` records the home's sha on the run (`agent.runs`, and `sha` on what it returns), read under the same lock
   as the skills it copies into the workspace. A run already started keeps its sha and its copy of the skills when the
   home is refreshed.
@@ -143,7 +146,7 @@ fields are the stored format.
 
 | Kind | Store | Key | Value |
 |---|---|---|---|
-| `agent.identity` | agent | | `{ id, name, formatVersion }`. `id` is the definition's `id`, or a UUIDv7 minted at creation; never a host's id |
+| `agent.identity` | agent | | `{ id, name, formatVersion }`. `id` is the definition's `id`, or a UUIDv7 minted at creation; never a host's id. A given id is one URL segment, `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `agent.source` | agent | | `{ sha, refreshedAt }`: the repo commit the definition and skills were read from, written in their commit; absent for a home not tied to a repo |
 | `agent.definition` | agent | | `{ id, version, name, description?, instructions, skills, tools, input_schema?, output_schema?, workflow?, max_cost_usd? }`. `skills` and `tools` are names; `workflow` is an AgentRun workflow document. No model, no thinking level |
 | `agent.skills` | agent | path under `.agents/skills/` | `{ content, sha256 }` |
@@ -169,6 +172,81 @@ neither.
 from an `agent.runs` record (it is the caller's own name for itself), or `undefined` when the kind is not on
 `EXPORTABLE_KINDS`. Kinds this package does not define, pi's own documents and another extension's, are not on the
 list, so they are dropped too.
+
+The three are also the subpath `@parcha/pi-durable-agent/export`, which imports no module: a writer that only filters
+kinds (a replay of exported stores, for one) loads them with `node:sqlite` alone, not the root, which loads
+pi-durable, chord and pi-ai.
+
+## Moving a home
+
+One packer moves a home between a local server and a hosted one. `packHome(home, { out })` writes the pack,
+`readPack(file)` judges one without writing a home, and `importPack(file, dir)` writes one as a home.
+
+A pack is a tar (POSIX ustar, with pax headers for a name over 100 bytes or beyond ASCII), and it holds these members
+and nothing else, in this order, sorted, owned by 0/0, mode 0644 or 0755, stamped with the manifest's `created_at`:
+
+| Member | Holds |
+|---|---|
+| `manifest.json` | `format` `agentrun.home/1`, `agent_id`, `definition`, `source` (`sha`, `refreshed_at`, or `null`), `skills` (`path`, `sha256`, `size_bytes`), `sign_ins` (`key`, `provider`: what the source had, none travels), `vault` (`name`s, empty today), `runs` (`count`, `live`), `size_bytes` (the pack's own), `created_at` |
+| `agent.sqlite` | A new agent store with only `EXPORTABLE_KINDS`, each through `projectForExport`, then `VACUUM INTO` one clean file: no `-wal`, no `-shm`, no free page with an old row. Nothing is copied from the live file |
+| `runs/<id>/store/run.sqlite` | Only through `exportRunStore(storePath, outPath)`; without it no run store travels |
+| `runs/<id>/work/...` | Regular files and directories whose names do not start with `.`. Whatever the reader would refuse is left out and listed in `skipped` with its reason: a link, a hard link, a device, a dotfile, a `*.sqlite-wal` side file, a text file named `*.sqlite` |
+
+A run that was still live (no `endedAt`) travels as its `agent.runs` entry only: neither its store nor its work. The
+home's `chrome/`, `repo/`, `owner.lock`, `tmp/` and everything else are never read. The packer refuses (`check`) a
+SQLite file that holds a `SECRET_KINDS` document or has a `-wal`, `-shm` or `-journal` file beside it, whatever its name:
+it looks at the bytes, so a store hiding in `work/` is found. A work directory it cannot read fails the pack, naming it,
+rather than packing less than the run has. Each work file is opened without following a link and must be the file that
+was listed (device, inode, size), alone, and inside the run's work directory, so a file or a parent directory swapped
+for a link while the pack is made is left out (or stops the pack, if it happens while it is written). `maxBytes` and
+`maxMembers` refuse (`too_large`) before anything is written. The home is read under its owner lock, the pack is written
+to a `.part` file, read back with `readPack`, and renamed into place only when its own reader accepts it.
+
+`readPack` returns `{ ok, manifest, checks }`. The checks use the contract's names for what the package can judge:
+`format` (the manifest first, `agentrun.home/N` with N at most this version's, every member on the allowlist and none
+inside a file, no `..`, no absolute path, no link or device, no store with a sign-in kind, at most `maxMembers`, no global
+pax header, at most one pax header of at most 64 fields before a member, nothing after the end), `definition` (the definition
+is valid and is the one in `agent.sqlite`, the agent id is the same everywhere, each skill matches its `sha256` and
+size), `sign_ins` (`warn` when the source had sign-ins: they are to redo at the target), `size` (the pack is the size its
+manifest says, and within `maxBytes`) and `live_runs` (`warn` when runs travel as index entries only). Tools, vault and
+quote are the host's to judge. It writes only temporary files.
+
+`importPack` judges the pack and extracts it to a directory beside `dir`. A pack whose file is over `maxBytes` is refused
+on its size, before a byte of it is parsed; one whose manifest says it is over is refused before anything is extracted. A
+`dir` that is absent or empty becomes a new home: the extracted directory is renamed into place, after an empty `dir` is
+removed with `rmdir`. The target is never deleted recursively: whatever another process has put there since the check
+makes the import refuse (`exists` for a home, `invalid` otherwise) and leaves it as it is. A `dir` that is already a home needs `replace`, must hold the same agent, and must
+have no live run (`check`, with `live_runs` failed); `ifRevision` must still be its `homeRevision` (`stale`).
+
+A home is changed in place, under its own owner lock: the lock, `agent.sqlite`, `chrome/`, `repo/`, the home's
+sign-ins, aliases and bindings, and its runs the pack does not have stay where they are. One store commit replaces the
+definition, the skills, the source and the pack's runs, so `homeRevision` only goes up (an import that changes nothing
+leaves it as it is). A run id in both takes the pack's entry and directory. A run that was live at the source arrives
+as an ended entry with outcome `not_carried_back`.
+
+The pack's run directories move into place before the commit, each old one set aside first in the staging directory
+beside the home, in the order of a journal, `.import-journal` (mode 0600), written first. A failure puts every one back.
+The journal has three phases, `moving`, then `committed` or `rolled-back`, and a settled one is written (beside the
+journal, synced, renamed over it, the directory synced) before any evidence is removed. As soon as the store's commit
+returns, the import writes `committed`; recovery writes `rolled-back` after every run directory is back, and `committed`
+for a journal that was still `moving` when the store's head had moved. A crash leaves the journal for the next process
+that takes the home's lock, which settles it before anything else. A `committed` or `rolled-back` journal is never
+judged again: only what is left of its evidence is removed, the staging directory first and the journal last, so
+recovery can be stopped at any point and run any number of times. Only a `moving` journal is judged, once: a store head
+past the journal's means the commit landed (a commit that changes nothing in the store does not move it, which is why the
+import writes `committed` itself, at once, and does not leave that to the head); otherwise every directory goes back. Recovery never deletes a run directory it cannot account for: when one it would
+restore, or one that should have arrived, is in neither of its places, it changes and removes nothing, keeps the journal
+and the staging directory, and says so; the import that failed does not remove them either. So a home is the old one or
+the new one, never a mix, and no old directory is deleted before the commit. Every refusal leaves the home, and the
+directory beside it, as they were.
+
+```js
+import { importPack, packHome, readPack } from "@parcha/pi-durable-agent";
+
+const { manifest } = await packHome(home, { out: "acme.tar", maxBytes: 200 * 1024 * 1024 });
+const { ok, checks } = await readPack("acme.tar");
+if (ok) await importPack("acme.tar", "./acme-copy"); // a fresh directory, or { replace: true, ifRevision: await homeRevision(home) } over a home
+```
 
 ## The timeline
 
@@ -201,27 +279,87 @@ origin, path and query keys but drops its query values, fragment and userinfo. `
 |---|---|
 | `createAgentHome(dir, { definition, skills? })` | A new agent home. A definition with a field it does not keep (a model, for one) is refused, and nothing is created |
 | `openAgentHome(dir)` | The home in `dir`, checked to be this format |
-| `readAgentHome(home)` | Everything the home holds, read in one pass |
+| `readAgentHome(home, { access? })` | Everything the home holds, read in one pass |
+| `homeRevision(home, { access? })` | The agent store's head commit number: every write that changes the home moves it, reads do not. With the identity's id it is the home's version, an ETag |
 | `setAlias(home, host, externalId)`, `setBindings(home, host, bindings)` | A host's id for the agent, and where its tools run there |
-| `startRun`, `carryBack` | A run's start and end, above |
-| `refreshAgentHome(home, { sha, from?, definition, skills })` | The cached definition and skills replaced by the ones at `sha` ([Following the agent's repo](#following-the-agents-repo)) |
+| `startRun`, `carryBack` | A run's start and end, above; `carryBack` takes `{ access? }` |
+| `prepareRun`, `seedRun`, `undoPrepare`, `HomeAccess`, `localAccess` | A start as its home and run halves, and how a host reaches a home on a disk ([An agent home on a disk](#an-agent-home-on-a-disk)) |
+| `refreshAgentHome(home, { sha, from?, ifRevision?, definition, skills })` | The cached definition and skills replaced by the ones at `sha` ([Following the agent's repo](#following-the-agents-repo)) |
 | `runPaths(home, runId)` | A run's `dir` (what `pi-durable-disk run --dir` takes), `storePath` (`store/run.sqlite`) and `workspace` (`work/`) |
 | `durableProfileStore(target, { provider?, signal? })` | pi-browser's `ProfileStore` over a run store; `target` is the host's Harness or any Session on the file |
-| `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)) |
+| `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)). Also from `@parcha/pi-durable-agent/export`, which loads no other module, so an exporter or a site build needs neither pi-durable nor pi-ai |
 | `timelineOf`, `timelineReducer`, `groupTimeline`, `renderText` | The timeline above, from `@parcha/pi-durable-agent/timeline` |
-| `AgentHomeError` | `code` is `invalid`, `exists`, `missing`, `busy`, `format` or `stale` |
+| `packHome(home, { out, maxBytes?, maxMembers?, exportRunStore?, now? })` | The pack of a home, above; returns `{ manifest, skipped }`, `skipped` being `{ path, reason }` |
+| `readPack(file, { maxBytes?, maxMembers? })` | `{ ok, manifest, checks }`, without writing a home |
+| `importPack(file, dir, { replace?, ifRevision?, maxBytes?, maxMembers?, now? })` | The pack as the home in `dir`, in place; `ifRevision` is a `homeRevision`; returns `{ home, report }` |
+| `AgentHomeError` | `code` is `invalid`, `exists`, `missing`, `busy`, `format`, `stale`, `too_large` or `check` (`checks` lists the home checks behind it) |
 
 The package does not import pi-browser at run time: `ProfileStore` is declared here by shape. `npm run typecheck`
 (after the workspace build) checks that the declaration is exactly pi-browser's type, read from the return of
 pi-browser's `fileProfileStore` once `@parcha/pi-browser/providers/browserbase` exports it, and from a copy of
 pi-browser's declaration until then.
 
+## An agent home on a disk
+
+A host can keep an agent home on a disk that one machine claims at a time (pi-durable-disk on Archil, for one). There
+the home's own files live under `agent/` (`agent/agent.sqlite`, `agent/owner.lock`) and each run is `runs/<id>`, the
+pi-durable-disk run directory. The package takes no dependency on the disk and holds no key: the host passes a
+`HomeAccess`, `{ claim(fn), runStore(run) }`.
+
+- `claim(fn)` runs `fn(agentDir)` while the host holds `agentDir` alone. The package also takes `owner.lock` there,
+  inside the claim, and commits to `agentDir/agent.sqlite`.
+- `runStore(run)` gives a local, closed copy of the released run's `run.sqlite` (`run` is `{ runId, path }`, the path
+  as `agent.runs` records it). The package reads it from a copy of its own and never writes it.
+- `carryBack`, `readAgentHome`, `homeRevision` and `prepareRun` take `{ access }`. Without it, the access is
+  `localAccess(home)`: the home is the local directory `home.dir` with its runs under it, as above.
+
+A start is two halves. `prepareRun(home, { host, runId?, sha?, access })` is the home's: in one commit inside the claim it
+checks the sha (`stale`), takes the save leases and records the run, and returns a `RunSeed` (the profiles, a leased
+one with its `ref` and every other `held`, the skill files, the root agent, the sha and the leases). It touches nothing
+under `runs/`. `seedRun({ storePath, workDir }, seed)` is the run's: it writes the run's store and its skills, and can run
+again on a half-written directory. `startRun` is the two in a row on this machine, under one hold of the home: a start
+whose seeding fails is undone under the same hold, with no run directory, no record, and each lease it took back as it
+was (another run's expired lease included). When the undo fails too, the error is an `AggregateError` with both.
+`undoPrepare(home, seed, { access })` is that undo for a host's own start: the seed keeps what `prepareRun` wrote and
+replaced (`seed.prior`). It acts only while that start is still the run's (its record there, unfinished, as written) and
+touches only leases exactly as it set them, so an undo retried after the run id was prepared again, or after the run went
+on, changes nothing and returns `{ undone: false }`.
+
+Binding the access and the seed to pi-durable-disk looks like this (a host's code, not part of this package):
+
+```js
+import { openDurableRun, readReleased, withClaim } from "@parcha/pi-durable-disk";
+import { carryBack, prepareRun, seedRun } from "@parcha/pi-durable-agent";
+
+const access = {
+  claim: (fn) => withClaim({ control, disk, region, path: "agent" }, ({ root }) => fn(root)),
+  runStore: async (run) => {
+    const { bytes } = await readReleased({ control, path: run.path }, "store/run.sqlite", { sqlite: true });
+    const file = join(tmp, `${run.runId}.sqlite`);
+    await writeFile(file, bytes);
+    return file;
+  },
+};
+
+const seed = await prepareRun(home, { host: "worker-1", sha, access });
+const run = await openDurableRun({ disk, region, id: seed.runId }, { harness, seed: (dir) => seedRun(dir, seed) });
+// (a run that will never start: await undoPrepare(home, seed, { access }) gives its leases back)
+// ... the run works, then:
+await run.release();
+await carryBack(home, { runId: seed.runId }, { outcome: "completed", access });
+```
+
+`seed` runs inside the first claim of a new run, before its Harness opens the store; a throw fails the open with
+nothing published, and the next open seeds again. A claim that fails leaves the home as it was, and the run can be
+carried back later.
+
 ## Not yet
 
 - Agent SQL: read-only queries over a whitelist of this run's and the agent's tables, and tables of the agent's own.
 - A vault: credentials kept as ciphertext that only the host decrypts, used by name in tools.
 - Tables whose rows commit inside pi's own commit, so a row and the turn that made it land together.
-- An agent home on a network disk, and a reader of both stores for viewers in another process.
+- The binding of a disk's claim and seed itself: this package takes their shape (`HomeAccess`, `seedRun`), and the
+  host or pi-durable-disk supplies them. A reader of both stores for viewers in another process.
 
 ## Requirements
 

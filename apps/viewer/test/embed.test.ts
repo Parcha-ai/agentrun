@@ -2,66 +2,45 @@
 // and what is focused, and it obeys that page (seek, focus, theme) only when its URL names the page's origin
 // (`&parent=`), each command checked. A message from another origin, or of another type, changes nothing.
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
+import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 import { chapterAt, embedMessage, fromParent, parentOrigin, parentParam, steerOf } from '../src/app.ts';
 
-const chrome = process.env.CHROME_PATH ?? '/usr/bin/google-chrome';
 const noChrome = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` };
 const fixtures = new URL('fixtures/', import.meta.url).pathname;
-/** A page in headless Chrome driven over the DevTools protocol, in real time. */
-async function drivenPage(url: string, profile: string) {
-  const browser = spawn(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${profile}`, '--remote-debugging-port=0', url], { stdio: 'ignore' });
-  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  let port: string | undefined;
-  for (let tries = 0; tries < 300 && !port; tries += 1) { await sleep(100); try { port = readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0]; } catch { /* not up yet */ } }
-  const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() as { type: string; url: string; webSocketDebuggerUrl: string }[];
-  const socket = new WebSocket(targets.find((target) => target.type === 'page' && target.url.startsWith(url))?.webSocketDebuggerUrl ?? targets.find((target) => target.type === 'page')!.webSocketDebuggerUrl);
-  await new Promise((resolve) => socket.addEventListener('open', resolve));
-  const waiting = new Map<number, (value: unknown) => void>();
-  socket.addEventListener('message', (event) => { const message = JSON.parse(String(event.data)) as { id?: number; result?: { result?: { value?: unknown } } }; if (message.id !== undefined) waiting.get(message.id)?.(message.result?.result?.value); });
-  let id = 0;
-  const evaluate = (expression: string) => new Promise((resolve) => { id += 1; waiting.set(id, resolve); socket.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, returnByValue: true } })); });
-  const exited = new Promise((resolve) => browser.once('exit', resolve));
-  const close = async () => {
-    socket.close();
-    const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json() as { webSocketDebuggerUrl: string };
-    const whole = new WebSocket(webSocketDebuggerUrl);
-    await new Promise((resolve) => whole.addEventListener('open', resolve));
-    whole.send(JSON.stringify({ id: 1, method: 'Browser.close' }));
-    await Promise.race([exited, sleep(10_000).then(() => browser.kill())]);
-  };
-  return { evaluate, sleep, close };
-}
-const flags = (profile: string) => ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${profile}`, '--virtual-time-budget=6000', '--dump-dom'];
+// Every test is bounded in seconds (a hang fails and names its test, it never holds the run), and so is every cleanup.
+const UNIT = { timeout: 5_000 };
+const IN_CHROME = { ...noChrome, timeout: 120_000 };
+const CLEANUP = { timeout: 20_000 };
+after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 
-test('the chapter a point is in is the one with the greatest stop at or before it, whatever the order chapters are listed in', () => {
+test('the chapter a point is in is the one with the greatest stop at or before it, whatever the order chapters are listed in', UNIT, () => {
   const chapters = [{ p: 1 }, { p: 10 }, { p: 25 }];
   assert.deepEqual([0, 1, 9, 10, 24, 25, 99].map((p) => chapterAt(chapters, p)), [-1, 0, 0, 1, 1, 2, 2]);
   const declared = [{ p: 25 }, { p: 1 }, { p: 10 }];
   assert.deepEqual([0, 1, 9, 10, 24, 25, 30].map((p) => chapterAt(declared, p)), [-1, 1, 1, 2, 2, 0, 0], 'the index in the list as declared');
 });
 
-test('every message names the viewer and its type', () => {
+test('every message names the viewer and its type', UNIT, () => {
   assert.deepEqual(embedMessage('focus', { path: null }), { source: 'agentrun-viewer', type: 'focus', path: null });
 });
 
-test('posts go to the framing page\'s origin when the browser says it, an http one; else any', () => {
+test('posts go to the framing page\'s origin when the browser says it, an http one; else any', UNIT, () => {
   assert.equal(parentOrigin('https://parcha-ai.github.io', ''), 'https://parcha-ai.github.io');
   assert.equal(parentOrigin(undefined, 'https://example.org/blog/post?x=1'), 'https://example.org');
   assert.equal(parentOrigin('file://', 'file:///page.html'), '*');
   assert.equal(parentOrigin(undefined, ''), '*');
 });
 
-test('&parent= names an http or https origin, written as one, or nothing', () => {
+test('&parent= names an http or https origin, written as one, or nothing', UNIT, () => {
   assert.equal(parentParam('https://agentrun.example'), 'https://agentrun.example');
   assert.equal(parentParam('http://127.0.0.1:8080'), 'http://127.0.0.1:8080');
   for (const not of [null, '', 'https://agentrun.example/', 'https://agentrun.example/play', 'file:///x', 'null', '*', 'javascript:alert(1)', 'agentrun.example']) {
@@ -69,7 +48,7 @@ test('&parent= names an http or https origin, written as one, or nothing', () =>
   }
 });
 
-test('only seek, focus and theme are obeyed, each field checked', () => {
+test('only seek, focus and theme are obeyed, each field checked', UNIT, () => {
   assert.deepEqual(steerOf({ type: 'seek', stop: 3 }, 10), { type: 'seek', stop: 3 });
   assert.deepEqual(steerOf({ source: 'a page', type: 'seek', commit: 4, gen: 2 }, 10), { type: 'seek', commit: 4, gen: 2 });
   assert.deepEqual(steerOf({ type: 'seek', t: 1.5 }, 10), { type: 'seek', t: 1.5 });
@@ -86,38 +65,66 @@ test('only seek, focus and theme are obeyed, each field checked', () => {
   for (const message of ignored) assert.equal(steerOf(message, 10), undefined, JSON.stringify(message));
 });
 
-test('a message steers only from the framing page itself, at the origin its URL named', () => {
+test('a message steers only from the framing page itself, at the origin its URL named', UNIT, () => {
   assert.equal(fromParent('https://a.example', true, 'https://a.example'), true);
   assert.equal(fromParent('https://b.example', true, 'https://a.example'), false, 'another origin');
   assert.equal(fromParent('https://a.example', false, 'https://a.example'), false, 'not the framing page');
   assert.equal(fromParent('https://a.example', true, undefined), false, 'no &parent=: nothing steers');
 });
 
-test('embedded, the page drops its header and fills its frame, and without &parent= it is steered by nothing', noChrome, (t) => {
+test('embedded, the page drops its header and fills its frame, and without &parent= it is steered by nothing', IN_CHROME, async (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-embed-'));
-  t.after(() => rmSync(out, { recursive: true, force: true }));
+  // One cleanup, in order: every Chrome first, then the files. The test's signal has killed them by then if it timed out.
+  const pages: Awaited<ReturnType<typeof drivenPage>>[] = [];
+  t.after(() => closeAll(pages, () => rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })), CLEANUP);
   build(join(out, 'dist'), fixtures);
-  const page = (query: string) => spawnSync(chrome, [...flags(join(out, 'profile')), `${pathToFileURL(join(out, 'dist', 'index.html')).href}?${query}`], { encoding: 'utf8', timeout: 60_000 }).stdout;
-  const embedded = page('r=reference-killed&embed=1');
-  assert.match(embedded, /<html[^>]* class="embed"/);
+  // Each page in real time, over DevTools, in a Chrome of its own: read once the page has drawn, never a virtual-time dump.
+  let launched = 0;
+  const read = async (url: string, ready: string, value: string, what: string) => {
+    const page = await drivenPage(url, join(out, `profile-${launched += 1}`), { signal: t.signal });
+    pages.push(page);
+    try { return await page.once(ready, value, 20_000, what); } finally { await page.close(); }
+  };
+  const drawn = 'document.body.textContent.includes("paid calls made")';
+  const html = 'document.documentElement.outerHTML';
+  const viewer = (query: string) => `${pathToFileURL(join(out, 'dist', 'index.html')).href}?${query}`;
+  const embedded = String(await read(viewer('r=reference-killed&embed=1'), drawn, html, 'the embedded page drawn'));
+  assert.match(embedded, /<html[^>]* class="(?:[^"]* )?embed(?: [^"]*)?"/, 'the root carries embed, beside a public replay\'s hide-durability');
   assert.doesNotMatch(embedded, /<h1>/);
   assert.match(embedded, /paid calls made/, 'the rest of the page is there');
-  assert.match(page('r=reference-killed'), /<h1>/, 'not embedded: the header');
-  // Framed from a file, with no origin to name: it says where it is, and nothing it is sent moves it.
+  assert.match(String(await read(viewer('r=reference-killed'), drawn, html, 'the page drawn')), /<h1>/, 'not embedded: the header');
+  // Framed from a file, with no origin to name: it says where it is, and nothing it is sent moves it. Once its three
+  // messages are in, two seconds more for any move the frame's seek could cause.
   writeFileSync(join(out, 'dist', 'frame.html'), `<!doctype html><body><iframe src="index.html?r=reference-killed&embed=1"></iframe><script>
     addEventListener("message", (event) => {
       if (event.data.type === "ready") event.source.postMessage({ type: "seek", stop: 1 }, "*");
       const got = document.createElement("pre"); got.className = "got"; got.textContent = JSON.stringify(event.data); document.body.append(got);
     });</script></body>`);
-  const framed = spawnSync(chrome, [...flags(join(out, 'profile')), pathToFileURL(join(out, 'dist', 'frame.html')).href], { encoding: 'utf8', timeout: 60_000 }).stdout;
-  const got = [...framed.matchAll(/<pre class="got">([^<]*)<\/pre>/g)].map((match) => JSON.parse(match[1]!.replaceAll('&quot;', '"')));
+  const messages = 'JSON.stringify([...document.querySelectorAll("pre.got")].map((each) => JSON.parse(each.textContent)))';
+  const frame = await drivenPage(pathToFileURL(join(out, 'dist', 'frame.html')).href, join(out, `profile-${launched += 1}`), { signal: t.signal });
+  pages.push(frame);
+  let got: { type: string; chapter?: { title: string } }[];
+  try {
+    await frame.once('document.querySelectorAll("pre.got").length >= 3', 'true', 20_000, 'the framed page\'s three messages');
+    await frame.sleep(2000);
+    got = JSON.parse(String(await frame.evaluate(messages))) as typeof got;
+  } finally {
+    await frame.close();
+  }
   assert.deepEqual(got.map((message) => message.type), ['ready', 'position', 'focus']);
-  assert.equal(got[1].chapter.title, 'the end', 'opened at the end, and the seek from an unnamed page was ignored');
+  assert.equal(got[1]!.chapter?.title, 'the end', 'opened at the end, and the seek from an unnamed page was ignored');
 });
 
-test('steered over http: the named parent\'s seek is obeyed; another type, and another origin, are ignored', noChrome, async (t) => {
+test('steered over http: the named parent\'s seek is obeyed; another type, and another origin, are ignored', IN_CHROME, async (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-steer-'));
-  t.after(() => rmSync(out, { recursive: true, force: true }));
+  // One cleanup, in order: Chrome first, then the server it reads, then the files. It runs even when the test times out
+  // with its body still waiting, and the test's signal has killed Chrome by then.
+  const held: { page?: Awaited<ReturnType<typeof drivenPage>>; server?: ReturnType<typeof createServer> } = {};
+  t.after(() => closeAll(held.page ? [held.page] : [], () => {
+    held.server?.closeAllConnections();
+    held.server?.close();
+    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }), CLEANUP);
   build(join(out, 'dist'), fixtures);
   const server = createServer((request, response) => {
     const path = new URL(request.url!, 'http://localhost').pathname;
@@ -126,7 +133,7 @@ test('steered over http: the named parent\'s seek is obeyed; another type, and a
     response.writeHead(200, { 'content-type': file.endsWith('.html') ? 'text/html' : file.endsWith('.js') ? 'text/javascript' : 'application/octet-stream' }).end(readFileSync(file));
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => server.close());
+  held.server = server;
   const port = (server.address() as AddressInfo).port;
   const parent = `http://127.0.0.1:${port}`;
   // The viewer is framed from another host name of the same server, so its origin differs from the parent's; a second
@@ -147,15 +154,19 @@ test('steered over http: the named parent\'s seek is obeyed; another type, and a
       const got = document.createElement("pre"); got.className = "got"; got.textContent = JSON.stringify(event.data); document.body.append(got);
     });</script></body>`);
   // In real time (a frame's answer crosses processes, which a virtual-time dump does not wait for): until the other frame
-  // has sent its seek, or a minute (a cold Chrome can take most of that to load its first page); then two seconds more,
-  // for any move it might cause.
-  const page = await drivenPage(`${parent}/frame.html`, join(out, 'profile'));
-  t.after(() => page.close());
-  const read = async () => JSON.parse(String(await page.evaluate('JSON.stringify([...document.querySelectorAll("pre.got")].map((each) => JSON.parse(each.textContent)))') ?? '[]')) as unknown[];
+  // has sent its seek, or 30 seconds (a cold Chrome is slow to load its first page); then two seconds more, for any move it
+  // might cause. Chrome is closed on every path out of here.
+  const page = await drivenPage(`${parent}/frame.html`, join(out, 'profile'), { signal: t.signal });
+  held.page = page;
   let got: unknown[] = [];
-  for (let tries = 0; tries < 600 && !got.includes('sent'); tries += 1) { await page.sleep(100); got = await read(); }
-  await page.sleep(2000);
-  got = await read();
+  try {
+    const read = async () => JSON.parse(String(await page.evaluate('JSON.stringify([...document.querySelectorAll("pre.got")].map((each) => JSON.parse(each.textContent)))') ?? '[]')) as unknown[];
+    for (const until = Date.now() + 30_000; Date.now() < until && !got.includes('sent') && !t.signal.aborted;) { await page.sleep(100); got = await read(); }
+    await page.sleep(2000);
+    got = await read();
+  } finally {
+    await page.close();
+  }
   assert.ok(got.includes('sent'), 'the other frame did send its seek');
   const positions = got.filter((message): message is { type: string; stop: number; commit: number } => (message as { type?: string }).type === 'position');
   assert.deepEqual(positions.map((message) => message.stop).slice(1), [1], 'one move, to the parent\'s stop: not the other frame\'s, not the other type');

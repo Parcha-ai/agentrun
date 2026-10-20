@@ -5,11 +5,11 @@
 // miss, the zip directory with its bomb guard, and the text a result is rendered to. The reader that inflates and
 // parses is the `office-js` provider.
 
-import { createHash } from "node:crypto";
 import { crc32 } from "node:zlib";
 import { ProviderMiss, type ProviderMissCode } from "./derive.js";
 import { visionContext } from "./env.js";
 import { SOURCE_BYTES_IN_PROCESS } from "./limits.js";
+import { messageLine, mib, sha256Hex } from "./primitives.js";
 import type { Cell, ProviderCall, ProviderSource } from "./provider.js";
 
 const MiB = 1024 * 1024;
@@ -35,6 +35,8 @@ export type OfficeLimits = {
   readonly maxCells: number;
 };
 
+/** The limits an archive is held to before anything is inflated, and every part is held to while it is: entries, sizes,
+ *  compression ratio, parsed elements, depth and cells. */
 export const OFFICE_LIMITS: OfficeLimits = Object.freeze({
   maxEntries: 10_000,
   maxUncompressedBytes: 16 * SOURCE_BYTES_IN_PROCESS,
@@ -50,6 +52,7 @@ export const OFFICE_LIMITS: OfficeLimits = Object.freeze({
 /** An office file that cannot be read, as a typed miss: the codes a provider's failure maps to. The message is one line
  *  the model reads, and names the sizes, the cap and how to narrow the read. */
 export type OfficeMissCode = ProviderMissCode;
+/** An office document that cannot be read, as a typed miss the model can act on. */
 export class OfficeMissError extends ProviderMiss {
   override readonly name = "OfficeMissError";
 }
@@ -70,13 +73,14 @@ export async function readSource(source: ProviderSource, call: ProviderCall): Pr
     if (info.value.size > SOURCE_BYTES_IN_PROCESS) throw tooBig(info.value.size);
     const read = await opened.value.read(0, info.value.size, context);
     if (!read.ok) throw unreadable(read.error.message);
-    if (createHash("sha256").update(read.value).digest("hex") !== source.sha256) throw new OfficeMissError("unreadable", "it changed after it was hashed; read it again");
+    if (sha256Hex(read.value) !== source.sha256) throw new OfficeMissError("unreadable", "it changed after it was hashed; read it again");
     return read.value;
   } finally {
     await opened.value.close(visionContext());
   }
 }
 
+/** One entry of a zip's central directory: its name, compression method, sizes, checksum and offset. */
 export type ZipEntry = { readonly name: string; readonly method: number; readonly size: number; readonly originalSize: number; readonly crc: number; readonly offset: number };
 
 const END_RECORD = 0x06054b50;
@@ -87,7 +91,6 @@ const PUSH_BYTES = 8192;
 const END_RECORD_BYTES = 22;
 const MAX_COMMENT_BYTES = 0xffff;
 const ZIP64 = 0xffffffff;
-const mib = (bytes: number) => `${(bytes / MiB).toFixed(1)} MiB`;
 
 /** The entries of a zip archive from its central directory, held to the limits before anything is inflated: the count,
  *  the declared total, and the declared ratio of the whole. An encrypted or duplicated entry, a zip64 archive and a
@@ -157,7 +160,7 @@ export async function inflateEntry(data: Uint8Array, entry: ZipEntry, limit: num
     }
   } catch (error) {
     if (error instanceof OfficeMissError) throw error;
-    throw damaged(`cannot be inflated: ${String((error as Error)?.message ?? error).split("\n")[0]}`);
+    throw damaged(`cannot be inflated: ${messageLine(error)}`);
   }
   if (total !== entry.originalSize || crc !== entry.crc) throw damaged("is not what its directory declares: its size or its checksum differs");
   return keep ? Buffer.concat(chunks) : new Uint8Array(0);

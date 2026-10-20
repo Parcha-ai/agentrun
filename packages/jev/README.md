@@ -2,7 +2,7 @@
 
 Optional [TypeSafe Jev](https://docs.typesafe.ai/) support for AgentRun DSL. Jev answers focused questions with typed values and probability distributions. The workflow decides how to use them.
 
-Beta: `0.1.0-beta.4`. Requires Node.js 22.19 or later.
+Beta, on npm under the `beta` dist-tag (`npm view @parcha/agentrun-jev dist-tags`). Requires Node.js 22.19 or later.
 
 ```sh
 npm install @parcha/agentrun-dsl@beta @parcha/agentrun-jev@beta
@@ -80,6 +80,36 @@ are never parsed for a reason. These details do not change validation, retry
 policy, or the submitted evidence. Unknown causes remain unspecified.
 
 Successful results retain `answers`, reported `model`, reported token `usage`, and a SHA-256 of the submitted request. `cost_usd` is `null` unless both usage and explicit `pricing: { inputUsdPerMillionTokens, outputUsdPerMillionTokens }` are available. Configured prices produce an estimate for the successful response; costs from unsuccessful or interrupted attempts are unknown.
+
+## Images and Box questions
+
+Jev 1.13 and 1.14 read still images, and Jev 1.14 can answer a Box question: where in an image something is. TypeSafe leaves both off unless a request says it carries one, and the runner says so for you: it sends `TypeSafe-Danger-Zone-Images: true` on every request that carries an image or a Box question and on no other.
+
+```ts
+import { createJevRunner, type JevJudge } from '@parcha/agentrun-jev';
+
+const judge: JevJudge = createJevRunner({ model: 'jev-1.14.0' });
+const { answers, usage, cost_usd } = await judge({
+  label: 'door', kind: 'judge',
+  state: 'The camera shows <photo>.',
+  questions: {
+    open: { type: 'noul', instructions: 'Is the door in <photo> open?' },
+    door: { type: 'box', instructions: 'the door in <photo>' },
+  },
+  assets: { '<photo>': { bytes: pngOrJpegFileBytes, mime: 'image/png' } },   // PNG or JPEG file bytes
+});
+// answers.door = { type: 'box', box: { top, bottom, left, right }, confidence } — edges are fractions of the image's height and width
+```
+
+- `assets` maps each reference, a string that appears literally in `state` or in a question's `instructions` or `criteria`, to the image. The runner builds the SDK's image from the bytes and sends it as a multipart file part. Each reference must appear inside a string value of the state, an instruction or a criterion (a question id or an option name does not count), or the request is refused.
+- A Box question needs `model: 'jev-1.14.0'` (or `'jev-preview'`); `jev-latest` is 1.13 and does not answer it. A Box on any other model, or a Box with no image, is refused with `JevError` code `invalid_request` before any request. `model` can also be named per call.
+- Before any request, the runner also refuses what Jev would reject: a file that is not PNG or JPEG (the bytes are checked against `mime`), an empty file, a file over 16 MiB, a reference nothing uses. It does not check pixel dimensions (each side 280 to 1568, total 78,400 to 2,458,624 pixels) or the 32 MiB request limit; Jev rejects those with a 400 or 413, which surfaces as a typed `http` error.
+- Images are billed as input tokens at the text price, and `usage.input_tokens` counts them. `cost_usd` is as for text: the provider's reported cost, else your `pricing` applied to the counted tokens, else `null`. `request_sha256` names each image by its own SHA-256, so the same request hashes the same and a different image does not.
+- A Box answer is always a box (there is no "not found"): ask a noul question in the same request to check presence. Edges and confidence are checked to lie in [0, 1] and the box to run forward (`top <= bottom`, `left <= right`); a confidence the provider omits is `null`.
+- `JevJudge`, `JevJudgeParams`, `JevJudgeResult` and `JevImage` are the types of this call. A package that asks Jev about images takes a `JevJudge` from its host and never imports the SDK.
+- Images and Box go to TypeSafe's own API only. The OpenRouter path is not verified for them, so a request that carries either is refused with `provider: "openrouter"`.
+- Request bodies are sent uncompressed; the SDK's default compresses them with zstd.
+- Box is a preview: Jev's page says its request format, answers and limits can change between releases.
 
 ## Offline tests
 

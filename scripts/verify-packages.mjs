@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -74,6 +75,12 @@ const allowedEndpoints = {
     // The fake provider in the test kit (`./testing`) serves its pages from a loopback server of its own.
     ['dist/testing/backend.js', 'http://127.0.0.1:${server.address().port}'],
   ],
+  serve: [
+    // The address agentrun-serve binds by default, which its quick start points a client at.
+    ['README.md', 'http://127.0.0.1:7340'],
+    // The same address in the changelog entry the release fold writes from the package's fragment (#625).
+    ['CHANGELOG.md', 'http://127.0.0.1:7340'],
+  ],
 };
 
 const usedEndpoints = new Set();
@@ -87,7 +94,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'harness'];
   const tarballs = [];
   for (const directory of packageDirectories) {
     const cwd = join(root, 'packages', directory);
@@ -238,7 +245,7 @@ import { z } from 'zod';
 import { supportTriage } from '@parcha/agentrun-dsl/demo';
 import { openRecovery, withRecovery, memoryStore } from '@parcha/agentrun-dsl/recovery';
 import { registerStoreConformance } from '@parcha/agentrun-dsl/recovery/testing';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -259,8 +266,22 @@ import * as transportHands from '@parcha/pi-transport/hands';
 import * as transportHome from '@parcha/pi-transport/home';
 import * as transportTesting from '@parcha/pi-transport/testing';
 import * as piDurable from '@parcha/agentrun-pi/durable';
+import * as piWorkflows from '@parcha/agentrun-pi/workflows';
 import * as agentHome from '@parcha/pi-durable-agent';
+import * as gitRemote from '@parcha/pi-git-remote';
+import * as gitRemoteAgent from '@parcha/pi-git-remote/coding-agent';
+import * as agentLearn from '@parcha/pi-agent-learn';
+import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durable';
+import { createModels } from '@earendil-works/pi-ai/models';
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
+import { execFileSync } from 'node:child_process';
+import * as agentExport from '@parcha/pi-durable-agent/export';
+import * as serve from '@parcha/agentrun-serve';
 import * as piSignin from '@parcha/agentrun-pi/signin';
+import * as reference from '@parcha/agentrun-harness';
+import * as referenceScan from '@parcha/agentrun-harness/scan';
+import * as referencePlace from '@parcha/agentrun-harness/place';
+import { fileURLToPath } from 'node:url';
 const { createPiRunner } = pi;
 assert.equal('authorWorkflow' in pi, false);
 assert.equal(validateWorkflow(supportTriage).ok,true);
@@ -292,14 +313,25 @@ for (const name of ${JSON.stringify(boxProviders)}) assert.equal(typeof (await i
 assert.equal(typeof transportHands.boxEnv,'function');
 assert.equal(typeof transportHands.transport,'function'); assert.equal(typeof transport.TransportError,'function');
 assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
+assert.equal(typeof piWorkflows.WorkflowStore,'function'); assert.equal(typeof piWorkflows.WorkflowStoreError,'function'); { const dir=await mkdtemp(join(tmpdir(),'wf-store-')); try { assert.deepEqual(await new piWorkflows.WorkflowStore(dir).list(),[]); } finally { await rm(dir,{recursive:true,force:true}); } }
 { const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-home-')); try { const home=await agentHome.createAgentHome(join(dir,'acme'),{definition:{version:1,name:'consumer',instructions:'Answer.',skills:['s'],tools:[]},skills:{'s/SKILL.md':'# S'}}); const started=await agentHome.startRun(home,{runId:'r1',host:'consumer'}); assert.deepEqual(started,{...agentHome.runPaths(home,'r1'),runId:'r1',agent:{instructions:'Answer.',tools:[]},leases:[]}); assert.equal(await readFile(join(started.workspace,'.agents/skills/s/SKILL.md'),'utf8'),'# S'); assert.deepEqual(await agentHome.carryBack(home,started,{outcome:'completed'}),{changed:true,profiles:[],released:[]}); assert.equal((await agentHome.readAgentHome(home)).runs.r1.outcome,'completed'); } finally { await rm(dir,{recursive:true,force:true}); } }
+{ const dir=await mkdtemp(join(tmpdir(),'agentrun-git-remote-')); try { const bare=join(dir,'remote.git'); execFileSync('git',['init','-q','--bare','--template=','-b','main',bare]); const repo=await gitRemote.openRepo({dir:join(dir,'host'),remote:gitRemote.local(bare)}); const made=await repo.commitTo('runs/r1',{files:{'inbox/r1.md':'a lesson\\n'},message:'r1',trailers:{'Run-Id':'r1'}}); await repo.push(made.sha,'runs/r1'); const fresh=await gitRemote.openRepo({dir:join(dir,'fresh'),remote:gitRemote.local(bare)}); assert.deepEqual(await fresh.commitTo('runs/r1',{files:{'inbox/r1.md':'again\\n'},message:'r1',trailers:{'Run-Id':'r1'}}),{sha:made.sha,created:false}); assert.equal(await fresh.read('inbox/r1.md',made.sha),'a lesson\\n'); const userinfo=new URL('https://git.example.test/a.git'); userinfo.username='user'; userinfo.password='pass'; await assert.rejects(gitRemote.openRepo({dir:join(dir,'h'),remote:{kind:'https',url:userinfo.href}}),e=>e instanceof gitRemote.GitRemoteError&&e.code==='refused'); assert.throws(()=>gitRemote.https(userinfo.href,()=>undefined),e=>e instanceof gitRemote.GitRemoteError&&e.code==='refused'); const hosted=gitRemote.codeStorage({origin:'https://git.example.test/git/',repo:'agents/a1',token:async()=>'unused',hidden:true}); assert.deepEqual([hosted.kind,hosted.url,hosted.pushUrl],['https','https://git.example.test/git/agents/a1.git','https://git.example.test/git/agents/a1+ephemeral.git']); assert.equal((await hosted.credential()).username,'t'); } finally { await rm(dir,{recursive:true,force:true}); } }
+{ const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-learn-')); try { assert.throws(()=>agentLearn.RULES_LOCKED.push('x'),TypeError); assert.equal(agentLearn.isRulesLocked('learnings/AGENTS.md'),true); const bare=join(dir,'remote.git'); execFileSync('git',['init','-q','--bare','--template=','-b','main',bare]); const repo=await gitRemote.openRepo({dir:join(dir,'host'),remote:gitRemote.local(bare)}); const lesson={id:'L-0123456789ab',type:'lesson',scope:'all',status:'active',provenance:{runs:['r0'],sha:'0'.repeat(40),untrusted:false},uses:0,supersedes:[],text:'Search both forms of the legal name.'}; const made=await repo.commitTo('main',{files:{'learnings/L-0123456789ab.md':agentLearn.renderLearning(lesson)},message:'seed'}); await repo.push(made.sha,'main'); const registry=createRegistry(); registry.install(agentLearn.agentLearn()); const harness=await Harness.open(new MemoryStorage(),{models:createModels(),registry},BACKGROUND_CONTEXT); try { const seeded=await agentLearn.seedLearning({repo,target:harness,into:join(dir,'work')}); assert.equal(seeded.sha,made.sha); assert.equal((await agentLearn.readSeed(harness)).sha,made.sha); assert.match(seeded.section,/L-0123456789ab lesson: Search both forms/); assert.equal(await readFile(join(dir,'work/.agent/learnings/L-0123456789ab.md'),'utf8'),agentLearn.renderLearning(lesson)); assert.deepEqual(await agentLearn.collectCandidates(harness),[]); } finally { await harness.close(BACKGROUND_CONTEXT); } } finally { await rm(dir,{recursive:true,force:true}); } }
+assert.equal(typeof gitRemoteAgent.createGitRemoteExtension,'function'); assert.equal(typeof gitRemoteAgent.default,'function'); assert.equal(typeof gitRemoteAgent.createGitRemoteExtension({}),'function');
+assert.deepEqual([agentExport.EXPORTABLE_KINDS,agentExport.SECRET_KINDS,agentExport.projectForExport],[agentHome.EXPORTABLE_KINDS,agentHome.SECRET_KINDS,agentHome.projectForExport]);
+{ const ready=piSignin.checkKeys({name:'consumer',models:{lead:{needs:['text']}},keys:[{env:'CONSUMER_KEY',why:'w',where:'x',required:true}],programs:[],expectedCalls:0,expectedCost:0},{env:{}}); assert.equal(ready.exitCode,2); assert.equal(typeof piSignin.resolveModel,'function'); }
+{ const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-propose-')); try { assert.deepEqual(agentLearn.guard({role:'curate',files:{'agent.json':'{}'}}).map(r=>r.reason),['rules_locked']); const bare=join(dir,'remote.git'); execFileSync('git',['init','-q','--bare','--template=','-b','main',bare]); const repo=await gitRemote.openRepo({dir:join(dir,'host'),remote:gitRemote.local(bare)}); const base=await repo.commitTo('main',{files:{'AGENTS.md':'# Rules\\n'},message:'seed'}); await repo.push(base.sha,'main'); const noted={callId:'c1',type:'lesson',text:'Search both forms of the legal name.',evidence:['a 404']}; const target={snapshot:async()=>({order:['c1'],byCall:{c1:noted}})}; const proposed=await agentLearn.proposeLearning({repo,runId:'r1',target}); assert.equal(proposed.status,'proposed'); assert.deepEqual(await agentLearn.proposeLearning({repo,runId:'r1',target}),{status:'already',sha:proposed.sha}); assert.deepEqual(agentLearn.parseInbox(await repo.read('inbox/r1.md',proposed.sha)),{run:'r1',candidates:[{...noted,untrusted:false}]}); const refused=await agentLearn.proposeLearning({repo,runId:'r2',target,secrets:['Search both forms']}); assert.equal(refused.status,'refused'); assert.equal(await repo.resolve('runs/r2'),undefined); } finally { await rm(dir,{recursive:true,force:true}); } }
+{ const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-workflows-')); try { const work=join(dir,'work'), checkout=join(dir,'checkout'); await mkdir(work); await mkdir(checkout); const saved=await new piWorkflows.WorkflowStore(work).save('consumer-add',workflow); const records={[saved.digest+'.json']:await readFile(join(work,'.pi/agentrun/workflows/consumer-add',saved.digest+'.json'),'utf8'),latest:saved.digest+'\\n'}; const main={main:'0'.repeat(40),read:async()=>undefined,list:async()=>[]}; const candidate={run:'r1',name:'consumer-add',description:'Add two numbers.',records,untrusted:false}; assert.equal((await agentLearn.workflowAdmitter({tmpRoot:dir})({...main,workflow:candidate})).status,'held'); const admitted=await agentLearn.workflowAdmitter({tmpRoot:dir,allowExecutableCode:true})({...main,workflow:candidate}); assert.equal(admitted.status,'admitted'); assert.equal(agentLearn.parseTrial(admitted.files['.agents/skills/consumer-add/trial.json'],'consumer-add').status,'trial'); for (const [file,text] of Object.entries(admitted.files)) if (file.startsWith('.pi/')) { await mkdir(join(checkout,file,'..'),{recursive:true}); await writeFile(join(checkout,file),text); } assert.equal((await new piWorkflows.WorkflowStore(checkout).load('consumer-add')).digest,saved.digest); assert.equal(agentLearn.matches([{pointer:'/left',op:'gte',value:1}],{left:2}),true); } finally { await rm(dir,{recursive:true,force:true}); } }
 { const ready=piSignin.checkKeys({name:'consumer',models:{lead:{needs:['text']}},keys:[{env:'CONSUMER_KEY',why:'w',where:'x',required:true}],programs:[],expectedCalls:0,expectedCost:0},{env:{}}); assert.equal(ready.exitCode,2); assert.equal(typeof piSignin.resolveModel,'function'); }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,network:'prohibited'}));
+{ assert.equal(typeof serve.startServe,'function'); const caps=serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.equal(caps.models,undefined); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
+for (const name of ['demo','run','placeAt','localHost','codeOf','tapBox']) assert.equal(typeof reference[name],'function',name); assert.equal(typeof referenceScan.credentialIn,'function'); assert.equal(typeof referencePlace.localPlace,'function'); assert.ok(existsSync(fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app'))),'the child app resolves to a file');
+console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,serve:true,git:true,learn:true,harness:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, runtimeSmokeChecks);
   receipt.runtimeSmoke = smoke;
+  assert.match((await offlineNode(['node_modules/@parcha/agentrun-serve/dist/cli.js', '--help'])).stdout, /^usage: agentrun-serve /, 'the installed agentrun-serve bin prints its usage');
   // The reference example runs in the consumer as a stranger would run it: its pages are served by the browser's fake backend on
   // loopback, so its preload admits loopback only.
   await cp(join(root, 'scripts/deny-remote.mjs'), join(consumer, 'deny-remote.mjs'));
@@ -374,6 +406,21 @@ const openStore = (store: DurableStore): Promise<RecoveryJournal> => { const con
 void openStore;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'durable-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'jev-consumer.ts'), `import { createJevRunner, type JevJudge, type JevImage } from '@parcha/agentrun-jev';
+import type { WorkflowDeps } from '@parcha/agentrun-dsl';
+const image: JevImage = { bytes: new Uint8Array([0x89]), mime: 'image/png' };
+const judge: JevJudge = createJevRunner({ model: 'jev-1.14.0' });
+const asDep: NonNullable<WorkflowDeps['runJudge']> = judge;
+const call = (): ReturnType<JevJudge> => judge({ label: 'door', kind: 'judge', state: '<photo>', questions: { door: { type: 'box', instructions: 'the door in <photo>' } }, assets: { '<photo>': image } });
+void [asDep, call];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'jev-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'workflows-consumer.ts'), `import { WorkflowStore, WorkflowStoreError, type StoredWorkflow, type WorkflowRevision } from '@parcha/agentrun-pi/workflows';
+import type { Workflow } from '@parcha/agentrun-dsl';
+const keep = async (store: WorkflowStore, workflow: Workflow): Promise<[StoredWorkflow, WorkflowRevision[], WorkflowStoreError | undefined]> => [await store.save('copy', workflow), await store.list(), undefined];
+void keep;
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'workflows-consumer.ts'], consumer);
   await writeFile(join(consumer, 'archil-consumer.ts'), `import { openDurableRun, type RunRef } from '@parcha/pi-durable-disk';
 import { openRunLease } from '@parcha/pi-durable-disk/lease';
 const durable: [typeof openDurableRun, typeof openRunLease, RunRef | undefined] = [openDurableRun, openRunLease, undefined];
@@ -423,7 +470,67 @@ const oneRun = async (home: AgentHome, harness: Parameters<typeof durableProfile
 };
 void [oneRun, createAgentHome];
 `);
-  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'agent-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'agent-export-consumer.ts'), `import { EXPORTABLE_KINDS, projectForExport, SECRET_KINDS } from '@parcha/pi-durable-agent/export';
+// An exporter's view: the two lists and one document as it may leave the home, from the subpath that loads nothing else.
+const kept: readonly string[] = EXPORTABLE_KINDS;
+const secret: readonly string[] = SECRET_KINDS;
+void [kept, secret, projectForExport('agent.runs', { path: 'runs/r1', host: 'h', startedAt: '' })];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'agent-consumer.ts', 'agent-export-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'git-consumer.ts'), `import { codeStorage, GitRemoteError, https, local, openRepo, type CodeStorageOptions, type CommitOptions, type Committed, type CredentialSource, type HttpsOptions, type Remote, type Repo } from '@parcha/pi-git-remote';
+// A host proposes a run's files on the run's branch and pushes them; an https remote takes its credential from a callback.
+const propose = async (dir: string, remote: Remote, files: CommitOptions['files']): Promise<Committed> => {
+  const repo: Repo = await openRepo({ dir, remote });
+  const made = await repo.commitTo('runs/r1', { files, message: 'r1', trailers: { 'Run-Id': 'r1' } });
+  await repo.push(made.sha, 'runs/r1');
+  return made;
+};
+const anyHost = (url: string, credential: CredentialSource, options?: HttpsOptions): Remote => https(url, credential, options);
+const codeStorageHost = (options: CodeStorageOptions): Remote => codeStorage(options);
+const code = (error: unknown) => (error instanceof GitRemoteError ? error.code : undefined);
+void [propose, anyHost, codeStorageHost, code, local];
+// The coding-agent subpath: options a host writes, the report it hears, and the factory pi loads.
+import { createGitRemoteExtension, type EndOutcome, type GitRemoteOptions } from '@parcha/pi-git-remote/coding-agent';
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+const options: GitRemoteOptions = { remote: local('/srv/acme.git'), allow: ['notes/**'], onEnd: (report) => { if (report.ok) { const outcome: EndOutcome = report.outcome; void outcome.branch; } } };
+const extension: (pi: ExtensionAPI) => void = createGitRemoteExtension(options);
+void extension;
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'git-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'learn-consumer.ts'), `import { agentLearn, collectCandidates, curate, LearnError, seedLearning, type Candidate, type CurateReport, type Guard, type Judge, type Refusal, type Seeded, type WorkflowHint } from '@parcha/pi-agent-learn';
+import type { Repo } from '@parcha/pi-git-remote';
+// A host seeds a run from its agent repository, installs the extension with its guard, and reads the run's candidates after.
+const guard: Guard = (input) => (input.candidates ?? []).filter((c: Candidate) => c.text.includes('secret')).map((): Refusal => ({ reason: 'secret_value', detail: 'a secret' }));
+const start = async (repo: Repo, harness: Parameters<typeof seedLearning>[0]['target'] & Parameters<typeof collectCandidates>[0], into: string, workflows: WorkflowHint[]): Promise<[Seeded, Candidate[]]> => {
+  const seeded = await seedLearning({ repo, target: harness, into, workflows });
+  return [seeded, await collectCandidates(harness)];
+};
+const code = (error: unknown) => (error instanceof LearnError ? error.code : undefined);
+// The curator writes main; its judge is the DSL's System One port.
+const curated = (repo: Repo, judge: Judge): Promise<CurateReport> => curate({ repo, judge, thresholds: { general: { yes: 0.9 } } });
+void [start, code, curated, agentLearn({ guard, secrets: () => [] })];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'learn-consumer.ts'], consumer);
+  // @parcha/agentrun-harness without @parcha/pi-transport, its optional peer: the package and its @parcha dependencies alone,
+  // where its public types compile under --strict with no skipLibCheck. @google/genai's types (under pi-ai) import the MCP
+  // SDK, genai's own optional peer, so a strict consumer of pi-ai supplies it at the range genai names.
+  const bare = join(temporary, 'consumer-reference');
+  await mkdir(bare);
+  await writeFile(join(bare, 'package.json'), JSON.stringify({ name: 'agentrun-harness-consumer', version: '1.0.0', private: true, type: 'module', overrides }));
+  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', ...['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'harness'].map(directory => tarballs[packageDirectories.indexOf(directory)])], bare);
+  const mcp = (await json(join(bare, 'node_modules', '@google', 'genai', 'package.json'))).peerDependencies?.['@modelcontextprotocol/sdk'];
+  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-dev', '--save-exact', `typescript@${typescript.version}`, `@types/node@${nodeTypes.version}`, ...(mcp ? [`@modelcontextprotocol/sdk@${mcp}`] : [])], bare);
+  assert.equal(existsSync(join(bare, 'node_modules', '@parcha', 'pi-transport')), false, 'the reference consumer holds no @parcha/pi-transport');
+  await writeFile(join(bare, 'reference-consumer.ts'), `import { demo, localHost, placeAt, type Boxes, type DemoOptions, type Fakes, type Job, type ToolContext } from '@parcha/agentrun-harness';
+const fakes: Fakes = { model: () => { throw new Error('no model'); }, tools: { lookup: (args) => ({ id: String(args.id), score: 1 }) }, judge: async () => { throw new Error('no judge'); }, pages: {}, start: '' };
+const job: Job = { workflow: { v: 2, name: 'typed', schemas: { Any: { type: 'object' } }, output: { schemaId: 'Any', path: 'final' }, root: { node: 'code', label: 'finish', code: 's => ({ final: {} })' } }, input: {} };
+const options: DemoOptions = { self: import.meta.url, spec: { name: 'typed' }, job, fakes };
+const boxes: Boxes = { name: 'none' };
+const useTool = (context: ToolContext): boolean => context.live;
+void [demo, localHost, placeAt, options, boxes, useTool];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'reference-consumer.ts'], bare);
+  receipt.checks.push('@parcha/agentrun-harness, installed with its @parcha dependencies and without @parcha/pi-transport, compiles under --strict with no skipLibCheck.');
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
   await rm(join(receiptDir, 'packages'), { recursive: true, force: true });
   await mkdir(join(receiptDir, 'packages'), { recursive: true });

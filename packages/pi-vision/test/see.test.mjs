@@ -5,6 +5,7 @@
 // by the test.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -110,6 +111,50 @@ test("a look that cannot be made throws with its code, filed and told as a miss;
   assert.deepEqual(blind.misses.map((m) => m.code), ["no_vision_route"]);
 });
 
+/** The bytes of a small MP4 a sniff reads as video: an ISO box with an mp4 brand, then padding. */
+const mp4Bytes = (size) => Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from("ftypisom"), Buffer.from([0, 0, 2, 0]), Buffer.from("isommp41"), Buffer.alloc(size)]);
+const EMPTY_SHA256 = createHash("sha256").update(Buffer.alloc(0)).digest("hex");
+
+test("a miss about one medium is filed as that medium: a video over the eyes' budget or that the eyes do not take names the video, its kind, its hash and the window its name cites", async () => {
+  const clip = mp4Bytes(4000);
+  const cwd = workspace({ "w120.mp4": clip });
+  const sha256 = createHash("sha256").update(clip).digest("hex");
+  const request = { ask: "What does this window show?", paths: ["w120.mp4"], fragments: ["film.mp4#t=120,180"] };
+  const script = `try { await vision.see(${JSON.stringify(request)}); return "seen"; } catch (error) { return error.message; }`;
+  const small = { ...DEFAULT_LIMITS, video: { ...DEFAULT_LIMITS.video, native: true, inlineBytes: 1000 } };
+  for (const [eyes, code] of [[fakeEyes({ accepts: { video: true }, limits: small }), "over_budget"], [fakeEyes(), "video_unseeable"]]) {
+    const rows = host();
+    const out = await ran(createVisionExtension({ eyes, ...rows.options }), cwd, script);
+    assert.match(out.value, new RegExp(`^${code}: film\\.mp4#t=120,180`));
+    const [record] = rows.filed;
+    assert.deepEqual([record.status, record.args.path, record.facts.kind, record.facts.sha256, record.facts.fragment], ["failed", "film.mp4#t=120,180", "video", sha256, "t=120,180"], code);
+    assert.deepEqual(rows.misses.map((m) => [m.code, m.source]), [[code, "film.mp4#t=120,180"]]);
+    assert.equal(eyes.ledger.length, 0, "no request was sent");
+  }
+});
+
+test("a name whose cited window rounds to nothing is still a name: the look is made, and a miss of it cites no window", async () => {
+  const cwd = workspace({ "p1.png": pngBytes(40, 30) });
+  const rows = host();
+  const label = "film.mp4#t=1.0001,1.0004";
+  const seen = await ran(createVisionExtension({ eyes: fakeEyes({ answers: ["a test card"] }), ...rows.options }), cwd, `return await vision.see({ ask: "what?", paths: ["p1.png"], fragments: [${JSON.stringify(label)}] });`);
+  assert.equal(seen.ok, true);
+  assert.equal(seen.value.text, "a test card");
+  const blind = host();
+  await ran(createVisionExtension(blind.options), cwd, `try { await vision.see({ ask: "what?", paths: ["p1.png"], fragments: [${JSON.stringify(label)}] }); } catch (error) { return error.message; }`);
+  assert.deepEqual(blind.filed.map((r) => [r.args.path, r.facts.fragment]), [[label, ""]]);
+});
+
+test("a miss before a medium is read names it as asked, of a kind not yet known, and with no hash rather than the hash of no bytes", async () => {
+  const cwd = workspace({ "p1.png": pngBytes(40, 30) });
+  const blind = host();
+  await ran(createVisionExtension(blind.options), cwd, `try { await vision.see({ ask: "what?", paths: ["p1.png"], fragments: ["r.pdf#page=2"] }); } catch (error) { return error.message; }`);
+  const gone = host();
+  await ran(createVisionExtension({ eyes: fakeEyes(), ...gone.options }), cwd, `try { await vision.see({ ask: "what?", paths: ["gone.mp4"] }); } catch (error) { return error.message; }`);
+  assert.deepEqual([blind.filed, gone.filed].map(([r]) => [r.args.path, r.facts.kind, r.facts.sha256, r.facts.fragment]), [["r.pdf#page=2", "unknown", "", "page=2"], ["gone.mp4", "unknown", "", ""]]);
+  assert.ok([...blind.filed, ...gone.filed].every((r) => r.facts.sha256 !== EMPTY_SHA256));
+});
+
 test("the global is built per call, carries the contract's words, throws a SeeMiss to a caller outside the sandbox, and a host whose setup throws gives a look_failed miss", async () => {
   const cwd = workspace({ "p1.png": pngBytes(40, 30) });
   const call = { conversationId: "c1", callId: "1", model: undefined, signal: undefined };
@@ -121,6 +166,7 @@ test("the global is built per call, carries the contract's words, throws a SeeMi
   const throwing = createVisionExtension({ ...broken.options, scope: () => { throw new Error("no scope for c1"); } }).see(nodeVisionEnv({ cwd }), call);
   await assert.rejects(throwing.execute({ ask: "what?", paths: ["p1.png"] }), (error) => error instanceof SeeMiss && error.code === "look_failed" && error.message === "look_failed: this host could not set the look up: no scope for c1");
   assert.deepEqual(broken.misses.map((m) => [m.tool, m.code]), [["vision.see", "look_failed"]]);
+  assert.equal("record" in broken.misses[0], false, "no look was made, so there is no record of one");
   const blocks = createVisionExtension({ eyes: twoAtATime(), ...host().options }).see(undefined, call);
   assert.equal((await blocks.execute({ ask: "what?", images: [png(20, 20)] })).text, "saw image 1", "with no environment, image blocks are still seen");
   await assert.rejects(blocks.execute({ ask: "what?", paths: ["p1.png"] }), /^SeeMiss: refused: p1\.png cannot be read/);

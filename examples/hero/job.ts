@@ -1,28 +1,24 @@
-// The hero job: one agent reads nine electricity grid operators' public fuel-mix dashboards, each in a browser session of its
-// own and all at once. The numbers exist only in the charts, so vision reads them (a screenshot with an `ask`, answered from the
-// pixels). Where the operator also publishes the mix as data, a `call` fetches it as the check, shown beside the reading. The
-// last step builds `snapshot.html`: a table of the nine grids, each reading linked to the screenshot it came from.
+// The hero job, as data: one agent reads electricity grid operators' public fuel-mix dashboards, each in a browser session of its own and
+// all at once. The numbers exist only in the charts, so vision reads them (a screenshot with an `ask`, answered from the pixels). Where the
+// operator also publishes the mix as data, a `call` fetches it as the check, shown beside the reading. The last step builds `snapshot.html`:
+// a table of the grids, each reading linked to the screenshot it came from.
 //
-// Everything here is scripted for the no-key host: the lead's turns, the eyes' answers, the pages and the published figures.
-// A live host takes the same workflow and its own models, browser and eyes.
-import { readFileSync } from 'node:fs';
-import type { Message, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai';
-import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
+// This file is the unit for `agent.run()` and the playground: a workflow, its default input and nothing else. The scripted lead, the eyes,
+// the pages and the published figures are in `fakes.ts`; a live host brings its own models, browser and eyes. `sources.json` (the nine
+// operators and how each page was checked by hand) is data this job carries inside its workflow.
 import type { Workflow } from '@parcha/agentrun-dsl';
-import { fakeImage, fixturePage, type FakeBackend } from '@parcha/pi-browser/testing';
-import { fakeEyes, type FakeEyes } from '@parcha/pi-vision/testing';
-import type { Fakes, Job } from '../reference/index.ts';
+import type { Job } from '@parcha/agentrun-harness';
+import sources from './sources.json' with { type: 'json' };
 
 /** One operator of `sources.json`, as the job takes it. */
-export type Grid = { id: string; operator: string; country: string; url: string; chart: string; numbers: string; peakOf: string; peakUnit: string; publishedUrl: string };
+type Grid = { id: string; operator: string; country: string; url: string; chart: string; numbers: string; peakOf: string; peakUnit: string; publishedUrl: string };
 
-/** The nine operators the job reads, from `sources.json` (the file records how each page was checked by hand). */
-export function readGrids(): Grid[] {
-  const file = JSON.parse(readFileSync(new URL('./sources.json', import.meta.url), 'utf8')) as { sources: Array<Record<string, string>> };
-  return file.sources.map((entry) => ({
-    id: entry.id!, operator: entry.operator!, country: entry.country!, url: entry.dashboardUrl!, chart: entry.chart!, numbers: entry.numbers!, peakOf: entry.peakOf!, peakUnit: entry.peakUnit!, publishedUrl: entry.publishedDataUrl!,
-  }));
-}
+const GRIDS: Grid[] = sources.pages.map((entry) => ({
+  id: entry.id, operator: entry.operator, country: entry.country, url: entry.dashboardUrl, chart: entry.chart, numbers: entry.numbers, peakOf: entry.peakOf, peakUnit: entry.peakUnit, publishedUrl: entry.publishedDataUrl,
+}));
+
+/** The operators the input names, in the order the input names them, with what the job needs to read each. */
+const SELECT = `(s) => { const table = ${JSON.stringify(GRIDS)}; return s.operators.map((id) => table.find((grid) => grid.id === id)); }`;
 
 /** The snapshot step: a pure function of the state, written as the one expression a `code` node takes. */
 const SNAPSHOT = `(s) => {
@@ -62,13 +58,10 @@ export const workflow = {
   name: 'hero-grid-snapshot',
   schemas: {
     Input: {
-      type: 'object', additionalProperties: false, required: ['at', 'grids'],
+      type: 'object', additionalProperties: false, required: ['at', 'operators'],
       properties: {
-        at: { type: 'string', minLength: 1 },
-        grids: { type: 'array', minItems: 1, items: {
-          type: 'object', additionalProperties: false, required: ['id', 'operator', 'country', 'url', 'chart', 'numbers', 'peakOf', 'peakUnit', 'publishedUrl'],
-          properties: { id: { type: 'string' }, operator: { type: 'string' }, country: { type: 'string' }, url: { type: 'string' }, chart: { type: 'string' }, numbers: { type: 'string' }, peakOf: { type: 'string' }, peakUnit: { type: 'string' }, publishedUrl: { type: 'string' } },
-        } },
+        at: { type: 'string', minLength: 1, description: 'The moment the snapshot is taken at, written on the page (an ISO 8601 time).' },
+        operators: { type: 'array', minItems: 1, items: { type: 'string', enum: GRIDS.map((grid) => grid.id) }, description: 'The grid operators to read, by id: each is read from its own dashboard in a browser session of its own.' },
       },
     },
     Reading: {
@@ -94,6 +87,7 @@ export const workflow = {
   input: { schemaId: 'Input' },
   output: { schemaId: 'Result', path: 'result' },
   root: { node: 'chain', steps: [
+    { node: 'code', label: 'select', as: 'grids', code: SELECT },
     {
       node: 'map', label: 'grids', itemsPath: 'grids', as: 'rows', resultPath: 'row', maxConcurrency: 9,
       body: { node: 'chain', steps: [
@@ -110,92 +104,9 @@ export const workflow = {
   ] },
 } as const satisfies Workflow;
 
-// ---- the fakes --------------------------------------------------------------------------------------------------------
 
-/** What each grid's chart shows, and what its operator publishes: fixed, so the snapshot is the same on every run. */
-const TRUTH = [
-  { share: 63.4, peak: 14210 }, { share: 27.9, peak: 21870 }, { share: 18.2, peak: 3340 }, { share: 11.6, peak: 1480 }, { share: 94.1, peak: 11900 },
-  { share: 72.8, peak: 5230 }, { share: 88.5, peak: 8910 }, { share: 94.0, peak: 5420 }, { share: 52.3, peak: 17640 },
-];
-/** What vision reads from each chart, as its distance from the published figure. */
-const MISREAD = [0.2, -0.4, 0, 0.3, -0.1, 0.5, 0, -0.2, 0.4];
+// The default input, and the one the recording ran: all nine operators, at a fixed moment so the no-key output is a constant.
+const input = { at: '2026-10-15T12:00:00Z', operators: GRIDS.map((grid) => grid.id) };
 
-const call = (name: string, args: ToolCall['arguments']) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' });
-const textOf = (message: Message) => (typeof message.content === 'string' ? message.content : message.content.map((block) => (block.type === 'text' ? block.text : '')).join(''));
-
-/** The lead: opens its dashboard, takes one screenshot asking for the two numbers, then files what the screenshot's answer said and
- *  the receipt it came with. A step that errs, or an answer that says the page is not the dashboard, is filed failed. */
-export function lead(messages: readonly Message[]) {
-  const first = messages.find((message) => message.role === 'user');
-  const url = (first ? textOf(first).match(/https?:\/\/[^"\s\\]+/)?.[0] : undefined) ?? '';
-  const results = messages.filter((message): message is ToolResultMessage => message.role === 'toolResult');
-  if (results.length === 0) return call('run', { code: `await page.goto(${JSON.stringify(url)})` });
-  if (results.length === 1 && !results[0]!.isError) return call('screenshot', { type: 'jpeg', ask: 'Read the renewable share now (percent) and the peak the chart shows, as the page asks for them. If this is not the dashboard, say so.' });
-  const shot = results[1] ? textOf(results[1]) : '';
-  const read = shot.match(/renewable share now: ([\d.]+)%.*peak: ([\d.]+)/is);
-  const filed = shot.match(/evidence\/[\w./-]+\/screenshot-[\w]+\.json/)?.[0];
-  if (results.some((result) => result.isError) || !read || !filed) return call('submit', { status: 'failed', page: url, note: results.some((result) => result.isError) ? 'a step failed' : 'the page was not the dashboard' });
-  return call('submit', { status: 'read', share: Number(read[1]), peak: Number(read[2]), screenshot: filed, page: url, note: 'read from the chart' });
-}
-
-/** The width of the blank screenshot the fake browser takes for the grid at position 0; the grid at position `i` is `SHOT_WIDTH + i` wide. */
-export const SHOT_WIDTH = 1200;
-
-/** Gives each session's screenshot the width of its page's grid, so the scripted eyes know whose chart they are looking at. Call it on the
- *  backend the browser runs on. */
-export function watchScreenshots(backend: FakeBackend, grids: readonly Grid[]): void {
-  const face = backend.driverFace;
-  const original = face.screenshot.bind(face);
-  face.screenshot = async (id, options) => {
-    const shot = await original(id, options);
-    const at = Math.max(0, grids.findIndex((grid) => grid.url === backend.sessions.get(id)?.url));
-    const width = SHOT_WIDTH + at;
-    return { ...shot, width, data: fakeImage(options?.type ?? 'jpeg', width, shot.height).toString('base64') };
-  };
-}
-
-/** The scripted job for `grids`: pages, the eyes' answers by operator, and the published figures. `broken` names a grid whose page is not
- *  its dashboard (the eyes say so, and the lead files it failed). */
-export function heroFakes(grids: readonly Grid[], options: { broken?: string; eyesLedger?: string; eyesPrice?: number } = {}): { fakes: Fakes; eyes: FakeEyes } {
-  const at = (grid: Grid) => grids.indexOf(grid) % TRUTH.length;
-  const pages = Object.fromEntries(grids.map((grid) => [grid.url, grid.id === options.broken
-    ? fixturePage(grid.url, 'Page not found.', 'Not found')
-    : fixturePage(grid.url, `${grid.operator} fuel mix. Renewables ${TRUTH[at(grid)]!.share}%.`, `${grid.operator} dashboard`)]));
-  const eyes = fakeEyes({
-    model: 'scripted-eyes',
-    // Scripted: it calls no model, so it costs 0.
-    price: { input: options.eyesPrice ?? 0, output: options.eyesPrice ?? 0 },
-    ...(options.eyesLedger ? { ledgerPath: options.eyesLedger } : {}),
-    answers: [(request) => {
-      // The fake browser's screenshots are blank, so the backend gives each grid's a width of its own (`watchScreenshots`), which says whose chart this is.
-      const width = request.parts.find((part) => part.type === 'image')?.width ?? 0;
-      const grid = grids[width - SHOT_WIDTH];
-      if (!grid || grid.id === options.broken) return 'A page with no chart: it says the page was not found. This is not a fuel-mix dashboard.';
-      const truth = TRUTH[at(grid)]!;
-      return `A fuel-mix chart from ${grid.operator}. Renewable share now: ${(truth.share + MISREAD[at(grid)]!).toFixed(1)}%. Peak: ${truth.peak} ${grid.peakUnit}.`;
-    }],
-  });
-  const fakes: Fakes = {
-    model: lead,
-    lead: { input: ['text'] },
-    tools: {
-      // The operator's published figure for the check. Staggered, so concurrent branches rarely overlap in the tool.
-      published: async (args) => {
-        const grid = grids.find((candidate) => candidate.id === args.id);
-        if (!grid) throw new Error(`no grid ${String(args.id)}`);
-        await new Promise((resolve) => setTimeout(resolve, 10 + 7 * grids.indexOf(grid)));
-        return { share: TRUTH[at(grid)]!.share, kind: grid.publishedUrl === grid.url ? 'the page\'s own table' : 'published data' };
-      },
-    },
-    // Scripted: it calls no model, so it costs 0 and used nothing.
-    judge: async ({ questions }) => ({ answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul' as const, noul: 0.92 }])), usage: { input_tokens: 0, output_tokens: 0 }, cost_usd: 0 }),
-    pages,
-    start: grids[0]!.url,
-    responses: 400,
-  };
-  return { fakes, eyes };
-}
-
-export function heroJob(grids: readonly Grid[], at: string): Job {
-  return { workflow, input: { at, grids: [...grids] } };
-}
+export const job = { workflow, input, files: {} } satisfies Job;
+export default job;

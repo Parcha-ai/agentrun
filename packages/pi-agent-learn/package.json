@@ -1,0 +1,71 @@
+{
+  "name": "@parcha/pi-agent-learn",
+  "version": "0.1.0-beta.18",
+  "private": true,
+  "description": "An agent that learns in its own git repository: a learn tool that costs nothing, a <learned> prompt section read at a fixed commit, and the host steps that seed a run from it.",
+  "keywords": [
+    "pi",
+    "pi-durable",
+    "agent",
+    "learning",
+    "git"
+  ],
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Parcha Labs, Inc.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "rm -rf dist && (test -f ../pi-git-remote/dist/index.d.ts || npm --prefix ../pi-git-remote run build) && (test -f ../dsl/dist/index.d.ts || npm --prefix ../dsl run build) && (test -f ../pi/dist/workflows.d.ts || npm --prefix ../pi run build) && tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
+  },
+  "dependencies": {
+    "@parcha/agentrun-dsl": "0.1.0-beta.18",
+    "@parcha/agentrun-pi": "0.1.0-beta.18",
+    "@parcha/pi-git-remote": "0.1.0-beta.18",
+    "typebox": "1.3.7"
+  },
+  "peerDependencies": {
+    "@earendil-works/chord": ">=1.1.0 <1.4.0",
+    "@earendil-works/pi-durable": ">=1.1.0 <1.4.0"
+  },
+  "devDependencies": {
+    "@earendil-works/chord": "1.1.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-durable": "1.1.0",
+    "@parcha/pi-durable-agent": "0.1.0-beta.18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Parcha-ai/agentrun.git",
+    "directory": "packages/pi-agent-learn"
+  },
+  "bugs": {
+    "url": "https://github.com/Parcha-ai/agentrun/issues"
+  },
+  "homepage": "https://agentrun.ai",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  }
+}

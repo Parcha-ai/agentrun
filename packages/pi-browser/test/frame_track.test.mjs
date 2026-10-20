@@ -210,7 +210,7 @@ test("ffmpeg that is killed on timeout is really gone: its process does not outl
   assert.throws(() => process.kill(pid, 0), /ESRCH/, "the process is gone");
 });
 
-// ---- review findings ----
+// ---- the export's bounds: abort before ffmpeg, the recording's end, memory, pictures of different shapes ----
 
 test("an export whose signal is already aborted never starts ffmpeg, and one aborted while a blob is being read ends aborted, ffmpeg not started", async (t) => {
   const marker = path.join(os.tmpdir(), `track-started-${process.pid}-${Date.now()}`);
@@ -346,7 +346,49 @@ test("an aborted export reads no more blobs: none for a signal aborted before it
   assert.equal(reads, 1, "the read under way finished and no other was started");
 });
 
-// ---- review second round ----
+/** `os.tmpdir()` for the length of a test, so what the export leaves behind is read from a directory only this test writes to. */
+function privateTmp(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "track-bound-"));
+  const before = process.env.TMPDIR;
+  process.env.TMPDIR = dir;
+  t.after(() => { if (before === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = before; fs.rmSync(dir, { recursive: true, force: true }); });
+  return dir;
+}
+
+test("a blob read that never answers ends at the session's deadline: the export fails with its timeout and the session's directory is removed", { timeout: 15_000 }, async (t) => {
+  const tmp = privateTmp(t);
+  const started = Date.now();
+  const lines = [frame("s1", 1000, sha(Buffer.from("a"))), frame("s1", 2000, sha(Buffer.from("b"))), frame("s1", 3000, sha(Buffer.from("c")))];
+  let reads = 0;
+  await assert.rejects(exportFrameTracks({ lines, readBlob: () => { reads += 1; return new Promise(() => {}); }, timeoutMs: 300 }), (error) => error.name === "TrackExportError" && error.code === "ffmpeg_timeout");
+  assert.ok(Date.now() - started < 3_000, `the stalled read held the export for ${Date.now() - started} ms`);
+  assert.equal(reads, 1, "the export ends at the stalled read: no other blob is asked for");
+  assert.deepEqual(fs.readdirSync(tmp), [], "nothing of the session is left in the temporary directory");
+});
+
+test("a blob read that never answers ends when the signal aborts: the export is aborted at once and the session's directory is removed", { timeout: 15_000 }, async (t) => {
+  const tmp = privateTmp(t);
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 100);
+  const started = Date.now();
+  await assert.rejects(exportFrameTracks({ lines: stubLines(), readBlob: () => new Promise(() => {}), signal: controller.signal, timeoutMs: 60_000 }), (error) => error.name === "TrackExportError" && error.code === "aborted");
+  assert.ok(Date.now() - started < 3_000, `the stalled read held the aborted export for ${Date.now() - started} ms`);
+  assert.deepEqual(fs.readdirSync(tmp), [], "nothing of the session is left in the temporary directory");
+});
+
+test("a blob read that fails, or answers late but inside the deadline, is still a missing picture or a picture", async (t) => {
+  privateTmp(t);
+  const stub = stubFfmpeg(t, "printf webm > out.webm");
+  const timers = () => process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length;
+  const before = timers();
+  const out = await exportFrameTracks({ lines: stubLines(), readBlob: async () => { await new Promise((r) => setTimeout(r, 50)); return JPEG; }, ffmpeg: stub.program, fps: 10, endAt: 3000, timeoutMs: 5_000 });
+  assert.equal(out.length, 1, "a slow read inside the deadline is read");
+  assert.equal(timers(), before, "a read that answered leaves no deadline timer behind");
+  const failed = await exportFrameTracks({ lines: stubLines(), readBlob: async () => { throw new Error("storage error"); }, ffmpeg: stub.program, timeoutMs: 5_000 });
+  assert.equal(failed.length === 0 || failed[0].skipped.every((s) => s.reason === "missing"), true, "a read that throws is a missing picture, as before");
+});
+
+// ---- the export's deadline and failures: one deadline per session, undecodable pictures, a track's end, a failed encode ----
 
 test("timeoutMs is one deadline for a session's whole export: every ffmpeg call gets only the time that is left", async (t) => {
   // Three pictures that each need a padding call, the slate and the encode: five calls of about 0.4 s against a limit of 1.2 s.

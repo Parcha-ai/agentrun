@@ -3,12 +3,12 @@
 // receipt and moves its lane, a miss shows by its code, and the account's photo sort and weaker eyes are drawn as the
 // result says. A second test plays the scripted recording named by VISION_RECORDING, when there is one.
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
@@ -20,6 +20,9 @@ import { counterFold, countersOf } from '../src/counters.ts';
 import { viewContext } from '../src/app.ts';
 import { visionAccountOf, visionKeptChars, visionMeters, visionPanel, type VisionState } from '../src/vision.ts';
 import { ACCOUNT, blobs, FILM, K, LOOKS, lines, manifest, PAGES, PHOTOS, RESULT, writeRecording } from './vision-hand.ts';
+import { closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
+
+after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 
 const walk = (node: Node, visit: (node: Exclude<Node, string>) => void) => {
   if (typeof node === 'string') return;
@@ -108,6 +111,21 @@ test('live lines show what is in flight and change no count but the observed pos
   assert.doesNotMatch(text(viewAt(end)), /In flight/, 'nothing is in flight at the end');
 });
 
+test('a look only live lines tell of is listed, never "not looked at": a native one as the lead\'s own, and once the run delivered as never filed', () => {
+  const look: Line = { channel: 'live', source: 'vision', kind: 'LookEvent', t: 5, seq: 1, gen: 1, data: { conversationId: '1', tool: 'read', source: 'filing.png', fragment: '', receipt: 'evidence/look-1.json',
+    record: { tool: 'look', args: { path: 'filing.png', native: true }, status: 'ok', facts: { key: 'k-filing' }, body: 'shown to the model natively' } } };
+  const result: Line = { channel: 'live', source: 'host', kind: 'result', t: 9, seq: 2, data: { gen: 1, blob: RESULT, title: 'The record' } };
+  const going = text(visionPanel.view(reduceTo(visionPanel, [look], 1), { t: 5 }));
+  assert.doesNotMatch(going, /have not looked/);
+  assert.match(going, /In flight \(live lines\) the lead looked at filing\.png itself, not filed yet/);
+  const ended = text(visionPanel.view(reduceTo(visionPanel, [look, result], 2), { t: 9 }));
+  assert.match(ended, /Told by live lines only the lead looked at filing\.png itself, never filed in the store/);
+  assert.match(ended, /looks paid\s+not measured/, 'and nothing is counted from it');
+  const eyes = { ...look, data: { ...look.data as object, record: { tool: 'look', args: { path: 'filing.png' }, status: 'ok', facts: { key: 'k-eyes' } } } } as Line;
+  assert.match(text(visionPanel.view(reduceTo(visionPanel, [eyes], 1), { t: 5 })), /the eyes answered for filing\.png, not filed yet/);
+  assert.match(text(visionPanel.view(reduceTo(visionPanel, [], 0), { t: 0 })), /The eyes have not looked at anything yet\./, 'with no line about a look, the panel still says so');
+});
+
 test('a citation opens its receipt and moves its lane: the page with the line\'s box, the film window, the photo', () => {
   const page = viewAt(end, { cite: K.page2 });
   const receipt = text(find(page, cls('vz-receipt'))[0]!);
@@ -149,7 +167,10 @@ test('?cite= lands after the commit that filed the look it names', () => {
 test('a miss shows by its code, and a failed look with no code says so', () => {
   const view = viewAt(end, { cite: K.photo2 });
   assert.match(text(find(view, cls('vz-receipt'))[0]!), /missed over_budget: an image over the eyes' limit/);
-  assert.equal(find(view, cls('vz-tile')).filter(cls('missed')).length, 1);
+  const missed = find(view, cls('vz-tile')).filter(cls('missed'));
+  assert.equal(missed.length, 1);
+  assert.equal(text(missed[0]!).trim(), 'over budget', 'a missed tile says its code');
+  assert.ok('title' in missed[0]! && missed[0].title?.endsWith(': over_budget, an image over the eyes\' limit'), 'and its reason on hover');
   const noCode = lines.map((line) => (JSON.stringify(line.data).includes('"over_budget"') && line.channel === 'durable' ? { ...line, data: JSON.parse(JSON.stringify(line.data).replace(/,"miss":\{[^}]*\}/, '')) } : line));
   assert.deepEqual(visionMeters(stateAt(noCode.length, noCode)).misses, [['code not recorded', 1]]);
 });
@@ -225,7 +246,7 @@ test('the account: entries with their chips, the photo sort against the captions
   assert.deepEqual(dropped.map(text), ['0', '1'], 'one digit dropped from each stamp');
   assert.deepEqual(visionKeptChars('00 00 00 12', '00 00 00 2'), [true, true, true, true, true, true, true, true, true, false, true]);
   const tiles = find(view, cls('vz-tile'));
-  assert.deepEqual(tiles.map((tile) => [text(tile).trim(), cls('right')(tile), cls('wrong')(tile)]), [['ground', true, false], ['', false, false], ['crew', false, true]]);
+  assert.deepEqual(tiles.map((tile) => [text(tile).trim(), cls('right')(tile), cls('wrong')(tile)]), [['ground', true, false], ['over budget', false, false], ['crew', false, true]]);
   assert.ok(tiles.every((tile) => 'path' in tile && tile.path?.startsWith('/root/steps/1/items/')), 'a photo tile focuses its branch');
   assert.equal(find(viewAt(end, { focus: '/root/steps/1/items/0' }), cls('dim')).length, 2, 'the other branches dim');
   assert.doesNotMatch(text(find(view, cls('vz-lane'))[1]!), /eyes-weak/, 'the weaker eyes are not drawn in the lanes once the account names them');
@@ -266,32 +287,6 @@ test('the page from file:// reads the account from the result blob, and ?cite= o
   assert.match(cited, /clear citation/);
 });
 
-/** A page in a headless Chrome driven over its debugging protocol: what an expression in the page evaluates to. */
-async function drivenPage(url: string, profile: string) {
-  const browser = spawn(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${profile}`, '--remote-debugging-port=0', '--window-size=1280,1600', url], { stdio: 'ignore' });
-  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  let port: string | undefined;
-  for (let tries = 0; tries < 200 && !port; tries += 1) { await sleep(100); try { port = readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0]; } catch { /* not up yet */ } }
-  const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() as { type: string; webSocketDebuggerUrl: string }[];
-  const socket = new WebSocket(targets.find((target) => target.type === 'page')!.webSocketDebuggerUrl);
-  await new Promise((resolve) => socket.addEventListener('open', resolve));
-  const waiting = new Map<number, (value: unknown) => void>();
-  socket.addEventListener('message', (event) => { const message = JSON.parse(String(event.data)) as { id?: number; result?: { result?: { value?: unknown } } }; if (message.id !== undefined) waiting.get(message.id)?.(message.result?.result?.value); });
-  let id = 0;
-  const evaluate = (expression: string) => new Promise((resolve) => { id += 1; waiting.set(id, resolve); socket.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } })); });
-  const exited = new Promise((resolve) => browser.once('exit', resolve));
-  // Closed as a browser closes, so no helper of its is still writing to the profile when the test removes it.
-  const close = async () => {
-    socket.close();
-    const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json() as { webSocketDebuggerUrl: string };
-    const whole = new WebSocket(webSocketDebuggerUrl);
-    await new Promise((resolve) => whole.addEventListener('open', resolve));
-    whole.send(JSON.stringify({ id: 1, method: 'Browser.close' }));
-    await Promise.race([exited, sleep(10_000).then(() => browser.kill())]);
-  };
-  return { evaluate, sleep, close };
-}
-
 test('a redraw after a chip is chosen keeps the account where the reader scrolled it, and the focus on the chip', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, async (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-vision-scroll-'));
   const dir = join(out, 'recordings', 'vision-long');
@@ -303,7 +298,7 @@ test('a redraw after a chip is chosen keeps the account where the reader scrolle
   for (const file of ['manifest.json', 'events.jsonl']) writeFileSync(join(dir, file), readFileSync(join(dir, file), 'utf8').replaceAll(RESULT, sha));
   build(join(out, 'dist'), join(out, 'recordings'));
   const page = await drivenPage(`${pathToFileURL(join(out, 'dist', 'index.html')).href}?r=vision-long`, join(out, 'profile'));
-  t.after(async () => { await page.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); });
+  t.after(() => closeAll([page], () => rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })));
   let ready = false;
   for (let tries = 0; tries < 100 && !ready; tries += 1) { await page.sleep(100); ready = await page.evaluate('(() => { const a = document.querySelector(".vz-account"); return !!a && a.scrollHeight > a.clientHeight + 300; })()') === true; }
   assert.ok(ready, 'the account scrolls');

@@ -9,18 +9,21 @@ import {
 	type ConversationId,
 	configure,
 	defineDoc,
+	defineDocFamily,
 	type Extension,
 	Harness,
 	type HarnessOptions,
+	type JsonObject,
 	type Storage,
 } from "@earendil-works/pi-durable";
 import { err, ok, type Result, toError } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type App, type AppContext, type AppOptions, appOptions } from "./app.ts";
+import { type CallEvent, callsExtension } from "./calls.ts";
 import { createGate, type DrainError, type Drained, type DrainOptions, type Gate } from "./gate.ts";
 import { holdStore, type StoreHold } from "./lock.ts";
-import { type Seal, sealStore, verifyStore } from "./store.ts";
+import { checkpointStore, type Seal, sealStore, verifyStore } from "./store.ts";
 
 /** The entry kind of the notice a session gets when its home moved. */
 export const MOVE_ENTRY = "transport.move";
@@ -34,13 +37,100 @@ const HomeDoc = defineDoc<{ root?: string }>({
 	initial: () => ({}),
 });
 
+/** Where a session was or is, as a recording names it: its box by a label the host gives, never the provider's id. */
+export type MoveWhere = { readonly environment: string; readonly provider: string; readonly box: string };
+
+/** The part of a move's record only the host knows, carried in `ResumeOrder.move.record`. Times are on the host's clock. */
+export type MoveFacts = {
+	/** Where the session was; `null` when the host no longer knows (a target it resumes from the lease alone). */
+	readonly from: MoveWhere | null;
+	readonly to: MoveWhere;
+	readonly drainMs: number | null;
+	readonly shipMs: number | null;
+	/** From the take's start to the lease written. */
+	readonly takeMs: number | null;
+	readonly bytes: number | null;
+	/** The attempts of this hop that a kill or a failure stopped before this one landed. */
+	readonly stopped: readonly {
+		readonly code: string;
+		readonly step: string;
+		readonly kill?: { readonly who: "host" | "source" | "target"; readonly step: string };
+	}[];
+	/** A move: the sealed store it shipped. */
+	readonly seal?: Seal;
+	/** A restore from a checkpoint: the checkpoint's store, and when it was taken (ISO). */
+	readonly checkpoint?: Seal & { readonly at: string };
+	/** The decision that asked for the move. */
+	readonly placement?: { readonly id: string; readonly by: string };
+};
+
+/**
+ * A move's durable record (RECORDING.md 3.2): the document `transport.moves`, keyed by the move id, written once by the
+ * target in the first commit it makes when it opens the moved store. `head` is the store's next commit at open, after any
+ * replay: a move's `seal.head`, a restore's `replayed.to + 1` or its checkpoint's head. The record's commit is `head`, or
+ * `head + 1` when pi committed once as it opened the store (a generation was running, which pi recovers first).
+ */
+export type MoveRecord = MoveFacts & {
+	readonly v: 1;
+	readonly id: string;
+	readonly kind: "move" | "restore";
+	readonly epoch: number;
+	readonly head: number;
+	readonly replayed?: { readonly from: number; readonly to: number };
+};
+
+/** The moves of the session, one document per move id. */
+export const MovesDoc = defineDocFamily<JsonObject, null>({
+	kind: "transport.moves",
+	version: 1,
+	scope: "session",
+	family: true,
+	initial: () => ({}),
+});
+
+/** The record an order's move asks the target to write, or `undefined` when its host sends none or no head is known. */
+function moveRecordOf(order: ResumeOrder): MoveRecord | undefined {
+	const move = order.move;
+	const facts = move?.record;
+	const head = move?.head ?? order.seal?.head;
+	if (move === undefined || facts === undefined || typeof facts !== "object" || head === undefined) return undefined;
+	const { seal, checkpoint, placement, ...rest } = facts;
+	return {
+		v: 1,
+		id: move.id,
+		kind: move.kind ?? "move",
+		epoch: order.epoch,
+		head,
+		from: rest.from,
+		to: rest.to,
+		drainMs: rest.drainMs,
+		shipMs: rest.shipMs,
+		takeMs: rest.takeMs,
+		bytes: rest.bytes,
+		stopped: rest.stopped,
+		...(seal === undefined ? {} : { seal }),
+		...(checkpoint === undefined ? {} : { checkpoint }),
+		...(placement === undefined ? {} : { placement }),
+		...(move.replayed === undefined ? {} : { replayed: move.replayed }),
+	};
+}
+
 /**
  * Why a home refused an order. `wrong_state`: the order does not fit what the home is doing. `stale_epoch`: the
  * order is for an epoch this home has left behind. `not_verified`: a store is here that no seal vouches for.
  * `seal_mismatch`: the store here is not the one the seal names. `app`: the app did not load or build. `store`: the
- * store could not be opened, sealed or removed. `busy`: another runner at this place holds the store.
+ * store could not be opened, sealed or removed. `busy`: another runner at this place holds the store. `invalid`: the
+ * order's arguments have the wrong shape.
  */
-export type HomeErrorCode = "wrong_state" | "stale_epoch" | "not_verified" | "seal_mismatch" | "app" | "store" | "busy";
+export type HomeErrorCode =
+	| "wrong_state"
+	| "stale_epoch"
+	| "not_verified"
+	| "seal_mismatch"
+	| "app"
+	| "store"
+	| "busy"
+	| "invalid";
 
 /** An order a home did not carry out. Returned, never thrown. */
 export class HomeError extends Error {
@@ -64,7 +154,31 @@ export type ResumeOrder = {
 		readonly id: string;
 		/** What the agent is told, once. */
 		readonly notice: string;
+		/** `restore`: the session continues from a checkpoint of a box that is gone; absent or `move` is a handoff. */
+		readonly kind?: "move" | "restore";
+		/**
+		 * A restore only: the checkpoint's head (`Seal.head`, the sequence number its next commit would take). Commits
+		 * of the lost box at or after it are gone and their numbers are taken again, so a recorder of moves and
+		 * commits drops that branch.
+		 */
+		readonly head?: number;
+		/**
+		 * A restore only: the commits of the lost box that were shipped to the host and applied to the checkpoint's store
+		 * before it opened, `from` to `to` inclusive. `head` is then `to + 1`.
+		 */
+		readonly replayed?: { readonly from: number; readonly to: number };
+		/**
+		 * What the host knows of the move, for its durable record: the target writes `transport.moves` with it in its first
+		 * commit, once. Absent: no record.
+		 */
+		readonly record?: MoveFacts;
 	};
+	/**
+	 * The session's environment for the app, handed to it as `AppContext.env`: over the link, never in argv, and a box
+	 * inherits none of the host's. Names and values are strings. An order without one keeps the environment this home
+	 * last opened with: a reopen, or a resume in the same process, gives the app the same one.
+	 */
+	readonly env?: Readonly<Record<string, string>>;
 };
 
 /** `closed`: nothing is open. `open`: the session runs. `sealed`: closed and sealed, waiting for the host's word. */
@@ -82,6 +196,8 @@ export type HomeOptions = {
 	readonly models: HarnessOptions["models"];
 	/** Where the session's tools run. Default: pi's own environment in `workspace`. */
 	readonly env?: HarnessOptions["env"];
+	/** Told when a tool call begins and ends (name and replay flag only). */
+	readonly onCall?: (event: CallEvent) => void | Promise<void>;
 	/**
 	 * Called with the store each time the home opens it, before pi does: the Harness runs over the storage it returns.
 	 * `opened` runs with the Harness before anything commits through it; `closed` after the Harness closed. A runner
@@ -106,6 +222,9 @@ export type WrappedStore = {
 	readonly opened?: (harness: Harness) => void | Promise<void>;
 	readonly closed?: () => Promise<void>;
 };
+
+/** A copy of the store taken while the session is held, and the seal that vouches for it. */
+export type CheckpointTaken = { readonly seal: Seal; readonly path: string };
 
 /**
  * One place a session can run: its store, its workspace and the Harness over them, driven by orders. The host gives
@@ -136,6 +255,15 @@ export interface Home {
 	drain(options: DrainOptions | undefined, context: Context): Promise<Result<Drained, DrainError | HomeError>>;
 	/** Give a drain up: held work goes on. */
 	abandon(): void;
+	/**
+	 * Hold the session (a drain) and take a consistent copy of the store beside it, at `<store>.checkpoint`. The gate stays
+	 * closed afterwards, so that the caller can read the workspace at the same moment; `abandon` opens it. On failure the
+	 * gate is open again.
+	 */
+	checkpoint(
+		options: DrainOptions | undefined,
+		context: Context,
+	): Promise<Result<CheckpointTaken, DrainError | HomeError>>;
 	/** After a drain: close the Harness and seal the store. From then on only `reopen` or `retire` is taken. */
 	seal(context: Context): Promise<Result<Seal, HomeError>>;
 	/** The move was abandoned and the lease still names this home at `epoch`: open the sealed store again. */
@@ -170,6 +298,8 @@ class SessionHome implements Home {
 	#harness: Harness | undefined;
 	#gate: Gate | undefined;
 	#app: AppOptions | undefined;
+	/** The environment the app was last given, for an order that brings none (a reopen sends only its epoch). */
+	#env: Readonly<Record<string, string>> | undefined;
 	#wrapped: WrappedStore | undefined;
 	#marker: Marker | undefined;
 	#drained = false;
@@ -296,6 +426,22 @@ class SessionHome implements Home {
 	abandon(): void {
 		this.#drained = false;
 		this.#gate?.open();
+	}
+
+	async checkpoint(
+		options: DrainOptions | undefined,
+		context: Context,
+	): Promise<Result<CheckpointTaken, DrainError | HomeError>> {
+		const drained = await this.drain(options, context);
+		if (!drained.ok) return drained;
+		const path = `${this.#options.store}.checkpoint`;
+		await rm(path, { force: true });
+		const copied = await checkpointStore(this.#options.store, path, context);
+		if (!copied.ok) {
+			this.abandon();
+			return err(new HomeError("store", `could not take the checkpoint: ${copied.error.message}`, copied.error));
+		}
+		return ok({ seal: copied.value, path });
 	}
 
 	seal(context: Context): Promise<Result<Seal, HomeError>> {
@@ -442,11 +588,31 @@ class SessionHome implements Home {
 	/** Open the store, bring the conversations here, admit the notice, resume. Every step is safe to repeat. */
 	async #open(order: ResumeOrder, context: Context): Promise<Result<void, HomeError>> {
 		const { app, session, store, workspace, where, models } = this.#options;
-		const built = await appOptions(app, { session, workspace, store, models, where });
+		const orderEnv = order.env ?? this.#env ?? {};
+		if (
+			typeof orderEnv !== "object" ||
+			orderEnv === null ||
+			Object.values(orderEnv).some((value) => typeof value !== "string")
+		) {
+			return err(new HomeError("invalid", "the resume order's env must map names to strings"));
+		}
+		this.#env = { ...orderEnv };
+		const built = await appOptions(app, {
+			session,
+			workspace,
+			store,
+			models,
+			where,
+			root: dirname(workspace),
+			epoch: order.epoch,
+			env: { ...orderEnv },
+		});
 		if (!built.ok) return err(new HomeError("app", built.error.message, built.error));
-		const { root: _root, onOpen, registry, ...rest } = built.value;
+		const { root: _root, onOpen, onResumed, registry, ...rest } = built.value;
 		const gate = createGate();
 		registry.install(gate.extension);
+		const { onCall } = this.#options;
+		if (onCall !== undefined) registry.install(callsExtension(registry, onCall));
 		for (const extension of this.#options.extensions ?? []) registry.install(extension);
 		const env: HarnessOptions["env"] =
 			this.#options.env ?? (async (target) => new NodeExecutionEnv({ cwd: target.cwd ?? workspace }));
@@ -469,7 +635,7 @@ class SessionHome implements Home {
 			// move's notice.
 			await wrapped?.opened?.(harness);
 			gate.attach(harness);
-			await bringHere(harness, workspace, context);
+			await bringHere(harness, workspace, moveRecordOf(order), context);
 			await onOpen?.(harness, context);
 			const { move } = order;
 			if (move !== undefined) {
@@ -498,6 +664,15 @@ class SessionHome implements Home {
 		this.#gate = gate;
 		this.#wrapped = wrapped;
 		this.#app = built.value;
+		if (onResumed !== undefined) {
+			// Not the order's to wait for: the app's own work goes on after the order answered.
+			const resumedContext = withoutAbortSignal(context);
+			void Promise.resolve()
+				.then(() => onResumed(harness, resumedContext))
+				.catch((cause) => {
+					process.stderr.write(`pi-transport: the app's onResumed failed: ${toError(cause).message}\n`);
+				});
+		}
 		return ok(undefined);
 	}
 
@@ -550,29 +725,34 @@ class SessionHome implements Home {
  * place under `to`, and records `to` as the root. Nothing changes when the store last ran here, so a second call
  * after a crash is a no-op, also when `to` lies under the old root.
  */
-async function bringHere(harness: Harness, to: string, context: Context): Promise<void> {
+async function bringHere(
+	harness: Harness,
+	to: string,
+	record: MoveRecord | undefined,
+	context: Context,
+): Promise<void> {
 	await harness.commit(async (tx) => {
 		const home = await tx.doc(HomeDoc);
 		const from = home.root;
-		if (from === to) return;
-		if (from === undefined) {
-			home.root = to;
-			return;
-		}
 		// Every read comes before the first write: a transaction refuses a table read after one.
 		const changes: [ConversationId, string][] = [];
-		for (let cursor: Parameters<typeof tx.scanConversations>[2]; ; ) {
-			const page = await tx.scanConversations({}, CONVERSATION_PAGE, cursor);
-			for (const conversation of page.items) {
-				const cwd = (await tx.doc(AgentDoc, conversation.id)).cwd;
-				if (cwd === from) changes.push([conversation.id, to]);
-				else if (cwd?.startsWith(`${from}/`)) changes.push([conversation.id, `${to}${cwd.slice(from.length)}`]);
+		if (from !== undefined && from !== to) {
+			for (let cursor: Parameters<typeof tx.scanConversations>[2]; ; ) {
+				const page = await tx.scanConversations({}, CONVERSATION_PAGE, cursor);
+				for (const conversation of page.items) {
+					const cwd = (await tx.doc(AgentDoc, conversation.id)).cwd;
+					if (cwd === from) changes.push([conversation.id, to]);
+					else if (cwd?.startsWith(`${from}/`)) changes.push([conversation.id, `${to}${cwd.slice(from.length)}`]);
+				}
+				if (page.next === undefined) break;
+				cursor = page.next;
 			}
-			if (page.next === undefined) break;
-			cursor = page.next;
 		}
+		// The move's record, once: the first open of the moved store writes it, and an open after that finds it there.
+		const moved = record === undefined ? undefined : await tx.doc(MovesDoc, record.id, null);
 		for (const [id, cwd] of changes) await configure(tx, id, { cwd });
-		home.root = to;
+		if (from !== to) home.root = to;
+		if (moved !== undefined && record !== undefined && moved.v === undefined) Object.assign(moved, record);
 	}, context);
 }
 

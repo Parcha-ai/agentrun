@@ -2,14 +2,14 @@
 // "$0.0000", because what fakes and scripts report is not a provider's bill.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
-import { costLabel } from '../src/app.ts';
+import { costLabel } from '../src/counters.ts';
 
 const chrome = process.env.CHROME_PATH ?? '/usr/bin/google-chrome';
 
@@ -27,10 +27,11 @@ test('a real run, or one whose manifest does not say, reads in dollars to four p
   assert.equal(costLabel(null, true), 'unknown');
 });
 
-test('on the page, a bundled scripted run reads scripted, $0 and says its providers', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, (t) => {
+test('on the page, a scripted run reads scripted, $0 and says its providers', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-cost-'));
   t.after(() => rmSync(out, { recursive: true, force: true }));
-  build(join(out, 'dist'));
+  cpSync(new URL('fixtures/reference-job/', import.meta.url).pathname, join(out, 'recordings', 'reference-job'), { recursive: true });
+  build(join(out, 'dist'), join(out, 'recordings'));
   const ran = spawnSync(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${join(out, 'profile')}`,
     '--virtual-time-budget=4000', '--dump-dom', `${pathToFileURL(join(out, 'dist', 'index.html')).href}?r=reference-job`], { encoding: 'utf8', timeout: 60_000 });
   assert.ifError(ran.error);

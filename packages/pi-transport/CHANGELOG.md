@@ -58,3 +58,71 @@
 - `boxEnv`'s abort and timeout no longer leave a command running when the call that kills it fails. The kill call's result used to be dropped, so a kill exec that failed fast or timed out on a loaded provider API left the command's process group running in the box after `exec` had answered `aborted` or `timeout`, and nothing ended it later. The kill now reads back that no live process of the group is left (a zombie is not counted: `kill -0` succeeds on one, and in a container whose first process does not reap, a killed group would have stayed "alive" for ever), and the call is sent again at 1, 2 and 4 seconds when it fails, times out or finds the group alive, within 10 seconds of wall time, a call in flight included. A stop whose kill call worked answers as fast as before; one that needed a retry answers later, by at most 10 seconds.
   - A new optional property on that error: when no kill call could confirm the group gone within the bound, the `aborted` or `timeout` error is a `StoppedCommandError` (new type, exported from `@parcha/pi-transport/hands`) with `killUnconfirmed: true`, and the command stays tracked so `cleanup()` ends it with the rest. It is absent when the group was confirmed gone.
   - The live and local tests of "the whole process group is killed on an abort and on a timeout" now poll for "not running" with a bound that fails, instead of reading absence once right after `exec` returns.
+- A session whose box is gone is rebuilt in a new one from a checkpoint the host holds (`./home`). `pullCheckpoint` takes
+  one moment of a session off its box: it holds the session briefly, copies its store and pulls the files that changed
+  since the last checkpoint into a vault (`localVault`: three generations by default, hard-linked, so a generation costs
+  its delta). A checkpoint is whole or skipped, with a reason (`busy`, `changed`, `too_large`, `failed`) that
+  `checkpointStats` counts, with how long the session was held. `workspace.exclude` leaves paths out (never pulled, named in
+  the restore notice), and `maxPullBytes` bounds one pull. `recoverHome` takes a `vault` and the host's `replace()`: when the
+  lease's box is gone (never on a timeout), it restores the newest checkpoint that still checks out into the box `replace`
+  makes, takes the lease at the next epoch, and tells the model once what did not survive and which calls ran since. With
+  no usable checkpoint it fails with `no_checkpoint` and changes nothing.
+  - The commits between checkpoints are kept too: `recordSink` implements the record stream's sink over the vault
+    (`appendLog`, `readLog`, `through`), and a restore replays the unbroken run through the store's own `Storage` before the
+    Harness opens, so what the lost box admitted after the checkpoint is in the history the new box opens. The resume order's
+    `move` carries `kind`, `head` and `replayed`.
+  - `serveModels` keeps a paid answer by the request's `key` until a checkpoint covers it (`covered(head)`), so a rebuilt
+    runner's repeat is answered without paying again; `proxyModels({ keyOf })` makes the key.
+  - New in `./home`: `pullCheckpoint`, `localVault`, `recordSink`, `checkpointStats`, `restoreNotice`, `replayCommits`,
+    `manifestSince`, `moveChanged`, `excludedOf`. New in `./testing`: `registerRestoreConformance`, which kills the whole box
+    of the source or the target before each step of a move and recovers.
+  - Crossings: named moments a place announces, awaited, so the host can act exactly there (a supervisor kills a box or a
+    process). `pullCheckpoint({ crossing })` announces `transport.checkpoint.taken` once the checkpoint is the latest and the
+    session is let go (never for a skipped pull); `connectHome` / `boxRunner({ crossing })` announce `transport.tool.started`
+    with the tool's name when a tool begins, and the runner holds the tool until the handler returns, `info.release()` is
+    called, or `crossingMs` (10 s) passes. `crossingCounter()` keeps `n` across restarts. Nothing is killed by this package.
+- The placer: `jevPlacer` asks Jev through pi-ai's `Models.classify` where a session's next step should run (one call,
+  `need` against the resting place and `where` among the environments) and moves it only for a need; every decision is
+  a `PlacementRecord` by `jev` or `config`, kept in the session's store (`transport.placements`) with
+  `HomeHandle.recordPlacement`. It refuses to build without the classifier model or its key. The config gains
+  `environments.<id>.purpose`, `auto.rest` and `auto.threshold`. `./testing`: `replayClassifier` and
+  `recordingClassifications`.
+- The record stream (`./home`): a host that passes `connectHome`'s `records` (a `RecordSink`) keeps the session's log.
+  The runner puts each commit in an outbox beside its store before the store has it, ships its writes and its
+  recorder's lines (`runMain(app, { recording })`) once it has, sends what the host lacks on every connect, starts no
+  effect the host's log lacks (`admitsTool`, `admits`), seals only what the host holds (`not_shipped`), and keys each
+  model request by its generation (`key`, `position`). `registerMoveConformance` takes `records: true`.
+- The box-env offline tests no longer leave a `sleep 3600` running after a run: a test that held a process group of its own ended the shell that started it, not the group. The file now marks its own process, so every child it starts carries the mark, and an after-all check fails the file, naming each process it left behind, if any survives it.
+- `./place`: `boxPlace(options)`, a session's place in a box for a supervisor that starts, kills and restarts it. It
+  starts pi-transport's runner in the box (`boxRunner`), kills a runner by its process (`killRunner`, KILL first) or by
+  its box, restarts it in the same box or, for a lost box, in a new one from the newest checkpoint, or before any checkpoint from the vault's log alone
+  (`recoverHome` with `restoreFromLog`),
+  takes checkpoints at rest (`pullCheckpoint`), reads a runner's kill request and the transport's crossings
+  (`signals`), ships every runner's commits into the vault's log (`recordSink`, the host's `recorder` takes the lines)
+  and asks one model server for all of them, names every box by its label (the host's `receipts` ledger's numbering)
+  in its status, its crossings and its own `transport` lines (`lines`: `box.created`, `box.killed`, `box.ended`, `lease`,
+  `restore`), keeps the host's placement decisions in the session's store (`recordPlacement`), reports the run's status, carries the files an order names back from the box (`carry`), and brings a
+  recording written in the box home when its supervisor asks (`recordHome`, `clockSkewMs`).
+  The app contract gains `AppContext.env` (the session's environment, from `ResumeOrder.env`, over the link), `root` and
+  `epoch`, and `onResumed`, called once the session has resumed and not awaited by the order; `recoverHome` and
+  `moveHome` take `env`, a home keeps the environment it last opened with for an order that brings none (a reopen),
+  `boxRunner` takes `onProcess`, and a home refuses an order whose `env` is not names to strings (`invalid`).
+- `boxReceipts({ prices, write })`: a ledger of the boxes its wrapped providers make, with one receipt per box when it
+  ends (destroyed, found ended, or gone): `{ box, provider, kind, from, to, seconds, usd_per_second, cost_usd, source,
+  priced }`, for the host to write as a live `transport` line of kind `box.receipt`. `box` is a label, never the
+  provider's id: a host's `label(made)` is called when the box is made, with its own request and facts, and `taken`
+  carries the labels a recording holds across a restart. The prices are the host's, and a box with no price writes no
+  receipt. A box found ended after it expired is counted up to its maximum lifetime, not to when it was found.
+  `cost_usd` is an estimate at list price, not the provider's invoice. `labelOf(provider, id)` says the label a
+  box was given, and wrapping a provider the ledger already wraps returns it. It comes from the package root;
+  `./box/receipts` is not an entry.
+- A move's durable record: the target writes the document `transport.moves`, keyed by the move id, once, in the first
+  commit it makes when it opens the moved store (`MoveRecord`, `MovesDoc`), from what the host sends in
+  `ResumeOrder.move.record` (`MoveFacts`). `moveHome` sends the places, its drain, ship and take times, its bytes and
+  its seal; its `head` is the seal's. A home `Place` takes a `label`, the name a recording gives its box
+  (`whereOf(place)`), and the box place passes its boxes' labels. An order with no record writes none.
+- A session whose box is gone can be restored from the host's log alone (`./home`): `recoverHome({ ..., restoreFromLog: true })`, when no
+  checkpoint checks out, replays every shipped commit from the first into an empty store, gives the new box an empty workspace and takes
+  the lease at the next epoch. A job that never rests takes no checkpoint, so before this its whole-box loss was `no_checkpoint`. It needs
+  a log whole from commit 1, is off by default, and the model is told that no checkpoint existed and no file came back.
+  `restoreNotice(undefined, ...)` makes that text.

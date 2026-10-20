@@ -2,14 +2,16 @@
 // one's manifest and blob paths, gallery.js embeds nothing, and the page fetches a recording when it is opened.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 import { test } from 'node:test';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
+import { closeAll, drivenPage } from './driven-page.ts';
 
 const chrome = process.env.CHROME_PATH ?? '/usr/bin/google-chrome';
 const fixtures = new URL('fixtures/', import.meta.url).pathname;
@@ -26,7 +28,8 @@ test('the index lists each recording with its manifest and blob paths, and galle
     assert.equal(entry.events, undefined, `${entry.id}: no lines in the index`);
     assert.ok(existsSync(join(out, 'recordings', entry.id, 'events.jsonl')), `${entry.id}: its lines beside it`);
     for (const [sha, path] of Object.entries(entry.blobs)) {
-      assert.match(path, new RegExp(`^blobs/${sha}\\.[a-z0-9]+$`), `${entry.id}: a blob path in its directory`);
+      // A page is published under its name with .txt after it (plain text when opened straight); every other blob as itself.
+      assert.match(path, new RegExp(`^blobs/${sha}\\.(?:[a-z0-9]+|html\\.txt)$`), `${entry.id}: a blob path in its directory`);
       assert.ok(existsSync(join(out, 'recordings', entry.id, path)), `${entry.id}: ${path} is there`);
     }
   }
@@ -79,4 +82,63 @@ test('served over http: the gallery lists from the index, a run and its bundled 
   const lost = await page('');
   assert.match(lost, /The gallery could not be read/);
   assert.match(lost, /Drop a recording folder/);
+});
+
+test('a blob still being written (.<sha>.<ext>.tmp-<pid>) is neither listed nor shipped, and the gate passes the build', async (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-tmp-blob-'));
+  t.after(() => rmSync(out, { recursive: true, force: true }));
+  // A copy of a recording taken while a blob was being written: the temp name sits in blobs/ beside the finished ones.
+  const recordings = join(out, 'recordings');
+  cpSync(join(fixtures, 'reference-job'), join(recordings, 'reference-job'), { recursive: true });
+  const unfinished = `.${'a'.repeat(64)}.png.tmp-4242`;
+  writeFileSync(join(recordings, 'reference-job', 'blobs', unfinished), 'half a picture');
+  // @ts-expect-error: the gate is plain JavaScript
+  const { gateProblems } = await import('../../../scripts/recording/gate.mjs');
+  for (const files of [true, false]) {
+    const dist = join(out, files ? 'files' : 'embedded');
+    build(dist, recordings, { files });
+    assert.ok(!existsSync(join(dist, 'recordings', 'reference-job', 'blobs', unfinished)), `files ${files}: not shipped`);
+    const text = readFileSync(join(dist, files ? 'recordings/index.json' : 'gallery.js'), 'utf8');
+    assert.ok(!text.includes('tmp-4242') && !text.includes(`.${'a'.repeat(64)}`), `files ${files}: not listed`);
+    assert.deepEqual(gateProblems(dist), [], `files ${files}: the gate passes the build`);
+  }
+});
+
+test('in Chrome: a page or an SVG in a recording is published as plain text, so opened straight from the site it runs nothing', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 120_000 }, async (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-inert-'));
+  const pages: Awaited<ReturnType<typeof drivenPage>>[] = [];
+  t.after(() => closeAll(pages, () => rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })), { timeout: 20_000 });
+  const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+  const html = Buffer.from('<!doctype html><html><body><p>an agent\'s page</p><script>window.ran = true</script></body></html>');
+  const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>window.ran = true</script></svg>');
+  const recordings = join(out, 'recordings');
+  cpSync(join(fixtures, 'reference-killed'), join(recordings, 'one'), { recursive: true });
+  writeFileSync(join(recordings, 'one', 'blobs', `${sha(html)}.html`), html);
+  writeFileSync(join(recordings, 'one', 'blobs', `${sha(svg)}.svg`), svg);
+  build(join(out, 'dist'), recordings, { files: true });
+  // The control: the same page served as itself runs, so a page that does not run is told apart.
+  mkdirSync(join(out, 'dist', 'control'));
+  writeFileSync(join(out, 'dist', 'control', 'page.html'), html);
+  // Each file served by its extension, as a static host serves it.
+  const TYPES: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.txt': 'text/plain; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
+  const server = createServer((request, response) => {
+    const file = join(out, 'dist', decodeURIComponent(new URL(request.url!, 'http://localhost').pathname));
+    if (!file.startsWith(join(out, 'dist')) || !existsSync(file) || statSync(file).isDirectory()) { response.writeHead(404).end(); return; }
+    response.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream', 'x-content-type-options': 'nosniff' }).end(readFileSync(file));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const published = ['.html', '.svg'].map((ext) => `/recordings/one/blobs/${sha(ext === '.html' ? html : svg)}${ext}`);
+  assert.ok(published.every((path) => !existsSync(join(out, 'dist', path)) && existsSync(join(out, 'dist', `${path}.txt`))), 'each is published only under its .txt name');
+  const page = await drivenPage(`${origin}/control/page.html`, join(out, 'profile'), { signal: t.signal });
+  pages.push(page);
+  await page.once('document.readyState === "complete"', 'true', 20_000, 'the control page');
+  assert.deepEqual(JSON.parse(String(await page.evaluate('JSON.stringify([document.contentType, window.ran === true])'))), ['text/html', true], 'served as a page, it runs');
+  for (const path of published) {
+    await page.evaluate(`window.before = true; location.assign(${JSON.stringify(`${origin}${path}.txt`)})`);
+    await page.once('window.before === undefined && document.readyState === "complete"', 'true', 20_000, `${path}.txt opening`);
+    const seen = JSON.parse(String(await page.evaluate('JSON.stringify([document.contentType, window.ran === true, document.body.innerText.includes("<script>")])')));
+    assert.deepEqual(seen, ['text/plain', false, true], `${path}.txt opens as its text and runs nothing`);
+  }
 });

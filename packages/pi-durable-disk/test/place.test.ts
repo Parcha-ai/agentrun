@@ -3,14 +3,17 @@
 // No Archil, no network.
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
-import { archilPlace, localPlace, PlaceError } from "../src/place.ts";
+import { archilPlace, localPlace, PlaceError, writeAll } from "../src/place.ts";
 import { parseTokenNickname } from "../src/claim.ts";
-import type { HostDriver, HostHandle, HostStatus, StartAttempt, SupervisorControl } from "../src/supervise.ts";
+import type { HostBox, HostDriver, HostHandle, HostStatus, StartAttempt, SupervisorControl } from "../src/supervise.ts";
 import { currentBootId, procStartTicks } from "../src/hosts/local-host.ts";
 import { scratchRoot } from "./_run-support.ts";
 
@@ -53,6 +56,7 @@ describe("localPlace", () => {
     assert.deepEqual(place.kills, ["process"], "no box to lose without destroyBoxes");
     assert.equal(place.token, undefined, "a plain directory has no claim, so no token");
     assert.equal(place.signals, undefined, "no request file named, no signals");
+    assert.equal(place.requestFile, undefined);
 
     const first = await place.start({ gen: 1, env: { PLACE_ORDER: "one" } });
     const sleeper = Number(await waitFor("the first runner's sleeper", () => existsSync(join(root, "work", "sleeper.pid")) && readFileSync(join(root, "work", "sleeper.pid"), "utf8")));
@@ -62,13 +66,13 @@ describe("localPlace", () => {
     await place.kill(first, "process");
     const killed = await first.exited;
     assert.deepEqual([killed.exit, killed.signal], ["SIGKILL", "SIGKILL"]);
-    assert.deepEqual([killed.outcome?.status, killed.outcome?.generation], ["running", 1], "no line: run.json as the killed instance left it");
+    assert.deepEqual([killed.outcome?.status, killed.outcome?.generation], ["failed", 1], "no line: run.json as the killed instance left it (running), in the run's word: not delivered");
     await waitFor("the sleeper to die with its group", () => !alive(sleeper), 5_000);
 
     const { runner } = await place.recover(first, "process", { gen: 2, env: { PLACE_ORDER: "two", PLACE_SILENT: "1" } });
     const done = await runner.exited;
     assert.equal(done.exit, 0, done.stderr);
-    assert.deepEqual(done.outcome, { status: "done", generation: 2, code: null, record: { order: "two" } }, "the record from the detail of the last status");
+    assert.deepEqual(done.outcome, { status: "complete", generation: 2, code: null, record: { order: "two" } }, "done with the record from the detail of the last status: complete");
     assert.equal(readFileSync(join(root, "work", "gen-2"), "utf8"), "two");
     assert.deepEqual([(await place.status!()).record?.status, (await place.status!()).record?.generation], ["done", 2]);
   });
@@ -103,6 +107,71 @@ describe("localPlace", () => {
     await Promise.race([commandGone, sleep(5_000)]);
     assert.ok(!alive(mark.pid), "release ended the run's recorded command");
     assert.ok(!existsSync(join(root2, "commands")), "and cleared its records");
+  });
+});
+
+describe("localPlace outcome", () => {
+  it("run.json's outcome is in the run's word: complete when done with a delivered record, failed for done with none or a failed run", { timeout: 120_000 }, async () => {
+    const cases = [
+      [{}, "complete"],
+      [{ PLACE_NO_RECORD: "1" }, "failed"],
+      [{ PLACE_FAIL: "1" }, "failed"],
+    ] as const;
+    for (const [env, status] of cases) {
+      const place = localPlace({ app: APP })({ paths: pathsAt(scratch()) });
+      const runner = await place.start({ gen: 1, env: { PLACE_FINISH: "1", PLACE_SILENT: "1", ...env } });
+      const ended = await runner.exited;
+      assert.equal(ended.exit, 0, ended.stderr);
+      assert.equal(ended.outcome?.status, status, JSON.stringify({ env, outcome: ended.outcome }));
+    }
+  });
+});
+
+describe("place outcome models", () => {
+  const MODELS = { lead: "claude-opus-5-5", eyes: "gpt-vision-2" };
+  /** A models value the app reported, and what the outcome should carry: a plain object of strings, else nothing. */
+  const cases: [string, unknown, Record<string, string> | undefined][] = [
+    ["a plain object of strings", MODELS, MODELS],
+    ["absent", undefined, undefined],
+    ["an array", ["claude-opus-5-5"], undefined],
+    ["a string", "claude-opus-5-5", undefined],
+    ["a non-string value", { lead: "claude-opus-5-5", eyes: 2 }, undefined],
+    ["null", null, undefined],
+  ];
+  const carries = (outcome: unknown, want: Record<string, string> | undefined, name: string) => {
+    if (want === undefined) assert.ok(outcome !== null && typeof outcome === "object" && !("models" in outcome), `${name}: no models field, never {}: ${JSON.stringify(outcome)}`);
+    else assert.deepEqual((outcome as { models?: unknown }).models, want, name);
+  };
+
+  it("localPlace: the outcome line's models only when they are a plain object of strings, and run.json's on a failed run that printed none", { timeout: 240_000 }, async () => {
+    for (const [name, models, want] of cases) {
+      const place = localPlace({ app: APP })({ paths: pathsAt(scratch()) });
+      const env: Record<string, string> = { PLACE_FINISH: "1", ...(models === undefined ? {} : { PLACE_MODELS: JSON.stringify(models) }) };
+      const ended = await (await place.start({ gen: 1, env })).exited;
+      assert.equal(ended.outcome?.status, "complete", `${name}: ${ended.stderr}`);
+      carries(ended.outcome, want, `the outcome line, ${name}`);
+    }
+    const place = localPlace({ app: APP })({ paths: pathsAt(scratch()) });
+    const failed = await (await place.start({ gen: 1, env: { PLACE_FINISH: "1", PLACE_SILENT: "1", PLACE_FAIL: "1", PLACE_MODELS: JSON.stringify(MODELS) } })).exited;
+    assert.equal(failed.outcome?.status, "failed", failed.stderr);
+    assert.deepEqual(failed.outcome?.models, MODELS, "a failed run used models too: run.json's detail carries them");
+  });
+
+  it("archilPlace: run.json's final detail.models on a complete or a failed outcome, only when they are a plain object of strings", async () => {
+    for (const status of ["done", "failed"] as const) {
+      for (const [name, models, want] of cases) {
+        const control = new FakeControl();
+        const { host, states } = fakeHost(control);
+        const at = makePlace({ ...REF, control, host });
+        const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+        control.runJson({ generation: 1, status, detail: { record: { n: 1 }, ...(models === undefined ? {} : { models }) } });
+        states.set("box-1", "stopped");
+        const outcome = (await runner.exited).outcome;
+        assert.equal(outcome?.status, status === "done" ? "complete" : "failed", name);
+        carries(outcome, want, `${status}, ${name}`);
+        await at.release();
+      }
+    }
   });
 });
 
@@ -157,6 +226,7 @@ describe("localPlace signals", () => {
     mkdirSync(dir, { recursive: true });
     const requestFile = (attempt: number) => join(dir, `kill-${attempt}.json`);
     const place = localPlace({ app: APP })({ paths: pathsAt(dir), requestFile });
+    assert.equal(place.requestFile!(4), requestFile(4), "the request file is the supervisor's own, where signals reads");
     const it1 = place.signals!(1)[Symbol.asyncIterator]();
     const first = it1.next();
     writeFileSync(requestFile(1), '{"point":"paid-call.ackno');
@@ -165,9 +235,9 @@ describe("localPlace signals", () => {
     void first.then(() => (settled = true));
     await sleep(0);
     assert.equal(settled, false, "half a request is not one");
-    writeFileSync(`${requestFile(1)}.tmp`, JSON.stringify({ point: "paid-call.acknowledged", n: 2, pid: 7 }));
+    writeFileSync(`${requestFile(1)}.tmp`, JSON.stringify({ point: "paid-call.acknowledged", n: 2, pid: 7, nonce: "ab12" }));
     renameSync(`${requestFile(1)}.tmp`, requestFile(1));
-    assert.deepEqual(await first, { done: false, value: { kind: "kill-request", crossing: { point: "paid-call.acknowledged", n: 2, pid: 7 } } });
+    assert.deepEqual(await first, { done: false, value: { kind: "kill-request", crossing: { point: "paid-call.acknowledged", n: 2, pid: 7 }, nonce: "ab12" } }, "the nonce at the signal's top");
     assert.deepEqual(await it1.next(), { done: true, value: undefined }, "one request per attempt");
 
     const it2 = place.signals!(2)[Symbol.asyncIterator]();
@@ -192,6 +262,9 @@ class FakeControl implements SupervisorControl {
   ops: string[] = [];
   /** getObject of a key under this prefix never answers. */
   hangUnder: string | null = null;
+  /** getObject calls so far, and an error every getObject of a key under `failUnder` throws instead of answering. */
+  gets = 0;
+  failUnder: { prefix: string; error: Error } | null = null;
   /** The inode each run directory has, as the disk's `find -inum` reports it; and how many execs ran, and how many next fail. */
   inodes = new Map<string, number>();
   execs = 0;
@@ -203,7 +276,9 @@ class FakeControl implements SupervisorControl {
     this.objects.set(`runs/${ID}/run.json`, JSON.stringify({ run: ID, status: "running", generation: 1, sealedSeq: null, wakeAt: null, holder: null, heartbeatAt: new Date().toISOString(), updatedAt: new Date().toISOString(), detail: null, ...o }));
   }
   async getObject(key: string) {
+    this.gets++;
     if (this.hangUnder !== null && key.startsWith(this.hangUnder)) return new Promise<Uint8Array>(() => {});
+    if (this.failUnder !== null && key.startsWith(this.failUnder.prefix)) throw this.failUnder.error;
     const v = this.objects.get(key);
     if (v === undefined) throw Object.assign(new Error("NoSuchKey"), { status: 404, code: "NoSuchKey" });
     return new TextEncoder().encode(v);
@@ -211,8 +286,24 @@ class FakeControl implements SupervisorControl {
   async headObject(key: string) {
     return this.objects.has(key) ? {} : null;
   }
-  async putObject(key: string, body: string) {
+  /** Every put, with the owner and mode it asked for; and a listing that fails, when set. */
+  puts: { key: string; uid: number; gid: number; mode: number }[] = [];
+  lists = 0;
+  failList: Error | null = null;
+  /** A put of a key under record/ or signals/ that the server refuses (a run a delegation holds), when set. */
+  putRefused: Error | null = null;
+  async putObject(key: string, body: string, options: { uid: number; gid: number; mode: number } = { uid: -1, gid: -1, mode: -1 }) {
+    if (key.includes("/record/") || key.includes("/signals/")) {
+      if (this.putRefused) throw this.putRefused;
+      this.ops.push(`put ${key.slice(`runs/${ID}/`.length)}`);
+      this.puts.push({ key, ...options });
+    }
     this.objects.set(key, body);
+  }
+  async listObjects(prefix: string, _options?: { recursive?: boolean }) {
+    this.lists++;
+    if (this.failList) throw this.failList;
+    return { objects: [...this.objects].filter(([key]) => key.startsWith(prefix) && !key.endsWith("/")).map(([key, v]) => ({ key, size: Buffer.byteLength(v) })) };
   }
   async addUser(user: { type: "token"; nickname: string }) {
     this.ops.push(`addUser ${user.nickname.replace(/-[0-9a-z]+$/, "")}`);
@@ -293,6 +384,244 @@ const makePlace = (o: Parameters<typeof archilPlace>[0]) => {
   return p;
 };
 
+describe("archilPlace recordHome", () => {
+  const rec = (n: number, rest: string) => `runs/${ID}/record/${n}/${rest}`;
+  const line = (o: Record<string, unknown>) => `${JSON.stringify(o)}\n`;
+  const blobOf = (text: string, ext = "png") => ({ text, hash: createHash("sha256").update(text).digest("hex"), name: `${createHash("sha256").update(text).digest("hex")}.${ext}` });
+  const read = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : null);
+
+  it("dir is the attempt's directory in the run; localPlace has none, nor a place whose control cannot list", () => {
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    assert.equal(at.recordHome!.dir(2), `/mnt/fake/runs/${ID}/record/2`);
+    assert.throws(() => at.recordHome!.dir(0), (e: unknown) => e instanceof PlaceError && e.code === "INVALID_ARGUMENT");
+    assert.equal(localPlace({ app: APP })({ paths: pathsAt("/x") }).recordHome, undefined);
+    const bare = new FakeControl();
+    (bare as unknown as { listObjects?: unknown }).listObjects = undefined;
+    assert.equal(makePlace({ ...REF, control: bare, host: fakeHost(bare).host }).recordHome, undefined);
+  });
+
+  it("brings home the whole lines and holds a partial one; a second call, or one from another place on the same disk, carries nothing twice", async () => {
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const into = scratch();
+    const spool = rec(1, ".spool/child-9-1.jsonl");
+    const dest = join(into, ".spool", "child-9-1.jsonl");
+    control.objects.set(spool, `${line({ seq: 0 })}${line({ seq: 1 })}{"seq":`);
+    control.objects.set(rec(1, ".spool/started"), "2026-10-16T07:00:00.000Z");
+    await at.recordHome!.bringHome(into);
+    assert.equal(read(dest), `${line({ seq: 0 })}${line({ seq: 1 })}`, "up to the last whole line");
+    assert.equal(read(join(into, ".spool", "started")), null, "started is the supervisor's, never carried back");
+    const gets = control.gets;
+    await at.recordHome!.bringHome(into);
+    assert.equal(read(dest), `${line({ seq: 0 })}${line({ seq: 1 })}`);
+    assert.equal(control.gets, gets, "a file that did not grow is not fetched");
+    control.objects.set(spool, `${line({ seq: 0 })}${line({ seq: 1 })}${line({ seq: 2 })}${line({ seq: 3 })}`);
+    await at.recordHome!.bringHome(into, { final: true });
+    await makePlace({ ...REF, control, host: fakeHost(control).host }).recordHome!.bringHome(into, { final: true });
+    assert.equal(read(dest), [0, 1, 2, 3].map((seq) => line({ seq })).join(""), "each line once");
+  });
+
+  it("carriers that overlap on one destination append each line once: two calls of one place, two places, a third that finds the lines home", async () => {
+    const control = new FakeControl();
+    const spool = rec(1, ".spool/child-9-1.jsonl");
+    const lines = [0, 1, 2, 3, 4].map((seq) => line({ seq })).join("");
+    control.objects.set(spool, lines);
+    const one = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const other = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const into = scratch();
+    // Both read the destination's offset (0) before either appends: without the recheck under the lock, both append.
+    await Promise.all([one.recordHome!.bringHome(into), one.recordHome!.bringHome(into), other.recordHome!.bringHome(into)]);
+    assert.equal(read(join(into, ".spool", "child-9-1.jsonl")), lines, "each line once");
+    await other.recordHome!.bringHome(into, { final: true });
+    assert.equal(read(join(into, ".spool", "child-9-1.jsonl")), lines);
+    assert.deepEqual(readdirSync(join(into, ".spool")), ["child-9-1.jsonl"], "no lock is left behind");
+  });
+
+  it("a second destination gets every line, even of the files this place already carried elsewhere and that did not grow", async () => {
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const spool = rec(1, ".spool/child-9-1.jsonl");
+    control.objects.set(spool, `${line({ seq: 0 })}${line({ seq: 1 })}`);
+    const a = scratch();
+    const b = scratch();
+    await at.recordHome!.bringHome(a);
+    await at.recordHome!.bringHome(b);
+    assert.equal(read(join(b, ".spool", "child-9-1.jsonl")), `${line({ seq: 0 })}${line({ seq: 1 })}`);
+    assert.equal(read(join(a, ".spool", "child-9-1.jsonl")), read(join(b, ".spool", "child-9-1.jsonl")));
+  });
+
+  it("a destination file's lock: one left by a carrier that is gone is taken over; one a live carrier keeps is CARRY_FAILED after the wait", { timeout: 30_000 }, async () => {
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    control.objects.set(rec(1, ".spool/child-9-1.jsonl"), line({ seq: 0 }));
+    const into = scratch();
+    mkdirSync(join(into, ".spool"), { recursive: true });
+    const lock = join(into, ".spool", ".child-9-1.jsonl.lock");
+    const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout;
+    writeFileSync(lock, dead);
+    await at.recordHome!.bringHome(into);
+    assert.equal(read(join(into, ".spool", "child-9-1.jsonl")), line({ seq: 0 }), "a gone holder's lock is taken over");
+    assert.equal(existsSync(lock), false);
+    control.objects.set(rec(1, ".spool/child-9-1.jsonl"), `${line({ seq: 0 })}${line({ seq: 1 })}`);
+    writeFileSync(lock, String(process.pid)); // a live carrier: this process, as another one would be
+    const t0 = Date.now();
+    await assert.rejects(at.recordHome!.bringHome(into), (e: unknown) => e instanceof PlaceError && e.code === "CARRY_FAILED" && /holds/.test(e.message) && e.message.length <= 240);
+    assert.ok(Date.now() - t0 >= 5_000, "it waited for the holder first");
+    assert.equal(read(join(into, ".spool", "child-9-1.jsonl")), line({ seq: 0 }), "nothing appended while another holds it");
+  });
+
+  it("a destination file's lock that cannot be read is CARRY_FAILED at once, never a wait without end", { timeout: 30_000 }, async (t) => {
+    if (process.getuid?.() === 0) return t.skip("root reads every file");
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    control.objects.set(rec(1, ".spool/child-9-1.jsonl"), line({ seq: 0 }));
+    const into = scratch();
+    mkdirSync(join(into, ".spool"), { recursive: true });
+    const lock = join(into, ".spool", ".child-9-1.jsonl.lock");
+    writeFileSync(lock, "4242");
+    chmodSync(lock, 0o000);
+    try {
+      const t0 = Date.now();
+      await assert.rejects(at.recordHome!.bringHome(into), (e: unknown) => e instanceof PlaceError && e.code === "CARRY_FAILED" && /reading the carry lock/.test(e.message) && e.message.length <= 240);
+      assert.ok(Date.now() - t0 < 5_000, "refused at once, not after the wait");
+      assert.equal(read(join(into, ".spool", "child-9-1.jsonl")), null);
+    } finally {
+      chmodSync(lock, 0o644);
+    }
+  });
+
+  it("writeAll goes on after a short write, and a write that takes nothing fails", () => {
+    const got: number[] = [];
+    writeAll(7, new Uint8Array([1, 2, 3, 4, 5, 6, 7]), (_fd, bytes, offset, length) => {
+      const n = Math.min(3, length);
+      got.push(...bytes.subarray(offset, offset + n));
+      return n;
+    });
+    assert.deepEqual(got, [1, 2, 3, 4, 5, 6, 7]);
+    assert.throws(() => writeAll(7, new Uint8Array([1, 2]), () => 0), (e: unknown) => e instanceof PlaceError && e.code === "CARRY_FAILED");
+  });
+
+  it("segments: each .spool/*.jsonl comes home with its own offset, a rotated one too", async () => {
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const into = scratch();
+    const seg = (n: number) => rec(2, `.spool/child-9-1.${n}.jsonl`);
+    control.objects.set(seg(1), `${line({ seq: 0 })}${line({ seq: 1 })}`);
+    control.objects.set(seg(2), `${line({ seq: 2 })}{"se`);
+    await at.recordHome!.bringHome(into);
+    control.objects.set(seg(2), `${line({ seq: 2 })}${line({ seq: 3 })}`);
+    control.objects.set(seg(3), line({ seq: 4 }));
+    await at.recordHome!.bringHome(into);
+    assert.equal(read(join(into, ".spool", "child-9-1.1.jsonl")), `${line({ seq: 0 })}${line({ seq: 1 })}`);
+    assert.equal(read(join(into, ".spool", "child-9-1.2.jsonl")), `${line({ seq: 2 })}${line({ seq: 3 })}`);
+    assert.equal(read(join(into, ".spool", "child-9-1.3.jsonl")), line({ seq: 4 }));
+  });
+
+  it("blobs first: a blob that lands before its line comes home with it; a line whose blob is not on the disk yet waits, and on final is carried and named CARRY_FAILED", async () => {
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const into = scratch();
+    const x = blobOf("frame one");
+    const y = blobOf("frame two", "jpg");
+    const spool = rec(1, ".spool/child-9-1.jsonl");
+    const dest = join(into, ".spool", "child-9-1.jsonl");
+    control.objects.set(rec(1, `blobs/${x.name}`), x.text);
+    control.objects.set(spool, line({ seq: 0, blobs: [x.hash] }));
+    await at.recordHome!.bringHome(into);
+    assert.equal(read(join(into, "blobs", x.name)), x.text);
+    assert.equal(read(dest), line({ seq: 0, blobs: [x.hash] }));
+
+    control.objects.set(spool, `${line({ seq: 0, blobs: [x.hash] })}${line({ seq: 1, blobs: [y.hash] })}${line({ seq: 2 })}`);
+    await at.recordHome!.bringHome(into);
+    assert.equal(read(dest), line({ seq: 0, blobs: [x.hash] }), "the line waits for its blob, and the lines after it too");
+    // The blob lands after the line that names it: the next call brings both.
+    const z = blobOf("frame three");
+    control.objects.set(rec(1, `blobs/${y.name}`), y.text);
+    await at.recordHome!.bringHome(into);
+    assert.equal(read(join(into, "blobs", y.name)), y.text);
+    assert.equal(read(dest), [line({ seq: 0, blobs: [x.hash] }), line({ seq: 1, blobs: [y.hash] }), line({ seq: 2 })].join(""));
+    control.objects.delete(rec(1, `blobs/${y.name}`));
+    control.objects.set(spool, `${read(dest)}${line({ seq: 3, blobs: [z.hash] })}`);
+    await assert.rejects(at.recordHome!.bringHome(into, { final: true }), (e: unknown) => e instanceof PlaceError && e.code === "CARRY_FAILED" && e.message.includes(z.hash) && e.message.length <= 240);
+    assert.ok(read(dest)!.endsWith(line({ seq: 3, blobs: [z.hash] })), "on final a line whose blob never landed comes home anyway, and says so");
+  });
+
+  it("a blob whose bytes do not hash to its name is skipped, everything else comes home, then the call is BLOB_MISMATCH", async () => {
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const into = scratch();
+    const bad = blobOf("the whole frame");
+    const good = blobOf("another frame", "jpg");
+    control.objects.set(rec(1, `blobs/${bad.name}`), "the who");
+    control.objects.set(rec(1, `blobs/${good.name}`), good.text);
+    control.objects.set(rec(1, ".spool/child-9-1.jsonl"), `${line({ seq: 0, blobs: [good.hash] })}${line({ seq: 1 })}`);
+    for (const final of [false, true]) {
+      await assert.rejects(at.recordHome!.bringHome(into, { final }), (e: unknown) => e instanceof PlaceError && e.code === "BLOB_MISMATCH" && e.message.includes(bad.name) && e.message.length <= 240);
+      assert.equal(read(join(into, "blobs", bad.name)), null, "never written");
+      assert.equal(read(join(into, "blobs", good.name)), good.text, "the rest first");
+      assert.equal(read(join(into, ".spool", "child-9-1.jsonl")), `${line({ seq: 0, blobs: [good.hash] })}${line({ seq: 1 })}`);
+    }
+    control.objects.set(rec(1, `blobs/${bad.name}`), bad.text);
+    await at.recordHome!.bringHome(into, { final: true });
+    assert.equal(read(join(into, "blobs", bad.name)), bad.text, "the next call tries it again");
+  });
+
+  it("no BOX_GONE: the recording is on the run's disk, so after the box is deleted the final call still carries what it wrote", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host });
+    const into = scratch();
+    const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+    control.objects.set(rec(1, ".spool/child-9-1.jsonl"), line({ seq: 0 }));
+    await at.kill(runner, "box");
+    await at.recordHome!.bringHome(into, { final: true });
+    assert.equal(read(join(into, ".spool", "child-9-1.jsonl")), line({ seq: 0 }));
+  });
+
+  it("a listing that fails is CARRY_FAILED, in a message of at most 240 characters", async () => {
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    control.failList = Object.assign(new Error(`503 ${"x".repeat(1_000)}`), { status: 503 });
+    await assert.rejects(at.recordHome!.bringHome(scratch()), (e: unknown) => e instanceof PlaceError && e.code === "CARRY_FAILED" && e.message.length <= 240);
+  });
+
+  it("at start, before the runner, the place makes the EMPTY signals/ and record/<attempt>/.spool/ over the control, owned by the run user; never a file", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = archilPlace({ ...REF, control, host, pollMs: 5, ensure: { create: { uid: 1500, gid: 1500 } } })({ paths: pathsAt("/x") });
+    made.push(at);
+    const first = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+    assert.deepEqual(control.ops.filter((o) => o.startsWith("put ") || o.startsWith("start ")), ["put signals/", "put record/", "put record/1/", "put record/1/.spool/", "put record/1/blobs/", "start g1"], "before the runner");
+    assert.ok(control.puts.every((p) => p.key.endsWith("/") && p.uid === 1500 && p.gid === 1500 && p.mode === 0o755), "directories only, the run user's");
+    await at.kill(first, "box");
+    control.ops.length = 0;
+    await at.recover(first, "box", { gen: 2, env: {}, stdin: await at.token!(2) });
+    assert.deepEqual(control.ops.filter((o) => o.startsWith("put ")), ["put record/2/", "put record/2/.spool/", "put record/2/blobs/"], "what exists is left as it is");
+    await at.release();
+
+    // A put the server refuses (a delegation holds the run): the start fails, saying so, and nothing starts.
+    const c3 = new FakeControl();
+    const { host: h3, starts } = fakeHost(c3);
+    const refused = archilPlace({ ...REF, control: c3, host: h3, pollMs: 5, ensure: { create: { uid: 1500, gid: 1500 } } })({ paths: pathsAt("/x") });
+    made.push(refused);
+    c3.putRefused = Object.assign(new Error("409 Conflict: the directory is held by another client"), { status: 409 });
+    await assert.rejects(refused.start({ gen: 1, env: {}, stdin: await refused.token!(1) }), (e: unknown) => {
+      const cause = (e as { cause?: { code?: string; message?: string } }).cause;
+      return (e as { code?: string }).code === "HOST_START_FAILED" && cause?.code === "DIRS_REFUSED" && /signals\/ in the run over the control was refused: 409/.test(cause.message ?? "") && (cause.message ?? "").length <= 240;
+    });
+    assert.equal(starts.length, 0, "no runner over directories that are not there");
+
+    // Without the run user's owner nothing is made: a directory the run user does not own would refuse its files.
+    const c2 = new FakeControl();
+    const unowned = archilPlace({ ...REF, control: c2, host: fakeHost(c2).host, pollMs: 5 })({ paths: pathsAt("/x") });
+    made.push(unowned);
+    await unowned.start({ gen: 1, env: {}, stdin: await unowned.token!(1) });
+    assert.deepEqual(c2.puts, []);
+    await unowned.release();
+  });
+});
+
 describe("archilPlace", () => {
   it("mints a mount token per attempt through its control: a runner starts with the token it was handed, with its order's environment", async () => {
     const control = new FakeControl();
@@ -332,7 +661,7 @@ describe("archilPlace", () => {
 
     await at.kill(first, "box");
     const ended = await first.exited;
-    assert.deepEqual([ended.exit, ended.signal, ended.outcome?.status, ended.outcome?.generation], ["SIGKILL", "SIGKILL", "running", 1]);
+    assert.deepEqual([ended.exit, ended.signal, ended.outcome?.status, ended.outcome?.generation], ["SIGKILL", "SIGKILL", "failed", 1]);
     assert.deepEqual(control.ops, ["kill box-1"]);
     control.ops.length = 0;
 
@@ -355,9 +684,29 @@ describe("archilPlace", () => {
     const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
     control.runJson({ status: "done", generation: 1, detail: { record: { n: 3 }, storeSha256: "ab", code: "OK" } });
     states.set("box-1", "stopped");
-    assert.deepEqual(await runner.exited, { exit: "stopped", signal: null, outcome: { status: "done", generation: 1, code: "OK", record: { n: 3 }, storeSha256: "ab" }, stderr: "" });
+    assert.deepEqual(await runner.exited, { exit: "stopped", signal: null, outcome: { status: "complete", generation: 1, code: "OK", record: { n: 3 }, storeSha256: "ab" }, stderr: "" });
     await at.kill(runner, "box");
     assert.ok(!control.ops.includes("kill box-1"));
+  });
+
+  it("run.json's outcome is in the run's word: complete only when done with a delivered record; done with none, failed or abandoned is failed", async () => {
+    const cases = [
+      [{ status: "done", detail: { record: { n: 1 } } }, "complete"],
+      [{ status: "done", detail: { steps: 4 } }, "failed"],
+      [{ status: "done", detail: { record: null } }, "failed"],
+      [{ status: "done", detail: null }, "failed"],
+      [{ status: "failed", detail: { code: "APP_GAVE_UP", record: { n: 1 } } }, "failed"],
+      [{ status: "running" }, "failed"],
+    ] as const;
+    for (const [record, status] of cases) {
+      const control = new FakeControl();
+      const { host, states } = fakeHost(control);
+      const at = makePlace({ ...REF, control, host });
+      const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+      control.runJson({ generation: 1, ...record });
+      states.set("box-1", "stopped");
+      assert.equal((await runner.exited).outcome?.status, status, JSON.stringify(record));
+    }
   });
 
   it("a done run starts nothing: the token goes, and the runner ends as it begins", async () => {
@@ -368,7 +717,7 @@ describe("archilPlace", () => {
     const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
     assert.equal(starts.length, 0);
     assert.deepEqual(control.users.size, 0, "the unused token user was removed");
-    assert.deepEqual((await runner.exited).outcome, { status: "done", generation: 4, code: null, record: "r" });
+    assert.deepEqual((await runner.exited).outcome, { status: "complete", generation: 4, code: null, record: "r" });
     await at.release();
   });
 
@@ -415,6 +764,46 @@ describe("archilPlace", () => {
     assert.equal(control.users.size, 1, "both removals failed: the user is still there");
     await at.release();
     assert.equal(control.users.size, 0, "release removed it");
+  });
+
+  it("signals: the attempt's request is read from the run's directory over S3, where requestFile says the runner writes it; return() ends a next() whose read hangs", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host, signalPollMs: 5 });
+    assert.equal(at.requestFile!(3), `/mnt/fake/runs/${ID}/signals/kill-3.json`, "in the run's mount, outside work/");
+    assert.throws(() => at.requestFile!(0), (e: unknown) => e instanceof PlaceError && e.code === "INVALID_ARGUMENT");
+    const key = `runs/${ID}/signals/kill-3.json`;
+
+    const it3 = at.signals!(3)[Symbol.asyncIterator]();
+    const first = it3.next();
+    let settled = false;
+    void first.then(() => (settled = true));
+    control.objects.set(key, '{"point":"paid-call.ackn');
+    await sleep(40);
+    assert.equal(settled, false, "half a request is not one");
+    control.objects.set(key, JSON.stringify({ point: "paid-call.acknowledged", n: 1, pid: 4, nonce: "0f1e" }));
+    assert.deepEqual(
+      await first,
+      { done: false, value: { kind: "kill-request", crossing: { point: "paid-call.acknowledged", n: 1, pid: 4 }, nonce: "0f1e" } },
+      "the nonce is the signal's, read at its top, and not the crossing's; every other field stays in the crossing",
+    );
+    assert.deepEqual(await it3.next(), { done: true, value: undefined });
+
+    // No nonce, or one that is not a string: the signal has no nonce field, and the crossing none either.
+    for (const [request, attempt] of [[{ point: "p", n: 2 }, 5], [{ point: "p", n: 2, nonce: 7 }, 6]] as const) {
+      control.objects.set(`runs/${ID}/signals/kill-${attempt}.json`, JSON.stringify(request));
+      const got = (await at.signals!(attempt)[Symbol.asyncIterator]().next()).value as Record<string, unknown>;
+      assert.deepEqual(got, { kind: "kill-request", crossing: { point: "p", n: 2 } }, JSON.stringify(request));
+      assert.ok(!("nonce" in got), "no nonce field at all");
+    }
+
+    control.hangUnder = `runs/${ID}/signals/`;
+    const it4 = at.signals!(4)[Symbol.asyncIterator]();
+    const pending = it4.next();
+    await sleep(20);
+    await it4.return!();
+    const ended = await Promise.race([pending, new Promise((r) => setImmediate(() => r("late")))]);
+    assert.deepEqual(ended, { done: true, value: undefined }, "the return ended it though its read never answered");
   });
 
   it("a runner whose status reads fail stays killable: its exited reports the failure, and kill still kills", async () => {
@@ -474,6 +863,118 @@ describe("archilPlace", () => {
     await assert.rejects(other.status!(), (e: unknown) => (e as { code?: string }).code === "CONTROL_API_FAILED");
     assert.deepEqual((await other.status!()).delegations?.map((d) => d.clientId), ["c-1"], "the next call resolved it with a new resolver");
     assert.equal(control.execs, 2);
+  });
+
+  it("signals: a long poll attaches nothing to anything that lives as long as the iterator (the heap does not grow with polls)", { timeout: 120_000 }, async () => {
+    setFlagsFromString("--expose-gc");
+    const gc = runInNewContext("gc") as () => void;
+    // The places the tests before made still poll their runners' status: quiet them, so the heap is this iterator's.
+    await Promise.all(made.map((p) => p.release().catch(() => {})));
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host, signalPollMs: 0 });
+    const it = at.signals!(9)[Symbol.asyncIterator]();
+    const pending = it.next();
+    // The heap after `polls` more polls, every collectable thing collected: a GC, a turn for what it freed to settle, and
+    // a GC again.
+    const heapAfter = async (polls: number) => {
+      const until = control.gets + polls;
+      while (control.gets < until) await sleep(50);
+      for (let i = 0; i < 3; i++) {
+        gc();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      return process.memoryUsage().heapUsed;
+    };
+    // What the test guards against (each wait raced against one promise that lives as long as the iterator) keeps about
+    // 1.2 KB a poll, so it grows every window by megabytes. One sample against an absolute bound could not tell that from
+    // a run's noise: a CI leg once read 1.01 MB over 3000 polls with nothing retained. So, after a warm-up (the JIT and the
+    // lazily compiled paths settle first), two windows, and the smaller one's growth must stay under 400 bytes a poll: a
+    // leak grows both, a one-off allocation lands in one.
+    const WINDOW = 2_500;
+    const BOUND = 400 * WINDOW;
+    const warm = await heapAfter(1_000);
+    const first = await heapAfter(WINDOW);
+    const second = await heapAfter(WINDOW);
+    await it.return!();
+    assert.deepEqual(await pending, { done: true, value: undefined });
+    const grew = [first - warm, second - first];
+    assert.ok(Math.min(...grew) < BOUND, `the heap grew ${grew.join(" and ")} bytes over two windows of ${WINDOW} polls (bound ${BOUND} each)`);
+  });
+
+  it("signals never reject: a lasting read failure is one signals-failed and then done; a short one is retried; a missing request is waited for", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host, signalPollMs: 5, signalFailMs: 200 });
+    const prefix = `runs/${ID}/signals/`;
+    /** The next result, or the rejection as a value (which must never come), or "no word" after 5 s. */
+    const nextOf = (it: AsyncIterator<unknown>) =>
+      Promise.race([it.next().then((r) => r, (e: unknown) => ({ rejected: e })), new Promise((r) => setTimeout(() => r("no word after 5 s"), 5_000).unref())]);
+
+    // A failure shorter than signalFailMs, then the request: it is yielded.
+    const it1 = at.signals!(1)[Symbol.asyncIterator]();
+    const first = nextOf(it1);
+    control.failUnder = { prefix, error: Object.assign(new Error("503 Slow Down"), { status: 503 }) };
+    await sleep(60);
+    control.failUnder = null;
+    control.objects.set(`${prefix}kill-1.json`, JSON.stringify({ point: "p", n: 1 }));
+    assert.deepEqual(await first, { done: false, value: { kind: "kill-request", crossing: { point: "p", n: 1 } } });
+
+    // A read refused for good: one signals-failed (the read's own code when it has one, else SIGNALS_FAILED), then done.
+    for (const [error, code] of [
+      [Object.assign(new Error("AccessDenied"), { status: 403 }), "SIGNALS_FAILED"],
+      [Object.assign(new Error("getObject did not answer in 10000 ms"), { code: "CONTROL_API_FAILED" }), "CONTROL_API_FAILED"],
+      [Object.assign(new Error(`AccessDenied ${"x".repeat(1_000)}`), { status: 403 }), "SIGNALS_FAILED"],
+    ] as const) {
+      const it2 = at.signals!(2)[Symbol.asyncIterator]();
+      control.failUnder = { prefix, error };
+      const failed = (await nextOf(it2)) as { done: boolean; value: { kind: string; code: string; message: string } };
+      assert.equal(failed.done, false, JSON.stringify(failed));
+      assert.equal(failed.value.kind, "signals-failed");
+      assert.equal(failed.value.code, code);
+      assert.ok(`reading the kill request failed for 200 ms: ${error.message}`.startsWith(failed.value.message), failed.value.message);
+      assert.ok(failed.value.message.length <= 240, `the whole message is capped: ${failed.value.message.length} characters`);
+      assert.match(failed.value.message, /^reading the kill request failed for 200 ms: AccessDenied|^reading the kill request failed for 200 ms: getObject/);
+      assert.deepEqual(await nextOf(it2), { done: true, value: undefined }, "then the iterator ends");
+      control.failUnder = null;
+    }
+
+    // No request at all for longer than signalFailMs: a missing object is not a failure.
+    const it3 = at.signals!(3)[Symbol.asyncIterator]();
+    const pending = nextOf(it3);
+    let settled = false;
+    void pending.then(() => (settled = true));
+    await sleep(300);
+    assert.equal(settled, false, "still waiting, no signal and no rejection");
+    await it3.return!();
+    assert.deepEqual(await pending, { done: true, value: undefined });
+  });
+
+  it("status lists a receipt for each box the place started, a killed or released one with its end; a driver that makes no boxes gives none, nor does localPlace", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const receipts = new Map<string, HostBox>();
+    const receipt = (n: number, to: string | null): HostBox => ({ provider: "daytona", kind: "sandbox 1 vCPU, 1 GiB memory, 3 GiB disk", from: `2026-10-16T09:0${n}:00.000Z`, to, usdPerSecond: 0.0000185, source: "https://www.daytona.io/pricing", priced: "2026-10-16" });
+    (host as HostDriver).box = (h) => receipts.get(String(h.name)) ?? null;
+    const at = makePlace({ ...REF, control, host });
+    const first = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+    receipts.set("box-1", receipt(1, null));
+    assert.deepEqual((await at.status!()).boxes, [receipt(1, null)]);
+    await at.kill(first, "box");
+    receipts.set("box-1", receipt(1, "2026-10-16T09:01:30.000Z"));
+    await at.recover(first, "box", { gen: 2, env: {}, stdin: await at.token!(2) });
+    receipts.set("box-2", receipt(2, null));
+    assert.deepEqual((await at.status!()).boxes, [receipt(1, "2026-10-16T09:01:30.000Z"), receipt(2, null)], "the killed box with its end, the new one live");
+    await at.release();
+    receipts.set("box-2", receipt(2, "2026-10-16T09:03:00.000Z"));
+    assert.deepEqual((await at.status!()).boxes?.map((b) => b.to), ["2026-10-16T09:01:30.000Z", "2026-10-16T09:03:00.000Z"], "released boxes stay listed");
+
+    const c2 = new FakeControl();
+    const plain = makePlace({ ...REF, control: c2, host: fakeHost(c2).host });
+    await plain.start({ gen: 1, env: {}, stdin: await plain.token!(1) });
+    assert.ok(!("boxes" in (await plain.status!())), "a driver that makes no boxes: no receipts");
+    await plain.release();
+    assert.ok(!("boxes" in (await localPlace({ app: APP })({ paths: pathsAt(scratch()) }).status!())), "localPlace reports none");
   });
 
   it("a driver with no kill: kills is empty and kill refuses", async () => {

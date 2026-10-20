@@ -6,7 +6,7 @@ import { processOf, under, type Json, type Line } from './format.ts';
 import { isAsk } from './live.ts';
 import type { Fold } from './replay.ts';
 import type { Counters } from './counters.ts';
-import { entryOf, imagesOf, textOf, toolCallsOf } from './durable.ts';
+import { entryOf, imagesOf, textOf, textPartsOf, toolCallsOf } from './durable.ts';
 
 /** A region in percent of the element that holds it: left, top, width, height. */
 export type Box = { x: number; y: number; w: number; h: number };
@@ -15,11 +15,14 @@ export type Box = { x: number; y: number; w: number; h: number };
 /** `vars` are numbers a stylesheet reads as custom properties (`--name`): a view's way to say where something is without a style string. */
 export type Props = { class?: string; path?: string; title?: string; cite?: string; box?: Box; vars?: Record<string, number> };
 
-/** A node a view returns. `frame` asks the shell to draw a browser session's picture at the stop (frames.ts). */
+/** A node a view returns. `frame` asks the shell to draw a browser session's picture at the stop (frames.ts). `pdf-page`
+ *  asks it to draw one page of a PDF in `blobs/` (pdf.ts), with `children` placed over the page (`box`, in percent of
+ *  the page as PDF.js draws it: its crop box). */
 export type Node =
   | string
   | ({ tag: string; children?: Node[] } & Props)
   | { tag: 'img'; blob: string; alt: string; class?: string }
+  | { tag: 'pdf-page'; blob: string; page: number; alt: string; class?: string; children?: Node[] }
   | { tag: 'a'; blob: string; text: string; class?: string; fragment?: string }
   | { tag: 'a'; href: string; text: string; class?: string }
   | { tag: 'frame'; session: string; class?: string };
@@ -34,7 +37,18 @@ export type BaselineView = { label: string; counters: Counters; ms: number | nul
  *  the baseline when the manifest names one (a real recording, never typed-in numbers). `cite` is the selected
  *  citation, a view input like the focus. `json` is a JSON blob the recording's result names, parsed, by its SHA-256:
  *  undefined until the shell has read it, and for any other blob. */
-export type ViewContext = { t: number; /** The playback clock in ms: the time of the point at a stop (a scrub sets it), and running between stops while playing. A view that draws motion reads it. */ now?: number; focus?: string; baseline?: BaselineView; providers?: 'real' | 'scripted'; cite?: string; json?: (sha: string) => Json | undefined };
+export type ViewContext = { t: number; /** The playback clock in ms: the time of the point at a stop (a scrub sets it), and running between stops while playing. A view that draws motion reads it. */ now?: number; focus?: string; baseline?: BaselineView; providers?: 'real' | 'scripted'; cite?: string; json?: (sha: string) => Json | undefined;
+  /** The run is followed while it goes and has not finished: its cost is not known yet. */
+  following?: true;
+  /** The page's debug views (`?debug=`, a comma list): `durability` shows what a public replay hides, the kills and
+   *  resumes and the receipts drawn as they are (PANELS.md, "What a public replay shows"). */
+  debug?: readonly string[];
+  /** A blob's media type, from its name in `blobs/` (undefined until the shell has found it): a view tells a picture it may
+   *  draw from a file it links. */
+  blobType?: (sha: string) => string | undefined;
+  /** The result the manifest names, for a recording in which no line delivers one: a view that shows a result from its
+   *  `result` line shows this one at every stop. */
+  manifestResult?: { blob: string; title: string } };
 
 /** A node's class under a focus: a line with a path outside the focused branch is dimmed; one with no path stays. */
 const dimmed = (path: string | undefined, focus: string | undefined) => (focus !== undefined && path !== undefined && !under(path, focus) ? ' dim' : '');
@@ -50,6 +64,9 @@ export type Panel<S> = Fold<S> & {
   /** Which lines a recording must hold for this panel to be drawn at all; without it, `accepts` says. A panel with no such
    *  line in the whole recording is not drawn, its title included. */
   shows?(line: Line): boolean;
+  /** A result (the parsed JSON a result names) that makes the recording draw this panel even when no line does, with each
+   *  blob's media type as the shell knows it when it asks (undefined for one it has not found). */
+  showsResult?(result: Json, context: { blobType(sha: string): string | undefined }): boolean;
 };
 
 /** The panel the shell shows first for this recording: the first registered one whose `featured` says yes. */
@@ -82,7 +99,9 @@ export const linesPanel: Panel<{ bySource: Record<string, Line[]>; count: number
       h('ol', {}, ...[...lines].reverse().map((line) => h('li', { class: `${line.channel}${dimmed(line.path, focus)}`, ...(line.path ? { path: line.path, title: line.path } : {}) }, describe(line))))))),
 };
 
-type Turn = { conv: number | undefined; role: string; text: string; calls: string[]; images: string[]; error: boolean; path?: string };
+/** `more`: what a prompt does not show at once, in full (the rest of its first text part, and every later part, such as a
+ *  footer the job adds after the prompt), folded under one toggle. */
+type Turn = { conv: number | undefined; role: string; text: string; more?: string[]; calls: string[]; images: string[]; error: boolean; path?: string };
 
 /** The agent's conversations as pi committed them: each turn's words, tool calls, results and images. */
 export const turnsPanel: Panel<{ turns: Turn[]; streaming: Record<string, boolean> }> = {
@@ -97,18 +116,28 @@ export const turnsPanel: Panel<{ turns: Turn[]; streaming: Record<string, boolea
     }
     const entry = entryOf(line);
     if (!entry) return state;
-    const turns = entry.model.filter((message) => message.role === 'assistant' || message.role === 'toolResult').map((message): Turn => ({
-      conv: line.conv, role: message.role, text: textOf(message).slice(0, 600), calls: toolCallsOf(message).map((call) => `${call.name}(${JSON.stringify(call.arguments)})`),
-      images: imagesOf(message), error: message.isError === true, ...(line.path ? { path: line.path } : {}),
-    }));
+    const turns = entry.model.filter((message) => message.role === 'assistant' || message.role === 'toolResult' || message.role === 'user').map((message): Turn => {
+      // A prompt shows the start of its first text part; everything else, the rest of that part and every later part (a
+      // footer the job adds after it), folds whole under one toggle, so opening it shows all of it.
+      const parts = message.role === 'user' ? textPartsOf(message) : [];
+      const first = parts[0] ?? '';
+      const folded = [...(first.length > 600 ? [first.slice(600)] : []), ...parts.slice(1)];
+      return {
+        conv: line.conv, role: message.role, text: message.role === 'user' ? first.slice(0, 600) : textOf(message).slice(0, 600),
+        ...(folded.length ? { more: folded } : {}),
+        calls: toolCallsOf(message).map((call) => `${call.name}(${JSON.stringify(call.arguments)})`),
+        images: imagesOf(message), error: message.isError === true, ...(line.path ? { path: line.path } : {}),
+      };
+    });
     const answered = entry.model.some((message) => message.role === 'assistant');
     return { turns: [...state.turns, ...turns], streaming: answered ? { ...state.streaming, [String(line.conv)]: false } : state.streaming };
   },
   view: (state, { focus }) => h('div', { class: 'turns' },
     state.turns.length === 0 && h('p', { class: 'empty' }, 'No turn committed yet.'),
     ...state.turns.map((turn) => h('div', { class: `turn ${turn.role}${turn.error ? ' error' : ''}${dimmed(turn.path, focus)}`, ...(turn.path ? { path: turn.path } : {}) },
-      h('span', { class: 'who' }, turn.role === 'assistant' ? 'model' : 'tool result'),
+      h('span', { class: 'who' }, turn.role === 'assistant' ? 'model' : turn.role === 'user' ? 'prompt' : 'tool result'),
       turn.text !== '' && h('p', {}, turn.text),
+      turn.more !== undefined && h('details', { class: 'more' }, h('summary', {}, 'more'), ...turn.more.map((part) => h('p', {}, part))),
       ...turn.calls.map((call) => h('code', {}, call)),
       ...turn.images.map((blob): Node => ({ tag: 'img', blob, alt: 'an image the model was shown' })))),
     ...Object.entries(state.streaming).filter(([, live]) => live).map(([conv]) => h('p', { class: 'streaming' }, `conversation ${conv}: a turn is in flight`))),
@@ -117,6 +146,8 @@ export const turnsPanel: Panel<{ turns: Turn[]; streaming: Record<string, boolea
 /** The panels the shell shows, in order: the extensions' first, then its own two, the run's lines and the model's turns. */
 export const panelsShown = (): Panel<any>[] => [...registry, linesPanel, turnsPanel];
 
-/** The panels a recording draws: each with a line it is for (`shows`, else `accepts`) anywhere in the whole recording.
- *  Judged over every line, never up to the stop, so a panel never appears mid-scrub. */
-export const panelsFor = (lines: readonly Line[]): Panel<any>[] => panelsShown().filter((panel) => lines.some((line) => (panel.shows ? panel.shows(line) : panel.accepts(line))));
+/** The panels a recording draws: each with a line it is for (`shows`, else `accepts`) anywhere in the whole recording, or
+ *  a result it is for (`showsResult`). Judged over every line and every result, never up to the stop, so a panel never
+ *  appears mid-scrub. */
+export const panelsFor = (lines: readonly Line[], results: readonly Json[] = [], blobType: (sha: string) => string | undefined = () => undefined): Panel<any>[] => panelsShown().filter((panel) =>
+  lines.some((line) => (panel.shows ? panel.shows(line) : panel.accepts(line))) || (panel.showsResult !== undefined && results.some((result) => panel.showsResult!(result, { blobType }))));

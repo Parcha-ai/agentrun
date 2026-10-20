@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { APIConnectionError, APIError, TypeSafeClient } from "@typesafe-ai/sdk";
+import { APIConnectionError, APIError, Image, TypeSafeClient } from "@typesafe-ai/sdk";
 import type { Fetch, RequestOptions, SystemOneRequest } from "@typesafe-ai/sdk";
 import { validateAnswers, SystemOneError, isSystemOneResponseReason } from "@parcha/agentrun-dsl";
 import type { WorkflowDeps, SystemOneResponseReason } from "@parcha/agentrun-dsl";
@@ -20,6 +20,45 @@ export function jevProviderFromEnv(env: Record<string, string | undefined> = pro
   const set = (name: string) => typeof env[name] === "string" && env[name]!.trim().length > 0;
   return set("OPENROUTER_API_KEY") && !set("TYPESAFE_API_KEY") ? "openrouter" : "typesafe";
 }
+
+/** A still image a request carries: PNG or JPEG file bytes and the type they are. The runner builds the SDK's image from it and sends it as a multipart file part. */
+export interface JevImage {
+  bytes: Uint8Array;
+  mime: "image/png" | "image/jpeg";
+}
+
+type RunJudge = NonNullable<WorkflowDeps["runJudge"]>;
+/** What one call to the runner takes: the interpreter's `runJudge` parameters, plus the images the request carries and an optional model for this call.
+ *  `assets` maps each reference, a string that appears literally in `state` or in a question's `instructions` or `criteria` (`"<photo>"`), to its image;
+ *  every reference must appear, and a Box question needs at least one image. */
+export type JevJudgeParams = Parameters<RunJudge>[0] & {
+  assets?: Record<string, JevImage>;
+  /** Names the model for this call, over the runner's `model`. A Box question needs `jev-1.14.0` or `jev-preview`; the default `jev-latest` is 1.13. */
+  model?: string;
+};
+/** The typed answers (choice, noul, score with their probabilities; box with its edges and confidence), the model that answered, its token usage, and
+ *  the cost: the provider's reported cost, else the host's configured price applied to the counted tokens, else null. */
+export type JevJudgeResult = Awaited<ReturnType<RunJudge>>;
+/** The judge `createJevRunner` returns, and the port a host passes to a package that asks Jev about images without importing the SDK. */
+export type JevJudge = (params: JevJudgeParams) => Promise<JevJudgeResult>;
+
+const IMAGE_HEADER = "TypeSafe-Danger-Zone-Images";
+const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
+const BOX_MODEL = "jev-1.14.0";
+/** Models that answer a Box question: Jev 1.14 and later by name, and the preview alias. `jev-latest` is 1.13 and does not. */
+function answersBox(model: string): boolean {
+  if (model === "jev-preview") return true;
+  const version = /^jev-(\d+)\.(\d+)(?:\.\d+)?$/.exec(model);
+  return version !== null && (Number(version[1]) > 1 || (Number(version[1]) === 1 && Number(version[2]) >= 14));
+}
+/** Every string value of a JSON value, not its keys. */
+function* stringValues(value: unknown): Generator<string> {
+  if (typeof value === "string") yield value;
+  else if (Array.isArray(value)) for (const each of value) yield* stringValues(each);
+  else if (record(value)) for (const each of Object.values(value)) yield* stringValues(each);
+}
+const startsWith = (bytes: Uint8Array, prefix: number[]) => prefix.every((byte, index) => bytes[index] === byte);
+const imageMagic: Record<JevImage["mime"], number[]> = { "image/png": [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], "image/jpeg": [0xff, 0xd8, 0xff] };
 
 export interface JevOptions {
   /** `typesafe` (default) or `openrouter`. OpenRouter sets the API root and the default model (`~typesafe/jev-latest`); its key is `apiKey` or `OPENROUTER_API_KEY`. Cannot be combined with `client`. */
@@ -51,7 +90,7 @@ export function isJevResponseReason(value: unknown): value is JevResponseReason 
 }
 export type JevResponseDiagnostic = { reason: JevResponseReason };
 export type JevRequestDiagnostic = {
-  reason: "invalid_state" | "state_too_large" | "invalid_questions";
+  reason: "invalid_state" | "state_too_large" | "invalid_questions" | "invalid_assets" | "unsupported_model" | "unsupported_provider";
   label?: string;
   stateBytes?: number;
   maxStateBytes?: number;
@@ -96,7 +135,16 @@ function wait(ms: number, signal: AbortSignal, error: () => JevError): Promise<v
   });
 }
 
-export function createJevRunner(options: JevOptions = {}): NonNullable<WorkflowDeps["runJudge"]> {
+/** A server's Retry-After in milliseconds from now, given as delta-seconds or an HTTP date; undefined when absent or unparseable. */
+function retryAfterMs(headers: unknown): number | undefined {
+  const value = headers instanceof Headers ? headers.get("retry-after")?.trim() : undefined;
+  if (!value) return undefined;
+  if (/^\d+$/.test(value)) return Number(value) * 1000;
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+}
+
+export function createJevRunner(options: JevOptions = {}): JevJudge {
   const timeoutMs = options.timeoutMs === null ? null : (options.timeoutMs ?? 30_000);
   const maxStateBytes = options.maxStateBytes ?? null;
   const maxAttempts = options.maxAttempts ?? 3;
@@ -122,6 +170,8 @@ export function createJevRunner(options: JevOptions = {}): NonNullable<WorkflowD
     client = options.client ?? new TypeSafeClient({
       apiKey: key, baseURL: options.baseURL ?? (provider === "openrouter" ? OPENROUTER_BASE_URL : undefined), fetch: options.fetch,
       defaultModel: model, retry: { maxRetries: 0 }, timeout: timeoutMs ?? undefined, logLevel: "off",
+      // Bodies go as they always have: uncompressed JSON, which a host's own fetch, a gateway and OpenRouter all read.
+      compression: false,
     });
   } catch {
     throw new JevError("configuration", `Could not configure Jev. Supply apiKey or set ${keyVariable[provider]}, and check transport options.`);
@@ -158,28 +208,73 @@ export function createJevRunner(options: JevOptions = {}): NonNullable<WorkflowD
       const stateBytes = Buffer.byteLength(serializedState, "utf8");
       if (maxStateBytes !== null && stateBytes > maxStateBytes) throw invalid("state_too_large",
         `Jev assembled state is ${stateBytes} UTF-8 bytes; configured host limit is ${maxStateBytes} bytes. No request was sent.`, stateBytes);
+      const callModel = params.model ?? model;
+      if (typeof callModel !== "string" || callModel.trim().length === 0) throw invalid("invalid_questions", "model must be a nonempty string; no request was sent.");
       try {
-        body = JSON.stringify({ state: JSON.parse(serializedState), model, questions: params.questions });
+        body = JSON.stringify({ state: JSON.parse(serializedState), model: callModel, questions: params.questions });
         request = JSON.parse(body) as SystemOneRequest;
         if (!record(request.questions) || Object.keys(request.questions).length === 0) throw new Error();
       } catch {
         throw invalid("invalid_questions", "Jev requires a nonempty JSON question map; no request was sent.");
       }
+      // Images and Box questions: validated whole before any send; the header goes with exactly these requests.
+      const hasBox = Object.values(request.questions).some(question => record(question) && question.type === "box");
+      const given = params.assets === undefined || params.assets === null ? {} : params.assets;
+      if (!record(given)) throw invalid("invalid_assets", "assets must map each reference to an image; no request was sent.");
+      const references = Object.keys(given);
+      const carriesImage = references.length > 0;
+      if ((carriesImage || hasBox) && provider !== "typesafe" && options.client === undefined) throw invalid("unsupported_provider", "Images and Box questions are sent to TypeSafe's own API only; the OpenRouter path is not verified for them. No request was sent.");
+      if (hasBox && !answersBox(callModel)) throw invalid("unsupported_model", `A Box question needs a model that answers it: ${BOX_MODEL} (or jev-preview); jev-latest is 1.13. No request was sent.`);
+      if (hasBox && !carriesImage) throw invalid("invalid_assets", "A Box question locates something in an image, and the request carries none. No request was sent.");
+      let assets: Record<string, Image> | undefined;
+      let assetDigests: Record<string, { sha256: string; mime: string; bytes: number }> | undefined;
+      if (carriesImage) {
+        // A reference is replaced where it sits inside a string value of the state, an instruction or a criterion; keys (question ids, option names) are never replaced.
+        const texts = [...stringValues(JSON.parse(serializedState)), ...Object.values(request.questions).flatMap(question => record(question) ? [...stringValues(question.instructions), ...stringValues(question.criteria)] : [])];
+        assets = Object.create(null) as Record<string, Image>; assetDigests = Object.create(null) as Record<string, { sha256: string; mime: string; bytes: number }>;
+        for (const reference of references) {
+          const image = given[reference];
+          const sound = typeof reference === "string" && reference.length > 0 && Buffer.byteLength(reference, "utf8") <= 1024 && !/["\\\u0000-\u001f]/.test(reference)
+            && record(image) && image.bytes instanceof Uint8Array && (image.mime === "image/png" || image.mime === "image/jpeg")
+            && image.bytes.byteLength > 0 && image.bytes.byteLength <= MAX_IMAGE_BYTES && startsWith(image.bytes, imageMagic[image.mime]);
+          if (!sound) throw invalid("invalid_assets", "Each image is a PNG or JPEG file of at most 16 MiB, with bytes that are that type and a plain reference. No request was sent.");
+          if (!texts.some(text => text.includes(reference))) throw invalid("invalid_assets", "Every image reference must appear in the state or a question. No request was sent.");
+          assets[reference] = new Image(image.bytes);
+          assetDigests[reference] = { sha256: createHash("sha256").update(image.bytes).digest("hex"), mime: image.mime, bytes: image.bytes.byteLength };
+        }
+        request = { ...request, assets };
+        // The hash names the images by their own digests, so it identifies the request that was sent without holding the bytes.
+        body = JSON.stringify({ ...JSON.parse(body), assets: assetDigests });
+      }
+      const headers = carriesImage || hasBox ? { [IMAGE_HEADER]: "true" } : undefined;
+      // The first attempt that failed in a way the server may have billed (a lost answer, a 408, a 5xx). A later 429 does not make the call free: the give-up reports this one.
+      let billable: { status?: number } | undefined;
       for (attempt = 1; ; attempt++) {
         if (signal.aborted) throw abortError();
         let result: unknown;
         try {
           result = await abortable(client.systemOne(request, {
-            signal, ...(timeoutMs === null ? {} : { timeout: Math.max(1, timeoutMs - (Date.now() - started)) }), retry: { maxRetries: 0 },
+            signal, ...(timeoutMs === null ? {} : { timeout: Math.max(1, timeoutMs - (Date.now() - started)) }), retry: { maxRetries: 0 }, ...(headers ? { headers } : {}),
           }), signal, abortError);
         } catch (error) {
           if (signal.aborted) throw abortError();
           const status = error instanceof APIError ? error.status : undefined;
           const retryable = status === 408 || status === 429 || (status !== undefined && status >= 500 && status <= 599) || error instanceof APIConnectionError;
+          if (retryable && status !== 429 && billable === undefined) billable = status === undefined ? {} : { status };
           if (retryable && attempt < maxAttempts) {
-            await wait(Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1)), signal, abortError);
-            continue;
+            const backoff = Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1));
+            const asked = error instanceof APIError && (status === 429 || status === 503) ? retryAfterMs(error.headers) : undefined;
+            const delay = asked === undefined ? backoff : Math.max(asked, backoff);
+            // A server's wait is kept in full or the loop gives up now: it never runs past the deadline, or past the longest timer when there is none, so no
+            // retry is sent with no time left to answer (a request that times out has a cost no one knows).
+            const left = timeoutMs === null ? 2_147_483_647 : timeoutMs - (Date.now() - started);
+            if (asked === undefined || delay < left) {
+              await wait(delay, signal, abortError);
+              continue;
+            }
           }
+          // HTTP 429 means every attempt was refused unanswered; after one that may have been billed, the give-up names that one instead.
+          if (status === 429 && billable) throw billable.status === undefined ? new JevError("connection", "Jev transport failed.", attempt) : new JevError("http", `Jev returned HTTP ${billable.status}.`, attempt, billable.status);
           if (status !== undefined) {
             const safeStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
             const capacity = error instanceof APIError && record(error.body) && record(error.body.detail)

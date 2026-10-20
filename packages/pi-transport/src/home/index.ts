@@ -1,4 +1,28 @@
 export { type App, type AppContext, AppError, type AppOptions, loadApp } from "./app.ts";
+export { CALLS_EXTENSION, type CallEvent } from "./calls.ts";
+export {
+	type Checkpoint,
+	CheckpointSkipped,
+	type CheckpointStats,
+	type CheckpointVault,
+	checkpointStats,
+	localVault,
+	type PendingCheckpoint,
+	type PullOptions,
+	pullCheckpoint,
+	recordSink,
+	restoreNotice,
+	type SkipReason,
+	VaultError,
+} from "./checkpoint.ts";
+export { type LogEntry, ReplayError, type ReplayErrorCode, replayCommits } from "./commit-log.ts";
+export {
+	type Crossing,
+	type CrossingCounter,
+	type CrossingInfo,
+	type CrossingPoint,
+	crossingCounter,
+} from "./crossing.ts";
 export { type DirStoreOptions, dirStore } from "./dir-store.ts";
 export {
 	createGate,
@@ -11,6 +35,7 @@ export {
 	type Holdout,
 } from "./gate.ts";
 export {
+	type CallRecord,
 	type ConnectOptions,
 	connectHome,
 	type HomeHandle,
@@ -61,6 +86,7 @@ export {
 	type RecoverOptions,
 	recoverHome,
 	type StartRunner,
+	whereOf,
 } from "./move.ts";
 export { type LinesSync, type OutboxEntry, openOutbox } from "./outbox.ts";
 export {
@@ -78,12 +104,17 @@ export {
 export { checkHomeHands } from "./place.ts";
 export { type Recording, type RecordLine, type RecordSink, receiveRecords } from "./records.ts";
 export {
+	type CheckpointTaken,
 	type Home,
 	HomeError,
 	type HomeErrorCode,
 	type HomeOptions,
 	type HomeState,
 	MOVE_ENTRY,
+	type MoveFacts,
+	type MoveRecord,
+	MovesDoc,
+	type MoveWhere,
 	openHome,
 	type ResumeOrder,
 	type WrappedStore,
@@ -98,14 +129,20 @@ export {
 } from "./runner.ts";
 export { admitsTool, type Shipped, shippingStorage } from "./shipping.ts";
 export { type BoxRunnerOptions, boxRunner, type RunnerProgram } from "./start.ts";
-export { type StopRunner, stopRunner } from "./stop.ts";
+export { killRunner, type StopRunner, stopRunner } from "./stop.ts";
 export { checkpointStore, type Seal, StoreError, type StoreErrorCode, sealStore, verifyStore } from "./store.ts";
 export {
+	type ChangedReceipt,
+	changedEntries,
+	type Excluded,
+	excludedOf,
 	type Manifest,
 	type ManifestEntry,
 	type MoveFileOptions,
 	type MoveWorkspaceOptions,
 	manifestOf,
+	manifestSince,
+	moveChanged,
 	moveFile,
 	moveWorkspace,
 	type Pipe,

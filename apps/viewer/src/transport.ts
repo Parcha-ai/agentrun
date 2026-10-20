@@ -17,7 +17,7 @@
 //
 // Pure: `accepts`, `reduce` and `view` read only their arguments. A scrub is a replay: the screen at a stop is the reduce of the lines
 // before it. Kinds it does not know are skipped.
-import { counterFold, countersOf, repeatedLabel, type CounterState } from './counters.ts';
+import { costLabel, counterFold, countersOf, repeatedLabel, type CounterState } from './counters.ts';
 import { docOf } from './durable.ts';
 import { isSupervisor, processOf, type Json, type Line } from './format.ts';
 import { h, register, type Node, type Panel } from './panels.ts';
@@ -224,7 +224,7 @@ export const transportPanel: Panel<TransportState> = {
     }
   },
   view(state, context) {
-    return view(state, context.t, context.now ?? context.t);
+    return view(state, context.t, context.now ?? context.t, context.providers);
   },
 };
 
@@ -238,7 +238,7 @@ const label = (state: TransportState, box: string | null | undefined): string =>
   return life ? `${life.environment} (${life.provider}${life.gpu ? `, ${life.gpu}` : life.isolation && life.isolation !== 'container' && life.isolation !== 'none' ? `, ${life.isolation}` : ''})` : box ? `box ${box.slice(0, 8)}` : 'a box not recorded';
 };
 
-function counters(state: TransportState, now: number): Node {
+function counters(state: TransportState, now: number, providers?: 'real' | 'scripted'): Node {
   const changed = changedAt(state);
   const bump = (key: string): { class: string; vars: { age: number } } | {} => (changed[key] !== undefined && changed[key]! >= 0 && now >= changed[key]! && now - changed[key]! < 1500 ? { class: 'bump', vars: { age: (now - changed[key]!) / 1000 } } : {});
   const strip = countersOf(state.counters, false);
@@ -252,7 +252,7 @@ function counters(state: TransportState, now: number): Node {
   const measured = state.durableLines > 0;
   const bytes = state.flights.reduce((sum, flight) => sum + (flight.bytes ?? 0), 0);
   const unknown = state.flights.filter((flight) => flight.bytes === null).length;
-  const row = (name: string, value: string, title?: string, key?: string): Node => h('li', { ...(title ? { title } : {}) }, h('span', { class: 'k' }, name), h('b', key === undefined ? {} : bump(key), value));
+  const row = (name: string, value: string, title?: string, key?: string, className?: string): Node => h('li', { ...(title ? { title } : {}), ...(className ? { class: className } : {}) }, h('span', { class: 'k' }, name), h('b', key === undefined ? {} : bump(key), value));
   return h('ul', { class: 'tcounters' },
     row('processes', String(state.runners.length), 'runners the host started: its own lines', 'processes'),
     row('kills survived', `${survived} of ${state.kills.length} · ${boxKills} box, ${processKills} process`, 'a kill is survived when a runner started after it', 'survived'),
@@ -261,8 +261,9 @@ function counters(state: TransportState, now: number): Node {
     row('bytes shipped', state.flights.length === 0 ? 'none yet' : unknown === state.flights.length ? 'not recorded' : unknown > 0 ? `${size(bytes)} known, ${unknown} flight${unknown === 1 ? '' : 's'} not recorded (observed)` : `${size(bytes)} (observed)`, undefined, 'bytes'),
     row('paid calls', measured ? String(strip.paid.total) : 'not measured: no durable lines'),
     row('repeated', measured ? repeatedLabel(strip) : 'not measured: no durable lines'),
-    // As the shell's strip: a cost nobody priced is unknown, with no durable line or with a part unknown, never $0.
-    row('cost', strip.cost === null ? 'unknown' : `$${strip.cost.toFixed(4)}`));
+    // As the shell's strip: a cost nobody priced is unknown, with no durable line or with a part unknown, never $0; the
+    // boxes' time named at list price.
+    row('cost', costLabel(strip.cost, strip.costLowerBound, providers, strip.costParts), undefined, undefined, 'cost'));
 }
 
 function flightNode(state: TransportState, flight: Flight): Node {
@@ -287,19 +288,20 @@ function killNode(state: TransportState, kill: Kill): Node {
   return h('li', { class: `kill ${kill.kind}` }, h('b', {}, kill.kind === 'box' ? '✗ the whole box' : '✗ a process'), ` — ${kill.label}`, kill.box ? ` (${label(state, kill.box)}, process ${kill.gen})` : ` (process ${kill.gen})`, h('div', { class: 'back' }, back));
 }
 
-function view(state: TransportState, t: number, now: number): Node {
+function view(state: TransportState, t: number, now: number, providers?: 'real' | 'scripted'): Node {
   if (state.boxes.length === 0 && state.runners.length === 0 && state.flights.length === 0 && state.durableLines === 0) return h('div', { class: 'transport' }, h('p', { class: 'empty' }, 'The session has not started a box yet.'));
   const end = Math.max(state.lastT, now, 1);
   return h('div', { class: 'transport' },
     stageView(state, now, end),
-    counters(state, now),
+    counters(state, now, providers),
     state.tile !== undefined && state.tileBox === undefined && h('div', { class: 'tile' }, h('h4', {}, 'The browser, as the box showed it'), { tag: 'frame', session: state.tile }),
     h('details', { class: 'tdetails' },
       h('summary', {}, 'Every flight, kill and box, in words'),
       h('h4', {}, 'Flights'),
       state.flights.length === 0 ? h('p', { class: 'empty' }, 'The session has not moved yet.') : h('ol', {}, ...state.flights.map((flight) => flightNode(state, flight))),
-      state.kills.length > 0 && h('h4', {}, 'Kills'),
-      ...(state.kills.length > 0 ? [h('ul', {}, ...state.kills.map((kill) => killNode(state, kill)))] : []),
+      // The kills are marked `durability`, drawn only with `?debug=durability` (PANELS.md, "What a public replay shows").
+      state.kills.length > 0 && h('h4', { class: 'durability' }, 'Kills'),
+      ...(state.kills.length > 0 ? [h('ul', { class: 'durability' }, ...state.kills.map((kill) => killNode(state, kill)))] : []),
       state.waits.length > 0 && h('h4', {}, 'Skipped waiting'),
       ...(state.waits.length > 0 ? [h('ul', {}, ...state.waits.map((wait) => h('li', { class: 'wait' }, `skipped ${seconds(wait.ms)} waiting for ${wait.what} (${wait.environment})`)))] : []),
       h('h4', {}, 'Boxes'),

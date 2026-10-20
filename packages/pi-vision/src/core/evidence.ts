@@ -7,12 +7,15 @@
 import { createHash } from "node:crypto";
 import { CONTRACT_VERSION } from "./contract.js";
 import type { Kind } from "./kinds.js";
+import { sha256Hex } from "./primitives.js";
 import type { MissEvent } from "./misses.js";
 import type { Fit } from "./plan.js";
 import type { CallContext, Json, Usage } from "./host.js";
 
+/** One look as the host files it: the call, its status, the facts a receipt header carries, and the answer or the miss as the body. */
 export type LookRecord = {
-  readonly tool: "look";
+  /** `look` for what was seen, `transcribe` for what was heard: the same shape, filed in the same document. */
+  readonly tool: "look" | "transcribe";
   /** The call as the receipt header's `args:` line shows it. `native` is true when the lead saw the media itself. */
   readonly args: {
     readonly path: string; readonly ask?: string; readonly page?: number; readonly pages?: string;
@@ -37,14 +40,21 @@ export type LookRecord = {
     readonly derived?: readonly string[];
     /** Set when the result's unit ids did not match its image blocks and every block was looked at on its own. */
     readonly units_dropped?: string;
-    /** Set when the answer was read back from the call's memo: an earlier attempt of the call asked and paid for it, and
-     *  this one made no request. Its key's other records are that look's, not another payment. */
+    /** Set when the answer was read back from the call's memo: an earlier attempt or an earlier call asked and paid for
+     *  it, and this one made no request. Its key's other records are that look's, not another payment. */
     readonly kept?: true;
+    /** When the model call this look made began, in epoch milliseconds. Absent for a look that made no request in this
+     *  call (a native look, one read back from a memo) and for one whose caller sent none. */
+    readonly startedAt?: number;
+    /** The tool call the look ran under: the call's own `toolCallId` (`CallContext.toolCallId`), which a timeline names as
+     *  the parent of this look. Absent when the caller named none. */
+    readonly parentToolCallId?: string;
   };
   /** The answer, "shown to the model natively", or the miss. */
   readonly body: string;
 };
 
+/** Where the host files a look's record. It has pi-browser's sink shape, so a host that files the browser's receipts files these the same way. */
 export type EvidenceSink = {
   /** File `record` under the conversation's `label`. `path` is what the model is told to cite. Null when the host files nothing. */
   file(label: string, record: LookRecord): Promise<{ readonly path: string } | null>;
@@ -64,6 +74,11 @@ export type LookEvent = {
   /** Null when the price is not known; 0 when `billedBy` names another service. */
   readonly costUsd: number | null;
   readonly billedBy?: string;
+  /** When the model call began, in epoch milliseconds (`record.facts.startedAt`), and the tool call it ran under
+   *  (`record.facts.parentToolCallId`): a timeline draws the call as a bar under that tool call. Each is absent when the
+   *  record has none. */
+  readonly startedAt?: number;
+  readonly parentToolCallId?: string;
   /** The host heard of this look in an earlier attempt of the call: do not charge it again. A look whose answer was read
    *  back but whose host was never told (`record.facts.kept` alone) is charged once, here. A call cut after this hook
    *  returns and before the guard keeps that it was told tells it again without `kept`: at least once. */
@@ -82,11 +97,9 @@ export type Filing = {
   readonly onMiss?: (miss: MissEvent) => void | Promise<void>;
 };
 
-const sha256 = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
-
 /** The memo key of a look: the same source, selector, question, eyes and plan under this contract give the same key. */
 export function lookKey(input: { readonly sha256: string; readonly fragment: string; readonly ask?: string; readonly model: string; readonly plan?: unknown }): string {
-  return sha256(JSON.stringify([CONTRACT_VERSION, input.sha256, input.fragment, input.ask ?? null, input.model, input.plan ?? null]));
+  return sha256Hex(JSON.stringify([CONTRACT_VERSION, input.sha256, input.fragment, input.ask ?? null, input.model, input.plan ?? null]));
 }
 
 /** The SHA-256 of the bytes a set of base64 blocks carries, in order: what a look at blocks with no source file saw. */
@@ -105,6 +118,7 @@ export function receiptFacts(record: LookRecord): Record<string, string | number
     ["sha256", f.sha256], ["kind", f.kind], ["fragment", f.fragment], ["fit", f.fit?.reduction], ["key", f.key],
     ["tokens_in", f.tokens_in], ["tokens_out", f.tokens_out], ["cost_usd", f.cost_usd === null ? "unknown" : f.cost_usd],
     ["provider", f.provider], ["derived", f.derived?.join(", ")], ["units_dropped", f.units_dropped], ["kept", f.kept ? "true" : undefined],
+    ["startedAt", f.startedAt], ["parentToolCallId", f.parentToolCallId],
   ];
   return Object.fromEntries(lines.filter((line): line is [string, string | number] => line[1] !== undefined && line[1] !== ""));
 }
@@ -122,7 +136,8 @@ export async function fileLook(filing: Filing, tool: string, record: LookRecord,
     await quietly(filing.onLook, {
       conversationId: filing.conversationId, tool, source: record.args.path, ...(record.args.ask ? { ask: record.args.ask } : {}),
       fragment: record.facts.fragment, model: record.args.model, usage: answer?.usage ?? null, costUsd: answer?.costUsd ?? null,
-      ...(answer?.billedBy ? { billedBy: answer.billedBy } : {}), ...(answer?.kept ? { kept: true } : {}), receipt, record,
+      ...(answer?.billedBy ? { billedBy: answer.billedBy } : {}), ...(answer?.kept ? { kept: true } : {}),
+      ...(record.facts.startedAt !== undefined ? { startedAt: record.facts.startedAt } : {}), ...(record.facts.parentToolCallId ? { parentToolCallId: record.facts.parentToolCallId } : {}), receipt, record,
     });
   }
   return receipt;
