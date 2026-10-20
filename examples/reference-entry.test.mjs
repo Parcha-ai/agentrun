@@ -8,7 +8,7 @@ import * as entry from '@parcha/agentrun-harness';
 import { fakes, job } from './reference/job.ts';
 
 test('the entry exports the names another example builds on, and nothing else', () => {
-  assert.deepEqual(Object.keys(entry).sort(), ['BOX_CROSSINGS', 'JEV_CAPS', 'JEV_LIST_PRICE', 'RUN_KEY', 'VisionLooks', 'capJudge', 'chooseBrowser', 'codeOf', 'cost', 'crossings', 'demo', 'finishRecording', 'jevCost', 'keepLooks', 'killsOf', 'localHost', 'localPlace', 'maxUsdOf', 'openRecorder', 'openSupervisor', 'packageCommitRecorder', 'parseInput', 'placeAt', 'plansOf', 'run', 'shownShots', 'tapBox', 'tapFakes', 'tapHost']);
+  assert.deepEqual(Object.keys(entry).sort(), ['BOX_CROSSINGS', 'JEV_LIST_PRICE', 'RUN_KEY', 'VisionLooks', 'chooseBrowser', 'codeOf', 'cost', 'crossings', 'demo', 'finishRecording', 'jevCost', 'keepLooks', 'killsOf', 'localHost', 'localPlace', 'maxUsdOf', 'openRecorder', 'openSupervisor', 'packageCommitRecorder', 'parseInput', 'placeAt', 'plansOf', 'priceJudge', 'run', 'shownShots', 'tapBox', 'tapFakes', 'tapHost']);
   for (const name of ['tapBox', 'demo', 'crossings', 'tapFakes', 'tapHost', 'chooseBrowser', 'killsOf', 'maxUsdOf', 'parseInput', 'plansOf', 'run', 'cost', 'placeAt', 'localHost', 'openRecorder', 'openSupervisor', 'finishRecording', 'codeOf', 'packageCommitRecorder']) assert.equal(typeof entry[name], 'function', name);
 });
 

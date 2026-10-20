@@ -12,11 +12,12 @@ import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chatCard, chatLooksShown } from '../../apps/viewer/src/chat-extract.ts';
 import { parseLines } from '../../apps/viewer/src/format.ts';
-import { FORBIDDEN, credentialInFile } from '../../packages/harness/src/scan.ts';
-import { validateRecording } from './validate.mjs';
+import { FORBIDDEN, MEDIA_FILE, PAGE_EXTENSIONS, credentialInFile } from '../../packages/harness/src/scan.ts';
+import { artifactBlobNames, blobNameProblem, validateRecording } from './validate.mjs';
 
 const MACHINE_PATH = FORBIDDEN.find(([name]) => name === 'machine path')[1];
-const BLOB = /^([0-9a-f]{64})\.[a-z0-9]+$/;
+/** A blob's name: its SHA-256 and extension, and `.txt` after an artifact page's (the gallery publishes it as text). */
+const BLOB = /^([0-9a-f]{64})\.([A-Za-z0-9]+)(\.txt)?$/;
 const TEXT = /\.(?:html|js|css|json|jsonl|txt|md|csv|svg|xml|yaml|yml|log)$/i;
 const GALLERY = 'window.AGENTRUN_GALLERY = ';
 /** gallery.js in a build that ships the recordings as files (`build.mjs --files`): it only points at the index. */
@@ -44,9 +45,16 @@ export function gateProblems(dist) {
     for (const file of readdirSync(dir, { withFileTypes: true })) {
       if (file.isFile() && (file.name === 'manifest.json' || file.name === 'events.jsonl')) continue;
       if (!file.isDirectory() || file.name !== 'blobs') { add(`${at}/${file.name}`, 'is not part of a recording: only its manifest, its lines and its blobs are published'); continue; }
+      let manifestOf;
+      try { manifestOf = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')); } catch { manifestOf = undefined; }
+      const artifactNames = artifactBlobNames(manifestOf);
       for (const blob of readdirSync(join(dir, 'blobs'), { withFileTypes: true })) {
         const named = BLOB.exec(blob.name);
+        const refused = blobNameProblem(blob.name, artifactNames);
         if (!blob.isFile() || !named) add(`${at}/blobs/${blob.name}`, 'is not a blob named by its SHA-256');
+        else if (refused) add(`${at}/blobs/${blob.name}`, refused);
+        // An artifact page opened straight would run on the gallery's site: the build publishes it as `<name>.txt`.
+        else if (!named[3] && PAGE_EXTENSIONS.includes(named[2].toLowerCase())) add(`${at}/blobs/${blob.name}`, `would open as a page: an artifact page is published as ${blob.name}.txt`);
         else if (createHash('sha256').update(readFileSync(join(dir, 'blobs', blob.name))).digest('hex') !== named[1]) add(`${at}/blobs/${blob.name}`, 'does not hash to its name');
       }
     }
@@ -55,10 +63,11 @@ export function gateProblems(dist) {
   // names included. Raw, and decoded when it is JSON (or JSON lines), so an escape hides nothing (`\u0065yJ`).
   const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? walk(join(dir, entry.name)) : [join(dir, entry.name)]));
   for (const file of existsSync(dist) ? walk(dist) : []) {
-    const found = TEXT.test(file) ? credentialInFile(file, readFileSync(file, 'utf8')) : undefined;
+    const inBlobs = /(?:^|[\\/])blobs[\\/]/.test(relative(dist, file));
+    const found = (inBlobs ? !MEDIA_FILE.test(file) : TEXT.test(file)) ? credentialInFile(file, readFileSync(file, 'utf8')) : undefined;
     if (found) add(relative(dist, file), `contains a ${found}`);
     // A blob that is not text (an image, a clip, a document of a report) is not read as text: the machine-path pattern runs on its bytes.
-    else if (!TEXT.test(file) && /(?:^|[\\/])blobs[\\/]/.test(relative(dist, file)) && MACHINE_PATH.test(readFileSync(file).toString('latin1'))) add(relative(dist, file), 'contains a machine path');
+    else if (inBlobs && MEDIA_FILE.test(file) && MACHINE_PATH.test(readFileSync(file).toString('latin1'))) add(relative(dist, file), 'contains a machine path');
   }
   // The gallery holds the recordings beside the page, and no other, each entry exactly what its files give: the page
   // plays the gallery's copy, so what it plays is what was checked. Embedded in gallery.js, an entry is the recording's
@@ -94,8 +103,8 @@ export function gateProblems(dist) {
       const right = files ? value === `blobs/${name}` : data !== null && Buffer.from(data[1], 'base64').equals(readFileSync(join(dir, 'blobs', name)));
       if (!right) add(where, `names ${JSON.stringify(typeof value === 'string' ? value.slice(0, 80) : value)} for ${sha} of ${entry.id}, not that blob in its directory`);
     }
-    // Its card, when the build gives one: the title and line its own run gives (the chat view's chatCard), its place in
-    // the lock's order, and a poster that is an image the recording holds.
+    // Its card, when the build gives one: the run's title and line as words, its place in the lock's order, and a poster
+    // that is an image the recording holds.
     if ('card' in entry) {
       const card = entry.card;
       const shape = isObject(card) && Object.keys(card).every((key) => ['title', 'line', 'poster', 'looks', 'boxes', 'rank'].includes(key))

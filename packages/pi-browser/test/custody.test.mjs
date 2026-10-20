@@ -20,7 +20,7 @@ function child(env) {
   return { proc, exited, output: () => out + err };
 }
 
-async function scenario(t, { script, script2 = script, cutAt, hold, between, inactive, env = {}, env2 = {}, zombie = false, kernel = false, start = START }) {
+async function scenario(t, { script, script2 = script, cutAt, hold, between, inactive, env = {}, env2 = {}, zombie = false, kernel = false, start = START, middle }) {
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "custody-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -49,6 +49,16 @@ async function scenario(t, { script, script2 = script, cutAt, hold, between, ina
   assert.ok(how !== "exit" || firstEnd.code === 0, `first process: ${firstEnd.out}${firstEnd.err}`);
   if (cutAt || hold) assert.equal(how === "exit" ? null : firstEnd.signal, "SIGKILL", `the first process reached its cut (${how}): ${firstEnd.out}${firstEnd.err}`);
   between?.(backend);
+
+  // Middle processes (one, or a list run in turn): each resumes the run so far and is killed at its own cut, before the last
+  // process takes over.
+  for (const [n, step] of (middle ? [middle].flat() : []).entries()) {
+    const mid = child({ ...base, ...step.env, MODE: "middle", SCRIPT: JSON.stringify(step.script ?? script), KILL_AT: step.cutAt, OUT: path.join(dir, `middle-${n}.json`) });
+    const got = await new Promise((resolve) => { mid.proc.on("line", (out) => { if (out.includes(`AT ${step.cutAt}`)) resolve("cut"); }); mid.exited.then(() => resolve("exit")); });
+    if (got === "cut") mid.proc.kill("SIGKILL");
+    const midEnd = await mid.exited;
+    assert.equal(midEnd.signal, "SIGKILL", `middle process ${n} reached its cut (${got}): ${midEnd.out}${midEnd.err}`);
+  }
 
   const second = child({ ...base, ...env2, MODE: "second", SCRIPT: JSON.stringify(script2), OUT: path.join(dir, "second.json"), RELEASE_AT_END: "1", ...(inactive ? { INACTIVE: "1" } : {}) });
   // A zombie holder: its create, sent before the takeover, lands at the provider after the new holder reconciled.
@@ -175,6 +185,54 @@ test("a host pause: a conversation that continues keeps its session; one that is
   assert.deepEqual([ended.tally.creates, ended.tally.liveAtEnd], [2, 0]);
 });
 
+test("killed while a person holds the browser: the restart keeps it held though the conversation is done, calls wait, the host's close releases it", async (t) => {
+  const { tally, result, seen } = await scenario(t, { script: ["browser_read", "snapshot"], script2: ["browser_read", "snapshot", "browser_read"], cutAt: "held", inactive: true });
+  const [record] = result.sessions.sessions;
+  assert.deepEqual(result.reconcile.kept, [record.tag], "a held row is never released by reconcile");
+  assert.equal(seen[1].isError, false, "the hold reran on the session it held");
+  assert.equal(failure(seen[2]).code, "waiting_for_human");
+  assert.deepEqual([tally.creates, tally.releases, tally.liveAtEnd], [1, 1, 0]);
+  assert.deepEqual([record.state, record.releaseReason, record.fence], ["released", "close", 1]);
+  assert.deepEqual(result.inventory.rows, {});
+});
+
+test("a held session the provider ended while the host was down is lost; the next call opens a fresh one", async (t) => {
+  const { tally, result, seen } = await scenario(t, { script: ["browser_read", "snapshot"], script2: ["browser_read", "snapshot", "browser_read"], cutAt: "held", between: (b) => b.endAll() });
+  assert.equal(result.reconcile.lost.length, 1);
+  assert.deepEqual([result.sessions.sessions[0].state, result.sessions.sessions[0].releaseReason], ["released", "ended"]);
+  assert.equal(seen[2].isError, false);
+  assert.match(failure(seen[2]).notice, /ended during an interruption/);
+  assert.deepEqual([tally.creates, tally.liveAtEnd], [2, 0]);
+});
+
+const HANDOFF = ["browser_request_handoff", { request_id: "5e2b8f1a-9c3d-4e7f-8a6b-2d1c0f9e8b7a", instruction: "Solve the captcha on the page.", completion_condition: "the search results show" }];
+const handoffDir = (t) => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), "handoff-")); t.after(() => fs.rmSync(dir, { recursive: true, force: true })); return dir; };
+const requests = (dir) => fs.readFileSync(path.join(dir, "requests.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+
+test("killed while a person has the browser: the restart keeps it held, the rerun waits on the same task, and the answer brings it back", async (t) => {
+  const dir = handoffDir(t);
+  const { tally, result, seen } = await scenario(t, { script: ["browser_read", HANDOFF], cutAt: "handoff-polled", env: { HANDOFF_DIR: dir }, env2: { HANDOFF_DIR: dir }, between: () => fs.writeFileSync(path.join(dir, "outcome"), "done") });
+  const [record] = result.sessions.sessions;
+  assert.deepEqual(result.reconcile.kept, [record.tag], "reconcile kept the held session");
+  assert.equal(requests(dir).length, 1, "the person was asked once");
+  const answer = failure(seen[1]);
+  assert.deepEqual([answer?.ok, answer?.outcome], [true, "done"], seen[1].text);
+  assert.deepEqual([tally.creates, tally.liveAtEnd], [1, 0]);
+  assert.deepEqual([record.fence, record.releaseReason], [2, "close"]);
+});
+
+test("killed after the port took the request but before its answer was kept: the rerun asks again with the same request id", async (t) => {
+  const dir = handoffDir(t);
+  const { tally, result, seen } = await scenario(t, { script: ["browser_read", HANDOFF], cutAt: "handoff-requested", env: { HANDOFF_DIR: dir }, env2: { HANDOFF_DIR: dir }, between: () => fs.writeFileSync(path.join(dir, "outcome"), "done") });
+  const asked = requests(dir);
+  assert.equal(asked.length, 2);
+  assert.deepEqual(new Set(asked.map((row) => `${row.requestId} ${row.sessionTag} ${row.sessionId}`)).size, 1, "the same request on the same session");
+  assert.deepEqual(asked.map((row) => row.sessionId), [result.sessions.sessions[0].resourceId, result.sessions.sessions[0].resourceId], "both asks name the provider's session id");
+  assert.deepEqual([failure(seen[1])?.ok, failure(seen[1])?.outcome], [true, "done"], seen[1].text);
+  assert.deepEqual([tally.creates, tally.liveAtEnd], [1, 0]);
+  assert.equal(result.sessions.sessions[0].fence, 2);
+});
+
 test("the host ends a conversation: its session is released by the task, and the host channel hears it with the conversation's label", async (t) => {
   const { tally, result } = await scenario(t, { script: ["browser_read"], script2: ["browser_read", "browser_read"] });
   assert.deepEqual([tally.creates, tally.releases, tally.liveAtEnd], [1, 1, 0]);
@@ -297,6 +355,27 @@ test("a host signal that fires while the drain is still inspecting rejects at on
   assert.deepEqual(unhandled.map(String), [], "no rejection went unhandled");
 });
 
+const ASK = { request_id: "7d3f2a9c-1b4e-4c8a-9f21-0a6b5c4d3e21", instruction: "Solve the captcha on the page.", completion_condition: "the search results show" };
+
+test("an aborted handoff wait is handed to a successor task: the person's answer still brings the session back, told on the next call", async (t) => {
+  const answer = { now: "pending" };
+  const polled = [];
+  const handoff = { request: async (ask) => ({ interactionId: `int-${ask.requestId}` }), outcome: async (id) => { polled.push(id); return answer.now; } };
+  const { browser, harness, root, ctx, settled } = await inProcess(t, { handoff }, {}, ["browser_read", ["browser_request_handoff", ASK]]);
+  const turn = await root.submit({ type: "input", content: "go" }, ctx);
+  for (let i = 0; i < 400 && polled.length === 0; i += 1) await new Promise((r) => setTimeout(r, 25));
+  assert.ok(polled.length > 0, "the wait began");
+  await root.abort(ctx, { background: true });
+  answer.now = "done";
+  await turn.wait(ctx).catch(() => undefined);
+  await settled();
+  const tasks = (await harness.commit((tx) => tx.scanTasks({}, 50), ctx)).items.filter((task) => task.kind === "browser.handoff");
+  assert.deepEqual(tasks.map((task) => task.state.outcome?.status), ["aborted", "completed"]);
+  const state = await harness.snapshot(browser.docs.Sessions, root.id, ctx);
+  assert.deepEqual([state.sessions[0].state, state.sessions[0].fence], ["live", 2]);
+  assert.match(state.notice ?? "", /A person finished your handoff/);
+});
+
 test("an abort handler whose release fails hands it to a successor task, which releases", async (t) => {
   const { backend, browser, harness, root, ctx, settled, releaseTasks } = await inProcess(t);
   backend.delay("release", 60_000);
@@ -363,6 +442,95 @@ test("the real run tool cut mid-dispatch: interrupted, the identical code refuse
   assert.equal(failure(seen[4])?.code, "effect_unknown", "a screenshot is not the look that clears a refusal: snapshot or browser_read is");
   assert.equal(seen[6].isError, false, "after a snapshot, the identical code runs");
   assert.deepEqual([tally.dispatches, tally.creates, tally.liveAtEnd], [2, 1, 0]);
+});
+
+test("killed after a call told a cut but before its answer was saved: the resumed call tells it again, and a later call does not", async (t) => {
+  const submit = ["run", { code: "await page.click('#submit')" }];
+  const env = { REAL_TOOLS: "1" };
+  const { seen, result } = await scenario(t, { script: [submit, "snapshot", "browser_read", "browser_release"], cutAt: "run-answered", env, middle: { cutAt: "snapshot-called", env }, env2: env });
+  assert.equal(seen[0].isError, true, "pi answers the cut run interrupted");
+  assert.match(seen[1].text, /Your run call call-0 ran, but the process stopped before its answer reached you/, "the snapshot whose telling answer was never saved tells the cut again");
+  assert.equal(seen[1].details?.pendingEffect?.callId, "call-0", "with its facts");
+  assert.doesNotMatch(seen[2].text, /Your run call call-0/, "told once its telling answer is saved: the next read is not told again");
+  assert.equal(seen[2].details?.pendingEffect, undefined);
+  assert.equal(result.sessions.sessions[0].pendingEffect?.told, true, "the entry stays told, for an identical run to be refused until a look");
+});
+
+test("a cut told by the identical run's refusal, killed before that answer was saved: pi answers the run interrupted, with no facts, so the next call tells the cut", async (t) => {
+  const submit = ["run", { code: "await page.click('#submit')" }];
+  const env = { REAL_TOOLS: "1" };
+  const { seen } = await scenario(t, { script: [submit, submit, "browser_read", "snapshot", "browser_release"], cutAt: "run-answered", env, middle: { cutAt: "run-answered", env }, env2: env });
+  assert.equal(seen[1].isError, true, "the refusing run was cut before pi saved its answer: pi answers it interrupted");
+  assert.equal(seen[1].details?.pendingEffect, undefined, "and that answer carries no facts, so it told nobody");
+  assert.match(seen[2].text, /Your run call call-0/, "the read tells the cut");
+  assert.equal(seen[2].details?.pendingEffect?.callId, "call-0");
+  assert.doesNotMatch(seen[3].text, /Your run call call-0/, "and only once");
+});
+
+test("a cut told by a DIFFERENT run that was killed before its answer was saved: the journal keeps the cut it replaced, told first, then the new one", async (t) => {
+  const submit = ["run", { code: "await page.click('#submit')" }];
+  const other = ["run", { code: "await page.click('#other')" }];
+  const env = { REAL_TOOLS: "1" };
+  const { seen, result } = await scenario(t, { script: [submit, other, "browser_read", "snapshot", "browser_read", "browser_release"], cutAt: "run-answered", env, middle: { cutAt: "run-answered", env }, env2: env });
+  assert.equal(seen[1].isError, true, "the other run, which told call-0's cut, was cut before pi saved its answer");
+  assert.match(seen[2].text, /Your run call call-0 ran, but the process stopped/, "call-0's warning is still told: the other run's entry kept it");
+  assert.equal(seen[2].details?.pendingEffect?.callId, "call-0");
+  assert.match(seen[3].text, /Your run call call-1 (on \S+ )?ran, but the process stopped/, "then the other run's own cut");
+  assert.equal(seen[3].details?.pendingEffect?.callId, "call-1");
+  assert.doesNotMatch(seen[4].text, /Your run call call-[01]/, "each told once");
+  const pe = result.sessions.sessions[0].pendingEffect;
+  assert.deepEqual([pe?.callId, pe?.told, pe?.prior?.callId, pe?.prior?.told], ["call-1", true, "call-0", true], "both told by saved answers; the next action's entry drops the delivered one");
+});
+
+test("a repeat of a newer cut in the chain is refused too, about itself, while the oldest is told next: no action in the chain runs twice before a look", async (t) => {
+  const submit = ["run", { code: "await page.click('#submit')" }];
+  const other = ["run", { code: "await page.click('#other')" }];
+  const env = { REAL_TOOLS: "1" };
+  const { seen, tally } = await scenario(t, { script: [submit, other, other, "snapshot", other, "browser_release"], cutAt: "run-answered", env, middle: { cutAt: "run-answered", env }, env2: env });
+  const refused = failure(seen[2]);
+  assert.equal(refused?.code, "effect_unknown", `the repeat of call-1, whose cut is not told yet, is refused: ${seen[2].text}`);
+  assert.match(refused.message, /Your run call call-1/, "the refusal is about the repeated action: its own notice");
+  assert.equal(seen[2].details?.pendingEffect?.callId, "call-1", "and its facts");
+  assert.match(seen[3].text, /Your run call call-0/, "the look then tells the oldest cut");
+  assert.equal(seen[3].details?.pendingEffect?.callId, "call-0");
+  assert.equal(seen[4].isError, false, `after the look the run runs: ${seen[4].text}`);
+  assert.equal(tally.dispatches, 3, "call-0 and call-1 once each, then the deliberate repeat after the look");
+});
+
+test("settling the chain's newer cut keeps the older one it carried: a repeat of the older is refused until a look", async (t) => {
+  const submit = ["run", { code: "await page.click('#submit')" }];
+  const other = ["run", { code: "await page.click('#other')" }];
+  const env = { REAL_TOOLS: "1" };
+  const { seen, tally } = await scenario(t, { script: [submit, other, other, "snapshot", submit, "browser_read", submit, "browser_release"], cutAt: "run-answered", env, middle: { cutAt: "run-answered", env }, env2: env });
+  assert.equal(failure(seen[2])?.code, "effect_unknown", "the repeat of call-1 is refused");
+  assert.match(seen[3].text, /Your run call call-0/, "the look tells call-0 and settles call-1's refusal");
+  assert.equal(failure(seen[4])?.code, "effect_unknown", `call-0's cut stays after call-1's is settled: its repeat is refused: ${seen[4].text}`);
+  assert.equal(seen[6].isError, false, `after a look, call-0's code runs: ${seen[6].text}`);
+  assert.equal(tally.dispatches, 3, "call-0 and call-1 once each, then the deliberate repeat after the look");
+});
+
+test("a look that tells a refused cut does not settle it in the same answer: killed before that answer was saved, the warning is told again", async (t) => {
+  const submit = ["run", { code: "await page.click('#submit')" }];
+  const env = { REAL_TOOLS: "1" };
+  // call-0 is cut; its identical repeat (call-1) is refused and cut before that answer was saved; the snapshot (call-2) then tells
+  // the cut and is cut after it answered, before that answer was saved.
+  const { seen, tally } = await scenario(t, { script: [submit, submit, "snapshot", "browser_read", submit, "browser_release"], cutAt: "run-answered", env,
+    middle: [{ cutAt: "run-answered", env }, { cutAt: "snapshot-answered", env }], env2: env });
+  assert.equal(seen[1].details?.pendingEffect, undefined, "the refusal's answer was never saved: pi answers the repeat interrupted");
+  assert.match(seen[2].text, /Your run call call-0/, `the replayed snapshot tells the cut again: ${seen[2].text}`);
+  assert.equal(seen[2].details?.pendingEffect?.callId, "call-0");
+  assert.equal(seen[4].isError, false, `after the read, a look whose telling answer was saved before it, the run runs: ${seen[4].text}`);
+  assert.equal(tally.dispatches, 2, "call-0 once, then the deliberate repeat");
+});
+
+test("a harmless cut, killed after it was told but before the telling answer was saved: told again, and settled only once that answer is saved", async (t) => {
+  const submit = ["run", { code: "await page.click('#submit')" }];
+  const env = { REAL_TOOLS: "1", QUIET_OBSERVER: "1", ACTIONS: "allow" };
+  const { seen, result } = await scenario(t, { script: [submit, "snapshot", "browser_read", "browser_release"], cutAt: "run-answered", env, middle: { cutAt: "snapshot-called", env }, env2: env });
+  assert.match(seen[1].text, /Your run call call-0 ran, but the process stopped before its answer reached you; it sent no request that changes anything, so it is safe to run again/, "the safe-to-run notice is told again after the kill");
+  assert.equal(seen[1].details?.pendingEffect?.callId, "call-0");
+  assert.doesNotMatch(seen[2].text, /Your run call call-0/, "told once its telling answer is saved");
+  assert.equal(result.sessions.sessions[0].pendingEffect, null, "and then settled: nothing waits on a look for a cut that sent nothing");
 });
 
 test("a run applied and answered, killed before pi committed its answer: the identical run is refused until the model looks after the refusal", async (t) => {

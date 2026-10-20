@@ -6,9 +6,10 @@ import { lanesOf, type Lanes, type Span } from './lanes.ts';
 import { animatedPanels, featuredPanel, panelsFor, type BaselineView, type Node, type Panel, type Props, type ViewContext } from './panels.ts';
 import { frameFold, gapTitle, pictureAt, type FrameState } from './frames.ts';
 import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, linkedTime, timeParam, type Fold } from './replay.ts';
+import { chatGivenInput, chatTitle } from './chat-extract.ts';
 import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
-import { opensInPage } from './blobs.ts';
+import { opensInPage, textAt } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
 import { blobsAt, blobsNamed, bundledRecordings, fromFiles, fromUrl, openBundled, type GalleryEntry, type IndexEntry } from './load.ts';
 import { finishedManifest, placeLines, tailOf } from './follow.ts';
@@ -306,15 +307,6 @@ export function restorePlace(root: HTMLElement, place: ReturnType<typeof placeIn
   if (place.focus !== undefined) (all.find((node) => placeKey(node, root) === place.focus) as HTMLElement | undefined)?.focus({ preventScroll: true });
 }
 
-/** A blob's text. An embedded blob's data: URL is decoded in the page: a page served with `connect-src 'self'` may not
- *  fetch one. */
-async function textAt(url: string): Promise<string> {
-  const data = /^data:[^,]*?(;base64)?,/.exec(url);
-  if (!data) return (await fetch(url)).text();
-  const body = url.slice(data[0].length);
-  return data[1] ? new TextDecoder().decode(Uint8Array.from(atob(body), (each) => each.charCodeAt(0))) : decodeURIComponent(body);
-}
-
 /** The JSON blobs a recording's result names (the manifest's and each `result` line's), parsed. One that does not load
  *  or parse is left out, and the views say they cannot read it. */
 async function resultJson(recording: Recording): Promise<Map<string, Json>> {
@@ -497,8 +489,9 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const liveStatus = el('span', { class: 'live-status', text: 'live' });
   const headerOf = () => {
     const { manifest } = recording;
-    if (following) return { header: el('header', {}, el('h1', { text: manifest.title }), el('p', { class: 'meta' }, `following ${live!.url} · `, liveStatus)), problemsNote: undefined };
-    const header = el('header', {}, el('h1', { text: manifest.title }), el('p', { class: 'meta', text:
+    const title = chatTitle(manifest, chatGivenInput(recording.lines));
+    if (following) return { header: el('header', {}, el('h1', { text: title }), el('p', { class: 'meta' }, `following ${live!.url} · `, liveStatus)), problemsNote: undefined };
+    const header = el('header', {}, el('h1', { text: title }), el('p', { class: 'meta', text:
       `${manifest.task} · ${manifest.model}${manifest.providers ? ` · ${manifest.providers} providers` : ''} · recorded ${manifest.recorded.started} · code ${manifest.code.commit.slice(0, 8)}` }));
     if (live) header.append(el('p', { class: 'meta' }, `followed live from ${live.url} · `, liveStatus));
     const problemsNote = problems.length ? el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }) : undefined;
@@ -775,7 +768,7 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entr
   const rest = shown.filter((entry) => !featured.has(entry.id));
   const list = el('ul', { class: 'gallery' }, ...rest.map((entry) => {
     // A demo opens in the chat + report view; its inspection is ./?r=<id>, linked from there.
-    const title = (entry as { card?: { title?: string } }).card?.title ?? entry.manifest.title;
+    const title = (entry as { card?: { title?: string } }).card?.title ?? chatTitle(entry.manifest);
     const link = Object.assign(el('a', { text: title }), { href: `chat.html?r=${encodeURIComponent(entry.id)}` });
     return el('li', {}, link);
   }));

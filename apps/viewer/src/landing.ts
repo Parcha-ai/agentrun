@@ -3,6 +3,8 @@
 // names among the run's own pictures, with the boxes the run's own report marked for the looks the lock names (each with
 // its label). A run with no poster is a card of words. Only a run a real model made is featured.
 
+import { textAt } from './blobs.ts';
+
 /** A run's card, written by the build from the run itself; `rank` is its place in the gallery's lock. */
 export type LandingCard = { title: string; line?: string; poster?: string; looks?: string[]; boxes?: { x: number; y: number; w: number; h: number; at: string; look: string }[]; rank?: number };
 type LandingEntry = { id: string; blobs: Record<string, string>; card?: LandingCard; manifest: { providers?: 'real' | 'scripted'; artifact?: { entry: string; files: Record<string, string> } } };
@@ -89,7 +91,7 @@ async function landingMarked(entry: LandingEntry, boxes: NonNullable<LandingCard
   const url = sha ? landingBlobUrl(entry, sha) : undefined;
   if (!url || boxes.length === 0) return [];
   try {
-    const page = new DOMParser().parseFromString(await (await fetch(url)).text(), 'text/html');
+    const page = new DOMParser().parseFromString(await textAt(url), 'text/html');
     const marks = [...page.querySelectorAll('[data-look][data-xywh]')].flatMap((node) => {
       const at = landingPercent(node.getAttribute('data-xywh')!);
       return at ? [{ look: node.getAttribute('data-look')!, at, label: (node.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 40) }] : [];
@@ -141,9 +143,13 @@ function landingFit(frame: HTMLElement, layer: HTMLElement, picture: HTMLImageEl
   frame.style.background = edge ?? '';
 }
 
-/** A marked box over the picture, its label above it (below when the box starts at the picture's top). */
-const landingBox = (each: LandingBox) => landingEl('span', { class: each.y < LANDING_LABEL ? 'lbox below' : 'lbox', style: `left:${each.x}%;top:${each.y}%;width:${each.w}%;height:${each.h}%` },
-  each.label !== '' && landingEl('span', { class: 'llabel', text: each.label }));
+/** A marked box over the picture, its label above it (below when the box starts at the picture's top). Placed through the
+ *  CSSOM: the page's policy refuses a style attribute. */
+const landingBox = (each: LandingBox) => {
+  const box = landingEl('span', { class: each.y < LANDING_LABEL ? 'lbox below' : 'lbox' }, each.label !== '' && landingEl('span', { class: 'llabel', text: each.label }));
+  Object.assign(box.style, { left: `${each.x}%`, top: `${each.y}%`, width: `${each.w}%`, height: `${each.h}%` });
+  return box;
+};
 
 /** The labels laid out so each reads whole, in order: each takes the first of four places (above its box or below it,
  *  from its left edge or ending at its right edge) that lies inside the poster's visible part and covers no label placed

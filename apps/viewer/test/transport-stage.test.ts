@@ -160,7 +160,7 @@ test('a wait the film skips is a hatched band with its seconds', () => {
 });
 
 test('no motion: every animated rule of the stage is switched off under prefers-reduced-motion, and the states are told in words', () => {
-  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../viewer.css', import.meta.url), 'utf8');
   const start = html.indexOf('/* The transport stage');
   const stage = html.slice(start, html.indexOf('@media (max-width: 640px)', start));
   const reduce = html.slice(html.indexOf('@media (prefers-reduced-motion: reduce)'));

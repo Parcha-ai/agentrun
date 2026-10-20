@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
 import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
+import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, tapBox, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, reap, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 test('the place seam: the supervisor starts, kills and recovers through the place, writes the kill line BEFORE the place kills, and passes the token the place mints for each attempt on stdin', { timeout: 300_000 }, async (t) => {
@@ -332,12 +332,13 @@ test('a slow status read does not hold up supervision: the spend cap stops a run
   const recording = join(tmp, 'recording');
   await demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => ({
     ...localPlace({ self, paths, destroyBoxes, requestFile }),
-    status: async () => { await new Promise((resolve) => setTimeout(resolve, 6000)); return { record: null }; },
+    status: async () => { await new Promise((resolve) => setTimeout(resolve, 20_000)); return { record: null }; },
   }) });
   const host = readEvents(recording).filter((line) => line.source === 'host');
   const started = host.find((line) => line.kind === 'process.started').t;
   const stopped = host.find((line) => line.kind === 'kill').t;
-  assert.ok(stopped - started < 4500, `the cap stopped the child ${stopped - started} ms after it started, not after the 6 s read`);
+  // The first read answers 20 s after it is asked, and it is asked once the child has started: a stop that waited for it would be 20 s or more after the start. The bound is far from both that and a loaded runner's slow start (4.6 s was seen on CI against the former 4.5 s bound).
+  assert.ok(stopped - started < 15_000, `the cap stopped the child ${stopped - started} ms after it started, not after the 20 s read`);
 });
 test('--operator-kill is refused by a place that cannot make a process kill, before anything starts', { timeout: 120_000 }, async (t) => {
   const { tmp, options } = await specWith(t, { name: 'reference' });

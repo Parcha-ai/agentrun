@@ -1,0 +1,233 @@
+{
+  "description": "A collecting map whose host declares an agent's failure an item failure with a message of 531 characters: the row keeps the first 300, as every row's message does.",
+  "workflow": {
+    "v": 2,
+    "name": "map-collect",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "Verdict": {
+        "type": "object",
+        "required": [
+          "verdict"
+        ],
+        "properties": {
+          "verdict": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "map",
+      "label": "each",
+      "itemsPath": "items",
+      "as": "results",
+      "resultPath": "verdict",
+      "onItemFailure": "collect",
+      "failedAs": "failed",
+      "body": {
+        "node": "chain",
+        "steps": [
+          {
+            "node": "code",
+            "label": "price",
+            "as": "quote",
+            "code": "s => { if (s.item.price < 0) throw new Error('no price for ' + s.item.id); return { total: s.item.price * 2 }; }"
+          },
+          {
+            "node": "agent",
+            "label": "judge",
+            "instructions": "Judge the quote.",
+            "out": "Verdict",
+            "as": "verdict"
+          }
+        ]
+      }
+    }
+  },
+  "input": {
+    "items": [
+      {
+        "id": "a",
+        "price": 1
+      },
+      {
+        "id": "b",
+        "price": -1
+      },
+      {
+        "id": "c",
+        "price": 3
+      },
+      {
+        "id": "d",
+        "price": 4
+      }
+    ]
+  },
+  "script": {
+    "code": {
+      "/root/items/1/body/steps/0": {
+        "throw": "no price for b"
+      },
+      "/root/items/0/body/steps/0": {
+        "return": {
+          "total": 2
+        }
+      },
+      "/root/items/2/body/steps/0": {
+        "return": {
+          "total": 6
+        }
+      },
+      "/root/items/3/body/steps/0": {
+        "return": {
+          "total": 8
+        }
+      }
+    },
+    "gen": {
+      "/root/items/0/body/steps/1": {
+        "submission": {
+          "verdict": "buy"
+        }
+      },
+      "/root/items/2/body/steps/1": {
+        "submission": {
+          "verdict": "pass"
+        }
+      },
+      "/root/items/3/body/steps/1": {
+        "throw": "blocked by the content filter: part 1 of a provider explanation part 2 of a provider explanation part 3 of a provider explanation part 4 of a provider explanation part 5 of a provider explanation part 6 of a provider explanation part 7 of a provider explanation part 8 of a provider explanation part 9 of a provider explanation part 10 of a provider explanation part 11 of a provider explanation part 12 of a provider explanation part 13 of a provider explanation part 14 of a provider explanation part 15 of a provider explanation",
+        "itemFailure": "CONTENT_FILTER"
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "items": [
+        {
+          "id": "a",
+          "price": 1
+        },
+        {
+          "id": "b",
+          "price": -1
+        },
+        {
+          "id": "c",
+          "price": 3
+        },
+        {
+          "id": "d",
+          "price": 4
+        }
+      ],
+      "results": [
+        {
+          "verdict": "buy"
+        },
+        null,
+        {
+          "verdict": "pass"
+        },
+        null
+      ],
+      "failed": [
+        {
+          "item_index": 1,
+          "label": "price",
+          "code": "code_transform_failed",
+          "message": "code node \"price\" failed: no price for b; check its state paths, synchronous function body and supported globals"
+        },
+        {
+          "item_index": 3,
+          "label": "judge",
+          "code": "CONTENT_FILTER",
+          "message": "blocked by the content filter: part 1 of a provider explanation part 2 of a provider explanation part 3 of a provider explanation part 4 of a provider explanation part 5 of a provider explanation part 6 of a provider explanation part 7 of a provider explanation part 8 of a provider explanation part "
+        }
+      ]
+    },
+    "output": {
+      "items": [
+        {
+          "id": "a",
+          "price": 1
+        },
+        {
+          "id": "b",
+          "price": -1
+        },
+        {
+          "id": "c",
+          "price": 3
+        },
+        {
+          "id": "d",
+          "price": 4
+        }
+      ],
+      "results": [
+        {
+          "verdict": "buy"
+        },
+        null,
+        {
+          "verdict": "pass"
+        },
+        null
+      ],
+      "failed": [
+        {
+          "item_index": 1,
+          "label": "price",
+          "code": "code_transform_failed",
+          "message": "code node \"price\" failed: no price for b; check its state paths, synchronous function body and supported globals"
+        },
+        {
+          "item_index": 3,
+          "label": "judge",
+          "code": "CONTENT_FILTER",
+          "message": "blocked by the content filter: part 1 of a provider explanation part 2 of a provider explanation part 3 of a provider explanation part 4 of a provider explanation part 5 of a provider explanation part 6 of a provider explanation part 7 of a provider explanation part 8 of a provider explanation part "
+        }
+      ]
+    },
+    "events": {
+      "/root/items/0/body/steps/0": [
+        "node.start:price",
+        "node.end:price:ok"
+      ],
+      "/root/items/1/body/steps/0": [
+        "node.start:price",
+        "node.end:price:failed"
+      ],
+      "/root/items/2/body/steps/0": [
+        "node.start:price",
+        "node.end:price:ok"
+      ],
+      "/root/items/3/body/steps/0": [
+        "node.start:price",
+        "node.end:price:ok"
+      ],
+      "/root/items/0/body/steps/1": [
+        "node.start:judge",
+        "node.end:judge:ok"
+      ],
+      "/root/items/2/body/steps/1": [
+        "node.start:judge",
+        "node.end:judge:ok"
+      ],
+      "/root/items/3/body/steps/1": [
+        "node.start:judge",
+        "node.end:judge:failed"
+      ]
+    }
+  }
+}

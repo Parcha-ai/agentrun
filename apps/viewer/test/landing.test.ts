@@ -95,8 +95,7 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
       rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }), { timeout: 20_000 });
     const recordings = join(out, 'recordings');
-    for (const id of ['chat-artifact', 'chat-hear-and-find', 'ten-kills-seed21']) cpSync(join(here, 'fixtures', id), join(recordings, id), { recursive: true });
-    cpSync(join(here, '..', 'recordings', 'reference-job'), join(recordings, 'reference-job'), { recursive: true });
+    for (const id of ['chat-artifact', 'chat-hear-and-find', 'reference-job', 'ten-kills-seed21']) cpSync(join(here, 'fixtures', id), join(recordings, id), { recursive: true });
     // The reference job asked a question: its card's line.
     cpSync(join(recordings, 'reference-job'), join(recordings, 'reference-asked'), { recursive: true });
     const events = join(recordings, 'reference-asked', 'events.jsonl');

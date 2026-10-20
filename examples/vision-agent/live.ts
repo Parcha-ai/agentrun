@@ -1,10 +1,13 @@
 // The models of a live run, each named by its provider and public model id as pi-ai's catalog names it: the lead writes
 // the code, the eyes watch a window with its sound (Google's take video; any other eyes take frames), Jev judges frames and
 // draws the box (TYPESAFE_API_KEY, or the gateway's key), and Scribe v2 on fal writes what is said (FAL_KEY, needed only when a question
-// needs speech). A run reaches the lead and the eyes with the user's own keys, or through an OpenAI-compatible gateway
-// (VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY) that serves each model under its public id; such a gateway may also pass
-// fal's queue through at its root (`/fal-queue`), which takes its key as a bearer token, and TypeSafe (`/typesafe`).
+// needs speech). A run reaches the lead and the eyes with the user's own keys, or through a gateway (VIDEO_MODEL_BASE_URL
+// and VIDEO_MODEL_API_KEY) that serves each model under its public id: OpenAI-compatible for OpenAI's and Google's, and
+// Anthropic's own Messages API at its root (`/v1/messages`) for Anthropic's, which is what returns thinking. Such a gateway
+// may also pass fal's queue through at its root (`/fal-queue`), which takes its key as a bearer token, and TypeSafe
+// (`/typesafe`).
 import { parseArgs } from 'node:util';
+import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import { createModels, createProvider, type Models, type Provider } from '@earendil-works/pi-ai/models';
@@ -61,8 +64,10 @@ function chooseModel(env: NodeJS.ProcessEnv, role: 'lead' | 'eyes', name: string
   return { provider, modelId: PROVIDERS[provider]![role] };
 }
 
-/** The catalog of a run's models: through the gateway when one is set (the Responses API for a model that speaks it, else
- *  chat completions), else each provider with its own key. */
+/** The catalog of a run's models: through the gateway when one is set (an Anthropic model over the Messages API at the
+ *  gateway's root, where the client adds /v1/messages and the model's thinking comes back as thinking blocks, which chat
+ *  completions through the gateway do not return; any other over the Responses API when it speaks it, else chat completions
+ *  at the gateway's base URL), else each provider with its own key. */
 function catalogOf(env: NodeJS.ProcessEnv, models: readonly PublicModel[]): Models {
   const catalog = createModels();
   for (const id of new Set(models.map((model) => model.provider))) {
@@ -73,17 +78,20 @@ function catalogOf(env: NodeJS.ProcessEnv, models: readonly PublicModel[]): Mode
       continue;
     }
     if (!env.VIDEO_MODEL_API_KEY) throw new Error('VIDEO_MODEL_BASE_URL needs VIDEO_MODEL_API_KEY (the gateway\'s credential).');
-    const baseUrl = env.VIDEO_MODEL_BASE_URL;
+    const messages = id === 'anthropic';
+    const baseUrl = messages ? gatewayRoot(env) : env.VIDEO_MODEL_BASE_URL;
     const apiKey = env.VIDEO_MODEL_API_KEY;
     const entries = models.filter((model) => model.provider === id).map((model) => {
       const entry = original.getModels().find((each) => each.id === model.modelId);
       if (!entry) throw new Error(`${id} has no model ${model.modelId} in this build of pi-ai`);
+      if (messages) return { ...entry, api: 'anthropic-messages' as const, baseUrl };
       return { ...entry, api: entry.api === 'openai-responses' ? 'openai-responses' as const : 'openai-completions' as const, baseUrl };
     });
     catalog.setProvider(createProvider({
       id, name: original.name, baseUrl,
       auth: { apiKey: { name: 'the model gateway', resolve: async () => ({ auth: { apiKey }, source: 'the model gateway' }) } },
-      models: entries as never, api: { 'openai-responses': openAIResponsesApi(), 'openai-completions': openAICompletionsApi() } as never,
+      models: entries as never,
+      api: (messages ? { 'anthropic-messages': anthropicMessagesApi() } : { 'openai-responses': openAIResponsesApi(), 'openai-completions': openAICompletionsApi() }) as never,
     }) as never);
   }
   return catalog;

@@ -71,8 +71,7 @@ const gate = (t, recordings) => {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, 'scripts/recording'), { recursive: true });
   for (const name of ['gate.mjs', 'validate.mjs']) cpSync(join(root, 'scripts/recording', name), join(dir, 'scripts/recording', name));
-  // Both import the one scanner, which lives in the reference example.
-  mkdirSync(join(dir, 'examples/reference'), { recursive: true });
+  // Both import the one scanner, which lives in the harness package.
   cpSync(join(root, 'packages/harness/src/scan.ts'), join(dir, 'packages/harness/src/scan.ts'));
   // The report page is read with an HTML parser, from node_modules (the workflow installs it before the gate).
   cpSync(join(root, 'packages/harness/src/artifact.ts'), join(dir, 'packages/harness/src/artifact.ts'));
@@ -84,12 +83,16 @@ const gate = (t, recordings) => {
 };
 
 test('the gate, as the step runs it, passes the build of the bundled recordings and fails the step on a problem', async (t) => {
-  const passed = await gate(t, join(root, 'apps/viewer/recordings'));
+  // In git, recordings/ holds no run (the Pages job unpacks the gallery into it): the step is tried on the reference job.
+  const gallery = mkdtempSync(join(tmpdir(), 'pages-gallery-'));
+  t.after(() => rmSync(gallery, { recursive: true, force: true }));
+  cpSync(join(root, 'apps/viewer/test/fixtures/reference-job'), join(gallery, 'reference-job'), { recursive: true });
+  const passed = await gate(t, gallery);
   assert.equal(passed.code, 0, passed.stderr);
   assert.match(passed.stdout, /apps\/viewer\/dist: 1 recording\(s\), every published file checked/);
   const copy = mkdtempSync(join(tmpdir(), 'pages-recordings-'));
   t.after(() => rmSync(copy, { recursive: true, force: true }));
-  cpSync(join(root, 'apps/viewer/recordings/reference-job'), join(copy, 'reference-job'), { recursive: true });
+  cpSync(join(root, 'apps/viewer/test/fixtures/reference-job'), join(copy, 'reference-job'), { recursive: true });
   writeFileSync(join(copy, 'reference-job', 'notes.txt'), `sk-${'a1'.repeat(20)}`);
   const refused = await gate(t, copy);
   assert.notEqual(refused.code, 0);
