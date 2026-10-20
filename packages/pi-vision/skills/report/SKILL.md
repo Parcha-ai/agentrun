@@ -47,7 +47,8 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
   - **a row** of a row-shaped answer: a thumbnail of its evidence (`thumb()`), small enough for many rows.
   Each picture has a caption in a sentence, from the look's answer: what it shows and why it matters ("the tallest bar is the
   second quarter's"), not what it is ("a chart"). Drop only a duplicate (the same picture twice) and a picture that shows
-  nothing its claim says.
+  nothing its claim says. A caption says only what its own picture shows, in the same measure: a box that holds part water
+  and part land is described that way, never as "completely filled" or "all".
 - **Fold the routine.** What was checked and found as expected goes in a folded section (`<details>`), one line each, its
   evidence inside the fold. What surprised, failed or decided the answer is a finding of its own, open, and first.
 - **A document is embedded.** When the run read a document, the page shows it as a viewer would: each page the findings

@@ -131,11 +131,15 @@ test("the skill holds the six pieces this test runs, and nothing more", () => {
   assert.ok(!description.includes(": ") && !description.includes(" #"), "a plain YAML scalar: no colon-space and no comment mark, or the skills loader refuses the front matter");
 });
 
-test("the skill holds the summary to its findings: each sentence restates a finding with no stronger word, and none, all or gone appear only where a finding says so", () => {
+test("the skill holds the summary to its findings and a caption to its picture: no stronger word than the finding says, and a partly filled box is never described as all", () => {
   const bullet = /- \*\*The answer first\*\*([\s\S]*?)\n- \*\*/.exec(SKILL)?.[1] ?? "";
   assert.ok(bullet.length > 0, "the answer-first bullet is there");
   assert.match(bullet.replace(/\s+/g, " "), /Each sentence of the summary restates a finding from the evidence below it with no stronger word: when a finding says most, part or all but one place, the summary says the same, and "none", "all" or "gone" appear only where a finding says so\./);
   assert.equal([...SKILL.matchAll(/restates a finding from the evidence below it/g)].length, 1, "the rule is said once");
+  const captions = /- \*\*Every finding shows its evidence; every row has a thumbnail\.\*\*([\s\S]*?)\n- \*\*/.exec(SKILL)?.[1] ?? "";
+  assert.ok(captions.length > 0, "the evidence bullet, where captions are described, is there");
+  assert.match(captions.replace(/\s+/g, " "), /A caption says only what its own picture shows, in the same measure: a box that holds part water and part land is described that way, never as "completely filled" or "all"\./);
+  assert.equal([...SKILL.matchAll(/A caption says only what its own picture shows/g)].length, 1, "the caption rule is said once");
 });
 
 test("a file is written byte for byte, whatever it holds, with no chunk ending inside a character", async () => {
