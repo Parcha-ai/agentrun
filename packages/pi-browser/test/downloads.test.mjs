@@ -5,7 +5,7 @@ import { cp as fs_cp, mkdir, readFile, readdir, rm, symlink, writeFile } from "n
 import http from "node:http";
 import path from "node:path";
 import test from "node:test";
-import { DOWNLOADS_MANIFEST, fetchDownloads, recordingHandle, safeDownloadName } from "../dist/index.js";
+import { createRedactor, DOWNLOADS_MANIFEST, fetchDownloads, recordingHandle, safeDownloadName } from "../dist/index.js";
 import { browserbaseProvider } from "../dist/providers/browserbase.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { fakeBrowserbase } from "./fixtures/fake-browserbase.mjs";
@@ -241,4 +241,16 @@ test("a real Chrome downloads a file; the cdp provider lists it once finished, a
     server.close();
     await rm(root, { recursive: true, force: true }); await rm(workspace, { recursive: true, force: true });
   }
+});
+
+// A read error's message is a provider's text; the run's secrets leave the whole message before the 200-character cut.
+test("a registered value straddling the 200-character cut of a skipped file's reason leaves no fragment", async (t) => {
+  const token = "run-token-0123456789";
+  const workspace = await scratch(t, "dl-redact-");
+  const provider = { downloads: { list: async () => [{ name: "a.pdf", sizeBytes: 3 }, { name: "b.pdf", sizeBytes: 3 }], read: async () => { throw new Error(`${"r".repeat(192)}${token} and more`); } } };
+  try {
+    const out = await fetchDownloads({ provider, ref: { id: "s1" }, session: "s1", workspace, redact: createRedactor(() => [token]) });
+    assert.equal(out.skipped.length, 2);
+    assert.doesNotMatch(JSON.stringify(out), /run-t/);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
 });

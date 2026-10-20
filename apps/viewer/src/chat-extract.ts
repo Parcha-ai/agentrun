@@ -2,7 +2,7 @@
 // thread (its messages as recorded, the run's own thinking, one card per tool call), the session's spans (workflow
 // nodes, LLM calls, tool calls, the model calls made inside a tool), what each look read, the run's cited answer and
 // the agent's artifact. The same code for every run; pure but for reading a blob's JSON, which the caller passes.
-import type { Json, Recording } from './format.ts';
+import type { Json, Line, Manifest, Recording } from './format.ts';
 import type { ChatCall, ChatDecision, ChatItem, ChatModel, ChatRow, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
 
 type Obj = { [key: string]: Json };
@@ -193,6 +193,38 @@ function chatRaw(body: Json | undefined): string {
 }
 
 /** The chat + report view's model of a recording. `readJson` reads a blob's JSON (the run's cited result). */
+/** Each conversation an agent node of the workflow ran, and that node's path. */
+function chatNodeConversations(lines: readonly Line[]): Map<string, string> {
+  const pathOfConversation = new Map<string, string>();
+  for (const line of lines) {
+    if (line.kind !== 'agentrun.nodes' || line.channel !== 'durable') continue;
+    const conversation = chatId(chatObj(chatObj(line.data)?.value)?.conversation);
+    if (conversation && line.path) pathOfConversation.set(conversation, line.path);
+  }
+  return pathOfConversation;
+}
+
+/** The run's input as given, when the workflow's nodes hold every recorded conversation: the runner drives each one, so
+ *  no person speaks in it. A conversation no node holds is one a person may speak in, and a workflow it ran is a call of
+ *  that conversation, its input that call's. */
+export function chatGivenInput(lines: readonly Line[]): Json | undefined {
+  const pathOfConversation = chatNodeConversations(lines);
+  const entries = ['pi.user', 'pi.assistant', 'pi.tool-result'];
+  const conversations = new Set(lines.filter((line) => line.channel === 'durable' && entries.includes(line.kind))
+    .map((line) => chatId(chatObj(line.data)?.conversationId) ?? chatId(line.conv)).filter((each): each is string => !!each));
+  const driven = conversations.size > 0 && [...conversations].every((conversation) => pathOfConversation.has(conversation));
+  const given = chatObj(lines.find((line) => line.channel === 'durable' && line.kind === 'agentrun.workflow')?.data)?.input;
+  return driven ? chatObj(given)?.input : undefined;
+}
+
+/** A run's title, by one rule wherever it is shown: the artifact's title, else the first line of the input's question,
+ *  else the recording's title. Without the run's lines (a gallery's list) the question is not known. */
+export function chatTitle(manifest: Manifest, inputValue?: Json): string {
+  const artifact = chatObj((manifest as { artifact?: Json }).artifact);
+  const question = typeof inputValue === 'string' ? inputValue : chatStr(chatObj(inputValue)?.question);
+  return chatStr(artifact?.title) ?? (question?.trim() ? chatClip(chatFirstLine(question), 140) : manifest.title);
+}
+
 export async function extractChat(recording: Recording, readJson: (sha: string) => Promise<Json | undefined>): Promise<ChatModel> {
   const { manifest } = recording;
   // A recording with no times keeps its file's order: each line placed at its position, the axis read as an order.
@@ -204,22 +236,8 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   const nodeAt = new Map<string, { label: string; t0?: number; t1?: number }>();
   for (const line of live('node.start')) nodeAt.set(line.path ?? '', { label: chatStr(chatObj(line.data)?.label) ?? line.path ?? 'node', t0: line.t });
   for (const line of live('node.end')) { const node = nodeAt.get(line.path ?? ''); if (node) node.t1 = line.t; }
-  const pathOfConversation = new Map<string, string>();
-  for (const line of lines) {
-    if (line.kind !== 'agentrun.nodes' || line.channel !== 'durable') continue;
-    const conversation = chatId(chatObj(chatObj(line.data)?.value)?.conversation);
-    if (conversation && line.path) pathOfConversation.set(conversation, line.path);
-  }
-
-  // The run's input as given, when the workflow's nodes hold every recorded conversation: the runner drives each one,
-  // so no person speaks in it. A conversation no node holds is one a person may speak in, and a workflow it ran is a
-  // call of that conversation, its input that call's.
-  const entries = ['pi.user', 'pi.assistant', 'pi.tool-result'];
-  const conversations = new Set(lines.filter((line) => line.channel === 'durable' && entries.includes(line.kind))
-    .map((line) => chatId(chatObj(line.data)?.conversationId) ?? chatId(line.conv)).filter((each): each is string => !!each));
-  const driven = conversations.size > 0 && [...conversations].every((conversation) => pathOfConversation.has(conversation));
-  const given = chatObj(lines.find((line) => line.channel === 'durable' && line.kind === 'agentrun.workflow')?.data)?.input;
-  const inputValue = driven ? chatObj(given)?.input : undefined;
+  const pathOfConversation = chatNodeConversations(lines);
+  const inputValue = chatGivenInput(lines);
   // A record's `question` is the person's words and its `files` what they handed over; any other field is a detail.
   const inputRecord = chatObj(inputValue);
   const asked = chatStr(inputRecord?.question);
@@ -298,9 +316,12 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
             const name = chatStr(p.name) ?? 'tool';
             const times = toolTimes.get(callId);
             const said = Object.values(chatObj(p.arguments) ?? {});
-            const detail = said.length === 1 && typeof said[0] === 'string' && said[0].trim().includes('\n') ? said[0] : undefined;
-            if (said.length === 1 && typeof said[0] === 'string') commands.add(callId);
-            const item: Extract<ChatItem, { kind: 'tool' }> = { kind: 'tool', id: `item-${++counter}`, tool: name, title: chatToolTitle(name, p.arguments), ...(detail ? { detail } : {}), takeaway: '', media: [], looks: [], calls: [], ...(chatIsJudge(name) ? { judge: true as const } : {}),
+            const only = said.length === 1 && typeof said[0] === 'string' ? said[0] : undefined;
+            const title = chatToolTitle(name, p.arguments);
+            // Its one argument in full wherever its title does not show it whole: one of several lines, or one line clipped.
+            const detail = only?.trim() && title !== `${name} ${only.trim()}` ? only : undefined;
+            if (only !== undefined) commands.add(callId);
+            const item: Extract<ChatItem, { kind: 'tool' }> = { kind: 'tool', id: `item-${++counter}`, tool: name, title, ...(detail ? { detail } : {}), takeaway: '', media: [], looks: [], calls: [], ...(chatIsJudge(name) ? { judge: true as const } : {}),
               ...(times?.t0 !== undefined ? { t0: times.t0 } : {}), ...(times?.t1 !== undefined ? { t1: times.t1 } : {}) };
             thread.items.push(item);
             toolItems.set(callId, item);
@@ -450,23 +471,15 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     sources[key] = { href, ...(addresses.length > 1 ? { more: addresses.slice(1) } : {}), ...(pictures ? { pictures } : {}), takeaway: text, decisions, media, regions, ...(lookItem.has(key) ? { item: lookItem.get(key)! } : {}) };
   }
 
-  // A call that made exactly one look says what that look found; its own first line is the tool's framing.
+  // A call that made exactly one look says what that look found; its own first line is the tool's framing. A call that
+  // failed keeps its error: why it failed is not what its look found.
   for (const item of toolItems.values()) {
     const only = item.looks.length === 1 ? sources[item.looks[0]!] : undefined;
-    if (only?.takeaway) item.takeaway = only.takeaway;
+    if (only?.takeaway && !item.failed) item.takeaway = only.takeaway;
   }
 
   // A step that ran a command or a script and made no look and no picture is plumbing.
   for (const [callId, item] of toolItems) if (commands.has(callId) && !item.calls.some((call) => call.look) && item.media.length === 0) item.plumbing = true;
-
-  // A step that nothing the agent thought or wrote leads into speaks for itself with what a look of it asked in words;
-  // a step whose looks asked nothing in words has no voice (a look's line and a call's result are logs, never a voice).
-  for (const thread of ordered) thread.items.forEach((item, index) => {
-    const before = thread.items[index - 1];
-    if (item.kind !== 'tool' || before?.kind === 'thinking' || before?.kind === 'assistant') return;
-    const asked = item.calls.find((call) => call.look && call.ask)?.ask;
-    if (asked) item.voice = asked;
-  });
 
   // The run's answer: its cited result, each cite on the look (and the card) that made it; else the result record it
   // submitted, a field of evidence paths as its cites; else its final assistant text.
@@ -523,9 +536,8 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   const times = lines.map((line) => line.t).filter((t) => typeof t === 'number' && t > 0);
   const resultLine = lines.findLast((line) => line.kind === 'result');
   const artifact = chatObj((manifest as { artifact?: Json }).artifact);
-  const question = typeof inputValue === 'string' ? inputValue : chatStr(chatObj(inputValue)?.question);
   return {
-    title: chatStr(artifact?.title) ?? (question?.trim() ? chatClip(chatFirstLine(question), 140) : manifest.title),
+    title: chatTitle(manifest, inputValue),
     ...(input ? { input } : {}),
     threads: ordered,
     spans: times.length ? spans : [],

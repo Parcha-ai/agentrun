@@ -25,7 +25,7 @@ This is the complete set. Each kind accepts exactly these fields; any other fiel
 - `extract`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`
 - `report`: `label`, `state`, `instructions`, `sopSection`, `requires`, `tools`, `effort`, `thinking`
 - `artifact`: `label`, `state`, `type`, `path`, `instructions`, `sopSection`, `requires`, `tools`, `effort`, `thinking`
-- `map`: `label`, `itemsPath`, `body`, `as`, `resultPath`, `maxConcurrency`
+- `map`: `label`, `itemsPath`, `body`, `as`, `resultPath`, `maxConcurrency`, `onItemFailure`, `failedAs`
 - `parallel`: `label`, `branches`
 - `loop`: `label`, `body`, `until`, `maxIters`, `expect_iters`
 - `escalate`: `label`, `when`, `kind`, `stage`, `summary`
@@ -51,7 +51,7 @@ Their fields:
 - `out` names the schema the submission must satisfy; the value lands at `as`.
 - `requires` lists state paths that must hold evidence before the node runs, each produced upstream: missing values, null, blank strings, empty arrays and empty objects stop the run; `false` and `0` pass.
 - `tools` names tools the host offers. `[]` means no tools; omitting `tools` offers every tool the host allows. Never name a tool the host did not offer.
-- `effort` is minimal|low|medium|high; `thinking` is low|medium|high (never off); `tier` is fast|default|strong. They are requests to the host: resource ceilings are the host's.
+- `effort` is minimal|low|medium|high; `thinking` is low|medium|high (never off); `tier` is fast|default|strong. They are requests to the host: resource ceilings are the host's. A node that names no `thinking` thinks at medium, unless its host sets another level.
 - An `agent` node may carry `budget_usd`, the most it asks to spend in dollars (above 0), which the host caps by what it has left, and `context`, fresh|fork: `fresh` (the default) sees only its instructions and state; `fork` asks the host to start it from the caller's transcript, which a host refuses where it has none.
 - `sopSection` names one heading of the host's SOP, or a list of them, as the exact text after "## ". The node receives those sections verbatim.
 - `verify` reviews a submission before it is accepted: {"out": a question schema with at least one boolean question, "state"?, "maxDrives"?: an integer >= 1 (default 2, no maximum), "override"?: {"below": a number in (0, 1), default 0.3}}. A boolean question named after a submission field doubts that field when its yes-probability is below `override.below`; any other boolean question is a requirement met at 0.5. A rejected submission returns to the same session with the reasons.
@@ -76,7 +76,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 ### Control nodes
 
 - `chain`: non-empty `steps`, run in order.
-- `map`: `itemsPath` (an upstream list), `body` and `as`. The body sees `item` and `item_index`; `maxConcurrency` is a positive integer (default 4); `resultPath` selects one path from each completed item's state. Without `resultPath`, and with no `as` in the body, each item's result is its whole state, the mapped list included: set `resultPath` (or an `as` in the body) for a large map; the validator warns.
+- `map`: `itemsPath` (an upstream list), `body` and `as`. The body sees `item` and `item_index`; `maxConcurrency` is a positive integer (default 4); `resultPath` selects one path from each completed item's state. Without `resultPath`, and with no `as` in the body, each item's result is its whole state, the mapped list included: set `resultPath` (or an `as` in the body) for a large map; the validator warns. `onItemFailure` is `stop` (default: the first failing item stops the map and the run) or `collect`. With `collect`, an item whose node fails (a call that failed after its retries, an agent that delivered no record, output that does not match its schema, a failed check) ends as {item_index, label, code, message} in the list at `failedAs`, the other items finish, and `as` stays aligned with the items: `as[i]` is item i's result, or `null` when item i failed. Filter the nulls explicitly if only successes are wanted. Gate on `failedAs` with `escalate` or a code node; never let failures pass silently. A crash, a cancel, an `escalate` inside the item or an effect whose outcome is unknown is never collected.
 - `parallel`: at least two `branches`, each starting from the state before the parallel node. Branches write disjoint keys and never read a sibling's writes.
 - `loop`: `body`, `until` (a predicate) and an integer `maxIters` of at least 1 (no maximum), optionally an integer `expect_iters` of at least 1 (priced passes). At the bound the state passes through with `until` unmet; follow the loop with an escalate or gate on that condition.
 - `escalate`: `when` (a predicate), and non-empty `kind`, `stage` and `summary`. When the predicate holds the run stops without output and returns the escalation with its interpolated summary.

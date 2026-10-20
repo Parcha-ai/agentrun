@@ -95,7 +95,7 @@ export function defineWorkflow<
     root: definition.root ?? { node: "chain", steps: definition.steps },
   }) as Workflow;
   const result = validateWorkflow(document);
-  if (!result.ok) throw new WorkflowInvalidError(document.name, result.errors);
+  if (!result.ok) throw new WorkflowInvalidError(document.name, result.errors, result.issues);
   const inputSchema = resolveSchemaForWorkflow(document, document.schemas[definition.input]);
   if (!objectContract(inputSchema)) {
     throw new WorkflowSchemaConversionError(definition.input, new Error("workflow input must be constrained to JSON objects; declare type: object or object-only schema alternatives"));
