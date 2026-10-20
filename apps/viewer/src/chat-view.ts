@@ -2,8 +2,9 @@
 // recorded, the thinking its own model wrote and one card per tool call; the session timeline under the title; and on
 // the right the report (chat-report.ts) or the source a citation or a card points at, its region drawn from an address
 // alone. On a phone the right side is a bottom sheet.
-import type { ChatCall, ChatDecision, ChatItem, ChatModel, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
+import type { ChatBrowser, ChatCall, ChatDecision, ChatItem, ChatModel, ChatRow, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
 import type { Recording } from './format.ts';
+import type { ReportOpen } from './chat-report.ts';
 import { drawReport, reportCiteLabel, reportClock, reportEl, reportFragmentOf, reportHeldFile, reportHowHref, reportInline, reportParagraphs } from './chat-report.ts';
 
 type ToolItem = Extract<ChatItem, { kind: 'tool' }>;
@@ -453,6 +454,27 @@ function threadCall(recording: Recording, model: ChatModel, call: ChatCall): HTM
     call.raw !== '' && reportEl('details', { class: 'raw' }, reportEl('summary', { text: 'Raw output' }), reportEl('pre', { text: call.raw }))));
 }
 
+/** The browser a step drove, drawn from its recorded frames: the step's last frame in a 16:10 box (contained, black bands), under it what
+ *  the recording says of who has the browser. Driving, or a hold: "Handed the browser over: <what was asked>", and once it ended
+ *  "Handed back · <outcome>". Nothing records who acted during a hold, so none is named. Take control is the live view's; on a
+ *  replay it is shown and disabled. */
+function threadBrowser(recording: Recording, browser: ChatBrowser): HTMLElement {
+  const last = browser.frames.at(-1);
+  const src = last ? recording.blobUrl(last.blob) : undefined;
+  const lines = browser.holds.length === 0
+    ? [{ text: 'Your agent is driving the browser', held: false }]
+    : browser.holds.flatMap((hold) => [
+      { text: hold.condition ? `Handed the browser over: ${hold.condition}` : 'Handed the browser over', held: true },
+      ...(hold.t1 !== undefined ? [{ text: hold.outcome ? `Handed back · ${hold.outcome}` : 'Handed back', held: false }] : []),
+    ]);
+  const take = reportEl('button', { class: 'take', type: 'button', disabled: true, title: 'Replay: the run is over', text: 'Take control' });
+  return reportEl('div', { class: `browser${browser.holds.some((hold) => hold.t1 === undefined) ? ' held' : ''}` },
+    reportEl('div', { class: 'bshot' }, src ? reportEl('img', { loading: 'lazy', src, alt: 'The browser at the end of this step' }) : reportEl('span', { class: 'bshot-none', text: 'No picture was recorded for this step' })),
+    reportEl('div', { class: 'bstrip' },
+      reportEl('div', { class: 'blabels' }, ...lines.map((line) => reportEl('span', { class: `blabel${line.held ? ' held' : ''}`, text: line.text }))),
+      take));
+}
+
 /** A tool call's card: what it did, what it found, its own first picture, and under it a card per model call it made
  *  (a look it made with no call of its own reads as its place and decisions); three show, the decisive ones always,
  *  the rest behind "+ N more". `fold` gets each folded call's card with the opener of its group. */
@@ -490,6 +512,7 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
     // Its looks speak for it (the first card's ask), so its voice line is not drawn.
     return reportEl('div', { class: `step looking${item.failed ? ' failed' : ''}${item.judge ? ' judge' : ''}`, 'data-item': item.id },
       reportEl('div', { class: 'calls' }, ...calls, more),
+      item.browser && threadBrowser(recording, item.browser),
       reportEl('button', { class: 'made', type: 'button', 'data-open': item.id, title: item.title },
         item.judge && threadJudge(), reportEl('span', { class: 'made-in', text: `made in ${item.tool} ·` }), reportEl('span', { class: 'made-title', text: named }),
         item.failed && reportEl('small', { class: 'tag', text: 'failed' })));
@@ -497,11 +520,228 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
   return reportEl('div', { class: `step${item.failed ? ' failed' : ''}${item.judge ? ' judge' : ''}`, 'data-item': item.id },
     // A step nothing the agent thought or wrote leads into speaks with what its look asked, inside its card.
     voice,
-    reportEl('button', { class: thumb ? 'step-main' : 'step-main bare', type: 'button', 'data-open': item.id },
+    reportEl('button', { class: thumb && !item.browser ? 'step-main' : 'step-main bare', type: 'button', 'data-open': item.id },
       reportEl('div', {}, reportEl('div', { class: 't' }, threadIcon(sourceKindOf(source?.href ?? '')), item.judge && threadJudge(), reportEl('span', { text: item.title }), item.failed && reportEl('small', { class: 'tag', text: 'failed' })),
-        item.takeaway !== '' && reportEl('div', { class: 'k', text: item.takeaway })),
-      thumb && reportEl('img', { loading: 'lazy', src: recording.blobUrl(thumb), alt: '' })),
+        // A step the browser card draws a hold for is told by the card ("Handed the browser over: ... / Handed back · done"), not by its raw result.
+        item.takeaway !== '' && !item.browser?.holds.length && reportEl('div', { class: 'k', text: item.takeaway })),
+      thumb && !item.browser && reportEl('img', { loading: 'lazy', src: recording.blobUrl(thumb), alt: '' })),
+    item.browser && threadBrowser(recording, item.browser),
     calls.length > 0 && reportEl('div', { class: 'calls' }, ...calls, more));
+}
+
+/** One cite of the answer, as the model holds it. */
+type AnswerCite = ChatRow['cites'][number];
+
+/** The words a cite carries beyond its own address: a label whose numbers are only the numbers of the cite's box or second ("box 38,29,8,8",
+ *  "84 s") says nothing the address does not, so it is no words. */
+const evidenceSaid = (cite: AnswerCite): string | undefined => {
+  if (!cite.label) return undefined;
+  const digits = (text: string) => text.replace(/[^\d.]/g, '');
+  const at = reportFragmentOf(cite.href);
+  const own = [at.get('xywh')?.replace(/^(?:percent|pixel):/, ''), at.get('t')].filter((part): part is string => !!part).map(digits);
+  return /[A-Za-z]/.test(cite.label.replace(/\b(?:box|s)\b/gi, '')) || !own.includes(digits(cite.label)) ? cite.label : undefined;
+};
+const evidenceClip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
+
+/** What a look found, in words a reader can use: its takeaway when that is a sentence. A typed answer ("h: yes"), the decisions as text or a
+ *  list of scores is the look's own field and says nothing to a reader, so it is no finding: fewer than four words, or mostly numbers. */
+export function evidenceFinding(source: Pick<ChatSource, 'takeaway' | 'decisions'>): string {
+  const text = source.takeaway.replace(/\s+/g, ' ').trim();
+  if (text === '' || text === sourceDecisions(source as ChatSource).join(' · ')) return '';
+  const tokens = text.split(' ');
+  const words = tokens.filter((token) => /[A-Za-z]{2,}/.test(token)).length;
+  const numbers = tokens.filter((token) => /^[\d.%·,:;-]+$/.test(token)).length;
+  return words < 4 || numbers / tokens.length >= 0.25 ? '' : evidenceClip(text, 260);
+}
+
+/** Pin numbers for a picture's boxes: boxes with identical words share one number, in the order the words first appear. */
+const numbersOf = (regions: SourceRegion[]): number[] => {
+  const labels = regions.map((region) => region.label ?? 'cited here');
+  const entries = [...new Set(labels)];
+  return labels.map((label) => entries.indexOf(label) + 1);
+};
+const VIDEO_FILE = /\.(?:webm|mp4|mov|m4v)$/i;
+/** A cite into a video: its file is a video and its address names a second (`#t=120&xywh=...`). The box is in that frame's own coordinates. */
+const evidenceVideoCite = (cite: AnswerCite): number | undefined => {
+  const second = parseFloat(reportFragmentOf(cite.href).get('t') ?? '');
+  return VIDEO_FILE.test(cite.href.split('#')[0] ?? '') && Number.isFinite(second) ? second : undefined;
+};
+
+/** The recording's video a cite's file names: the one the browser's own track kept (a `frame.track` line whose session ends with the file's name),
+ *  else the only video the recording holds. */
+function evidenceVideoBlob(recording: Recording, file: string): string | undefined {
+  const name = (file.split('/').pop() ?? '').replace(/\.[^.]+$/, '');
+  const extension = (file.split('.').pop() ?? '').toLowerCase();
+  const tracks = recording.lines.filter((line) => line.kind === 'frame.track').map((line) => ({
+    session: String((line.data as { session?: string } | undefined)?.session ?? ''),
+    blobs: (line.blobs ?? []).filter((sha) => /^video\//.test(recording.blobType(sha) ?? '')),
+  }));
+  const named = name === '' ? undefined : tracks.find((track) => track.session.endsWith(name) && track.blobs.length > 0);
+  if (named) return named.blobs.find((sha) => (recording.blobType(sha) ?? '').endsWith(extension)) ?? named.blobs[0];
+  const all = [...new Set(tracks.flatMap((track) => track.blobs))];
+  return all.length === 1 ? all[0] : undefined;
+}
+
+/** The real frame of a video at a second, drawn on a canvas with the boxes over it (their coordinates are that frame's), a snapshot of it for the
+ *  enlargement, and a button that plays the clip from there. `drawn` runs once the frame is on screen; if it cannot be drawn the card says so and
+ *  shows the picture the look kept, labelled as that, never silently. */
+function evidenceVideo(recording: Recording, sha: string, second: number, regions: SourceRegion[], alt: string, kept: HTMLElement | undefined, drawn: (snapshot: HTMLImageElement) => void): { medium: HTMLElement; play: HTMLElement } {
+  const url = recording.blobUrl(sha)!;
+  const medium = reportEl('div', { class: 'media evidence-pic video-frame' });
+  const canvas = document.createElement('canvas');
+  canvas.className = 'ev-frame';
+  canvas.setAttribute('role', 'img');
+  canvas.setAttribute('aria-label', alt);
+  medium.append(canvas);
+  const video = document.createElement('video');
+  Object.assign(video, { muted: true, preload: 'auto', playsInline: true, src: url });
+  let finished = false;
+  const fail = (why: string) => {
+    if (finished) return;
+    finished = true;
+    medium.replaceChildren(reportEl('p', { class: 'ev-note', text: `The video frame at ${second} s could not be drawn here (${why}); this is the picture the look kept, not that frame.` }), ...(kept ? [...kept.children] : []));
+  };
+  video.addEventListener('loadedmetadata', () => { video.currentTime = Number.isFinite(video.duration) && video.duration > 0 ? Math.min(second, Math.max(0, video.duration - 0.05)) : second; }, { once: true });
+  // `seeked` can come before the new frame can be drawn (a busy page): the frame is drawn once it is presented, or after a moment if the browser cannot say.
+  const draw = () => {
+    if (finished) return;
+    try {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d')!.drawImage(video, 0, 0);
+      canvas.dataset.second = String(second);
+      const snapshot = document.createElement('img');
+      snapshot.src = canvas.toDataURL('image/jpeg', 0.92);
+      const size = { complete: true, naturalWidth: canvas.width, naturalHeight: canvas.height } as HTMLImageElement;
+      medium.append(...regions.map((region) => sourceBox(region, size)));
+      finished = true;
+      drawn(snapshot);
+    } catch (error) { fail(String((error as Error)?.message ?? error).slice(0, 60)); }
+  };
+  video.addEventListener('seeked', () => {
+    if (finished) return;
+    const presented = video as HTMLVideoElement & { requestVideoFrameCallback?: (callback: () => void) => number };
+    let once = false;
+    const go = () => { if (!once) { once = true; draw(); } };
+    if (video.readyState < 2) { video.addEventListener('loadeddata', go, { once: true }); setTimeout(go, 3000); }
+    else if (presented.requestVideoFrameCallback) { presented.requestVideoFrameCallback(go); setTimeout(go, 1500); }
+    else go();
+  }, { once: true });
+  video.addEventListener('error', () => fail('the video would not load'), { once: true });
+  setTimeout(() => fail('it took too long'), 20_000);
+  // The clip itself, from there: made when asked.
+  let player: HTMLVideoElement | undefined;
+  const play = reportEl('button', { class: 'cite ev-play', type: 'button', text: `Play from ${second} s` });
+  play.addEventListener('click', () => {
+    if (!player) {
+      player = Object.assign(document.createElement('video'), { controls: true, playsInline: true, preload: 'metadata', src: url, className: 'ev-player' });
+      player.addEventListener('loadedmetadata', () => { player!.currentTime = second; void player!.play().catch(() => undefined); }, { once: true });
+      medium.after(player);
+    } else { player.hidden = !player.hidden; if (!player.hidden) { player.currentTime = second; void player.play().catch(() => undefined); } else player.pause(); }
+  });
+  return { medium, play };
+}
+
+/** The small boxes of one picture shown again enlarged: when three or more boxes are small (each under half a percent of the picture) and together fill a
+ *  small part of it, a crop of that part, scaled up to the card's width, with the same boxes and pins spread out by the scale. None when the boxes are not
+ *  small or not together: the picture itself is then big enough. Drawn once the picture's size is known (a pixel box needs it). */
+function evidenceZoom(picture: HTMLImageElement, regions: SourceRegion[], numbers: number[]): HTMLElement {
+  const holder = reportEl('div', { class: 'ev-zoom', hidden: true });
+  const build = () => {
+    const width = picture.naturalWidth;
+    const height = picture.naturalHeight;
+    if (!width || !height) return;
+    const boxes = regions.map((region, index) => (region.unit === 'percent'
+      ? { index, x: region.x, y: region.y, w: region.w, h: region.h }
+      : { index, x: region.x / width * 100, y: region.y / height * 100, w: region.w / width * 100, h: region.h / height * 100 }));
+    const small = boxes.filter((box) => box.w * box.h < 50);
+    if (small.length < 3) return;
+    const pad = 2.5;
+    const left = Math.max(0, Math.min(...small.map((box) => box.x)) - pad);
+    const top = Math.max(0, Math.min(...small.map((box) => box.y)) - pad);
+    const right = Math.min(100, Math.max(...small.map((box) => box.x + box.w)) + pad);
+    const bottom = Math.min(100, Math.max(...small.map((box) => box.y + box.h)) + pad);
+    const w = right - left;
+    const h = bottom - top;
+    if (w <= 0 || h <= 0 || w * h / 100 > 30) return;
+    const crop = reportEl('div', { class: 'ev-zoom-crop' });
+    crop.style.aspectRatio = `${w * width} / ${h * height}`;
+    const image = reportEl('img', { src: picture.currentSrc || picture.src, alt: '' });
+    Object.assign(image.style, { width: `${10000 / w}%`, height: `${10000 / h}%`, left: `${-left * 100 / w}%`, top: `${-top * 100 / h}%` });
+    crop.append(image);
+    for (const box of small) {
+      const mark = reportEl('div', { class: 'jbox' }, reportEl('span', { class: 'pin', text: String(numbers[box.index]) }));
+      Object.assign(mark.style, { left: `${(box.x - left) / w * 100}%`, top: `${(box.y - top) / h * 100}%`, width: `${box.w / w * 100}%`, height: `${box.h / h * 100}%` });
+      crop.append(mark);
+    }
+    holder.replaceChildren(crop, reportEl('div', { class: 'ev-zoom-cap', text: 'The small boxes, enlarged' }));
+    holder.hidden = false;
+  };
+  if (picture.complete) build(); else picture.addEventListener('load', build, { once: true });
+  return holder;
+}
+
+/** A row's cites drawn as the evidence they are: one card per cited look (or cited picture), the picture first and as wide as
+ *  the pane, with the boxes the cites name over it at once (a cite's own words label its box, else "cited here"), under it what
+ *  the look found, and one chip that opens the look as the cites' chips always did. A cite that names no picture stays a chip. */
+function evidenceOf(recording: Recording, model: ChatModel, cites: AnswerCite[], open: ReportOpen): { node: HTMLElement; drawn: Set<AnswerCite> } | undefined {
+  const groups = new Map<string, { look?: string; blob?: string; cites: AnswerCite[] }>();
+  for (const cite of cites) {
+    const look = cite.look && model.sources[cite.look] ? cite.look : undefined;
+    const videoSecond = evidenceVideoCite(cite);
+    const key = look ? `look:${look}${videoSecond !== undefined ? `@${videoSecond}` : ''}` : cite.blob && recording.blobUrl(cite.blob) && /^(?:image|video)\//.test(recording.blobType(cite.blob) ?? '') ? `blob:${cite.blob}` : undefined;
+    if (!key) continue;
+    const group = groups.get(key) ?? { ...(look ? { look } : { blob: cite.blob }), cites: [] };
+    group.cites.push(cite);
+    groups.set(key, group);
+  }
+  const drawn = new Set<AnswerCite>();
+  const cards: HTMLElement[] = [];
+  for (const group of groups.values()) {
+    const source = group.look ? model.sources[group.look] : undefined;
+    const first = group.cites[0]!;
+    const second = parseFloat(reportFragmentOf(first.href).get('t') ?? '');
+    let sha = group.blob;
+    if (source) {
+      const pictures = source.pictures;
+      sha = pictures?.length ? sourcePictureFor(pictures, pictures.find((each) => each.href === first.href) ?? pictures[0]!, first.href).sha
+        : (source.media[sourceFrameAt(source.href, source.media.length, Number.isFinite(second) ? second : undefined)] ?? source.media[0]);
+    }
+    const videoSecond = evidenceVideoCite(first);
+    const videoSha = videoSecond !== undefined ? evidenceVideoBlob(recording, first.href.split('#')[0]!) : undefined;
+    if (!sha && !videoSha) continue;
+    // The cites' own boxes first (with their words), then the look's boxes that are not the same box.
+    const near = (a: SourceRegion, b: SourceRegion) => a.unit === b.unit && [a.x - b.x, a.y - b.y, a.w - b.w, a.h - b.h].every((delta) => Math.abs(delta) < 0.05);
+    const regions: SourceRegion[] = group.cites.flatMap((cite) => sourceRegionOf(cite.href, evidenceSaid(cite)) ?? []);
+    for (const own of (source?.regions ?? []).flatMap((region) => sourceRegionOf(region.href, region.label) ?? [])) if (!regions.some((each) => near(each, own))) regions.push(own);
+    const alt = evidenceSaid(first) ?? (source ? threadPlace(sourceAddresses(source)) : 'The picture cited');
+    // A cite into a video is drawn on that video's own frame at its second, the coordinates being that frame's; any other on the picture the look kept.
+    const kept = sha && videoSha ? sourceMedium(recording, sha, alt, [], 'evidence-pic') : undefined;
+    const slot = reportEl('div', { class: 'ev-zoom-slot' });
+    let applied: (() => void) | undefined;
+    const video = videoSha && videoSecond !== undefined ? evidenceVideo(recording, videoSha, videoSecond, regions, alt, kept, (snapshot) => { applied?.(); slot.replaceWith(evidenceZoom(snapshot, regions, numbersOf(regions))); }) : undefined;
+    const medium = video?.medium ?? sourceMedium(recording, sha!, alt, regions, 'evidence-pic');
+    if (!medium) continue;
+    const found = source ? evidenceFinding(source) : '';
+    // Many boxes on one picture would stack their labels on each other: each box is a numbered pin, and a legend under the picture names them. Boxes
+    // whose words are identical are one entry (they share a number), and a cluster of small boxes is shown again enlarged, with the same pins.
+    const dense = regions.length > 4;
+    const labels = regions.map((region) => region.label ?? 'cited here');
+    const entries = [...new Set(labels)];
+    const numbers = numbersOf(regions);
+    const pins = () => { if (dense) [...medium.querySelectorAll('.jbox span')].forEach((pin, index) => { pin.textContent = String(numbers[index]); pin.classList.add('pin'); }); };
+    pins();
+    applied = pins;
+    const legend = dense && reportEl('ol', { class: 'ev-legend' }, ...entries.map((label) => reportEl('li', { text: label })));
+    const picture = medium.querySelector('img');
+    const zoom = dense ? (video ? slot : picture ? evidenceZoom(picture, regions, numbers) : undefined) : undefined;
+    const chip = reportEl('button', { class: 'cite', type: 'button', 'data-look': group.look, 'data-item': first.item, title: first.href || undefined, text: evidenceSaid(first) ?? 'Open the look' });
+    chip.addEventListener('click', () => open(first.href, group.look, group.blob ? { blob: group.blob, label: first.label } : undefined));
+    for (const cite of group.cites) drawn.add(cite);
+    cards.push(reportEl('figure', { class: 'ev-card' }, medium, zoom, legend,
+      reportEl('figcaption', { class: 'ev-cap' }, found !== '' && reportEl('p', { class: 'ev-said', text: found }), chip, video?.play)));
+  }
+  return cards.length ? { node: reportEl('div', { class: 'evidence' }, ...cards), drawn } : undefined;
 }
 
 /** The session timeline, collapsed under the title: a lane per span lane, a call made inside a tool on a lane under its
@@ -587,7 +827,13 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
 
   const header = reportEl('header', { class: 'top' },
     reportEl('span', { class: 'brand' }, threadIcon('brand'), reportEl('b', {}, 'agent', reportEl('span', { text: '.run()' })), reportEl('small', { text: 'by grep.ai' })),
-    reportEl('div', { class: 'title', text: model.title }),
+    model.agent
+      ? reportEl('div', { class: 'agent', title: model.title },
+        reportEl('span', { class: 'avatar', 'aria-hidden': 'true', text: [...model.agent.name][0]!.toUpperCase() }),
+        reportEl('div', { class: 'agent-who' },
+          reportEl('b', { class: 'agent-name', text: model.agent.name }),
+          reportEl('span', { class: `agent-status ${model.agent.status}`, text: model.agent.status === 'done' ? 'Done' : model.agent.status === 'waiting' ? 'Waiting for you' : 'Is working' })))
+      : reportEl('div', { class: 'title', text: model.title }),
     reportEl('a', { class: 'how', href: reportHowHref(recording), text: 'How this ran' }));
 
   // Each conversation as recorded: its messages, its thinking, its tool cards. Steps that only ran a command fold into one
@@ -766,7 +1012,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     const item = toolOf(key ? model.sources[key]!.item : undefined);
     const region = sourceRegionOf(href);
     showSource({ ...(key ? { look: key } : {}), ...(item ? { item } : {}), ...(picture ? { picture } : {}), href, regions: region ? [region] : [] });
-  });
+  }, (cites, open) => evidenceOf(recording, model, cites, open));
 
   let settling: AbortController | undefined;
   const scrollToItem = (id: string) => {

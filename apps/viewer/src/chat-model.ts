@@ -31,6 +31,9 @@ export type ChatItem =
     failed?: boolean;
     /** The tool is a judge (its verb is "judge"): drawn with the judge's accent. */
     judge?: true;
+    /** The browser the step drove, from the recording's `frame` lines (never from the tool's name): its frames in order, and the
+     *  holds the run handed the browser over for. A step that holds frames or a hold is drawn as a browser card and is never plumbing. */
+    browser?: ChatBrowser;
     /** The looks made inside this call (their keys), so a cite of one finds its card. */
     looks: string[];
     /** The model calls made inside this call, in the order they ended: each its own card under this one. */
@@ -38,6 +41,17 @@ export type ChatItem =
     t0?: number;
     t1?: number;
   };
+
+/** What a step showed of its browser: `frames` (each a recorded `frame` line: its time, its image's SHA-256 and its size), and the
+ *  `holds` that began during the step. A hold is the browser handed over: from the session row that says held (t0) to the row that
+ *  says it is not (t1, none while the run ends held), with the condition the run asked and, once answered, its outcome
+ *  (done, cancelled or expired). Nothing records who acted during a hold, so none is named. */
+export type ChatBrowser = {
+  /** The host the browser was on at the step's last frame (from the session rows' last address), when the rows say. */
+  site?: string;
+  frames: { t: number; blob: string; w: number; h: number }[];
+  holds: { t0: number; t1?: number; condition: string; outcome?: string }[];
+};
 
 /** A model call made inside a tool call (a vision look, a Jev decision, speech to text). `label` is its name, its
  *  scores and what it drew ("Jev judge · 0.87 · box drawn"), the same on its card and its span; `raw` is its output
@@ -110,4 +124,10 @@ export type ChatModel = {
   artifact?: ChatArtifact;
   durationMs?: number;
   answeredAt?: number;
+  /** The agent the header names: its name (the host's `reference.label`, else the recording's task) and its state from the events:
+   *  done (the manifest names a result), waiting (the run ends held), else working. */
+  agent?: { name: string; status: 'working' | 'waiting' | 'done' };
+  /** The times the run waited for a person to sign in, from the browser's own sign-in document (`browser.profiles`): asked when the profile
+   *  gains the address it signs in to (t0), signed in when it is verified (t1; none when the run ends waiting). `site` is that address's host. */
+  waits?: { t0: number; t1?: number; site: string; /** The profile was already signed in when the run first read it: a sign-in the run found there, not one it waited for. */ remembered?: true }[];
 };
