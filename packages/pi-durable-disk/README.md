@@ -26,8 +26,9 @@ Use it when a run should not be tied to the machine it started on:
 - **Your compute is disposable or changes.** Containers, sandboxes, VMs, deploys: whichever host opens the run next carries
   on, with no state to copy first. Hosts: systemd units on this machine, Docker containers, Daytona sandboxes (a driver for
   another compute is [three calls](docs/reference.md#host-drivers-and-the-supervisor)).
-- **The agent waits.** A run that only sleeps in a retry or a long poll is released, holds no process, and is started again
-  at its deadline or by a request ([serve and parking](docs/reference.md#serve-parking-and-fork)).
+- **The agent waits.** A run whose work only sleeps in a retry or a long poll (longer than the park threshold, 60 s with the local
+  and Docker drivers) is released, holds no process, and is started again at its deadline. With `--serve`, a run with no work at
+  all is released too and a request starts it ([serve and parking](docs/reference.md#serve-parking-and-fork)).
 - **You move or branch a run.** Hand it to another host at a step boundary, or fork a sealed run into many, each continuing
   on its own.
 - **You want to look at a run from outside.** Its record is a file: `readLocalRunStatus(dir)` on a directory,
@@ -191,8 +192,10 @@ what it imports.
   takes about 0.2 s and releasing one about 0.15 s, from the live suites on a VM next to the disk's region ([where the figures
   come from](docs/reference.md#the-failure-table)).
 - **Hosts:** whatever you run them on, a machine you own, Docker, or a [Daytona](https://www.daytona.io) sandbox, which Daytona
-  bills; a sandbox's list price per second is in its receipt (`daytonaUsdPerSecond`). A run that only waits is released and
-  holds no process ([parking](docs/reference.md#serve-parking-and-fork)), so an idle run does not keep a host.
+  bills; a sandbox's list price per second is in its receipt (`daytonaUsdPerSecond`). A run whose work only waits longer
+  than the park threshold (60 s by default with the local and Docker drivers) is released and holds no process; an instance with
+  no work at all parks only with `--serve` or `--park-idle` ([parking](docs/reference.md#serve-parking-and-fork)). Otherwise it
+  stays up, and so does its host.
 - **A supervisor** is a function you call or `pi-durable-disk supervise`; it needs the Archil API key, and no instance ever
   holds it.
 
