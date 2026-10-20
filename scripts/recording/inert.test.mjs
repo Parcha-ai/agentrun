@@ -106,8 +106,8 @@ test('the machine-path scan takes /home/<user> with no slash, a Windows profile,
   for (const text of ['https://example.org/home/page', 'see /root/steps/0 and /root/items', 'the /rooted idea', 'a home/other relative', `${dir('home', 'web_user')}`]) assert.equal(credentialIn(text), undefined, text);
   // A child workflow at the root and a loop at the root: the pointers a run records, as text and inside a JSON line.
   for (const text of ['/root/workflow/root/steps/0', '/root/iterations/3/body', '/root/iterations/0', JSON.stringify({ executionPath: '/root/iterations/0/body/workflow/root', path: '/root/body' })]) assert.equal(credentialIn(text), undefined, text);
-  // A workflow name is taken whole: a folder in root's home that starts with one is still root's home.
-  for (const text of [dir('root', 'myproject', 'x'), dir('root', '.ssh', 'id_rsa'), dir('root', 'workflow-notes'), dir('root', 'steps.bak'), dir('root', 'iterations_old', 'x')]) assert.equal(credentialIn(text), 'machine path', text);
+  // A workflow name is taken whole, a child as workflow/root and a loop's pass as iterations/<n>: any other folder in root's home is root's home.
+  for (const text of [dir('root', 'myproject', 'x'), dir('root', '.ssh', 'id_rsa'), dir('root', 'workflow-notes'), dir('root', 'steps.bak'), dir('root', 'iterations_old', 'x'), dir('root', 'workflow', 'notes.txt'), dir('root', 'workflow', 'rootkit'), dir('root', 'iterations', 'x'), dir('root', 'iterations', '3x')]) assert.equal(credentialIn(text), 'machine path', text);
 });
 
 test('the recorder records an svg tool output as text, never as .svg, and any other extension it is handed as txt', async (t) => {
