@@ -439,6 +439,26 @@ test('the Muse view: a sign-in wait is read from the browser\'s profile document
   assert.equal((await extractChat(recording, readJson)).waits, undefined, 'and none without the option');
 });
 
+test('the Muse view: a step\'s browser says the host of ITS OWN session, never another session\'s, with two sessions on two hosts', async () => {
+  // Two sessions: the frames before 3000 are session sA's (on one.example.test), the frame after is session sB's (on two.example.test). A row lists both,
+  // and the other session's address is the one listed last: a join across sessions would name it on the first step.
+  const edit = (events: string) => events.split('\n').map((text) => {
+    if (text === '') return text;
+    const line = JSON.parse(text) as { kind: string; t: number; data: { session?: string; value?: { sessions: Record<string, unknown>[] } } };
+    if (line.kind === 'frame') line.data.session = line.t < 3000 ? 'sA' : 'sB';
+    if (line.kind === 'browser.sessions') {
+      const sessions = line.data.value!.sessions;
+      sessions[0] = { ...sessions[0], resourceId: 'sA', lastUrl: 'https://one.example.test/a' };
+      sessions.push({ tag: 'ar-2', state: 'live', resourceId: 'sB', lastUrl: 'https://two.example.test/b' });
+    }
+    return JSON.stringify(line);
+  }).join('\n');
+  const { recording, readJson } = opened(browserFixture, edit);
+  const muse = await extractChat(recording, readJson, { muse: true });
+  assert.equal(browserOf(muse, 'run').browser!.site, 'one.example.test', 'the first step was in session sA');
+  assert.equal(browserOf(muse, 'browser_request_handoff').browser!.site, 'two.example.test', 'the handoff step was in session sB');
+});
+
 test('the Muse view: a profile already signed in the first time the run reads it is a remembered sign-in, not a wait', async () => {
   const { recording, readJson } = opened(browserFixture);
   const signed = { ...recording, lines: recording.lines.map((line) => (line.kind === 'browser.profiles'
