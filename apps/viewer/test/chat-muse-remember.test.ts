@@ -1,7 +1,8 @@
-// "What I remember" in the Muse layout, in a real Chrome, under the exact policy the docs site serves (`connect-src 'self'`): an embedded recording keeps its
-// blobs as data: URLs, which that policy will not let a fetch() read, so the card decodes them itself; and a page that cannot be read is said on the card.
+// "What I remember" and the agent's state in the Muse layout, in a real Chrome, under the exact policy the docs site serves (`connect-src 'self'`): an embedded
+// recording keeps its blobs as data: URLs, which that policy will not let a fetch() read, so the card decodes them itself; a page that cannot be read is said on
+// the card; and a finished run reads "is working" until the end of the conversation is in view, then "Done".
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -20,7 +21,7 @@ const POLICY = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsa
 const TYPES: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.css': 'text/css', '.webp': 'image/webp' };
 
 /** A built viewer over the chat-browser fixture, served with the policy, and a page open on it in the Muse layout. `files` ships the blobs as files; `remove` takes one out. */
-async function served(t: { after(fn: () => unknown, options?: { timeout?: number }): void; signal: AbortSignal }, { files = false, remove = false } = {}) {
+async function served(t: { after(fn: () => unknown, options?: { timeout?: number }): void; signal: AbortSignal }, { files = false, remove = false, height = 844 } = {}) {
   const out = mkdtempSync(join(tmpdir(), 'viewer-remember-'));
   const held: { page?: Awaited<ReturnType<typeof drivenPage>>; server?: ReturnType<typeof createServer> } = {};
   t.after(() => closeAll(held.page ? [held.page] : [], () => {
@@ -48,7 +49,9 @@ async function served(t: { after(fn: () => unknown, options?: { timeout?: number
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   held.server = server;
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const page = await drivenPage(`${origin}/chat.html?r=chat-browser&muse`, join(out, 'profile'), { signal: t.signal });
+  // The page sits in a phone-wide frame of the height asked, so a short one has the end of the conversation below its fold.
+  writeFileSync(join(out, 'dist', 'harness.html'), `<!doctype html><body style="margin:0"><iframe id="f" style="width:390px;height:${height}px;border:0" src="chat.html?r=chat-browser&muse"></iframe><script>const d = () => document.getElementById('f').contentDocument;</script></body>`);
+  const page = await drivenPage(`${origin}/harness.html`, join(out, 'profile'), { signal: t.signal });
   held.page = page;
   const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
   const until = (expression: string, what: string) => page.once(expression, 'true', 25_000, what);
@@ -57,14 +60,27 @@ async function served(t: { after(fn: () => unknown, options?: { timeout?: number
 
 test('in Chrome: under connect-src \'self\' an embedded recording\'s What I remember is read from its data: URL, not said unreadable', IN_CHROME, async (t) => {
   const { value, until } = await served(t);
-  await until(`!!document.querySelector('.mu-memory .mu-rh') || !!document.querySelector('.mu-memory .mu-quiet:not(:only-child)') || /could not be read/.test(document.querySelector('.mu-memory .mu-remember')?.textContent ?? '')`, 'the card was read or said unreadable');
-  const card = await value<{ headings: string[]; text: string }>(`({ headings: [...document.querySelectorAll('.mu-memory .mu-rh')].map((h) => h.textContent), text: document.querySelector('.mu-memory .mu-remember').textContent })`);
+  await until(`!!d()?.querySelector('.mu-memory .mu-rh') || /could not be read/.test(d()?.querySelector('.mu-memory .mu-remember')?.textContent ?? '')`, 'the card was read or said unreadable');
+  const card = await value<{ headings: string[]; text: string }>(`({ headings: [...d().querySelectorAll('.mu-memory .mu-rh')].map((h) => h.textContent), text: d().querySelector('.mu-memory .mu-remember').textContent })`);
   assert.doesNotMatch(card.text, /could not be read/, `the card read its page, got: ${card.text.slice(0, 120)}`);
   assert.ok(card.headings.length > 0, 'its headings are drawn');
 });
 
 test('in Chrome: a page that cannot be read is said on the card, with the reason', IN_CHROME, async (t) => {
   const { value, until } = await served(t, { files: true, remove: true });
-  await until(`/could not be read/.test(document.querySelector('.mu-memory .mu-remember')?.textContent ?? '')`, 'the card said it could not be read');
-  assert.match(await value<string>(`document.querySelector('.mu-memory .mu-remember').textContent`), /^What the agent remembers could not be read here \(the page answered 404\)\./);
+  await until(`/could not be read/.test(d()?.querySelector('.mu-memory .mu-remember')?.textContent ?? '')`, 'the card said it could not be read');
+  assert.match(await value<string>(`d().querySelector('.mu-memory .mu-remember').textContent`), /^What the agent remembers could not be read here \(the page answered 404\)\./);
+});
+
+test('in Chrome: a finished run reads "is working" while the end of the conversation is out of view, and "Done" once it is in view', IN_CHROME, async (t) => {
+  const { value, until } = await served(t, { height: 360 });
+  await until(`!!d()?.querySelector('.mu-memory .mu-rh')`, 'the page drawn');
+  const state = () => value<string>(`d().querySelector('.mu-state').textContent`);
+  assert.equal(await value<boolean>(`(() => { const chat = d().querySelector('.mu-chat'); return chat.scrollHeight > chat.clientHeight + 400; })()`), true, 'the conversation is longer than the frame');
+  assert.equal(await state(), 'is working', 'at the top the end is not in view');
+  await value(`(() => { const chat = d().querySelector('.mu-chat'); chat.scrollTop = chat.scrollHeight; return 0; })()`);
+  await until(`d().querySelector('.mu-state').textContent === 'Done'`, 'the state said Done at the end');
+  await value(`(() => { d().querySelector('.mu-chat').scrollTop = 0; return 0; })()`);
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal(await state(), 'Done', 'scrolled back up it stays Done: the end has been read');
 });

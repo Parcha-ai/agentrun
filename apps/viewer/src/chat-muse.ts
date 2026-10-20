@@ -100,6 +100,18 @@ function agentBubble(text: string): HTMLElement {
     files.length > 0 && reportEl('div', { class: 'mu-files' }, ...files.map((name) => reportEl('span', { class: 'mu-file', title: name, text: name }))));
 }
 
+/** The text of a blob. An embedded recording keeps its blobs as data: URLs, which a host's `connect-src 'self'` will not let a fetch() read, so those are decoded here; any other URL is fetched. */
+async function pageText(url: string): Promise<string> {
+  const data = /^data:[^,]*?(;base64)?,/.exec(url);
+  if (data) {
+    const body = url.slice(data[0].length);
+    return data[1] ? new TextDecoder().decode(Uint8Array.from(atob(body), (each) => each.charCodeAt(0))) : decodeURIComponent(body);
+  }
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`the page answered ${response.status}`);
+  return response.text();
+}
+
 /** "What I remember": the host's artifact, read as a page and drawn as lines (its headings, lists and notes), every address shortened. When it cannot be read, the card says so. */
 function rememberCard(recording: Recording, artifact: NonNullable<ChatModel['artifact']>): HTMLElement {
   const body = reportEl('div', { class: 'mu-remember' }, reportEl('p', { class: 'mu-quiet', text: 'Reading what the agent kept…' }));
@@ -108,7 +120,7 @@ function rememberCard(recording: Recording, artifact: NonNullable<ChatModel['art
   const failed = (why: string) => body.replaceChildren(reportEl('p', { class: 'mu-quiet', text: `What the agent remembers could not be read here${why ? ` (${why})` : ''}.` }));
   if (!url) failed('it is not in this recording');
   else {
-    void fetch(url).then((response) => (response.ok ? response.text() : Promise.reject(new Error(`the page answered ${response.status}`)))).then((html) => {
+    void pageText(url).then((html) => {
       const doc = new DOMParser().parseFromString(html, 'text/html');
       const parts: HTMLElement[] = [];
       let skippedTitle = false;
@@ -210,4 +222,20 @@ export function drawMuse(root: HTMLElement, model: ChatModel, recording: Recordi
 
   const composer = reportEl('footer', { class: 'mu-composer' }, reportEl('div', { class: 'mu-input', text: 'This is a replay of a recorded run.' }));
   root.append(header, column, composer);
+
+  // A finished run is "Done" once the end of its conversation has been in view; until then it reads as working, as it did when it ran. The observer is sticky.
+  const end = column.lastElementChild;
+  const state = header.querySelector('.mu-state');
+  if (model.agent?.status === 'done' && end && state && typeof IntersectionObserver === 'function') {
+    state.className = 'mu-state working';
+    state.textContent = STATE.working;
+    // The composer's fade covers the foot of the column: the end counts once it is above it.
+    const seen = new IntersectionObserver((changes) => {
+      if (!changes.some((change) => change.isIntersecting)) return;
+      seen.disconnect();
+      state.className = 'mu-state done';
+      state.textContent = STATE.done;
+    }, { root: column, rootMargin: '0px 0px -96px 0px' });
+    seen.observe(end);
+  }
 }

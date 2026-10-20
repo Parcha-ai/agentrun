@@ -108,8 +108,8 @@ test('in Chrome: &muse is a phone chat over the same events, at 1440 and 390: th
   await until(`loaded('phone')`, 'the phone page\'s frames loaded');
 
   for (const id of ['wide', 'phone']) {
-    // The avatar at the top, the agent's name and its state under it.
-    assert.deepEqual(await value(`[doc('${id}').querySelector('.mu-name').textContent, doc('${id}').querySelector('.mu-state').textContent]`), ['Wren', 'Done'], `${id}: the agent's name and its state`);
+    // The avatar at the top, the agent's name and its state under it (its state follows the scroll: see chat-muse-remember.test.ts).
+    assert.deepEqual(await value(`[doc('${id}').querySelector('.mu-name').textContent, ['is working', 'Done'].includes(doc('${id}').querySelector('.mu-state').textContent)]`), ['Wren', true], `${id}: the agent's name and its state`);
     // The avatar is the one picture file, loaded, in a square frame whose hard shadow is the cards' own.
     assert.deepEqual(await value(`(() => { const d = doc('${id}'); const img = d.querySelector('.mu-avatar img'); const card = d.querySelector('.mu-card'); const shadow = (el) => getComputedStyle(el).boxShadow;
       return [img.getAttribute('src'), img.complete && img.naturalWidth > 0, d.querySelector('.mu-avatar').getBoundingClientRect().width === d.querySelector('.mu-avatar').getBoundingClientRect().height, shadow(d.querySelector('.mu-avatar')) === shadow(card), /^rgb\\(\\d+, \\d+, \\d+\\) 4px 4px 0px 0px$/.test(shadow(card))]; })()`), ['muse-avatar.webp', true, true, true, true], `${id}: the avatar picture, square, with the cards' hard shadow`);
