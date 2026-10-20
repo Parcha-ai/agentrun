@@ -92,3 +92,24 @@ test('in Chrome: a card that still says it is reading does not mark the run Done
   await value(`(() => { const chat = d().querySelector('.mu-chat'); chat.scrollTop = chat.scrollHeight; return 0; })()`);
   await until(`d().querySelector('.mu-state').textContent === 'Done'`, 'Done once it has been read and its end reached');
 });
+
+/** The workflow input a recording was given (the run's own record of what the person asked). */
+const givenInput = (dir: string, input: Record<string, unknown>) => {
+  const lines = readEvents(dir);
+  const at = lines.findIndex((line) => line.kind === 'agentrun.workflow');
+  lines[at].data.input.input = input;
+  writeEvents(dir, lines);
+};
+
+test('in Chrome: a workflow run opens with its input as the person\'s first message: its fields, in the default view\'s words', IN_CHROME, async (t) => {
+  const { value, until } = await served(t, { fixture: 'reference-job' });
+  await until(`!!d()?.querySelector('.mu-chat .mu-row')`, 'the page drawn');
+  assert.deepEqual(await value(`(() => { const first = d().querySelector('.mu-chat').firstElementChild; return [first.className, first.querySelector('.mu-tag').textContent, first.querySelector('.mu-bubble').textContent]; })()`), ['mu-row person', 'You', 'company: Acme Ltd']);
+});
+
+test('in Chrome: the opening request is the question in words, its other fields as lines and its files as chips', IN_CHROME, async (t) => {
+  const { value, until } = await served(t, { fixture: 'reference-job', edit: (dir) => givenInput(dir, { question: 'Is the filing at https://registry.example.test/acme current?', files: ['filing.pdf'], company: 'Acme Ltd' }) });
+  await until(`!!d()?.querySelector('.mu-chat .mu-row')`, 'the page drawn');
+  assert.deepEqual(await value(`(() => { const first = d().querySelector('.mu-chat').firstElementChild; return [first.className, first.querySelector('.mu-bubble').textContent, [...first.querySelectorAll('.mu-file')].map((f) => f.textContent)]; })()`),
+  ['mu-row person', 'Is the filing at registry.example.test current?\n\ncompany: Acme Ltd', ['filing.pdf']]);
+});

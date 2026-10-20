@@ -18,6 +18,8 @@ export const POLICY = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wa
 const TYPES: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.css': 'text/css', '.webp': 'image/webp' };
 
 export type Variant = {
+  /** The fixture the copy is made from (default: chat-browser). */
+  fixture?: string;
   /** Called with the copy's directory before the build. */
   edit?: (dir: string) => void;
   /** Ship the blobs as files (a fetch for each) instead of embedding them as data: URLs. */
@@ -54,7 +56,7 @@ export async function served(t: { after(fn: () => unknown, options?: { timeout?:
   }), { timeout: 20_000 });
   const copy = join(out, 'recordings', 'chat-browser');
   mkdirSync(join(out, 'recordings'));
-  cpSync(join(here, 'fixtures', 'chat-browser'), copy, { recursive: true });
+  cpSync(join(here, 'fixtures', variant.fixture ?? 'chat-browser'), copy, { recursive: true });
   variant.edit?.(copy);
   build(join(out, 'dist'), join(out, 'recordings'), { files: variant.files ?? false });
   if (variant.removeEntry) {

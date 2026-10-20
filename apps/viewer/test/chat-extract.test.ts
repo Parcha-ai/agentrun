@@ -459,6 +459,16 @@ test('the Muse view: a step\'s browser says the host of ITS OWN session, never a
   assert.equal(browserOf(muse, 'browser_request_handoff').browser!.site, 'two.example.test', 'the handoff step was in session sB');
 });
 
+test('the Muse view: a saved profile another run holds (a copy with its address, no verification, state held) opens no wait; a profile this run was asked to sign in to still does', async () => {
+  // prepareRun copies a saved account's address into the run's home, drops its verification and marks it held: nobody was asked to sign in to it.
+  const withHeld = (events: string) => `${events.trimEnd()}\n${JSON.stringify({ channel: 'durable', source: 'host', kind: 'browser.profiles', conv: 1, t: 2700, data: { doc: 'browser.profiles', key: 'saved-other', version: 1, value: { provider: 'chrome', ref: '', state: 'held', heldBy: 'run-x', startUrl: 'https://other.example.test/account', allowedOrigins: ['https://other.example.test'] } } })}\n`;
+  const { recording, readJson } = opened(browserFixture, withHeld);
+  assert.deepEqual((await extractChat(recording, readJson, { muse: true })).waits, [{ t0: 6000, site: 'shop.example.test', t1: 9200 }], 'only the profile this run asked about: the held copy opens none');
+  // With no ask of its own, a held copy leaves no wait at all.
+  const only = opened(browserFixture, (events) => withHeld(events.split('\n').filter((line) => !line.includes('"browser.profiles"')).join('\n')));
+  assert.deepEqual((await extractChat(only.recording, only.readJson, { muse: true })).waits ?? [], [], 'none');
+});
+
 test('the Muse view: a profile already signed in the first time the run reads it is a remembered sign-in, not a wait', async () => {
   const { recording, readJson } = opened(browserFixture);
   const signed = { ...recording, lines: recording.lines.map((line) => (line.kind === 'browser.profiles'
