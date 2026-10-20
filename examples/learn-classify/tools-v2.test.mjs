@@ -667,6 +667,8 @@ function liveScripted({ leaky = false, browserCheck = true, extra = [] } = {}) {
   return {
     ...base,
     mode: 'live',
+    // A live pass names its node model; here the scripted one, at a level of its own.
+    modelFor: (job, run) => ({ ...base.modelFor(job, run), node: { model: { provider: 'faux', modelId: 'scripted' }, thinkingLevel: 'medium' } }),
     toolsFor: async (job, run) => [...(await base.toolsFor(job, run)), ...extra],
     ...(browserCheck ? { browserCheck: (dir) => guardSelfTest({ root: dir, browser: held.browser, driver: held.driver, guard, lookup: publicLookup }) } : {}),
   };
