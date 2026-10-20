@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createRepeatGuard } from "../dist/index.js";
+import { createRedactor, createRepeatGuard } from "../dist/index.js";
 
 const failure = (code, detail) => ({ ok: false, code, retryable: true, effect: "none", message: `${code} happened`, ...(detail === undefined ? {} : { detail }) });
 
@@ -66,4 +66,22 @@ test("the error quoted in a refusal is cut to 200 characters", () => {
   for (let i = 0; i < 2; i += 1) guard.note("run", {}, failure("code_error", "x".repeat(1_000)));
   const quoted = guard.check("run", {}).message.match(/\("([^"]*)"\)/)[1];
   assert.equal(quoted.length, 200);
+});
+
+// The refusal repeats an earlier error to the model; the run's secrets are gone from it before any cut.
+test("a registered value straddling the guard's cut points never reaches the refusal", () => {
+  const token = "run-token-0123456789";
+  const guard = createRepeatGuard(createRedactor(() => [token]));
+  // "code_error:" is 11 characters, so the value starts at 195 and the 200-character cut falls inside it.
+  const detail = `${"x".repeat(184)}${token} tail`;
+  guard.note("run", {}, failure("code_error", detail));
+  guard.note("run", {}, failure("code_error", detail));
+  const refused = guard.check("run", {});
+  assert.equal(refused.code, "refused");
+  assert.doesNotMatch(JSON.stringify(refused), /run-t/);
+  const long = `${"y".repeat(289)}${token} tail`;
+  const again = createRepeatGuard(createRedactor(() => [token]));
+  again.note("run", {}, failure("code_error", long));
+  again.note("run", {}, failure("code_error", long));
+  assert.doesNotMatch(JSON.stringify(again.check("run", {})), /run-t/, "the 300-character cut of the stored error");
 });

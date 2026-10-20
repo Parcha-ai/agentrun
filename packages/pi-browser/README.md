@@ -1,9 +1,14 @@
 # @parcha/pi-browser
 
-A browser for [pi](https://github.com/earendil-works/pi) agents that survives crashes. The package records a session
-before it calls the provider and releases it with a durable task. After a crash it reruns reads and never reruns actions.
-It files every page the agent reads as evidence with its SHA-256, gives each failure a typed code, and keeps credentials out
-of anything the model, a document or a log can see.
+Your agent gets its own browser, and you can take over and hand it back.
+
+- **Its own browser.** The agent drives a Chrome of its own: a local Chrome, Browserbase or Kernel. It reads pages, clicks, types and takes screenshots. A local Chrome needs no key.
+- **You can take over and hand it back.** A host mounts the live view in a few lines, and then a person sees the agent's page, uses the mouse and keys, and lets the agent go on. While the person is driving, the agent's browser calls are refused. The agent can also ask a person for a step only a person can do, and wait for the answer. See [Take over and hand back](#take-over-and-hand-back). For now, use the live view with test accounts on practice sites only: the model's own page code can read what a person types there.
+- **Credentials you register stay out of what the model sees.** Credentials you register, and keys of the common shapes, are replaced with `[redacted]` in every tool result, failure, filed page and log. See [Credentials](#credentials).
+- **Every page the agent reads is filed as evidence.** The file holds the page's URL, its title and its SHA-256.
+- **Bot walls get a name, and failures get a code.** A CAPTCHA, a login wall, a paywall or a region block is named, with a next step, when you give the package a page judge. Every failure is one envelope with one of 15 codes. See [Failures](#failures).
+
+If the process dies, a pi-durable host recovers the session and does not repeat an action. See [For hosts](#for-hosts).
 
 Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=22.19.0`, pi 1.1 and 1.2 (the
 coding-agent entry also runs on pi 1.0.4). ESM only: the
@@ -12,23 +17,11 @@ package has `import` entries and no `require` entry.
 ## Install
 
 ```sh
-pi install npm:@parcha/pi-browser    # the pi coding agent's extension
-npm install @parcha/pi-browser       # the library: providers, driver, durable adapter
+pi install npm:@parcha/pi-browser@beta    # the pi coding agent's extension
+npm install @parcha/pi-browser@beta       # the library: providers, driver, durable adapter
 ```
 
-Until it is published, build it from a checkout and `pi install ./packages/pi-browser`.
-
-Stagehand, undici, zod and the two HTML packages are dependencies. Four optional peers cover the rest. Install only the ones you use:
-
-| Peer | Needed for |
-|---|---|
-| `@earendil-works/pi-coding-agent` | `/coding-agent`. `pi install` supplies it. |
-| `@earendil-works/pi-durable` and `@earendil-works/chord` | `/durable`, the adapter for a pi-durable Harness. |
-| `@browserbasehq/sdk` | the Browserbase provider. Kernel needs no SDK. |
-
-The pi peers are `@earendil-works/pi-durable` and `chord` `>=1.1.0 <1.4.0`, and `@earendil-works/pi-coding-agent` at any version, as pi's package guidance asks of the packages it supplies. The suite passes on pi 1.1, 1.2 and 1.3, and the coding-agent entry's tests also pass on a pi 1.0.4 family.
-
-pi 1.0.4 or 1.1.x users: pin `@earendil-works/pi-codemode` to the same version as `@earendil-works/pi-coding-agent` (`@1.0.4`, or `@1.1.0`), because pi-codemode 1.2.0 removed an export those versions import, or use pi 1.2.
+`pi install` loads the extension. A Chrome starts on the model's first browser call, and not before.
 
 ## Quick start
 
@@ -93,6 +86,158 @@ Four runnable demos live in `examples/` in the repository. They are not in the n
 | [`examples/crash-and-resume.mjs`](examples/crash-and-resume.mjs) | `node packages/pi-browser/examples/crash-and-resume.mjs`, twice | The first run sets a page title and kills itself with SIGKILL between two tool calls. The second recovers the same Chrome from the run's own store and reads the title back. A scripted model stands in for a real one. It uses the pi-durable packages the repository already installs. Delete `$TMPDIR/pi-browser-crash-demo` to start over. |
 | [`examples/read-a-pdf.mjs`](examples/read-a-pdf.mjs) | `node packages/pi-browser/examples/read-a-pdf.mjs` | `web_fetch` on a PDF the fetch service cannot convert. It fetches the file raw and hands the bytes to your extractor, here poppler's `pdftotext` (needs poppler installed). The fetch service is a stand-in that answers HTTP 400 for a PDF, as Browserbase does. It does not need Chrome. |
 
+## Providers
+
+The same tools run on three kinds of browser. You pick one when you set up the package.
+
+| Provider | What it is | What it needs |
+|---|---|---|
+| Local Chrome (`/providers/cdp`) | A Chrome the package starts and stops by exact pid, with its own profile directory and a free debugging port. It can also attach to a Chrome you already run, at a CDP endpoint. | Chrome or Chromium. No key. |
+| Browserbase (`/providers/browserbase`) | A Browserbase session, through its SDK. | `BROWSERBASE_API_KEY` and the `@browserbasehq/sdk` peer. |
+| Kernel (`/providers/kernel`) | A Kernel browser, through its REST API. | `KERNEL_API_KEY`. No SDK. |
+
+The pi extension picks one from a flag or an environment variable; see [For pi users](#for-pi-users). A host that wires the package itself passes the provider it wants; see [For hosts](#for-hosts). `examples/one-script-three-providers.mjs` runs one script on all three.
+
+## Take over and hand back
+
+A person and the agent never drive the browser together. There are two ways for a person to come in.
+
+**The person drives, from a live view.** The live view shows the session's page and sends the person's mouse, keys, paste, address bar, back and reload to it. While a person has driven within the last 3 seconds, every browser call from the agent is refused before it does anything (`refused`, `person_driving`, and it can be retried). While an agent call runs, the person's input is discarded with a notice. A call that waited while the person used the browser is told that the page may have changed, and the agent takes a snapshot before it acts.
+
+**The agent asks for a person.** The tool `browser_request_handoff` takes an instruction (what the person should do) and a completion condition (what the page shows when it is done). It waits until the person finishes, cancels or the request expires. While the person has the browser, every other browser call answers `waiting_for_human`. Afterwards the agent takes a snapshot and checks the condition on the page. The tool is listed only when the host gives a `HandoffPort`, which is how the host reaches the person.
+
+**The limit.** The credential guards are not in this release. Until they ship, use the live view with test accounts on practice sites only. The model's own page code can read what a person types there.
+
+What runs where:
+
+| | The pi extension, as `pi install` loads it | A host that wires it |
+|---|---|---|
+| Live view of a local Chrome | not wired | `createLiveView` and `liveViewProvider` |
+| Live-view URL of a Browserbase or Kernel session | not shown to anyone | handed to the host only, through `onSession` or the handoff port |
+| `browser_request_handoff` | not listed | listed when the host passes a `handoff` port |
+
+The pi extension does not offer Kernel's live view, because Kernel's API has no read-only form of it.
+
+### The live view of your own Chrome
+
+`@parcha/pi-browser/live-view` serves a canvas of the session's active page, and the person's mouse, keys, paste, address bar, back and reload go to it. It works for the local Chrome (the cdp provider). Browserbase and Kernel give a host a live-view URL of their own.
+
+```ts
+import { createLiveView, liveViewProvider } from "@parcha/pi-browser/live-view";
+import { cdpProvider } from "@parcha/pi-browser/providers/cdp";
+
+const liveView = createLiveView({
+  hostOrigin: "https://app.example",              // the one origin that may frame the viewer (null: none)
+  baseUrl: "https://app.example/live/run-123",    // where you mount it; omit it and the live view serves itself on 127.0.0.1
+});
+server.on("request", (req, res) => { if (!liveView.handle(req, res)) next(req, res); });
+server.on("upgrade", (req, socket, head) => { if (!liveView.upgrade(req, socket, head)) socket.destroy(); });
+
+const provider = liveViewProvider(cdpProvider({ chrome }), liveView);   // wrap it as the recorder's `watch` wraps a provider
+createBrowserExtension({ provider: () => provider, onSession: (row) => { /* row.liveView.fullscreen is the viewer's URL */ }, ... });
+```
+
+The URL is a full-control credential and goes to `onSession` only (never a result, a record or the model): `https://.../live/run-123/v/<id>#t=<token>`. The
+token is 256 random bits in the fragment, so it reaches no server log, proxy or Referer; the viewer's script sends it as the WebSocket's first message and
+nothing is accepted before it. The upgrade's `Origin` must be the viewer's own origin (behind a proxy, pass the upgrade through with `Origin` intact).
+There is one authenticated viewer per session (a second is refused `viewer_in_use`); the token, the stream and the viewer's socket end at the session's release.
+The page is served with `Referrer-Policy: no-referrer`, `default-src 'self'` and `frame-ancestors` set to `hostOrigin`. The viewer may send a page only to
+http(s) addresses. Frames are held one at a time and acknowledged after they were sent; none is written anywhere.
+
+Every browser tool is a model call on its session's gate (`drivingGates`, shared by default between the live view and the toolset, so you pass nothing). To use your own
+registry, pass the same one to both sides: `const gates = createDrivingGates({ idleMs: 5_000 }); createLiveView({ hostOrigin, gates }); createBrowserExtension({ ..., gates });`.
+
+`drivingGates(tag).viewing()` is true for as long as an authenticated viewer is connected to that session, even when the person sits still longer than the 3 s driving window (a person mid-sign-in): the host's own custody reads it before it releases a session on its own. A custom registry's gates implement `viewing()` and `setViewing(on)`; the live view sets it on a viewer's hello and clears it when that viewer leaves or the session is released.
+
+Limits: JS dialogs show with accept and dismiss. A file chooser and downloads are not supported.
+
+## Saved sign-ins
+
+This section says where a profile's state lives. A host can ask for a browser profile by name, and say whether the session keeps what it learns. The host sets it in the session policy (`profile: { name, save }`). A name is 1 to 64 letters, digits, dots, dashes and underscores, and starts with a letter or a digit. A session that names a profile starts from the cookies and logins that profile holds. A provider that cannot keep a profile refuses the request by name, and no session starts.
+
+Where the profile lives:
+
+- **Local Chrome:** a directory `.profiles/<name>` under the profile root you give the provider. A session that saves runs on that directory. A session that does not save runs on a copy, and the profile stays as it was.
+- **Browserbase:** a Browserbase context. The provider keeps the map from profile name to context id in a file under the user's config directory, or in the store you pass.
+- **Kernel:** a Kernel profile of that name, created if it is not there.
+
+It is never your own browser's profile. The Chrome the pi extension starts has its own directory under a temporary root, and the pi extension has no flag for a saved profile.
+
+One session at a time may save to a profile in one process. A second saver is refused, and the message says why. Across processes, the last session to end wins. A profile name and a raw Browserbase context id cannot be asked for together.
+
+
+## The tools
+
+| Tool | Does | Replay after a crash |
+|---|---|---|
+| `snapshot` | The page's accessibility tree with bracketed ids: a working view for the next `run`. Never filed, so it is not citable evidence. | Reruns. |
+| `screenshot`, `browser_read` | Read the page. Each read is filed as evidence with its URL, SHA-256 and the offset into the session's recording. A screenshot is held to 2,000 px on its long edge. A `screenshot` can take a `clip` (CSS pixels from the viewport's top-left corner), an `id` from the latest snapshot or a CSS `selector` (scrolled into view first) to capture one region (a blank `id` or `selector`, or a clip of zero width and height, counts as not given); an empty or off-screen region, or an element that matches nothing or more than one, is refused with the typed envelope before any capture. Its `details.media` gives the image's path, type, size and the region. | Reruns. A read whose session was lost answers `session_replaced`. |
+| `browser_downloads` | Copy what the session downloaded into the host's workspace, with a manifest of SHA-256 sums. The pi extension lists it unless `fileTools` is false; the durable adapter lists it only when the host supplies `workspace`. | Reruns; files already there are skipped. |
+| `run` | Act: code, or a batch of ref actions. | Never reruns. The model is told the call may have taken effect and where the page was, and the identical code is refused once (`effect_unknown`). |
+| `browser_release`, `browser_relaunch` | End the session; end it and open another. | Idempotent. A create carries a tag, so a rerun finds its session. |
+| `browser_request_handoff` | Hand the session to a person for a step only a human can do, and wait for the host's handoff port to say how it ended. While the person has it, every other call answers `waiting_for_human`. Listed only when the host gives a `handoff` port. | Reruns and waits on the same request; a request asked again carries the same `request_id`, which the port treats as one. |
+| `web_fetch`, `web_search` | Fetch a page or search, through the provider's services. | Reruns. |
+| `browser_upload` | Choose one workspace file in a file input on the page, as a person picking it would. Nothing is submitted; `run` submits the form afterwards. The pi extension lists it unless `fileTools` is false; the durable adapter lists it only when the host supplies `files` or `workspace`. | Never reruns. An upload the page does not answer fails at 60 s as possibly applied, and the identical retry is refused until the agent has looked at the page. |
+| `use_website` | Hand a task to another agent that works one website the host granted, in its own browser, and get its report. Listed only when the host passes `sites`. | A `request_id` that already finished answers its result without running again. A task that failed runs again. |
+
+`web_fetch` and `web_search` results carry their price as pi usage (the Browserbase provider's list prices). Session
+minutes are charged by the session meter (`core/usage.ts`, wired into custody): every session tool's result carries the
+time since the last charge, and each released session's record carries its total.
+
+
+## Failures
+
+Every failure is one envelope: `ok: false`, a `code`, `retryable`, `effect` (`none` or `possibly_effected`) and a message that names the way out. A `detail` of at most 2,000 characters may follow, redacted. The code comes from typed facts (a status, a class name, a cause code), never from the text of a message. There are 15 codes.
+
+| Code | Means |
+|---|---|
+| `browser_unavailable` | The browser or its provider could not be reached. |
+| `auth` | The provider refused the key (401) or the kind of session (403). |
+| `timeout` | The call ran past its deadline. |
+| `aborted` | The run cancelled the call. |
+| `refused` | The package declined before it did anything: a bad argument, a person driving, a profile that cannot be used, an identical call that has already failed several times, or no person to hand to. |
+| `stale_snapshot` | The snapshot id is stale, the page moved on since the snapshot, or a person used the browser meanwhile. Take a new snapshot. |
+| `session_ended` | The provider closed the session, or the browser died. The next call opens a fresh one. |
+| `session_replaced` | A call that reran after an interruption lost its session, so its page is gone. |
+| `effect_unknown` | An action may have taken effect before an interruption. The identical code is refused once. |
+| `code_error` | The code the model sent to `run` threw. |
+| `command_failed` | A read failed. |
+| `not_content` | The page is not content: a login wall, a paywall, a consent notice, an error page, a loading page, an empty page, or a fresh browser that has loaded no page. |
+| `blocked` | A CAPTCHA or bot check, a region block, or a fetch the site refused (HTTP 401, 403, 451 or 999). |
+| `rate_limited` | The site or the provider answered 429. |
+| `waiting_for_human` | A person has the browser. |
+
+**Walls.** Naming a wall takes a judge. A host passes `decisions.classifyPage`, which gets the page's URL, status, content type and text, and answers one of eight classes: `captcha_or_bot_check`, `login_wall`, `paywall`, `region_or_geo_block`, `consent_interstitial`, `error_or_not_found`, `loading_or_js_required` or `empty_or_template`. A bot check or a region block files as `blocked`, and the others as `not_content`, each with a next step. With no judge, no page is classified. A fetch the site refuses with 401, 403, 451 or 999 still answers `blocked`. The pi extension passes no judge.
+
+## Credentials
+
+What the package does with the credentials you register and the keys it recognises, so they stay out of the model's view, a log and a filed page:
+
+- **Registered values.** A host registers the exact strings to scrub (`redact.values`; at least 8 characters). Each is replaced with `[redacted]` in the raw, URL-encoded and fetch-sent spellings.
+- **Known shapes.** A query parameter named `signingKey`, `api_key`, `token`, `access_token`, `key`, `jwt` or `signature`, an OpenAI-style `sk-` key, a Browserbase `bb_live_` or `bb_test_` key, a Google `AIza` key and a `Bearer` value are replaced the same way.
+- **Page URLs.** Every query value is replaced (the names stay), and the fragment and the userinfo are dropped, before a URL is shown or filed.
+- **Where it runs.** The redactor runs over tool results, failure messages and details, the repeat guard's text, download reasons and the inputs to a page judge. It runs before any text is cut, filed or shown.
+- **The live view's address** is a full-control credential. It goes to the host's `onSession` and the handoff port, and nowhere else.
+- **Recordings.** The frame recorder keeps no frame while a password, a one-time-code field or a field it cannot read is on the page.
+- **Browserbase.** The provider dials Browserbase through a bound credential proxy, not the raw connect URL.
+- **Tested.** The wire tests (`test/wire/`) plant sentinel credentials in a fake provider and scan every byte a run produced: the run's entries and database, every request to the model, its reports, its evidence files and its process log. They look for each value raw, URL-encoded, hex- and base64-encoded, and for its head and tail.
+
+What this does not cover: a value nobody registered and no shape matches, and what a person types into a page. See the limit under [Take over and hand back](#take-over-and-hand-back).
+
+## Peers
+
+Stagehand, undici, zod and the two HTML packages are dependencies. Four optional peers cover the rest. Install only the ones you use:
+
+| Peer | Needed for |
+|---|---|
+| `@earendil-works/pi-coding-agent` | `/coding-agent`. `pi install` supplies it. |
+| `@earendil-works/pi-durable` and `@earendil-works/chord` | `/durable`, the adapter for a pi-durable Harness. |
+| `@browserbasehq/sdk` | the Browserbase provider. Kernel needs no SDK. |
+
+The pi peers are `@earendil-works/pi-durable` and `chord` `>=1.1.0 <1.4.0`, and `@earendil-works/pi-coding-agent` at any version, as pi's package guidance asks of the packages it supplies. The suite passes on pi 1.1, 1.2 and 1.3, and the coding-agent entry's tests also pass on a pi 1.0.4 family.
+
+pi 1.0.4 or 1.1.x users: pin `@earendil-works/pi-codemode` to the same version as `@earendil-works/pi-coding-agent` (`@1.0.4`, or `@1.1.0`), because pi-codemode 1.2.0 removed an export those versions import, or use pi 1.2.
+
 ## Entries
 
 - `@parcha/pi-browser`: the host-neutral core. The model contract (tool names, descriptions, JSON schemas, effect and
@@ -110,27 +255,11 @@ Four runnable demos live in `examples/` in the repository. They are not in the n
 - `/providers/browserbase`, `/providers/kernel`, `/providers/cdp`: where browsers come from. Browserbase through its SDK,
   with the credential-proxy dial and the connect-URL rewrite. Kernel through its REST API on the package's own HTTP agent.
   Any CDP endpoint, or a local Chrome the provider starts and kills by exact pid.
+- `/live-view`: a person sees and drives the local Chrome (the cdp provider) from your page, with nothing leaving the machine but the model. See
+  [The live view of your own Chrome](#the-live-view-of-your-own-chrome).
 - `/testing`: the shared test fake. A provider backend with a ledger of every call, a credential broker, an HTTP face so the
   ledger outlives a killed child process, a driver over in-memory pages, and sentinel credentials. A host's composition
   test and this package's crash matrix use the same one.
-
-## The tools
-
-| Tool | Does | Replay after a crash |
-|---|---|---|
-| `snapshot` | The page's accessibility tree with bracketed ids: a working view for the next `run`. Never filed, so it is not citable evidence. | Reruns. |
-| `screenshot`, `browser_read` | Read the page. Each read is filed as evidence with its URL, SHA-256 and the offset into the session's recording. A screenshot is held to 2,000 px on its long edge. | Reruns. A read whose session was lost answers `session_replaced`. |
-| `browser_downloads` | Copy what the session downloaded into the host's workspace, with a manifest of SHA-256 sums. Listed only when the host gives a `workspace` and the provider can list downloads. | Reruns; files already there are skipped. |
-| `run` | Act: code, or a batch of ref actions. | Never reruns. The model is told the call may have taken effect and where the page was, and the identical code is refused once (`effect_unknown`). |
-| `browser_release`, `browser_relaunch` | End the session; end it and open another. | Idempotent. A create carries a tag, so a rerun finds its session. |
-| `web_fetch`, `web_search` | Fetch a page or search, through the provider's services. | Reruns. |
-
-`web_fetch` and `web_search` results carry their price as pi usage (the Browserbase provider's list prices). Session
-minutes are charged by the session meter (`core/usage.ts`, wired into custody): every session tool's result carries the
-time since the last charge, and each released session's record carries its total.
-
-Every failure is one envelope: `ok: false`, a `code`, `retryable`, `effect` (`none` or `possibly_effected`) and a message
-that names the way out.
 
 ## For pi users
 
@@ -222,7 +351,10 @@ await browser.reconcile(harness, () => true, context);   // settles what a dead 
 - `decisions`: `classifyPage` and `rankChunks`, answered with your judge. Absent, no page is classified and no find is ranked.
 - `redact.values`: exact strings to scrub besides the built-in shapes.
 - `section.addendum`: your text after the package's prompt section.
-- `workspace`: where `browser_downloads` writes. Absent, that tool is not listed.
+- `workspace`: where `browser_downloads` writes, and where `browser_upload` reads when `files` is absent. Absent, `browser_downloads` is not listed, and `browser_upload` is listed only if `files` is given.
+- `files`: a `WorkspaceFiles` that resolves `browser_upload` paths. Given, `browser_upload` is listed without a `workspace`.
+- `handoff`: a `HandoffPort` that reaches a person (`request`, then `outcome` polled until done, cancelled or expired;
+  when a request expires is the port's to decide). Absent, `browser_request_handoff` is not listed.
 - `prices`: your session price (for example from `BROWSERBASE_USD_PER_MINUTE`). It prices the session meter, so each session
   tool's result and each released session's record carry dollars. Without it the minutes are recorded unpriced.
 
@@ -231,7 +363,10 @@ region, a raw context id, the session timeout, the idle release and the batch ti
 package's defaults to spread and override) in the conversation's creating commit,
 selects the extensions for it, and calls `handle.release(conversation, "close", ctx)` when the conversation ends. Releases run
 as background tasks, which `waitForIdle` skips and closing the harness aborts: before it closes, a host calls
-`handle.drain(harness, ctx, signal?)`, which resolves once none is live. At run open, after the extensions are installed and
+`handle.drain(harness, ctx, signal?)`, which resolves once none is live. A release the store cannot record (a storage error)
+is still made at the provider, and the record is left for the next run's reconcile; once the store has failed,
+`handle.close()` releases every session the process still holds, and over a healthy store it releases nothing. At run open,
+after the extensions are installed and
 before anything resumes, it calls `handle.reconcile(harness, isActive, ctx)`, and every session a dead process left is bound,
 kept or released. The host wraps the tools (`handle.tools`) with its own policy: pause, call records, a result cap, media for
 the route.
@@ -295,6 +430,9 @@ A session is captured from the moment it is created or reattached (so after a ki
   is not recorded. The pause lasts until the page navigates and the check is clean; the gap says why in `data.detail` (`field`, `typed`,
   `too_deep`, `unreadable_frame` or `host`). What no script in the page can see (a closed shadow root, a value set by script with no event) is the
   host's to pause with `frames.pause(session)` (lifted with `frames.resume(session)`).
+  A host that lets a person drive a session (the live view) passes `hold: (ref) => boolean`: while it answers `true` for a session no frame is stored and one gap
+  (`credential_on_page`, detail `host`) marks the span, not one per skipped frame; when it answers `false` frames resume. A hold that throws counts as `true`.
+  The screencast sends a frame only when the page repaints, and a person's login has often already left the page, so when a hold lifts the recorder captures one frame of the page as it is then (a one-off screenshot of the followed session, judged like any other: a field still holding a credential makes it the credential gap, not a frame); a capture that fails costs that frame only. No new option. A withheld frame never counts as the last frame kept, so a `session_released` gap inside a hold starts at the last frame stored before it.
 - A live-view URL is never recorded or asked for: the recorder reads only the session's DevTools socket and never writes its address.
 - Lines reach the sink one at a time, in order. A sink that throws, rejects or does not answer within `sinkTimeoutMs` (5 s) cannot fail a browser
   call: that line is dropped and counted in `frames.stats()`, and a frame that was not saved never becomes the point a later gap starts from.

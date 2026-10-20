@@ -20,11 +20,20 @@ const removeLast = (t, dir) => t.after(() => t.after(async () => {
   await rm(dir, RM);
 }));
 
-export async function scratch(t, prefix) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), prefix));
+export async function scratch(t, prefix, base = os.tmpdir()) {
+  const dir = await mkdtemp(path.join(base, prefix));
   made.add(dir);
   removeLast(t, dir);
   return dir;
+}
+
+// makePrivateTmp gives a lease its own TMPDIR only while a Chrome singleton socket path fits in 107 bytes, i.e. a host TMPDIR of at most 50
+// characters. A test of that private directory needs a host TMPDIR that short: under this process's TMPDIR when that leaves room (the
+// runner's preload makes a short one, and its keeper sweeps it if the worker is killed), else under /tmp (a file run directly with a long TMPDIR).
+const HOST_TMPDIR_MAX = 50;
+export async function scratchShort(t, prefix) {
+  const fits = Buffer.byteLength(path.join(os.tmpdir(), `${prefix}XXXXXX`)) <= HOST_TMPDIR_MAX;
+  return scratch(t, prefix, fits || !fs.existsSync("/tmp") ? os.tmpdir() : "/tmp");
 }
 
 export function scratchSync(t, prefix) {

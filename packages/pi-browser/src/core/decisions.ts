@@ -4,7 +4,13 @@ export const WALL_CLASSES = Object.freeze([
 ] as const);
 export type WallClass = (typeof WALL_CLASSES)[number];
 
-export type PageForJudgment = { url: string; status: number | null; contentType: string | null; text: string };
+export type PageForJudgment = {
+  url: string; status: number | null; contentType: string | null; text: string;
+  /** The distinct origins of the page's frames (at most five, in document order, redacted), when it has any. A frame's content is not in `text`: a page whose content sits in a challenge frame has almost none of its own. */
+  frames?: string[];
+  /** What the page puts INSIDE its frame elements (their fallback text, whitespace collapsed, at most 200 characters each, at most five, redacted), when any is there: a browser does not render it, so `text` lacks it, and a block page (Incapsula's) keeps its message there. */
+  frameText?: string[];
+};
 
 export type PageVerdict = {
   /** "content" files the page `ok`; a wall class files it `failed` with a typed way out. */

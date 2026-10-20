@@ -1,7 +1,7 @@
 {
   "name": "@parcha/pi-browser",
   "version": "0.1.0-beta.18",
-  "description": "A durable browser for pi agents: session custody that survives crashes, effect and replay classes per tool, evidence with SHA-256, typed failures, and no credential in any model-visible string.",
+  "description": "Your agent gets its own browser, and you can take over and hand it back.",
   "keywords": [
     "pi-package",
     "pi-durable",
@@ -28,6 +28,10 @@
       "types": "./dist/recorder/index.d.ts",
       "import": "./dist/recorder/index.js"
     },
+    "./live-view": {
+      "types": "./dist/live-view/index.d.ts",
+      "import": "./dist/live-view/index.js"
+    },
     "./providers/browserbase": {
       "types": "./dist/providers/browserbase.d.ts",
       "import": "./dist/providers/browserbase.js"
@@ -35,6 +39,10 @@
     "./providers/cdp": {
       "types": "./dist/providers/cdp.d.ts",
       "import": "./dist/providers/cdp.js"
+    },
+    "./providers/assigned": {
+      "types": "./dist/providers/assigned.d.ts",
+      "import": "./dist/providers/assigned.js"
     },
     "./providers/kernel": {
       "types": "./dist/providers/kernel.d.ts",

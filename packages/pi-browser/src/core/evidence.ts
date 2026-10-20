@@ -25,8 +25,9 @@ export type EvidenceRecord = {
 };
 
 export type EvidenceSink = {
-  /** `path` is what the model cites; `bodyLine` is the 1-indexed line where the body starts. Null: nothing was filed. */
-  file(label: string, record: EvidenceRecord): Promise<{ path: string; bodyLine?: number } | null>;
+  /** `path` is what the model cites; `bodyLine` is the 1-indexed line where the body starts; `bodyPath` is where a binary body (a capture) was
+   *  written, relative to the same root as `path`. Null: nothing was filed. */
+  file(label: string, record: EvidenceRecord): Promise<{ path: string; bodyLine?: number; bodyPath?: string } | null>;
   /** The model's whole result for a filed body; absent, a head under DEFAULT_INLINE_CHARS and the file's path. */
   inline?(body: string, at: { path: string | null; bodyLine: number | null; prefix: string; filed: string }): string;
 };

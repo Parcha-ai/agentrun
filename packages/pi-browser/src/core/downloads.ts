@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { BrowserFailureError } from "./custody.js";
 import type { BrowserProvider, RemoteFile } from "./host.js";
 import type { LeaseRef } from "./lease.js";
 
@@ -45,16 +46,21 @@ export async function withLock<T>(file: string, run: () => Promise<T>, what = "d
   try { return await run(); } finally { await rm(file, { force: true }); }
 }
 
+/** A manifest that is there but unreadable is refused, never replaced: its rows are the only record of earlier fetches. */
 async function readManifest(file: string): Promise<Manifest> {
-  try {
-    const parsed = JSON.parse(await readFile(file, "utf8")) as Manifest;
-    if (parsed?.schema === "pi-browser.downloads.v1" && Array.isArray(parsed.files)) return parsed;
-  } catch {}
-  return { schema: "pi-browser.downloads.v1", files: [] };
+  let raw: string;
+  try { raw = await readFile(file, "utf8"); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { schema: "pi-browser.downloads.v1", files: [] };
+    throw error;
+  }
+  let parsed: Manifest | null = null;
+  try { parsed = JSON.parse(raw) as Manifest; } catch {}
+  if (parsed?.schema === "pi-browser.downloads.v1" && Array.isArray(parsed.files)) return parsed;
+  throw new BrowserFailureError({ ok: false, code: "refused", retryable: false, effect: "none", message: `${DOWNLOADS_MANIFEST} exists but is not a pi-browser downloads manifest; fix or move it, then call browser_downloads again.` });
 }
 
 /** Skips what the workspace already holds; one failing file is skipped with its reason. */
-export async function fetchDownloads(options: { provider: Pick<BrowserProvider, "downloads">; ref: LeaseRef; session: string; workspace: string; maxBytes?: number; maxFiles?: number; now?: () => Date }): Promise<DownloadsResult> {
+export async function fetchDownloads(options: { provider: Pick<BrowserProvider, "downloads">; ref: LeaseRef; session: string; workspace: string; maxBytes?: number; maxFiles?: number; now?: () => Date; redact?: (text: string) => string }): Promise<DownloadsResult> {
   const { provider, ref, session, workspace } = options;
   if (!provider.downloads) throw new Error("this provider cannot list downloads");
   const maxBytes = options.maxBytes ?? MAX_DOWNLOAD_BYTES;
@@ -111,7 +117,7 @@ export async function fetchDownloads(options: { provider: Pick<BrowserProvider, 
       result.fetched.push(entry(row));
     } catch (error) {
       await rm(part, { force: true });
-      result.skipped.push({ name: file.name, reason: error instanceof Error ? error.message.slice(0, 200) : "the read failed" });
+      result.skipped.push({ name: file.name, reason: error instanceof Error ? (options.redact ?? ((text: string) => text))(error.message).slice(0, 200) : "the read failed" });
     }
   }
   return result;

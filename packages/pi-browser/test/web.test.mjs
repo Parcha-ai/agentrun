@@ -564,3 +564,22 @@ test("an answer with no readable content names the status and the way out, never
   assert.match(failure.message, /^https:\/\/blog\.example\/empty answered HTTP 200 with no readable content \(an empty page, or one its scripts build after load\)\./);
   assert.equal(failure.next.action, "drive_page");
 });
+
+// The detail of an HTTP failure is a cut of the page body; the run's secrets leave the whole body before the cut.
+test("a registered value straddling the 500-character cut of a failed page's detail leaves no fragment", async (t) => {
+  const token = "RUNTOKEN-0123456789abcdef";
+  const body = `${"p".repeat(492)}${token} and the rest of the page`;
+  const r = await rig(t, { "/refused": { status: 403, body }, "/missing": { status: 404, body }, "/limited": { status: 429, body } }, { options: { redact: { values: () => [token] } } });
+  const { results } = await r.run([[["web_fetch", { url: "https://s.example/refused" }], ["web_fetch", { url: "https://s.example/missing" }], ["web_fetch", { url: "https://s.example/limited" }]]]);
+  assert.equal(results.length, 3);
+  assert.doesNotMatch(JSON.stringify(results), /RUNTOK/);
+});
+
+test("web_fetch hands the page judge content with the run's registered values removed", async (t) => {
+  const token = "RUNTOKEN-0123456789abcdef";
+  const judged = [];
+  const r = await rig(t, { "/echo": { body: `# Page\n\nthe page echoes ${token} back` } }, { options: { redact: { values: () => [token] }, decisions: { classifyPage: async (page) => { judged.push(page.text); return { wall: "content", injection: null, confidence: 0.9 }; } } } });
+  await r.run([[["web_fetch", { url: "https://s.example/echo" }]]]);
+  assert.equal(judged.length, 1);
+  assert.doesNotMatch(judged[0], /RUNTOK/);
+});

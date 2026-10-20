@@ -117,6 +117,8 @@ export function chunkPage(markdown: string, max = FIND_CHUNK_CHARS): Chunk[] {
 export type FindOptions = {
   kind: "tree" | "page";
   rank?: Decisions["rankChunks"];
+  /** The run's redactor. It runs over the whole source before chunking, so a registered value across a chunk boundary is removed, not left as two halves. */
+  redact?: (text: string) => string;
   filedAt?: string | null;
   maxChars?: number;
   shownChunks?: number;
@@ -133,7 +135,8 @@ export type FindResult = {
 const quote = (query: string) => JSON.stringify(query.length > 120 ? `${query.slice(0, 120)}…` : query);
 
 /** Without a usable ranker the whole source comes back with a line saying find was not applied: never a silent cut. */
-export async function findInText(source: string, query: string, options: FindOptions): Promise<FindResult> {
+export async function findInText(rawSource: string, rawQuery: string, options: FindOptions): Promise<FindResult> {
+  const [source, query] = options.redact ? [options.redact(rawSource), options.redact(rawQuery)] : [rawSource, rawQuery];
   const whole = (why: string): FindResult => ({ text: `find ${quote(query)} was not applied: ${why}. The whole ${options.kind === "tree" ? "snapshot" : "page"} follows.\n${source}`, applied: false, chunks: 0, shown: [], ids: [] });
   if (!options.rank) return whole("this host has no ranker");
   let max = options.maxChars ?? FIND_CHUNK_CHARS;

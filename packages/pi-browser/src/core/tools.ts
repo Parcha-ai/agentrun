@@ -1,34 +1,55 @@
-import { BrowserFailureError, type AttachedSession, type BrowserDriver, type CustodyPort, type ToolOutput } from "./custody.js";
+import { BrowserFailureError, FenceRefusal, loadedNoPage, passedThrough, type AttachedSession, type BrowserDriver, type CustodyPort, type ToolOutput } from "./custody.js";
 import { defaultInline, type EvidenceRecord, type EvidenceSink } from "./evidence.js";
 import type { Decisions, PageVerdict } from "./decisions.js";
-import { browserFailure, classifyBrowserError, type BrowserFailure } from "./failures.js";
+import { fetchDownloads } from "./downloads.js";
+import { browserFailure, classifyBrowserError, transportFactOf, type BrowserFailure } from "./failures.js";
+import type { WorkspaceFiles } from "./host.js";
 import { createRepeatGuard, type RepeatGuard } from "./guard.js";
+import { regionOf, type Locate } from "./clip.js";
 import { captureWithinBudget, type ScreenshotOptions } from "./images.js";
 import { orderFacts, receiptFacts, sha256Hex } from "./receipts.js";
 import { scrubPageUrl, type Redact } from "./redact.js";
-import { pageNotice, wallFailure, wallOf } from "./web.js";
-import type { Geo, PendingEffectFacts } from "./host.js";
+import { UNANSWERED_CALL } from "./unanswered.js";
+import { pageNotice, wallFailure, wallOf, type WebFailure } from "./web.js";
+import type { Geo, PendingEffectFacts, ReleaseReason } from "./host.js";
+
+/** One action of a run's batch, as the contract's schema admits it. */
+export type RunAction =
+  | { op: "click"; id: string }
+  | { op: "hover"; id: string }
+  | { op: "fill"; id: string; value: string }
+  | { op: "type"; id: string; text: string; delay?: number }
+  | { op: "press"; id: string; key: string }
+  | { op: "select"; id: string; values: string | string[] };
 
 export type PageDriver = BrowserDriver & {
   snapshot(options?: { includeIframes?: boolean }): Promise<string>;
-  run(input: { code?: string; actions?: unknown[] }): Promise<unknown>;
+  run(input: { code?: string; actions?: RunAction[] }): Promise<unknown>;
   /** The page's URL, cheaply: no page content is read. */
   url(): Promise<string>;
+  /** Drops every snapshot's element ids, so an action by an old id fails as a stale snapshot (a person changed the page, whatever its URL). Optional:
+   *  a driver without ids has none to drop. */
+  forgetSnapshots?(): void;
   screenshot(options: ScreenshotOptions): Promise<{ data: string; mimeType: string }>;
+  /** Where an element or the viewport is now (see clip.ts); an element is scrolled into view first. Absent: no region can be placed. */
+  locate?: Locate;
   page(): Promise<{ url: string; title: string; text: string; html: string }>;
+  setInputFiles?(selector: string, file: { name: string; mimeType: string; buffer: Uint8Array }): Promise<void>;
 };
 
-export type ToolCall = { callId: string; conversationId: number; signal: AbortSignal | undefined; label: string; redact: Redact; evidence: EvidenceSink; classifyPage?: Decisions["classifyPage"] };
+export type ToolCall = { callId: string; conversationId: number; signal: AbortSignal | undefined; label: string; redact: Redact; evidence: EvidenceSink; classifyPage?: Decisions["classifyPage"]; workspace?: string; files?: WorkspaceFiles };
 export type ToolImpl<D extends BrowserDriver = BrowserDriver, A = unknown> = (args: A, port: CustodyPort<D>, call: ToolCall) => Promise<ToolOutput>;
 /** Each browser tool's arguments, as its contract's schema admits them. */
 export type BrowserToolArgs = {
   snapshot: { includeIframes?: boolean };
-  run: { code?: string; actions?: unknown[] };
-  screenshot: { fullPage?: boolean; type?: "png" | "jpeg"; quality?: number; ask?: string };
+  run: { code?: string; actions?: RunAction[] };
+  screenshot: { fullPage?: boolean; type?: "png" | "jpeg"; quality?: number; ask?: string; clip?: { x: number; y: number; width: number; height: number }; id?: string; selector?: string };
   browser_read: { what?: (typeof WHATS)[number] };
   browser_release: Record<string, never>;
   browser_relaunch: { verified?: boolean; geolocation?: Geo };
   browser_downloads: Record<string, never>;
+  browser_request_handoff: { request_id: string; instruction: string; completion_condition: string };
+  browser_upload: { path?: string; selector?: string };
 };
 export type BrowserToolImpls<D extends BrowserDriver = BrowserDriver> = { [K in keyof BrowserToolArgs]: ToolImpl<D, BrowserToolArgs[K]> };
 
@@ -38,19 +59,97 @@ type Read = { body: string; extractor?: EvidenceRecord["facts"]["extractor"]; ex
 const WHATS = ["markdown", "text", "html", "url", "title"] as const;
 const DROPPED_RUN = "The connection to your browser session dropped; the session is still open, and your next browser call reconnects to it with its pages and cookies. This run may have acted before the drop: take a snapshot to see the page before running again.";
 const DROPPED_FOR_GOOD = "The connection to your browser session dropped and could not be re-established, though the session is still open. Call browser_relaunch for a fresh session (its pages and cookies are gone), or use web_fetch.";
+const HUNG_PAGE = "After a fresh connection to your browser session, the page still did not answer this call: the page itself is stuck, not the browser. Call browser_relaunch for a fresh session (its pages and cookies are gone), then open the page again.";
+const DROPPED_RELEASED = "The connection to your browser session dropped and could not be re-established, so that session was released: a session that stops answering keeps running and billing. Your next browser call opens a fresh one, without the old pages or cookies; browser_relaunch opens it now. Or use web_fetch.";
+const KEPT_FOR_PERSON = "The browser is held for a person, and its connection could not be re-established; it is kept for them. Wait for them to finish, or use web_fetch.";
+const RELAUNCH_NEXT = { action: "browser_relaunch" as const, note: "Call browser_relaunch for a fresh session now, or make your next browser call, which opens one." };
+/** The same remedy for a session custody did not release (a stuck page, or a release that failed): the next ordinary call would use it. */
+const RELAUNCH_ONLY = { action: "browser_relaunch" as const, note: "Call browser_relaunch for a fresh session; this one is still attached, and your next browser call would use it." };
+/** A dropped connection the provider still runs is reconnected on a backoff, within one budget: 90 s or the call's own end,
+ *  whichever comes first. A try starts only when a whole one still fits (Stagehand's 60 s init deadline plus the attach
+ *  around it), so every try that starts ends inside the budget. */
+type ReconnectTimings = { budgetMs: number; tryMs: number; backoffMs: readonly number[] };
+const RECONNECT: ReconnectTimings = { budgetMs: 90_000, tryMs: 61_000, backoffMs: [1_000, 3_000] };
+const pause = (ms: number, signal: AbortSignal | undefined) => new Promise<void>((resolve) => {
+  const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", done); resolve(); };
+  const timer = setTimeout(done, ms);
+  signal?.addEventListener("abort", done, { once: true });
+});
 const text = (value: unknown, isError = false): ToolOutput =>
   ({ content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }], ...(isError ? { isError: true } : {}) });
 const withNews = (news: string, body: string) => (news ? `${news}\n\n${body}` : body);
+const refused = (message: string): BrowserFailure => ({ ok: false, code: "refused", retryable: false, effect: "none", message });
+
+/** A read of a browser that has loaded no page yet: it is fresh, and the next step is to navigate, to the replaced
+ *  session's last page when there is one. */
+function freshBrowser(replaced: AttachedSession<unknown>["replaced"]): WebFailure {
+  const why = replaced ? `it replaced the session released${replaced.at ? ` at ${replaced.at}` : ""} (${replaced.reason})` : "it was just opened";
+  const go = replaced?.lastUrl ? `Navigate to the last page, ${replaced.lastUrl}, with run, then read again.` : "Navigate to the page you need with run, then read again.";
+  return { ok: false, code: "not_content", retryable: true, effect: "none", message: `This browser is fresh and has loaded no page yet: ${why}. ${go}`, detail: "", next: { action: "drive_page", note: go } };
+}
 const pageUrl = (call: ToolCall, raw: string): string => scrubPageUrl(raw, call.redact);
+
+const MAX_FRAMES = 5;
+const FRAME_TEXT_CHARS = 200;
+const FRAME_TEXT_READ_CHARS = 20_000;
+const FRAME_SCAN_CHARS = 2_000_000;
+/** What the judge is shown of the page's frames, in document order: a frame's content is not in the page's text, so a page whose content sits in a challenge frame reads as empty without it. `frames` are the distinct origins (origin only: a
+ *  frame's path and query can carry a token; http(s) only; a relative source resolves against the page's `<base href>` when it has one, as the browser does) and `frameText` what the page puts inside the frame elements (the fallback a browser
+ *  does not render, where a block page keeps its message), collapsed to one line and cut at 200 characters. A frame is an element: markup inside a script, a comment, a noscript or a template is not one, so it neither counts nor takes one of the five.
+ *  A page that cannot be parsed gives none. */
+async function framesOf(html: string, pageUrl: string, redact: Redact): Promise<{ frames: string[]; frameText: string[] }> {
+  try {
+    const { parse } = await import("node-html-parser");
+    // HTML's own void elements (the parser's default list lacks `frame`, so an unclosed <frame> would swallow its sibling).
+    const root = parse(html.slice(0, FRAME_SCAN_CHARS), { voidTag: { tags: ["area", "base", "br", "col", "embed", "frame", "hr", "img", "input", "keygen", "link", "meta", "param", "source", "track", "wbr"] } });
+    let base = pageUrl;
+    const baseHref = root.querySelector("base[href]")?.getAttribute("href");
+    if (baseHref) { try { base = new URL(baseHref, pageUrl).href; } catch { /* a base that does not parse: the page's own URL stands */ } }
+    const origins = new Set<string>();
+    const texts = new Set<string>();
+    for (const frame of root.querySelectorAll("iframe, frame")) {
+      if (origins.size >= MAX_FRAMES && texts.size >= MAX_FRAMES) break;
+      let inert = false;
+      for (let up = frame.parentNode; up; up = up.parentNode) if (up.rawTagName?.toLowerCase() === "template") { inert = true; break; }
+      if (inert) continue;
+      const source = frame.getAttribute("src")?.trim();
+      if (source && origins.size < MAX_FRAMES) {
+        try {
+          const url = new URL(source, base);
+          if (url.protocol === "http:" || url.protocol === "https:") origins.add(redact(url.origin));
+        } catch { /* a source that does not parse names no origin */ }
+      }
+      if (texts.size < MAX_FRAMES) {
+        // Redacted WHOLE, then cut: a registered secret the cut split would no longer match, and half of it would reach the judge. The read bound is far past the cut, so nothing the cut keeps can straddle it.
+        const text = redact(frame.text.replace(/\s+/g, " ").trim().slice(0, FRAME_TEXT_READ_CHARS)).slice(0, FRAME_TEXT_CHARS);
+        if (text) texts.add(text);
+      }
+    }
+    return { frames: [...origins], frameText: [...texts] };
+  } catch { return { frames: [], frameText: [] }; }
+}
 type Cut = NonNullable<Session["interrupted"]>;
 /** How a page tool meets custody's journal: a replay-unsafe action carries its key; a look clears a refused cut. */
 type Kind = { effect: string } | "look" | "read";
+/** An effectful call the page never answered within its deadline: it may have acted, and the identical call is refused until a look. */
+const UNANSWERED_EFFECT: Record<string, string> = {
+  browser_upload: "The page did not answer your browser_upload in time, so the file may already be set. Look at the page with snapshot or browser_read before you upload it again.",
+};
+const unansweredEffect = (tool: string) => UNANSWERED_EFFECT[tool] ?? `The page did not answer your ${tool} call in time, so it may already have taken effect. Look at the page with snapshot or browser_read before you repeat it.`;
+/** The refusal of an identical replay-unsafe action, by tool. */
+const SAME: Record<string, string> = {
+  run: "This is the same code, and it may already have taken effect, so it is not run again now: look at the page with snapshot or browser_read before you run this again.",
+  browser_upload: "This is the same upload, and it may already have taken effect, so it is not repeated now: look at the page with snapshot or browser_read before you upload it again.",
+};
 
-/** A cut run that was observed and sent nothing that left the browser is safe to run again. */
-const harmless = (p: Cut) => p.observed === true && !(p.sent ?? []).some((r) => r.held !== "denied");
+/** A cut `run` that was observed and sent nothing that left the browser is safe to run again. */
+const harmlessRun = (p: Cut) => p.observed === true && !(p.sent ?? []).some((r) => r.held !== "denied");
+/** A cut upload is never harmless: it sets a file into an input, which changes the page without any request, so an observer that saw none says nothing about whether the file is set. */
+const harmlessUpload = (_p: Cut) => false;
+const harmless = (p: Cut) => (p.tool === "browser_upload" ? harmlessUpload : harmlessRun)(p);
 
 function interruptedNotice(p: Cut, now: string): string {
-  const where = `Your run call ${p.callId}${p.url ? ` on ${p.url}` : ""}`;
+  const where = `Your ${p.tool ?? "run"} call ${p.callId}${p.url ? ` on ${p.url}` : ""}`;
   const sent = (p.sent ?? []).filter((r) => r.held !== "denied").map((r) => `${r.method} ${r.origin}${r.path}`);
   if (p.finished) {
     const head = `${where} ran, but the process stopped before its answer reached you`;
@@ -81,28 +180,70 @@ async function markdown(html: string, fallback: string): Promise<Read> {
 }
 
 /** `guards` holds each conversation's repeat guard; a host that owns the conversation's lifecycle passes it to evict one. */
-export function pageTools({ guards = new Map<number, RepeatGuard>() }: { guards?: Map<number, RepeatGuard> } = {}): Pick<BrowserToolImpls<PageDriver>, "snapshot" | "run" | "screenshot" | "browser_read"> {
-  const guardOf = (conversationId: number) => guards.get(conversationId) ?? guards.set(conversationId, createRepeatGuard()).get(conversationId)!;
+/** `reconnect`: the reconnect timings, for tests; hosts keep the defaults. */
+export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: timings = RECONNECT }: { guards?: Map<number, RepeatGuard>; reconnect?: ReconnectTimings } = {}): Pick<BrowserToolImpls<PageDriver>, "snapshot" | "run" | "screenshot" | "browser_read" | "browser_upload" | "browser_downloads"> {
+  const guardOf = (conversationId: number, redact: Redact) => guards.get(conversationId) ?? guards.set(conversationId, createRepeatGuard(redact)).get(conversationId)!;
 
-  async function failureOf(error: unknown, effectful: boolean, port: CustodyPort<PageDriver>, call: ToolCall): Promise<BrowserFailure> {
+  async function failureOf(error: unknown, effectful: boolean, port: CustodyPort<PageDriver>, call: ToolCall, action?: string): Promise<BrowserFailure> {
     if (error instanceof BrowserFailureError) return error.failure;
-    const facts = { aborted: call.signal?.aborted === true };
+    const facts = { aborted: call.signal?.aborted === true, action, redact: call.redact };
     const first = classifyBrowserError(error, effectful, facts);
     if (first.code === "aborted" || first.code === "auth" || !(await port.ended().catch(() => false))) return first;
     return classifyBrowserError(error, effectful, { ...facts, sessionEnded: true });
   }
 
   /** A replay-unsafe action is journaled before it acts and marked finished after; the entry stays until a later call
-   *  settles it, so a process that dies before pi commits the answer leaves a cut for the resumed run. */
-  async function dispatched(port: CustodyPort<PageDriver>, call: ToolCall, s: Session, key: string, action: () => Promise<ToolOutput>): Promise<ToolOutput> {
-    await port.dispatching({ callId: call.callId, codeSha: key, url: s.record.lastUrl, observed: s.effects?.holding === true, watched: s.effects != null });
-    try { return await action(); } finally { await port.mark("finished", call.callId).catch(() => undefined); }
+   *  settles it, so a process that dies before pi commits the answer leaves a cut for the resumed run. One that a hold
+   *  fenced before any of its driver calls got through never reached the page: its entry is settled at once, as not sent,
+   *  so no look is owed for it in this process or a resumed one. */
+  async function dispatched(tool: string, port: CustodyPort<PageDriver>, call: ToolCall, s: Session, key: string, action: () => Promise<ToolOutput>): Promise<ToolOutput> {
+    await port.dispatching({ callId: call.callId, ...(tool === "browser_upload" ? { tool } : {}), codeSha: key, url: s.record.lastUrl, observed: s.effects?.holding === true, watched: s.effects != null });
+    const before = passedThrough(s.driver);
+    let notSent = false;
+    try { return await action(); } catch (error) {
+      notSent = error instanceof FenceRefusal && before !== null && passedThrough(s.driver) === before;
+      throw error;
+    } finally { await (notSent ? port.settle(call.callId) : port.mark("finished", call.callId)).catch(() => undefined); }
   }
+
+  /** Reconnects a dropped session: the first try at once, then each backoff step while a whole try still fits in the budget
+   *  and the call lasts. A refusal that is not a dropped browser (an abort, credentials) ends the tries. */
+  async function reconnect(port: CustodyPort<PageDriver>, call: ToolCall): Promise<{ session: Session } | { error: unknown }> {
+    const until = Date.now() + timings.budgetMs;
+    let error: unknown = null;
+    for (const wait of [0, ...timings.backoffMs]) {
+      if (wait > 0) {
+        // The next try must fit whole after its pause: a try is not bounded on our side, so one that could not finish in
+        // the budget never starts.
+        if (call.signal?.aborted || until - (Date.now() + wait) < timings.tryMs) break;
+        await pause(wait, call.signal);
+        if (call.signal?.aborted) break;
+      }
+      // The try's attach is bounded by what is left of the budget: one that waits on the browser (an earlier init still
+      // finishing in it) stops there instead of running past it. The timer is a ref'd one, cleared when the try ends, so a
+      // reconnect in progress keeps the process alive (AbortSignal.timeout's timer does not, and Node 22 then drains).
+      const deadline = new AbortController();
+      const timer = setTimeout(() => deadline.abort(new DOMException("the reconnect's budget ran out", "TimeoutError")), Math.max(0, until - Date.now()));
+      try { return { session: await port.session(call.signal ? AbortSignal.any([call.signal, deadline.signal]) : deadline.signal) }; } catch (failed) { error = failed; } finally { clearTimeout(timer); }
+      // The budget ran out, not the call: that is a reconnect that failed, and the session goes on to be released as lost.
+      if (deadline.signal.aborted && !call.signal?.aborted) { error = new BrowserFailureError(browserFailure("browser_unavailable", "The browser did not answer a reconnect within its budget.")); break; }
+      if (notDropped(error)) break;
+    }
+    // A call cancelled while it reconnects ends aborted, whatever the last try failed with: the session is the run's, not
+    // the cancelled call's, so it is never released for that.
+    if (call.signal?.aborted) return { error: Object.assign(new Error("the call was cancelled while it reconnected"), { name: "AbortError" }) };
+    return { error };
+  }
+  /** A failure no reconnect can help: an abort, credentials, a refusal, a replaced session, one held for a person. A
+   *  provider that fails the attach (command_failed, timeout, rate_limited, browser_unavailable) is tried again. */
+  const FINAL = new Set<string>(["aborted", "auth", "refused", "session_replaced", "waiting_for_human"]);
+  const notDropped = (error: unknown) => FINAL.has(error instanceof BrowserFailureError ? error.failure.code : classifyBrowserError(error, false).code);
 
   async function perform(tool: string, args: unknown, port: CustodyPort<PageDriver>, call: ToolCall, kind: Kind, body: (s: Session, news: string) => Promise<ToolOutput>): Promise<ToolOutput> {
     const effect = typeof kind === "object" ? kind.effect : null;
     const effectful = effect !== null;
-    const guard = guardOf(call.conversationId);
+    const action = effectful && tool !== "run" ? `Your ${tool} call` : undefined;
+    const guard = guardOf(call.conversationId, call.redact);
     const refused = guard.check(tool, args);
     if (refused) return text(refused, true);
     // A cut is told once, on the call after it, whatever that call ends in. An identical action is refused until a look
@@ -110,45 +251,87 @@ export function pageTools({ guards = new Map<number, RepeatGuard>() }: { guards?
     let news = "";
     let cut: Cut | null = null;
     let facts: PendingEffectFacts | null = null;
-    const tell = (out: ToolOutput): ToolOutput => (facts ? { ...out, details: { ...(out.details as object | undefined), pendingEffect: facts } } : out);
+    // The first call after a release the model did not ask for: by what and when, beside the notice that says it.
+    let previous: { released: true; reason: ReleaseReason; at: string | null } | null = null;
+    const tell = (out: ToolOutput): ToolOutput => (facts || previous ? { ...out, details: { ...(out.details as object | undefined), ...(facts ? { pendingEffect: facts } : {}), ...(previous ? { previous_session: previous } : {}) } } : out);
     const done = (out: ToolOutput) => { guard.note(tool, args, null); return tell(out); };
-    const fail = (failure: BrowserFailure) => { guard.note(tool, args, failure); return tell(text(news ? { ...failure, notice: news } : failure, true)); };
-    const looked = async (out: ToolOutput) => { if (kind === "look" && cut?.refused) await port.settle(cut.callId); return done(out); };
+    // The notice leads a failure, never after its own keys: a call told nothing else first reads it.
+    const fail = (failure: BrowserFailure) => { guard.note(tool, args, failure); return tell(text(news ? { notice: news, ...(previous ? { previous_session: previous } : {}), ...failure } : failure, true)); };
+    let cuts: Cut[] = [];
+    // A look after a refusal settles every refused cut in the chain whose warning a saved answer had already told; one this call is
+    // telling stays until a later look, so a process that dies before this answer is saved tells it again.
+    const looked = async (out: ToolOutput) => {
+      if (kind === "look") { guard.looked(); for (const each of cuts) if (each.refused && each.told) await port.settle(each.callId); }
+      return done(out);
+    };
     try {
       const s = await port.session();
       news = s.notice ?? "";
+      if (s.notice && s.replaced) previous = { released: true, reason: s.replaced.reason, at: s.replaced.at };
       cut = s.interrupted;
-      const same = cut !== null && effect === cut.codeSha && !harmless(cut);
+      cuts = s.cuts ?? (cut ? [cut] : []);
+      // A cut that sent nothing, told by an answer that was saved, is over.
+      if (cut?.told && harmless(cut)) { await port.settle(cut.callId); cuts = cuts.filter((each) => each !== cut); cut = null; }
+      // The cut this action would repeat: any in the chain. A repeat of a newer one while an older is still to be told is
+      // refused about itself, with its own notice and facts; the older one is told by the next call.
+      const repeated = effect === null ? null : cuts.find((each) => each.codeSha === effect && !harmless(each)) ?? null;
+      if (repeated && repeated !== cut) {
+        facts = factsOf(repeated, pageUrl(call, await s.driver.url().catch(() => "gone")));
+        if (!repeated.told) {
+          news = [news, interruptedNotice(repeated, facts.urlNow)].filter(Boolean).join(" ");
+          await port.mark("told", repeated.callId, call.callId);
+        }
+        await port.mark("refused", repeated.callId);
+        return done(text(browserFailure("effect_unknown", `${news ? `${news} ` : ""}${SAME[tool] ?? SAME.run}`, { retryable: true, effect: "possibly_effected" }), true));
+      }
+      const same = repeated !== null;
+      // The same action as one the page never answered in this process: refused like a cut, until a look.
+      const held = effect !== null && guard.held(tool, effect);
       if (cut && (!cut.told || same)) facts = factsOf(cut, pageUrl(call, await s.driver.url().catch(() => "gone")));
       if (cut && !cut.told) {
         news = [news, interruptedNotice(cut, facts!.urlNow)].filter(Boolean).join(" ");
-        await (harmless(cut) ? port.settle(cut.callId) : port.mark("told", cut.callId));
+        // Told by this call: it counts once this call's answer, carrying the facts, is saved, so a process that dies first
+        // leaves the cut to be told again.
+        await port.mark("told", cut.callId, call.callId);
       }
-      if (cut && same) {
-        await port.mark("refused", cut.callId);
-        return done(text(browserFailure("effect_unknown", `${news ? `${news} ` : ""}This is the same code, and it may already have taken effect, so it is not run again now: look at the page with snapshot or browser_read before you run this again.`, { retryable: true, effect: "possibly_effected" }), true));
+      if ((cut && same) || held) {
+        if (cut && same) await port.mark("refused", cut.callId);
+        return done(text(browserFailure("effect_unknown", `${news ? `${news} ` : ""}${SAME[tool] ?? SAME.run}`, { retryable: true, effect: "possibly_effected" }), true));
       }
-      return await looked(effect === null ? await body(s, news) : await dispatched(port, call, s, effect, () => body(s, news)));
+      return await looked(effect === null ? await body(s, news) : await dispatched(tool, port, call, s, effect, () => body(s, news)));
     } catch (error) {
-      const failure = await failureOf(error, effectful, port, call);
+      const failure = await failureOf(error, effectful, port, call, action);
       if (failure.code !== "browser_unavailable" || error instanceof BrowserFailureError) return fail(failure);
       // A dropped CDP connection to a session the provider still runs: a read reconnects and runs once more; a run, which
       // may have acted, is not repeated.
       await port.dropped().catch(() => undefined);
-      if (effectful) return fail({ ...failure, retryable: true, message: DROPPED_RUN });
-      let again: Session;
-      try { again = await port.session(); } catch (reconnect) {
-        const refused = await failureOf(reconnect, effectful, port, call);
-        return fail(refused.code === "aborted" || refused.code === "auth" ? refused : { ...refused, code: "browser_unavailable", retryable: false, message: DROPPED_FOR_GOOD });
+      if (effectful && transportFactOf(error).errorName === UNANSWERED_CALL) {
+        guard.hold(tool, effect!);
+        return fail({ ...failure, effect: "possibly_effected", retryable: true, message: unansweredEffect(tool) });
       }
-      try { return await looked(await body(again, news)); } catch (retried) { return fail(await failureOf(retried, effectful, port, call)); }
+      if (effectful) return fail({ ...failure, retryable: true, message: DROPPED_RUN });
+      const reconnected = await reconnect(port, call);
+      if ("session" in reconnected) {
+        try { return await looked(await body(reconnected.session, news)); } catch (retried) {
+          const failure = await failureOf(retried, effectful, port, call, action);
+          // The browser answered the reconnect, so a call it leaves unanswered again is the page's, not an unreachable browser.
+          return fail(failure.code === "browser_unavailable" && transportFactOf(retried).errorName === UNANSWERED_CALL ? { ...failure, retryable: false, message: HUNG_PAGE, next: RELAUNCH_ONLY } as WebFailure : failure);
+        }
+      }
+      const refused = await failureOf(reconnected.error, effectful, port, call, action);
+      if (refused.code === "aborted" || refused.code === "auth") return fail(refused);
+      // Every try failed while the provider still runs it: that session is released as lost (it would keep billing), unless a
+      // person holds or drives it, and the next call opens a fresh one.
+      const left = await port.unreachable().catch(() => null);
+      if (left?.kept) return fail({ ...refused, code: "browser_unavailable", retryable: false, message: KEPT_FOR_PERSON });
+      return fail({ ...refused, code: "browser_unavailable", retryable: false, message: left?.released ? DROPPED_RELEASED : DROPPED_FOR_GOOD, next: left?.released ? RELAUNCH_NEXT : RELAUNCH_ONLY } as WebFailure);
     }
   }
 
   async function file(s: Session, call: ToolCall, record: Omit<EvidenceRecord, "facts"> & { facts: Omit<EvidenceRecord["facts"], "sha256"> }) {
     const facts = orderFacts({ ...record.facts, ...receiptFacts({ body: record.body, session: s.record, recorded: s.recorded }) });
     const filed = await call.evidence.file(call.label, { ...record, facts });
-    return { path: filed?.path ?? null, bodyLine: filed?.bodyLine ?? null, sha256: facts.sha256 };
+    return { path: filed?.path ?? null, bodyLine: filed?.bodyLine ?? null, bodyPath: filed?.bodyPath ?? null, sha256: facts.sha256 };
   }
 
   return {
@@ -179,16 +362,19 @@ export function pageTools({ guards = new Map<number, RepeatGuard>() }: { guards?
     },
 
     screenshot: (args, port, call) => {
-      const { ask: asked, ...requested } = args ?? {};
+      const { ask: asked, clip: wantedClip, id: wantedId, selector: wantedSelector, ...requested } = args ?? {};
       const ask = typeof asked === "string" && asked.trim() ? asked.trim() : undefined;
       return perform("screenshot", args ?? {}, port, call, "read", async (s, news) => {
-        const shot = await captureWithinBudget((options) => s.driver.screenshot(options), requested);
+        // A region goes through the same capture as the whole page, so whatever guards a capture guards a clipped one.
+        const region = await regionOf({ clip: wantedClip, id: wantedId, selector: wantedSelector, fullPage: requested.fullPage }, s.driver.locate?.bind(s.driver));
+        const shot = await captureWithinBudget((options) => s.driver.screenshot(options), region ? { ...requested, fullPage: false, clip: region.clip } : requested);
         const url = pageUrl(call, await s.driver.url());
-        const receipt = await file(s, call, { tool: "screenshot", args: requested, status: "ok", facts: { final_url: url }, body: Buffer.from(shot.data, "base64"), ext: shot.size.type === "png" ? "png" : "jpg" });
+        const receipt = await file(s, call, { tool: "screenshot", args: region ? { ...requested, clip: region.clip, ...region.of } : requested, status: "ok", facts: { final_url: url }, body: Buffer.from(shot.data, "base64"), ext: shot.size.type === "png" ? "png" : "jpg" });
         const first = shot.adjusted?.first;
-        const adjusted = shot.adjusted && `adjusted: the first capture${first ? ` (${first.width}x${first.height})` : ""} was over the ${shot.adjusted.why === "long_edge" ? "2,000 px long edge" : "size"} budget; this is the viewport at ${shot.size.width}x${shot.size.height}`;
+        const adjusted = shot.adjusted && `adjusted: the first capture${first ? ` (${first.width}x${first.height})` : ""} was over the ${shot.adjusted.why === "long_edge" ? "2,000 px long edge" : "size"} budget; this is ${region ? "the clip" : "the viewport"} at ${shot.size.width}x${shot.size.height}`;
         const lines = [news, `url: ${url}`, `evidence: ${receipt.path ?? "(not filed)"}`, adjusted].filter(Boolean).join("\n");
-        return { content: [{ type: "text", text: lines }, { type: "image", data: shot.data, mimeType: shot.mimeType }], details: { evidence: receipt.path, sha256: receipt.sha256, ...(ask ? { media: { ask } } : {}) } };
+        const media = { kind: "screenshot", path: receipt.bodyPath, mime: shot.mimeType, bytes: Buffer.from(shot.data, "base64").byteLength, width: shot.size.width, height: shot.size.height, ...(region ? { clip: region.clip, ...region.of } : {}), ...(ask ? { ask } : {}) };
+        return { content: [{ type: "text", text: lines }, { type: "image", data: shot.data, mimeType: shot.mimeType }], details: { evidence: receipt.path, sha256: receipt.sha256, media } };
       });
     },
 
@@ -196,13 +382,17 @@ export function pageTools({ guards = new Map<number, RepeatGuard>() }: { guards?
       const what = args?.what && WHATS.includes(args.what) ? args.what : "markdown";
       return perform("browser_read", { what }, port, call, "look", async (s, news) => {
         const page = await s.driver.page();
+        // A browser that has loaded no page yet, on an about:blank nothing has written into, is fresh, not walled: it says
+        // so, and where to go. A script that wrote a title or text into about:blank made a page, which is read.
+        if (page.url === "about:blank" && loadedNoPage(s.record) && !page.title.trim() && !page.text.trim()) throw new BrowserFailureError(freshBrowser(s.replaced ?? null));
         const read: Read = what === "markdown" ? await markdown(page.html, page.text)
           : what === "html" ? { body: page.html, extractor: "raw", ext: "html" }
           : what === "text" ? { body: page.text, extractor: "inner-text", ext: "txt" }
           : { body: what === "url" ? pageUrl(call, page.url) : page.title, ext: "txt" };
         const body = call.redact(read.body);
         const [url, title] = [pageUrl(call, page.url), call.redact(page.title)];
-        const verdict = call.classifyPage ? await call.classifyPage({ url, status: null, contentType: "text/html", text: page.text }).catch((): PageVerdict => ({ wall: "unjudged", injection: null, confidence: null })) : null;
+        const { frames, frameText } = await framesOf(page.html, page.url, call.redact);
+        const verdict = call.classifyPage ? await call.classifyPage({ url, status: null, contentType: "text/html", text: call.redact(page.text), ...(frames.length ? { frames } : {}), ...(frameText.length ? { frameText } : {}) }).catch((): PageVerdict => ({ wall: "unjudged", injection: null, confidence: null })) : null;
         const wall = wallOf(verdict);
         const facts = { final_url: url, title, ...(read.extractor ? { extractor: read.extractor } : {}), via: "browser", ...(verdict?.guard ? { page_guard: call.redact(verdict.guard) } : {}) };
         const receipt = await file(s, call, { tool: "browser_read", args: { what }, status: wall ? "failed" : "ok", facts, body, ext: read.ext });
@@ -212,5 +402,37 @@ export function pageTools({ guards = new Map<number, RepeatGuard>() }: { guards?
         return { content: [{ type: "text", text: shown }], details: { evidence: receipt.path, sha256: receipt.sha256, url } };
       });
     },
+
+    browser_upload: async (args, port, call) => {
+      const asked = typeof args?.path === "string" ? args.path : "";
+      const selector = typeof args?.selector === "string" ? args.selector.trim() : "";
+      if (!call.files) return text(refused("This host gives the browser no workspace to upload from."), true);
+      if (!selector) return text(refused("selector must name the page's file input."), true);
+      // The host resolves the path before any browser call, so a refused file never reaches the page.
+      const file = await call.files.resolve(asked);
+      if ("refused" in file) return text(refused(`browser_upload refused the file: ${file.refused}.`), true);
+      const uploaded = { name: file.name, bytes: file.bytes.byteLength, sha256: sha256Hex(file.bytes) };
+      const codeSha = sha256Hex(JSON.stringify({ upload: selector, sha256: uploaded.sha256 }));
+      // A page can send the file once its input changes: an upload is journaled like a run and never repeated.
+      return perform("browser_upload", { path: asked, selector }, port, call, { effect: codeSha }, async (s, news) => {
+        if (!s.driver.setInputFiles) throw new BrowserFailureError(refused("This browser driver cannot set a file input."));
+        const sent: Array<{ method: string; url: string; held: string | null }> = [];
+        const stop = s.effects?.record((row) => { sent.push({ method: row.method, url: call.redact(`${row.origin}${row.path}`), held: row.held }); return port.journal(row); });
+        try {
+          await s.driver.setInputFiles(selector, { name: file.name, mimeType: file.mime, buffer: file.bytes });
+        } finally {
+          await s.effects?.flush(call.signal).catch(() => undefined);
+          stop?.();
+        }
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, uploaded, selector, ...(news ? { notice: news } : {}) }) }], details: { uploaded, ...(sent.length ? { sent } : {}) } };
+      });
+    },
+
+    browser_downloads: (args, port, call) => perform("browser_downloads", {}, port, call, "read", async (s, news) => {
+      if (!call.workspace) throw new BrowserFailureError(refused("This host gives the browser no workspace to copy downloads into."));
+      if (!s.downloads) throw new BrowserFailureError(refused("This browser provider cannot list the files its sessions download."));
+      const result = await fetchDownloads({ provider: { downloads: s.downloads }, ref: { id: s.sessionId, tag: s.tag }, session: s.sessionId, workspace: call.workspace, redact: call.redact });
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, ...result, ...(news ? { notice: news } : {}) }) }], details: { downloads: result } };
+    }),
   };
 }
