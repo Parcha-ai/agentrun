@@ -838,9 +838,13 @@ id and directory as the supervisor computed them.
       `{ provider, key, run }`, where `run` is the order's `RUN_LABEL` (the supervisor's life, minted per invocation).
       The runner's process claims that label first on opening the run, in `<root>/box-ids.internal/`. With
       `ensure.create`, the place makes that directory over the control at each start, as it makes `signals/`.
-    - The place only reads, over S3, until the label lands (every `labelPollMs`, 500 ms, for at most `labelWaitMs`,
-      30 s). A label that never lands is `LABEL_MISSING` ("host box <key> on <provider> has no label: its child never
-      claimed it"), never a guess, so a final read refuses rather than leave a box out of the cost.
+    - The place only reads, over S3, until the label lands (every `labelPollMs`, 250 ms, for at most `labelWaitMs`,
+      2 s). A label not landed within that bound is `undefined`, never a guess: the supervisor asks again, and its final
+      read refuses a box that never got one rather than leave it out of the cost. Reads of the labels that fail until
+      the bound are `LABEL_UNREADABLE`, with the read's error.
+    - `status().boxes` lists every box the place started in this life, in start order, ended ones included, so a box's
+      position there is its key. A box the driver gives no receipt for fails the read (`STATUS_FAILED`) rather than
+      shift the boxes after it.
     - A key this place did not start in this supervisor's life is `LABEL_REFUSED`. Labels are numbered within one
       supervisor's life: a run with host boxes and tool boxes **cannot resume across a supervisor restart**, `--reuse` of
       an earlier take included. Its runner refuses the claim, and a failed take is taken again, not resumed.

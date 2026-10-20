@@ -628,13 +628,15 @@ describe("archilPlace labelBox", () => {
   const labelling = (o: Partial<Parameters<typeof archilPlace>[0]> = {}) => {
     const control = new FakeControl();
     const fake = fakeHost(control);
-    const host: HostDriver = { ...fake.host, provider: "modal", box: () => ({ provider: "modal", kind: "sandbox", from: new Date().toISOString(), to: null }) };
+    /** Boxes the driver gives no receipt for. */
+    const noReceipt = new Set<string>();
+    const host: HostDriver = { ...fake.host, provider: "modal", box: (h) => (noReceipt.has(String(h.name)) ? null : { provider: "modal", kind: `sandbox ${h.name}`, from: "2026-10-20T00:00:00.000Z", to: fake.states.get(String(h.name)) === "gone" ? "2026-10-20T00:01:00.000Z" : null }) };
     const place = makePlace({ ...REF, control, host, ensure: { create: { uid: 1500, gid: 1500 } }, labelPollMs: 5, labelWaitMs: 2_000, ...o });
     /** What the runner of start `i` was asked to claim. */
     const asked = (i: number) => JSON.parse(fake.starts[i]!.attempt!.env!.HOST_BOX!) as { provider: string; key: string; run: string };
     /** The runner's process claiming a label, as the harness's ledger does (format v1), seen over S3. */
     const claim = (n: number, entry: Record<string, unknown>) => control.objects.set(`${LABELS}box-${n}.json`, JSON.stringify(entry));
-    return { control, place, asked, claim, starts: fake.starts };
+    return { control, place, asked, claim, starts: fake.starts, noReceipt };
   };
 
   it("a start asks its runner to claim its host box's label (HOST_BOX: provider, start index, this life's RUN_LABEL), in box-ids.internal/ made for it, and labelBox reads what the runner claimed", async () => {
@@ -662,16 +664,33 @@ describe("archilPlace labelBox", () => {
     assert.equal(await pending, "box-4");
   });
 
-  it("refuses a key this place did not start in this life, and another provider; a label that never lands is LABEL_MISSING naming the box, never a guess", async () => {
-    const { place, claim } = labelling({ labelWaitMs: 100 });
+  it("refuses a key this place did not start in this life, and another provider; a label not landed within the bound is undefined, never a guess; labels that cannot be read say why", async () => {
+    const { control, place, claim } = labelling({ labelWaitMs: 100 });
     await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
     await assert.rejects(place.labelBox!({ provider: "modal", key: "1" }), (e: unknown) => e instanceof PlaceError && e.code === "LABEL_REFUSED" && /not started by this place in this supervisor's life: a supervisor restarted mid-run would renumber its host boxes; refused/.test(e.message));
     await assert.rejects(place.labelBox!({ provider: "daytona", key: "0" }), (e: unknown) => e instanceof PlaceError && e.code === "LABEL_REFUSED" && /is on modal, not daytona/.test(e.message));
     // Another life's label for key 0 is not this one's.
     claim(1, { provider: "modal", owner: "place", key: "0", run: "life-0", kind: "host", from: "2026-10-20T00:00:00.000Z" });
     const t0 = Date.now();
-    await assert.rejects(place.labelBox!({ provider: "modal", key: "0" }), (e: unknown) => e instanceof PlaceError && e.code === "LABEL_MISSING" && e.message === "host box 0 on modal has no label: its child never claimed it");
+    assert.equal(await place.labelBox!({ provider: "modal", key: "0" }), undefined, "not landed: the supervisor asks again, and its final read refuses a box that never got one");
     assert.ok(Date.now() - t0 < 2_000, "bounded");
+    control.failList = Object.assign(new Error("503 Service Unavailable"), { status: 503 });
+    await assert.rejects(place.labelBox!({ provider: "modal", key: "0" }), (e: unknown) => e instanceof PlaceError && e.code === "LABEL_UNREADABLE" && /the labels of runs\/place-run cannot be read over the control: 503 Service Unavailable/.test(e.message));
+  });
+
+  it("status() lists every box this life started, in start order, ended ones included, so a box's position is its start index; a box the driver gives no receipt for fails the read rather than shift the rest", async () => {
+    const { place, asked, noReceipt } = labelling();
+    const first = await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
+    await place.kill(first, "box");
+    const second = await place.recover(first, "box", { gen: 2, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(2) });
+    await place.kill(second.runner, "box");
+    await place.recover(second.runner, "box", { gen: 3, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(3) });
+    const boxes = (await place.status!()).boxes!;
+    assert.deepEqual(boxes.map((b) => b.kind), ["sandbox box-1", "sandbox box-2", "sandbox box-3"], "start order");
+    assert.deepEqual(boxes.map((b) => b.to !== null), [true, true, false], "the ended ones stay, at their place");
+    assert.deepEqual([0, 1, 2].map((i) => asked(i).key), ["0", "1", "2"], "each position is the key its runner was asked to claim");
+    noReceipt.add("box-2");
+    await assert.rejects(place.status!(), (e: unknown) => e instanceof PlaceError && e.code === "STATUS_FAILED" && /no receipt for host box 1/.test(e.message));
   });
 
   it("labels nothing without a provider, a listing control or the order's RUN_LABEL: no labelBox, no HOST_BOX, no box-ids.internal/", async () => {

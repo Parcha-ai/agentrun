@@ -132,13 +132,14 @@ export interface Place {
    * `provider`. The runner's process claims it, first on opening the run, in the run's `box-ids.internal/` beside the
    * labels of the boxes the run's tools make, so no two boxes of a run share a label; the place only reads it. A key
    * this place did not start in this supervisor's life is refused (`LABEL_REFUSED`): a supervisor restarted mid-run
-   * would renumber its host boxes. A label that does not land within the place's bound is `LABEL_MISSING`, never a
-   * guess.
+   * would renumber its host boxes. A label that has not landed within the place's bound is `undefined`, never a guess
+   * (the supervisor asks again, and its final read refuses a box that never got one); reads of the labels that fail
+   * until the bound are `LABEL_UNREADABLE`.
    */
-  labelBox?(box: { provider: string; key: string }): Promise<string>;
+  labelBox?(box: { provider: string; key: string }): Promise<string | undefined>;
 }
 
-export type PlaceErrorCode = "INVALID_ARGUMENT" | "HELD" | "START_TIMED_OUT" | "STATUS_FAILED" | "KILL_UNSUPPORTED" | "RELEASE_FAILED" | "BOX_GONE" | "CARRY_FAILED" | "BLOB_MISMATCH" | "DIRS_REFUSED" | "LABEL_REFUSED" | "LABEL_MISSING";
+export type PlaceErrorCode = "INVALID_ARGUMENT" | "HELD" | "START_TIMED_OUT" | "STATUS_FAILED" | "KILL_UNSUPPORTED" | "RELEASE_FAILED" | "BOX_GONE" | "CARRY_FAILED" | "BLOB_MISMATCH" | "DIRS_REFUSED" | "LABEL_REFUSED" | "LABEL_UNREADABLE";
 
 export class PlaceError extends PdaError {
   constructor(code: PlaceErrorCode, message: string, options: { cause?: unknown } = {}) {
@@ -487,7 +488,7 @@ export interface ArchilPlaceOptions {
    * `signals-failed` and ends. Default 60 s.
    */
   signalFailMs?: number;
-  /** How long `labelBox` reads for a host box's label before `LABEL_MISSING`, and how often. Default 30 s, every 500 ms. */
+  /** How long `labelBox` reads for a host box's label before it answers `undefined`, and how often. Default 2 s, every 250 ms. */
   labelWaitMs?: number;
   labelPollMs?: number;
 }
@@ -776,8 +777,8 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
   const startTimeoutMs = options.startTimeoutMs ?? 60_000;
   const signalPollMs = options.signalPollMs ?? 500;
   const signalFailMs = options.signalFailMs ?? SIGNAL_FAIL_MS;
-  const labelWaitMs = options.labelWaitMs ?? 30_000;
-  const labelPollMs = options.labelPollMs ?? 500;
+  const labelWaitMs = options.labelWaitMs ?? 2_000;
+  const labelPollMs = options.labelPollMs ?? 250;
   return (ctx) => {
     const ref: RunRef = { disk: options.disk, region: options.region, id: options.id ?? ctx.paths.id };
     runPath(ref.id);
@@ -965,16 +966,18 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
     };
 
     /** The label of host box `key`, as its runner claimed it: read over the control, bounded, never guessed. */
-    const labelBox = async (box: { provider: string; key: string }): Promise<string> => {
+    const labelBox = async (box: { provider: string; key: string }): Promise<string | undefined> => {
       const mine = hostBoxes.get(box.key);
       if (!mine) throw new PlaceError("LABEL_REFUSED", `host box ${box.key} was not started by this place in this supervisor's life: a supervisor restarted mid-run would renumber its host boxes; refused`);
       if (mine.provider !== box.provider) throw new PlaceError("LABEL_REFUSED", `host box ${box.key} is on ${mine.provider}, not ${box.provider}`);
       const known = labels.get(box.key);
       if (known) return known;
       const prefix = `${runPath(ref.id)}/${BOX_IDS}/`;
+      // The last look's failure, if it failed: a label not landed yet is undefined, labels that cannot be read say why.
       let last: unknown;
       for (const deadline = Date.now() + labelWaitMs; ; await sleep(labelPollMs)) {
         try {
+          last = undefined;
           const { objects } = await (control as SupervisorControl & RecordControl).listObjects(prefix);
           for (const { key } of objects) {
             const name = key.slice(prefix.length);
@@ -1003,8 +1006,8 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
           last = error;
         }
         if (Date.now() >= deadline) {
-          const why = last === undefined ? "" : ` (the last read failed: ${(last as Error)?.message ?? last})`;
-          throw new PlaceError("LABEL_MISSING", said(`host box ${box.key} on ${box.provider} has no label: its child never claimed it${why}`), last === undefined ? {} : { cause: last });
+          if (last === undefined) return undefined;
+          throw new PlaceError("LABEL_UNREADABLE", said(`the labels of ${runPath(ref.id)} cannot be read over the control: ${(last as Error)?.message ?? last}`), { cause: last });
         }
       }
     };
@@ -1066,7 +1069,12 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
             throw error;
           }),
         ]);
-        const boxes = host.box ? started.map((h) => host.box!(h)).filter((b): b is HostBox => b !== null) : undefined;
+        // Every box this place started in this life, in start order, ended ones included: with labels, a box's position
+        // is its start index, the key the supervisor asks labelBox with, so a box never drops out of the list.
+        const receipts = host.box ? started.map((h) => host.box!(h)) : undefined;
+        const missing = receipts ? receipts.indexOf(null) : -1;
+        if (labelling && missing >= 0) throw new PlaceError("STATUS_FAILED", `the driver gave no receipt for host box ${missing}, which this place started: every later box's position would shift`);
+        const boxes = receipts?.filter((b): b is HostBox => b !== null);
         return { record, delegations: delegations.map(({ clientId, inodeId, path, isOrphaned, isPending }) => ({ clientId, inodeId, path, isOrphaned, isPending })), ...(boxes ? { boxes } : {}) };
       },
       recover: async (last, kind, order) => {
