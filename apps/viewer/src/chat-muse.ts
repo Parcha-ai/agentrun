@@ -233,7 +233,6 @@ export function drawMuse(root: HTMLElement, model: ChatModel, recording: Recordi
       quiet.length > 0 && reportEl('ul', { class: 'mu-steps-list' }, ...quiet.map((step) => reportEl('li', { text: museShorten(step.title).slice(0, 140) })))));
     thoughts = []; quiet = []; hidden = false;
   };
-  const said: string[] = [];
   for (const entry of entries) {
     if (entry.kind === 'browser') { if (browsing.length === 0) flushQuiet(); browsing.push(entry.item as ToolItem); continue; }
     if (entry.kind === 'quiet') { quiet.push(entry.item as ToolItem); continue; }
@@ -245,15 +244,15 @@ export function drawMuse(root: HTMLElement, model: ChatModel, recording: Recordi
       if (item.text.trim() !== '') column.append(reportEl('div', { class: 'mu-row person' }, reportEl('div', { class: 'mu-tag', text: 'You' }), reportEl('div', { class: 'mu-bubble' }, ...reportParagraphs(museShorten(item.text)))));
     } else if (entry.kind === 'agent') {
       const item = entry.item as Extract<ChatItem, { kind: 'assistant' }>;
-      if (item.text.trim() !== '') { column.append(agentBubble(item.text, name)); said.push(item.text.replace(/\s+/g, ' ')); }
+      if (item.text.trim() !== '') column.append(agentBubble(item.text, name));
     }
   }
   flushBrowser(); flushQuiet();
-  // A run that delivered its answer as a saved result (not as a message) has it drawn here, as the agent's last bubble, unless the conversation already said it.
+  // A saved answer (a cited result or a submitted record) is a deliverable the run made, not a message: it is always the agent's last bubble, with its cites as chips.
+  // An answer that is only the run's final message (`from: 'text'`) is that message, already drawn above.
   if (model.answer && model.answer.from !== 'text') {
     const { text, chips } = savedAnswer(model.answer);
-    const unsaid = model.answer.rows.filter((row) => row.text !== '' && !said.some((each) => each.includes(row.text.replace(/\s+/g, ' '))));
-    if (text !== '' && (unsaid.length > 0 || (chips.length > 0 && model.answer.rows.every((row) => row.text === '')))) column.append(agentBubble(text, name, chips));
+    if (text !== '') column.append(agentBubble(text, name, chips));
   }
   const memory = model.artifact ? rememberCard(recording, model.artifact) : undefined;
   if (memory) column.append(memory.card);
