@@ -217,6 +217,25 @@ export function coverAddress(html) {
   return { city, state, country, ...(countryTag ? { countryTag } : {}) };
 }
 
+// Segment lists the TL reviewed against the filing's own text and NumberOfReportableSegments tag, one by one
+// (2026-10-20): a one-segment report, members that are no segment, or no truth that can be confirmed.
+export const SEGMENT_OVERRIDES = Object.freeze({
+  '0000065770': { oneSegment: true, reason: 'tags NumberOfReportableSegments 1 and says "operates in one operating segment and one reportable segment"; its members are revenue types' },
+  '0001873093': { oneSegment: true, reason: 'says "the identified operating segment as one reportable segment"; its second member has no revenue' },
+  '0000082811': { drop: ['IndustrialSystemsSegment'], reason: 'Industrial Systems has no revenue (divested); the filing tags 3 reportable segments' },
+  '0000749251': { drop: ['OtherReportableSegment'], reason: '"Other" is not a reportable segment; the filing tags 3' },
+  '0001847986': { drop: ['OriginalEquipmentManufacturersSegment'], reason: 'duplicates OriginalEquipmentManufacturers at 0.03% of revenue; the filing tags 2' },
+  '0000771999': { drop: ['SecuritiesRevenueInformation', 'CommercialLendingRevenueInformation', 'BiotechnologyRevenueInformation'], reason: 'each "Revenue Information" member repeats a segment\'s revenue' },
+  '0001843656': { drop: ['VaultHoldingCorporations'], reason: 'duplicates VaultHoldingCorporation' },
+  '0001968043': { none: true, reason: 'tags its service lines on the segment axis, and no archived 20-F can confirm its reportable segments' },
+});
+// Lists short of the filing's NumberOfReportableSegments tag, kept as they are and flagged.
+const SEGMENT_FLAGS = Object.freeze({
+  '0000104889': 'the filing tags 7 reportable segments; the list holds 5',
+  '0001837429': 'the filing tags 4 reportable segments; the list holds 3',
+  '0000031462': 'the filing tags 4 reportable segments; the list holds 3',
+});
+
 // Cover city tags the TL reviewed and ruled wrong, one by one (2026-10-20): the city the row uses instead, and why.
 export const HQ_OVERRIDES = Object.freeze({
   '0001611005': { city: 'Singapore', reason: 'the cover tags a building, "Millenia Tower", as the city; sub.txt gives Singapore' },
@@ -361,6 +380,21 @@ async function main() {
         else if (members.length >= 2) row.segments = members.map((m) => ({ member: m.member, label: m.name, revenue: m.value, share: m.share }));
         else notes.segments = 'one segment member left after dropping negative revenue';
       }
+      const override = SEGMENT_OVERRIDES[c.cik];
+      if (override) {
+        notes.segmentOverride = { reason: override.reason, before: row.segments };
+        if (override.oneSegment) row.segments = { oneSegment: true };
+        else if (override.none) {
+          row.segments = null;
+          notes.segments = override.reason;
+        }
+        else {
+          const missing = override.drop.filter((member) => !row.segments?.some((s) => s.member === member));
+          if (missing.length) throw new Error(`${c.cik}: the override drops ${missing.join(', ')}, which the list does not hold`);
+          row.segments = row.segments.filter((s) => !override.drop.includes(s.member));
+        }
+      }
+      if (SEGMENT_FLAGS[c.cik]) notes.segmentFlag = SEGMENT_FLAGS[c.cik];
       const subs = await subsidiariesOf(c.cik, f);
       row.subsidiaries = subs.truth;
       notes.subsidiaries = {

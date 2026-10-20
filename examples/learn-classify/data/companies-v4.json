@@ -1059,26 +1059,7 @@
     "sic": "4731",
     "sic2": "47",
     "sicDescription": "ARRANGEMENT OF TRANSPORTATION OF FREIGHT & CARGO",
-    "segments": [
-      {
-        "member": "AirFreightForwardingServices",
-        "label": "Air Freight Forwarding Services",
-        "revenue": 41934661,
-        "share": 0.9513
-      },
-      {
-        "member": "OtherServices",
-        "label": "Other Services",
-        "revenue": 1584129,
-        "share": 0.0359
-      },
-      {
-        "member": "OceanFreightForwardingServices",
-        "label": "Ocean Freight Forwarding Services",
-        "revenue": 564941,
-        "share": 0.0128
-      }
-    ],
+    "segments": null,
     "hq": {
       "city": "HONG KONG",
       "state": null,
@@ -6379,26 +6360,9 @@
     "sic": "3679",
     "sic2": "36",
     "sicDescription": "ELECTRONIC COMPONENTS, NEC",
-    "segments": [
-      {
-        "member": "ProductRevenue",
-        "label": "Product Revenue",
-        "revenue": 610000,
-        "share": 0.505
-      },
-      {
-        "member": "LicenseAndRoyaltyRevenue",
-        "label": "License And Royalty Revenue",
-        "revenue": 550000,
-        "share": 0.4553
-      },
-      {
-        "member": "ContractRevenue",
-        "label": "Contract Revenue",
-        "revenue": 48000,
-        "share": 0.0397
-      }
-    ],
+    "segments": {
+      "oneSegment": true
+    },
     "hq": {
       "city": "Redmond",
       "state": "WA",
@@ -8334,12 +8298,6 @@
         "label": "Power Efficiency Solutions",
         "revenue": 1650600000,
         "share": 0.2781
-      },
-      {
-        "member": "IndustrialSystemsSegment",
-        "label": "Industrial Systems",
-        "revenue": 0,
-        "share": 0
       }
     ],
     "hq": {
@@ -8758,20 +8716,9 @@
     "sic": "2834",
     "sic2": "28",
     "sicDescription": "PHARMACEUTICAL PREPARATIONS",
-    "segments": [
-      {
-        "member": "CBUServiceAndRelatedTherapy",
-        "label": "CBU Service And Related Therapy",
-        "revenue": 324387,
-        "share": 1
-      },
-      {
-        "member": "ImmuneCellTherapy",
-        "label": "Immune Cell Therapy",
-        "revenue": 0,
-        "share": 0
-      }
-    ],
+    "segments": {
+      "oneSegment": true
+    },
     "hq": {
       "city": "Singapore",
       "state": null,
@@ -12266,12 +12213,6 @@
         "label": "Consulting",
         "revenue": 552499000,
         "share": 0.085
-      },
-      {
-        "member": "OtherReportableSegment",
-        "label": "Other",
-        "revenue": 227414000,
-        "share": 0.035
       }
     ],
     "hq": {
@@ -15874,12 +15815,6 @@
         "label": "Direct To Consumers",
         "revenue": 20696000,
         "share": 0.353
-      },
-      {
-        "member": "OriginalEquipmentManufacturersSegment",
-        "label": "Original Equipment Manufacturers",
-        "revenue": 15728,
-        "share": 0.0003
       }
     ],
     "hq": {
@@ -19352,32 +19287,14 @@
         "share": 0.1216
       },
       {
-        "member": "SecuritiesRevenueInformation",
-        "label": "Securities Revenue Information",
-        "revenue": 2524000,
-        "share": 0.1216
-      },
-      {
         "member": "CommercialBanking",
         "label": "Commercial Banking",
         "revenue": 45000,
         "share": 0.0022
       },
       {
-        "member": "CommercialLendingRevenueInformation",
-        "label": "Commercial Lending Revenue Information",
-        "revenue": 45000,
-        "share": 0.0022
-      },
-      {
         "member": "Biotechnology",
         "label": "Biotechnology",
-        "revenue": 38000,
-        "share": 0.0018
-      },
-      {
-        "member": "BiotechnologyRevenueInformation",
-        "label": "Biotechnology Revenue Information",
         "revenue": 38000,
         "share": 0.0018
       }
@@ -27046,12 +26963,6 @@
       {
         "member": "VaultHoldingCorporation",
         "label": "Vault Holding Corporation",
-        "revenue": 60000,
-        "share": 0.0121
-      },
-      {
-        "member": "VaultHoldingCorporations",
-        "label": "Vault Holding Corporations",
         "revenue": 60000,
         "share": 0.0121
       },

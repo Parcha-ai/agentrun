@@ -81,9 +81,9 @@
    }
   },
   "segments": {
-   "truth": 93,
-   "oneSegment": 29,
-   "null": 8
+   "truth": 90,
+   "oneSegment": 31,
+   "null": 9
   },
   "subsidiaries": {
    "truth": 81,
@@ -290,6 +290,30 @@
     "qtrs": 4,
     "sumShare": 1
    },
+   "segmentOverride": {
+    "reason": "tags its service lines on the segment axis, and no archived 20-F can confirm its reportable segments",
+    "before": [
+     {
+      "member": "AirFreightForwardingServices",
+      "label": "Air Freight Forwarding Services",
+      "revenue": 41934661,
+      "share": 0.9513
+     },
+     {
+      "member": "OtherServices",
+      "label": "Other Services",
+      "revenue": 1584129,
+      "share": 0.0359
+     },
+     {
+      "member": "OceanFreightForwardingServices",
+      "label": "Ocean Freight Forwarding Services",
+      "revenue": 564941,
+      "share": 0.0128
+     }
+    ]
+   },
+   "segments": "tags its service lines on the segment axis, and no archived 20-F can confirm its reportable segments",
    "subsidiaries": {
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/1968043/000149315226006875/0001493152-26-006875-index.htm",
@@ -744,6 +768,7 @@
     "qtrs": 4,
     "sumShare": 0.9272
    },
+   "segmentFlag": "the filing tags 7 reportable segments; the list holds 5",
    "subsidiaries": {
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/104889/000162828026011405/0001628280-26-011405-index.htm",
@@ -1075,6 +1100,29 @@
     "qtrs": 4,
     "sumShare": 1
    },
+   "segmentOverride": {
+    "reason": "tags NumberOfReportableSegments 1 and says \"operates in one operating segment and one reportable segment\"; its members are revenue types",
+    "before": [
+     {
+      "member": "ProductRevenue",
+      "label": "Product Revenue",
+      "revenue": 610000,
+      "share": 0.505
+     },
+     {
+      "member": "LicenseAndRoyaltyRevenue",
+      "label": "License And Royalty Revenue",
+      "revenue": 550000,
+      "share": 0.4553
+     },
+     {
+      "member": "ContractRevenue",
+      "label": "Contract Revenue",
+      "revenue": 48000,
+      "share": 0.0397
+     }
+    ]
+   },
    "subsidiaries": {
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/65770/000149315226008898/0001493152-26-008898-index.htm",
@@ -1397,6 +1445,35 @@
     "qtrs": 4,
     "sumShare": 1
    },
+   "segmentOverride": {
+    "reason": "Industrial Systems has no revenue (divested); the filing tags 3 reportable segments",
+    "before": [
+     {
+      "member": "IndustrialPowertrainSolutionsSegment",
+      "label": "Industrial Powertrain Solutions",
+      "revenue": 2594100000,
+      "share": 0.4371
+     },
+     {
+      "member": "AutomationAndMotionControlSegment",
+      "label": "Automation And Motion Control",
+      "revenue": 1689800000,
+      "share": 0.2847
+     },
+     {
+      "member": "PowerEfficiencySolutionsSegment",
+      "label": "Power Efficiency Solutions",
+      "revenue": 1650600000,
+      "share": 0.2781
+     },
+     {
+      "member": "IndustrialSystemsSegment",
+      "label": "Industrial Systems",
+      "revenue": 0,
+      "share": 0
+     }
+    ]
+   },
    "subsidiaries": {
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/82811/000008281126000054/0000082811-26-000054-index.htm",
@@ -1480,6 +1557,7 @@
     "qtrs": 4,
     "sumShare": 0.9782
    },
+   "segmentFlag": "the filing tags 4 reportable segments; the list holds 3",
    "subsidiaries": {
     "why": "the filing index lists no EX-8",
     "index": {
@@ -1639,6 +1717,23 @@
     "period": "20251231",
     "qtrs": 4,
     "sumShare": 1
+   },
+   "segmentOverride": {
+    "reason": "says \"the identified operating segment as one reportable segment\"; its second member has no revenue",
+    "before": [
+     {
+      "member": "CBUServiceAndRelatedTherapy",
+      "label": "CBU Service And Related Therapy",
+      "revenue": 324387,
+      "share": 1
+     },
+     {
+      "member": "ImmuneCellTherapy",
+      "label": "Immune Cell Therapy",
+      "revenue": 0,
+      "share": 0
+     }
+    ]
    },
    "subsidiaries": {
     "why": "the filing index lists no EX-8",
@@ -2784,6 +2879,35 @@
     "qtrs": 4,
     "sumShare": 1
    },
+   "segmentOverride": {
+    "reason": "\"Other\" is not a reportable segment; the filing tags 3",
+    "before": [
+     {
+      "member": "Insights",
+      "label": "Insights",
+      "revenue": 5072570000,
+      "share": 0.7807
+     },
+     {
+      "member": "Conferences",
+      "label": "Conferences",
+      "revenue": 644743000,
+      "share": 0.0992
+     },
+     {
+      "member": "Consulting",
+      "label": "Consulting",
+      "revenue": 552499000,
+      "share": 0.085
+     },
+     {
+      "member": "OtherReportableSegment",
+      "label": "Other",
+      "revenue": 227414000,
+      "share": 0.035
+     }
+    ]
+   },
    "subsidiaries": {
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/749251/000074925126000112/0000749251-26-000112-index.htm",
@@ -3684,6 +3808,29 @@
     "qtrs": 4,
     "sumShare": 0.9832
    },
+   "segmentOverride": {
+    "reason": "duplicates OriginalEquipmentManufacturers at 0.03% of revenue; the filing tags 2",
+    "before": [
+     {
+      "member": "OriginalEquipmentManufacturers",
+      "label": "Original Equipment Manufacturers",
+      "revenue": 36934000,
+      "share": 0.63
+     },
+     {
+      "member": "DirectToConsumers",
+      "label": "Direct To Consumers",
+      "revenue": 20696000,
+      "share": 0.353
+     },
+     {
+      "member": "OriginalEquipmentManufacturersSegment",
+      "label": "Original Equipment Manufacturers",
+      "revenue": 15728,
+      "share": 0.0003
+     }
+    ]
+   },
    "subsidiaries": {
     "why": "the filing index lists no EX-21",
     "index": {
@@ -4353,6 +4500,7 @@
     "qtrs": 4,
     "sumShare": 0.9225
    },
+   "segmentFlag": "the filing tags 4 reportable segments; the list holds 3",
    "subsidiaries": {
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/31462/000110465926018357/0001104659-26-018357-index.htm",
@@ -4564,6 +4712,53 @@
     "period": "20251231",
     "qtrs": 4,
     "sumShare": 1.1256
+   },
+   "segmentOverride": {
+    "reason": "each \"Revenue Information\" member repeats a segment's revenue",
+    "before": [
+     {
+      "member": "ProductPackaging",
+      "label": "Product Packaging",
+      "revenue": 18150000,
+      "share": 0.8744
+     },
+     {
+      "member": "Securities",
+      "label": "Securities",
+      "revenue": 2524000,
+      "share": 0.1216
+     },
+     {
+      "member": "SecuritiesRevenueInformation",
+      "label": "Securities Revenue Information",
+      "revenue": 2524000,
+      "share": 0.1216
+     },
+     {
+      "member": "CommercialBanking",
+      "label": "Commercial Banking",
+      "revenue": 45000,
+      "share": 0.0022
+     },
+     {
+      "member": "CommercialLendingRevenueInformation",
+      "label": "Commercial Lending Revenue Information",
+      "revenue": 45000,
+      "share": 0.0022
+     },
+     {
+      "member": "Biotechnology",
+      "label": "Biotechnology",
+      "revenue": 38000,
+      "share": 0.0018
+     },
+     {
+      "member": "BiotechnologyRevenueInformation",
+      "label": "Biotechnology Revenue Information",
+      "revenue": 38000,
+      "share": 0.0018
+     }
+    ]
    },
    "subsidiaries": {
     "index": {
@@ -5385,6 +5580,35 @@
     "period": "20251231",
     "qtrs": 4,
     "sumShare": 1.0121
+   },
+   "segmentOverride": {
+    "reason": "duplicates VaultHoldingCorporation",
+    "before": [
+     {
+      "member": "RMCEnvironmentalServices",
+      "label": "RMC Environmental Services",
+      "revenue": 4850358,
+      "share": 0.9799
+     },
+     {
+      "member": "VaultHoldingCorporation",
+      "label": "Vault Holding Corporation",
+      "revenue": 60000,
+      "share": 0.0121
+     },
+     {
+      "member": "VaultHoldingCorporations",
+      "label": "Vault Holding Corporations",
+      "revenue": 60000,
+      "share": 0.0121
+     },
+     {
+      "member": "RoyaltyManagementCorporationInvestments",
+      "label": "Royalty Management Corporation Investments",
+      "revenue": 39558,
+      "share": 0.008
+     }
+    ]
    },
    "subsidiaries": {
     "index": {
