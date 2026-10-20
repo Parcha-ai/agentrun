@@ -187,8 +187,8 @@ the restored generation's snapshot.
    up to a point gives exactly the screen at that point, so scrubbing is replaying.
 6. **Time is for drawing.** `t` places a line on the timeline. It never orders durable facts; `commit` does.
 7. **Unknown kinds are skipped.** A panel ignores kinds it does not know; the format adds kinds without a version bump.
-8. **A handoff is never worded as a kill.** The public view shows the move through the disk panel, and the process lane stays behind `?debug=durability`. No kill is the PUBLIC rule, not a format rule: an internal recording may have both.
    A change to a field's meaning is `agentrun.recording/2`.
+8. **A handoff is never worded as a kill.** The public view shows the move through the disk panel, and the process lane stays behind `?debug=durability`. No kill is the PUBLIC rule, not a format rule: an internal recording may have both.
 
 ## 5. Kinds, by source and channel
 

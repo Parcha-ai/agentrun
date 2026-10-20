@@ -352,7 +352,9 @@ export function validateRecording(dir) {
   // Processes come from the supervisor, never from a durable line's gen: that counts journal opens, which can outnumber processes.
   if (manifest && isInt(manifest.generations)) {
     if (processes !== manifest.generations) add('manifest.json', `generations is ${manifest.generations}, but the recording has ${processes} host process.started lines`);
-    if (manifest.handoffs !== undefined && manifest.handoffs !== handoffs) add('manifest.json', `handoffs is ${manifest.handoffs}, but the recording has ${handoffs} host handoff lines`);
+    // An absent count reads as 0, so a recording with handoff lines and no count is refused as one with a wrong count is.
+    const declared = manifest.handoffs ?? 0;
+    if (declared !== handoffs) add('manifest.json', `handoffs is ${declared}, but the recording has ${handoffs} host handoff lines`);
     const beyond = [...liveGenerations].filter(gen => gen > processes);
     if (beyond.length) add('events.jsonl', `a live line carries gen ${Math.max(...beyond)}, beyond the ${processes} processes that started`);
   }
