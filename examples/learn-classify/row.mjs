@@ -82,9 +82,10 @@ export function rowOf({ run, runId, job, seedSha, afterSha, offered, measure, fi
 /**
  * A v2 row: v1's fields, with `answer` and `truth` the 4-digit codes and `correct` the headline (the code exact, and the
  * segment not wrong), then the v2 and v3 fields of CLASSIFY-CONTRACT.md. `score` is `scoreV2`'s, `stats` `toolStats`'s,
- * `scoringJudge` the scorer's Jev meter, `lineage` `lineageOf`'s, `phase` a sealed row's (before or after).
+ * `scoringJudge` the scorer's Jev meter, `lineage` `lineageOf`'s, `phase` a sealed row's (before or after), `jobRecord`
+ * job-record.mjs's `jobRecordOf` over the run's recording lines.
  */
-export function rowOfV2({ score, stats, scoringJudge, lineage, phase, ...v1 }) {
+export function rowOfV2({ score, stats, scoringJudge, lineage, phase, jobRecord, ...v1 }) {
   const row = rowOf({ ...v1, key: 'sic4', tools: [stats.browserCostUsd, stats.searchCostUsd, stats.documentCostUsd] });
   const { job } = v1;
   return {
@@ -94,6 +95,8 @@ export function rowOfV2({ score, stats, scoringJudge, lineage, phase, ...v1 }) {
     ticker: job.ticker ?? null,
     born: lineage?.born ?? [],
     rewritten: lineage?.rewritten ?? [],
+    // As job-record.mjs returns them from the run's recording lines, never recomputed here.
+    ...(jobRecord ? { executions: jobRecord.executions, workflowShare: jobRecord.workflowShare, agentFallback: jobRecord.agentFallback } : {}),
     correct: score.correct,
     convention: null,
     set: 'v2',

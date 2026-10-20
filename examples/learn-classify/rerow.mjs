@@ -1,24 +1,31 @@
 #!/usr/bin/env node
 // Backfills the v3 chart fields (CLASSIFY-CONTRACT.md v3) into a finished v2 pass, from the pass's own files: its rows, its
-// agent repository and the truth set's companies. It writes <out>/runs.v3.jsonl and, per sealed pass, <out>/v3-sealed-
+// recordings (the workflow part, job-record.mjs), its agent repository and the truth set's companies. It writes <out>/runs.v3.jsonl and, per sealed pass, <out>/v3-sealed-
 // <sha12>.jsonl; it never rewrites runs.jsonl or a sealed file, never fetches anything and never calls a model.
 //   node examples/learn-classify/rerow.mjs <out> [--data <dir>]
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { jobRecordOf } from './job-record.mjs';
 import { bareRepoReader, lineageOf } from './lineage.mjs';
 
 const DATA = join(import.meta.dirname, 'data');
 const readRows = (file) => (existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []);
 const writeRows = (file, rows) => writeFileSync(file, rows.map((row) => `${JSON.stringify(row)}\n`).join(''));
 
-/** A row with its v3 fields, every other field as it was. */
-async function v3Of(row, { companies, reader, seedSha }) {
+/** A row with its v3 fields, every other field as it was. The workflow part is job-record.mjs's, over the run's
+ *  recording; a row whose recording was not kept has none of it. */
+async function v3Of(row, { companies, reader, seedSha, recordings }) {
   const company = companies.get(row.cik);
   const sealed = row.split === 'sealed';
   const lineage = sealed ? { born: [], rewritten: [] } : await lineageOf({ admitted: row.curate?.admitted ?? [], seedSha: row.seedSha, afterSha: row.afterSha, ...reader });
-  return { ...row, ...(sealed ? { phase: row.seedSha === seedSha ? 'before' : 'after' } : {}), company: company?.name ?? null, ticker: company?.ticker ?? null, ...lineage };
+  const events = row.recording ? join(recordings, row.recording, 'events.jsonl') : undefined;
+  const record = events && existsSync(events) ? jobRecordOf(readRows(events)) : undefined;
+  return {
+    ...row, ...(sealed ? { phase: row.seedSha === seedSha ? 'before' : 'after' } : {}), company: company?.name ?? null, ticker: company?.ticker ?? null, ...lineage,
+    ...(record ? { executions: record.executions, workflowShare: record.workflowShare, agentFallback: record.agentFallback } : {}),
+  };
 }
 
 /** Writes the v3 rows of the pass in `out`; returns how many rows each file holds. */
@@ -26,14 +33,15 @@ export async function rerow({ out, data = DATA }) {
   const meta = JSON.parse(readFileSync(join(out, 'meta.json'), 'utf8'));
   if (meta.set !== 'v2') throw new Error(`${out} holds a ${meta.set ?? 'v1'} pass; the v3 fields are v2's`);
   const companies = new Map(JSON.parse(readFileSync(join(data, 'companies-v2.json'), 'utf8')).map((c) => [c.cik, c]));
-  const context = { companies, reader: bareRepoReader(join(out, 'agent.git')), seedSha: meta.seedSha };
+  const context = { companies, reader: bareRepoReader(join(out, 'agent.git')), seedSha: meta.seedSha, recordings: join(out, 'recordings') };
   const runs = [];
   for (const row of readRows(join(out, 'runs.jsonl'))) runs.push(await v3Of(row, context));
   writeRows(join(out, 'runs.v3.jsonl'), runs);
   const sealed = {};
   for (const file of readdirSync(out).filter((f) => /^sealed-[0-9a-f]{12}\.jsonl$/.test(f))) {
     const rows = [];
-    for (const row of readRows(join(out, file))) rows.push(await v3Of(row, context));
+    const sealedContext = { ...context, recordings: join(out, 'sealed', file.slice('sealed-'.length, -'.jsonl'.length), 'recordings') };
+    for (const row of readRows(join(out, file))) rows.push(await v3Of(row, sealedContext));
     writeRows(join(out, `v3-${file}`), rows);
     sealed[`v3-${file}`] = rows.length;
   }

@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { renderCurve } from './curve.mjs';
+import { recordingLines } from '@parcha/agentrun-pi/durable';
+import { jobRecordOf } from './job-record.mjs';
 import { bareRepoReader, lineageOf } from './lineage.mjs';
 import { rerow } from './rerow.mjs';
 import { toolStats } from './host.mjs';
@@ -209,7 +211,24 @@ test('a document the reader fetched through a browser session: the session\'s mi
 
 // ---- v3: the chart record (CLASSIFY-CONTRACT.md "v3") --------------------------------------------------------------
 
-const v3Fields = (r) => ({ company: r.company, ticker: r.ticker, born: r.born, rewritten: r.rewritten });
+const v3Fields = (r) => ({ company: r.company, ticker: r.ticker, born: r.born, rewritten: r.rewritten, executions: r.executions, workflowShare: r.workflowShare, agentFallback: r.agentFallback });
+
+test('v3 rows carry job-record.mjs\'s workflow part as it returns it: an agent run, then runs that run the whole-job workflow', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const { rows } = await runLoop({ out, parts: scriptedParts({ set: SETS.v2 }), jobs: 4, record: false });
+  // Run 1 did the job by hand and only saved the workflow; run 2 (no website) by hand too; runs 3 and 4 ran it, and their root made no job call.
+  assert.deepEqual(rows.map((r) => [r.executions.length, r.workflowShare, r.agentFallback]), [[0, 0, null], [0, 0, null], [1, 1, false], [1, 1, false]]);
+  for (const r of rows.slice(2)) {
+    const [execution] = r.executions;
+    assert.deepEqual([execution.name, execution.outcome, execution.revision], [WORKFLOW, 'complete', r.workflowsUsed[0].revision]);
+    assert.equal(execution.toolCalls, 3, 'fetch_page, sic2_groups and sic_codes, each a call node');
+  }
+  for (const r of rows) {
+    const store = join(out, 'home', 'runs', `run-00${r.run}`, 'store', 'run.sqlite');
+    const expected = jobRecordOf(recordingLines(store).lines);
+    assert.deepEqual([r.executions, r.workflowShare, r.agentFallback], [expected.executions, expected.workflowShare, expected.agentFallback]);
+  }
+}, { timeout: 180_000 });
 
 test('v3 rows name the company and say which workflows were born or rewritten at the run, each with the digest main holds after it', async (t) => {
   const out = join(await scratch(t), 'out');
@@ -248,13 +267,13 @@ test('a sealed row says its phase: before at the seed, after at a later main; it
 
 test('rerow backfills the v3 fields of a finished pass into runs.v3.jsonl from its own files, and never rewrites runs.jsonl', async (t) => {
   const out = join(await scratch(t), 'out');
-  const { rows } = await runLoop({ out, parts: scriptedParts({ set: SETS.v2 }), jobs: 4, record: false });
+  const { rows } = await runLoop({ out, parts: scriptedParts({ set: SETS.v2 }), jobs: 4 });
   await runSealed({ out, parts: scriptedParts({ set: SETS.v2 }), at: 'seed' });
   // A pass from before v3: the same rows without the v3 fields.
-  const old = rows.map(({ company, ticker, born, rewritten, ...rest }) => rest);
+  const old = rows.map(({ company, ticker, born, rewritten, executions, workflowShare, agentFallback, ...rest }) => rest);
   writeFileSync(join(out, 'runs.jsonl'), old.map((r) => `${JSON.stringify(r)}\n`).join(''));
   const sealedFile = readdirSync(out).find((f) => /^sealed-[0-9a-f]{12}\.jsonl$/.test(f));
-  const sealedOld = readRows(join(out, sealedFile)).map(({ phase, ...rest }) => rest);
+  const sealedOld = readRows(join(out, sealedFile)).map(({ phase, executions, workflowShare, agentFallback, ...rest }) => rest);
   writeFileSync(join(out, sealedFile), sealedOld.map((r) => `${JSON.stringify(r)}\n`).join(''));
   const runsBefore = readFileSync(join(out, 'runs.jsonl'));
 
@@ -262,7 +281,7 @@ test('rerow backfills the v3 fields of a finished pass into runs.v3.jsonl from i
   assert.deepEqual(readFileSync(join(out, 'runs.jsonl')), runsBefore, 'runs.jsonl is never rewritten');
   const v3 = readRows(join(out, 'runs.v3.jsonl'));
   assert.deepEqual(v3.map(v3Fields), rows.map(v3Fields));
-  assert.deepEqual(v3.map(({ company, ticker, born, rewritten, ...rest }) => rest), old, 'every other field as it was');
+  assert.deepEqual(v3.map(({ company, ticker, born, rewritten, executions, workflowShare, agentFallback, ...rest }) => rest), old, 'every other field as it was');
   const sealedV3 = readRows(join(out, `v3-${sealedFile}`));
   assert.deepEqual(sealedV3.map((r) => r.phase), ['before', 'before']);
   assert.deepEqual(written, { runs: 4, sealed: { [`v3-${sealedFile}`]: 2 } });
