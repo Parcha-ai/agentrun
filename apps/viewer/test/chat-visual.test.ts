@@ -40,6 +40,9 @@ test('the safety rule: in a session that had a credential on its page, every fra
   // The film: its first two held frames are the blurred ones; playback starts after them and runs the rest (each held frame plays at most 1.5 s).
   assert.deepEqual(visual.video!.segments, [[2, 4]], 'only the kept frames play, from the gap\'s end');
   assert.equal(visual.video!.poster, frames[2500], 'its poster is the first frame that is not blurred');
+  // Fail closed: the span is the video's prefix [0, skipEnd); every place the page ever sends the video to (a segment's start, a chapter) is at or after its end.
+  assert.equal(visual.video!.skipEnd, 2);
+  assert.ok(visual.video!.segments.every(([start]) => start >= visual.video!.skipEnd) && visual.chapters.every((chapter) => chapter.at >= visual.video!.skipEnd), 'no seek point inside the blurred span');
   assert.deepEqual(visual.chapters.map((chapter) => [chapter.title, chapter.at]), [['Account summary', 2.5], ['Your bills', 3.7]], 'a page read while only a blurred frame was on screen has no seek point, so it is no chapter; the others never seek inside the skipped span');
 });
 
@@ -48,6 +51,7 @@ test('a run with no credential gap blurs nothing and plays whole', async (t) => 
   const visual = (await visualOf(recording))!;
   assert.deepEqual(visual.frames.filter((frame) => frame.sensitive), []);
   assert.deepEqual(visual.video!.segments, [[0, 4]]);
+  assert.equal(visual.video!.skipEnd, 0, 'nothing skipped');
   assert.deepEqual(visual.chapters.map((chapter) => chapter.title), ['Sign in', 'Account summary', 'Your bills']);
 });
 
@@ -76,11 +80,11 @@ test('the files an artifact holds as PDFs are the report\'s thumbnails; no brows
 test('in Chrome: the report holds the video, the chapters, the strip of screenshots; the sign-in frames are canvases (never the sharp picture) with no click, the others open enlarged', IN_CHROME, async (t) => {
   const { value, until } = await served(t, { query: '&muse&visual', height: 900, edit: (dir) => browserRun(dir) });
   await until(`!!d()?.querySelector('.mu-report .mu-shot-tile')`, 'the report drawn');
-  const report = await value<{ video: [boolean, boolean]; chapters: string[]; tiles: [boolean, number, number, string][]; wider: number }>(`(() => { const r = d().querySelector('.mu-report'); const v = r.querySelector('video');
-    return { video: [v.muted, v.hasAttribute('controls')], chapters: [...r.querySelectorAll('.mu-chapter')].map((b) => b.querySelector('.mu-ch-title').textContent + (b.disabled ? '(off)' : '')),
+  const report = await value<{ video: [boolean, boolean, string | null]; chapters: string[]; tiles: [boolean, number, number, string][]; wider: number }>(`(() => { const r = d().querySelector('.mu-report'); const v = r.querySelector('video');
+    return { video: [v.muted, v.hasAttribute('controls'), (v.getAttribute('src') || '').split('#')[1] ?? null], chapters: [...r.querySelectorAll('.mu-chapter')].map((b) => b.querySelector('.mu-ch-title').textContent + (b.disabled ? '(off)' : '')),
       tiles: [...r.querySelectorAll('.mu-shot-tile')].map((tile) => [tile.classList.contains('blurred'), tile.querySelectorAll('canvas').length, tile.querySelectorAll('img').length, tile.querySelector('.mu-cap').textContent]),
       wider: d().documentElement.scrollWidth - d().documentElement.clientWidth }; })()`);
-  assert.deepEqual(report.video, [true, true], 'muted, scrubbable');
+  assert.deepEqual(report.video, [true, false, 't=2'], 'muted; NO native controls on a video with a credential gap (a scrub bar would let anyone drag into the blurred span, the jump coming only after the frame is shown); it starts at the span\'s end');
   assert.deepEqual(report.chapters, ['Account summary', 'Your bills'], 'a chapter that cannot be sought is not listed');
   assert.deepEqual(report.tiles.map(([blurred, canvases, images]) => [blurred, canvases, images]), [[true, 1, 0], [true, 1, 0], [false, 0, 1], [false, 0, 1], [false, 0, 1]], 'a blurred frame is a canvas and has no picture element at all');
   assert.equal(report.tiles[0]![3], 'Sign-in (blurred)');
@@ -114,6 +118,7 @@ test('in Chrome: a run that skipped its sign-in because it was remembered says s
   await remembered.until(`!!d()?.querySelector('.mu-report .mu-skip')`, 'the skipped tile');
   assert.equal(await remembered.value<string>(`d().querySelector('.mu-skip').textContent`), 'Skippedsign-in, rememberedOpened straight on the account');
   assert.equal(await remembered.value<number>(`d().querySelectorAll('.mu-blurred').length`), 0, 'no gap, nothing blurred');
+  assert.deepEqual(await remembered.value(`[d().querySelector('.mu-video').hasAttribute('controls'), (d().querySelector('.mu-video').getAttribute('src') || '').includes('#')]`), [true, false], 'no gap: the native controls stay, nothing to fence off');
 });
 
 test('in Chrome: without &visual the Muse layout draws no report', IN_CHROME, async (t) => {
