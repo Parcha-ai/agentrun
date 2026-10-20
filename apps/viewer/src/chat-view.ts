@@ -22,8 +22,10 @@ const SOURCE_SAID: Record<SourceKind, string> = { page: 'Read on the page', imag
 /** How many lines, or characters, of a long message show before "Show the whole message". */
 const THREAD_LINES = 8;
 const THREAD_CHARS = 600;
-/** How many cards of one kind in a row show before "+ N more": calls of one tool, calls inside one call. */
+/** How many of a step's looks, or of one tool's calls in a row, show before "+ N more" (decisive looks always show). */
 const THREAD_SHOWN = 3;
+/** How many of the person's files show as chips before "+ N files". */
+const THREAD_FILES = 4;
 
 const threadIcon = (name: string): Element => {
   const holder = document.createElement('template');
@@ -262,30 +264,30 @@ function sourceViewOf(recording: Recording, model: ChatModel, shown: SourceShown
   return pane;
 }
 
-/** How many characters of a thought's first line show as its title. */
-const THREAD_TITLE = 120;
-
-/** A thinking part as its title and its body: the title is its first line (a wholly bold line without its markers, as
- *  a model's thought summary writes it, else the line, clipped); the body is the rest. A clipped title is a preview
- *  only, so its body is the whole part from that line on. */
-export function threadThought(text: string): { title: string; body: string } {
+/** A thinking part as its title and its body. The title is the headline the model wrote (a first line wholly in bold,
+ *  without its markers, as a thought summary opens), and the body the rest; a part with no headline has no title, and
+ *  the whole part is its body: the view never makes a title from the model's words. */
+export function threadThought(text: string): { title?: string; body: string } {
   const lines = text.split('\n');
   const at = lines.findIndex((line) => line.trim() !== '');
-  if (at < 0) return { title: '', body: '' };
-  const line = lines[at]!.trim();
-  const bold = /^(\*\*|__)(?=\S)(.+?\S)\1$/.exec(line);
+  if (at < 0) return { body: '' };
+  const bold = /^(\*\*|__)(?=\S)(.+?\S)\1$/.exec(lines[at]!.trim());
   if (bold && !bold[2]!.includes(bold[1]!)) return { title: bold[2]!, body: lines.slice(at + 1).join('\n').trim() };
-  if (line.length > THREAD_TITLE) return { title: `${line.slice(0, THREAD_TITLE - 1).trimEnd()}…`, body: lines.slice(at).join('\n').trim() };
-  return { title: line, body: lines.slice(at + 1).join('\n').trim() };
+  return { body: lines.slice(at).join('\n').trim() };
 }
 
 /** A thought the provider redacted: its mark, and none of its words. */
 const threadRedacted = () => reportEl('div', { class: 'thought redacted' }, reportEl('span', { class: 'thought-tag', text: 'thinking · redacted' }));
 
-/** Thinking the run's own model wrote, in the agent's voice: its title as a line in the chat with its "thinking" tag,
- *  its body folded behind it (a thought of one line has no fold, and no chevron). */
+/** Thinking the run's own model wrote. With a headline, in the agent's voice: the headline as a line in the chat with
+ *  its "thinking" tag, its body folded behind it (a headline alone has no fold, and no chevron). With none, the whole
+ *  part folded under "Thought". */
 function threadThinking(text: string): HTMLElement {
   const { title, body } = threadThought(text);
+  if (title === undefined) {
+    return reportEl('details', { class: 'thought untitled' }, reportEl('summary', {}, reportEl('span', { class: 'thought-tag', text: 'Thought' })),
+      reportEl('div', { class: 'thought-body' }, ...reportParagraphs(body)));
+  }
   const line = reportEl('span', { class: 'thought-title' }, ...reportInline(title));
   if (body === '') return reportEl('div', { class: 'thought' }, line, reportEl('span', { class: 'thought-tag', text: 'thinking' }));
   return reportEl('details', { class: 'thought' },
@@ -307,14 +309,31 @@ function threadYou(body: HTMLElement, long: boolean, id?: string): HTMLElement {
 
 const threadLong = (text: string) => text.split('\n').length > THREAD_LINES || text.length > THREAD_CHARS;
 
-/** The run's input as given, as the person's message: its words, or its fields by name. */
+const threadFields = (fields: { name: string; value: string }[]) => reportEl('dl', { class: 'bubble fields' }, ...fields.map((field) => reportEl('div', {}, reportEl('dt', { text: field.name }), reportEl('dd', { text: field.value }))));
+
+/** The run's input as given, as the person's message: its question in plain words with its files as chips and its
+ *  other fields behind a toggle; else its words; else its fields by name. */
 function threadInput(input: NonNullable<ChatModel['input']>): HTMLElement | undefined {
   const fields = input.fields ?? [];
-  if (fields.length) {
-    const list = reportEl('dl', { class: 'bubble fields' }, ...fields.map((field) => reportEl('div', {}, reportEl('dt', { text: field.name }), reportEl('dd', { text: field.value }))));
-    return threadYou(list, fields.length > THREAD_LINES || fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0) > THREAD_CHARS);
+  const files = input.files ?? [];
+  const words = input.question ?? input.text;
+  if (words === undefined && !files.length) {
+    return fields.length ? threadYou(threadFields(fields), fields.length > THREAD_LINES || fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0) > THREAD_CHARS) : undefined;
   }
-  return input.text ? threadYou(reportEl('div', { class: 'bubble', text: input.text }), threadLong(input.text)) : undefined;
+  const node = threadYou(reportEl('div', { class: input.question !== undefined ? 'bubble prose' : 'bubble', text: words ?? '' }), threadLong(words ?? ''));
+  if (files.length) {
+    const chips = files.map((file) => reportEl('span', { class: 'file', title: file, text: file.split('/').at(-1) || file }));
+    const rest = chips.slice(THREAD_FILES);
+    const more = rest.length > 0 && reportEl('button', { class: 'file more-files', type: 'button' });
+    if (more) {
+      const toggle = (open = rest[0]!.hidden) => { for (const chip of rest) chip.hidden = !open; more.textContent = open ? 'Show less' : `+ ${rest.length} files`; };
+      toggle(false);
+      more.addEventListener('click', () => toggle());
+    }
+    node.append(reportEl('div', { class: 'files' }, ...chips, more));
+  }
+  if (fields.length) node.append(reportEl('details', { class: 'input-fields' }, reportEl('summary', { text: 'details' }), threadFields(fields)));
+  return node;
 }
 
 /** The look a card opens first: the decisive one, else its first look the recording describes. */
@@ -361,32 +380,75 @@ const threadDecision = (decision: ChatDecision, named: boolean) => {
   return decision.kind === 'noul' ? `${name}${decision.score.toFixed(2)} ${decision.score >= 0.5 ? 'yes' : 'no'}` : `${named ? `${name.trim()}: ` : ''}${decision.choice}`;
 };
 
-/** A look's picture for its call's card (the first of its own), and the regions that picture carries. */
-function threadThumb(recording: Recording, source: ChatSource): { sha: string; regions: SourceRegion[] } | undefined {
+/** A look's pictures for its call's card, in its order, each with the regions it carries. */
+function threadThumbs(recording: Recording, source: ChatSource): { sha: string; regions: SourceRegion[] }[] {
   const regions = source.regions.flatMap((region) => sourceRegionOf(region.href, region.label) ?? []);
-  const first = source.pictures?.[0];
-  if (first) return { sha: first.sha, regions: regions.filter((region) => sourcePictureFor(source.pictures!, first, region.href) === first) };
+  if (source.pictures?.length) return source.pictures.map((picture) => ({ sha: picture.sha, regions: regions.filter((region) => sourcePictureFor(source.pictures!, picture, region.href) === picture) }));
   const frames = source.media.filter((sha) => recording.blobUrl(sha) && !sourceIsVideo(recording, sha));
-  if (!frames[0]) return undefined;
-  if (sourceKindOf(source.href) === 'video') return { sha: frames[0], regions: regions.filter((region) => sourceFrameAt(source.href, frames.length, region.t) === 0) };
-  return { sha: frames[0], regions: frames.length === 1 ? regions : [] };
+  if (sourceKindOf(source.href) === 'video') return frames.map((sha, index) => ({ sha, regions: regions.filter((region) => sourceFrameAt(source.href, frames.length, region.t) === index) }));
+  return frames.map((sha) => ({ sha, regions: frames.length === 1 ? regions : [] }));
+}
+
+/** The mean brightness (of 255) under which a picture is near-black: the report skill's dark-frame line. */
+const THREAD_DARK = 16;
+
+/** A loaded picture's mean brightness, of 255; undefined when the page may not read its pixels. */
+function threadBrightness(picture: HTMLImageElement): number | undefined {
+  try {
+    const canvas = Object.assign(document.createElement('canvas'), { width: 32, height: 24 });
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return undefined;
+    context.drawImage(picture, 0, 0, 32, 24);
+    const { data } = context.getImageData(0, 0, 32, 24);
+    let sum = 0;
+    for (let at = 0; at < data.length; at += 4) sum += data[at]! + data[at + 1]! + data[at + 2]!;
+    return sum / (data.length / 4) / 3;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A card's picture that loads near-black gives way to the look's first picture that is not, with its own boxes; when
+ *  every one is dark, or the page may not read them, the first stays. */
+function threadLighter(recording: Recording, medium: HTMLElement, thumbs: { sha: string; regions: SourceRegion[] }[]): void {
+  const first = medium.querySelector('img');
+  if (!first || thumbs.length < 2) return;
+  first.addEventListener('load', async () => {
+    if ((threadBrightness(first) ?? THREAD_DARK) >= THREAD_DARK) return;
+    for (const candidate of thumbs.slice(1)) {
+      const url = recording.blobUrl(candidate.sha);
+      if (!url || sourceIsVideo(recording, candidate.sha)) continue;
+      const probe = Object.assign(new Image(), { src: url });
+      try { await probe.decode(); } catch { continue; }
+      if ((threadBrightness(probe) ?? 0) < THREAD_DARK) continue;
+      const lighter = sourceMedium(recording, candidate.sha, '', candidate.regions, 'thumb');
+      if (lighter && medium.isConnected) medium.replaceWith(lighter);
+      return;
+    }
+  }, { once: true });
 }
 
 /** The judge's mark at the start of a judge's label. */
 const threadJudge = () => reportEl('span', { class: 'judge-chip', text: 'judge' });
 
-/** A model call made inside a tool call, as its own card: its look's picture with that look's boxes, its line, its
- *  look's place, and its raw output behind a click. */
+/** A model call made inside a tool call, as its own card: its look's picture with that look's boxes; what it asked (a
+ *  typed ask reads as the call's name); what it said (else the scores on its line); its look's place; its raw output
+ *  behind a click. */
 function threadCall(recording: Recording, model: ChatModel, call: ChatCall): HTMLElement {
   const found = call.look ? model.sources[call.look] : undefined;
-  const thumb = found && threadThumb(recording, found);
+  const thumbs = found ? threadThumbs(recording, found) : [];
+  const medium = thumbs[0] && sourceMedium(recording, thumbs[0].sha, '', thumbs[0].regions, 'thumb');
+  if (medium) threadLighter(recording, medium, thumbs);
   const addresses = found ? sourceAddresses(found) : [];
   const place = found ? threadPlace(addresses) : '';
+  const scores = call.label.startsWith(call.name) ? call.label.slice(call.name.length).replace(/^\s*·\s*/, '') : call.label;
+  const said = call.said ?? scores;
   return reportEl('div', { class: `call${found?.decisive ? ' decisive' : ''}${call.judge ? ' judge' : ''}`, 'data-call': call.id, 'data-look': found ? call.look : undefined, role: found ? 'button' : undefined,
-    tabindex: found ? 0 : undefined, title: addresses.join(', ') || undefined, 'aria-label': [call.label, place, addresses.join(', ')].filter(Boolean).join('; ') },
-  thumb && sourceMedium(recording, thumb.sha, '', thumb.regions, 'thumb'),
+    tabindex: found ? 0 : undefined, title: addresses.join(', ') || undefined, 'aria-label': [call.ask ?? call.name, said, place, addresses.join(', ')].filter(Boolean).join('; ') },
+  medium,
   reportEl('div', { class: 'call-body' },
-    reportEl('span', { class: 'call-label', title: call.label }, call.judge && threadJudge(), ...reportInline(call.label)),
+    reportEl('span', { class: 'call-title', title: call.label }, call.judge && threadJudge(), ...reportInline(call.ask ?? call.name)),
+    said !== '' && reportEl('span', { class: 'call-said' }, ...reportInline(said)),
     place !== '' && reportEl('span', { class: 'call-at', text: place }),
     call.raw !== '' && reportEl('details', { class: 'raw' }, reportEl('summary', { text: 'Raw output' }), reportEl('pre', { text: call.raw }))));
 }
@@ -401,7 +463,9 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
   const called = new Set(item.calls.map((call) => call.look));
   const unread = item.looks.filter((each) => model.sources[each] && !called.has(each)).map((each, n): ChatCall => {
     const found = model.sources[each]!;
-    return { id: `${item.id}:look-${n}`, name: 'look', label: found.decisions.map((decision) => threadDecision(decision, found.decisions.length > 1)).join(' · ') || threadPlace(sourceAddresses(found)), raw: '', look: each };
+    const decided = found.decisions.map((decision) => threadDecision(decision, found.decisions.length > 1)).join(' · ');
+    const place = threadPlace(sourceAddresses(found));
+    return { id: `${item.id}:look-${n}`, name: place, label: decided ? `${place} · ${decided}` : place, raw: '', look: each, ...(decided ? { said: decided } : {}) };
   });
   const calls = [...item.calls, ...unread].map((call) => {
     const node = threadCall(recording, model, call);
@@ -417,10 +481,22 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
     more.addEventListener('click', () => toggle());
     for (const node of rest) fold(node, () => toggle(true));
   }
+  // Tagged as the ask, so it never reads as the agent talking.
+  const voice = item.voice && reportEl('p', { class: 'voice' }, reportEl('span', { class: 'voice-tag', text: 'asked' }), reportEl('span', { class: 'voice-text' }, ...reportInline(item.voice)));
+  // A step that made looks shows them first; the step itself is a quiet line under them, its result and command a click
+  // away.
+  if (item.looks.length > 0) {
+    const named = item.title.startsWith(`${item.tool} `) ? item.title.slice(item.tool.length + 1) : item.title;
+    // Its looks speak for it (the first card's ask), so its voice line is not drawn.
+    return reportEl('div', { class: `step looking${item.failed ? ' failed' : ''}${item.judge ? ' judge' : ''}`, 'data-item': item.id },
+      reportEl('div', { class: 'calls' }, ...calls, more),
+      reportEl('button', { class: 'made', type: 'button', 'data-open': item.id, title: item.title },
+        item.judge && threadJudge(), reportEl('span', { class: 'made-in', text: `made in ${item.tool} ·` }), reportEl('span', { class: 'made-title', text: named }),
+        item.failed && reportEl('small', { class: 'tag', text: 'failed' })));
+  }
   return reportEl('div', { class: `step${item.failed ? ' failed' : ''}${item.judge ? ' judge' : ''}`, 'data-item': item.id },
-    // A step nothing the agent thought or wrote leads into speaks with what its look asked, inside its card, tagged as
-    // the ask so it never reads as the agent talking.
-    item.voice && reportEl('p', { class: 'voice' }, reportEl('span', { class: 'voice-tag', text: 'asked' }), reportEl('span', { class: 'voice-text' }, ...reportInline(item.voice))),
+    // A step nothing the agent thought or wrote leads into speaks with what its look asked, inside its card.
+    voice,
     reportEl('button', { class: thumb ? 'step-main' : 'step-main bare', type: 'button', 'data-open': item.id },
       reportEl('div', {}, reportEl('div', { class: 't' }, threadIcon(sourceKindOf(source?.href ?? '')), item.judge && threadJudge(), reportEl('span', { text: item.title }), item.failed && reportEl('small', { class: 'tag', text: 'failed' })),
         item.takeaway !== '' && reportEl('div', { class: 'k', text: item.takeaway })),
@@ -514,8 +590,9 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     reportEl('div', { class: 'title', text: model.title }),
     reportEl('a', { class: 'how', href: reportHowHref(recording), text: 'How this ran' }));
 
-  // Each conversation as recorded: its messages, its thinking, its tool cards (calls of one tool in a row show the first
-  // three, the rest behind "+ N more"). A folded card is opened by its group's opener.
+  // Each conversation as recorded: its messages, its thinking, its tool cards. Steps that only ran a command fold into one
+  // line; a step that made looks always shows; calls of one other tool in a row show the first three, the rest behind
+  // "+ N more". A folded card is opened by its group's opener.
   const cards = new Map<string, HTMLElement>();
   const nodes = new Map<string, HTMLElement>();
   const openers = new Map<HTMLElement, () => void>();
@@ -528,8 +605,21 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     const out: HTMLElement[] = [];
     let agent: HTMLElement | undefined;
     let steps: HTMLElement | undefined;
+    // Steps that only ran a command or a script, in a row, fold into one quiet line.
+    let plumbing: { line: HTMLButtonElement; body: HTMLElement; count: number; failed: number } | undefined;
+    const plumbingOf = (into: HTMLElement) => {
+      if (plumbing) return plumbing;
+      const body = reportEl('div', { class: 'plumb-steps', hidden: true });
+      const line = reportEl('button', { class: 'plumb-line', type: 'button', 'aria-expanded': 'false' });
+      const open = (to = body.hidden) => { body.hidden = !to; line.setAttribute('aria-expanded', String(to)); };
+      line.addEventListener('click', () => open());
+      openers.set(body, () => open(true));
+      into.append(reportEl('div', { class: 'plumbing' }, line, body));
+      return (plumbing = { line, body, count: 0, failed: 0 });
+    };
     let run: { tool: string; cards: HTMLElement[] } | undefined;
-    const closeRun = () => {
+    // Ends the run of one tool's calls (folding past three) and the line of commands.
+    const endPlumbing = () => {
       if (run && steps && run.cards.length > THREAD_SHOWN) {
         const group = { more: reportEl('button', { class: 'more', type: 'button' }), extras: run.cards.slice(THREAD_SHOWN) };
         group.more.addEventListener('click', () => toggleRun(group));
@@ -538,10 +628,11 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
         steps.append(group.more);
       }
       run = undefined;
+      plumbing = undefined;
     };
     for (const item of thread.items) {
       if (item.kind === 'user') {
-        closeRun();
+        endPlumbing();
         agent = undefined;
         steps = undefined;
         const node = threadYou(reportEl('div', { class: 'bubble', text: item.text }), threadLong(item.text), item.id);
@@ -551,7 +642,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
       }
       if (item.kind === 'host') {
         // A message the host added sits where it was recorded, inside the agent's turn, as the host's.
-        closeRun();
+        endPlumbing();
         steps = undefined;
         const node = reportEl('div', { class: 'host-note', 'data-item': item.id }, reportEl('span', { class: 'host-who', text: 'Host' }), reportEl('span', { class: 'host-text', text: item.text }));
         nodes.set(item.id, node);
@@ -561,23 +652,33 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
       if (!agent) { agent = agentMessage(); out.push(agent); }
       if (item.kind === 'tool') {
         if (!steps) { steps = reportEl('div', { class: 'steps' }); agent.append(steps); }
-        // A step that speaks (its voice) starts a run of its own, so its line is never folded away.
-        if (run && (run.tool !== item.tool || item.voice)) closeRun();
         const card = threadCard(recording, model, item, (node, open) => openers.set(node, open), (id, node) => nodes.set(id, node));
         cards.set(item.id, card);
         nodes.set(item.id, card);
+        if (item.plumbing) {
+          if (run) endPlumbing();
+          const group = plumbingOf(steps);
+          group.body.append(card);
+          group.count += 1;
+          if (item.failed) group.failed += 1;
+          group.line.textContent = `ran ${group.count === 1 ? 'a command' : `${group.count} commands`}${group.failed ? `, ${group.failed} failed` : ''}`;
+          continue;
+        }
+        if (plumbing || item.looks.length > 0 || (run && run.tool !== item.tool)) endPlumbing();
         steps.append(card);
-        run ??= { tool: item.tool, cards: [] };
-        run.cards.push(card);
+        if (item.looks.length === 0) {
+          run ??= { tool: item.tool, cards: [] };
+          run.cards.push(card);
+        }
         continue;
       }
-      closeRun();
+      endPlumbing();
       steps = undefined;
       const node = item.kind === 'thinking' ? (item.redacted ? threadRedacted() : threadThinking(item.text)) : reportEl('div', { class: 'said-text', 'data-item': item.id }, ...reportParagraphs(item.text));
       nodes.set(item.id, node);
       agent.append(node);
     }
-    closeRun();
+    endPlumbing();
     return out;
   };
   const input = model.input && threadInput(model.input);
@@ -614,6 +715,12 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
   const art = reportEl('aside', { class: 'art', 'aria-label': 'The report' }, reportEl('div', { class: 'grab' }, reportEl('i')), shut, reportPane, source);
   const scrim = reportEl('div', { class: 'scrim' });
   root.replaceChildren(header, reportEl('div', { class: 'app' }, chat, art), scrim);
+  // Pictures within a screen and a half of the top load at once; the rest wait until they come into view.
+  requestAnimationFrame(() => {
+    for (const img of root.querySelectorAll<HTMLImageElement>('img[loading="lazy"]')) {
+      if (img.checkVisibility() && img.getBoundingClientRect().top < innerHeight * 1.5) img.loading = 'eager';
+    }
+  });
 
   /** Opens every fold that hides a node: its conversation's, and each folded group it sits in. */
   const reveal = (node: HTMLElement) => {
@@ -661,25 +768,34 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     showSource({ ...(key ? { look: key } : {}), ...(item ? { item } : {}), ...(picture ? { picture } : {}), href, regions: region ? [region] : [] });
   });
 
-  let jumps = 0;
+  let settling: AbortController | undefined;
   const scrollToItem = (id: string) => {
     const target = id === 'answer' ? answerNode : nodes.get(id);
     if (!target) return;
-    const jump = ++jumps;
+    settling?.abort();
     reveal(target);
     target.scrollIntoView({ block: 'center', behavior: motion() });
     target.classList.remove('flash');
     void target.offsetWidth;
     target.classList.add('flash');
     // Pictures above the card still to load would move it as they come in: they load now, and once they have, or after
-    // 1.5 s, the card is centred again, once, unless another jump came since.
+    // 1.5 s, the card is centred again; on a slow page, once more when the rest come in (up to 6 s). A newer jump, or the
+    // reader's own wheel, touch, key or press, ends the wait: the page stays where the reader took it.
     const waiting = [...thread.querySelectorAll<HTMLImageElement>('img')].filter((img) => !img.complete && img.getClientRects().length > 0
       && (target.contains(img) || (img.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0));
     if (waiting.length === 0) return;
+    const settle = new AbortController();
+    settling = settle;
+    for (const type of ['wheel', 'touchmove', 'keydown', 'pointerdown']) addEventListener(type, () => settle.abort(), { capture: true, passive: true, signal: settle.signal });
     const loaded = waiting.map((img) => new Promise((done) => { img.addEventListener('load', done, { once: true }); img.addEventListener('error', done, { once: true }); }));
     for (const img of waiting) img.loading = 'eager';
-    void Promise.race([Promise.all(loaded), new Promise((done) => setTimeout(done, 1_500))]).then(() => {
-      if (jump === jumps) target.scrollIntoView({ block: 'center', behavior: motion() });
+    const all = Promise.all(loaded).then(() => true);
+    const after = (ms: number) => new Promise<false>((done) => setTimeout(() => done(false), ms));
+    const center = () => { if (!settle.signal.aborted) target.scrollIntoView({ block: 'center', behavior: motion() }); };
+    void Promise.race([all, after(1_500)]).then((done) => {
+      center();
+      if (done) settle.abort();
+      else void Promise.race([all, after(6_000)]).then((late) => { if (late) center(); settle.abort(); });
     });
   };
 

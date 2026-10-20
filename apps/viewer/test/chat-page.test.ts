@@ -19,7 +19,7 @@ import type { ChatSource } from '../src/chat-model.ts';
 import type { Line } from '../src/format.ts';
 import { reportFileOf, reportLinkOf } from '../src/chat-report.ts';
 import { sourceByHref, sourceFrameAt, sourceKindOf, sourcePageOf, sourcePictureFor, sourceRegionOf, threadPlace, threadThought } from '../src/chat-view.ts';
-import { CITED, K, lines, manifest as handManifest, PAGES, PHOTOS, SCANS, deliverInstead, png, writeRecording } from './vision-hand.ts';
+import { CITED, FILM, K, lines, manifest as handManifest, PAGES, PHOTOS, SCANS, deliverInstead, png, writeRecording } from './vision-hand.ts';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 
 const UNIT = { timeout: 5_000 };
@@ -66,14 +66,12 @@ test('a region comes from the citation\'s address alone, and lands on the page o
   assert.equal(sourceByHref(several, 'deck.pdf#page=9&xywh=percent:1,2,3,4'), 'spread');
 });
 
-test('a thought reads as its first line, a wholly bold line without its markers, and the rest as its body', UNIT, () => {
+test('a thought\'s title is the headline its model wrote (a wholly bold first line); with none it has no title and is all body', UNIT, () => {
   assert.deepEqual(threadThought('**Analyzing transcript data**\n\nI am reading page 2.'), { title: 'Analyzing transcript data', body: 'I am reading page 2.' });
   assert.deepEqual(threadThought('\n__Checking the pages__\nfirst, then second'), { title: 'Checking the pages', body: 'first, then second' });
-  assert.deepEqual(threadThought('**Page 2** holds the alarm; I will cite its `line`.'), { title: '**Page 2** holds the alarm; I will cite its `line`.', body: '' }, 'a line only partly bold keeps its marks for the inline render');
-  assert.deepEqual(threadThought('Plain first line\nand more'), { title: 'Plain first line', body: 'and more' });
-  const long = threadThought('x'.repeat(200));
-  assert.deepEqual([long.title.length, long.body], [120, 'x'.repeat(200)], 'a long first line is clipped as its title, and its fold holds the whole of it');
-  assert.deepEqual(threadThought(`${'y'.repeat(150)}\nthen more`), { title: `${'y'.repeat(119)}…`, body: `${'y'.repeat(150)}\nthen more` }, 'a clipped first line and the lines after it, all in the fold');
+  assert.deepEqual(threadThought('**Page 2** holds the alarm; I will cite its `line`.'), { body: '**Page 2** holds the alarm; I will cite its `line`.' }, 'a line only partly bold is no headline, and keeps its marks for the inline render');
+  assert.deepEqual(threadThought('Plain first line\nand more'), { body: 'Plain first line\nand more' }, 'a thought with no headline gets no title made from its words');
+  assert.deepEqual(threadThought('x'.repeat(200)), { body: 'x'.repeat(200) }, 'nor a clipped one');
 });
 
 test('a region is drawn on the picture whose address holds it; of several, the cited one; of none, the cited one', UNIT, () => {
@@ -106,6 +104,8 @@ const TASK = 'Read the three scanned pages and the photographs, and say what hap
 const THOUGHT = '**Page 2** holds the alarm; I will cite its `line`.';
 /** A look's address that is a long list of files with no space to break at, as a real run cites one. */
 const LONG = Array.from({ length: 40 }, (_, n) => `scan-${n}.pdf`).join(',');
+/** The six files the person hands the bare run. */
+const SIX_FILES = ['scans.pdf', 'photos/photo-001.png', 'photos/photo-002.png', 'photos/photo-003.png', 'film.mp4', 'notes.txt'];
 /** An answer's title of 200 characters. */
 const LONG_TITLE = 'The three scanned pages and the photographs, read in order: an alarm is called out on page two, the crew answers, and the run reaches contact on page three, with the photographs sorted.'.padEnd(200, '.');
 /** A look over three pages, filed as one path joined by ", " with a picture for each page, as a live run files one. */
@@ -113,7 +113,7 @@ const THREE = ['scans.pdf#page=1', 'scans.pdf#page=2', 'scans.pdf#page=3'];
 /** The hand vision run: the input it was given, the host's prompt as each conversation's first user entry, and, when
  *  asked, the lead's own thinking and last words. Its look lines name their conversation, as a vision run's do; the
  *  weaker eyes' look read a long list of files. */
-function handRun(said: boolean): Line[] {
+function handRun(said: boolean, files = ['scans.pdf', 'photos/photo-001.png']): Line[] {
   const run = lines.map((line): Line => {
     const named = line.kind === 'LookEvent' ? { ...line, data: { ...(line.data as object), conversationId: String(line.conv) } } : line;
     const json = JSON.stringify(named);
@@ -130,7 +130,7 @@ function handRun(said: boolean): Line[] {
   const result = run.findLastIndex((line) => line.kind === 'result');
   const first = run.findIndex((line) => line.channel === 'durable');
   run.splice(first + 1, 0, { ...run[first]!, kind: 'pi.user', source: 'pi', conv: 1, order: 1, data: { kind: 'pi.user', model: [{ role: 'user', content: `The host's prompt. ${TASK}` }] } },
-    { ...run[first]!, kind: 'agentrun.workflow', order: 2, data: { doc: 'agentrun.workflow', input: { input: TASK } } },
+    { ...run[first]!, kind: 'agentrun.workflow', order: 2, data: { doc: 'agentrun.workflow', input: { input: { question: TASK, files, pages: 3 } } } },
     // Each conversation is a workflow node's, so the runner speaks in it: its first user entry is the composed prompt.
     ...[1, 2].map((conv, n): Line => ({ ...run[first]!, kind: 'agentrun.nodes', order: 3 + n, path: conv === 1 ? '/root/lead' : '/root/steps/1/items/0',
       data: { doc: 'agentrun.nodes', key: `hand:node:${conv}`, value: { conversation: conv, closed: false }, version: 1 } })));
@@ -153,7 +153,7 @@ const ENTRY = `<!doctype html><html><head><meta charset="utf-8"><title>Three pag
 </body></html>`;
 /** The cited answer with a row citing the third page of the look over three pages, a box on it. */
 const CITED_PAGES = { ...CITED, rows: [...CITED.rows, { label: 'Contact', value: 'on the third page', cites: [{ look: K.page3, fragment: '#page=3&xywh=percent:10,20,30,10' }] }] };
-const SHEET = 'body{background:#101012;color:#eee}.sheet{background-image:url(../media/page-2.png)}';
+const SHEET = 'body{background:#101012;color:#eee}#alarm{letter-spacing:1px}.sheet{background-image:url(../media/page-2.png)}';
 
 /** The recordings: the repository's chat fixtures and reference job (a submitted record), and the hand run as
  *  `hand-page` (an agent's page written to test the frame, thinking, two conversations), `hand-answer` (the cited answer
@@ -176,7 +176,7 @@ function writeFixtures(dir: string) {
   deliverInstead(answer, CITED_PAGES as never);
   writeNarrated(join(dir, 'hand-narrated'));
   for (const [id, said] of [['hand-said', true], ['hand-bare', false]] as const) {
-    writeRecording(join(dir, id), handRun(said));
+    writeRecording(join(dir, id), said ? handRun(said) : handRun(said, SIX_FILES));
     const { result: _result, ...unanswered } = JSON.parse(readFileSync(join(dir, id, 'manifest.json'), 'utf8'));
     // The run's last words are its answer, under the recording's title: here a whole paragraph of one.
     writeFileSync(join(dir, id, 'manifest.json'), JSON.stringify(said ? { ...unanswered, title: LONG_TITLE } : unanswered, null, 2));
@@ -192,10 +192,12 @@ function writeFixtures(dir: string) {
 
 /** A command of several lines, as an agent runs one. */
 const COMMAND = 'python3 -c "\nimport json\nprint(json.dumps({\'pages\': 4}))\n"';
-/** The reads of the narrated run: eight calls of one tool in a row, the fifth making a look nothing leads into. */
+/** The reads of the narrated run: eight calls of one tool in a row, each making a look. */
 const READS = [1, 2, 3, 4, 5, 6, 7, 8];
-/** A run whose agent speaks between its calls: its words, eight calls of one tool (the fifth speaks with its look's ask),
- *  a message the host adds, its words again, a command. */
+/** Then four searches in a row, none making a look and none only a command. */
+const SEARCHES = [1, 2, 3, 4];
+/** A run whose agent speaks between its calls: its words, eight look steps of one tool, four searches, a message the
+ *  host adds, its words again, two commands. */
 function writeNarrated(dir: string) {
   let t = 0;
   let seq = 1;
@@ -208,14 +210,19 @@ function writeNarrated(dir: string) {
     pi(2, 'pi.user', { role: 'user', content: 'The host\'s prompt.' }),
     pi(3, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: '**Analyzing transcript data**\n\nI am reading page 2 before the others.' }, { type: 'text', text: 'I will read each page in turn.' }, ...READS.map((n) => ({ type: 'toolCall', id: `r${n}`, name: 'read', arguments: { path: 'notes.pdf', page: n } }))] }),
     ...READS.flatMap((n) => [live('tool_execution_start', { type: 'tool_execution_start', toolCallId: `r${n}`, toolName: 'read', args: { path: 'notes.pdf', page: n } }),
-      ...(n === 5 ? [live('LookEvent', { tool: 'see', parentToolCallId: 'r5', conversationId: '1', receipt: 'evidence/read/look-5.json',
-        record: { tool: 'look', args: { path: 'notes.pdf', page: 5, ask: 'What is on page 5?' }, facts: { key: 'look-page-5', fragment: 'page=5' }, body: 'A table of figures.' } }, 'vision')] : []),
+      live('LookEvent', { tool: 'see', parentToolCallId: `r${n}`, conversationId: '1', receipt: `evidence/read/look-${n}.json`,
+        record: { tool: 'look', args: { path: 'notes.pdf', page: n, ask: `What is on page ${n}?` }, facts: { key: `look-page-${n}`, fragment: `page=${n}` }, body: 'A table of figures.' } }, 'vision'),
       live('tool_execution_end', { type: 'tool_execution_end', toolCallId: `r${n}`, toolName: 'read' }),
       pi(3 + n, 'pi.tool-result', { role: 'toolResult', toolCallId: `r${n}`, toolName: 'read', content: [{ type: 'text', text: `Page ${n} says the same.` }], isError: false })]),
+    pi(12, 'pi.assistant', { role: 'assistant', content: SEARCHES.map((n) => ({ type: 'toolCall', id: `s${n}`, name: 'search', arguments: { query: `figures on page ${n}`, limit: 5 } })) }),
+    ...SEARCHES.map((n) => pi(12, 'pi.tool-result', { role: 'toolResult', toolCallId: `s${n}`, toolName: 'search', content: [{ type: 'text', text: `${n} hits.` }], isError: false })),
     pi(12, 'pi.user', { role: 'user', content: 'You stopped without submitting. Call submit.' }),
     pi(13, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: '[Reasoning redacted]', redacted: true }, { type: 'thinking', thinking: '**Settling the answer**' }, { type: 'thinking', thinking: 'Checking that the four agree\nthey do, line for line.' }, { type: 'text', text: 'All four pages agree.' },
-      { type: 'toolCall', id: 'b1', name: 'bash', arguments: { command: COMMAND } }] }),
+      { type: 'toolCall', id: 'b1', name: 'bash', arguments: { command: COMMAND } }, { type: 'toolCall', id: 'b2', name: 'bash', arguments: { command: 'ls missing-dir' } }] }),
+    live('tool_execution_start', { type: 'tool_execution_start', toolCallId: 'b1', toolName: 'bash', args: { command: COMMAND } }),
+    live('tool_execution_end', { type: 'tool_execution_end', toolCallId: 'b1', toolName: 'bash' }),
     pi(14, 'pi.tool-result', { role: 'toolResult', toolCallId: 'b1', toolName: 'bash', content: [{ type: 'text', text: '{"pages": 4}' }], isError: false }),
+    pi(15, 'pi.tool-result', { role: 'toolResult', toolCallId: 'b2', toolName: 'bash', content: [{ type: 'text', text: 'ls: cannot access missing-dir' }], isError: true }),
   ];
   mkdirSync(join(dir, 'blobs'), { recursive: true });
   const { result: _result, ...rest } = handManifest;
@@ -246,7 +253,10 @@ const artReady = (id) => art(id)?.URL === 'about:srcdoc' && !!art(id).getElement
 const flat = (id) => { const d = doc(id); return { page: d.documentElement.scrollWidth - d.documentElement.clientWidth, panes: Math.max(...[...d.querySelectorAll('.thread, .src, .report')].map((n) => n.scrollWidth - n.clientWidth)) }; };
 const words = (id) => doc(id).body.textContent + ' ' + (art(id)?.body.textContent ?? '');
 const unstripped = (id) => { const body = doc(id).body.cloneNode(true); for (const calls of body.querySelectorAll('.calls')) calls.remove(); return body.textContent + ' ' + (art(id)?.body.textContent ?? ''); };
-const card = (id, title) => [...doc(id).querySelectorAll('.step')].find((each) => each.querySelector('.t span').textContent === title);
+const titleOf = (c) => c.querySelector('.t span')?.textContent ?? c.querySelector('.made')?.title;
+const card = (id, title) => [...doc(id).querySelectorAll('.step')].find((each) => titleOf(each) === title);
+const opener = (c) => c.querySelector('.step-main, .made');
+const callTitle = (n) => { const t = n.querySelector('.call-title'); return t.textContent.slice(t.querySelector('.judge-chip')?.textContent.length ?? 0); };
 const inView = (node, box) => { const a = node.getBoundingClientRect(); const b = box.getBoundingClientRect(); return a.top >= b.top - 1 && a.bottom <= b.bottom + 1; };
 const shown = (node) => !!node && node.checkVisibility();
 const PAGES = ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare', 'plain', 'srcpage', 'srcsheet', 'narrated'];
@@ -290,14 +300,17 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     // 1440, the agent's page: the input as the person's one message (the host's prompt is no message), its conversations
     // as recorded (the first open), thinking only the run's own with its markdown drawn, "How this ran" with ?r= alone.
     const wide = await value<Record<string, unknown>>(`(() => { const d = doc('wide'); return {
-      task: [...d.querySelectorAll('.msg.user .bubble')].map((n) => n.textContent), first: d.querySelector('.thread').firstElementChild.matches('.msg.user'),
+      task: [...d.querySelectorAll('.msg.user > .bubble')].map((n) => n.textContent), first: d.querySelector('.thread').firstElementChild.matches('.msg.user'),
+      person: (() => { const m = d.querySelector('.msg.user'); const b = m.querySelector('.bubble.prose'); return [getComputedStyle(b).fontFamily.startsWith('Inter'), [...m.querySelectorAll('.files .file')].map((n) => n.textContent),
+        m.querySelector('details.input-fields').open, m.querySelector('details.input-fields summary').textContent, [...m.querySelectorAll('details.input-fields dt, details.input-fields dd')].map((n) => n.textContent)]; })(),
+      eager: (() => { const near = [...d.querySelectorAll('img')].filter((n) => n.checkVisibility() && n.getBoundingClientRect().top < d.defaultView.innerHeight * 1.5); return [near.length > 0, near.every((n) => n.loading === 'eager')]; })(),
       prompt: d.body.textContent.includes("The host's prompt"), marks: d.body.textContent.includes('**') || d.body.textContent.includes('\u0060'),
       strong: [...d.querySelectorAll('.thought strong, .said-text strong')].map((n) => n.textContent),
       code: [...d.querySelectorAll('.thought code')].map((n) => n.textContent),
-      cards: [...d.querySelectorAll('.thread > .msg .step')].map((c) => c.querySelector('.t span').textContent), hidden: d.querySelectorAll('.step[hidden]').length,
+      cards: [...d.querySelectorAll('.thread > .msg .step')].map(titleOf), hidden: d.querySelectorAll('.step[hidden]').length,
       more: [...d.querySelectorAll('.more')].map((n) => n.textContent),
       folds: [...d.querySelectorAll('details.fold')].map((n) => ({ open: n.open, label: n.querySelector('summary .lab').textContent, cards: n.querySelectorAll('.step').length })),
-      thinking: [...d.querySelectorAll('.thought')].map((n) => ({ fold: n.tagName === 'DETAILS', title: n.querySelector('.thought-title').textContent, tag: n.querySelector('.thought-tag')?.textContent,
+      thinking: [...d.querySelectorAll('.thought')].map((n) => ({ fold: n.tagName === 'DETAILS', title: n.querySelector('.thought-title')?.textContent ?? null, tag: n.querySelector('.thought-tag')?.textContent,
         chevron: getComputedStyle(n.querySelector('.thought-tag'), '::after').display })),
       how: d.querySelector('a.how').getAttribute('href'),
       timeline: { body: shown(d.querySelector('.tl-body')), expanded: d.querySelector('.tl-toggle').getAttribute('aria-expanded'), dot: !!d.querySelector('.tl .dot') },
@@ -306,6 +319,9 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       last: d.querySelector('.thread').lastElementChild.matches('.msg.answer') && d.querySelector('.thread').lastElementChild.textContent,
     }; })()`);
     assert.deepEqual(wide.task, [TASK], 'the input as given, once');
+    assert.deepEqual(wide.person, [true, ['scans.pdf', 'photo-001.png'], false, 'details', ['pages', '3']],
+      'its question a plain bubble in the body font, its files as chips by name, its other fields behind a closed toggle');
+    assert.deepEqual(wide.eager, [true, true], 'every picture within a screen and a half of the top loads at once');
     assert.equal(wide.first, true, 'at the top of the chat');
     assert.equal(wide.prompt, false, 'the host\'s prompt is not drawn');
     assert.equal(wide.marks, false, 'no markdown marks left as text');
@@ -315,21 +331,17 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.deepEqual(wide.more, [], 'each read here made a look nothing leads into, so each speaks and none folds');
     assert.equal(wide.hidden, 0);
     assert.deepEqual(wide.folds, [{ open: false, label: 'conversation 2', cards: 3 }], 'the second conversation, folded');
-    assert.deepEqual(wide.thinking, [{ fold: false, title: 'Page 2 holds the alarm; I will cite its line.', tag: 'thinking', chevron: 'none' }], 'the run\'s own thought of one line: a line with its tag, no fold and no chevron');
+    assert.deepEqual(wide.thinking, [{ fold: true, title: null, tag: 'Thought', chevron: 'inline-block' }], 'the run\'s own thought with no headline: folded whole under "Thought", no title made from its words');
     assert.equal(wide.how, './?r=hand-page', 'the inspection viewer, with no other query parameter');
     assert.deepEqual(wide.timeline, { body: false, expanded: 'false', dot: true }, 'the timeline starts collapsed');
     assert.deepEqual(wide.flat, { page: 0, panes: 0 }, 'no horizontal scroll');
     assert.equal(wide.split, true, 'the chat on the left, the report wider on the right');
     assert.deepEqual(wide.said, ['Done. The alarm is on page 2.'], 'its last words as recorded');
     assert.match(String(wide.last), /Three pages, read\s*The page the agent wrote/, 'the card that opens the page it wrote closes the chat, after every conversation');
-    // A step nothing the agent thought or wrote leads into speaks with what its look asked: a quiet line above its
-    // title, inside its card, muted, with no bubble, led by an "asked" tag in the thought tag's style, so the ask never
-    // reads as the agent talking.
-    assert.deepEqual(await value(`(() => { const c = card('wide', 'read film.mp4 from_s=0 to_s=30'); const v = c.querySelector('.voice'); const tag = v.firstElementChild;
-      const thought = getComputedStyle(doc('wide').querySelector('.thought-tag')); const own = getComputedStyle(tag);
-      return [v.querySelector('.voice-text').textContent, [tag.className, tag.textContent, own.fontFamily === thought.fontFamily, own.fontSize, own.color === thought.color, own.fontStyle],
-        c.firstElementChild === v, v.getBoundingClientRect().bottom <= c.querySelector('.t').getBoundingClientRect().top + 1, getComputedStyle(v).color, getComputedStyle(v).backgroundColor]; })()`),
-      ['What changes in this window?', ['voice-tag', 'asked', true, '10.5px', true, 'normal'], true, true, 'rgb(164, 164, 173)', 'rgba(0, 0, 0, 0)']);
+    // A step whose looks lead speaks through its first look's ask, once: no voice line repeats it above.
+    assert.deepEqual(await value(`(() => { const c = card('wide', 'read film.mp4 from_s=0 to_s=30'); return [!!c.querySelector('.voice'), callTitle(c.querySelector('.call')),
+      c.textContent.split('What changes in this window?').length - 1, doc('wide').querySelectorAll('.voice').length]; })()`),
+      [false, 'What changes in this window?', 1, 0]);
 
     // The agent's page runs nothing, keeps only its own files, and is held to the recording's blobs by its policy.
     const frame = await value<Record<string, unknown>>(`(() => { const f = doc('wide').querySelector('.report-frame'); const a = art('wide'); return {
@@ -352,21 +364,22 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.doesNotMatch(String(frame.styles), /evil\.example|url\((?!"blob:)/, 'every url() in its styles is a blob, or gone');
     assert.match(String(frame.styles), /\.sheet\{background-image:url\("blob:/, 'its sheet, inlined, with its own reference resolved from its own path');
 
-    // The timeline: a click on a hidden card's bar opens its run, scrolls the chat to the card and flashes it.
-    const target = await value<string>(`doc('narrated').querySelector('.step[hidden]').dataset.item`);
+    // The timeline: a click on the bar of a step folded into "ran N commands" opens that line, scrolls the chat to the
+    // step and flashes it.
+    const target = await value<string>(`doc('narrated').querySelector('.plumb-steps > .step').dataset.item`);
     await page.evaluate(`doc('narrated').querySelector('.tl-toggle').click(); doc('narrated').querySelector('.tbar[data-goto="${target}"]').click()`);
-    await until(`(() => { const d = doc('narrated'); const c = d.querySelector('.step[data-item="${target}"]'); return shown(d.querySelector('.tl-body')) && !c.hidden && c.classList.contains('flash') && inView(c, d.querySelector('.thread')); })()`, 'the card scrolled into view and flashed');
-    assert.equal(await value(`doc('narrated').querySelector('.steps > .more').textContent`), 'Show less');
-    await page.evaluate(`doc('narrated').querySelector('.steps > .more').click(); doc('narrated').querySelector('.tl-toggle').click()`);
+    await until(`(() => { const d = doc('narrated'); const c = d.querySelector('.step[data-item="${target}"]'); return shown(d.querySelector('.tl-body')) && shown(c) && c.classList.contains('flash') && inView(c, d.querySelector('.thread')); })()`, 'the step scrolled into view and flashed');
+    assert.equal(await value(`doc('narrated').querySelector('.plumb-line').getAttribute('aria-expanded')`), 'true');
+    await page.evaluate(`doc('narrated').querySelector('.plumb-line').click(); doc('narrated').querySelector('.tl-toggle').click()`);
 
     // A citation in the agent's page opens its look with the region its address carries; the card opens the same look
     // at its own address, which carries none, so none is drawn.
     await page.evaluate(`art('wide').querySelector('a.cite').click()`);
     await until(`shown(doc('wide').querySelector('.src .jbox'))`, 'the source view with the cited region');
     const cited = await value<Record<string, unknown>>(`(() => { const d = doc('wide'); return { title: d.querySelector('.src .ptitle').textContent, addr: d.querySelector('.src .addr').textContent,
-      box: d.querySelector('.src .jbox').style.cssText, boxes: d.querySelectorAll('.src .jbox').length, frame: art('wide').URL, current: d.querySelector('.step[aria-current="true"] .t span')?.textContent }; })()`);
+      box: d.querySelector('.src .jbox').style.cssText, boxes: d.querySelectorAll('.src .jbox').length, frame: art('wide').URL, current: titleOf(d.querySelector('.step[aria-current="true"]')) }; })()`);
     assert.deepEqual(cited, { title: 'read scans.pdf page=2', addr: 'scans.pdf#page=2&xywh=percent:6,8,80,6', box: 'left: 6%; top: 8%; width: 80%; height: 6%;', boxes: 1, frame: 'about:srcdoc', current: 'read scans.pdf page=2' });
-    await page.evaluate(`doc('wide').querySelector('.src .back').click(); card('wide', 'read scans.pdf page=2').querySelector('.step-main').click()`);
+    await page.evaluate(`doc('wide').querySelector('.src .back').click(); opener(card('wide', 'read scans.pdf page=2')).click()`);
     await until(`shown(doc('wide').querySelector('.src .media img'))`, 'the card\'s source view');
     assert.equal(await value(`doc('wide').querySelectorAll('.src .jbox').length`), 0, 'no region the address does not carry');
     assert.equal(await value(`doc('wide').defaultView.location.hash`), `#look=${K.page2}`);
@@ -382,15 +395,15 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       THREE.map((address) => [address, `#${address.split('#')[1]}`]));
     // A look that kept no picture: its card has no picture and no empty frame, its call's card its line and place with no
     // picture, and its source its address and answer, with no player and no frame.
-    const film = await value<Record<string, unknown>>(`(() => { const c = card('wide', 'read film.mp4 from_s=0 to_s=30'); c.querySelector('.step-main').click(); return {
-      main: [c.querySelector('.step-main').className, c.querySelector('.step-main').children.length], calls: [...c.querySelectorAll('.calls .call')].map((n) => [n.querySelector('.call-at')?.textContent, n.querySelectorAll('img, .media').length]) }; })()`);
-    assert.deepEqual(film, { main: ['step-main bare', 1], calls: [['t 0:00', 0]] });
+    const film = await value<Record<string, unknown>>(`(() => { const c = card('wide', 'read film.mp4 from_s=0 to_s=30'); opener(c).click(); return {
+      made: c.querySelector('.made').textContent, pictures: c.querySelectorAll('.made img, .made .media').length, calls: [...c.querySelectorAll('.calls .call')].map((n) => [n.querySelector('.call-at')?.textContent, n.querySelectorAll('img, .media').length]) }; })()`);
+    assert.deepEqual(film, { made: 'made in read ·film.mp4 from_s=0 to_s=30', pictures: 0, calls: [['t 0:00', 0]] });
     await until(`doc('wide').querySelector('.src .addr')?.textContent.startsWith('film.mp4')`, 'the video look\'s source');
     assert.deepEqual(await value(`(() => { const d = doc('wide'); return [d.querySelectorAll('.src video, .src img, .src .media').length, d.querySelectorAll('.src a.addr[href]').length, d.querySelector('.src .said p')?.textContent]; })()`),
       [0, 0, 'The ground slides past; at 20 s a shadow crosses the frame.']);
 
     // "In the report" on the card the page cites: the report again, scrolled to that spot, flashed. In-page links stay in it.
-    assert.deepEqual(await value(`[...doc('wide').querySelectorAll('.step')].filter((c) => c.querySelector('.inrep')).map((c) => c.querySelector('.t span').textContent)`), ['read scans.pdf page=2'], 'only the cards the page cites');
+    assert.deepEqual(await value(`[...doc('wide').querySelectorAll('.step')].filter((c) => c.querySelector('.inrep')).map(titleOf)`), ['read scans.pdf page=2'], 'only the cards the page cites');
     await page.evaluate(`card('wide', 'read scans.pdf page=2').querySelector('.inrep').click()`);
     await until(`!shown(doc('wide').querySelector('.src')) && art('wide').querySelector('[data-look="${K.page2}"]').hasAttribute('data-chat-flash')`, 'the cited spot flashed in the page');
     await page.evaluate(`art('wide').defaultView.scrollTo(0, 1500); art('wide').getElementById('jump').click()`);
@@ -408,7 +421,7 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       { text: 'Three pages, read', shown: true, below: true, oneLine: true, timeline: true });
     await page.evaluate(`doc('phone').querySelector('.report-btn').click()`);
     await until(`doc('phone').querySelector('.art').classList.contains('open') && Math.abs(doc('phone').querySelector('.art').getBoundingClientRect().bottom - 844) < 2`, 'the sheet opened by the bottom bar');
-    await page.evaluate(`doc('phone').querySelector('.shut').click(); card('phone', 'read scans.pdf page=1').querySelector('.step-main').click()`);
+    await page.evaluate(`doc('phone').querySelector('.shut').click(); opener(card('phone', 'read scans.pdf page=1')).click()`);
     await until(`doc('phone').querySelector('.art').classList.contains('open') && shown(doc('phone').querySelector('.src .media img'))`, 'a card opens its source in the sheet');
     await page.evaluate(`doc('phone').querySelector('.shut').click(); card('phone', 'read scans.pdf page=2').querySelector('.inrep').click()`);
     await until(`doc('phone').querySelector('.art').classList.contains('open') && !shown(doc('phone').querySelector('.src')) && art('phone').querySelector('[data-look="${K.page2}"]').hasAttribute('data-chat-flash')`, '"In the report" opens the sheet at that spot');
@@ -416,7 +429,7 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     // No page from the agent: the run's answer, labelled as the run's, its chips opening their sources; no thinking fold.
     const answer = await value<Record<string, unknown>>(`(() => { const d = doc('answer'); return { kicker: d.querySelector('.kicker').textContent, title: d.querySelector('.atitle').textContent,
       rows: d.querySelectorAll('.arow').length, frames: d.querySelectorAll('iframe').length, thinking: d.querySelectorAll('.thought').length,
-      inReport: [...d.querySelectorAll('.step')].filter((c) => c.querySelector('.inrep')).map((c) => c.querySelector('.t span').textContent), flat: flat('answer') }; })()`);
+      inReport: [...d.querySelectorAll('.step')].filter((c) => c.querySelector('.inrep')).map(titleOf), flat: flat('answer') }; })()`);
     assert.deepEqual(answer, { kicker: 'The run\'s answer', title: CITED.title, rows: CITED_PAGES.rows.length, frames: 0, thinking: 0,
       inReport: ['read scans.pdf page=2', 'read scans.pdf page=3', 'read photos/photo-001.png'], flat: { page: 0, panes: 0 } });
     // A cite to the third page of a look over three: that page's picture first with the box, the others below, unboxed.
@@ -425,8 +438,10 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.equal(await value(`card('answer', 'read scans.pdf page=3').hidden`), false, 'the folded card of the call that made the cited look is opened');
     assert.deepEqual(await value(`[...doc('answer').querySelectorAll('.src .media')].map((m) => [m.querySelector('img').alt, [...m.querySelectorAll('.jbox')].map((b) => b.style.cssText)])`),
       [['scans.pdf#page=3', ['left: 10%; top: 20%; width: 30%; height: 10%;']], ['scans.pdf#page=1', []], ['scans.pdf#page=2', []]]);
-    // Every picture in the chat and the source loads when it comes into view: a folded card's pictures cost nothing.
-    assert.deepEqual(await value(`(() => { const all = [...doc('answer').querySelectorAll('.thread img, .src img')]; return [all.length > 0, all.filter((i) => i.loading !== 'lazy').map((i) => i.alt)]; })()`), [true, []]);
+    // A picture out of view loads when it comes into view: a folded card's pictures, and the source's, cost nothing until
+    // then; only those in the first screen and a half load at once.
+    assert.deepEqual(await value(`(() => { const lazy = (i) => i.loading === 'lazy'; const folded = [...doc('answer').querySelectorAll('.thread img')].filter((i) => !i.checkVisibility());
+      const source = [...doc('answer').querySelectorAll('.src img')]; return [folded.length > 0 && folded.every(lazy), source.length > 0 && source.every(lazy)]; })()`), [true, true]);
     await page.evaluate(`doc('answer').querySelector('.cite[data-look="${K.page2}"]').click()`);
     await until(`shown(doc('answer').querySelector('.src .jbox'))`, 'a chip opens its source with its region');
     assert.equal(await value(`doc('answer').querySelector('.src .jbox').style.cssText`), 'left: 6%; top: 8%; width: 80%; height: 6%;');
@@ -434,26 +449,34 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     // Shipped as files, the page's blobs are the server's: its policy names that origin.
     assert.match(await value<string>(`art('files').head.firstElementChild.content`), new RegExp(`img-src blob: ${origin.replace(/[.]/g, '\\.')};`));
 
-    // Each model call the tool call made is its own card under it: its line, its look's place, its raw output behind a
-    // click; three show, the decisive ones always, the rest behind "+ N more". With no picture kept, no picture.
+    // A step that made looks shows them first, each its own card: what it asked (a typed ask reads as the call's name),
+    // what it said (else its scores), its look's place, its raw output behind a click; three show, the decisive ones
+    // always, the rest behind "+ N more". The step is a quiet line under them. With no picture kept, no picture.
     const hear = await value<Record<string, unknown>>(`(() => { const c = doc('hear').querySelector('.calls').closest('.step'); return {
-      title: c.querySelector('.t span').textContent.split(' ')[0], calls: [...c.querySelectorAll('.call')].map((n) => [n.querySelector('.call-label').title, n.querySelector('.call-at')?.textContent, n.hidden, n.classList.contains('decisive')]),
+      looking: c.matches('.looking'), made: [c.querySelector(':scope > .calls').nextElementSibling.matches('.made'), c.querySelector('.made-in').textContent, c.querySelector('.made-title').textContent.slice(0, 10)],
+      calls: [...c.querySelectorAll('.call')].map((n) => [callTitle(n), n.querySelector('.call-said')?.textContent ?? null, n.querySelector('.call-at')?.textContent, n.hidden, n.classList.contains('decisive')]),
+      label: c.querySelector('.call[data-call="call-10"] .call-title').title,
       more: c.querySelector('.calls > .more').textContent, raw: [...c.querySelectorAll('.call details.raw')].map((n) => [n.open, n.querySelector('summary').textContent, n.querySelector('pre').textContent.charAt(0)]).slice(1, 2),
-      pictures: c.querySelectorAll('img').length, bare: c.querySelector('.step-main').matches('.bare') && c.querySelector('.step-main').children.length === 1, inReport: !!c.querySelector('.inrep'), flat: flat('hear') }; })()`);
-    assert.deepEqual(hear, { title: 'code', calls: [
-      ['Scripted transcribe · We copy you down, Eagle. Houston, uh,', 't 0:00', false, true], ['Jev judge · 0.05', 't 0:00', false, false], ['Jev judge · 0.05', 't 0:10', false, false],
-      ['Jev judge · 0.05', 't 0:20', true, false], ['Jev judge · 0.95', 't 0:30', true, false], ['Vision see · SECOND=28', 't 0:00', true, false],
-      ['Jev judge · here 0.60 · where 0.20 · box drawn', 't 0:27', true, false], ['Jev judge · here 0.95 · where 0.90 · box drawn', 't 0:28', false, true],
-      ['Jev judge · here 0.95 · where 0.90 · box drawn', 't 0:29', true, false]],
-      more: '+ 5 more', raw: [[false, 'Raw output', '{']], pictures: 0, bare: true, inReport: true, flat: { page: 0, panes: 0 } });
-    // The judge in its accent: a judge call's card and its span, its lane's dot, a chip at the start of its line whose text
-    // stays ink; a call that is no judge carries none.
+      pictures: c.querySelectorAll('img').length, inReport: !!c.querySelector('.inrep'), flat: flat('hear') }; })()`);
+    assert.deepEqual(hear, { looking: true, made: [true, 'made in code ·', 'const film'], calls: [
+      ['Scripted transcribe', 'We copy you down, Eagle.', 't 0:00', false, true], ['Jev judge', '0.05', 't 0:00', false, false], ['Jev judge', '0.05', 't 0:10', false, false],
+      ['Jev judge', '0.05', 't 0:20', true, false], ['Jev judge', '0.95', 't 0:30', true, false],
+      ['At which second is a United States flag standing planted on the ground first seen? First line: SECOND=<whole seconds from the start of this clip>', 'SECOND=28', 't 0:00', true, false],
+      ['Jev judge', 'here 0.60 · where 0.20 · box drawn', 't 0:27', true, false], ['Jev judge', 'here 0.95 · where 0.90 · box drawn', 't 0:28', false, true],
+      ['Jev judge', 'here 0.95 · where 0.90 · box drawn', 't 0:29', true, false]],
+      label: 'Jev judge · here 0.95 · where 0.90 · box drawn', more: '+ 5 more', raw: [[false, 'Raw output', '{']], pictures: 0, inReport: true, flat: { page: 0, panes: 0 } });
+    // The judge in its accent: its span, its lane's dot, a chip at the start of its line whose text stays ink; its card is
+    // square with no bar of its own; a call that is no judge carries none.
     const PINK = 'rgb(229, 81, 186)';
     assert.deepEqual(await value(`(() => { const d = doc('hear'); const css = (n, p) => getComputedStyle(n)[p]; const judge = d.querySelector('.call[data-call="call-4"]'); const other = d.querySelector('.call[data-call="call-3"]');
       return { card: css(judge, 'borderLeftColor'), chip: [css(judge.querySelector('.judge-chip'), 'borderTopColor'), css(judge.querySelector('.judge-chip'), 'color'), judge.querySelector('.judge-chip').textContent, css(judge.querySelector('.judge-chip'), 'backgroundColor')],
         span: css(d.querySelector('.tbar[data-goto="call-4"]'), 'backgroundColor'), lane: [...d.querySelectorAll('.tl .lane')].filter((n) => n.querySelector('.judge-dot')).map((n) => n.querySelector('.ln').textContent),
         other: [css(other, 'borderLeftColor'), !!other.querySelector('.judge-chip'), css(d.querySelector('.tbar[data-goto="call-3"]'), 'backgroundColor')] }; })()`),
-      { card: PINK, chip: [PINK, 'rgb(242, 242, 242)', 'judge', 'rgba(0, 0, 0, 0)'], span: PINK, lane: ['Jev judge'], other: ['rgb(255, 135, 0)', false, 'rgb(90, 90, 98)'] });
+      { card: 'rgb(44, 44, 48)', chip: [PINK, 'rgb(242, 242, 242)', 'judge', 'rgba(0, 0, 0, 0)'], span: PINK, lane: ['Jev judge'], other: ['rgb(255, 135, 0)', false, 'rgb(90, 90, 98)'] });
+    // The agentrun.ai look: no rounded corner and no left bar anywhere, in the chat or in the agent's page.
+    assert.deepEqual(await value(`(() => { const bad = (d) => d ? [...d.querySelectorAll('*')].filter((n) => { const s = getComputedStyle(n); return parseFloat(s.borderTopLeftRadius) > 0
+      || (s.borderLeftStyle !== 'none' && parseFloat(s.borderLeftWidth) > parseFloat(s.borderRightWidth)); }).map((n) => String(n.className || n.tagName)) : [];
+      return PAGES.flatMap((id) => [...bad(doc(id)), ...bad(art(id))]); })()`), [], 'no rounded corner and no left bar, in the chat or the agent\'s page');
     // A timeline click on a folded call opens its group, scrolls to it and flashes it.
     await page.evaluate(`doc('hear').querySelector('.tl-toggle').click(); doc('hear').querySelector('.tbar[data-goto="call-11"]').click()`);
     await until(`(() => { const d = doc('hear'); const c = d.querySelector('.call[data-call="call-11"]'); return !c.hidden && c.classList.contains('flash') && inView(c, d.querySelector('.thread')); })()`, 'the folded call scrolled into view and flashed');
@@ -461,14 +484,14 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     // A call's card opens its look on the right; a click on its raw output only opens the output.
     await page.evaluate(`doc('hear').querySelector('.call[data-call="call-4"] details.raw summary').click()`);
     assert.deepEqual(await value(`[doc('hear').querySelector('.call[data-call="call-4"] details.raw').open, shown(doc('hear').querySelector('.src'))]`), [true, false]);
-    await page.evaluate(`doc('hear').querySelector('.call[data-call="call-10"] .call-label').click()`);
+    await page.evaluate(`doc('hear').querySelector('.call[data-call="call-10"] .call-title').click()`);
     await until(`doc('hear').querySelector('.src .addr')?.textContent === 'eagle-heard-and-seen.webm#t=28'`, 'the call\'s look on the right');
     assert.equal(await value(`doc('hear').querySelector('.call[aria-current="true"]')?.dataset.call`), 'call-10');
     await page.evaluate(`doc('hear').querySelector('.cite[data-look][title*="xywh"]').click()`);
     await until(`shown(doc('hear').querySelector('.src .regions'))`, 'the cited look\'s source, its region listed');
     assert.deepEqual(await value(`(() => { const d = doc('hear'); return { regions: [...d.querySelectorAll('.src .regions li')].map((n) => n.textContent), boxes: d.querySelectorAll('.src .jbox').length, pictures: d.querySelectorAll('.src img').length }; })()`),
       { regions: ['cited hereeagle-heard-and-seen.webm#t=28&xywh=percent:30.3,5.6,50.3,54.4'], boxes: 0, pictures: 0 });
-    await page.evaluate(`doc('hear').querySelector('.calls').closest('.step').querySelector('.step-main').click()`);
+    await page.evaluate(`opener(doc('hear').querySelector('.calls').closest('.step')).click()`);
     await until(`doc('hear').querySelector('.src .addr')?.textContent === 'eagle-heard-and-seen.webm#t=0,34.092'`, 'the card opens its first decisive look');
     assert.equal(await value(`doc('hear').querySelectorAll('.src video, .src img, .src .media, .src a.addr[href]').length`), 0, 'a video window that kept no frames shows no player and no frame');
     // A row's note, muted under its value; a cite of a picture the recording holds (no look) opens that picture, its
@@ -497,6 +520,12 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.deepEqual(said, { kicker: 'The run\'s final message', rows: [['arow wide', null, 'Done. The alarm is on page 2.']], strong: 'alarm', card: 'The run\'s final message.' });
     assert.deepEqual(await value(`(() => { const h = doc('said').querySelector('.atitle'); return [h.textContent.length, parseFloat(getComputedStyle(h).fontSize) <= 20, h.classList.contains('long')]; })()`), [200, true, true],
       'a long answer title takes a reading size, not the display size');
+    // Past four files, the rest sit behind a "+ N files" chip that lays them all out.
+    assert.deepEqual(await value(`(() => { const f = doc('bare').querySelector('.msg.user .files'); return [[...f.querySelectorAll('.file:not(.more-files)')].filter((n) => shown(n)).length, f.querySelector('.more-files').textContent]; })()`),
+      [4, '+ 2 files']);
+    await page.evaluate(`doc('bare').querySelector('.more-files').click()`);
+    assert.deepEqual(await value(`(() => { const f = doc('bare').querySelector('.msg.user .files'); return [[...f.querySelectorAll('.file:not(.more-files)')].filter((n) => shown(n)).map((n) => n.textContent), f.querySelector('.more-files').textContent]; })()`),
+      [['scans.pdf', 'photo-001.png', 'photo-002.png', 'photo-003.png', 'film.mp4', 'notes.txt'], 'Show less']);
     const bare = await value<Record<string, unknown>>(`(() => { const d = doc('bare'); return { report: d.querySelector('.report').textContent, link: d.querySelector('.report a')?.getAttribute('href'), card: !!d.querySelector('.doccard') }; })()`);
     assert.deepEqual(bare, { report: 'This run has no report.How this ran: every call, look and file of the run.', link: './?r=hand-bare', card: false });
 
@@ -509,40 +538,46 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       host: [m.querySelector('.host-note .host-who').textContent, m.querySelector('.host-note .host-text').textContent, !!m.querySelector('.host-note').closest('.msg.user')],
       users: [...doc('narrated').querySelectorAll('.msg.user')].map((n) => n.textContent),
       redacted: [[...m.querySelectorAll('.thought.redacted')].map((n) => [n.textContent, n.tagName]), doc('narrated').body.textContent.includes('[Reasoning redacted]')],
-      thoughts: [...m.querySelectorAll('.thought:not(.redacted)')].map((n) => [n.querySelector('.thought-title').textContent, shown(n.querySelector('.thought-title')), n.tagName,
+      thoughts: [...m.querySelectorAll('.thought:not(.redacted)')].map((n) => [n.querySelector('.thought-title')?.textContent ?? null, shown(n.querySelector('.thought-title')), n.tagName,
         shown(n.querySelector('.thought-body')), n.querySelector('.thought-body')?.textContent ?? null, n.querySelector('.thought-tag').textContent, getComputedStyle(n.querySelector('.thought-tag'), '::after').display]) }; })()`);
-    // Eight reads in a row: the first three show, the fourth folds; the fifth speaks (its look's ask), so it starts a run
-    // of its own and shows with its line, and the run after it folds again after three. A card led by a thought or the
-    // agent's words has no voice line.
-    assert.deepEqual(narrated, { order: ['who', 'thought', 'said-text', 'steps', 'host-note', 'thought redacted', 'thought', 'thought', 'said-text', 'steps'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
-      cards: [false, false, false, true, false, false, false, true, false], more: ['+ 1 more', '+ 1 more'],
-      voices: [null, null, null, null, 'askedWhat is on page 5?', null, null, null, null], host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
+    // Eight look steps of one tool in a row all show; the four searches after them, of one tool and no look, show three,
+    // the fourth behind "+ 1 more". No step draws a voice line.
+    assert.deepEqual(narrated, { order: ['who', 'thought', 'said-text', 'steps', 'host-note', 'thought redacted', 'thought', 'thought untitled', 'said-text', 'steps'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
+      cards: [false, false, false, false, false, false, false, false, false, false, false, true], more: ['+ 1 more'],
+      voices: [null, null, null, null, null, null, null, null, null, null, null, null], host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
       redacted: [[['thinking · redacted', 'DIV']], false],
       thoughts: [['Analyzing transcript data', true, 'DETAILS', false, 'I am reading page 2 before the others.', 'thinking', 'inline-block'],
-        ['Settling the answer', true, 'DIV', false, null, 'thinking', 'none'], ['Checking that the four agree', true, 'DETAILS', false, 'they do, line for line.', 'thinking', 'inline-block']] });
+        ['Settling the answer', true, 'DIV', false, null, 'thinking', 'none'], [null, false, 'DETAILS', false, 'Checking that the four agree\nthey do, line for line.', 'Thought', 'inline-block']] });
 
     // A card of a command of several lines opens with the whole command under what it found; a card with a look keeps
     // the look first and its command folded under it.
-    await page.evaluate(`[...doc('narrated').querySelectorAll('.step')].at(-1).querySelector('.step-main').click()`);
+    // Steps that only ran a command fold into one quiet line, its count and its failures; a click lays them out.
+    assert.deepEqual(await value(`(() => { const p = doc('narrated').querySelector('.plumbing'); return [p.querySelector('.plumb-line').textContent, p.querySelector('.plumb-line').getAttribute('aria-expanded'),
+      shown(p.querySelector('.plumb-steps')), p.querySelectorAll('.plumb-steps > .step').length, doc('none').querySelector('.plumb-line').textContent]; })()`),
+      ['ran 2 commands, 1 failed', 'false', false, 2, 'ran 2 commands']);
+    await page.evaluate(`doc('narrated').querySelector('.plumb-line').click()`);
+    assert.deepEqual(await value(`(() => { const p = doc('narrated').querySelector('.plumbing'); return [p.querySelector('.plumb-line').getAttribute('aria-expanded'), [...p.querySelectorAll('.plumb-steps > .step')].map((n) => shown(n))]; })()`),
+      ['true', [true, true]]);
+    await page.evaluate(`doc('narrated').querySelector('.plumb-steps > .step .step-main').click()`);
     await until(`!!doc('narrated').querySelector('.src .command pre')`, 'the command in the card\'s pane');
     assert.deepEqual(await value(`(() => { const c = doc('narrated').querySelector('.src .command'); return [c.tagName, c.querySelector('.kind').textContent, c.querySelector('pre').textContent, shown(c.querySelector('pre'))]; })()`),
       ['DIV', 'Command', COMMAND, true]);
-    await page.evaluate(`doc('hear').querySelector('.calls').closest('.step').querySelector('.step-main').click()`);
+    await page.evaluate(`opener(doc('hear').querySelector('.calls').closest('.step')).click()`);
     await until(`!!doc('hear').querySelector('.src details.command')`, 'the look\'s command, folded');
     assert.deepEqual(await value(`(() => { const c = doc('hear').querySelector('.src details.command'); return [c.open, c.querySelector('summary').textContent, c.querySelector('pre').textContent.startsWith('const film = '), c.previousElementSibling !== null]; })()`),
       [false, 'Command', true, true]);
 
     // A judge's look over two photographs that boxed a mark on the second: opened at the first, the box is on the second,
     // in the judge's accent.
-    await page.evaluate(`card('answer', 'read photos/photo-001.png').querySelector('.step-main').click()`);
+    await page.evaluate(`opener(card('answer', 'read photos/photo-001.png')).click()`);
     await until(`doc('answer').querySelectorAll('.src .media img').length === 2`, 'the look\'s two pictures');
     assert.deepEqual(await value(`[...doc('answer').querySelectorAll('.src .media')].map((m) => [m.querySelector('img').alt, [...m.querySelectorAll('.jbox')].map((b) => [b.textContent, b.style.cssText])])`),
       [['photos/photo-001.png', []], ['photos/photo-002.png', [['flag', 'left: 5%; top: 5%; width: 20%; height: 20%;']]]]);
     assert.deepEqual(await value(`(() => { const b = doc('answer').querySelector('.src .jbox'); return [getComputedStyle(b).borderTopColor, getComputedStyle(b.querySelector('span')).color]; })()`),
       ['rgb(229, 81, 186)', 'rgb(242, 242, 242)'], 'a judge\'s box in its accent, its label in ink');
 
-    // Opened by its URL (?src=), the agent's page keeps the stylesheet it links.
-    assert.equal(await value(`getComputedStyle(art('srcsheet').body).backgroundColor`), 'rgb(16, 16, 18)');
+    // Opened by its URL (?src=), the agent's page keeps the stylesheet it links; the site's palette is drawn over it.
+    assert.deepEqual(await value(`[getComputedStyle(art('srcsheet').getElementById('alarm')).letterSpacing, getComputedStyle(art('srcsheet').body).backgroundColor]`), ['1px', 'rgb(8, 8, 9)']);
 
     // Opened by its URL (?src=), "How this ran" opens the same URL in the inspection viewer, in the header and the report.
     assert.deepEqual(await value(`[doc('srcpage').querySelector('a.how').getAttribute('href'), doc('srcpage').querySelector('.report a').getAttribute('href')]`),
@@ -666,19 +701,141 @@ test('in Chrome: a timeline click to the last card of a long run lands on it, th
       const before = await value<{ waiting: number; heights: number[] }>(`(() => { const waiting = above('${id}').filter((img) => !img.complete);
         return { waiting: waiting.length, heights: [...new Set(waiting.map((img) => Math.round(img.getBoundingClientRect().height)))] }; })()`);
       assert.ok(before.waiting > 20, `${id}: most pictures above the last card are still to load (${before.waiting})`);
+      // A picture still to load holds a box; one partly in may already have its own size, so no single size is asked.
       assert.ok(before.heights.length > 0 && before.heights.every((height) => height > 0), `${id}: a picture still to load holds a box of its own (${before.heights})`);
       const target = await value<string>(`last('${id}').dataset.item`);
       await page.evaluate(`doc('${id}').querySelector('.tl-toggle').click(); doc('${id}').querySelector('.tbar[data-goto="${target}"]').click()`);
       // The jump loads the pictures above the card and centres it again once they are in: it ends on the card and stays.
-      await page.once(`above('${id}').every((img) => img.complete) && seen('${id}').inView`, 'true', 6_000, `${id}: the pictures above loaded and the last card in view`)
+      await page.once(`above('${id}').every((img) => img.complete) && seen('${id}').inView`, 'true', 12_000, `${id}: the pictures above loaded and the last card in view`)
         .catch(async (error: Error) => { throw new Error(`${error.message}: ${JSON.stringify(await value(`seen('${id}')`))}`); });
       await page.sleep(800);
       const after = await value<{ top: number; bottom: number; inView: boolean }>(`seen('${id}')`);
       assert.equal(after.inView, true, `${id}: the last card stays in view after the jump (${JSON.stringify(after)})`);
       // Once loaded, a picture's frame is the picture: its boxes stay on it.
-      assert.deepEqual(await value(`above('${id}').slice(0, 3).map((img) => [Math.round(img.getBoundingClientRect().height), img.parentElement.clientHeight])`),
-        [[96, 96], [96, 96], [96, 96]], `${id}: a loaded picture fills its frame`);
+      const filled = await value<[number, number][]>(`above('${id}').slice(0, 3).map((img) => [Math.round(img.getBoundingClientRect().height), img.parentElement.clientHeight])`);
+      assert.ok(filled.length === 3 && filled.every(([picture, frame]) => picture > 0 && picture === frame), `${id}: a loaded picture fills its frame (${JSON.stringify(filled)})`);
     }
+  } finally {
+    await page.close();
+  }
+});
+
+test('in Chrome: a reader who scrolls away while the pictures above a jumped-to card still load keeps their place, at 390 and 1440', IN_CHROME, async (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-jump-away-'));
+  const held: { page?: Awaited<ReturnType<typeof drivenPage>>; server?: ReturnType<typeof createServer> } = {};
+  // While `holding`, every picture's response waits until `release()`.
+  let holding = false;
+  const pending: (() => void)[] = [];
+  const release = () => { holding = false; for (const send of pending.splice(0)) send(); };
+  t.after(() => closeAll(held.page ? [held.page] : [], () => {
+    release();
+    held.server?.closeAllConnections();
+    held.server?.close();
+    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }), { timeout: 20_000 });
+  writeMany(join(out, 'recordings', 'many'));
+  build(join(out, 'dist'), join(out, 'recordings'), { files: true });
+  writeFileSync(join(out, 'dist', 'harness.html'), JUMP);
+  const TYPES: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.css': 'text/css' };
+  const server = createServer((request, response) => {
+    const file = join(out, 'dist', decodeURIComponent(new URL(request.url!, 'http://localhost').pathname));
+    if (!file.startsWith(join(out, 'dist')) || !existsSync(file) || !extname(file)) { response.writeHead(404).end(); return; }
+    const send = () => response.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' }).end(readFileSync(file));
+    if (holding && extname(file) === '.png') pending.push(send);
+    else send();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  held.server = server;
+  const page = await drivenPage(`http://127.0.0.1:${(server.address() as AddressInfo).port}/harness.html`, join(out, 'profile'), { signal: t.signal });
+  held.page = page;
+  const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
+  // The element that scrolls the thread: the thread pane at 1440, the page at 390.
+  const scroller = (id: string) => `((d) => { for (let at = last('${id}').parentElement; at && at !== d.documentElement; at = at.parentElement) {
+    const y = d.defaultView.getComputedStyle(at).overflowY; if ((y === 'auto' || y === 'scroll') && at.scrollHeight > at.clientHeight) return at; } return d.scrollingElement; })(doc('${id}'))`;
+  try {
+    await page.once(`ready('wide') && ready('phone')`, 'true', 20_000, 'both pages drawn');
+    for (const id of ['phone', 'wide']) {
+      holding = true;
+      const target = await value<string>(`last('${id}').dataset.item`);
+      await page.evaluate(`doc('${id}').querySelector('.tl-toggle').click(); doc('${id}').querySelector('.tbar[data-goto="${target}"]').click()`);
+      await page.once(`seen('${id}').inView`, 'true', 8_000, `${id}: the jump lands on the last card`);
+      assert.ok(await value<boolean>(`above('${id}').some((img) => !img.complete)`), `${id}: pictures above the card are still to load when the reader moves`);
+      // The reader turns the wheel and goes back to the top while the pictures still load; then they all come in.
+      await page.evaluate(`(() => { const at = ${scroller(id)}; at.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -4000 })); at.scrollTop = 0; })()`);
+      release();
+      await page.once(`above('${id}').every((img) => img.complete)`, 'true', 12_000, `${id}: the pictures above the card loaded`);
+      await page.sleep(2_000);
+      const kept = await value<{ top: number; seen: { inView: boolean } }>(`({ top: Math.round(${scroller(id)}.scrollTop), seen: seen('${id}') })`);
+      assert.ok(kept.top < 40 && !kept.seen.inView, `${id}: the page stays where the reader took it (${JSON.stringify(kept)})`);
+    }
+  } finally {
+    await page.close();
+  }
+});
+
+/** The hand run with the film look's pictures set to `images` (shas), and `extra` written beside the run's own blobs. */
+function writeFilmPictures(dir: string, images: string[], extra: Buffer[]) {
+  const run = handRun(true).map((line): Line => {
+    if (line.kind !== 'vision.looks') return line;
+    const data = line.data as { value: { looks: { record: { facts: { key: string } }; images: unknown[] }[] } };
+    if (!data.value.looks.some((look) => look.record.facts.key === K.film)) return line;
+    const looks = data.value.looks.map((look) => (look.record.facts.key === K.film ? { ...look, images } : look));
+    return { ...line, data: { ...data, value: { ...data.value, looks } } } as Line;
+  });
+  writeRecording(dir, run);
+  for (const bytes of extra) writeFileSync(join(dir, 'blobs', `${sha256(bytes)}.png`), bytes);
+}
+
+const THUMBS = `<!doctype html><body style="margin:0">
+<iframe id="lit" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=lit"></iframe>
+<iframe id="dark" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=dark"></iframe>
+<script>
+const doc = (id) => document.getElementById(id).contentDocument;
+const card = (id) => doc(id)?.querySelector('.call[data-look="${K.film}"]');
+const thumb = (id) => card(id)?.querySelector('.thumb img')?.getAttribute('src') ?? '';
+const loaded = (id) => { const img = card(id)?.querySelector('.thumb img'); return !!img && img.complete && img.naturalWidth > 0; };
+</script></body>`;
+
+test('in Chrome: a look card passes over a near-black first picture to the first lit one, keeps the first when all are dark, and the opened look shows every picture', IN_CHROME, async (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-thumb-'));
+  const held: { page?: Awaited<ReturnType<typeof drivenPage>>; server?: ReturnType<typeof createServer> } = {};
+  t.after(() => closeAll(held.page ? [held.page] : [], () => {
+    held.server?.closeAllConnections();
+    held.server?.close();
+    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }), { timeout: 20_000 });
+  // A film's leader: two near-black frames (mean brightness under 16 of 255).
+  const NIGHT = png(64, 40, () => [6, 6, 8]);
+  const DUSK = png(64, 40, () => [12, 10, 9]);
+  const night = sha256(NIGHT);
+  writeFilmPictures(join(out, 'recordings', 'lit'), [night, FILM[1]!, FILM[2]!], [NIGHT]);
+  writeFilmPictures(join(out, 'recordings', 'dark'), [night, sha256(DUSK)], [NIGHT, DUSK]);
+  build(join(out, 'dist'), join(out, 'recordings'), { files: true });
+  writeFileSync(join(out, 'dist', 'harness.html'), THUMBS);
+  const TYPES: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.css': 'text/css' };
+  const server = createServer((request, response) => {
+    const file = join(out, 'dist', decodeURIComponent(new URL(request.url!, 'http://localhost').pathname));
+    if (!file.startsWith(join(out, 'dist')) || !existsSync(file) || !extname(file)) { response.writeHead(404).end(); return; }
+    response.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' }).end(readFileSync(file));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  held.server = server;
+  const page = await drivenPage(`http://127.0.0.1:${(server.address() as AddressInfo).port}/harness.html`, join(out, 'profile'), { signal: t.signal });
+  held.page = page;
+  const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
+  try {
+    await page.once(`!!card('lit') && !!card('dark')`, 'true', 30_000, 'the film look\'s card in both runs');
+    for (const id of ['lit', 'dark']) await page.evaluate(`card('${id}').scrollIntoView({ block: 'center' })`);
+    // The lit look's card ends on its first lit picture (the frame after the leader); the dark look's keeps its first.
+    await page.once(`thumb('lit').includes('${FILM[1]}') && loaded('lit') && loaded('dark')`, 'true', 30_000, 'the lit look\'s card on its first lit picture');
+    await page.sleep(1500);
+    assert.deepEqual(await value(`[thumb('lit').includes('${FILM[1]}'), thumb('dark').includes('${night}')]`), [true, true],
+      'a near-black first picture gives way to the first lit one; when every picture is dark the first stays');
+    // Opened, the look's strip holds every frame, the leader first.
+    await page.evaluate(`card('lit').click()`);
+    await page.once(`doc('lit').querySelectorAll('.src .strip img').length >= 3`, 'true', 15_000, 'the opened look\'s frames');
+    const opened = await value<string[]>(`[...doc('lit').querySelectorAll('.src .strip img')].map((img) => img.getAttribute('src'))`);
+    assert.deepEqual([night, FILM[1]!, FILM[2]!].map((sha) => opened.findIndex((src) => src.includes(sha))), [0, 1, 2], 'the opened look keeps every picture in its order');
   } finally {
     await page.close();
   }

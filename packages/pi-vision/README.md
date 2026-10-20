@@ -1,21 +1,27 @@
 # @parcha/pi-vision
 
-Eyes for pi agents: an agent can read a document, look at a picture, a scan or a video, and write down what a recording
-says. Every look comes back with its answer and its price, and a look that cannot be made says why.
+pi-vision lets a pi agent read documents, look at pictures, scans and videos, and write down what a recording says.
+Each look (one question a vision model answers about a picture, a page or a window of film) comes back with its answer
+and its price, and a look that cannot be made says why.
 
 ## Try it
 
-Free, on scripted models: no key, no network. From a checkout of this repository, with Node 22.19 or later:
+Free, on scripted models: no key, no network. From a checkout of this repository, with Node 22.19 or later, and with
+`ffmpeg`, `ffprobe`, `pdftoppm` and `pdftotext` on your path (`brew install ffmpeg poppler`, or
+`sudo apt-get install ffmpeg poppler-utils`):
 
 ```sh
 npm ci --ignore-scripts && npm run build
 npm run demo:vision -- examples/document-check
 ```
 
-[`examples/vision-agent`](https://github.com/Parcha-ai/agentrun/tree/main/examples/vision-agent) is one agent that answers any question about a set of files. `document-check`
-asks it which of six marks a certified copy carries and where. On scripted models the agent takes one look at the first file
-and says its answer is scripted; the run still shows the whole path and writes the report. Every example runs the same way:
-`npm run demo:vision -- examples/<folder>`.
+[`examples/vision-agent`](https://github.com/Parcha-ai/agentrun/tree/main/examples/vision-agent) is one agent that answers questions about a set of files. `document-check`
+asks it which of six marks a certified copy carries and where. On scripted models (the free run's stand-ins for every
+model) the agent takes one look at the first file and says its answer is scripted; the run still shows the whole path and
+writes the report. `document-check` commits its two PDFs and `lake-mead` its thirteen images, so they run as above. The
+six other examples fetch their files first: add `--fetch-sources` (`video-chapters` and `hear-and-find` 120 MB each,
+`apollo-descent` 211 MB, `boulder-chapters` 218 MB, `market-street` 227 MB, `fair-robot` 342 MB), as in
+`npm run demo:vision -- examples/fair-robot --fetch-sources`.
 
 ## Go live
 
@@ -27,23 +33,25 @@ The agent runs shell commands with your user's rights on your machine: use a con
 
 - `GEMINI_API_KEY` ([aistudio.google.com](https://aistudio.google.com)), for the model that runs the agent and the model
   that looks;
-- `TYPESAFE_API_KEY` ([console.typesafe.ai/keys](https://console.typesafe.ai/keys)), for Jev, the judge that answers
-  yes-or-no, choice, count and box questions; needed unless a gateway that passes TypeSafe through is set
-  (`VIDEO_MODEL_BASE_URL` with `VIDEO_MODEL_API_KEY`, which is then Jev's key);
-- `FAL_KEY`, only for a question about speech (`hear-and-find`);
-- the programs `ffmpeg`, `ffprobe`, `pdftoppm` and `pdftotext` on your path.
+- `TYPESAFE_API_KEY` ([console.typesafe.ai/keys](https://console.typesafe.ai/keys)), for Jev, TypeSafe's judge model
+  that answers yes-or-no, choice, count and box questions; needed unless a gateway (an OpenAI-compatible endpoint that
+  serves every model, named by `VIDEO_MODEL_BASE_URL` with `VIDEO_MODEL_API_KEY`) passes TypeSafe through, and then the
+  gateway's key is Jev's;
+- `FAL_KEY` ([fal.ai](https://fal.ai)): optional. With it the agent can transcribe the film's speech; without it, it works
+  from the picture alone;
+- the same four programs as a free run.
 
-One measured live `document-check` cost about $0.54 and took about 8 minutes; a run's cost and time vary.
-[`examples/vision-agent`](https://github.com/Parcha-ai/agentrun/tree/main/examples/vision-agent) lists every flag and key.
+One measured live `document-check` cost about $0.54 and took about 8 minutes; a run's cost and time vary. A run stops
+past $1 unless `--max-usd <n>` sets another cap. [`examples/vision-agent`](https://github.com/Parcha-ai/agentrun/tree/main/examples/vision-agent) lists every flag and key.
 
 ## It runs inside a pi-durable host
 
-pi-vision is a library, not a command line. It is an extension for a pi-durable host: a process that opens an agent with
+pi-vision is a library, not a command line: an extension for a pi-durable host, a process that opens an agent with
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable), [chord](https://www.npmjs.com/package/@earendil-works/chord)
 and [pi-ai](https://www.npmjs.com/package/@earendil-works/pi-ai) and installs this package's extension.
 [`examples/reference`](https://github.com/Parcha-ai/agentrun/tree/main/examples/reference) is such a host, and
 [what a host supplies](https://github.com/Parcha-ai/agentrun/blob/main/docs/reference-host.md) says what each package asks
-of one. There is no pi coding-agent extension and no command line: a plain `pi install npm:@parcha/pi-vision` loads only
+of one. There is no pi coding-agent extension: a plain `pi install npm:@parcha/pi-vision` loads only
 the skills, and the `vision.see` they call is not defined there.
 
 ## What it does
@@ -84,7 +92,7 @@ transcript, the photographs and the film), [`boulder-chapters`](https://github.c
 - **Node 22.19 or later, and ESM.** The package is ESM only: `import` it. `require("@parcha/pi-vision")` is not
   supported.
 - **A pi-durable host**, as above. A host whose `read` is its own calls `handle.read` and `handle.fit` with
-  `nodeVisionEnv`, as the first read below does; it needs no Harness for that.
+  `nodeVisionEnv`, as the first read below does; it needs no pi-durable Harness for that.
 - **Nothing more for documents.** A PDF's text, an office document and a spreadsheet read with nothing installed. Images
   want Photon (`@silvia-odwyer/photon-node`), video wants ffmpeg, and a look at an image or a scan that the model running
   the agent cannot see wants a model that sees, and its key.
@@ -92,27 +100,14 @@ transcript, the photographs and the film), [`boulder-chapters`](https://github.c
 ## Status
 
 Published on npm under the `beta` tag, at the workspace version with this repository's other packages: install it with
-`@beta`. Parts not built yet throw `NotBuiltError`, never a half answer.
+`@beta`. Everything this README describes is built; a part that is not throws `NotBuiltError`, never a half answer.
 
-| Part | Status |
-| --- | --- |
-| The model contract: `read`'s media arguments and description, `vision.see`, the section, the miss codes | built |
-| The host contract's types, the environment port, budgets (`resolveLimits`), fragments, the provider interface | built |
-| The test kit (`./testing`): fake eyes, fixtures, the provider conformance suite | built |
-| The test kit's builders of synthetic documents, images and spreadsheets | built |
-| The test kit's leak check: sentinels, a scanner, the limits every image block must meet | built |
-| The planner | built |
-| Images: kinds, fit, tiles, Photon and sharp processors | built |
-| PDF: facts, text, pages, poppler | built |
-| Office documents and spreadsheets, LibreOffice | built |
-| Video: probe, frames by seek, windows, ffmpeg | built |
-| `read`'s media half with the package's own reader for every kind, the guard, the eyes on pi-ai, receipts and misses | built |
-| The pi-durable adapter, the Node environment and eyes on pi's `Models` | built |
-| `vision.see` for a host's code mode, and the `look` skill | built |
-| `vision.judge` (Jev's choice, noul, score and box answers) and Jev's image limits in the fit | built |
-| The `verify` skill (`skills/verify/SKILL.md`): whether a PDF has each mark a checklist file names (a seal, a signature, a stamp, two numbers that agree), yes or no, with its box on its page (`file.pdf#page=N&xywh=percent:...`); another kind of document is another checklist | built |
-| The `report` skill (`skills/report/SKILL.md`): ends a run with the agent's own script-free HTML report, `report/index.html`: the answer first, the evidence for every finding and a thumbnail for every row (the document page with its mark boxed and a close crop, the film moment's frame and a short clip, the photo), every claim cited to the file's own page, second or region (`file.pdf#page=3`, `film.mp4#t=18,26`, `#xywh=percent:...`) with the look it rests on | built |
-| The report's check, which the agent runs before it stops, and its $0 test (`test/binaries/report-skill.test.mjs`): no script and no network, every file present, within budget and without metadata, every cite well formed and resolving to a look, every cited document page embedded with its marks and a close crop of each, no markdown pasted into the text | built |
+## Known limits
+
+- A recording source a host passes without `owns()` is readable by every conversation in the run; give it `owns()`
+  when conversations must not share recordings. (A recording source, in `VisionOptions.sources`, lets `read` answer a
+  question about a recording by its handle, such as a browser session's; the host's `allow` still applies to every
+  read.)
 
 ## A first read, with no key
 
@@ -160,7 +155,8 @@ A3=2 | B3=99.99 | C3=199.98 {=B3*2} | D3=<no stored value> {=SUM(B$2:B3)}
 A cell shows its value, its formula and whether a value was stored; the 16-digit number stays digits. A PDF's text and
 an office document's read the same way with nothing installed. An image is fitted to the model's limits by Photon
 (`@silvia-odwyer/photon-node`) when it is installed, and without it the read is a `needs` miss that says so. `model`
-is the lead's model as pi-ai describes it, which sets the limits; with none, the defaults hold.
+is the lead's model (the model that runs the agent) as pi-ai describes it, which sets the limits; with none, the
+defaults hold.
 
 ## Entries
 
@@ -274,7 +270,7 @@ export const codeMode: Extension = {
     },
   }],
 };
-// The host installs both before it opens the Harness: registry.install(vision.extension); registry.install(codeMode);
+// The host installs both before it opens pi-durable's Harness: registry.install(vision.extension); registry.install(codeMode);
 ```
 
 A global is not a tool: the model's tool list does not change, and the sandbox's declarations carry its doc comment and
@@ -430,9 +426,11 @@ npm run verify:tarball -w @parcha/pi-vision   # packs, installs and imports ever
 npm run bench -w @parcha/pi-vision            # the free bench on synthetic files
 ```
 
-Tests import the built package, so build before running one file with `node --test`. Every fixture is built by the
-test that uses it; no real document is ever committed. On a busy machine, `TEST_CONCURRENCY=N` (or
-`-- --concurrency N` after either test script) caps how many test files run at once; unset, Node's default holds.
+Tests import the built package, so build before running one file with `node --test`. The package's tests build their
+fixtures, apart from one 20-second public-domain clip ([`ASSETS.md`](https://github.com/Parcha-ai/agentrun/blob/main/ASSETS.md)),
+and commit no document. (The examples do commit public inputs: `document-check`'s pages of a certified copy from a public
+SEC filing.) On a busy machine, `TEST_CONCURRENCY=N` (or `-- --concurrency N` after either test script) caps how many
+test files run at once; unset, Node's default holds.
 
 The live eyes check, two paid looks through pi-ai (about a cent) and never part of `npm test` or CI, runs from the
 repository root after a build: `PI_VISION_LIVE_EYES=<provider>/<model id> node packages/pi-vision/test/live/eyes.mjs`,

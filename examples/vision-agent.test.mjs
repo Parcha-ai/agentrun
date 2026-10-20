@@ -6,8 +6,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -16,6 +17,9 @@ import { argvFor, options } from './vision-agent/run.ts';
 import { scriptFor } from './vision-agent/fakes.ts';
 import { jevKeyOf, jevOptionsOf, liveParts, missingKeys, namedModels, preflight } from './vision-agent/live.ts';
 import { demo } from '@parcha/agentrun-harness';
+import { createVisionExtension } from '@parcha/pi-vision/durable';
+import { nodeVisionEnv } from '@parcha/pi-vision/node';
+import { pngBytes } from '@parcha/pi-vision/testing';
 
 const PROGRAMS = (() => { try { for (const cmd of ['ffmpeg', 'ffprobe', 'pdftoppm']) execFileSync(cmd, [cmd === 'pdftoppm' ? '-v' : '-version'], { stdio: 'ignore' }); return false; } catch { return 'ffmpeg, ffprobe and pdftoppm are needed'; } })();
 const EXAMPLES = ['video-chapters', 'hear-and-find', 'document-check', 'apollo-descent', 'boulder-chapters', 'fair-robot', 'lake-mead', 'market-street'];
@@ -27,6 +31,18 @@ async function go(tmp, argv, env = {}) {
 }
 const statusOf = (run) => run.processes.at(-1)?.outcome?.status;
 const stderrOf = (run) => run.processes.map((process) => `${process.outcome?.message ?? ''}\n${process.stderr}`).join('\n');
+
+test('the lake-mead run is given its map key as a file: inputs.json lists map-key.md, and the job copies it into the workspace', () => {
+  const example = exampleAt('lake-mead');
+  const key = example.items.find((item) => item.path === 'map-key.md');
+  assert.ok(key, 'inputs.json lists map-key.md as a committed file');
+  assert.ok(inputOf(example).files.includes('map-key.md'), 'the run is told of it');
+  const bytes = readFileSync(join(example.dir, 'map-key.md'));
+  assert.deepEqual([bytes.length, sha256(bytes)], [key.bytes, key.sha256]);
+  assert.match(bytes.toString(), /\| Overton Arm \|/);
+  process.env.INPUT = JSON.stringify({ example: 'lake-mead' });
+  try { assert.deepEqual([...jobOf().files['map-key.md']], [...bytes], 'the job carries it as the run\'s own file'); } finally { delete process.env.INPUT; }
+});
 
 test('each example is a question, its files with their sources and checks, and a README; nothing in it is code', () => {
   const assets = readFileSync(join(import.meta.dirname, '..', 'ASSETS.md'), 'utf8');
@@ -68,6 +84,44 @@ test('Jev goes through the gateway\'s /typesafe when a gateway is set, else TYPE
   assert.equal('baseURL' in jevOptionsOf(key), false, 'no gateway and no base: the SDK\'s own address');
   assert.equal(jevOptionsOf(key).apiKey, 'not-a-secret');
   assert.ok(options.spec.keys.some((entry) => entry.env === 'TYPESAFE_BASE_URL'), 'declared, so a live child gets it');
+});
+
+// Every request Jev gets from a live run, as it reaches the wire: vision.judge through the live parts' runner, wired as the
+// host's judge seam wires it. A fake TypeSafe on 127.0.0.1 keeps each request's headers and model, and answers each
+// question in its own type. An image or a box carries TypeSafe's images header; a text-only judgment (the report skill's
+// grounding step) carries none; each asks jev-1.14.0, the Jev that answers a box.
+test('on a live run Jev is asked for jev-1.14.0 on every judgment, with the images header exactly when it carries an image or a box', async (t) => {
+  const seen = [];
+  const server = createServer((request, response) => {
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', async () => {
+      const type = request.headers['content-type'] ?? '';
+      const body = Buffer.concat(chunks);
+      const part = type.startsWith('multipart/form-data') ? (await new Response(body, { headers: { 'content-type': type } }).formData()).get('request') : body.toString('utf8');
+      const sent = JSON.parse(typeof part === 'string' ? part : await part.text());
+      seen.push({ header: request.headers['typesafe-danger-zone-images'], model: sent.model, types: Object.values(sent.questions).map((question) => question.type) });
+      const answers = Object.fromEntries(Object.entries(sent.questions).map(([name, question]) => [name, question.type === 'box' ? { type: 'box', box: { top: 0.1, bottom: 0.5, left: 0.2, right: 0.6 }, confidence: 0.9 } : { type: 'noul', noul: 0.9 }]));
+      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ answers, model: 'jev-1.14', usage: { input_tokens: 10, output_tokens: 1 } }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const env = { TYPESAFE_API_KEY: 'not-a-secret', GEMINI_API_KEY: 'not-a-secret', TYPESAFE_BASE_URL: `http://127.0.0.1:${server.address().port}` };
+  const runJudge = liveParts({ env, models: {} }).host.decisions.runJudge;
+  const tmp = await scratch(t);
+  writeFileSync(join(tmp, 'page.png'), pngBytes(400, 300));
+  const vision = createVisionExtension({ jev: { judge: (params) => runJudge(params) }, evidence: { file: async () => ({ path: 'evidence/judge.md' }) }, scope: () => ({ label: 'judge', deriveDir: '.vision' }) });
+  const judge = (request) => vision.judge(nodeVisionEnv({ cwd: tmp }), { conversationId: 'c', callId: String(seen.length) }).execute(request);
+  await judge({ paths: ['page.png'], questions: { seal: { type: 'noul', instructions: 'Is there a seal on `images[0].image`?' } } });
+  const boxed = await judge({ paths: ['page.png'], fragments: ['doc.pdf#page=1'], questions: { seal: { type: 'box', instructions: 'the seal on `images[0].image`' } } });
+  await judge({ state: { claims: { t0: 'The seal is on page 1.' }, evidence: { 'doc.pdf#page=1': 'A round seal at the foot of the page.' } }, questions: { t0: { type: 'noul', instructions: 'Does the evidence state every name, time and number in t0?' } } });
+  assert.deepEqual(seen, [
+    { header: 'true', model: 'jev-1.14.0', types: ['noul'] },
+    { header: 'true', model: 'jev-1.14.0', types: ['box'] },
+    { header: undefined, model: 'jev-1.14.0', types: ['noul'] },
+  ], 'an image and a box carry the header, a text-only judgment none; every one asks jev-1.14.0');
+  assert.match(boxed.answers.seal.fragment, /^doc\.pdf#page=1&xywh=percent:/, 'the box comes back as a region of the page it was asked about');
 });
 
 // A live run's keys, told before anything starts. Every value here is a made-up string: no network, no model.
@@ -182,6 +236,21 @@ test('on fakes a film question runs over a film given beside it, and the report 
   const manifest = JSON.parse(readFileSync(join(tmp, 'recording', 'manifest.json'), 'utf8'));
   const kept = JSON.parse(readFileSync(join(tmp, 'recording', 'blobs', `${manifest.result.blob}.json`), 'utf8'));
   assert.deepEqual(kept.rows[0].cites.map((cite) => [cite.fragment, cite.note]), [['#t=1', '1 s']]);
+});
+
+test('on fakes Lake Mead runs over its committed still images at $0 and ends with a report that cites the first image', { timeout: 300_000, skip: PROGRAMS }, async (t) => {
+  const tmp = await scratch(t);
+  const record = join(tmp, 'recording');
+  const run = await go(tmp, ['--record', record, ...argvFor(['examples/lake-mead']).filter((arg, i, all) => i >= all.indexOf('--input'))], {});
+  assert.equal(statusOf(run), 'complete', stderrOf(run));
+  assert.equal(run.usd, 0);
+  assert.match(run.record.answer, /^\(scripted\) One look at lake-mead-1984-05-15\.jpg/);
+  const manifest = JSON.parse(readFileSync(join(record, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.example, 'lake-mead');
+  const kept = JSON.parse(readFileSync(join(record, 'blobs', `${manifest.result.blob}.json`), 'utf8'));
+  assert.equal(kept.report.page, 'report/index.html');
+  assert.ok(existsSync(join(record, 'blobs', `${kept.report.files['frames/one.png']}.png`)), 'the picture the report shows is a blob too');
+  assert.deepEqual(kept.rows[0].cites.map((cite) => [cite.fragment, cite.note]), [['', 'the image']]);
 });
 
 // The report skill writes report/index.html, so the scripted lead and the fallback prompt do too: one name, fakes and live alike.
@@ -350,4 +419,99 @@ test('on fakes the command with --thinking high carries it into the workflow the
   const plain = recorded('plain', []);
   assert.match(plain, /"tools":\["code"\],"thinking":"medium","state"/);
   assert.doesNotMatch(plain, /"thinking":"high"/);
+});
+
+// The example folder is the one token that is neither a flag nor a flag's value. A rule of "not after a --flag" took every flag for
+// one that takes a value, so a folder after a switch (--live) was silently skipped and the run asked the default question.
+const folderInput = (argv) => JSON.parse(argv.at(-1));
+
+test('the example folder is found wherever it sits among the flags: after a switch, after a flag and its value, or first', () => {
+  const doc = inputOf(exampleAt('document-check'));
+  const places = [
+    ['--live', 'examples/document-check'],
+    ['--max-usd', '3', 'examples/document-check'],
+    ['--max-usd=3', 'examples/document-check'],
+    ['--record', 'r', '--live', 'examples/document-check'],
+    ['--model', 'google/gemini-3.8-flash', '--fetch-sources', 'examples/document-check'],
+    ['--see-also', 'a', '--see-also', 'b', 'examples/document-check'],
+    ['--live', '--thinking', 'high', 'examples/document-check'],
+    ['--thinking', 'high', '--live', 'examples/document-check'],
+    ['examples/document-check', '--live', '--max-usd', '3'],
+  ];
+  for (const args of places) {
+    const argv = argvFor(args);
+    assert.deepEqual(folderInput(argv).example, 'document-check', `${args.join(' ')}: the folder is the example`);
+    assert.deepEqual(folderInput(argv).files, doc.files);
+    assert.ok(!argv.includes('examples/document-check'), `${args.join(' ')}: the folder is taken out of the arguments`);
+  }
+  assert.deepEqual(argvFor(['--live', 'examples/document-check']).slice(0, 1), ['--live'], 'a switch stays');
+  assert.deepEqual(folderInput(argvFor(['examples/document-check', '--live', '--thinking', 'high'])), { ...doc, thinking: 'high' }, 'the folder first, as before');
+  const same = argvFor(['--record', 'examples/document-check', 'examples/document-check']);
+  assert.deepEqual(same.slice(0, 2), ['--record', 'examples/document-check'], 'a value that spells the folder is still the flag\'s value');
+  assert.equal(folderInput(same).example, 'document-check');
+});
+
+test('the flags that take a value are the host\'s string options and --thinking: no flag the host reads is taken for the other kind', () => {
+  const host = readFileSync(join(import.meta.dirname, '..', 'packages', 'harness', 'src', 'demo.ts'), 'utf8');
+  const table = host.match(/const FLAGS = (\{.*?\}) as const;/s)?.[1];
+  assert.ok(table, 'demo.ts still declares its FLAGS table where this test reads it');
+  const flags = [...table.matchAll(/'?([a-z-]+)'?: \{ type: '(boolean|string)'/g)].map((match) => [match[1], match[2]]);
+  assert.ok(flags.length >= 15 && flags.some(([name]) => name === 'live') && flags.some(([name]) => name === 'max-usd'));
+  for (const [name, type] of [...flags, ['thinking', 'string']]) {
+    const args = type === 'string' ? [`--${name}`, name === 'thinking' ? 'high' : 'v', 'examples/document-check'] : [`--${name}`, 'examples/document-check'];
+    assert.equal(folderInput(argvFor(args)).example, 'document-check', `--${name} (${type}) then the folder: the folder is the example`);
+  }
+});
+
+test('a folder that cannot be placed is refused before anything starts, never ignored: a second folder, a stray token, a folder that is not an example', async (t) => {
+  assert.throws(() => argvFor(['examples/document-check', 'examples/video-chapters']), /^Error: one example folder at a time: examples\/document-check, examples\/video-chapters$/);
+  assert.throws(() => argvFor(['--live', 'examples/document-check', '--max-usd', '3', 'examples/video-chapters']), /one example folder at a time/);
+  assert.throws(() => argvFor(['--live', '3']), /^Error: 3: not an example folder/);
+  const missing = (() => { try { argvFor(['examples/nowhere']); } catch (error) { return error.message; } })();
+  assert.match(missing, /^examples\/nowhere: not an example folder/);
+  assert.doesNotMatch(missing, /\/home\/|ENOENT/, 'a message, not a stack or a path of this machine');
+  const dir = await scratch(t);
+  const record = join(dir, 'recording');
+  const ran = command(dir, ['examples/document-check', 'examples/video-chapters', '--record', record].map((arg) => (arg.startsWith('examples/') ? join(import.meta.dirname, '..', arg) : arg)), {});
+  assert.notEqual(ran.status, 0);
+  assert.match(ran.stderr, /^one example folder at a time: .*document-check, .*video-chapters\n$/);
+  assert.doesNotMatch(ran.stderr, /\n.+\n/, 'one line');
+  assert.doesNotMatch(`${ran.stdout}${ran.stderr}`, /cost:|recording:|run directory:|stopped:/);
+  assert.deepEqual(readdirSync(dir), [], 'nothing was written');
+  assert.equal(existsSync(record), false);
+});
+
+test('a folder outside examples/ that exists, and a partly made example, are refused in one line: no stack from the module\'s import, no raw ENOENT', async (t) => {
+  const dir = await scratch(t);
+  mkdirSync(join(dir, 'document-check'));
+  const outside = join(dir, 'document-check');
+  const ran = command(dir, ['--live', outside], {});
+  assert.notEqual(ran.status, 0);
+  assert.equal(ran.stderr, `${outside}: an example is a folder under examples/; for files elsewhere, give --input with the question and the files\n`);
+  assert.doesNotMatch(ran.stdout, /\S/);
+  assert.deepEqual(readdirSync(dir), ['document-check'], 'nothing was written');
+  // An example with a question and no inputs: the check names both files, so it asks for both.
+  const partial = join(import.meta.dirname, `zz-partial-${process.pid}`);
+  mkdirSync(partial);
+  try {
+    writeFileSync(join(partial, 'question.md'), 'What is in these files?');
+    const message = (() => { try { argvFor([partial]); } catch (error) { return error.message; } })();
+    assert.match(message, /: not an example folder \(an example is a folder under examples\/ with a question\.md and an inputs\.json\)$/);
+    assert.doesNotMatch(message, /ENOENT/);
+    const refused = command(dir, [partial], {});
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /^[^\n]*: not an example folder \(.*inputs\.json\)\n$/);
+  } finally { rmSync(partial, { recursive: true, force: true }); }
+});
+
+test('on fakes a folder after a switch is the run\'s example: the command asks the folder\'s question over its committed files', { timeout: 300_000, skip: PROGRAMS }, async (t) => {
+  const tmp = await scratch(t);
+  const dir = join(tmp, 'run');
+  mkdirSync(dir);
+  const record = join(dir, 'recording');
+  const ran = command(dir, ['--json', join(import.meta.dirname, '..', 'examples', 'document-check'), '--record', record], {});
+  assert.equal(ran.status, 0, `${ran.stdout}\n${ran.stderr}`);
+  const events = readFileSync(join(record, 'events.jsonl'), 'utf8');
+  assert.match(events, /"example":"document-check"/, 'the example reached the run\'s input');
+  assert.match(events, /aveo-ex3-1-pages-1-4\.pdf/, 'and its committed files reached the workspace');
 });

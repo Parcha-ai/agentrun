@@ -21,7 +21,7 @@ jobs:
   publish:
     if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     environment: npm-release
     permissions:
       contents: read

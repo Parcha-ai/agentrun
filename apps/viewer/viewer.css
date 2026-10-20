@@ -1,24 +1,25 @@
 /* The run viewer's styles (index.html), a file of the page's own origin so its policy allows no inline style. */
+  /* The agentrun.ai look: square corners everywhere. */
+  *, *::before, *::after { border-radius: 0 !important; }
+  /* The agentrun.ai palette and type by default; a framing page may ask for the light one (embed protocol). */
   :root {
+    color-scheme: dark;
+    --bg: #080809; --panel: #111113; --ink: #f2f2f2; --muted: #a4a4ad; --rule: #2c2c30;
+    --band-0: #23493a; --band-1: #2c3560; --band-2: #5a4421; --band-3: #4a3058;
+    --kill: #e5484d; --done: #8ec9ac; --open: #ff8700; --failed: #e5484d; --focus: #b4a0ff;
+    --token: #ff8700; --token-ink: #080809; --glow: rgba(255, 135, 0, 0.4);
+    --sans: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
     --bg: #fbfaf7; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --rule: #dedbd3;
     --band-0: #cfe3d9; --band-1: #d7dcf0; --band-2: #f0e2c9; --band-3: #e6d4ec;
     --kill: #c8322a; --done: #3b7d5c; --open: #c79a2b; --failed: #c8322a; --focus: #2f5fd0;
     --token: #e8a317; --token-ink: #2a1c00; --glow: rgba(232, 163, 23, 0.45);
   }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --bg: #151514; --panel: #1f1f1d; --ink: #ecebe6; --muted: #a3a19a; --rule: #3a3935;
-      --band-0: #23493a; --band-1: #2c3560; --band-2: #5a4421; --band-3: #4a3058;
-      --token: #f2b73a; --glow: rgba(242, 183, 58, 0.4);
-    }
-  }
-  /* A framing page may choose the theme (embed protocol): dark here whatever the system's. */
-  :root[data-theme="dark"] {
-    --bg: #151514; --panel: #1f1f1d; --ink: #ecebe6; --muted: #a3a19a; --rule: #3a3935;
-    --band-0: #23493a; --band-1: #2c3560; --band-2: #5a4421; --band-3: #4a3058;
-  }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 var(--sans); }
+  h1, h2, h3 { font-family: var(--mono); font-weight: 500; }
   #viewer { max-width: 1200px; margin: 0 auto; padding: 16px; }
   html.embed #viewer { max-width: none; margin: 0; padding: 8px; }
   h1 { font-size: 22px; margin: 0 0 4px; }
@@ -67,7 +68,7 @@
   .focused { outline: 2px solid var(--focus); outline-offset: 1px; }
   .dim { opacity: 0.4; }
   .empty { color: var(--muted); }
-  .turn { border-left: 3px solid var(--rule); padding: 4px 8px; margin: 6px 0; }
+  .turn { border: 1px solid var(--rule); padding: 4px 8px; margin: 6px 0; }
   .turn.assistant { border-color: var(--done); }
   .turn.error { border-color: var(--failed); }
   .turn .who { font-size: 12px; color: var(--muted); }
@@ -107,7 +108,7 @@
   .vz-c0 .vz-label { background: #5d6a7a; } .vz-c1 .vz-label { background: #2f5c8f; } .vz-c2 .vz-label { background: #8a6f3a; } .vz-c3 .vz-label { background: #6b4f7a; } .vz-c4 .vz-label { background: #3f7a5c; }
   .vz-tile.right { border-color: var(--done); } .vz-tile.wrong { border-color: var(--failed); }
   .vz-tile.missed { border: 2px dashed var(--failed); opacity: 0.6; } .vz-tile.cited { outline: 2px solid var(--focus); outline-offset: 1px; }
-  .vz-entry { margin: 0 0 8px; font-size: 13px; } .vz-entry.cited { border-left: 3px solid var(--focus); padding-left: 6px; }
+  .vz-entry { margin: 0 0 8px; font-size: 13px; } .vz-entry.cited { border: 1px solid var(--focus); padding: 2px 6px; }
   .vz-time { font: 11px ui-monospace, monospace; color: var(--open); } .vz-name { font-weight: 600; }
   .vz-keyframes { display: inline-block; margin-left: 4px; vertical-align: middle; }
   .vz-keyframe { display: block; height: 54px; max-width: 120px; object-fit: cover; border: 1px solid var(--rule); border-radius: 2px; }

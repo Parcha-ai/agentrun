@@ -128,6 +128,17 @@ async function reportCss(css: string, from: string, resolve: (from: string, ref:
 
 const REPORT_DROPPED = 'script, base, meta[http-equiv], iframe, frame, frameset, object, embed, applet, portal';
 const REPORT_FLASH = '[data-chat-flash]{outline:2px solid #ff8700;outline-offset:4px;animation:chat-flash 1.6s ease-out}@keyframes chat-flash{0%{background-color:#ff870040}100%{background-color:transparent}}';
+/** The site's look over the agent's page, for presentation only (the recording is not changed): square corners, the
+ *  site's dark palette in the report skill's own colour names, its type. A left border wider than the right one is
+ *  drawn as the right one by reportSquare once the page has loaded. */
+const REPORT_BASE = [
+  '*,*::before,*::after{border-radius:0!important}',
+  ':root{color-scheme:dark!important;--bg:#080809!important;--fg:#f2f2f2!important;--mute:#a4a4ad!important;--card:#111113!important;--line:#2c2c30!important;--accent:#ff8700!important;--box:#b4a0ff!important}',
+  'html,body{background:#080809!important;color:#f2f2f2!important}',
+  'body{font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif!important}',
+  'h1,h2,h3{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace!important;font-weight:500!important}',
+  'code,pre,kbd,samp{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace!important}',
+].join('');
 
 /** The artifact's entry as a document that runs nothing and loads only its own files from the recording: every
  *  reference rewritten through `files`, every script and handler removed, a policy naming only the blobs' origins. */
@@ -197,10 +208,24 @@ export async function reportPage(artifact: ChatArtifact, recording: Recording, p
   policy.setAttribute('content', `default-src 'none'; img-src ${sources}; media-src ${sources}; style-src 'unsafe-inline' ${sources}; font-src ${sources}`);
   const flash = doc.createElement('style');
   flash.textContent = REPORT_FLASH;
+  const base = doc.createElement('style');
+  base.textContent = REPORT_BASE;
   doc.head.prepend(policy);
-  doc.head.append(flash);
+  doc.head.append(flash, base);
   const looks = new Set([...doc.querySelectorAll('[data-look]')].map((node) => node.getAttribute('data-look')!).filter(Boolean));
   return { html: `<!doctype html>\n${doc.documentElement.outerHTML}`, looks };
+}
+
+/** Every element of a loaded page whose left border is wider than its right one (an accent bar) draws its left side as
+ *  its right side. */
+export function reportSquare(doc: Document): void {
+  const view = doc.defaultView;
+  if (!view) return;
+  for (const node of doc.querySelectorAll<HTMLElement>('body *')) {
+    const style = view.getComputedStyle(node);
+    if (style.borderLeftStyle === 'none' || !(parseFloat(style.borderLeftWidth) > parseFloat(style.borderRightWidth))) continue;
+    node.style.setProperty('border-left', `${style.borderRightWidth} ${style.borderRightStyle} ${style.borderRightColor}`, 'important');
+  }
 }
 
 /** Where a click on a link in the artifact goes: a citation (a relative address, with or without a fragment) opens its
@@ -307,6 +332,7 @@ export function drawReport(pane: HTMLElement, model: ChatModel, recording: Recor
   frame.addEventListener('load', () => {
     const doc = frame.contentDocument;
     if (!doc || doc.URL !== 'about:srcdoc') return;
+    reportSquare(doc);
     ready = doc;
     doc.addEventListener('click', (event) => {
       const link = (event.target as Element | null)?.closest?.('a[href]');

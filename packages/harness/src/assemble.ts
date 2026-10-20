@@ -149,7 +149,9 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
     ...(host.credentials.redact ? { redact: { values: host.credentials.redact } } : {}),
     ...(host.decisions.browser ? { decisions: host.decisions.browser } : {}),
     ...(host.tools.browser.createDeadlineMs ? { createDeadlineMs: host.tools.browser.createDeadlineMs } : {}),
-    onSession: (row, change) => status({ source: 'browser', change, row }),
+    // A session's live view is a full-control address: it never goes into the run's events or its recording, which anyone
+    // with the recording can read. This host shows no session to a person; one that does asks the provider (`liveView(ref)`).
+    onSession: (row, change) => status({ source: 'browser', change, row: { ...row, liveView: null } }),
   });
   const visionBase: VisionAdapterOptions = {
     evidence: host.evidence,
