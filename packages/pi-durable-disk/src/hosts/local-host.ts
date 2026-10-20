@@ -159,6 +159,23 @@ export function unitStatus(show: Record<string, string>): HostStatus {
   }
 }
 
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * The text of an `EnvironmentFile=`: one `NAME="value"` line each, with `\` and `"` escaped inside the double quotes (nothing
+ * else is special there: systemd expands no `$` in this file). A name that is not a variable name, or a value with a newline,
+ * a carriage return or a NUL, cannot be written faithfully, so it is refused rather than mangled.
+ */
+function environmentFile(env: Record<string, string>): string {
+  const lines: string[] = [];
+  for (const [name, value] of Object.entries(env)) {
+    if (!ENV_NAME.test(name)) throw new LocalHostError("INVALID_ARGUMENT", `${JSON.stringify(name)} is not an environment variable name`);
+    if (typeof value !== "string" || /[\r\n\0]/.test(value)) throw new LocalHostError("INVALID_ARGUMENT", `the value of ${name} is not a string without a newline, a carriage return or a NUL`);
+    lines.push(`${name}="${value.replace(/[\\"]/g, "\\$&")}"`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pick<HostDriver, "kill" | "kills">> & { readonly hostName: string; readonly mountRoot: string } {
   const mode = opts.mode ?? "systemd";
   const mountRoot = opts.mountRoot ?? DEFAULT_MOUNT_ROOT;
@@ -195,15 +212,18 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
   const holderEnv = (h: Record<string, Json>) => JSON.stringify(h);
 
   const tokenFile = (unit: string) => join(TOKEN_DIR, `${unit}.mount-token`);
+  /** The unit's environment, loaded with `EnvironmentFile=`: a value on `systemd-run`'s argv is logged by sudo and shown by `systemctl show`. */
+  const envFile = (unit: string) => join(TOKEN_DIR, `${unit}.env`);
 
-  async function writeTokenFile(path: string, token: string): Promise<void> {
+  /** Writes a root-only (0600) file under the token directory; `content` goes through stdin, never an argument. */
+  async function writeSecretFile(path: string, content: string, what: string): Promise<void> {
     if (!sudo) {
       await mkdir(TOKEN_DIR, { recursive: true, mode: 0o700 });
-      await writeFile(path, token, { mode: 0o600 });
+      await writeFile(path, content, { mode: 0o600 });
       return;
     }
-    const r = await root(["/bin/sh", "-c", 'umask 077 && mkdir -p "$1" && cat > "$2"', "sh", TOKEN_DIR, path], { input: token });
-    if (!okRan(r)) throw new LocalHostError("START_FAILED", `cannot write the mount token file: ${firstLine(r)}`);
+    const r = await root(["/bin/sh", "-c", 'umask 077 && mkdir -p "$1" && cat > "$2"', "sh", TOKEN_DIR, path], { input: content });
+    if (!okRan(r)) throw new LocalHostError("START_FAILED", `cannot write the ${what}: ${firstLine(r)}`);
   }
 
   /** Replace the token file by an empty one: the started instance's open fd keeps the token, the path no longer has it. */
@@ -223,10 +243,13 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
     const mountpoint = mountpointOf(ref);
     const handle: HostHandle = { driver: "local", mode: "systemd", host: hostName, bootId, unit, mountpoint };
     const env: Record<string, string> = { ...opts.env, ...extra, PATH: SAFE_PATH, PDA_HOLDER: holderEnv(handle) };
+    const environment = environmentFile(env);
     const path = tokenFile(unit);
-    await writeTokenFile(path, token);
+    const envPath = envFile(unit);
+    await writeSecretFile(path, token, "mount token file");
     let started = false;
     try {
+      await writeSecretFile(envPath, environment, "environment file");
       const argv = [
         SYSTEMD_RUN,
         `--unit=${unit}`,
@@ -239,7 +262,7 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
         "-p", `User=${user}`,
         "-p", `Group=${group}`,
         "-p", `StandardInput=file:${path}`,
-        ...Object.entries(env).map(([k, v]) => `--setenv=${k}=${v}`),
+        "-p", `EnvironmentFile=${envPath}`,
         "--",
         ...command,
         ...runFlags(ref),
@@ -251,8 +274,10 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
       return handle;
     } finally {
       // Type=exec: systemd-run returns after the exec, so the instance's stdin is already open on the token. The path
-      // stays (empty) because a restart in place opens it again; stop removes it.
-      await (started ? emptyTokenFile(path) : removeFile(path)).catch(() => {});
+      // stays (empty) because a restart in place opens it again; stop removes it. The environment file stays whole: a
+      // restart in place loads it again, and stop removes it. A start that failed leaves neither.
+      if (started) await emptyTokenFile(path).catch(() => {});
+      else await Promise.all([removeFile(path), removeFile(envPath)]).catch(() => {});
     }
   }
 
@@ -393,6 +418,7 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
       await cleanMount(h.unit, String(h.mountpoint));
       await root([SYSTEMCTL, "reset-failed", `${h.unit}.service`]);
       await removeFile(tokenFile(h.unit));
+      await removeFile(envFile(h.unit));
     },
 
     async kill(h) {

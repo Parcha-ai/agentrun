@@ -62,7 +62,7 @@ test("systemd start: a transient unit that kills its control group, restarts in 
     assert.match(unit, /^pda-t-r1-[0-9a-z]+$/);
 
     const file = `/run/pi-durable-disk/${unit}.mount-token`;
-    const [cred, run, empty] = calls;
+    const [cred, envWrite, run, empty] = calls;
     assert.equal(cred.argv[0], "/usr/bin/sudo");
     assert.equal(cred.input, TOKEN, "the token goes into a root-only file through stdin");
     assert.equal(cred.argv.at(-1), file);
@@ -74,7 +74,11 @@ test("systemd start: a transient unit that kills its control group, restarts in 
     for (const p of ["KillMode=control-group", "Restart=on-failure", "RestartPreventExitStatus=65 70 75 76", "User=1000", "Group=1000", `StandardInput=file:${file}`, "TimeoutStopSec=30s"]) {
       assert.ok(prop(p), `property ${p}`);
     }
-    const holder = JSON.parse(a.find((x) => x.startsWith("--setenv=PDA_HOLDER="))!.slice("--setenv=PDA_HOLDER=".length));
+    assert.ok(prop(`EnvironmentFile=/run/pi-durable-disk/${unit}.env`), "the environment (PDA_HOLDER among it) is loaded from a root-only file, not set on the command line");
+    assert.ok(!a.some((x) => x.startsWith("--setenv")), "no --setenv on systemd-run's argv");
+    assert.equal(cred.input, TOKEN);
+    assert.equal(envWrite.argv.at(-1), `/run/pi-durable-disk/${unit}.env`);
+    const holder = JSON.parse(/^PDA_HOLDER="(.*)"$/m.exec(envWrite.input!)![1].replace(/\\(["\\])/g, "$1"));
     assert.deepEqual(holder, { driver: "local", mode: "systemd", host: "host-a", bootId: currentBootId(), unit, mountpoint: w.mp });
     assert.ok(!a.some((x) => /ImportCredential|LoadCredential|SetCredential|TOKEN/.test(x)), "no systemd credential the run's user could read");
     const cmd = a.slice(a.indexOf("--") + 1);
@@ -115,7 +119,7 @@ test("systemd start that fails: the credential file is still removed and the err
   assert.ok(calls.at(-1)!.argv.includes("/bin/rm"));
   const noRestart = recorder();
   await localHost({ exec: noRestart.exec, mountRoot: w.mountRoot, restart: false }).start(REF, TOKEN);
-  assert.ok(!noRestart.calls[1].argv.some((x) => x.startsWith("Restart")), "restart: false drops Restart=");
+  assert.ok(!noRestart.calls.find((c) => c.argv.includes("/usr/bin/systemd-run"))!.argv.some((x) => x.startsWith("Restart")), "restart: false drops Restart=");
 });
 
 test("status: the unit's state, a foreign host is unknown, another boot is gone", async () => {
@@ -151,8 +155,9 @@ test("stop: the unit, then nothing else when the instance released its own mount
   assert.equal(argvs[0], "/usr/bin/sudo -n /usr/bin/systemctl stop pda-t-r1-x.service");
   assert.ok(argvs.some((a) => a.includes("list-units --all --plain --no-legend --type=scope pda-t-r1-x-fuse-*")), "the unit's FUSE scope is looked for even with nothing mounted");
   assert.ok(!argvs.some((a) => /\/usr\/bin\/archil|fusermount|umount|stat |kill/.test(a)), "nothing mounted and no scope: nothing to clean");
-  assert.equal(argvs.at(-2), "/usr/bin/sudo -n /usr/bin/systemctl reset-failed pda-t-r1-x.service");
-  assert.equal(argvs.at(-1), "/usr/bin/sudo -n /bin/rm -f /run/pi-durable-disk/pda-t-r1-x.mount-token", "stop removes the unit's token file");
+  assert.equal(argvs.at(-3), "/usr/bin/sudo -n /usr/bin/systemctl reset-failed pda-t-r1-x.service");
+  assert.equal(argvs.at(-2), "/usr/bin/sudo -n /bin/rm -f /run/pi-durable-disk/pda-t-r1-x.mount-token", "stop removes the unit's token file");
+  assert.equal(argvs.at(-1), "/usr/bin/sudo -n /bin/rm -f /run/pi-durable-disk/pda-t-r1-x.env", "and its environment file");
   calls.length = 0;
   await host.stop({ ...h, host: "host-b" });
   await host.stop({ ...h, bootId: "other" });
@@ -164,8 +169,11 @@ test("a start's own environment goes over the driver's; one that sets PATH or PD
   const { calls, exec } = recorder();
   const host = localHost({ exec, mountRoot: w.mountRoot, procMounts: w.procMounts, hostName: "host-a", user: "1000", group: "1000", command: ["/n", "/c"], env: { A: "1", PLAN: "driver's" } });
   const h = await host.start(REF, TOKEN, { attempt: 2, env: { PLAN: '{"tools":["x y"]}' } });
-  const set = calls.find((c) => c.argv.includes("/usr/bin/systemd-run"))!.argv.filter((x) => x.startsWith("--setenv="));
-  assert.deepEqual(set, ["--setenv=A=1", '--setenv=PLAN={"tools":["x y"]}', "--setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", `--setenv=PDA_HOLDER=${JSON.stringify(h)}`]);
+  const unit = String(h.unit);
+  const written = calls.find((c) => c.argv.at(-1) === `/run/pi-durable-disk/${unit}.env`)!.input!;
+  assert.ok(!calls.some((c) => c.argv.some((x) => x.startsWith("--setenv"))), "nothing on a command line");
+  assert.deepEqual(written.split("\n").slice(0, 3), ['A="1"', 'PLAN="{\\"tools\\":[\\"x y\\"]}"', 'PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"'], "the driver's env, the start's over it, then the driver's own keys");
+  assert.match(written, new RegExp(`^PDA_HOLDER="${JSON.stringify(h).replace(/[\\"]/g, "\\\\$&").replace(/[.*+?^${}()|[\]]/g, "\\$&")}"$`, "m"));
   calls.length = 0;
   for (const env of [{ "NOT-A-NAME": "x" }, { PATH: "/elsewhere" }, { PDA_HOLDER: "{}" }] as Record<string, string>[]) {
     await assert.rejects(host.start(REF, TOKEN, { attempt: 3, env }), (e: unknown) => e instanceof LocalHostError && e.code === "INVALID_ARGUMENT", JSON.stringify(env));
