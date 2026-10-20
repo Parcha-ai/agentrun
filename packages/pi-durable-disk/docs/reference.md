@@ -760,10 +760,9 @@ SQLite (`sqlite: true`), its `-wal` must also be absent or empty, so its writer 
 held path is `CLAIM_HELD`, retryable as above, and a WAL with content is `NOT_RELEASED`. A file that changed during every
 one of `attempts` reads (default 3) is `CLAIM_HELD`. Open the bytes as a local file, read-only (`?immutable=1`).
 
-### Places: a run a supervisor can kill and bring back
+### Places: where a run's instance starts and ends
 
-A place is where one run lives and how its instance starts, is killed and comes back, for a supervisor that decides when
-to kill (agentrun's reference demo). Each factory takes its options and returns `(ctx) => Place`; `ctx.paths` is the run's
+A place is where one run lives and how its instance starts, ends and comes back, for a supervisor of your own. Each factory takes its options and returns `(ctx) => Place`; `ctx.paths` is the run's
 id and directory as the supervisor computed them.
 
 - `localPlace({ app, root? })` runs `pi-durable-disk run --dir <root> --id <id> --app <app>` as a child in its own

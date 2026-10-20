@@ -1,11 +1,10 @@
 # @parcha/pi-durable-disk
 
-An agent's home and its runs live on a disk, not on a machine. Any host that mounts the disk can open a run where the last
-one released it: the conversation, the agent's files and what it was waiting for are all in the run's directory, so a
-process is somewhere a run visits, not where it lives.
+Run a [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) agent from a directory or a network disk, so any process or host can open the run and carry on where the last one released it.
 
-It runs [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) agents. This is a beta (`0.1.0-beta.N`): a
-change that breaks a caller is listed in [CHANGELOG.md](CHANGELOG.md) when it ships.
+An agent's home and its runs live on the disk, not on a machine: the conversation, the agent's files and what it was waiting
+for are all in the run's directory, so a process is somewhere a run visits, not where it lives. This is a beta
+(`0.1.0-beta.N`): a change that breaks a caller is listed in [CHANGELOG.md](CHANGELOG.md) when it ships.
 
 ## What it is
 
@@ -177,12 +176,38 @@ guarantees. This release names no other backend and promises none.
 - **Seed a new run** with a store and files before anything sees it ([Seeding a new run](docs/reference.md#seeding-a-new-run)).
 - **Run it supervised** on systemd units, Docker containers or Daytona sandboxes ([Host drivers and the
   supervisor](docs/reference.md#host-drivers-and-the-supervisor)).
-- **Keep what was committed.** Every commit is on the disk before anything is shown, and an effect whose intent was
-  committed is never started twice: after a process dies, the next open tells the model the call was `interrupted`
-  ([kill-9](examples/kill-9/), [no-double-charge](examples/no-double-charge/)).
+- **Keep what was committed.** Every commit is on the disk before anything is shown, and an effect whose intent was committed is never started twice.
 
 [examples/](examples/README.md) lists every example, one property each, with what each needs and the first version that has
 what it imports.
+
+## What it costs
+
+- **A local run costs nothing:** a directory of this machine, no account and no key. The model is yours: the examples use a
+  scripted one, so the first run spends nothing; the package adds no model calls of its own.
+- **On a disk:** an [Archil](https://archil.com) account (the free plan is enough for scratch runs) and the disk's storage. A
+  run is one directory (a SQLite store, a workspace and `run.json`), removed with `deleteRunTree`. Every commit is one round
+  trip to the disk's region, 3 to 6 ms p50 from a host next to it (measured), so run hosts near the disk. Claiming a run
+  takes about 0.2 s and releasing one about 0.15 s on the same measurement ([the figures](docs/reference.md#the-failure-table)).
+- **Hosts:** whatever you run them on, a machine you own, Docker, or a [Daytona](https://www.daytona.io) sandbox, which Daytona
+  bills; a sandbox's list price per second is in its receipt (`daytonaUsdPerSecond`). A run that only waits is released and
+  holds no process ([parking](docs/reference.md#serve-parking-and-fork)), so an idle run does not keep a host.
+- **A supervisor** is a function you call or `pi-durable-disk supervise`; it needs the Archil API key, and no instance ever
+  holds it.
+
+## What it does not do
+
+- **Other disks.** Archil is the only disk in this release: the package needs an exclusive claim and a fence from it. No other
+  backend is named or promised.
+- **Guard a run on a plain directory against another machine.** `localRun` has no fence: the directory is the claim, so it
+  keeps a second process on this machine off the run and nothing else. Use it for one machine; use a disk to share a run.
+- **Sandbox an agent.** Commands run as the run user, with `no_new_privs` and the file tools confined to `work/`, and a command
+  can reach anything that user can. Run an agent you do not trust in your own sandbox ([Security](docs/reference.md#security)).
+- **Make a third party idempotent.** The package never starts the same effect twice, but a call your model decides to retry is
+  a new call: give a paid API an idempotency key from your own business key.
+- **Choose your model or hold its keys.** You bring the provider and the key; they stay in your app.
+- **Run on every platform.** Linux is supported. macOS is for development ([On macOS](docs/reference.md#on-macos)) and Windows is
+  not supported. A Kubernetes host driver is not written (a driver is [three calls](docs/reference.md#host-drivers-and-the-supervisor)).
 
 ## Install
 
@@ -205,19 +230,15 @@ cd packages/pi-durable-disk
 What the package exports for a host of your own. `src/index.ts` lists every export, and the `.d.ts` files in `dist/` are the
 reference. [Library](docs/reference.md#library) describes each in full.
 
-<!-- TODO(before the public drop, Monday after the rename lands): the reference-demo link below points at packages/reference
-     (@parcha/agentrun-reference), which becomes @parcha/agentrun-harness (packages/harness): update the path and the name.
-     TODO(Tuesday): pi-durable-agent goes public Tuesday: drop "not published yet" from the two links that carry it. -->
-
 | Name | What it is | Example |
 |---|---|---|
 | `openDurableRun(ref, options)` | Open a run: take the claim and the owner lock, open the store and the Harness, resume, keep the lease. `run.release()` seals it | [pick-up-a-run](examples/pick-up-a-run/main.ts) |
 | `localRun(root)` | The `acquire` and `claimDir` that put a run on a plain directory of this machine, with no disk and no key | [pick-up-a-run](examples/pick-up-a-run/main.ts) |
-| `seed` (an option of `openDurableRun`) | Write what a new run starts with, its store file and workspace files, once, before anything sees the run ([Seeding a new run](docs/reference.md#seeding-a-new-run)) | [seed-a-run](examples/seed-a-run/); pi-durable-agent's `seedRun` seeds a run with an agent's definition ([not published yet](https://github.com/Parcha-ai/agentrun/blob/main/packages/pi-durable-agent/README.md#an-agent-home-on-a-disk)) |
-| `localPlace({ app })` and `archilPlace({ disk, region, control, host })` | Where one run lives and how its instance starts and ends, for a supervisor of your own ([Places](docs/reference.md#places-a-run-a-supervisor-can-kill-and-bring-back)) | [place-outcome](examples/place-outcome/) (`localPlace`, no key); `archilPlace` needs Archil: [`test/place.test.ts`](test/place.test.ts) and the [reference demo](https://github.com/Parcha-ai/agentrun/blob/main/packages/reference/README.md) |
+| `seed` (an option of `openDurableRun`) | Write what a new run starts with, its store file and workspace files, once, before anything sees the run ([Seeding a new run](docs/reference.md#seeding-a-new-run)) | [seed-a-run](examples/seed-a-run/) |
+| `localPlace({ app })` and `archilPlace({ disk, region, control, host })` | Where one run lives and how its instance starts and ends, for a supervisor of your own ([Places](docs/reference.md#places-where-a-runs-instance-starts-and-ends)) | [place-outcome](examples/place-outcome/) (`localPlace`, no key); `archilPlace` needs Archil: [`test/place.test.ts`](test/place.test.ts) |
 | `PlaceOutcome` | How a runner ended: the run's `status` (`complete` or `failed`), its `generation`, and the app's `record` or `code` and `message`, and the `models` it used | [place-outcome](examples/place-outcome/) |
-| `withClaim(where, fn)` and `readReleased(where, file)` | Hold one path of a disk exclusively for a moment, outside any run; read what it released over S3, with no mount ([A short claim](docs/reference.md#a-short-claim-on-any-path-and-a-read-of-what-it-released)) | Archil only: [`test/with-claim.test.ts`](test/with-claim.test.ts) (fakes) and [`test/live/with-claim.live.test.ts`](test/live/with-claim.live.test.ts); pi-durable-agent carries an agent's home this way ([not published yet](https://github.com/Parcha-ai/agentrun/blob/main/packages/pi-durable-agent/README.md#an-agent-home-on-a-disk)) |
-| `recordHome` (a field of a `Place`) | The directory an attempt's runner records into, and `bringHome(into, { final })`, which reads it back over the control with no claim ([Places](docs/reference.md#places-a-run-a-supervisor-can-kill-and-bring-back)) | Archil only: [`test/place.test.ts`](test/place.test.ts), [`test/live/record-home.live.test.ts`](test/live/record-home.live.test.ts) |
+| `withClaim(where, fn)` and `readReleased(where, file)` | Hold one path of a disk exclusively for a moment, outside any run; read what it released over S3, with no mount ([A short claim](docs/reference.md#a-short-claim-on-any-path-and-a-read-of-what-it-released)) | Archil only: [`test/with-claim.test.ts`](test/with-claim.test.ts) (fakes) and [`test/live/with-claim.live.test.ts`](test/live/with-claim.live.test.ts) |
+| `recordHome` (a field of a `Place`) | The directory an attempt's runner records into, and `bringHome(into, { final })`, which reads it back over the control with no claim ([Places](docs/reference.md#places-where-a-runs-instance-starts-and-ends)) | Archil only: [`test/place.test.ts`](test/place.test.ts), [`test/live/record-home.live.test.ts`](test/live/record-home.live.test.ts) |
 
 Also exported: `ensureRunning` and the host drivers (`localHost`, `dockerHost`, `daytonaHost`), `serveRun` and `requestRun`,
 parking, `fork` and `forkLocal`, `readLocalRunStatus` and `readRunStatus`, `archilControl`, and the typed errors.

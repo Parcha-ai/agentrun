@@ -133,5 +133,5 @@ ok: two runs, two outcomes: the one that delivered is complete with its record, 
 ## What it does not show
 
 On a disk, `archilPlace` reads the same outcome from `run.json` over S3, because a box's stdout is out of reach, and
-`status()`, the takeover and `recordHome` are there too ([Places](../../docs/reference.md#places-a-run-a-supervisor-can-kill-and-bring-back)).
+`status()`, the takeover and `recordHome` are there too ([Places](../../docs/reference.md#places-where-a-runs-instance-starts-and-ends)).
 A place is also what a supervisor kills and brings back, which this example does not do.

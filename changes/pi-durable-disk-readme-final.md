@@ -5,7 +5,7 @@ kind: docs
 **The README is the overview, `docs/reference.md` the reference; three new keyless examples**
 - The package README is now the overview: what it is (an agent's home and runs live on a disk, so any host can open a run where
   the last one released it), when to use it, a keyless example to run from an npm install, Archil as "bring your own disk",
-  what you can do with it, the install lines, and the low-level API (`openDurableRun`, `localRun`, `seed`, `localPlace` and
+  what you can do with it, what it costs, what it does not do, the install lines, and the low-level API (`openDurableRun`, `localRun`, `seed`, `localPlace` and
   `archilPlace`, `PlaceOutcome`, `withClaim`, `recordHome`) with an example or test for each. The reference sections moved,
   with their headings, to `docs/reference.md` (requirements, the quickstarts on a disk, the app, the CLI, host drivers and the
   supervisor, the failure table, security, the layout, the library). `docs/` is not in the published package, so the README's
