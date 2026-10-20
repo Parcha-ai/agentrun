@@ -37,7 +37,7 @@ import { askToBeKilled, aroundOwnFiling, crossings, tapFakes, tapHost, tapLive, 
 import { keepLooks, shownShots } from './looks.ts';
 import { transcriberFromEnv } from './transcriber.ts';
 import type { LookRecord } from '@parcha/pi-vision';
-import { releasedOutcome, type HandoffFailure } from './handoff.ts';
+import { cleanExit, releasedOutcome, type HandoffFailure } from './handoff.ts';
 import { localPlace, type Exit, type Place, type Runner } from './place.ts';
 import { checkModelKeys, checkPrograms, refuseJudgeCaps, inputOf, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, handoffPlansOf, handoffsOf, killsOf, maxUsdOf, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
 import { cost } from './fold.ts';
@@ -693,7 +693,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         // `sealedSeq`, so a seal present after the exit can only be this generation's own.
         const opening = Math.max(0, ...[...sealOf].filter(([generation, seal]) => generation < lastGeneration! && seal !== null).map(([, seal]) => seal!));
         const sealed = lastGeneration !== undefined && lastGeneration > generationBefore && lastRunSeal !== null && lastRunSeal >= opening;
-        const reason: HandoffFailure | undefined = !landed ? 'crossing not logged' : result.exit !== 0 ? 'exit not 0' : (lastRunStatus === 'sleeping' || lastRunStatus === 'paused') && sealed ? undefined : 'not released';
+        const reason: HandoffFailure | undefined = !landed ? 'crossing not logged' : !cleanExit(result.exit) ? 'exit not 0' : (lastRunStatus === 'sleeping' || lastRunStatus === 'paused') && sealed ? undefined : 'not released';
         if (!reason && landed) {
           // The line is ranked before the next process's start (as a kill's is), so it must be later than the run.json line just read by more than the recording's tick: a tie in one millisecond would sort it before that line.
           await new Promise((resolve) => setTimeout(resolve, 3));

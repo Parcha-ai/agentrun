@@ -7,8 +7,16 @@ export type HandoffFailure = 'crossing not logged' | 'exit not 0' | 'not release
 /** A process outcome as a place reports it. */
 export type Outcome = { status: string; [other: string]: unknown };
 
-/** `released` when the place said `failed`, the process exited 0, the last `run.json` read says `sleeping` or `paused`, and a planned handoff landed in this process; the outcome as it was otherwise. */
+/**
+ * Whether a runner's exit is a clean end, in the words places use today: 0 from a process of this machine (the local place), `stopped` from a host driver, which says it only after its instance exited 0
+ * (the Daytona launcher's and docker's word on the Archil place; `failed` after any other end). THIS WEEK ONLY too: it goes once every place reports a clean exit the same way (a disk PR after the launch).
+ */
+export function cleanExit(exit: number | string | null): boolean {
+  return exit === 0 || exit === 'stopped';
+}
+
+/** `released` when the place said `failed`, the process ended cleanly (`cleanExit`), the last `run.json` read says `sleeping` or `paused`, and a planned handoff landed in this process; the outcome as it was otherwise. */
 export function releasedOutcome<T extends Outcome>(outcome: T | undefined, exit: number | string | null, lastRunStatus: string | undefined, handoffLanded: boolean): T | undefined {
-  if (!outcome || outcome.status !== 'failed' || exit !== 0 || !handoffLanded) return outcome;
+  if (!outcome || outcome.status !== 'failed' || !cleanExit(exit) || !handoffLanded) return outcome;
   return lastRunStatus === 'sleeping' || lastRunStatus === 'paused' ? { ...outcome, status: 'released' } : outcome;
 }

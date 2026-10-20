@@ -171,6 +171,11 @@ const place = (ctx) => {
     const end = async (runner) => ({ ...runner, exited: runner.exited.then((exit) => ({ ...exit, exit: 1 })) });
     return { ...made, start: async (order) => end(await made.start(order)), recover: async (last, kind, order) => { const r = await made.recover(last, kind, order); return { ...r, runner: await end(r.runner) }; } };
   }
+  // As the Archil place reports a clean end: the host driver's word stopped in place of exit 0 (a non-zero exit stays as it is).
+  if (wrap === 'stopped') {
+    const end = async (runner) => ({ ...runner, exited: runner.exited.then((exit) => (exit.exit === 0 ? { ...exit, exit: 'stopped' } : exit)) });
+    return { ...made, start: async (order) => end(await made.start(order)), recover: async (last, kind, order) => { const r = await made.recover(last, kind, order); return { ...r, runner: await end(r.runner) }; } };
+  }
   if (wrap === 'unsealed') return { ...made, status: async () => { const s = await made.status(); return { ...s, record: s.record && { ...s.record, sealedSeq: null } }; } };
   if (wrap === 'status') return { ...made, status: async () => { const s = await made.status(); return { ...s, record: s.record && { ...s.record, status: 'running' } }; } };
   return made;
@@ -205,6 +210,15 @@ test('handoff.failed, "exit not 0": the crossing is logged but the process did n
   assert.equal(lines.filter((line) => line.kind === 'handoff').length, 0);
   assert.equal(result.handoffs, 0);
   assert.deepEqual(result.failedHandoffs, [{ gen: 1, point: 'effect.kept charge', reason: 'exit not 0' }]);
+});
+
+test('a handoff on a place whose clean end reads `stopped` (the Archil place) lands as on the local place', { timeout: 200_000 }, async (t) => {
+  const { ran, lines, result } = await failing(t, { wrap: 'stopped' });
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.deepEqual(failedOf(lines), []);
+  assert.equal(lines.filter((line) => line.source === 'host' && line.kind === 'handoff').length, 1);
+  assert.equal(result.handoffs, 1);
+  assert.deepEqual(result.processes.map((process) => [process.exit, process.outcome?.status]), [['stopped', 'released'], ['stopped', 'complete']]);
 });
 
 test('handoff.failed, "not released": the process exited 0 but the last run.json does not show the run released', { timeout: 200_000 }, async (t) => {

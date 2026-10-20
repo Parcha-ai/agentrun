@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { handoffsOf } from '../packages/harness/dist/demo-spec.js';
-import { releasedOutcome } from '../packages/harness/dist/handoff.js';
+import { cleanExit, releasedOutcome } from '../packages/harness/dist/handoff.js';
 import { run } from './reference-demo-helpers.mjs';
 
 const one = { point: 'effect.kept charge', n: 5, why: 'the fifth charge is kept' };
@@ -28,6 +28,9 @@ test('releasedOutcome: only a failed outcome of a process that exited 0 after a 
   assert.equal(releasedOutcome(failed, 0, 'running', true), failed, 'the run was not left sealed');
   assert.equal(releasedOutcome(failed, 0, undefined, true), failed, 'the last run.json is unknown');
   assert.equal(releasedOutcome(failed, 1, 'sleeping', true), failed, 'the process did not exit 0');
+  // On the Archil place a clean end is the host driver's word, `stopped` (its instance exited 0); `failed` is any other end.
+  assert.deepEqual(releasedOutcome(failed, 'stopped', 'sleeping', true), { status: 'released', generation: 1 });
+  assert.equal(releasedOutcome(failed, 'failed', 'sleeping', true), failed, 'the host driver says the instance did not exit 0');
   const complete = { status: 'complete', generation: 2 };
   assert.equal(releasedOutcome(complete, 0, 'sleeping', true), complete, 'a delivered run is never relabeled');
   assert.equal(releasedOutcome(undefined, 0, 'sleeping', true), undefined);
@@ -39,4 +42,10 @@ test('--kill and --handoff are different runs: both together are refused before 
 
 test('--handoff on a place that cannot report the run\'s status is refused at load, never reported as unlanded afterwards', async (t) => {
   await assert.rejects(run(t, { handoffs: [one] }, ['--handoff']), /cannot report the run's status/);
+});
+
+test('cleanExit: 0 from a local process and `stopped` from a host driver are clean; anything else is not', () => {
+  assert.equal(cleanExit(0), true);
+  assert.equal(cleanExit('stopped'), true);
+  for (const exit of [1, 'failed', 'gone', 'SIGKILL', 'unknown', null]) assert.equal(cleanExit(exit), false, String(exit));
 });
