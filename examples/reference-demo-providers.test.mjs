@@ -1,7 +1,8 @@
 // Tool-made boxes on the demo's own providers (`DemoOptions.providers`): the harness taps them, so a recording holds every box a run's tools made, by label.
 // The lines are RECORDING.md's (draft 39): `box.created` { box, provider, facts, role? }, `box.exec` { box } per command, `box.ended` { box }, all live lines with source `transport` and
 // a `box-N` label, never a provider id; one host `box.receipt` per box with no rate (`usd_per_second`, `cost_usd`, `source` and `priced` null), so the run's cost reads unknown.
-// The provider ids go only to a file outside the recording (`--box-ids`, default `<run dir>/box-ids.internal.json`).
+// The provider ids go only to a directory outside the recording (`--box-ids`, default `<run dir>/box-ids.internal`), one file per label (`box-N.json`), each claimed exclusively,
+// so the place's boxes and the tools' boxes share one numbering across processes and hosts.
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -22,7 +23,9 @@ const everyFile = (dir) => readdirSync(dir, { recursive: true, withFileTypes: tr
 const NO_RATE = { usd_per_second: null, cost_usd: null, source: null, priced: null };
 /** The boxes the providers' tool answered, from the run's kept answers. */
 const answered = (dir) => readdirSync(join(dir, 'answers')).map((name) => JSON.parse(readFileSync(join(dir, 'answers', name), 'utf8')).value).find((value) => value && 'alpha' in value && 'beta' in value);
-/** Ends a box a run left, by the id the ids file names, so a test leaves nothing running. */
+/** The labels a run's ids directory holds, each `box-N` with its entry. */
+const readIds = (dir) => Object.fromEntries((existsSync(dir) ? readdirSync(dir) : []).filter((name) => /^box-\d+\.json$/.test(name)).sort((a, b) => Number(a.slice(4, -5)) - Number(b.slice(4, -5))).map((name) => [name.slice(0, -5), JSON.parse(readFileSync(join(dir, name), 'utf8'))]));
+/** Ends a box a run left, by the id the ids directory names, so a test leaves nothing running. */
 async function endLeft(dir, ids, label) {
   const { id } = ids[label];
   const found = await localBoxes({ root: join(dir, 'beta') }).attach(id, BACKGROUND_CONTEXT);
@@ -53,12 +56,13 @@ test('two boxes on two providers of the demo\'s own: box.created, a box.exec per
   assert.equal(manifest.cost.usd, null, 'a box with no rate makes the run\'s cost unknown, never 0');
 });
 
-test('no provider id is in the recording: the ids are in the run directory\'s box-ids.internal.json, outside the recording, by label', { timeout: 300_000 }, async (t) => {
+test('no provider id is in the recording: the ids are in the run directory\'s box-ids.internal/, outside the recording, one file per label', { timeout: 300_000 }, async (t) => {
   const { result, recording } = await run(t, {}, ['--json'], { DEMO_PROVIDERS: '1' });
-  const file = join(result.dir, 'box-ids.internal.json');
-  assert.ok(existsSync(file), 'the ids file is in the run directory');
+  const file = join(result.dir, 'box-ids.internal');
+  assert.ok(existsSync(file), 'the ids directory is in the run directory');
   assert.ok(relative(realpathSync(recording), realpathSync(file)).startsWith('..'), 'and outside the recording');
-  const ids = JSON.parse(readFileSync(file, 'utf8'));
+  const ids = readIds(file);
+  assert.deepEqual([ids['box-1'].owner, ids['box-2'].owner], ['tools', 'tools']);
   assert.deepEqual(Object.keys(ids), ['box-1', 'box-2']);
   assert.deepEqual([ids['box-1'].provider, ids['box-2'].provider], ['alpha', 'beta']);
   const recorded = everyFile(recording).join('\n');
@@ -68,14 +72,14 @@ test('no provider id is in the recording: the ids are in the run directory\'s bo
   }
 });
 
-test('--box-ids names the ids file: a path outside the recording is used, and one inside it is refused', { timeout: 300_000 }, async (t) => {
+test('--box-ids names the ids directory: a path outside the recording is used, and one inside it is refused', { timeout: 300_000 }, async (t) => {
   const own = await mkdtemp(join(tmpdir(), 'box-ids-'));
   t.after(() => rm(own, { recursive: true, force: true }));
-  const outside = join(own, 'ids.json');
+  const outside = join(own, 'ids');
   const { result } = await run(t, {}, ['--json', '--box-ids', outside], { DEMO_PROVIDERS: '1' });
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(outside, 'utf8'))), ['box-1', 'box-2']);
-  assert.ok(!existsSync(join(result.dir, 'box-ids.internal.json')), 'the default file is not written as well');
+  assert.deepEqual(Object.keys(readIds(outside)), ['box-1', 'box-2']);
+  assert.ok(!existsSync(join(result.dir, 'box-ids.internal')), 'the default directory is not written as well');
   // The last --record wins: this run records into a directory the test knows, and is asked to put the ids inside it.
   const recording = join(own, 'recording');
   await assert.rejects(run(t, {}, ['--json', '--record', recording, '--box-ids', join(recording, 'ids.json')], { DEMO_PROVIDERS: '1' }), /--box-ids .*inside the recording/);
@@ -84,7 +88,7 @@ test('--box-ids names the ids file: a path outside the recording is used, and on
 test('a box still open when the run ends gets its receipt then, with no end and no seconds', { timeout: 300_000 }, async (t) => {
   const { result, recording } = await run(t, {}, ['--json'], { DEMO_PROVIDERS: 'leave' });
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
-  const ids = JSON.parse(readFileSync(join(result.dir, 'box-ids.internal.json'), 'utf8'));
+  const ids = readIds(join(result.dir, 'box-ids.internal'));
   t.after(() => endLeft(result.dir, ids, 'box-2'));
   assert.deepEqual(transport(recording).filter((line) => line.kind === 'box.ended').map((line) => line.data.box), ['box-1'], 'only the alpha box ended');
   const open = receipts(recording).find((receipt) => receipt.box === 'box-2');
@@ -106,8 +110,8 @@ test('the recording validates, the viewer\'s transport panel lists both boxes by
   assert.ok(!label.includes('$'));
 });
 
-test('a run whose place makes boxes and whose tools make boxes too is refused: one labeller, never two box-1s', async (t) => {
-  await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: '1' }), /place.*tool-made boxes|tool-made boxes.*place/);
+test('a place of the demo\'s own with no labelBox, and tool-made boxes, is refused: the place cannot share the run\'s labels, never two box-1s', async (t) => {
+  await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: '1' }), /labelBox/);
 });
 
 test('the demo.json boxes (local here) are named by label too: box.created, box.exec and box.ended carry box-N, never the provider id', { timeout: 300_000 }, async (t) => {
@@ -137,15 +141,15 @@ test('the default ids file is never in the recording: a run whose directory is i
   const own = await mkdtemp(join(tmpdir(), 'box-ids-default-'));
   t.after(() => rm(own, { recursive: true, force: true }));
   const recording = join(own, 'recording');
-  // No --box-ids: the default, box-ids.internal.json in the run's directory, would be inside the recording.
-  await assert.rejects(run(t, {}, ['--json', '--record', recording, '--dir', join(recording, 'run')], { DEMO_PROVIDERS: '1' }), /box-ids\.internal\.json.* inside the recording/);
-  await assert.rejects(run(t, {}, ['--json', '--record', join(own, 'same'), '--dir', join(own, 'same')], { DEMO_PROVIDERS: '1' }), /box-ids\.internal\.json.* inside the recording/);
+  // No --box-ids: the default, box-ids.internal/ in the run's directory, would be inside the recording.
+  await assert.rejects(run(t, {}, ['--json', '--record', recording, '--dir', join(recording, 'run')], { DEMO_PROVIDERS: '1' }), /box-ids\.internal.* inside the recording/);
+  await assert.rejects(run(t, {}, ['--json', '--record', join(own, 'same'), '--dir', join(own, 'same')], { DEMO_PROVIDERS: '1' }), /box-ids\.internal.* inside the recording/);
 });
 
 test('a box still open when the result hook throws gets its receipt all the same, with no end and no seconds', { timeout: 300_000 }, async (t) => {
   const { result, recording } = await run(t, {}, ['--json'], { DEMO_PROVIDERS: 'leave', DEMO_RESULT_THROWS: '1' });
   assert.notEqual(result.processes.at(-1).outcome.status, 'complete', 'the result hook failed the process');
-  const ids = JSON.parse(readFileSync(join(result.dir, 'box-ids.internal.json'), 'utf8'));
+  const ids = readIds(join(result.dir, 'box-ids.internal'));
   t.after(() => endLeft(result.dir, ids, 'box-2'));
   const kept = receipts(recording);
   assert.deepEqual(kept.map((receipt) => [receipt.box, receipt.to === null, receipt.seconds === null]), [['box-1', false, false], ['box-2', true, true]]);
@@ -164,31 +168,33 @@ test('a box whose label cannot be saved is destroyed and its create fails: no bo
   const { writeFileSync } = await import('node:fs');
   writeFileSync(join(own, 'a-file'), 'not a directory');
   const root = join(own, 'boxes');
-  const provider = tap(localBoxes({ root }), { ...quiet, ledger: boxLedger({ file: join(own, 'a-file', 'ids.json') }), receipts: true });
+  const provider = tap(localBoxes({ root }), { ...quiet, ledger: boxLedger({ dir: join(own, 'a-file', 'ids') }), receipts: true });
   const made = await provider.create({ maxLifetimeMs: 60_000 }, BACKGROUND_CONTEXT);
   assert.equal(made.ok, false, 'the create fails');
   assert.match(made.error.message, /box ids/);
   assert.deepEqual(boxesUnder(root), [], 'and the box it made is destroyed');
 });
 
-test('a damaged ids file is refused, never read as empty: no label is reused and the box made is destroyed', async (t) => {
+test('a damaged label file is refused, never read as empty: no label is reused and the box made is destroyed', async (t) => {
   const own = await mkdtemp(join(tmpdir(), 'box-ids-damaged-'));
   t.after(() => rm(own, { recursive: true, force: true }));
-  const { writeFileSync } = await import('node:fs');
-  const file = join(own, 'ids.json');
-  writeFileSync(file, '{"box-1": {"provider": "alpha", "id": "x"');
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const dir = join(own, 'ids');
+  mkdirSync(dir);
+  const file = join(dir, 'box-1.json');
+  writeFileSync(file, '{"provider": "alpha", "id": "x"');
   const root = join(own, 'boxes');
-  const made = await tap(localBoxes({ root }), { ...quiet, ledger: boxLedger({ file }) }).create({ maxLifetimeMs: 60_000 }, BACKGROUND_CONTEXT);
+  const made = await tap(localBoxes({ root }), { ...quiet, ledger: boxLedger({ dir }) }).create({ maxLifetimeMs: 60_000 }, BACKGROUND_CONTEXT);
   assert.equal(made.ok, false);
-  assert.match(made.error.message, /box ids file .* cannot be read/);
-  assert.equal(readFileSync(file, 'utf8'), '{"box-1": {"provider": "alpha", "id": "x"', 'the file is left as it was');
+  assert.match(made.error.message, /box ids .* cannot be read/);
+  assert.equal(readFileSync(file, 'utf8'), '{"provider": "alpha", "id": "x"', 'the file is left as it was');
   assert.deepEqual(boxesUnder(root), []);
 });
 
 test('a box still open when its process is killed (SIGKILL, no finally) gets its receipt from the next process, once', { timeout: 300_000 }, async (t) => {
   const { result, recording } = await run(t, { kills: [{ point: 'effect.kept boxes2', why: 'the process dies with the beta box open' }] }, ['--kill', '--json'], { DEMO_PROVIDERS: 'leave' });
   assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, 'complete']]);
-  const ids = JSON.parse(readFileSync(join(result.dir, 'box-ids.internal.json'), 'utf8'));
+  const ids = readIds(join(result.dir, 'box-ids.internal'));
   t.after(() => endLeft(result.dir, ids, 'box-2'));
   const kept = receipts(recording);
   assert.deepEqual(kept.map((receipt) => [receipt.box, receipt.to === null, receipt.seconds === null]), [['box-1', false, false], ['box-2', true, true]], 'one receipt each: the ended box\'s from its process, the open one\'s from the next');
@@ -211,4 +217,78 @@ test('the app\'s boxes are closed when its run fails before the result: the rece
   const fine = closeOnFailure(async () => 'done', close);
   assert.equal(await fine({}), 'done');
   assert.equal(closed, 1, 'a run that succeeds is closed by its result, not here');
+});
+
+// ---- one labeller run-wide: the place's boxes and the tools' boxes ----------------------------------------------------------------------------
+
+const { parseHostBox } = await import('../packages/harness/dist/boxes.js');
+
+test('two processes claiming labels in one directory at once get distinct labels, none lost: box-1..box-100', { timeout: 120_000 }, async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-race-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const dir = join(own, 'ids');
+  const { fork } = await import('node:child_process');
+  const claimer = join(own, 'claim.mjs');
+  const { writeFileSync } = await import('node:fs');
+  writeFileSync(claimer, `const { boxLedger } = await import(${JSON.stringify(new URL('../packages/harness/dist/boxes.js', import.meta.url).href)});
+const ledger = boxLedger({ dir: process.argv[2] });
+for (let i = 0; i < 50; i += 1) ledger.label(process.argv[3], process.argv[3] + '-' + i);
+`);
+  await Promise.all(['alpha', 'beta'].map((name) => new Promise((resolve, reject) => fork(claimer, [dir, name]).on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${name} exited ${code}`)))))));
+  const ids = readIds(dir);
+  assert.deepEqual(Object.keys(ids), Array.from({ length: 100 }, (_, i) => `box-${i + 1}`), 'labels 1 to 100, none twice, none skipped');
+  assert.equal(new Set(Object.values(ids).map((entry) => `${entry.provider}:${entry.id}`)).size, 100, 'every claimed box once');
+});
+
+test('one run, two labellers: the place\'s home box and the tools\' two boxes are box-1, box-2 and box-3 run-wide, never a repeat', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'labelled' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  const ids = readIds(join(result.dir, 'box-ids.internal'));
+  assert.deepEqual(Object.entries(ids).map(([label, entry]) => [label, entry.owner, entry.provider]), [['box-1', 'place', 'home'], ['box-2', 'tools', 'alpha'], ['box-3', 'tools', 'beta']]);
+  assert.deepEqual(answered(result.dir), { alpha: 'box-2', beta: 'box-3' });
+  const kept = receipts(recording);
+  assert.deepEqual(kept.map((receipt) => [receipt.box, receipt.provider]).sort(), [['box-1', 'home'], ['box-2', 'alpha'], ['box-3', 'beta']], 'one receipt each, by the one numbering');
+});
+
+test('a host box\'s label is claimed by the run\'s process: the same again in the same supervisor life, refused in another, and a malformed identity is refused', async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-host-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const dir = join(own, 'ids');
+  const from = new Date().toISOString();
+  assert.equal(boxLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-a' }, from), 'box-1');
+  assert.equal(boxLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-a' }, from), 'box-1', 'a process restarted in the same supervisor life gets the same label');
+  assert.throws(() => boxLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-b' }, from), /restarted/, 'another supervisor life would renumber: refused');
+  assert.equal(boxLedger({ dir }).claimHost({ provider: 'home', key: '1', run: 'life-a' }, from), 'box-2');
+  for (const bad of ['not json', '{}', '{"provider":"home","key":"x","run":"a"}', '{"provider":"","key":"0","run":"a"}', '{"provider":"home","key":"0"}']) assert.throws(() => parseHostBox(bad), /HOST_BOX/, bad);
+});
+
+test('a host box the place started but no process claimed refuses the recording at the final read: it is never finished without that box', { timeout: 300_000 }, async (t) => {
+  await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'unclaimed' }), /host box 0 on home has no label: its child never claimed it/);
+});
+
+test('two supervisors on one run directory are two lives: the second, resuming the run, is refused at its host box\'s claim, never given the first one\'s label', { timeout: 300_000 }, async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-lives-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const dir = join(own, 'run');
+  const first = await run(t, {}, ['--json', '--dir', dir], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'labelled' });
+  assert.equal(first.result.processes.at(-1).outcome.status, 'complete');
+  const life = readIds(join(dir, 'box-ids.internal'))['box-1'].run;
+  assert.match(life, /^[0-9a-f-]{36}$/, 'the first life\'s RUN_LABEL');
+  const second = await run(t, {}, ['--json', '--dir', dir], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'labelled' }).catch((error) => ({ error }));
+  const said = second.error ? String(second.error.message) : JSON.stringify(second.result.processes.at(-1));
+  assert.match(said, /restarted/, 'the second life is refused at its host box');
+  assert.equal(readIds(join(dir, 'box-ids.internal'))['box-1'].run, life, 'and box-1 is still the first life\'s');
+});
+
+test('a run started on the single ids file of beta.21 keeps its labels: the file is read into the directory, and new labels number on', async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-migrate-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const { writeFileSync } = await import('node:fs');
+  const dir = join(own, 'box-ids.internal');
+  writeFileSync(`${dir}.json`, JSON.stringify({ 'box-1': { provider: 'alpha', id: 'old-1' }, 'box-2': { provider: 'beta', id: 'old-2', receipt: 'open', kind: 'none', from: '2026-10-20T00:00:00.000Z' } }));
+  const ledger = boxLedger({ dir });
+  assert.equal(ledger.label('alpha', 'old-1'), 'box-1', 'an old label is kept');
+  assert.equal(ledger.label('gamma', 'new-1'), 'box-3', 'a new label numbers on past the old ones');
+  assert.deepEqual(Object.keys(readIds(dir)), ['box-1', 'box-2', 'box-3']);
+  assert.equal(readIds(dir)['box-2'].receipt, 'open', 'an old box\'s receipt state comes along');
 });
