@@ -134,10 +134,11 @@ export async function visualOf(recording: Recording): Promise<Visual | undefined
   });
 
   // One chapter per distinct page visit: two that land at the same place in the video (a page opened, then the next straight after) are the later one; a place not shown keeps its own.
+  // A chapter with no seek point (its page was read while only a blurred frame was on screen) is no chapter at all.
   const chapters: VisualChapter[] = [];
-  for (const chapter of everyPage) {
+  for (const chapter of everyPage.filter((each) => !each.hidden)) {
     const last = chapters.at(-1);
-    if (last && !last.hidden && !chapter.hidden && chapter.at - last.at < MERGE_S) chapters[chapters.length - 1] = chapter; else chapters.push(chapter);
+    if (last && chapter.at - last.at < MERGE_S) chapters[chapters.length - 1] = chapter; else chapters.push(chapter);
   }
   const manifest = obj(recording.manifest as unknown as Json);
   const files = Object.entries(obj(obj(manifest?.artifact)?.files) ?? {}).filter(([name, sha]) => /\.pdf$/i.test(name) && typeof sha === 'string').map(([name, sha]) => ({ name, sha: sha as string }));
@@ -224,19 +225,32 @@ function lightbox(host: HTMLElement, url: string, alt: string, box?: VisualFact[
 /** Sets an element's style through the CSSOM: a host whose policy allows no inline style still lets this. */
 const styled = <T extends HTMLElement>(element: T, cssText: string): T => { element.style.cssText = cssText; return element; };
 
-/** A picture of one flat colour, within a few levels, sampled on a small grid. */
-function isBlank(image: HTMLImageElement): boolean {
-  if (!image.naturalWidth) return false;
-  const canvas = Object.assign(document.createElement('canvas'), { width: 32, height: 16 });
-  const context = canvas.getContext('2d', { willReadFrequently: true });
-  if (!context) return false;
-  context.drawImage(image, 0, 0, 32, 16);
-  const data = context.getImageData(0, 0, 32, 16).data;
-  let low = [255, 255, 255];
-  let high = [0, 0, 0];
-  for (let i = 0; i < data.length; i += 4) for (let c = 0; c < 3; c += 1) { low[c] = Math.min(low[c]!, data[i + c]!); high[c] = Math.max(high[c]!, data[i + c]!); }
-  return high.every((value, c) => value - low[c]! < 12);
+/** A frame's original pixels, sampled on a small grid and never put on screen (loaded off the page): whether it is one flat colour, within a few levels, and its
+ *  grey values for comparing it with another frame of the same page. */
+function pixelsOf(url: string): Promise<{ blank: boolean; grey: number[] } | undefined> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onerror = () => resolve(undefined);
+    image.onload = () => {
+      const canvas = Object.assign(document.createElement('canvas'), { width: 32, height: 16 });
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      if (!context || !image.naturalWidth) { resolve(undefined); return; }
+      context.drawImage(image, 0, 0, 32, 16);
+      const data = context.getImageData(0, 0, 32, 16).data;
+      const low = [255, 255, 255];
+      const high = [0, 0, 0];
+      const grey: number[] = [];
+      for (let i = 0; i < data.length; i += 4) {
+        for (let c = 0; c < 3; c += 1) { low[c] = Math.min(low[c]!, data[i + c]!); high[c] = Math.max(high[c]!, data[i + c]!); }
+        grey.push((data[i]! + data[i + 1]! + data[i + 2]!) / 3);
+      }
+      resolve({ blank: high.every((value, c) => value - low[c]! < 12), grey });
+    };
+    image.src = url;
+  });
 }
+/** Two frames are one picture when their grey grids differ by this little on average (a button lit, a hover), out of 255. */
+const SAME_PAGE_DIFF = 6;
 
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 
@@ -279,6 +293,7 @@ export function drawVisual(visual: Visual, model: ChatModel, recording: Recordin
     const strip = reportEl('div', { class: 'mu-film', role: 'list', 'aria-label': 'Screenshots, in order' });
     if (remembered) strip.append(reportEl('div', { class: 'mu-skip', role: 'listitem' }, reportEl('div', { class: 'mu-skip-body' }, reportEl('span', { class: 'mu-skip-title', text: 'Skipped' }), reportEl('span', { class: 'mu-skip-sub', text: 'sign-in, remembered' })), reportEl('div', { class: 'mu-cap', text: 'Opened straight on the account' })));
     const seen = new Set<string>();
+    const tiles: { tile: HTMLElement; frame: VisualFrame }[] = [];
     for (const frame of visual.frames) {
       // The same picture twice is one tile.
       if (seen.has(frame.blob)) continue;
@@ -287,10 +302,21 @@ export function drawVisual(visual: Visual, model: ChatModel, recording: Recordin
       const picture = frame.sensitive ? blurredCanvas(url, frame.w, frame.h) : reportEl('img', { loading: 'lazy', src: url, alt: frame.title ? `The browser on ${frame.title}` : 'The browser' });
       const tile = reportEl('figure', { class: `mu-shot-tile${frame.sensitive ? ' blurred' : ''}`, role: 'listitem' }, styled(reportEl('div', { class: 'mu-tile-pic' }, picture), `aspect-ratio:${frame.w}/${frame.h}`), reportEl('figcaption', { class: 'mu-cap', text: frame.sensitive ? 'Sign-in (blurred)' : frame.title ?? clock((frame.t - (visual.frames[0]?.t ?? frame.t)) / 1000) }));
       if (!frame.sensitive) { tile.tabIndex = 0; tile.addEventListener('click', () => lightbox(host, url, frame.title ?? 'The browser')); tile.addEventListener('keydown', (event) => { if (event.key === 'Enter') lightbox(host, url, frame.title ?? 'The browser'); }); }
-      // A blank frame (one flat colour: a page not yet drawn) tells nothing: its tile goes once its picture is known to be blank.
-      if (!frame.sensitive) { const image = tile.querySelector('img'); if (image) { const check = () => { if (isBlank(image)) tile.remove(); }; if (image.complete) check(); else image.addEventListener('load', check, { once: true }); } }
       strip.append(tile);
+      tiles.push({ tile, frame });
     }
+    // Each frame is judged on its original pixels, sharp or blurred on screen: a blank one (a page not yet drawn) is no tile, and neither is a frame near-identical to an
+    // earlier tile of the same page (the page, by its title, and a small pixel difference: not the hash alone); one tile per distinct page.
+    void Promise.all(tiles.map(({ frame }) => pixelsOf(urlOf(frame.blob)))).then((all) => {
+      const kept: { title?: string; grey: number[] }[] = [];
+      tiles.forEach(({ tile, frame }, i) => {
+        const pixels = all[i];
+        if (!pixels) return;
+        if (pixels.blank) { tile.remove(); return; }
+        const same = kept.some((each) => frame.title !== undefined && each.title === frame.title && each.grey.reduce((sum, value, k) => sum + Math.abs(value - pixels.grey[k]!), 0) / each.grey.length < SAME_PAGE_DIFF);
+        if (same) tile.remove(); else kept.push({ ...(frame.title !== undefined ? { title: frame.title } : {}), grey: pixels.grey });
+      });
+    });
     report.append(strip);
   }
 
