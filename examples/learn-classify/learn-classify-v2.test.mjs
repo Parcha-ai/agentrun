@@ -1,12 +1,15 @@
 // learn-classify v2, the hard job, at $0: the scorer on its own, then a scripted pass end to end with fakes of lane C3's
 // search_web, browse and read_document, scored from what each run's store says it read.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { chmod, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { renderCurve } from './curve.mjs';
+import { bareRepoReader, lineageOf } from './lineage.mjs';
+import { rerow } from './rerow.mjs';
 import { toolStats } from './host.mjs';
 import { readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { sameUrl, scoreEvidence, scoreSegment, scoreV2, SEGMENT_QUESTION } from './score-v2.mjs';
@@ -203,3 +206,64 @@ test('a document the reader fetched through a browser session: the session\'s mi
   const unknown = toolStats([{ tool: 'read_document', args: {}, value: { costUsd: 0.005, looks: [], browser: { costUsd: null, billedSeconds: 60 } } }]);
   assert.deepEqual([unknown.browserCostUsd, unknown.documentCostUsd], [null, null]);
 });
+
+// ---- v3: the chart record (CLASSIFY-CONTRACT.md "v3") --------------------------------------------------------------
+
+const v3Fields = (r) => ({ company: r.company, ticker: r.ticker, born: r.born, rewritten: r.rewritten });
+
+test('v3 rows name the company and say which workflows were born or rewritten at the run, each with the digest main holds after it', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const { rows } = await runLoop({ out, parts: scriptedParts({ set: SETS.v2 }), jobs: 4, record: false });
+  const companies = readJson(join(FIXTURES_V2, 'companies-v2.json'));
+  for (const row of rows) {
+    const company = companies.find((c) => c.cik === row.cik);
+    assert.deepEqual([row.company, row.ticker], [company.name, company.ticker]);
+  }
+  const latest = execFileSync('git', ['--git-dir', join(out, 'agent.git'), 'show', `${rows[0].afterSha}:.pi/agentrun/workflows/${WORKFLOW}/latest`], { encoding: 'utf8' }).trim();
+  assert.deepEqual(rows.map((r) => [r.born, r.rewritten]), [[[{ name: WORKFLOW, revision: latest }], []], [[], []], [[], []], [[], []]]);
+}, { timeout: 180_000 });
+
+test('a workflow admitted under a name main already held is rewritten, not born', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const { rows } = await runLoop({ out, parts: scriptedParts({ set: SETS.v2 }), jobs: 2, record: false });
+  const reader = bareRepoReader(join(out, 'agent.git'));
+  // At run 2's seed, main holds classify-company (run 1 was born with it): admitting it again there is a rewrite.
+  const again = await lineageOf({ admitted: [WORKFLOW], seedSha: rows[1].seedSha, afterSha: rows[1].afterSha, ...reader });
+  assert.deepEqual(again, { born: [], rewritten: [{ name: WORKFLOW, revision: rows[0].born[0].revision }] });
+  const first = await lineageOf({ admitted: [WORKFLOW], seedSha: rows[0].seedSha, afterSha: rows[0].afterSha, ...reader });
+  assert.deepEqual(first, { born: rows[0].born, rewritten: [] });
+}, { timeout: 120_000 });
+
+test('a sealed row says its phase: before at the seed, after at a later main; it stays out of runs.jsonl', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const parts = scriptedParts({ set: SETS.v2 });
+  await runLoop({ out, parts, jobs: 1, record: false });
+  const before = await runSealed({ out, parts: scriptedParts({ set: SETS.v2 }), at: 'seed' });
+  const after = await runSealed({ out, parts: scriptedParts({ set: SETS.v2 }), at: 'main' });
+  assert.deepEqual(before.rows.map((r) => r.phase), ['before', 'before']);
+  assert.deepEqual(after.rows.map((r) => r.phase), ['after', 'after']);
+  assert.ok(readRows(join(out, 'runs.jsonl')).every((r) => r.split === 'run' && !('phase' in r)));
+  for (const r of [...before.rows, ...after.rows]) assert.deepEqual([r.born, r.rewritten], [[], []]);
+}, { timeout: 180_000 });
+
+test('rerow backfills the v3 fields of a finished pass into runs.v3.jsonl from its own files, and never rewrites runs.jsonl', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const { rows } = await runLoop({ out, parts: scriptedParts({ set: SETS.v2 }), jobs: 4, record: false });
+  await runSealed({ out, parts: scriptedParts({ set: SETS.v2 }), at: 'seed' });
+  // A pass from before v3: the same rows without the v3 fields.
+  const old = rows.map(({ company, ticker, born, rewritten, ...rest }) => rest);
+  writeFileSync(join(out, 'runs.jsonl'), old.map((r) => `${JSON.stringify(r)}\n`).join(''));
+  const sealedFile = readdirSync(out).find((f) => /^sealed-[0-9a-f]{12}\.jsonl$/.test(f));
+  const sealedOld = readRows(join(out, sealedFile)).map(({ phase, ...rest }) => rest);
+  writeFileSync(join(out, sealedFile), sealedOld.map((r) => `${JSON.stringify(r)}\n`).join(''));
+  const runsBefore = readFileSync(join(out, 'runs.jsonl'));
+
+  const written = await rerow({ out, data: FIXTURES_V2 });
+  assert.deepEqual(readFileSync(join(out, 'runs.jsonl')), runsBefore, 'runs.jsonl is never rewritten');
+  const v3 = readRows(join(out, 'runs.v3.jsonl'));
+  assert.deepEqual(v3.map(v3Fields), rows.map(v3Fields));
+  assert.deepEqual(v3.map(({ company, ticker, born, rewritten, ...rest }) => rest), old, 'every other field as it was');
+  const sealedV3 = readRows(join(out, `v3-${sealedFile}`));
+  assert.deepEqual(sealedV3.map((r) => r.phase), ['before', 'before']);
+  assert.deepEqual(written, { runs: 4, sealed: { [`v3-${sealedFile}`]: 2 } });
+}, { timeout: 240_000 });

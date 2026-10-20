@@ -19,7 +19,8 @@ import {
   agentHomeFor, curateJob, finishJob, groupsOf, meteredJudge, prepareRun, readAgentAt, runJob, textsRead, toolResultsOf, toolStats, usageOfStore,
 } from './host.mjs';
 import { writeRecording } from './recording.mjs';
-import { rowOf, rowOfV2, spendOf } from './row.mjs';
+import { lineageOf } from './lineage.mjs';
+import { curateOf, rowOf, rowOfV2, spendOf } from './row.mjs';
 import { scoreV2 } from './score-v2.mjs';
 import { agentScript, agentScriptV2, FIXTURES, FIXTURES_V2, fakeHardTools, fixtureWeb, scriptedJev, scriptedModel } from './scripted.mjs';
 import { SETS } from './sets.mjs';
@@ -215,6 +216,10 @@ async function oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, l
     const curated = await curateJob({ repo, judge: curateJudge });
     save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main });
   }
+  if (!p.lineage) {
+    const admitted = curateOf(p.curated, runId, p.finished?.proposal?.withheld).admitted;
+    save({ ...p, lineage: await lineageOf({ admitted, seedSha: p.seedSha, afterSha: p.afterSha, read: (path, sha) => repo.read(path, sha), list: (prefix, sha) => repo.list(prefix, sha) }) });
+  }
   const tools = p.stats ? [p.stats.browserCostUsd, p.stats.searchCostUsd, p.stats.documentCostUsd] : [];
   const spend = spendOf(p.measure, p.curateJudge, tools);
   save({ ...p, knownUsd: spend.knownUsd });
@@ -222,7 +227,7 @@ async function oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, l
     ? await writeRecording({ into: join(out, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started: p.started, ended: p.ended, spend, modelUsd: p.measure.unpricedAnswers ? null : p.measure.usage.costUsd })
     : null;
   const v1 = { run: job.order, runId, job, seedSha: p.seedSha, afterSha: p.afterSha, offered: p.offered, measure: p.measure, finished: p.finished, curated: p.curated, curateJudge: p.curateJudge, recording, convention: parts.conventions?.[job.cik] };
-  return parts.set === SETS.v2 ? rowOfV2({ ...v1, score: p.score, stats: p.stats, scoringJudge: p.scoringJudge }) : rowOf(v1);
+  return parts.set === SETS.v2 ? rowOfV2({ ...v1, score: p.score, stats: p.stats, scoringJudge: p.scoringJudge, lineage: p.lineage }) : rowOf(v1);
 }
 
 /** The learning pass: the first `jobs` companies of split "run", in order, until the spend reaches `capUsd`. */
@@ -300,7 +305,8 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
       ? await writeRecording({ into: join(out, 'sealed', label, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started, ended: Date.now(), spend: spendOf(measure, undefined, tools), modelUsd: measure.unpricedAnswers ? null : measure.usage.costUsd })
       : null;
     const v1 = { run: i + 1, runId: prepared.runId, job, seedSha: sha, afterSha: sha, offered: prepared.workflows.loaded.map((w) => w.name), measure, finished, curated: null, recording, convention: parts.conventions?.[job.cik] };
-    const row = scored ? rowOfV2({ ...v1, score: scored.score, stats: scored.stats, scoringJudge: scored.scoringJudge }) : rowOf(v1);
+    const phase = sha === meta.seedSha ? 'before' : 'after';
+    const row = scored ? rowOfV2({ ...v1, score: scored.score, stats: scored.stats, scoringJudge: scored.scoringJudge, phase }) : { ...rowOf(v1), phase };
     spent += spendOf(measure, undefined, tools).knownUsd + (scored?.scoringJudge.costUsd ?? 0);
     appendFileSync(rowsPath, `${JSON.stringify(row)}\n`);
     rows.push(row);
