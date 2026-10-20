@@ -409,6 +409,12 @@ test("box: a receipt of each box the driver made: its size, when it was made and
   await g.host.stop(gh);
 });
 
+test("inheritEnv: a name that is not a variable name, the launcher's own, or one env sets is refused before a box is made", () => {
+  for (const bad of [["1X"], ["A=B"], ["PATH"], ["HOME"], ["PDA_HOLDER"], ["PDA_TEST_OUT"]]) {
+    assert.throws(() => world("hold", { inheritEnv: bad }), (e: unknown) => e instanceof DaytonaHostError && e.code === "INVALID_ARGUMENT" && /inheritEnv/.test(e.message), JSON.stringify(bad));
+  }
+});
+
 test("box: a driver built on daytonaHost under another name (driver) names its own provider, and no box of it gets Daytona's list price", async () => {
   const w = world("hold", { driver: "other" }, { size: { cpu: 2, memory: 4, disk: 10, gpu: 0, createdAt: "2026-10-16T09:00:00.000Z" } });
   const h = await w.host.start(REF, TOKEN);

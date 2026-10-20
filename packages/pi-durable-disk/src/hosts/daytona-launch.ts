@@ -2,9 +2,10 @@
 // alive in place, as a systemd unit does on a host.
 // It runs as root, started through the toolbox, and keeps one instance of a run alive in its box:
 //   start <name>   move the spec and token from the toolbox user's staging directory (`--stage`), spawn `serve` detached (its own session, so the toolbox's process-group kill never reaches it), wait
-//                  until the first incarnation is spawned, print the state
+//                  until the first incarnation is spawned, print the state. `--inherit-env A,B`: those variables of its own
+//                  environment (a secret the box's runtime put on the exec) go to `serve`'s, never to a file
 //   serve <name>   read the spec and the mount token, unlink the token file, run the instance as the run user with the
-//                  token on a pipe to its stdin, restart it after a non-terminal exit (never after 0, 65, 70, 75 or 76,
+//                  token on a pipe to its stdin (and the `--inherit-env` variables of its own environment), restart it after a non-terminal exit (never after 0, 65, 70, 75 or 76,
 //                  and not past the restart limit), forward SIGTERM to it, write `<name>.state` on every change
 //   status <name>  print running, stopped or failed from the state file and whether the processes still live
 //   stop <name>    SIGTERM the launcher (it drains the instance), SIGKILL both after the timeout, print the state
@@ -24,6 +25,7 @@ export const LAUNCH_DIR = "/run/pda";
 export const LAUNCH_SCRIPT = fileURLToPath(import.meta.url);
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export interface LaunchSpec {
   /** The instance command and its arguments (absolute program path). */
@@ -130,7 +132,7 @@ function runAs(spec: LaunchSpec): { uid?: number; gid?: number; home: string } {
 }
 
 /** The loop `serve` runs; resolves with the final state. */
-export async function serve(dir: string, name: string): Promise<LaunchState> {
+export async function serve(dir: string, name: string, inheritEnv: string[] = []): Promise<LaunchState> {
   const f = files(dir, name);
   const state: LaunchState = { launcher: process.pid, launcherTicks: procStartTicks(process.pid), phase: "running", instance: null, instanceTicks: null, spawned: 0, restarts: 0, exit: null, signal: null, reason: null, at: new Date().toISOString() };
   const save = (patch: Partial<LaunchState>) => writeState(f.state, Object.assign(state, patch, { at: new Date().toISOString() }));
@@ -147,6 +149,8 @@ export async function serve(dir: string, name: string): Promise<LaunchState> {
     save({ phase: "exited", exit: 1, reason: `refused: ${(err as Error).message}` });
     return state;
   }
+  // What `start` handed over in this launcher's environment; in memory only.
+  const inherited = Object.fromEntries(inheritEnv.flatMap((n) => (process.env[n] === undefined ? [] : [[n, process.env[n]!]])));
   const restart = spec.restart !== false;
   const delay = spec.restartDelayMs ?? 1_000;
   const limit = spec.restartLimit ?? { burst: 5, intervalMs: 60_000 };
@@ -167,7 +171,7 @@ export async function serve(dir: string, name: string): Promise<LaunchState> {
   const recent: number[] = [];
   try {
     for (;;) {
-      const env = { PATH: SAFE_PATH, LANG: "C.UTF-8", HOME: ids.home, ...spec.env };
+      const env = { PATH: SAFE_PATH, LANG: "C.UTF-8", HOME: ids.home, ...spec.env, ...inherited };
       const piped = Boolean(token);
       try {
         child = spawn(spec.argv[0], spec.argv.slice(1), { uid: ids.uid, gid: ids.gid, env, cwd: "/", stdio: [piped ? "pipe" : "ignore", log, log], detached: true });
@@ -218,10 +222,17 @@ export async function serve(dir: string, name: string): Promise<LaunchState> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Spawn `serve` in its own session and wait until its first incarnation is spawned (or the launcher ended without one). */
-export async function start(dir: string, name: string, timeoutMs = 30_000, stage?: string): Promise<LaunchState | null> {
+/**
+ * Spawn `serve` in its own session and wait until its first incarnation is spawned (or the launcher ended without one).
+ * `inheritEnv` names variables of this process's environment that `serve` gets in its own and passes to every incarnation:
+ * their values are never written anywhere. A name this environment does not have fails the start, naming it.
+ */
+export async function start(dir: string, name: string, timeoutMs = 30_000, stage?: string, inheritEnv: string[] = []): Promise<LaunchState | null> {
   const f = files(dir, name);
   if (readState(dir, name)) throw new Error(`${name} was already launched in this box`);
+  for (const n of inheritEnv) if (!ENV_NAME.test(n)) throw new Error(`${JSON.stringify(n)} is not an environment variable name`);
+  const missing = inheritEnv.filter((n) => process.env[n] === undefined);
+  if (missing.length > 0) throw new Error(`the launcher's environment has no ${missing.join(", ")} (inheritEnv)`);
   if (stage) {
     // The toolbox's user uploaded into its own 0700 staging directory; move both files into the root-only directory.
     const from = files(stage, name);
@@ -232,7 +243,9 @@ export async function start(dir: string, name: string, timeoutMs = 30_000, stage
     }
   }
   if (!existsSync(f.spec)) throw new Error(`no launch spec at ${f.spec}`);
-  const child = spawn(process.execPath, [LAUNCH_SCRIPT, "serve", name, "--dir", dir], { detached: true, stdio: "ignore", env: { PATH: SAFE_PATH, LANG: "C.UTF-8" } });
+  const inherited = Object.fromEntries(inheritEnv.map((n) => [n, process.env[n]!]));
+  const args = [LAUNCH_SCRIPT, "serve", name, "--dir", dir, ...(inheritEnv.length > 0 ? ["--inherit-env", inheritEnv.join(",")] : [])];
+  const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", env: { PATH: SAFE_PATH, LANG: "C.UTF-8", ...inherited } });
   child.unref();
   for (const t0 = Date.now(); Date.now() - t0 < timeoutMs; await sleep(25)) {
     const s = readState(dir, name);
@@ -353,13 +366,14 @@ async function main(argv: string[]): Promise<number> {
   };
   const dir = opt("--dir") ?? LAUNCH_DIR;
   const timeoutMs = Number(opt("--timeout-ms") ?? 30_000);
+  const inheritEnv = (opt("--inherit-env") ?? "").split(",").filter(Boolean);
   const print = (v: unknown) => process.stdout.write(`${JSON.stringify(v)}\n`);
   switch (verb) {
     case "serve":
-      await serve(dir, name);
+      await serve(dir, name, inheritEnv);
       return 0;
     case "start": {
-      const s = await start(dir, name, timeoutMs, opt("--stage"));
+      const s = await start(dir, name, timeoutMs, opt("--stage"), inheritEnv);
       print(s);
       return s && s.spawned > 0 ? 0 : 1;
     }
@@ -370,7 +384,7 @@ async function main(argv: string[]): Promise<number> {
       print(await stop(dir, name, timeoutMs, { reapDetached: rest.includes("--reap-detached") }));
       return 0;
     default:
-      process.stderr.write("usage: daytona-launch.ts start|serve|status|stop NAME [--dir DIR] [--stage DIR] [--timeout-ms MS] [--reap-detached]\n");
+      process.stderr.write("usage: daytona-launch.ts start|serve|status|stop NAME [--dir DIR] [--stage DIR] [--timeout-ms MS] [--inherit-env A,B] [--reap-detached]\n");
       return 2;
   }
 }
