@@ -37,6 +37,10 @@ A live run needs a model for the agent (Google's gemini-3.8-flash, thinking at m
 
 The Modal SDK is not installed with this repository: `npm install --no-save modal@0.11.0`. Each key stays in the demo's process; none reaches a sandbox, and none is one the agent's tools could read. The sandboxes carry the label `example=placed-frames`, end when the run releases them, and end by themselves after 20 minutes at most, so a run that dies leaves nothing for long. `SETUP-PROMPT.md` sets a live run up for you.
 
+## What a run keeps
+
+With `--dir <path>` the run's directory keeps, under `work/frames/`, each frame's pixels (`f<N>.idx`), a record of each tool call (`f<N>.call.json` and `release.call.json`: the tool, its arguments and its answer) and `boxes.json`, the sandboxes' own log by label: when each was made, each command's start and end, and when it ended. None of them holds a provider id, an address or a path. The provider's id of each sandbox is written apart, at the root of the run's directory, as `box-ids.internal.json` (label to id), so that whoever checks the accounts after a run can find every sandbox; it is never part of a recording.
+
 ## What it is not
 
 Jev picks one of the places the config names; it does not make a place. The sandboxes are the ones in `demo.json` (`placement`): their purposes are what Jev reads, so another zoom or another job needs its own lines. The line on each frame is the example's own, and what the card says is read from the calls the tools answered, never from what the agent wrote. The line is composed from the placement record's fields (where, who judged, the score); it is what was judged, not a proof the other sandbox could not have done it.
