@@ -24,8 +24,8 @@ for are all in the run's directory, so a process is somewhere a run visits, not 
 Use it when a run should not be tied to the machine it started on:
 
 - **Your compute is disposable or changes.** Containers, sandboxes, VMs, deploys: whichever host opens the run next carries
-  on, with no state to copy first. Hosts: systemd units on this machine, Docker containers, Daytona sandboxes (a driver for
-  another compute is [three calls](docs/reference.md#host-drivers-and-the-supervisor)).
+  on, with no state to copy first. Hosts: systemd units on this machine, Docker containers, Daytona sandboxes, Modal VMs (a
+  driver for another compute is [three calls](docs/reference.md#host-drivers-and-the-supervisor)).
 - **The agent waits.** A run whose work only sleeps in a retry or a long poll (longer than the park threshold, 60 s with the local
   and Docker drivers) is released, holds no process, and is started again at its deadline. With `--serve`, a run with no work at
   all is released too and a request starts it ([serve and parking](docs/reference.md#serve-parking-and-fork)).
@@ -175,7 +175,7 @@ guarantees. This release names no other backend and promises none.
   another host gets the same submission ([Serve, parking and fork](docs/reference.md#serve-parking-and-fork)).
 - **Fork a sealed run into many**, each fork a run of its own ([fork-into-many](examples/fork-into-many/)).
 - **Seed a new run** with a store and files before anything sees it ([Seeding a new run](docs/reference.md#seeding-a-new-run)).
-- **Run it supervised** on systemd units, Docker containers or Daytona sandboxes ([Host drivers and the
+- **Run it supervised** on systemd units, Docker containers, Daytona sandboxes or Modal VMs ([Host drivers and the
   supervisor](docs/reference.md#host-drivers-and-the-supervisor)).
 - **Keep what was committed.** Every commit is on the disk before anything is shown, and an effect whose intent was committed is never started twice.
 
@@ -244,8 +244,8 @@ reference. [Library](docs/reference.md#library) describes each in full.
 | `withClaim(where, fn)` and `readReleased(where, file)` | Hold one path of a disk exclusively for a moment, outside any run; read what it released over S3, with no mount ([A short claim](docs/reference.md#a-short-claim-on-any-path-and-a-read-of-what-it-released)) | Archil only: [`test/with-claim.test.ts`](test/with-claim.test.ts) (fakes) and [`test/live/with-claim.live.test.ts`](test/live/with-claim.live.test.ts) |
 | `recordHome` (a field of a `Place`) | The directory an attempt's runner records into, and `bringHome(into, { final })`, which reads it back over the control with no claim ([Places](docs/reference.md#places-where-a-runs-instance-starts-and-ends)) | Archil only: [`test/place.test.ts`](test/place.test.ts), [`test/live/record-home.live.test.ts`](test/live/record-home.live.test.ts) |
 
-Also exported: `ensureRunning` and the host drivers (`localHost`, `dockerHost`, `daytonaHost`), `serveRun` and `requestRun`,
-parking, `fork` and `forkLocal`, `readLocalRunStatus` and `readRunStatus`, `archilControl`, and the typed errors.
+Also exported: `ensureRunning` and the host drivers (`localHost`, `dockerHost`, `daytonaHost`, `modalHost`), `serveRun` and
+`requestRun`, parking, `fork` and `forkLocal`, `readLocalRunStatus` and `readRunStatus`, `archilControl`, and the typed errors.
 `@parcha/pi-durable-disk/lease` is the narrow entry for a host that owns its Harness; `@parcha/pi-durable-disk/internals` has
 no compatibility promise.
 
