@@ -12,9 +12,9 @@
 // installed in the box) and this demo's directory.
 // It refuses without the keys, caps itself at 25 minutes, and sweeps at the end: every sandbox deleted and confirmed gone, the run's directory removed.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, posix } from 'node:path';
+import { dirname, join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { archilControl, archilPlace, daytonaHost } from '@parcha/pi-durable-disk';
 import { revokeBestEffort } from '../../packages/pi-durable-disk/src/claim.ts';
@@ -38,6 +38,7 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 const spec = JSON.parse(readFileSync(new URL('./demo.json', import.meta.url), 'utf8'));
 const runId = `disk-live-${Date.now().toString(36)}`;
 const stamp = Date.now().toString(36);
+const runDirOf = () => join(process.env.PDA_STATE_DIR!, `run-${stamp}`);
 
 // What the child imports besides the disk package: the workspace packages (the reference among them), packed once here, and this demo's directory. The pack ships the package's `dist/`, so a dist
 // older than its source would run old code in the box: refuse it.
@@ -136,6 +137,20 @@ const precreate = process.env.DISK_LIVE_PRECREATE === '0' ? [''] : ['', 'signals
 for (const dir of precreate) {
   await (disk as never as { putObject(key: string, body: string, attrs: object): Promise<unknown> }).putObject(`runs/${runId}/${dir}`, '', { uid: PDA_ID, gid: PDA_ID, mode: 0o755 });
 }
+// What the report and the by-code checks need of the run, which lives on the disk: its ledger, the kept answers and work/ (the report among it), read over S3 into the supervisor's run directory after
+// each process, so the entry takes the agent's report from there as it does on a directory of its own. Never the store, never the claim's files.
+async function bringRunHome(into: string): Promise<void> {
+  const prefix = `runs/${runId}/`;
+  const { objects } = await control.listObjects(prefix, { recursive: true });
+  for (const object of objects) {
+    const rel = object.key.slice(prefix.length);
+    if (rel.endsWith('/') || !(rel === 'ledger.jsonl' || rel.startsWith('answers/') || rel.startsWith('work/'))) continue;
+    if (rel.split('/').some((part) => part === '..' || part === '')) continue;
+    const to = join(into, ...rel.split('/'));
+    mkdirSync(dirname(to), { recursive: true });
+    writeFileSync(to, await control.getObject(object.key));
+  }
+}
 // For a failed take: the launcher's log of each live sandbox, read as it runs (a deleted sandbox takes its log with it), printed at the end.
 const boxLogs = new Map<string, string>();
 const logTimer = setInterval(async () => {
@@ -179,6 +194,7 @@ try {
       const crossings = (gen: number) => posix.join(made.paths.root, 'signals', `crossings-${gen}.jsonl`);
       const homeCrossings = (order: Parameters<typeof made.start>[0]) => async <T>(exit: T): Promise<T> => {
         try { writeFileSync(order.env.CROSS_LOG!, await control.getObject(`runs/${runId}/signals/crossings-${order.gen}.jsonl`)); } catch (error) { console.log(`the crossing log of process ${order.gen} could not be read: ${String((error as Error).message).slice(0, 120)}`); }
+        try { await bringRunHome(context.paths.root); } catch (error) { console.log(`the run's files could not be brought home after process ${order.gen}: ${String((error as Error).message).slice(0, 120)}`); }
         return exit;
       };
       const inBox = (order: Parameters<typeof made.start>[0]) => ({
@@ -192,13 +208,18 @@ try {
       });
       return { ...made, start: async (order: Parameters<typeof made.start>[0]) => { console.log(`TIMING ${new Date().toISOString()} place.start called, generation ${order.gen}`); const runner = await made.start(inBox(order)); return { ...runner, exited: runner.exited.then(homeCrossings(order)) }; }, recover: async (last: Parameters<typeof made.recover>[0], kind: Parameters<typeof made.recover>[1], order: Parameters<typeof made.recover>[2]) => { console.log(`TIMING ${new Date().toISOString()} place.recover called, generation ${order.gen}, kind ${String(kind)}`); const recovered = await made.recover(last, kind, inBox(order)); return { ...recovered, runner: { ...recovered.runner, exited: recovered.runner.exited.then(homeCrossings(order)) } }; } } as never;
     },
-    argv: [mode, ...(secret ? ['--live'] : []), ...(maxUsd ? ['--max-usd', maxUsd] : []), '--record', record, '--dir', join(process.env.PDA_STATE_DIR!, `run-${stamp}`)],
+    argv: [mode, ...(secret ? ['--live'] : []), ...(maxUsd ? ['--max-usd', maxUsd] : []), '--record', record, '--dir', runDirOf()],
   });
 } catch (error) { failure = error; }
 clearTimeout(cap);
 clearInterval(logTimer);
 const redact = (text: string) => text.replaceAll(`${MOUNT_ROOT}/runs/${runId}`, '<mp>').replaceAll(runId, '<run>');
 for (const [id, text] of boxLogs) console.log(`--- launcher log of a sandbox (${id.slice(0, 8)}) ---\n${redact(text).slice(-12000)}`);
+// The by-code checks of the review (no model judges these), on the recording and the run's files brought home, before anything is published.
+const runDir = runDirOf();
+const { reviewProblems } = (await import(new URL('../disk-review-checks.mjs', import.meta.url).href)) as { reviewProblems: (input: { recording: string; dir: string; record: unknown; live: boolean }) => string[] };
+const checks = outcome && existsSync(join(record, 'events.jsonl')) ? reviewProblems({ recording: record, dir: runDir, record: outcome.record, live: Boolean(secret) }) : null;
+if (checks) console.log(checks.length ? `by-code checks: ${checks.length} problem(s)\n${checks.map((problem) => `  - ${problem}`).join('\n')}` : 'by-code checks: none failed');
 const report = await sweep();
-console.log(JSON.stringify({ run: runId, minutes: Math.round((Date.now() - startedAt) / 6000) / 10, spendUsd: ledger.spend(), ...(failure ? { failure: String((failure as Error).message).slice(0, 300) } : {}), mode, live: Boolean(secret), kills: outcome?.kills ?? null, handoffs: outcome?.handoffs ?? null, failedHandoffs: outcome?.failedHandoffs ?? null, processes: outcome?.processes.map((p) => ({ exit: p.exit, status: p.outcome?.status ?? null })) ?? null, usd: outcome?.usd ?? null, overBudget: outcome?.overBudget ?? null, report }));
+console.log(JSON.stringify({ run: runId, minutes: Math.round((Date.now() - startedAt) / 6000) / 10, spendUsd: ledger.spend(), ...(failure ? { failure: String((failure as Error).message).slice(0, 300) } : {}), mode, live: Boolean(secret), kills: outcome?.kills ?? null, handoffs: outcome?.handoffs ?? null, failedHandoffs: outcome?.failedHandoffs ?? null, processes: outcome?.processes.map((p) => ({ exit: p.exit, status: p.outcome?.status ?? null })) ?? null, usd: outcome?.usd ?? null, overBudget: outcome?.overBudget ?? null, checks, report }));
 process.exit(failure ? 1 : 0);
