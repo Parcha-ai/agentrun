@@ -370,8 +370,22 @@ test('the transport package is published: listed, not held, a release manifest a
   const workspace = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   checkManifest(repoManifest('pi-transport'), 'pi-transport', workspace.version, workspace.license);
   const plan = (await preflight(root)).packages.map(pkg => pkg.name);
-  assert.ok(plan.indexOf('@parcha/pi-transport') > plan.indexOf('@parcha/pi-vision'), 'in the plan, after the packages before it in the map');
-  assert.equal(plan.at(-1), '@parcha/agentrun-harness', 'the harness host stays last');
+  const at = name => plan.indexOf(name);
+  assert.ok(at('@parcha/pi-vision') >= 0 && at('@parcha/pi-transport') > at('@parcha/pi-vision'), 'in the plan, after pi-vision');
+  assert.ok(at('@parcha/agentrun-harness') > at('@parcha/pi-transport'), 'before the harness host, which depends on the packages before it');
+}));
+
+test('lifting pi-git-remote and pi-agent-learn after pi-transport keeps the plan in map order, pi-transport between pi-vision and the harness host', () => fixture(async root => {
+  const set = async (directory, change) => { const path = join(root, 'packages', directory, 'package.json'); const current = JSON.parse(await readFile(path, 'utf8')); const { private: _, ...rest } = current; await putJson(path, { ...rest, ...change }); };
+  await set('pi-transport', {});
+  await set('pi-git-remote', {});
+  await set('pi-agent-learn', {});
+  await recordPackages(root);
+  const names = (await preflight(root)).packages.map(pkg => pkg.name);
+  const at = name => names.indexOf(name);
+  const order = ['@parcha/pi-vision', '@parcha/pi-transport', '@parcha/pi-git-remote', '@parcha/pi-agent-learn', '@parcha/agentrun-harness'];
+  assert.ok(order.every(name => at(name) >= 0), `all five are in the plan: ${names.join(', ')}`);
+  assert.deepEqual([...order].sort((x, y) => at(x) - at(y)), order, 'in map order, by index');
 }));
 
 test('a release is refused while fragments remain or the changelog lacks the version', () => fixture(async root => {
