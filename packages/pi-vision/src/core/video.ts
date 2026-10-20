@@ -9,6 +9,7 @@ import { visionContext } from "./env.js";
 import { formatFragment } from "./fragments.js";
 import { RESULT_BYTES_SHARE, type Limits } from "./limits.js";
 import type { Part } from "./plan.js";
+import { messageLine, toBase64 } from "./primitives.js";
 import type { MadeBy, Provider, ProviderCall, ProviderSource } from "./provider.js";
 
 /** What a probe finds; null for what the file does not say. */
@@ -38,9 +39,8 @@ export type VideoOutcome<T> = ({ readonly ok: true } & T) | Failure;
 /** The typed miss for an error a provider or the environment raised; a call that was cancelled is cancelled, not a miss. */
 const failure = (call: ProviderCall, error: unknown, code: MissCode, what: string): Failure => {
   if (call.signal?.aborted) throw error;
-  return error instanceof VideoMiss ? { ok: false, code: error.code, text: error.message } : { ok: false, code, text: `${what} (${String((error as Error)?.message ?? error).split("\n")[0]})` };
+  return error instanceof VideoMiss ? { ok: false, code: error.code, text: error.message } : { ok: false, code, text: `${what} (${messageLine(error)})` };
 };
-const base64 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
 const fmtS = (s: number | null) => (s === null ? "?" : `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`);
 
 /** The facts of a file nothing could probe: only its size. */
@@ -89,7 +89,7 @@ export async function videoAsIs(source: ProviderSource, facts: VideoFacts, limit
   if (!read.ok) return failure(call, read.error, "unreadable", "the file could not be read");
   if (read.value.length > budget) return over(read.value.length);
   const fragment = formatFragment({ t: facts.durationS ? { from: 0, to: facts.durationS } : { from: 0 } });
-  return { ok: true, part: { type: "video", data: base64(read.value), mimeType, fragment }, bytes: read.value.length };
+  return { ok: true, part: { type: "video", data: toBase64(read.value), mimeType, fragment }, bytes: read.value.length };
 }
 
 /** One frame at each time asked, found by seek: at most `imagesPerCall`, each within the image limits and together
@@ -103,7 +103,7 @@ export async function videoFrames(provider: VideoProvider, source: ProviderSourc
   const parts: Part[] = [];
   const shown = new Set<number>();
   for (const frame of out.frames) {
-    const data = base64(frame.data);
+    const data = toBase64(frame.data);
     if (data.length > limits.image.maxBytes || data.length > room) continue;
     room -= data.length;
     shown.add(frame.atS);
@@ -124,6 +124,6 @@ export async function videoClip(provider: VideoProvider, source: ProviderSource,
     if (!read.ok) return failure(call, read.error, "video_unseeable", "the window could not be read back");
     if (read.value.length > budget) return { ok: false, code: "over_budget", text: `the window is ${read.value.length} bytes, over the ${budget} a request carries inline; read a shorter window` };
     const { fromS, toS, madeBy, mimeType } = made;
-    return { ok: true, part: { type: "video", data: base64(read.value), mimeType, fragment: formatFragment({ t: { from: fromS, to: toS } }) }, madeBy, fromS, toS, bytes: read.value.length };
+    return { ok: true, part: { type: "video", data: toBase64(read.value), mimeType, fragment: formatFragment({ t: { from: fromS, to: toS } }) }, madeBy, fromS, toS, bytes: read.value.length };
   } finally { await call.env.remove(made.path, { force: true }, visionContext()); }
 }

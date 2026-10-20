@@ -94,8 +94,8 @@ test('a failed TypeScript floor rerun replaces stale success evidence', async ()
 test('release plan binds the exact verified tarballs in dependency order', () => fixture(async root => {
   const plan = await preflight(root);
   assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/agentrun-harness']);
-  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-pi-vision-${version}.tgz`, `parcha-pi-transport-${version}.tgz`, `parcha-agentrun-harness-${version}.tgz`]);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-pi-vision-${version}.tgz`, `parcha-pi-transport-${version}.tgz`]);
   assert.ok(plan.packages.every(pkg => /^sha512-/.test(pkg.integrity) && /^[a-f0-9]{64}$/.test(pkg.sha256)));
 }));
 test('unlicensed source and inconsistent tags fail before publication', () => fixture(async root => {
@@ -213,7 +213,7 @@ test('Apache release preserves the approved root license and notices in every ar
   await recordPackages(root);
   const plan = await preflight(root);
   assert.equal(plan.license, 'Apache-2.0');
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/agentrun-harness']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport']);
   await writeFile(join(root, 'packages/pi-durable-disk/NOTICE'), `${notice}\nThird-party notice kept after the repository's.\n`);
   await recordPackages(root);
   assert.equal((await preflight(root)).packages.length, releasePackages.length, 'a published package may append third-party notices to the root NOTICE');
@@ -365,26 +365,27 @@ test('the browser package is published: listed, not held, a release manifest at 
   assert.ok(plan.indexOf('@parcha/pi-browser') > plan.indexOf('@parcha/pi-durable-disk'), 'in the plan, after the packages before it in the map');
 }));
 
-test('the transport package is published: listed, not held, a release manifest at the workspace version, and in the plan after pi-vision', () => fixture(async root => {
+test('the transport package is published: listed, not held, a release manifest at the workspace version, and in the plan after pi-vision and before any later package', () => fixture(async root => {
   assert.ok(releasePackages.includes('pi-transport') && !heldPackages.includes('pi-transport'), 'published from this checkout');
   const workspace = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   checkManifest(repoManifest('pi-transport'), 'pi-transport', workspace.version, workspace.license);
-  const plan = (await preflight(root)).packages.map(pkg => pkg.name);
-  const at = name => plan.indexOf(name);
-  assert.ok(at('@parcha/pi-vision') >= 0 && at('@parcha/pi-transport') > at('@parcha/pi-vision'), 'in the plan, after pi-vision');
-  assert.ok(at('@parcha/agentrun-harness') > at('@parcha/pi-transport'), 'before the harness host, which depends on the packages before it');
+  const plan = (await preflight(root)).packages.map(pkg => pkg.directory);
+  const at = directory => plan.indexOf(directory);
+  assert.ok(at('pi-vision') >= 0 && at('pi-transport') > at('pi-vision'), 'in the plan, after pi-vision');
+  // Every package after it in the map that a tree publishes comes after it in the plan, whichever of them are published.
+  for (const later of listedPackages.slice(listedPackages.indexOf('pi-transport') + 1)) if (at(later) >= 0) assert.ok(at(later) > at('pi-transport'), `${later} after pi-transport`);
 }));
 
-test('lifting pi-git-remote and pi-agent-learn after pi-transport keeps the plan in map order, pi-transport between pi-vision and the harness host', () => fixture(async root => {
+test('lifting pi-git-remote and pi-agent-learn after pi-transport keeps the plan in map order, pi-transport after pi-vision and before them', () => fixture(async root => {
   const set = async (directory, change) => { const path = join(root, 'packages', directory, 'package.json'); const current = JSON.parse(await readFile(path, 'utf8')); const { private: _, ...rest } = current; await putJson(path, { ...rest, ...change }); };
   await set('pi-transport', {});
   await set('pi-git-remote', {});
   await set('pi-agent-learn', {});
   await recordPackages(root);
-  const names = (await preflight(root)).packages.map(pkg => pkg.name);
-  const at = name => names.indexOf(name);
-  const order = ['@parcha/pi-vision', '@parcha/pi-transport', '@parcha/pi-git-remote', '@parcha/pi-agent-learn', '@parcha/agentrun-harness'];
-  assert.ok(order.every(name => at(name) >= 0), `all five are in the plan: ${names.join(', ')}`);
+  const names = (await preflight(root)).packages.map(pkg => pkg.directory);
+  const at = directory => names.indexOf(directory);
+  const order = ['pi-vision', 'pi-transport', 'pi-git-remote', 'pi-agent-learn'];
+  assert.ok(order.every(directory => at(directory) >= 0), `all four are in the plan: ${names.join(', ')}`);
   assert.deepEqual([...order].sort((x, y) => at(x) - at(y)), order, 'in map order, by index');
 }));
 

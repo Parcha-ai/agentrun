@@ -137,6 +137,13 @@ export function moveRecords(value, found = []) {
 
 /** What a blob's extension may be (draft 50): the allowlist, and `html`/`htm`/`css` only as a file of the manifest's artifact. Everything else (`svg`, `xml`, `js`, an unknown one) is refused. */
 export function blobNameProblem(name, artifactNames) {
+  // A gallery publishes an artifact page as `<hash>.html.txt` (apps/viewer/build.mjs): plain text when opened straight.
+  const published = /^([0-9a-f]{64})\.([A-Za-z0-9]+)\.txt$/.exec(name);
+  if (published) {
+    const inner = `${published[1]}.${published[2].toLowerCase()}`;
+    if (PAGE_EXTENSIONS.includes(published[2].toLowerCase()) && artifactNames.has(inner)) return undefined;
+    return blobNameProblem(inner, artifactNames) ?? 'is not a blob named by its SHA-256: only an artifact page is published with .txt after its name';
+  }
   const named = /^([0-9a-f]{64})\.([A-Za-z0-9]+)$/.exec(name);
   if (!named) return 'is not a blob named by its SHA-256';
   const extension = named[2].toLowerCase();
@@ -166,8 +173,9 @@ function artifactFileProblems(artifact, dir, lookKeys, lookSources, add) {
   const base = path => path.slice(path.lastIndexOf('/') + 1);
   for (const [path, hash] of Object.entries(artifact.files)) {
     const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
-    const file = join(dir, 'blobs', `${hash}.${extension}`);
-    if (!existsSync(file)) { add(where, `artifact file ${path} needs blob ${hash}.${extension}, which is not in blobs/`); continue; }
+    // A published copy (apps/viewer/build.mjs) holds a page or a script as `<hash>.<extension>.txt`, plain text when opened.
+    const file = [`${hash}.${extension}`, `${hash}.${extension}.txt`].map((name) => join(dir, 'blobs', name)).find((each) => existsSync(each));
+    if (!file) { add(where, `artifact file ${path} needs blob ${hash}.${extension}, which is not in blobs/`); continue; }
     const bytes = readFileSync(file);
     if (createHash('sha256').update(bytes).digest('hex') !== hash) { add(where, `blob ${hash}.${extension} of artifact file ${path} does not hash to its name`); continue; }
     if (TEXT_FILE.test(file)) {
