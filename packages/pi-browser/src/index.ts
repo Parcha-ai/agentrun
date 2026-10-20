@@ -2,10 +2,12 @@
 export * from "./core/contract.js";
 export { BrowserFailureError, type AttachedSession, type BrowserDriver, type CustodyPort, type DriverFactory, type DriverOptions, type Overrides, type ToolOutput } from "./core/custody.js";
 export * from "./core/decisions.js";
+export * from "./core/dial.js";
 export * from "./core/downloads.js";
 export * from "./core/effects.js";
 export * from "./core/evidence.js";
 export * from "./core/failures.js";
+export * from "./core/files.js";
 export * from "./core/find.js";
 export * from "./core/guard.js";
 export * from "./core/host.js";

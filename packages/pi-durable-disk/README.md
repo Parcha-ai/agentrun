@@ -12,8 +12,8 @@ for are all in the run's directory, so a process is somewhere a run visits, not 
   workspace (`work/`) and `run.json` (its status, generation and holder). [Layout on the disk](docs/reference.md#layout-on-the-disk).
 - **One process at a time holds it.** A second claim is refused. The process that opens a run keeps a lease on it, and a
   holder that lost the claim cannot write any more.
-- **Release and open.** `release()` seals the run, and an instance process ends after it (`process.exit(0)` once `await run.release()`
-  returns, as the examples do). The next process to open the directory is the next generation: it reopens
+- **Release and open.** `release()` seals the run, and the instance ends: returning from `onOpen` after `await run.release()` is
+  enough (the examples call `process.exit(0)`, which is fine too). The next process to open the directory is the next generation: it reopens
   the store, and pi-durable resumes the conversation and its tasks from the last commit.
 - **Two places a run can live.** On a plain directory of this machine (`localRun`: no disk, no key, one machine), or on an
   [Archil](https://archil.com) disk that a Linux host or a container can mount (your own disk: [below](#bring-your-own-disk)).

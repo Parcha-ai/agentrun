@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { validateRecording } from './validate.mjs';
+import { makeSentinels } from '../../packages/pi-browser/src/testing/sentinels.ts';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const png = Buffer.from('not really a png');
@@ -108,6 +109,24 @@ test('every blob a line or the manifest names is present and hashes to its name'
   const absent = events.map(line => (line.blobs ? { ...line, blobs: ['b'.repeat(64)] } : line));
   const problem = (await recording(t, { lines: absent })) && validateRecording(await recording(t, { lines: absent })).find(each => each.line === 4);
   assert.match(problem.message, /bbbb.* not in blobs/);
+});
+
+test('a line or the manifest that records a URL carrying a credential in its query is refused at its line, naming the parameter and no value', async t => {
+  const s = makeSentinels();
+  const withUrl = url => events.map((line, index) => (index === 3 ? { ...line, data: { liveView: { url } } } : line));
+  const cases = [
+    [s.bbLiveViewUrl, 'url with a token-bearing query parameter (token)', [s.bbLiveViewToken, s.bbSessionId]],
+    [s.bbConnectUrl.replace(s.bbApiKey, 'opaque-api-value'), 'url with a token-bearing query parameter (apiKey)', ['opaque-api-value', s.bbSigningKey]],
+    ['wss://kernel.sentinel.test/browser/cdp?session=opaque-value', 'websocket url with a query (session)', ['opaque-value']],
+  ];
+  for (const [url, expected, values] of cases) {
+    const problem = first(await recording(t, { lines: withUrl(url) }));
+    assert.deepEqual([problem.where, problem.line, problem.message], ['events.jsonl', 4, `contains a ${expected}`], url.slice(0, 40));
+    for (const value of values) assert.ok(!JSON.stringify(problem).includes(value), 'the problem repeats a value');
+  }
+  const inManifest = validateRecording(await recording(t, { manifestOver: { title: s.bbLiveViewUrl }, started: 2 })).find(problem => problem.where === 'manifest.json');
+  assert.equal(inManifest.message, 'contains a url with a token-bearing query parameter (token)');
+  assert.deepEqual(validateRecording(await recording(t, { lines: withUrl('https://example.test/search?q=cats&page=2'), started: 2 })), [], 'a plain link with ?q= passes');
 });
 
 test('a line or the manifest that holds a credential-shaped value is refused', async t => {

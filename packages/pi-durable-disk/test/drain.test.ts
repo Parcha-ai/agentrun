@@ -29,6 +29,116 @@ function fakeRun(releaseMs: number) {
   return { run: run as unknown as Pick<DurableRun, "setStatus" | "release" | "record">, steps, harnessClosed };
 }
 
+/** A run as the real one behaves once released: `releasing` is true, a second release is a no-op, and the Harness is closed under a status write. */
+function releasedRun() {
+  const steps: string[] = [];
+  let released = false;
+  const run = {
+    record: { status: "running" },
+    get releasing() {
+      return released;
+    },
+    async setStatus(status: string) {
+      if (released) throw new Error("Session is closed");
+      steps.push(`status ${status}`);
+    },
+    async release() {
+      if (released) return;
+      steps.push("release");
+      released = true;
+    },
+  };
+  return { run: run as unknown as Pick<DurableRun, "setStatus" | "release" | "record">, steps };
+}
+const within = <T>(promise: Promise<T>, ms: number, what: string): Promise<T> => {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([promise, new Promise<never>((_, reject) => void (timer = setTimeout(() => reject(new Error(`${what}: not settled in ${ms} ms`)), ms)))]).finally(() => clearTimeout(timer));
+};
+
+test("an app that releases the run in onOpen and returns ends the instance: exit 0 at once, the release done once", async () => {
+  const { run, steps } = releasedRun();
+  const events: string[] = [];
+  const signals = new EventEmitter();
+  const exit = serveUntilDone(run, async (opened) => void (await opened.release()), "resume", (e) => events.push(e), signals);
+  // A failing run of this test must not leave the instance's keep-alive timer holding the test process: stop it.
+  exit.catch(() => {});
+  try {
+    assert.equal(await within(exit, 2_000, "an instance whose run was released by its app"), 0);
+  } finally {
+    signals.emit("SIGTERM");
+  }
+  assert.deepEqual(steps, ["release"], "no second release, no status written to the closed session");
+  assert.deepEqual(events, ["released"]);
+});
+
+/** A run whose release is still unmounting: every `release()` joins one promise the test settles. */
+function unmountingRun() {
+  let finish!: () => void;
+  let fail!: (error: Error) => void;
+  const unmounting = new Promise<void>((resolve, reject) => {
+    finish = resolve;
+    fail = reject;
+  });
+  let started = false;
+  const run = {
+    record: { status: "done" },
+    get releasing() {
+      return started;
+    },
+    async setStatus() {
+      throw new Error("Session is closed");
+    },
+    release() {
+      started = true;
+      return unmounting;
+    },
+  };
+  return { run: run as unknown as Pick<DurableRun, "setStatus" | "release" | "record">, finish, fail };
+}
+
+test("an instance whose app started its release stays up until the unmount ends, then exits 0", async () => {
+  const { run, finish } = unmountingRun();
+  const events: string[] = [];
+  const exit = serveUntilDone(run, (opened) => void opened.release().catch(() => {}), "resume", (e) => events.push(e), new EventEmitter());
+  let settled = false;
+  void exit.then(() => (settled = true));
+  try {
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(settled, false, "still up while the release is unmounting");
+    assert.deepEqual(events, []);
+  } finally {
+    finish();
+  }
+  assert.equal(await within(exit, 2_000, "the instance after its unmount ended"), 0);
+  assert.deepEqual(events, ["released"]);
+});
+
+test("a release that fails after the app started it decides the exit code: fenced is 75, and nothing is reported released", async () => {
+  const { run, fail } = unmountingRun();
+  const events: string[] = [];
+  const exit = serveUntilDone(run, (opened) => void opened.release().catch(() => {}), "resume", (e) => events.push(e), new EventEmitter());
+  await new Promise((r) => setTimeout(r, 50));
+  fail(new FencedError("revoked"));
+  assert.equal(await within(exit, 2_000, "the instance after its release failed"), 75);
+  assert.deepEqual(events, ["release failed"]);
+});
+
+test("a stop after the app released the run is a clean exit 0: no wake written to the closed session, no failure", async () => {
+  const { run, steps } = releasedRun();
+  const signals = new EventEmitter();
+  const events: string[] = [];
+  const exit = serveUntilDone(run, async (opened) => { await opened.release(); await new Promise(() => {}); }, "resume", (e) => events.push(e), signals);
+  await new Promise((r) => setTimeout(r, 50));
+  signals.emit("SIGTERM");
+  try {
+    assert.equal(await within(exit, 2_000, "a stop after a release"), 0);
+  } finally {
+    signals.emit("SIGINT");
+  }
+  assert.deepEqual(steps, ["release"]);
+  assert.deepEqual(events, ["draining", "released"], "not `release failed`");
+});
+
 test("a drain is not cut short by the app's work rejecting when the Harness closes under it", async () => {
   const { run, steps, harnessClosed } = fakeRun(200);
   const signals = new EventEmitter();

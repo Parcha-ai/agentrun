@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { crc32 } from "node:zlib";
 import fs from "node:fs";
@@ -42,11 +43,14 @@ export type FakeBackendOptions = {
   downloads?: Record<string, string>;
   viewport?: { width: number; height: number };
   fullPageHeight?: number;
+  /** What `locate` finds, by the snapshot ID or the CSS selector a caller gives: one box or several (a selector that matches more than one). Anything else matches nothing. */
+  elements?: Record<string, FakeBox | FakeBox[]>;
   /** Device pixels per CSS pixel; a screenshot is this many times larger unless it asks for `scale: "css"`. */
   deviceScale?: number;
 };
 
-export type FakeScreenshotOptions = { fullPage?: boolean; type?: "png" | "jpeg"; quality?: number; scale?: "css" | "device" };
+export type FakeBox = { x: number; y: number; width: number; height: number };
+export type FakeScreenshotOptions = { fullPage?: boolean; type?: "png" | "jpeg"; quality?: number; scale?: "css" | "device"; clip?: FakeBox };
 
 /** A PNG or JPEG whose header declares `width` x `height`: enough for a reader that decodes the header, not a picture. */
 export function fakeImage(type: "png" | "jpeg", width: number, height: number): Buffer {
@@ -375,7 +379,8 @@ export class FakeDriverFace {
 
   private pageOf(id: string): FixturePage {
     const url = this.session(id).url;
-    return this.b.pages[url] ?? fixturePage(url, "");
+    // A page no test registered: about:blank is empty, as a real browser's is; any other URL is a bare fixture.
+    return this.b.pages[url] ?? (url === "about:blank" ? { url, title: "", text: "", html: "" } : fixturePage(url, ""));
   }
 
   private async call(id: string, op: string, knob: string, detail: Record<string, unknown> = {}): Promise<void> {
@@ -418,11 +423,22 @@ export class FakeDriverFace {
     await this.call(id, "screenshot", "screenshot", { options });
     const { viewport = { width: 1288, height: 711 }, fullPageHeight = 8319, deviceScale = 1 } = this.b.opts;
     const factor = options.scale === "css" ? 1 : deviceScale;
-    const width = viewport.width * factor;
-    const height = (options.fullPage ? fullPageHeight : viewport.height) * factor;
+    const width = (options.clip ? options.clip.width : viewport.width) * factor;
+    const height = (options.clip ? options.clip.height : options.fullPage ? fullPageHeight : viewport.height) * factor;
     const type = options.type ?? "jpeg";
     await this.b.after("driver.screenshot");
     return { data: fakeImage(type, width, height).toString("base64"), mimeType: `image/${type}`, width, height };
+  }
+
+  /** No `dispatched` row: where an element is is not a read of the page. */
+  async locate(id: string, target?: { id?: string; selector?: string }): Promise<{ viewport: { width: number; height: number }; matches?: number; box?: FakeBox | null }> {
+    await this.b.before("driver.locate");
+    this.session(id);
+    const viewport = this.b.opts.viewport ?? { width: 1288, height: 711 };
+    if (!target) return { viewport };
+    const found = this.b.opts.elements?.[target.id ?? target.selector ?? ""];
+    const boxes = found === undefined ? [] : Array.isArray(found) ? found : [found];
+    return { viewport, matches: boxes.length, box: boxes.length === 1 ? boxes[0] : null };
   }
 
   async page(id: string): Promise<FixturePage> {
@@ -430,6 +446,12 @@ export class FakeDriverFace {
     const out = { ...this.pageOf(id) };
     await this.b.after("driver.page");
     return out;
+  }
+
+  async setInputFiles(id: string, selector: string, file: { name: string; mimeType: string; buffer: Uint8Array | string }): Promise<void> {
+    const bytes = typeof file.buffer === "string" ? Buffer.from(file.buffer, "base64") : Buffer.from(file.buffer);
+    await this.call(id, "setInputFiles", "setInputFiles", { selector, name: file.name, mimeType: file.mimeType, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+    await this.b.after("driver.setInputFiles");
   }
 
   async close(id: string): Promise<void> {
