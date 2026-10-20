@@ -341,7 +341,7 @@ test("dry run: question nodes synthesize the unsure branch, so the deterministic
   ]);
   wf.schemas.rec.properties.rating = { type: "string", const: "medium" };
   const r = await dryRunWorkflow(wf);
-  assert.deepEqual(r, { ok: true });
+  assert.deepEqual(r, { ok: true, status: "passed" });
   const broken = { ...wf, root: { ...wf.root, steps: [...wf.root.steps.slice(0, 2), { node: "code", label: "bad record", code: "(s) => ({ record: { nope: s.facts[0].name_link } })" }] } };
   const rb = await dryRunWorkflow(broken);
   assert.equal(rb.ok, false);

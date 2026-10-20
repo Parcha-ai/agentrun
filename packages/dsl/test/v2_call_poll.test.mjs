@@ -94,7 +94,7 @@ test("runner: a result that violates the schema fails before any predicate is re
 
 test("dry run synthesizes a poll result without waiting for its unsatisfied predicate", { timeout: 1000 }, async () => {
   const result = await dryRunWorkflow(wf([planNode, statusCall({}, poll({ interval_s: 300, deadline_s: 7200 })), assemble]), {});
-  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(result, { ok: true, status: "passed" });
 });
 
 test("runner: a check that starts near the poll deadline is cut at the poll deadline, not at its own node deadline", async () => {
