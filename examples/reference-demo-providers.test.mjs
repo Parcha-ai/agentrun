@@ -118,3 +118,35 @@ test('the demo.json boxes (local here) are named by label too: box.created, box.
   assert.ok(lines.filter((line) => line.kind === 'box.exec').every((line) => line.data.box === 'box-1') && lines.some((line) => line.kind === 'box.exec'));
   assert.ok(!readFileSync(join(recording, 'events.jsonl'), 'utf8').includes('local-'), 'no local box id in a line');
 });
+
+test('providerExtensions get the tapped providers, never the raw ones: an agent\'s own tool (not a call node) makes a box on one, and it is recorded by label with a receipt', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, {}, ['--json'], { DEMO_PROVIDERS: 'ext' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  const lines = transport(recording).map((line) => [line.kind, line.data.box, line.data.role ?? null]);
+  assert.deepEqual(lines, [['box.created', 'box-1', 'ext'], ['box.exec', 'box-1', null], ['box.ended', 'box-1', null]], 'the extension tool\'s box is on the recording: the provider it was handed is the tapped one');
+  const [receipt] = receipts(recording);
+  assert.deepEqual([receipt.box, receipt.provider, receipt.cost_usd, receipt.usd_per_second], ['box-1', 'alpha', null, null]);
+  assert.ok(!readFileSync(join(recording, 'events.jsonl'), 'utf8').includes('local-'), 'no provider id in a line');
+});
+
+test('providerExtensions without providers is refused: the hook would have nothing to hand its tools', async (t) => {
+  await assert.rejects(run(t, {}, ['--json'], { DEMO_EXT_ALONE: '1' }), /providerExtensions.*providers/);
+});
+
+test('the default ids file is never in the recording: a run whose directory is inside the recording is refused before it starts, as --box-ids inside it is', async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-default-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const recording = join(own, 'recording');
+  // No --box-ids: the default, box-ids.internal.json in the run's directory, would be inside the recording.
+  await assert.rejects(run(t, {}, ['--json', '--record', recording, '--dir', join(recording, 'run')], { DEMO_PROVIDERS: '1' }), /box-ids\.internal\.json.* inside the recording/);
+  await assert.rejects(run(t, {}, ['--json', '--record', join(own, 'same'), '--dir', join(own, 'same')], { DEMO_PROVIDERS: '1' }), /box-ids\.internal\.json.* inside the recording/);
+});
+
+test('a box still open when the result hook throws gets its receipt all the same, with no end and no seconds', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, {}, ['--json'], { DEMO_PROVIDERS: 'leave', DEMO_RESULT_THROWS: '1' });
+  assert.notEqual(result.processes.at(-1).outcome.status, 'complete', 'the result hook failed the process');
+  const ids = JSON.parse(readFileSync(join(result.dir, 'box-ids.internal.json'), 'utf8'));
+  t.after(() => endLeft(result.dir, ids, 'box-2'));
+  const kept = receipts(recording);
+  assert.deepEqual(kept.map((receipt) => [receipt.box, receipt.to === null, receipt.seconds === null]), [['box-1', false, false], ['box-2', true, true]]);
+});

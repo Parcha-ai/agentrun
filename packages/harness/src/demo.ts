@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/testing';
-import type { Harness } from '@earendil-works/pi-durable';
+import type { Extension, Harness } from '@earendil-works/pi-durable';
 import type { BoxProvider } from '@parcha/pi-transport';
 import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { CodeModeOptions } from './code-mode.ts';
@@ -86,6 +86,10 @@ export type DemoOptions = {
    *  makes is on the recording by its label (`box.created`, a `box.exec` per command, `box.ended`) with a receipt, and never by the provider's id. Called once in each process of the run. A demo
    *  with a place of its own cannot have them yet: the place's boxes and these would need one labeller, so the run is refused. */
   providers?: (context: { live: boolean; env: NodeJS.ProcessEnv; root: string }) => Record<string, Boxes> | Promise<Record<string, Boxes>>;
+  /** Extensions whose tools make boxes on the demo's own providers (an agent's tools, which are not workflow call nodes): called once in each process of the run, on fakes and on `--live`, right
+   *  after the providers are tapped, with those tapped providers, and installed beside the host's own. Every other extension stays on its own path (`fakes.extensions`, the live parts'
+   *  `host.tools.extensions`). Refused without `providers`: the hook would have nothing to hand its tools. */
+  providerExtensions?: (context: { providers: Readonly<Record<string, Boxes>>; live: boolean; place: { root: string; work: string } }) => readonly Extension[] | Promise<readonly Extension[]>;
   /** Where the provider ids of the run's boxes go, by label (`--box-ids` says the same): a file outside the recording, refused inside it. Default `box-ids.internal.json` in the run's directory. */
   boxIds?: string;
 };
@@ -262,6 +266,8 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   // The demo's own providers, each tapped: a box a tool makes on one is on the recording by its label, with a receipt.
   const own = options.providers ? await options.providers({ live, env, root: place.root }) : undefined;
   const providers = own ? Object.fromEntries(Object.entries(own).map(([name, made]) => [name, tapBox(made, { ...tapping, receipts: true })])) : undefined;
+  // The extensions whose tools make boxes on those providers: handed the tapped ones, never the raw ones.
+  const providerExtensions = options.providerExtensions ? await options.providerExtensions({ providers: providers ?? {}, live, place: { root: place.root, work: place.work } }) : [];
   // Live tools get the same crossings the fakes' do (a kill before or after a dispatch); the ones a demo declares `local: "fakes"` fall back to the fakes' own, tapped the same way.
   const tapped = live && parts.tools ? tapFakes({ ...options.fakes, tools: parts.tools }, cross) : undefined;
   const fakesTapped = live && parts.tools ? tapFakes(options.fakes, cross) : undefined;
@@ -302,7 +308,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   const filedRecords = new Map<string, LookRecord>();
   const filing = local.host.evidence.file;
   local.host.evidence = { file: async (label, record) => { const at = await filing(label, record); if (at && 'facts' in record) filedRecords.set(at.path, record as LookRecord); return at; } };
-  local.host.tools = { ...local.host.tools, extensions: [...local.host.tools.extensions, shown.extension] };
+  local.host.tools = { ...local.host.tools, extensions: [...local.host.tools.extensions, shown.extension, ...providerExtensions] };
   // The vision lane, one seam: the entry keeps every look it is told of (`keepLooks`: each with the screenshot it was of, its item and the filing crossing); the demo's own lane (`fakes.vision` on fakes, the live parts' on --live)
   // adds to it, and may bring its own eyes and limits. A demo's `onLook` and `onMiss` run after the entry's and are never replaced by them.
   const vision: RunOptions['vision'] = (running) => {
@@ -334,10 +340,16 @@ async function child(options: DemoOptions) {
     delete process.env.KILL_NONCE;
     prepared = await prepareChild(options, process.env, undefined, killNonce);
     await prepared.open();
-    const result = await run(prepared.place, prepared.host, prepared.job, prepared.runOptions);
-    const made = await prepared.made(result);
-    prepared.boxesDone();
-    await prepared.recorder?.detach();
+    let result: Awaited<ReturnType<typeof run>>;
+    let made: Awaited<ReturnType<Prepared['made']>>;
+    // The receipts of the boxes still open, and the recorder's detach, whether or not the run and the result hook succeed: a box's time is never lost with a failure.
+    try {
+      result = await run(prepared.place, prepared.host, prepared.job, prepared.runOptions);
+      made = await prepared.made(result);
+    } finally {
+      prepared.boxesDone();
+      await prepared.recorder?.detach();
+    }
     // What the process tells the supervisor passes through the process's own redaction: it has seen every token the sign-in held over the run, which the supervisor's own list may not.
     const line = JSON.stringify({ outcome: outcomeOf(result, storeShaOf(prepared.place), made, prepared.models) });
     console.log(prepared.redact ? prepared.redact(line) : line);
@@ -388,6 +400,7 @@ export async function destroyBoxes(spec: DemoSpec, runLabel: string, root: strin
 async function supervise(options: DemoOptions, values: ReturnType<typeof parseArgs<{ options: typeof FLAGS }>>['values']): Promise<DemoResult> {
   const { spec, job } = options;
   const live = values.live === true;
+  if (options.providerExtensions && !options.providers) throw new Error(`${spec.name} passes providerExtensions with no providers: the hook would have nothing to hand its tools`);
   if (options.providers && options.place) throw new Error(`${spec.name} has a place of its own and tool-made boxes (providers): their boxes would need one labeller, which they cannot share yet, so the run is refused rather than give two boxes one label`);
   if (live && !options.live) throw new Error(`--live: ${spec.name} supplies no live parts (no real models or services), so it runs on fakes only.`);
   // `browser: false` in demo.json: no browser is created, so no key or Chrome is asked for.
@@ -418,13 +431,16 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const dir = values.dir ?? join(scratch, 'run');
   const recordDir = values.record ?? join(scratch, 'recording');
   mkdirSync(recordDir, { recursive: true });
-  // The provider ids of the run's boxes go to a file outside the recording, never inside it (a link that resolves into it included).
+  // The provider ids of the run's boxes go to a file outside the recording, never inside it (a link that resolves into it included): `--box-ids`, else `box-ids.internal.json` in the run's
+  // directory, checked the same way. A demo's own place keeps its default in the place's own directory.
+  const real = (path: string): string => { try { return realpathSync(path); } catch { return dirname(path) === path ? path : join(real(dirname(path)), basename(path)); } };
+  const inRecording = (path: string) => { const from = relative(real(recordDir), real(path)); return from === '' || (!from.startsWith('..') && !isAbsolute(from)); };
   const boxIdsGiven = values['box-ids'] ?? options.boxIds;
-  const boxIds = boxIdsGiven === undefined ? undefined : resolve(boxIdsGiven);
-  if (boxIds !== undefined) {
-    const real = (path: string): string => { try { return realpathSync(path); } catch { return dirname(path) === path ? path : join(real(dirname(path)), basename(path)); } };
-    const from = relative(real(recordDir), real(boxIds));
-    if (from === '' || (!from.startsWith('..') && !isAbsolute(from))) throw new Error(`--box-ids ${boxIdsGiven} is inside the recording (${recordDir}): the provider ids of a run's boxes never go in a recording; name a file outside it`);
+  const boxIds = boxIdsGiven !== undefined ? resolve(boxIdsGiven) : options.place ? undefined : join(resolve(dir), 'box-ids.internal.json');
+  if (boxIds !== undefined && inRecording(boxIds)) {
+    throw new Error(boxIdsGiven !== undefined
+      ? `--box-ids ${boxIdsGiven} is inside the recording (${recordDir}): the provider ids of a run's boxes never go in a recording; name a file outside it`
+      : `the run's directory (${dir}) is inside the recording (${recordDir}), so its box-ids.internal.json would be inside the recording: keep --dir outside the recording, or give --box-ids a file outside it`);
   }
   // The fake browser's backend outlives a killed process: it is served here, and each child reaches it by URL.
   const backend = new FakeBackend({ start: options.fakes.start, pages: options.fakes.pages });
