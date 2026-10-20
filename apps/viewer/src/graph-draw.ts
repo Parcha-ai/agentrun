@@ -8,9 +8,6 @@ import { under } from './format.ts';
 export type GraphTree = string | { tag: string; class?: string; title?: string; path?: string; children?: GraphTree[] };
 export const GRAPH_STATUS_TEXT: Record<NodeState, string> = { done: 'done', working: 'working', failed: 'failed', 'not-run': 'not run' };
 
-/** An execution path as the node it ran: a map item's and a loop iteration's index taken out. */
-export const graphNodeOf = (path: string) => path.replace(/\/items\/\d+\/body/g, '/body').replace(/\/iterations\/\d+(?=\/|$)/g, '');
-
 const gdEl = (tag: string, props: { class?: string; title?: string; path?: string }, ...children: GraphTree[]): GraphTree => ({ tag, ...props, children });
 
 /** The nodes of `graph` as nested lists, each node marked with `statuses[path]` (not run when absent). `dim` adds a class to

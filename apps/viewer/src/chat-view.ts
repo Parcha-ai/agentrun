@@ -508,8 +508,9 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
 
 /** The session timeline's length: the run's, or its last span's end. */
 export const timelineEndOf = (model: ChatModel) => Math.max(model.durationMs ?? 0, model.answeredAt ?? 0, ...model.spans.map((span) => span.t1 ?? span.t0)) || 1;
-/** A time on the session timeline in words: seconds under ten seconds, else minutes; a position in a recording with no times. */
-const timelineAt = (model: ChatModel, t: number, end: number) => (model.inOrder ? `${Math.round(t)} of ${Math.round(end)}` : end < 10_000 ? `${(t / 1000).toFixed(1)} s` : reportClock(t / 1000));
+/** A time on the session timeline in words: seconds under ten seconds, else minutes; in a recording with no times, a line
+ *  of the file. */
+const timelineAt = (model: ChatModel, t: number, end: number) => (model.inOrder ? `line ${Math.round(t)}` : end < 10_000 ? `${(t / 1000).toFixed(1)} s` : reportClock(t / 1000));
 
 /** The session timeline, collapsed under the title: a lane per span lane, a call made inside a tool on a lane under its
  *  tool's; each span at its recorded times (one time is a tick), spans at once on rows of their own; the answer a point
@@ -623,7 +624,7 @@ const WORKFLOW_ORDER = ['done', 'working', 'failed', 'not-run'] as const;
 function workflowViewOf(model: ChatModel, runs: readonly ChatWorkflow[], callTitle: (id: string) => string | undefined, replay: { set: (t: number) => void },
   pick: (run: ChatWorkflow, path: string) => void, from: (id: string) => void): { node: HTMLElement; draw: (t: number) => void } {
   const end = timelineEndOf(model);
-  const scrub = reportEl('input', { class: 'scrub', type: 'range', min: 0, max: end, step: 'any', value: end, 'aria-label': 'Replay time' });
+  const scrub = reportEl('input', { class: 'scrub', type: 'range', min: 0, max: end, step: model.inOrder ? 1 : 'any', value: end, 'aria-label': model.inOrder ? 'Replay line' : 'Replay time' });
   const at = reportEl('span', { class: 'wf-at' });
   const last = reportEl('button', { class: 'wf-end', type: 'button', text: 'End' });
   scrub.addEventListener('input', () => replay.set(Number(scrub.value)));
@@ -651,7 +652,8 @@ function workflowViewOf(model: ChatModel, runs: readonly ChatWorkflow[], callTit
   const draw = (t: number) => {
     const whole = t >= end;
     scrub.value = String(Math.min(t, end));
-    at.textContent = whole ? `end · ${timelineAt(model, end, end)}` : `${timelineAt(model, t, end)} / ${timelineAt(model, end, end)}`;
+    at.textContent = whole ? (model.inOrder ? `end · ${Math.round(end)} lines` : `end · ${timelineAt(model, end, end)}`)
+      : model.inOrder ? `${timelineAt(model, t, end)} of ${Math.round(end)}` : `${timelineAt(model, t, end)} / ${timelineAt(model, end, end)}`;
     last.disabled = whole;
     for (const { run, graph, counts } of drawn) {
       const statuses = chatWorkflowStatusAt(run, whole ? Infinity : t);
@@ -799,7 +801,8 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
   const end = timelineEndOf(model);
   let replayAt = end;
   const setReplay = (t: number) => {
-    replayAt = Math.min(end, Math.max(0, t));
+    // In a recording with no times a place is a line of the file.
+    replayAt = Math.min(end, Math.max(0, model.inOrder ? Math.round(t) : t));
     for (const head of chat.querySelectorAll<HTMLElement>('.tl .playhead')) head.style.left = `${(replayAt / end * 100).toFixed(2)}%`;
     workflowView?.draw(replayAt);
   };
@@ -906,7 +909,8 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     });
   };
 
-  // The Workflow view: a node opens its conversation in the thread, else lights its span on the timeline.
+  // The Workflow view: a node opens its conversation in the thread, else lights its span on the timeline, else shows the
+  // call that started its execution.
   const openWorkflow = (id?: string) => {
     setView('workflow');
     openSheet();
@@ -918,7 +922,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     if (conversation) { toThread(conversation); return; }
     const span = model.spans.find((each) => each.node?.run === run.id && each.node.path === path);
     const bar = span ? chat.querySelector<HTMLElement>(`.tbar[data-span="${CSS.escape(span.id)}"]`) : null;
-    if (!bar) return;
+    if (!bar) { if (run.call) toThread(run.call); return; }
     if (phone()) closeSheet();
     const toggle = chat.querySelector<HTMLElement>('.tl-toggle');
     if (toggle?.getAttribute('aria-expanded') !== 'true') toggle?.click();

@@ -4,12 +4,20 @@ kind: feature
 ---
 **`apps/viewer`: the chat view's Workflow view**
 - A run that ran a workflow has a "Report | Workflow" switch at the top of the chat view's right pane (inside the bottom
-  sheet on a phone); a run with none has no switch. The Workflow view draws one graph per workflow run, in run order,
-  each node marked with what the run had done there at the replay's time. The drawing is the workflow graph panel's,
+  sheet on a phone); a run with none has no switch. The Workflow view draws one graph per execution (an
+  `agentrun.workflow` task), in the order they began, from the task's own workflow, never the manifest's job; each node
+  is marked with what the execution had done there at the replay's place. The drawing is the workflow graph panel's,
   now shared (`src/graph-draw.ts`).
-- Every workflow node in the chat view is keyed by its task and its path. Before, nodes were keyed by path alone, so in
-  a recording with two runs whose paths collide the second run's node took the first one's conversation label and span.
-- The replay's time is the run's end until a press or a drag on the session timeline (a playhead marks it) or the
+- Every workflow node in the chat view is keyed by the execution's run key (`data.input.key`, which its documents join
+  on) and its execution path, mapped to its graph node by the DSL's `graphNodeOf`. Before, nodes were keyed by path
+  alone, so in a recording with two executions whose paths collide the second one's node took the first one's
+  conversation label and span. The call that started an execution is the call of its conversation made before its
+  first line and answered after it.
+- In a recording with no times (an export from a store), the replay's place is a line of the file, a tool call spans its
+  entry to its result and a node attempt its conversation, so such a recording has a timeline.
+- The replay's place is the run's end until a press or a drag on the session timeline (a playhead marks it) or the
   view's scrubber sets it; a click on a span still jumps to it. A node's click opens its conversation in the thread,
-  else lights its span; the tool call that started a run gets a chip to its graph and is never folded as a command.
+  else lights its span, else shows the call that started its execution; that call gets a chip to its graph and is
+  never folded as a command.
+- The workflow graph panel's focus is mapped to its node by `graphNodeOf` too.
 - The machine-path scan passes `/root/workflow/...` and `/root/iterations/...`: they are workflow execution paths.

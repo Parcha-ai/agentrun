@@ -1,7 +1,7 @@
-// The chat page's Workflow view in a real Chrome, at 1440 and 390 px, over a hand run that starts two workflows whose
-// paths collide: the right pane's switch, a graph per run in run order, a node opening its conversation or lighting its
-// span, the replay's time set by a press and a drag on the timeline and by the scrubber, a phone's sheet, and a recording
-// with no workflow, which has no switch at all.
+// The chat page's Workflow view in a real Chrome, at 1440 and 390 px, over a hand run with no times that starts two
+// workflows whose paths collide: the right pane's switch, a graph per execution in order, a node opening its conversation
+// or the call that started it, the replay's place (a line of the file) set by a press and a drag on the timeline and by
+// the scrubber, a phone's sheet, and a recording with no workflow, which has no switch at all.
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -12,7 +12,7 @@ import { after, test } from 'node:test';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
-import { lines, writeRecording } from './workflow-hand.ts';
+import { KEY_A, KEY_B, lines, placeOf, writeRecording } from './workflow-hand.ts';
 
 const IN_CHROME = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 120_000 };
 after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
@@ -63,8 +63,8 @@ test('in Chrome: the Workflow view beside the report, a graph per run, its nodes
   held.page = page;
   const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
   const until = (expression: string, what: string) => page.once(expression, 'true', 20_000, what);
-  const A = 'workflow-5';
-  const B = 'workflow-9';
+  const A = 'workflow-1';
+  const B = 'workflow-2';
   const END_A = { '/root': 'done', '/root/steps/0': 'done', '/root/steps/1': 'done' };
   const END_B = { '/root': 'failed', '/root/steps/0': 'done', '/root/steps/1': 'failed' };
   await until(`['wide', 'phone', 'none'].every(ready)`, 'every chat page drawn');
@@ -78,30 +78,34 @@ test('in Chrome: the Workflow view beside the report, a graph per run, its nodes
   { host: true, report: false, hash: '#workflow', titles: [[A, 'Workflow 1 of 2', 'gather-and-tally'], [B, 'Workflow 2 of 2', 'check-and-judge']] });
   assert.deepEqual(await value(`[statuses('wide', '${A}'), statuses('wide', '${B}')]`), [END_A, END_B], 'at the end of the run');
   assert.deepEqual(await value(`[...doc('wide').querySelectorAll('#${B} .wg-row')].map((each) => each.textContent)`), ['chain chain failed', 'agent check done', 'judge verdict failed']);
-  assert.match(await value<string>(`doc('wide').querySelector('.wf-at').textContent`), /^end · 0\.5 s$/);
+  assert.equal(await value<string>(`doc('wide').querySelector('.wf-at').textContent`), `end · ${lines.length} lines`);
   assert.doesNotMatch(await value<string>(`doc('wide').querySelector('.wf-host').textContent`), /kill|chaos|ledger|restor/i, 'no durability marks');
 
-  // A node with a conversation opens it in the thread; one without lights its span on the timeline.
+  // A node with a conversation opens it in the thread; one with none shows the call that started its execution.
   await page.evaluate(`row('wide', '${B}', '/root/steps/0').click()`);
   await until(`doc('wide').querySelector('details.fold[data-item="thread-3"]')?.open === true`, 'the check node\'s conversation opened');
-  assert.equal(await value(`doc('wide').querySelector('details.fold[data-item="thread-2"]').open`), false, 'not the other run\'s node at the same path');
+  assert.equal(await value(`doc('wide').querySelector('details.fold[data-item="thread-2"]').open`), false, 'not the other execution\'s node at the same path');
   await page.evaluate(`row('wide', '${A}', '/root/steps/1').click()`);
-  assert.deepEqual(await value(`({ open: doc('wide').querySelector('.tl-toggle').getAttribute('aria-expanded'), lit: [...doc('wide').querySelectorAll('.tbar.on')].map((each) => each.title) })`), { open: 'true', lit: ['node tally'] });
+  await until(`!!doc('wide').querySelector('.step.flash')?.textContent.includes('gather-and-tally')`, 'the call that started the tally node\'s execution');
 
-  // The replay: a press on the timeline sets its time, a drag moves it, the scrubber and End too.
-  await page.evaluate(`press('wide', 150)`);
+  // The replay, by the file's lines: a press on the timeline sets the line, a drag moves it, the scrubber and End too.
+  const drivers = (key: string) => lines.filter((line) => line.kind === 'agentrun.driver' && (line.data as { key: string }).key === key).map(placeOf);
+  const [, aGather, aTally] = drivers(KEY_A);
+  const [, bVerdict] = drivers(KEY_B);
+  await page.evaluate(`doc('wide').querySelector('.tl-toggle').click()`);
+  await page.evaluate(`press('wide', ${aGather! + 0.4})`);
   assert.deepEqual(await value(`[statuses('wide', '${A}'), statuses('wide', '${B}')]`), [
     { '/root': 'working', '/root/steps/0': 'working', '/root/steps/1': 'not-run' }, { '/root': 'not-run', '/root/steps/0': 'not-run', '/root/steps/1': 'not-run' }]);
-  assert.match(await value<string>(`doc('wide').querySelector('.wf-at').textContent`), /^0\.1 s \/ 0\.5 s$/);
-  assert.deepEqual(await value(`[...new Set([...doc('wide').querySelectorAll('.tl .playhead')].map((head) => head.style.left))]`), ['30%'], 'the playhead at the press');
-  await page.evaluate(`(() => { pointer('wide', 'pointerdown', undefined, 150); pointer('wide', 'pointermove', doc('wide').defaultView, 300); pointer('wide', 'pointermove', doc('wide').defaultView, 415); pointer('wide', 'pointerup', doc('wide').defaultView, 415); })()`);
+  assert.equal(await value<string>(`doc('wide').querySelector('.wf-at').textContent`), `line ${aGather} of ${lines.length}`, 'a press lands on a line');
+  assert.deepEqual(await value(`[...new Set([...doc('wide').querySelectorAll('.tl .playhead')].map((head) => parseFloat(head.style.left).toFixed(2)))]`), [(aGather! / lines.length * 100).toFixed(2)], 'the playhead at the press');
+  await page.evaluate(`(() => { pointer('wide', 'pointerdown', undefined, ${aGather}); pointer('wide', 'pointermove', doc('wide').defaultView, ${aTally}); pointer('wide', 'pointermove', doc('wide').defaultView, ${bVerdict}); pointer('wide', 'pointerup', doc('wide').defaultView, ${bVerdict}); })()`);
   assert.deepEqual(await value(`[statuses('wide', '${A}'), statuses('wide', '${B}')]`), [END_A, { '/root': 'working', '/root/steps/0': 'done', '/root/steps/1': 'working' }], 'dragged on to the verdict');
-  await page.evaluate(`(() => { const scrub = doc('wide').querySelector('.scrub'); scrub.value = '205'; scrub.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-  assert.deepEqual(await value(`statuses('wide', '${A}')`), { '/root': 'working', '/root/steps/0': 'done', '/root/steps/1': 'not-run' }, 'the scrubber: after gather, before tally');
+  await page.evaluate(`(() => { const scrub = doc('wide').querySelector('.scrub'); scrub.value = '${aTally}'; scrub.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  assert.deepEqual(await value(`statuses('wide', '${A}')`), { '/root': 'working', '/root/steps/0': 'done', '/root/steps/1': 'working' }, 'the scrubber: gather done, tally under way');
   await page.evaluate(`doc('wide').querySelector('.wf-end').click()`);
   assert.deepEqual(await value(`[statuses('wide', '${A}'), statuses('wide', '${B}'), doc('wide').querySelector('.wf-end').disabled]`), [END_A, END_B, true]);
-  // A click on a span still jumps to its conversation, and sets the time where it was pressed.
-  await page.evaluate(`(() => { const bar = [...doc('wide').querySelectorAll('.tbar')].find((each) => each.title === 'node gather'); press('wide', 130, bar); bar.click(); })()`);
+  // A click on a span still jumps to its conversation, and sets the place where it was pressed.
+  await page.evaluate(`(() => { const bar = [...doc('wide').querySelectorAll('.tbar')].find((each) => each.title === 'node gather'); press('wide', ${aGather! + 1}, bar); bar.click(); })()`);
   await until(`doc('wide').querySelector('details.fold[data-item="thread-2"]')?.open === true`, 'the gather node\'s conversation opened from its span');
   assert.deepEqual(await value(`statuses('wide', '${A}')`), { '/root': 'working', '/root/steps/0': 'working', '/root/steps/1': 'not-run' });
   // The chip on the call that started a run opens the Workflow view at that run.
