@@ -17,6 +17,7 @@ import { type Admission, admitRevision, type Decision, foldUses, type IgnoredUse
 import type { UsesSource } from "./propose.js";
 import { MAX_WORKFLOW_HINTS, type WorkflowHint } from "./section.js";
 import { readSeed } from "./seed.js";
+import { type ServedRun, servedUse } from "./serving.js";
 import type { AdmitWorkflow, AdmitWorkflowInput, AdmitWorkflowResult, RepoRead, SettleUses, SettleUsesInput, SettleUsesResult, WorkflowUse } from "./types.js";
 import {
   checkPreconditions, currentRevision, deriveWhen, fitTrial, matches, MAX_NAME, parseTrial, type Precondition, readTrial, renderTrial, skillName, skillPath, type Trial, trialPath,
@@ -246,6 +247,8 @@ export type ReadUsesOptions = {
   /** The run's working directory: the project directory of its workflow store, which names what a digest was saved as. */
   readonly workDir: string;
   readonly run: string;
+  /** What the host served the run (`serve`): each is a use of its own revision under its name, with the host's verdict. */
+  readonly served?: readonly ServedRun[];
 } & (
   /** The run's pi-durable store file, read only: once the run's Harness has closed it, or while it is open. */
   | { readonly store: string }
@@ -352,6 +355,7 @@ export async function readUses(options: ReadUsesOptions): Promise<ReadUses> {
     if (!held || Number(task.id) > Number(held.id)) last.set(key, task);
   }
   const uses: RunUse[] = [];
+  const served = new Map((options.served ?? []).filter((run) => run.key !== null).map((run) => [run.key!, run]));
   for (const [key, task] of [...last].sort(([a], [b]) => (a < b ? -1 : 1))) {
     let digest: string;
     try {
@@ -360,9 +364,12 @@ export async function readUses(options: ReadUsesOptions): Promise<ReadUses> {
       skipped.push({ reason: `run ${key} holds a workflow document that does not hash` });
       continue;
     }
-    const names = saved.byDigest.get(digest);
+    const host = served.get(key);
+    // A served run's revision need not be in the run's store (a canary is read from the repository): the host names it,
+    // and its verdict stands for the task's, since it also checked the output.
+    const names = host && host.sha256 === digest ? [host.name] : saved.byDigest.get(digest);
     if (!names) continue;
-    const how = outcomeOf(task);
+    const how = host && host.sha256 === digest ? (servedUse(host) ?? { skip: `the host's run ended ${host.outcome}, which says nothing about the workflow` }) : outcomeOf(task);
     if (typeof how !== "string") {
       skipped.push({ name: names[0]!, reason: `run ${key}: ${how.skip}` });
       continue;

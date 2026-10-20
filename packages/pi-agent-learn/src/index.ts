@@ -36,3 +36,4 @@ export {
   schemaDescription, schemaWhen, settleWorkflowUses, type Settled, type SettledDecision, type SettleOptions, type SkippedWorkflow, usesSettler, type UsesSettlerOptions, usesSource,
   workflowAdmitter, type WorkflowAdmitterOptions, workflowsToTry,
 } from "./workflows.js";
+export { hostKey, hostRunName, planServing, type PlanServingOptions, serve, type ServedRun, servedUse, type ServeOptions, type ServingPlan, type WorkflowStarter } from "./serving.js";
