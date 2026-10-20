@@ -139,6 +139,42 @@ lowercase hex digits, a SHA-1 or a SHA-256 commit).
 
 A home with no `agent.source` (every home made before this) is not tied to a repo, and its runs record no sha.
 
+## Saved browser sessions: the vault
+
+A browser session the person signed in to can be kept for the agent's next run, as ciphertext only.
+`sessionVault(home, { hostKey })` is the session vault a browser host uses (`SessionVaultPort`): `capture` at release,
+`restore` at the next create, before the driver attaches, and `forget`. A session is a local Chrome's cookies and
+localStorage (`kind: "cdp"`), or a provider's context id (`kind: "provider-context"`, Browserbase or Kernel, which keep
+the state on their side).
+
+```js
+const vault = sessionVault(home, { hostKey: localHostKey("laptop-1", keyBytes) });
+await vault.capture({ sessionKey: "acme", origins: ["https://app.acme.example"], state }); // at release
+const saved = await vault.restore({ sessionKey: "acme", origins: ["https://app.acme.example"] }); // at create, or null
+```
+
+- **Ciphertext, under keys the home never holds in clear.** Each session is AES-256-GCM in `agent.vault` under its own
+  item key. The item keys are wrapped by the home's vault key, and that key by the host's key (`HostKey`: `{ id, wrap,
+  unwrap }`, a KMS key, an OS keychain item or a 1Password item; `localHostKey(id, bytes)` is one held in this process).
+  The wrapped keys are in `vault.keys`, owner-only, beside `agent.sqlite`, and not in the store: a pi-durable store keeps
+  every revision of a document, so a key kept there could never be destroyed. Each ciphertext is bound to its agent,
+  session and kind, so it cannot be moved to another row.
+- **One host key.** The first capture binds the vault to `hostKey.id`; another key, or the same id with other bytes,
+  is refused (`AgentHomeError` `key`). A copy of the home opens on another machine with the same host key.
+- **Revoke destroys the key.** `forget(sessionKey)` removes the session and its item key, so the session's earlier
+  revisions, which the store keeps, can never be read. A capture mints a new item key and destroys the one before.
+  `forgetAll()` destroys every key and the vault key itself.
+- **What comes back.** A capture keeps only the cookies and localStorage of the origins it names. A restore returns
+  what was captured for the origins asked for, never more. A persistent cookie keeps its own expiry; a session cookie
+  comes back for at most 24 hours after its capture (`maxSessionCookieAgeMs` lowers it; it cannot go higher). With
+  `runId`, a capture is refused (`busy`) while another live run holds that session's save lease.
+- **Never anywhere else.** `agent.vault` is on `SECRET_KINDS`: never exported, packed or seeded into a run; a pack's
+  manifest names the sessions (`vault`), never a value, and `vault.keys` never travels. No value is in an error or a
+  log. `handedOut()` lists every value `restore` returned, for a redactor such as pi-browser's `redact.values`.
+
+On a disk, `access` (a `HomeAccess`) claims the directory that holds `agent.sqlite`, and `vault.keys` is read and written
+there, inside the claim.
+
 ## Stored kinds
 
 Every document is session-scoped, version 1, in the store named. Times are ISO 8601 strings in UTC. The kinds and their
@@ -154,6 +190,7 @@ fields are the stored format.
 | `agent.bindings` | agent | host | `{ [tool]: target }`: where each tool runs in that host |
 | `agent.runs` | agent | run id | `{ path, host, startedAt, sha?, endedAt?, outcome?, finalAnswer?, cost? }`; `path` is relative to the home; `sha` is the home's `agent.source` when the run started |
 | `agent.leases` | agent | profile key | `{ runId, expiresAt }` |
+| `agent.vault` | agent | session key | `{ kind, origins, capturedAt, provider?, keyId, iv, ciphertext, alg, v }`: a saved browser session as AES-256-GCM ciphertext; `keyId` names its item key in `vault.keys`, beside the store ([the vault](#saved-browser-sessions-the-vault)) |
 | `browser.profiles` | agent and run | profile key | `{ provider, ref, state, startUrl?, allowedOrigins?, verifiedAt?, heldBy? }`; `ref` is the provider's saved sign-in, `state` is `ready` once it names one, or `held` in a run store whose run has no lease on it (`ref` empty, `heldBy` the run that has) |
 
 A profile's `ref` opens a signed-in session, so it is as secret as the password behind it: it reaches a run only
@@ -163,7 +200,7 @@ through the host, and no tool reads or returns a profile.
 
 An exporter (a copy of a home for a viewer, or for someone else to run) copies only the kinds on `EXPORTABLE_KINDS`:
 `agent.identity`, `agent.definition`, `agent.source`, `agent.skills` and `agent.runs`. Every other kind is dropped, a kind this release
-does not know included. `SECRET_KINDS` names what never leaves the home: `browser.profiles` (saved sign-ins),
+does not know included. `SECRET_KINDS` names what never leaves the home: `browser.profiles` (saved sign-ins), `agent.vault` (saved sessions),
 `agent.leases`, and `agent.bindings` and `agent.aliases` (each host's own names for where the tools run and for the
 agent). Every kind this package defines is on exactly one of the two lists, and a test fails on a kind added to
 neither.
@@ -187,13 +224,13 @@ and nothing else, in this order, sorted, owned by 0/0, mode 0644 or 0755, stampe
 
 | Member | Holds |
 |---|---|
-| `manifest.json` | `format` `agentrun.home/1`, `agent_id`, `definition`, `source` (`sha`, `refreshed_at`, or `null`), `skills` (`path`, `sha256`, `size_bytes`), `sign_ins` (`key`, `provider`: what the source had, none travels), `vault` (`name`s, empty today), `runs` (`count`, `live`), `size_bytes` (the pack's own), `created_at` |
+| `manifest.json` | `format` `agentrun.home/1`, `agent_id`, `definition`, `source` (`sha`, `refreshed_at`, or `null`), `skills` (`path`, `sha256`, `size_bytes`), `sign_ins` (`key`, `provider`: what the source had, none travels), `vault` (`name`s: the saved sessions' keys, never a value; none travels), `runs` (`count`, `live`), `size_bytes` (the pack's own), `created_at` |
 | `agent.sqlite` | A new agent store with only `EXPORTABLE_KINDS`, each through `projectForExport`, then `VACUUM INTO` one clean file: no `-wal`, no `-shm`, no free page with an old row. Nothing is copied from the live file |
 | `runs/<id>/store/run.sqlite` | Only through `exportRunStore(storePath, outPath)`; without it no run store travels |
 | `runs/<id>/work/...` | Regular files and directories whose names do not start with `.`. Whatever the reader would refuse is left out and listed in `skipped` with its reason: a link, a hard link, a device, a dotfile, a `*.sqlite-wal` side file, a text file named `*.sqlite` |
 
 A run that was still live (no `endedAt`) travels as its `agent.runs` entry only: neither its store nor its work. The
-home's `chrome/`, `repo/`, `owner.lock`, `tmp/` and everything else are never read. The packer refuses (`check`) a
+home's `vault.keys`, `chrome/`, `repo/`, `owner.lock`, `tmp/` and everything else are never read. The packer refuses (`check`) a
 SQLite file that holds a `SECRET_KINDS` document or has a `-wal`, `-shm` or `-journal` file beside it, whatever its name:
 it looks at the bytes, so a store hiding in `work/` is found. A work directory it cannot read fails the pack, naming it,
 rather than packing less than the run has. Each work file is opened without following a link and must be the file that
@@ -292,7 +329,8 @@ origin, path and query keys but drops its query values, fragment and userinfo. `
 | `packHome(home, { out, maxBytes?, maxMembers?, exportRunStore?, now? })` | The pack of a home, above; returns `{ manifest, skipped }`, `skipped` being `{ path, reason }` |
 | `readPack(file, { maxBytes?, maxMembers? })` | `{ ok, manifest, checks }`, without writing a home |
 | `importPack(file, dir, { replace?, ifRevision?, maxBytes?, maxMembers?, now? })` | The pack as the home in `dir`, in place; `ifRevision` is a `homeRevision`; returns `{ home, report }` |
-| `AgentHomeError` | `code` is `invalid`, `exists`, `missing`, `busy`, `format`, `stale`, `too_large` or `check` (`checks` lists the home checks behind it) |
+| `sessionVault(home, { hostKey, maxSessionCookieAgeMs?, runId?, access?, now? })`, `localHostKey(id, bytes)` | The session vault ([Saved browser sessions](#saved-browser-sessions-the-vault)): `capture`, `restore`, `forget`, `forgetAll`, `list`, `handedOut`; also `VAULT_KEYS_FILE` and `MAX_SESSION_COOKIE_AGE_MS` |
+| `AgentHomeError` | `code` is `invalid`, `exists`, `missing`, `busy`, `format`, `stale`, `too_large`, `check` (`checks` lists the home checks behind it) or `key` (a host key that does not open the vault) |
 
 The package does not import pi-browser at run time: `ProfileStore` is declared here by shape. `npm run typecheck`
 (after the workspace build) checks that the declaration is exactly pi-browser's type, read from the return of
@@ -356,7 +394,8 @@ carried back later.
 ## Not yet
 
 - Agent SQL: read-only queries over a whitelist of this run's and the agent's tables, and tables of the agent's own.
-- A vault: credentials kept as ciphertext that only the host decrypts, used by name in tools.
+- Saved credentials in the vault (passwords, one-time-code seeds), filled by name in tools: the vault keeps browser
+  sessions today. A session's IndexedDB, and a site's own logout calling `forget`.
 - Tables whose rows commit inside pi's own commit, so a row and the turn that made it land together.
 - The binding of a disk's claim and seed itself: this package takes their shape (`HomeAccess`, `seedRun`), and the
   host or pi-durable-disk supplies them. A reader of both stores for viewers in another process.

@@ -10,3 +10,6 @@ export { type PackOptions, packHome, type Skipped } from "./pack.js";
 export { type HomeManifest, PACK_FORMAT } from "./pack-shared.js";
 export { type ImportOptions, type ImportReport, type ImportStep, importPack, readPack } from "./unpack.js";
 export { AgentHomeError, type HomeCheck, LOCK_FILE } from "./store.js";
+export {
+  type CapturedState, type HostKey, localHostKey, MAX_SESSION_COOKIE_AGE_MS, sessionVault, type SessionVault, type SessionVaultPort, VAULT_KEYS_FILE, type VaultCookie, type VaultEntry,
+} from "./vault.js";

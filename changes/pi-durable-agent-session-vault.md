@@ -1,0 +1,8 @@
+---
+packages: @parcha/pi-durable-agent
+kind: feature
+---
+A session vault in the agent home: `sessionVault(home, { hostKey, maxSessionCookieAgeMs?, runId?, access?, now? })` keeps a signed-in browser session for the agent's next run as ciphertext only, behind the `SessionVaultPort` a browser host calls (`capture` at release, `restore` at create, `forget`). A session is a local Chrome's cookies and localStorage, or a Browserbase or Kernel context id.
+- Each session is AES-256-GCM in a new secret kind, `agent.vault`, under its own item key, bound to its agent, session and kind. The item keys are wrapped by the home's vault key and that by the host's key (`HostKey`, `{ id, wrap, unwrap }`; `localHostKey(id, bytes)` for a key held in the process), in `vault.keys` beside `agent.sqlite`, owner-only, outside the store so that a key can be destroyed. The first capture binds the vault to the host key; any other is refused with a new `AgentHomeError` code, `key`.
+- `forget` destroys a session's item key, so its earlier revisions can never be read; a capture destroys the key before it; `forgetAll` destroys every key. A capture keeps only the origins it names, a restore returns only the origins asked for that were captured, a persistent cookie keeps its expiry, and a session cookie comes back for at most 24 hours (`maxSessionCookieAgeMs` may only lower it). With `runId`, a capture is refused while another live run holds the session's save lease.
+- `agent.vault` is on `SECRET_KINDS`: never exported, packed or seeded into a run. A pack's manifest names the saved sessions in `vault` and carries no value and no key file. `handedOut()` lists what restore returned, for a redactor.

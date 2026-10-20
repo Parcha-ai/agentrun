@@ -7,12 +7,12 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { projectForExport } from "./export.js";
 import { AGENT_STORE_FILE, type AgentHome, type AgentHomeState, homeDir, readState, sha256 } from "./home.js";
-import { DefinitionDoc, IdentityDoc, put, RunsDoc, SkillsDoc, SourceDoc } from "./kinds.js";
+import { DefinitionDoc, IdentityDoc, put, RunsDoc, SkillsDoc, SourceDoc, VaultDoc } from "./kinds.js";
 import {
   byName, documentKinds, type HomeManifest, invalid, isRunId, iso, MANIFEST_LIMIT, MAX_MEMBERS, memberProblem, PACK_FORMAT, refused, safeSegment, secretIn, SIDE_FILES, SQLITE_MAGIC,
 } from "./pack-shared.js";
 import { runPaths } from "./runs.js";
-import { AgentHomeError, openStore, withHome } from "./store.js";
+import { AgentHomeError, openStore, readFamily, withHome } from "./store.js";
 import { copyRange, readAt, tarSize, type TarEntry, writeTar } from "./tar.js";
 import { readPack } from "./unpack.js";
 
@@ -167,7 +167,11 @@ export async function packHome(home: AgentHome, options: PackOptions): Promise<{
     return await withHome(dir, async () => {
       const store = await openStore(path.join(dir, AGENT_STORE_FILE));
       let state: AgentHomeState;
-      try { state = await readState(store); } finally { await store.close(); }
+      let vaultNames: string[];
+      try {
+        state = await readState(store);
+        vaultNames = Object.keys(await readFamily(store, VaultDoc)).sort(byName);
+      } finally { await store.close(); }
       const agentFile = await buildAgentStore(state, scratch);
       refuseUnclean(agentFile, AGENT_STORE_FILE, true);
 
@@ -255,7 +259,7 @@ export async function packHome(home: AgentHome, options: PackOptions): Promise<{
           return { path: file, sha256: skill.sha256, size_bytes: Buffer.byteLength(skill.content) };
         }),
         sign_ins: Object.keys(state.profiles).sort().map((key) => ({ key, provider: state.profiles[key]!.provider })),
-        vault: [],
+        vault: vaultNames.map((name) => ({ name })),
         runs: { count: runIds.length, live },
         size_bytes: 0,
         created_at: iso(now),

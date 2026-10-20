@@ -76,7 +76,7 @@ test("a pack holds its allowlist in a fixed order, and the manifest says what th
   assert.deepEqual(manifest, {
     format: "agentrun.home/1", agent_id: state.identity.id, definition: state.definition,
     skills: [{ path: "practice/SKILL.md", sha256: state.skills["practice/SKILL.md"].sha256, size_bytes: Buffer.byteLength(state.skills["practice/SKILL.md"].content) }],
-    sign_ins: [{ key: "practice", provider: "browserbase" }], vault: [], runs: { count: 1, live: 0 },
+    sign_ins: [{ key: "practice", provider: "browserbase" }], vault: [{ name: "practice" }], runs: { count: 1, live: 0 },
     size_bytes: statSync(f.out).size, created_at: "2026-10-16T05:00:00.000Z", source: { sha: SHA, refreshed_at: state.source.refreshedAt },
   });
   assert.deepEqual(manifestOf(listTar(f.out)), manifest);
