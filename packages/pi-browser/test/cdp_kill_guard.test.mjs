@@ -6,6 +6,9 @@ import { killTree } from "../dist/providers/cdp.js";
 import { isRunning } from "./fixtures/local-chrome.mjs";
 
 const recorder = () => { const calls = []; return { calls, kill: (pid, signal) => { calls.push([pid, signal]); } }; };
+// The pid a test names as "some other process" must not be this process's own: killTree refuses its own pid, so on a runner whose test process happens to be 4242 the
+// recorded calls were empty and the test failed.
+const OTHER = process.pid === 4242 ? 4243 : 4242;
 
 test("a pid that is not a single other process (1, 0, NaN, a fraction, negative, our own) signals nothing, whatever the group check says", async () => {
   for (const pid of [1, 0, -1, -7, Number.NaN, Number.POSITIVE_INFINITY, 12.5, process.pid]) {
@@ -18,17 +21,17 @@ test("a pid that is not a single other process (1, 0, NaN, a fraction, negative,
 // Windows kills through taskkill, which the injected kill does not reach.
 test("a process that leads its group is killed with its group, one that does not is killed alone, and never the group it only belongs to", { skip: process.platform === "win32" }, async () => {
   const leader = recorder();
-  await killTree(4242, { kill: leader.kill, leadsGroup: () => true });
-  assert.deepEqual(leader.calls, [[-4242, "SIGKILL"]]);
+  await killTree(OTHER, { kill: leader.kill, leadsGroup: () => true });
+  assert.deepEqual(leader.calls, [[-OTHER, "SIGKILL"]]);
 
   const follower = recorder();
-  await killTree(4242, { kill: follower.kill, leadsGroup: () => false });
-  assert.deepEqual(follower.calls, [[4242, "SIGKILL"]], "a non-leader's own pid only: -pid would name a group that is somebody else's");
+  await killTree(OTHER, { kill: follower.kill, leadsGroup: () => false });
+  assert.deepEqual(follower.calls, [[OTHER, "SIGKILL"]], "a non-leader's own pid only: -pid would name a group that is somebody else's");
 
   const nogroup = recorder();
   let first = true;
-  await killTree(4242, { kill: (pid, signal) => { nogroup.calls.push([pid, signal]); if (first) { first = false; throw Object.assign(new Error("no such group"), { code: "ESRCH" }); } }, leadsGroup: () => true });
-  assert.deepEqual(nogroup.calls, [[-4242, "SIGKILL"], [4242, "SIGKILL"]], "a group that is gone falls back to the process");
+  await killTree(OTHER, { kill: (pid, signal) => { nogroup.calls.push([pid, signal]); if (first) { first = false; throw Object.assign(new Error("no such group"), { code: "ESRCH" }); } }, leadsGroup: () => true });
+  assert.deepEqual(nogroup.calls, [[-OTHER, "SIGKILL"], [OTHER, "SIGKILL"]], "a group that is gone falls back to the process");
 });
 
 test("on Linux the group check reads /proc: a process we started without its own group is killed alone and its group (ours) survives", { skip: process.platform !== "linux" }, async () => {
