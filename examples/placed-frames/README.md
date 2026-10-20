@@ -29,6 +29,7 @@ A live run needs a model for the agent (Google's gemini-3.8-flash, thinking at m
 |---|---|
 | `GEMINI_API_KEY` (or a gateway's `VIDEO_MODEL_BASE_URL` and `VIDEO_MODEL_API_KEY`) | the agent; a gateway serves it under its public id and passes Jev through at `/typesafe/v1` |
 | `DAYTONA_API_KEY` | the `daytona` environment: Daytona sandboxes, made through Daytona's REST API |
+| `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | another Daytona address, and the region the sandboxes are made in |
 | `DAYTONA_SNAPSHOT` (optional) | a snapshot with node 22 or newer, when your organization's default sandbox has none |
 | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | the `modal` environment: Modal sandboxes, through the Modal SDK |
 | `TYPESAFE_API_KEY` | Jev at TypeSafe, which places each frame |
@@ -42,4 +43,4 @@ Jev picks one of the places the config names; it does not make a place. The sand
 
 ## Runtime dependencies
 
-`@parcha/agentrun-reference` (the host: `demo()`), `@parcha/pi-transport` (the boxes, `jevPlacer`, `boxEnv`), `@earendil-works/pi-durable` (the agent's tools), `@earendil-works/pi-ai` (the lead's models, and Jev's and the script's classifier) and `@parcha/agentrun-dsl` (the workflow's types).
+`@parcha/agentrun-harness` (the host: `demo()`), `@parcha/pi-transport` (the boxes, `jevPlacer`, `boxEnv`), `@earendil-works/pi-durable` (the agent's tools), `@earendil-works/pi-ai` (the lead's models, and Jev's and the script's classifier) and `@parcha/agentrun-dsl` (the workflow's types).

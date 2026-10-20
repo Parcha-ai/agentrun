@@ -1,7 +1,7 @@
 // The job: a pi agent draws a zoom into the Mandelbrot set, frame by frame. The agent has two tools, `frame` and `release` (tools.ts); the host places each `frame` call (Jev reads the
 // frame and each sandbox's purpose) and runs it in the sandbox it picks. The agent never sees where a call may go: it asks for the frames and reads which sandbox each one ran in.
 import type { Workflow } from '@parcha/agentrun-dsl';
-import type { Job } from '@parcha/agentrun-reference';
+import type { Job } from '@parcha/agentrun-harness';
 
 export const INSTRUCTIONS = `Draw a zoom into the Mandelbrot set of \`frames\` frames.
 

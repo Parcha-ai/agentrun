@@ -51,6 +51,20 @@
       "for": "live"
     },
     {
+      "env": "DAYTONA_API_URL",
+      "why": "Another address for Daytona's API, when your organization is served from one of its own.",
+      "where": "app.daytona.io, Keys",
+      "required": false,
+      "for": "live"
+    },
+    {
+      "env": "DAYTONA_TARGET",
+      "why": "The Daytona region (target) the sandboxes are made in, when your organization has more than one.",
+      "where": "app.daytona.io, Settings",
+      "required": false,
+      "for": "live"
+    },
+    {
       "env": "DAYTONA_SNAPSHOT",
       "why": "A Daytona snapshot with node, when your organization's default sandbox has none.",
       "where": "app.daytona.io, Snapshots",

@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
-import { demo } from '@parcha/agentrun-reference';
+import { demo } from '@parcha/agentrun-harness';
 import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node';
 import { jevPlacer } from '@parcha/pi-transport';
 import { localBoxes } from '@parcha/pi-transport/box/local';
@@ -62,6 +62,18 @@ test('the zoom on fakes: the agent asks for one placed tool call a frame, each a
   const released = kept.find((call) => call.tool === 'release').answer;
   assert.deepEqual(released, { boxes: [{ box: 'box-1', environment: 'daytona', provider: 'local' }, { box: 'box-2', environment: 'modal', provider: 'local' }] }, 'both boxes ended, and no receipt without rates');
   for (const environment of ['daytona', 'modal']) assert.deepEqual(readdirSync(join(run.dir, 'boxes', environment)), [], `no ${environment} box is left`);
+  // The boxes' own log beside the frames: by label, with when each was made, each command's start and end, and when it ended; no provider id, address or path.
+  const boxesText = readFileSync(join(run.dir, 'work', 'frames', 'boxes.json'), 'utf8');
+  const log = JSON.parse(boxesText);
+  assert.equal(log.format, 'placed-frames.boxes/1');
+  assert.deepEqual(log.boxes.map((box) => [box.box, box.provider]), [['box-1', 'local'], ['box-2', 'local']]);
+  for (const box of log.boxes) {
+    assert.ok(box.created && box.ended && box.created <= box.ended, `${box.box}: made, then ended`);
+    assert.equal(box.execs.filter((exec) => exec.what === 'check node').length, 1);
+    assert.ok(box.execs.every((exec) => exec.start <= exec.end && exec.exitCode === 0), `${box.box}: every command has its start, end and exit code`);
+  }
+  assert.equal(log.boxes.flatMap((box) => box.execs).filter((exec) => exec.what.startsWith('tile ')).length, FRAMES * 4, 'four tiles a frame');
+  assert.doesNotMatch(boxesText, /local-[0-9a-f]{12}|\/home\/|\/tmp\/|\/var\/|https?:/, 'no provider id, path or address');
   // The agent's own answer says what the results say.
   assert.deepEqual(run.record, { answer: '(scripted) Drew 12 frames: 7 on daytona and 5 on modal.' });
 

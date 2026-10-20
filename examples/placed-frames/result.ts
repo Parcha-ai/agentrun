@@ -4,7 +4,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
-import type { DemoOptions } from '@parcha/agentrun-reference';
+import type { DemoOptions } from '@parcha/agentrun-harness';
 import { rgbOf } from './programs/palette.mjs';
 import { HEIGHT, WIDTH } from './programs/params.mjs';
 

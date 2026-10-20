@@ -79,7 +79,9 @@ async function sh(env: ExecutionEnv, command: string, timeoutS: number): Promise
 }
 
 type Made = { box: Box; env: ExecutionEnv; label: string; provider: string };
-type State = { providers: Record<string, BoxProvider>; labelOf(provider: string, id: string): string | undefined; receipts: BoxReceipt[]; placer: Placer; boxes: Map<string, Promise<Made>> };
+/** What the run's boxes did, by the box's label: when it was made, each command's start and end (what it was, its exit code), and when it ended. No id, address or path. */
+type BoxLog = { box: string; provider: string; created: string; ended?: string; execs: Array<{ what: string; start: string; end: string; exitCode: number }> };
+type State = { log: Map<string, BoxLog>; providers: Record<string, BoxProvider>; labelOf(provider: string, id: string): string | undefined; receipts: BoxReceipt[]; placer: Placer; boxes: Map<string, Promise<Made>> };
 
 /** A tool's answer as pi keeps it: the JSON text in both the result's `content` and its `output`, so a reader of either sees it. */
 function answered(value: unknown): ToolExecutionResult {
@@ -104,11 +106,19 @@ export function placedFrames(hosting: Hosting): Extension {
         }));
         const placer = await jevPlacer(hosting.models, JEV, { rest: REST, timeoutMs: 30_000 });
         if (!placer.ok) throw placer.error;
-        return { providers, labelOf: (provider: string, id: string) => ledger.labelOf(provider, id), receipts, placer: placer.value, boxes: new Map() } satisfies State;
+        return { log: new Map(), providers, labelOf: (provider: string, id: string) => ledger.labelOf(provider, id), receipts, placer: placer.value, boxes: new Map() } satisfies State;
       })();
       runs.set(place.work, state);
     }
     return state;
+  };
+
+  /** A command in a box, with its start and end noted in the box's log. */
+  const logged = async <T extends { exitCode: number }>(s: State, made: Made, what: string, run: () => Promise<T>): Promise<T> => {
+    const start = new Date().toISOString();
+    const ran = await run();
+    s.log.get(made.label)?.execs.push({ what, start, end: new Date().toISOString(), exitCode: ran.exitCode });
+    return ran;
   };
 
   /** The environment's box: made, checked for node and given the tile program the first time, then the same one. */
@@ -122,7 +132,8 @@ export function placedFrames(hosting: Hosting): Extension {
       const box = created.value;
       const env = boxEnv(box);
       const made = { box, env, label: s.labelOf(provider.name, box.id) ?? 'box-?', provider: provider.name };
-      const node = await sh(env, 'node -v', 60);
+      s.log.set(made.label, { box: made.label, provider: made.provider, created: new Date().toISOString(), execs: [] });
+      const node = await logged(s, made, 'check node', () => sh(env, 'node -v', 60));
       if (node.exitCode !== 0) {
         await box.destroy(ctx);
         throw new Error(`the ${environment.id} sandbox (${provider.name}) has no node: ${environment.provider === 'daytona' ? 'set DAYTONA_SNAPSHOT to a snapshot with node 22 or newer' : 'name an image with node 22 or newer'}`);
@@ -168,7 +179,7 @@ export function placedFrames(hosting: Hosting): Extension {
       const made = await boxIn(s, environment);
       const cells = Array.from({ length: TILES_X * TILES_Y }, (_, i) => ({ tx: i % TILES_X, ty: Math.floor(i / TILES_X) }));
       const tiles = await Promise.all(cells.map(async ({ tx, ty }) => {
-        const ran = await sh(made.env, `node ${IN_BOX}/tile.mjs '${JSON.stringify({ f, tx, ty })}'`, 120);
+        const ran = await logged(s, made, `tile ${f}/${tx}/${ty}`, () => sh(made.env, `node ${IN_BOX}/tile.mjs '${JSON.stringify({ f, tx, ty })}'`, 120));
         if (ran.exitCode !== 0) throw new Error(`tile ${f}/${tx}/${ty} failed in ${made.label}: ${ran.errs.slice(0, 200)}`);
         return { tx, ty, px: Buffer.from((JSON.parse(ran.out.trim().split('\n').at(-1)!) as { px: string }).px, 'base64') };
       }));
@@ -202,6 +213,8 @@ export function placedFrames(hosting: Hosting): Extension {
         if (!made) continue;
         const done = await made.box.destroy(ctx);
         if (!done.ok) throw done.error;
+        const entry = s.log.get(made.label);
+        if (entry) entry.ended = new Date().toISOString();
         ended.push({ box: made.label, environment, provider: made.provider });
       }
       ended.sort((a, b) => a.box.localeCompare(b.box, 'en', { numeric: true }));
@@ -209,6 +222,9 @@ export function placedFrames(hosting: Hosting): Extension {
       const made_ = await env!.exec('mkdir -p frames', undefined, ctx);
       if (!made_.ok) throw made_.error;
       await keep(env!, 'frames/release.call.json', JSON.stringify({ tool: 'release', args: {}, answer }));
+      // The boxes' own log, for whoever draws the run: by label, never by the provider's id.
+      const boxes = [...s.log.values()].sort((a, b) => a.box.localeCompare(b.box, 'en', { numeric: true }));
+      await keep(env!, 'frames/boxes.json', JSON.stringify({ format: 'placed-frames.boxes/1', boxes }));
       return answered(answer);
     },
   });

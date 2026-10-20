@@ -8,7 +8,7 @@ import type { Models } from '@earendil-works/pi-ai';
 import { createModels, createProvider, type Provider } from '@earendil-works/pi-ai/models';
 import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { typesafeProvider } from '@earendil-works/pi-ai/providers/typesafe';
-import type { LiveParts } from '@parcha/agentrun-reference';
+import type { LiveParts } from '@parcha/agentrun-harness';
 import type { BoxPrice } from '@parcha/pi-transport';
 import { daytonaBoxes } from '@parcha/pi-transport/box/daytona';
 import { type ModalSdk, modalBoxes } from '@parcha/pi-transport/box/modal';
@@ -74,7 +74,7 @@ const need = (env: NodeJS.ProcessEnv, name: string): string => {
 };
 
 export const liveParts = async ({ env }: { env: NodeJS.ProcessEnv }): Promise<LiveParts> => {
-  const daytona = { apiKey: need(env, 'DAYTONA_API_KEY'), snapshot: env.DAYTONA_SNAPSHOT?.trim() || undefined };
+  const daytona = { apiKey: need(env, 'DAYTONA_API_KEY'), apiUrl: env.DAYTONA_API_URL?.trim() || undefined, target: env.DAYTONA_TARGET?.trim() || undefined, snapshot: env.DAYTONA_SNAPSHOT?.trim() || undefined };
   need(env, 'MODAL_TOKEN_ID');
   need(env, 'MODAL_TOKEN_SECRET');
   need(env, 'TYPESAFE_API_KEY');
@@ -84,7 +84,7 @@ export const liveParts = async ({ env }: { env: NodeJS.ProcessEnv }): Promise<Li
   const { ModalClient } = (await import(sdk).catch(() => { throw new Error('--live needs the modal SDK: npm install --no-save modal@0.11.0'); })) as { ModalClient: new () => ModalSdk };
   const extension = placedFrames({
     providers: () => ({
-      daytona: daytonaBoxes({ apiKey: daytona.apiKey }),
+      daytona: daytonaBoxes({ apiKey: daytona.apiKey, ...(daytona.apiUrl ? { apiUrl: daytona.apiUrl } : {}), ...(daytona.target ? { target: daytona.target } : {}) }),
       modal: modalBoxes(new ModalClient(), { appName: MODAL_APP }),
     }),
     specOf: (environment) => ({

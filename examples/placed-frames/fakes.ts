@@ -6,7 +6,7 @@ import type { AssistantMessage, ClassifierAnswer, ClassifierContext, ClassifierR
 import { createModels, createProvider } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { typesafeProvider } from '@earendil-works/pi-ai/providers/typesafe';
-import type { Fakes } from '@parcha/agentrun-reference';
+import type { Fakes } from '@parcha/agentrun-harness';
 import { localBoxes } from '@parcha/pi-transport/box/local';
 import { ENVIRONMENTS, placedFrames } from './tools.ts';
 
