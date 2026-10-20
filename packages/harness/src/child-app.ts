@@ -30,6 +30,7 @@ export default async function app(ctx: AppContext): Promise<AppOptions> {
     // The recorder is detached and the prepared parts released whether or not the result hook and the report succeed.
     try {
       const made = await prepared.made(result);
+      prepared.boxesDone();
       await prepared.recorder?.detach();
       // Printed once the final status is written and the run released (the supervisor reads this line as how the run ended).
       // Written whole before the process exits: the outcome can be large, and a line still waiting to enter the pipe when the process ends is cut off.

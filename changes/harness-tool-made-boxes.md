@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-harness
+kind: feature
+---
+A demo's tools can make boxes on providers of the demo's own: `DemoOptions.providers` (`({ live, env, root }) => ({ name: provider })`), handed to the tools as `context.providers`. The entry taps each, so every box a tool makes is on the recording: `box.created` `{ box, provider, facts, role? }`, a `box.exec` `{ box }` per command (never the command) and `box.ended` `{ box }`, and a host `box.receipt` when the box ends, or when the process ends with it open, with `usd_per_second`, `cost_usd`, `source` and `priced` null, so the run's cost reads unknown. Every box line names its box by its label (`box-1`, `box-2`), never by the provider's id, and `demo.json`'s `boxes` lines now do the same. A box the tool made carries its label (`box.label`) for the tool's result. The provider ids go only to `--box-ids <file>` (`DemoOptions.boxIds`; default `box-ids.internal.json` in the run's directory), refused inside the recording. A demo with a place of its own and `providers` is refused: the two would need one labeller.
