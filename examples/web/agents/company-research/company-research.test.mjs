@@ -270,12 +270,12 @@ test("edit-prompts: a usage error is exit 2, and a build with no setPrompts is s
 const PROBS = { public: 0.93, nonprofit: 0.02, small_retail: 0.01, ecommerce: 0.02, other: 0.02 };
 const RUNS = [
   { id: "run-a", title: "", index: { startedAt: "2026-10-20T04:10:00.000Z", endedAt: "2026-10-20T04:12:30.000Z", outcome: "completed", cost: 0.0421 }, briefHref: "runs/run-a/work/brief.md",
-    record: { version: 1, input: "Caterpillar Inc.", passes: [{ pass: 1, lookup: null, choice: "public", confidence: 0.93, probabilities: PROBS, model: "jev-latest", cost_usd: 0.00001, latency_ms: 412 }], lookup_used: false, chosen: { label: "public", role: "overlay", reason: "pass 1: public at 0.93, over the 0.8 threshold" } } },
+    record: { version: 1, question: "company_kind", input: "Caterpillar Inc.", variant: "public", passes: [{ choice: "public", confidence: 0.93, probabilities: PROBS, model: "jev-latest", cost_usd: 0.00001, latency_ms: 412 }], lookup: { used: false, sources: [] }, reason: "Jev: public at 93%" } },
   { id: "run-b", title: "", index: { startedAt: "2026-10-20T04:20:00.000Z", endedAt: "2026-10-20T04:23:00.000Z", outcome: "completed", cost: 0.05 }, briefHref: null,
-    record: { version: 1, input: "Habitat", passes: [
-      { pass: 1, lookup: null, choice: "other", confidence: 0.41, probabilities: { public: 0.1, nonprofit: 0.35, small_retail: 0.1, ecommerce: 0.04, other: 0.41 } },
-      { pass: 2, lookup: { query: "Habitat organisation", sources: [{ via: "browserbase_search", url: "https://example.org/about?utm=1#top", title: "About Habitat" }, { via: "wikipedia", url: "https://en.wikipedia.org/wiki/Habitat_(disambiguation)", title: "Habitat" }] }, choice: "nonprofit", confidence: 0.62, probabilities: { public: 0.02, nonprofit: 0.62, small_retail: 0.1, ecommerce: 0.06, other: 0.2 } },
-    ], lookup_used: true, chosen: { label: "generic", role: "generic", reason: "pass 2: nonprofit at 0.62, under 0.8" } } },
+    record: { version: 1, question: "company_kind", input: "Habitat", variant: "generic", passes: [
+      { choice: "other", confidence: 0.41, probabilities: { public: 0.1, nonprofit: 0.35, small_retail: 0.1, ecommerce: 0.04, other: 0.41 } },
+      { choice: "nonprofit", confidence: 0.62, probabilities: { public: 0.02, nonprofit: 0.62, small_retail: 0.1, ecommerce: 0.06, other: 0.2 } },
+    ], lookup: { used: true, sources: [{ via: "browserbase_search", url: "https://example.org/about?utm=1#top", title: "About Habitat" }, { via: "wikipedia", url: "https://en.wikipedia.org/wiki/Habitat_(disambiguation)", title: "Habitat" }] }, reason: "Jev: other at 41%; after the lookup, Jev: nonprofit at 62%, under 80%; so the generic prompt" } },
   { id: "run-c", title: "Powell's Books", index: { startedAt: "2026-10-20T04:30:00.000Z", prompt: { id: "small-retail-v2", reason: "from the index" } }, record: null, briefHref: null },
   { id: "run-d", title: "", index: { startedAt: "2026-10-20T04:40:00.000Z", endedAt: "2026-10-20T04:41:00.000Z", outcome: "failed" }, briefHref: null,
     record: { version: 1, input: "<script>alert(1)</script> & \"Co\"", passes: [{ pass: 1, lookup: null, choice: "<img src=x onerror=alert(2)>", confidence: 0.5, probabilities: {} }], lookup_used: false, chosen: { label: "<b>x</b>", role: "overlay", reason: "<i>why</i>" } } },
@@ -301,14 +301,21 @@ test("the page shows the base, each overlay with its Jev rule, the generic, and 
   assert.ok(a.includes("public 0.93 · nonprofit 0.02"), "probabilities, largest first");
   assert.ok(a.includes("$0.000010") && a.includes("412 ms"));
   assert.ok(a.includes("<td>no</td>"), "no lookup");
-  assert.ok(a.includes('<b>public</b> <span class="role">overlay</span><small>pass 1: public at 0.93, over the 0.8 threshold</small>'));
+  assert.ok(a.includes('<b>public</b> <span class="role">overlay</span><small>Jev: public at 93%</small>'), "the variant by its label, its role from the home, the host's reason");
   assert.ok(a.includes("completed<small>$0.0421</small>"));
   assert.ok(a.includes('<a href="runs/run-a/work/brief.md">brief.md</a>'));
   const b = byId("run-b");
   assert.ok(b.includes("<b>other</b> at 0.41") && b.includes("<b>nonprofit</b> at 0.62"), "both passes");
   assert.ok(b.includes("other 0.41 · nonprofit 0.35 · "), "the probabilities, largest first, whatever order they came in");
-  assert.ok(b.includes("yes<small>browserbase_search · About Habitat · example.org/about<br>wikipedia · Habitat · en.wikipedia.org/wiki/Habitat_(disambiguation)<br>search: Habitat organisation</small>"), "each source the lookup read, its address with no scheme, query or fragment, and the search");
-  const oldShape = renderPage({ ...DATA, runs: [{ ...RUNS[1], id: "run-old", record: { ...RUNS[1].record, passes: [RUNS[1].record.passes[0], { ...RUNS[1].record.passes[1], lookup: { query: "q", url: "https://example.org/x?y=1", title: "T" } }] } }] });
+  assert.ok(b.includes("yes<small>browserbase_search · About Habitat · example.org/about<br>wikipedia · Habitat · en.wikipedia.org/wiki/Habitat_(disambiguation)</small>"), "each source the lookup read, its address with no scheme, query or fragment");
+  assert.ok(b.includes("so the generic prompt</small>"), "the host's reason is shown as it wrote it");
+  const first = { choice: "other", confidence: 0.41, probabilities: { other: 0.41, nonprofit: 0.35 } };
+  const oldShape = renderPage({ ...DATA, runs: [{ id: "run-old", title: "", index: {}, briefHref: null, record: { version: 1, input: "Habitat", passes: [{ pass: 1, lookup: null, ...first }, { pass: 2, lookup: { query: "q", url: "https://example.org/x?y=1", title: "T" }, choice: "nonprofit", confidence: 0.62, probabilities: {} }], lookup_used: true, chosen: { label: "generic", role: "generic", reason: "first-shape reason" } } }] });
+  assert.ok(oldShape.includes('<b>generic</b> <span class="role">generic</span><small>first-shape reason</small>'), "the first prompt.json shape (chosen, lookup_used) still shows");
+  const flagged = renderPage({ ...DATA, runs: [{ id: "run-flag", title: "", index: {}, briefHref: null, record: { input: "X", passes: [first], lookup_used: true, chosen: { label: "generic", role: "generic", reason: "r" } } }] });
+  assert.ok(flagged.includes("yes<small>no source recorded</small>"), "the first shape's lookup_used, with no lookup recorded, still says a lookup ran");
+  const unnamed = renderPage({ ...DATA, runs: [{ id: "run-n", title: "", index: {}, briefHref: null, record: { input: "X", variant: { id: "nonprofit", label: "Charity", role: "overlay" }, passes: [first], lookup: { used: true, sources: [] }, reason: "r" } }] });
+  assert.ok(unnamed.includes('<b>Charity</b> <span class="role">overlay</span><small>r</small>') && unnamed.includes("yes<small>no source recorded</small>"), "a variant as { id, label, role }, and a lookup that recorded no source");
   assert.ok(oldShape.includes("yes<small>T · example.org/x<br>search: q</small>"), "a lookup of one page, as `{ url, title }`, still shows");
   assert.ok(b.includes('<b>generic</b> <span class="role">generic</span>'));
   assert.ok(b.includes("no brief"));
@@ -407,7 +414,7 @@ test("with the built package's prompts, a run started with a prompt shows its va
   assert.equal((await run(edit, ["--home", dir, "--init"], real)).code, 0);
   const home = await real.openAgentHome(dir);
   const started = await real.startRun(home, { runId: "r1", host: "test", prompt: { id: "nonprofit", reason: "Jev: nonprofit at 91%" } });
-  writeFileSync(join(started.dir, "prompt.json"), JSON.stringify({ version: 1, input: "American Red Cross", passes: [{ pass: 1, lookup: null, choice: "nonprofit", confidence: 0.91, probabilities: { nonprofit: 0.91, other: 0.09 } }], lookup_used: false, chosen: { label: "nonprofit", role: "overlay", reason: "Jev: nonprofit at 91%" } }));
+  writeFileSync(join(started.dir, "prompt.json"), JSON.stringify({ version: 1, input: "American Red Cross", variant: "nonprofit", passes: [{ choice: "nonprofit", confidence: 0.91, probabilities: { nonprofit: 0.91, other: 0.09 } }], lookup: { used: false, sources: [] }, reason: "Jev: nonprofit at 91%" }));
   await real.startRun(home, { runId: "r2", host: "test", prompt: { id: "generic", reason: "no overlay was sure" } });
   assert.deepEqual((await real.readAgentHome(home)).runs.r2.prompt, { id: "generic", reason: "no overlay was sure" });
   await assert.rejects(real.startRun(home, { runId: "r3", host: "test", prompt: { id: "not-a-variant", reason: "x" } }), /not one of the agent's variants/);

@@ -4,9 +4,11 @@
 // and its runs index) and, for each run, `runs/<id>/prompt.json`, the host's record of how it chose (below), and links
 // `runs/<id>/work/brief.md` when there is one. A field that is not recorded is shown as "not recorded".
 //
-// runs/<id>/prompt.json: { version: 1, question, input, passes: [{ pass, lookup: null | { query, sources: [{ via, url, title }] }, choice,
-//   confidence, probabilities, model, cost_usd, latency_ms }], lookup_used, chosen: { label, role, reason }, selected_at }.
-// The runs index may also carry prompt: { id, reason }, which the page uses when prompt.json is not there.
+// runs/<id>/prompt.json is the host's selection plus the run's input: { version: 1, question, input, variant, passes: [{ choice,
+//   probabilities, confidence, model?, cost_usd?, latency_ms? }], lookup: { used, sources: [{ via, url, title }] }, reason,
+//   selected_at }. `variant` is the id or label of the variant loaded (or { id, label, role }). The first selection shape,
+//   { chosen: { label, role, reason }, lookup_used, passes[].lookup }, is read too. The runs index may also carry
+//   prompt: { id, reason }, which the page uses when prompt.json is not there.
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -46,22 +48,29 @@ function passCell(pass) {
 function lookupCell(record) {
   if (!isObject(record)) return `<td>${NONE}</td>`;
   const passes = Array.isArray(record.passes) ? record.passes : [];
-  const used = record.lookup_used === true || passes.some((pass) => isObject(pass) && isObject(pass.lookup));
+  // The lookup is `{ used, sources }`; the first shape had `lookup_used` and a lookup on the pass that followed it.
+  const lookup = isObject(record.lookup) ? record.lookup : passes.map((pass) => pass?.lookup).find(isObject);
+  const used = lookup?.used === true || record.lookup_used === true || (lookup !== undefined && lookup?.used === undefined);
   if (!used) return "<td>no</td>";
-  const lookup = passes.map((pass) => pass?.lookup).find(isObject);
   // The sources a lookup read: `sources: [{ via, url, title }]`, or one page as `{ url, title }`.
   const sources = Array.isArray(lookup?.sources) ? lookup.sources.filter(isObject) : lookup && (lookup.url || lookup.title) ? [lookup] : [];
   const lines = sources.map((source) => [source.via, source.title, where(source.url)].filter(Boolean).map(escapeHtml).join(" · ")).filter(Boolean);
   if (lookup?.query) lines.push(`search: ${escapeHtml(lookup.query)}`);
-  return `<td>yes${lines.length ? `<small>${lines.join("<br>")}</small>` : ""}</td>`;
+  if (!lines.length) lines.push("no source recorded");
+  return `<td>yes<small>${lines.join("<br>")}</small></td>`;
 }
 
 function variantCell(run, byId) {
-  const chosen = isObject(run.record?.chosen) ? run.record.chosen : null;
-  const label = chosen?.label ?? byId.get(run.index?.prompt?.id)?.label ?? run.index?.prompt?.id;
-  const reason = chosen?.reason ?? run.index?.prompt?.reason;
+  const record = run.record;
+  const named = record?.variant;
+  const chosen = isObject(record?.chosen) ? record.chosen : null;
+  const ref = typeof named === "string" ? named : isObject(named) ? (named.id ?? named.label) : (chosen?.label ?? run.index?.prompt?.id);
+  const found = byId.get(ref);
+  const label = (isObject(named) ? named.label : undefined) ?? found?.label ?? ref;
+  const role = (isObject(named) ? named.role : undefined) ?? found?.role ?? chosen?.role;
+  const reason = record?.reason ?? chosen?.reason ?? run.index?.prompt?.reason;
   if (!label) return `<td>${NONE}</td>`;
-  return `<td><b>${escapeHtml(label)}</b>${chosen?.role ? ` <span class="role">${escapeHtml(chosen.role)}</span>` : ""}${reason ? `<small>${escapeHtml(reason)}</small>` : ""}</td>`;
+  return `<td><b>${escapeHtml(label)}</b>${role ? ` <span class="role">${escapeHtml(role)}</span>` : ""}${reason ? `<small>${escapeHtml(reason)}</small>` : ""}</td>`;
 }
 
 function outcomeCell(run) {
@@ -106,7 +115,7 @@ export function renderPage(data) {
   const sorted = [...prompts].sort((a, b) => (order[a.role] ?? 3) - (order[b.role] ?? 3));
   const runs = [...(data.runs ?? [])].sort((a, b) => String(b.index?.startedAt ?? "").localeCompare(String(a.index?.startedAt ?? "")) || a.id.localeCompare(b.id));
   const question = data.question;
-  const byId = new Map(sorted.map((v) => [v.id ?? v.label, v]));
+  const byId = new Map(sorted.flatMap((v) => [[v.label, v], [v.id ?? v.label, v]]));
   const threshold = sorted.find((v) => v.when)?.when;
   const rule = question
     ? `<p class="lede">Before its first turn the host asks Jev one question about the company in the input: <b>${escapeHtml(question.id)}</b>, ${escapeHtml(question.instructions ?? "")} The overlay whose option Jev picks with enough confidence${threshold ? ` (${escapeHtml(threshold.threshold)} or more)` : ""} is added to the base. When no overlay reaches its threshold, the host looks the company up once and asks again. When there is still none, the generic prompt is added to the base.</p>`
