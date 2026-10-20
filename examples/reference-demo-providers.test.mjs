@@ -258,12 +258,43 @@ test('a host box\'s label is claimed by the run\'s process: the same again in th
   assert.equal(boxLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-a' }, from), 'box-1');
   assert.equal(boxLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-a' }, from), 'box-1', 'a process restarted in the same supervisor life gets the same label');
   assert.throws(() => boxLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-b' }, from), /restarted/, 'another supervisor life would renumber: refused');
+  assert.throws(() => boxLedger({ dir }).claimHost({ provider: 'away', key: '0', run: 'life-a' }, from), /box-1 on home, not on away/, 'one key on another provider is not the same box: refused');
   assert.equal(boxLedger({ dir }).claimHost({ provider: 'home', key: '1', run: 'life-a' }, from), 'box-2');
   for (const bad of ['not json', '{}', '{"provider":"home","key":"x","run":"a"}', '{"provider":"","key":"0","run":"a"}', '{"provider":"home","key":"0"}']) assert.throws(() => parseHostBox(bad), /HOST_BOX/, bad);
 });
 
 test('a host box the place started but no process claimed refuses the recording at the final read: it is never finished without that box', { timeout: 300_000 }, async (t) => {
   await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'unclaimed' }), /host box 0 on home has no label: its child never claimed it/);
+});
+
+test('a host box whose label the place cannot read refuses the recording at the final read too: a failed read is no label, never a recording without that box', { timeout: 300_000 }, async (t) => {
+  await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'unreadable' }), /host box 0 on home has no label: its label cannot be read \(the ids cannot be read here\)/);
+});
+
+test('a host box whose label read outlasts the supervisor\'s bound on the final read refuses the recording: a cut-off read is no label, never a recording without that box', { timeout: 300_000 }, async (t) => {
+  await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'slow' }), /host box 0 on home has no label: the final read did not finish reading it inside its bound/);
+});
+
+test('an ids directory a place made beforehand is used as it is, and one that takes no files (ENOENT, though it exists: an Archil directory made by path) is refused by name', async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-premade-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const fs = (await import('node:fs')).default;
+  const { syncBuiltinESMExports } = await import('node:module');
+  const made = join(own, 'made');
+  fs.mkdirSync(made, { mode: 0o755 });
+  assert.equal(boxLedger({ dir: made }).label('alpha', 'one'), 'box-1', 'a directory already there takes claims');
+  fs.writeFileSync(join(own, 'ids.json'), '{}');
+  assert.throws(() => boxLedger({ dir: join(own, 'ids.json') }).label('alpha', 'one'), /ids\.json is a file: --box-ids names a directory/, 'a path that is a file is refused by name');
+  const bare = join(own, 'bare');
+  fs.mkdirSync(bare);
+  const open = fs.openSync;
+  t.mock.method(fs, 'openSync', (path, ...rest) => {
+    if (String(path).startsWith(`${bare}/`)) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
+    return open(path, ...rest);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  assert.throws(() => boxLedger({ dir: bare }).label('alpha', 'one'), /bare\/ cannot take files: on a disk place it must be made by the place, not by path/);
 });
 
 test('two supervisors on one run directory are two lives: the second, resuming the run, is refused at its host box\'s claim, never given the first one\'s label', { timeout: 300_000 }, async (t) => {

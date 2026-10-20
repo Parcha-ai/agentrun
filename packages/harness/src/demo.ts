@@ -30,7 +30,7 @@ import type { BoxProvider } from '@parcha/pi-transport';
 import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { CodeModeOptions } from './code-mode.ts';
 import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
-import { boxLedger, RUN_LABEL, tapBox, type Boxes } from './boxes.ts';
+import { boxLedger, hostBoxLabel, parseHostBox, RUN_LABEL, tapBox, type Boxes } from './boxes.ts';
 import type { Recorder, Redact } from './record.ts';
 import { priceJudge } from './judge.ts';
 import { askToBeKilled, aroundOwnFiling, crossings, tapFakes, tapHost, tapLive, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
@@ -90,7 +90,7 @@ export type DemoOptions = {
    *  after the providers are tapped, with those tapped providers, and installed beside the host's own. Every other extension stays on its own path (`fakes.extensions`, the live parts'
    *  `host.tools.extensions`). Refused without `providers`: the hook would have nothing to hand its tools. */
   providerExtensions?: (context: { providers: Readonly<Record<string, Boxes>>; live: boolean; place: { root: string; work: string } }) => readonly Extension[] | Promise<readonly Extension[]>;
-  /** Where the provider ids of the run's boxes go, by label (`--box-ids` says the same): a file outside the recording, refused inside it. Default `box-ids.internal.json` in the run's directory. */
+  /** Where the provider ids of the run's boxes go, by label (`--box-ids` says the same): a directory outside the recording, one file per label, refused inside it. Default `box-ids.internal/` in the run's directory. */
   boxIds?: string;
 };
 
@@ -260,7 +260,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   if (at && boxSpec?.runIn) throw new Error('boxes.runIn is not supported under pi-durable-disk run --app: the app opens its tools on the claim\'s own environment, not in a box. Run the demo through its own command, or drop runIn.');
   const provider = await boxProvider(boxSpec, place);
   // One labeller for every box this process's tools make (box-N), its ids in a file outside the recording that the next process numbers on from.
-  const ledger = boxLedger({ file: env.BOX_IDS || join(place.root, 'box-ids.internal.json'), ...(recorder ? { recorder } : {}) });
+  const ledger = boxLedger({ dir: env.BOX_IDS || join(place.root, 'box-ids.internal'), ...(recorder ? { recorder } : {}) });
   const tapping = { cross, window, ledger, ...(env.RUN_LABEL ? { runLabel: env.RUN_LABEL } : {}), ...(recorder ? { recorder } : {}) };
   const boxes = provider ? (tapBox(provider, tapping) as BoxProvider) : undefined;
   // The demo's own providers, each tapped: a box a tool makes on one is on the recording by its label, with a receipt.
@@ -292,6 +292,9 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   // What writes under the run's directory waits for `open()`: the recorder, the fetched files, the box. Nothing before it touches the disk (on a disk the run has not mounted yet, a write would land on the bare mountpoint).
   const open = async () => {
     lazy?.start();
+    // The host box the place started for this process (`HOST_BOX`), its label claimed FIRST, before any model call or tool box: the place only reads it. A malformed identity, or one a
+    // supervisor in another life claimed, refuses the process.
+    if (env.HOST_BOX) ledger.claimHost(parseHostBox(env.HOST_BOX), new Date().toISOString());
     // The receipts of boxes a killed process left open, written by this one (to and seconds null): a SIGKILL runs no finally.
     ledger.recover();
     local.touchLogs();
@@ -403,7 +406,6 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const { spec, job } = options;
   const live = values.live === true;
   if (options.providerExtensions && !options.providers) throw new Error(`${spec.name} passes providerExtensions with no providers: the hook would have nothing to hand its tools`);
-  if (options.providers && options.place) throw new Error(`${spec.name} has a place of its own and tool-made boxes (providers): their boxes would need one labeller, which they cannot share yet, so the run is refused rather than give two boxes one label`);
   if (live && !options.live) throw new Error(`--live: ${spec.name} supplies no live parts (no real models or services), so it runs on fakes only.`);
   // `browser: false` in demo.json: no browser is created, so no key or Chrome is asked for.
   const browser = spec.browser === false ? 'none' as const : chooseBrowser({ live, env: process.env, localChrome: values['local-chrome'] === true });
@@ -433,17 +435,17 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const dir = values.dir ?? join(scratch, 'run');
   const recordDir = values.record ?? join(scratch, 'recording');
   mkdirSync(recordDir, { recursive: true });
-  // The provider ids of the run's boxes go to a file outside the recording, never inside it (a link that resolves into it included): `--box-ids`, else `box-ids.internal.json` in the run's
+  // The provider ids of the run's boxes go to a directory outside the recording, never inside it (a link that resolves into it included): `--box-ids`, else `box-ids.internal/` in the run's
   // directory, checked the same way. A demo's own place keeps its default in the place's own directory.
   const real = (path: string): string => { try { return realpathSync(path); } catch { return dirname(path) === path ? path : join(real(dirname(path)), basename(path)); } };
   // Outside the recording means a parent step (`..` or `../`) or another root, never a name that only starts with two dots (`..ids.json`).
   const inRecording = (path: string) => { const from = relative(real(recordDir), real(path)); return !(from === '..' || from.startsWith(`..${sep}`) || isAbsolute(from)); };
   const boxIdsGiven = values['box-ids'] ?? options.boxIds;
-  const boxIds = boxIdsGiven !== undefined ? resolve(boxIdsGiven) : options.place ? undefined : join(resolve(dir), 'box-ids.internal.json');
+  const boxIds = boxIdsGiven !== undefined ? resolve(boxIdsGiven) : options.place ? undefined : join(resolve(dir), 'box-ids.internal');
   if (boxIds !== undefined && inRecording(boxIds)) {
     throw new Error(boxIdsGiven !== undefined
-      ? `--box-ids ${boxIdsGiven} is inside the recording (${recordDir}): the provider ids of a run's boxes never go in a recording; name a file outside it`
-      : `the run's directory (${dir}) is inside the recording (${recordDir}), so its box-ids.internal.json would be inside the recording: keep --dir outside the recording, or give --box-ids a file outside it`);
+      ? `--box-ids ${boxIdsGiven} is inside the recording (${recordDir}): the provider ids of a run's boxes never go in a recording; name a directory outside it`
+      : `the run's directory (${dir}) is inside the recording (${recordDir}), so its box-ids.internal would be inside the recording: keep --dir outside the recording, or give --box-ids a directory outside it`);
   }
   // The fake browser's backend outlives a killed process: it is served here, and each child reaches it by URL.
   const backend = new FakeBackend({ start: options.fakes.start, pages: options.fakes.pages });
@@ -511,6 +513,10 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   let reading: Promise<void> = Promise.resolve();
   const boxLabels = new Map<string, string>();
   const boxReceipted = new Set<string>();
+  // The labels a place's `labelBox` read (by start index): a claimed label never changes, so it is read once. Every host box a read listed is kept (with its provider): one with no
+  // label when the run ends refuses the recording, even when the final read did not finish inside its bound.
+  const homeBoxLabels = new Map<string, string>();
+  const homeBoxSeen = new Map<string, string>();
   // The slow tick does not queue a read behind one still running (a place's reads can take seconds): the boundary reads, which a result waits for, then wait behind at most one.
   let inflight = false;
   // A read the supervisor waits for (after a kill, at a process's exit, at the end) is waited for a bounded time: an optional reading never holds supervision up for a place's whole timeout.
@@ -549,20 +555,30 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         // The boxes the place made (a `HostBox` each, ended ones too): one `box.receipt` line per box when its `to` appears, or at the final read for one still open (`to`, `seconds` and `cost_usd` null). A box is its place in the
         // place's list (the place lists the boxes it started, in the order it started them, so equal provider, kind and start never make two boxes one), and it is `box-N` by first appearance, labelled when it first shows, before its
         // receipt; never the provider's id. `cost_usd` is seconds times the published per-second price, null when the box has none (the run's cost then reads unknown).
-        (Array.isArray(status?.boxes) ? status!.boxes as unknown[] : []).forEach((entry, index) => {
-          const label = labelOf(boxLabels, 'box', String(index));
+        // A place that shares the run's labels (`labelBox`) reads each host box's label from the run's ids, where the run's process claimed it; a label not there yet is read again
+        // at the next tick, and at the final read a host box with none refuses the recording. A place without `labelBox` numbers its boxes itself (no tool boxes beside them).
+        for (const [index, entry] of (Array.isArray(status?.boxes) ? status!.boxes as unknown[] : []).entries()) {
           const box = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : undefined;
-          if (!box || typeof box.provider !== 'string' || typeof box.kind !== 'string') return;
+          if (!box || typeof box.provider !== 'string' || typeof box.kind !== 'string') continue;
+          const key = String(index);
+          let label = place.labelBox ? homeBoxLabels.get(key) : labelOf(boxLabels, 'box', key);
+          if (label === undefined) {
+            homeBoxSeen.set(key, box.provider);
+            // A label that cannot be read is no label: at the final read it refuses the recording too, never a recording without that box's receipt.
+            try { label = await place.labelBox!({ provider: box.provider, key }); } catch (error) { if (final) unlabelled ??= { key, provider: box.provider, why: `its label cannot be read (${messageOf(error, paths.root)})` }; continue; }
+            if (label === undefined) { if (final) unlabelled ??= { key, provider: box.provider, why: 'its child never claimed it' }; continue; }
+            homeBoxLabels.set(key, label);
+          }
           const at = (value: unknown) => (typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : Number.NaN);
           const from = at(box.from);
           const to = at(box.to);
           const ended = Number.isFinite(to);
-          if (!Number.isFinite(from) || (!ended && !final) || boxReceipted.has(label)) return;
+          if (!Number.isFinite(from) || (!ended && !final) || boxReceipted.has(label)) continue;
           boxReceipted.add(label);
           const seconds = ended ? Math.max(0, (to - from) / 1000) : null;
           const price = typeof box.usdPerSecond === 'number' && Number.isFinite(box.usdPerSecond) ? box.usdPerSecond : null;
           supervisor.host('box.receipt', { box: label, provider: box.provider, kind: box.kind, from: box.from, to: ended ? box.to : null, seconds, usd_per_second: price, cost_usd: price !== null && seconds !== null ? seconds * price : null, source: typeof box.source === 'string' ? box.source.slice(0, 240) : null, priced: box.priced ?? null });
-        });
+        }
       } catch { /* a reading never fails the run */ } finally { inflight = false; }
     });
     return reading;
@@ -573,6 +589,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // The slow tick does not queue a carry behind one still running (a transfer can take seconds): the final carry, which the result waits for, then waits behind at most one.
   let carryBusy = false;
   let carryRefusal: { gen: number; code: string } | undefined;
+  // A host box the place started whose label its process never claimed: the recording is refused, never finished without it (its time would be missing from the cost).
+  let unlabelled: { key: string; provider: string; why: string } | undefined;
   const carry = (gen: number, final: boolean, lost: () => boolean): Promise<void> => {
     if (!place.recordHome) return Promise.resolve();
     carrying = carrying.then(async () => {
@@ -589,7 +607,11 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // Metering: the recording's lines as they stand, folded; past the cap the supervisor stops the run.
   const meterTimer = maxUsd === null ? undefined : setInterval(() => { if (meterKnown(recordDir) > maxUsd) overBudget = true; }, 250);
   try {
-    place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
+    place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(boxIds !== undefined ? { boxIds } : {}), ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
+    // A place of the demo's own that cannot read the run's labels (no `labelBox`) cannot share one numbering with the tools' boxes: refused, never two boxes with one label.
+    if (options.providers && options.place && !place.labelBox) {
+      throw new Error(`${spec.name} has a place of its own with no labelBox and tool-made boxes (providers): the place's boxes cannot take labels from the run's one labeller, so the run is refused rather than give two boxes one label`);
+    }
     // The follower's hold reads the place's clock allowance from here on (it was assigned before the place existed, so it was never seen).
     placeRef = place;
     const remaining = childPlansOf(plans);
@@ -744,6 +766,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     if (followError) throw followError;
     follower.close();
     if (carryRefusal) throw new Error(`the recording is refused: the place could not bring home process ${carryRefusal.gen}'s recording (${carryRefusal.code}), and that process ended on its own`);
+    if (unlabelled) throw new Error(`the recording is refused: host box ${unlabelled.key} on ${unlabelled.provider} has no label: ${unlabelled.why}`);
+    const unread = [...homeBoxSeen].find(([key]) => !homeBoxLabels.has(key));
+    if (unread) throw new Error(`the recording is refused: host box ${unread[0]} on ${unread[1]} has no label: the final read did not finish reading it inside its bound`);
     // The agent's report (draft 41): `report/index.html` in the run's work directory and the files it reaches, kept as blobs before the scans below; a file the final page does not reach (a killed attempt's leftover) is not kept.
     const artifact = takeArtifact(join(paths.work, 'report'), (bytes, extension) => keepBlob(recordDir, bytes, extension), spec.title ?? spec.name);
     // What a viewer following the run could already have fetched is not taken back: a secret in the file as it was placed refuses the recording, though the finished file is redacted.

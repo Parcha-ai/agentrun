@@ -232,7 +232,7 @@ await demo({ self: import.meta.url, spec, job, fakes });
 | `--fetch-sources` | fetches the demo's `sources.json` into the run's `work/` before the job runs (always with `--live`) |
 | `--cache <dir>` | where fetched sources are kept by hash, so a re-run does not fetch them again (default `agentrun-sources` in the OS temp dir) |
 | `--dir <path>` | keeps the run's directory |
-| `--box-ids <file>` | where the provider ids of the run's boxes go, by label (default `box-ids.internal.json` in the run's directory); refused inside the recording |
+| `--box-ids <dir>` | where the provider ids of the run's boxes go: a directory, one file per label (default `box-ids.internal/` in the run's directory); refused inside the recording |
 | `--json` | the result as one JSON object |
 
 ### The spec
@@ -260,9 +260,33 @@ them to the tools as `context.providers`; every box a tool makes on one is on th
 
 A box the tool made carries its label (`box.label`): a tool puts that in its result, so the result and the lines agree. An agent's own tools (pi extension tools, not workflow call nodes) get the same
 tapped providers through `providerExtensions: ({ providers, live, place }) => [extension, ...]`, called once in each process right after the tap, on fakes and on `--live`; every other extension stays on
-`fakes.extensions` and the live parts' `host.tools.extensions`. `providerExtensions` without `providers` is refused. The provider ids go only to `--box-ids` (`box-ids.internal.json` in the run's
-directory by default), where the next process of the run numbers on from them; either path is refused when it resolves inside the recording. `demo.json`'s `boxes` are named by label the same way. A demo with a place of its own cannot pass `providers` yet: the place's boxes and the
-tools' would need one labeller, so such a run is refused.
+`fakes.extensions` and the live parts' `host.tools.extensions`. `providerExtensions` without `providers` is refused. The provider ids go only to `--box-ids` (`box-ids.internal/` in the run's
+directory by default): a directory with one file per label (`box-N.json`), each claimed by an exclusive `link(2)`, so two processes never take one label, and the next process of the run numbers on from
+them. Either path is refused when it resolves inside the recording. `demo.json`'s `boxes` are named by label the same way. A run started on the earlier single file (the directory's name plus `.json`)
+has its labels read into the directory at its first claim.
+
+#### One numbering with a place's host boxes
+
+A demo with a place of its own can pass `providers` when the place has `labelBox({ provider, key })`: the place's host boxes (its `status().boxes`) and the tools' boxes then share one `box-N`
+numbering run-wide.
+
+- The place hands each runner its host box as `HOST_BOX` in the order's environment, JSON `{ provider, key, run }`: `key` is the box's start index in the place's list, and `run` is this
+  supervisor life's `RUN_LABEL`.
+- The runner claims that label first, before any model call or tool box. The place never writes a label: `labelBox` reads it back with a bounded read, and returns `undefined` when it is not there
+  yet. The supervisor asks again on its next read. The local place's `labelBox` reads the default directory.
+- At the run's end, a host box that any read listed and that has no label refuses the recording (`host box <key> on <provider> has no label: ...`), also when the final read did not finish
+  inside its bound.
+- A place without `labelBox` is refused with `providers`.
+
+Before its first claim the ledger checks that the disk gives an exclusive link (a second link to one name must fail). These refuse the run, so no label is given twice:
+
+- a read-only mount (EROFS: not the run's holder mount);
+- a directory that exists and takes no files (ENOENT: on a disk place the place must make it, not a process by path);
+- a malformed `HOST_BOX`;
+- a damaged label file.
+
+A host box's key is claimed once per supervisor life: a supervisor started again on the same run directory is refused at its host box's claim. So a run with a place's host boxes and `providers`
+is re-taken, not resumed.
 
 ### The judge seam
 

@@ -92,19 +92,24 @@ const extLead = (messages: readonly Message[]) => {
 };
 // And a place of the demo's own beside its tools' boxes (`DEMO_WITH_PLACE`): `labelled` is the local place that also starts a home box (it reports one in `status()`) and hands the
 // run's process its identity (`HOST_BOX`), which that process claims first; the place only reads the label back (`labelBox`). `unclaimed` reports the home box but never hands it
-// over, so no process claims it. Any other value is the local place with no `labelBox`.
+// over, so no process claims it. `unreadable` hands it over but its `labelBox` cannot read the run's ids (it throws); `slow` hands it over but its `labelBox` answers only after 40 s,
+// past the supervisor's bound on a read. Any other value is the local place with no `labelBox`.
 const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: string; root: string }; self: string; requestFile: (attempt: number) => string }) => {
   const { localPlace, hostBoxLabel } = await import('@parcha/agentrun-harness');
   const inner = localPlace({ self: context.self, paths: context.paths as never, requestFile: context.requestFile });
   const mode = process.env.DEMO_WITH_PLACE;
-  if (mode !== 'labelled' && mode !== 'unclaimed') { const { labelBox: _none, ...bare } = inner as typeof inner & { labelBox?: unknown }; return bare; }
+  if (mode !== 'labelled' && mode !== 'unclaimed' && mode !== 'unreadable' && mode !== 'slow') { const { labelBox: _none, ...bare } = inner as typeof inner & { labelBox?: unknown }; return bare; }
   const from = new Date().toISOString();
-  const handOver = (order: Parameters<typeof inner.start>[0]) => (mode === 'labelled' ? { ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ provider: 'home', key: '0', run: order.env.RUN_LABEL }) } } : order);
+  const handOver = (order: Parameters<typeof inner.start>[0]) => (mode !== 'unclaimed' ? { ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ provider: 'home', key: '0', run: order.env.RUN_LABEL }) } } : order);
   return {
     ...inner,
     start: (order: Parameters<typeof inner.start>[0]) => inner.start(handOver(order)),
     status: async () => ({ boxes: [{ provider: 'home', kind: 'host', from, to: null }] }),
-    labelBox: (box: { provider: string; key: string }) => hostBoxLabel(join(context.paths.root, 'box-ids.internal'), box, { waitMs: 500 }),
+    labelBox: async (box: { provider: string; key: string }) => {
+      if (mode === 'unreadable') throw new Error('the ids cannot be read here');
+      if (mode === 'slow') await new Promise((resolve) => { setTimeout(resolve, 40_000).unref(); });
+      return hostBoxLabel(join(context.paths.root, 'box-ids.internal'), box, { waitMs: 500 });
+    },
   };
 } : undefined;
 const withProviders = providersTool ? { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Boxed: { type: 'object' } }, root: { ...job.workflow.root, steps: [(job.workflow.root as { steps: unknown[] }).steps[0], { node: 'call', label: 'boxes2', via: 'tool', tool: 'boxes2', args: {}, out: 'Boxed', as: 'boxed', deadline_s: 60 }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(1)] } } } as unknown as typeof job : undefined;
