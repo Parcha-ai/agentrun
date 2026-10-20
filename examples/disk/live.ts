@@ -1,17 +1,20 @@
-// The live variant of the disk demo (not the gallery's, which stays on fakes): a real Daytona sandbox is deleted in the middle of the batch, on a real Archil disk, and a new sandbox
-// takes the run over. The supervisor is the reference entry's `demo()`, the place is the disk package's `archilPlace` on `daytonaHost`, and the process in each sandbox is the reference
-// package's child app running this demo's job (the lead and the paid tool are scripted). Its recording comes home through the run's disk.
+// The live variant of the disk demo: the run lives on a real Archil disk and each process of it in a real Daytona sandbox. The supervisor is the harness entry's `demo()`, the place is the disk package's
+// `archilPlace` on `daytonaHost`, and the process in each sandbox is the harness's child app running this demo's job. Its recording is written to the run's disk and brought home by the place.
 //
-//   with-daytona -- with-archil -- env PDA_LIVE=1 PDA_LIVE_DISK=dsk-... PDA_STATE_DIR=<scratch> node examples/disk/live.ts <record-dir>
+//   PDA_LIVE=1 PDA_STATE_DIR=<scratch> [PDA_LIVE_SNAPSHOT=<name>] [DISK_LIVE_SECRET=<name>] node examples/disk/live.ts <record-dir>
+//   (DAYTONA_API_KEY, ARCHIL_API_KEY and PDA_LIVE_DISK from the caller's credential wrapper)
 //
-// Live: real Daytona sandbox deleted mid-job, real Archil disk, the template's supervisor and place; the lead is scripted.
-// Each box gets the disk package (the live helper's `prepareBox`, or `prepareOnSnapshot` from a runtime snapshot: PDA_LIVE_SNAPSHOT), the workspace packages the reference child imports (packed here,
+// What runs: `--handoff` by default (the first sandbox releases the run at the planned crossing and a second sandbox opens it from the disk and finishes; nothing is killed), or `--kill` with
+// DISK_LIVE_MODE=kill (the first sandbox is deleted there). The lead: with DISK_LIVE_SECRET, the name of a Daytona secret that holds a Gemini key (allowed for generativelanguage.googleapis.com), the run is
+// `--live` on gemini-3.8-flash (model.ts): each sandbox is created with that secret as GEMINI_API_KEY, so the box holds only Daytona's placeholder, and the instance reaches Google through Daytona's egress
+// proxy, which puts the key into the request's header. Without it, the lead is scripted. DISK_LIVE_MAX_USD caps the run's spend (`--max-usd`; else twice demo.json's expectedCost).
+// Each box gets the disk package (the live helper's `prepareBox`, or `prepareOnSnapshot` from a runtime snapshot: PDA_LIVE_SNAPSHOT), the workspace packages the harness child imports (packed here,
 // installed in the box) and this demo's directory.
 // It refuses without the keys, caps itself at 25 minutes, and sweeps at the end: every sandbox deleted and confirmed gone, the run's directory removed.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { archilControl, archilPlace, daytonaHost } from '@parcha/pi-durable-disk';
 import { revokeBestEffort } from '../../packages/pi-durable-disk/src/claim.ts';
@@ -20,10 +23,16 @@ import { ARCHIL_WRAPPER, confirmGone, deletePrefix, demoClosure, FLEET, guardedC
 import { demo } from '@parcha/agentrun-harness';
 import { fakes } from './fakes.ts';
 import { job } from './job.ts';
+import { live } from './model.ts';
 
 const record = process.argv[2];
 if (!record) throw new Error('usage: live.ts <record-dir>');
-for (const name of ['DAYTONA_API_KEY', 'ARCHIL_API_KEY', 'PDA_LIVE_DISK', 'PDA_STATE_DIR']) if (!process.env[name]) throw new Error(`${name} is not set (with-daytona, with-archil, PDA_LIVE_DISK and PDA_STATE_DIR: see the header)`);
+for (const name of ['DAYTONA_API_KEY', 'ARCHIL_API_KEY', 'PDA_LIVE_DISK', 'PDA_STATE_DIR']) if (!process.env[name]) throw new Error(`${name} is not set (see the header)`);
+const mode = process.env.DISK_LIVE_MODE === 'kill' ? '--kill' : '--handoff';
+const secret = process.env.DISK_LIVE_SECRET;
+if (secret !== undefined && !/^[A-Za-z0-9._-]{1,100}$/.test(secret)) throw new Error('DISK_LIVE_SECRET names a Daytona secret: letters, digits, dot, dash and underscore');
+const maxUsd = process.env.DISK_LIVE_MAX_USD;
+if (maxUsd !== undefined && !(Number(maxUsd) > 0)) throw new Error('DISK_LIVE_MAX_USD is a number of dollars above 0');
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const spec = JSON.parse(readFileSync(new URL('./demo.json', import.meta.url), 'utf8'));
@@ -65,14 +74,18 @@ function snapshotCovers(name: string | undefined): { offline: boolean; why: stri
 const covered = snapshotCovers(process.env.PDA_LIVE_SNAPSHOT);
 console.log(`snapshot: ${process.env.PDA_LIVE_SNAPSHOT ?? 'none'}; packs install ${covered.offline ? 'offline' : 'online'} (${covered.why})`);
 
-const client = guardedClient();
+const guarded = guardedClient();
+// Each box is created with the model's secret attached as GEMINI_API_KEY (Daytona's REST form: one name per entry). The box's environment holds Daytona's placeholder; the key itself never enters it.
+const client: typeof guarded = secret ? { ...guarded, create: (body) => guarded.create({ ...body, secrets: [{ GEMINI_API_KEY: secret }] } as typeof body) } : guarded;
+/** The instance's environment beside the order's (the driver's `env`): with the secret, read from each box as it is prepared (the placeholder and Daytona's proxy, which Node uses only when told to). */
+const boxEnv: Record<string, string> = {};
 const disk = await scratchDisk();
 const startedAt = Date.now();
 const host = daytonaHost({
   client, snapshot: process.env.PDA_LIVE_SNAPSHOT || 'daytona-medium', target: process.env.DAYTONA_TARGET || 'us', fleet: FLEET, namePrefix: NAME_PREFIX, labels: { 'pda-p9': `disk-demo-${stamp}` },
   mountRoot: MOUNT_ROOT, node: NODE, packageDir: PACKAGE_DIR, archil: ARCHIL_WRAPPER, user: 'pda',
   runArgs: [`--app=${PACKAGE_DIR}/node_modules/@parcha/agentrun-harness/dist/child-app.js`, '--heartbeat-ms=1000', '--lease-expiry-ms=600000', '--lease-margin-ms=0'],
-  env: {}, ttlMinutes: 60, startTimeoutMs: 600_000, stopTimeoutMs: 5_000,
+  env: boxEnv, ttlMinutes: 60, startTimeoutMs: 600_000, stopTimeoutMs: 5_000,
   prepare: async (box) => {
     const t0 = Date.now();
     const lap = (what: string) => console.log(`TIMING ${new Date().toISOString()} ${box.name.slice(-6)} +${((Date.now() - t0) / 1000).toFixed(1)}s ${what}`);
@@ -98,11 +111,22 @@ rm -f /tmp/d4-demo.tgz`, 120);
     // The workspace packs and pi-codemode, installed offline over the snapshot's third-party closure (installDemoPacks).
     const installed = await installDemoPacks(client, box, readdirSync(packs).map((file) => join(packs, file)), { offline: covered.offline });
     lap(`packs installed ${JSON.stringify(installed.steps)}`);
+    if (secret) {
+      // The names the model call needs, read in the box: the secret's placeholder and Daytona's egress proxy with its CA (the proxy carries no credential). A value that is not a placeholder is refused: a key
+      // never goes into an instance's environment from here. Only the names are printed.
+      const read = await sh(client, box, `for v in GEMINI_API_KEY HTTPS_PROXY HTTP_PROXY NO_PROXY NODE_EXTRA_CA_CERTS; do printf '%s=%s\\n' "$v" "$(printenv "$v")"; done`, 30);
+      const got = Object.fromEntries(read.split('\n').filter((line) => line.includes('=')).map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+      if (!/^dtn_secret_[A-Za-z0-9_-]+$/.test(got.GEMINI_API_KEY ?? '')) throw new Error(`the box's GEMINI_API_KEY is not a Daytona secret's placeholder: is ${secret} a secret of this organisation?`);
+      for (const name of ['HTTPS_PROXY', 'NODE_EXTRA_CA_CERTS']) if (!got[name]) throw new Error(`the box has no ${name}: Daytona's egress proxy, which puts the key into the request, is not set`);
+      Object.assign(boxEnv, got, { NODE_USE_ENV_PROXY: '1' });
+      lap(`the model's secret is attached (placeholder) and the proxy set: ${Object.keys(got).filter((name) => got[name]).join(', ')}`);
+    }
     console.log(`prepared ${box.name}: ${JSON.stringify(steps)}`);
   },
 });
+const control = await archilControl({ apiKey: process.env.ARCHIL_API_KEY!, disk: scratchDiskId(), region: REGION });
 const makePlace = archilPlace({
-  disk: scratchDiskId(), region: REGION, control: await archilControl({ apiKey: process.env.ARCHIL_API_KEY!, disk: scratchDiskId(), region: REGION }), host, id: runId, mountRoot: MOUNT_ROOT,
+  disk: scratchDiskId(), region: REGION, control, host, id: runId, mountRoot: MOUNT_ROOT,
   ensure: { create: { uid: PDA_ID, gid: PDA_ID }, tokenTtl: '2h', tokenPrefix: 'pda-p9-', leaseExpiryMs: 600_000, stonithTimeoutMs: 30_000 },
 });
 
@@ -144,23 +168,31 @@ async function sweep() {
 
 try {
   outcome = await demo({
-    self: import.meta.url, spec, job, fakes,
+    self: import.meta.url, spec, job, fakes, live,
     place: (context) => {
       const made = makePlace({ paths: { ...context.paths }, requestFile: context.requestFile });
       current = made;
       // The order's environment, for a process in a sandbox: the supervisor's paths (its scratch directory, its loopback backend) mean nothing there. The child app finds this demo's options
       // in the sandbox's copy (DEMO_ENTRY) and records into the run's directory on the disk (RECORD_DIR), which the place brings home.
+      // The crossing log is the supervisor's evidence of where a process stopped (a handoff is told by it): the process writes it in the run's directory on the disk, and once the process has ended it is
+      // read over S3 into the supervisor's own file, before the supervisor reads it.
+      const crossings = (gen: number) => posix.join(made.paths.root, 'signals', `crossings-${gen}.jsonl`);
+      const homeCrossings = (order: Parameters<typeof made.start>[0]) => async <T>(exit: T): Promise<T> => {
+        try { writeFileSync(order.env.CROSS_LOG!, await control.getObject(`runs/${runId}/signals/crossings-${order.gen}.jsonl`)); } catch (error) { console.log(`the crossing log of process ${order.gen} could not be read: ${String((error as Error).message).slice(0, 120)}`); }
+        return exit;
+      };
       const inBox = (order: Parameters<typeof made.start>[0]) => ({
         ...order,
         env: {
           DEMO_ENTRY: `file://${PACKAGE_DIR}/demo/examples/disk/run.ts`, DEMO_NAME: order.env.DEMO_NAME!, RUN_ID: order.env.RUN_ID!, ...(order.env.RUN_LABEL ? { RUN_LABEL: order.env.RUN_LABEL } : {}),
-          KILL_REQUEST: order.env.KILL_REQUEST!, KILL_NONCE: order.env.KILL_NONCE!, PLAN: order.env.PLAN!, ...(process.env.DISK_LIVE_RECORD_IN_BOX === '1' ? { RECORD_GEN: order.env.RECORD_GEN!, RECORD_STARTED: order.env.RECORD_STARTED!, RECORD_DIR: made.recordHome!.dir(order.gen) } : {}),
-          CROSS_LOG: `/tmp/crossings-${order.gen}.jsonl`, BROWSER: 'none', HOME: '/home/pda', TMPDIR: '/tmp',
+          KILL_REQUEST: order.env.KILL_REQUEST!, KILL_NONCE: order.env.KILL_NONCE!, PLAN: order.env.PLAN!, ...(order.env.LIVE ? { LIVE: order.env.LIVE } : {}), ...(order.env.MODELS ? { MODELS: order.env.MODELS } : {}), ...(order.env.INPUT ? { INPUT: order.env.INPUT } : {}),
+          ...(process.env.DISK_LIVE_RECORD_IN_BOX !== '0' ? { RECORD_GEN: order.env.RECORD_GEN!, RECORD_STARTED: order.env.RECORD_STARTED!, RECORD_DIR: made.recordHome!.dir(order.gen) } : {}),
+          CROSS_LOG: crossings(order.gen), BROWSER: 'none', HOME: '/home/pda', TMPDIR: '/tmp',
         },
       });
-      return { ...made, start: (order: Parameters<typeof made.start>[0]) => { console.log(`TIMING ${new Date().toISOString()} place.start called, generation ${order.gen}`); return made.start(inBox(order)); }, recover: (last: Parameters<typeof made.recover>[0], kind: Parameters<typeof made.recover>[1], order: Parameters<typeof made.recover>[2]) => { console.log(`TIMING ${new Date().toISOString()} place.recover called, generation ${order.gen}, kind ${String(kind)}`); return made.recover(last, kind, inBox(order)); } } as never;
+      return { ...made, start: async (order: Parameters<typeof made.start>[0]) => { console.log(`TIMING ${new Date().toISOString()} place.start called, generation ${order.gen}`); const runner = await made.start(inBox(order)); return { ...runner, exited: runner.exited.then(homeCrossings(order)) }; }, recover: async (last: Parameters<typeof made.recover>[0], kind: Parameters<typeof made.recover>[1], order: Parameters<typeof made.recover>[2]) => { console.log(`TIMING ${new Date().toISOString()} place.recover called, generation ${order.gen}, kind ${String(kind)}`); const recovered = await made.recover(last, kind, inBox(order)); return { ...recovered, runner: { ...recovered.runner, exited: recovered.runner.exited.then(homeCrossings(order)) } }; } } as never;
     },
-    argv: ['--kill', '--record', record, '--dir', join(process.env.PDA_STATE_DIR!, `run-${stamp}`)],
+    argv: [mode, ...(secret ? ['--live'] : []), ...(maxUsd ? ['--max-usd', maxUsd] : []), '--record', record, '--dir', join(process.env.PDA_STATE_DIR!, `run-${stamp}`)],
   });
 } catch (error) { failure = error; }
 clearTimeout(cap);
@@ -168,5 +200,5 @@ clearInterval(logTimer);
 const redact = (text: string) => text.replaceAll(`${MOUNT_ROOT}/runs/${runId}`, '<mp>').replaceAll(runId, '<run>');
 for (const [id, text] of boxLogs) console.log(`--- launcher log of a sandbox (${id.slice(0, 8)}) ---\n${redact(text).slice(-12000)}`);
 const report = await sweep();
-console.log(JSON.stringify({ run: runId, minutes: Math.round((Date.now() - startedAt) / 6000) / 10, spendUsd: ledger.spend(), ...(failure ? { failure: String((failure as Error).message).slice(0, 300) } : {}), kills: outcome?.kills ?? null, processes: outcome?.processes.map((p) => ({ exit: p.exit, status: p.outcome?.status ?? null })) ?? null, usd: outcome?.usd ?? null, report }));
+console.log(JSON.stringify({ run: runId, minutes: Math.round((Date.now() - startedAt) / 6000) / 10, spendUsd: ledger.spend(), ...(failure ? { failure: String((failure as Error).message).slice(0, 300) } : {}), mode, live: Boolean(secret), kills: outcome?.kills ?? null, handoffs: outcome?.handoffs ?? null, failedHandoffs: outcome?.failedHandoffs ?? null, processes: outcome?.processes.map((p) => ({ exit: p.exit, status: p.outcome?.status ?? null })) ?? null, usd: outcome?.usd ?? null, overBudget: outcome?.overBudget ?? null, report }));
 process.exit(failure ? 1 : 0);
