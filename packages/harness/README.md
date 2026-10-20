@@ -232,6 +232,7 @@ await demo({ self: import.meta.url, spec, job, fakes });
 | `--fetch-sources` | fetches the demo's `sources.json` into the run's `work/` before the job runs (always with `--live`) |
 | `--cache <dir>` | where fetched sources are kept by hash, so a re-run does not fetch them again (default `agentrun-sources` in the OS temp dir) |
 | `--dir <path>` | keeps the run's directory |
+| `--box-ids <dir>` | where the provider ids of the run's boxes go: a directory, one file per label (default `box-ids.internal/` in the run's directory); refused inside the recording |
 | `--json` | the result as one JSON object |
 
 ### The spec
@@ -244,6 +245,50 @@ The parts of `demo.json` the entry acts on:
 - `sources`: `true` (the demo's `sources.json`), or a path (relative to the demo's directory, to the repository when it starts with `examples/`, or absolute): `sources.json` has two kinds of entry. `pages` are visited live by the agent (each with its URL, what it shows and its hand-check date): the entry passes them through untouched, never fetching or refusing them. `files` (or `items`) are the checked files `{ id, url, bytes, sha256, license }` the job reads. They are fetched into `work/` as `<id><extension of the URL's path>`, verified by size and hash (a file already there with the right hash is kept; one that is not the checked bytes is refused, naming what was checked and what came), on `--live` and with `--fetch-sources`. A no-key run uses the files the demo commits (`job.files`). A demo whose files depend on the input gives `sourcesFor(input)` instead (the same item shape, without `license`): only those items are fetched, and a no-key run that lacks their files is refused in one line naming `--fetch-sources`.
 - `input`: `{ fixtures: { <name>: "examples/<demo>/fixtures/<file>.json" } }`: the demo's captures, each a name (`[a-z0-9-]`) and the JSON file that is the job's input for it. `--input <name>` runs the job on that capture. A path outside `examples/<demo>/fixtures/` is refused; on fakes a bare name that is not a capture (and not a file) is refused with the list of captures; `--live` reads the real thing.
 - `boxes`: `{ kind: "local" | "docker", image?, runIn? }`. Docker is used only with `--live`: a no-key run uses a local box and starts no container. The provider is handed to the demo's tools as `context.boxes` (their second argument), with the crossings and transport lines of [Crossings](#crossings) built in. A tool's `context` also carries `live` (false on a no-key run: one set of tools reads live or replays a capture) and the run's `place` (`{ root, work }`), where it reads the run's evidence files and the job's files. `runIn: true` also runs the job's own disk tools in a box of it.
+
+### Boxes the demo's tools make
+
+A demo whose tools make boxes on providers of its own (a Daytona and a Modal one, say) passes them as `providers: ({ live, env, root }) => ({ name: provider, ... })`. The entry taps each and hands
+them to the tools as `context.providers`; every box a tool makes on one is on the recording:
+
+- live lines with source `transport`, each naming the box by its label (`box-1`, `box-2` by first appearance), never by the provider's id: `box.created` `{ box, provider, facts: { isolation, cpus, gpu }, role? }`
+  (`role` is the create call's `labels.role`), `box.exec` `{ box }` for each command the box took (never the command, its arguments or its environment), and `box.ended` `{ box }`;
+- a host `box.receipt` when the box ends, or when the process ends with it still open (`to` and `seconds` null), also when the run or the result hook fails. A process that was killed
+  (no `finally` runs) leaves its open boxes' receipts to the next process of the run, which writes them when it opens the run. It writes the receipt only: it does not end such a box.
+  The box's own `maxLifetimeMs` ends it, and a listing of the provider by the run's labels finds it. It names no rate (`usd_per_second`, `cost_usd`, `source` and `priced` null), so the run's cost
+  reads unknown, never 0.
+
+A box the tool made carries its label (`box.label`): a tool puts that in its result, so the result and the lines agree. An agent's own tools (pi extension tools, not workflow call nodes) get the same
+tapped providers through `providerExtensions: ({ providers, live, place }) => [extension, ...]`, called once in each process right after the tap, on fakes and on `--live`; every other extension stays on
+`fakes.extensions` and the live parts' `host.tools.extensions`. `providerExtensions` without `providers` is refused. The provider ids go only to `--box-ids` (`box-ids.internal/` in the run's
+directory by default): a directory with one file per label (`box-N.json`), each claimed by an exclusive `link(2)`, so two processes never take one label, and the next process of the run numbers on from
+them. Either path is refused when it resolves inside the recording. `demo.json`'s `boxes` are named by label the same way. A run started on the earlier single file (the directory's name plus `.json`)
+has its labels read into the directory at its first claim.
+
+#### One numbering with a place's host boxes
+
+A demo with a place of its own can pass `providers` when the place has `labelBox({ provider, key })`: the place's host boxes (its `status().boxes`) and the tools' boxes then share one `box-N`
+numbering run-wide.
+
+- The place hands each runner its host box as `HOST_BOX` in the order's environment, JSON `{ provider, key, run }`: `key` is the box's start index in the place's list, and `run` is this
+  supervisor life's `RUN_LABEL`.
+- The runner claims that label first, before any model call or tool box. The place never writes a label: `labelBox` reads it back with a bounded read, and returns `undefined` when it is not there
+  yet. The supervisor asks again on its next read. `labelBox` comes only with the `HOST_BOX` handover (`hostBoxLabel(dir, box)` is the read); the local place starts no host box and
+  has neither.
+- At the run's end, a host box that any read listed and that has no label refuses the recording (`host box <key> on <provider> has no label: ...`), also when the final read did not finish
+  inside its bound.
+- A place without `labelBox` (one that hands over no `HOST_BOX`, like a place that adds `status()` boxes to the local place): in a run with no `providers` the supervisor numbers its
+  host boxes itself (`box-1`, `box-2` in start order), as before; with `providers` it is refused.
+
+Before its first claim the ledger checks that the disk gives an exclusive link (a second link to one name must fail). These refuse the run, so no label is given twice:
+
+- a read-only mount (EROFS: not the run's holder mount);
+- a directory that exists and takes no files (ENOENT: on a disk place the place must make it, not a process by path);
+- a malformed `HOST_BOX`;
+- a damaged label file.
+
+A host box's key is claimed once per supervisor life: a supervisor started again on the same run directory is refused at its host box's claim. So a run with a place's host boxes and `providers`
+is re-taken, not resumed.
 
 ### The judge seam
 

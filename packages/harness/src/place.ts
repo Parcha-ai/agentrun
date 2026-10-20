@@ -54,6 +54,11 @@ export type Place = {
   kill(runner: Runner, kind: 'process' | 'box'): Promise<void>;
   /** How the session stands, read the way the place reads it (a package's status reader), never from the store or `work/`: the supervisor is control-plane only. */
   status?(): Promise<unknown>; // { record?: the run's record, delegations?: PlaceDelegation[], boxes?: HostBox[] } for a place that has them
+  /** The label of host box `key` (its start index), read from the run's ids, where the run's process claimed it first thing (the place hands it the box as `HOST_BOX`, JSON
+   *  `{ provider, key, run }`, in the order's env, and never writes the ids itself). A bounded read: `undefined` when the label has not landed yet; the supervisor reads again, and at
+   *  the final read a host box with no label refuses the recording. A place with it shares one numbering with the tools' boxes (`DemoOptions.providers`); one without cannot. Only a
+   *  place that hands over `HOST_BOX` has it (`hostBoxLabel` is the read): a place without the handover would leave every host box unlabelled. */
+  labelBox?(box: { provider: string; key: string }): Promise<string | undefined>;
   /** The next runner after a kill: a process kill restarts in the same place with the store intact; a box kill replaces the machine and restores from the last checkpoint, and says what it restored and replayed. */
   recover(last: Runner, kind: 'process' | 'box', order: RunnerOrder): Promise<{ runner: Runner; restored?: { checkpoint: string; head: number }; replayed?: { from: number; to: number }; /** A takeover that revoked the old holder's delegations (an Archil place): what was revoked, and how long the whole takeover took in ms (the revoke plus the start of the next holder). Written as a `revoke` host line. */ revoked?: PlaceDelegation[]; ms?: number }>;
   /** Takes a checkpoint at rest; reports what held it when it could not. A place that cannot lose its machine has none. */
