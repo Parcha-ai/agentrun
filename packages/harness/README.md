@@ -118,6 +118,7 @@ it with what it found and where, and the directory is left without a manifest, s
 | 5 | `status` | browser sessions and reconcile, vision looks and misses, workflow events | one JSON line per row in `<run>/events.jsonl` |
 | 6 | `deliver` | the workflow's output | `<run>/out/record.json` |
 | 7 | `credentials` | the browser's `redact`, the environment of a program vision starts | none; a started program sees only `PATH`. A command the agent runs (its `bash` tool, code mode's `tools.bash`) sees only `PATH`, `HOME`, `TMPDIR` and `LANG`: a key stays in the host (`command-env.ts`) |
+| 8 | `lacks` | `agentApp`, which refuses a tool whose plane the host lacks; vision, which gives `vision.judge` no Jev port on a host with no judge | nothing: it has every plane |
 
 Where the run lives (`RunPlace`) is the disk package's `AppContext`: `root`, `work`, `store` (`<root>/store`, holding
 `run.sqlite`, which the package's readers take as a file; a directory whose store is at `<root>/durable`, where the
@@ -183,6 +184,39 @@ Each fake is one member of `Host`. Build `localHost()`'s value and replace that 
   browser's default (60 s) waits that long for a create whose answer was lost with the process that sent it.
   `localHost()` passes 3 s for its fake, which answers in the same process.
 - Tools: your own pi extensions in `tools.extensions`, and your tool server behind `tools.runEffect`.
+
+## Serve uses this
+
+`agentApp(place, host, agent, options)` is the run app for one agent with no workflow: the `AppOptions` that
+`pi-durable-disk run --app` opens an agent's run with, and no node runner or workflow task. `agent` is
+`{ instructions, tools, thinking? }`; the lead is `host.models.lead` at the agent's thinking level (never `off`;
+absent, the node runner's default). It installs and offers exactly the tools `tools` names, and refuses a name it
+cannot offer when it is called, with the tool and what it needs. Its extensions come from `agentExtensions()`, the
+builder `compose()` uses, so a workflow's run and an agent's run offer each tool the same way.
+
+| Name | What | Needs |
+|---|---|---|
+| `read`, `write`, `edit`, `bash` | the disk package's file and shell tools, in the run's `work/`; `bash` gets only `PATH`, `HOME`, `TMPDIR` and `LANG` | nothing |
+| `code` | code mode: a script with `tools.bash`, `vision.see` and `vision.judge`, with vision installed underneath | nothing; `vision.judge` answers only on a host with a judge, and is a typed miss on one without |
+| `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, and `use_website` when `options.sites` lists sites | the browser's tools, by their registered names | a browser on the host, and options that do not say `browser: false` |
+| a host extension's tools | the host's own | nothing |
+
+Vision registers no tool of its own: it shows `read` the images and documents it opens, and fits the image blocks of
+every result to the model. `agentTools(place, host, options)` is the same list as data: each name with its plane, what
+it needs and, when the host cannot offer it, why. With a browser tool, the browser's configuration is in the commit
+that creates the conversation, its sessions are reconciled before the run resumes, and released before the instance
+lets the run go: on a drain with `--on-sigterm resume` (the default, which serve uses) and on a park, through the
+app's `wake`. `pi-durable-disk` gives an app no hook on `--on-sigterm pause`, so a run stopped that way keeps its
+sessions open until the provider ends them. `use_website`'s child agent browses with this agent's own browser tools,
+so naming `use_website` means naming every other browser tool too, or the call is refused.
+
+`hostFromEnv(place, { models, lead, env })` is the host for a run outside `demo()`: the models the caller binds, Jev
+with `TYPESAFE_API_KEY`, a browser with both `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` or a local Chrome at
+`CHROME_PATH`, and evidence, status and the record under the run's directory as `localHost()` writes them. A plane it
+has no key for refuses every use and is named in `Host.lacks` with what would give it one. Its `runEffect` refuses: an
+agent run has no `call` node.
+
+A command the agent runs, through `bash` or `code`, runs with your user's rights; there is no command sandbox yet.
 
 ## What it does not do yet
 
