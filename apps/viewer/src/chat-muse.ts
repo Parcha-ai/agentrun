@@ -88,8 +88,9 @@ function browserCard(recording: Recording, steps: ToolItem[]): HTMLElement {
 /** Where the run waited for a person to sign in: asked, and signed in once the browser's own profile says so. */
 function signInCard(wait: NonNullable<ChatModel['waits']>[number]): HTMLElement {
   const text = wait.remembered ? 'Signed in · remembered' : wait.t1 === undefined ? 'Waiting for you' : 'Signed in';
-  const button = reportEl('button', { class: 'mu-wide', type: 'button', disabled: true, title: 'Replay: the run is over', text });
-  return card(`mu-signin${wait.remembered ? ' mu-remembered' : ''}`, 'shield', 'Secure Store', wait.remembered ? `Signed in to ${wait.site}` : `Sign in to ${wait.site}`, button);
+  // A state, not a control: a plain status element (a replay has nothing to press, and a dimmed button would be announced as one).
+  const state = reportEl('div', { class: 'mu-wide', role: 'status', text });
+  return card(`mu-signin${wait.remembered ? ' mu-remembered' : ''}`, 'shield', 'Secure Store', wait.remembered ? `Signed in to ${wait.site}` : `Sign in to ${wait.site}`, state);
 }
 
 /** A bubble of the agent's words (a paragraph per blank line), the files it names as chips under them. */
