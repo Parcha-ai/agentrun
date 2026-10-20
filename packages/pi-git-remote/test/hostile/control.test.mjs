@@ -28,7 +28,8 @@ const TRIGGER = {
   "attr-merge-operator-driver": (env, w) => run(env, ["merge", "-q", "--no-edit", "side"], { cwd: w }),
   "path-leading-dash": (env, w) => run(env, ["diff", "HEAD", "--output=marker-dash"], { cwd: w }),
   "limit-git-config-merge-driver": (env, w) => run(env, ["merge", "-q", "--no-edit", "side"], { cwd: w }),
-  "limit-git-config-filter": (env, w) => run(env, ["add", "--", "notes.txt"], { cwd: w }),
+  // --renormalize: plain `add` skips the clean filter for a stat-clean file, so the trigger would depend on timing.
+  "limit-git-config-filter": (env, w) => run(env, ["add", "--renormalize", "--", "notes.txt"], { cwd: w }),
 };
 for (const name of REMOTE_HOOKS) {
   TRIGGER[`remote-hook-${name}`] = (env, w) => run(env, ["push", "-q", "origin", `HEAD:refs/heads/probe-${name}`], { cwd: w });

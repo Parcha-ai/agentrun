@@ -30,3 +30,8 @@ precap.md
 
 # Lean build output
 spec/lean/.lake/
+
+# The gallery's recordings are unpacked here from the release asset its lock names (scripts/recording/gallery.mjs); only
+# the README is in git
+/apps/viewer/recordings/*
+!/apps/viewer/recordings/README.md
