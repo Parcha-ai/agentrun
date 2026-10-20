@@ -587,10 +587,14 @@ function evidenceOf(recording: Recording, model: ChatModel, cites: AnswerCite[],
     const medium = sourceMedium(recording, sha, evidenceSaid(first) ?? (source ? threadPlace(sourceAddresses(source)) : 'The picture cited'), regions, 'evidence-pic');
     if (!medium) continue;
     const found = source ? evidenceFinding(source) : '';
+    // Many boxes on one picture would stack their labels on each other: each box is a numbered pin, and a legend under the picture names them.
+    const dense = regions.length > 4;
+    if (dense) [...medium.querySelectorAll('.jbox span')].forEach((pin, index) => { pin.textContent = String(index + 1); pin.classList.add('pin'); });
+    const legend = dense && reportEl('ol', { class: 'ev-legend' }, ...regions.map((region) => reportEl('li', { text: region.label ?? 'cited here' })));
     const chip = reportEl('button', { class: 'cite', type: 'button', 'data-look': group.look, 'data-item': first.item, title: first.href || undefined, text: evidenceSaid(first) ?? 'Open the look' });
     chip.addEventListener('click', () => open(first.href, group.look, group.blob ? { blob: group.blob, label: first.label } : undefined));
     for (const cite of group.cites) drawn.add(cite);
-    cards.push(reportEl('figure', { class: 'ev-card' }, medium,
+    cards.push(reportEl('figure', { class: 'ev-card' }, medium, legend,
       reportEl('figcaption', { class: 'ev-cap' }, found !== '' && reportEl('p', { class: 'ev-said', text: found }), chip)));
   }
   return cards.length ? { node: reportEl('div', { class: 'evidence' }, ...cards), drawn } : undefined;

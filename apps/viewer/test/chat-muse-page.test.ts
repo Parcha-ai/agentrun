@@ -157,10 +157,16 @@ test('in Chrome: the answer draws one evidence card per cited look, its boxes vi
   deliverInstead(once, { format: 'agentrun.cited/1', title: 'Number nine', rows: [{ label: 'Answer', value: 'Number nine', cites: [
     { look: K.page2, fragment: '#page=2&xywh=percent:6,8,80,6', note: 'the alarm line' },
     { look: K.page2, fragment: '#page=2&xywh=percent:10,30,20,10', note: 'box 10,30,20,10' }] }] } as never);
+  // Six named boxes on one picture: too many to label in place, so each is a numbered pin and a legend names them.
+  const dense = join(out, 'recordings', 'hand-dense');
+  writeRecording(dense);
+  const names = ['Visa', 'Mastercard', 'American Express', 'Discover', 'JCB', 'UnionPay'];
+  deliverInstead(dense, { format: 'agentrun.cited/1', title: 'Six brands', rows: [{ label: 'Brands', value: 'six', cites: names.map((note, index) => ({ look: K.page2, fragment: `#page=2&xywh=percent:${5 + index * 14},10,10,8`, note })) }] } as never);
   build(join(out, 'dist'), join(out, 'recordings'));
   writeFileSync(join(out, 'dist', 'harness.html'), `<!doctype html><body style="margin:0">
 <iframe id="cited" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=hand-answer"></iframe>
 <iframe id="once" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=hand-once"></iframe>
+<iframe id="dense" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=hand-dense"></iframe>
 <script>const doc = (id) => document.getElementById(id).contentDocument;
 const ready = (id) => !!doc(id)?.querySelector('main#chat-root > .app .thread') && !!doc(id)?.querySelector('.kicker');
 const loaded = (id) => [...doc(id).querySelectorAll('.ev-card img')].every((image) => image.complete && image.naturalWidth > 0);</script></body>`);
@@ -177,7 +183,8 @@ const loaded = (id) => [...doc(id).querySelectorAll('.ev-card img')].every((imag
   held.page = page;
   const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
   const until = (expression: string, what: string) => page.once(expression, 'true', 20_000, what);
-  for (const id of ['cited', 'once']) await until(`ready('${id}')`, `${id}: the answer drawn`);
+  for (const id of ['cited', 'once', 'dense']) await until(`ready('${id}')`, `${id}: the answer drawn`);
+  await until(`loaded('dense')`, 'the dense evidence picture loaded');
   await until(`loaded('once')`, 'the evidence picture loaded');
   // The same look cited twice is ONE card with both boxes, the picture first, the box with the cite's words labelled by them and the other "cited here".
   const card = await value<{ cards: number; first: string; boxes: string[]; shown: boolean; width: number; pane: number }>(`(() => { const cards = [...doc('once').querySelectorAll('.ev-card')];
@@ -191,6 +198,8 @@ const loaded = (id) => [...doc(id).querySelectorAll('.ev-card img')].every((imag
   assert.ok(card.width > card.pane * 0.9, `the picture is as wide as the pane (${card.width} of ${card.pane})`);
   // The answer is said once: the heading, and no row repeating it under it.
   assert.deepEqual(await value(`[doc('once').querySelectorAll('.arow .alabel').length, (doc('once').querySelector('.report').textContent.match(/Number nine/g) ?? []).length]`), [0, 1], 'once');
+  // Six boxes on one picture: numbered pins on it, and a legend that names them in order.
+  assert.deepEqual(await value(`(() => { const card = doc('dense').querySelector('.ev-card'); return [[...card.querySelectorAll('.jbox span')].map((s) => s.textContent), [...card.querySelectorAll('.ev-legend li')].map((li) => li.textContent), card.querySelectorAll('.jbox').length]; })()`), [['1', '2', '3', '4', '5', '6'], ['Visa', 'Mastercard', 'American Express', 'Discover', 'JCB', 'UnionPay'], 6], 'pins and a legend');
   // A run citing several looks and files: a card per look and per picture, a cite of a PDF stays a chip, and every chip still opens its look.
   const many = await value<{ cards: number; chips: number; pdfChip: boolean }>(`({ cards: doc('cited').querySelectorAll('.ev-card').length, chips: doc('cited').querySelectorAll('.report .cite').length, pdfChip: [...doc('cited').querySelectorAll('.report .cite')].some((chip) => chip.closest('.ev-card') === null) })`);
   assert.ok(many.cards >= 2, `a card for each cited look or picture, got ${many.cards}`);
