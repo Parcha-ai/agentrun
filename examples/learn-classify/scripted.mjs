@@ -182,6 +182,13 @@ export function pricedModels(models) {
   });
 }
 
+/** The workflow the last agentrun load in a request loaded, from the tool's own JSON answer. */
+export function loadedWorkflow(context) {
+  const loadIds = new Set(context.messages.filter((m) => m.role === 'assistant').flatMap((m) => m.content.filter((c) => c.type === 'toolCall' && c.name === 'agentrun' && c.arguments?.action === 'load').map((c) => c.id)));
+  const result = context.messages.findLast((m) => m.role === 'toolResult' && loadIds.has(m.toolCallId));
+  return json(textOf(result?.content))?.workflow;
+}
+
 /** The last agentrun run's outcome in a request, from the tool's own JSON answer. */
 export function lastRunOutcome(context) {
   const runIds = new Set(context.messages.filter((m) => m.role === 'assistant').flatMap((m) => m.content.filter((c) => c.type === 'toolCall' && c.name === 'agentrun' && c.arguments?.action === 'run').map((c) => c.id)));
@@ -532,18 +539,24 @@ export function agentScriptV4({ job, offered, fixtures }) {
     return { submit: answerOfV4(t, { sic4: state.code?.code ?? '', report: state.report }) };
   };
   if (offered.includes(WORKFLOW) && truth.browserOnly) {
-    // A kind of company classify-company does not handle yet (the host's run of it escalated on the empty site): the job
-    // by hand, then classify-company grown by a route for that kind, its old paths kept, saved under its own name.
+    // A site that needs a browser. When the offered classify-company already routes on the kind of site, run it, and
+    // answer from it when it completes, saving nothing. When it does not (its run escalated on the empty site), the job by
+    // hand, then classify-company grown by a route for that kind, its old paths kept, saved under its own name.
+    const byHand = byHandV4(job, truth);
+    const routed = (context) => loadedWorkflow(context)?.root?.steps?.some((step) => step.node === 'route' && step.label === SITE_KIND.label) ?? false;
+    const answered = (context) => routed(context) && lastRunOutcome(context)?.status === 'complete';
     return {
       node,
       root: [
-        ...byHandV4(job, truth),
         { call: 'agentrun', args: { action: 'load', name: WORKFLOW, input } },
-        { call: 'agentrun', args: { action: 'inspect', workflow: CLASSIFY_ROUTED_V4, input } },
-        { call: 'agentrun', args: { action: 'dry-run' } },
-        { call: 'agentrun', args: { action: 'save', name: WORKFLOW } },
-        { call: 'learn', args: { type: 'workflow', id: WORKFLOW, text: 'Use it for any company: it finds the site when no website is given, and browses a site that needs a browser.' } },
-        { say: 'Answered by hand, and grew classify-company for sites that need a browser.' },
+        { call: 'agentrun', args: { action: 'run' }, when: routed },
+        ...byHand.slice(0, -1).map((step) => ({ ...step, when: (context) => !answered(context) })),
+        { call: 'answer', args: (context) => (answered(context) ? lastRunOutcome(context).output : answerOfV4(truth)) },
+        { call: 'agentrun', args: { action: 'inspect', workflow: CLASSIFY_ROUTED_V4, input }, when: (context) => !routed(context) },
+        { call: 'agentrun', args: { action: 'dry-run' }, when: (context) => !routed(context) },
+        { call: 'agentrun', args: { action: 'save', name: WORKFLOW }, when: (context) => !routed(context) },
+        { call: 'learn', args: { type: 'workflow', id: WORKFLOW, text: 'Use it for any company: it finds the site when no website is given, and browses a site that needs a browser.' }, when: (context) => !routed(context) },
+        { say: 'Answered.' },
       ],
     };
   }

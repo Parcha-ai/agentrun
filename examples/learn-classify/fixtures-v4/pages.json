@@ -70,5 +70,13 @@
       "https://www.quartzridge.example/annual-report-2025.pdf"
     ],
     "browserOnly": true
+  },
+  "https://www.garnetpeak.example": {
+    "title": "Garnet Peak Systems Inc.",
+    "text": "Garnet Peak Systems sells scheduling software that clinics license by the seat. We report one segment.",
+    "links": [
+      "https://www.garnetpeak.example/annual-report-2025.pdf"
+    ],
+    "browserOnly": true
   }
 }

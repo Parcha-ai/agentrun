@@ -433,5 +433,35 @@
       "filed": "2026-02-27"
     },
     "subsidiaries": null
+  },
+  {
+    "cik": "0000900111",
+    "name": "Garnet Peak Systems Inc.",
+    "ticker": "GPS",
+    "website": "https://www.garnetpeak.example",
+    "split": "run",
+    "order": 9,
+    "categories": [
+      "small-cap"
+    ],
+    "sic": "7372",
+    "sic2": "73",
+    "sicDescription": "SERVICES-PREPACKAGED SOFTWARE",
+    "segments": {
+      "oneSegment": true
+    },
+    "hq": {
+      "city": "Denver",
+      "state": "CO",
+      "country": "US"
+    },
+    "latestAnnual": {
+      "form": "10-K",
+      "fy": 2025,
+      "period": "2025-12-31",
+      "adsh": "0000900100-25-000009",
+      "filed": "2026-02-27"
+    },
+    "subsidiaries": null
   }
 ]

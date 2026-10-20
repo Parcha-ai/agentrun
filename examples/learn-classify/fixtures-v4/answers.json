@@ -319,5 +319,33 @@
     "subsidiaryQuote": "Exhibit 21: subsidiaries of the registrant: Quartz Ridge Operating Company.",
     "reportQuote": "Quartz Ridge Labs Inc. Annual Report for fiscal year 2025.",
     "browserOnly": true
+  },
+  "Garnet Peak Systems Inc.": {
+    "sic4": "7372",
+    "segments": {
+      "oneSegment": true
+    },
+    "hq": {
+      "city": "Denver",
+      "state": "Colorado",
+      "country": "United States"
+    },
+    "subsidiaries": [
+      {
+        "name": "Garnet Peak Operating Company"
+      }
+    ],
+    "annualReport": {
+      "url": "https://www.garnetpeak.example/annual-report-2025.pdf",
+      "fiscalYear": 2025
+    },
+    "site": "https://www.garnetpeak.example",
+    "siteQuote": "Garnet Peak Systems sells scheduling software that clinics license by the seat",
+    "document": "https://www.garnetpeak.example/annual-report-2025.pdf",
+    "segmentQuote": "Revenue by reportable segment: one reportable segment.",
+    "hqQuote": "Headquarters: Denver, United States.",
+    "subsidiaryQuote": "Exhibit 21: subsidiaries of the registrant: Garnet Peak Operating Company.",
+    "reportQuote": "Garnet Peak Systems Inc. Annual Report for fiscal year 2025.",
+    "browserOnly": true
   }
 }

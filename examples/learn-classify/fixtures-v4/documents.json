@@ -58,5 +58,11 @@
     "pages": 9,
     "page": 4,
     "look": "The segment table: one reportable segment."
+  },
+  "https://www.garnetpeak.example/annual-report-2025.pdf": {
+    "text": "[page 1] Garnet Peak Systems Inc. Annual Report for fiscal year 2025. Headquarters: Denver, United States.\n[page 4] Revenue by reportable segment: one reportable segment.\n[page 9] Exhibit 21: subsidiaries of the registrant: Garnet Peak Operating Company.",
+    "pages": 9,
+    "page": 4,
+    "look": "The segment table: one reportable segment."
   }
 }
