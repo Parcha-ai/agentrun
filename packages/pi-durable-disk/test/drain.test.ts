@@ -71,6 +71,58 @@ test("an app that releases the run in onOpen and returns ends the instance: exit
   assert.deepEqual(events, ["released"]);
 });
 
+/** A run whose release is still unmounting: every `release()` joins one promise the test settles. */
+function unmountingRun() {
+  let finish!: () => void;
+  let fail!: (error: Error) => void;
+  const unmounting = new Promise<void>((resolve, reject) => {
+    finish = resolve;
+    fail = reject;
+  });
+  let started = false;
+  const run = {
+    record: { status: "done" },
+    get releasing() {
+      return started;
+    },
+    async setStatus() {
+      throw new Error("Session is closed");
+    },
+    release() {
+      started = true;
+      return unmounting;
+    },
+  };
+  return { run: run as unknown as Pick<DurableRun, "setStatus" | "release" | "record">, finish, fail };
+}
+
+test("an instance whose app started its release stays up until the unmount ends, then exits 0", async () => {
+  const { run, finish } = unmountingRun();
+  const events: string[] = [];
+  const exit = serveUntilDone(run, (opened) => void opened.release().catch(() => {}), "resume", (e) => events.push(e), new EventEmitter());
+  let settled = false;
+  void exit.then(() => (settled = true));
+  try {
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(settled, false, "still up while the release is unmounting");
+    assert.deepEqual(events, []);
+  } finally {
+    finish();
+  }
+  assert.equal(await within(exit, 2_000, "the instance after its unmount ended"), 0);
+  assert.deepEqual(events, ["released"]);
+});
+
+test("a release that fails after the app started it decides the exit code: fenced is 75, and nothing is reported released", async () => {
+  const { run, fail } = unmountingRun();
+  const events: string[] = [];
+  const exit = serveUntilDone(run, (opened) => void opened.release().catch(() => {}), "resume", (e) => events.push(e), new EventEmitter());
+  await new Promise((r) => setTimeout(r, 50));
+  fail(new FencedError("revoked"));
+  assert.equal(await within(exit, 2_000, "the instance after its release failed"), 75);
+  assert.deepEqual(events, ["release failed"]);
+});
+
 test("a stop after the app released the run is a clean exit 0: no wake written to the closed session, no failure", async () => {
   const { run, steps } = releasedRun();
   const signals = new EventEmitter();
