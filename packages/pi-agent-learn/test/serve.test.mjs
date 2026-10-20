@@ -252,7 +252,7 @@ test("serve's workload limits are the agentrun tool's own: at each limit the too
   };
   const doc = (name, root) => ({ v: 2, name, schemas, input: { schemaId: "In" }, output: { schemaId: "Any", path: "out" }, root });
   const map = (n) => doc(`map-${n}`, { node: "map", label: "each", itemsPath: "skus", maxConcurrency: n, as: "out", body: { ...quote("q"), args: { sku: "{item}" } } });
-  const parallel = (n) => doc(`parallel-${n}`, { node: "parallel", label: "all", branches: Array.from({ length: n }, (_, i) => quote(`q${i}`)) });
+  const parallel = (n) => doc(`parallel-${n}`, { node: "parallel", label: "all", branches: Array.from({ length: n }, (_, i) => (i === 0 ? { ...quote("q0"), as: "out" } : quote(`q${i}`))) });
   const chain = (n) => doc(`chain-${n}`, { node: "chain", steps: Array.from({ length: n - 1 }, (_, i) => (i === n - 2 ? { ...quote(`q${i}`), as: "out" } : quote(`q${i}`))) });
   const input = { sku: "A-1", skus: ["A-1"] };
   const run = await servingRun();
