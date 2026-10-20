@@ -13,8 +13,8 @@ export function rotatingHost(hosts: Readonly<Record<string, HostDriver>>, order:
   return {
     kills: "process",
     async start(ref, token, attempt) {
-      // Attempt numbers count from 1; a restart of the same attempt (adoption) goes to the same host.
-      const name = order[((attempt?.attempt ?? 1) - 1) % order.length]!;
+      // The order names its host (`MOVES_HOST`, the runner's choice by the process's number); without one, attempts count from 1 and take the hosts in turn.
+      const name = attempt?.env?.MOVES_HOST ?? order[((attempt?.attempt ?? 1) - 1) % order.length]!;
       return named(name).start(ref, token, attempt);
     },
     async status(handle) {

@@ -143,3 +143,13 @@ test('the rotating host starts attempt 1 and 3 on the first host and attempt 2 o
   assert.deepEqual(log, ['start local 1', 'start modal 2', 'start local 3', 'status modal', 'stop local']);
   assert.equal(await rotating.status({ driver: 'elsewhere' }), 'unknown');
 });
+
+test('the rotating host starts the host the order names, whatever the attempt number says', async () => {
+  const log = [];
+  const host = (name) => ({ start: async () => (log.push(`start ${name}`), { driver: name }), status: async () => 'running', stop: async () => {} });
+  const rotating = rotatingHost({ local: host('local'), modal: host('modal') }, ['local', 'modal']);
+  await rotating.start({}, 'token', { attempt: 1, env: { MOVES_HOST: 'modal' } });
+  await rotating.start({}, 'token', { attempt: 2, env: { MOVES_HOST: 'local' } });
+  await rotating.start({}, 'token', { attempt: 2 });
+  assert.deepEqual(log, ['start modal', 'start local', 'start modal']);
+});
