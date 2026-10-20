@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -14,6 +14,7 @@ import { renderCurve } from './curve.mjs';
 import { HOST_WORKFLOW } from './dispatch.mjs';
 import { answerV4, textsRead } from './host.mjs';
 import { rerow } from './rerow.mjs';
+import { rescore } from './rescore.mjs';
 import { openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { CITE_QUESTION_V4, countryCode, entityName, HQ_QUESTION, MAX_SUBSIDIARIES, scoreCites, scoreHq, scoreSegments, scoreSubsidiaries, scoreV4, SEGMENT_PICK } from './score-v4.mjs';
 import { agentScriptV4Compose, CLASSIFY_WORKFLOW_V4, FIXTURES_V2, FIXTURES_V4, PART_CODE, PART_FIND_REPORT, readJson, scriptedModel, WORKFLOW } from './scripted.mjs';
@@ -472,3 +473,26 @@ test('composition: the parts are admitted, then classify-company embedding them,
   assert.deepEqual(rows[5].executions.map((e) => [e.name, e.outcome, e.toolCalls]), [[WORKFLOW, 'complete', 5]]);
   assert.deepEqual(rows[5].toolCalls, { search: 0, browse: 0, fetch: 2, read_document: 1 });
 }, { timeout: 300_000 });
+
+test('rescore scores a finished v4 pass again from its own files against a truth set, beside runs.jsonl, never over it', async (t) => {
+  const root = await scratch(t);
+  const out = join(root, 'out');
+  const parts = scriptedParts({ set: SETS.v4 });
+  const { rows } = await runLoop({ out, parts, jobs: 2, record: false });
+  const runs = readFileSync(join(out, 'runs.jsonl'));
+  // The truth moves on: Harbor Valve's headquarters, as its latest cover gives them, are now Boston.
+  const data = join(root, 'data');
+  await cp(FIXTURES_V4, data, { recursive: true });
+  const companies = readJson(join(data, 'companies-v4.json'));
+  companies[0].hq = { city: 'BOSTON', state: 'MA', country: 'US' };
+  await writeFile(join(data, 'companies-v4.json'), JSON.stringify(companies));
+  const { before, after } = await rescore({ out, data, judge: parts.judge() });
+  assert.deepEqual(readFileSync(join(out, 'runs.jsonl')), runs, 'runs.jsonl is never rewritten');
+  assert.deepEqual(before, rows);
+  assert.deepEqual(readRows(join(out, 'runs.rescored.jsonl')), after);
+  assert.deepEqual(after.map((r) => [r.hqTruth.city, r.hqCorrect, r.correct]), [['BOSTON', false, false], ['SEATTLE', true, true]]);
+  // Every other field as it was, the score aside.
+  const { hqTruth, hqCorrect, correct, scoreCostUsd, ...rest } = after[1];
+  const { hqTruth: h, hqCorrect: c, correct: k, scoreCostUsd: s, ...was } = rows[1];
+  assert.deepEqual(rest, was);
+}, { timeout: 180_000 });

@@ -275,7 +275,9 @@ company lists them in a 10-K's Exhibit 21 or a 20-F's Exhibit 8), `annualReport`
 A v4 row is a v2 row (v3's chart fields included) with v2's four segment fields replaced by `correctOver`, `segmentsAnswer`,
 `segmentsTruth`, `segmentsShareSum`, `segmentsF1`, `shareErrorMean`, `hqAnswer`, `hqTruth`, `hqCorrect`, `subsidiariesAnswer`,
 `subsidiariesTruthCount`, `subsidiariesRecall`, `subsidiariesPrecision`, `reportAnswer`, `reportTruth`,
-`reportYearCorrect` and `reportRead`. `rerow.mjs` backfills a v4 pass as it does a v2 one.
+`reportYearCorrect` and `reportRead`. `rerow.mjs` backfills a v4 pass as it does a v2 one. `rescore.mjs <out> --data
+<dir>` scores a finished v4 pass again with the scorer and truth set of today, from each run's answer and store, into
+`runs.rescored.jsonl` beside `runs.jsonl` (never over it); unlike `rerow.mjs` it calls Jev through the gateway.
 
 ## v4: the models and the host's dispatch
 
@@ -316,6 +318,7 @@ however it ended; a row's `dispatch` says how, a refusal included.
 | `sets.mjs` | the jobs, v1, v2 and v4: what the agent is given, its label tools and its answer |
 | `score-v2.mjs`, `score-v4.mjs` | the v2 and v4 scorers |
 | `lineage.mjs`, `rerow.mjs` | which workflows a run gave main (`born`, `rewritten`), and the v3 backfill of a finished pass |
+| `rescore.mjs` | a finished v4 pass scored again with today's scorer and truth set |
 | `agent-v2/`, `fixtures-v2/` | the v2 agent, and v2's made-up companies, pages, documents and answers for the scripted pass |
 | `agent-v4/`, `fixtures-v4/` | the v4 agent, and v4's made-up companies, pages, annual reports, answers and scorer answers for the scripted pass |
 | `fixtures/` | five made-up companies, their pages and ten groups, for the scripted pass and the tests |
