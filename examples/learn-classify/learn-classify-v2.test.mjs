@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { renderCurve } from './curve.mjs';
+import { toolStats } from './host.mjs';
 import { readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { sameUrl, scoreEvidence, scoreSegment, scoreV2, SEGMENT_QUESTION } from './score-v2.mjs';
 import { FIXTURES_V2, readJson, WORKFLOW } from './scripted.mjs';
@@ -174,3 +175,31 @@ test('the per-run limit counts what the tools cost: a run whose browser, search 
   assert.ok(progress.measure.toolSpend.costUsd >= 0.02, JSON.stringify(progress.measure.toolSpend));
   assert.equal(rows[0].sic4Answer, null, 'it was stopped before it answered');
 }, { timeout: 120_000 });
+
+test('tool facts: browser minutes from billed seconds, vision pages only for looks that reached the model, null costs stay null', () => {
+  const stats = toolStats([
+    { tool: 'browse', args: {}, value: { costUsd: 0.002, seconds: 12, billedSeconds: 60 } },
+    { tool: 'browse', args: {}, value: { costUsd: 0, seconds: 30 } },
+    { tool: 'read_document', args: {}, value: { costUsd: 0.001, looks: [{ page: 1, answer: 'a' }, { page: 2, miss: 'no model' }] } },
+    { tool: 'search_web', args: {}, value: { costUsd: null, results: [] } },
+    { tool: 'fetch_page', args: {}, value: { ok: true } },
+    { tool: 'browse', args: {}, value: undefined },
+  ]);
+  assert.deepEqual(stats, {
+    toolCalls: { search: 1, browse: 3, fetch: 1, read_document: 1 },
+    browserSeconds: 90, browserCostUsd: 0.002, visionPages: 1, searchCostUsd: null, documentCostUsd: 0.001,
+  });
+});
+
+test('a document the reader fetched through a browser session: the session\'s minutes and cost are the browser\'s, the rest the reader\'s, counted once', () => {
+  const stats = toolStats([
+    { tool: 'browse', args: {}, value: { costUsd: 0.002, seconds: 12, billedSeconds: 60 } },
+    { tool: 'read_document', args: {}, value: { via: 'browser', costUsd: 0.005, looks: [{ page: 1 }], browser: { browser: 'browserbase', seconds: 20, billedSeconds: 60, costUsd: 0.002 } } },
+    { tool: 'read_document', args: {}, value: { via: 'direct', costUsd: 0.001, looks: [] } },
+  ]);
+  assert.equal(stats.browserSeconds, 120);
+  assert.equal(stats.browserCostUsd, 0.004);
+  assert.ok(Math.abs(stats.documentCostUsd - 0.004) < 1e-12, String(stats.documentCostUsd));
+  const unknown = toolStats([{ tool: 'read_document', args: {}, value: { costUsd: 0.005, looks: [], browser: { costUsd: null, billedSeconds: 60 } } }]);
+  assert.deepEqual([unknown.browserCostUsd, unknown.documentCostUsd], [null, null]);
+});

@@ -1,6 +1,7 @@
 // The live parts, through one model gateway: the agent and the workflow's nodes on an OpenAI Responses endpoint at
 // `<gateway>/v1`, and Jev at `<gateway>/typesafe`. A gateway that holds the keys needs none from this process.
-//   LEARN_CLASSIFY_GATEWAY      the gateway's root URL (required for --live)
+//   LEARN_CLASSIFY_GATEWAY      the gateway's root URL, or its /v1 base (required for --live outside a take)
+//   AGENTRUN_BROKER_URL         a take's broker (take-in-docker.sh sets it), used when the one above is not set
 //   LEARN_CLASSIFY_GATEWAY_KEY  the key the gateway wants, if it wants one
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import { createModels, createProvider } from '@earendil-works/pi-ai/models';
@@ -13,9 +14,10 @@ export const JEV_PRICE = Object.freeze({ inputUsdPerMillionTokens: 0.042, output
 const NO_KEY = 'gateway-holds-the-key';
 
 export function gatewayOf(env = process.env) {
-  // The root, also when given as the OpenAI base URL (`.../v1`), as a take's broker variable is.
-  const root = env.LEARN_CLASSIFY_GATEWAY?.replace(/\/+$/, '').replace(/\/v1$/, '');
-  if (!root) throw new Error('--live needs LEARN_CLASSIFY_GATEWAY: a gateway root that serves an OpenAI Responses endpoint at /v1 and Jev at /typesafe');
+  // The root, also when given as the OpenAI base URL (`.../v1`), as a take's broker variables are. In a take
+  // (take-in-docker.sh) AGENTRUN_BROKER_URL names the broker when LEARN_CLASSIFY_GATEWAY is not set.
+  const root = (env.LEARN_CLASSIFY_GATEWAY || env.AGENTRUN_BROKER_URL)?.replace(/\/+$/, '').replace(/\/v1$/, '');
+  if (!root) throw new Error('--live needs LEARN_CLASSIFY_GATEWAY (or, in a take, AGENTRUN_BROKER_URL): a gateway root that serves an OpenAI Responses endpoint at /v1 and Jev at /typesafe');
   return { root, key: env.LEARN_CLASSIFY_GATEWAY_KEY || NO_KEY };
 }
 

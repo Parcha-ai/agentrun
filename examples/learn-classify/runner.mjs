@@ -9,7 +9,7 @@
 import { local, openRepo } from '@parcha/pi-git-remote';
 import { AGENT_STORE_FILE, carryBack, createAgentHome, openAgentHome, runPaths } from '@parcha/pi-durable-agent';
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { mkdir, readdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -24,6 +24,7 @@ import { scoreV2 } from './score-v2.mjs';
 import { agentScript, agentScriptV2, FIXTURES, FIXTURES_V2, fakeHardTools, fixtureWeb, scriptedJev, scriptedModel } from './scripted.mjs';
 import { SETS } from './sets.mjs';
 import { ANY_HOST, domainOf, fetchPageTool } from './tools.mjs';
+import { writeHosts } from './tools-v2.mjs';
 
 export const DATA = join(import.meta.dirname, 'data');
 /** Where a pass writes when no --out is given, as the demo's contract names it. */
@@ -96,9 +97,9 @@ export function scriptedParts({ set = SETS.v1, data = set === SETS.v2 ? FIXTURES
   };
 }
 
-/** The paid parts: the model and Jev through the gateway (models.mjs), fetch_page on the job's domain and Wikipedia, and in
- *  v2 lane C3's tools (tools-v2.mjs: the search provider and the browser from the environment, the eyes through the
- *  gateway), their evidence and the browser's profile under the run's own directory. */
+/** The paid parts: the model and Jev through the gateway (models.mjs), fetch_page, and in v2 lane C3's tools
+ *  (tools-v2.mjs: search and the browser on Browserbase with the key read at each call, else a local Chrome; the eyes
+ *  through the gateway), their evidence and the browser's profile under the run's own directory. */
 export async function liveParts({ set = SETS.v1, data = DATA, model = 'gpt-6-luna', thinking = 'medium', env = process.env } = {}) {
   const { gatewayJev, gatewayModel, gatewayOf } = await import('./models.mjs');
   const gateway = gatewayOf(env);
@@ -113,10 +114,19 @@ export async function liveParts({ set = SETS.v1, data = DATA, model = 'gpt-6-lun
     judge: () => jev,
     toolsFor: async (job, run) => [
       fetchPageTool({ allowDomain: allowedDomain(job, set) }),
-      ...(hard ? await hard.hardJobTools({ root: join(run.dir, 'evidence'), profileRoot: join(run.dir, 'chrome'), search: hard.searchFromEnv?.(env), eyes: await hard.gatewayEyes(gateway), env }) : []),
+      ...(hard ? await hard.hardJobTools({ root: join(run.dir, 'evidence'), profileRoot: join(run.dir, 'chrome'), eyes: await hard.gatewayEyes(gateway), env }) : []),
     ],
     modelFor: () => gatewayModel(gateway, { model, thinking }),
+    // The browser's guard on the browser the pass will use, before its first job.
+    ...(hard ? { selfTest: (dir) => hard.guardSelfTest({ root: dir, profileRoot: join(dir, 'chrome'), env }) } : {}),
   };
+}
+
+/** A live pass's checks before its first job; a failure stops the pass there. */
+async function selfTest({ out, parts, log }) {
+  if (!parts.selfTest) return;
+  const result = await parts.selfTest(join(out, 'self-test', String(Date.now())));
+  log(`self-test: the browser's guard refused ${result.blocked.join(', ')} on ${result.browser} (${usd(result.costUsd)})`);
 }
 
 /** One run of the agent with the set's tools, answer and job text. */
@@ -127,9 +137,10 @@ async function runSet({ parts, run, job, judge, limitUsd }) {
 }
 
 /** A v2 run's score and tool facts, read from its closed store; the scoring's own Jev is metered apart from the run. */
-async function scoreRun({ parts, run, job, measure }) {
+async function scoreRun({ parts, run, job, measure, hostsDir }) {
   const { data } = parts;
   const results = toolResultsOf(run.storePath);
+  await writeHosts({ dir: hostsDir, runId: run.runId, results });
   const judge = meteredJudge(parts.judge());
   const report = data.report?.companies?.find((c) => c.cik === job.cik);
   const score = await scoreV2({ answer: measure.answer, company: job, report, rules: data.report?.scoring ?? [], read: textsRead(results), codes: data.codes, judge: judge.run });
@@ -197,7 +208,7 @@ async function oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, l
   const run = { runId, ...runPaths(home, runId) };
   if (p.phase === 'ran') {
     const finished = await finishJob({ home, repo, run, job, measure: p.measure });
-    save({ ...p, phase: 'proposed', finished, ...(parts.set === SETS.v2 ? await scoreRun({ parts, run, job, measure: p.measure }) : {}) });
+    save({ ...p, phase: 'proposed', finished, ...(parts.set === SETS.v2 ? await scoreRun({ parts, run, job, measure: p.measure, hostsDir: join(out, 'hosts') }) : {}) });
   }
   if (p.phase === 'proposed') {
     const curateJudge = meteredJudge(judge);
@@ -228,6 +239,7 @@ export async function runLoop({ out, parts, jobs, capUsd, runCapUsd, record = tr
   writeFileSync(join(out, 'conventions.json'), `${JSON.stringify(parts.conventions ?? {}, null, 2)}\n`);
   let stoppedBy = null;
   log(`learn-classify: ${parts.mode} pass in ${out}, seed ${short(meta.seedSha)}, ${queue.length} job(s)${capUsd === undefined ? '' : `, cap ${usd(capUsd)}`}`);
+  if (queue.some((job) => !done.has(job.order))) await selfTest({ out, parts, log });
   for (const job of queue) {
     if (done.has(job.order)) continue;
     if (capUsd !== undefined && spentNow() >= capUsd) { stoppedBy = `spent ${usd(spentNow())}, at or over the cap of ${usd(capUsd)}`; break; }
@@ -266,6 +278,7 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
   let spent = rows.reduce((sum, r) => sum + (r.costUsd ?? 0) + (r.scoreCostUsd ?? 0), 0);
   let stoppedBy = null;
   log(`learn-classify: sealed pass at ${label}${sha === meta.seedSha ? ' (the seed: nothing learned)' : ''}, ${queue.length} companies`);
+  if (queue.some((job) => !done.has(job.cik))) await selfTest({ out, parts, log });
   for (const [i, job] of queue.entries()) {
     if (done.has(job.cik)) continue;
     if (capUsd !== undefined && spent >= capUsd) { stoppedBy = `spent ${usd(spent)}, at or over the cap of ${usd(capUsd)}`; break; }
@@ -281,7 +294,7 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
     const measure = await runSet({ parts, run: prepared, job, judge: runJudge, limitUsd: runCapUsd });
     const run = { runId: prepared.runId, ...runPaths(home, prepared.runId) };
     const finished = await finishJob({ home, repo, run, job, measure, propose: false });
-    const scored = parts.set === SETS.v2 ? await scoreRun({ parts, run, job, measure }) : undefined;
+    const scored = parts.set === SETS.v2 ? await scoreRun({ parts, run, job, measure, hostsDir: join(out, 'sealed', label, 'hosts') }) : undefined;
     const tools = scored ? [scored.stats.browserCostUsd, scored.stats.searchCostUsd, scored.stats.documentCostUsd] : [];
     const recording = record
       ? await writeRecording({ into: join(out, 'sealed', label, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started, ended: Date.now(), spend: spendOf(measure, undefined, tools), modelUsd: measure.unpricedAnswers ? null : measure.usage.costUsd })
@@ -332,7 +345,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const parts = values.live
       ? await liveParts({ set, ...(values.data ? { data: resolve(values.data) } : {}), ...(values.model ? { model: values.model } : {}), ...(values.thinking ? { thinking: values.thinking } : {}) })
       : scriptedParts({ set, ...(values.data ? { data: resolve(values.data) } : {}) });
-    const common = { out: values.out ?? OUT, parts, capUsd: number('cap-usd'), runCapUsd: number('run-cap-usd'), log: (line) => console.log(line) };
+    const out = resolve(values.out ?? OUT);
+    try {
+      mkdirSync(out, { recursive: true });
+      accessSync(out, constants.W_OK);
+    } catch (error) {
+      console.error(`--out ${out} is not writable (${error.code ?? error.message}); in a take only /run is: use --out /run/out`);
+      process.exit(2);
+    }
+    const common = { out, parts, capUsd: number('cap-usd'), runCapUsd: number('run-cap-usd'), log: (line) => console.log(line) };
     const result = values.sealed
       ? await runSealed({ ...common, at: values.at, record: !values['no-record'] })
       : await runLoop({ ...common, jobs: number('jobs'), record: !values['no-record'] });

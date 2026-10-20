@@ -434,7 +434,7 @@ export function textsRead(results) {
     }
     if (tool === 'read_document' && (value.text || value.looks?.length)) {
       const looks = (value.looks ?? []).map((l) => (typeof l === 'string' ? l : [l.page !== undefined ? `[page ${l.page}]` : '', l.answer ?? l.text ?? JSON.stringify(l)].join(' '))).join('\n');
-      for (const url of new Set([value.source, args.url, args.path].filter(Boolean))) out.push({ tool, url, text: [value.text ?? '', looks].filter(Boolean).join('\n') });
+      for (const url of new Set([value.source, value.url, args.url, args.path].filter(Boolean))) out.push({ tool, url, text: [value.text ?? '', looks].filter(Boolean).join('\n') });
     }
     if (tool === 'search_web') for (const r of value.results ?? []) out.push({ tool, url: r.url, text: `${r.title ?? ''}\n${r.snippet ?? ''}` });
   }
@@ -446,18 +446,29 @@ export const pagesRead = (storePath) => [...new Set(textsRead(toolResultsOf(stor
 
 const sumOrNull = (values) => (values.some((v) => typeof v !== 'number' || !Number.isFinite(v)) ? null : values.reduce((a, b) => a + b, 0));
 
-/** The v2 tool facts of a run: calls per tool, the browser's billed seconds and cost, the pages a vision model looked at,
- *  and what search and the document reader cost. A cost a tool reported as null makes its sum null. */
+/** The v2 tool facts of a run: calls per tool, the browser's billed seconds and cost, the pages a vision model looked at
+ *  (a look that missed the model is not one), and what search and the document reader cost. A cost a tool reported as
+ *  null makes its sum null. */
 export function toolStats(results) {
   const of = (tool) => results.filter((r) => r.tool === tool);
   const done = (tool) => of(tool).filter((r) => r.value);
+  // Billed seconds when the browser reports them (Browserbase bills a minimum), so the minutes match the cost.
+  const billed = (b) => (typeof b?.billedSeconds === 'number' ? b.billedSeconds : typeof b?.seconds === 'number' ? b.seconds : 0);
+  // A document the reader fetched through a browser session carries that session in `browser`; its costUsd already holds
+  // the session's, so the session counts as the browser's and the rest as the reader's, never both.
+  const sessions = done('read_document').map((r) => r.value.browser).filter(Boolean);
+  const documentCost = (value) => {
+    if (!value.browser) return value.costUsd;
+    return typeof value.costUsd === 'number' && typeof value.browser.costUsd === 'number' ? Math.max(0, value.costUsd - value.browser.costUsd) : null;
+  };
   return {
     toolCalls: { search: of('search_web').length, browse: of('browse').length, fetch: of('fetch_page').length, read_document: of('read_document').length },
-    browserSeconds: done('browse').reduce((sum, r) => sum + (typeof r.value.seconds === 'number' ? r.value.seconds : 0), 0),
-    browserCostUsd: sumOrNull(done('browse').map((r) => r.value.costUsd)),
-    visionPages: done('read_document').reduce((sum, r) => sum + (r.value.looks?.length ?? 0), 0),
+    browserSeconds: [...done('browse').map((r) => r.value), ...sessions].reduce((sum, b) => sum + billed(b), 0),
+    browserCostUsd: sumOrNull([...done('browse').map((r) => r.value.costUsd), ...sessions.map((b) => b.costUsd)]),
+    // A look with `miss` never reached the vision model, so nobody paid for it.
+    visionPages: done('read_document').reduce((sum, r) => sum + (r.value.looks ?? []).filter((look) => !look?.miss).length, 0),
     searchCostUsd: sumOrNull(done('search_web').map((r) => r.value.costUsd)),
-    documentCostUsd: sumOrNull(done('read_document').map((r) => r.value.costUsd)),
+    documentCostUsd: sumOrNull(done('read_document').map((r) => documentCost(r.value))),
   };
 }
 
