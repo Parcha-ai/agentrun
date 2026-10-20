@@ -1,0 +1,50 @@
+[
+  {
+    "input": "Caterpillar Inc.",
+    "case": "clear",
+    "expected": "public",
+    "why": "Listed on the NYSE (CAT) and a long-standing 10-K filer; nothing else shares the name."
+  },
+  {
+    "input": "American Red Cross",
+    "case": "clear",
+    "expected": "nonprofit",
+    "why": "A congressionally chartered charity that files a Form 990 every year."
+  },
+  {
+    "input": "Brattle Book Shop, Boston",
+    "case": "clear",
+    "expected": "small_retail",
+    "why": "One bookshop in one location, with a Yelp and Google Maps presence and a local following."
+  },
+  {
+    "input": "Thrive Market",
+    "case": "clear",
+    "expected": "ecommerce",
+    "why": "A privately held online grocer with no shops: the website is the business."
+  },
+  {
+    "input": "Cargill",
+    "case": "ambiguous",
+    "expected": "other",
+    "why": "One of the largest companies in the world, but privately held, so there are no SEC filings; the right path is the generic one."
+  },
+  {
+    "input": "The Walmart Foundation",
+    "case": "ambiguous",
+    "expected": "nonprofit",
+    "why": "The name is a public company's, but the foundation is a separate non-profit that files its own Form 990; a first pass may say public."
+  },
+  {
+    "input": "Powell's Books",
+    "case": "ambiguous",
+    "expected": "small_retail or ecommerce",
+    "why": "A well-known bookshop in Portland with a large online store; either overlay can fit, and a lookup should settle it or fall back to the generic prompt."
+  },
+  {
+    "input": "Habitat",
+    "case": "ambiguous",
+    "expected": "other",
+    "why": "Shared by Habitat for Humanity (a non-profit) and Habitat, a furniture retailer, among others; the name alone does not say which."
+  }
+]

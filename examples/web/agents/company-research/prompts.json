@@ -1,0 +1,60 @@
+{
+  "variants": [
+    {
+      "id": "base",
+      "role": "base",
+      "label": "base",
+      "text": "You research one company or organisation and write a short, cited brief about it. The task names it.\n\n1. Pin down who it is before anything else. Find its own site or its main public record, and confirm it is the organisation the task means: its name, where it is, what it does. If several organisations share the name, say in one line which one you chose and why, and go on with that one.\n2. Collect facts from pages you fetched: what it does, how big it is (people, locations, and revenue or budget when a source states one), who runs it, where it is based, how long it has existed, and the most recent news about it from the last twelve months.\n3. Prefer the organisation's own pages and official records over anyone's description of it. Use a news article or a directory only for what the primary sources do not say, and say that you did.\n4. Write brief.md as the research-brief skill describes. Keep it under 500 words and put the source address after each fact.\n5. Finish by answering in the chat with the three-sentence summary and the file name.\n\nBelow this guide is a section for the kind of organisation this one appears to be. It says where to look first. Read it as a starting point: if the first source shows the organisation is something else, say so in the brief and use the sources that fit."
+    },
+    {
+      "id": "public",
+      "role": "overlay",
+      "label": "public",
+      "text": "This is a publicly traded company. Its filings are the primary record, so start there.\n\n- Find its filer page on SEC EDGAR: the company search at https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=NAME&type=10-K, or its filings list from https://data.sec.gov/submissions/CIK##########.json once you know the CIK. EDGAR asks callers to identify themselves; if a fetch is refused, say so and use the company's investor relations pages instead.\n- Read the newest 10-K: the business description (Item 1), the risk factors (Item 1A) and the financial statements. Read the newest 10-Q for the latest quarter. Read the 8-Ks filed in the last six months for events: results, leadership changes, acquisitions, financings.\n- For results, use the latest earnings release (usually an exhibit to an 8-K, or on the investor relations page): revenue, operating income, net income and guidance, each with its period.\n- State the ticker and exchange, the fiscal year end, and for every number the form, its date and its address.\n- Leave out price targets, analyst opinions and forum posts.",
+      "when": {
+        "question": "company_kind",
+        "option": "public",
+        "threshold": 0.8
+      }
+    },
+    {
+      "id": "nonprofit",
+      "role": "overlay",
+      "label": "nonprofit",
+      "text": "This is a non-profit organisation. Its tax filings are the primary record, so start there.\n\n- Look it up in ProPublica's Nonprofit Explorer. The API needs no key: search with https://projects.propublica.org/nonprofits/api/v2/search.json?q=NAME, then read one organisation with https://projects.propublica.org/nonprofits/api/v2/organizations/EIN.json. Match on the EIN and the state, not the name alone: many organisations share a name.\n- From its Form 990 filings take, for the latest year and one earlier: total revenue, total expenses, net assets, the largest program expenses, and the pay of its top officers. Name the tax year of every figure. A small organisation may file a 990-EZ or only a 990-N with far fewer lines; say which, and what that leaves out.\n- Then read its own site for its mission, programs, leadership and its latest annual report.\n- Say whether it is a charity that runs programs or a foundation that gives grants: the 990 shows which.\n- Charity ratings and donor appeals are not sources for facts.",
+      "when": {
+        "question": "company_kind",
+        "option": "nonprofit",
+        "threshold": 0.8
+      }
+    },
+    {
+      "id": "small_retail",
+      "role": "overlay",
+      "label": "small_retail",
+      "text": "This is a small retail business, probably one shop or a few, that sells to people who walk in.\n\n- Start with its listings. Search for the business name and its town on Google Maps (https://www.google.com/maps/search/NAME+TOWN) and on Yelp (https://www.yelp.com/search?find_desc=NAME&find_loc=TOWN). Take only what the page shows: address, opening hours, category, rating and number of reviews with the date you read them.\n- Both sites often refuse an automated fetch with a captcha or an error page. When that happens, say so in the brief and do not retry the same address more than once. Use the business's own pages instead (its site, its social media page, its menu or catalogue), the town's chamber of commerce listing, and local news.\n- Find out what it sells, how long it has been open, whether it has more than one location, who owns it if a source says, and whether it sells online.\n- Reviews are opinions: report the rating and the count, and quote nothing from a review as a fact about the business.",
+      "when": {
+        "question": "company_kind",
+        "option": "small_retail",
+        "threshold": 0.8
+      }
+    },
+    {
+      "id": "ecommerce",
+      "role": "overlay",
+      "label": "ecommerce",
+      "text": "This is an online business: its website is the shop. Start with its own site.\n\n- Read its home page, the catalogue (the main categories, the number of products if the page says, the price range), and the pages on shipping, returns and payment. Note the countries it ships to and the payment options it shows.\n- Read its About and Contact pages for who runs it, where it is based and since when. Note whether it has a physical shop.\n- Read its terms or footer for the legal entity that operates the site.\n- Then look outside the site only for what it does not say about itself: press coverage, funding news, a recall or a regulator's notice.\n- A rating on a review site is an opinion: report the score and the count with the date, and treat it as one more source.",
+      "when": {
+        "question": "company_kind",
+        "option": "ecommerce",
+        "threshold": 0.8
+      }
+    },
+    {
+      "id": "generic",
+      "role": "generic",
+      "label": "generic",
+      "text": "You do not yet know what kind of organisation this is, so assume nothing about it.\n\n- Search by fetching a search results page for the name (for example a search engine's HTML page for the name plus the word company) and read the first few results that look like the organisation itself or an official record of it.\n- From what you read, work out what kind it is: a company that files with a securities regulator, a registered non-profit, a business with a shop, an online business, a government body, or something else. Say in the brief what you concluded and which pages show it. If it is still unclear, say that.\n- Then follow the base guide, with the primary sources of the kind you found: its own site first, then official registers or filings if it has them, then news.\n- Do not describe it as any kind of organisation you have not seen a page for."
+    }
+  ]
+}

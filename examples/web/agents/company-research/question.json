@@ -1,0 +1,12 @@
+{
+  "id": "company_kind",
+  "type": "choice",
+  "instructions": "What kind of organisation is the one named in the input?",
+  "criteria": {
+    "public": "A company whose shares trade on a public stock exchange, so it files reports with a securities regulator.",
+    "nonprofit": "A charity, foundation, association or other organisation that is legally non-profit and files an annual return as one.",
+    "small_retail": "A small shop or local service business with one or a few physical locations that sells mainly to people who walk in.",
+    "ecommerce": "A business that sells mainly through its own online store and has no or very few physical shops.",
+    "other": "Anything else: a large private company, a government body, a person, a name that fits several of these, or one you cannot place."
+  }
+}

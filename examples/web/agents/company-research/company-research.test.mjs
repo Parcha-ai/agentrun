@@ -1,0 +1,401 @@
+// The company-research agent's prompts, its companies, the edit tool and the config page, offline: no key, no network, no
+// model. The tool and the page run against a fake of the home's prompt functions, and, where the built package has them,
+// against the real ones.
+import assert from "node:assert/strict";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { after, test } from "node:test";
+import { fileURLToPath } from "node:url";
+import * as real from "@parcha/pi-durable-agent";
+import { main as page, renderPage, where } from "./config-page.mjs";
+import { listing, main as edit } from "./edit-prompts.mjs";
+import { checkPrompts, normalizePrompts, readQuestion, ruleText, variantsOf } from "./prompts-lib.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const json = (name) => JSON.parse(readFileSync(join(HERE, name), "utf8"));
+const PROMPTS = json("prompts.json").variants;
+const QUESTION = await readQuestion(join(HERE, "question.json"));
+const COMPANIES = json("companies.json");
+const SITE_WORDS = /EDGAR|10-K|ProPublica|Nonprofit Explorer|Form 990|Google Maps|Yelp/i;
+
+let tmp;
+const root = async () => (tmp ??= await mkdtemp(join(tmpdir(), "company-research-")));
+after(() => tmp && rm(tmp, { recursive: true, force: true }));
+const fresh = async (name) => {
+  const dir = join(await root(), `${name}-${Math.random().toString(36).slice(2, 8)}`);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+};
+
+/** The home's prompt functions, in memory: a home is a directory with an agent.sqlite file and a record here. */
+function fakeApi({ withSetPrompts = true } = {}) {
+  const homes = new Map();
+  const calls = [];
+  const api = {
+    calls,
+    homes,
+    async createAgentHome(dir, files) {
+      calls.push(["createAgentHome", dir, Object.keys(files.skills)]);
+      writeFileSync(join(dir, "agent.sqlite"), "");
+      homes.set(dir, { definition: files.definition, prompts: undefined });
+      return { dir, identity: { id: files.definition.id, name: files.definition.name, formatVersion: 1 } };
+    },
+    async openAgentHome(dir) {
+      calls.push(["openAgentHome", dir]);
+      if (!homes.has(dir)) homes.set(dir, { definition: json("agent.json"), prompts: undefined });
+      const { definition } = homes.get(dir);
+      return { dir, identity: { id: definition.id, name: definition.name, formatVersion: 1 } };
+    },
+    async readAgentHome(home) {
+      const { definition, prompts } = homes.get(home.dir);
+      return { identity: home.identity, definition, prompts, runs: {}, skills: {}, profiles: {}, leases: {}, aliases: {}, bindings: {} };
+    },
+    async setPrompts(home, variants) {
+      calls.push(["setPrompts", variants]);
+      const next = Object.fromEntries(variants.map(({ id, ...rest }) => [id, structuredClone(rest)]));
+      const same = JSON.stringify(homes.get(home.dir).prompts) === JSON.stringify(next);
+      homes.get(home.dir).prompts = next;
+      return { changed: !same };
+    },
+  };
+  if (!withSetPrompts) delete api.setPrompts;
+  return api;
+}
+/** A home as a directory the tool will accept. */
+const homeDir = async (name) => {
+  const dir = await fresh(name);
+  writeFileSync(join(dir, "agent.sqlite"), "");
+  return dir;
+};
+const run = async (tool, argv, api, extra = {}) => {
+  const out = [];
+  const err = [];
+  const code = await tool(argv, { api, out: (line) => out.push(line), err: (line) => err.push(line), ...extra });
+  return { code, out: out.join("\n"), err: err.join("\n") };
+};
+
+// ---- the content ----------------------------------------------------------------------------------------------------
+
+test("the prompts: a base, four overlays that each name their own sources, a generic, and each overlay's rule is 0.8 on its Jev option", () => {
+  assert.deepEqual(checkPrompts(PROMPTS, QUESTION), []);
+  assert.deepEqual(PROMPTS.map((v) => v.id), PROMPTS.map((v) => v.label), "each variant's id is its label");
+  assert.deepEqual(PROMPTS.map((v) => [v.role, v.label]), [["base", "base"], ["overlay", "public"], ["overlay", "nonprofit"], ["overlay", "small_retail"], ["overlay", "ecommerce"], ["generic", "generic"]]);
+  for (const v of PROMPTS.filter((p) => p.role === "overlay")) assert.deepEqual(v.when, { question: "company_kind", option: v.label, threshold: 0.8 }, v.label);
+  const text = Object.fromEntries(PROMPTS.map((v) => [v.label, v.text]));
+  assert.match(text.public, /EDGAR/);
+  assert.match(text.public, /10-K/);
+  assert.match(text.public, /10-Q/);
+  assert.match(text.public, /8-K/);
+  assert.match(text.public, /earnings release/);
+  assert.match(text.nonprofit, /Nonprofit Explorer/);
+  assert.match(text.nonprofit, /propublica\.org\/nonprofits\/api\/v2/);
+  assert.match(text.nonprofit, /needs no key/);
+  assert.match(text.nonprofit, /Form 990/);
+  assert.match(text.small_retail, /Google Maps/);
+  assert.match(text.small_retail, /Yelp/);
+  assert.match(text.small_retail, /refuse an automated fetch/);
+  assert.match(text.small_retail, /local news/);
+  assert.match(text.ecommerce, /its own site|own site/i);
+  assert.match(text.ecommerce, /shipping/);
+  assert.match(text.ecommerce, /returns/);
+  assert.doesNotMatch(text.base, SITE_WORDS, "the base names no site");
+  assert.doesNotMatch(text.generic, SITE_WORDS, "the generic names no site");
+  assert.match(text.generic, /assume nothing/);
+  assert.match(text.base, /cited|address/);
+});
+
+test("the skill and the definition name no site, and the definition is one a home keeps", async () => {
+  const skill = readFileSync(join(HERE, "skills", "research-brief", "SKILL.md"), "utf8");
+  assert.doesNotMatch(skill, SITE_WORDS);
+  assert.match(skill, /Cite every fact to the address/);
+  const definition = json("agent.json");
+  assert.deepEqual([definition.name, definition.tools, definition.skills], ["Desk", ["web_fetch", "write", "read"], ["research-brief"]]);
+  const dir = join(await fresh("definition"), "home");
+  const home = await real.createAgentHome(dir, { definition, skills: { "research-brief/SKILL.md": skill } });
+  const state = await real.readAgentHome(home);
+  assert.deepEqual([state.definition.id, state.definition.name], ["company-research", "Desk"]);
+  assert.equal(state.skills["research-brief/SKILL.md"].content, skill);
+});
+
+test("the Jev question is a choice over public, nonprofit, small_retail, ecommerce and other, one line each", () => {
+  const question = json("question.json");
+  assert.deepEqual([question.id, question.type], ["company_kind", "choice"]);
+  assert.deepEqual(Object.keys(question.criteria), ["public", "nonprofit", "small_retail", "ecommerce", "other"]);
+  for (const [option, line] of Object.entries(question.criteria)) assert.ok(line.length > 20 && !line.includes("\n"), option);
+  assert.ok(question.instructions.length > 10);
+});
+
+test("eight companies: one clear case of each kind and four ambiguous, each with its expected kind and why", () => {
+  assert.equal(COMPANIES.length, 8);
+  assert.equal(new Set(COMPANIES.map((c) => c.input)).size, 8);
+  const clear = COMPANIES.filter((c) => c.case === "clear");
+  const ambiguous = COMPANIES.filter((c) => c.case === "ambiguous");
+  assert.deepEqual(clear.map((c) => c.expected).sort(), ["ecommerce", "nonprofit", "public", "small_retail"]);
+  assert.equal(ambiguous.length, 4);
+  for (const c of COMPANIES) assert.ok(c.why.length > 30 && c.input.length > 1, c.input);
+  for (const c of COMPANIES) for (const option of c.expected.split(" or ")) assert.ok(Object.hasOwn(QUESTION.criteria, option), `${c.input}: ${option}`);
+});
+
+// ---- the check ------------------------------------------------------------------------------------------------------
+
+test("a prompts file is refused, with the reason, when it has no base, two bases, a bad rule, a repeated label or an option the question lacks", () => {
+  const ok = structuredClone(PROMPTS);
+  const without = (f) => ok.filter(f);
+  const edited = (label, change) => ok.map((v) => (v.label === label ? change(structuredClone(v)) : v));
+  const cases = [
+    ["no base", without((v) => v.role !== "base"), /exactly one base \(found 0\)/],
+    ["two bases", [...ok, { id: "base2", role: "base", label: "base2", text: "x" }], /exactly one base \(found 2\)/],
+    ["two generics", [...ok, { id: "generic2", role: "generic", label: "generic2", text: "x" }], /exactly one generic \(found 2\)/],
+    ["no generic", without((v) => v.role !== "generic"), /exactly one generic \(found 0\)/],
+    ["an overlay with no rule", edited("public", (v) => (delete v.when, v)), /public: an overlay needs a when/],
+    ["a base with a rule", edited("base", (v) => ((v.when = { question: "company_kind", option: "public", threshold: 0.5 }), v)), /base: only an overlay has a when/],
+    ["a threshold below 0", edited("public", (v) => ((v.when.threshold = -0.1), v)), /threshold is a number from 0 to 1/],
+    ["a threshold above 1", edited("public", (v) => ((v.when.threshold = 1.2), v)), /threshold is a number from 0 to 1/],
+    ["a threshold as text", edited("public", (v) => ((v.when.threshold = "0.8"), v)), /threshold is a number from 0 to 1/],
+    ["an unknown option", edited("public", (v) => ((v.when.option = "listed"), v)), /"listed" is not an option of company_kind/],
+    ["another question", edited("public", (v) => ((v.when.question = "other_question"), v)), /not "company_kind"/],
+    ["two overlays on one option", edited("ecommerce", (v) => ((v.when.option = "public"), v)), /another overlay already takes public/],
+    ["a repeated id", edited("ecommerce", (v) => ((v.id = "public"), v)), /the id is used twice/],
+    ["no id", edited("ecommerce", (v) => (delete v.id, v)), /id is 1 to 128/],
+    ["a field it does not keep", edited("public", (v) => ((v.priority = 1), v)), /public: has a field it does not keep \(priority\)/],
+    ["an empty text", edited("generic", (v) => ((v.text = "  "), v)), /generic: text is empty/],
+    ["a bad role", edited("generic", (v) => ((v.role = "fallback"), v)), /role is one of base, overlay, generic/],
+    ["an id that is not a URL segment", edited("generic", (v) => ((v.id = "has space"), v)), /generic|has space: id is 1 to 128/],
+    ["an empty label", edited("generic", (v) => ((v.label = " "), v)), /generic: label is empty/],
+  ];
+  for (const [name, variants, pattern] of cases) assert.match(checkPrompts(variants, QUESTION).join("\n"), pattern, name);
+  assert.deepEqual(checkPrompts([], QUESTION), ["there are no variants"]);
+  assert.deepEqual(checkPrompts("no", QUESTION), ["there are no variants"]);
+  assert.deepEqual(checkPrompts(ok.filter((v) => v.label !== "ecommerce"), QUESTION), [], "fewer overlays is fine: a kind with none takes the generic prompt");
+  assert.deepEqual(checkPrompts(edited("public", (v) => ((v.when.threshold = 0), v)), QUESTION), [], "a threshold of 0 is one the home keeps");
+  assert.equal(ruleText(PROMPTS[1].when), "company_kind is public at 0.8 or more");
+  assert.deepEqual(variantsOf({ variants: [1] }), [1]);
+  assert.deepEqual(variantsOf([2]), [2]);
+  assert.throws(() => variantsOf({ nope: 1 }), /prompts file is/);
+  assert.deepEqual(normalizePrompts({ g: { role: "generic", text: "g" }, a: { role: "base", text: "t" } }), [{ id: "a", role: "base", text: "t" }, { id: "g", role: "generic", text: "g" }], "a record by id becomes a list, the base first");
+});
+
+// ---- the edit tool --------------------------------------------------------------------------------------------------
+
+test("edit-prompts saves the file's variants with setPrompts, replacing what the home held, and says what it saved", async () => {
+  const api = fakeApi();
+  const home = await homeDir("save");
+  const first = await run(edit, ["--home", home], api);
+  assert.equal(first.code, 0, first.err);
+  const [, saved] = api.calls.find(([name]) => name === "setPrompts");
+  assert.deepEqual(saved, PROMPTS, "exactly the file's six variants, nothing added");
+  assert.match(first.out, /^saved 6 prompt variants in /);
+  assert.match(first.out, /overlay\s+nonprofit\s+company_kind is nonprofit at 0\.8 or more/);
+  assert.doesNotMatch(first.out, new RegExp(home.replaceAll(/[/\\^$.*+?()[\]{}|]/g, "\\$&")), "the path of the home is not printed");
+
+  const smaller = join(await fresh("file"), "two.json");
+  writeFileSync(smaller, JSON.stringify([{ id: "base", role: "base", label: "base", text: "Research it." }, { id: "generic", role: "generic", label: "generic", text: "Assume nothing." }]));
+  const second = await run(edit, ["--home", home, "--file", smaller], api);
+  assert.equal(second.code, 0, second.err);
+  assert.deepEqual(normalizePrompts((await api.readAgentHome(await api.openAgentHome(home))).prompts).map((v) => v.label), ["base", "generic"], "the second save replaced the first");
+  const again = await run(edit, ["--home", home, "--file", smaller], api);
+  assert.equal(again.code, 0, again.err);
+  assert.match(again.out, /^the 2 prompt variants were already saved in .*: nothing changed/, "a save of what is there says so");
+});
+
+test("edit-prompts --show prints what the home holds, as a table or as JSON", async () => {
+  const api = fakeApi();
+  const home = await homeDir("show");
+  const empty = await run(edit, ["--home", home, "--show"], api);
+  assert.equal(empty.code, 0);
+  assert.match(empty.out, /^Desk \(company-research\): 0 prompt variants$/);
+  await run(edit, ["--home", home], api);
+  const shown = await run(edit, ["--home", home, "--show"], api);
+  assert.match(shown.out, /^Desk \(company-research\): 6 prompt variants\n/);
+  assert.match(shown.out, /base\s+base\s+-\s+\d+ chars\s+You research one company/);
+  assert.match(shown.out, /overlay\s+small_retail\s+company_kind is small_retail at 0\.8 or more/);
+  assert.match(shown.out, /generic\s+generic\s+-/);
+  const asJson = JSON.parse((await run(edit, ["--home", home, "--show", "--json"], api)).out);
+  assert.deepEqual([asJson.agent, asJson.prompts], [{ id: "company-research", name: "Desk" }, PROMPTS]);
+});
+
+test("edit-prompts refuses a bad file with every problem and saves nothing; --check needs no home", async () => {
+  const api = fakeApi();
+  const home = await homeDir("bad");
+  const file = join(await fresh("bad-file"), "bad.json");
+  writeFileSync(file, JSON.stringify({ variants: [{ role: "overlay", label: "public", text: "x" }] }));
+  const refused = await run(edit, ["--home", home, "--file", file], api);
+  assert.equal(refused.code, 1);
+  assert.match(refused.err, /bad\.json is not saved: \d+ problems/);
+  writeFileSync(file, JSON.stringify({ variants: [{ id: "a", role: "overlay", label: "public", text: "x" }, { id: "a", role: "overlay", label: "public", text: "y", when: { question: "company_kind", option: "listed", threshold: 2 } }] }));
+  const refusedAgain = await run(edit, ["--home", home, "--file", file], api);
+  for (const reason of [/exactly one base \(found 0\)/, /exactly one generic \(found 0\)/, /an overlay needs a when/, /the id is used twice/, /"listed" is not an option/, /threshold is a number from 0 to 1/]) assert.match(refusedAgain.err, reason);
+  assert.equal(api.calls.some(([name]) => name === "setPrompts"), false, "setPrompts was never called");
+  const checked = await run(edit, ["--check", "--file", file], api);
+  assert.equal(checked.code, 1);
+  const good = await run(edit, ["--check"], api);
+  assert.equal(good.code, 0, good.err);
+  assert.match(good.out, /^prompts\.json is valid: 6 variants\n/);
+  assert.equal(api.calls.length, 0, "--check opens no home");
+
+  const notJson = join(await fresh("not-json"), "x.json");
+  writeFileSync(notJson, "{ nope");
+  assert.match((await run(edit, ["--check", "--file", notJson], api)).err, /x\.json: /);
+  assert.match((await run(edit, ["--check", "--file", join(HERE, "absent.json")], api)).err, /cannot read .*absent\.json: ENOENT/);
+});
+
+test("edit-prompts needs a home: --init makes one from agent.json and its skill first; without it the tool says how", async () => {
+  const api = fakeApi();
+  const dir = join(await fresh("init"), "desk-home");
+  const without = await run(edit, ["--home", dir], api);
+  assert.equal(without.code, 1);
+  assert.match(without.err, /desk-home is not an agent home; add --init/);
+  assert.equal(existsSync(dir), false, "nothing was made");
+  const made = await run(edit, ["--home", dir, "--init"], api);
+  assert.equal(made.code, 0, made.err);
+  assert.match(made.out, /^made the agent home desk-home\nsaved 6 prompt variants/);
+  assert.deepEqual(api.calls[0], ["createAgentHome", dir, ["research-brief/SKILL.md"]]);
+  assert.equal(readdirSync(dir).includes("agent.sqlite"), true);
+});
+
+test("edit-prompts: a usage error is exit 2, and a build with no setPrompts is said plainly", async () => {
+  const api = fakeApi();
+  for (const argv of [[], ["--show"], ["--home", "x", "--show", "--file", "f"], ["--home", "x", "--json"], ["--check", "--home", "x"], ["--nope"]]) assert.equal((await run(edit, argv, api)).code, 2, argv.join(" "));
+  const home = await homeDir("old-build");
+  const old = await run(edit, ["--home", home], fakeApi({ withSetPrompts: false }));
+  assert.equal(old.code, 1);
+  assert.match(old.err, /has no setPrompts/);
+  assert.match(listing([{ role: "base", label: "base", text: "A line\nanother" }]), /^base\s+base\s+-\s+14 chars\s+A line$/);
+});
+
+// ---- the config page ------------------------------------------------------------------------------------------------
+
+const PROBS = { public: 0.93, nonprofit: 0.02, small_retail: 0.01, ecommerce: 0.02, other: 0.02 };
+const RUNS = [
+  { id: "run-a", title: "", index: { startedAt: "2026-10-20T04:10:00.000Z", endedAt: "2026-10-20T04:12:30.000Z", outcome: "completed", cost: 0.0421 }, briefHref: "runs/run-a/work/brief.md",
+    record: { version: 1, input: "Caterpillar Inc.", passes: [{ pass: 1, lookup: null, choice: "public", confidence: 0.93, probabilities: PROBS, model: "jev-latest", cost_usd: 0.00001, latency_ms: 412 }], lookup_used: false, chosen: { label: "public", role: "overlay", reason: "pass 1: public at 0.93, over the 0.8 threshold" } } },
+  { id: "run-b", title: "", index: { startedAt: "2026-10-20T04:20:00.000Z", endedAt: "2026-10-20T04:23:00.000Z", outcome: "completed", cost: 0.05 }, briefHref: null,
+    record: { version: 1, input: "Habitat", passes: [
+      { pass: 1, lookup: null, choice: "other", confidence: 0.41, probabilities: { public: 0.1, nonprofit: 0.35, small_retail: 0.1, ecommerce: 0.04, other: 0.41 } },
+      { pass: 2, lookup: { query: "Habitat organisation", url: "https://example.org/about?utm=1#top", title: "About Habitat" }, choice: "nonprofit", confidence: 0.62, probabilities: { public: 0.02, nonprofit: 0.62, small_retail: 0.1, ecommerce: 0.06, other: 0.2 } },
+    ], lookup_used: true, chosen: { label: "generic", role: "generic", reason: "pass 2: nonprofit at 0.62, under 0.8" } } },
+  { id: "run-c", title: "Powell's Books", index: { startedAt: "2026-10-20T04:30:00.000Z", prompt: { id: "small-retail-v2", reason: "from the index" } }, record: null, briefHref: null },
+  { id: "run-d", title: "", index: { startedAt: "2026-10-20T04:40:00.000Z", endedAt: "2026-10-20T04:41:00.000Z", outcome: "failed" }, briefHref: null,
+    record: { version: 1, input: "<script>alert(1)</script> & \"Co\"", passes: [{ pass: 1, lookup: null, choice: "<img src=x onerror=alert(2)>", confidence: 0.5, probabilities: {} }], lookup_used: false, chosen: { label: "<b>x</b>", role: "overlay", reason: "<i>why</i>" } } },
+];
+const DATA = { agent: { id: "company-research", name: "Desk", description: "Researches one company." }, prompts: PROMPTS.map((v) => (v.id === "small_retail" ? { ...v, id: "small-retail-v2" } : v)), question: QUESTION, runs: RUNS, generatedAt: "2026-10-20T05:00:00.000Z" };
+
+test("the page shows the base, each overlay with its Jev rule, the generic, and a row for each run: both passes, the lookup, the prompt loaded, the outcome and the result", () => {
+  const html = renderPage(DATA);
+  for (const v of PROMPTS) assert.ok(html.includes(`<b>${v.label}</b> <span class="role">${v.role}</span>`), v.label);
+  for (const v of PROMPTS.filter((p) => p.when)) assert.ok(html.includes(`loads when company_kind is ${v.label} at 0.8 or more`), v.label);
+  assert.match(html, /loads when no overlay reaches its threshold, even after a lookup/);
+  assert.match(html, /always part of the prompt/);
+  assert.ok(html.includes("EDGAR") && html.includes("Nonprofit Explorer"), "each prompt's text is on the page");
+  assert.match(html, /<li><b>nonprofit<\/b>: A charity/);
+  assert.match(html, /Before its first turn the host asks Jev one question[\s\S]*company_kind[\s\S]*0\.8 or more/);
+  const rows = html.match(/<tr><td>[\s\S]*?<\/tr>/g);
+  assert.equal(rows.length, 4);
+  const byId = (id) => rows.find((row) => row.includes(`class="id">${id}<`));
+  assert.ok(rows[0].includes('class="id">run-d<') && rows[3].includes('class="id">run-a<'), "newest first");
+  const a = byId("run-a");
+  assert.ok(a.includes("Caterpillar Inc."));
+  assert.ok(a.includes("<b>public</b> at 0.93"));
+  assert.ok(a.includes("public 0.93 · nonprofit 0.02"), "probabilities, largest first");
+  assert.ok(a.includes("$0.000010") && a.includes("412 ms"));
+  assert.ok(a.includes("<td>no</td>"), "no lookup");
+  assert.ok(a.includes('<b>public</b> <span class="role">overlay</span><small>pass 1: public at 0.93, over the 0.8 threshold</small>'));
+  assert.ok(a.includes("completed<small>$0.0421</small>"));
+  assert.ok(a.includes('<a href="runs/run-a/work/brief.md">brief.md</a>'));
+  const b = byId("run-b");
+  assert.ok(b.includes("<b>other</b> at 0.41") && b.includes("<b>nonprofit</b> at 0.62"), "both passes");
+  assert.ok(b.includes("other 0.41 · nonprofit 0.35 · "), "the probabilities, largest first, whatever order they came in");
+  assert.ok(b.includes("yes<small>About Habitat<br>example.org/about<br>search: Habitat organisation</small>"), "the lookup, its address with no scheme, query or fragment");
+  assert.ok(b.includes('<b>generic</b> <span class="role">generic</span>'));
+  assert.ok(b.includes("no brief"));
+  const c = byId("run-c");
+  assert.ok(c.includes("Powell&#39;s Books"), "the input falls back to the run's title");
+  assert.ok(c.includes("<b>small_retail</b>") && c.includes("from the index"), "the runs index's prompt (an id) is shown by its variant's label when there is no prompt.json");
+  assert.ok(c.includes("not recorded") && c.includes(">running<"));
+  assert.equal(where("https://example.org/about?utm=1#top"), "example.org/about");
+  assert.equal(where("nonsense"), "");
+});
+
+test("the page has no script, no network address to load and nothing unescaped from a run", () => {
+  const html = renderPage(DATA);
+  assert.doesNotMatch(html, /<script/i);
+  assert.doesNotMatch(html, /<[a-z][^>]*\son[a-z]+\s*=/i, "no event attribute on any real tag");
+  assert.doesNotMatch(html, /<(iframe|object|embed|form|base|link|img|svg|video|audio)\b/i);
+  assert.doesNotMatch(html, /<[a-z][^>]*\b(src|srcset|action|formaction)\s*=/i, "no attribute that loads or submits");
+  assert.doesNotMatch(html, /url\(|@import/i);
+  assert.deepEqual([...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]), ["runs/run-a/work/brief.md"], "the one link is relative");
+  assert.match(html, /content="default-src 'none'; style-src 'unsafe-inline'/);
+  assert.ok(html.includes("&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;Co&quot;"), "an input is escaped");
+  assert.ok(html.includes("&lt;img src=x onerror=alert(2)&gt;") && html.includes("&lt;b&gt;x&lt;/b&gt;") && html.includes("&lt;i&gt;why&lt;/i&gt;"));
+  assert.doesNotMatch(html, /\/home\/|\/tmp\//);
+  assert.match(renderPage({ agent: { name: "A" }, prompts: undefined, runs: [], generatedAt: "t" }), /No prompts are saved in this home\.[\s\S]*No runs yet\./);
+  assert.equal(renderPage(DATA), renderPage(structuredClone(DATA)), "the same data gives the same page");
+});
+
+/** A real home with two runs started, one of them carried back with a brief and a prompt.json. */
+async function homeWithRuns() {
+  const dir = join(await fresh("page-home"), "home");
+  const definition = json("agent.json");
+  const home = await real.createAgentHome(dir, { definition, skills: { "research-brief/SKILL.md": readFileSync(join(HERE, "skills", "research-brief", "SKILL.md"), "utf8") } });
+  const one = await real.startRun(home, { runId: "r1", host: "test" });
+  mkdirSync(one.workspace, { recursive: true });
+  writeFileSync(join(one.workspace, "brief.md"), "# Caterpillar\n");
+  writeFileSync(join(one.dir, "prompt.json"), JSON.stringify(RUNS[0].record));
+  await real.carryBack(home, one, { outcome: "completed", cost: 0.02 });
+  await real.startRun(home, { runId: "r2", host: "test" });
+  return { dir, home };
+}
+
+test("config-page reads a real agent home and its runs' prompt.json, links the brief by a relative path and writes the page whole", async () => {
+  const { dir } = await homeWithRuns();
+  const out = join(await fresh("page-out"), "site", "config.html");
+  const result = await run(page, ["--home", dir, "--out", out], undefined);
+  assert.equal(result.code, 0, result.err);
+  assert.match(result.out, /^wrote config\.html: \d+ prompt variants, 2 runs$/);
+  const html = readFileSync(out, "utf8");
+  assert.ok(html.includes("<h1>Desk</h1>"));
+  assert.ok(html.includes("Caterpillar Inc.") && html.includes("<b>public</b> at 0.93"), "run r1's prompt.json is read");
+  const link = /href="([^"]*)"/.exec(html)[1];
+  assert.match(link, /^\.\.\/.*home\/runs\/r1\/work\/brief\.md$/, "the brief is linked by a path relative to the page, never an absolute one");
+  assert.ok(html.includes("completed<small>$0.0200</small>"), "the outcome and cost come from the runs index");
+  assert.equal([...html.matchAll(/href="([^"]*)"/g)].length, 1, "r2 has no brief and so no link");
+  assert.equal(readdirSync(dirname(out)).filter((name) => name.endsWith(".tmp")).length, 0, "no temporary file is left");
+  assert.equal(typeof (await real.readAgentHome(await real.openAgentHome(dir))).runs.r1.endedAt, "string");
+});
+
+test("config-page shows the prompts the home holds and the question's rule, through the home's own readAgentHome", async () => {
+  const { dir } = await homeWithRuns();
+  const wrapped = { ...real, readAgentHome: async (home) => ({ ...(await real.readAgentHome(home)), prompts: PROMPTS }) };
+  const out = join(await fresh("page-prompts"), "config.html");
+  const result = await run(page, ["--home", dir, "--out", out], wrapped);
+  assert.equal(result.code, 0, result.err);
+  assert.match(result.out, /6 prompt variants, 2 runs/);
+  const html = readFileSync(out, "utf8");
+  assert.ok(html.includes("loads when company_kind is public at 0.8 or more"));
+  assert.ok(html.includes("0.8 or more) is added to the base"));
+});
+
+test("config-page: a missing argument is exit 2, a directory that is not a home is exit 1 and writes no page", async () => {
+  assert.equal((await run(page, ["--home", "x"], undefined)).code, 2);
+  assert.equal((await run(page, ["--out", "x"], undefined)).code, 2);
+  const nothere = await fresh("not-a-home");
+  const out = join(await fresh("no-page"), "config.html");
+  const result = await run(page, ["--home", nothere, "--out", out], undefined);
+  assert.equal(result.code, 1);
+  assert.match(result.err, /no page written: .* is not an agent home/);
+  assert.equal(existsSync(out), false);
+});
+
+test("with the built package's setPrompts, the edit tool and the page round-trip through a real home", { skip: typeof real.setPrompts === "function" ? false : "this build of @parcha/pi-durable-agent has no setPrompts yet (durable-agent/prompts)" }, async () => {
+  const dir = join(await fresh("real-roundtrip"), "home");
+  const saved = await run(edit, ["--home", dir, "--init"], real);
+  assert.equal(saved.code, 0, saved.err);
+  assert.match(saved.out, /saved 6 prompt variants/);
+  const shown = JSON.parse((await run(edit, ["--home", dir, "--show", "--json"], real)).out);
+  assert.deepEqual(normalizePrompts(shown.prompts).map((v) => v.label), PROMPTS.map((v) => v.label));
+  const out = join(await fresh("real-page"), "config.html");
+  assert.equal((await run(page, ["--home", dir, "--out", out], real)).code, 0);
+  assert.ok(readFileSync(out, "utf8").includes("loads when company_kind is nonprofit at 0.8 or more"));
+});

@@ -1,0 +1,40 @@
+{
+  "id": "company-research",
+  "version": 1,
+  "name": "Desk",
+  "description": "Researches one company or organisation on the web and writes a short brief in which every fact is cited to a page it fetched. Which sources it starts with depends on what kind of organisation it is: the host decides that before the first turn and loads the matching prompt from the agent's own store.",
+  "instructions": "You are Desk, a research assistant. The host gives you a research guide for the kind of organisation you are asked about. Follow it. Use web_fetch to read pages, and read and write for your workspace. Write brief.md and answer in the chat (the research-brief skill).",
+  "skills": [
+    "research-brief"
+  ],
+  "tools": [
+    "web_fetch",
+    "write",
+    "read"
+  ],
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "company": {
+        "type": "string",
+        "description": "The company or organisation to research, as the person names it."
+      }
+    },
+    "required": [
+      "company"
+    ]
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "Workspace path of the brief, brief.md."
+      }
+    },
+    "required": [
+      "brief"
+    ]
+  },
+  "max_cost_usd": 1
+}
