@@ -241,8 +241,10 @@ function checkRevision(ifRevision: unknown): number | undefined {
 /** A prompt variant as `setPrompts` takes it: with its `id`. */
 export type PromptVariantInput = PromptVariant & { id: string };
 
-const ROLES = new Set(["base", "overlay", "generic"]);
-const VARIANT_FIELDS = new Set(["id", "role", "label", "text", "when"]);
+const ROLES = new Set(["base", "overlay", "generic", "question"]);
+const VARIANT_FIELDS = new Set(["id", "role", "label", "text", "when", "criteria"]);
+/** The option every question has, for an input no overlay fits. */
+export const OTHER_OPTION = "other";
 const RULE_FIELDS = new Set(["question", "option", "threshold"]);
 const MAX_VARIANTS = 64;
 const MAX_LABEL = 200;
@@ -256,15 +258,25 @@ function checkRule(id: string, when: unknown): PromptRule {
   const extra = extraField(when, RULE_FIELDS);
   if (extra !== undefined) throw invalid(`the prompt ${id}'s when has a field a rule does not keep: ${extra}`);
   const { question, option, threshold } = when;
-  if (!isText(question, MAX_QUESTION)) throw invalid(`the prompt ${id}'s question is not a non-empty string of at most ${MAX_QUESTION} characters`);
+  if (typeof question !== "string" || !ID_PATTERN.test(question)) throw invalid(`the prompt ${id}'s question ${JSON.stringify(question)} is not a prompt id`);
   if (!isText(option, MAX_LABEL)) throw invalid(`the prompt ${id}'s option is not a non-empty string of at most ${MAX_LABEL} characters`);
+  if (option === OTHER_OPTION) throw invalid(`the prompt ${id}'s option is "${OTHER_OPTION}", which every question has for an input no overlay fits`);
   if (typeof threshold !== "number" || !(threshold >= 0 && threshold <= 1)) throw invalid(`the prompt ${id}'s threshold ${String(threshold)} is not a number from 0 to 1`);
   return { question, option, threshold };
 }
 
+function checkCriteria(id: string, criteria: unknown): Record<string, string> {
+  if (!isObject(criteria)) throw invalid(`the prompt ${id}'s criteria are not option names to descriptions`);
+  for (const [option, description] of Object.entries(criteria)) {
+    if (!isText(description, MAX_QUESTION)) throw invalid(`the prompt ${id}'s criterion for ${option} is not a non-empty string of at most ${MAX_QUESTION} characters`);
+  }
+  return { ...(criteria as Record<string, string>) };
+}
+
 /** A prompt set as stored, in the given order, or a refusal naming the first thing that is wrong: one `base`, one
- *  `generic`, any number of `overlay`s, each id one URL segment and given once, and the stated sizes. */
-function checkPrompts(variants: unknown): [string, PromptVariant][] {
+ *  `generic`, any number of `overlay`s, at most one `question`, each id one URL segment and given once, the stated
+ *  sizes, and rules that name the question row and an option no other overlay needs. */
+export function checkPrompts(variants: unknown): [string, PromptVariant][] {
   if (!Array.isArray(variants)) throw invalid("the prompts are not a list of variants");
   if (variants.length > MAX_VARIANTS) throw invalid(`the prompts are ${variants.length} variants; a set has at most ${MAX_VARIANTS}`);
   const checked: [string, PromptVariant][] = [];
@@ -275,15 +287,33 @@ function checkPrompts(variants: unknown): [string, PromptVariant][] {
     if (checked.some(([seen]) => seen === id)) throw invalid(`the prompt id ${id} is given twice`);
     const extra = extraField(variant, VARIANT_FIELDS);
     if (extra !== undefined) throw invalid(`the prompt ${id} has a field a variant does not keep: ${extra}`);
-    if (typeof role !== "string" || !ROLES.has(role)) throw invalid(`the prompt ${id}'s role ${JSON.stringify(role)} is not base, overlay or generic`);
+    if (typeof role !== "string" || !ROLES.has(role)) throw invalid(`the prompt ${id}'s role ${JSON.stringify(role)} is not base, overlay, generic or question`);
     if (!isText(label, MAX_LABEL)) throw invalid(`the prompt ${id}'s label is not a non-empty string of at most ${MAX_LABEL} characters`);
     if (typeof text !== "string" || text.trim() === "" || Buffer.byteLength(text, "utf8") > MAX_TEXT_BYTES) throw invalid(`the prompt ${id}'s text is not a non-empty string of at most ${MAX_TEXT_BYTES} bytes`);
     if (when !== undefined && role !== "overlay") throw invalid(`the prompt ${id} is the ${role}; only an overlay has a when`);
-    checked.push([id, { role: role as PromptVariant["role"], label, text, ...(when === undefined ? {} : { when: checkRule(id, when) }) }]);
+    if (variant.criteria !== undefined && role !== "question") throw invalid(`the prompt ${id} is the ${role}; only a question has criteria`);
+    checked.push([id, {
+      role: role as PromptVariant["role"], label, text,
+      ...(when === undefined ? {} : { when: checkRule(id, when) }),
+      ...(variant.criteria === undefined ? {} : { criteria: checkCriteria(id, variant.criteria) }),
+    }]);
   }
   for (const role of ["base", "generic"]) {
     const count = checked.filter(([, variant]) => variant.role === role).length;
     if (count !== 1) throw invalid(`the prompts have ${count} ${role} variants; a set has exactly one`);
+  }
+  const questions = checked.filter(([, variant]) => variant.role === "question").map(([id]) => id);
+  if (questions.length > 1) throw invalid(`the prompts have ${questions.length} questions (${questions.join(", ")}); a set has at most one`);
+  const options = new Map<string, string>();
+  for (const [id, { when }] of checked) {
+    if (!when) continue;
+    if (when.question !== questions[0]) throw invalid(`the prompt ${id}'s question ${when.question} is not the set's question row`);
+    if (options.has(when.option)) throw invalid(`the option ${when.option} is needed by both ${options.get(when.option)} and ${id}`);
+    options.set(when.option, id);
+  }
+  for (const [id, { criteria }] of checked) {
+    const unknown = Object.keys(criteria ?? {}).find((option) => option !== OTHER_OPTION && !options.has(option));
+    if (unknown !== undefined) throw invalid(`the question ${id} describes ${unknown}, which no overlay needs`);
   }
   return checked;
 }
