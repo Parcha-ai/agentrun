@@ -214,3 +214,21 @@ test('the built index carries the lock\'s title and view for an id it names, and
     assert.match(gateProblems(join(dir, 'dist'), bare).map(({ message }) => message)[0], /^holds the title "The reference job, in words of its own" for reference-job, not the lock's undefined$/, 'an index whose entry carries fields the lock does not name is refused too');
   }
 });
+
+test('the gallery is built and listed in the lock\'s order, the ids it does not name after them by name; a lock [b, a] builds [b, a]; the gate refuses an index in another order', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'gallery-order-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  for (const id of ['a', 'b', 'c', 'd']) cpSync(referenceJob, join(dir, 'recordings', id), { recursive: true });
+  const lock = { asset: 'recordings.tar', sha256: 'a'.repeat(64), ids: ['b', 'a'] };
+  const lockPath = join(dir, 'recordings.lock.json');
+  writeFileSync(lockPath, JSON.stringify(lock));
+  const ids = (files) => (files ? JSON.parse(readFileSync(join(dir, 'dist', 'recordings', 'index.json'), 'utf8')) : JSON.parse(readFileSync(join(dir, 'dist', 'gallery.js'), 'utf8').slice('window.AGENTRUN_GALLERY = '.length, -2))).map((entry) => entry.id);
+  for (const files of [false, true]) {
+    build(join(dir, 'dist'), join(dir, 'recordings'), { files, lock: lockPath });
+    assert.deepEqual(ids(files), ['b', 'a', 'c', 'd'], `the lock's [b, a] first, then c and d by name (files: ${files})`);
+    assert.deepEqual(gateProblems(join(dir, 'dist'), lock), [], 'the gate passes the index in the lock\'s order');
+    assert.match(gateProblems(join(dir, 'dist'), { ...lock, ids: ['a', 'b'] }).map(({ message }) => message)[0] ?? '', /^lists \["b","a","c","d"\], not in the lock's order \["a","b","c","d"\]$/, 'an index in another order than the lock\'s is refused');
+  }
+  build(join(dir, 'dist'), join(dir, 'recordings'), { files: false });
+  assert.deepEqual(ids(false), ['a', 'b', 'c', 'd'], 'with no lock, by name as before');
+});
