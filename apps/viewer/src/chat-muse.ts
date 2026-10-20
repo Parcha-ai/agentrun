@@ -45,7 +45,8 @@ const FILE_LINE = new RegExp(`^[\\w][\\w .-]*\\.${EXT}$`, 'i');
 export function museFiles(text: string): { text: string; files: string[] } {
   const files: string[] = [];
   const kept = text.split('\n').filter((line) => {
-    const bare = line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim();
+    // A list item's name as a person reads it: markdown's backticks and bold marks around it are not part of the name.
+    const bare = line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').replace(/[`*]/g, '').trim();
     if (bare !== '' && FILE_LINE.test(bare)) { if (!files.includes(bare)) files.push(bare); return false; }
     return true;
   }).join('\n').replace(/\n{3,}/g, '\n\n').trim();
