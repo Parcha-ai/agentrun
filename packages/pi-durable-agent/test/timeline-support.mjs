@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 /** The run viewer's recordings and test fixtures, read only. */
 const VIEWER = fileURLToPath(new URL("../../../apps/viewer/", import.meta.url));
 
-/** The lines of the recording at `path` under apps/viewer ("recordings/reference-job"). */
+/** The lines of the recording at `path` under apps/viewer ("test/fixtures/reference-job"). */
 export function lines(path) {
   return readFileSync(`${VIEWER}/${path}/events.jsonl`, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 }

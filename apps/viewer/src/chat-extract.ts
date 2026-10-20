@@ -2,7 +2,7 @@
 // thread (its messages as recorded, the run's own thinking, one card per tool call), the session's spans (workflow
 // nodes, LLM calls, tool calls, the model calls made inside a tool), what each look read, the run's cited answer and
 // the agent's artifact. The same code for every run; pure but for reading a blob's JSON, which the caller passes.
-import type { Json, Recording } from './format.ts';
+import type { Json, Line, Manifest, Recording } from './format.ts';
 import type { ChatCall, ChatDecision, ChatItem, ChatModel, ChatRow, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
 
 type Obj = { [key: string]: Json };
@@ -171,6 +171,20 @@ function chatCallLabel(name: string, body: Json | undefined): string {
   return chatClip([name, ...parts].join(' · '), 160);
 }
 
+/** An answer in words, its first sentence that says something: the first line with words that is no heading (a `#`
+ *  line, or a line wholly bold or italic) and does not end in a colon (a lead-in), its quote or list marker and a timed
+ *  answer's times left out, cut at its first sentence's end (never at an initial, nor at a question it repeats). */
+export function chatSaid(body: Json | undefined): string | undefined {
+  const text = chatStr(body)?.trim();
+  if (!text) return undefined;
+  try { if (typeof JSON.parse(text) === 'object') return undefined; } catch { /* words */ }
+  const line = text.split('\n').map((each) => each.trim().replace(/^[\d.]+\t[\d.]+\t/, '').replace(/^(?:>\s*)+/, '').replace(/^(?:[*+-]|\d+[.)])\s+/, ''))
+    .find((each) => /[\p{L}\p{N}]/u.test(each) && !/^#{1,6}\s/.test(each) && !/^(\*{1,2}|_{1,2})(?:(?!\1).)+\1$/.test(each) && !/:(?:\*\*|__|\*|_)?$/.test(each));
+  if (!line) return undefined;
+  const sentence = /^(.{20,}?(?<!\b\p{Lu})[.!](?:\*\*|__|\*|_)?)\s/u.exec(line)?.[1] ?? line;
+  return chatClip(sentence, 240);
+}
+
 /** A model call's output as recorded, a JSON one indented. */
 function chatRaw(body: Json | undefined): string {
   const raw = typeof body === 'string' ? body : body === undefined || body === null ? '' : JSON.stringify(body);
@@ -179,6 +193,38 @@ function chatRaw(body: Json | undefined): string {
 }
 
 /** The chat + report view's model of a recording. `readJson` reads a blob's JSON (the run's cited result). */
+/** Each conversation an agent node of the workflow ran, and that node's path. */
+function chatNodeConversations(lines: readonly Line[]): Map<string, string> {
+  const pathOfConversation = new Map<string, string>();
+  for (const line of lines) {
+    if (line.kind !== 'agentrun.nodes' || line.channel !== 'durable') continue;
+    const conversation = chatId(chatObj(chatObj(line.data)?.value)?.conversation);
+    if (conversation && line.path) pathOfConversation.set(conversation, line.path);
+  }
+  return pathOfConversation;
+}
+
+/** The run's input as given, when the workflow's nodes hold every recorded conversation: the runner drives each one, so
+ *  no person speaks in it. A conversation no node holds is one a person may speak in, and a workflow it ran is a call of
+ *  that conversation, its input that call's. */
+export function chatGivenInput(lines: readonly Line[]): Json | undefined {
+  const pathOfConversation = chatNodeConversations(lines);
+  const entries = ['pi.user', 'pi.assistant', 'pi.tool-result'];
+  const conversations = new Set(lines.filter((line) => line.channel === 'durable' && entries.includes(line.kind))
+    .map((line) => chatId(chatObj(line.data)?.conversationId) ?? chatId(line.conv)).filter((each): each is string => !!each));
+  const driven = conversations.size > 0 && [...conversations].every((conversation) => pathOfConversation.has(conversation));
+  const given = chatObj(lines.find((line) => line.channel === 'durable' && line.kind === 'agentrun.workflow')?.data)?.input;
+  return driven ? chatObj(given)?.input : undefined;
+}
+
+/** A run's title, by one rule wherever it is shown: the artifact's title, else the first line of the input's question,
+ *  else the recording's title. Without the run's lines (a gallery's list) the question is not known. */
+export function chatTitle(manifest: Manifest, inputValue?: Json): string {
+  const artifact = chatObj((manifest as { artifact?: Json }).artifact);
+  const question = typeof inputValue === 'string' ? inputValue : chatStr(chatObj(inputValue)?.question);
+  return chatStr(artifact?.title) ?? (question?.trim() ? chatClip(chatFirstLine(question), 140) : manifest.title);
+}
+
 export async function extractChat(recording: Recording, readJson: (sha: string) => Promise<Json | undefined>): Promise<ChatModel> {
   const { manifest } = recording;
   // A recording with no times keeps its file's order: each line placed at its position, the axis read as an order.
@@ -190,24 +236,16 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   const nodeAt = new Map<string, { label: string; t0?: number; t1?: number }>();
   for (const line of live('node.start')) nodeAt.set(line.path ?? '', { label: chatStr(chatObj(line.data)?.label) ?? line.path ?? 'node', t0: line.t });
   for (const line of live('node.end')) { const node = nodeAt.get(line.path ?? ''); if (node) node.t1 = line.t; }
-  const pathOfConversation = new Map<string, string>();
-  for (const line of lines) {
-    if (line.kind !== 'agentrun.nodes' || line.channel !== 'durable') continue;
-    const conversation = chatId(chatObj(chatObj(line.data)?.value)?.conversation);
-    if (conversation && line.path) pathOfConversation.set(conversation, line.path);
-  }
-
-  // The run's input as given, when the workflow's nodes hold every recorded conversation: the runner drives each one,
-  // so no person speaks in it. A conversation no node holds is one a person may speak in, and a workflow it ran is a
-  // call of that conversation, its input that call's.
-  const entries = ['pi.user', 'pi.assistant', 'pi.tool-result'];
-  const conversations = new Set(lines.filter((line) => line.channel === 'durable' && entries.includes(line.kind))
-    .map((line) => chatId(chatObj(line.data)?.conversationId) ?? chatId(line.conv)).filter((each): each is string => !!each));
-  const driven = conversations.size > 0 && [...conversations].every((conversation) => pathOfConversation.has(conversation));
-  const given = chatObj(lines.find((line) => line.channel === 'durable' && line.kind === 'agentrun.workflow')?.data)?.input;
-  const inputValue = driven ? chatObj(given)?.input : undefined;
+  const pathOfConversation = chatNodeConversations(lines);
+  const inputValue = chatGivenInput(lines);
+  // A record's `question` is the person's words and its `files` what they handed over; any other field is a detail.
+  const inputRecord = chatObj(inputValue);
+  const asked = chatStr(inputRecord?.question);
+  const handed = inputRecord?.files === undefined ? undefined : chatList(inputRecord.files).length ? chatList(inputRecord.files) : [inputRecord.files];
+  const files = handed?.every((each) => typeof each === 'string') ? handed as string[] : undefined;
+  const rest = Object.entries(inputRecord ?? {}).filter(([name]) => !(name === 'question' && asked !== undefined) && !(name === 'files' && files));
   const input: ChatModel['input'] = typeof inputValue === 'string' ? { text: inputValue }
-    : chatObj(inputValue) ? { fields: Object.entries(chatObj(inputValue)!).map(([name, value]) => ({ name, value: chatPlain(value) })) } : undefined;
+    : inputRecord ? { ...(asked !== undefined ? { question: asked } : {}), ...(files ? { files } : {}), ...(rest.length ? { fields: rest.map(([name, value]) => ({ name, value: chatPlain(value) })) } : {}) } : undefined;
 
   // Tool calls' times, by call id, from the live start and end lines.
   const toolTimes = new Map<string, { t0?: number; t1?: number }>();
@@ -223,6 +261,8 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   // Each recorded conversation as a thread: its stored entries in file order, each entry once.
   const threads = new Map<string, ChatThread>();
   const toolItems = new Map<string, Extract<ChatItem, { kind: 'tool' }>>();
+  /** The calls made with one string argument: a command or a script. */
+  const commands = new Set<string>();
   const assistantItems = new Map<string, { id: string; t: number }[]>();
   const seen = new Set<string>();
   const prompted = new Set<string>();
@@ -277,6 +317,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
             const times = toolTimes.get(callId);
             const said = Object.values(chatObj(p.arguments) ?? {});
             const detail = said.length === 1 && typeof said[0] === 'string' && said[0].trim().includes('\n') ? said[0] : undefined;
+            if (said.length === 1 && typeof said[0] === 'string') commands.add(callId);
             const item: Extract<ChatItem, { kind: 'tool' }> = { kind: 'tool', id: `item-${++counter}`, tool: name, title: chatToolTitle(name, p.arguments), ...(detail ? { detail } : {}), takeaway: '', media: [], looks: [], calls: [], ...(chatIsJudge(name) ? { judge: true as const } : {}),
               ...(times?.t0 !== undefined ? { t0: times.t0 } : {}), ...(times?.t1 !== undefined ? { t1: times.t1 } : {}) };
             thread.items.push(item);
@@ -366,8 +407,9 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     let typed = false;
     try { typed = !!asked && typeof JSON.parse(asked) === 'object'; } catch { /* words */ }
     const ask = asked && !typed ? chatClip(chatFirstLine(asked), 160) : '';
+    const said = chatSaid(record?.body);
     const call: ChatCall = { id: `call-${++counter}`, name, label: chatCallLabel(name, record?.body), raw: chatRaw(record?.body), ...(key ? { look: key } : {}), ...(model ? { model } : {}), ...judge,
-      ...(ask ? { ask } : {}),
+      ...(ask ? { ask } : {}), ...(said ? { said } : {}),
       ...(started !== undefined ? { t0: started } : {}), t1: line.t };
     if (item) item.calls.push(call);
     spans.push({ id: `span-${spans.length + 1}`, actor: 'inner', lane: name, label: call.label, t0: started ?? line.t, ...(started !== undefined ? { t1: line.t } : {}),
@@ -431,6 +473,9 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     const only = item.looks.length === 1 ? sources[item.looks[0]!] : undefined;
     if (only?.takeaway) item.takeaway = only.takeaway;
   }
+
+  // A step that ran a command or a script and made no look and no picture is plumbing.
+  for (const [callId, item] of toolItems) if (commands.has(callId) && !item.calls.some((call) => call.look) && item.media.length === 0) item.plumbing = true;
 
   // A step that nothing the agent thought or wrote leads into speaks for itself with what a look of it asked in words;
   // a step whose looks asked nothing in words has no voice (a look's line and a call's result are logs, never a voice).
@@ -496,9 +541,8 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   const times = lines.map((line) => line.t).filter((t) => typeof t === 'number' && t > 0);
   const resultLine = lines.findLast((line) => line.kind === 'result');
   const artifact = chatObj((manifest as { artifact?: Json }).artifact);
-  const question = typeof inputValue === 'string' ? inputValue : chatStr(chatObj(inputValue)?.question);
   return {
-    title: chatStr(artifact?.title) ?? (question?.trim() ? chatClip(chatFirstLine(question), 140) : manifest.title),
+    title: chatTitle(manifest, inputValue),
     ...(input ? { input } : {}),
     threads: ordered,
     spans: times.length ? spans : [],
