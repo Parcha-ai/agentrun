@@ -44,6 +44,23 @@ test('the lake-mead run is given its map key as a file: inputs.json lists map-ke
   try { assert.deepEqual([...jobOf().files['map-key.md']], [...bytes], 'the job carries it as the run\'s own file'); } finally { delete process.env.INPUT; }
 });
 
+test('the lake-mead run is given the elevation record as a file beside the images and the map key: fifteen inputs in all, each checked, and the job copies it into the workspace', () => {
+  const example = exampleAt('lake-mead');
+  assert.equal(example.items.length, 15, 'thirteen images, the map key and the elevation record');
+  const record = example.items.find((item) => item.path === 'lake-mead-elevation.csv');
+  assert.ok(record, 'inputs.json lists lake-mead-elevation.csv as a committed file');
+  assert.equal(inputOf(example).files.length, 15, 'the run is told of every one');
+  assert.ok(inputOf(example).files.includes('lake-mead-elevation.csv'));
+  const bytes = readFileSync(join(example.dir, 'lake-mead-elevation.csv'));
+  assert.deepEqual([bytes.length, sha256(bytes)], [record.bytes, record.sha256]);
+  const rows = bytes.toString().trim().split('\n');
+  assert.equal(rows[0], 'year,month,elevation_ft');
+  assert.ok(rows.slice(1).every((row) => /^\d{4},(?:[1-9]|1[0-2]),\d+\.\d\d$/.test(row)), 'a row a month: year, month, feet');
+  for (const row of ['2000,5,1207.67', '2003,7,1141.93', '2022,7,1040.92']) assert.ok(rows.includes(row), `${row} is the table's value`);
+  process.env.INPUT = JSON.stringify({ example: 'lake-mead' });
+  try { assert.deepEqual([...jobOf().files['lake-mead-elevation.csv']], [...bytes], 'the job carries it as the run\'s own file'); } finally { delete process.env.INPUT; }
+});
+
 test('each example is a question, its files with their sources and checks, and a README; nothing in it is code', () => {
   const assets = readFileSync(join(import.meta.dirname, '..', 'ASSETS.md'), 'utf8');
   for (const name of EXAMPLES) {

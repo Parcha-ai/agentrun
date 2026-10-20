@@ -30,5 +30,5 @@ To connect models, follow [support integration](support-quickstart.md) or [resea
 - **[The Apollo 11 descent](../examples/apollo-descent/README.md).** NASA's transcript, photographs and film, read into the landing minute by minute.
 - **[A government film, in chapters](../examples/boulder-chapters/README.md).** A 1930s film on the building of Boulder Dam, cut into chapters.
 - **[A robot in a long film](../examples/fair-robot/README.md).** When a golden robot is first seen in a 1939 film of nearly an hour, and where it is in the frame.
-- **[Lake Mead from space](../examples/lake-mead/README.md).** Thirteen Landsat images of one frame, 1984 to 2024: when the water fell the most and where, with a box on where it fell.
+- **[Lake Mead from space](../examples/lake-mead/README.md).** Thirteen Landsat images of one frame, 1984 to 2024, and the lake's elevation record: when the water fell the most and where, with a box on each place that went dry then.
 - **[A trip down Market Street, 1906](../examples/market-street/README.md).** A single take from a cable car: every vehicle that crosses in front of the camera, to the second, boxed, then counted by kind.

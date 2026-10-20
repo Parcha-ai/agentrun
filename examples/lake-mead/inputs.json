@@ -1,5 +1,5 @@
 {
- "about": "Thirteen Landsat images of the same frame over Lake Mead, Hoover Dam to the Overton Arm, from 1984 to 2024, and a map key of the named places in that frame, committed here and checked by size and SHA-256.",
+ "about": "Thirteen Landsat images of the same frame over Lake Mead, Hoover Dam to the Overton Arm, from 1984 to 2024, a map key of the named places in that frame, and the lake's end-of-month elevation record, committed here and checked by size and SHA-256.",
  "frame": {
   "crs": "WGS 84 / UTM zone 11N (EPSG:32611)",
   "pixel_m": 60.0,
@@ -337,6 +337,15 @@
    "sha256": "320dda97c7dccc19ec3f5dc67b4b2943583876a8d1f975f56b411274ae03bb9e",
    "source": "Park Map - Lake Mead National Recreation Area, National Park Service, Harpers Ferry Center: https://www.nps.gov/npgallery/GetAsset/b74cc29c-79a5-4ab4-ac69-54982c8a4a3a (names only)",
    "license": "NPS maps: public domain"
+  },
+  {
+   "id": "lake-mead-elevation",
+   "title": "Lake Mead at Hoover Dam, end-of-month elevation in feet, one row a month from 1935 to 2025 for every month the table gives a value",
+   "path": "lake-mead-elevation.csv",
+   "bytes": 16646,
+   "sha256": "7213b966304b53aa49a1b70cb6e218f9f144269d92d2ae0ccb9e2c5a939c5bc4",
+   "source": "Lake Mead at Hoover Dam, end-of-month elevation (feet), Bureau of Reclamation, Lower Colorado Region, https://www.usbr.gov/lc/region/g4000/hourly/mead-elv.html, retrieved 2026-10-19",
+   "license": "a work of the U.S. federal government, public domain"
   }
  ],
  "mirror": {
