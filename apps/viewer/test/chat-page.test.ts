@@ -17,7 +17,7 @@ import { after, test } from 'node:test';
 import { build } from '../build.mjs';
 import type { ChatSource } from '../src/chat-model.ts';
 import type { Line } from '../src/format.ts';
-import { reportFileOf, reportLinkOf, reportStyles } from '../src/chat-report.ts';
+import { reportFileOf, reportLinkOf, reportRowsShown, reportStyles } from '../src/chat-report.ts';
 import { sourceByHref, sourceFrameAt, sourceKindOf, sourcePageOf, sourcePictureFor, sourceRegionOf, threadPlace, threadThought } from '../src/chat-view.ts';
 import { CITED, FILM, K, lines, manifest as handManifest, PAGES, PHOTOS, SCANS, deliverInstead, png, writeRecording } from './vision-hand.ts';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
@@ -54,6 +54,16 @@ test('a sheet the agent\'s page imports is rewritten from its own path, served o
   assert.deepEqual(served, ['@import url("about:invalid");.x{background:url("held:png")}'], 'its picture from its own folder; its import of the sheet importing it dropped');
   assert.equal(await styles('@import "css/sub/more.css";', 'index.html'), '@import url("served:1");', 'imported again, the same sheet');
   assert.equal(served.length, 1);
+});
+
+test('an answer row that only says the title again is not drawn twice: its cites and note stay, its text goes', UNIT, () => {
+  const title = 'Option 2 is selected and both boxes are ticked.';
+  const cites = [{ href: 'evidence/read.json' }];
+  const answer = (rows: { label: string; text: string; note?: string; cites: { href: string }[] }[]) => ({ title, rows, from: 'record' as const });
+  assert.deepEqual(reportRowsShown(answer([{ label: 'answer', text: ` ${title}\n`, cites: [] }, { label: 'pages', text: '2', cites: [] }])), [{ label: 'pages', text: '2', cites: [] }]);
+  assert.deepEqual(reportRowsShown(answer([{ label: 'answer', text: title, cites }])), [{ label: 'answer', text: '', cites }]);
+  assert.deepEqual(reportRowsShown(answer([{ label: 'answer', text: title, note: 'from the page', cites: [] }])), [{ label: 'answer', text: '', note: 'from the page', cites: [] }]);
+  assert.deepEqual(reportRowsShown(answer([{ label: 'answer', text: 'Option 2.', cites: [] }])), [{ label: 'answer', text: 'Option 2.', cites: [] }]);
 });
 
 test('a region comes from the citation\'s address alone, and lands on the page or frame it names', UNIT, () => {

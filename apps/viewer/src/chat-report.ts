@@ -1,6 +1,6 @@
 // The right side of the chat page: the agent's own page (manifest.artifact) in a frame that runs nothing and loads only
 // the recording's blobs, else the run's cited answer drawn here. A citation in either calls `open` with its address.
-import type { ChatArtifact, ChatModel } from './chat-model.ts';
+import type { ChatArtifact, ChatModel, ChatRow } from './chat-model.ts';
 import type { Recording } from './format.ts';
 import { opensInPage } from './blobs.ts';
 
@@ -286,6 +286,13 @@ const REPORT_TITLE = 90;
 /** A cite that points somewhere: an address, a look of the run, or a picture the recording holds. */
 const reportCites = (cite: { href: string; look?: string; blob?: string }) => cite.href !== '' || cite.look !== undefined || cite.blob !== undefined;
 
+/** The rows of the run's answer to draw under its title: a row that only says the title again keeps its cites and its
+ *  note, not its text, and is left out when it has neither. */
+export function reportRowsShown(answer: NonNullable<ChatModel['answer']>): ChatRow[] {
+  const title = answer.title.trim();
+  return answer.rows.flatMap((row) => (row.text.trim() !== title ? [row] : row.note || row.cites.some(reportCites) ? [{ ...row, text: '' }] : []));
+}
+
 /** The run's answer, drawn here (cited, its submitted record, or its final message): each row with its chips, each chip
  *  opening the source it cites. */
 function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording, open: ReportOpen, none = 'This run has no report.') {
@@ -298,7 +305,7 @@ function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording,
     return { scroller, cited: new Set<string>() };
   }
   const cited = new Set<string>();
-  const rows = answer.rows.map((row) => reportEl('li', { class: row.label === '' ? 'arow wide' : 'arow' },
+  const rows = reportRowsShown(answer).map((row) => reportEl('li', { class: row.label === '' ? 'arow wide' : 'arow' },
     row.label !== '' && reportEl('span', { class: 'alabel', text: row.label }),
     reportEl('div', {}, ...reportParagraphs(row.text), row.note && reportEl('p', { class: 'anote', text: row.note }), row.cites.some(reportCites) && reportEl('div', { class: 'cites' }, ...row.cites.filter(reportCites).map((cite) => {
       if (cite.look) cited.add(cite.look);
