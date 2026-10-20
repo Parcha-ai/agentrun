@@ -17,7 +17,7 @@ import { rerow } from './rerow.mjs';
 import { rescore } from './rescore.mjs';
 import { lineOf, openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { CITE_QUESTION_V4, countryCode, entityName, HQ_QUESTION, MAX_SUBSIDIARIES, scoreCites, scoreHq, scoreSegments, scoreSubsidiaries, scoreV4, SEGMENT_PICK } from './score-v4.mjs';
-import { agentScriptV4Compose, CLASSIFY_WORKFLOW_V4, FIXTURES_V2, FIXTURES_V4, PART_CODE, PART_FIND_REPORT, readJson, scriptedModel, WORKFLOW } from './scripted.mjs';
+import { agentScriptV4Compose, CLASSIFY_ROUTED_V4, CLASSIFY_WHOLE_V4, CLASSIFY_WORKFLOW_V4, FIXTURES_V2, FIXTURES_V4, PART_CODE, PART_FIND_REPORT, readJson, scriptedModel, WORKFLOW } from './scripted.mjs';
 import { SETS } from './sets.mjs';
 
 async function scratch(t) {
@@ -341,6 +341,9 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   // Parts on trial are built on now; with none, the whole job is written as a workflow after the first run.
   const flat = (body) => body.replace(/\s+/g, ' ');
   for (const words of [/Admitted includes trial/, /do not wait for them to be promoted/, /If no `classify-company` exists after your first run, write one for the whole job/, /narrow agent steps/, /Embed parts into it as they are admitted/]) assert.match(flat(v4Rules), words);
+  // A new kind of company grows classify-company by a route; a complete run is never a reason to save.
+  for (const words of [/When `classify-company` escalates on a kind of company it does not handle yet, grow it rather than rework it: add a route for that kind/, /keep the paths for the kinds it already handles as they are/, /a complete answer is not a reason to rewrite, only an escalation or a failure is/, /Saving a new revision after a complete run starts its trust over/])
+    assert.match(flat(v4Rules), words);
   // The code is chosen from sic_codes by where most revenue comes from, never remembered.
   for (const words of [/its 4-digit SIC code, from sic_codes: sic2_groups for the group/, /chosen by where most revenue comes from/, /A code you remember from EDGAR or elsewhere is a guess, never evidence/, /the revenue reading wins, and the code's cite is the revenue table it rests on/])
     assert.match(flat(text(v4, 'AGENTS.md')), words);
@@ -479,7 +482,7 @@ test('composition: the parts are admitted, then classify-company embedding them,
   const parts = scriptedParts({ set: SETS.v4 });
   const truth = readJson(join(FIXTURES_V4, 'answers.json'));
   // The six companies with a website, then one without (Bluefin), after classify-company is promoted.
-  parts.companies = [...parts.companies.filter((c) => c.website), { ...parts.companies.find((c) => c.split === 'run' && !c.website), order: 99 }];
+  parts.companies = [...parts.companies.filter((c) => c.website && c.order <= 7), { ...parts.companies.find((c) => c.split === 'run' && !c.website), order: 99 }];
   parts.modelFor = (job, run) => scriptedModel(agentScriptV4Compose({ job, offered: run.workflows.loaded.map((w) => w.name), fixtures: { truth } }));
   const { rows } = await runLoop({ out, parts, jobs: 7, record: false });
   const names = [PART_CODE.name, PART_FIND_REPORT.name];
@@ -570,3 +573,52 @@ test('a sealed file is "before" when its rows say so, though its seed commit is 
   assert.match(html, /sealed, before \(the seed\)<\/div><div class="v">2 of 2/);
   assert.match(html, /sealed, at ccccccc<\/div><div class="v">1 of 1/);
 });
+
+/** Commits `workflow` to the agent repository's main as classify-company, its live revision promoted (active). */
+async function commitPromoted(repo, root, workflow) {
+  const store = join(root, 'store');
+  await mkdir(store, { recursive: true });
+  const saved = await new WorkflowStore(store).save(WORKFLOW, workflow);
+  const trial = { name: WORKFLOW, status: 'active', when: [], revisions: [{ sha256: saved.digest, status: 'active', since: '2026-10-20T00:00:00.000Z', run: 'run-000', after: 0 }], uses: [] };
+  const commit = await repo.commitTo('main', {
+    files: {
+      [`.pi/agentrun/workflows/${WORKFLOW}/${saved.digest}.json`]: await readFile(join(store, '.pi/agentrun/workflows', WORKFLOW, `${saved.digest}.json`), 'utf8'),
+      [`.pi/agentrun/workflows/${WORKFLOW}/latest`]: `${saved.digest}\n`,
+      [skillPath(WORKFLOW)]: renderSkill(WORKFLOW, 'Use it for any company.'),
+      [trialPath(WORKFLOW)]: renderTrial(trial),
+    },
+    message: 'test: classify-company promoted',
+  });
+  await repo.push(commit.sha, 'main');
+  return saved.digest;
+}
+
+/** Every node label in a workflow document, branches and children included. */
+const labelsOf = (node) => (!node || typeof node !== 'object' ? [] : Array.isArray(node) ? node.flatMap(labelsOf)
+  : [...(node.label ? [node.label] : []), ...Object.entries(node).filter(([key]) => key !== 'workflow' || node.node !== 'workflow').flatMap(([, value]) => labelsOf(value))]);
+
+test('a new kind of company: the promoted whole job escalates, the agent grows it by a route branch (a new revision on trial), and a complete run saves nothing', async (t) => {
+  const root = await scratch(t);
+  const out = join(root, 'out');
+  const { repo } = await openOut(out, { mode: 'scripted', set: SETS.v4 });
+  await commitPromoted(repo, root, CLASSIFY_WHOLE_V4);
+  const parts = scriptedParts({ set: SETS.v4 });
+  const at = (name, order) => ({ ...parts.companies.find((c) => c.name === name), order });
+  // A company the workflow handles, one whose site needs a browser (a kind it does not handle yet), then another it handles.
+  parts.companies = [at('Harbor Valve Works Inc.', 1), at('Quartz Ridge Labs Inc.', 2), at('Summit Ridge Software Corp.', 3)];
+  const { rows } = await runLoop({ out, parts, jobs: 3, record: false });
+  assert.ok(rows.every((r) => r.correct), JSON.stringify(rows.map((r) => [r.company, r.correctOver])));
+  assert.deepEqual(rows.map((r) => [r.dispatched, r.byWorkflow]), [[true, true], [true, false], [false, true]]);
+  // Run 2: the host's run escalates on the empty site; the agent does the job by hand and adds a route for the new kind.
+  assert.deepEqual(rows[1].workflowsUsed.map((u) => [u.name, u.outcome, u.classifiedBy ?? null]), [[WORKFLOW, 'escalated', HOST_WORKFLOW]]);
+  assert.deepEqual(rows[1].workflowsSaved, [WORKFLOW]);
+  assert.deepEqual([rows[1].curate.admitted, rows[1].born, rows[1].rewritten.map((w) => w.name)], [[WORKFLOW], [], [WORKFLOW]]);
+  const record = JSON.parse(execFileSync('git', ['--git-dir', join(out, 'agent.git'), 'show', `main:.pi/agentrun/workflows/${WORKFLOW}/${rows[1].rewritten[0].revision}.json`], { encoding: 'utf8' }));
+  const document = record.workflow ?? record;
+  const route = document.root.steps.find((step) => step.node === 'route' && step.label === 'the kind of site');
+  assert.deepEqual(Object.keys(route.branches), ['reads as text', 'needs a browser']);
+  for (const label of labelsOf(CLASSIFY_WHOLE_V4.root)) assert.ok(labelsOf(document.root).includes(label), `the path it had, ${label}, is kept`);
+  // Run 3: the new revision is on trial, so the agent runs it; it completes, and the agent saves nothing.
+  assert.deepEqual(rows[2].workflowsUsed.map((u) => [u.name, u.outcome, u.revision]), [[WORKFLOW, 'complete', rows[1].rewritten[0].revision]]);
+  assert.deepEqual([rows[2].workflowsSaved, rows[2].curate.admitted, rows[2].born, rows[2].rewritten], [[], [], [], []]);
+}, { timeout: 300_000 });

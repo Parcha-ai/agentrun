@@ -62,5 +62,13 @@
     "links": [
       "https://www.cornerpantry.example/annual-report-2025.pdf"
     ]
+  },
+  "https://www.quartzridge.example": {
+    "title": "Quartz Ridge Labs Inc.",
+    "text": "Quartz Ridge Labs makes specialty reagents and solvents for research laboratories. We report one segment.",
+    "links": [
+      "https://www.quartzridge.example/annual-report-2025.pdf"
+    ],
+    "browserOnly": true
   }
 }

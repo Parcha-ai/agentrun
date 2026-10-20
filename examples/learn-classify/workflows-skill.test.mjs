@@ -100,4 +100,6 @@ test('compose: a saved part embedded as a workflow step runs as a complete inlin
   assert.equal((await dryRunStatus(whole)).status, 'passed', 'the host gate passes it');
   assert.deepEqual(inspectWorkflow(whole).requires.tools, ['fetch_page'], 'the child\'s tools are the whole\'s');
   assert.match(SKILL, /# Compose\n\nA `workflow` step runs a complete inline child/);
+  // A new case grows a workflow by a route branch, not by replacing it; every branch writes what later steps read.
+  assert.match(SKILL.replace(/\s+/g, ' '), /For a new case, add a branch to a `route` rather than replacing the workflow: every branch writes the keys the later steps read\./);
 });

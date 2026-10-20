@@ -16,7 +16,7 @@ export const FETCH_RESULT_SCHEMA = Object.freeze({
   type: 'object', additionalProperties: false, required: ['ok', 'url', 'status', 'title', 'text', 'links'],
   properties: {
     ok: { type: 'boolean' }, url: { type: 'string' }, status: { type: 'integer' }, title: { type: 'string' }, text: { type: 'string' },
-    links: { type: 'array', items: { type: 'string' } }, refused: { type: 'string' },
+    links: { type: 'array', items: { type: 'string' } }, refused: { type: 'string' }, error: { type: 'string' },
   },
 });
 
@@ -37,7 +37,8 @@ export function fixtureFetch(pages, seen = []) {
 
 const escapeHtml = (text) => String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
-/** A `fetch` over the fixture pages, as HTML, for lane C1's fetch_page: the scripted pass runs the real tool on them. */
+/** A `fetch` over the fixture pages, as HTML, for lane C1's fetch_page: the scripted pass runs the real tool on them. A
+ *  page marked `browserOnly` comes back without its text, as a site whose scripts draw it does. */
 export function fixtureWeb(pages, seen = []) {
   const byHref = new Map(Object.entries(pages).map(([url, page]) => [new URL(url).href, page]));
   return async (href) => {
@@ -45,7 +46,8 @@ export function fixtureWeb(pages, seen = []) {
     const page = byHref.get(new URL(href).href);
     if (!page) return new Response('not found', { status: 404, headers: { 'content-type': 'text/plain' } });
     const links = (page.links ?? []).map((link) => `<a href="${escapeHtml(link)}">more</a>`).join(' ');
-    const html = `<!doctype html><html><head><title>${escapeHtml(page.title)}</title></head><body><main><p>${escapeHtml(page.text)}</p>${links}</main></body></html>`;
+    const body = page.browserOnly ? '<div id="app"></div>' : `<main><p>${escapeHtml(page.text)}</p>${links}</main>`;
+    const html = `<!doctype html><html><head><title>${escapeHtml(page.title)}</title></head><body>${body}</body></html>`;
     return new Response(html, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } });
   };
 }
@@ -241,6 +243,10 @@ export function scriptedJev({ truthByName = {}, groups = [], overrides = {}, seg
         answers[key] = { type: 'noul', noul: segments.hq?.[state.answer?.city] ?? 0.1 };
       } else if (question.type === 'noul' && label === 'score/subsidiary') {
         answers[key] = { type: 'noul', noul: segments.subsidiaries?.[state.subsidiary] ?? 0.1 };
+      } else if (question.type === 'choice' && 'needs a browser' in question.criteria) {
+        // The route on the kind of site: the kind the fixture's judge.json names for the company, else a site that reads as text.
+        const choice = segments.kinds?.[state.company] ?? 'reads as text';
+        answers[key] = { type: 'choice', choice, probabilities: probabilitiesOf(Object.keys(question.criteria), choice), confidence: 0.9 };
       } else if (question.type === 'choice' && label === 'score/segments') {
         // v4's segment match: the filed segment `segments.segmentMatch` names (by member) for this answer segment, else none.
         const name = state.answer?.find((a) => a.id === key)?.name;
@@ -497,7 +503,7 @@ function byHandV4(job, truth) {
   const site = job.website ?? truth.site;
   return [
     ...(job.website ? [] : [{ call: 'search_web', args: { query: `${job.name} ${job.ticker ?? ''} investor relations`.trim() } }]),
-    { call: job.website ? 'fetch_page' : 'browse', args: { url: site } },
+    { call: job.website && !truth.browserOnly ? 'fetch_page' : 'browse', args: { url: site } },
     // Find the segment note, then look at its page (vision) for the table as laid out.
     { call: 'read_document', args: { url: truth.document, find: 'segment information' } },
     { call: 'read_document', args: { url: truth.document, pages: [4], question: 'the segment revenue table as laid out' } },
@@ -525,6 +531,22 @@ export function agentScriptV4({ job, offered, fixtures }) {
     if ('links' in state) return { submit: { url: t.document } };
     return { submit: answerOfV4(t, { sic4: state.code?.code ?? '', report: state.report }) };
   };
+  if (offered.includes(WORKFLOW) && truth.browserOnly) {
+    // A kind of company classify-company does not handle yet (the host's run of it escalated on the empty site): the job
+    // by hand, then classify-company grown by a route for that kind, its old paths kept, saved under its own name.
+    return {
+      node,
+      root: [
+        ...byHandV4(job, truth),
+        { call: 'agentrun', args: { action: 'load', name: WORKFLOW, input } },
+        { call: 'agentrun', args: { action: 'inspect', workflow: CLASSIFY_ROUTED_V4, input } },
+        { call: 'agentrun', args: { action: 'dry-run' } },
+        { call: 'agentrun', args: { action: 'save', name: WORKFLOW } },
+        { call: 'learn', args: { type: 'workflow', id: WORKFLOW, text: 'Use it for any company: it finds the site when no website is given, and browses a site that needs a browser.' } },
+        { say: 'Answered by hand, and grew classify-company for sites that need a browser.' },
+      ],
+    };
+  }
   if (offered.includes(WORKFLOW)) {
     // Run it on the input as given; when it does not complete, the job by hand.
     const byHand = byHandV4(job, truth);
@@ -649,6 +671,34 @@ export const CLASSIFY_WHOLE_V4 = Object.freeze({
       ...CLASSIFY_COMPOSITE.root.steps.slice(-3),
     ],
   },
+});
+
+/** classify-company grown for a new kind of company, not reworked: after the site is read, a route on the kind of site
+ *  (Jev's pick) keeps the old path for a site that reads as text, and adds a branch for a site that needs a browser. Both
+ *  branches leave the site at `page`, which every later step reads; every step of CLASSIFY_WHOLE_V4 is still there. */
+const SITE_KIND = Object.freeze({
+  node: 'route', label: 'the kind of site', as: 'kind',
+  instructions: 'Does the site read as text, or did it come back without text because it needs a browser to run its scripts?',
+  state: { company: '{name}', title: '{page.title}', text: '{page.text}' },
+  branches: {
+    'reads as text': { criteria: 'the page has the company\'s own text', body: SITE_STEPS.at(-1) },
+    'needs a browser': {
+      criteria: 'the page came back empty or nearly so: its text is drawn by scripts',
+      body: {
+        node: 'chain',
+        steps: [
+          { node: 'call', label: 'browse the site', via: 'tool', tool: 'browse', args: { url: '{page.url}' }, out: 'Browsed', as: 'page', deadline_s: 90 },
+          { node: 'escalate', label: 'no site in the browser', when: { predicate: 'empty', path: 'page.text' }, kind: 'needs_input', stage: 'research', summary: 'the site has no text even in a browser' },
+        ],
+      },
+    },
+  },
+});
+
+export const CLASSIFY_ROUTED_V4 = Object.freeze({
+  ...CLASSIFY_WHOLE_V4,
+  schemas: { ...CLASSIFY_WHOLE_V4.schemas, Browsed: BROWSE_SCHEMA },
+  root: { node: 'chain', steps: [...SITE_STEPS.slice(0, -1), SITE_KIND, ...CLASSIFY_WHOLE_V4.root.steps.slice(SITE_STEPS.length)] },
 });
 
 /**

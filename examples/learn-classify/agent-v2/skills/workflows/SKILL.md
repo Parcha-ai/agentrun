@@ -14,8 +14,7 @@ A workflow pays off when each step is the cheapest node that can do it. From che
 - `agent`: a model session that calls tools as it goes, so it costs more with every call. Use one only for a single
   step that needs open-ended looking around, with `tools` limited to that step and a `budget_usd`. Never the whole job.
 
-Each node writes its result at its `as`, and later nodes read it by path: `"{page.text}"` in `args` or `state`,
-`page.text` in `requires` and in predicates.
+Each node writes its result at its `as`; later nodes read it by path, `"{page.text}"` in `args` and `state`.
 
 An optional input field: never interpolate it where it may be absent. Inspection refuses a `{field}` the input lacks,
 and inside a `route` branch, where inspection does not look, the run fails on it. Either require the field in the input
@@ -32,10 +31,11 @@ lists anything as skipped did not run every check, and what you save from it is 
 # Compose
 
 A `workflow` step runs a complete inline child: `"workflow"` is its whole document, `"input"` its input from this
-workflow's input or earlier steps, `"out"` a schema here for its output. To build a whole job from saved parts, load
-each part, embed it, and write the steps no part covers as calls, decisions or one agent step. A part saved again
-reaches the whole only once the whole is written again with it embedded. A saved workflow is offered to a later run only
-when that run's input has every field it requires: give a part the job's own input, never a value found on the way.
+workflow's input or earlier steps, `"out"` a schema here for its output. Build a whole job from saved parts: load each,
+embed it, and write the steps no part covers as calls, decisions or one agent step. A part saved again reaches the whole
+once the whole is written again with it embedded. A saved workflow is offered to a later run only when that run's input
+has every field it requires: give a part the job's own input, never a value found on the way. For a new case, add a
+branch to a `route` rather than replacing the workflow: every branch writes the keys the later steps read.
 
 # Check inside the workflow
 

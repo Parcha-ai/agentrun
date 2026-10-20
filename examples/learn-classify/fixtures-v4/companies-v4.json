@@ -403,5 +403,35 @@
       "filed": "2026-02-27"
     },
     "subsidiaries": null
+  },
+  {
+    "cik": "0000900110",
+    "name": "Quartz Ridge Labs Inc.",
+    "ticker": "QRL",
+    "website": "https://www.quartzridge.example",
+    "split": "run",
+    "order": 8,
+    "categories": [
+      "small-cap"
+    ],
+    "sic": "2800",
+    "sic2": "28",
+    "sicDescription": "CHEMICALS & ALLIED PRODUCTS",
+    "segments": {
+      "oneSegment": true
+    },
+    "hq": {
+      "city": "Boulder",
+      "state": "CO",
+      "country": "US"
+    },
+    "latestAnnual": {
+      "form": "10-K",
+      "fy": 2025,
+      "period": "2025-12-31",
+      "adsh": "0000900100-25-000008",
+      "filed": "2026-02-27"
+    },
+    "subsidiaries": null
   }
 ]

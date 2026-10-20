@@ -291,5 +291,33 @@
     "hqQuote": "Headquarters: Atlanta, United States.",
     "subsidiaryQuote": "Exhibit 21: subsidiaries of the registrant: Corner Operating Company.",
     "reportQuote": "Corner Pantry Stores Inc. Annual Report for fiscal year 2025."
+  },
+  "Quartz Ridge Labs Inc.": {
+    "sic4": "2800",
+    "segments": {
+      "oneSegment": true
+    },
+    "hq": {
+      "city": "Boulder",
+      "state": "Colorado",
+      "country": "United States"
+    },
+    "subsidiaries": [
+      {
+        "name": "Quartz Ridge Operating Company"
+      }
+    ],
+    "annualReport": {
+      "url": "https://www.quartzridge.example/annual-report-2025.pdf",
+      "fiscalYear": 2025
+    },
+    "site": "https://www.quartzridge.example",
+    "siteQuote": "Quartz Ridge Labs makes specialty reagents and solvents for research laboratories",
+    "document": "https://www.quartzridge.example/annual-report-2025.pdf",
+    "segmentQuote": "Revenue by reportable segment: one reportable segment.",
+    "hqQuote": "Headquarters: Boulder, United States.",
+    "subsidiaryQuote": "Exhibit 21: subsidiaries of the registrant: Quartz Ridge Operating Company.",
+    "reportQuote": "Quartz Ridge Labs Inc. Annual Report for fiscal year 2025.",
+    "browserOnly": true
   }
 }

@@ -60,6 +60,12 @@
   something a run finds on the way (a document's URL) is never offered to a later run, so it cannot be embedded.
 - When a part gets a new revision, write `classify-company` again with that revision embedded: a revised part does not
   reach `classify-company` until then.
+- When `classify-company` escalates on a kind of company it does not handle yet, grow it rather than rework it: add a
+  route for that kind (Jev picks the company's kind, then a branch for it), and keep the paths for the kinds it already
+  handles as they are. Every branch leaves the values later steps read under the same names.
+- When an offered workflow completes, use what it returned and save nothing, even when the answer looks wrong to you:
+  a complete answer is not a reason to rewrite, only an escalation or a failure is. Saving a new revision after a
+  complete run starts its trust over.
 - A workflow works for any company. Never put a company's name, domain, answer or a page's words in one. It reads with
   the tools above, decides with pick, judge or route, and hands anything unsure back with escalate.
 

@@ -1,5 +1,8 @@
 {
   "segmentMatch": {
     "Cloud Software": "CloudMember"
+  },
+  "kinds": {
+    "Quartz Ridge Labs Inc.": "needs a browser"
   }
 }
