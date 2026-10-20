@@ -17,7 +17,7 @@ of a run.
 ## How a prompt is picked
 
 Before its first turn the host asks Jev the question about the company in the input. If an overlay's option comes back with
-confidence at or above its threshold, that overlay is added to the base. If none does, the host looks the company up once
+a probability at or above its threshold, that overlay is added to the base. If none does, the host looks the company up once
 and asks again. If there is still none, the generic prompt is added to the base. Every run records how it chose in
 `runs/<id>/prompt.json`, and the runs index names the variant loaded as `prompt: { id, reason }`.
 

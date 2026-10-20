@@ -38,10 +38,12 @@ function probabilities(pass) {
 function passCell(pass) {
   if (!isObject(pass)) return "<td>-</td>";
   const choice = typeof pass.choice === "string" ? `<b>${escapeHtml(pass.choice)}</b>` : NONE;
+  // The threshold is compared with the probability of the option, so that is the headline; the confidence is Jev's own figure and is shown when it differs.
+  const probability = isObject(pass.probabilities) && Object.hasOwn(pass.probabilities, pass.choice) ? number(pass.probabilities[pass.choice], 2) : null;
   const confidence = number(pass.confidence, 2);
   const probs = probabilities(pass);
-  const meta = [number(pass.cost_usd, 6) === null ? null : `$${number(pass.cost_usd, 6)}`, typeof pass.latency_ms === "number" ? `${Math.round(pass.latency_ms)} ms` : null].filter(Boolean);
-  return `<td>${choice}${confidence === null ? "" : ` at ${confidence}`}${probs ? `<small>${probs}</small>` : ""}${meta.length ? `<small>${escapeHtml(meta.join(" · "))}</small>` : ""}</td>`;
+  const meta = [probability !== null && confidence !== null && confidence !== probability ? `confidence ${confidence}` : null, number(pass.cost_usd, 6) === null ? null : `$${number(pass.cost_usd, 6)}`, typeof pass.latency_ms === "number" ? `${Math.round(pass.latency_ms)} ms` : null].filter(Boolean);
+  return `<td>${choice}${(probability ?? confidence) === null ? "" : ` at ${probability ?? confidence}`}${probs ? `<small>${probs}</small>` : ""}${meta.length ? `<small>${escapeHtml(meta.join(" · "))}</small>` : ""}</td>`;
 }
 
 function lookupCell(record) {
@@ -115,7 +117,7 @@ export function renderPage(data) {
   const byId = new Map(sorted.flatMap((v) => [[v.label, v], [v.id ?? v.label, v]]));
   const threshold = sorted.find((v) => v.when)?.when;
   const rule = question
-    ? `<p class="lede">Before its first turn the host asks Jev one question about the company in the input: <b>${escapeHtml(question.id)}</b>, ${escapeHtml(question.instructions ?? "")} The overlay whose option Jev picks with enough confidence${threshold ? ` (${escapeHtml(threshold.threshold)} or more)` : ""} is added to the base. When no overlay reaches its threshold, the host looks the company up once and asks again. When there is still none, the generic prompt is added to the base.</p>`
+    ? `<p class="lede">Before its first turn the host asks Jev one question about the company in the input: <b>${escapeHtml(question.id)}</b>, ${escapeHtml(question.instructions ?? "")} The overlay whose option Jev gives enough probability${threshold ? ` (${escapeHtml(threshold.threshold)} or more)` : ""} is added to the base. When no overlay reaches its threshold, the host looks the company up once and asks again. When there is still none, the generic prompt is added to the base.</p>`
     : "";
   const criteria = question?.criteria && Object.keys(question.criteria).length
     ? `<ul>${Object.entries(question.criteria).map(([option, text]) => `<li><b>${escapeHtml(option)}</b>: ${escapeHtml(text)}</li>`).join("")}</ul>`
