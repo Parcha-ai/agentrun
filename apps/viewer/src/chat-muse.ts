@@ -15,22 +15,19 @@ export function museShorten(text: string): string {
   return text.replace(/\bhttps?:\/\/[^\s"'<>)\]]+/gi, (address) => { try { return new URL(address).host || address; } catch { return address; } });
 }
 
-/** An ISO time as a person says it: "today, 00:12", "yesterday, 00:12", else "20 Oct, 00:12" (with the year when it is not this one). `now` and `timeZone` are the viewer's own unless given. */
-export function museWhen(text: string, now = new Date(), timeZone?: string): string {
+/** An ISO time as a date and a time ("Oct 20, 00:12"), the year only when it is not the year of `reference` (the recording's own end). A replay is watched
+ *  days later, so a time is never "today" or "yesterday": it is the date it happened. The clock is the viewer's own unless `timeZone` is given. */
+export function museWhen(text: string, reference = new Date(), timeZone?: string): string {
   return text.replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?\b/g, (iso) => {
     const at = new Date(/(?:Z|[+-]\d{2}:?\d{2})$/.test(iso) ? iso : `${iso}Z`);
     if (Number.isNaN(at.getTime())) return iso;
-    const day = (date: Date) => date.toLocaleDateString('en-CA', { timeZone });
     const clock = at.toLocaleTimeString('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false });
-    const yesterday = new Date(now.getTime() - 86_400_000);
-    if (day(at) === day(now)) return `today, ${clock}`;
-    if (day(at) === day(yesterday)) return `yesterday, ${clock}`;
-    const sameYear = at.toLocaleDateString('en-CA', { timeZone, year: 'numeric' }) === now.toLocaleDateString('en-CA', { timeZone, year: 'numeric' });
     // The month by our own short names, so a runtime's locale data does not change it ("Sept" or "Sep").
     const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Number(at.toLocaleDateString('en-CA', { timeZone, month: '2-digit' })) - 1]!;
-    const dayOfMonth = Number(at.toLocaleDateString('en-CA', { timeZone, day: '2-digit' }));
-    const year = sameYear ? '' : ` ${at.toLocaleDateString('en-CA', { timeZone, year: 'numeric' })}`;
-    return `${dayOfMonth} ${month}${year}, ${clock}`;
+    const day = Number(at.toLocaleDateString('en-CA', { timeZone, day: '2-digit' }));
+    const year = at.toLocaleDateString('en-CA', { timeZone, year: 'numeric' });
+    const sameYear = year === reference.toLocaleDateString('en-CA', { timeZone, year: 'numeric' });
+    return `${month} ${day}${sameYear ? '' : `, ${year}`}, ${clock}`;
   });
 }
 
@@ -117,7 +114,9 @@ function rememberCard(recording: Recording, artifact: NonNullable<ChatModel['art
       const parts: HTMLElement[] = [];
       let skippedTitle = false;
       let skipping = false;
-      const plain = (raw: string) => museWhen(museShorten(raw.replace(/\s+/g, ' ').trim()));
+      const ended = Date.parse(recording.manifest.recorded?.ended ?? '');
+      const reference = Number.isNaN(ended) ? new Date() : new Date(ended);
+      const plain = (raw: string) => museWhen(museShorten(raw.replace(/\s+/g, ' ').trim()), reference);
       for (const node of [...doc.body.children]) {
         const tag = node.tagName.toLowerCase();
         const text = plain(node.textContent ?? '');

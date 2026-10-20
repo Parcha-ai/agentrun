@@ -602,12 +602,14 @@ function evidenceVideo(recording: Recording, sha: string, second: number, region
     medium.replaceChildren(reportEl('p', { class: 'ev-note', text: `The video frame at ${second} s could not be drawn here (${why}); this is the picture the look kept, not that frame.` }), ...(kept ? [...kept.children] : []));
   };
   video.addEventListener('loadedmetadata', () => { video.currentTime = Number.isFinite(video.duration) && video.duration > 0 ? Math.min(second, Math.max(0, video.duration - 0.05)) : second; }, { once: true });
-  video.addEventListener('seeked', () => {
+  // `seeked` can come before the new frame can be drawn (a busy page): the frame is drawn once it is presented, or after a moment if the browser cannot say.
+  const draw = () => {
     if (finished) return;
     try {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       canvas.getContext('2d')!.drawImage(video, 0, 0);
+      canvas.dataset.second = String(second);
       const snapshot = document.createElement('img');
       snapshot.src = canvas.toDataURL('image/jpeg', 0.92);
       const size = { complete: true, naturalWidth: canvas.width, naturalHeight: canvas.height } as HTMLImageElement;
@@ -615,6 +617,15 @@ function evidenceVideo(recording: Recording, sha: string, second: number, region
       finished = true;
       drawn(snapshot);
     } catch (error) { fail(String((error as Error)?.message ?? error).slice(0, 60)); }
+  };
+  video.addEventListener('seeked', () => {
+    if (finished) return;
+    const presented = video as HTMLVideoElement & { requestVideoFrameCallback?: (callback: () => void) => number };
+    let once = false;
+    const go = () => { if (!once) { once = true; draw(); } };
+    if (video.readyState < 2) { video.addEventListener('loadeddata', go, { once: true }); setTimeout(go, 3000); }
+    else if (presented.requestVideoFrameCallback) { presented.requestVideoFrameCallback(go); setTimeout(go, 1500); }
+    else go();
   }, { once: true });
   video.addEventListener('error', () => fail('the video would not load'), { once: true });
   setTimeout(() => fail('it took too long'), 20_000);

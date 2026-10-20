@@ -41,13 +41,14 @@ test('the Muse layout shortens every web address to its host, and takes the file
   assert.deepEqual(museFiles('Nothing to attach.'), { text: 'Nothing to attach.', files: [] });
 });
 
-test('the Muse layout says times as a person does and names memory files plainly', { timeout: 5_000 }, () => {
-  const now = new Date('2026-10-20T12:00:00Z');
-  assert.equal(museWhen('checked 2026-10-20T00:12:59.215Z', now, 'UTC'), 'checked today, 00:12');
-  assert.equal(museWhen('2026-10-19T23:05:00Z, this run', now, 'UTC'), 'yesterday, 23:05, this run');
-  assert.equal(museWhen('on 2026-09-03T08:30:00Z', now, 'UTC'), 'on 3 Sep, 08:30');
-  assert.equal(museWhen('2025-01-02T08:30:00Z', now, 'UTC'), '2 Jan 2025, 08:30');
-  assert.equal(museWhen('no time here, April 15, 2026', now, 'UTC'), 'no time here, April 15, 2026');
+test('the Muse layout says a time as its date, never "today", and names memory files plainly', { timeout: 5_000 }, () => {
+  const reference = new Date('2026-10-20T12:00:00Z');
+  assert.equal(museWhen('checked 2026-10-20T00:12:59.215Z', reference, 'UTC'), 'checked Oct 20, 00:12');
+  assert.equal(museWhen('2026-10-19T23:05:00Z, this run', reference, 'UTC'), 'Oct 19, 23:05, this run');
+  assert.equal(museWhen('on 2026-09-03T08:30:00Z', reference, 'UTC'), 'on Sep 3, 08:30');
+  assert.equal(museWhen('2025-01-02T08:30:00Z', reference, 'UTC'), 'Jan 2, 2025, 08:30', 'the year when it is not the recording\'s own');
+  assert.equal(museWhen('checked 2026-10-20T00:12:59.215Z', new Date('2031-05-01T00:00:00Z'), 'UTC'), 'checked Oct 20, 2026, 00:12', 'and the same text read against another recording');
+  assert.equal(museWhen('no time here, April 15, 2026', reference, 'UTC'), 'no time here, April 15, 2026');
   assert.deepEqual(['preferences.md', 'accounts.md', 'index.md', 'my-notes.txt', 'INDEX.md'].map(museFriendlyFile), ['Preferences', 'Accounts', undefined, 'My notes', undefined]);
 });
 
@@ -112,7 +113,7 @@ test('in Chrome: &muse is a phone chat over the same events, at 1440 and 390: th
     // The sign-in where the run waited, signed in once the browser's own profile says so.
     assert.deepEqual(await value(`[...doc('${id}').querySelectorAll('.mu-signin')].map((card) => [card.querySelector('.mu-card-title').textContent, card.querySelector('.mu-card-sub').textContent, card.querySelector('.mu-wide').textContent, card.querySelector('.mu-wide').disabled])`), [['Secure Store', 'Sign in to shop.example.test', 'Signed in', true]], `${id}: the sign-in card`);
     // What I remember: the host's page as a card, every address shortened, its own style (and its left bar) not used.
-    assert.deepEqual(await value(`(() => { const c = doc('${id}').querySelector('.mu-memory'); return [c.querySelector('.mu-card-title').textContent, [...c.querySelectorAll('.mu-rh')].map((h) => h.textContent), [...c.querySelectorAll('.mu-rsub')].map((h) => h.textContent), c.textContent.includes('http'), c.textContent.includes('Shop: shop.example.test'), /\\d{4}-\\d{2}-\\d{2}T/.test(c.textContent), /\\.md\\b|index/i.test(c.textContent), [...c.querySelectorAll('.mu-rlist li')].map((li) => li.textContent).filter((text) => /preferences|amount|\\$100/i.test(text)), c.querySelectorAll('pre, .mu-rpre').length]; })()`), ['What I remember', ['Signed in', 'My memory', 'Runs'], ['Accounts', 'Preferences'], false, true, false, false, ['Only care about the amount and the due date', 'Flag anything over $100'], 0], `${id}: What I remember: plain headings, plain lines, no file names, no raw time, no address`);
+    assert.deepEqual(await value(`(() => { const c = doc('${id}').querySelector('.mu-memory'); return [c.querySelector('.mu-card-title').textContent, [...c.querySelectorAll('.mu-rh')].map((h) => h.textContent), [...c.querySelectorAll('.mu-rsub')].map((h) => h.textContent), c.textContent.includes('http'), c.textContent.includes('Shop: shop.example.test'), /\\d{4}-\\d{2}-\\d{2}T/.test(c.textContent) || /today|yesterday/i.test(c.textContent), /\\.md\\b|index/i.test(c.textContent), [...c.querySelectorAll('.mu-rlist li')].map((li) => li.textContent).filter((text) => /preferences|amount|\\$100/i.test(text)), c.querySelectorAll('pre, .mu-rpre').length]; })()`), ['What I remember', ['Signed in', 'My memory', 'Runs'], ['Accounts', 'Preferences'], false, true, false, false, ['Only care about the amount and the due date', 'Flag anything over $100'], 0], `${id}: What I remember: plain headings, plain lines, no file names, no raw time, no address`);
     // Nothing of the analyst view, and no web address anywhere in what the page shows.
     assert.deepEqual(await value(`[doc('${id}').querySelectorAll('.app, .report, .step, .tl, .src').length, /https?:\\/\\//.test(doc('${id}').body.innerText)]`), [0, false], `${id}: no report page, no raw address`);
     assert.deepEqual(await value(`[...doc('${id}').querySelectorAll('.muse, .muse *')].filter((node) => { const s = getComputedStyle(node); return s.borderLeftStyle !== 'none' && parseFloat(s.borderLeftWidth) > parseFloat(s.borderRightWidth); }).map((node) => node.className || node.tagName)`), [], `${id}: no left-edge accent bar`);
@@ -274,7 +275,8 @@ test('in Chrome: a cite into a video is drawn on the video\'s own frame at its s
   const page = await drivenPage(`${origin}/chat.html?r=hand-clip`, join(out, 'profile'), { signal: t.signal });
   held.page = page;
   const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
-  await page.once(`!!document.querySelector('.ev-card canvas.ev-frame') && document.querySelector('.ev-card canvas.ev-frame').width > 0`, 'true', 20_000, 'the video frame drawn on its canvas');
+  // A canvas is 300x150 before anything is drawn: the frame is drawn once the card says which second it holds.
+  await page.once(`document.querySelector('.ev-card canvas.ev-frame')?.dataset.second === '1'`, 'true', 30_000, 'the video frame drawn on its canvas');
   const frame = await value<{ size: number[]; alpha: number; boxes: string[]; shown: boolean; kept: number }>(`(() => { const c = document.querySelector('.ev-card canvas.ev-frame'); const px = c.getContext('2d').getImageData(160, 90, 1, 1).data;
     return { size: [c.width, c.height], alpha: px[3], boxes: [...document.querySelectorAll('.ev-card .jbox span')].map((s) => s.textContent), shown: [...document.querySelectorAll('.ev-card .jbox')].every((b) => b.checkVisibility() && b.getBoundingClientRect().width > 4), kept: document.querySelectorAll('.ev-card .media img').length }; })()`);
   assert.deepEqual(frame.size, [320, 180], 'the video\'s own frame, at its own size');
