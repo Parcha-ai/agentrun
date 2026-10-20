@@ -37,6 +37,14 @@ test('the Muse layout shortens every web address to its host, and takes the file
   assert.deepEqual(museFiles('Nothing to attach.'), { text: 'Nothing to attach.', files: [] });
 });
 
+test('a list of files an answer writes in markdown (backticked or bold names) folds into the chips, as a list of bare names does', { timeout: 5_000 }, () => {
+  // An answer as an agent writes it: the amount in bold, the files one a line, each name in backticks.
+  const answer = 'You owe **$112.40** (flagged: over $100), due on **April 15, 2026**.\n\nDownloaded bills:\n- `statement-2026-03.pdf`\n- `statement-2026-02.pdf`\n- `statement-2026-01.pdf`';
+  assert.deepEqual(museFiles(answer), { text: 'You owe **$112.40** (flagged: over $100), due on **April 15, 2026**.\n\nDownloaded bills:', files: ['statement-2026-03.pdf', 'statement-2026-02.pdf', 'statement-2026-01.pdf'] });
+  assert.deepEqual(museFiles('Files:\n* **report.pdf**\n1. `data.csv`'), { text: 'Files:', files: ['report.pdf', 'data.csv'] }, 'bold names and numbered or starred items too');
+  assert.deepEqual(museFiles('The note says `see report.pdf` for details.'), { text: 'The note says `see report.pdf` for details.', files: ['report.pdf'] }, 'a sentence is kept whole');
+});
+
 test('the Muse layout says a time as its date, never "today", and names memory files plainly', { timeout: 5_000 }, () => {
   const reference = new Date('2026-10-20T12:00:00Z');
   assert.equal(museWhen('checked 2026-10-20T00:12:59.215Z', reference, 'UTC'), 'checked Oct 20, 00:12');
