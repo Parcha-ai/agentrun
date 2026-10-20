@@ -35,7 +35,7 @@ test('the job tools are the six that do the job', () => {
   assert.deepEqual(JOB_TOOLS, ['fetch_page', 'search_web', 'browse', 'read_document', 'sic2_groups', 'sic_codes']);
 });
 
-test('no execution: an agent run. No job call at all is (null, null); the root\'s calls alone are a share of 0 and no fallback verdict', () => {
+test('no run attempt: an agent run. No job call at all is (null, null); the root\'s calls alone are a share of 0 and no fallback verdict', () => {
   assert.deepEqual(jobRecordOf([]), { executions: [], workflowShare: null, agentFallback: null });
   const none = [assistant(1, [call('answer', { sic4: '1' }), call('learn', {})])];
   assert.deepEqual(jobRecordOf(none), { executions: [], workflowShare: null, agentFallback: null });
@@ -105,7 +105,9 @@ test('two executions in one run: each its own key, revision, calls, cost and tok
 
 test('a map node and a child workflow: every node attempt under the run key is the execution\'s, and a call node\'s effect counts', () => {
   const key = keyOf(SHA_A);
+  const run = call('agentrun', { action: 'run' });
   const events = [
+    assistant(1, [run]), toolResult(1, run.id, 'agentrun', { run: { key } }),
     task(20, key, done('complete')),
     node(key, '/root/items/0/body', 0, 23), node(key, '/root/items/1/body', 0, 24), node(key, '/root/items/1/body', 1, 25), // a map's items, one a retried attempt
     node(key, '/root/workflow/root', 0, 26), // the child workflow's node
@@ -176,4 +178,23 @@ test('a load that is an error, or that comes after the run, is not the execution
   ];
   const [execution] = jobRecordOf(events).executions;
   assert.deepEqual([execution.name, execution.revision], [null, SHA_A]);
+});
+
+test('a run call refused at its own inspection, then root job calls: no execution, and the agent fell back (true); a save with no later run is not an attempt', () => {
+  const load = call('agentrun', { action: 'load', name: 'classify-company' }), run = call('agentrun', { action: 'run' }), save = call('agentrun', { action: 'save', name: 'classify-company' });
+  const refused = [
+    assistant(1, [load]), toolResult(1, load.id, 'agentrun', { workflow: {}, saved: { name: 'classify-company', digest: 'ff76' } }),
+    assistant(1, [run]), toolResult(1, run.id, 'agentrun', { message: 'Cannot inspect workflow: root (research-and-classify): interpolates {website} but no upstream node produces website' }, true),
+  ];
+  // Attempted and refused, the root agent then did the job by hand.
+  const byHand = [...refused, assistant(1, [call('search_web', {}), call('fetch_page', {}), call('read_document', {})])];
+  assert.deepEqual(jobRecordOf(byHand), { executions: [], workflowShare: 0, agentFallback: true });
+  // Attempted, refused, and no job call by hand: not a fallback.
+  assert.deepEqual(jobRecordOf(refused), { executions: [], workflowShare: null, agentFallback: false });
+  // A save with no later run is not an attempt: no run call, so no verdict.
+  const saved = [assistant(1, [load]), toolResult(1, load.id, 'agentrun', { workflow: {}, saved: { name: 'x', digest: 'd' } }), assistant(1, [save]), toolResult(1, save.id, 'agentrun', { name: 'x', digest: 'd' }), assistant(1, [call('search_web', {})])];
+  assert.deepEqual(jobRecordOf(saved), { executions: [], workflowShare: 0, agentFallback: null });
+  // A run call whose result never came (in flight) is still an attempt.
+  const inflight = [assistant(1, [run]), assistant(1, [call('fetch_page', {})])];
+  assert.equal(jobRecordOf(inflight).agentFallback, true);
 });

@@ -1,6 +1,6 @@
 // The workflow part of a chart row, computed from one run's agentrun.recording/1 events (the parsed lines of events.jsonl). CLASSIFY-CONTRACT.md "v3: the chart record" defines the
 // fields; VIZ-DATA-CONTRACT.md section 1 defines an execution: one `agentrun.workflow` task, its id the run key (`data.input.key`), the latest line per `data.id`.
-//   jobRecordOf(events) -> { executions: [{ key, name, revision, outcome, toolCalls, costUsd | null, tokensIn, tokensOut }], workflowShare: 0..1 | null, agentFallback: true | false | null }
+//   jobRecordOf(events) -> { executions: [{ key, name, revision, outcome, toolCalls, costUsd | null, tokensIn, tokensOut }], workflowShare: 0..1 | null, agentFallback: true | false | null }  (agentFallback: null with no run attempt, else whether the root agent made a job-tool call outside every execution)
 // Read-only and structural: it reads document and entry lines, never text.
 
 /** The job tools: the calls that do the job. Not answer, learn, agentrun or submit. */
@@ -87,6 +87,7 @@ export function jobRecordOf(events) {
     }
   }
   const calls = agentrunCalls(events);
+  const attempts = calls.filter((call) => call.action === 'run').length;
   const nodeConvs = new Set();
   const executions = [];
   let inside = 0;
@@ -109,6 +110,7 @@ export function jobRecordOf(events) {
   return {
     executions,
     workflowShare: total === 0 ? null : inside / total,
-    agentFallback: executions.length === 0 ? null : root > 0,
+    // Over attempts, not executions: an attempt is an `agentrun` run call (paired by call id), whether it executed, was refused at its own inspection or failed before it executed.
+    agentFallback: attempts === 0 ? null : root > 0,
   };
 }
