@@ -87,7 +87,7 @@ The three questions are asked in one Jev request per issue, not three: fourteen 
 Recovery is tested, not shown: the scripted run can be killed inside a typed question and finished by a fresh process.
 
 - `npm run demo:issue-triage -- --kill` kills the process at the tenth `triage` question (`kills` in `demo.json`) and resumes the run in a fresh one.
-- `node examples/issue-triage/analyze.mjs <recording dir>` reads a killed take's stores: Jev requests sent against answers recorded, tool calls, and the model turns asked and committed in each process.
+- `node examples/issue-triage/analyze.mjs <recording dir> <run dir>` reads a killed take's stores (`<run dir>` is the directory given to `--dir`): Jev requests sent against answers recorded, tool calls, and the model turns asked and committed in each process.
 
 ### What a killed take claims, and what its store can show
 

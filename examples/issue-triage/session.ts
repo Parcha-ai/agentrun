@@ -152,6 +152,7 @@ async function session(options: { dir: string; input: Input; record?: string; pl
   let outcome: { status: string; answer?: string; message?: string } = { status: 'error' };
   let job: { workflow: unknown; input: unknown } | undefined;
   let patience: NodeJS.Timeout | undefined;
+  let follow: NodeJS.Timeout | undefined;
   try {
     const root = await harness.root(ctx, { agent: { model: lead, thinkingLevel: 'medium', instructions: INSTRUCTIONS, extensions: [tool.extension] } } as never);
     const prompt = sentenceFor(input);
@@ -161,7 +162,7 @@ async function session(options: { dir: string; input: Input; record?: string; pl
     patience = setTimeout(() => { if (!reached) { say('the author did not reach run in time: stopping this take', 'error'); process.exit(2); } }, AUTHOR_PATIENCE_MS);
     // Follow the conversation: what the agent calls, and the tool's answer in a line.
     let shown = 0;
-    const follow = setInterval(async () => {
+    follow = setInterval(async () => {
       try {
         const { messages } = await root.context(ctx) as unknown as { messages: Array<{ role: string; content: unknown; toolName?: string; isError?: boolean }> };
         for (; shown < messages.length; shown += 1) {
@@ -185,6 +186,7 @@ async function session(options: { dir: string; input: Input; record?: string; pl
     }, 400);
     await (await root.submit({ type: 'input', content: prompt, requestId: 'author-1' } as never, ctx)).wait(ctx);
     clearInterval(follow);
+    follow = undefined;
     const { messages } = await root.context(ctx) as unknown as { messages: Array<{ role: string; content: unknown; toolName?: string }> };
     const runs = messages.filter((m) => m.role === 'toolResult' && m.toolName === 'agentrun').map((m) => textOf(m.content)).flatMap((t) => { try { const j = JSON.parse(t); return j.outcome ? [j] : []; } catch { return []; } });
     const last = runs.at(-1);
@@ -197,6 +199,7 @@ async function session(options: { dir: string; input: Input; record?: string; pl
     outcome = { status: 'error', message: String((error as Error).message).slice(0, 500) };
   } finally {
     clearTimeout(patience);
+    clearInterval(follow);
     await harness.close(ctx).catch(() => undefined);
     await durable.release().catch(() => undefined);
   }

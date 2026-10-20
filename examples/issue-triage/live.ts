@@ -28,6 +28,13 @@ const parse = (name: string): PublicModel => {
 };
 /** The lead by default: one value in demo.json (`models.lead.default`). */
 export const LEAD: PublicModel = parse(spec.models.lead.default);
+/** The other providers' leads, used when the default's key is not set and another's is (a gateway serves the default). */
+const FALLBACK_LEADS: PublicModel[] = [{ provider: 'openai', modelId: 'gpt-6-luna' }, { provider: 'anthropic', modelId: 'claude-haiku-5-5' }];
+/** The lead when none is named: the default, else the first of the others whose key is set (the default also when none is, so the error names its key). */
+export function defaultLead(env: NodeJS.ProcessEnv): PublicModel {
+  if (env.VIDEO_MODEL_BASE_URL || env[PROVIDERS[LEAD.provider]!.key]) return LEAD;
+  return FALLBACK_LEADS.find((model) => env[PROVIDERS[model.provider]!.key]) ?? LEAD;
+}
 /** Jev's price as TypeSafe lists it, per million input tokens. */
 const JEV_PRICE = { inputUsdPerMillionTokens: 0.042, outputUsdPerMillionTokens: 0 };
 
@@ -63,10 +70,10 @@ export function jevOptionsOf(env: NodeJS.ProcessEnv) {
 export function live({ env, models }: { env: NodeJS.ProcessEnv; models?: { provider?: string; model?: string } }): LiveParts {
   if (!env.TYPESAFE_API_KEY && !env.OPENROUTER_API_KEY) throw new Error('--live needs TYPESAFE_API_KEY (typesafe.ai) or OPENROUTER_API_KEY: Jev judges the issues. With a gateway, any placeholder works.');
   const named = models?.model && models.provider && !models.model.includes('/') ? `${models.provider}/${models.model}` : models?.model;
-  const lead = named ? parse(named) : LEAD;
+  const lead = named ? parse(named) : defaultLead(env);
   const catalog = catalogOf(env, lead);
   return {
-    host: { models: { catalog, lead: { provider: lead.provider, modelId: lead.modelId } }, decisions: { runJudge: (env.TYPESAFE_API_KEY ? createJevRunner(jevOptionsOf(env)) : createJevRunner()) as never } },
+    host: { models: { catalog, lead: { provider: lead.provider, modelId: lead.modelId } }, decisions: { runJudge: createJevRunner(env.TYPESAFE_API_KEY ? jevOptionsOf(env) : { provider: 'openrouter', apiKey: env.OPENROUTER_API_KEY }) as never } },
     tools: githubTools(env),
     models: { lead: publicName(lead), judge: 'jev-latest' },
   };

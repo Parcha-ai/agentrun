@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { githubTools, GithubError } from './issue-triage/github.ts';
-import { catalogOf, jevOptionsOf, LEAD, live } from './issue-triage/live.ts';
+import { catalogOf, defaultLead, jevOptionsOf, LEAD, live } from './issue-triage/live.ts';
 import { fakes, job } from './issue-triage/job.ts';
 
 const TOKEN = 'github-token-test-value-0123456789';
@@ -214,4 +214,26 @@ test('the lead is demo.json\'s default, Jev goes through the gateway\'s /typesaf
   assert.throws(() => live({ env: { VIDEO_MODEL_BASE_URL: 'http://gateway:9421/v1', TYPESAFE_API_KEY: 'x' } }), /VIDEO_MODEL_API_KEY/);
   assert.throws(() => live({ env: { TYPESAFE_API_KEY: 'x' } }), /GEMINI_API_KEY/);
   assert.throws(() => live({ env: { GEMINI_API_KEY: 'x' } }), /TYPESAFE_API_KEY/);
+});
+
+test('the lead falls back to the provider whose key is set, and an OpenRouter-only setup builds a judge', () => {
+  assert.equal(defaultLead({ GEMINI_API_KEY: 'k' }), LEAD);
+  assert.equal(defaultLead({ OPENAI_API_KEY: 'k' }).provider, 'openai');
+  assert.equal(defaultLead({ ANTHROPIC_API_KEY: 'k' }).provider, 'anthropic');
+  assert.equal(defaultLead({ OPENAI_API_KEY: 'k', GEMINI_API_KEY: 'k' }), LEAD, 'the default wins when its key is set');
+  assert.equal(defaultLead({}), LEAD, 'no key: the default, so the error names its key');
+  assert.equal(live({ env: { OPENAI_API_KEY: 'k', TYPESAFE_API_KEY: 'k' } }).models.lead, 'openai/gpt-6-luna');
+  const parts = live({ env: { GEMINI_API_KEY: 'k', OPENROUTER_API_KEY: 'k' } });
+  assert.equal(typeof parts.host.decisions.runJudge, 'function');
+});
+
+test('an issue that names only a root-level file gets it fetched', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'triage-rootfile-'));
+  try {
+    const place = { root, work: join(root, 'work') };
+    const rootIssue = { ...ISSUE, body: 'It is in package.json and README.md only.' };
+    const run = github({ '/repos/o/r/issues/7': () => json(rootIssue), '/repos/o/r/issues/7/timeline': () => json([]), [`raw.githubusercontent.com/o/r/${SHA}/package.json`]: () => text('{}'), [`raw.githubusercontent.com/o/r/${SHA}/README.md`]: () => text('# r') });
+    assert.deepEqual((await githubTools({}, run.fetcher).github_code({ repo: 'o/r', number: 7, sha: SHA }, { place })).paths.sort(), ['README.md', 'package.json']);
+    assert.equal(await readFile(join(place.work, 'repo/package.json'), 'utf8'), '{}');
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

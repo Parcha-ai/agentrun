@@ -15,7 +15,7 @@ const DIFF_PATHS = 10;
 const BODY_CAP = 4_000;
 const FILE_CAP = 40_000;
 const REPO = /^[\w.-]+\/[\w.-]+$/;
-const PATHS = /\b(?:[\w.-]+\/)+[\w.-]+\.(?:js|mjs|cjs|ts|tsx|jsx|json|md|html|css|yml|yaml)\b/g;
+const PATHS = /\b(?:[\w.-]+\/)*[\w.-]+\.(?:js|mjs|cjs|ts|tsx|jsx|json|md|html|css|yml|yaml)\b/g;
 
 /** An error the entry may send again: a server failure or a rate limit. */
 export class GithubError extends Error {
