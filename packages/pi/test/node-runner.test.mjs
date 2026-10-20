@@ -272,6 +272,41 @@ test('a conversation that is no node is left as it is: no task section, no nudge
   await harness.close(ctx);
 });
 
+test('a fork of a node\'s conversation is no node: it answers on its own, its submit is refused, and the node goes on to deliver', async () => {
+  // A host tool the node calls: it forks the node's conversation where its task was given, owned by the call, asks the fork
+  // one thing, and answers with what the fork said. The runner never reaches the fork, so nothing of the fork may wait for it.
+  let child;
+  const fork = defineTool({
+    name: 'fork', description: 'Fork this conversation and ask the fork.', parameters: { type: 'object', additionalProperties: true },
+    async execute(_args, api, context) {
+      child = await api.commit(async (tx) => {
+        const at = (await tx.scanEntries({ conversationId: api.conversationId }, 50)).items.find((entry) => entry.kind === 'pi.user')?.id;
+        return (await tx.forkConversation(api.conversationId, at, { ownership: { kind: 'task', taskId: api.taskId } })).id;
+      }, context);
+      const handle = await api.conversation(child, context);
+      const settled = await (await handle.submit({ type: 'input', content: 'Say hello.', requestId: 'fork-1' }, context)).wait(context);
+      return resultOf([{ type: 'text', text: `the fork's input ended ${settled?.status}` }]);
+    },
+  });
+  const forking = defineExtension({ name: 'host-fork', tools: [fork] });
+  const { harness, runNode, requests } = await rig(
+    [fauxAssistantMessage([fauxToolCall('fork', {})], { stopReason: 'toolUse' }), submit({ verdict: 'buy' }), say('hello'), submit({ verdict: 'pass' }), say('never asked')],
+    { agent: () => ({ model: MODEL, extensions: [forking], tools: [fork] }) }, [forking]);
+  let timer;
+  const hung = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('the node did not deliver in 10 s: a request of the fork waits for the runner')), 10_000); });
+  try {
+    assert.deepEqual(await Promise.race([runNode(verdict()), hung]), { verdict: 'pass' });
+  } finally { clearTimeout(timer); }
+  assert.equal(requests.length, 4, 'the node asks twice and the fork twice');
+  const [, forkFirst, forkSecond, nodeSecond] = requests;
+  assert.equal(systemOf(forkFirst)?.sections?.task, undefined, 'the fork has no task section');
+  assert.match(toolResults(forkSecond).at(-1), /submit was called in a conversation that is no workflow node/);
+  assert.equal(toolResults(nodeSecond).at(-1), 'the fork\'s input ended done', 'the fork answered once, and was not nudged');
+  assert.equal((await harness.snapshot(NodeDoc, child, ctx))?.schema ?? null, null, 'the fork starts with no node configuration');
+  assert.equal((await harness.snapshot(RecordDoc, child, ctx))?.record ?? null, null);
+  await harness.close(ctx);
+});
+
 test('under the recovery driver a failed attempt is closed and the second is a new conversation that delivers', async () => {
   const asked = [];
   const written = [];
