@@ -6,9 +6,11 @@
 // - the tar hashes to the lock's SHA-256;
 // - it holds only directories and regular files (no link, device or other entry), each at `<id>/manifest.json`,
 //   `<id>/events.jsonl` or `<id>/blobs/<sha256>.<ext>` of an id the lock names, once each;
-// - it holds exactly the lock's ids, each with its manifest and its lines, each id once and the name of the example
-//   folder (`examples/<id>`) whose run it is, as its own manifest says (`example`, else `task`): one recording per
-//   example, so a re-take replaces its id;
+// - it holds exactly the lock's ids, each with its manifest and its lines, each id once. A manifest names an example by
+//   its `example`, else by a `task` that is an example folder's name: such a run's id is that example folder
+//   (`examples/<id>`), one recording per example, so a re-take replaces its id. A run whose manifest names no example
+//   (its `example` absent or null, its task free text) takes an id of its own, never an example folder's, so an
+//   example's id only ever holds that example's run;
 // - no recording is over 80 MB and the gallery is not over 300 MB, measured raw on the files it unpacks (a run's
 //   pi.live revisions are whole documents, which the format keeps as recorded);
 // - a poster is an image blob (PNG, JPEG, WebP or GIF, by its bytes) of the recording it is the poster of;
@@ -152,7 +154,8 @@ export function writeTar(files) {
 
 /** What the tar `bytes` would unpack to under `lock`, as `{ files, problems }`: `files` each `{ id, path, data }` and only
  *  when there is no problem. `limits`: the most a recording and the gallery may hold, in bytes, and `examples`, the
- *  example folders an id may name (every name when absent). */
+ *  example folders. Without `examples`, a manifest's `example`, else its `task`, must be its id, and no folder is
+ *  checked. */
 export function galleryOf(bytes, lock, limits = {}) {
   const { recording: recordingLimit = RECORDING_LIMIT, gallery: galleryLimit = GALLERY_LIMIT, examples } = limits;
   const problems = [];
@@ -182,12 +185,23 @@ export function galleryOf(bytes, lock, limits = {}) {
   }
   for (const { id, poster } of lock.ids) {
     if (!seen.has(`${id}/manifest.json`) || !seen.has(`${id}/events.jsonl`)) problems.push(`${id}: the asset holds no ${seen.has(`${id}/manifest.json`) ? 'events.jsonl' : 'manifest.json'} for it`);
-    if (examples && !examples.has(id)) problems.push(`${id}: names no example folder (examples/${id})`);
     const manifest = files.find((file) => file.path === `${id}/manifest.json`);
-    if (manifest) {
-      let named;
-      try { const value = JSON.parse(manifest.data.toString('utf8')); named = isObject(value) ? (typeof value.example === 'string' ? value.example : value.task) : undefined; } catch { named = undefined; }
+    let value;
+    try { value = manifest ? JSON.parse(manifest.data.toString('utf8')) : undefined; } catch { value = undefined; }
+    const example = isObject(value) && typeof value.example === 'string' ? value.example : undefined;
+    if (!manifest) {
+      // Its missing manifest is the problem, said above.
+    } else if (!examples) {
+      const named = isObject(value) ? (example ?? value.task) : undefined;
       if (named !== id) problems.push(`${id}: its manifest names the example ${JSON.stringify(named ?? null)}, not ${id}`);
+    } else {
+      // The example the run names: its `example`, else its task when that is an example folder's name.
+      const task = isObject(value) && typeof value.task === 'string' ? value.task : undefined;
+      const named = example ?? (task !== undefined && examples.has(task) ? task : undefined);
+      if (named === undefined) {
+        if (examples.has(id)) problems.push(`${id}: is the example folder examples/${id}, but its manifest names no example`);
+      } else if (named !== id) problems.push(`${id}: its manifest names the example ${JSON.stringify(named)}, not ${id}`);
+      else if (!examples.has(id)) problems.push(`${id}: names no example folder (examples/${id})`);
     }
     if ((sizes.get(id) ?? 0) > recordingLimit) problems.push(`${id}: is ${sizes.get(id)} bytes, over the ${recordingLimit} a recording may be`);
     if (poster === undefined) continue;

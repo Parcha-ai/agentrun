@@ -166,7 +166,9 @@ test('an id is the name of its example folder, as the run\'s own manifest says: 
   const tar = packGallery(dir, lockOf(['a', 'b']));
   const lock = lockOf(['a', 'b'], tar);
   assert.equal(galleryOf(tar, lock, { examples: new Set(['a', 'b', 'c']) }).problems, undefined, 'a by its example, b by its task');
-  assert.deepEqual(galleryOf(tar, lock, { examples: new Set(['a']) }).problems, ['b: names no example folder (examples/b)']);
+  assert.deepEqual(galleryOf(tar, lock, { examples: new Set(['b']) }).problems, ['a: names no example folder (examples/a)']);
+  // b's task names no example folder here, so b names no example: it takes an id of its own.
+  assert.equal(galleryOf(tar, lock, { examples: new Set(['a']) }).problems, undefined);
   // A run filed under another example's id: its manifest says whose it is.
   const swapped = pinned(files(dir).map(({ path, data }) => ({ path, data: path === 'b/manifest.json' ? Buffer.from('{"task":"vision-agent","example":"a"}') : data })), ['a', 'b']);
   assert.deepEqual(galleryOf(swapped.tar, lockOf(['a', 'b'], swapped.tar)).problems, ['b: its manifest names the example "a", not b']);
@@ -174,6 +176,27 @@ test('an id is the name of its example folder, as the run\'s own manifest says: 
   assert.deepEqual(galleryOf(unread.tar, lockOf(['a', 'b'], unread.tar)).problems, ['b: its manifest names the example null, not b']);
   // A second take of one example cannot be listed: the lock refuses an id twice.
   assert.match(readLock(JSON.stringify({ ...lock, ids: ['a', 'b', 'a'] })).problems[0], /^a is listed twice$/);
+});
+
+test('a recording that names no example takes an id of its own, never an example folder\'s', () => {
+  /** The problems of a gallery of one recording, `id`, whose manifest is `manifest`, with these example folders. */
+  const problemsOf = (id, manifest, folders) => {
+    const { tar, lock } = pinned([{ path: `${id}/manifest.json`, data: Buffer.from(`${JSON.stringify(manifest)}\n`) }, { path: `${id}/events.jsonl`, data: Buffer.from('{"t":1}\n') }], [id]);
+    return galleryOf(tar, lock, folders ? { examples: new Set(folders) } : {}).problems;
+  };
+  const question = 'What do I owe now on my utility account?';
+  // A manifest names an example by its `example`, else by a `task` that is an example folder's name.
+  assert.equal(problemsOf('a', { task: 'vision-agent', example: 'a' }, ['a']), undefined, 'its example, the id, a folder');
+  assert.deepEqual(problemsOf('a', { example: 'b' }, ['a', 'b']), ['a: its manifest names the example "b", not a']);
+  assert.equal(problemsOf('a', { task: 'a' }, ['a']), undefined, 'no example, its task the id and a folder (the older shape)');
+  assert.deepEqual(problemsOf('a', { task: 'b' }, ['a', 'b']), ['a: its manifest names the example "b", not a'], 'its task names another example');
+  // One that names none: any id of the lock's form but an example folder's, whatever its task says.
+  assert.equal(problemsOf('utility-bills', { task: question }, ['a', 'b']), undefined, 'no example key, a free task');
+  assert.equal(problemsOf('utility-bills', { example: null, task: question }, ['a']), undefined, 'example null is no example');
+  assert.deepEqual(problemsOf('a', { task: question }, ['a']), ['a: is the example folder examples/a, but its manifest names no example'], 'an example\'s slot holds only its own run');
+  // Without the folder list, as before: the manifest's example, else its task, is the id.
+  assert.deepEqual(problemsOf('utility-bills', { task: question }), [`utility-bills: its manifest names the example ${JSON.stringify(question)}, not utility-bills`]);
+  assert.equal(problemsOf('a', { task: 'a' }), undefined);
 });
 
 test('a recording over its limit, or a gallery over its own, is refused', (t) => {
