@@ -90,7 +90,10 @@ export async function visualOf(recording: Recording): Promise<Visual | undefined
     spans.set(session, { from: Math.min(before?.from ?? Infinity, mine[0]!.t), to: Math.max(before?.to ?? 0, to) });
   }
   for (const frame of frames) { const span = spans.get(frame.session); if (span && frame.t >= span.from && frame.t < span.to) frame.sensitive = true; }
+  // Fail closed BY PICTURE as well as by time: the picture of a blurred frame is blurred wherever it shows (a re-login's empty form comes back as the same picture, after the
+  // gap's end), so a frame whose picture is a blurred one is blurred too.
   const blurred = new Set(frames.filter((frame) => frame.sensitive).map((frame) => frame.blob));
+  for (const frame of frames) if (blurred.has(frame.blob)) frame.sensitive = true;
 
   // The pages the run read, in order: a chapter each time the page changes.
   const reads: { t: number; title: string }[] = [];
@@ -119,14 +122,23 @@ export async function visualOf(recording: Recording): Promise<Visual | undefined
   if (videoBlob && recording.blobUrl(videoBlob) && from !== undefined && to !== undefined) {
     const held = list(index?.frames).map((each) => obj(each)).filter((each): each is Record<string, Json> => !!each && num(each.ms) !== undefined);
     const segments: [number, number][] = [];
+    // The blurred span is the video's prefix (one track per session, blurred from the session's first frame): the leading held frames whose picture is a blurred one.
+    // A blurred picture anywhere after it would play sharp (a video cannot be blurred in the page), so then there is no video at all.
+    let prefix = true;
+    let recurs = false;
     held.forEach((each, i) => {
       const start = num(each.ms)!;
       const end = i + 1 < held.length ? num(held[i + 1]!.ms)! : to - from;
-      if (blurred.has(str(each.sha256) ?? '')) { skipEnd = Math.max(skipEnd, end / 1000); return; }
+      if (blurred.has(str(each.sha256) ?? '')) {
+        if (prefix) skipEnd = Math.max(skipEnd, end / 1000); else recurs = true;
+        return;
+      }
+      prefix = false;
       const playTo = start + Math.min(end - start, HOLD_MS);
       const last = segments.at(-1);
       if (last && Math.abs(last[1] * 1000 - start) < 1) last[1] = playTo / 1000; else segments.push([start / 1000, playTo / 1000]);
     });
+    if (recurs) segments.length = 0;
     const poster = frames.find((frame) => !frame.sensitive)?.blob;
     if (segments.length > 0) video = { blob: videoBlob, ...(poster ? { poster } : {}), duration: (to - from) / 1000, skipEnd, segments };
   }
