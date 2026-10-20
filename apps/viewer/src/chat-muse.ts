@@ -102,6 +102,12 @@ function signInCard(wait: NonNullable<ChatModel['waits']>[number]): HTMLElement 
   return card(`mu-signin${wait.remembered ? ' mu-remembered' : ''}`, 'shield', 'Secure Store', waiting ? `Sign in to ${wait.site}` : '', state);
 }
 
+/** A file as a chip says it: its name. An address (https://host/reports/summary.pdf?x=1) is its file name, never the whole address; one with no name is its host. */
+function chipName(file: string): string {
+  if (!/^https?:\/\//i.test(file)) return file;
+  try { const url = new URL(file); return decodeURIComponent(url.pathname.split('/').filter((part) => part !== '').pop() ?? '') || url.host; } catch { return museShorten(file); }
+}
+
 /** The run's input as the person's first message (a workflow run keeps it in `model.input`, and its first prompt is no entry of the conversation): the question in words
  *  (or the text given), its other fields as `name: value` lines, its files as chips. Nothing to say, no row. */
 function openingRequest(input: NonNullable<ChatModel['input']>): HTMLElement | undefined {
@@ -112,7 +118,7 @@ function openingRequest(input: NonNullable<ChatModel['input']>): HTMLElement | u
   if (text === '' && files.length === 0) return undefined;
   return reportEl('div', { class: 'mu-row person' }, reportEl('div', { class: 'mu-tag', text: 'You' }),
     text !== '' && reportEl('div', { class: 'mu-bubble' }, ...reportParagraphs(museShorten(text))),
-    files.length > 0 && reportEl('div', { class: 'mu-files' }, ...files.map((file) => reportEl('span', { class: 'mu-file', title: file, text: file }))));
+    files.length > 0 && reportEl('div', { class: 'mu-files' }, ...files.map((file) => reportEl('span', { class: 'mu-file', title: chipName(file), text: chipName(file) }))));
 }
 
 /** A bubble of the agent's words (a paragraph per blank line), the files it names as chips under them. */
