@@ -622,6 +622,74 @@ describe("archilPlace recordHome", () => {
   });
 });
 
+describe("archilPlace labelBox", () => {
+  const LABELS = `runs/${ID}/box-ids.internal/`;
+  /** A host whose boxes are a provider's, and the place over it, with a short label bound. */
+  const labelling = (o: Partial<Parameters<typeof archilPlace>[0]> = {}) => {
+    const control = new FakeControl();
+    const fake = fakeHost(control);
+    const host: HostDriver = { ...fake.host, provider: "modal", box: () => ({ provider: "modal", kind: "sandbox", from: new Date().toISOString(), to: null }) };
+    const place = makePlace({ ...REF, control, host, ensure: { create: { uid: 1500, gid: 1500 } }, labelPollMs: 5, labelWaitMs: 2_000, ...o });
+    /** What the runner of start `i` was asked to claim. */
+    const asked = (i: number) => JSON.parse(fake.starts[i]!.attempt!.env!.HOST_BOX!) as { provider: string; key: string; run: string };
+    /** The runner's process claiming a label, as the harness's ledger does (format v1), seen over S3. */
+    const claim = (n: number, entry: Record<string, unknown>) => control.objects.set(`${LABELS}box-${n}.json`, JSON.stringify(entry));
+    return { control, place, asked, claim, starts: fake.starts };
+  };
+
+  it("a start asks its runner to claim its host box's label (HOST_BOX: provider, start index, this life's RUN_LABEL), in box-ids.internal/ made for it, and labelBox reads what the runner claimed", async () => {
+    const { control, place, asked, claim } = labelling();
+    const first = await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
+    assert.deepEqual(asked(0), { provider: "modal", key: "0", run: "life-1" });
+    assert.ok(control.objects.has(LABELS), "box-ids.internal/ is made over the control before the runner, as signals/ is");
+    // A tool's label, another life's label for the same key, a file that is not a label, and the runner's own claim.
+    claim(1, { provider: "modal", owner: "tools", id: "sb-tool", receipt: "open" });
+    claim(2, { provider: "modal", owner: "place", key: "0", run: "life-0", kind: "host", from: "2026-10-20T00:00:00.000Z" });
+    control.objects.set(`${LABELS}box-02.json`, JSON.stringify({ provider: "modal", owner: "place", key: "0", run: "life-1" }));
+    claim(3, { provider: "modal", owner: "place", key: "0", run: "life-1", kind: "host", from: "2026-10-20T00:00:01.000Z" });
+    assert.equal(await place.labelBox!({ provider: "modal", key: "0" }), "box-3");
+    const lists = control.lists;
+    assert.equal(await place.labelBox!({ provider: "modal", key: "0" }), "box-3", "the same key, the same label");
+    assert.equal(control.lists, lists, "from memory once read");
+
+    // The next box's label lands a moment after the place asks: it waits for it, within its bound.
+    await place.kill(first, "box");
+    await place.recover(first, "box", { gen: 2, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(2) });
+    assert.deepEqual(asked(1), { provider: "modal", key: "1", run: "life-1" });
+    const pending = place.labelBox!({ provider: "modal", key: "1" });
+    await sleep(50);
+    claim(4, { provider: "modal", owner: "place", key: "1", run: "life-1", kind: "host", from: "2026-10-20T00:00:02.000Z" });
+    assert.equal(await pending, "box-4");
+  });
+
+  it("refuses a key this place did not start in this life, and another provider; a label that never lands is LABEL_MISSING naming the box, never a guess", async () => {
+    const { place, claim } = labelling({ labelWaitMs: 100 });
+    await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
+    await assert.rejects(place.labelBox!({ provider: "modal", key: "1" }), (e: unknown) => e instanceof PlaceError && e.code === "LABEL_REFUSED" && /not started by this place in this supervisor's life: a supervisor restarted mid-run would renumber its host boxes; refused/.test(e.message));
+    await assert.rejects(place.labelBox!({ provider: "daytona", key: "0" }), (e: unknown) => e instanceof PlaceError && e.code === "LABEL_REFUSED" && /is on modal, not daytona/.test(e.message));
+    // Another life's label for key 0 is not this one's.
+    claim(1, { provider: "modal", owner: "place", key: "0", run: "life-0", kind: "host", from: "2026-10-20T00:00:00.000Z" });
+    const t0 = Date.now();
+    await assert.rejects(place.labelBox!({ provider: "modal", key: "0" }), (e: unknown) => e instanceof PlaceError && e.code === "LABEL_MISSING" && e.message === "host box 0 on modal has no label: its child never claimed it");
+    assert.ok(Date.now() - t0 < 2_000, "bounded");
+  });
+
+  it("labels nothing without a provider, a listing control or the order's RUN_LABEL: no labelBox, no HOST_BOX, no box-ids.internal/", async () => {
+    const control = new FakeControl();
+    const plain = fakeHost(control);
+    const unlabelled = makePlace({ ...REF, control, host: plain.host, ensure: { create: { uid: 1500, gid: 1500 } } });
+    assert.equal(unlabelled.labelBox, undefined, "a driver that names no provider");
+    await unlabelled.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await unlabelled.token!(1) });
+    assert.equal(plain.starts[0]!.attempt!.env!.HOST_BOX, undefined);
+    assert.equal(control.objects.has(LABELS), false);
+
+    const { place, starts } = labelling();
+    await place.start({ gen: 1, env: {}, stdin: await place.token!(1) });
+    assert.equal(starts[0]!.attempt!.env!.HOST_BOX, undefined, "an order with no life asks for no label");
+    await assert.rejects(place.labelBox!({ provider: "modal", key: "0" }), (e: unknown) => e instanceof PlaceError && e.code === "LABEL_REFUSED");
+  });
+});
+
 describe("archilPlace", () => {
   it("mints a mount token per attempt through its control: a runner starts with the token it was handed, with its order's environment", async () => {
     const control = new FakeControl();

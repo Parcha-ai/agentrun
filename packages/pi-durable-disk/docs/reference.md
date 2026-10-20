@@ -831,6 +831,20 @@ id and directory as the supervisor computed them.
       directory a process made by path on an Archil mount was seen to refuse file creates afterwards (ENOENT), and one
       made over the control didn't. Every file in them stays the runner's. A refused put fails the start
       (`DIRS_REFUSED`, as the cause of `HOST_START_FAILED`), and without an owner nothing is made.
+  - `labelBox({ provider, key })` (when the driver names its `provider`, as `daytonaHost` and `modalHost` do, and the
+    control can list) gives the run-wide label (`box-N`) of the host box the place started at `key`, its start index.
+    Host boxes and the boxes the run's tools make then share one numbering, so no two boxes of a run share a label.
+    - Only the process that holds the run writes labels. A start puts `HOST_BOX` in its order's environment, as JSON
+      `{ provider, key, run }`, where `run` is the order's `RUN_LABEL` (the supervisor's life, minted per invocation).
+      The runner's process claims that label first on opening the run, in `<root>/box-ids.internal/`. With
+      `ensure.create`, the place makes that directory over the control at each start, as it makes `signals/`.
+    - The place only reads, over S3, until the label lands (every `labelPollMs`, 500 ms, for at most `labelWaitMs`,
+      30 s). A label that never lands is `LABEL_MISSING` ("host box <key> on <provider> has no label: its child never
+      claimed it"), never a guess, so a final read refuses rather than leave a box out of the cost.
+    - A key this place did not start in this supervisor's life is `LABEL_REFUSED`. Labels are numbered within one
+      supervisor's life: a run with host boxes and tool boxes **cannot resume across a supervisor restart**, `--reuse` of
+      an earlier take included. Its runner refuses the claim, and a failed take is taken again, not resumed.
+    - An order without `RUN_LABEL` asks for no label, and a driver that names no provider gets no `labelBox`.
   - `requestFile(attempt)` is `<root>/signals/kill-<attempt>.json`, in the run's directory and outside `work/`, and
     `signals(attempt)` reads `runs/<id>/signals/kill-<attempt>.json` over S3 every 500 ms (`signalPollMs`). A runner on
     a box of its own can't reach the supervisor's files, so its request travels through the disk. The runner must write
