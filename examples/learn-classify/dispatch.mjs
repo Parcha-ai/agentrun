@@ -80,7 +80,7 @@ async function recordedWorkflow(repo, name, sha256, sha) {
  * The workflow the host runs first for this run, or null. Of the workflows seeded into the run, in their order (active
  * ones first), the first whose live revision at the run's commit is the revision seeded and which `answersTheJob` for
  * `input`, the run's input: the live revision when it is active (promoted: proven over runs); while it is on trial, the
- * revision it superseded, read from the agent repository at the run's commit (`canary: true`).
+ * revision it superseded, read from the agent repository at the run's commit (`canary: true`, `trial` the live digest).
  */
 export async function promotedFor({ repo, run, answer, input }) {
   for (const { name, sha256 } of run.workflows?.loaded ?? []) {
@@ -94,7 +94,7 @@ export async function promotedFor({ repo, run, answer, input }) {
     }
     const proven = lastProven(trial);
     const workflow = proven && await recordedWorkflow(repo, name, proven.sha256, run.sha);
-    if (workflow && answersTheJob(workflow, answer.parameters, input)) return { name, sha256: proven.sha256, workflow, input, canary: true };
+    if (workflow && answersTheJob(workflow, answer.parameters, input)) return { name, sha256: proven.sha256, workflow, input, canary: true, trial: live.sha256 };
   }
   return null;
 }
@@ -144,15 +144,25 @@ export async function runPromoted({ harness, workflows, dispatch, toolNames, ans
 
 const MAX_HANDOFF = 12_000;
 
-/** What the root agent is told, after the job, when the host's run of a proven workflow did not answer it. */
-export function handoffText(hostRun) {
+/**
+ * What the root agent is told, after the job, when the host's run of a proven workflow did not answer it. `dispatch` is
+ * `promotedFor`'s pick: for a canary with a trial live under the same name, the text names that trial and asks for it to be
+ * run first, so the trial is tried on the jobs the proven revision gives up on.
+ */
+export function handoffText(hostRun, dispatch = null) {
   const how = hostRun.invalid ? `escalated: its output is not a valid answer (${hostRun.invalid.join('; ')})` : hostRun.outcome;
   const what = JSON.stringify(hostRun.invalid ? hostRun.output : hostRun.detail ?? null) ?? 'null';
+  const returned = [`What it returned (${what.length > MAX_HANDOFF ? `the first ${MAX_HANDOFF} characters` : 'all of it'}):`, what.slice(0, MAX_HANDOFF)];
+  if (!dispatch?.canary || !dispatch.trial) {
+    return [`The proven workflow ${hostRun.name} ran first on this company, without you, and did not finish the job: it ${how}.`, ...returned, 'Start from that: do the rest of the job and give the answer.'].join('\n');
+  }
+  const summary = typeof hostRun.detail?.summary === 'string' ? hostRun.detail.summary.trim().replace(/\.$/, '') : '';
+  const reason = hostRun.outcome === 'escalated' && !hostRun.invalid && summary ? `escalated: ${summary}`
+    : hostRun.outcome === 'failed' && typeof hostRun.detail === 'string' ? `failed: ${hostRun.detail}` : how;
   return [
-    `The proven workflow ${hostRun.name} ran first on this company, without you, and did not finish the job: it ${how}.`,
-    `What it returned (${what.length > MAX_HANDOFF ? `the first ${MAX_HANDOFF} characters` : 'all of it'}):`,
-    what.slice(0, MAX_HANDOFF),
-    'Start from that: do the rest of the job and give the answer.',
+    `The proven revision ${hostRun.revision.slice(0, 8)} of ${hostRun.name} ran first on this company, without you, and did not finish the job: it ${reason}.`,
+    ...returned,
+    `A newer revision of ${hostRun.name}, ${dispatch.trial.slice(0, 8)}, is on trial and may handle this kind of company: load ${hostRun.name} and run it first; do the job by hand only if it escalates too.`,
   ].join('\n');
 }
 

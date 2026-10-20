@@ -15,7 +15,7 @@ import { agentHomeFor, finishJob, meteredJudge, prepareRun, runJob } from './hos
 import { PRICES } from './models.mjs';
 import { rowOf } from './row.mjs';
 import { openOut, runLoop, scriptedParts } from './runner.mjs';
-import { agentScriptV4, CLASSIFY_WORKFLOW_V4, FIXTURES_V4, readJson, scriptedModel, WORKFLOW } from './scripted.mjs';
+import { agentScriptV4, answerOfV4, CLASSIFY_WORKFLOW_V4, FIXTURES_V4, lastRunOutcome, readJson, scriptedModel, WORKFLOW } from './scripted.mjs';
 import { SETS } from './sets.mjs';
 
 const v4 = scriptedParts({ set: SETS.v4 });
@@ -148,4 +148,43 @@ test('canary: A escalates and the agent runs B; B earns its uses only there, is 
   assert.deepEqual([next.dispatch.revision, next.dispatch.outcome, next.dispatch.canary ?? false], [b, 'complete', false]);
   assert.deepEqual(next.workflowsUsed.map((u) => [u.revision, u.outcome, u.classifiedBy]), [[b, 'complete', HOST_WORKFLOW]]);
   assert.equal(next.correct, true);
+});
+
+test('canary: when the proven revision escalates and a trial is live, the handoff names the trial; the agent runs it, and it earns a clean use', async (t) => {
+  const root = await scratch(t);
+  const out = join(root, 'out');
+  const { repo } = await openOut(out, { mode: 'scripted', set: SETS.v4 });
+  const { a, b } = await commitCanary(repo, join(root, 'store'), { a: provenA([harbor.name]), b: trialB });
+  const home = await agentHomeFor({ dir: join(out, 'home'), repo });
+  const input = SETS.v4.input(harbor);
+  const run = await prepareRun({ home, repo, host: 'test', runId: 'run-trial-first', input });
+  const dispatch = await promotedFor({ repo, run, answer: answer4, input });
+  assert.deepEqual([dispatch.sha256, dispatch.canary], [a, true]);
+
+  // A scripted agent that runs the trial only when the handoff tells it to, and otherwise does the job by hand.
+  const said = (context) => { const user = context.messages.find((m) => m.role === 'user'); return typeof user.content === 'string' ? user.content : user.content.map((c) => c.text ?? '').join(''); };
+  const told = (context) => said(context).includes(`load ${WORKFLOW} and run it first`);
+  const { node } = agentScriptV4({ job: harbor, offered: [WORKFLOW], fixtures: { truth: truth4 } });
+  const model = scriptedModel({
+    root: [
+      { call: 'agentrun', args: (context) => (told(context) ? { action: 'load', name: WORKFLOW, input } : { action: 'describe' }) },
+      { call: 'agentrun', args: (context) => (told(context) ? { action: 'run' } : { action: 'describe' }) },
+      { call: 'answer', args: (context) => { const outcome = lastRunOutcome(context); return outcome?.status === 'complete' ? outcome.output : answerOfV4(truth4[harbor.name]); } },
+      { say: 'Done.' },
+    ],
+    node, models: twoModels,
+  });
+  const measure = await runJob({ run, job: harbor, model, judge: meteredJudge(v4.judge()), effects: [...(await v4.toolsFor(harbor, run)), ...SETS.v4.labelTools(v4.data)], answer: answer4, text: SETS.v4.text, dispatch });
+  assert.deepEqual([measure.dispatch.revision, measure.dispatch.outcome, measure.dispatch.canary], [a, 'escalated', true]);
+
+  const prompt = said(model.requests[0]);
+  assert.ok(prompt.startsWith(SETS.v4.text(harbor)), 'the job comes first');
+  assert.ok(prompt.includes(`The proven revision ${a.slice(0, 8)} of ${WORKFLOW} ran first on this company, without you, and did not finish the job: it escalated: a company this revision has not seen the like of.`), prompt);
+  assert.ok(prompt.includes(`A newer revision of ${WORKFLOW}, ${b.slice(0, 8)}, is on trial and may handle this kind of company: load ${WORKFLOW} and run it first; do the job by hand only if it escalates too.`), prompt);
+
+  // The agent ran B, which completed: its output is the answer, and B has a clean use beside A's escalated one.
+  assert.deepEqual(measure.workflowRuns.map((r) => [r.revision, r.outcome, r.classifiedBy ?? null]), [[a, 'escalated', HOST_WORKFLOW], [b, 'complete', null]]);
+  assert.equal(measure.answer.sic4, truth4[harbor.name].sic4);
+  const finished = await finishJob({ home, repo, run, job: harbor, measure, propose: false });
+  assert.deepEqual(finished.uses.map((u) => [u.sha256, u.outcome]).sort(), [[a, 'escalated'], [b, 'frozen']].sort());
 });
