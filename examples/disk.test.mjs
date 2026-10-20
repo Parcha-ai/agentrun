@@ -247,7 +247,7 @@ test('the live part: each process is held to its model calls and its answer size
   assert.deepEqual(seen.map((options) => options.maxTokens), [100, 100, 50], 'an answer is held to the cap, and a smaller ask is kept');
   assert.deepEqual(seen.map((options) => options.signal?.aborted ?? false), [false, false, true], 'a call past the cap goes out already aborted');
   assert.throws(() => live({ env: {} }), /GEMINI_API_KEY/);
-  const parts = live({ env: { GEMINI_API_KEY: 'a-placeholder' } });
+  const parts = live({ env: { GEMINI_API_KEY: 'fake-test-key' } });
   assert.deepEqual(parts.models, { lead: 'google/gemini-3.8-flash' });
   assert.deepEqual(parts.host.models.lead, { provider: 'google', modelId: 'gemini-3.8-flash' });
 });
