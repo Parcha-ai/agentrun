@@ -123,6 +123,7 @@ test('in Chrome: a run that skipped its sign-in because it was remembered says s
   await remembered.until(`!!d()?.querySelector('.mu-report .mu-skip')`, 'the skipped tile');
   assert.equal(await remembered.value<string>(`d().querySelector('.mu-skip').textContent`), 'Skippedsign-in, rememberedOpened straight on the account');
   assert.equal(await remembered.value<number>(`d().querySelectorAll('.mu-blurred').length`), 0, 'no gap, nothing blurred');
+  assert.equal(await remembered.value<number>(`d().querySelectorAll('.mu-play').length`), 0, 'native controls: no button of its own');
   assert.deepEqual(await remembered.value(`[d().querySelector('.mu-video').hasAttribute('controls'), (d().querySelector('.mu-video').getAttribute('src') || '').includes('#')]`), [true, false], 'no gap: the native controls stay, nothing to fence off');
 });
 
@@ -205,6 +206,16 @@ test('in Chrome: the video plays only from the end of the blurred span, whatever
   assert.ok(Math.max(...seen) >= 3, `it played (max ${Math.max(...seen)})`);
   assert.ok(Math.min(...seen) >= 1.95, `nothing before the span's end was ever the current time (min ${Math.min(...seen)})`);
   assert.ok(seen.some((time, i) => i > 0 && seen[i - 1]! >= 3.4 && time <= 2.6), 'it looped back to the start of what is kept');
+  // No native controls here, so a button of its own pauses and plays (the scrub bar is what is withheld); a video with native controls has none.
+  assert.deepEqual(await value(`[d().querySelectorAll('.mu-play').length, d().querySelector('.mu-play')?.textContent ?? null]`), [1, 'Pause'], 'one pause button');
+  await value(`(() => { d().querySelector('.mu-play').click(); return 0; })()`);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const frozen = await value<number[]>(`(() => { const v = d().querySelector('.mu-video'); const a = v.currentTime; return [v.paused ? 1 : 0, a]; })()`);
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.deepEqual([frozen[0], await value<number>(`d().querySelector('.mu-video').currentTime`) === frozen[1] ? 1 : 0, await value<string>(`d().querySelector('.mu-play').textContent`)], [1, 1, 'Play'], 'paused, and it stays where it is');
+  await value(`(() => { d().querySelector('.mu-play').click(); return 0; })()`);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(await value<boolean>(`!d().querySelector('.mu-video').paused`), true, 'and plays again');
   await value(`(() => { d().querySelector('.mu-chapter').click(); return 0; })()`);
   await new Promise((resolve) => setTimeout(resolve, 300));
   const at = await value<number>(`d().querySelector('.mu-video').currentTime`);
@@ -220,4 +231,11 @@ test('fail closed by picture: a sign-in picture that comes back after the gap (a
   assert.equal(visual.video, undefined, 'the track would show that picture sharp after the span: no video at all');
   assert.deepEqual(visual.chapters, [], 'and no chapter seeks into it');
   assert.equal(visual.frames.find((frame) => !frame.sensitive)!.blob, frames[2500], 'the first frame that is not blurred is still a different picture');
+});
+
+test('a chapter seeks to the frame it was read on by its time, not to the last appearance of that picture: the same picture kept at several times keeps each chapter at its own', async (t) => {
+  // The frame at 4000 is the very picture of the frame at 2500; a page read at 2600 was on the first, so its chapter is at that frame's place (2.0 s), not at 3.5 s.
+  const { recording } = openedRun(t, { sameAs: { 4000: 2500 }, reads: [[2600, 'Early page']] });
+  const chapters = (await visualOf(recording))!.chapters.map((chapter) => [chapter.title, chapter.at]);
+  assert.deepEqual(chapters, [['Early page', 2], ['Account summary', 2.2], ['Your bills', 3.5]], 'each at its own frame, in order');
 });
