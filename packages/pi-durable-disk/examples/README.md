@@ -7,6 +7,9 @@ change, and each one ends with a single `ok: ...` line naming what it showed.
 | Example | What it shows | Needs | Since | CI |
 |---|---|---|---|---|
 | [01-durable-chat](01-durable-chat/) | A chat survives its host being powered off: another host revokes the dead claim and goes on from the last committed message, nothing answered twice | Linux, the archil client, an Archil disk and API key | checkout | no |
+| [pick-up-a-run](pick-up-a-run/) | A run is a directory: three processes, one after another, open the same run, answer one question of one chat and release it, and the last still knows the first question; the run's record is read from outside | Linux, Node 22.19 or later | 0.1.0-beta.15 | yes |
+| [seed-a-run](seed-a-run/) | What a new run starts with: `seed` writes its store file and workspace files once, on the open that finds no `run.json`, and the next open keeps what the run changed since | Linux, Node 22.19 or later | 0.1.0-beta.15 | yes |
+| [place-outcome](place-outcome/) | How a run ended, in the run's own words: through `localPlace`, a run that delivers is `complete` with its record, one that gives up is `failed` with its code and message, and both name the models they used | Linux, Node 22.19 or later | 0.1.0-beta.16 | yes |
 | [01-durable-chat/on-a-directory.mjs](01-durable-chat/on-a-directory.mjs) | The no-key quickstart: the same chat on a directory of this machine, killed after its third answer and finished by a second process | Linux or macOS, Node 22.19 or later | 0.1.0-beta.13 | yes |
 | [02-paid-effect](02-paid-effect/) | A paid charge cut mid-flight by a lost host is never sent twice: the new host records it `interrupted` and tells the model | Linux, the archil client, an Archil disk and API key | checkout | no |
 | [no-double-charge](no-double-charge/) | A paid call cut by `kill -9` is never sent twice: the next process gets it back `interrupted`, and the payment server has one charge per invoice | Linux or macOS, Node 22.19 or later | 0.1.0-beta.13 | yes |
@@ -32,7 +35,7 @@ The quickstart is `node examples/01-durable-chat/on-a-directory.mjs`. Examples 0
 run as their own READMEs and headers say.
 
 Node 22.19 or later runs the TypeScript directly. A run on a local directory runs on Linux, and on macOS for development
-([On macOS](../README.md#on-macos) says what is weaker there). On macOS every example needs 0.1.0-beta.14 or later, the
+([On macOS](../docs/reference.md#on-macos) says what is weaker there). On macOS every example needs 0.1.0-beta.14 or later, the
 first release that runs there, whatever its Since says.
 
 ## Run one from an install
@@ -44,13 +47,11 @@ older than that, it stops at its first import. To run one from an install, in an
 
 ```sh
 npm init -y && npm pkg set type=module
-npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/pi-ai@~1.2.0 @earendil-works/chord@~1.2.0
+npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
 mkdir audit-across-crashes && cd audit-across-crashes
 # copy the example's files in (main.ts and any helper beside it, not its README or its test), from a checkout or from GitHub
 node main.ts
 ```
-
-The pi packages are pinned to 1.2: pi 1.3.0 pins its own packages to exact versions, and this release's ranges stop below 1.3 until the next one.
 
 `npm pkg set type=module` is what lets Node read the example's `import` lines without reparsing every file and printing a
 warning on each start. Run it from the directory that holds `node_modules`, or from one inside it. An example whose Since is

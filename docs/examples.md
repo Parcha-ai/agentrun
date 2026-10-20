@@ -11,6 +11,7 @@ After `npm ci --ignore-scripts` and `npm run build`:
 | [Rank a list](../examples/rank-candidates.mjs) | `npm run demo:rank` | Score candidates against your brief, drop duplicates, cap each bucket, keep the top k; call it from another workflow. |
 | [Standalone TypeScript app](../examples/starter/README.md) | Follow the app's install steps, then `npm test` and `npm start` | Build outside this checkout with public package imports. |
 | [The reference host](reference-host.md) | `npm run demo:reference` | One durable pi run with the recovery driver, a browser and vision: replace the scripted model, tools, browser and eyes with yours. |
+| [An agent that learns](../examples/agent-learn/README.md) | `npm run demo:learn` | An issue-triage agent learns a maintainer's correction in its own git repository and applies it in the next run, and a workflow it saved is promoted on clean uses: copy `host.mjs` and give it your model, judge and remote. |
 | [The hero job](../examples/hero/README.md) | `npm run demo:hero` | One agent reads nine grid operators' dashboard charts with vision, each in a browser session of its own, and, where the operator also publishes the mix as data, checks each reading against it. |
 | [The vision agent](../examples/vision-agent/README.md) | `npm run demo:vision -- examples/document-check` (free; needs `ffmpeg`, `ffprobe`, `pdftoppm` and `pdftotext`), and add `--live` with your keys | Ask a question about your own files: write a folder with the question and the files' addresses; one agent answers it and ends with its own report. |
 
@@ -30,5 +31,5 @@ To connect models, follow [support integration](support-quickstart.md) or [resea
 - **[The Apollo 11 descent](../examples/apollo-descent/README.md).** NASA's transcript, photographs and film, read into the landing minute by minute.
 - **[A government film, in chapters](../examples/boulder-chapters/README.md).** A 1930s film on the building of Boulder Dam, cut into chapters.
 - **[A robot in a long film](../examples/fair-robot/README.md).** When a golden robot is first seen in a 1939 film of nearly an hour, and where it is in the frame.
-- **[Lake Mead from space](../examples/lake-mead/README.md).** Thirteen Landsat images of one frame, 1984 to 2024: when the water fell the most and where, with a box on where it fell.
+- **[Lake Mead from space](../examples/lake-mead/README.md).** Thirteen Landsat images of one frame, 1984 to 2024, and the lake's elevation record: when the water fell the most and where, with a box on each place that went dry then.
 - **[A trip down Market Street, 1906](../examples/market-street/README.md).** A single take from a cable car: every vehicle that crosses in front of the camera, to the second, boxed, then counted by kind.

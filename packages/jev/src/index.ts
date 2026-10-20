@@ -33,7 +33,7 @@ type RunJudge = NonNullable<WorkflowDeps["runJudge"]>;
  *  every reference must appear, and a Box question needs at least one image. */
 export type JevJudgeParams = Parameters<RunJudge>[0] & {
   assets?: Record<string, JevImage>;
-  /** Names the model for this call, over the runner's `model`. A Box question needs `jev-1.14.0` or `jev-preview`; the default `jev-latest` is 1.13. */
+  /** Names the model for this call, over the runner's `model`. A Box question needs `jev-1.14.0` (or later) or `jev-preview` by name; the default `jev-latest` is refused for it whatever version that alias points at. */
   model?: string;
 };
 /** The typed answers (choice, noul, score with their probabilities; box with its edges and confidence), the model that answered, its token usage, and
@@ -45,7 +45,7 @@ export type JevJudge = (params: JevJudgeParams) => Promise<JevJudgeResult>;
 const IMAGE_HEADER = "TypeSafe-Danger-Zone-Images";
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 const BOX_MODEL = "jev-1.14.0";
-/** Models that answer a Box question: Jev 1.14 and later by name, and the preview alias. `jev-latest` is 1.13 and does not. */
+/** Models that answer a Box question: Jev 1.14 and later by name, and the preview alias. The check is by name, so `jev-latest` is refused whatever version it points at. */
 function answersBox(model: string): boolean {
   if (model === "jev-preview") return true;
   const version = /^jev-(\d+)\.(\d+)(?:\.\d+)?$/.exec(model);
@@ -224,7 +224,7 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
       const references = Object.keys(given);
       const carriesImage = references.length > 0;
       if ((carriesImage || hasBox) && provider !== "typesafe" && options.client === undefined) throw invalid("unsupported_provider", "Images and Box questions are sent to TypeSafe's own API only; the OpenRouter path is not verified for them. No request was sent.");
-      if (hasBox && !answersBox(callModel)) throw invalid("unsupported_model", `A Box question needs a model that answers it: ${BOX_MODEL} (or jev-preview); jev-latest is 1.13. No request was sent.`);
+      if (hasBox && !answersBox(callModel)) throw invalid("unsupported_model", `A Box question needs a model that answers it, by name: ${BOX_MODEL} or later, or jev-preview; jev-latest is refused whatever version it points at. No request was sent.`);
       if (hasBox && !carriesImage) throw invalid("invalid_assets", "A Box question locates something in an image, and the request carries none. No request was sent.");
       let assets: Record<string, Image> | undefined;
       let assetDigests: Record<string, { sha256: string; mime: string; bytes: number }> | undefined;

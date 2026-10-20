@@ -265,7 +265,7 @@ def mayWrite : Node → String → Bool
   | .report .., k => "report_markdown" == k || hostKey == k
   | .artifact _ type _ _ _, k =>
     if artifactIsProse type then "report_markdown" == k || hostKey == k else "artifact" == k
-  | .map _ _ _ as _, k => as == k
+  | .map _ _ _ as _ oif fa, k => as == k || collectKey oif fa == some k
   | .parallel _ bs, k => mayWriteList bs k
   | .loop _ body _ _, k => mayWrite body k
   | .escalate .., _ => false
@@ -355,17 +355,29 @@ theorem frame (O : Oracle) (k : String) (hA : O.afterNode = none ∨ k = hostKey
       rw [hget k hA]
       peel_ok
       rw [State.get_set_ne _ _ hw]
-  | .map label itemsPath body as resultPath, path, addr, lp, s, s', ev, hw, h => by
+  | .map label itemsPath body as resultPath oif fa, path, addr, lp, s, s', ev, hw, h => by
     simp only [eval] at h
-    simp only [mayWrite, beq_eq_false_iff_ne] at hw
+    simp only [mayWrite, Bool.or_eq_false_iff, beq_eq_false_iff_ne] at hw
     split at h
     · split at h
-      · rename_i hg
-        simp only [Prod.mk.injEq] at h
-        have := (gather_error O _ _ hg).2
-        rw [h.1] at this; simp [Outcome.isOk] at this
-      · simp only [Prod.mk.injEq, Outcome.ok.injEq] at h; obtain ⟨rfl, -⟩ := h
-        rw [State.get_set_ne _ _ hw]
+      · -- A collecting map writes `as` and its `failedAs` key, or reports a failure it cannot collect.
+        rename_i key hkey
+        simp only [Prod.mk.injEq, collectItems] at h
+        split at h
+        · simp only [Outcome.ok.injEq] at h; obtain ⟨⟨rfl⟩, -⟩ := h
+          have hk : key ≠ k := fun hk => hw.2 (by rw [hkey, hk])
+          rw [State.get_set_ne _ _ hk, State.get_set_ne _ _ hw.1]
+        · rename_i hne
+          have hmem := O.choose_mem _ (fun hnil => hne (List.isEmpty_iff.mpr hnil))
+          rw [h.1] at hmem
+          simp [List.mem_filter, stops] at hmem
+      · split at h
+        · rename_i hg
+          simp only [Prod.mk.injEq] at h
+          have := (gather_error O _ _ hg).2
+          rw [h.1] at this; simp [Outcome.isOk] at this
+        · simp only [Prod.mk.injEq, Outcome.ok.injEq] at h; obtain ⟨rfl, -⟩ := h
+          rw [State.get_set_ne _ _ hw.1]
     · simp at h
   | .parallel label branches, path, addr, lp, s, s', ev, hw, h => by
     simp only [eval] at h

@@ -25,7 +25,8 @@
         "height": 32
       }
     },
-    "key": "80e3c3e47acef7bbbf33fdd510400bb701dd0d098f0bd8806282608014a9b748"
+    "key": "80e3c3e47acef7bbbf33fdd510400bb701dd0d098f0bd8806282608014a9b748",
+    "parentToolCallId": "tool:1792440101504:uu0iees697p"
   },
   "body": "shown to the model natively"
 }
