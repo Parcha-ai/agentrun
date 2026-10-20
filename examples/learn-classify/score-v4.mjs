@@ -16,8 +16,11 @@ export const shareSum = (segments) => (Array.isArray(segments) && segments.some(
 
 const folded = (text) => String(text ?? '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
-/** An XBRL segment member as words: "WaterSystemsMember" is "water systems". */
-const memberWords = (member) => folded(String(member ?? '').replace(/(Segment)?Member$/, '').replace(/([a-z0-9])([A-Z])/g, '$1 $2'));
+/** A segment's name without a trailing "segment" word, a format like a legal form: "Pharmaceutical Segment" is "pharmaceutical". */
+const segmentName = (text) => folded(text).replace(/\s*\bsegments?$/, '');
+
+/** An XBRL segment member as words: "WaterSystemsMember" and "WaterSystemsSegment" are "water systems". */
+const memberWords = (member) => segmentName(String(member ?? '').replace(/Member$/, '').replace(/([a-z0-9])([A-Z])/g, '$1 $2'));
 
 // ISO 3166 codes for the countries SEC filers name, by the names and short forms an answer may use.
 const COUNTRIES = {
@@ -74,8 +77,8 @@ export async function scoreSegments({ answer, truth, judge }) {
   const pairs = [];
   const open = [];
   for (const [i, segment] of given.entries()) {
-    const name = folded(segment.name);
-    const j = filed.findIndex((t, k) => !taken.has(k) && (folded(t.label) === name || memberWords(t.member) === name));
+    const name = segmentName(segment.name);
+    const j = filed.findIndex((t, k) => !taken.has(k) && ((t.label && segmentName(t.label) === name) || memberWords(t.member) === name));
     if (j >= 0) { taken.add(j); pairs.push([i, j]); } else open.push(i);
   }
   const free = filed.map((t, k) => k).filter((k) => !taken.has(k));

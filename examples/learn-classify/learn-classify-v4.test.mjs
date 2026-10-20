@@ -100,6 +100,14 @@ test('segments: a filed label or member matches without a question, F1 over both
   assert.ok(Math.abs(half.segmentsF1 - 2 / 3) < 1e-12, String(half.segmentsF1), 'precision 1, recall 1/2');
 });
 
+test('a trailing "segment" word is a format, folded on both sides like a legal form: no question for it', async () => {
+  const j = judge();
+  const truth = [{ member: 'Pharmaceutical', label: 'Pharmaceutical', share: 0.9 }, { member: 'Biotechnology', label: 'Biotechnology', share: 0.1 }, { member: 'WorldWrestlingEntertainmentSegment', label: null, share: 0 }];
+  const result = await scoreSegments({ answer: { segments: [{ name: 'Pharmaceutical Segment', share: 0.9 }, { name: 'Biotechnology segments', share: 0.1 }, { name: 'World Wrestling Entertainment', share: 0 }] }, truth, judge: j.run });
+  assert.deepEqual(result, { segmentsF1: 1, shareErrorMean: 0 });
+  assert.equal(j.asked.length, 0);
+});
+
 test('segments in other words are Jev\'s: one request, a choice per open segment over the filed ones not yet taken', async () => {
   const j = judge({ picks: { 'Water': ['WaterSystemsMember', 0.9], 'Flow control': ['IndustrialFlowMember', 0.8] } });
   const result = await scoreSegments({ answer: { segments: [{ name: 'Water', share: 0.6 }, { name: 'Flow control', share: 0.3 }, { name: 'Corporate', share: 0.1 }] }, truth: filed, judge: j.run });
