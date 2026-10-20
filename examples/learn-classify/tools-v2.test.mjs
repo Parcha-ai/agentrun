@@ -188,7 +188,7 @@ function scriptedBrowser({ pages, redirects = {} }) {
     backend,
     log,
     browser: async () => ({ name: 'fake', provider: backend.provider, usd: () => 0 }),
-    guard: async (_target, { check }) => (guard = { refused: [], status: 0, closed: false, check, close() {} }),
+    guard: async (_target, { check, capture }) => (guard = { refused: [], status: 0, closed: false, check, capture, close() {} }),
     driver: async () => {
       let current = { url: 'about:blank', title: '', text: '', html: '' };
       const load = async (href) => {
@@ -204,6 +204,11 @@ function scriptedBrowser({ pages, redirects = {} }) {
           if (redirects[at]) { at = new URL(redirects[at], at).href; continue; }
           const page = pages[at];
           guard.status = page ? 200 : 404;
+          // A file the guard is set to take is handed over and not shown, as the real guard does.
+          if (page?.document && guard.capture) {
+            guard.captured = { url: at, status: 200, contentType: page.contentType, bytes: page.document };
+            throw new Error('net::ERR_ABORTED');
+          }
           current = page ? { url: at, title: page.title, text: page.text, html: page.html ?? '' } : { url: at, title: 'Not found', text: '', html: '' };
           for (const sub of page?.requests ?? []) {
             const subWhy = await guard.check(sub);
@@ -450,6 +455,43 @@ test('read_document without eyes, or with eyes that fail: the text still comes b
 });
 
 
+test('read_document asks again through the browser when a host turns a plain request away, with every hop still checked and the session priced', async (t) => {
+  const root = await scratch(t);
+  const web = await localWeb(t, {
+    'ir.walled.example/ar.pdf': (res) => { res.writeHead(403, { 'content-type': 'text/html' }); res.end('<html>Access denied</html>'); },
+    'ir.walled.example/challenge.pdf': send('text/html', '<html><script>checking your browser</script></html>'),
+    'ir.walled.example/to-sec.pdf': (res) => { res.writeHead(403); res.end(); },
+    'ir.open.example/ar.pdf': send('application/pdf', Buffer.from(REPORT)),
+  });
+  const scripted = scriptedBrowser({
+    pages: {
+      'https://ir.walled.example/ar.pdf': { document: Buffer.from(REPORT), contentType: 'application/pdf' },
+      'https://ir.walled.example/challenge.pdf': { document: Buffer.from(REPORT), contentType: 'application/octet-stream' },
+    },
+    redirects: { 'https://ir.walled.example/to-sec.pdf': 'https://www.sec.gov/Archives/edgar/data/1/ar.pdf' },
+  });
+  const priced = async () => ({ ...(await scripted.browser()), billedSeconds: (s) => Math.max(s, 60), usd: (s) => Math.max(s, 60) * 0.12 / 3600 });
+  const tool = readDocumentTool({ root, vision: await visionFor({ root, eyes: fakeEyes() }), browser: priced, driver: scripted.driver, guard: scripted.guard, fetch: web.fetch, lookup: publicLookup });
+
+  const walled = conforms(tool, await tool.run({ url: 'https://ir.walled.example/ar.pdf', find: 'Segment' }));
+  assert.equal(walled.ok, true);
+  assert.equal(walled.via, 'browser');
+  assert.deepEqual(walled.found, [3]);
+  assert.equal(walled.browser.billedSeconds, 60);
+  assert.ok(Math.abs(walled.costUsd - 0.002) < 1e-9, 'the session is in the cost');
+  assert.equal(conforms(tool, await tool.run({ url: 'https://ir.walled.example/challenge.pdf' })).via, 'browser');
+  const refused = conforms(tool, await tool.run({ url: 'https://ir.walled.example/to-sec.pdf' }));
+  assert.match(refused.refused, /^https:\/\/www\.sec\.gov\/Archives\/edgar\/data\/1\/ar\.pdf: www\.sec\.gov is on the refused list/);
+  assert.equal(scripted.log.requests.some((r) => new URL(r).hostname.endsWith('sec.gov')), false);
+  const open = conforms(tool, await tool.run({ url: 'https://ir.open.example/ar.pdf' }));
+  assert.equal(open.via, 'direct');
+  assert.equal(open.browser, undefined);
+  assert.equal(ledgerOps(scripted.backend).filter((op) => op === 'create').length, 3, 'one session per walled document, none for an open one');
+
+  const plain = readDocumentTool({ root, vision: await visionFor({ root, eyes: fakeEyes() }), fetch: web.fetch, lookup: publicLookup });
+  assert.equal((await plain.run({ url: 'https://ir.walled.example/ar.pdf' })).error, 'HTTP 403');
+});
+
 test('the eyes reach the model gateway: Google\'s model over its OpenAI-compatible chat completions at <gateway>/v1, with the gateway\'s key and thinking on', async (t) => {
   const requests = [];
   const server = createServer((req, res) => {
@@ -620,11 +662,11 @@ test('the guard self-test passes when a redirect to sec.gov comes back refused a
 
 const CHROME = process.env.CHROME_PATH || ['/usr/bin/google-chrome', '/usr/bin/chromium', '/opt/google/chrome/chrome'].find((path) => existsSync(path));
 
-test('browse on a real Chrome: scripts run, and a redirect, a click and an image to a refused site never reach it', { skip: CHROME ? false : 'no Chrome on this machine', timeout: 240_000 }, async (t) => {
+test('browse and read_document on a real Chrome: scripts run, a walled PDF comes from the browser, and a redirect, a click and an image to a refused site never reach it', { skip: CHROME ? false : 'no Chrome on this machine', timeout: 240_000 }, async (t) => {
   const seen = [];
   let port;
   const server = createServer((req, res) => {
-    const host = (req.headers.host ?? '').split(':')[0];
+    const host = (req.headers['x-test-host'] ?? req.headers.host ?? '').split(':')[0];
     seen.push(`${host}${req.url}`);
     const html = (body) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end(body); };
     if (host === 'www.acme.test' && req.url === '/') {
@@ -635,6 +677,11 @@ test('browse on a real Chrome: scripts run, and a redirect, a click and an image
     if (host === 'www.acme.test' && req.url === '/investors') return html('<title>Investors</title><p>Segment table: Valves 70%, Pumps 30%.</p>');
     if (host === 'www.acme.test' && req.url === '/to-sec') { res.writeHead(302, { location: `http://www.sec.gov:${port}/cgi-bin/browse-edgar?CIK=1` }); return res.end(); }
     if (host === 'www.acme.test' && req.url === '/script-nav') return html(`<title>Moving</title><p>Moving on</p><script>setTimeout(() => { location.href = 'http://siccode.com:${port}/apple'; }, 50);</script>`);
+    if (host === 'www.acme.test' && req.url === '/walled.pdf') {
+      if (!/Chrome/.test(req.headers['user-agent'] ?? '')) { res.writeHead(403, { 'content-type': 'text/html' }); return res.end('<p>Access denied</p>'); }
+      res.writeHead(200, { 'content-type': 'application/pdf' });
+      return res.end(Buffer.from(REPORT));
+    }
     res.writeHead(404, { 'content-type': 'text/plain' });
     res.end('no');
   });
@@ -672,6 +719,15 @@ test('browse on a real Chrome: scripts run, and a redirect, a click and an image
   assert.match(followed.text, /Valves 70%/);
 
   // Another process on the machine may probe a new loopback port by its address; no refused host ever arrives.
+  // A host that turns away a plain request: read_document takes the file from the browser's own response.
+  const direct = (href, init = {}) => { const u = new URL(href); return globalThis.fetch(`http://127.0.0.1:${port}${u.pathname}`, { ...init, headers: { ...init.headers, 'x-test-host': u.host } }); };
+  const reader = readDocumentTool({ root: join(dir, 'files'), vision: await visionFor({ root: join(dir, 'files'), eyes: fakeEyes() }), browser, fetch: direct, allowPrivate: true });
+  const walled = conforms(reader, await reader.run({ url: at('/walled.pdf'), find: 'Segment' }));
+  assert.equal(walled.via, 'browser', JSON.stringify(walled));
+  assert.deepEqual(walled.found, [3]);
+  const blocked = conforms(reader, await reader.run({ url: at('/to-sec') }));
+  assert.match(blocked.refused ?? '', /www\.sec\.gov is on the refused list/, JSON.stringify(blocked));
+
   const reached = new Set(seen.map((s) => s.split('/')[0]));
   assert.ok(reached.has('www.acme.test'));
   for (const host of reached) assert.equal(refusedUrl(`http://${host}/`, { allowPrivate: true }), null, `the server saw ${host}`);

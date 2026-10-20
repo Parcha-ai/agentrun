@@ -6,11 +6,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { mkdir, readFile, realpath, rmdir, stat, writeFile } from 'node:fs/promises';
-import { isIP } from 'node:net';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { LIST_PRICES } from '@parcha/pi-browser';
 import { pdfDocument, pdfPage } from '@parcha/pi-vision';
-import { refusedHost } from './tools.mjs';
+import { refusedHost, refusedUrl, urlPolicy } from './tools.mjs';
+
+// The one URL policy is fetch_page's (tools.mjs); these tools use it, and its parts are exported here too.
+export { blockedAddress, refusedHostOf, refusedUrl, urlPolicy } from './tools.mjs';
 
 export const USER_AGENT = 'agentrun-learn-classify/1.0 (hard-job tools; +https://github.com/Parcha-ai/agentrun)';
 export const MAX_TEXT = 8_000;
@@ -33,92 +35,6 @@ export const SECRET_NAMES = Object.freeze(['BROWSERBASE_API_KEY', 'BB_API_KEY', 
 const size = (n) => (n >= 1048576 ? `${+(n / 1048576).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`);
 const normalHost = (host) => String(host).toLowerCase().replace(/\.$/, '').replace(/^\[|\]$/g, '');
 const firstLine = (error) => String(error?.message ?? error).split('\n')[0].slice(0, 300);
-
-// Addresses on this machine or a network it sits on: unspecified, loopback, private, CGNAT (the tailnet), link-local,
-// benchmarking, multicast and reserved. IPv6 adds unique-local, link-local, multicast, and IPv4 mapped or translated.
-const V4_BLOCKED = [[0, 8], [10 << 24, 8], [100 << 24 | 64 << 16, 10], [127 << 24, 8], [169 << 24 | 254 << 16, 16], [172 << 24 | 16 << 16, 12],
-  [192 << 24, 24], [192 << 24 | 168 << 16, 16], [198 << 24 | 18 << 16, 15], [224 << 24, 3]].map(([net, bits]) => [net >>> 0, bits]);
-const v4Number = (address) => address.split('.').reduce((n, part) => (n * 256) + Number(part), 0);
-const v4Blocked = (n) => V4_BLOCKED.some(([net, bits]) => (n >>> (32 - bits)) === (net >>> (32 - bits)));
-
-function v6Words(address) {
-  let text = address.split('%')[0];
-  const dotted = /(\d+\.\d+\.\d+\.\d+)$/.exec(text);
-  if (dotted) {
-    const n = v4Number(dotted[1]);
-    text = `${text.slice(0, -dotted[1].length)}${(n >>> 16).toString(16)}:${(n & 0xffff).toString(16)}`;
-  }
-  const [head, tail] = text.split('::');
-  const part = (s) => (s ? s.split(':').map((w) => parseInt(w, 16)) : []);
-  const words = tail === undefined ? part(head) : [...part(head), ...Array(8 - part(head).length - part(tail).length).fill(0), ...part(tail)];
-  return words.length === 8 && words.every((w) => Number.isInteger(w) && w >= 0 && w <= 0xffff) ? words : null;
-}
-
-/** True for an IP literal that names this machine or a network it sits on. */
-export function blockedAddress(address) {
-  const host = normalHost(address);
-  if (isIP(host) === 4) return v4Blocked(v4Number(host));
-  if (isIP(host) !== 6) return false;
-  const w = v6Words(host);
-  if (!w) return true;
-  if (w.slice(0, 7).every((x) => x === 0)) return true; // :: and ::1
-  if ((w[0] & 0xfe00) === 0xfc00 || (w[0] & 0xffc0) === 0xfe80 || (w[0] & 0xff00) === 0xff00) return true;
-  const mapped = w.slice(0, 5).every((x) => x === 0) && w[5] === 0xffff;
-  const nat64 = w[0] === 0x64 && w[1] === 0xff9b && w.slice(2, 6).every((x) => x === 0);
-  return (mapped || nat64) ? v4Blocked(((w[6] << 16) | w[7]) >>> 0) : false;
-}
-
-const LOCAL_SUFFIXES = ['localhost', 'local', 'internal', 'home.arpa', 'ts.net', 'lan', 'intranet'];
-
-/** Why a host is never opened, judged on its name alone: a refused site (tools.mjs), or this machine or its network. */
-export function refusedHostOf(host, { allowPrivate = false } = {}) {
-  const h = normalHost(host);
-  const refused = refusedHost(h);
-  if (refused) return refused;
-  if (allowPrivate) return null;
-  if (!h || blockedAddress(h)) return `${h || 'an empty host'} is on this machine or its network`;
-  if (isIP(h)) return null;
-  if (!h.includes('.')) return `${h} is a single-label name, which resolves only on a local network`;
-  if (LOCAL_SUFFIXES.some((suffix) => h === suffix || h.endsWith(`.${suffix}`))) return `${h} is a local network name`;
-  return null;
-}
-
-/** Why `raw` is never opened, judged on the URL alone, or null. */
-export function refusedUrl(raw, options = {}) {
-  let url;
-  try {
-    url = new URL(String(raw));
-  } catch {
-    return `${JSON.stringify(String(raw).slice(0, 200))} is not a URL`;
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return `only http and https URLs are opened, not ${url.protocol}`;
-  if (url.username || url.password) return 'URLs with credentials are not opened';
-  return refusedHostOf(url.hostname, options);
-}
-
-/** The URL check every request of a tool goes through: the name, then what the name resolves to here (once per host per
- *  policy). A name that does not resolve is left to the request to fail. */
-export function urlPolicy({ allowPrivate = false, lookup = dnsLookup } = {}) {
-  const resolved = new Map();
-  const resolvesBlocked = (host) => {
-    if (!resolved.has(host)) {
-      resolved.set(host, lookup(host, { all: true, verbatim: true })
-        .then((answers) => answers.find((a) => blockedAddress(a.address)) ?? null, () => null)
-        .then((hit) => (hit ? `${host} resolves to ${hit.address}, on this machine or its network` : null)));
-    }
-    return resolved.get(host);
-  };
-  return {
-    allowPrivate,
-    lexical: (raw) => refusedUrl(raw, { allowPrivate }),
-    async check(raw) {
-      const why = refusedUrl(raw, { allowPrivate });
-      if (why || allowPrivate) return why;
-      const host = normalHost(new URL(raw).hostname);
-      return isIP(host) ? null : resolvesBlocked(host);
-    },
-  };
-}
 
 /** A host tool's cost, in the shape every result carries. */
 const sumCost = (a, b) => (a === null || b === null ? null : a + b);
@@ -238,6 +154,7 @@ export function browserbaseSearchProvider({ env = process.env, make } = {}) {
 export const searchFromEnv = (env = process.env) => browserbaseSearchProvider({ env });
 
 const GUARDED = new Set(['page', 'iframe', 'service_worker', 'shared_worker']);
+const CAPTURED = /^(application\/(pdf|octet-stream|x-pdf)|binary\/octet-stream|image\/(png|jpeg|gif|webp))\b/;
 const SESSIONS = new Set([...GUARDED, 'worker']);
 
 /**
@@ -248,7 +165,7 @@ const SESSIONS = new Set([...GUARDED, 'worker']);
  * document. If its socket closes or a page cannot be held, `closed` is set and the caller must not trust what the page
  * shows.
  */
-export async function cdpRequestGuard(target, { check }) {
+export async function cdpRequestGuard(target, { check, capture }) {
   const url = target.dial?.url ?? target.sdkCdpUrl;
   const ws = new WebSocket(url, ...(target.dial?.headers ? [{ headers: target.dial.headers }] : []));
   await new Promise((done, fail) => {
@@ -284,6 +201,27 @@ export async function cdpRequestGuard(target, { check }) {
     }
     return send('Fetch.continueRequest', { requestId: p.requestId }, sessionId).catch(() => {});
   };
+  // With `capture`, a top-level document that answers 2xx as a PDF, an image or bytes is taken whole (at most
+  // `capture.maxBytes`) into `captured`, and not shown: its request ends there.
+  const take = async (sessionId, p) => {
+    const header = (name) => (p.responseHeaders ?? []).find((h) => h.name.toLowerCase() === name)?.value ?? '';
+    const type = header('content-type').toLowerCase();
+    const ok = p.responseStatusCode >= 200 && p.responseStatusCode < 300;
+    if (capture && ok && pages.get(sessionId) === p.frameId && CAPTURED.test(type)) {
+      const declared = Number(header('content-length'));
+      const at = { url: p.request.url, status: p.responseStatusCode, contentType: type };
+      if (declared > capture.maxBytes) guard.captured = { ...at, error: `the file is ${size(declared)}, over the ${size(capture.maxBytes)} cap` };
+      else {
+        const body = await send('Fetch.getResponseBody', { requestId: p.requestId }, sessionId).catch(() => null);
+        const bytes = body ? Buffer.from(body.body, body.base64Encoded ? 'base64' : 'utf8') : null;
+        guard.captured = !bytes ? { ...at, error: 'the browser did not hand over the file' }
+          : bytes.length > capture.maxBytes ? { ...at, error: `the file is over the ${size(capture.maxBytes)} cap` } : { ...at, bytes };
+      }
+      return send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'Aborted' }, sessionId).catch(() => {});
+    }
+    return send('Fetch.continueResponse', { requestId: p.requestId }, sessionId)
+      .catch(() => send('Fetch.continueRequest', { requestId: p.requestId }, sessionId)).catch(() => {});
+  };
   const setup = ({ sessionId, targetInfo, waitingForDebugger }) => {
     const { type, targetId } = targetInfo;
     if (type === 'page') pages.set(sessionId, targetId);
@@ -291,7 +229,8 @@ export async function cdpRequestGuard(target, { check }) {
     // goes last so nothing it sends escapes before interception is on.
     const steps = [];
     // A page whose interception could not be turned on is not guarded: the guard counts as lost.
-    if (GUARDED.has(type)) steps.push(send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }, sessionId).catch((error) => { if (type === 'page') guard.closed = true; throw error; }));
+    const patterns = [{ urlPattern: '*', requestStage: 'Request' }, ...(capture && type === 'page' ? [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Response' }] : [])];
+    if (GUARDED.has(type)) steps.push(send('Fetch.enable', { patterns }, sessionId).catch((error) => { if (type === 'page') guard.closed = true; throw error; }));
     if (type === 'page') steps.push(send('Network.enable', {}, sessionId));
     if (SESSIONS.has(type) || type === 'tab') steps.push(send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sessionId));
     if (waitingForDebugger) steps.push(send('Runtime.runIfWaitingForDebugger', {}, sessionId));
@@ -308,7 +247,7 @@ export async function cdpRequestGuard(target, { check }) {
     } else if (m.method === 'Target.detachedFromTarget') {
       pages.delete(m.params.sessionId);
     } else if (m.method === 'Fetch.requestPaused') {
-      void decide(m.sessionId, m.params);
+      void (m.params.responseStatusCode !== undefined || m.params.responseErrorReason ? take(m.sessionId, m.params) : decide(m.sessionId, m.params));
     } else if (m.method === 'Network.responseReceived' && m.params.type === 'Document' && pages.get(m.sessionId) === m.params.frameId) {
       guard.status = m.params.response.status;
     }
@@ -452,6 +391,57 @@ function linksOf(html, pageUrl, lexical) {
 }
 
 /**
+ * One browser session for one call, from `browser()` (`browserFromEnv`): created, put under the request guard (`capture`
+ * passed on), driven by `work(page, guard, name)`, and released whatever happened. Returns `work`'s value, or `error`
+ * when the session or the work failed, with the browser's name, the seconds it was held, the seconds its provider bills
+ * and their price (null when a create that failed may have made a billed session).
+ */
+async function withBrowser({ browser, driver, openGuard = cdpRequestGuard, check, capture, signal, timeoutMs }, work) {
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const abort = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  let source;
+  try {
+    source = await browser();
+  } catch (error) {
+    return { error: `no browser: ${firstLine(error)}`, costUsd: 0, seconds: 0, billedSeconds: 0 };
+  }
+  const spec = {
+    tag: `browse-${randomUUID().slice(0, 12)}`, maxLifetimeS: 300, idleTimeoutS: 120, proxies: false, verified: false, captcha: false,
+    viewport: { width: 1280, height: 900 }, metadata: { tool: 'browse' },
+  };
+  let ref;
+  let guard;
+  let page;
+  const out = { browser: source.name };
+  const created = Date.now();
+  try {
+    ref = await source.provider.create(spec, abort);
+    const target = await source.provider.attach(ref, abort);
+    guard = await openGuard(target, { check, ...(capture ? { capture } : {}) });
+    const makeDriver = driver ?? (await import('@parcha/pi-browser/driver/stagehand')).stagehandDriver();
+    page = await makeDriver(target, abort, { batchTimeoutMs: 30_000 });
+    const guarded = { run: async (input) => { if (abort.aborted) throw abort.reason; return page.run(input); }, page: () => page.page(), screenshot: (o) => page.screenshot(o) };
+    out.value = await work(guarded, guard, source.name);
+  } catch (error) {
+    out.error = abort.aborted && !signal?.aborted ? `timed out after ${timeoutMs / 1000} s` : signal?.aborted ? 'cancelled' : firstLine(error);
+  } finally {
+    guard?.close();
+    await page?.close().catch(() => {});
+    if (ref) {
+      await source.provider.release(ref).then(() => source.released?.(ref), (error) => {
+        out.error = `the browser could not be released: ${firstLine(error)}`;
+      });
+    }
+  }
+  const seconds = (Date.now() - created) / 1000;
+  // A create that threw may have made a session that bills; a local browser costs nothing either way.
+  out.costUsd = ref ? source.usd(seconds) : source.usd(1) > 0 ? null : 0;
+  out.seconds = Math.round(seconds * 10) / 10;
+  out.billedSeconds = ref ? Math.round((source.billedSeconds?.(seconds) ?? 0) * 10) / 10 : 0;
+  return out;
+}
+
+/**
  * browse: open one URL in a real browser, let its scripts run, optionally click, scroll, wait or go on, and read the
  * page's text, links and (asked for) a screenshot. A fresh browser per call, from `browser()` (`browserFromEnv`), released
  * when the call ends whatever happened. Every request the page makes goes through `guard` (`cdpRequestGuard`) and the URL
@@ -473,33 +463,9 @@ export function browseTool({ browser, root, driver, guard: openGuard = cdpReques
       const why = await policy.check(target);
       if (why) return empty(raw, { refused: target === raw ? why : `goto ${target}: ${why}` });
     }
-    const deadline = AbortSignal.timeout(timeoutMs);
-    const abort = signal ? AbortSignal.any([signal, deadline]) : deadline;
-    let source;
-    try {
-      source = await browser();
-    } catch (error) {
-      return empty(raw, { error: `no browser: ${firstLine(error)}` });
-    }
-    const spec = {
-      tag: `browse-${randomUUID().slice(0, 12)}`, maxLifetimeS: 300, idleTimeoutS: 120, proxies: false, verified: false, captcha: false,
-      viewport: { width: 1280, height: 900 }, metadata: { tool: 'browse' },
-    };
-    let ref;
-    let guard;
-    let page;
-    let result;
-    let created = null;
-    try {
-      created = Date.now();
-      ref = await source.provider.create(spec, abort);
-      const target = await source.provider.attach(ref, abort);
-      guard = await openGuard(target, { check: policy.check });
-      const makeDriver = driver ?? (await import('@parcha/pi-browser/driver/stagehand')).stagehandDriver();
-      page = await makeDriver(target, abort, { batchTimeoutMs: 30_000 });
+    const session = await withBrowser({ browser, driver, openGuard, check: policy.check, signal, timeoutMs }, async (page, guard, name) => {
       let failure = null;
       const step = async (code) => {
-        if (abort.aborted) throw abort.reason;
         try {
           await page.run({ code });
         } catch (error) {
@@ -515,43 +481,28 @@ export function browseTool({ browser, root, driver, guard: openGuard = cdpReques
       const now = await page.page();
       const stopped = guard.refused.findLast((r) => r.main);
       const blocked = [...new Set(guard.refused.map((r) => r.url))].slice(0, 10);
-      const base = { browser: source.name, ...(blocked.length ? { blocked } : {}) };
+      const base = { browser: name, ...(blocked.length ? { blocked } : {}) };
       if (String(now.url).startsWith('chrome-error:') || (stopped && failure)) {
-        result = empty(stopped?.url ?? raw, { ...base, ...(stopped ? { refused: `${stopped.url}: ${stopped.reason}` } : { error: `the page did not load${failure ? ` (${firstLine(failure)})` : ''}` }) });
-      } else if (policy.lexical(now.url)) {
-        result = empty(now.url, { ...base, refused: `${now.url}: ${policy.lexical(now.url)}` });
-      } else {
-        const text = tidyText(now.text).slice(0, MAX_TEXT);
-        const { links, documents } = linksOf(now.html, now.url, policy.lexical);
-        result = { ok: !failure && text.length > 0, url: now.url, status: guard.status ?? 0, title: String(now.title ?? '').slice(0, 300), text, links, ...(documents.length ? { documents } : {}), ...base };
-        if (failure) result.error = `an action failed: ${firstLine(failure)}`;
-        else if (!text) result.error = 'the page has no visible text';
-        if (args?.screenshot) {
-          const shot = await page.screenshot({ type: 'png' });
-          const bytes = Buffer.from(shot.data, 'base64');
-          const name = `browse/${createHash('sha256').update(bytes).digest('hex').slice(0, 16)}.png`;
-          await mkdir(join(root, 'browse'), { recursive: true });
-          await writeFile(join(root, name), bytes);
-          result.screenshot = name;
-        }
+        return empty(stopped?.url ?? raw, { ...base, ...(stopped ? { refused: `${stopped.url}: ${stopped.reason}` } : { error: `the page did not load${failure ? ` (${firstLine(failure)})` : ''}` }) });
       }
-    } catch (error) {
-      result = empty(raw, { browser: source.name, error: abort.aborted && !signal?.aborted ? `timed out after ${timeoutMs / 1000} s` : signal?.aborted ? 'cancelled' : firstLine(error) });
-    } finally {
-      guard?.close();
-      await page?.close().catch(() => {});
-      if (ref) {
-        await source.provider.release(ref).then(() => source.released?.(ref), (error) => {
-          result = { ...result, ok: false, error: `the browser could not be released: ${firstLine(error)}` };
-        });
+      if (policy.lexical(now.url)) return empty(now.url, { ...base, refused: `${now.url}: ${policy.lexical(now.url)}` });
+      const text = tidyText(now.text).slice(0, MAX_TEXT);
+      const { links, documents } = linksOf(now.html, now.url, policy.lexical);
+      const result = { ok: !failure && text.length > 0, url: now.url, status: guard.status ?? 0, title: String(now.title ?? '').slice(0, 300), text, links, ...(documents.length ? { documents } : {}), ...base };
+      if (failure) result.error = `an action failed: ${firstLine(failure)}`;
+      else if (!text) result.error = 'the page has no visible text';
+      if (args?.screenshot) {
+        const shot = await page.screenshot({ type: 'png' });
+        const bytes = Buffer.from(shot.data, 'base64');
+        const file = `browse/${createHash('sha256').update(bytes).digest('hex').slice(0, 16)}.png`;
+        await mkdir(join(root, 'browse'), { recursive: true });
+        await writeFile(join(root, file), bytes);
+        result.screenshot = file;
       }
-    }
-    // A create that threw may have made a session that bills; one never asked for cost nothing.
-    const seconds = created ? (Date.now() - created) / 1000 : 0;
-    result.costUsd = ref ? source.usd(seconds) : created && source.usd(1) > 0 ? null : 0;
-    result.seconds = Math.round(seconds * 10) / 10;
-    result.billedSeconds = ref ? Math.round((source.billedSeconds?.(seconds) ?? 0) * 10) / 10 : 0;
-    return result;
+      return result;
+    });
+    const { value, error, ...spent } = session;
+    return { ...(value ?? empty(raw, { ...(spent.browser ? { browser: spent.browser } : {}) })), ...(error ? { ok: false, error } : {}), costUsd: spent.costUsd, seconds: spent.seconds, billedSeconds: spent.billedSeconds };
   }
 
   return {
@@ -587,6 +538,12 @@ const DOCUMENT_RESULT_SCHEMA = {
     ok: { type: 'boolean' },
     source: { type: 'string', description: 'the url or path asked for' },
     url: { type: 'string', description: 'the URL the document came from, after redirects, when it was downloaded' },
+    via: { type: 'string', enum: ['direct', 'browser'], description: 'how it was downloaded: a plain request, or a browser session when the host turned the plain one away' },
+    browser: {
+      type: 'object', additionalProperties: false, required: ['browser', 'seconds', 'billedSeconds', 'costUsd'],
+      properties: { browser: { type: 'string' }, seconds: { type: 'number' }, billedSeconds: { type: 'number' }, costUsd: { type: ['number', 'null'] } },
+      description: 'the browser session the download took, when it took one; its cost is in costUsd',
+    },
     path: { type: 'string', description: 'where the document is kept: pass it as path to read it again without downloading' },
     kind: { type: 'string', enum: ['pdf', 'image', 'unknown'] },
     sha256: { type: 'string' },
@@ -604,6 +561,7 @@ const DOCUMENT_RESULT_SCHEMA = {
 };
 
 const PNG = [0x89, 0x50, 0x4e, 0x47];
+const WALL_STATUS = new Set([401, 403, 406, 429, 503]);
 function kindOf(bytes) {
   const b = bytes;
   if (b.length >= 5 && Buffer.from(b.subarray(0, 5)).toString('latin1') === '%PDF-') return { kind: 'pdf', mimeType: 'application/pdf', ext: 'pdf' };
@@ -638,7 +596,7 @@ async function download(url, { policy, fetchImpl, maxBytes, timeoutMs, signal })
       }
       if (!res.ok) {
         await res.body?.cancel();
-        return { error: `HTTP ${res.status}` };
+        return { error: `HTTP ${res.status}`, status: res.status, url: at };
       }
       const declared = Number(res.headers.get('content-length'));
       if (declared > maxBytes) {
@@ -674,14 +632,15 @@ const pagesProblem = (pages) => (pages === undefined ? null
 
 /**
  * read_document: a PDF or an image, from a URL (downloaded within the URL policy, at most 20 MB) or a path under `root`
- * (one this tool or browse kept). A PDF comes back as its text layer, page by page; with `find`, the pages that hold
+ * (one this tool or browse kept). A host that turns a plain request away is asked again through `browser` (the same
+ * sessions as browse, under the same guard). A PDF comes back as its text layer, page by page; with `find`, the pages that hold
  * those words; with `pages`, those pages' text. With `question`, the vision model looks at `pages` (or, without them, the
  * scanned pages shown) and answers about each: up to MAX_LOOKS looks a call. An image is looked at whole.
  *
  * The looks go through pi-vision's `vision.see` on `vision` (createVisionExtension) with `eyes` (`gatewayEyes`, through
  * the model gateway, or scripted ones), and each is filed as a receipt under `root`/evidence.
  */
-export function readDocumentTool({ root, vision, allowPrivate = false, lookup = dnsLookup, fetch: fetchImpl = globalThis.fetch, maxBytes = MAX_DOCUMENT_BYTES, timeoutMs = DOCUMENT_TIMEOUT_MS }) {
+export function readDocumentTool({ root, vision, browser, driver, guard: openGuard = cdpRequestGuard, allowPrivate = false, lookup = dnsLookup, fetch: fetchImpl = globalThis.fetch, maxBytes = MAX_DOCUMENT_BYTES, timeoutMs = DOCUMENT_TIMEOUT_MS }) {
   if (!root) throw new TypeError('readDocumentTool needs root, where documents are kept');
   if (!vision?.see) throw new TypeError('readDocumentTool needs vision: createVisionExtension(...) from @parcha/pi-vision/durable');
   const policy = urlPolicy({ allowPrivate, lookup });
@@ -708,7 +667,32 @@ export function readDocumentTool({ root, vision, allowPrivate = false, lookup = 
     return { looks: done, costUsd };
   }
 
+  // The browser-backed download: the document opened in a browser session under the guard, every hop checked, and its
+  // bytes taken from the browser's own response (`capture`). For a host that refuses a plain request.
+  async function throughBrowser(target, signal) {
+    const session = await withBrowser({ browser, driver, openGuard, check: policy.check, capture: { maxBytes }, signal, timeoutMs: BROWSE_TIMEOUT_MS }, async (page, guard) => {
+      try {
+        await page.run({ code: STEP.goto(target) });
+      } catch {}
+      const stopped = guard.refused.findLast((r) => r.main);
+      if (stopped) return { refused: `${stopped.url}: ${stopped.reason}` };
+      if (guard.closed) throw new Error('the request guard lost the browser, so the file cannot be trusted');
+      const got = guard.captured;
+      if (!got) return { error: 'the browser was given no PDF or image at that address' };
+      return got.error ? { error: got.error } : { bytes: got.bytes, url: got.url };
+    });
+    const { value, error, ...spent } = session;
+    return { ...(value ?? {}), ...(error ? { error: `through the browser: ${error}` } : {}), spent };
+  }
+
   async function run(args, { signal } = {}) {
+    const used = {};
+    const result = await read(args, signal, used);
+    if (!used.browser) return typeof args?.url === 'string' && args.url.trim() ? { ...result, via: 'direct' } : result;
+    return { ...result, via: 'browser', browser: used.browser, costUsd: sumCost(result.costUsd, used.browser.costUsd) };
+  }
+
+  async function read(args, signal, used) {
     const url = typeof args?.url === 'string' ? args.url.trim() : '';
     const given = typeof args?.path === 'string' ? args.path.trim() : '';
     const question = typeof args?.question === 'string' ? args.question.trim() : '';
@@ -723,7 +707,16 @@ export function readDocumentTool({ root, vision, allowPrivate = false, lookup = 
     let kept;
     let from;
     if (url) {
-      const got = await download(url, { policy, fetchImpl, maxBytes, timeoutMs, signal });
+      let got = await download(url, { policy, fetchImpl, maxBytes, timeoutMs, signal });
+      // A host that turns away a plain request (a bot wall: 401, 403, 406, 429, 503, or a page where a file was asked
+      // for) is asked again through the browser, when there is one.
+      const walled = WALL_STATUS.has(got.status) || (got.bytes && !kindOf(got.bytes) && /html/.test(got.type));
+      if (walled && browser) {
+        const viaBrowser = await throughBrowser(url, signal);
+        used.browser = viaBrowser.spent;
+        if (viaBrowser.refused || viaBrowser.error) return empty(viaBrowser.refused ? { refused: viaBrowser.refused } : { error: `${got.error ?? 'a page, not a file'}; ${viaBrowser.error}` });
+        got = viaBrowser;
+      }
       if (got.refused || got.error) return empty(got.refused ? { refused: got.refused } : { error: got.error });
       bytes = got.bytes;
       from = got.url;
@@ -873,7 +866,7 @@ export async function hardJobTools({ root, profileRoot, search, eyes, env = proc
   const shared = { ...(allowPrivate ? { allowPrivate } : {}), ...(lookup ? { lookup } : {}) };
   const tools = [searchWebTool({ provider: search ?? browserbaseSearchProvider({ env }), ...(allowPrivate ? { allowPrivate } : {}) })];
   tools.push(browseTool({ browser: browser ?? browserFromEnv({ env, profileRoot }), root, ...(driver ? { driver } : {}), ...(guard ? { guard } : {}), ...shared }));
-  tools.push(readDocumentTool({ root, vision: await visionFor({ root, eyes }), ...(fetch ? { fetch } : {}), ...shared }));
+  tools.push(readDocumentTool({ root, vision: await visionFor({ root, eyes }), browser: browser ?? browserFromEnv({ env, profileRoot }), ...(driver ? { driver } : {}), ...(guard ? { guard } : {}), ...(fetch ? { fetch } : {}), ...shared }));
   return tools;
 }
 

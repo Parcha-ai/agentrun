@@ -163,7 +163,12 @@ refused.
 Every one of these tools refuses what `fetch_page` refuses (the SEC and EDGAR, SIC listing sites, web archives) and,
 beyond it, this machine and its network (loopback, private, CGNAT and link-local addresses, single-label and local names).
 In the browser a second DevTools client holds each request until it is checked, so a redirect, a clicked link, a script's
-navigation, a frame or an image to a refused site is stopped before it is sent. Each result carries its `costUsd`.
+navigation, a frame or an image to a refused site is stopped before it is sent. `read_document` downloads with a plain
+request and, when a host turns that away (401, 403, 406, 429, 503, or a page where a file was asked for), takes the file
+from a browser session's own response under the same guard. Each result carries its `costUsd`.
+
+Browserbase's Fetch API is not used: it follows redirects on Browserbase's side and reports neither the final URL nor the
+headers, so a hop to a refused site could not be stopped or even seen.
 
 Before a live v2 pass runs its first job, the guard is tested on the browser the pass will use: `browse` opens a public
 page that redirects to sec.gov, and the pass stops unless that comes back refused with the sec.gov request blocked. After
