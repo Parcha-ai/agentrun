@@ -107,7 +107,9 @@ export async function visualOf(recording: Recording): Promise<Visual | undefined
 
   // The browser video: the frame track's webm and its index, whose clock is the frames' own (video second = (t - from) / 1000).
   let video: Visual['video'];
-  const track = lines.find((line) => line.channel === 'live' && line.kind === 'frame.track');
+  // One track per browser session: the video is the first's; with more than one, a chapter (a page read, by no session) has no honest place to seek.
+  const tracks = lines.filter((line) => line.channel === 'live' && line.kind === 'frame.track');
+  const track = tracks[0];
   const videoBlob = str(track?.blobs?.[0] as Json | undefined);
   const indexBlob = str(track?.blobs?.[1] as Json | undefined);
   const index = indexBlob ? obj(await readJson(indexBlob)) : undefined;
@@ -128,13 +130,15 @@ export async function visualOf(recording: Recording): Promise<Visual | undefined
     const poster = frames.find((frame) => !frame.sensitive)?.blob;
     if (segments.length > 0) video = { blob: videoBlob, ...(poster ? { poster } : {}), duration: (to - from) / 1000, skipEnd, segments };
   }
-  // A page read while only a blurred frame was on screen has no seek point, so it is no chapter; one chapter per distinct page visit: two that land at the same place in the
-  // video (a page opened, then the next straight after) are the later one.
+  // A chapter seeks to the kept frame that shows its page: the latest frame at or before the read (the page the run was looking at). A read made while only a blurred frame
+  // was on screen has none, so it is no chapter; with more than one session's track there is no honest place to seek, so none either. One chapter per distinct page
+  // visit: two that land on the same frame are the later page.
+  const heldMs = new Map<string, number>(list(index?.frames).flatMap((each) => { const f = obj(each); return str(f?.sha256) && num(f?.ms) !== undefined ? [[str(f!.sha256)!, num(f!.ms)!] as [string, number]] : []; }));
   const chapters: VisualChapter[] = [];
-  for (const page of pages) {
-    const raw = from !== undefined ? (page.t - from) / 1000 : 0;
-    if (raw < skipEnd && blurredRead(page.t, frames)) continue;
-    const chapter = { title: page.title, t: page.t, at: segmentAt(video?.segments ?? [], Math.max(raw, skipEnd)) };
+  for (const page of video && tracks.length === 1 ? pages : []) {
+    const shown = [...frames].reverse().find((frame) => frame.t <= page.t);
+    if (!shown || shown.sensitive || !heldMs.has(shown.blob)) continue;
+    const chapter = { title: page.title, t: page.t, at: heldMs.get(shown.blob)! / 1000 };
     const last = chapters.at(-1);
     if (last && chapter.at - last.at < MERGE_S) chapters[chapters.length - 1] = chapter; else chapters.push(chapter);
   }
@@ -150,7 +154,10 @@ export async function visualOf(recording: Recording): Promise<Visual | undefined
       const fact = str(f?.fact);
       if (!f || !fact || !frame || !frames.some((known) => known.blob === frame)) continue;
       const b = obj(f.box);
-      const box = b && [b.x, b.y, b.w, b.h].every((n) => num(n) !== undefined) ? { x: num(b.x)!, y: num(b.y)!, w: num(b.w)!, h: num(b.h)! } : null;
+      // A box is clamped into its frame; when nothing of it is left (no area, or off the frame) it is none, and the fact shows its whole frame.
+      const known = frames.find((each) => each.blob === frame)!;
+      const raw = b && [b.x, b.y, b.w, b.h].every((n) => num(n) !== undefined) ? { x: Math.max(0, num(b.x)!), y: Math.max(0, num(b.y)!), right: Math.min(known.w, num(b.x)! + num(b.w)!), bottom: Math.min(known.h, num(b.y)! + num(b.h)!) } : undefined;
+      const box = raw && raw.right > raw.x && raw.bottom > raw.y && num(b?.w)! > 0 && num(b?.h)! > 0 ? { x: raw.x, y: raw.y, w: raw.right - raw.x, h: raw.bottom - raw.y } : null;
       const r = obj(f.receipt);
       facts.push({ fact, claim: str(f.claim) ?? '', frame, box, label: str(f.label) ?? '', ...(str(f.why) ? { why: str(f.why)! } : {}), ...(f.inferred === true ? { inferred: true } : {}),
         ...(r ? { receipt: { ...(str(r.sha256) ? { sha256: str(r.sha256)! } : {}), ...(str(r.model) ? { model: str(r.model)! } : {}), ...(num(r.usd) !== undefined ? { usd: num(r.usd)! } : {}) } } : {}) });
@@ -158,18 +165,6 @@ export async function visualOf(recording: Recording): Promise<Visual | undefined
   }
   if (frames.length === 0 && !video && files.length === 0) return undefined;
   return { ...(video ? { video } : {}), frames, chapters, files, facts };
-}
-
-/** Whether a read at `t` was made while only a blurred frame was on screen (no kept frame between the span's start and the read). */
-const blurredRead = (t: number, frames: VisualFrame[]): boolean => {
-  const last = [...frames].reverse().find((frame) => frame.t <= t);
-  return !!last && last.sensitive;
-};
-
-/** The first second of the video at or after `seconds` that is played (inside a segment, or at the next segment's start). */
-function segmentAt(segments: [number, number][], seconds: number): number {
-  for (const [start, end] of segments) { if (seconds <= end) return Math.max(seconds, start); }
-  return segments.at(-1)?.[0] ?? seconds;
 }
 
 /** The part of a frame a boxed fact is shown in, in the frame's pixels: the box with CROP_PAD of air on every side (clamped to the frame, never a sliver); a box across
@@ -351,8 +346,16 @@ export function drawVisual(visual: Visual, model: ChatModel, recording: Recordin
         pic.style.cssText = `aspect-ratio:${crop.w}/${crop.h}`;
         pic.append(styled(reportEl('img', { src: url, alt: fact.claim || fact.fact }), `position:absolute;width:${(frame.w / crop.w) * 100}%;max-width:none;height:auto;left:${-(crop.x / crop.w) * 100}%;top:${-(crop.y / crop.h) * 100}%`),
           styled(reportEl('span', { class: 'mu-box' }), placed(fact.box, crop, BOX_PAD)));
-      } else pic.append(reportEl('img', { src: url, alt: fact.claim || fact.fact }));
-      if (!frame.sensitive) { pic.tabIndex = 0; pic.addEventListener('click', () => lightbox(host, url, fact.claim || fact.fact, fact.box, { w: frame.w, h: frame.h })); }
+      } else pic.append(reportEl('img', { class: 'mu-whole', src: url, alt: fact.claim || fact.fact }));
+      if (!frame.sensitive) {
+        // A control for the pointer and the keyboard alike.
+        const open = () => lightbox(host, url, fact.claim || fact.fact, fact.box, { w: frame.w, h: frame.h });
+        pic.setAttribute('role', 'button');
+        pic.setAttribute('aria-label', `Enlarge the picture for ${fact.claim || fact.fact}`);
+        pic.tabIndex = 0;
+        pic.addEventListener('click', open);
+        pic.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); } });
+      }
       facts.append(reportEl('figure', { class: `mu-fact${fact.box && !frame.sensitive && fact.box.w >= frame.w * 0.5 ? ' wide' : ''}` }, pic, reportEl('figcaption', fact.receipt ? { title: [fact.receipt.model, fact.receipt.usd !== undefined ? `$${fact.receipt.usd}` : ''].filter((each) => each !== '').join(' · ') } : {}, reportEl('span', { class: 'mu-fact-value', text: fact.fact }), reportEl('span', { class: 'mu-cap', text: [fact.claim, fact.label].filter((each) => each !== '').join(' · ') }), fact.inferred ? reportEl('span', { class: 'mu-cap', text: 'The page shows the evidence, not the conclusion: this is the agent\'s own flag.' }) : false, fact.why && !fact.box ? reportEl('span', { class: 'mu-cap', text: fact.why }) : false)));
     }
     report.append(facts);
