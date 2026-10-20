@@ -54,7 +54,7 @@ machine. A Cloudflare Durable Object gives it both. This package gives it both o
   machine; or the following on a Linux host.
 - Linux with systemd and FUSE (`/dev/fuse`, `libfuse2`, which the archil package depends on, and `fusermount` from `fuse3`,
   which cleans a dead mount), `setpriv` (util-linux) and `sudo`, near the disk's region: a commit is one round trip to the
-  region (3 to 6 ms p50 from a VM next to it, measured).
+  region (3 to 6 ms p50 from a VM next to it; [where the figures come from](#the-failure-table)).
 - Node 22.19 or later, to run the package and its unit tests.
 - The [`archil` client](https://docs.archil.com/mounting/linux) 0.8.40 or later (0.8.42 tested):
   `curl -s https://archil.com/install | sh`.
@@ -76,7 +76,7 @@ where FUSE is unavailable. Without Archil, a run can live on a plain directory o
 ## Quickstart with Docker
 
 You need Docker (Docker Desktop, OrbStack or Colima on macOS, Docker Engine on Linux), Node 22.19 or later, and an Archil
-account (the free plan is enough): from the Archil console, a disk for scratch runs and an API key. This machine needs no
+account: from the Archil console, a disk for scratch runs and an API key. This machine needs no
 root, no FUSE and no archil client: each instance of a run is a container of this package's image, and that container is
 the instance's machine.
 
@@ -500,7 +500,10 @@ What a revoke cannot do: no fence reaches a third party. A paid API that already
 guarantees that this runtime does not start an effect twice; an effect your model decides to retry is a new call, so give a
 paid API an idempotency key from your own business key.
 
-Measured on a VM about 3 ms from `aws-us-east-1`, archil 0.8.42: acquire 222 ms p50, release 139 ms, takeover by revoke
+Where these figures come from: the package's live suites, run against a real Archil disk from a VM about 3 ms from `aws-us-east-1`
+with archil client 0.8.42, and written into this README on 2026-10-07, when the package was first written. `npm run test:live:claim`
+records the claim timings (acquire, release, takeover by revoke) and `npm run test:live:store` the commit timings, each as p50 and
+p95, so you can measure your own host and disk. Measured on that VM: acquire 222 ms p50, release 139 ms, takeover by revoke
 252 ms, commit 3.75 to 5.63 ms p50, a killed host's run back to its first commit in 1 to 1.5 s, a hung host replaced in 6
 to 6.3 s with a 6 s test lease (90 to 120 s with the defaults). A start that never reaches running costs its start grace: live on Archil with a 6 s grace and a 3 s tick,
 starts that all failed were retried six times in five minutes, each grace doubled (`test/live/supervise-slow.live.test.ts`),

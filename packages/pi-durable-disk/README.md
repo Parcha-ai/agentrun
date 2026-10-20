@@ -140,8 +140,7 @@ can mount.
 
 ## Bring your own disk
 
-The run's directory moves to an Archil disk, and the same app module runs on it (`run --disk` where `run --dir` was). You need an Archil account (the free plan is
-enough), a disk in the region nearest your hosts, and an API key from the Archil console. The key stays with the supervisor:
+The run's directory moves to an Archil disk, and the same app module runs on it (`run --disk` where `run --dir` was). You need an Archil account, a disk in the region nearest your hosts, and an API key from the Archil console. The key stays with the supervisor:
 hosts and instances never hold it. The supervisor is a function you call (`ensureRunning`) or `pi-durable-disk supervise`, which starts an
 instance where a run has none and hands each instance a mount token for its own start. On a Linux host set up as in
 [Requirements](docs/reference.md#requirements) (add `--host docker --image IMAGE` to start each instance in a container instead):
@@ -185,10 +184,11 @@ what it imports.
 
 - **A local run costs nothing:** a directory of this machine, no account and no key. The model is yours: the examples use a
   scripted one, so the first run spends nothing; the package adds no model calls of its own.
-- **On a disk:** an [Archil](https://archil.com) account (the free plan is enough for scratch runs) and the disk's storage. A
+- **On a disk:** an [Archil](https://archil.com) account and the disk's storage. A
   run is one directory (a SQLite store, a workspace and `run.json`), removed with `deleteRunTree`. Every commit is one round
   trip to the disk's region, 3 to 6 ms p50 from a host next to it (measured), so run hosts near the disk. Claiming a run
-  takes about 0.2 s and releasing one about 0.15 s on the same measurement ([the figures](docs/reference.md#the-failure-table)).
+  takes about 0.2 s and releasing one about 0.15 s, from the live suites on a VM next to the disk's region ([where the figures
+  come from](docs/reference.md#the-failure-table)).
 - **Hosts:** whatever you run them on, a machine you own, Docker, or a [Daytona](https://www.daytona.io) sandbox, which Daytona
   bills; a sandbox's list price per second is in its receipt (`daytonaUsdPerSecond`). A run that only waits is released and
   holds no process ([parking](docs/reference.md#serve-parking-and-fork)), so an idle run does not keep a host.
