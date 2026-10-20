@@ -143,28 +143,44 @@ A home with no `agent.source` (every home made before this) is not tied to a rep
 
 ## Prompt variants
 
-An agent can keep prompt variants in its home: one `base`, one `generic`, and `overlay`s, each with a `when`, the rule a
-host applies to pick it. A rule is a Jev choice question, the option the overlay needs, and the least probability for
-that option. The package stores the set and records the choice; picking one is the host's. A host asks the question
-about the run's input, takes the overlay whose option comes back at or above its threshold (`generic` when none does),
-gives the run `base` with that variant's text, and passes `prompt: { id, reason }` to `startRun`, so the run's entry
-says which variant it got and why.
+An agent can keep prompt variants in its home: one `base`, one `generic`, `overlay`s, and at most one `question`. Each
+overlay's `when` is the rule for picking it: the question's id, the option the overlay needs, and the least probability
+for that option. The question's `text` is a Jev choice question, and its `criteria` describe options by name; every
+question also has the option `other`, for an input no overlay fits.
+
+`choosePrompt(prompts, input, { judge, lookup?, signal? })` picks one before a run starts. `judge` is a Jev runner
+(`createJevRunner` from `@parcha/agentrun-jev`), or any function of that shape; this package imports no Jev. The judge
+answers the question about `{ input }`, with the overlays' options and `other` as the choices. The overlay whose
+option's probability is at least its threshold is chosen, the highest such probability winning. When none is and
+`lookup` is given, the lookup runs once on the input's words, and the judge answers again about `{ input, lookup }`
+(its text cut to `LOOKUP_TEXT_MAX`, 3,000 characters) by the same rule. Otherwise the run gets the generic. A judge or
+lookup failure never throws: the run gets the generic, and `reason` says why.
 
 ```js
 await setPrompts(home, [
   { id: "base", role: "base", label: "Company research", text: "Research the company in the input. Cite every claim." },
+  { id: "kind", role: "question", label: "Kind of organization", text: "What kind of organization is this?",
+    criteria: { public_company: "Its shares trade on a public exchange." } },
   { id: "public", role: "overlay", label: "Public company", text: "Start from its latest annual report.",
-    when: { question: "What kind of organization is this?", option: "public_company", threshold: 0.9 } },
+    when: { question: "kind", option: "public_company", threshold: 0.9 } },
   { id: "generic", role: "generic", label: "Not sure", text: "Say what kind of organization it seems to be, and why." },
 ]);
 const { prompts } = await readAgentHome(home); // keyed by id
-await startRun(home, { host: "laptop", prompt: { id: "public", reason: "public_company at 0.93" } });
+const choice = await choosePrompt(prompts, "Caterpillar Inc.", { judge, lookup });
+// { variant: "public", instructions: base + "\n\n" + overlay, passes, lookup: { used, chars, sources }, reason }
+await startRun(home, { host: "laptop", prompt: { id: choice.variant, reason: choice.reason } });
 ```
 
+`instructions` is the base's text, a blank line, and the chosen variant's text: what the host gives the run's root
+conversation. `passes` holds each answer (`choice`, `probabilities`, `confidence`, `model`, `cost_usd`, `latency_ms`).
+`lookup` says whether one ran, how many characters the judge read and the sources it named, never the text. `lookup`
+is `(query, { input, signal }) => text | { text, sources? } | null`, `query` being the input's words.
+
 `setPrompts` replaces the whole set in one commit and refuses one that is not exactly one base and one generic, with
-ids that are one URL segment and given once, a label of at most 200 characters, a text of at most 64 KiB and a threshold
-from 0 to 1 (`invalid`); `ifRevision` makes it a compare-and-swap on `homeRevision` (`stale`). Prompts are exported and
-packed with the agent; they are not secrets.
+ids that are one URL segment and given once, a label of at most 200 characters, a text of at most 64 KiB, a threshold
+from 0 to 1, and rules that name the set's question and an option no other overlay needs, never `other` (`invalid`);
+`ifRevision` makes it a compare-and-swap on `homeRevision` (`stale`). `choosePrompt` refuses the same sets. Prompts are
+exported and packed with the agent; they are not secrets.
 
 ## Stored kinds
 
@@ -177,7 +193,7 @@ fields are the stored format.
 | `agent.source` | agent | | `{ sha, refreshedAt }`: the repo commit the definition and skills were read from, written in their commit; absent for a home not tied to a repo |
 | `agent.definition` | agent | | `{ id, version, name, description?, instructions, skills, tools, input_schema?, output_schema?, workflow?, max_cost_usd? }`. `skills` and `tools` are names; `workflow` is an AgentRun workflow document. No model, no thinking level |
 | `agent.skills` | agent | path under `.agents/skills/` | `{ content, sha256 }` |
-| `agent.prompts` | agent | variant id | `{ role, label, text, when? }`: `role` is `base`, `overlay` or `generic`, one base and one generic per set; `when` (an overlay's only) is `{ question, option, threshold }`, the Jev choice question, the option the variant needs and its least probability, 0 to 1 |
+| `agent.prompts` | agent | id | `{ role, label, text, when?, criteria? }`: `role` is `base`, `overlay`, `generic` or `question`, one base, one generic and at most one question per set; `when` (an overlay's only) is `{ question, option, threshold }`, the question's id, the option the variant needs and its least probability, 0 to 1; `criteria` (a question's only) describes options by name |
 | `agent.aliases` | agent | host | `{ externalId }`: the agent's id in that host |
 | `agent.bindings` | agent | host | `{ [tool]: target }`: where each tool runs in that host |
 | `agent.runs` | agent | run id | `{ path, host, startedAt, sha?, prompt?, endedAt?, outcome?, finalAnswer?, cost? }`; `path` is relative to the home; `sha` is the home's `agent.source` when the run started; `prompt` is `{ id, reason }`, the variant the host chose |
@@ -311,6 +327,7 @@ origin, path and query keys but drops its query values, fragment and userinfo. `
 | `homeRevision(home, { access? })` | The agent store's head commit number: every write that changes the home moves it, reads do not. With the identity's id it is the home's version, an ETag |
 | `setAlias(home, host, externalId)`, `setBindings(home, host, bindings)` | A host's id for the agent, and where its tools run there |
 | `setPrompts(home, variants, { ifRevision?, access? })` | The agent's prompt variants replaced by `variants`, one commit ([Prompt variants](#prompt-variants)); returns `{ changed }` |
+| `choosePrompt(prompts, input, { judge, lookup?, signal? })` | The variant a run starts with, by a Jev choice question and at most one lookup; returns `{ variant, instructions, passes, lookup, reason }` |
 | `startRun`, `carryBack` | A run's start and end, above; `carryBack` takes `{ access? }` |
 | `prepareRun`, `seedRun`, `undoPrepare`, `HomeAccess`, `localAccess` | A start as its home and run halves, and how a host reaches a home on a disk ([An agent home on a disk](#an-agent-home-on-a-disk)) |
 | `refreshAgentHome(home, { sha, from?, ifRevision?, definition, skills })` | The cached definition and skills replaced by the ones at `sha` ([Following the agent's repo](#following-the-agents-repo)) |

@@ -28,12 +28,13 @@ export type AgentDefinition = {
 
 /** `agent.skills`, keyed by the skill file's path under `.agents/skills/`. */
 export type SkillFile = { content: string; sha256: string };
-/** The host's rule for picking an overlay: the Jev choice `question`, the `option` this variant needs, and the least
+/** An overlay's selection rule: the id of the `question` row it answers, the `option` this variant needs, and the least
  *  probability (`threshold`, 0 to 1) for that option. */
 export type PromptRule = { question: string; option: string; threshold: number };
-/** `agent.prompts`, keyed by variant id: one `base`, one `generic` and any number of `overlay`s, each with a `label` and
- *  its `text`; only an overlay has a `when`. Choosing a variant is the host's. */
-export type PromptVariant = { role: "base" | "overlay" | "generic"; label: string; text: string; when?: PromptRule };
+/** `agent.prompts`, keyed by id: one `base`, one `generic`, any number of `overlay`s, and at most one `question`, the
+ *  choice the overlays' rules answer. A question's `text` is its instructions and its `criteria` describe options by name
+ *  (`other` included); only an overlay has a `when`. */
+export type PromptVariant = { role: "base" | "overlay" | "generic" | "question"; label: string; text: string; when?: PromptRule; criteria?: Record<string, string> };
 /** `agent.aliases`, keyed by host: the agent's id in that host. */
 export type AgentAlias = { externalId: string };
 /** `agent.bindings`, keyed by host: where each tool name runs there. */
