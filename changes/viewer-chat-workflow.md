@@ -26,6 +26,7 @@ kind: feature
   the outcome: "complete", "failed", "aborted", or "escalated at <label>: <summary>" (clipped, whole in its title), and
   the counts include the escalated node. Before the terminal line nothing changes. Before, an escalated run's end read
   "chain working" with the node where it stopped shown as not run.
-- The workflow graph panel's focus is mapped to its node by `graphNodeOf` too.
+- The workflow graph panel's focus is mapped to its node by `graphNodeOf` too; a bare map item (a fan-out cell's focus,
+  `<map>/items/<i>`) is its body's node, so the item's own steps are not dimmed.
 - The build inlines a DSL module (`graph.ts`, `item-state.ts`) without its comments: the bundle carries its code, not
   its docs, whose examples of workflow paths read to the machine-path scan as root's home.

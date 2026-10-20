@@ -99,6 +99,11 @@ test('until the job is read, or when it holds no workflow, the panel says so; a 
   assert.equal(focused.find((row) => row.path === '/root/steps/0/body')!.cls.endsWith(' dim'), false, 'the item\'s body, under the focus');
   assert.equal(focused.find((row) => row.path === '/root/steps/0')!.cls.endsWith(' dim'), false, 'the map the focus is in');
   assert.equal(focused.find((row) => row.path === '/root/steps/1')!.cls.endsWith(' dim'), true, 'a later step');
+  // A fan-out cell focuses its item bare (no `/body`): the item's body and its steps are its own, a sibling step is not.
+  const item = rows(viewed(lines, read('map-v3.workflow.json'), { focus: '/root/steps/0/items/1' }));
+  const inside = item.filter((row) => row.path === '/root/steps/0/body' || row.path.startsWith('/root/steps/0/body/'));
+  assert.ok(inside.length > 1 && inside.every((row) => !row.cls.endsWith(' dim')), inside.map((row) => `${row.path}${row.cls}`).join(', '));
+  assert.equal(item.find((row) => row.path === '/root/steps/1')!.cls.endsWith(' dim'), true, 'a sibling step');
 });
 
 test('the build inlines the DSL\'s graph module from its source, and refuses it once it imports anything', async () => {

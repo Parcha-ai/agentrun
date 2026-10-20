@@ -6,10 +6,10 @@
 // run: it is an execution's only when that execution is the one open at its place (begun, not ended) whose graph holds
 // its node; else no execution takes it. An execution path is mapped to its graph node by the DSL's walk (`graphNodeOf`),
 // never by its text. Status is the DSL's `nodeStatus`. Pure.
-import { graphNodeOf, nodeStatus, workflowGraph, type NodeState, type WorkflowGraph } from '../../../packages/dsl/src/graph.ts';
+import { nodeStatus, workflowGraph, type NodeState, type WorkflowGraph } from '../../../packages/dsl/src/graph.ts';
 import { under, type Json, type Line } from './format.ts';
 import { docOf } from './durable.ts';
-import type { GraphStatus } from './graph-draw.ts';
+import { graphNodeOfPath, type GraphStatus } from './graph-draw.ts';
 import { runRecordAccepts, runRecordInit, runRecordReduce, statusSource } from './node-status.ts';
 
 /** How an execution ended, from its task's terminal state (`state.outcome`): completed with a complete result, completed
@@ -46,8 +46,8 @@ function cwOutcomeOf(state: CwObj | undefined): ChatOutcome | undefined {
   return { status: 'escalated', ...(path !== undefined ? { path } : {}), ...(label !== undefined ? { label } : {}), ...(summary !== undefined ? { summary } : {}) };
 }
 
-/** The graph node an execution path ran at: the one mapping, the DSL's walk of the graph. */
-export const chatNodeOf = (graph: WorkflowGraph, path: string): string | undefined => graphNodeOf(graph, path)?.path;
+/** The graph node an execution path ran at: the one mapping, the DSL's walk of the graph (`graphNodeOfPath`). */
+export const chatNodeOf = (graph: WorkflowGraph, path: string): string | undefined => graphNodeOfPath(graph, path);
 
 /** The executions in `lines`, in the order their first lines come, and the run key each line is (undefined: none). */
 export function chatWorkflowsOf(lines: readonly Line[]): { runs: ChatWorkflow[]; runOf: (line: Line) => string | undefined } {

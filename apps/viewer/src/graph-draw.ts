@@ -2,13 +2,18 @@
 // a branch, a route's branches, a map's body, a child workflow) under it, and marked with the status it is given. One
 // drawing for the inspection view's panel (workflow-graph.ts) and the chat view (chat-view.ts); what a status is, is the
 // caller's (the DSL's `nodeStatus`). Pure: a tree of plain nodes, which the panels' `Node` takes as it is.
-import type { GraphEdge, NodeState, WorkflowGraph } from '../../../packages/dsl/src/graph.ts';
+import { graphNodeOf, type GraphEdge, type NodeState, type WorkflowGraph } from '../../../packages/dsl/src/graph.ts';
 import { under } from './format.ts';
 
 export type GraphTree = string | { tag: string; class?: string; title?: string; path?: string; children?: GraphTree[] };
 /** A node's mark: the DSL's `NodeState`, and, once an execution has ended, where it escalated and the nodes it stopped in. */
 export type GraphStatus = NodeState | 'escalated' | 'stopped';
 export const GRAPH_STATUS_TEXT: Record<GraphStatus, string> = { done: 'done', working: 'working', failed: 'failed', 'not-run': 'not run', escalated: 'escalated', stopped: 'stopped' };
+
+/** The graph node an execution path ran at, by the DSL's walk (`graphNodeOf`); a bare map item or loop iteration
+ *  (`<map>/items/<i>`), which names no node of its own, is its body's. */
+export const graphNodeOfPath = (graph: WorkflowGraph, path: string): string | undefined =>
+  graphNodeOf(graph, path)?.path ?? graphNodeOf(graph, `${path}/body`)?.path;
 
 const gdEl = (tag: string, props: { class?: string; title?: string; path?: string }, ...children: GraphTree[]): GraphTree => ({ tag, ...props, children });
 

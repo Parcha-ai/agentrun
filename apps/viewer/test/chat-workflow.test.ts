@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseLines, type Json, type Line, type Recording } from '../src/format.ts';
 import { extractChat } from '../src/chat-extract.ts';
-import { chatWorkflowsOf, chatWorkflowStatusAt } from '../src/chat-workflow.ts';
+import { chatNodeOf, chatWorkflowsOf, chatWorkflowStatusAt } from '../src/chat-workflow.ts';
 import type { ChatItem, ChatModel } from '../src/chat-model.ts';
 import { KEY_A, KEY_B, lines, manifest, placeOf, SUMMARY } from './workflow-hand.ts';
 
@@ -124,6 +124,8 @@ test('a line is its execution\'s by the run key its document carries, the longes
   const { runs, runOf } = chatWorkflowsOf(run);
   assert.deepEqual(run.map(runOf), [`${key}:1`, key, key, `${key}:1`, undefined, key, `${key}:1`]);
   assert.deepEqual(runs.map((each) => [each.key, each.conversations]), [[`${key}:1`, { '/root/body': ['7'] }], [key, { '/root/body': ['6'] }]], 'a map item\'s node is the map\'s body, by the DSL\'s walk');
+  assert.deepEqual(['/root/items/2/body', '/root/items/2', '/root/body', '/root/items/x'].map((path) => chatNodeOf(runs[0]!.graph, path)), ['/root/body', '/root/body', undefined, undefined],
+    'a bare item is its body\'s; a graph path or a path the graph does not have is no execution path');
 });
 
 test('a recording that ran no workflow has none; nor does a task that names no workflow, whatever the manifest\'s job', async () => {
