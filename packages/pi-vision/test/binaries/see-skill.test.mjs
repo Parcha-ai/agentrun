@@ -218,3 +218,8 @@ test("the skill teaches a series of images over time place by place: a small box
   assert.doesNotMatch(section, /Against the first image|comes back|returns/, "what a change against the first image means is the question's to say, not the skill's");
   assert.doesNotMatch(section, /bracket and then bisect|at each candidate date/, "no bisection: it skips a first change when a place refills");
 });
+
+test("the series section decides water from a near-infrared or colour-infrared picture when one is given, and shows the place on the true-colour picture", () => {
+  const section = /\n## A series of images of one scene over time\n([\s\S]*?)\n## /.exec(SKILL)?.[1] ?? "";
+  assert.match(section, /\n- When a near-infrared or colour-infrared picture of the same scene and date is given, decide water from it, not from the true-colour picture: open water is near black in near-infrared, while wet mud and plants, which can pass for water in true colour, are bright\. Show the place on the true-colour picture\.\n/);
+});

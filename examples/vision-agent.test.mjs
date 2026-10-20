@@ -44,12 +44,12 @@ test('the lake-mead run is given its map key as a file: inputs.json lists map-ke
   try { assert.deepEqual([...jobOf().files['map-key.md']], [...bytes], 'the job carries it as the run\'s own file'); } finally { delete process.env.INPUT; }
 });
 
-test('the lake-mead run is given the elevation record as a file beside the images and the map key: fifteen inputs in all, each checked, and the job copies it into the workspace', () => {
+test('the lake-mead run is given the elevation record as a file beside the images and the map key: twenty-eight inputs in all, each checked, and the job copies it into the workspace', () => {
   const example = exampleAt('lake-mead');
-  assert.equal(example.items.length, 15, 'thirteen images, the map key and the elevation record');
+  assert.equal(example.items.length, 28, 'thirteen true-colour images, thirteen colour-infrared images, the map key and the elevation record');
   const record = example.items.find((item) => item.path === 'lake-mead-elevation.json');
   assert.ok(record, 'inputs.json lists lake-mead-elevation.json as a committed file');
-  assert.equal(inputOf(example).files.length, 15, 'the run is told of every one');
+  assert.equal(inputOf(example).files.length, 28, 'the run is told of every one');
   assert.ok(inputOf(example).files.includes('lake-mead-elevation.json'));
   const bytes = readFileSync(join(example.dir, 'lake-mead-elevation.json'));
   assert.deepEqual([bytes.length, sha256(bytes)], [record.bytes, record.sha256]);
@@ -62,6 +62,26 @@ test('the lake-mead run is given the elevation record as a file beside the image
   for (const row of [[2000, 5, 1207.67], [2003, 7, 1141.93], [2022, 7, 1040.92]]) assert.ok(data.rows.some((have) => have.join() === row.join()), `${row} is the table's value`);
   process.env.INPUT = JSON.stringify({ example: 'lake-mead' });
   try { assert.deepEqual([...jobOf().files['lake-mead-elevation.json']], [...bytes], 'the job carries it as the run\'s own file'); } finally { delete process.env.INPUT; }
+});
+
+test('the lake-mead run is given a colour-infrared picture beside each true-colour image: the same scene and date, near-infrared, red and green bands, each checked, and the job copies it into the workspace', () => {
+  const example = exampleAt('lake-mead');
+  const colour = example.items.filter((item) => /^images\/lake-mead-\d{4}-\d\d-\d\d\.jpg$/.test(item.path));
+  const infrared = example.items.filter((item) => /^images\/lake-mead-\d{4}-\d\d-\d\d-infrared\.jpg$/.test(item.path));
+  assert.deepEqual([colour.length, infrared.length], [13, 13]);
+  process.env.INPUT = JSON.stringify({ example: 'lake-mead' });
+  try {
+    const files = jobOf().files;
+    for (const item of colour) {
+      const pair = infrared.find((other) => other.path === item.path.replace(/\.jpg$/, '-infrared.jpg'));
+      assert.ok(pair, `${item.path} has its colour-infrared picture`);
+      assert.deepEqual([pair.source.scene, pair.source.date], [item.source.scene, item.source.date], `${pair.path}: the same scene and date`);
+      assert.deepEqual(pair.source.bands, item.source.bands[0].startsWith('TM') ? ['TM_B4', 'TM_B3', 'TM_B2'] : ['OLI_B5', 'OLI_B4', 'OLI_B3'], `${pair.path}: near-infrared, red and green`);
+      const bytes = readFileSync(join(example.dir, pair.path));
+      assert.deepEqual([bytes.length, sha256(bytes)], [pair.bytes, pair.sha256]);
+      assert.deepEqual([...files[fileName(pair)]], [...bytes], `${pair.path}: the job carries it as the run's own file`);
+    }
+  } finally { delete process.env.INPUT; }
 });
 
 test('each example is a question, its files with their sources and checks, and a README; nothing in it is code', () => {
