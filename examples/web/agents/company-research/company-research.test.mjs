@@ -385,15 +385,33 @@ test("the page shows the base, each overlay with its Jev rule, the generic, and 
 test("a pass shows its choice at the probability the threshold is compared with, and its confidence when that is a different number", () => {
   const habitat = { version: 1, input: "Habitat", variant: "generic", passes: [{ choice: "nonprofit", confidence: 0.37, probabilities: { nonprofit: 0.5, other: 0.36, public: 0.13 }, cost_usd: 0.00002, latency_ms: 344 }, { choice: "nonprofit", confidence: 0.46, probabilities: { nonprofit: 0.46, other: 0.4 } }], lookup: { used: true, sources: [] }, reason: "r" };
   const html = renderPage({ ...DATA, runs: [{ id: "run-h", title: "", index: {}, briefHref: null, record: habitat }] });
-  const [first, second] = html.match(/<td><b>nonprofit<\/b>[\s\S]*?<\/td>/g);
-  assert.ok(first.startsWith("<td><b>nonprofit</b> at 0.50<small>nonprofit 0.50 · other 0.36 · public 0.13</small><small>confidence 0.37 · $0.000020 · 344 ms</small>"), first);
-  assert.ok(second.startsWith("<td><b>nonprofit</b> at 0.46<small>nonprofit 0.46 · other 0.40</small>"), "the same number twice is shown once");
+  const [first, second] = html.match(/<td class="num"><b>nonprofit<\/b>[\s\S]*?<\/td>/g);
+  assert.ok(first.startsWith("<td class=\"num\"><b>nonprofit</b> at 0.50<small>nonprofit 0.50 · other 0.36 · public 0.13</small><small>confidence 0.37 · $0.000020 · 344 ms</small>"), first);
+  assert.ok(second.startsWith("<td class=\"num\"><b>nonprofit</b> at 0.46<small>nonprofit 0.46 · other 0.40</small>"), "the same number twice is shown once");
   assert.doesNotMatch(second, /confidence/);
   const bare = renderPage({ ...DATA, runs: [{ id: "run-i", title: "", index: {}, briefHref: null, record: { version: 1, input: "x", passes: [{ choice: "public", confidence: 0.5, probabilities: {} }] } }] });
-  assert.ok(bare.includes("<td><b>public</b> at 0.50</td>"), "with no probability for the choice, the confidence is the number shown");
+  assert.ok(bare.includes("<td class=\"num\"><b>public</b> at 0.50</td>"), "with no probability for the choice, the confidence is the number shown");
   const noConfidence = renderPage({ ...DATA, runs: [{ id: "run-j", title: "", index: {}, briefHref: null, record: { version: 1, input: "x", passes: [{ choice: "public", probabilities: { public: 0.7 } }, { choice: "other" }] } }] });
-  assert.ok(noConfidence.includes("<td><b>public</b> at 0.70<small>public 0.70</small></td>"), "with no confidence, the probability is shown alone");
-  assert.ok(noConfidence.includes("<td><b>other</b></td>"), "with neither, only the choice");
+  assert.ok(noConfidence.includes("<td class=\"num\"><b>public</b> at 0.70<small>public 0.70</small></td>"), "with no confidence, the probability is shown alone");
+  assert.ok(noConfidence.includes("<td class=\"num\"><b>other</b></td>"), "with neither, only the choice");
+});
+
+test("the page wears the agentrun.ai tokens: dark only, square corners, hairlines, a mono and a sans stack, the dotted grid, and no font or file loaded", () => {
+  const html = renderPage(DATA);
+  const style = /<style>([\s\S]*?)<\/style>/.exec(html)[1];
+  const tokens = { bg: "#080809", panel: "#111113", line: "#2c2c30", ink: "#f2f2f2", muted: "#a4a4ad", accent: "#ff8700", purple: "#b4a0ff", green: "#8ec9ac" };
+  for (const [name, value] of Object.entries(tokens)) assert.ok(style.includes(`--${name}:${value};`) || style.includes(`--${name}:${value}}`), name);
+  assert.deepEqual([...new Set(style.match(/#[0-9a-f]{3,8}\b/gi).map((color) => color.toLowerCase()))].sort(), [...Object.values(tokens), "#303036"].sort(), "no colour but the eight tokens and the grid's dot");
+  assert.match(style, /^:root\{color-scheme:dark;/);
+  assert.doesNotMatch(style, /border-radius|prefers-color-scheme|color-scheme:[^;}]*light/i, "no rounded corner and no light theme");
+  assert.match(style, /--mono:"JetBrains Mono",ui-monospace,[^;]*monospace;/);
+  assert.match(style, /--sans:Inter,system-ui,[^;}]*sans-serif[;}]/);
+  assert.match(style, /radial-gradient\(#303036 1px,transparent 1px\);background-size:22px 22px/, "the dotted grid on a 22px pitch");
+  assert.match(style, /h1\{font:600 28px\/1\.2 var\(--mono\)/, "titles are mono");
+  assert.match(style, /body\{[^}]*font:15px\/1\.7 var\(--sans\)/, "the body is sans");
+  assert.match(style, /td\.num\{font:[^}]*var\(--mono\)/, "numbers are mono");
+  assert.doesNotMatch(style, /@font-face|url\(|@import|https?:/i, "the fonts are the system's or the reader's own: nothing is loaded");
+  assert.match(html, /<td class="num"><b>public<\/b> at 0\.93/, "a pass's numbers sit in the mono cell");
 });
 
 test("the page has no script, no network address to load and nothing unescaped from a run", () => {

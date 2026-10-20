@@ -45,7 +45,7 @@ function passCell(pass) {
   const confidence = number(pass.confidence, 2);
   const probs = probabilities(pass);
   const meta = [probability !== null && confidence !== null && confidence !== probability ? `confidence ${confidence}` : null, number(pass.cost_usd, 6) === null ? null : `$${number(pass.cost_usd, 6)}`, typeof pass.latency_ms === "number" ? `${Math.round(pass.latency_ms)} ms` : null].filter(Boolean);
-  return `<td>${choice}${(probability ?? confidence) === null ? "" : ` at ${probability ?? confidence}`}${probs ? `<small>${probs}</small>` : ""}${meta.length ? `<small>${escapeHtml(meta.join(" · "))}</small>` : ""}</td>`;
+  return `<td class="num">${choice}${(probability ?? confidence) === null ? "" : ` at ${probability ?? confidence}`}${probs ? `<small>${probs}</small>` : ""}${meta.length ? `<small>${escapeHtml(meta.join(" · "))}</small>` : ""}</td>`;
 }
 
 function lookupCell(record) {
@@ -80,7 +80,7 @@ function outcomeCell(run) {
   const index = run.index ?? {};
   const state = index.endedAt ? escapeHtml(index.outcome ?? "ended") : "running";
   const cost = number(index.cost, 4);
-  return `<td>${state}${cost === null ? "" : `<small>$${cost}</small>`}</td>`;
+  return `<td class="num">${state}${cost === null ? "" : `<small>$${cost}</small>`}</td>`;
 }
 
 function runRow(run, byId) {
@@ -98,15 +98,16 @@ function promptBlock(variant, question) {
   return `<details${variant.role === "base" ? " open" : ""}><summary><b>${escapeHtml(variant.label)}</b> <span class="role">${escapeHtml(variant.role)}</span> ${rule}</summary>${criterion}<pre>${escapeHtml(variant.text)}</pre></details>`;
 }
 
-const STYLE = `:root{color-scheme:light dark;--bg:#fff;--fg:#17171a;--muted:#5b5b66;--line:#d9d9df;--soft:#f3f3f6;--accent:#b45f00}
-@media (prefers-color-scheme:dark){:root{--bg:#080809;--fg:#f2f2f2;--muted:#a4a4ad;--line:#2c2c30;--soft:#111113;--accent:#ff8700}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:1180px;margin:0 auto;padding:24px 16px 64px}h1{font-size:24px;margin:0 0 4px}h2{font-size:16px;margin:32px 0 8px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
-p{margin:6px 0}.lede{color:var(--muted);max-width:70ch}.none{color:var(--muted)}small{display:block;color:var(--muted);font-size:12px;overflow-wrap:anywhere}.id{font-family:ui-monospace,monospace}
-details{border:1px solid var(--line);border-radius:6px;margin:8px 0;background:var(--soft)}summary{cursor:pointer;padding:10px 12px}pre{margin:0;padding:12px;white-space:pre-wrap;overflow-wrap:anywhere;border-top:1px solid var(--line);font:13px/1.5 ui-monospace,monospace}
-.role{font:12px ui-monospace,monospace;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:0 5px}.rule{color:var(--accent);font-size:13px}.criterion{margin:0;padding:10px 12px 0;color:var(--muted);font-size:13px}
-.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:6px}table{border-collapse:collapse;width:100%;min-width:900px}th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--line)}th{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:var(--soft)}tr:last-child td{border-bottom:0}
-a{color:var(--accent)}ul{margin:6px 0;padding-left:20px}.warn{border:1px solid var(--accent);border-radius:6px;padding:8px 12px;margin:12px 0}`;
+const STYLE = `:root{color-scheme:dark;--bg:#080809;--panel:#111113;--line:#2c2c30;--ink:#f2f2f2;--muted:#a4a4ad;--accent:#ff8700;--purple:#b4a0ff;--green:#8ec9ac;--mono:"JetBrains Mono",ui-monospace,"SF Mono","Cascadia Mono",Menlo,Consolas,monospace;--sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+*{box-sizing:border-box}body{margin:0;background-color:var(--bg);background-image:radial-gradient(#303036 1px,transparent 1px);background-size:22px 22px;color:var(--ink);font:15px/1.7 var(--sans);-webkit-font-smoothing:antialiased}
+main{max-width:1180px;margin:0 auto;padding:32px 16px 72px}h1{font:600 28px/1.2 var(--mono);letter-spacing:-.04em;margin:0 0 8px}
+h2{display:flex;align-items:center;gap:10px;font:500 11px/1.4 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:40px 0 10px}h2:before{content:"";width:6px;height:6px;background:var(--accent)}
+p{margin:6px 0}.lede{color:var(--muted);max-width:70ch}.none{color:var(--muted)}small{display:block;color:var(--muted);font-size:12px;line-height:1.5;overflow-wrap:anywhere}.id{font-family:var(--mono)}
+details{border-top:1px solid var(--line)}details:last-of-type{border-bottom:1px solid var(--line)}summary{cursor:pointer;padding:12px 4px}pre{margin:0;padding:14px 16px;background:var(--panel);white-space:pre-wrap;overflow-wrap:anywhere;border-top:1px solid var(--line);font:13px/1.6 var(--mono)}
+.role{font:11px var(--mono);color:var(--purple);border:1px solid var(--line);padding:0 6px;margin:0 4px}.rule{color:var(--accent);font-size:13px}.criterion{margin:0;padding:10px 4px 0;color:var(--muted);font-size:13px}
+.scroll{overflow-x:auto;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--panel)}table{border-collapse:collapse;width:100%;min-width:900px}th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--line)}th{font:500 11px/1.4 var(--mono);text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}tr:last-child td{border-bottom:0}
+td.num{font:13px/1.6 var(--mono)}td.num b{color:var(--green)}td.num small{font-size:11px}
+a{color:var(--accent)}ul{margin:6px 0;padding-left:20px}.warn{border-top:1px solid var(--accent);border-bottom:1px solid var(--accent);background:var(--panel);padding:8px 14px;margin:14px 0}`;
 
 /**
  * The page as one string. `data` is `{ agent: { id, name, description }, prompts (the home's, its question row too), runs: [{ id,
