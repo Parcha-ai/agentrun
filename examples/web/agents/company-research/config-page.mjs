@@ -4,7 +4,7 @@
 // and its runs index) and, for each run, `runs/<id>/prompt.json`, the host's record of how it chose (below), and links
 // `runs/<id>/work/brief.md` when there is one. A field that is not recorded is shown as "not recorded".
 //
-// runs/<id>/prompt.json: { version: 1, question, input, passes: [{ pass, lookup: null | { query, url, title }, choice,
+// runs/<id>/prompt.json: { version: 1, question, input, passes: [{ pass, lookup: null | { query, sources: [{ via, url, title }] }, choice,
 //   confidence, probabilities, model, cost_usd, latency_ms }], lookup_used, chosen: { label, role, reason }, selected_at }.
 // The runs index may also carry prompt: { id, reason }, which the page uses when prompt.json is not there.
 import { existsSync } from "node:fs";
@@ -49,8 +49,11 @@ function lookupCell(record) {
   const used = record.lookup_used === true || passes.some((pass) => isObject(pass) && isObject(pass.lookup));
   if (!used) return "<td>no</td>";
   const lookup = passes.map((pass) => pass?.lookup).find(isObject);
-  const parts = [lookup?.title ? escapeHtml(lookup.title) : null, lookup?.url ? where(lookup.url) && escapeHtml(where(lookup.url)) : null, lookup?.query ? `search: ${escapeHtml(lookup.query)}` : null].filter(Boolean);
-  return `<td>yes${parts.length ? `<small>${parts.join("<br>")}</small>` : ""}</td>`;
+  // The sources a lookup read: `sources: [{ via, url, title }]`, or one page as `{ url, title }`.
+  const sources = Array.isArray(lookup?.sources) ? lookup.sources.filter(isObject) : lookup && (lookup.url || lookup.title) ? [lookup] : [];
+  const lines = sources.map((source) => [source.via, source.title, where(source.url)].filter(Boolean).map(escapeHtml).join(" · ")).filter(Boolean);
+  if (lookup?.query) lines.push(`search: ${escapeHtml(lookup.query)}`);
+  return `<td>yes${lines.length ? `<small>${lines.join("<br>")}</small>` : ""}</td>`;
 }
 
 function variantCell(run, byId) {

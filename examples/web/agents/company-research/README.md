@@ -41,9 +41,10 @@ node examples/web/agents/company-research/config-page.mjs --home ./desk-home --o
 
 One HTML file, no script and nothing loaded from the network: the base, each overlay with its rule, the generic, and a
 table of runs with the input, Jev's choice and probabilities (both passes when there was a lookup), the lookup, the prompt
-loaded, the outcome and a link to `brief.md`. A run's `prompt.json` is `{ version, question, input, passes: [{ pass, lookup,
-choice, confidence, probabilities, model, cost_usd, latency_ms }], lookup_used, chosen: { label, role, reason },
-selected_at }`; a field that is missing shows as "not recorded".
+loaded, the outcome and a link to `brief.md`. A run's `prompt.json` is `{ version, question, input, passes: [{ pass,
+lookup, choice, confidence, probabilities, model, cost_usd, latency_ms }], lookup_used, chosen: { label, role, reason },
+selected_at }`, where `lookup` is null on the first pass and `{ query, sources: [{ via, url, title }] }` after a lookup. A
+field that is missing shows as "not recorded".
 
 ## Test
 

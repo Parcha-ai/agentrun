@@ -274,7 +274,7 @@ const RUNS = [
   { id: "run-b", title: "", index: { startedAt: "2026-10-20T04:20:00.000Z", endedAt: "2026-10-20T04:23:00.000Z", outcome: "completed", cost: 0.05 }, briefHref: null,
     record: { version: 1, input: "Habitat", passes: [
       { pass: 1, lookup: null, choice: "other", confidence: 0.41, probabilities: { public: 0.1, nonprofit: 0.35, small_retail: 0.1, ecommerce: 0.04, other: 0.41 } },
-      { pass: 2, lookup: { query: "Habitat organisation", url: "https://example.org/about?utm=1#top", title: "About Habitat" }, choice: "nonprofit", confidence: 0.62, probabilities: { public: 0.02, nonprofit: 0.62, small_retail: 0.1, ecommerce: 0.06, other: 0.2 } },
+      { pass: 2, lookup: { query: "Habitat organisation", sources: [{ via: "browserbase_search", url: "https://example.org/about?utm=1#top", title: "About Habitat" }, { via: "wikipedia", url: "https://en.wikipedia.org/wiki/Habitat_(disambiguation)", title: "Habitat" }] }, choice: "nonprofit", confidence: 0.62, probabilities: { public: 0.02, nonprofit: 0.62, small_retail: 0.1, ecommerce: 0.06, other: 0.2 } },
     ], lookup_used: true, chosen: { label: "generic", role: "generic", reason: "pass 2: nonprofit at 0.62, under 0.8" } } },
   { id: "run-c", title: "Powell's Books", index: { startedAt: "2026-10-20T04:30:00.000Z", prompt: { id: "small-retail-v2", reason: "from the index" } }, record: null, briefHref: null },
   { id: "run-d", title: "", index: { startedAt: "2026-10-20T04:40:00.000Z", endedAt: "2026-10-20T04:41:00.000Z", outcome: "failed" }, briefHref: null,
@@ -307,7 +307,9 @@ test("the page shows the base, each overlay with its Jev rule, the generic, and 
   const b = byId("run-b");
   assert.ok(b.includes("<b>other</b> at 0.41") && b.includes("<b>nonprofit</b> at 0.62"), "both passes");
   assert.ok(b.includes("other 0.41 · nonprofit 0.35 · "), "the probabilities, largest first, whatever order they came in");
-  assert.ok(b.includes("yes<small>About Habitat<br>example.org/about<br>search: Habitat organisation</small>"), "the lookup, its address with no scheme, query or fragment");
+  assert.ok(b.includes("yes<small>browserbase_search · About Habitat · example.org/about<br>wikipedia · Habitat · en.wikipedia.org/wiki/Habitat_(disambiguation)<br>search: Habitat organisation</small>"), "each source the lookup read, its address with no scheme, query or fragment, and the search");
+  const oldShape = renderPage({ ...DATA, runs: [{ ...RUNS[1], id: "run-old", record: { ...RUNS[1].record, passes: [RUNS[1].record.passes[0], { ...RUNS[1].record.passes[1], lookup: { query: "q", url: "https://example.org/x?y=1", title: "T" } }] } }] });
+  assert.ok(oldShape.includes("yes<small>T · example.org/x<br>search: q</small>"), "a lookup of one page, as `{ url, title }`, still shows");
   assert.ok(b.includes('<b>generic</b> <span class="role">generic</span>'));
   assert.ok(b.includes("no brief"));
   const c = byId("run-c");
