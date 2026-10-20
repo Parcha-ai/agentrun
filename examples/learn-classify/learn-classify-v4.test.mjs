@@ -15,7 +15,7 @@ import { HOST_WORKFLOW } from './dispatch.mjs';
 import { answerV4, textsRead } from './host.mjs';
 import { rerow } from './rerow.mjs';
 import { rescore } from './rescore.mjs';
-import { openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
+import { lineOf, openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { CITE_QUESTION_V4, countryCode, entityName, HQ_QUESTION, MAX_SUBSIDIARIES, scoreCites, scoreHq, scoreSegments, scoreSubsidiaries, scoreV4, SEGMENT_PICK } from './score-v4.mjs';
 import { agentScriptV4Compose, CLASSIFY_WORKFLOW_V4, FIXTURES_V2, FIXTURES_V4, PART_CODE, PART_FIND_REPORT, readJson, scriptedModel, WORKFLOW } from './scripted.mjs';
 import { SETS } from './sets.mjs';
@@ -338,6 +338,11 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   const v4Rules = after(text(v4, 'AGENTS.md'), '## Every run').replace(shape, '');
   for (const line of after(text(v2, 'AGENTS.md'), '## Every run').replace(shape, '').split('\n')) assert.ok(v4Rules.includes(line), line);
   for (const words of [/embed it as a `workflow` step, a complete inline child/, /cover the parts no workflow covers/, /a revised part does not\s+reach `classify-company` until then/]) assert.match(v4Rules, words);
+  // Parts on trial are built on now; with none, the whole job is written as a workflow after the first run.
+  const flat = (body) => body.replace(/\s+/g, ' ');
+  for (const words of [/Admitted includes trial/, /do not wait for them to be promoted/, /If no `classify-company` exists after your first run, write one for the whole job/, /narrow agent steps/, /Embed parts into it as they are admitted/]) assert.match(flat(v4Rules), words);
+  // Looking at the pages is a rule of the job, not only the skill's advice.
+  assert.match(flat(text(v4, 'AGENTS.md')), /look at the annual report's cover page and the page of its segment table with read_document/i);
   // classify-company takes the job's input as given, a website or none.
   for (const words of [/takes the job's input as given and must work when the website is absent/, /requires only `name`/, /a route by its `valuePath`/]) assert.match(v4Rules, words);
   assert.match(text(v4, 'AGENTS.md'), /`\{ "sic4", "segments", "hq", "subsidiaries", "annualReport", "cites" \}`, the answer's own shape/);
@@ -381,20 +386,20 @@ test('a scripted v4 pass: by hand, then the whole-job workflow on site and repor
   assert.equal(asked.filter((l) => l === 'score/segments').length, 1, 'only Summit\'s segment needed Jev');
   assert.equal(asked.filter((l) => l === 'score/hq' || l === 'score/subsidiary').length, 0);
 
-  assert.deepEqual(rows.map((r) => r.byWorkflow), [false, false, true, true]);
+  // Run 1 by hand writes classify-company for the whole job, on the job's input as given; from run 2 on it runs, the
+  // company without a website (Bluefin, run 2) included.
+  assert.deepEqual(rows.map((r) => r.byWorkflow), [false, true, true, true]);
   assert.deepEqual(rows.map((r) => r.dispatched), [false, false, false, false], 'a workflow on trial runs through the agent');
   assert.deepEqual(rows[0].workflowsSaved, [WORKFLOW]);
   assert.deepEqual(rows[0].born.map((b) => b.name), [WORKFLOW]);
-  // By hand the report is read twice: find the segment note, then a look at its page with a question (vision).
-  assert.deepEqual(rows[1].toolCalls, { search: 1, browse: 1, fetch: 0, read_document: 2 });
-  assert.deepEqual(rows.map((r) => r.visionPages), [1, 1, 1, 1]);
+  // By hand the report is read three times: find the segment note, then looks (vision) at its page and at the cover.
+  assert.deepEqual(rows[0].toolCalls, { search: 0, browse: 0, fetch: 1, read_document: 3 });
+  assert.deepEqual(rows.map((r) => r.visionPages), [2, 1, 1, 1]);
   const reads = parts.fakeCalls.filter((c) => c.tool === 'read_document');
-  assert.deepEqual(reads.slice(0, 2).map((c) => [Boolean(c.find), c.pages ?? null, Boolean(c.question)]), [[true, null, false], [false, [4], true]], 'find, then look at the page it found');
-  assert.deepEqual(rows[2].toolCalls, { search: 0, browse: 0, fetch: 1, read_document: 1 }, 'the workflow read the site and the report through its call nodes');
-  for (const r of rows.slice(2)) {
-    assert.deepEqual(r.executions.map((e) => [e.name, e.outcome, e.toolCalls]), [[WORKFLOW, 'complete', 4]], 'fetch_page, sic2_groups, sic_codes, read_document');
-    assert.deepEqual([r.workflowShare, r.agentFallback], [1, false]);
-  }
+  assert.deepEqual(reads.slice(0, 3).map((c) => [Boolean(c.find), c.pages ?? null, Boolean(c.question)]), [[true, null, false], [false, [4], true], [false, [1], true]], 'find, then look at the page it found and at the cover');
+  assert.deepEqual(rows.slice(1).map((r) => r.toolCalls), [{ search: 1, browse: 0, fetch: 1, read_document: 1 }, { search: 0, browse: 0, fetch: 1, read_document: 1 }, { search: 0, browse: 0, fetch: 1, read_document: 1 }], 'the workflow\'s call nodes: without a website, a search for the site first');
+  assert.deepEqual(rows.slice(1).map((r) => r.executions.map((e) => [e.name, e.outcome, e.toolCalls])), [[[WORKFLOW, 'complete', 5]], [[WORKFLOW, 'complete', 4]], [[WORKFLOW, 'complete', 4]]]);
+  for (const r of rows.slice(1)) assert.deepEqual([r.workflowShare, r.agentFallback], [1, false]);
   assert.deepEqual(readRows(join(out, 'runs.jsonl')), rows);
 
   const html = renderCurve({ rows });
@@ -451,7 +456,7 @@ test('the host dispatches a promoted v4 workflow: its output passes the v4 answe
   // Bluefin has no website: the workflow's input schema refuses its input, so the host does not run it, and the agent does
   // the job by hand.
   assert.deepEqual([rows[1].byWorkflow, rows[1].correct], [false, true]);
-  assert.deepEqual(rows[1].toolCalls, { search: 1, browse: 1, fetch: 0, read_document: 2 });
+  assert.deepEqual(rows[1].toolCalls, { search: 1, browse: 1, fetch: 0, read_document: 3 });
   // No dispatch and no use: nothing in the row or the uses file counts against the promoted workflow.
   assert.deepEqual(['dispatch' in rows[1], rows[1].workflowsUsed], [false, []]);
   assert.deepEqual(JSON.parse(readFileSync(join(out, 'progress', 'run-002.json'), 'utf8')).finished.uses, []);
@@ -516,3 +521,28 @@ test('rescore scores a finished v4 pass again from its own files against a truth
   const { hqTruth: h, hqCorrect: c, correct: k, scoreCostUsd: s, ...was } = rows[1];
   assert.deepEqual(rest, was);
 }, { timeout: 180_000 });
+
+test('the whole job as a workflow from run 1: admitted, used on trial, promoted after three clean uses, then the host runs it, a website given or not', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const { rows } = await runLoop({ out, parts: scriptedParts({ set: SETS.v4 }), jobs: 6, record: false });
+  assert.deepEqual(rows.map((r) => r.company), ['Harbor Valve Works Inc.', 'Bluefin Markets Inc.', 'Summit Ridge Software Corp.', 'Lantern Hall Restaurants Inc.', 'Golden Prairie Foods Inc.', 'Bluestem Chemical Co.']);
+  assert.ok(rows.every((r) => r.correct), JSON.stringify(rows.map((r) => [r.company, r.correctOver])));
+  assert.deepEqual(rows[0].curate.admitted, [WORKFLOW]);
+  assert.deepEqual(rows.map((r) => r.curate.promoted), [[], [], [], [WORKFLOW], [], []]);
+  assert.deepEqual(rows.map((r) => [r.byWorkflow, r.dispatched]), [[false, false], [true, false], [true, false], [true, false], [true, true], [true, true]]);
+  for (const r of rows.slice(4)) assert.deepEqual(r.workflowsUsed.map((u) => [u.name, u.outcome, u.classifiedBy ?? null]), [[WORKFLOW, 'complete', HOST_WORKFLOW]]);
+  // As saved, it takes the job's input as given.
+  const record = JSON.parse(execFileSync('git', ['--git-dir', join(out, 'agent.git'), 'show', `main:.pi/agentrun/workflows/${WORKFLOW}/${rows[0].born[0].revision}.json`], { encoding: 'utf8' }));
+  const document = record.workflow ?? record;
+  assert.deepEqual(document.schemas[document.input.schemaId].required, ['name']);
+}, { timeout: 300_000 });
+
+test('the log names what curate held: a note by its id, the run\'s uses as uses, never undefined', () => {
+  const row = {
+    run: 2, split: 'run', answer: '5411', truth: '5411', correct: true, byWorkflow: false, workflowsUsed: [], costUsd: 0, judgeCostUsd: 0, workflowsSaved: [], seedSha: 'a', afterSha: 'b',
+    curate: { admitted: [], promoted: [], demoted: [], held: [{ id: 'L-1', candidate: 2, reason: 'unsure' }, { reason: 'uses: they touch a workflow this run also admitted, so they were not settled' }], refused: [{ candidate: 3, reason: 'from content' }] },
+  };
+  const line = lineOf(row);
+  assert.match(line, /held L-1, held the run's uses, refused note 3/);
+  assert.doesNotMatch(line, /undefined/);
+});

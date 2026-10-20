@@ -165,12 +165,16 @@ async function scoreRun({ parts, run, job, measure, hostsDir }) {
 
 const short = (sha) => (sha ? sha.slice(0, 7) : '-');
 const usd = (n) => (n === null ? 'unknown' : `$${n.toFixed(4)}`);
+/** What curate held or refused, by name: a workflow, a note by its id or place in the run, or the run's uses (curate's
+ *  hold on them names nothing else). */
+const curatedName = (h) => h.workflow ?? h.id ?? (h.candidate !== undefined ? `note ${h.candidate}` : 'the run\'s uses');
+
 export function lineOf(row, convention = row.convention) {
   if (row.set === 'v2') return lineOfV2(row);
   const how = row.byWorkflow ? `by ${row.workflowsUsed.find((u) => u.outcome === 'complete' && u.name)?.name ?? 'a draft workflow'}` : 'by hand';
   const curated = [
     ...row.curate.admitted.map((n) => `admitted ${n}`), ...row.curate.promoted.map((n) => `promoted ${n}`), ...row.curate.demoted.map((n) => `demoted ${n}`),
-    ...row.curate.held.map((h) => `held ${h.workflow ?? h.id ?? `note ${h.candidate}`}`), ...row.curate.refused.map((h) => `refused ${h.workflow ?? h.id ?? `note ${h.candidate}`}`),
+    ...row.curate.held.map((h) => `held ${curatedName(h)}`), ...row.curate.refused.map((h) => `refused ${curatedName(h)}`),
   ];
   return `run ${row.run} ${row.split === 'run' ? '' : `(${row.split}) `}${row.answer ?? 'no answer'} vs ${row.truth} ${row.correct ? 'correct' : 'wrong'}${convention ? ' (a filing convention)' : ''}, ${how}, ${usd(row.costUsd)} (Jev ${usd(row.judgeCostUsd)})`
     + `${row.workflowsSaved.length ? `, saved ${row.workflowsSaved.join(', ')}` : ''}${curated.length ? `; curate ${curated.join(', ')}` : ''}; main ${short(row.seedSha)} -> ${short(row.afterSha)}`;

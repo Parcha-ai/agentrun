@@ -16,6 +16,9 @@
   headquarters, a subsidiary or the report), the page or document it comes from as you read it in this run, where on it
   (a section, or "pdf p. N" for a page of a PDF), and the words it says, at most 300 characters. Cite the annual report
   by its pages.
+- Look at the annual report's cover page and the page of its segment table with read_document `{ pages: [N],
+  question }` (a vision model looks at the page), and cite the segments, the headquarters and the fiscal year from
+  those looks ("pdf p. N"). A table read only as text loses its layout.
 - sec.gov and EDGAR are refused by every tool, and so are their mirrors and SIC listing sites: do not try them. Search
   with search_web, read pages with fetch_page or browse (browse runs a page's scripts), and read annual reports and other
   PDFs with read_document.
@@ -42,6 +45,11 @@
   requires only `name`. It finds the site first, the way the workflows skill handles an optional field (an extract
   with no state map that returns whether a website was given, then a route by its `valuePath`, the branch with none
   searching for the site), or with a part that finds the site from the name and ticker.
+- If no `classify-company` exists after your first run, write one for the whole job from steps: calls, extracts,
+  judges, and narrow agent steps for the open-ended looking (they run on the cheap model). Embed parts into it as they
+  are admitted.
+- `<learned>` lists a workflow from its admission, on trial. Admitted includes trial: build on parts on trial now and
+  do not wait for them to be promoted; `classify-company`'s own clean runs on trial are what earn its trust.
 - Once workflows for parts are admitted (`<learned>` lists them), write `classify-company` from them: load each part
   and embed it as a `workflow` step, a complete inline child whose input comes from this job's input or earlier steps;
   cover the parts no workflow covers with call, extract or agent steps; return the answer's full shape. Inspect it with
