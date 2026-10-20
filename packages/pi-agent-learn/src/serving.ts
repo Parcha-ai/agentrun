@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { inspectWorkflow, validateWorkflow, type Workflow } from "@parcha/agentrun-dsl";
-import { WorkflowExtensionService } from "@parcha/agentrun-pi";
 import type { createWorkflowExtension, WorkflowCaller } from "@parcha/agentrun-pi/durable";
 import { WorkflowStore } from "@parcha/agentrun-pi/workflows";
 import type { Repo } from "@parcha/pi-git-remote";
@@ -40,6 +39,10 @@ const canonical = (value: unknown): string => (Array.isArray(value) ? `[${value.
   : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}`
     : JSON.stringify(value ?? null));
 
+/** The agentrun tool's workload limits, which `serve` applies before a task: the same numbers as the tool's own (a test
+ *  holds them equal), kept here so the package never loads pi's coding agent. */
+export const SERVE_LIMITS = Object.freeze({ maxNodes: 200, maxMapConcurrency: 8, maxParallelBranches: 8 });
+
 /** A served run's key: `host:<name>:<workflow sha256>:<input hash>`, so the run's records name the workflow. */
 export const hostKey = (name: string, sha256: string, input: unknown): string => `host:${name}:${sha256}:${createHash("sha256").update(canonical(input)).digest("hex")}`;
 
@@ -61,8 +64,8 @@ export type ServeOptions = {
 /**
  * Runs `plan` as a durable workflow task of the run, before the agent says anything. The checks the agentrun tool makes
  * come first, and a workflow that fails one is `refused` with no task: a code node, SOP text, a tool the host does not
- * register, an input the workflow does not take or a node that reads a key the input lacks, and the tool's admission with
- * its workload limits (`WorkflowExtensionService.preflight`). A complete run whose output
+ * register, an input the workflow does not take or a node that reads a key the input lacks, an artifact, and the tool's
+ * workload limits (`SERVE_LIMITS`). A complete run whose output
  * `check` accepts is `complete`, the answer; one it refuses is `escalated`, with the problems.
  */
 export async function serve(options: ServeOptions): Promise<ServedRun> {
@@ -82,12 +85,17 @@ export async function serve(options: ServeOptions): Promise<ServedRun> {
   if (missing.length) return refuse(`it uses tools this host does not register: ${missing.join(", ")}`);
   const fits = validateWorkflow(plan.workflow, { executeCode: false, input });
   if (!fits.ok) return refuse(`it does not take this input: ${fits.errors.slice(0, 20).join("; ")}`);
-  // The tool's own admission, its workload limits with it (nodes, a map's concurrency, a parallel's branches).
-  try {
-    new WorkflowExtensionService({ allowedTools: [...options.tools] }).preflight(plan.workflow, input);
-  } catch (error) {
-    return refuse(`the agentrun tool would not start it: ${error instanceof Error ? error.message : String(error)}`);
+  // The tool's admission and its workload limits (nodes, a map's concurrency, a parallel's branches).
+  if (inspection.nodes.length > SERVE_LIMITS.maxNodes) return refuse(`it has ${inspection.nodes.length} nodes; at most ${SERVE_LIMITS.maxNodes}`);
+  const limits: string[] = [];
+  for (const entry of inspection.nodes) {
+    const node = entry.path.split("/").slice(1).reduce<any>((item, key) => item?.[key.replace(/~1/g, "/").replace(/~0/g, "~")], plan.workflow);
+    if (node?.node === "artifact") limits.push("Artifact delivery is not available here.");
+    if (node?.node === "call" && (node.via !== "tool" || !options.tools.includes(node.tool))) limits.push("Effects must use a registered host tool; shell and executor calls are unavailable.");
+    if (node?.node === "map" && (node.maxConcurrency ?? 4) > SERVE_LIMITS.maxMapConcurrency) limits.push(`Map concurrency must not exceed ${SERVE_LIMITS.maxMapConcurrency}.`);
+    if (node?.node === "parallel" && Array.isArray(node.branches) && node.branches.length > SERVE_LIMITS.maxParallelBranches) limits.push(`Parallel nodes must not exceed ${SERVE_LIMITS.maxParallelBranches} branches.`);
   }
+  if (limits.length) return refuse(`the agentrun tool would not start it: ${[...new Set(limits)].join(" ")}`);
   const key = hostKey(plan.name, plan.sha256, input);
   const run = await options.workflows.start(options.harness, { key, workflow: plan.workflow, input }, options.context, { background: true });
   const outcome = await run.wait(options.context);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
@@ -9,7 +10,7 @@ import { workspaceFiles } from "@parcha/agentrun-dsl/recovery";
 import { createWorkflowExtension, recordingLines } from "@parcha/agentrun-pi/durable";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import { readFile } from "node:fs/promises";
-import { admitRevision, hostKey, hostRunName, planServing, proposeLearning, readUses, renderTrial, serve, trialPath, workflowDir } from "../dist/index.js";
+import { admitRevision, hostKey, hostRunName, planServing, SERVE_LIMITS, proposeLearning, readUses, renderTrial, serve, trialPath, workflowDir } from "../dist/index.js";
 import { agentRepo, commitMain, ctx, scratch } from "./support.mjs";
 import { workDirWith, workflowDoc } from "./workflow-support.mjs";
 
@@ -222,4 +223,38 @@ test("planServing passes over a superseded revision whose record does not read, 
   const { repo, sha, digests: [da, db, dc] } = await revisions([{ doc: a, active: true }, { doc: b, active: true }, { doc: c }], { tamper: 1 });
   const picked = await plan(repo, sha, await seededWith(c), dc);
   assert.deepEqual([picked.sha256, picked.canary, picked.trial], [da, true, dc], `${db.slice(0, 8)}'s record does not hash, so the one before it is served`);
+});
+
+test("the package loads on a durable host with none of pi's coding agent, agent core or TUI installed", () => {
+  // A resolve hook that refuses those packages, as if they were not installed, then the package's entry point.
+  const hooks = `export async function resolve(specifier, context, next) { if (/^@earendil-works\\/pi-(coding-agent|agent-core|tui)(\\/|$)/.test(specifier)) throw new Error("not installed: " + specifier); return next(specifier, context); }`;
+  const register = `import { register } from "node:module"; register(${JSON.stringify(`data:text/javascript,${encodeURIComponent(hooks)}`)});`;
+  const entry = new URL("../dist/index.js", import.meta.url).href;
+  const run = spawnSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(register)}`, "--input-type=module", "-e", `await import(${JSON.stringify(entry)}); console.log("loaded");`], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout.trim(), "loaded");
+});
+
+test("serve's workload limits are the agentrun tool's own: at each limit the tool and serve agree, one past it both refuse", async (t) => {
+  const { WorkflowExtensionService } = await import("@parcha/agentrun-pi");
+  const toolTakes = (doc, input) => { try { new WorkflowExtensionService({ allowedTools: ["prices.quote"] }).preflight(doc, input); return true; } catch { return false; } };
+  const quote = (label) => ({ node: "call", label, via: "tool", tool: "prices.quote", args: { sku: "{sku}" }, out: "Quote", as: label.replace(/\W/g, "_"), deadline_s: 20 });
+  const schemas = {
+    In: { type: "object", additionalProperties: false, required: ["sku", "skus"], properties: { sku: { type: "string" }, skus: { type: "array", items: { type: "string" } } } },
+    Quote: { type: "object", required: ["price"], properties: { price: { type: "number" } } },
+    Any: { type: "object" },
+  };
+  const doc = (name, root) => ({ v: 2, name, schemas, input: { schemaId: "In" }, output: { schemaId: "Any", path: "out" }, root });
+  const map = (n) => doc(`map-${n}`, { node: "map", label: "each", itemsPath: "skus", maxConcurrency: n, as: "out", body: { ...quote("q"), args: { sku: "{item}" } } });
+  const parallel = (n) => doc(`parallel-${n}`, { node: "parallel", label: "all", branches: Array.from({ length: n }, (_, i) => quote(`q${i}`)) });
+  const chain = (n) => doc(`chain-${n}`, { node: "chain", steps: Array.from({ length: n - 1 }, (_, i) => (i === n - 2 ? { ...quote(`q${i}`), as: "out" } : quote(`q${i}`))) });
+  const input = { sku: "A-1", skus: ["A-1"] };
+  const run = await servingRun();
+  t.after(run.close);
+  const serveRefuses = async (d) => (await serve({ harness: run.harness, workflows: run.flow, context: ctx, plan: planOf(d), input, tools: ["prices.quote"], check: () => [] })).outcome === "refused";
+  for (const [what, make, limit] of [["map concurrency", map, SERVE_LIMITS.maxMapConcurrency], ["parallel branches", parallel, SERVE_LIMITS.maxParallelBranches], ["nodes", chain, SERVE_LIMITS.maxNodes]]) {
+    assert.equal(toolTakes(make(limit), input), true, `the tool takes ${what} at ${limit}`);
+    assert.equal(toolTakes(make(limit + 1), input), false, `the tool refuses ${what} at ${limit + 1}`);
+    assert.equal(await serveRefuses(make(limit + 1)), true, `serve refuses ${what} at ${limit + 1}`);
+  }
 });
