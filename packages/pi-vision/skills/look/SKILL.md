@@ -218,8 +218,9 @@ return Object.entries(check.answers).filter(([, a]) => a.noul > 0.5).map(([side]
 When the images are one scene at many dates (a shoreline the water left, a building that went up) and the question is when something changed, answer it place by place, from each place's own picture, never from the scene as a whole.
 
 - Each place the question asks about is its own small box: one contiguous area, such as one cove, one wash or one building, never a region that spans several named places.
+- When the question asks where something changed, a box marks the change itself: the area that shows the thing in the earlier image and not in the later one, drawn as tight as that area. It never marks the whole place, the land around it, or what did not change; separate areas that changed get separate boxes.
 - Use the place names the run's own files give (a map key, if there is one), not names of your own.
-- For each place, bracket and then bisect the dates on that place's own crop: find the last image where the thing is present and the first where it is gone. Look at the crop at each candidate date. Do not infer a date from a whole-scene average such as "half of its lost water is dry".
+- For each place, look at its own crop at every date in order, and find the last image where the thing is present and the first where it is gone. Do not bisect: a place that dries and refills hides its first change from a bisection. Do not infer a date from a whole-scene average such as "half of its lost water is dry".
 - A place is "dry" or "gone" in an image when its crop shows none of it, as the eyes say (`vision.see`) and Jev confirms with a typed question for each crop and each date (`noul`, such as "Is there open water in this crop?"). A pixel mask or a brightness threshold only points where to look and never answers: water can be dark, green, turbid or glinting, and a threshold set on one date misses it on another.
 
 ## When pdftoppm or ffmpeg is missing

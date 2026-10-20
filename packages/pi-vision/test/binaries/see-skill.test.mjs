@@ -203,16 +203,18 @@ test("every page the skill renders is its crop box, the area a citation's percen
   }
 });
 
-test("the skill teaches a series of images over time place by place: a small box for each place, bracket and bisect on its own crop, absent only as the eyes and Jev say", () => {
+test("the skill teaches a series of images over time place by place: a small box for each place, a box that marks the change itself, every date read in order on the place's own crop and never bisected, absent only as the eyes and Jev say", () => {
   const section = /\n## A series of images of one scene over time\n([\s\S]*?)\n## /.exec(SKILL)?.[1] ?? "";
   assert.ok(section.length > 0, "the section is there, before the section on a missing tool");
   assert.doesNotMatch(section, /```/, "plain sentences: no example the ten-examples test would have to run");
   for (const sentence of [
     /Each place the question asks about is its own small box: one contiguous area, such as one cove, one wash or one building, never a region that spans several named places\./,
     /Use the place names the run's own files give \(a map key, if there is one\)/,
-    /bracket and then bisect the dates on that place's own crop: find the last image where the thing is present and the first where it is gone\. Look at the crop at each candidate date\. Do not infer a date from a whole-scene average/,
+    /When the question asks where something changed, a box marks the change itself: the area that shows the thing in the earlier image and not in the later one, drawn as tight as that area\. It never marks the whole place, the land around it, or what did not change; separate areas that changed get separate boxes\./,
+    /For each place, look at its own crop at every date in order, and find the last image where the thing is present and the first where it is gone\. Do not bisect: a place that dries and refills hides its first change from a bisection\. Do not infer a date from a whole-scene average such as "half of its lost water is dry"\./,
     /A place is "dry" or "gone" in an image when its crop shows none of it, as the eyes say \(`vision\.see`\) and Jev confirms with a typed question for each crop and each date \(`noul`/,
     /A pixel mask or a brightness threshold only points where to look and never answers: water can be dark, green, turbid or glinting/,
   ]) assert.match(section, sentence);
   assert.doesNotMatch(section, /Against the first image|comes back|returns/, "what a change against the first image means is the question's to say, not the skill's");
+  assert.doesNotMatch(section, /bracket and then bisect|at each candidate date/, "no bisection: it skips a first change when a place refills");
 });
