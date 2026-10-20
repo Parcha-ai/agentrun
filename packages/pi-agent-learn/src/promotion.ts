@@ -2,7 +2,7 @@ import { LearnError } from "./errors.js";
 import { currentRevision, LIMITS, type Precondition, pruneUses, type Revision, type Trial, type Use } from "./trial.js";
 
 /** Promote a trial after this many clean uses in a row; demote after this many failed or escalated ones in a row. */
-export const PROMOTION_DEFAULTS = Object.freeze({ promoteAfter: 3, demoteAfter: 2 });
+export const PROMOTION_DEFAULTS = Object.freeze({ promoteAfter: 2, demoteAfter: 2 });
 export type Thresholds = { readonly promoteAfter: number; readonly demoteAfter: number };
 
 /** The host's thresholds over the defaults, each a whole number from 1 to `LIMITS.threshold`. */
@@ -183,7 +183,7 @@ const SEVERITY = { frozen: 0, escalated: 1, failed: 2 } as const;
 /**
  * Appends a run's uses to a trial and settles after each one, as if a curator had run between runs. Promotion rests on
  * independent evidence: a run's uses of one revision are one use, the worst outcome winning (failed over escalated over
- * frozen, so one bad case in a run counts against the run) and the latest time standing, which makes 3 clean uses 3 distinct
+ * frozen, so one bad case in a run counts against the run) and the latest time standing, which makes 2 clean uses 2 distinct
  * runs and the last 2 uses of a demotion the last 2 runs. The uses of one call are folded in the order they happened; calls are
  * folded in the order they are made, and that order, not any clock, decides which uses count toward a standing: a use that
  * arrives after a decision counts toward the standing the decision gave. A use of a revision the trial does not hold is left

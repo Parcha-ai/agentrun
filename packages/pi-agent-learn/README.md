@@ -414,8 +414,8 @@ that digest under it.
 records of its superseded revisions, into a scratch directory, and folds the run's uses in, appending each to its workflow's
 `trial.json` and settling after each one (`settleWorkflowUses`, `foldUses`, `promotionDecision`). Promotion rests on
 independent evidence: a run's uses of one revision are one use, the worst outcome winning (failed over escalated over frozen,
-so one bad case in a run counts against the run), however many inputs the run gave it. A trial is promoted when its last 3
-uses, which are 3 distinct runs, all finished `frozen`; the live revision is demoted when its last 2 uses, the last 2 runs that
+so one bad case in a run counts against the run), however many inputs the run gave it. A trial is promoted when its last 2
+uses, which are 2 distinct runs, all finished `frozen`; the live revision is demoted when its last 2 uses, the last 2 runs that
 used it, both failed or escalated, and the most recent superseded revision that the store can still load comes back, with `latest`, its preconditions and its skill's
 description. With none to restore the name is demoted whole, its skill is deleted so the agent is no longer told about it, and
 `trial.json` stays, so a demoted revision is never promoted or tried again; only a changed document, with a new digest, is

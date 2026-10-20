@@ -116,8 +116,9 @@ good: it counts how each run that used it ended, as the `agentrun` tool recorded
 - **A run is one use of a revision.** However many cases a run gave the workflow, curation counts it once, and the worst
   outcome wins (`failed` over `escalated` over `frozen`); the other cases are named as `same_run` in the report. So promotion
   and demotion rest on distinct runs, and one run cannot promote a trial alone.
-- **Three clean runs promote.** A trial whose last three uses, three distinct runs, all ended `frozen` becomes `active`. The
-  run that wrote a revision is no evidence for it.
+- **Three clean runs promote.** A trial whose last three uses, three distinct runs, all ended `frozen` becomes `active`:
+  this host sets three (`usesSettler({ thresholds: { promoteAfter: 3 } })`), over the package's default of two. The run
+  that wrote a revision is no evidence for it.
 - **Two failed or escalated runs in a row demote and roll back.** The live revision is marked `demoted`, and the revision it
   replaced, kept as `superseded` with its preconditions and the description of its skill, is active again. With none to
   restore, the name is demoted whole and its skill is removed, so no run is offered it.

@@ -58,7 +58,7 @@
   and returns the files that admit it: the skill (`.agents/skills/<name>/SKILL.md`, whose description is the agent's when-to-use text)
   and `trial.json`, `{ name, status, when, revisions, uses }`, where `when` is optional typed checks on the run's input (a JSON pointer
   and `eq`, `in`, `exists`, `gte` or `lte`; `schemaWhen` derives them from a workflow's input schema). `usesSettler` is the `SettleUses`
-  port: it folds a run's uses into `trial.json` by the rules of the archived harness. Promotion rests on independent evidence: a run's uses of one revision are one use, the worst outcome winning, so a trial is promoted after 3 clean runs in a row,
+  port: it folds a run's uses into `trial.json` by the rules of the archived harness. Promotion rests on independent evidence: a run's uses of one revision are one use, the worst outcome winning, so a trial is promoted after 2 clean runs in a row,
   the live revision is demoted after 2 runs that failed or escalated and the previous active revision comes back with its checks and its
   description, a demoted revision is never tried again, the run that wrote a revision is no evidence for it, and uses count in the
   order they were folded, never a clock. `collectWorkflows` and `inboxWorkflowFiles` hand a run's new revisions to its inbox,
@@ -91,3 +91,4 @@
   - `readRevision(repo, name, sha256, ref)`: a revision's workflow from its record at a commit, through the DSL's store; undefined when the record is missing or is not that revision.
   - `trialFirstText({ name, served, trial })`: the served revision did not finish; the trial is named and asked to run first, the job done by hand only if it escalates too.
   - The `<learned>` section's workflows line, when one of them is on trial, adds that a workflow on trial earns trust only from its own clean runs: run it before doing the job by hand, and change it only after it escalates or fails.
+- A trial is promoted after 2 clean runs in a row by default, not 3 (`PROMOTION_DEFAULTS.promoteAfter`); demotion stays after 2. A host that wants more sets `usesSettler({ thresholds: { promoteAfter } })`, as `examples/agent-learn` does with 3.
