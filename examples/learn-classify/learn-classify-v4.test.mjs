@@ -597,18 +597,18 @@ async function commitPromoted(repo, root, workflow) {
 const labelsOf = (node) => (!node || typeof node !== 'object' ? [] : Array.isArray(node) ? node.flatMap(labelsOf)
   : [...(node.label ? [node.label] : []), ...Object.entries(node).filter(([key]) => key !== 'workflow' || node.node !== 'workflow').flatMap(([, value]) => labelsOf(value))]);
 
-test('a new kind of company: the promoted whole job escalates, the agent grows it by a route branch (a new revision on trial), and a complete run saves nothing', async (t) => {
+test('a new kind of company: the promoted whole job escalates, the agent grows it by a route branch (a new revision on trial), the proven revision serves the next company, and a complete run saves nothing', async (t) => {
   const root = await scratch(t);
   const out = join(root, 'out');
   const { repo } = await openOut(out, { mode: 'scripted', set: SETS.v4 });
-  await commitPromoted(repo, root, CLASSIFY_WHOLE_V4);
+  const proven = await commitPromoted(repo, root, CLASSIFY_WHOLE_V4);
   const parts = scriptedParts({ set: SETS.v4 });
   const at = (name, order) => ({ ...parts.companies.find((c) => c.name === name), order });
   // A company the workflow handles, one whose site needs a browser (a kind it does not handle yet), then another it handles.
   parts.companies = [at('Harbor Valve Works Inc.', 1), at('Quartz Ridge Labs Inc.', 2), at('Summit Ridge Software Corp.', 3)];
   const { rows } = await runLoop({ out, parts, jobs: 3, record: false });
   assert.ok(rows.every((r) => r.correct), JSON.stringify(rows.map((r) => [r.company, r.correctOver])));
-  assert.deepEqual(rows.map((r) => [r.dispatched, r.byWorkflow]), [[true, true], [true, false], [false, true]]);
+  assert.deepEqual(rows.map((r) => [r.dispatched, r.byWorkflow]), [[true, true], [true, false], [true, true]]);
   // Run 2: the host's run escalates on the empty site; the agent does the job by hand and adds a route for the new kind.
   assert.deepEqual(rows[1].workflowsUsed.map((u) => [u.name, u.outcome, u.classifiedBy ?? null]), [[WORKFLOW, 'escalated', HOST_WORKFLOW]]);
   assert.deepEqual(rows[1].workflowsSaved, [WORKFLOW]);
@@ -618,7 +618,8 @@ test('a new kind of company: the promoted whole job escalates, the agent grows i
   const route = document.root.steps.find((step) => step.node === 'route' && step.label === 'the kind of site');
   assert.deepEqual(Object.keys(route.branches), ['reads as text', 'needs a browser']);
   for (const label of labelsOf(CLASSIFY_WHOLE_V4.root)) assert.ok(labelsOf(document.root).includes(label), `the path it had, ${label}, is kept`);
-  // Run 3: the new revision is on trial, so the agent runs it; it completes, and the agent saves nothing.
-  assert.deepEqual(rows[2].workflowsUsed.map((u) => [u.name, u.outcome, u.revision]), [[WORKFLOW, 'complete', rows[1].rewritten[0].revision]]);
+  // Run 3: while the new revision is on trial, the host serves the last proven one (canary serving); it completes, and
+  // nothing is saved.
+  assert.deepEqual(rows[2].workflowsUsed.map((u) => [u.name, u.outcome, u.revision, u.classifiedBy ?? null]), [[WORKFLOW, 'complete', proven, HOST_WORKFLOW]]);
   assert.deepEqual([rows[2].workflowsSaved, rows[2].curate.admitted, rows[2].born, rows[2].rewritten], [[], [], [], []]);
 }, { timeout: 300_000 });
