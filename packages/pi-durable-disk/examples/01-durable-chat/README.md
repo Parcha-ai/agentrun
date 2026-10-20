@@ -11,7 +11,7 @@ read back from the run's store, shows which generation and which host produced e
 
 This demo needs a checkout of the repository (it imports `../lib/demo.ts`), so it does not run from an install; the no-key variant below, `on-a-directory.mjs`, runs from an install of 0.1.0-beta.13 or later.
 
-You need the Quickstart's setup from the [top-level README](../../README.md#quickstart-on-a-linux-host-kill-a-host-watch-the-run-resume-on-another)
+You need the Quickstart's setup from the [top-level README](../../docs/reference.md#quickstart-on-a-linux-host-two-hosts-one-run)
 (the root-owned wrapper and the two mount roots, once per machine), a scratch disk and its API key. No model key: the model is
 pi-ai's faux provider.
 
@@ -34,7 +34,7 @@ The same story without Archil, in one process tree: [`on-a-directory.mjs`](on-a-
 of this machine with `localRun`, kills its first process (`SIGKILL`) after the third answer, and lets a second open the same
 run and answer the rest. It needs Linux and the root build, nothing else; the run goes under `./chat-run/`. It guards one
 machine only (the directory is the claim), which is what the disk above is for. The package README's
-[first quickstart](../../README.md#quickstart-on-one-machine-no-disk-no-key) is this file.
+[Try it](../../README.md#try-it-no-disk-no-key) is [pick-up-a-run](../pick-up-a-run/), the same idea with no kill.
 
 ```sh
 node examples/01-durable-chat/on-a-directory.mjs    # about five seconds

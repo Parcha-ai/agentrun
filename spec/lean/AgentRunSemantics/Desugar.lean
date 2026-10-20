@@ -16,7 +16,7 @@ def desugar : Node → Node
     if artifactIsProse type then .report label requires st else .artifact label type path requires st
   | .chain steps => .chain (desugarList steps)
   | .parallel label branches => .parallel label (desugarList branches)
-  | .map label itemsPath body as resultPath => .map label itemsPath (desugar body) as resultPath
+  | .map label itemsPath body as resultPath oif fa => .map label itemsPath (desugar body) as resultPath oif fa
   | .loop label body u n => .loop label (desugar body) u n
   | .route label st branches unsure as requires => .route label st (desugarNamed branches) unsure as requires
   | .routeValue label vp branches otherwise as requires => .routeValue label vp (desugarNamed branches) otherwise as requires

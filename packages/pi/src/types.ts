@@ -75,6 +75,8 @@ export type PiSessionFactory = (options: PiSessionOptions) => Promise<{ session:
 export interface PiRunnerCommonOptions {
 
   model: PiModel;
+  /** The level a node that names none thinks at (default `medium`). A node's own level outranks it, and `off` is
+   *  `medium`: thinking is never off. */
   thinkingLevel?: PiThinkingLevel;
   cwd?: string;
 
@@ -101,6 +103,8 @@ export interface PiHostContext {
 
     streamSimple(model: PiModel, context: object, options?: { signal?: AbortSignal; reasoning?: PiThinkingLevel }): AsyncIterable<unknown> & { result(): Promise<unknown> };
   };
+  /** The host session's thinking level. A node does not inherit it: a node that names no level thinks at medium,
+   *  unless the runner's own `thinkingLevel` option says otherwise. */
   thinkingLevel?: PiThinkingLevel;
 }
 export type PiHostRunnerOptions = Omit<PiRunnerCommonOptions, "model">;
