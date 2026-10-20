@@ -1,35 +1,52 @@
-# A run outlives its box
+# A run changes hosts
 
-An agent's run lives on an Archil disk: delete its sandbox mid-job and a new one takes over in seconds, with every paid tool call made once.
+An agent reviews ten invoices in its workspace on an Archil disk. Midway, the run is released and a second sandbox opens it from the disk and finishes, with every payment made once.
 
-    npm run demo:disk            # on fakes, $0, no key
-    npm run demo:disk -- --live  # real models and services, your keys (SETUP-PROMPT.md)
+    npm run demo:disk -- --handoff          # on fakes, $0, no key: the move between two processes on this machine
+    npm run demo:disk -- --live --handoff   # a real agent (gemini-3.8-flash), your Gemini key (SETUP-PROMPT.md)
 
 Watch the recorded run: https://parcha-ai.github.io/agentrun/?r=disk
 
 ## What you will see
 
-1. The job: an agent settles ten invoices of one batch through a paid tool, `charge`, one call each, and writes the settlement note; you keep a receipt for every charge.
-2. A kill and resume: the box the run lives in is taken away right after the fifth charge is paid and its answer kept. A new one takes the run over from the disk. The fifth charge is
-   not made again: the run settles it from the kept answer, and the other five follow. The recording's counters read repeated 0 and unknown 0.
-3. Receipts with cost: each paid call is kept as an answer under its own id in the run's directory, and the recording's manifest has the run's cost, a number or unknown. On fakes it says
-   `scripted`, $0; live it says `real` and the dollars.
+1. The job: an agent reviews ten invoices against a payment policy, one invoice at a time, in its own workspace. It reads the policy and the invoice with `read_lines`, which returns a window of
+   lines and a receipt for the read, and decides approve or hold, citing the lines it relied on. The workflow, not the agent, pays an approved invoice through the paid tool `charge`, one call at a
+   time. `charge` is simulated: no money moves. Two invoices break the policy by construction (one is over the limit, one names no purchase order) and are held with the rule each breaks.
+2. A move between hosts: right after the fifth payment is made and its answer kept, the process releases the run. Its store is sealed, `run.json` says `sleeping` and the claim on the disk is let go.
+   The next process opens the run from the disk, reads the kept answer instead of paying again, and reviews invoices six to ten. Nothing is killed: the recording has one `handoff` line and two holders
+   of the claim.
+3. The report: a last agent writes `report/index.html`, a row for each invoice with its decision, the reason and a link to each line it cites, in a copy of the file beside the page. The recording
+   keeps the page and those files as its artifact.
 
-On fakes the run lives in a directory of this machine and the kill is a `kill -9`; live it lives on an Archil disk in a Daytona sandbox, and the kill deletes the sandbox.
+On fakes a scripted lead plays the agent and the run lives in a directory of this machine. `--live` runs the real agent; `live.ts` runs it on Daytona and an Archil disk (below).
 
-### The live variant
+### Checked by code, not by a model
 
-`live.ts` runs it for real: **live: real Daytona sandbox deleted mid-job, real Archil disk, the template's supervisor and place; the lead is scripted.** The supervisor is the reference entry's
-`demo()` and the place is the disk package's `archilPlace` on `daytonaHost`. The process in each sandbox is the reference package's child app running this demo's job (`run.ts`'s `options`), on
-the disk package's own claim: the same ten invoices and the same scripted lead as on fakes, with the run's recording written to the disk and brought home by the place. After the fifth charge the
-supervisor deletes the sandbox, a new one takes the run over, and the ledger and the recording are the evidence: ten invoices, each charged once. The charge that was paid and cut comes back to
-the agent as interrupted and is not sent again. It refuses without its keys, stops itself after 25 minutes, and ends by deleting every sandbox it made and the run's directory on the disk.
+`examples/disk-review-checks.mjs` reads the recording and the run's files: the paid set equals the policy's key (eight invoices, each paid once), the two held are the two that break the policy,
+every cite resolves through the receipt of the read that made it and links the same file beside the report, no tool call names a path outside the workspace, and a live run has a readable thinking
+block. `examples/disk.test.mjs` runs them on the fixture; `live.ts` runs them on every live run before anything is published.
 
-A new sandbox is ready in seconds when it starts from a runtime snapshot of the package's dependencies (`PDA_LIVE_SNAPSHOT=<name>`, built by `test/live/daytona-snapshot.ts build <commit> --demo`),
-and takes tens of seconds installing them at boot without one. The runner installs the workspace packages offline over the snapshot only when the snapshot's dependency closure (read at the
-commit its name carries) equals the checkout's; otherwise it installs online, and says which in its first lines. It prints a `TIMING` line at each step of a takeover. Untested on a box: the
-reference package is installed with the others, but the install's ownership step (`chown`, `chmod`) names only the packages the snapshot helper lists, so the reference's files keep the owner `sudo npm`
-gave them (root, readable by the run user).
+### On Daytona and an Archil disk: `live.ts`
+
+```sh
+PDA_LIVE=1 PDA_STATE_DIR=<scratch> PDA_LIVE_SNAPSHOT=<runtime snapshot> DISK_LIVE_SECRET=<daytona secret> node examples/disk/live.ts <record-dir>
+```
+
+The supervisor is the harness entry's `demo()` and the place is the disk package's `archilPlace` on `daytonaHost`: each process of the run is a Daytona sandbox, and the run's directory is on an
+Archil disk. The first sandbox releases the run at the fifth payment, and a second one opens it. The process records into the run's directory on the disk, and the runner brings the recording,
+the report and the crossing log home over S3 (the supervisor never mounts the disk).
+
+The model key never enters a sandbox. `DISK_LIVE_SECRET` names a Daytona secret that holds a Gemini key and allows only `generativelanguage.googleapis.com`. Each sandbox is created with it as
+`GEMINI_API_KEY`, so the sandbox holds Daytona's placeholder, and Daytona's egress proxy puts the key into the request's header. The runner gives the process the proxy and its CA
+(`NODE_USE_ENV_PROXY=1`), which Node needs before it sends anything through a proxy. Without `DISK_LIVE_SECRET` the lead is scripted. `DISK_LIVE_MODE=kill` deletes the first sandbox at the same
+crossing instead of releasing the run (a recovery test, not a public take).
+
+A sandbox is ready in seconds from a runtime snapshot of the dependencies (`PDA_LIVE_SNAPSHOT`, built by `packages/pi-durable-disk/test/live/daytona-snapshot.ts build <commit> --demo`). The
+runner installs the workspace packages offline over it only when the snapshot's dependency closure equals the checkout's, and says which in its first line. It needs `DAYTONA_API_KEY`,
+`ARCHIL_API_KEY` and `PDA_LIVE_DISK` from your credential wrapper, refuses without them, stops itself after 25 minutes, and ends by deleting every sandbox it made and the run's directory.
+
+What a live run spends is bounded twice. Each process may make at most 60 model calls, each answer at most 8192 tokens with its thinking (`model.ts`); `--max-usd` caps the whole run (twice
+`expectedCost`, $1.00, unless `DISK_LIVE_MAX_USD` says otherwise). A run is about 50 model calls, about $0.25 to $0.50 at list price, and two sandboxes for a few minutes.
 
 ## Keys and programs
 
@@ -37,20 +54,23 @@ On fakes: `node` 22.19 or later, and nothing else. `SETUP-PROMPT.md` does the re
 
 | Name | What | For |
 |---|---|---|
-| `ARCHIL_API_KEY` | An API key of a scratch Archil organisation | live |
-| `PDA_LIVE_DISK` | The disk the run lives on (`dsk-...`) | live |
-| `PDA_LIVE_REGION` | The disk's region, `aws-us-east-1` when unset (optional) | live |
-| `DAYTONA_API_KEY` | The sandbox the live kill deletes | live kill |
+| `GEMINI_API_KEY` | A Gemini key for the agent; on Daytona, a Daytona secret that holds it (`DISK_LIVE_SECRET`) | live |
+| `ARCHIL_API_KEY` | An API key of a scratch Archil organisation | live.ts |
+| `PDA_LIVE_DISK` | The disk the run lives on (`dsk-...`) | live.ts |
+| `PDA_LIVE_REGION` | The disk's region, `aws-us-east-1` when unset (optional) | live.ts |
+| `DAYTONA_API_KEY` | The sandboxes each process runs in | live.ts |
 | `node` | Runs the demo | all |
-| `archil` | The Archil client, 0.8.42 or later (Linux) | live |
-| `fusermount` | FUSE, from `fuse3` (Linux) | live |
-| `archil-scoped` | This package's root-owned wrapper around the archil client (Linux) | live |
+| `archil` | The Archil client, 0.8.42 or later (Linux; in the sandbox) | live.ts |
+| `fusermount` | FUSE, from `fuse3` (Linux; in the sandbox) | live.ts |
+| `archil-scoped` | The disk package's root-owned wrapper around the archil client (in the sandbox) | live.ts |
 
 ## How it is built
 
-- `job.ts`: the job as data, a workflow of a `map` of `call` nodes (the paid tool) and an `agent` note. No host code.
-- `fakes.ts`: the scripted lead, the paid tool's fake and the judge, for the no-key run.
-- `run.ts`: about ten lines on `@parcha/agentrun-harness`, the entry that reads the standard flags and supervises the kill. The place is where the session lives and how it starts, stops and
-  comes back: the entry's local place on fakes, `@parcha/pi-durable-disk`'s `localPlace` and `archilPlace` live.
-- `@parcha/pi-durable-disk`: the run's claim, the store the kept answers and the receipts commit to, and the takeover after a kill.
+- `job.ts`: the job as data, a workflow: a `map` over the invoices, one at a time, of a review `agent`, a `route` on its decision to the paid tool (a `call` node) or a hold, then the report `agent`.
+  No host code. `files.ts`: the policy, the ten invoices and the key, by hand.
+- `tools.ts`: `read_lines`, the confined read whose result states its window and a receipt, so a report can cite lines.
+- `fakes.ts`: the scripted lead, the paid tool's fake and the judge, for the no-key run. `model.ts`: the live agent, gemini-3.8-flash with its bounds.
+- `run.ts`: about ten lines on `@parcha/agentrun-harness`, the entry that reads the standard flags (`--handoff`, `--live`, `--record`) and supervises the run. The place is where the run lives and how
+  each process of it starts and ends: `@parcha/pi-durable-disk`'s `localPlace` here, `archilPlace` in `live.ts`.
+- `@parcha/pi-durable-disk`: the run's claim, the store the kept answers and the receipts commit to, the seal at a release, and the next process's open.
 - `@parcha/agentrun-dsl`, `@parcha/agentrun-pi`: the workflow and the durable task that runs it.
