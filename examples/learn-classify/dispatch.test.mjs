@@ -264,3 +264,52 @@ test('v4: a pass dispatches the loosely typed workflow; its bad output goes to O
   assert.deepEqual(row.executions.map((e) => [e.name, e.outcome]), [[WORKFLOW, 'escalated']]);
   assert.equal(row.dispatch.outcome, 'escalated');
 });
+
+/** The workflow tasks the run's store holds. */
+const tasksOf = (run) => recordingLines(run.storePath).lines.filter((line) => line.kind === 'agentrun.workflow');
+
+test('v4: a promoted workflow whose input schema needs a website is not dispatched for a company without one: no task, no use, the agent starts', async (t) => {
+  const { repo, home, run, job } = await setUp(t, { set: SETS.v4, workflow: CLASSIFY_WORKFLOW_V4, job: bluefin });
+  const dispatch = await promotedFor({ repo, run, answer: answer4, input: SETS.v4.input(job) });
+  assert.equal(dispatch, null);
+  const model = v4Model(job, { root: [{ call: 'answer', args: answerOfV4(truth4[job.name]) }, { say: 'Answered by hand.' }] });
+  const measure = await runJob({ run, job, model, judge: meteredJudge(v4.judge()), effects: await v4Effects(job, run), answer: answer4, text: SETS.v4.text, dispatch });
+  assert.equal(measure.dispatch, undefined);
+  assert.deepEqual(tasksOf(run), []);
+  const asked = model.requests[0].messages.find((m) => m.role === 'user');
+  assert.equal(typeof asked.content === 'string' ? asked.content : asked.content.map((c) => c.text ?? '').join(''), SETS.v4.text(job), 'the job, as on a run with nothing promoted');
+  const finished = await finishJob({ home, repo, run, job, measure, propose: false });
+  assert.deepEqual(finished.uses, []);
+});
+
+test('v4: a website the input schema makes optional but a node interpolates is refused at inspection with the run\'s input: no task, no use, the agent starts', async (t) => {
+  // Probe 1's run 3: website optional in the input schema, {website} read by the first call node.
+  const optional = structuredClone(CLASSIFY_WORKFLOW_V4);
+  optional.schemas.Company = { ...optional.schemas.Company, required: ['name'] };
+  assert.equal(answersTheJob(optional, answer4.parameters, SETS.v4.input(bluefin)), true, 'the input schema accepts it');
+  const { repo, home, run, job } = await setUp(t, { set: SETS.v4, workflow: optional, job: bluefin });
+  const dispatch = await promotedFor({ repo, run, answer: answer4, input: SETS.v4.input(job) });
+  assert.equal(dispatch?.name, WORKFLOW);
+  const model = v4Model(job, { root: [{ call: 'answer', args: answerOfV4(truth4[job.name]) }, { say: 'Answered by hand.' }] });
+  const measure = await runJob({ run, job, model, judge: meteredJudge(v4.judge()), effects: await v4Effects(job, run), answer: answer4, text: SETS.v4.text, dispatch });
+  assert.equal(measure.dispatch.outcome, 'refused');
+  assert.equal(measure.dispatch.key, null);
+  assert.match(measure.dispatch.detail, /interpolates \{website\} but no upstream node produces "website"/);
+  assert.deepEqual(tasksOf(run), [], 'no task was created');
+  assert.deepEqual(measure.workflowRuns, []);
+  const asked = model.requests[0].messages.find((m) => m.role === 'user');
+  assert.equal(typeof asked.content === 'string' ? asked.content : asked.content.map((c) => c.text ?? '').join(''), SETS.v4.text(job), 'the job alone: the workflow never ran');
+  assert.deepEqual(measure.answer, answerOfV4(truth4[job.name]));
+  const row = rowOf({ run: 1, runId: run.runId, job, seedSha: run.sha, afterSha: run.sha, offered: [WORKFLOW], measure, finished: null, curated: null, recording: null, key: 'sic4' });
+  assert.equal(row.dispatch.outcome, 'refused');
+  const finished = await finishJob({ home, repo, run, job, measure, propose: false });
+  assert.deepEqual(finished.uses, [], 'no use: a bad input is not evidence against the workflow');
+
+  // The same workflow with a website is dispatched and answers.
+  const withSite = await setUp(t, { set: SETS.v4, workflow: optional, job: harbor });
+  const picked = await promotedFor({ repo: withSite.repo, run: withSite.run, answer: answer4, input: SETS.v4.input(harbor) });
+  const nodeOnly = v4Model(harbor, { root: [{ say: 'The root agent should not be asked.' }] });
+  const answered = await runJob({ run: withSite.run, job: harbor, model: nodeOnly, judge: meteredJudge(v4.judge()), effects: await v4Effects(harbor, withSite.run), answer: answer4, text: SETS.v4.text, dispatch: picked });
+  assert.equal(answered.dispatch.outcome, 'complete');
+  assert.deepEqual(nodeOnly.requests, []);
+});
