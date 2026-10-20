@@ -110,4 +110,6 @@ export type ChatModel = {
   artifact?: ChatArtifact;
   durationMs?: number;
   answeredAt?: number;
+  /** What the run delivered that could not be read here, with the reason when known: the page says so, never falls back silently. */
+  unread?: { what: 'result'; why?: string }[];
 };

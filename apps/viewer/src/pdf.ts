@@ -5,6 +5,7 @@
 // only places it. A page opened from file:// cannot load PDF.js (a module script); it says so, and the view's own text
 // stays. A scan's images (CCITT, JBIG2, JPEG 2000) are decoded by PDF.js's JavaScript decoders beside it, never by
 // WebAssembly, so the page needs no file type a static host might not serve.
+import { fetchBlob } from './blobs.ts';
 import type { Recording } from './format.ts';
 
 /** A page as the shell has it: drawn (a picture and its size in pixels), being drawn, or not drawable, and why. */
@@ -37,9 +38,7 @@ export async function blobBytes(recording: Recording, sha: string): Promise<Uint
   if (held) return held;
   const url = recording.blobUrl(sha);
   if (!url) throw new Error('the PDF is not in this recording');
-  const data = /^data:[^,]*?(;base64)?,/.exec(url);
-  if (data) return data[1] ? Uint8Array.from(atob(url.slice(data[0].length)), (each) => each.charCodeAt(0)) : new TextEncoder().encode(decodeURIComponent(url.slice(data[0].length)));
-  const response = await fetch(url);
+  const response = await fetchBlob(url);
   if (!response.ok) throw new Error(`the PDF answered ${response.status}`);
   return new Uint8Array(await response.arrayBuffer());
 }

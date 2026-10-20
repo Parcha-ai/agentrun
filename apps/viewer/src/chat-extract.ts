@@ -193,7 +193,13 @@ function chatRaw(body: Json | undefined): string {
 }
 
 /** The chat + report view's model of a recording. `readJson` reads a blob's JSON (the run's cited result). */
-export async function extractChat(recording: Recording, readJson: (sha: string) => Promise<Json | undefined>): Promise<ChatModel> {
+export async function extractChat(recording: Recording, readBlobJson: (sha: string) => Promise<Json | undefined>): Promise<ChatModel> {
+  // A read that fails (the reader throws with its reason) is an unreadable blob, and its reason is kept for the page to say.
+  const why = new Map<string, string>();
+  const readJson = async (sha: string): Promise<Json | undefined> => {
+    try { return await readBlobJson(sha); } catch (error) { why.set(sha, String((error as Error)?.message ?? error).slice(0, 120)); return undefined; }
+  };
+  const unread: NonNullable<ChatModel['unread']> = [];
   const { manifest } = recording;
   // A recording with no times keeps its file's order: each line placed at its position, the axis read as an order.
   const clocked = recording.lines.some((line) => typeof line.t === 'number' && line.t > 0);
@@ -473,6 +479,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   let answer: ChatModel['answer'];
   if (manifest.result?.blob) {
     const result = chatObj(await readJson(manifest.result.blob));
+    if (!result) unread.push({ what: 'result', ...(why.get(manifest.result.blob) ? { why: why.get(manifest.result.blob)! } : {}) });
     if (result && result.format !== 'agentrun.cited/1') {
       const record = chatObj(result.record) ?? result;
       const evidence = new Set(chatList(result.evidence).map((each) => chatStr(each)).filter((each): each is string => !!each));
@@ -533,6 +540,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     sources,
     ...(answer ? { answer } : {}),
     ...(artifact && chatStr(artifact.entry) && chatObj(artifact.files) ? { artifact: { title: chatStr(artifact.title) ?? manifest.title, entry: chatStr(artifact.entry)!, files: chatObj(artifact.files) as Record<string, string> } } : {}),
+    ...(unread.length ? { unread } : {}),
     ...(times.length ? { durationMs: Math.max(...times) } : {}),
     ...(resultLine ? { answeredAt: resultLine.t } : {}),
   };

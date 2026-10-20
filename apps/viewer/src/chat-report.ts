@@ -2,7 +2,7 @@
 // the recording's blobs, else the run's cited answer drawn here. A citation in either calls `open` with its address.
 import type { ChatArtifact, ChatModel } from './chat-model.ts';
 import type { Recording } from './format.ts';
-import { opensInPage } from './blobs.ts';
+import { fetchBlob, opensInPage } from './blobs.ts';
 
 type ReportChild = Node | string | undefined | false;
 
@@ -69,7 +69,7 @@ function reportBlobUrl(recording: Recording, sha: string): Promise<string | unde
   const key = `${recording.id}\n${sha}`;
   let held = reportObjectUrls.get(key);
   if (!held) {
-    held = fetch(url).then((response) => response.blob()).then((blob) => URL.createObjectURL(blob)).catch(() => undefined);
+    held = fetchBlob(url).then((response) => response.blob()).then((blob) => URL.createObjectURL(blob)).catch(() => undefined);
     reportObjectUrls.set(key, held);
   }
   return held;
@@ -142,14 +142,15 @@ const REPORT_BASE = [
 
 /** The artifact's entry as a document that runs nothing and loads only its own files from the recording: every
  *  reference rewritten through `files`, every script and handler removed, a policy naming only the blobs' origins. */
-export async function reportPage(artifact: ChatArtifact, recording: Recording, parser = new DOMParser()): Promise<{ html: string; looks: Set<string> } | undefined> {
+export async function reportPage(artifact: ChatArtifact, recording: Recording, parser = new DOMParser(), failed: { why?: string } = {}): Promise<{ html: string; looks: Set<string> } | undefined> {
   const files = Object.fromEntries(Object.entries(artifact.files).map(([path, sha]) => [path.replace(/^\.\//, ''), sha]));
   const entry = artifact.entry.replace(/^\.\//, '');
   const entrySha = files[entry];
-  if (!entrySha) return undefined;
+  if (!entrySha) { failed.why = 'its entry is not named in this recording'; return undefined; }
   const held = recording.heldText?.(entrySha);
   const entryUrl = recording.blobUrl(entrySha);
-  const text = held ?? (entryUrl ? await fetch(entryUrl).then((response) => (response.ok ? response.text() : undefined)).catch(() => undefined) : undefined);
+  if (held === undefined && !entryUrl) { failed.why = 'its entry is not in this recording'; return undefined; }
+  const text = held ?? await fetchBlob(entryUrl!).then((response) => (response.ok ? response.text() : Promise.reject(new Error(`its entry answered ${response.status}`)))).catch((error: unknown) => { failed.why = String((error as Error)?.message ?? error).slice(0, 100); return undefined; });
   if (text === undefined) return undefined;
   const origins = new Set<string>(['blob:']);
   const resolve = async (from: string, ref: string) => {
@@ -193,7 +194,7 @@ export async function reportPage(artifact: ChatArtifact, recording: Recording, p
     const file = reportFileOf(files, entry, link.getAttribute('href') ?? '');
     const url = file && recording.blobUrl(files[file.path]!);
     // A sheet is read and inlined, its own references resolved from its own path.
-    jobs.push((url ? fetch(url).then((response) => (response.ok ? response.text() : undefined)).catch(() => undefined) : Promise.resolve(undefined)).then(async (css) => {
+    jobs.push((url ? fetchBlob(url).then((response) => (response.ok ? response.text() : undefined)).catch(() => undefined) : Promise.resolve(undefined)).then(async (css) => {
       if (css === undefined || !file) { link.remove(); return; }
       const style = doc.createElement('style');
       style.textContent = await reportCss(css, file.path, resolve);
@@ -260,11 +261,18 @@ const reportCites = (cite: { href: string; look?: string; blob?: string }) => ci
 
 /** The run's answer, drawn here (cited, its submitted record, or its final message): each row with its chips, each chip
  *  opening the source it cites. */
-function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording, open: ReportOpen, none = 'This run has no report.') {
+function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording, open: ReportOpen, none = 'This run has no report.', note?: string) {
   const scroller = reportEl('div', { class: 'report' });
   const answer = model.answer;
+  // What could not be read is said here, above whatever stands in for it, never left for the reader to guess: the run's result (then what follows is its
+  // final message, not its answer), or the agent's page (then what follows is the run's answer).
+  const lost = model.unread?.find((each) => each.what === 'result');
+  const said = [
+    ...(lost ? [`The run's result could not be read here${lost.why ? ` (${lost.why})` : ''}.${answer ? ' This is the run\'s final message, not its answer.' : ''}`] : []),
+    ...(note ? [note] : []),
+  ].map((text) => reportEl('p', { class: 'report-unread', role: 'status', text }));
   if (!answer) {
-    scroller.append(reportEl('div', { class: 'pane' }, reportEl('p', { class: 'report-none', text: none }),
+    scroller.append(reportEl('div', { class: 'pane' }, ...said, reportEl('p', { class: 'report-none', text: none }),
       reportEl('p', { class: 'report-none' }, reportEl('a', { href: reportHowHref(recording), text: 'How this ran' }), ': every call, look and file of the run.')));
     pane.append(scroller);
     return { scroller, cited: new Set<string>() };
@@ -279,7 +287,7 @@ function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording,
       chip.addEventListener('click', () => open(cite.href, cite.look, cite.blob ? { blob: cite.blob, label: cite.label } : undefined));
       return chip;
     })))));
-  scroller.append(reportEl('div', { class: 'pane' },
+  scroller.append(reportEl('div', { class: 'pane' }, ...said,
     reportEl('div', { class: 'kicker', text: answer.from === 'text' ? 'The run\'s final message' : 'The run\'s answer' }),
     reportEl('h1', { class: answer.title.length > REPORT_TITLE ? 'atitle long' : 'atitle', text: answer.title }),
     reportEl('ol', { class: 'arows' }, ...rows)));
@@ -295,8 +303,8 @@ export type ReportOpen = (href: string, look?: string, picture?: { blob: string;
 
 export function drawReport(pane: HTMLElement, model: ChatModel, recording: Recording, open: ReportOpen): { scrollToLook(look: string): boolean; cited: Promise<Set<string>> } {
   pane.replaceChildren();
-  const native = (none?: string) => {
-    const { scroller, cited } = reportAnswer(pane, model, recording, open, none);
+  const native = (none?: string, note?: string) => {
+    const { scroller, cited } = reportAnswer(pane, model, recording, open, none, note);
     return {
       cited,
       scrollToLook(look: string) {
@@ -349,10 +357,11 @@ export function drawReport(pane: HTMLElement, model: ChatModel, recording: Recor
     });
     if (wanted) { const look = wanted; wanted = undefined; scrollToLook(look); }
   });
-  const cited = reportPage(model.artifact, recording).then((page) => {
+  const failed: { why?: string } = {};
+  const cited = reportPage(model.artifact, recording, undefined, failed).then((page) => {
     if (!page) {
       frame.remove();
-      fallback = native('The page the agent wrote could not be read from this recording.');
+      fallback = native('The page the agent wrote could not be read from this recording.', `The agent's page could not be read here${failed.why ? ` (${failed.why})` : ''}. What follows is the run's ${model.answer?.from === 'text' ? 'final message' : 'answer'}.`);
       if (wanted) fallback.scrollToLook(wanted);
       return fallback.cited;
     }

@@ -8,7 +8,7 @@ import { frameFold, gapTitle, pictureAt, type FrameState } from './frames.ts';
 import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, linkedTime, timeParam, type Fold } from './replay.ts';
 import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
-import { opensInPage } from './blobs.ts';
+import { fetchBlob, opensInPage } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
 import { blobsAt, blobsNamed, bundledRecordings, fromFiles, fromUrl, openBundled, type GalleryEntry, type IndexEntry } from './load.ts';
 import { finishedManifest, placeLines, tailOf } from './follow.ts';
@@ -305,13 +305,9 @@ export function restorePlace(root: HTMLElement, place: ReturnType<typeof placeIn
   if (place.focus !== undefined) (all.find((node) => placeKey(node, root) === place.focus) as HTMLElement | undefined)?.focus({ preventScroll: true });
 }
 
-/** A blob's text. An embedded blob's data: URL is decoded in the page: a page served with `connect-src 'self'` may not
- *  fetch one. */
+/** A blob's text, through the one reader of blobs (an embedded blob's data: URL is decoded in the page, not fetched). */
 async function textAt(url: string): Promise<string> {
-  const data = /^data:[^,]*?(;base64)?,/.exec(url);
-  if (!data) return (await fetch(url)).text();
-  const body = url.slice(data[0].length);
-  return data[1] ? new TextDecoder().decode(Uint8Array.from(atob(body), (each) => each.charCodeAt(0))) : decodeURIComponent(body);
+  return (await fetchBlob(url)).text();
 }
 
 /** The JSON blobs a recording's result names (the manifest's and each `result` line's), parsed. One that does not load
