@@ -11,7 +11,7 @@ import { reduceTo, stopsOf } from '../src/replay.ts';
 import { branchOf, planOf } from '../src/audit-read.ts';
 import { counterFold, countersOf } from '../src/counters.ts';
 import type { BaselineView } from '../src/panels.ts';
-import { wmGlyphOf, workflowMapPanel, type WmState } from '../src/workflow-map.ts';
+import { wmCellsOf, wmGlyphOf, wmStarted, workflowMapPanel, type WmGlyph, type WmState } from '../src/workflow-map.ts';
 
 const ROOT = '/root/steps/0/items';
 const STEPS = ['registry', 'advisories', 'install in a box', 'repository', 'finding', 'verdict', 'row'];
@@ -266,8 +266,10 @@ test('a restore rebuilds the branches from the checkpoint: a discarded verdict g
   const before = reduceAll(run.slice(0, 5));
   assert.equal(wmGlyphOf(before, before.branches[`${ROOT}/1`]!), 'finding');
   const after = reduceAll(run);
-  assert.equal(wmGlyphOf(after, after.branches[`${ROOT}/1`]!), 'working', 'the discarded verdict and finish are gone');
-  assert.equal(after.branches[`${ROOT}/1`]!.verdict, undefined);
+  // The branch is the record's after the restore (the checkpoint says it started), so the grid's cell is read.
+  const cell = wmCellsOf(after).find((each) => each.id === `${ROOT}/1`)!;
+  assert.equal(cell.glyph, 'working', 'the discarded verdict and finish are gone');
+  assert.equal(cell.branch?.verdict, undefined);
   assert.deepEqual(after.kills.map((each) => each.label), ['storm 1'], 'the kill history stays');
   assert.equal(after.plan?.items.length, 4, 'and the plan');
   // The kill's cut is history: a branch it cut keeps its cut count and its outline through the restore, whatever the checkpoint holds.
@@ -279,8 +281,8 @@ test('a restore rebuilds the branches from the checkpoint: a discarded verdict g
   // A branch that finished a step, checkpointed and was cut in its first call: the restored checkpoint shows it started, with its cut count.
   const progressed = reduceAll([process(1), task, driverAt(3, [step(2, 0)], 1), durableLine('agentrun.effects', 'workflow', 1, 4, { doc: 'agentrun.effects', key: `a\u0000step:${step(2, 1)}#call:0`, value: { name: 'advisories', argsHash: 'y', status: 'unknown', result: null, intent: { tool: 'advisories', argsHash: 'y' } }, version: 1 }, { path: step(2, 1) }),
     kill(1), process(2), driverAt(3, [step(2, 0)], 1, true)]);
-  const branch = progressed.branches[`${ROOT}/2`]!;
-  assert.deepEqual([branch.seen, branch.cut, wmGlyphOf(progressed, branch)], [true, 1, 'working']);
+  const branch = wmCellsOf(progressed).find((each) => each.id === `${ROOT}/2`)!.branch!;
+  assert.deepEqual([wmStarted(progressed, branch), branch.cut, wmGlyphOf(progressed, branch)], [true, 1, 'working']);
 });
 
 test('an itemsPath is a dotted state path: a nested input still lays out its planned cells', () => {
@@ -289,4 +291,102 @@ test('an itemsPath is a dotted state path: a nested input still lays out its pla
   assert.deepEqual(planOf(line({ plan: { questions: ['first', 'second'] } })), { mapPath: '/root/steps/0', items: ['first', 'second'], steps: ['ask'] });
   assert.deepEqual(planOf(line({ plan: { questions: [{ name: 'a', version: '1' }] } }))?.items, ['a@1']);
   assert.deepEqual(planOf(line({ plan: {} }))?.items, [], 'a path that leads nowhere plans no cells');
+});
+
+// The DSL's map fixtures (packages/dsl/test/fixtures/graph): the frame the driver kept and, in the keyed layout, each
+// item's own record, fed in as lines after the workflow line. What each item did is read off the fixtures' records: a
+// finished run finished every item; a cut run finished its first item, was inside its second, and never reached its third.
+const GRAPH = new URL('../../../packages/dsl/test/fixtures/graph/', import.meta.url);
+const graphFixture = (file: string) => JSON.parse(readFileSync(new URL(file, GRAPH), 'utf8')) as Json;
+const MAP_SHAPES: Record<string, Json> = { 'map-v3': { items: ['a', 'b', 'c'].map((id) => ({ id })) }, 'map-v4': { items: ['a', 'b', 'c'].map((id) => ({ id })) }, nested: { items: ['i0', 'i1', 'i2'].map((id) => ({ id })) } };
+const ITEMS_DID: Record<string, WmGlyph[]> = { finished: ['done', 'done', 'done'], cut: ['done', 'working', 'empty'] };
+for (const [shape, input] of Object.entries(MAP_SHAPES)) {
+  for (const variant of ['finished', 'cut']) {
+    test(`${shape}, ${variant}: each item's cell shows what the item did, from the driver's frame and the item's own record`, () => {
+      const at = (commit: number, order: number, kind: string, data: Json): Line => ({ channel: 'durable', source: 'workflow', kind, gen: 1, t: commit * 10 + order, commit, order, data } as Line);
+      const records = graphFixture(`${shape}.${variant}.items.json`) as Record<string, Json>[];
+      const fed = [
+        at(1, 0, 'agentrun.workflow', { id: 1, kind: 'agentrun.workflow', input: { key: 'run', workflow: graphFixture(`${shape}.workflow.json`), input } }),
+        at(2, 0, 'agentrun.driver', { doc: 'agentrun.driver', key: 'run', value: { generation: 1, state: { schema: 'agentrun.frozen_run.v4', pin: graphFixture(`${shape}.${variant}.frame.json`) } }, version: 1 }),
+        ...records.map((record, n) => at(3, n, 'agentrun.items', { doc: 'agentrun.items', key: `run\u0000${String(record.map)}/items/${String(record.index)}`, value: record, version: 1 })),
+      ];
+      const end = reduceTo(workflowMapPanel, fed, fed.length);
+      assert.deepEqual(wmCellsOf(end).map((cell) => cell.glyph), ITEMS_DID[variant]);
+    });
+  }
+}
+
+test('a recording whose lines carry no workflow line reads the workflow and its plan from the job the manifest names', () => {
+  // The DSL's nested recording: its task line names no workflow, so only the job says what ran. Every item finished.
+  const recorded = parseLines(readFileSync(new URL('nested.recording.jsonl', GRAPH), 'utf8'));
+  assert.equal(recorded.some((line) => line.kind === 'agentrun.workflow'), false);
+  const end = reduceTo(workflowMapPanel, recorded, recorded.length);
+  const job = 'e'.repeat(64);
+  const read = { workflow: graphFixture('nested.workflow.json'), input: MAP_SHAPES.nested, files: [] } as Json;
+  const cells = (context: Record<string, unknown>) => {
+    const found: string[] = [];
+    const walk = (node: Node) => { if (typeof node === 'string' || !('children' in node)) return; if (typeof node.class === 'string' && node.class.startsWith('wm-glyph ')) found.push(node.class.split(' ')[1]!); for (const child of node.children ?? []) walk(child); };
+    walk(workflowMapPanel.view(end, { t: 0, ...context }));
+    return found;
+  };
+  assert.deepEqual(cells({ json: (sha: string) => (sha === job ? read : undefined), job }), ['done', 'done', 'done']);
+  // A v4 run: the checkpoint names no item, and each item's own record says it finished. With no live line at all (a
+  // process that finishes its items from its journal writes none), every item still reads done, from the record alone.
+  const durableOnly = recorded.filter((line) => line.channel === 'durable');
+  const read2 = { json: (sha: string) => (sha === job ? read : undefined), job };
+  assert.deepEqual(wmCellsOf(reduceTo(workflowMapPanel, durableOnly, durableOnly.length), read2).map((cell) => cell.glyph), ['done', 'done', 'done']);
+  assert.equal(cells({ json: () => undefined, job }).includes('done'), false, 'the job not read yet: nothing reads finished');
+  const zoomed = workflowMapPanel.view(end, { t: 0, json: (sha: string) => (sha === job ? read : undefined), job, focus: '/root/steps/0/items/1' });
+  const labels: string[] = [];
+  const walk = (node: Node) => { if (typeof node === 'string' || !('children' in node)) return; if (typeof node.class === 'string' && node.class.startsWith('wm-node ')) labels.push(`${String(node.children?.[0])}:${node.class.split(' ')[1]}`); for (const child of node.children ?? []) walk(child); };
+  walk(zoomed);
+  const body = ((graphFixture('nested.workflow.json') as { root: { steps: { body: { steps: { label: string }[] } }[] } }).root.steps[0]!.body.steps).map((step) => `${step.label}:done`);
+  assert.deepEqual(labels, body, "the item's steps are the job's map body's, each done");
+});
+
+test('a map inside a map\'s item: each row\'s cell reads off its records, in both layouts', () => {
+  // fixtures/map-in-map: the DSL's own driver. A finished run finished both rows; a cut one the first, and was inside the second.
+  const twice = JSON.parse(readFileSync(new URL('fixtures/map-in-map/runs.json', import.meta.url), 'utf8')) as { workflow: Json; input: Json; runs: Record<string, { frame: Json; items: Record<string, Json>[] }> };
+  const at = (commit: number, order: number, kind: string, data: Json): Line => ({ channel: 'durable', source: 'workflow', kind, gen: 1, t: commit * 10 + order, commit, order, data } as Line);
+  for (const [run, want] of [['v3.finished', ['done', 'done']], ['v3.cut', ['done', 'working']], ['v4.finished', ['done', 'done']], ['v4.cut', ['done', 'working']]] as const) {
+    const { frame, items } = twice.runs[run]!;
+    const fed = [
+      at(1, 0, 'agentrun.workflow', { id: 1, kind: 'agentrun.workflow', input: { key: 'run', workflow: twice.workflow, input: twice.input } }),
+      at(2, 0, 'agentrun.driver', { doc: 'agentrun.driver', key: 'run', value: { generation: 1, state: { schema: 'agentrun.frozen_run.v4', pin: frame } }, version: 1 }),
+      ...items.map((record, n) => at(3, n, 'agentrun.items', { doc: 'agentrun.items', key: `run\u0000${String(record.map)}/items/${String(record.index)}`, value: record, version: 1 })),
+    ];
+    const cells = wmCellsOf(reduceTo(workflowMapPanel, fed, fed.length));
+    assert.deepEqual(cells.map((cell) => cell.glyph), want, run);
+    assert.deepEqual(cells.map((cell) => cell.id), ['/root/steps/0/items/0', '/root/steps/0/items/1'], `${run}: a cell per row, none per inner cell`);
+  }
+});
+
+test('a map over a list an earlier step made: the record names the items that ran, and each gets its cell', () => {
+  // The input holds no list (a code step builds it before the map), so the plan names no item and no line carries an item's
+  // path: the checkpoint and the items' own records are all that say which items ran. An item the run never reached is in
+  // neither, so it has no cell.
+  const at = (commit: number, order: number, kind: string, data: Json): Line => ({ channel: 'durable', source: 'workflow', kind, gen: 1, t: commit * 10 + order, commit, order, data } as Line);
+  const fedOf = (workflow: Json, frame: Json, records: Record<string, Json>[]) => [
+    at(1, 0, 'agentrun.workflow', { id: 1, kind: 'agentrun.workflow', input: { key: 'run', workflow, input: {} } }),
+    at(2, 0, 'agentrun.driver', { doc: 'agentrun.driver', key: 'run', value: { generation: 1, state: { schema: 'agentrun.frozen_run.v4', pin: frame } }, version: 1 }),
+    ...records.map((record, n) => at(3, n, 'agentrun.items', { doc: 'agentrun.items', key: `run\u0000${String(record.map)}/items/${String(record.index)}`, value: record, version: 1 })),
+  ];
+  for (const shape of Object.keys(MAP_SHAPES)) {
+    for (const [variant, want] of [['finished', ['done', 'done', 'done']], ['cut', ['done', 'working']]] as const) {
+      const fed = fedOf(graphFixture(`${shape}.workflow.json`), graphFixture(`${shape}.${variant}.frame.json`), graphFixture(`${shape}.${variant}.items.json`) as Record<string, Json>[]);
+      const end = reduceTo(workflowMapPanel, fed, fed.length);
+      assert.deepEqual(end.plan?.items, [], `${shape}: the plan names no item`);
+      const cells = wmCellsOf(end);
+      assert.deepEqual(cells.map((cell) => cell.glyph), want, `${shape}, ${variant}`);
+      assert.deepEqual(cells.map((cell) => cell.id), want.map((_, index) => `/root/steps/0/items/${index}`), `${shape}, ${variant}: the map's items, none of a map inside one`);
+    }
+  }
+  // Only the checkpoint, stored whole (v3): its paths name the items.
+  const v3 = fedOf(graphFixture('map-v3.workflow.json'), graphFixture('map-v3.finished.frame.json'), []);
+  assert.deepEqual(wmCellsOf(reduceTo(workflowMapPanel, v3, v3.length)).map((cell) => cell.glyph), ['done', 'done', 'done']);
+  const twice = JSON.parse(readFileSync(new URL('fixtures/map-in-map/runs.json', import.meta.url), 'utf8')) as { workflow: Json; runs: Record<string, { frame: Json; items: Record<string, Json>[] }> };
+  for (const run of ['v3.cut', 'v4.cut']) {
+    const fed = fedOf(twice.workflow, twice.runs[run]!.frame, twice.runs[run]!.items);
+    assert.deepEqual(wmCellsOf(reduceTo(workflowMapPanel, fed, fed.length)).map((cell) => cell.id), ['/root/steps/0/items/0', '/root/steps/0/items/1'], `${run}: a cell per row, none per inner cell`);
+  }
 });

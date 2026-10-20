@@ -1,0 +1,61 @@
+{
+  "record": {
+    "batch": "october-vendors",
+    "charged": 10,
+    "cents": 20375,
+    "receipts": [
+      {
+        "invoice": "INV-001",
+        "receipt": "rcpt-INV-001",
+        "cents": 1250
+      },
+      {
+        "invoice": "INV-002",
+        "receipt": "rcpt-INV-002",
+        "cents": 1425
+      },
+      {
+        "invoice": "INV-003",
+        "receipt": "rcpt-INV-003",
+        "cents": 1600
+      },
+      {
+        "invoice": "INV-004",
+        "receipt": "rcpt-INV-004",
+        "cents": 1775
+      },
+      {
+        "invoice": "INV-005",
+        "receipt": "rcpt-INV-005",
+        "cents": 1950
+      },
+      {
+        "invoice": "INV-006",
+        "receipt": "rcpt-INV-006",
+        "cents": 2125
+      },
+      {
+        "invoice": "INV-007",
+        "receipt": "rcpt-INV-007",
+        "cents": 2300
+      },
+      {
+        "invoice": "INV-008",
+        "receipt": "rcpt-INV-008",
+        "cents": 2475
+      },
+      {
+        "invoice": "INV-009",
+        "receipt": "rcpt-INV-009",
+        "cents": 2650
+      },
+      {
+        "invoice": "INV-010",
+        "receipt": "rcpt-INV-010",
+        "cents": 2825
+      }
+    ],
+    "note": "10 invoices settled, each charged once."
+  },
+  "evidence": []
+}

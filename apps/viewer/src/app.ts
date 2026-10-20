@@ -9,6 +9,7 @@ import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, link
 import { chatGivenInput, chatTitle } from './chat-extract.ts';
 import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
+import { workflowGraphPanel } from './workflow-graph.ts';
 import { opensInPage } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
 import { blobsAt, blobsNamed, bundledRecordings, fromFiles, fromUrl, openBundled, type GalleryEntry, type IndexEntry } from './load.ts';
@@ -315,10 +316,11 @@ async function textAt(url: string): Promise<string> {
   return data[1] ? new TextDecoder().decode(Uint8Array.from(atob(body), (each) => each.charCodeAt(0))) : decodeURIComponent(body);
 }
 
-/** The JSON blobs a recording's result names (the manifest's and each `result` line's), parsed. One that does not load
- *  or parse is left out, and the views say they cannot read it. */
+/** The JSON blobs a recording's result names (the manifest's and each `result` line's), and the job that ran (the
+ *  manifest's `job`), parsed. One that does not load or parse is left out, and the views say they cannot read it. */
 async function resultJson(recording: Recording): Promise<Map<string, Json>> {
   const named = new Set<string>(recording.manifest.result ? [recording.manifest.result.blob] : []);
+  if (typeof recording.manifest.job?.blob === 'string') named.add(recording.manifest.job.blob);
   for (const line of recording.lines) {
     const blob = line.source === 'host' && line.kind === 'result' ? (line.data as { blob?: unknown } | null)?.blob : undefined;
     if (typeof blob === 'string') named.add(blob);
@@ -359,7 +361,7 @@ export function viewContext(t: number, manifest: Manifest, inputs: { focus?: str
   const { focus, baseline, cite, json, now, following, blobType, debug, delivered } = inputs;
   return { t, now: now ?? t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}),
     ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}), ...(following ? { following: true as const } : {}),
-    ...(blobType ? { blobType } : {}), ...(debug && debug.length ? { debug } : {}),
+    ...(typeof manifest.job?.blob === 'string' ? { job: manifest.job.blob } : {}), ...(blobType ? { blobType } : {}), ...(debug && debug.length ? { debug } : {}),
     ...(delivered === false && manifest.result ? { manifestResult: manifest.result } : {}) };
 }
 
@@ -534,9 +536,9 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   // The first registered panel that calls itself featured for this recording is shown first, with the controls right under it; the rest follow as before.
   // The panels this recording draws, judged once over all its lines: a panel with nothing here never shows, not even its title.
   let json: Map<string, Json> | undefined;
-  /** The results read so far: a panel may be drawn for its recording's result (`showsResult`). */
-  const results = () => [...(json?.values() ?? [])];
-  let shown = panelsFor(lines, results(), (sha) => recording.blobType(sha));
+  /** The results read so far (the job's blob is not one): a panel may be drawn for its recording's result (`showsResult`). */
+  const results = () => [...(json?.entries() ?? [])].filter(([sha]) => sha !== recording.manifest.job?.blob).map(([, value]) => value);
+  let shown = panelsFor(lines, results(), (sha) => recording.blobType(sha), recording.manifest);
   let featured = featuredPanel(shown, lines);
   const featuredBox = el('div', { class: 'featured' });
   if (embedded) document.documentElement.classList.add('embed');
@@ -680,8 +682,9 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   }
   draw();
   /** The panels for the recording, worked out again when what decides them changes: its lines, or a result read. */
+  // A panel the manifest decides on (`showsFor`) is drawn once the finished run's manifest is in.
   const choosePanels = () => {
-    const now = panelsFor(lines, results(), (sha) => recording.blobType(sha));
+    const now = panelsFor(lines, results(), (sha) => recording.blobType(sha), recording.manifest);
     const nowFeatured = featuredPanel(now, lines);
     const moved = nowFeatured !== featured;
     shown = now;
