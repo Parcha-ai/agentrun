@@ -3,6 +3,7 @@
 // lines, with who has the browser said by the rows alone and a Take control that is shown and disabled on a replay. It is
 // opt-in: the same recording without `&muse` has neither. No accent bar on a card's or the header's left edge.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -14,7 +15,7 @@ import { build } from '../build.mjs';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 import { museFiles, museFriendlyFile, museShorten, museWhen } from '../src/chat-muse.ts';
 import { evidenceFinding } from '../src/chat-view.ts';
-import { CITED, K, deliverInstead, writeRecording } from './vision-hand.ts';
+import { CITED, K, deliverInstead, lines as handLines, writeRecording } from './vision-hand.ts';
 
 const here = new URL('.', import.meta.url).pathname;
 const IN_CHROME = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 120_000 };
@@ -224,5 +225,50 @@ test('an evidence card\'s finding is the look\'s sentence; a typed answer or a d
   assert.equal(evidenceFinding({ takeaway: 'a: yes · b: no', decisions: [{ name: 'a', kind: 'noul', score: 0.9 }, { name: 'b', kind: 'noul', score: 0.1 }] }), '', 'decisions as text');
   assert.equal(evidenceFinding({ takeaway: '', decisions: [] }), '');
   assert.equal(evidenceFinding({ takeaway: `${'word '.repeat(80)}end`, decisions: [] }).length <= 260, true, 'clipped');
+});
+
+// A cite into a video (`film.mp4#t=1&xywh=...`) has its box in that video's own frame: the card draws the video's frame at that second and the box on it,
+// never the picture the look kept, and the clip plays from there.
+test('in Chrome: a cite into a video is drawn on the video\'s own frame at its second with its box, and plays from there', IN_CHROME, async (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-video-'));
+  const held: { page?: Awaited<ReturnType<typeof drivenPage>>; server?: ReturnType<typeof createServer> } = {};
+  t.after(() => closeAll(held.page ? [held.page] : [], () => {
+    held.server?.closeAllConnections();
+    held.server?.close();
+    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }), { timeout: 20_000 });
+  mkdirSync(join(out, 'recordings'));
+  const clip = readFileSync(join(here, 'fixtures', 'hand-clip.webm'));
+  const sha = createHash('sha256').update(clip).digest('hex');
+  const dir = join(out, 'recordings', 'hand-clip');
+  // The browser's own track: a frame.track line whose session ends with the cited file's name, keeping the clip.
+  writeRecording(dir, [...handLines, { channel: 'live', source: 'browser', kind: 'frame.track', gen: 1, t: 1, seq: 99_999, data: { session: 'local:1:2:film', fps: 4, from: 0, to: 3000 }, blobs: [sha] } as never]);
+  writeFileSync(join(dir, 'blobs', `${sha}.webm`), clip);
+  deliverInstead(dir, { format: 'agentrun.cited/1', title: 'The clip', rows: [{ label: 'Seen', value: 'a box', cites: [{ look: K.film, fragment: '#t=1&xywh=percent:10,10,25,20', note: 'the box' }] }] } as never);
+  build(join(out, 'dist'), join(out, 'recordings'));
+  const TYPES: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.css': 'text/css', '.webm': 'video/webm' };
+  const server = createServer((request, response) => {
+    const file = join(out, 'dist', decodeURIComponent(new URL(request.url!, 'http://localhost').pathname));
+    if (!file.startsWith(join(out, 'dist')) || !existsSync(file) || !extname(file)) { response.writeHead(404).end(); return; }
+    response.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' }).end(readFileSync(file));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  held.server = server;
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const page = await drivenPage(`${origin}/chat.html?r=hand-clip`, join(out, 'profile'), { signal: t.signal });
+  held.page = page;
+  const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
+  await page.once(`!!document.querySelector('.ev-card canvas.ev-frame') && document.querySelector('.ev-card canvas.ev-frame').width > 0`, 'true', 20_000, 'the video frame drawn on its canvas');
+  const frame = await value<{ size: number[]; alpha: number; boxes: string[]; shown: boolean; kept: number }>(`(() => { const c = document.querySelector('.ev-card canvas.ev-frame'); const px = c.getContext('2d').getImageData(160, 90, 1, 1).data;
+    return { size: [c.width, c.height], alpha: px[3], boxes: [...document.querySelectorAll('.ev-card .jbox span')].map((s) => s.textContent), shown: [...document.querySelectorAll('.ev-card .jbox')].every((b) => b.checkVisibility() && b.getBoundingClientRect().width > 4), kept: document.querySelectorAll('.ev-card .media img').length }; })()`);
+  assert.deepEqual(frame.size, [320, 180], 'the video\'s own frame, at its own size');
+  assert.equal(frame.alpha, 255, 'a frame was drawn on the canvas');
+  assert.deepEqual(frame.boxes, ['the box'], 'the cite\'s box, with its words, on that frame');
+  assert.equal(frame.shown, true, 'visible at once');
+  assert.equal(frame.kept, 0, 'not the picture the look kept');
+  // The clip plays from the cited second.
+  await page.evaluate(`document.querySelector('.ev-play').click()`);
+  await page.once(`!!document.querySelector('.ev-player') && document.querySelector('.ev-player').readyState >= 1 && Math.abs(document.querySelector('.ev-player').currentTime - 1) < 0.5`, 'true', 20_000, 'the clip loaded and seeked to the cited second');
+  assert.deepEqual(await value(`[document.querySelector('.ev-play').textContent, document.querySelector('.ev-player').controls]`), ['Play from 1 s', true]);
 });
 
