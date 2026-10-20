@@ -2,7 +2,8 @@
 // (the static viewer inlines it) and the pi session's text view draw the same graph; nothing here validates, runs or
 // reads a store. `workflowGraph` reads the workflow JSON as written; `nodeStatus` reads the driver's record of a run
 // (the `agentrun.driver` frame of the frozen snapshot, and the `agentrun.items` of a keyed-layout run) and says, for
-// each node of that graph, whether it is done, working, failed or not run.
+// each node of that graph, whether it is done, working, failed or not run; `graphNodeOf` names the node an execution path ran
+// at, and the map items and loop iterations around it.
 
 /** One node of the workflow as written. `path` is a JSON Pointer (RFC 6901) into the document: `/root` is the root,
  *  `/root/steps/1` a chain's second step, `/root/branches/<name>/body` a route's branch, `/root/body` a map's or a
@@ -161,4 +162,59 @@ export function nodeStatus(graph: WorkflowGraph, source: StatusSource, options: 
     if (containers.some((container) => node.path.startsWith(`${container.path}/body`) && out[container.path] !== "done")) out[node.path] = "working";
   }
   return out;
+}
+
+/** Where an execution path is in the graph: the node it ran at (`path`, a node of the graph) and the map items and loop
+ *  iterations it ran in, outermost first. */
+export type GraphNodeAt = { path: string; at: { kind: "item" | "iteration"; index: number }[] };
+
+/** An item or iteration index as an execution path writes it: a whole number with no sign and no leading zero. */
+const indexOf = (segment: string | undefined): number | undefined =>
+  segment !== undefined && /^(0|[1-9][0-9]*)$/.test(segment) && Number.isSafeInteger(Number(segment)) ? Number(segment) : undefined;
+
+/** The graph node an execution path ran at. An execution path is the node's JSON Pointer with two runtime segments added:
+ *  a map's item (`items/<i>` before the map's `body`) and a loop's iteration (`iterations/<i>` before the loop's `body`); the
+ *  graph has `/body` for both, and the indexes are returned in `at`. The path is read by walking the graph from `/root`, by
+ *  each node's kind, never by matching its text, so a route branch named `items` or `iterations` is a branch. Undefined for
+ *  a path the graph does not have, or one that is not an execution path (a map's `body` without an item, an item without
+ *  its `body`). */
+export function graphNodeOf(graph: WorkflowGraph, executionPath: string): GraphNodeAt | undefined {
+  if (typeof executionPath !== "string") return undefined;
+  const kinds = new Map(graph.nodes.map((node) => [node.path, node.kind]));
+  const parts = executionPath.split("/");
+  if (parts[0] !== "" || parts[1] !== "root" || !kinds.has("/root")) return undefined;
+  let path = "/root";
+  const at: GraphNodeAt["at"] = [];
+  for (let i = 2; i < parts.length;) {
+    const [first, second, third] = [parts[i], parts[i + 1], parts[i + 2]];
+    let next: string | undefined;
+    switch (kinds.get(path)) {
+      case "chain":
+        if (first === "steps" && indexOf(second) !== undefined) { next = `${path}/steps/${second}`; i += 2; }
+        break;
+      case "parallel":
+        if (first === "branches" && indexOf(second) !== undefined) { next = `${path}/branches/${second}`; i += 2; }
+        break;
+      case "route":
+        // The branch's name, pointer-escaped as in the graph, whatever it is: `items`, `iterations` and `0` included.
+        if (first === "branches" && second !== undefined && second !== "" && third === "body") { next = `${path}/branches/${second}/body`; i += 3; }
+        break;
+      case "workflow":
+        if (first === "workflow" && second === "root") { next = `${path}/workflow/root`; i += 2; }
+        break;
+      case "map": {
+        const index = indexOf(second);
+        if (first === "items" && index !== undefined && third === "body") { at.push({ kind: "item", index }); next = `${path}/body`; i += 3; }
+        break;
+      }
+      case "loop": {
+        const index = indexOf(second);
+        if (first === "iterations" && index !== undefined && third === "body") { at.push({ kind: "iteration", index }); next = `${path}/body`; i += 3; }
+        break;
+      }
+    }
+    if (next === undefined || !kinds.has(next)) return undefined;
+    path = next;
+  }
+  return { path, at };
 }
