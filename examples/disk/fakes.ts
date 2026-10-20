@@ -3,7 +3,7 @@
 import type { Message } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import type { Fakes } from '@parcha/agentrun-harness';
-import { DiskReview } from './tools.ts';
+import { charge, DiskReview } from './tools.ts';
 
 const textOf = (message: Message) => (typeof message.content === 'string' ? message.content : message.content.map((block) => (block.type === 'text' ? block.text : '')).join(''));
 const call = (name: string, args: Parameters<typeof fauxToolCall>[1]) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' });
@@ -71,7 +71,7 @@ export const fakes: Fakes = {
   lead: { input: ['text'] },
   extensions: [DiskReview],
   // The paid tool (simulated: no money moves): a receipt that names the invoice, so a charge made twice would show as the same receipt twice. The host's ledger counts each call it receives.
-  tools: { charge: (args) => ({ invoice: String(args.invoice), receipt: `rcpt-${String(args.invoice)}`, cents: Number(args.cents) }) },
+  tools: { charge },
   // Scripted: it calls no model, so it costs 0 and used nothing (not unknown).
   judge: async ({ questions }) => ({ answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul' as const, noul: 0.92 }])), usage: { input_tokens: 0, output_tokens: 0 }, cost_usd: 0 }),
   pages: {},

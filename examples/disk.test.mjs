@@ -250,6 +250,9 @@ test('the live part: each process is held to its model calls and its answer size
   const parts = live({ env: { ANTHROPIC_API_KEY: 'fake-test-key' } });
   assert.deepEqual(parts.models, { lead: 'anthropic/claude-sonnet-5-5' });
   assert.deepEqual(parts.host.models.lead, { provider: 'anthropic', modelId: 'claude-sonnet-5-5' });
+  // The live run has the agent's read tool and the simulated paid tool too: without them its review node and its charge have no source.
+  assert.deepEqual(parts.host.tools.extensions.map((extension) => extension.name), ['disk-review']);
+  assert.deepEqual(parts.tools.charge({ invoice: 'INV-001', cents: 1250 }), { invoice: 'INV-001', receipt: 'rcpt-INV-001', cents: 1250 });
 });
 
 test('the by-code checks read a cite in any attribute order and quoting, and never skip one they cannot read', async () => {

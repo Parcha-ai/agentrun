@@ -6,6 +6,7 @@ import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messag
 import { createModels, createProvider, type Provider } from '@earendil-works/pi-ai/models';
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic';
 import type { LiveParts } from '@parcha/agentrun-harness';
+import { charge, DiskReview } from './tools.ts';
 
 export const LEAD = { provider: 'anthropic', modelId: 'claude-sonnet-5-5' } as const;
 /** The variable the key (or, in a sandbox, its placeholder) is read from. */
@@ -44,5 +45,10 @@ export function live({ env }: { env: NodeJS.ProcessEnv }): LiveParts {
     models: [{ ...entry, maxTokens: MAX_OUTPUT_TOKENS }],
     api: boundedApi(anthropicMessagesApi()),
   } as never) as never);
-  return { host: { models: { catalog, lead: { provider: LEAD.provider, modelId: LEAD.modelId } } }, models: { lead: `${LEAD.provider}/${LEAD.modelId}` } };
+  // The agent's own tool (`read_lines`, an extension the entry adds beside its coding tools) and the paid tool (simulated, as on fakes) are the live run's too.
+  return {
+    host: { models: { catalog, lead: { provider: LEAD.provider, modelId: LEAD.modelId } }, tools: { extensions: [DiskReview] } as never },
+    tools: { charge },
+    models: { lead: `${LEAD.provider}/${LEAD.modelId}` },
+  };
 }

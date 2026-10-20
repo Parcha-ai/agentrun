@@ -117,5 +117,6 @@
       "n": 5,
       "why": "the fifth charge is paid and its answer kept, and the run is released to the disk for a second host to open"
     }
-  ]
+  ],
+  "browser": false
 }

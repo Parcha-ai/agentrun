@@ -63,3 +63,9 @@ export const readLines = defineTool({
 
 /** The extension the review installs: the one tool. */
 export const DiskReview = defineExtension({ name: 'disk-review', tools: [readLines] });
+
+/**
+ * The paid tool `charge`, simulated: no money moves. It answers with a receipt that names the invoice, so a charge made twice would show as the same receipt twice, and the host's ledger counts each call
+ * it receives. The same function on fakes and live: the agent is real on --live, the money never is.
+ */
+export const charge = (args: Record<string, unknown>) => ({ invoice: String(args.invoice), receipt: `rcpt-${String(args.invoice)}`, cents: Number(args.cents) });
