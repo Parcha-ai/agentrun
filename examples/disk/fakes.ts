@@ -2,7 +2,7 @@
 // tool and cites the receipts the tool shows, as the live model does; it is the test fixture, not what a gallery shows. Nothing here is the job: job.ts is data.
 import type { Message } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import type { Fakes } from '@parcha/agentrun-reference';
+import type { Fakes } from '@parcha/agentrun-harness';
 import { DiskReview } from './tools.ts';
 
 const textOf = (message: Message) => (typeof message.content === 'string' ? message.content : message.content.map((block) => (block.type === 'text' ? block.text : '')).join(''));
@@ -39,7 +39,7 @@ function review(messages: readonly Message[], path: string) {
   return call('submit', { invoice: field('Invoice'), decision: hold ? 'hold' : 'approve', cents, reason, cites });
 }
 
-const link = (cite: Cite) => `<a href="../${cite.path}#line=${cite.from},${cite.to}" data-receipt="${cite.receipt}">line ${cite.from + 1}</a>`;
+const link = (cite: Cite) => `<a href="${cite.path}#line=${cite.from},${cite.to}" data-receipt="${cite.receipt}">line ${cite.from + 1}</a>`;
 
 /** The report: a row for each entry, each cite linked through the receipt of the read, written with the write tool, then submitted. */
 function report(messages: readonly Message[]) {

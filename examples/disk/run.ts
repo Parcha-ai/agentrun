@@ -4,14 +4,14 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { localPlace } from '@parcha/pi-durable-disk';
-import { demo, type DemoOptions } from '@parcha/agentrun-reference';
+import { demo, type DemoOptions } from '@parcha/agentrun-harness';
 import { fakes } from './fakes.ts';
 import { job } from './job.ts';
 
 const raw = JSON.parse(readFileSync(new URL('./demo.json', import.meta.url), 'utf8'));
 // The spec's kill is the box going away, which a disk place can do (the sandbox is deleted). The local place has no box of its own: on fakes the same crossing ends the process. `--handoff` runs the spec's handoffs instead (the entry's flag).
 const spec = process.argv.includes('--live') ? raw : { ...raw, kills: raw.kills.map(({ kind, ...kill }: { kind?: string }) => kill) };
-const childApp = fileURLToPath(import.meta.resolve('@parcha/agentrun-reference/child-app'));
+const childApp = fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app'));
 
 export const options: DemoOptions = { self: import.meta.url, spec, job, fakes, place: localPlace({ app: childApp }) };
 

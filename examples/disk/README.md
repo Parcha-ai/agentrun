@@ -50,7 +50,7 @@ On fakes: `node` 22.19 or later, and nothing else. `SETUP-PROMPT.md` does the re
 
 - `job.ts`: the job as data, a workflow of a `map` of `call` nodes (the paid tool) and an `agent` note. No host code.
 - `fakes.ts`: the scripted lead, the paid tool's fake and the judge, for the no-key run.
-- `run.ts`: about ten lines on `@parcha/agentrun-reference`, the entry that reads the standard flags and supervises the kill. The place is where the session lives and how it starts, stops and
+- `run.ts`: about ten lines on `@parcha/agentrun-harness`, the entry that reads the standard flags and supervises the kill. The place is where the session lives and how it starts, stops and
   comes back: the entry's local place on fakes, `@parcha/pi-durable-disk`'s `localPlace` and `archilPlace` live.
 - `@parcha/pi-durable-disk`: the run's claim, the store the kept answers and the receipts commit to, and the takeover after a kill.
 - `@parcha/agentrun-dsl`, `@parcha/agentrun-pi`: the workflow and the durable task that runs it.

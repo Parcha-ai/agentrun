@@ -156,14 +156,14 @@ const failing = async (t, { n = 5, wrap = '' } = {}) => {
   t.after(() => rm(entry, { force: true }));
   writeFileSync(entry, `import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { demo } from '@parcha/agentrun-reference';
+import { demo } from '@parcha/agentrun-harness';
 import { localPlace } from '@parcha/pi-durable-disk';
 import { fakes } from './disk/fakes.ts';
 import { job } from './disk/job.ts';
 const raw = JSON.parse(readFileSync(new URL('./disk/demo.json', import.meta.url), 'utf8'));
 const { kills, kill, ...spec } = raw;
 spec.handoffs = [{ ...raw.handoffs[0], n: ${n} }];
-const make = localPlace({ app: fileURLToPath(import.meta.resolve('@parcha/agentrun-reference/child-app')) });
+const make = localPlace({ app: fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app')) });
 const wrap = ${JSON.stringify(wrap)};
 const place = (ctx) => {
   const made = make(ctx);

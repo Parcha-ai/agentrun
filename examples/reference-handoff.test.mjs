@@ -1,8 +1,8 @@
 // A planned handoff in the reference entry: the spec's list and its refusals, the flags (one at a time), a place that cannot report the run's status, and the one-week mapping of a released process's outcome.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { handoffsOf } from '../packages/reference/dist/demo-spec.js';
-import { releasedOutcome } from '../packages/reference/dist/handoff.js';
+import { handoffsOf } from '../packages/harness/dist/demo-spec.js';
+import { releasedOutcome } from '../packages/harness/dist/handoff.js';
 import { run } from './reference-demo-helpers.mjs';
 
 const one = { point: 'effect.kept charge', n: 5, why: 'the fifth charge is kept' };

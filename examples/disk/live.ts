@@ -17,7 +17,7 @@ import { archilControl, archilPlace, daytonaHost } from '@parcha/pi-durable-disk
 import { revokeBestEffort } from '../../packages/pi-durable-disk/src/claim.ts';
 import { scratchDisk, scratchDiskId, REGION } from '../../packages/pi-durable-disk/test/live/_archil.ts';
 import { ARCHIL_WRAPPER, confirmGone, deletePrefix, demoClosure, FLEET, guardedClient, ledger, MOUNT_ROOT, NAME_PREFIX, NODE, PACKAGE_DIR, PDA_ID, installDemoPacks, prepareBox, prepareOnSnapshot, sh } from '../../packages/pi-durable-disk/test/live/_p9.ts';
-import { demo } from '@parcha/agentrun-reference';
+import { demo } from '@parcha/agentrun-harness';
 import { fakes } from './fakes.ts';
 import { job } from './job.ts';
 
@@ -36,7 +36,7 @@ const scratch = mkdtempSync(join(tmpdir(), 'disk-live-'));
 const packs = join(scratch, 'packs');
 spawnSync('mkdir', ['-p', packs]);
 const newest = (dir: string): number => readdirSync(dir, { withFileTypes: true }).reduce((latest, entry) => Math.max(latest, entry.isDirectory() ? newest(join(dir, entry.name)) : statSync(join(dir, entry.name)).mtimeMs), 0);
-for (const dir of ['dsl', 'pi', 'pi-browser', 'pi-vision', 'pi-transport', 'reference']) {
+for (const dir of ['dsl', 'pi', 'pi-browser', 'pi-vision', 'pi-transport', 'harness']) {
   const at = join(root, 'packages', dir);
   if (!existsSync(join(at, 'dist')) || newest(join(at, 'dist')) < newest(join(at, 'src'))) throw new Error(`packages/${dir}/dist is missing or older than its source: npm run build first (the pack ships dist)`);
   const packed = spawnSync('npm', ['pack', '--ignore-scripts', '--silent', '--pack-destination', packs], { cwd: at, encoding: 'utf8' });
@@ -71,7 +71,7 @@ const startedAt = Date.now();
 const host = daytonaHost({
   client, snapshot: process.env.PDA_LIVE_SNAPSHOT || 'daytona-medium', target: process.env.DAYTONA_TARGET || 'us', fleet: FLEET, namePrefix: NAME_PREFIX, labels: { 'pda-p9': `disk-demo-${stamp}` },
   mountRoot: MOUNT_ROOT, node: NODE, packageDir: PACKAGE_DIR, archil: ARCHIL_WRAPPER, user: 'pda',
-  runArgs: [`--app=${PACKAGE_DIR}/node_modules/@parcha/agentrun-reference/dist/child-app.js`, '--heartbeat-ms=1000', '--lease-expiry-ms=600000', '--lease-margin-ms=0'],
+  runArgs: [`--app=${PACKAGE_DIR}/node_modules/@parcha/agentrun-harness/dist/child-app.js`, '--heartbeat-ms=1000', '--lease-expiry-ms=600000', '--lease-margin-ms=0'],
   env: {}, ttlMinutes: 60, startTimeoutMs: 600_000, stopTimeoutMs: 5_000,
   prepare: async (box) => {
     const t0 = Date.now();

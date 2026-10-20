@@ -56,7 +56,7 @@ export function reviewProblems({ recording, dir, record, live = false }) {
       if (text !== parts.slice(from, to).map((line, index) => line + (from + index < parts.length - 1 || all.endsWith('\n') ? '\n' : '')).join('')) problems.push(`read ${read.receipt}: part ${part} is not the lines ${from} to ${to} of ${read.path}`);
     }
   }
-  // 4. The report: every invoice has a row, and every cite resolves through a read of that file whose window holds it.
+  // 4. The report: every invoice has a row, and every cite resolves through a read of that file whose window holds it and links the same file beside the page.
   const reportFile = join(dir, 'work', 'report', 'index.html');
   if (!existsSync(reportFile)) problems.push('there is no report/index.html');
   else {
@@ -66,7 +66,7 @@ export function reviewProblems({ recording, dir, record, live = false }) {
     const rows = html.split(/<tr>/i).slice(1);
     for (const row of rows) if (!/data-receipt="/.test(row)) problems.push(`a row of the report has no cite: ${row.replace(/<[^>]+>/g, ' ').trim().slice(0, 60)}`);
     const byReceipt = new Map(reads.map((read) => [read.receipt, read]));
-    for (const match of html.matchAll(/<a href="\.\.\/([^"#]+)#line=(\d+),(\d+)" data-receipt="([^"]+)"/g)) {
+    for (const match of html.matchAll(/<a href="([^"#]+)#line=(\d+),(\d+)" data-receipt="([^"]+)"/g)) {
       const [, path, a, b, receipt] = match;
       const read = byReceipt.get(receipt);
       if (!read) { problems.push(`a cite names receipt ${receipt}, which no read stated`); continue; }
@@ -74,6 +74,10 @@ export function reviewProblems({ recording, dir, record, live = false }) {
       else if (!(Number(a) >= read.window.from && Number(b) <= read.window.to && Number(a) < Number(b))) problems.push(`a cite of ${path} lines ${a} to ${b} is outside the read's window ${read.window.from} to ${read.window.to}`);
       const file = join(dir, 'work', path);
       if (existsSync(file) && Number(b) > lineCount(readFileSync(file, 'utf8'))) problems.push(`a cite of ${path} reaches line ${b}, past the end of the file`);
+      // The link opens the copy beside the page: it must be the file that was read, byte for byte.
+      const beside = join(dir, 'work', 'report', path);
+      if (!existsSync(beside)) problems.push(`a cite links ${path}, which is not beside the report`);
+      else if (existsSync(file) && readFileSync(beside, 'utf8') !== readFileSync(file, 'utf8')) problems.push(`the copy of ${path} beside the report is not the file that was read`);
     }
   }
   // 5. Nothing outside the workspace: no tool call's arguments or results name an absolute path of a machine.
