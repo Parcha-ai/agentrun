@@ -336,4 +336,8 @@ test('the host dispatches a promoted v4 workflow: its output passes the v4 answe
   // the job by hand.
   assert.deepEqual([rows[1].byWorkflow, rows[1].correct], [false, true]);
   assert.deepEqual(rows[1].toolCalls, { search: 1, browse: 1, fetch: 0, read_document: 1 });
+  // No dispatch and no use: nothing in the row or the uses file counts against the promoted workflow.
+  assert.deepEqual(['dispatch' in rows[1], rows[1].workflowsUsed], [false, []]);
+  assert.deepEqual(JSON.parse(readFileSync(join(out, 'progress', 'run-002.json'), 'utf8')).finished.uses, []);
+  assert.deepEqual(JSON.parse(readFileSync(join(out, 'progress', 'run-001.json'), 'utf8')).finished.uses.map((u) => [u.name, u.outcome]), [[WORKFLOW, 'frozen']]);
 }, { timeout: 180_000 });
