@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { credentialIn } from '../../packages/harness/src/scan.ts';
+import { credentialIn, credentialInFile } from '../../packages/harness/src/scan.ts';
 import { moveImages } from '../../packages/harness/src/record.ts';
 import { readdirSync as readdirSyncOf } from 'node:fs';
 import { build } from '../../apps/viewer/build.mjs';
@@ -167,4 +167,15 @@ test('a native video block (mp4, webm) is kept with its own extension, and a tex
   first.blobs = [hash];
   writeFileSync(join(dir, 'events.jsonl'), [JSON.stringify(first), ...lines.slice(1)].join('\n') + '\n');
   assert.ok(problems(dir).some((each) => /contains a google api key/.test(each)), problems(dir).join(' | '));
+});
+
+test('a public URL\'s path is the site\'s, not the machine\'s: /news/home/ in a link passes; file:// URLs, bare paths, a Windows profile, a JSON-escaped path and a path beside a URL still trip', () => {
+  const slash = (...parts) => ['', ...parts].join('/');
+  const passes = ['https://www.businesswire.com/news/home/20251210588210/en/Some-Release', 'https://www.businesswire.com/news/home/2025/en/x', 'https://example.org/home/alice', 'http://example.org/Users/alice/profile', 'see <https://example.org/home/alice> and "https://example.org/home/bob" and (https://example.org/home/carol/x)'];
+  for (const text of passes) assert.equal(credentialIn(text), undefined, text);
+  const trips = [`file://${slash('home', 'alice', 'x')}`, slash('home', 'alice', 'x'), `C:${'\\'}Users${'\\'}alice`, `${slash('Users', 'alice')}`, `https://example.org/a ${slash('home', 'alice', 'x')}`, `${slash('home', 'alice', 'x')} https://example.org/a`, `\"https://example.org/a\" ${slash('home', 'alice', 'x')}`];
+  for (const text of trips) assert.equal(credentialIn(text), 'machine path', text);
+  // In a JSON value, escaped slashes: the URL's path passes and an escaped machine path trips.
+  assert.equal(credentialInFile('x.json', JSON.stringify({ link: 'https://www.businesswire.com/news/home/2025/en/x' }).replace(/\//g, '\\/')), undefined);
+  assert.equal(credentialInFile('x.json', JSON.stringify({ path: slash('home', 'alice', 'x') }).replace(/\//g, '\\/')), 'machine path');
 });

@@ -35,8 +35,18 @@ export const FORBIDDEN: readonly (readonly [string, RegExp])[] = [
 
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
+/** A public URL is a site's path, not this machine's (`https://www.businesswire.com/news/home/2025/...`): an http(s) URL token (up to whitespace, a quote, `<` or `>`) is blanked before the machine-path pattern runs. A `file://` URL and a bare path are not blanked: they are paths of a machine. */
+const URL_TOKEN = /https?:\/\/[^\s"'<>]+/gi;
+export const withoutUrls = (text: string): string => text.replace(URL_TOKEN, ' ');
+/** Whether a text holds a machine path, a public URL's path left out. */
+const MACHINE_PATH = FORBIDDEN.find(([name]) => name === 'machine path')![1];
+export const machinePathIn = (text: string): boolean => MACHINE_PATH.test(withoutUrls(text));
+
 /** The first credential shape in a text, by name. */
-export const credentialIn = (text: string): string | undefined => FORBIDDEN.find(([, pattern]) => pattern.test(text))?.[0];
+export const credentialIn = (text: string): string | undefined => {
+  const open = withoutUrls(text);
+  return FORBIDDEN.find(([name, pattern]) => pattern.test(name === 'machine path' ? open : text))?.[0];
+};
 
 /** The credential shape in any string or key of a decoded JSON value: the raw text can hide one behind an escape (`sk-`). */
 export function credentialInValue(value: unknown): string | undefined {
