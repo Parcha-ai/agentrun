@@ -110,6 +110,47 @@ test('the build inlines the DSL\'s graph module from its source, and refuses it 
   assert.throws(() => checkModule(DSL_GRAPH, "import { x } from 'y';\nexport const a = 1;"), /imports something; the viewer inlines it only while it imports nothing/);
 });
 
+test('the build carries a DSL module\'s code without its comments: strings, templates and regular expressions as written', async () => {
+  // @ts-expect-error: the build script is plain JavaScript
+  const { bundle, withoutComments, DSL_GRAPH, DSL_ITEM_STATE } = await import('../build.mjs');
+  const kept = [
+    "const a = '/* not a comment */', b = \"// nor this\";",
+    'const c = `x ${\'/*\'} ${`y ${1 / 2}`} // z`;',
+    'const d = /\\/\\*[/]*\\/\\//g.test(e) ? f / g / h : 0; // trailing, kept',
+    'if (x) /a\\/b/.exec(y);',
+  ].join('\n');
+  assert.equal(withoutComments(kept), kept, 'nothing in a literal is taken for a comment; a trailing comment stays');
+  assert.equal(withoutComments('a /* inline */ b\n  // a whole line\n/**\n * doc\n */\nc'), 'a   b\n  \n\n\n\nc');
+  const ts = (await import('typescript')).default;
+  const printed = (code: string) => ts.transpileModule(code, { compilerOptions: { removeComments: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
+  const { stripTypeScriptTypes } = await import('node:module');
+  for (const module of [DSL_GRAPH, DSL_ITEM_STATE]) {
+    const code = stripTypeScriptTypes(readFileSync(new URL(`../src/${module}`, import.meta.url), 'utf8'));
+    const out = withoutComments(code) as string;
+    assert.equal(printed(out), printed(code), `${module}: the same code`);
+    assert.ok(!out.includes('/*') && !/^\s*\/\//m.test(out), `${module}: no comment left`);
+  }
+  // The inlined module still gives what the DSL's own does, on its graph fixtures.
+  const { body } = bundle('chat-workflow.ts') as { body: string };
+  const { FORBIDDEN } = await import('../../../packages/harness/src/scan.ts');
+  assert.doesNotMatch(body, FORBIDDEN.find(([name]) => name === 'machine path')![1], 'the machine-path scan passes the script');
+  const { Script, createContext } = await import('node:vm');
+  const context = createContext({});
+  new Script(`${body}\nthis.got = { workflowGraph, nodeStatus, graphNodeOf };`).runInContext(context);
+  const inlined = (context as { got: Record<string, (...args: unknown[]) => unknown> }).got;
+  const dsl = await import('../../../packages/dsl/src/graph.ts') as unknown as Record<string, (...args: unknown[]) => unknown>;
+  // Plain values, so objects made in the script's own realm compare.
+  const plain = (value: unknown) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)) as unknown);
+  const same = (name: string, ...args: unknown[]) => assert.deepEqual(plain(inlined[name]!(...args)), plain(dsl[name]!(...args)), name);
+  for (const shape of SHAPES) {
+    const workflow = read(`${shape}.workflow.json`);
+    same('workflowGraph', workflow);
+    const graph = dsl.workflowGraph!(workflow) as { nodes: { path: string }[] };
+    for (const run of ['finished', 'cut']) same('nodeStatus', graph, { pin: read(`${shape}.${run}.frame.json`), items: read(`${shape}.${run}.items.json`) });
+    for (const node of graph.nodes) for (const path of [node.path, node.path.replace(/\/body(?=\/|$)/, '/items/1/body')]) same('graphNodeOf', graph, path);
+  }
+});
+
 test('a row reads as words: its kind, label, way and status apart, in its text and on the page', () => {
   // A row's parts were drawn flush ("chainchainworking"): the text keeps a space between them, and the page's stylesheet
   // sets the parts apart and marks the status by what the run did.

@@ -26,4 +26,5 @@ kind: feature
   the counts include the escalated node. Before the terminal line nothing changes. Before, an escalated run's end read
   "chain working" with the node where it stopped shown as not run.
 - The workflow graph panel's focus is mapped to its node by `graphNodeOf` too.
-- The machine-path scan passes `/root/workflow/...` and `/root/iterations/...`: they are workflow execution paths.
+- The build inlines a DSL module (`graph.ts`, `item-state.ts`) without its comments: the bundle carries its code, not
+  its docs, whose examples of workflow paths read to the machine-path scan as root's home.

@@ -186,10 +186,10 @@ runs the DSL's own `partialResults` with the page's SHA-256, for either layout. 
 `{ result }` or `{ unreadable }`, or a whole `{ unreadable }` when the list is missing, does not hash to its digest or
 is not a list of digests; every digest is checked.
 
-The DSL's modules, `item-state.ts` (`itemState`, `partialResults`) and `graph.ts` (`workflowGraph`, `nodeStatus`), are
-read from the DSL's source each time the viewer is built, never copied here: they are the only files outside
-`apps/viewer` a viewer module may import, the build inlines each in a scope of its own, and it refuses to build if one
-ever imports anything.
+The DSL's modules, `item-state.ts` (`itemState`, `partialResults`) and `graph.ts` (`workflowGraph`, `nodeStatus`,
+`graphNodeOf`), are read from the DSL's source each time the viewer is built, never copied here: they are the only files
+outside `apps/viewer` a viewer module may import, the build inlines each in a scope of its own and without its comments
+(the bundle carries its code, not its docs), and it refuses to build if one ever imports anything.
 
 ## What a public replay shows
 

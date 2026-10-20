@@ -54,13 +54,99 @@ export function checkModule(file, code) {
   if (bare) throw new Error(`${file} imports ${bare[1]} for its side effect alone; import a name from it, so the build includes it in order`);
 }
 
+/** After one of these (or at the start), a `/` begins a regular expression; after anything else it divides. */
+const REGEX_AFTER = new Set(['', '(', ',', '=', ':', '[', '!', '&', '|', '?', '{', '}', ';', '+', '-', '*', '%', '<', '>', '~', '^']);
+const REGEX_AFTER_WORDS = new Set(['return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await']);
+
+/** `code` with its block comments and its whole-line `//` comments dropped; its strings, template literals and regular
+ *  expressions as written, and every other character too. A DSL module is inlined as code: its docs stay in its source. */
+export function withoutComments(code) {
+  let out = '';
+  let last = '';
+  let lineHasCode = false;
+  // The brace depth at which each open template literal's `${` expression closes.
+  const templates = [];
+  let depth = 0;
+  const literal = (from, close) => {
+    let at = from + 1;
+    while (at < code.length && code[at] !== close) at += code[at] === '\\' ? 2 : 1;
+    return at + 1;
+  };
+  // A template literal's text from `from` up to its end, or up to a `${`, which opens an expression (code again).
+  const template = (from) => {
+    let at = from;
+    while (at < code.length && code[at] !== '`' && !(code[at] === '$' && code[at + 1] === '{')) at += code[at] === '\\' ? 2 : 1;
+    if (code[at] === '`') return { end: at + 1, open: false };
+    return { end: at + 2, open: true };
+  };
+  let i = 0;
+  while (i < code.length) {
+    const c = code[i];
+    const next = code[i + 1];
+    if (c === '\n') { out += c; lineHasCode = false; i += 1; continue; }
+    if (/\s/.test(c)) { out += c; i += 1; continue; }
+    if (c === '/' && next === '*') {
+      const end = code.indexOf('*/', i + 2);
+      const comment = code.slice(i, end < 0 ? code.length : end + 2);
+      const lines = comment.split('\n').length - 1;
+      out += lines ? '\n'.repeat(lines) : ' ';
+      if (lines) lineHasCode = false;
+      i += comment.length;
+      continue;
+    }
+    if (c === '/' && next === '/') {
+      const end = code.indexOf('\n', i);
+      const stop = end < 0 ? code.length : end;
+      if (lineHasCode) out += code.slice(i, stop);
+      i = stop;
+      continue;
+    }
+    lineHasCode = true;
+    if (c === "'" || c === '"') { const end = literal(i, c); out += code.slice(i, end); i = end; last = 'x'; continue; }
+    if (c === '`' || (c === '}' && templates.at(-1) === depth)) {
+      if (c === '}') templates.pop();
+      const { end, open } = template(i + 1);
+      out += code.slice(i, end);
+      i = end;
+      if (open) templates.push(depth);
+      last = open ? '{' : 'x';
+      continue;
+    }
+    if (c === '/' && (REGEX_AFTER.has(last) || REGEX_AFTER_WORDS.has(last))) {
+      let at = i + 1;
+      let inClass = false;
+      while (at < code.length && (inClass || code[at] !== '/')) {
+        if (code[at] === '\\') at += 1;
+        else if (code[at] === '[') inClass = true;
+        else if (code[at] === ']') inClass = false;
+        at += 1;
+      }
+      at += 1;
+      while (/[A-Za-z]/.test(code[at] ?? '')) at += 1;
+      out += code.slice(i, at);
+      i = at;
+      last = 'x';
+      continue;
+    }
+    const word = /^[A-Za-z_$0-9][\w$]*/.exec(code.slice(i, i + 64));
+    if (word) { out += word[0]; i += word[0].length; last = word[0]; continue; }
+    if (c === '{') depth += 1;
+    if (c === '}') depth -= 1;
+    out += c;
+    last = c === ')' || c === ']' ? 'x' : c;
+    i += 1;
+  }
+  return out;
+}
+
 /** One page's script: the modules `entry` needs, types stripped and joined in import order into one body for a classic
- *  script, and their names in that order. */
+ *  script, and their names in that order. A DSL module's comments are dropped (`withoutComments`). */
 export function bundle(entry = 'app.ts') {
   const names = new Map();
   const modules = ordered(entry);
   const parts = modules.map((file) => {
-    const code = stripTypeScriptTypes(readFileSync(pathOf(file), 'utf8'));
+    const stripped = stripTypeScriptTypes(readFileSync(pathOf(file), 'utf8'));
+    const code = DSL_MODULES.has(file) ? withoutComments(stripped) : stripped;
     checkModule(file, code);
     if (DSL_MODULES.has(file)) {
       // Its own names stay in its scope; only what it exports joins the viewer's.
