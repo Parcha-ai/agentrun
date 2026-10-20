@@ -131,6 +131,13 @@ test("the skill holds the six pieces this test runs, and nothing more", () => {
   assert.ok(!description.includes(": ") && !description.includes(" #"), "a plain YAML scalar: no colon-space and no comment mark, or the skills loader refuses the front matter");
 });
 
+test("the skill holds the summary to its findings: each sentence restates a finding with no stronger word, and none, all or gone appear only where a finding says so", () => {
+  const bullet = /- \*\*The answer first\*\*([\s\S]*?)\n- \*\*/.exec(SKILL)?.[1] ?? "";
+  assert.ok(bullet.length > 0, "the answer-first bullet is there");
+  assert.match(bullet.replace(/\s+/g, " "), /Each sentence of the summary restates a finding from the evidence below it with no stronger word: when a finding says most, part or all but one place, the summary says the same, and "none", "all" or "gone" appear only where a finding says so\./);
+  assert.equal([...SKILL.matchAll(/restates a finding from the evidence below it/g)].length, 1, "the rule is said once");
+});
+
 test("a file is written byte for byte, whatever it holds, with no chunk ending inside a character", async () => {
   const text = `<p>${"a".repeat(29_996)}\u{1F600}${"é".repeat(29_000)}\u{1F4A1}${"b".repeat(40_000)}'quoted' $HOME \\n %s \`tick\` ${"\u{1F600}".repeat(20_000)}</p>\n`;
   fs.writeFileSync(path.join(cwd, "text.json"), JSON.stringify(text));

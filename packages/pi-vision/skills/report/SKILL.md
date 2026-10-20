@@ -35,7 +35,9 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
   the element.
 - **The answer first**, in a sentence or two, then three or four key points, each a link to the finding or the mark it
   stands on. Someone who reads only that much has the answer. A count over rows is stated as what was logged ("34 vehicles
-  logged crossing"), never as the film's true total, unless every moment was looked at and the page says so.
+  logged crossing"), never as the film's true total, unless every moment was looked at and the page says so. Each sentence
+  of the summary restates a finding from the evidence below it with no stronger word: when a finding says most, part or all
+  but one place, the summary says the same, and "none", "all" or "gone" appear only where a finding says so.
 - **Every finding shows its evidence; every row has a thumbnail.** A page that only says is a page nobody checks. Show:
   - **a document:** the page with the cited mark boxed (the embedded page, below) and, in the finding, a close crop of the
     mark with its box in the crop. `crop()` computes the crop and the box in it; you do no arithmetic;
