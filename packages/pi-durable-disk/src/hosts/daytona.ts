@@ -252,7 +252,8 @@ export interface DaytonaHostOptions {
    * Names the instance takes from the environment of the driver's exec into the box, where the box's runtime puts a secret
    * (`modalHost`'s `secrets`). The launcher's start is told the names, and hands the values to `serve` and every incarnation
    * in their environments: no file, argument or handle holds a value, and none passes through this process. A name missing
-   * there fails the start, naming it. Not PATH, LANG, HOME, PDA_HOLDER, or a name `env` sets.
+   * there fails the start, naming it. With `sudo`, the start runs as `sudo -n --preserve-env=<names>`, which the box's
+   * sudoers must allow (it does for a user that may run any command). Not PATH, LANG, HOME, PDA_HOLDER, or a name `env` sets.
    */
   inheritEnv?: string[];
   /** Restart in place after a non-terminal exit (default true). */
@@ -382,8 +383,10 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pic
 
   const mine = (h: HostHandle) => h.driver === driver && h.fleet === fleet && typeof h.sandboxId === "string" && typeof h.name === "string";
   const ours = (box: SandboxInfo, runId: string) => box.labels?.[LABEL_FLEET] === fleet && box.labels?.[LABEL_RUN] === runId;
+  // sudo resets the environment: the start keeps the inherited names across it (names on its command line, never values).
+  const startS = S && inheritEnv.length > 0 ? `sudo -n --preserve-env=${inheritEnv.join(",")} ` : S;
   const launcher = (verb: "start" | "status" | "stop", name: string, timeoutMs?: number) =>
-    `${S}${node} ${launch} ${verb} ${name} --dir ${dir}${verb === "start" ? ` --stage ${stage}${inheritEnv.length > 0 ? ` --inherit-env ${inheritEnv.join(",")}` : ""}` : ""}${timeoutMs === undefined ? "" : ` --timeout-ms ${timeoutMs}`}${verb === "stop" && opts.reapOnStop ? " --reap-detached" : ""}`;
+    `${verb === "start" ? startS : S}${node} ${launch} ${verb} ${name} --dir ${dir}${verb === "start" ? ` --stage ${stage}${inheritEnv.length > 0 ? ` --inherit-env ${inheritEnv.join(",")}` : ""}` : ""}${timeoutMs === undefined ? "" : ` --timeout-ms ${timeoutMs}`}${verb === "stop" && opts.reapOnStop ? " --reap-detached" : ""}`;
 
   async function createOrAdopt(body: CreateSandboxBody, runId: string): Promise<SandboxInfo> {
     for (let attempt = 1; ; attempt++) {
