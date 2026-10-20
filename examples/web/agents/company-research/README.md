@@ -7,7 +7,7 @@ of a run.
 
 | File | What |
 | --- | --- |
-| `agent.json`, `skills/research-brief/` | The agent: tools `web_fetch`, `write` and `read`, and the skill that says how to cite. |
+| `agent.json`, `skills/research-brief/` | The agent: tools `web_search`, `web_fetch`, `write` and `read`, and the skill that says how to cite. |
 | `prompts.json` | The variants, each with an `id` (the home keys them by it), a `label`, a `role` and its `text`: a `base` that every run gets, an `overlay` for each kind (`public`, `nonprofit`, `small_retail`, `ecommerce`) and a `generic` for when none is sure enough. Each overlay has a `when` rule: `{ question: "company_kind", option, threshold: 0.8 }`. |
 | `question.json` | The Jev question the rules are about: `company_kind`, a choice over `public`, `nonprofit`, `small_retail`, `ecommerce` and `other`, one line each. It is the file a person edits; saving puts it in the home as its own row (below). |
 | `companies.json` | Eight companies to run it on: one clear case of each kind and four ambiguous ones, each with the kind expected and why. |

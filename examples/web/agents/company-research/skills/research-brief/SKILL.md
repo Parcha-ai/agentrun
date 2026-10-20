@@ -2,7 +2,7 @@
 
 Use this to research one organisation and write what you found as a short brief.
 
-1. Read pages with web_fetch. Note the address you fetched, its title and what it says. A page you did not fetch is not a source.
+1. Find pages with web_search when you do not know where to look, and read them with web_fetch. A search result is a lead, not a source. Note the address you fetched, its title and what it says. A page you did not fetch is not a source.
 2. Cite every fact to the address of the page it came from, in the brief and in the chat. A fact with no fetched page behind it is left out, not softened.
 3. A fetch can fail: an error, a blocked page, a page with no text. Say so in one line in the brief's open questions, with the address, and go on to another source. Fetch the same address again at most once.
 4. When sources disagree, give both figures and name each source. Never pick one silently.
