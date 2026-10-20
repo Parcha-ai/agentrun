@@ -250,15 +250,36 @@ async function oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, l
   return (parts.set === SETS.v4 ? rowOfV4 : rowOfV2)({ ...v1, score: p.score, stats: p.stats, scoringJudge: p.scoringJudge, lineage: p.lineage, jobRecord: hostRecord(jobRecordOf(recordingLines(run.storePath).lines), p.measure.dispatch) });
 }
 
-/** The learning pass: the first `jobs` companies of split "run", in order, until the spend reaches `capUsd`. */
-export async function runLoop({ out, parts, jobs, capUsd, runCapUsd, record = true, log = () => {} }) {
+/**
+ * The queue of a pass on a list (the hill-climb's fixed companies): each `{ cik, ticker?, cause? }` in the list's order,
+ * numbered by its place in it. A company not in the run split, a sealed one, one listed twice or a ticker that is not the
+ * company's is refused, so a list cannot quietly run something else.
+ */
+export function listQueue(companies, list) {
+  if (!Array.isArray(list) || !list.length) throw new Error('--list is an empty list: give the companies to run, in order');
+  const seen = new Set();
+  return list.map((item, i) => {
+    const cik = String(item?.cik ?? '');
+    const company = companies.find((c) => c.cik === cik);
+    if (!company) throw new Error(`--list: ${cik || `entry ${i + 1}`} is not in the run split`);
+    if (company.split !== 'run') throw new Error(`--list: ${cik} (${company.ticker}) is ${company.split}: a pass on a list takes the run split only`);
+    if (seen.has(cik)) throw new Error(`--list: ${cik} is listed twice`);
+    if (item.ticker !== undefined && item.ticker !== company.ticker) throw new Error(`--list: ${cik} is ${company.ticker}, not ${item.ticker}`);
+    seen.add(cik);
+    return { ...company, order: i + 1 };
+  });
+}
+
+/** The learning pass: the first `jobs` companies of split "run", in order (or of `list`, in its order), until the spend
+ *  reaches `capUsd`. */
+export async function runLoop({ out, parts, jobs, list, capUsd, runCapUsd, record = true, log = () => {} }) {
   out = resolve(out);
   const { repo, meta } = await openOut(out, { mode: parts.mode, set: parts.set });
   const home = await agentHomeFor({ dir: join(out, 'home'), repo });
   const rowsPath = join(out, 'runs.jsonl');
   const rows = readRows(rowsPath);
   const done = new Set(rows.map((r) => r.run));
-  const queue = parts.companies.filter((c) => c.split === 'run').sort((a, b) => a.order - b.order).slice(0, jobs ?? Infinity);
+  const queue = (list ? listQueue(parts.companies, list) : parts.companies.filter((c) => c.split === 'run').sort((a, b) => a.order - b.order)).slice(0, jobs ?? Infinity);
   const judge = parts.judge();
   const spentNow = () => knownSpend(out);
   writeFileSync(join(out, 'conventions.json'), `${JSON.stringify(parts.conventions ?? {}, null, 2)}\n`);
@@ -338,7 +359,7 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--sealed --at seed|main|<sha>]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--sealed --at seed|main|<sha>]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -348,7 +369,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         out: { type: 'string' }, scripted: { type: 'boolean' }, live: { type: 'boolean' }, data: { type: 'string' }, jobs: { type: 'string' },
         'cap-usd': { type: 'string' }, 'run-cap-usd': { type: 'string' }, 'no-record': { type: 'boolean' }, sealed: { type: 'boolean' }, at: { type: 'string' },
         'no-dispatch': { type: 'boolean' },
-        model: { type: 'string' }, thinking: { type: 'string' }, set: { type: 'string' },
+        model: { type: 'string' }, thinking: { type: 'string' }, set: { type: 'string' }, list: { type: 'string' },
       },
     }));
   } catch (error) {
@@ -366,6 +387,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     process.exit(2);
   }
   if (values.thinking === 'off') { console.error('--thinking off is not allowed: every model call thinks'); process.exit(2); }
+  if (values.list !== undefined && values.sealed) { console.error(`--list runs a learning pass: a sealed pass takes the sealed split\n${USAGE}`); process.exit(2); }
+  let list;
+  if (values.list !== undefined) {
+    try { list = JSON.parse(readFileSync(resolve(values.list), 'utf8')); } catch (error) { console.error(`--list ${values.list}: ${error.message}`); process.exit(2); }
+  }
   try {
     const set = SETS[values.set ?? 'v1'];
     if (!set) { console.error(`--set is v1, v2 or v4\n${USAGE}`); process.exit(2); }
@@ -384,7 +410,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const common = { out, parts, capUsd: number('cap-usd'), runCapUsd: number('run-cap-usd'), log: (line) => console.log(line) };
     const result = values.sealed
       ? await runSealed({ ...common, at: values.at, record: !values['no-record'] })
-      : await runLoop({ ...common, jobs: number('jobs'), record: !values['no-record'] });
+      : await runLoop({ ...common, jobs: number('jobs'), list, record: !values['no-record'] });
     if (result.stoppedBy) process.exitCode = 3;
   } catch (error) {
     console.error(`learn-classify failed: ${error.stack ?? error}`);
