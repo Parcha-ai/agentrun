@@ -170,8 +170,12 @@ from a browser session's own response under the same guard. Each result carries 
 Browserbase's Fetch API is not used: it follows redirects on Browserbase's side and reports neither the final URL nor the
 headers, so a hop to a refused site could not be stopped or even seen.
 
-Before a live v2 pass runs its first job, the guard is tested on the browser the pass will use: `browse` opens a public
-page that redirects to sec.gov, and the pass stops unless that comes back refused with the sec.gov request blocked. After
+Every live pass checks itself before its first job (`selftest.mjs`) and stops there on a failure. It runs its own host
+once on a scripted model, in a home of its own: it records the tools the root agent is offered, the tools a workflow's call
+nodes reach and the tools an agent node is offered, and fails on any tool not known to run neither a command nor code; it
+runs a workflow whose one node is code, which must be refused (no code executor is wired); and with a browser, `browse`
+opens a public page that redirects to sec.gov, which must come back refused with the sec.gov request blocked. What it
+found is in `<out>/selftest.json`. After
 each run, `<out>/hosts/<run>.json` lists the hosts its tools visited, the hosts its searches named and the hosts that were
 refused, each with a count, so the refused list can grow.
 
@@ -233,6 +237,8 @@ scored from it.
 | `fixtures/` | five made-up companies, their pages and ten groups, for the scripted pass and the tests |
 | `tools.mjs`, `data/` | `fetch_page` and the truth set (lane C1) |
 | `tools-v2.mjs` | v2's `search_web`, `browse` (pi-browser) and `read_document` (pi-vision), and the vision model's route (lane C3) |
+| `selftest.mjs` | the check every live pass makes before its first job |
+| `demo.json`, `SETUP-PROMPT.md` | the live pass's keys, registered as secret values for its recordings, and how to set them up |
 
 `node --test examples/learn-classify/*.test.mjs` runs it all offline.
 

@@ -1,0 +1,22 @@
+{
+  "name": "learn-classify",
+  "title": "A Job That Turns Into Workflows",
+  "targets": ["local"],
+  "claim": "One agent classifies public companies the way the SEC files them, one company a run, and turns the parts of the job that repeat into workflows, so later runs cost less at the same accuracy.",
+  "models": {
+    "lead": { "needs": ["text", "tools"], "default": "openai/gpt-6-luna" },
+    "eyes": { "needs": ["images"], "default": "google/gemini-3.8-flash" }
+  },
+  "keys": [
+    {
+      "oneOf": [[
+        { "env": "BROWSERBASE_API_KEY", "required": true, "where": "your Browserbase account (browserbase.com)", "why": "the browser and the web search of a live v2 pass" },
+        { "env": "BROWSERBASE_PROJECT_ID", "required": true, "where": "your Browserbase account (browserbase.com)", "why": "the project the pass's browser sessions belong to" }
+      ]],
+      "why": "a live v2 pass browses and searches on Browserbase; without it browse starts a local Chrome and search answers that it needs the key",
+      "for": "live"
+    },
+    { "env": "LEARN_CLASSIFY_GATEWAY_KEY", "required": false, "where": "your model gateway", "why": "the model gateway's key, when it wants one; a gateway that holds the provider keys needs none", "for": "live" }
+  ],
+  "programs": []
+}
