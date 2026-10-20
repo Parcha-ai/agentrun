@@ -5,10 +5,11 @@ import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DaytonaApiError, LABEL_FLEET, LABEL_RUN, type CreateSandboxBody } from "../src/hosts/daytona.ts";
+import { DaytonaApiError, DaytonaHostError, LABEL_FLEET, LABEL_RUN, type CreateSandboxBody } from "../src/hosts/daytona.ts";
 import { launchStatus, mountBlockers, stop as stopLaunch, type LaunchSpec, type LaunchState } from "../src/hosts/daytona-launch.ts";
 import { modalHost, modalSandboxes, MODAL_MAX_TIMEOUT_MS, type ModalCreateParams, type ModalProcess, type ModalSandbox, type ModalSdk } from "../src/hosts/modal.ts";
 
@@ -91,7 +92,10 @@ function fakeModal(cwd: string) {
   const live = new Map<string, FakeSandbox>();
   const all = new Map<string, FakeSandbox>();
   const creates: { app: string; image: unknown; params: ModalCreateParams }[] = [];
-  const execs: { id: string; argv: string[]; stdin: string }[] = [];
+  const execs: { id: string; argv: string[]; stdin: string; secrets: unknown[] }[] = [];
+  // Secrets by name, as Modal holds them: an exec given one runs with its variables.
+  const secretValues = new Map<string, Record<string, string>>();
+  const secretLookups: string[] = [];
   const faults = { create: [] as Fault[], setTags: [] as Error[], poll: [] as Error[], terminate: [] as Error[] };
   let next = 1;
 
@@ -103,12 +107,13 @@ function fakeModal(cwd: string) {
     constructor(name: string) {
       this.name = name;
     }
-    async exec(argv: string[], params: { mode: "binary"; timeoutMs?: number }): Promise<ModalProcess> {
+    async exec(argv: string[], params: { mode: "binary"; timeoutMs?: number; secrets?: unknown[] }): Promise<ModalProcess> {
       if (this.exit !== null) throw new NotFoundError("Modal Sandbox has terminated");
       assert.equal(params.mode, "binary");
-      const record = { id: this.sandboxId, argv, stdin: "" };
+      const record = { id: this.sandboxId, argv, stdin: "", secrets: params.secrets ?? [] };
       execs.push(record);
-      const child = spawn(argv[0], argv.slice(1), { cwd, env: { PATH: "/usr/bin:/bin", HOME: cwd }, stdio: ["pipe", "pipe", "pipe"] });
+      const fromSecrets = Object.assign({}, ...record.secrets.map((x) => (x as { env: Record<string, string> }).env));
+      const child = spawn(argv[0], argv.slice(1), { cwd, env: { PATH: "/usr/bin:/bin", HOME: cwd, ...fromSecrets }, stdio: ["pipe", "pipe", "pipe"] });
       const drain = (s: NodeJS.ReadableStream) => new Promise<Uint8Array>((resolve) => {
         const chunks: Buffer[] = [];
         s.on("data", (c: Buffer) => chunks.push(c));
@@ -177,15 +182,22 @@ function fakeModal(cwd: string) {
         for (const box of live.values()) if (Object.entries(tags).every(([k, v]) => box.tags[k] === v)) yield box;
       },
     },
+    secrets: {
+      async fromName(name) {
+        secretLookups.push(name);
+        const env = secretValues.get(name);
+        if (!env) throw new NotFoundError(`no secret ${name}`);
+        return { secretId: `st-${name}`, env };
+      },
+    },
   };
-  return { sdk, live, all, creates, execs, faults };
+  return { sdk, live, all, creates, execs, faults, secretValues, secretLookups };
 }
 
-function world(codes = "hold", over: Partial<Parameters<typeof modalHost>[0]> = {}) {
+function world(codes = "hold", over: Partial<Parameters<typeof modalHost>[0]> = {}, fake = fakeModal(scratch("pda-mdf-"))) {
   const d = scratch("pda-md-");
   const box = join(d, "box");
   const out = join(d, "instance.jsonl");
-  const fake = fakeModal(d);
   const host = modalHost({
     sdk: fake.sdk,
     appName: "pda-demo-t",
@@ -201,7 +213,7 @@ function world(codes = "hold", over: Partial<Parameters<typeof modalHost>[0]> = 
     user: ME,
     boxDir: box,
     stageDir: join(d, "stage"),
-    env: { PDA_TEST_OUT: out, PDA_TEST_CODES: codes },
+    env: { PDA_TEST_OUT: out, PDA_TEST_CODES: codes, PDA_TEST_ECHO: "PDA_DUMMY_KEY,PDA_DUMMY_OTHER" },
     pollMs: 5,
     startTimeoutMs: 20_000,
     stopTimeoutMs: 5_000,
@@ -253,6 +265,51 @@ test("box and kill: a receipt that says modal, with no price (the driver prices 
   assert.equal(w.all.get("sb-1")!.exit, 137, "killed: the sandbox is terminated, the instance and its mount with it");
   assert.ok(w.host.box!(h)!.to !== null, "the receipt ends when the driver terminated it");
   await stopLaunch(w.box, String(h.name), 1_000);
+});
+
+/** Every file under `dir`, read whole (a directory that is gone reads as none). */
+function filesUnder(dir: string): { path: string; text: string }[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((e) => e.isFile())
+    .map((e) => join(e.parentPath, e.name))
+    .map((path) => ({ path, text: readFileSync(path, "utf8") }));
+}
+
+test("secrets: a Secret named at start reaches the instance through inheritEnv, and its value is in no file of the box, no exec's argument or stdin, no create and no handle", async () => {
+  const value = `dummy-${randomUUID()}`;
+  const fake = fakeModal(scratch("pda-mds-"));
+  fake.secretValues.set("pda-unit-keys", { PDA_DUMMY_KEY: value });
+  const passed = { secretId: "st-object", env: { PDA_DUMMY_OTHER: "other" } };
+  // The first incarnation exits 1 and the launcher restarts it in place: the second has them too, from serve's memory.
+  const w = world("1,hold", { secrets: ["pda-unit-keys", passed], inheritEnv: ["PDA_DUMMY_KEY", "PDA_DUMMY_OTHER"] }, fake);
+  const h = await w.host.start(REF, TOKEN);
+  const lines = await waitFor("the restarted instance", () => (w.lines().length >= 2 ? w.lines() : null));
+  for (const line of lines) assert.deepEqual(line.echo, { PDA_DUMMY_KEY: value, PDA_DUMMY_OTHER: "other" }, "from a name and from an SDK Secret, in each incarnation");
+  assert.deepEqual(fake.secretLookups, ["pda-unit-keys"], "a name is looked up once; an SDK Secret is passed as is");
+  const commands = w.execs.filter((e) => e.argv[2]?.startsWith("exec 2>&1"));
+  assert.ok(commands.length > 0 && commands.every((e) => e.secrets.length === 2 && e.secrets.includes(passed)), "on every command the driver runs");
+
+  assert.ok(commands.some((e) => e.argv[2]!.includes(" start ") && e.argv[2]!.includes("--inherit-env PDA_DUMMY_KEY,PDA_DUMMY_OTHER")), "the launcher's start is told the names, and only the names");
+  const files = [...filesUnder(w.box), ...filesUnder(join(w.dir, "stage"))];
+  assert.ok(files.some((f) => f.path.endsWith(`${h.name}.log`)), "the instance's log is among the files read");
+  assert.deepEqual(files.filter((f) => f.text.includes(value)).map((f) => f.path), [], "no file of the box holds the value: not the spec, the state or the log");
+  assert.ok(!w.execs.some((e) => e.argv.join(" ").includes(value) || e.stdin.includes(value)), "nor an exec's argument or stdin");
+  assert.ok(!JSON.stringify(w.creates).includes(value) && !JSON.stringify(h).includes(value), "nor a create or the handle");
+
+  await w.host.stop(h);
+});
+
+test("inheritEnv: a name the launcher's environment does not have fails the start, naming it and no value; a name given by name needs the SDK's secrets", async () => {
+  const w = world("hold", { inheritEnv: ["PDA_DUMMY_MISSING"] });
+  await assert.rejects(w.host.start(REF, TOKEN), (e: unknown) => {
+    assert.ok(e instanceof DaytonaHostError && e.code === "START_FAILED", String(e));
+    assert.match(e.message, /PDA_DUMMY_MISSING/);
+    return true;
+  });
+  assert.equal(w.lines().length, 0, "no instance ran without it");
+  const { secrets: _none, ...sdk } = fakeModal(scratch("pda-mdn-")).sdk;
+  assert.throws(() => modalHost({ sdk, appName: "a", image: "ubuntu:24.04", secrets: ["x"] }), (e: unknown) => e instanceof DaytonaHostError && e.code === "INVALID_ARGUMENT");
 });
 
 test("handles: another driver's or fleet's handle is unknown, and its stop is a no-op", async () => {
