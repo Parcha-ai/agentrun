@@ -46,7 +46,7 @@ lane's). Its storage is billed while it exists, so delete it once its takes are 
 
 `build <commit> --demo` builds the disk demo's variant, `pda-p9-runtime-demo-...`: one more layer with the third-party
 closure of the packages the demo's box installs from this checkout (`DEMO_PACKS`: dsl, pi, pi-browser, pi-vision,
-pi-transport) and of `DEMO_EXTRA` (pi-codemode), read from their package.json files and the workspace lockfile at `commit`
+pi-transport, harness) and of `DEMO_EXTRA` (pi-codemode), read from their package.json files and the workspace lockfile at `commit`
 (`demoClosure`: stand-ins for the packs, and every single-version package of the closure pinned to the lockfile's version).
 npm's cache stays in it. A box then installs the checkout's packs with `installDemoPacks` (`npm install --offline`) in about
 1.5 s instead of 6 to 7 s over the network, and makes only what it installed root-owned. `check-demo <name>` packs them,

@@ -329,7 +329,7 @@ export function snapshotDockerfile(commit: string, options: { readonly demo?: bo
 // ---- the demo variant: what the disk demo's box installs besides this package, baked in ---------------------------------
 
 /** The workspace packages the disk demo's box installs from this checkout's tarballs, by directory under packages/. */
-export const DEMO_PACKS = ["dsl", "pi", "pi-browser", "pi-vision", "pi-transport"] as const;
+export const DEMO_PACKS = ["dsl", "pi", "pi-browser", "pi-vision", "pi-transport", "harness"] as const;
 /** What the demo's box installs from npm with them. */
 export const DEMO_EXTRA = ["@earendil-works/pi-codemode@1.1.0"] as const;
 const DEMO_STUBS = "/opt/pda-demo/stubs";
@@ -348,7 +348,8 @@ const gitShow = (commit: string, path: string): string => {
  * the box's own tarballs replace), and `pins`, every package of the closure the lockfile resolves to one version, at that
  * version (npm overrides), so the snapshot holds the lockfile's versions. A name the lockfile has at several versions
  * (typebox, pinned exactly by each pack) is left to npm, which nests it as the lockfile does. A workspace package that is
- * not a pack (`@parcha/agentrun-jev`) comes from npm at its version, as it does in the box.
+ * not a pack (pi's `@parcha/agentrun-jev`, the harness's `@parcha/pi-durable-disk`) comes from npm at its version, as it
+ * does in the box, so that version must be published when the snapshot is built.
  */
 export function demoClosure(commit: string): { stubs: Record<string, Record<string, unknown>>; pins: Record<string, string> } {
   const lock = (JSON.parse(gitShow(commit, "package-lock.json")) as { packages: Record<string, LockEntry> }).packages;
