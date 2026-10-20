@@ -190,3 +190,16 @@ test('tool facts: browser minutes from billed seconds, vision pages only for loo
     browserSeconds: 90, browserCostUsd: 0.002, visionPages: 1, searchCostUsd: null, documentCostUsd: 0.001,
   });
 });
+
+test('a document the reader fetched through a browser session: the session\'s minutes and cost are the browser\'s, the rest the reader\'s, counted once', () => {
+  const stats = toolStats([
+    { tool: 'browse', args: {}, value: { costUsd: 0.002, seconds: 12, billedSeconds: 60 } },
+    { tool: 'read_document', args: {}, value: { via: 'browser', costUsd: 0.005, looks: [{ page: 1 }], browser: { browser: 'browserbase', seconds: 20, billedSeconds: 60, costUsd: 0.002 } } },
+    { tool: 'read_document', args: {}, value: { via: 'direct', costUsd: 0.001, looks: [] } },
+  ]);
+  assert.equal(stats.browserSeconds, 120);
+  assert.equal(stats.browserCostUsd, 0.004);
+  assert.ok(Math.abs(stats.documentCostUsd - 0.004) < 1e-12, String(stats.documentCostUsd));
+  const unknown = toolStats([{ tool: 'read_document', args: {}, value: { costUsd: 0.005, looks: [], browser: { costUsd: null, billedSeconds: 60 } } }]);
+  assert.deepEqual([unknown.browserCostUsd, unknown.documentCostUsd], [null, null]);
+});
