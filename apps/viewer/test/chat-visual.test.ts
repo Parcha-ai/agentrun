@@ -73,7 +73,7 @@ test('the files an artifact holds as PDFs are the report\'s thumbnails; no brows
   assert.equal(await visualOf({ ...recording, lines: recording.lines.filter((line) => line.kind !== 'frame' && line.kind !== 'frame.track'), manifest: { ...recording.manifest, artifact: undefined } as never }), undefined, 'nothing to show');
 });
 
-test('in Chrome: the report holds the video, the chapters, the filmstrip; the sign-in frames are canvases (never the sharp picture) with no click, the others open enlarged', IN_CHROME, async (t) => {
+test('in Chrome: the report holds the video, the chapters, the strip of screenshots; the sign-in frames are canvases (never the sharp picture) with no click, the others open enlarged', IN_CHROME, async (t) => {
   const { value, until } = await served(t, { query: '&muse&visual', height: 900, edit: (dir) => browserRun(dir) });
   await until(`!!d()?.querySelector('.mu-report .mu-shot-tile')`, 'the report drawn');
   const report = await value<{ video: [boolean, boolean]; chapters: string[]; tiles: [boolean, number, number, string][]; wider: number }>(`(() => { const r = d().querySelector('.mu-report'); const v = r.querySelector('video');
@@ -140,7 +140,7 @@ test('a crop holds its box with 24 px of air on every side (the frame\'s edge ex
   assert.ok(row.y <= 212 - 70 && row.y + row.h >= 212 + 28 + 24, 'the row with the table\'s header above it and air below');
 });
 
-test('in Chrome: a blank frame and a picture shown twice are no tiles of the filmstrip; a wide window breaks the report out of the chat column, three facts across', IN_CHROME, async (t) => {
+test('in Chrome: a blank frame and a picture shown twice are no tiles of the strip of screenshots; a wide window breaks the report out of the chat column, three facts across', IN_CHROME, async (t) => {
   const facts = (known: Record<number, string>) => [2500, 2700, 4000].map((at, i) => ({ fact: `fact ${i}`, claim: 'c', frame: known[at], box: { x: 100, y: 100, w: 60, h: 18 }, label: 'boxed by a look after the run' }));
   const { value, until } = await served(t, { query: '&muse&visual', width: 1440, height: 900, edit: (dir) => browserRun(dir, { blankAt: 2700, sameAs: { 4000: 2500 }, facts }) });
   await until(`!!d()?.querySelector('.mu-fact')`, 'the report drawn');

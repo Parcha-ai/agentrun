@@ -1,5 +1,5 @@
 // The visual report of a browser run (`chat.html?r=<id>&muse&visual`): what the run's own browser showed, put where the answer is. The recording's browser video
-// front and centre (muted, looped, its waits skipped, with a chapter strip that seeks it), the screenshots as a filmstrip under their page titles, the files the
+// front and centre (muted, looped, its waits skipped, with a chapter strip that seeks it), the screenshots as a strip of screenshots under their page titles, the files the
 // agent's artifact holds as first-page thumbnails, a tile for a sign-in memory skipped, and each fact of the answer as the crop where it was read, boxed only by a look
 // that recorded a box. Everything is read from the recording's own lines and blobs: nothing here knows a site, an agent or a run.
 //
@@ -254,7 +254,7 @@ const SAME_PAGE_DIFF = 6;
 
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 
-/** The report: video and chapters, the sign-in that was skipped, the filmstrip, the files, the facts. */
+/** The report: video and chapters, the sign-in that was skipped, the strip of screenshots, the files, the facts. */
 export function drawVisual(visual: Visual, model: ChatModel, recording: Recording, host: HTMLElement): HTMLElement {
   const report = reportEl('section', { class: 'mu-report', 'aria-label': 'What the browser showed' }, reportEl('div', { class: 'mu-rep-title', text: 'What the browser showed' }));
   const urlOf = (sha: string) => recording.blobUrl(sha) ?? '';
@@ -290,7 +290,7 @@ export function drawVisual(visual: Visual, model: ChatModel, recording: Recordin
 
   const remembered = (model.waits ?? []).some((wait) => wait.remembered);
   if (visual.frames.length > 0 || remembered) {
-    const strip = reportEl('div', { class: 'mu-film', role: 'list', 'aria-label': 'Screenshots, in order' });
+    const strip = reportEl('div', { class: 'mu-frames', role: 'list', 'aria-label': 'Screenshots, in order' });
     if (remembered) strip.append(reportEl('div', { class: 'mu-skip', role: 'listitem' }, reportEl('div', { class: 'mu-skip-body' }, reportEl('span', { class: 'mu-skip-title', text: 'Skipped' }), reportEl('span', { class: 'mu-skip-sub', text: 'sign-in, remembered' })), reportEl('div', { class: 'mu-cap', text: 'Opened straight on the account' })));
     const seen = new Set<string>();
     const tiles: { tile: HTMLElement; frame: VisualFrame }[] = [];
