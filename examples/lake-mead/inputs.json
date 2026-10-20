@@ -340,10 +340,10 @@
   },
   {
    "id": "lake-mead-elevation",
-   "title": "Lake Mead at Hoover Dam, end-of-month elevation in feet, one row a month from 1935 to 2025 for every month the table gives a value",
-   "path": "lake-mead-elevation.csv",
-   "bytes": 16646,
-   "sha256": "7213b966304b53aa49a1b70cb6e218f9f144269d92d2ae0ccb9e2c5a939c5bc4",
+   "title": "Lake Mead at Hoover Dam, end-of-month elevation in feet: one [year, month, elevation_ft] row a month from 1935 to 2025 for every month the table gives a value",
+   "path": "lake-mead-elevation.json",
+   "bytes": 22312,
+   "sha256": "59ad60580e5db4c1736bf8877e54c657b231394e7eea34f7cf4616d1f1c543dd",
    "source": "Lake Mead at Hoover Dam, end-of-month elevation (feet), Bureau of Reclamation, Lower Colorado Region, https://www.usbr.gov/lc/region/g4000/hourly/mead-elv.html, retrieved 2026-10-19",
    "license": "a work of the U.S. federal government, public domain"
   }
