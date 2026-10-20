@@ -17,7 +17,7 @@ tool calls go to the box. Every provider is behind one `Box` interface:
 | Docker | `dockerBoxes`, from `@parcha/pi-transport/box/docker` | a container per box |
 | Daytona | `daytonaBoxes`, from `@parcha/pi-transport/box/daytona` | a container per box on the host kernel; a `linux-vm` snapshot is a VM |
 | Modal | `modalBoxes`, from `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
-| Archil exec | `archilExecBoxes`, from `@parcha/pi-transport/box/archil-exec` | a directory of the agent's work disk; each `exec` is one serverless call in a fresh VM container |
+| Archil exec | `archilExecBoxes`, from `@parcha/pi-transport/box/archil-exec` | a directory of the agent's work disk; each `exec` is one serverless call in a fresh VM container, and boxes on one disk share it |
 
 Jev places a call from each environment's one-line `purpose`: the host asks `jevPlacer`, Jev reads the step and those
 lines and says where it should run, and the host points its tools there.
@@ -161,6 +161,11 @@ a typed error:
 - **A lifetime is checked, not enforced by a timer.** Archil has no timer that ends a directory: a box past its
   `maxLifetimeMs` is ended, and its directory removed, by the first call that looks at it (`attach`, `list`, `exec`,
   `status`, `upload`, `download`). A box nobody calls again stays on the disk until a `list` finds it.
+- **The isolation is one VM per call, and the disk is shared.** Each call runs in its own fresh VM container, but boxes on one
+  disk share it: a command can read and write every box's directory, and the records, on that disk. Give each agent its own
+  work disk, never one disk to two agents.
+- **A box's env is not secret.** It is kept in the box's record on the disk and sent in each call's command, so any command on
+  that disk can read it. Never put a secret in a box's env.
 - Refused before any call: a GPU, a snapshot, a `workspace`, an isolation other than `vm`, more than 2 vCPU or 3938 MiB
   (`unsupported`); a label in the providers' namespace, an env name that is not a shell name, a lifetime that is not
   positive (`invalid`).

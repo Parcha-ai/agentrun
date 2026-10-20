@@ -633,6 +633,7 @@ export function archilExecBoxes(options: ArchilExecBoxesOptions): BoxProvider {
 			const id = `ax-${randomBytes(6).toString("hex")}`;
 			const facts: BoxFacts = {
 				provider: "archil-exec",
+				// One VM per call; the work disk is shared by every box on it (see the README), so this is no isolation between boxes.
 				isolation: "vm",
 				cpus: CPUS,
 				memoryMb: MEMORY_MB,
