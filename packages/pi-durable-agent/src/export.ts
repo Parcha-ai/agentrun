@@ -2,7 +2,7 @@ import type { JsonValue } from "@earendil-works/chord";
 
 /** The kinds an exporter may copy out of an agent home. Deny by default: any kind not listed, one this release does
  *  not know included, is dropped. */
-export const EXPORTABLE_KINDS: readonly string[] = Object.freeze(["agent.identity", "agent.definition", "agent.source", "agent.skills", "agent.runs"]);
+export const EXPORTABLE_KINDS: readonly string[] = Object.freeze(["agent.identity", "agent.definition", "agent.source", "agent.skills", "agent.prompts", "agent.runs"]);
 
 /** The kinds that never leave an agent home: saved sign-ins, save leases, and each host's own names for the agent and
  *  for where its tools run. */

@@ -9,9 +9,10 @@
 // them. When the run lets go, each session's frames become a WebM (`frame.track`); start-run.mjs finishes the recording
 // once the run has exited (`finishRunRecording`): the run's `report/` as `manifest.artifact` (the host's "What I
 // remember" page its entry), the manifest, and the scans.
-import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { codeOf, cost, finishRecording, openRecorder, openSupervisor, packageCommitRecorder, redactorOf, runScrub, scanPlaced, scanRecording, type Secret, type Supervisor } from "@parcha/agentrun-reference";
+import { codeOf, cost, finishRecording, openRecorder, openSupervisor, packageCommitRecorder, redactorOf, runScrub, scanPlaced, scanRecording, type Secret, type Supervisor } from "@parcha/agentrun-harness";
 import type { BrowserProvider, LeaseRef, LiveView } from "@parcha/pi-browser";
 import { exportFrameTracks, type FrameLine } from "@parcha/pi-browser/recorder";
 import { openAgentHome, readAgentHome } from "@parcha/pi-durable-agent";
@@ -161,6 +162,20 @@ async function jobOf(storePath: string): Promise<string> {
 }
 
 /** Every file of the agent's `report/` as a blob, by its path there: the entry and what it shows. No dotfile, no link. */
+/** An artifact file kept whole in `blobs/` under its SHA-256 and its own extension, text redacted first: the
+ *  recorder's `blob` names a page `.txt`, and a page or stylesheet keeps its extension only as the artifact's own file. */
+const artifactBlob = (dir: string, redact: Redact) => (bytes: Buffer | string, extension: string): string => {
+  const body = typeof bytes === "string" ? Buffer.from(redact(bytes)) : bytes;
+  const hash = createHash("sha256").update(body).digest("hex");
+  mkdirSync(join(dir, "blobs"), { recursive: true });
+  try {
+    writeFileSync(join(dir, "blobs", `${hash}.${extension}`), body, { flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  return hash;
+};
+
 function reportFiles(dir: string, keep: (bytes: Buffer | string, extension: string) => string, at = ""): Record<string, string> {
   const files: Record<string, string> = {};
   for (const name of readdirSync(join(dir, at)).sort()) {
@@ -193,11 +208,9 @@ export async function finishRunRecording(options: { dir: string; run: string; en
   await readBrowserIds(store, ids.browser);
   const task = (await jobOf(store)) || "a run of the site reporter";
   const redact = redactionOf(ids, scrubFor(env, dir, home));
-  // Blobs only: every line of the recording is the run process's or its supervisor's.
-  const recorder = openRecorder({ dir, redact });
   // The artifact is the host's "What I remember" page, with the agent's own report beside it when it wrote one.
   const report = join(run, "work", "report");
-  const artifact = existsSync(join(report, REMEMBER_PAGE)) ? { title: "What I remember", entry: REMEMBER_PAGE, files: reportFiles(report, (bytes, extension) => recorder.blob(bytes, extension)) } : undefined;
+  const artifact = existsSync(join(report, REMEMBER_PAGE)) ? { title: "What I remember", entry: REMEMBER_PAGE, files: reportFiles(report, artifactBlob(dir, redact)) } : undefined;
   const { definition } = await readAgentHome(await openAgentHome(home));
 
   const { lines } = finishRecording(dir, {

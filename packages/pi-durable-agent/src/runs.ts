@@ -9,7 +9,7 @@ import {
   type AgentHome, checkSha, homeDir, type HomeAccess, ID_PATTERN, inClaimedHome, isSkillPath, localAccess, readState, RUN_STORE_FILE,
   runStoreIn, sha256, uuidv7,
 } from "./home.js";
-import { type BrowserProfile, LeasesDoc, type ProfileLease, ProfilesDoc, put, type RunRecord, RunsDoc } from "./kinds.js";
+import { type BrowserProfile, canonical, LeasesDoc, type ProfileLease, ProfilesDoc, put, type RunRecord, RunsDoc } from "./kinds.js";
 import { AgentHomeError, openStore, readFamily, type Store } from "./store.js";
 
 export { RUN_STORE_FILE };
@@ -78,30 +78,44 @@ const withoutRef = (profile: BrowserProfile, holder: string): BrowserProfile => 
 const isFree = (lease: ProfileLease | undefined, runs: Record<string, RunRecord>, now: number) =>
   !lease || Date.parse(lease.expiresAt) <= now || own(runs, lease.runId)?.endedAt !== undefined;
 
-/** A start's host, lease and sha, checked before the home is touched. */
-function checkStart(options: { host: string; sha?: string; leaseMs?: number }): { leaseMs: number; wanted: string | undefined } {
+/** The variant the host chose for a run, and why: recorded on the run, never chosen here. */
+export type RunPrompt = { id: string; reason: string };
+const MAX_REASON = 2_000;
+
+/** A start's host, lease, sha and prompt, checked before the home is touched. */
+function checkStart(options: { host: string; sha?: string; leaseMs?: number; prompt?: RunPrompt }): { leaseMs: number; wanted: string | undefined; prompt: RunPrompt | undefined } {
   if (typeof options.host !== "string" || options.host === "") throw invalid("the host is not a non-empty string");
   const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
   if (!Number.isSafeInteger(leaseMs) || leaseMs < 1) throw invalid("leaseMs is not a positive integer");
-  return { leaseMs, wanted: options.sha === undefined ? undefined : checkSha(options.sha) };
+  const given: unknown = options.prompt;
+  let prompt: RunPrompt | undefined;
+  if (given !== undefined) {
+    if (typeof given !== "object" || given === null || Object.keys(given).some((key) => key !== "id" && key !== "reason")) throw invalid("the prompt is not { id, reason }");
+    const { id, reason } = given as Partial<RunPrompt>;
+    if (typeof id !== "string" || !ID_PATTERN.test(id)) throw invalid(`the prompt id ${JSON.stringify(id)} is not a variant id`);
+    if (typeof reason !== "string" || reason.trim() === "" || reason.length > MAX_REASON) throw invalid(`the prompt's reason is not a non-empty string of at most ${MAX_REASON} characters`);
+    prompt = { id, reason };
+  }
+  return { leaseMs, wanted: options.sha === undefined ? undefined : checkSha(options.sha), prompt };
 }
 
 /** The home-side half of a run's start, in one commit under the home's claim: with `sha`, a home whose cache is at
  *  another commit, or at none, is refused (`stale`); each skill is checked against its SHA-256; the save lease is taken
  *  for every profile no live run holds; the run is recorded in `agent.runs` (`runs/<runId>`) with the home's
  *  `agent.source` sha. It touches nothing under `runs/`: `seedRun` writes the run's directory from the seed. */
-export async function prepareRun(home: AgentHome, options: { runId?: string; host: string; sha?: string; now?: number; leaseMs?: number; access?: HomeAccess }): Promise<RunSeed> {
+export async function prepareRun(home: AgentHome, options: { runId?: string; host: string; sha?: string; prompt?: RunPrompt; now?: number; leaseMs?: number; access?: HomeAccess }): Promise<RunSeed> {
   const now = options.now ?? Date.now();
   const runId = options.runId ?? uuidv7(now);
   if (typeof runId !== "string" || !ID_PATTERN.test(runId)) throw invalid(`the run id ${JSON.stringify(runId)} is not letters, digits, ".", "_" or "-" (at most 128)`);
-  const { leaseMs, wanted } = checkStart(options);
-  return inClaimedHome(home, options.access, (store) => prepareIn(store, { runId, now, host: options.host, leaseMs, wanted }));
+  const { leaseMs, wanted, prompt } = checkStart(options);
+  return inClaimedHome(home, options.access, (store) => prepareIn(store, { runId, now, host: options.host, leaseMs, wanted, prompt }));
 }
 
 /** `prepareRun`'s commit, on an agent store already held. */
-async function prepareIn(store: Store, { runId, now, host, leaseMs, wanted }: { runId: string; now: number; host: string; leaseMs: number; wanted: string | undefined }): Promise<RunSeed> {
+async function prepareIn(store: Store, { runId, now, host, leaseMs, wanted, prompt }: { runId: string; now: number; host: string; leaseMs: number; wanted: string | undefined; prompt: RunPrompt | undefined }): Promise<RunSeed> {
   const state = await readState(store);
   if (own(state.runs, runId)) throw new AgentHomeError("exists", `the run ${runId} already exists`);
+  if (prompt && !own(state.prompts, prompt.id)) throw invalid(`the prompt ${prompt.id} is not one of the agent's variants`);
   const sha = state.source?.sha;
   if (wanted !== undefined && wanted !== sha) {
     throw new AgentHomeError("stale", `the agent home's cache is at ${sha ?? "no commit"} and must be refreshed to ${wanted} before a run starts there`);
@@ -112,7 +126,7 @@ async function prepareIn(store: Store, { runId, now, host, leaseMs, wanted }: { 
   }));
   const leases = Object.keys(state.profiles).filter((key) => isFree(own(state.leases, key), state.runs, now));
   const profiles = Object.fromEntries(Object.entries(state.profiles).map(([key, profile]) => [key, leases.includes(key) ? profile : withoutRef(profile, own(state.leases, key)!.runId)]));
-  const record: RunRecord = { path: `runs/${runId}`, host, startedAt: iso(now), ...(sha !== undefined ? { sha } : {}) };
+  const record: RunRecord = { path: `runs/${runId}`, host, startedAt: iso(now), ...(sha !== undefined ? { sha } : {}), ...(prompt ? { prompt } : {}) };
   const lease: ProfileLease = { runId, expiresAt: iso(now + leaseMs) };
   const prior = { record, lease, leases: Object.fromEntries(leases.map((key) => [key, own(state.leases, key) ?? null])) };
   await store.session.commit(async (tx) => {
@@ -161,15 +175,15 @@ export async function seedRun(dir: { storePath: string; workDir: string }, seed:
  *  and `work/`), under one hold of the home, so a start that fails is undone under the same hold: no run directory, and
  *  its record and leases as they were. When undoing fails too, the error carries both failures. Seeding is this host
  *  step, never a tool. */
-export async function startRun(home: AgentHome, options: { runId?: string; host: string; sha?: string; now?: number; leaseMs?: number }): Promise<RunStart> {
+export async function startRun(home: AgentHome, options: { runId?: string; host: string; sha?: string; prompt?: RunPrompt; now?: number; leaseMs?: number }): Promise<RunStart> {
   const now = options.now ?? Date.now();
   const runId = options.runId ?? uuidv7(now);
   const paths = runPaths(home, runId);
-  const { leaseMs, wanted } = checkStart(options);
+  const { leaseMs, wanted, prompt } = checkStart(options);
   homeDir(home.dir);
   if (existsSync(paths.dir)) throw new AgentHomeError("exists", `the run ${runId} already exists`);
   return inClaimedHome(home, undefined, async (store) => {
-    const seed = await prepareIn(store, { runId, now, host: options.host, leaseMs, wanted });
+    const seed = await prepareIn(store, { runId, now, host: options.host, leaseMs, wanted, prompt });
     try {
       await seedRun({ storePath: paths.storePath, workDir: paths.workspace }, seed);
     } catch (error) {
@@ -191,9 +205,8 @@ export async function undoPrepare(home: AgentHome, seed: RunSeed, options: { acc
   return inClaimedHome(home, options.access, (store) => undoIn(store, seed));
 }
 
-/** Two flat records (a run record, a lease) with the same fields and values, whatever their key order. */
-const sameJson = (a: object | undefined, b: object | undefined) =>
-  a !== undefined && b !== undefined && JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
+/** Two records (a run record, a lease) with the same fields and values, whatever their key order, nested ones too. */
+const sameJson = (a: object | undefined, b: object | undefined) => a !== undefined && b !== undefined && canonical(a) === canonical(b);
 
 async function undoIn(store: Store, seed: RunSeed): Promise<{ undone: boolean }> {
   const state = await readState(store);

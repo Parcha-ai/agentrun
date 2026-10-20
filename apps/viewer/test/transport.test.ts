@@ -156,7 +156,7 @@ const moveOf = (id: string, t: number, to: string, extra: { [key: string]: Json 
 const stepsOf = (names: string[], from: number) => names.map((step, index) => live('move.step', from + index, { move: 'move', step }));
 
 test('the lane cells that carry the class token are styled by their own selector only, never by a bare .token rule', () => {
-  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../viewer.css', import.meta.url), 'utf8');
   assert.match(html, /\.tcells \.cell\.token \{/);
   assert.doesNotMatch(html, /\.transport \.token \{/);
   assert.doesNotMatch(html, /\.transport > \.token \{/);

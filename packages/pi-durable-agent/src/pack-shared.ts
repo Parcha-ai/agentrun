@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { SECRET_KINDS } from "./export.js";
 import { AGENT_STORE_FILE, ID_PATTERN } from "./home.js";
-import { FORMAT_VERSION, type AgentDefinition } from "./kinds.js";
+import { canonical, FORMAT_VERSION, type AgentDefinition } from "./kinds.js";
 import { AgentHomeError } from "./store.js";
 
 // What a packer and a reader agree on. A rule that one of them applies is here, so a pack the packer writes is a pack
@@ -40,12 +40,7 @@ export const SIDE_FILES = ["-wal", "-shm", "-journal"];
 /** The most directories a work file may be nested in; a member deeper than this is refused. */
 export const MAX_DEPTH = 64;
 
-/** JSON with sorted keys: one text for one value. */
-export function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (isObject(value)) return `{${Object.keys(value).sort().filter((key) => value[key] !== undefined).map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
-  return JSON.stringify(value ?? null);
-}
+export { canonical };
 
 export const byName = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 

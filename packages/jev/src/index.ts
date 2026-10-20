@@ -135,6 +135,15 @@ function wait(ms: number, signal: AbortSignal, error: () => JevError): Promise<v
   });
 }
 
+/** A server's Retry-After in milliseconds from now, given as delta-seconds or an HTTP date; undefined when absent or unparseable. */
+function retryAfterMs(headers: unknown): number | undefined {
+  const value = headers instanceof Headers ? headers.get("retry-after")?.trim() : undefined;
+  if (!value) return undefined;
+  if (/^\d+$/.test(value)) return Number(value) * 1000;
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+}
+
 export function createJevRunner(options: JevOptions = {}): JevJudge {
   const timeoutMs = options.timeoutMs === null ? null : (options.timeoutMs ?? 30_000);
   const maxStateBytes = options.maxStateBytes ?? null;
@@ -238,6 +247,8 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
         body = JSON.stringify({ ...JSON.parse(body), assets: assetDigests });
       }
       const headers = carriesImage || hasBox ? { [IMAGE_HEADER]: "true" } : undefined;
+      // The first attempt that failed in a way the server may have billed (a lost answer, a 408, a 5xx). A later 429 does not make the call free: the give-up reports this one.
+      let billable: { status?: number } | undefined;
       for (attempt = 1; ; attempt++) {
         if (signal.aborted) throw abortError();
         let result: unknown;
@@ -249,10 +260,21 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
           if (signal.aborted) throw abortError();
           const status = error instanceof APIError ? error.status : undefined;
           const retryable = status === 408 || status === 429 || (status !== undefined && status >= 500 && status <= 599) || error instanceof APIConnectionError;
+          if (retryable && status !== 429 && billable === undefined) billable = status === undefined ? {} : { status };
           if (retryable && attempt < maxAttempts) {
-            await wait(Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1)), signal, abortError);
-            continue;
+            const backoff = Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1));
+            const asked = error instanceof APIError && (status === 429 || status === 503) ? retryAfterMs(error.headers) : undefined;
+            const delay = asked === undefined ? backoff : Math.max(asked, backoff);
+            // A server's wait is kept in full or the loop gives up now: it never runs past the deadline, or past the longest timer when there is none, so no
+            // retry is sent with no time left to answer (a request that times out has a cost no one knows).
+            const left = timeoutMs === null ? 2_147_483_647 : timeoutMs - (Date.now() - started);
+            if (asked === undefined || delay < left) {
+              await wait(delay, signal, abortError);
+              continue;
+            }
           }
+          // HTTP 429 means every attempt was refused unanswered; after one that may have been billed, the give-up names that one instead.
+          if (status === 429 && billable) throw billable.status === undefined ? new JevError("connection", "Jev transport failed.", attempt) : new JevError("http", `Jev returned HTTP ${billable.status}.`, attempt, billable.status);
           if (status !== undefined) {
             const safeStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
             const capacity = error instanceof APIError && record(error.body) && record(error.body.detail)

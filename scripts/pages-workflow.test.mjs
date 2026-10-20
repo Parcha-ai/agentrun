@@ -3,7 +3,7 @@
 // the build made. The gate's step runs for real here, as written.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -48,6 +48,22 @@ test('the gate sits between the build and the upload, as the command run below a
   assert.match(workflow, /path: apps\/viewer\/dist\n/);
 });
 
+const FETCH = 'node scripts/recording/gallery.mjs fetch apps/viewer/recordings.lock.json apps/viewer/recordings';
+
+test('the recordings come from the lock\'s release asset, fetched after the install and before the build, with the job\'s own token', () => {
+  const lines = workflow.split('\n').map((line) => line.trim().replace(/^- /, ''));
+  const at = (match) => {
+    const index = lines.findIndex(match);
+    assert.ok(index > 0, String(match));
+    return index;
+  };
+  const order = [at((line) => line === 'run: npm ci --ignore-scripts'), at((line) => line === `run: ${FETCH}`), at((line) => line === 'run: node apps/viewer/build.mjs --files')];
+  assert.deepEqual(order, [...order].sort((a, b) => a - b));
+  const step = lines.slice(at((line) => line === "name: Fetch the gallery's recordings"), order[1] + 1);
+  assert.deepEqual(step, ["name: Fetch the gallery's recordings", 'env:', 'GH_TOKEN: ${{ github.token }}', `run: ${FETCH}`], 'its only credential is the job\'s token, which reads the repository');
+  assert.match(readFileSync(join(root, 'scripts/recording/gallery.mjs'), 'utf8'), /export const RELEASE = 'gallery';/, 'the release it reads is gallery, which no release workflow reads');
+});
+
 /** The gate's command run as the runner runs it (bash) in a directory laid out as the repository after the build step,
  *  with the gallery built from `recordings`; its exit code and output. */
 const gate = (t, recordings) => {
@@ -55,20 +71,26 @@ const gate = (t, recordings) => {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, 'scripts/recording'), { recursive: true });
   for (const name of ['gate.mjs', 'validate.mjs']) cpSync(join(root, 'scripts/recording', name), join(dir, 'scripts/recording', name));
-  // Both import the one scanner, which lives in the reference example.
-  mkdirSync(join(dir, 'examples/reference'), { recursive: true });
-  cpSync(join(root, 'packages/reference/src/scan.ts'), join(dir, 'packages/reference/src/scan.ts'));
+  // Both import the one scanner, which lives in the harness package.
+  cpSync(join(root, 'packages/harness/src/scan.ts'), join(dir, 'packages/harness/src/scan.ts'));
+  // The report page is read with an HTML parser, from node_modules (the workflow installs it before the gate).
+  cpSync(join(root, 'packages/harness/src/artifact.ts'), join(dir, 'packages/harness/src/artifact.ts'));
+  symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'));
   build(join(dir, 'apps/viewer/dist'), recordings);
   return new Promise((resolve) => execFile('bash', ['-c', GATE], { cwd: dir }, (error, stdout, stderr) => resolve({ code: error ? error.code : 0, stdout, stderr })));
 };
 
 test('the gate, as the step runs it, passes the build of the bundled recordings and fails the step on a problem', async (t) => {
-  const passed = await gate(t, join(root, 'apps/viewer/recordings'));
+  // In git, recordings/ holds no run (the Pages job unpacks the gallery into it): the step is tried on the reference job.
+  const gallery = mkdtempSync(join(tmpdir(), 'pages-gallery-'));
+  t.after(() => rmSync(gallery, { recursive: true, force: true }));
+  cpSync(join(root, 'apps/viewer/test/fixtures/reference-job'), join(gallery, 'reference-job'), { recursive: true });
+  const passed = await gate(t, gallery);
   assert.equal(passed.code, 0, passed.stderr);
-  assert.match(passed.stdout, /apps\/viewer\/dist: 2 recording\(s\), every published file checked/);
+  assert.match(passed.stdout, /apps\/viewer\/dist: 1 recording\(s\), every published file checked/);
   const copy = mkdtempSync(join(tmpdir(), 'pages-recordings-'));
   t.after(() => rmSync(copy, { recursive: true, force: true }));
-  cpSync(join(root, 'apps/viewer/recordings/reference-job'), join(copy, 'reference-job'), { recursive: true });
+  cpSync(join(root, 'apps/viewer/test/fixtures/reference-job'), join(copy, 'reference-job'), { recursive: true });
   writeFileSync(join(copy, 'reference-job', 'notes.txt'), `sk-${'a1'.repeat(20)}`);
   const refused = await gate(t, copy);
   assert.notEqual(refused.code, 0);

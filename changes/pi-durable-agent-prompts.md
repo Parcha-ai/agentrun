@@ -1,0 +1,5 @@
+---
+packages: @parcha/pi-durable-agent
+kind: feature
+---
+Prompt variants in the agent home: a new kind, `agent.prompts`, keyed by variant id, holds one `base`, one `generic` and any number of `overlay`s (`{ role, label, text, when? }`). An overlay's `when` is the host's selection rule, `{ question, option, threshold }`: a Jev choice question, the option the variant needs and its least probability. `setPrompts(home, variants, { ifRevision?, access? })` replaces the set in one commit under the home's lock and refuses one that is not exactly one base and one generic, with unique ids that are one URL segment, labels of at most 200 characters, texts of at most 64 KiB and thresholds from 0 to 1 (`AgentHomeError` `invalid`; `stale` for a moved `ifRevision`). An equal set writes nothing. `readAgentHome` returns `prompts`. `startRun` and `prepareRun` take `prompt: { id, reason }`, the variant the host chose, and record it on the run's `agent.runs` entry; an id that is not one of the agent's variants is refused. Choosing a variant is the host's. Prompts are on `EXPORTABLE_KINDS` and travel in a pack.
