@@ -202,7 +202,7 @@ of its name is installed. A tool that only reads can be marked `replay: "safe"` 
 rerun. Any other tool is an effect: its intent is committed before it starts, and after a crash the model is told the call
 was `interrupted`, never run again. `run.setStatus("done" | "failed" | "paused" | "sleeping", detail)` records the run's
 status in `run.json`; `done` and `failed` run the durability barrier first. `run.release()` closes the Harness, kills the
-run's commands, runs the barrier, seals `run.json` with the store's last sequence, and unmounts. A module that is missing
+run's commands, runs the barrier, seals `run.json` with the store's last sequence, and unmounts. An instance process ends after its release: call `process.exit(0)` once `await run.release()` returns, as the examples do. One that releases and returns stays active, and stopping it fails. A module that is missing
 or throws, or an `onOpen` that rejects, is `AppError` (exit 1, which the unit retries; a module that fails lets the claim
 go first). A `beforeResume` that rejects
 fails the open (its step is `before-resume`) and releases the claim. Besides the Harness, the hook gets `storage`, the
