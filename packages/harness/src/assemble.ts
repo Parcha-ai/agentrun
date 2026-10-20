@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
-import { createRegistry, defineDoc, type ConversationId, type Harness, type ToolRegistration } from '@earendil-works/pi-durable';
+import { createRegistry, defineDoc, type ConversationId, type Extension, type Harness, type ToolRegistration, type Tx } from '@earendil-works/pi-durable';
 import type { Workflow } from '@parcha/agentrun-dsl';
 import { withRecovery } from '@parcha/agentrun-dsl/recovery';
 import {
@@ -19,10 +19,10 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 type JsonValue = Parameters<DurableRun['setStatus']>[1] & {};
 import { DEFAULT_BROWSER_POLICY, localSites, type LocalSite } from '@parcha/pi-browser';
-import { createBrowserExtension } from '@parcha/pi-browser/durable';
+import { createBrowserExtension, type BrowserExtensionHandle } from '@parcha/pi-browser/durable';
 import { codeModeExtension, type CodeModeOptions } from './code-mode.ts';
 import { codingTools } from './command-env.ts';
-import { createVisionExtension, type VisionAdapterOptions } from '@parcha/pi-vision/durable';
+import { createVisionExtension, type VisionAdapterOptions, type VisionHandle } from '@parcha/pi-vision/durable';
 import type { Host, RunPlace, StatusEvent } from './host.ts';
 
 export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: Record<string, Uint8Array> };
@@ -126,14 +126,32 @@ export async function run(place: RunPlace, host: Host, job: Job, options: RunOpt
   }
 }
 
-/** The run's pieces, before its store is open. */
-export async function compose(place: RunPlace, host: Host, job: Job, options: RunOptions = {}): Promise<Composed> {
-  // The version before this kept the store at `<root>/durable`; this one keeps it where the disk package does. Opening
-  // such a directory would start the run over, so it is refused before anything runs.
-  const earlier = join(place.root, 'durable', 'run.sqlite');
-  if (existsSync(earlier) && !existsSync(join(place.store, 'run.sqlite'))) {
-    throw Object.assign(new Error(`This run's store is at ${earlier}, and this version keeps it at ${join(place.store, 'run.sqlite')}. Resume it with the version that wrote it, or start a new directory.`), { code: 'RUN_STORE_ELSEWHERE' });
-  }
+/** What a run's agents are offered, built from the host before the run's store is open, in install order: the coding tools, the host's own extensions, vision, code mode and the browser. Each is a value here, so
+ *  a caller installs the ones it offers (`agentApp` installs only the tools its agent names). `open`, `init`, `reconcile` and `cleanup` are the steps the extensions need around the open. */
+export type AgentExtensions = {
+  /** All of them, in install order. */
+  extensions: Extension[];
+  coding: Extension;
+  host: readonly Extension[];
+  vision: VisionHandle;
+  /** Code mode's `code` tool, built on the vision handle; absent unless `options.codeMode`. */
+  code: Extension | undefined;
+  /** Absent when `options.browser` is false. */
+  browser: BrowserExtensionHandle | undefined;
+  /** Reports a row to the host; a row that fails never fails the caller. */
+  status(event: StatusEvent): Promise<void>;
+  /** Hands over the open run: each conversation's label is read from it, and the caller's `vision` option sees it. */
+  open(harness: Harness): void;
+  /** What the commit that creates a conversation writes: its label, and the browser's configuration, which must be there before its first call. */
+  init(tx: Tx, conversationId: ConversationId, label: string): Promise<void>;
+  /** Reconciles the browser's sessions with the open run and reports it. */
+  reconcile(harness: Harness, context?: typeof ctx): Promise<void>;
+  /** Releases every browser session still open and closes the browser. The run itself is released by whoever opened it. */
+  cleanup(harness: Harness): Promise<void>;
+};
+
+/** The extensions a run's agents are offered, from the host and the run's options: `compose()` installs all of them beside the workflow's, `agentApp()` the ones its agent names. */
+export async function agentExtensions(place: RunPlace, host: Host, options: RunOptions = {}): Promise<AgentExtensions> {
   const status = async (event: StatusEvent) => { try { await host.status(event); } catch { /* a status row never fails the run */ } };
   let opened: Harness | undefined;
   const labelOf = async (id: ConversationId | undefined) => (opened && id !== undefined && (await opened.snapshot(Label, id, ctx))?.label) || 'run';
@@ -169,15 +187,57 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
     onLook: async (look) => { await visionBase.onLook?.(look); await more.onLook?.(look); },
     onMiss: async (miss) => { await visionBase.onMiss?.(miss); await more.onMiss?.(miss); },
   });
+  // Code mode is built from the vision handle, so it is installed after it.
+  const code = options.codeMode ? codeModeExtension(vision, options.codeMode === true ? {} : options.codeMode, options.codeImages ? { note: options.codeImages, workDir: place.work } : undefined) : undefined;
+  return {
+    extensions: [codingTools, ...host.tools.extensions, vision.extension, ...(code ? [code] : []), ...(browser ? [browser.extension] : [])],
+    coding: codingTools, host: host.tools.extensions, vision, code, browser, status,
+    open(harness) { opened = harness; },
+    async init(tx, conversationId, label) {
+      (await tx.doc(Label, conversationId)).label = label;
+      if (browser) Object.assign(await tx.doc(browser.docs.Config, conversationId), { label, run: place.id, policy: DEFAULT_BROWSER_POLICY });
+    },
+    async reconcile(harness, context = ctx) {
+      if (browser) await status({ source: 'browser', reconciled: await browser.reconcile(harness, () => true, context) });
+    },
+    async cleanup(harness) {
+      if (!browser) return;
+      // pi has no conversation-end event: every session still open is released here, before the close.
+      const open = Object.values((await harness.snapshot(browser.docs.Inventory, ctx))?.rows ?? {}).filter((row) => row.state !== 'releasing');
+      for (const conversationId of new Set(open.map((row) => row.conversationId))) {
+        const conversation = await harness.conversation(conversationId as ConversationId, ctx);
+        if (conversation) await browser.release(conversation, 'close', ctx);
+      }
+      // pi-browser gap: release returns before its background task runs, and waitForIdle does not wait for background tasks.
+      for (const task of (await harness.inspect(ctx)).tasks) {
+        if (task.record.kind === `${browser.extension.name}.release`) await harness.waitForTask(task.record.id, ctx);
+      }
+      await browser.close();
+    },
+  };
+}
+
+/** The recorder's hook between the open and the resume: it snapshots every document at the head the hook gives, then follows each commit. Undefined when the host records nothing. */
+export function recorderHook(host: Host): Composed['beforeResume'] | undefined {
+  return host.record?.attach ? async ({ harness, storage, head, context, generation }) => { host.record!.generation(generation); await host.record!.attach!({ session: harness, storage, head, context, gen: generation }); } : undefined;
+}
+
+/** The run's pieces, before its store is open. */
+export async function compose(place: RunPlace, host: Host, job: Job, options: RunOptions = {}): Promise<Composed> {
+  // The version before this kept the store at `<root>/durable`; this one keeps it where the disk package does. Opening
+  // such a directory would start the run over, so it is refused before anything runs.
+  const earlier = join(place.root, 'durable', 'run.sqlite');
+  if (existsSync(earlier) && !existsSync(join(place.store, 'run.sqlite'))) {
+    throw Object.assign(new Error(`This run's store is at ${earlier}, and this version keeps it at ${join(place.store, 'run.sqlite')}. Resume it with the version that wrote it, or start a new directory.`), { code: 'RUN_STORE_ELSEWHERE' });
+  }
+  const built = await agentExtensions(place, host, options);
+  const { status } = built;
   let offered: readonly ToolRegistration[] = [];
   const nodes = nodeRunner({
     agent: (node) => { const tools = nodeTools(offered, node); return { ...nodeAgent(host.models.lead, node), ...(tools ? { tools } : {}) }; },
     record: () => ({ instructions: 'Cite each source by the evidence path its tool returned.' }),
     // The browser needs its configuration in the commit that creates the conversation; `init` is the one member that runs there.
-    init: async (node, tx, conversationId) => {
-      (await tx.doc(Label, conversationId)).label = node.label;
-      if (browser) Object.assign(await tx.doc(browser.docs.Config, conversationId), { label: node.label, run: place.id, policy: DEFAULT_BROWSER_POLICY });
-    },
+    init: (node, tx, conversationId) => built.init(tx, conversationId, node.label),
   });
   // The workflow is one pi-durable task: a process that dies leaves it pending, and the next open resumes it.
   // pi-durable-disk gap (F3): that open resumes the task before the host can reconcile the browser, so it waits here.
@@ -203,11 +263,8 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
     },
   });
   const registry = createRegistry();
-  // Code mode is built from the vision handle, so it is installed after it.
-  const codeMode = options.codeMode ? [codeModeExtension(vision, options.codeMode === true ? {} : options.codeMode, options.codeImages ? { note: options.codeImages, workDir: place.work } : undefined)] : [];
-  const extensions = [codingTools, ...host.tools.extensions, vision.extension, ...codeMode, ...(browser ? [browser.extension] : [])];
-  offered = extensions.flatMap((extension) => extension.tools ?? []);
-  for (const extension of [...extensions, nodes.extension, flow.extension]) registry.install(extension);
+  offered = built.extensions.flatMap((extension) => extension.tools ?? []);
+  for (const extension of [...built.extensions, nodes.extension, flow.extension]) registry.install(extension);
 
   // The job's files, in `work/`: each written beside its name and renamed into place, so one a killed process left
   // under its name is whole, and is kept.
@@ -218,14 +275,13 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
     await writeFile(`${at}.${process.pid}.partial`, bytes);
     await rename(`${at}.${process.pid}.partial`, at);
   }
-  // The recorder attaches between the open and the resume: it snapshots every document at the head the hook gives, then follows each commit.
-  const beforeResume: Composed['beforeResume'] | undefined = host.record?.attach ? async ({ harness, storage, head, context, generation }) => { host.record!.generation(generation); await host.record!.attach!({ session: harness, storage, head, context, gen: generation }); } : undefined;
+  const beforeResume = recorderHook(host);
   return {
     registry, models: host.models.catalog, ...(beforeResume ? { beforeResume } : {}),
     async drive(durable) {
       const harness = durable.harness;
-      opened = harness;
-      if (browser) await status({ source: 'browser', reconciled: await browser.reconcile(harness, () => true, ctx) });
+      built.open(harness);
+      await built.reconcile(harness);
       // start() refuses a request that is not the run's own, with the driver's binding mismatch, and the job reports it as a
       // refusal. The saved task stays held until start() accepts the request, so a refused job never lets it run with this host.
       let task: Awaited<ReturnType<typeof flow.start>>;
@@ -239,20 +295,7 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
       if (outcome.status === 'complete') await host.deliver({ record: outcome.output });
       return { ...outcome, generation: durable.generation, usage: await harness.usage(ctx) };
     },
-    async cleanup(harness) {
-      if (!browser) return;
-      // pi has no conversation-end event: every session still open is released here, before the close.
-      const open = Object.values((await harness.snapshot(browser.docs.Inventory, ctx))?.rows ?? {}).filter((row) => row.state !== 'releasing');
-      for (const conversationId of new Set(open.map((row) => row.conversationId))) {
-        const conversation = await harness.conversation(conversationId as ConversationId, ctx);
-        if (conversation) await browser.release(conversation, 'close', ctx);
-      }
-      // pi-browser gap: release returns before its background task runs, and waitForIdle does not wait for background tasks.
-      for (const task of (await harness.inspect(ctx)).tasks) {
-        if (task.record.kind === `${browser.extension.name}.release`) await harness.waitForTask(task.record.id, ctx);
-      }
-      await browser.close();
-    },
+    cleanup: (harness) => built.cleanup(harness),
   };
 }
 
