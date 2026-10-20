@@ -32,6 +32,7 @@
     "demo:reference": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/reference/run.ts",
     "demo:kill": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/reference/kill-anywhere.ts",
     "demo:disk": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/disk/run.ts",
+    "demo:moves": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/moves/run.ts",
     "demo:hero": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/hero/run.ts",
     "demo:issue-triage": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/issue-triage/run.ts",
     "demo:vision": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/vision-agent/run.ts",

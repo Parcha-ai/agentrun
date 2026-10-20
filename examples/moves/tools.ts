@@ -48,7 +48,7 @@ const fail = (error: unknown) => ({ isError: true as const, content: [{ type: "t
 
 export interface MovesTools {
   /** The provider the threads' sandboxes come from: Modal's on the VM, a stand-in offline. Asked for at the first thread, never before. */
-  readonly provider: () => Promise<BoxProvider>;
+  readonly provider: (workspace: string) => Promise<BoxProvider>;
   /** Labels on every sandbox, so a run's own can be found and ended by exact id. */
   readonly labels: Readonly<Record<string, string>>;
 }
@@ -56,11 +56,11 @@ export interface MovesTools {
 export function movesExtensions(deps: MovesTools): { session: Extension; thread: Extension } {
   // One sandbox per thread conversation, made at its first tool call and kept for the process (the threads run in one process, the one on the VM).
   const boxes = new Map<string, Promise<Box>>();
-  const boxFor = (conversation: ConversationId, context: Context): Promise<Box> => {
+  const boxFor = (conversation: ConversationId, context: Context, workspace: string): Promise<Box> => {
     let box = boxes.get(String(conversation));
     if (!box) {
       box = (async () => {
-        const provider = await deps.provider();
+        const provider = await deps.provider(workspace);
         const made = await provider.create({ gpu: GPU, image: GPU_IMAGE, isolation: "gvisor", maxLifetimeMs: 30 * 60_000, labels: deps.labels }, context);
         if (!made.ok) throw made.error;
         return made.value;
@@ -69,7 +69,7 @@ export function movesExtensions(deps: MovesTools): { session: Extension; thread:
     }
     return box;
   };
-  const sandbox = async (api: ToolExecutionApi, context: Context) => boxEnv(await boxFor(api.conversationId, context));
+  const sandbox = async (api: ToolExecutionApi, context: Context) => boxEnv(await boxFor(api.conversationId, context, api.env?.cwd ?? "."));
 
   const forkThreads = defineTool({
     name: "fork_threads",
@@ -109,6 +109,10 @@ export function movesExtensions(deps: MovesTools): { session: Extension; thread:
         }),
       );
       const threads: Thread[] = replies.map((reply, i) => ({ n: i + 1, conversation: String(children[i]), reply, ...parseReply(reply) }));
+      // The threads are done: their sandboxes are ended now, by the exact box each thread used (one that fails to end is left to its lifetime and the runner's sweep).
+      const owned = [...boxes.values()];
+      boxes.clear();
+      await Promise.allSettled(owned.map(async (box) => (await box).destroy(context)));
       const env = api.env;
       if (!env) throw new Error("no workspace");
       getOrThrow(await env.writeFile("threads.json", `${JSON.stringify({ threads }, null, 2)}\n`, context));

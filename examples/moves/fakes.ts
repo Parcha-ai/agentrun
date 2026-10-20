@@ -1,9 +1,7 @@
 // The moves demo on fakes: a scripted lead for the three agent nodes and for the threads it forks, the two hand-overs' fakes, and stand-in
 // sandboxes that run local processes. The lead's answer is a pure function of the transcript, so it is the same across a handoff. Every answer
 // carries a thinking block, as the live model's do. This is the test fixture, not what a gallery shows.
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Message } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import type { Fakes } from '@parcha/agentrun-harness';
@@ -50,7 +48,7 @@ export function lead(all: readonly Message[]) {
     const job = `console.log("final_loss=" + ${loss});\n`;
     if (results.length === 0) return call('gpu_bash', { command: 'command -v nvidia-smi >/dev/null && nvidia-smi -L || echo "GPU 0: none (offline stand-in)"' }, `t${n}-gpu`);
     if (results.length === 1) return call('gpu_write', { path: 'job.mjs', content: job }, `t${n}-write`);
-    if (results.length === 2) return call('gpu_bash', { command: `${process.execPath} job.mjs` }, `t${n}-run`);
+    if (results.length === 2) return call('gpu_bash', { command: 'node job.mjs' }, `t${n}-run`);
     const gpu = /GPU \d+: ([^(\n]+?)\s*(?:\(|\n|$)/.exec(results[0]!)?.[1] ?? 'unknown';
     const metric = /final_loss=([0-9.]+)/.exec(results[2]!)?.[1] ?? 'nan';
     return say(`METRIC=${metric} SETTINGS=${JSON.stringify(settings)} GPU=${gpu}`);
@@ -82,8 +80,8 @@ export function lead(all: readonly Message[]) {
 
 /** The fakes: the lead above, the extensions with stand-in sandboxes, and the hand-overs (effect tools that do nothing outside the run). */
 export function movesFakes(): Fakes {
-  const dir = process.env.MOVES_FAKE_BOXES ?? mkdtempSync(join(tmpdir(), 'moves-boxes-'));
-  const { session, thread } = movesExtensions({ provider: async () => fakeModalBoxes(join(dir, 'boxes'), ledgerPath(dir)), labels: { run: 'moves' } });
+  // The stand-in sandboxes live beside the run's workspace (never inside it, so never in the recording), with a ledger of what each was asked to be and when it ended.
+  const { session, thread } = movesExtensions({ provider: async (workspace) => { const at = join(dirname(workspace), 'boxes'); return fakeModalBoxes(at, ledgerPath(at)); }, labels: { run: 'moves' } });
   const handOver = (args: Record<string, unknown>) => ({ to: String(args.to) });
   return {
     model: lead,

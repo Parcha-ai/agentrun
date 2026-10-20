@@ -3,7 +3,7 @@
 // runs local boxes and writes down what each box was asked to be, offline. No `local` provider is ever returned: an environment
 // served by the host's own machine is exactly what this example keeps the agent away from.
 import { appendFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { localBoxes } from "@parcha/pi-transport/box/local";
 import type { BoxProvider } from "@parcha/pi-transport";
 
@@ -12,7 +12,8 @@ export type BoxEvent = { ev: "create" | "destroy"; id?: string; spec?: Record<st
 
 export function fakeModalBoxes(root: string, ledger: string): BoxProvider {
   mkdirSync(root, { recursive: true });
-  const inner = localBoxes({ root });
+  // The stand-in's boxes find this Node by name, so a command in the recording says `node`, not where it is installed.
+  const inner = localBoxes({ root, path: `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin` });
   const note = (event: BoxEvent) => appendFileSync(ledger, `${JSON.stringify(event)}\n`);
   return {
     ...inner,
