@@ -129,5 +129,5 @@ export type ChatModel = {
   agent?: { name: string; status: 'working' | 'waiting' | 'done' };
   /** The times the run waited for a person to sign in, from the browser's own sign-in document (`browser.profiles`): asked when the profile
    *  gains the address it signs in to (t0), signed in when it is verified (t1; none when the run ends waiting). `site` is that address's host. */
-  waits?: { t0: number; t1?: number; site: string }[];
+  waits?: { t0: number; t1?: number; site: string; /** The profile was already signed in when the run first read it: a sign-in the run found there, not one it waited for. */ remembered?: true }[];
 };

@@ -522,12 +522,18 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   const waits: NonNullable<ChatModel['waits']> = [];
   if (options.muse) {
     const open = new Map<string, { t0: number; site: string }>();
+    const seen = new Set<string>();
     for (const line of lines.filter((each) => each.channel === 'durable' && each.kind === 'browser.profiles')) {
       const key = chatStr(chatObj(line.data)?.key) ?? chatStr(chatObj(chatObj(line.data)?.value)?.ref) ?? 'profile';
       const value = chatObj(chatObj(line.data)?.value);
       const site = hostOf(chatStr(value?.startUrl)) ?? chatStr(chatList(value?.allowedOrigins)[0] as Json | undefined)?.replace(/^https?:\/\//, '');
-      if (site && !open.has(key) && !value?.verifiedAt) open.set(key, { t0: line.t, site });
-      else if (value?.verifiedAt && open.has(key)) { const asked = open.get(key)!; open.delete(key); waits.push({ ...asked, t1: line.t }); }
+      if (!site) continue;
+      if (!seen.has(key)) {
+        seen.add(key);
+        // The first row that has the address: already verified, it is a sign-in the run found there (remembered); not yet, it is the ask.
+        if (value?.verifiedAt) waits.push({ t0: line.t, t1: line.t, site, remembered: true });
+        else open.set(key, { t0: line.t, site });
+      } else if (value?.verifiedAt && open.has(key)) { const asked = open.get(key)!; open.delete(key); waits.push({ ...asked, t1: line.t }); }
     }
     for (const asked of open.values()) waits.push(asked);
   }

@@ -409,3 +409,11 @@ test('the Muse view: a sign-in wait is read from the browser\'s profile document
   assert.deepEqual((await extractChat(open.recording, open.readJson, { muse: true })).waits, [{ t0: 6000, site: 'shop.example.test' }]);
   assert.equal((await extractChat(recording, readJson)).waits, undefined, 'and none without the option');
 });
+
+test('the Muse view: a profile already signed in the first time the run reads it is a remembered sign-in, not a wait', async () => {
+  const { recording, readJson } = opened(browserFixture);
+  const signed = { ...recording, lines: recording.lines.map((line) => (line.kind === 'browser.profiles'
+    ? { ...line, data: { ...(line.data as object), value: { ...((line.data as { value: object }).value), allowedOrigins: ['https://shop.example.test'], startUrl: 'https://shop.example.test/account', verifiedAt: '2026-10-20T00:00:00.000Z' } } as never }
+    : line)) };
+  assert.deepEqual((await extractChat(signed, readJson, { muse: true })).waits, [{ t0: 2600, t1: 2600, site: 'shop.example.test', remembered: true }], 'one remembered sign-in, at the first read');
+});

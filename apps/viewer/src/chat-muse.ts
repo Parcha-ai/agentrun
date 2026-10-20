@@ -92,8 +92,9 @@ function browserCard(recording: Recording, steps: ToolItem[]): HTMLElement {
 
 /** Where the run waited for a person to sign in: asked, and signed in once the browser's own profile says so. */
 function signInCard(wait: NonNullable<ChatModel['waits']>[number]): HTMLElement {
-  const button = reportEl('button', { class: 'mu-wide', type: 'button', disabled: true, title: 'Replay: the run is over', text: wait.t1 === undefined ? 'Waiting for you' : 'Signed in' });
-  return card('mu-signin', 'shield', 'Secure Store', `Sign in to ${wait.site}`, button);
+  const text = wait.remembered ? 'Signed in · remembered' : wait.t1 === undefined ? 'Waiting for you' : 'Signed in';
+  const button = reportEl('button', { class: 'mu-wide', type: 'button', disabled: true, title: 'Replay: the run is over', text });
+  return card(`mu-signin${wait.remembered ? ' mu-remembered' : ''}`, 'shield', 'Secure Store', wait.remembered ? `Signed in to ${wait.site}` : `Sign in to ${wait.site}`, button);
 }
 
 /** A bubble of the agent's words (a paragraph per blank line), the files it names as chips under them. */
@@ -167,7 +168,9 @@ export function drawMuse(root: HTMLElement, model: ChatModel, recording: Recordi
       else if (item.kind === 'tool') entries.push({ t, order: order++, kind: item.browser ? 'browser' : 'quiet', item });
     }
   }
-  for (const wait of model.waits ?? []) entries.push({ t: wait.t0, order: order++, kind: 'wait', wait });
+  // A sign-in found already there is told after the person's first words, not before them.
+  const asked = entries.find((entry) => entry.kind === 'user')?.t ?? 0;
+  for (const wait of model.waits ?? []) entries.push({ t: wait.remembered ? Math.max(wait.t0, asked + 1) : wait.t0, order: order++, kind: 'wait', wait });
   entries.sort((a, b) => a.t - b.t || a.order - b.order);
 
   // Browser steps with nothing said between them are one card; the thoughts and the other tool steps between two visible things fold into one

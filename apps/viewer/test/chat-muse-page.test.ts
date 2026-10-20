@@ -25,6 +25,7 @@ const HARNESS = `<!doctype html><body style="margin:0">
 <iframe id="wide" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=chat-browser&muse"></iframe>
 <iframe id="phone" style="position:absolute;top:0;left:0;width:390px;height:844px;border:0" src="chat.html?r=chat-browser&muse"></iframe>
 <iframe id="plain" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=chat-browser"></iframe>
+<iframe id="signed" style="position:absolute;top:0;left:0;width:390px;height:844px;border:0" src="chat.html?r=chat-signed&muse"></iframe>
 <script>
 const doc = (id) => document.getElementById(id).contentDocument;
 const ready = (id) => !!doc(id)?.querySelector('.muse .mu-card.mu-memory .mu-rh') || !!doc(id)?.querySelector('main#chat-root > .app .thread');
@@ -60,6 +61,18 @@ test('in Chrome: &muse is a phone chat over the same events, at 1440 and 390: th
   }), { timeout: 20_000 });
   mkdirSync(join(out, 'recordings'));
   cpSync(join(here, 'fixtures', 'chat-browser'), join(out, 'recordings', 'chat-browser'), { recursive: true });
+  // The same run whose browser profile was already signed in when the run first read it: the sign-in is remembered, not waited for.
+  cpSync(join(here, 'fixtures', 'chat-browser'), join(out, 'recordings', 'chat-signed'), { recursive: true });
+  const eventsFile = join(out, 'recordings', 'chat-signed', 'events.jsonl');
+  // The profile is read before the person's first words (as a run reads it at its start): its card still comes after them.
+  let first = true;
+  writeFileSync(eventsFile, readFileSync(eventsFile, 'utf8').split('\n').map((text) => {
+    if (!text.includes('"browser.profiles"')) return text;
+    const line = JSON.parse(text);
+    line.data.value = { ...line.data.value, allowedOrigins: ['https://shop.example.test'], startUrl: 'https://shop.example.test/account', verifiedAt: '2026-10-20T00:00:00.000Z' };
+    if (first) { line.t = 500; first = false; }
+    return JSON.stringify(line);
+  }).join('\n'));
   build(join(out, 'dist'), join(out, 'recordings'));
   writeFileSync(join(out, 'dist', 'harness.html'), HARNESS);
   const TYPES: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.css': 'text/css' };
@@ -75,7 +88,7 @@ test('in Chrome: &muse is a phone chat over the same events, at 1440 and 390: th
   held.page = page;
   const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
   const until = (expression: string, what: string) => page.once(expression, 'true', 20_000, what);
-  for (const id of ['wide', 'phone', 'plain']) await until(`ready('${id}')`, `${id} page drawn`);
+  for (const id of ['wide', 'phone', 'plain', 'signed']) await until(`ready('${id}')`, `${id} page drawn`);
   await until(`loaded('wide')`, 'the wide page\'s frames loaded');
   await until(`loaded('phone')`, 'the phone page\'s frames loaded');
 
@@ -105,6 +118,9 @@ test('in Chrome: &muse is a phone chat over the same events, at 1440 and 390: th
     assert.deepEqual(await value(`[...doc('${id}').querySelectorAll('.muse, .muse *')].filter((node) => { const s = getComputedStyle(node); return s.borderLeftStyle !== 'none' && parseFloat(s.borderLeftWidth) > parseFloat(s.borderRightWidth); }).map((node) => node.className || node.tagName)`), [], `${id}: no left-edge accent bar`);
     assert.ok((await value<number>(`wider('${id}')`)) <= 1, `${id}: nothing sideways`);
   }
+  // A run that starts signed in: no card that waits, one that says the sign-in was remembered, after the person's words.
+  assert.deepEqual(await value(`(() => { const d = doc('signed'); const order = [...d.querySelector('.mu-chat').children].filter((n) => n.classList.contains('mu-row') || n.classList.contains('mu-card')).map((n) => n.classList.contains('person') ? 'person' : n.classList.contains('mu-signin') ? 'signin' : n.classList.contains('mu-card') ? 'card' : 'agent');
+    const cards = [...d.querySelectorAll('.mu-signin')]; return [order.slice(0, 2), cards.length, cards[0].querySelector('.mu-card-sub').textContent, cards[0].querySelector('.mu-wide').textContent, cards[0].classList.contains('mu-remembered')]; })()`), [['person', 'signin'], 1, 'Signed in to shop.example.test', 'Signed in · remembered', true], 'a remembered sign-in');
   // The same recording without the option is the analyst view, exactly as before.
   assert.deepEqual(await value(`[!!doc('plain').querySelector('.muse'), !!doc('plain').querySelector('.app .thread'), doc('plain').querySelectorAll('.browser').length]`), [false, true, 0], 'without &muse');
 });
