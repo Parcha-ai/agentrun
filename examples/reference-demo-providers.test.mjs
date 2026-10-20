@@ -150,3 +150,65 @@ test('a box still open when the result hook throws gets its receipt all the same
   const kept = receipts(recording);
   assert.deepEqual(kept.map((receipt) => [receipt.box, receipt.to === null, receipt.seconds === null]), [['box-1', false, false], ['box-2', true, true]]);
 });
+
+// ---- the review of #833 ------------------------------------------------------------------------------------------------------------------------
+
+const { boxLedger, tapBox: tap } = await import('../packages/harness/dist/boxes.js');
+const quiet = { cross: () => false, window: { open: 0 } };
+/** The local boxes under a root that are still there (a box's directory, its own state file kept beside it). */
+const boxesUnder = (root) => (existsSync(root) ? readdirSync(root).filter((name) => name.startsWith('local-')) : []);
+
+test('a box whose label cannot be saved is destroyed and its create fails: no box is left running with no label and no receipt', async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-unwritable-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const { writeFileSync } = await import('node:fs');
+  writeFileSync(join(own, 'a-file'), 'not a directory');
+  const root = join(own, 'boxes');
+  const provider = tap(localBoxes({ root }), { ...quiet, ledger: boxLedger({ file: join(own, 'a-file', 'ids.json') }), receipts: true });
+  const made = await provider.create({ maxLifetimeMs: 60_000 }, BACKGROUND_CONTEXT);
+  assert.equal(made.ok, false, 'the create fails');
+  assert.match(made.error.message, /box ids/);
+  assert.deepEqual(boxesUnder(root), [], 'and the box it made is destroyed');
+});
+
+test('a damaged ids file is refused, never read as empty: no label is reused and the box made is destroyed', async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-damaged-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const { writeFileSync } = await import('node:fs');
+  const file = join(own, 'ids.json');
+  writeFileSync(file, '{"box-1": {"provider": "alpha", "id": "x"');
+  const root = join(own, 'boxes');
+  const made = await tap(localBoxes({ root }), { ...quiet, ledger: boxLedger({ file }) }).create({ maxLifetimeMs: 60_000 }, BACKGROUND_CONTEXT);
+  assert.equal(made.ok, false);
+  assert.match(made.error.message, /box ids file .* cannot be read/);
+  assert.equal(readFileSync(file, 'utf8'), '{"box-1": {"provider": "alpha", "id": "x"', 'the file is left as it was');
+  assert.deepEqual(boxesUnder(root), []);
+});
+
+test('a box still open when its process is killed (SIGKILL, no finally) gets its receipt from the next process, once', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, { kills: [{ point: 'effect.kept boxes2', why: 'the process dies with the beta box open' }] }, ['--kill', '--json'], { DEMO_PROVIDERS: 'leave' });
+  assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, 'complete']]);
+  const ids = JSON.parse(readFileSync(join(result.dir, 'box-ids.internal.json'), 'utf8'));
+  t.after(() => endLeft(result.dir, ids, 'box-2'));
+  const kept = receipts(recording);
+  assert.deepEqual(kept.map((receipt) => [receipt.box, receipt.to === null, receipt.seconds === null]), [['box-1', false, false], ['box-2', true, true]], 'one receipt each: the ended box\'s from its process, the open one\'s from the next');
+});
+
+test('a path whose name starts with two dots is not outside the recording: --box-ids <recording>/..ids.json is refused', async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-dots-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const recording = join(own, 'recording');
+  await assert.rejects(run(t, {}, ['--json', '--record', recording, '--box-ids', join(recording, '..ids.json')], { DEMO_PROVIDERS: '1' }), /--box-ids .*inside the recording/);
+});
+
+test('the app\'s boxes are closed when its run fails before the result: the receipts of open boxes and the detach run once, and the failure stands', async () => {
+  const { closeOnFailure } = await import('../packages/harness/dist/child-app.js');
+  let closed = 0;
+  const close = async () => { closed += 1; };
+  const failing = closeOnFailure(async () => { throw new Error('the drive failed'); }, close);
+  await assert.rejects(failing({}), /the drive failed/);
+  assert.equal(closed, 1);
+  const fine = closeOnFailure(async () => 'done', close);
+  assert.equal(await fine({}), 'done');
+  assert.equal(closed, 1, 'a run that succeeds is closed by its result, not here');
+});
