@@ -1,0 +1,14 @@
+{
+ "about": "The files the question is about, fetched once on --live (or with --fetch-sources) and checked by size and SHA-256 before they are used.",
+ "items": [
+  {
+   "id": "boulder-dam",
+   "title": "Boulder Dam (United States Department of the Interior, Bureau of Reclamation, 1930s, black and white, 34 minutes 52 seconds; Prelinger Archives rendition, 640x480): a government film on the building of the dam",
+   "url": "https://archive.org/download/tmp_BoulderD_2/tmp_BoulderD_2.mp4",
+   "source": "https://archive.org/details/tmp_BoulderD_2",
+   "license": "Public Domain, as the source page states it (licence field creativecommons.org/licenses/publicdomain/; Prelinger Archives, Internet Archive; subject \"Motion pictures: Government\"). A film produced by the U.S. Department of the Interior, Bureau of Reclamation, by its opening card. No score is credited in the film, and an uncredited score cannot be ruled out; the project uses the film as the source page publishes it, relying on its public-domain statement.",
+   "bytes": 217849330,
+   "sha256": "72d8a4b3ad902f237df77dcbac441e3fab0ddabeb59d3ab0dbf9676062e4899b"
+  }
+ ]
+}

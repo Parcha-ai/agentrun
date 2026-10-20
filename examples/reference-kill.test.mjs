@@ -3,7 +3,7 @@
 // the run's own rows. The same seed draws the same first kill.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { reconcileEffects } from './reference/assemble.ts';
+import { reconcileEffects } from '../packages/harness/dist/assemble.js';
 import { classesOf, CLASSES, cutBrowserAction, cutInEffectWindow, isReduced, killAnywhere, planNext, progress, random, render } from './reference/kill-anywhere.ts';
 
 const failed = (ledger) => ledger.checks.filter((check) => !check.ok).map((check) => ({ check: check.name, detail: check.detail }));

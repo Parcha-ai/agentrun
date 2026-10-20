@@ -3,7 +3,7 @@
 // the build made. The gate's step runs for real here, as written.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -55,6 +55,12 @@ const gate = (t, recordings) => {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, 'scripts/recording'), { recursive: true });
   for (const name of ['gate.mjs', 'validate.mjs']) cpSync(join(root, 'scripts/recording', name), join(dir, 'scripts/recording', name));
+  // Both import the one scanner, which lives in the reference example.
+  mkdirSync(join(dir, 'examples/reference'), { recursive: true });
+  cpSync(join(root, 'packages/harness/src/scan.ts'), join(dir, 'packages/harness/src/scan.ts'));
+  // The report page is read with an HTML parser, from node_modules (the workflow installs it before the gate).
+  cpSync(join(root, 'packages/harness/src/artifact.ts'), join(dir, 'packages/harness/src/artifact.ts'));
+  symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'));
   build(join(dir, 'apps/viewer/dist'), recordings);
   return new Promise((resolve) => execFile('bash', ['-c', GATE], { cwd: dir }, (error, stdout, stderr) => resolve({ code: error ? error.code : 0, stdout, stderr })));
 };
@@ -62,7 +68,7 @@ const gate = (t, recordings) => {
 test('the gate, as the step runs it, passes the build of the bundled recordings and fails the step on a problem', async (t) => {
   const passed = await gate(t, join(root, 'apps/viewer/recordings'));
   assert.equal(passed.code, 0, passed.stderr);
-  assert.match(passed.stdout, /apps\/viewer\/dist: 2 recording\(s\), every published file checked/);
+  assert.match(passed.stdout, /apps\/viewer\/dist: 1 recording\(s\), every published file checked/);
   const copy = mkdtempSync(join(tmpdir(), 'pages-recordings-'));
   t.after(() => rmSync(copy, { recursive: true, force: true }));
   cpSync(join(root, 'apps/viewer/recordings/reference-job'), join(copy, 'reference-job'), { recursive: true });

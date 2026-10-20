@@ -4,11 +4,11 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import * as entry from './reference/index.ts';
+import * as entry from '@parcha/agentrun-harness';
 import { fakes, job } from './reference/job.ts';
 
 test('the entry exports the names another example builds on, and nothing else', () => {
-  assert.deepEqual(Object.keys(entry).sort(), ['BOX_CROSSINGS', 'JEV_CAPS', 'JEV_LIST_PRICE', 'RUN_KEY', 'capJudge', 'chooseBrowser', 'codeOf', 'cost', 'crossings', 'demo', 'finishRecording', 'jevCost', 'killsOf', 'localHost', 'maxUsdOf', 'openRecorder', 'openSupervisor', 'packageCommitRecorder', 'parseInput', 'placeAt', 'plansOf', 'run', 'tapBox', 'tapFakes', 'tapHost']);
+  assert.deepEqual(Object.keys(entry).sort(), ['BOX_CROSSINGS', 'JEV_LIST_PRICE', 'RUN_KEY', 'VisionLooks', 'chooseBrowser', 'codeOf', 'cost', 'crossings', 'demo', 'finishRecording', 'jevCost', 'keepLooks', 'killsOf', 'localHost', 'localPlace', 'maxUsdOf', 'openRecorder', 'openSupervisor', 'packageCommitRecorder', 'parseInput', 'placeAt', 'plansOf', 'priceJudge', 'run', 'shownShots', 'tapBox', 'tapFakes', 'tapHost']);
   for (const name of ['tapBox', 'demo', 'crossings', 'tapFakes', 'tapHost', 'chooseBrowser', 'killsOf', 'maxUsdOf', 'parseInput', 'plansOf', 'run', 'cost', 'placeAt', 'localHost', 'openRecorder', 'openSupervisor', 'finishRecording', 'codeOf', 'packageCommitRecorder']) assert.equal(typeof entry[name], 'function', name);
 });
 
@@ -52,7 +52,7 @@ test('Fakes.responses sets how many model turns one process can take: one is too
 });
 
 test('reconcile reports an applied call exactly once, in the receipt the driver appends: from the kept answer when none is listed, never when one is, and the calls end [failed, applied]', async () => {
-  const { reconcileEffects, appliedOnce } = await import('./reference/assemble.ts');
+  const { reconcileEffects, appliedOnce } = await import('../packages/harness/dist/assemble.js');
   const { fold } = await import('../scripts/recording/fold.mjs');
   const effect = (id, calls) => ({ id, argsHash: `h-${id}`, intent: { tool: 'search' }, ...(calls ? { calls } : {}) });
   const settle = async (unknown, tools) => {

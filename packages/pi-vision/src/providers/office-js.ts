@@ -6,6 +6,7 @@
 import type { Element } from "@xmldom/xmldom";
 import { OFFICE_LIMITS, OfficeMissError, cellText, inflateEntry, readSource, sheetText, zipDirectory, type OfficeCell, type OfficeLimits } from "../core/office.js";
 import type { Cell, Provider, ProviderCall, ProviderSource } from "../core/provider.js";
+import { messageLine, mib } from "../core/primitives.js";
 
 /** The reader's output version: it changes whenever the text or the cells it writes change, so a derivation cached
  *  under an older one is never reused. */
@@ -39,7 +40,6 @@ type Archive = {
 };
 
 const unreadable = (why: string) => new OfficeMissError("unreadable", why);
-const mib = (bytes: number) => `${(bytes / 1048576).toFixed(1)} MiB`;
 const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString("hex");
 
 const kids = (el: El): Element[] => {
@@ -446,10 +446,11 @@ async function guarded<T>(call: ProviderCall, run: () => Promise<T>): Promise<T>
   } catch (error) {
     if (call.signal?.aborted) throw call.signal.reason ?? error;
     if (error instanceof OfficeMissError) throw error;
-    throw unreadable(`the file could not be read: ${String((error as Error)?.message ?? error).split("\n")[0]}`);
+    throw unreadable(`the file could not be read: ${messageLine(error)}`);
   }
 }
 
+/** Limits over the archive limits of `OFFICE_LIMITS`; a field left out keeps its default. */
 export type OfficeJsOptions = { readonly limits?: Partial<OfficeLimits> };
 
 /** The zero-install office reader: `text` for documents and presentations (a slide is a page) and for spreadsheets (a
@@ -467,7 +468,7 @@ export function officeJsProvider(options: OfficeJsOptions = {}): Provider {
         return { available: true, version: READER_VERSION };
       } catch (error) {
         xmldom = undefined;
-        return { available: false, needs: "fflate and @xmldom/xmldom", reason: `they did not load: ${String((error as Error)?.message ?? error).split("\n")[0]}` };
+        return { available: false, needs: "fflate and @xmldom/xmldom", reason: `they did not load: ${messageLine(error)}` };
       }
     },
     text: (source, request, call) => guarded(call, async () => {

@@ -66,9 +66,9 @@ for (const shape of SHAPES) {
 test('drawn only for a recording whose manifest names a job; every node of the graph is drawn, each once', () => {
   const lines = linesOf('nested', 'finished');
   const manifest = { format: 'agentrun.recording/1' } as unknown as Manifest;
-  assert.equal(panelsFor(lines, manifest).some((each) => each.id === 'workflow-graph'), false, 'no job: not drawn');
+  assert.equal(panelsFor(lines, [], undefined, manifest).some((each) => each.id === 'workflow-graph'), false, 'no job: not drawn');
   assert.equal(panelsFor(lines).some((each) => each.id === 'workflow-graph'), false, 'no manifest given: not drawn');
-  assert.equal(panelsFor(lines, { ...manifest, job: { blob: JOB, sha256: JOB } }).some((each) => each.id === 'workflow-graph'), true, 'a job: drawn');
+  assert.equal(panelsFor(lines, [], undefined, { ...manifest, job: { blob: JOB, sha256: JOB } }).some((each) => each.id === 'workflow-graph'), true, 'a job: drawn');
   const paths = rows(viewed(lines, read('nested.workflow.json'))).map((row) => row.path);
   assert.equal(new Set(paths).size, paths.length, 'each node once');
   assert.ok(paths.includes('/root/steps/0/body/steps/0/workflow/root/steps/1'), 'into the child workflow');

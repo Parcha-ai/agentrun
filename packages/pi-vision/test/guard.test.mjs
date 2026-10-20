@@ -53,7 +53,8 @@ test("a text-only lead: the eyes answer the agent's question in the image's plac
   assert.equal(record.status, "ok");
   assert.equal(record.body, "Badges: three payment marks.");
   const facts = receiptFacts(record);
-  assert.deepEqual(Object.keys(facts), ["original", "shown", "shown_blocks", "shown_bytes", "sha256", "kind", "key", "tokens_in", "tokens_out", "cost_usd"], "an empty fragment (the whole file) is left out");
+  assert.deepEqual(Object.keys(facts), ["original", "shown", "shown_blocks", "shown_bytes", "sha256", "kind", "key", "tokens_in", "tokens_out", "cost_usd", "startedAt"], "an empty fragment (the whole file) is left out; the request's start is a fact, and no tool call was named");
+  assert.ok(Number.isInteger(facts.startedAt) && Math.abs(Date.now() - facts.startedAt) < 60_000, "the milliseconds the request began");
   assert.deepEqual([facts.original, facts.shown, facts.shown_blocks, facts.shown_bytes, facts.sha256, facts.kind], ["40x30", "40x30", 1, shot(media).content[1].data.length, media.sha256, "image"]);
   assert.deepEqual([facts.tokens_in, facts.tokens_out], [1200, 30]);
   assert.ok(Math.abs(facts.cost_usd - (1200 * 1 + 30 * 4) / 1e6) < 1e-12);
@@ -187,7 +188,7 @@ test("with no eyes the image is withheld loudly: the saved file, the missing rou
   assert.equal(texts(out)[1], "(image withheld for this model and not described: no vision route is configured for this run. The file is saved at evidence/n/1-screenshot.png. Receipt filed at evidence/n/00000001-look.md. The operator's fix is to give this host eyes (a vision model that accepts images), or to run a model that accepts images. Until then, work from the saved file with bash (OCR, pixel statistics, metadata).)");
   assert.equal(images(out).length, 0);
   assert.deepEqual([h.filed[0].record.status, h.filed[0].record.args.model, h.filed[0].record.body], ["failed", "no vision route", "not seen: no vision route is configured for this run"]);
-  assert.deepEqual(h.misses, [{ conversationId: "c1", tool: "read", source: "evidence/n/1-screenshot.png", code: "no_vision_route", reason: "no vision route is configured for this run", receipt: "evidence/n/00000001-look.md" }]);
+  assert.deepEqual(h.misses, [{ conversationId: "c1", tool: "read", source: "evidence/n/1-screenshot.png", code: "no_vision_route", reason: "no vision route is configured for this run", receipt: "evidence/n/00000001-look.md", record: h.filed[0].record }]);
   assert.equal(h.looks.length, 0, "a miss is not a look");
 });
 

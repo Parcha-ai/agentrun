@@ -1,0 +1,73 @@
+{
+  "name": "pdfjs-dist",
+  "version": "6.4.299",
+  "license": "Apache-2.0",
+  "source": "https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-6.4.299.tgz",
+  "integrity": "sha512-AVl138zALtfaAPvADulE0PZThbYzCBS79nL4pOSL/6Sm/4AH5A21BD9VHt97OlCuzJuCpmeZtAtkinisF4Vb1g==",
+  "usedBy": "apps/viewer: the document panel draws a PDF page with it",
+  "files": [
+    {
+      "path": "pdf.min.mjs",
+      "from": "build/pdf.min.mjs",
+      "license": "Apache-2.0",
+      "bytes": 458904,
+      "sha256": "57456c8e0c81e46be31174b499ef77f2b9f5ee46d04412ba627320a36755d4c2"
+    },
+    {
+      "path": "pdf.worker.min.mjs",
+      "from": "build/pdf.worker.min.mjs",
+      "license": "Apache-2.0",
+      "bytes": 1264342,
+      "sha256": "9536359f1b8367850d485731ca1d5e45c159a7b7a0912325e539937aa21ceb18"
+    },
+    {
+      "path": "LICENSE.txt",
+      "from": "LICENSE",
+      "license": "Apache-2.0",
+      "bytes": 10174,
+      "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+    },
+    {
+      "path": "wasm/jbig2_nowasm_fallback.js",
+      "from": "wasm/jbig2_nowasm_fallback.js",
+      "license": "BSD-3-Clause AND Apache-2.0",
+      "bytes": 152009,
+      "sha256": "68686ced624a48c42f84cdaa482ec44b72b0de4dc84a0df903af1fb7b45b5d9a"
+    },
+    {
+      "path": "wasm/LICENSE_JBIG2.txt",
+      "from": "wasm/LICENSE_JBIG2",
+      "license": "BSD-3-Clause",
+      "bytes": 12862,
+      "sha256": "9e66b7f1b934a28b37f3bc4dac97915de1674271e79a0a88182a18ed9731b4d1"
+    },
+    {
+      "path": "wasm/LICENSE_PDFJS_JBIG2.txt",
+      "from": "wasm/LICENSE_PDFJS_JBIG2",
+      "license": "Apache-2.0",
+      "bytes": 555,
+      "sha256": "aad3cce09842e00e9e11ad5e8fef8cc02fbc3a3768fe2f007443b9cee37aaee5"
+    },
+    {
+      "path": "wasm/openjpeg_nowasm_fallback.js",
+      "from": "wasm/openjpeg_nowasm_fallback.js",
+      "license": "BSD-2-Clause",
+      "bytes": 445781,
+      "sha256": "9047b34b6bc142d85e4b0aa1b08b0b9baad4c6f8b7ac87641b9e8f90eb6fd23e"
+    },
+    {
+      "path": "wasm/LICENSE_OPENJPEG.txt",
+      "from": "wasm/LICENSE_OPENJPEG",
+      "license": "BSD-2-Clause",
+      "bytes": 2112,
+      "sha256": "a6af136f3e15038a666b61f376612a07d9a4e48cb7c01adbf3e33b3f14ab49b6"
+    },
+    {
+      "path": "wasm/LICENSE_PDFJS_OPENJPEG.txt",
+      "from": "wasm/LICENSE_PDFJS_OPENJPEG",
+      "license": "BSD-2-Clause",
+      "bytes": 1285,
+      "sha256": "717fc62da03292dbb4dd0c8280bd4ce7bb8550dcf31d772bc93455fb50313425"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # What a host supplies
 
-[`examples/reference/`](../examples/reference/README.md) is one program that puts the open packages together: a
+[`@parcha/agentrun-harness`](../packages/harness/README.md), with its example job in `examples/reference/`, is one program that puts the open packages together: a
 durable pi run, the recovery driver, the workflow node runner, the browser and vision. It runs one job end to end with
 a scripted model and no key. This page says what each package asks of the host that runs it, so you can replace the
 scripted parts with your own.
@@ -11,7 +11,7 @@ npm ci --ignore-scripts && npm run build && npm run demo:reference
 
 ## The seven host functions
 
-The example declares them as one value, `Host` (`examples/reference/host.ts`). Each member feeds an option that an open
+The example declares them as one value, `Host` (`packages/harness/src/host.ts`). Each member feeds an option that an open
 package already has; none is new. The last column is what `localHost()` passes so the job needs no key.
 
 | # | Host function | Who asks for it | The type that already exists | The example passes |

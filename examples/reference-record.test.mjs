@@ -1,16 +1,20 @@
 // The recorder: the reference job run in this process with a recorder, a store read of the test's own standing in for the
 // package's export, and the recording it leaves checked by the validator. The spools of a killed process are torn at the end.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import * as validator from '../scripts/recording/validate.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { placeAt, run } from './reference/assemble.ts';
-import { localHost } from './reference/host.ts';
+import { placeAt, run } from '@parcha/agentrun-harness';
+import { localHost } from '@parcha/agentrun-harness';
 import { fakes, job } from './reference/job.ts';
-import { codeOf, finishRecording, moveImages, openRecorder, openSupervisor } from './reference/record.ts';
+import { codeOf, finishRecording, moveImages, openRecorder, openSupervisor } from '../packages/harness/dist/record.js';
+import * as scan from '../packages/harness/dist/scan.js';
 
 const lines = (dir) => readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
 
@@ -177,4 +181,145 @@ test('a process start sorts before the lines it writes at the same millisecond, 
   writeFileSync(join(circle, '.spool', 'live-2.jsonl'), JSON.stringify({ channel: 'live', source: 'workflow', kind: 'node.start', gen: 2, t: 4, seq: 0, data: {} }) + '\n');
   finishRecording(circle, { title: 't', task: 't', model: 'm', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
   assert.deepEqual(lines(circle).map((line) => line.kind), ['process.started', 'kill', 'process.started', 'pi.assistant', 'node.start']);
+});
+
+test('detach stops every watcher, one still being set up included, before it makes the last sync: a line a late watcher writes is synced', async (t) => {
+  const { syncBuiltinESMExports } = await import('node:module');
+  const fs = (await import('node:fs')).default;
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-detach-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'rec');
+  const events = [];
+  const { appendFileSync: appended, openSync: opened } = fs;
+  fs.appendFileSync = (path, ...rest) => { if (String(path).includes('live-')) events.push('append'); return appended(path, ...rest); };
+  fs.openSync = (path, flag, ...rest) => { if (flag === 'r+' && String(path).includes('live-')) events.push('sync'); return opened(path, flag, ...rest); };
+  syncBuiltinESMExports();
+  t.after(() => { fs.appendFileSync = appended; fs.openSync = opened; syncBuiltinESMExports(); });
+  // A commit that names a conversation starts a watcher; its setup takes 150 ms, and it delivers an event the moment it starts.
+  const watch = () => new Promise((resolve) => setTimeout(() => resolve({ start: (listener) => { void listener([{ type: 'turn_start' }]); }, stop: async () => undefined }), 150));
+  const withWatch = async (_input, write) => { write({ channel: 'durable', source: 'workflow', kind: 'agentrun.driver', gen: 1, commit: 1, order: 0, conv: 1, snapshot: true, data: { doc: 'agentrun.driver', value: {} } }); return async () => undefined; };
+  const recorder = openRecorder({ dir, commits: withWatch, watch });
+  await recorder.attach({ session: {}, context: {}, gen: 1 });
+  await recorder.detach();
+  assert.ok(events.includes('append'), 'the late watcher wrote its line');
+  assert.ok(events.lastIndexOf('sync') > events.lastIndexOf('append'), `the last sync came after the last write: ${events.join(',')}`);
+
+});
+
+test('a process killed while it writes a blob never leaves a torn file in blobs/: the bytes go to a temporary file in .spool/ and are renamed whole', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-blob-kill-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const bytes = 'x'.repeat(200_000);
+  const record = new URL('../packages/harness/dist/record.js', import.meta.url).href;
+  // A child that keeps one blob and is SIGKILLed at a point of the write: part-way through the bytes, or after them and before the rename.
+  const script = `
+    import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+    const die = () => process.kill(process.pid, 'SIGKILL');
+    const writeSync = fs.writeSync;
+    if (process.env.KILL_AT === 'write') fs.writeSync = (fd, data, ...rest) => { writeSync(fd, data.subarray(0, data.length / 2)); die(); };
+    if (process.env.KILL_AT === 'rename') fs.renameSync = die;
+    if (process.env.SHORT === '1') fs.writeSync = (fd, data, offset = 0) => writeSync(fd, data, offset, Math.min(1000, data.length - offset));
+    syncBuiltinESMExports();
+    const { keepBlob } = await import(${JSON.stringify(record)});
+    keepBlob(process.argv[1], Buffer.from('x'.repeat(200_000)), 'txt');`;
+  for (const at of ['write', 'rename']) {
+    const dir = join(tmp, at);
+    const child = spawnSync(process.execPath, ['--no-warnings=ExperimentalWarning', '--input-type=module', '-e', script, dir], { env: { ...process.env, KILL_AT: at } });
+    assert.equal(child.signal, 'SIGKILL', `the child was killed at ${at}: ${child.error ?? String(child.stderr).slice(0, 300)}`);
+    assert.deepEqual(readdirSync(join(dir, 'blobs')), [], `no file, torn or whole, in blobs/ after a kill at ${at}`);
+    assert.equal(readdirSync(join(dir, '.spool')).filter((name) => name.startsWith('blob-')).length, 1, 'the half-written bytes are a temporary file in .spool/');
+  }
+  // A write that returns fewer bytes than asked (a full disk, a signal) is finished, not renamed short: the blob is whole.
+  const short = join(tmp, 'short');
+  const shorted = spawnSync(process.execPath, ['--no-warnings=ExperimentalWarning', '--input-type=module', '-e', script, short], { env: { ...process.env, SHORT: '1' } });
+  assert.equal(shorted.status, 0, String(shorted.stderr));
+  const shortHash = createHash('sha256').update(bytes).digest('hex');
+  assert.equal(readFileSync(join(short, 'blobs', `${shortHash}.txt`), 'utf8'), bytes, 'every byte is there when each write took 1000');
+  // Without a kill the blob is whole under the hash of its bytes, and no temporary file is left.
+  const whole = join(tmp, 'whole');
+  const done = spawnSync(process.execPath, ['--no-warnings=ExperimentalWarning', '--input-type=module', '-e', script, whole], { env: { ...process.env } });
+  assert.equal(done.status, 0, String(done.stderr));
+  const hash = createHash('sha256').update(bytes).digest('hex');
+  assert.deepEqual(readdirSync(join(whole, 'blobs')), [`${hash}.txt`]);
+  assert.equal(readFileSync(join(whole, 'blobs', `${hash}.txt`), 'utf8'), bytes);
+  assert.deepEqual(readdirSync(join(whole, '.spool')).filter((name) => name.startsWith('blob-')), []);
+
+});
+
+test('the recorder scans before it finishes: a credential or a machine path in a line, a blob or the manifest writes no manifest', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-record-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const header = (over = {}) => ({ title: 't', task: 't', model: 'm', generations: 1, kills: 0, code: { repo: 'r', commit: 'c', packages: { '@earendil-works/pi-durable': '1.1.0', '@earendil-works/pi-ai': '1.1.0' } }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') }, ...over });
+  const secret = `sk-${'a1'.repeat(20)}`;
+  const machinePath = ['', 'home', 'someone', 'work', ''].join('/');
+  const cases = [
+    ['a line', (recorder) => recorder.live('workflow', 'node.start', { header: secret }), {}, /holds a provider secret in events\.jsonl/],
+    ['a blob', (recorder) => recorder.blob(`token ${secret}`, 'txt'), {}, /holds a provider secret in blobs\/[0-9a-f]{64}\.txt/],
+    // A JSON string in a text blob can hide the shape behind an escape; the scan decodes it, as the validator does.
+    ['an escaped key in a text blob', (recorder) => recorder.blob(`"\\u0073k-${'a1'.repeat(20)}"`, 'txt'), {}, /holds a provider secret in blobs\/[0-9a-f]{64}\.txt/],
+    // A .jsonl file need not be JSON lines: one object across several lines, none of which parses alone.
+    ['an escaped key across the lines of a .jsonl blob', (recorder) => recorder.blob(`{\n  "token": "\\u0073k-${'a1'.repeat(20)}"\n}`, 'jsonl'), {}, /holds a provider secret in blobs\/[0-9a-f]{64}\.jsonl/],
+    ['a machine path', (recorder) => recorder.live('pi', 'message_end', { cwd: machinePath }), {}, /holds a machine path in events\.jsonl/],
+    ['the manifest', () => undefined, { title: secret }, /holds a provider secret in manifest\.json/],
+  ];
+  for (const [where, act, over, message] of cases) {
+    const dir = join(tmp, where.replaceAll(' ', '-'));
+    const recorder = openRecorder({ dir });
+    recorder.host('process.started', { pid: 1 });
+    act(recorder);
+    assert.throws(() => finishRecording(dir, header(over)), message, where);
+    assert.ok(!existsSync(join(dir, 'manifest.json')), `${where}: not a finished recording`);
+  }
+  const clean = join(tmp, 'clean');
+  openRecorder({ dir: clean }).host('process.started', { pid: 1 });
+  finishRecording(clean, header());
+  assert.deepEqual(validateRecording(clean), []);
+  // A finished recording is refused before anything in it changes: its events stay the ones its manifest describes.
+  const events = readFileSync(join(clean, 'events.jsonl'), 'utf8');
+  openRecorder({ dir: clean }).live('workflow', 'node.start', { header: secret });
+  assert.throws(() => finishRecording(clean, header()), /already holds a finished recording/);
+  assert.equal(readFileSync(join(clean, 'events.jsonl'), 'utf8'), events);
+});
+
+/** A JSON Web Token made here from fake JSON, signed by nothing: the shape of a ChatGPT sign-in's access and id tokens. */
+const fakeJwt = () => `${[{ alg: 'RS256', typ: 'JWT' }, { sub: 'test-user', aud: 'https://example.invalid', exp: 0 }].map((part) => Buffer.from(JSON.stringify(part)).toString('base64url')).join('.')}.${Buffer.from('a test fixture, not a signature').toString('base64url')}`;
+/** A key in the shape Browserbase's docs show (`bb_live_...`), made here. */
+const fakeBrowserbaseKey = () => `bb_live_${'Q7x-'.repeat(6)}`;
+
+test('a JWT (a sign-in token) or a Browserbase key in a tool result, a blob or the manifest, escaped in JSON too, writes no manifest', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-record-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const header = (over = {}) => ({ title: 't', task: 't', model: 'm', generations: 1, kills: 0, code: { repo: 'r', commit: 'c', packages: { '@earendil-works/pi-durable': '1.1.0', '@earendil-works/pi-ai': '1.1.0' } }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') }, ...over });
+  const jwt = fakeJwt();
+  // As a JSON string whose raw text hides both of its `eyJ`s behind an escape.
+  const escaped = JSON.stringify(jwt).replaceAll('eyJ', '\\u0065yJ');
+  assert.equal(scan.credentialIn(escaped), undefined, 'the raw text hides it');
+  const toolResult = (text) => (recorder) => recorder.live('pi', 'tool_execution_end', { toolCallId: 'c1', toolName: 'signin', result: { content: [{ type: 'text', text }] } });
+  const cases = [
+    ['a tool result', toolResult(`signed in: ${jwt}`), {}, /holds a jwt in events\.jsonl/],
+    ['a text blob', (recorder) => recorder.blob(`token ${jwt}`, 'txt'), {}, /holds a jwt in blobs\/[0-9a-f]{64}\.txt/],
+    ['the manifest', () => undefined, { title: jwt }, /holds a jwt in manifest\.json/],
+    ['escaped in a JSON value', (recorder) => recorder.blob(`{"token": ${escaped}}`, 'json'), {}, /holds a jwt in blobs\/[0-9a-f]{64}\.json/],
+    ['a browserbase key', toolResult(`the session used ${fakeBrowserbaseKey()}`), {}, /holds a browserbase api key in events\.jsonl/],
+  ];
+  for (const [where, act, over, message] of cases) {
+    const dir = join(tmp, where.replaceAll(' ', '-'));
+    const recorder = openRecorder({ dir });
+    recorder.host('process.started', { pid: 1 });
+    act(recorder);
+    assert.throws(() => finishRecording(dir, header(over)), message, where);
+    assert.ok(!existsSync(join(dir, 'manifest.json')), `${where}: not a finished recording`);
+  }
+  // What is not one: a JWT's header alone, and the docs' own placeholder.
+  for (const text of [jwt.split('.')[0], 'BROWSERBASE_API_KEY=bb_live_...']) assert.equal(scan.credentialIn(text), undefined, text);
+});
+
+test('one scanner: the validator and the gallery\'s gate use the recorder\'s own', async () => {
+  // The validator and the gate read the scanner's source (the Pages job has no install); the recorder runs its build.
+  const source = await import('../packages/harness/src/scan.ts');
+  assert.equal(validator.credentialIn, source.credentialIn);
+  assert.equal(validator.credentialInValue, source.credentialInValue);
+  assert.match(readFileSync(new URL('../packages/harness/dist/record.js', import.meta.url), 'utf8'), /^import \{[^}]*\bcredentialInFile\b[^}]*\} from "\.\/scan\.js";$/m);
+  const gate = readFileSync(new URL('../scripts/recording/gate.mjs', import.meta.url), 'utf8');
+  assert.match(gate, /^import \{[^}]*\bcredentialInFile\b[^}]*\} from '\.\.\/\.\.\/packages\/harness\/src\/scan\.ts';$/m);
 });

@@ -20,7 +20,7 @@ async function fixture(t) {
   await write('scripts/export-source.mjs', exporter);
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
-    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-vision': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/pi-git-remote': {}, 'packages/pi-agent-learn': {},
+    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-vision': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/pi-git-remote': {}, 'packages/pi-agent-learn': {}, 'packages/harness': {},
   } }));
   await write('docs/guide.md', '# Public fixture\n');
   await write('packages/dsl/schema/workflow.schema.json', '{}\n');
@@ -57,6 +57,23 @@ test('source archives exclude website files, build output, and private review st
   await f.run();
   assert.deepEqual(await readFile(join(f.root, '.release/agentrun-dsl-source.tar.gz')), archive);
   assert.equal(await f.listing(), firstListing);
+});
+
+test('a *.local.* file is excluded and a source file named local.ts is archived', async t => {
+  const f = await fixture(t);
+  // pi-transport's `./box/*` export resolves `./box/local` to src/box/local.ts, and @parcha/agentrun-harness imports it: a source
+  // archive without it does not build. Only a name with `.local` after something (`*.local.*`, `*.local`) is a machine's own file: a
+  // directory named `local` and a name that merely starts with `.localhost` are source too.
+  const archived = ['packages/pi-transport/src/box/local.ts', 'packages/dsl/src/local.mjs', 'packages/dsl/src/local/index.mjs', 'examples/foo.localhost.ts'];
+  const excluded = ['packages/pi-transport/examples/hands.local.json', 'docs/settings.local.md', 'examples/notes.local', 'examples/.env.local', 'packages/dsl/.env.local.json'];
+  for (const path of archived) await f.write(path, 'export const box = 1;\n');
+  for (const path of excluded) await f.write(path, 'MACHINE_LOCAL_FIXTURE\n');
+  await f.run();
+  const listing = await f.listing();
+  for (const path of archived) assert.ok(listing.includes(`agentrun-dsl-source/${path}`), `${path} is archived`);
+  for (const path of excluded) assert.ok(!listing.includes(`agentrun-dsl-source/${path}`), `${path} is excluded`);
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok(receipt.exclusions.includes('*.local.*'));
 });
 
 test('an audit finding blocks the source archive without exposing its content', async t => {
@@ -142,6 +159,23 @@ test('formal model sources are archived and scanned as text; an unreviewed file 
   await assert.rejects(f.run(), /Unreviewed source-export file type: spec\/model\/Model\.toolbox/);
 });
 
+test('a PDF is archived only when one line of ASSETS.md names it with its SHA-256', async t => {
+  const f = await fixture(t);
+  const pdf = '%PDF-1.4\n% fixture\n%%EOF\n';
+  await f.write('examples/demo/sample.pdf', pdf);
+  await assert.rejects(f.run(), /Unreviewed PDF: examples\/demo\/sample\.pdf is not in ASSETS\.md with its SHA-256/);
+  await f.write('ASSETS.md', `| \`sample.pdf\` | a fixture | \`${'0'.repeat(64)}\` |\n`);
+  await assert.rejects(f.run(), /Unreviewed PDF/, 'its name with another hash is not its entry');
+  const other = '%PDF-1.4\n% another fixture\n%%EOF\n';
+  await f.write('ASSETS.md', `| \`sample.pdf\` | a fixture | \`${hash(other)}\` |\n| \`other.pdf\` | another | \`${hash(pdf)}\` |\n`);
+  await assert.rejects(f.run(), /Unreviewed PDF/, 'its name on one line and its hash on another line is not its entry');
+  await f.write('ASSETS.md', `| \`sample.pdf\` | a fixture | \`${hash(pdf)}\` |\n`);
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok((await f.listing()).includes('agentrun-dsl-source/examples/demo/sample.pdf\n'));
+  assert.equal(receipt.files.find(file => file.path === 'examples/demo/sample.pdf')?.kind, 'binary');
+});
+
 test('the code owners file is archived and scanned as text; another extensionless .github file still stops the export', async t => {
   const f = await fixture(t);
   await f.write('.github/CODEOWNERS', '* @example-owner\n');
@@ -165,7 +199,7 @@ test('inventory generation works without build output and does not produce an ar
 
 test('the dependency inventory follows the runtime graph only: a lock that changes a dev-only entry gives the same bytes, a runtime dependency changes them', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'harness'].map(name => [`packages/${name}`, {}]));
   const lock = ({ dev, runtime } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
     '': dev ? { devDependencies: { 'dev-tool': dev } } : {},
     ...workspaces,
@@ -212,4 +246,22 @@ test('the scan stays linear on a long line of host characters and still finds an
   await assert.rejects(f.run(), error => /unreviewed finding/.test(error.stderr));
   const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
   assert.ok(receipt.findings.some(finding => finding.path === 'docs/host.md' && finding.rule === 'internal_domain'));
+});
+
+test('vendored code an app keeps is listed apart, with its source, licenses and size, and a license the inventory does not take is flagged', async t => {
+  const f = await fixture(t);
+  const manifest = (license) => JSON.stringify({ name: 'some-lib', version: '1.2.3', license: 'MIT', source: 'https://registry.example.org/some-lib-1.2.3.tgz',
+    files: [{ path: 'lib.min.mjs', from: 'build/lib.min.mjs', license, bytes: 10, sha256: '0'.repeat(64) }, { path: 'LICENSE.txt', from: 'LICENSE', license: 'MIT', bytes: 5, sha256: '1'.repeat(64) }] });
+  await f.run('--inventory-only');
+  const without = await readFile(join(f.root, 'docs/dependencies.md'), 'utf8');
+  assert.doesNotMatch(without, /Vendored code/, 'no section when no app vendors code');
+  await f.write('apps/viewer/vendor/some-lib/vendored.json', manifest('MIT AND BSD-3-Clause'));
+  await f.run('--inventory-only');
+  const inventory = await readFile(join(f.root, 'docs/dependencies.md'), 'utf8');
+  assert.match(inventory, /## Vendored code/);
+  assert.match(inventory, /\| some-lib \| 1\.2\.3 \| BSD-3-Clause, MIT \| apps\/viewer\/vendor\/some-lib \| https:\/\/registry\.example\.org\/some-lib-1\.2\.3\.tgz \| 15 \|/);
+  assert.match(inventory, /No missing, restrictive, reciprocal, or unrecognized license identifiers/);
+  await f.write('apps/viewer/vendor/some-lib/vendored.json', manifest('GPL-3.0-only'));
+  await f.run('--inventory-only');
+  assert.match(await readFile(join(f.root, 'docs/dependencies.md'), 'utf8'), /\*\*some-lib@1\.2\.3:\*\* GPL-3\.0-only — Restrictive or reciprocal metadata needs release-owner review\./);
 });

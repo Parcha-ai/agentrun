@@ -19,6 +19,7 @@ const myPanel: Panel<MyState> = {
   view: (state, { t, focus, baseline }) => node,  // the screen for a state
   shows: (line) => line.kind === 'frame',          // optional: the lines a recording needs to draw this panel at all
   showsFor: (manifest) => manifest.job !== undefined, // optional: the recordings, by their manifest, it is for
+  showsResult: (result, { blobType }) => isMine(result), // optional: a result that has this panel drawn even when no line does
 };
 register(myPanel);                // when its module loads; extensions' panels show first, in this order
 ```
@@ -39,6 +40,15 @@ a recording with `transport` lines.
 A panel with `showsFor` is drawn only for a recording whose manifest it says yes to, whatever its lines: the workflow
 graph panel needs the job that ran, so a recording whose manifest names no `job` does not draw it.
 
+A panel whose story is in the run's result rather than in its lines gives `showsResult(result, { blobType })`: the
+parsed JSON a result names (the manifest's or a `result` line's). The second argument gives `blobType(sha)`, a blob's
+media type as the shell knows it (the same function views get), so a panel decides whether it shows a result by the
+same rule it draws by; a panel may ignore it. The shell asks it once, when it has read the results as the
+recording opens (and, for a run it follows, when the run delivers one), and never for a recording with no result or a
+result that is not JSON. It is pure and cheap and reads nothing of the stop: a result is the whole recording's, so a
+scrub never makes a panel appear or vanish. The document panel draws only for a result that cites a page, though every
+run's result line is one it reduces.
+
 ## What `view` returns
 
 Plain nodes, not DOM. The viewer draws them.
@@ -55,6 +65,13 @@ Plain nodes, not DOM. The viewer draws them.
   A view never reads a blob's bytes: the shell resolves the hash to a URL when it draws. The one exception is the
   result's JSON, which the shell reads and hands every view (`json`, below).
 - `{ tag: 'frame', session }`: a browser session's picture at the current point (below).
+- `{ tag: 'pdf-page', blob, page, alt, children }`: page `page` of a PDF in `blobs/`, drawn by the shell with PDF.js
+  at the width of its place and its own proportions, with `children` placed over it: give each a `box`, in percent of
+  the page as PDF.js draws it (its crop box, which is also the page pi-vision renders and cites, so a cite's
+  `xywh=percent:` is a box as it is). Until the page is drawn the shell shows that it is drawing, and when it cannot
+  draw it (a page opened from `file://` cannot load PDF.js, a file that is not a PDF, a page past the last) it says
+  why and links the file at that page; the children are drawn only over a drawn page, so a view says in its own text
+  what they mark.
 
 Any node with a `path` is clickable: a click focuses that execution path in every panel, and the viewer shows the
 focus and a way to clear it. Give a node the `path` of the workflow position it shows.
@@ -97,11 +114,16 @@ The shell gives `view` a context: `t`, the time of the current point; `focus`, t
 as unknown); `cite`, the selected citation if there is one (a node with `cite` selects it, `?cite=` opens with it, and selecting one
 moves no stop, so the screen it was clicked on stays); `json(sha)`, the parsed JSON of a blob the manifest's `result`
 or a `result` line names, or of the manifest's `job`, undefined until the shell has read it; `job`, the SHA-256 of the
-job blob when the manifest names one (`{ workflow, input, files }`, read with `json(job)`); `blobType(sha)`, a blob's media
-type from its name in `blobs/` (undefined until the shell has found it), so a view can draw a picture a result cites and link any other file; and `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
+job blob when the manifest names one (`{ workflow, input, files }`, read with `json(job)`); `blobType(sha)`, a blob's
+media type from its name in `blobs/` (undefined until the shell has found it), so a view can draw a picture a result
+cites and link any other file; `manifestResult`, the result the manifest names (`{ blob, title }`) for a recording in
+which no line delivers one, so a view that shows a result from its `result` line shows that one at every stop, labelled
+as the run's final result, since no line gives its time; and `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
 and how long it ran in ms, or null; another real recording, opened beside this one, never typed-in numbers). When
 `counters.measured` is false the recording has no durable line, so its counts are not measured and its cost is
-unknown: show that, never its zeros.
+unknown, a box's receipt notwithstanding: show that, never its zeros. `counters.costParts` is the cost by part (the
+model's usage as `lead`, `judge`, `eyes`, `browser`, and `boxes`, each box's `box.receipt` at list price); `costLabel`
+draws it as the strip does, naming the boxes apart at list price, and in a scripted run the other parts scripted.
 
 A run's result is the demo's own JSON, and two formats are known to the vision panel: `apollo11.account/1`, and the
 generic cited result `agentrun.cited/1` (RECORDING.md: rows of a label and a value, each citing a blob, a look or
@@ -168,6 +190,30 @@ The DSL's modules, `item-state.ts` (`itemState`, `partialResults`) and `graph.ts
 read from the DSL's source each time the viewer is built, never copied here: they are the only files outside
 `apps/viewer` a viewer module may import, the build inlines each in a scope of its own, and it refuses to build if one
 ever imports anything.
+
+## What a public replay shows
+
+A replay shows what the run's agent did. By default the viewer draws no part that tells a kill and a resume, and keeps
+the payments and the cost one click away. The view as it was, every part drawn, is behind `?debug=durability`, which no
+public page sets.
+
+- **Durability, not drawn.** The shell marks `durability`:
+  - the timeline's process lane, with each process, its kill, a restore and the journal's opens (the picture starts
+    below the lane);
+  - the processes, kills, repeated, asked twice and journal opens counters.
+
+  It leaves out the chapters it would make of each process start and kill, in the page and in the embed protocol's
+  `ready`; a manifest's own chapters stay. A panel marks its own such parts with the class `durability`:
+  - the vision panel: its kill and resume badges, and its kept, repeated, asked twice and possible payments meters;
+  - the workflow map: its kills, a cell's mark of a kill that cut it, and the price of chaos;
+  - the transport panel: its kills;
+  - the disk panel: a generation that ended without a holder.
+- **Receipts, one click away.** The strip's looks paid and cost sit under a disclosure, Receipts. So do the vision
+  panel's meters and the receipt of its look.
+- **A look leads with its answer.** In the vision panel's film and pages lanes, a look shows what the eyes answered and
+  the rows that cite it first. Its picture (the frames, the page with its boxes) is below, in a disclosure a click opens.
+
+A view reads the page's debug views from `ViewContext.debug` (`durability` among them in the debug view).
 
 ## A panel in full
 
@@ -262,3 +308,27 @@ a map whose body is one node are done where the record says so. The workflow map
 recording with no workflow anywhere or no durable record to ask. The tests read the DSL's graph fixtures
 (`packages/dsl/test/fixtures/graph`: six shapes, finished and cut, and the nested shape's recording),
 `test/fixtures/map-in-map` (a map inside a map's item, from the DSL's own driver) and `test/fixtures/disk-resumed`.
+
+## The run's picture
+
+The run's result so far as an image (RECORDING.md draft 31): the recording's home side draws it from the run's committed
+results and writes it as a `picture` host line, `{ blob, label?, commit? }`, with no `gen`, since no process the run can
+lose writes it. The picture panel draws the latest picture at or before the stop, a gap before the first, and keeps the
+last one after the run ends, a kill included. It is any job's picture, read from the line alone. A recording with no
+`picture` line draws no picture panel; one with pictures shows it first (`featured`), since a run that draws its result as
+it goes is about that picture. The image is drawn at the panel's width with its pixels kept sharp. Its test is
+`test/picture.test.ts`.
+
+## The document panel (`src/document.ts`)
+
+The pages of a PDF a run's result cites, each drawn whole, with every box a row cites over its page. It reads the generic
+cited result (`agentrun.cited/1`): a cite that names a blob and a page (`page=N`) is that page of that file, and a cite
+whose fragment also names a region (`page=N&xywh=percent:x,y,w,h`, pi-vision's form) is a box on it. Each page is drawn
+once (in the order the result first cites it) as a `pdf-page` node; under it, every row that cites the page, numbered,
+with its value and its box, or "no box" for a row that cites the page without a region (a mark checked and found
+absent). Each box carries its row's number, with the row's words beside it where the page is wide enough, and rows
+that cite the same region share one box. A box and a row that cite a look select it when clicked, as a citation chip does, and the
+selected one is lit. A cite whose file the shell knows to be a picture is not a page. A recording whose result cites no
+page draws no document panel (`showsResult`). PDF.js is the viewer's one dependency, shipped as its release files
+(`vendor/pdfjs/README.md`). Its test is `test/document.test.ts`, which also draws a hand-made PDF in Chrome under a
+static host's policy that loads scripts, workers and data from its own origin only.

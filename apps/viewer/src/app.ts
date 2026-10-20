@@ -1,7 +1,7 @@
 // The page: load a recording, draw its timeline and counters, and replay it. Everything on screen at a stop is a
 // reduce of the lines before that stop; the DOM is redrawn from those reduces, never patched by events.
 import { FORMAT, parseLines, processOf, under, validate, type Json, type Line, type Manifest, type Recording } from './format.ts';
-import { askedTwiceLabel, counterFold, countersOf, repeatedLabel, type Counters } from './counters.ts';
+import { askedTwiceLabel, costLabel, counterFold, countersOf, repeatedLabel, type Counters } from './counters.ts';
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
 import { animatedPanels, featuredPanel, panelsFor, type BaselineView, type Node, type Panel, type Props, type ViewContext } from './panels.ts';
 import { frameFold, gapTitle, pictureAt, type FrameState } from './frames.ts';
@@ -9,21 +9,17 @@ import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, link
 import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
 import { workflowGraphPanel } from './workflow-graph.ts';
-import { opensInPage, typeOfName } from './blobs.ts';
+import { opensInPage } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
-import { sha256Paused } from './receipt-key.ts';
+import { blobsAt, blobsNamed, bundledRecordings, fromFiles, fromUrl, openBundled, type GalleryEntry, type IndexEntry } from './load.ts';
 import { finishedManifest, placeLines, tailOf } from './follow.ts';
 import { diskPanel } from './disk.ts';
+import { picturePanel } from './picture.ts';
+import { pdfDrawer, type PdfDrawn } from './pdf.ts';
 import { transportPanel } from './transport.ts';
 import { visionPanel } from './vision.ts';
+import { documentPanel } from './document.ts';
 
-/** A bundled recording: embedded in gallery.js (its lines, and each blob as a data: URL), or, in a build that ships
- *  recordings as files, listed in `recordings/index.json` (each blob as its path in the recording's directory). */
-type GalleryEntry = { id: string; manifest: Manifest; events: string; blobs: Record<string, string> };
-type IndexEntry = { id: string; manifest: Manifest; blobs: Record<string, string> };
-declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[]; AGENTRUN_GALLERY_INDEX?: string };
-
-const BLOB_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'json', 'html', 'md', 'txt', 'pdf', 'sqlite'];
 const SPEEDS = [0.5, 1, 2, 4, 10];
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, props: { class?: string; text?: string; title?: string } = {}, ...children: (globalThis.Node | string)[]) => {
@@ -52,130 +48,6 @@ function blobLink(recording: Recording, sha: string, text: string, className: st
   return link;
 }
 
-// ---- loading ---------------------------------------------------------------------------------------------------
-
-/** A recording the index lists: its lines fetched from its directory, each blob at the path the index names. */
-async function fromIndex(entry: IndexEntry, root: string): Promise<Recording> {
-  const lines = parseLines(await (await fetch(`${root}events.jsonl`)).text());
-  const urls = Object.fromEntries(Object.entries(entry.blobs).map(([sha, path]) => [sha, new URL(path, root).href]));
-  return { id: entry.id, manifest: entry.manifest, lines, blobUrl: (sha) => urls[sha], blobType: (sha) => (urls[sha] ? typeOfName(urls[sha]!) : undefined) };
-}
-
-/** The bundled recordings: embedded in gallery.js, or listed in the index a files build ships beside them, read once and
- *  only when something needs them (a gallery, a `?r=`, a bundled baseline). */
-let bundled: Promise<(GalleryEntry | IndexEntry)[]> | undefined;
-const bundledRecordings = () => (bundled ??= window.AGENTRUN_GALLERY ? Promise.resolve(window.AGENTRUN_GALLERY)
-  : window.AGENTRUN_GALLERY_INDEX ? fetch(window.AGENTRUN_GALLERY_INDEX).then((response) => {
-    if (!response.ok) throw new Error(`${window.AGENTRUN_GALLERY_INDEX} answered ${response.status}`);
-    return response.json() as Promise<IndexEntry[]>;
-  }) : Promise.resolve([]));
-const isEmbedded = (each: GalleryEntry | IndexEntry): each is GalleryEntry => 'events' in each && typeof each.events === 'string';
-/** A bundled recording, opened from gallery.js or fetched from its directory beside the page, with that directory. */
-async function openBundled(entry: GalleryEntry | IndexEntry): Promise<{ recording: Recording; dir: string }> {
-  const dir = new URL(`recordings/${entry.id}/`, location.href).href;
-  return { recording: isEmbedded(entry) ? fromGallery(entry) : await fromIndex(entry, dir), dir };
-}
-
-function fromGallery(entry: GalleryEntry): Recording {
-  return { id: entry.id, manifest: entry.manifest, lines: parseLines(entry.events), blobUrl: (sha) => entry.blobs[sha],
-    blobType: (sha) => /^data:([^;,]+)/.exec(entry.blobs[sha] ?? '')?.[1] };
-}
-
-/** Every blob a recording names: its lines', its images', its result's. */
-export function blobsNamed(manifest: Manifest, lines: Line[]): string[] {
-  const named = new Set<string>([manifest.result?.blob, manifest.job?.blob, manifest.store?.blob].filter((sha): sha is string => sha !== undefined));
-  for (const line of lines) {
-    for (const sha of line.blobs ?? []) named.add(sha);
-    for (const match of JSON.stringify(line.data).matchAll(/"blob":"([0-9a-f]{64})"/g)) named.add(match[1]!);
-  }
-  return [...named];
-}
-
-/** The blobs of a recording at a URL: blobs/<sha>.<ext>, where the line names the hash, so the extension is found by
- *  asking. A hash not found is asked again on a later `find`, after 1, 2, 4 and up to 32 of them, so a slow writer never
- *  draws a request for every type of every missing blob on every poll. `whole`: a run still being written may serve a
- *  blob half written, so each one is read and kept only when its bytes hash to its name; one that does not is not
- *  there yet. */
-/** A blob's SHA-256 without holding the page: the browser's own digest where the page has one (a secure origin), else
- *  the viewer's, a MiB at a time. */
-async function digestOf(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
-  const subtle = globalThis.crypto?.subtle;
-  if (!subtle) return sha256Paused(bytes);
-  return [...new Uint8Array(await subtle.digest('SHA-256', bytes))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-function blobsAt(root: string, whole = false) {
-  const urls: Record<string, string> = {};
-  const types: Record<string, string | undefined> = {};
-  const texts: Record<string, string> = {};
-  const missing = new Map<string, { tries: number; at: number }>();
-  let round = 0;
-  const found = async (sha: string, url: string): Promise<boolean> => {
-    if (!whole) return (await fetch(url, { method: 'HEAD' }).catch(() => undefined))?.ok === true;
-    const response = await fetch(url, { cache: 'no-store' }).catch(() => undefined);
-    if (!response?.ok) return false;
-    // A body cut off midway is a blob not there yet: the lines that name it are drawn, and it is asked for again.
-    const body = await response.arrayBuffer().catch(() => undefined);
-    if (!body) return false;
-    const bytes = new Uint8Array(body);
-    if (await digestOf(bytes) !== sha) return false;
-    // A blob URL has the viewer's origin: a page in one must never render, so an active type becomes opaque bytes.
-    const type = typeOfName(url) ?? 'application/octet-stream';
-    urls[sha] = URL.createObjectURL(new Blob([bytes], { type: opensInPage(type) || type.startsWith('image/') ? type : 'application/octet-stream' }));
-    types[sha] = type;
-    // Its JSON is kept as read: a page served with `connect-src 'self'` may not fetch the blob: URL.
-    if (type.split(';')[0] === 'application/json') texts[sha] = new TextDecoder().decode(bytes);
-    return true;
-  };
-  return {
-    url: (sha: string) => urls[sha],
-    type: (sha: string) => (types[sha] ?? (urls[sha] ? typeOfName(urls[sha]!) : undefined)),
-    text: (sha: string): string | undefined => texts[sha],
-    /** Looks for the blobs not found yet, and those due again; says how many it found. */
-    async find(shas: readonly string[]): Promise<number> {
-      round += 1;
-      const due = [...missing].filter(([, wait]) => wait.at <= round).map(([sha]) => sha);
-      let count = 0;
-      await Promise.all([...new Set([...shas, ...due])].filter((sha) => urls[sha] === undefined).map(async (sha) => {
-        for (const ext of BLOB_TYPES) {
-          const url = `${root}blobs/${sha}.${ext}`;
-          if (await found(sha, url)) { if (!whole) urls[sha] = url; missing.delete(sha); count += 1; return; }
-        }
-        const tries = (missing.get(sha)?.tries ?? 0) + 1;
-        missing.set(sha, { tries, at: round + Math.min(32, 2 ** (tries - 1)) });
-      }));
-      return count;
-    },
-  };
-}
-
-async function fromUrl(base: string): Promise<Recording> {
-  const root = base.endsWith('/') ? base : `${base}/`;
-  const manifest = await (await fetch(`${root}manifest.json`)).json() as Manifest;
-  const lines = parseLines(await (await fetch(`${root}events.jsonl`)).text());
-  const blobs = blobsAt(root);
-  await blobs.find(blobsNamed(manifest, lines));
-  return { id: root, manifest, lines, blobUrl: blobs.url, blobType: blobs.type, find: blobs.find };
-}
-
-async function fromFiles(files: File[]): Promise<Recording> {
-  const byPath = new Map(files.map((file) => [(file.webkitRelativePath || file.name).split('/').slice(-2).join('/'), file]));
-  const find = (name: string) => [...byPath].find(([path]) => path === name || path.endsWith(`/${name}`))?.[1];
-  const manifestFile = find('manifest.json');
-  const eventsFile = find('events.jsonl');
-  if (!manifestFile || !eventsFile) throw new Error('The folder needs manifest.json and events.jsonl.');
-  const urls: Record<string, string> = {};
-  const types: Record<string, string> = {};
-  for (const [path, file] of byPath) {
-    const name = path.split('/').at(-1)!;
-    if (!path.startsWith('blobs/')) continue;
-    const sha = name.split('.')[0]!;
-    types[sha] = typeOfName(name) ?? (file.type || 'application/octet-stream');
-    // A blob URL has the viewer's origin: a page in one must never render, so an active type becomes opaque bytes.
-    urls[sha] = URL.createObjectURL(opensInPage(types[sha]) || types[sha]!.startsWith('image/') ? file : new Blob([file], { type: 'application/octet-stream' }));
-  }
-  return { id: 'dropped', manifest: JSON.parse(await manifestFile.text()) as Manifest, lines: parseLines(await eventsFile.text()), blobUrl: (sha) => urls[sha], blobType: (sha) => types[sha] };
-}
 
 // ---- the player state ------------------------------------------------------------------------------------------
 
@@ -185,6 +57,8 @@ type Player = {
   following?: boolean;
   /** A blob a view draws that the shell has not found: asks for it, and says whether it is still being looked for. */
   want?: (sha: string) => boolean;
+  /** A page of a PDF in the recording, as drawn so far (pdf.ts). */
+  pdf?: (sha: string, page: number) => PdfDrawn;
   stops: boolean[];
   lanes: Lanes;
   p: number;
@@ -213,28 +87,23 @@ function cachedReduce<S>(fold: Fold<S>, lines: Line[], p: number, cache: Map<num
 
 /** The strip. `measured`: the recording has durable lines; without them every count from the store is not measured
  *  and cost is unknown, never 0 (processes and kills still come from the supervisor's lines). */
-/** The cost on the strip: unknown when it is; a scripted run (its manifest's `providers`: at least one priced part was a
- *  fake, a cassette or a script) says so, and its zero is "$0", never "$0.0000", since that is not a provider's bill; a
- *  real run's in dollars to four places. */
-export const costLabel = (cost: number | null, lowerBound: boolean, providers?: 'real' | 'scripted'): string => {
-  if (cost === null) return 'unknown';
-  const dollars = providers === 'scripted' && cost === 0 ? '$0' : `$${cost.toFixed(4)}`;
-  return `${lowerBound ? 'at least ' : ''}${providers === 'scripted' ? `scripted, ${dollars}` : dollars}`;
-};
 
-function drawCounters(counters: Counters, measured = counters.measured, providers?: 'real' | 'scripted', following = false): HTMLElement {
+function drawCounters(counters: Counters, measured = counters.measured, providers?: 'real' | 'scripted', following = false, receiptsInline = false): HTMLElement {
   const reasked = counters.modelTurns.reasked;
   const item = (label: string, value: string, title: string, extra = '') => el('div', { class: `counter${extra}`, title }, el('span', { class: 'value', text: value }), el('span', { class: 'label', text: label }));
   const stored = (label: string, value: string, title: string, extra = '') => (measured ? item(label, value, title, extra)
-    : item(label, 'not measured', 'This recording has no durable lines: nothing from the store can be counted.'));
-  return el('div', { class: 'counters' },
+    : item(label, 'not measured', 'This recording has no durable lines: nothing from the store can be counted.', extra.includes('durability') ? ' durability' : ''));
+  // What a kill and a resume did (processes, kills, a repeat, a call asked twice, the journal's opens) is marked
+  // `durability`, drawn only with `?debug=durability`; the payments and the cost are `receipt`s, kept under one
+  // disclosure, Receipts, unless the page shows its debug view (PANELS.md, "What a public replay shows").
+  const counted = [
     stored('paid calls made', String(counters.paid.total), `Workflow effects completed: ${counters.paid.workflow}. Agent receipts: ${counters.paid.agent}. Vision looks paid: ${counters.paid.vision}.`),
     stored('looks paid', `${counters.paid.vision}${counters.vision.possible ? ` + ${counters.vision.possible} possible` : ''}`,
-      `Looks the eyes answered and billed, per look key${counters.vision.native ? `; ${counters.vision.native} the lead looked at itself, which charge nothing` : ''}.${counters.vision.possible ? ` ${counters.vision.possible} more possible: a look started in a process that ended before filing it, so no durable line shows whether it was paid, and the cost is a lower bound.` : ''}`),
+      `Looks the eyes answered and billed, per look key${counters.vision.native ? `; ${counters.vision.native} the lead looked at itself, which charge nothing` : ''}.${counters.vision.possible ? ` ${counters.vision.possible} more possible: a look started in a process that ended before filing it, so no durable line shows whether it was paid, and the cost is a lower bound.` : ''}`, ' receipt'),
     stored('repeated', `${repeatedLabel(counters)}${counters.pageActions.possible ? ` + ${counters.pageActions.possible} possible` : ''}`,
       `An applied call in a later process than an earlier applied one.${counters.repeatedNotMeasured > 0 ? ` ${counters.repeatedNotMeasured} effects report no calls: their repeats are not measured, never shown as 0.` : ''}${counters.pageActions.possible ? ` ${counters.pageActions.possible} more possible: a browser page action dispatched again after one that never showed reaching the page, so no durable line says whether it was applied twice.` : ''}${counters.pageActions.measured ? '' : ' The browser\'s page actions are not measured: its session records are an export\'s, which keeps only their latest revision.'}`,
-      counters.repeated > 0 ? ' alarm' : ''),
-    stored('asked twice', askedTwiceLabel(counters), `A call dispatched twice in one process: the model asking again.${counters.pageActions.measured ? '' : ' The browser\'s page actions are not measured: its session records are an export\'s.'}`),
+      counters.repeated > 0 ? ' alarm durability' : ' durability'),
+    stored('asked twice', askedTwiceLabel(counters), `A call dispatched twice in one process: the model asking again.${counters.pageActions.measured ? '' : ' The browser\'s page actions are not measured: its session records are an export\'s.'}`, ' durability'),
     stored(counters.inFlight > 0 ? 'unknown (in flight)' : 'unknown', counters.inFlight > 0 ? `${counters.unknown} (${counters.inFlight})` : String(counters.unknown), 'Effects admitted and never completed.'),
     stored('judge asks', String(counters.judge.answered + counters.judge.failed), `Answered ${counters.judge.answered}, failed ${counters.judge.failed}, re-asked ${counters.judge.reasked}.`),
     stored('model turns', String(counters.modelTurns.committed), 'Committed assistant turns.'),
@@ -244,53 +113,59 @@ function drawCounters(counters: Counters, measured = counters.measured, provider
         ? 'No ask start was committed to this run\'s pi.live (or its version is not one this viewer knows), so a turn asked again cannot be shown.'
         : 'Extra asks after a kill cut an ask, each counted once: proven when the cut ask had committed a partial (the model was answering), possible when only its start (the process may have died before calling the model). Only proven ones count.',
       reasked?.proven.reasks ? ' alarm' : ''),
-    item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
-    item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
-    item('cost', costLabel(counters.cost, counters.costLowerBound, providers), following ? 'A run followed while it goes: its cost is known once it finishes.' :
-      `Unknown until a durable line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}`),
-    stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact'),
-  );
+    item('processes', String(counters.processes), 'From the supervisor\'s process lines.', ' durability'),
+    item('kills', String(counters.kills), 'From the supervisor\'s kill lines.', ' durability'),
+    item('cost', costLabel(counters.cost, counters.costLowerBound, providers, counters.costParts), following ? 'A run followed while it goes: its cost is known once it finishes.' :
+      `Unknown until a line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}${counters.costParts.boxes !== undefined ? ' Boxes: each box\'s time at its provider\'s published list price, an estimate, not the provider\'s invoice; unknown while a box has no receipt or its kind has no published price.' : ''}`, ' receipt'),
+    stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact durability'),
+  ];
+  if (receiptsInline) return el('div', { class: 'counters' }, ...counted);
+  const receipts = counted.filter((node) => node.classList.contains('receipt'));
+  return el('div', { class: 'counters' }, ...counted.filter((node) => !receipts.includes(node)), el('details', { class: 'receipts' }, el('summary', { text: 'Receipts' }), ...receipts));
 }
 
-function drawTimeline(player: Player, onScrub: (t: number) => void, onFocus: (path: string) => void): SVGSVGElement {
+function drawTimeline(player: Player, onScrub: (t: number) => void, onFocus: (path: string) => void, hideDurability = false): SVGSVGElement {
   const { lanes } = player;
   const width = 1000;
-  const rows = [{ name: 'process', y: 18 }, { name: 'calls', y: 70 }, { name: 'model turns', y: 120 }];
-  const svg = svgEl('svg', { viewBox: `0 0 ${width} 160`, class: 'timeline', role: 'img', 'aria-label': 'The run over time' }) as SVGSVGElement;
+  // The process lane (each process, its kill, a restore, the journal's opens) is marked `durability`; with
+  // `&hide=durability` it is hidden and the picture starts below it.
+  const rows = [{ name: 'process', y: 18, durability: true }, { name: 'calls', y: 70 }, { name: 'model turns', y: 120 }];
+  const svg = svgEl('svg', { viewBox: hideDurability ? `0 58 ${width} 102` : `0 0 ${width} 160`, class: 'timeline', role: 'img', 'aria-label': 'The run over time' }) as SVGSVGElement;
+  const marked = (name: string, durability = true) => (durability ? `${name} durability` : name);
   const x = (t: number) => 90 + (lanes.end > 0 ? (t / lanes.end) * (width - 100) : 0);
   for (const row of rows) {
-    const label = svgEl('text', { x: 4, y: row.y + 14, class: 'lane-label' });
+    const label = svgEl('text', { x: 4, y: row.y + 14, class: marked('lane-label', row.durability === true) });
     label.textContent = row.name;
-    svg.append(label, svgEl('line', { x1: 90, x2: width - 10, y1: row.y + 26, y2: row.y + 26, class: 'lane-rule' }));
+    svg.append(label, svgEl('line', { x1: 90, x2: width - 10, y1: row.y + 26, y2: row.y + 26, class: marked('lane-rule', row.durability === true) }));
   }
   for (const band of lanes.processes) {
-    const rect = svgEl('rect', { x: x(band.from), y: 18, width: Math.max(2, x(band.to) - x(band.from)), height: 22, rx: 4, class: `band band-${band.process % 4}` });
+    const rect = svgEl('rect', { x: x(band.from), y: 18, width: Math.max(2, x(band.to) - x(band.from)), height: 22, rx: 4, class: marked(`band band-${band.process % 4}`) });
     const title = svgEl('title', {}); title.textContent = `process ${band.process}`; rect.append(title);
     svg.append(rect);
-    const name = svgEl('text', { x: x(band.from) + 6, y: 33, class: 'band-label' }); name.textContent = `process ${band.process}`;
+    const name = svgEl('text', { x: x(band.from) + 6, y: 33, class: marked('band-label') }); name.textContent = `process ${band.process}`;
     svg.append(name);
     if (band.kill) {
       // The label in full where it fits before the next kill; else the kill's number, with the label on hover.
       const full = `killed: ${band.kill.label}`;
       const next = lanes.processes.find((other) => other.kill && other.kill.t > band.kill!.t)?.kill?.t;
       const fits = next === undefined ? x(band.kill.t) + full.length * 6.5 < width : x(next) - x(band.kill.t) > full.length * 6.5 + 10;
-      const mark = svgEl('rect', { x: x(band.kill.t), y: 14, width: 3, height: 30, class: 'kill' });
+      const mark = svgEl('rect', { x: x(band.kill.t), y: 14, width: 3, height: 30, class: marked('kill') });
       const hover = svgEl('title', {}); hover.textContent = `${full}${band.kill.crossing ? ` (crossing ${band.kill.crossing})` : ''}`; mark.append(hover);
       svg.append(mark);
-      const label = svgEl('text', { x: x(band.kill.t) + 6, y: 56, class: 'kill-label' });
+      const label = svgEl('text', { x: x(band.kill.t) + 6, y: 56, class: marked('kill-label') });
       label.textContent = fits ? full : `k${band.process}`;
       label.append(hover.cloneNode(true));
       svg.append(label);
     }
   }
   for (const restore of lanes.restores) {
-    svg.append(svgEl('line', { x1: x(restore.t), x2: x(restore.t), y1: 8, y2: 156, class: 'restore' }));
-    const label = svgEl('text', { x: x(restore.t) + 4, y: 66, class: 'restore-label' });
+    svg.append(svgEl('line', { x1: x(restore.t), x2: x(restore.t), y1: 8, y2: 156, class: marked('restore') }));
+    const label = svgEl('text', { x: x(restore.t) + 4, y: 66, class: marked('restore-label') });
     label.textContent = `restored to commit ${restore.to}: what came after it is a lost branch`;
     svg.append(label);
   }
   for (const open of lanes.opens) {
-    const tick = svgEl('rect', { x: x(open.t), y: 41, width: 1.5, height: 6, class: 'open-tick' });
+    const tick = svgEl('rect', { x: x(open.t), y: 41, width: 1.5, height: 6, class: marked('open-tick') });
     const title = svgEl('title', {}); title.textContent = `journal opened (generation ${open.generation})`; tick.append(title);
     svg.append(tick);
   }
@@ -332,6 +207,23 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
   }
   if (node.tag === 'a' && 'blob' in node && 'text' in node) {
     return blobLink(player.recording, node.blob, node.text, node.class ?? 'blob', 'fragment' in node ? node.fragment : undefined) ?? el('span', { class: 'missing', text: `[${node.text}: ${player.want?.(node.blob) || player.following ? 'loading' : 'not in this recording'}]` });
+  }
+  if (node.tag === 'pdf-page' && 'page' in node) {
+    // The page is placed as drawn, at its own proportions, so a child's box in percent lands where it names on it.
+    const holder = el('div', { class: node.class ?? 'pdf-page' });
+    const drawn = player.recording.blobUrl(node.blob) ? player.pdf?.(node.blob, node.page) : undefined;
+    if (drawn?.kind === 'drawn') {
+      holder.style.aspectRatio = `${drawn.w} / ${drawn.h}`;
+      holder.append(Object.assign(el('img', { class: 'pdf-picture' }), { src: drawn.url, alt: node.alt }));
+      for (const child of node.children ?? []) holder.append(renderNode(child, player, frames, t, onFocus, onCite));
+      return holder;
+    }
+    holder.classList.add('pdf-wait');
+    const missing = !player.recording.blobUrl(node.blob);
+    holder.append(el('span', { text: missing ? `[${node.alt}: ${player.want?.(node.blob) || player.following ? 'loading' : 'not in this recording'}]`
+      : drawn?.kind === 'failed' ? `${node.alt} could not be drawn: ${drawn.reason}` : `drawing ${node.alt}` }));
+    if (drawn?.kind === 'failed') { const link = blobLink(player.recording, node.blob, `open ${node.alt}`, 'blob', `page=${node.page}`); if (link) holder.append(' ', link); }
+    return holder;
   }
   if (node.tag === 'frame' && 'session' in node) {
     const picture = pictureAt(frames, node.session, t);
@@ -463,11 +355,12 @@ export function baselineViewOf(label: string, other: Recording): BaselineView {
 /** What the shell hands a panel's view at a stop: the time, the run's own providers (`real` or `scripted`) when its manifest says, and
  *  the view inputs it holds: the focus, the baseline the manifest names, the selected citation, the result's JSON blobs read so far, and the
  *  playback clock (`now`, the time of the point at a stop). */
-export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number; following?: boolean; blobType?: (sha: string) => string | undefined } = {}): ViewContext {
-  const { focus, baseline, cite, json, now, following, blobType } = inputs;
+export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number; following?: boolean; blobType?: (sha: string) => string | undefined; debug?: readonly string[]; delivered?: boolean } = {}): ViewContext {
+  const { focus, baseline, cite, json, now, following, blobType, debug, delivered } = inputs;
   return { t, now: now ?? t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}),
     ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}), ...(following ? { following: true as const } : {}),
-    ...(typeof manifest.job?.blob === 'string' ? { job: manifest.job.blob } : {}), ...(blobType ? { blobType } : {}) };
+    ...(typeof manifest.job?.blob === 'string' ? { job: manifest.job.blob } : {}), ...(blobType ? { blobType } : {}), ...(debug && debug.length ? { debug } : {}),
+    ...(delivered === false && manifest.result ? { manifestResult: manifest.result } : {}) };
 }
 
 /** The chapter a point is in: the one with the greatest stop at or before it (a manifest's chapters keep the order it
@@ -538,6 +431,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const looked = new Map<string, boolean>();
   const wanted = new Set<string>();
   if (recording.find) player.want = (sha) => { if (!looked.has(sha)) wanted.add(sha); return looked.get(sha) !== true; };
+  player.pdf = pdfDrawer(recording, () => draw());
   const findWanted = () => {
     const due = [...wanted];
     wanted.clear();
@@ -570,15 +464,19 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   if (opened !== undefined) player.p = head.seekTime(opened);
   player.focus = params.get('focus') ?? undefined;
   player.cite = citeParam ?? undefined;
-  let json: Map<string, Json> | undefined;
+  // A public replay (PANELS.md, "What a public replay shows") draws no part marked `durability` (the process lane, the
+  // kills, a repeat, the journal's opens), no chapter made of a process or a kill, and keeps the payments and the cost
+  // under Receipts. `?debug=durability` shows all of it as it is: a view no public page sets.
+  const debug = (params.get('debug') ?? '').split(',').map((each) => each.trim()).filter((each) => each !== '');
+  const showDurability = debug.includes('durability');
 
   // The manifest's chapters when it names them; else each process start, each kill, and the end (while a run is followed,
-  // its end so far).
+  // its end so far). With durability hidden, the derived ones are the end alone.
   const chaptersOf = (): { title: string; p: number; focus?: string }[] => (recording.manifest.chapters && !following
     ? recording.manifest.chapters.map((chapter) => ({ title: chapter.title, p: afterCommit(chapter.at.commit, chapter.at.gen), ...(chapter.focus ? { focus: chapter.focus } : {}) }))
     : [
-      ...lines.flatMap((line, index) => (line.source === 'host' && line.kind === 'process.started' ? [{ title: `process ${processOf(line)} starts`, p: index + 1 }] : [])),
-      ...lines.flatMap((line, index) => (line.source === 'host' && line.kind === 'kill' ? [{ title: `killed: ${(line.data as { label?: string }).label ?? ''}`, p: snap(player.stops, index) }] : [])),
+      ...lines.flatMap((line, index) => (showDurability && line.source === 'host' && line.kind === 'process.started' ? [{ title: `process ${processOf(line)} starts`, p: index + 1 }] : [])),
+      ...lines.flatMap((line, index) => (showDurability && line.source === 'host' && line.kind === 'kill' ? [{ title: `killed: ${(line.data as { label?: string }).label ?? ''}`, p: snap(player.stops, index) }] : [])),
       { title: following ? 'now' : 'the end', p: last },
     ].sort((a, b) => a.p - b.p));
   let chapters = chaptersOf();
@@ -586,6 +484,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   let restored = player.lanes.restores.length > 0;
   // With no durable line anywhere, nothing from the store is measured; before a recording's first one, its zeros are true.
   let measured = lines.some((line) => line.channel === 'durable');
+  /** Whether a line of the recording delivers a result: when none does, a view shows the one its manifest names. */
+  let delivered = lines.some((line) => line.source === 'host' && line.kind === 'result');
   let baseline: BaselineView | undefined;
   const baselineRow = el('div', { class: 'baseline' });
 
@@ -597,7 +497,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const { manifest } = recording;
     if (following) return { header: el('header', {}, el('h1', { text: manifest.title }), el('p', { class: 'meta' }, `following ${live!.url} · `, liveStatus)), problemsNote: undefined };
     const header = el('header', {}, el('h1', { text: manifest.title }), el('p', { class: 'meta', text:
-      `${manifest.task} · ${manifest.model} · ${manifest.generations} process${manifest.generations === 1 ? '' : 'es'} · ${manifest.kills} kill${manifest.kills === 1 ? '' : 's'}${manifest.providers ? ` · ${manifest.providers} providers` : ''} · recorded ${manifest.recorded.started} · code ${manifest.code.commit.slice(0, 8)}` }));
+      `${manifest.task} · ${manifest.model}${manifest.providers ? ` · ${manifest.providers} providers` : ''} · recorded ${manifest.recorded.started} · code ${manifest.code.commit.slice(0, 8)}` }));
     if (live) header.append(el('p', { class: 'meta' }, `followed live from ${live.url} · `, liveStatus));
     const problemsNote = problems.length ? el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }) : undefined;
     if (problemsNote && !embedded) header.append(problemsNote);
@@ -630,10 +530,14 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const controls = el('div', { class: 'controls' }, el('button', { text: 'previous commit' }), playButton, el('button', { text: 'next commit' }), speed, range, position);
   // The first registered panel that calls itself featured for this recording is shown first, with the controls right under it; the rest follow as before.
   // The panels this recording draws, judged once over all its lines: a panel with nothing here never shows, not even its title.
-  let shown = panelsFor(lines, recording.manifest);
+  let json: Map<string, Json> | undefined;
+  /** The results read so far (the job's blob is not one): a panel may be drawn for its recording's result (`showsResult`). */
+  const results = () => [...(json?.entries() ?? [])].filter(([sha]) => sha !== recording.manifest.job?.blob).map(([, value]) => value);
+  let shown = panelsFor(lines, results(), (sha) => recording.blobType(sha), recording.manifest);
   let featured = featuredPanel(shown, lines);
   const featuredBox = el('div', { class: 'featured' });
   if (embedded) document.documentElement.classList.add('embed');
+  if (!showDurability) document.documentElement.classList.add('hide-durability');
   const layout = () => {
     const top = embedded ? (problemsNote ? [problemsNote] : []) : [header];
     if (featured) root.replaceChildren(...top, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
@@ -672,8 +576,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const counterState = cachedReduce(counterFold, lines, player.p, cacheOf(counterFold) as Map<number, never>);
     // A run that goes has no cost yet: what its lines have priced so far is short by every call still paying.
     const counted = countersOf(counterState, player.p === last && !following);
-    counters.replaceChildren(drawCounters(following ? { ...counted, cost: null, costLowerBound: false } : counted, measured, recording.manifest.providers, following));
-    timeline.replaceChildren(drawTimeline(player, (at) => scrubTo(stopAt(lines, player.stops, at)), setFocus));
+    counters.replaceChildren(drawCounters(following ? { ...counted, cost: null, costLowerBound: false } : counted, measured, recording.manifest.providers, following, showDurability));
+    timeline.replaceChildren(drawTimeline(player, (at) => scrubTo(stopAt(lines, player.stops, at)), setFocus, !showDurability));
     range.value = String(player.p);
     const line = lines[player.p - 1];
     position.textContent = player.p === 0 ? 'before the first line' : `${(t / 1000).toFixed(2)} s · ${line?.channel === 'durable' ? `after commit ${line.commit}${restored ? ` of generation ${line.gen}` : ''}` : `${line?.kind}`} · line ${player.p} of ${last}`;
@@ -714,7 +618,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const drawn = (panel: Panel<unknown>) => {
       const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
       const section = el('section', { class: 'panel' }, el('h3', { text: panel.title }),
-        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json, now: head.clock, following, blobType: (sha) => recording.blobType(sha) })), player, frames, t, setFocus, setCite));
+        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json, now: head.clock, following, blobType: (sha) => recording.blobType(sha), debug, delivered })), player, frames, t, setFocus, setCite));
       sections.set(panel.id, section);
       return section;
     };
@@ -771,7 +675,17 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     }
   }
   draw();
-  const readResults = () => void resultJson(recording).then((read) => { if (read.size) { json = read; draw(); } });
+  /** The panels for the recording, worked out again when what decides them changes: its lines, or a result read. */
+  // A panel the manifest decides on (`showsFor`) is drawn once the finished run's manifest is in.
+  const choosePanels = () => {
+    const now = panelsFor(lines, results(), (sha) => recording.blobType(sha), recording.manifest);
+    const nowFeatured = featuredPanel(now, lines);
+    const moved = nowFeatured !== featured;
+    shown = now;
+    featured = nowFeatured;
+    if (moved) layout();
+  };
+  const readResults = () => void resultJson(recording).then((read) => { if (read.size) { json = read; choosePanels(); draw(); } });
   readResults();
   const readBaseline = () => {
     if (!recording.manifest.baseline) return;
@@ -779,7 +693,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     baselineOf(recording, base).then((loaded) => {
       baseline = loaded;
       baselineRow.replaceChildren(loaded
-        ? el('div', {}, el('p', { class: 'meta', text: `Beside it, ${loaded.label}, at its end:` }), drawCounters(loaded.counters, loaded.counters.measured, loaded.providers))
+        ? el('div', {}, el('p', { class: 'meta', text: `Beside it, ${loaded.label}, at its end:` }), drawCounters(loaded.counters, loaded.counters.measured, loaded.providers, false, showDurability))
         : el('p', { class: 'meta', text: `Baseline ${recording.manifest.baseline!.label}: not available here` }));
       draw();
     }).catch(() => baselineRow.replaceChildren(el('p', { class: 'meta', text: `Baseline ${recording.manifest.baseline!.label}: could not be opened` })));
@@ -806,14 +720,9 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     chapters = chaptersOf();
     restored = player.lanes.restores.length > 0;
     measured = lines.some((line) => line.channel === 'durable');
+    delivered = lines.some((line) => line.source === 'host' && line.kind === 'result');
     range.max = String(last);
-    // A panel the manifest decides on (`showsFor`) is drawn once the finished run's manifest is in.
-    const now = panelsFor(lines, recording.manifest);
-    const nowFeatured = featuredPanel(now, lines);
-    const moved = nowFeatured !== featured;
-    shown = now;
-    featured = nowFeatured;
-    if (moved) layout();
+    choosePanels();
   };
   return {
     grow(fresh, found = false) {
@@ -859,8 +768,9 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
 
 function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly { id: string; manifest: Manifest }[], unread?: string) {
   const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {
-    const link = Object.assign(el('a', { text: entry.manifest.title }), { href: `?r=${encodeURIComponent(entry.id)}` });
-    return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.generations} process${entry.manifest.generations === 1 ? '' : 'es'}, ${entry.manifest.kills} kill${entry.manifest.kills === 1 ? '' : 's'}, ${entry.manifest.model}` }));
+    // A demo opens in the chat + report view; its inspection is ./?r=<id>, linked from there.
+    const link = Object.assign(el('a', { text: entry.manifest.title }), { href: `chat.html?r=${encodeURIComponent(entry.id)}` });
+    return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.model}` }));
   }));
   const picker = Object.assign(el('input'), { type: 'file', multiple: true }) as HTMLInputElement;
   picker.setAttribute('webkitdirectory', '');
@@ -885,7 +795,7 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entr
     }
     onOpen(await fromFiles(files));
   });
-  root.replaceChildren(el('header', {}, el('h1', { text: 'agentrun run viewer' }), el('p', { class: 'meta', text: 'Replays a run recorded as agentrun.recording/1: every process, every kill, every commit.' })),
+  root.replaceChildren(el('header', {}, el('h1', { text: 'agentrun run viewer' }), el('p', { class: 'meta', text: 'Replays a run recorded as agentrun.recording/1.' })),
     el('h2', { text: 'Recordings' }), unread !== undefined ? el('p', { class: 'problems', text: `The gallery could not be read (${unread}); a recording folder can still be opened below.` })
       : entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), drop);
 }
@@ -902,7 +812,7 @@ async function followRun(target: string, root: HTMLElement, params: URLSearchPar
   const base = url.href;
   const tail = tailOf(`${base}events.jsonl`);
   const blobs = blobsAt(base, true);
-  const recording: Recording = { id: base, lines: [], blobUrl: blobs.url, blobType: blobs.type, heldText: blobs.text, find: blobs.find, manifest: {
+  const recording: Recording = { id: base, lines: [], blobUrl: blobs.url, blobType: blobs.type, heldText: blobs.text, heldBytes: blobs.bytes, find: blobs.find, manifest: {
     format: FORMAT, title: 'A run, followed live', task: '', recorded: { started: '', ended: '' }, code: { repo: '', commit: '', packages: {} },
     model: '', generations: 0, kills: 0, cost: { usd: null, parts: {} }, source: { run: '', store_sha256: '' },
   } };

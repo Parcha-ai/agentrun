@@ -33,6 +33,7 @@ export type ModelsDoor = {
   completeSimple(model: CatalogModel, context: { messages: { role: "user"; content: Block[]; timestamp: number }[] }, options?: { signal?: AbortSignal; reasoning?: string }): Promise<Answer>;
 };
 
+/** What `modelsEyes` takes: the thinking level, the timeout, limits over the model's own, and what the route accepts beyond the catalog's `input`. */
 export type ModelsEyesOptions = {
   /** pi's thinking level for the look; `off` and absent are `low`. */
   readonly thinking?: string;

@@ -2,7 +2,7 @@
 // kill (agentrun's reference demo) is the same for every place; the place decides how. `localPlace` runs the instance on
 // a directory of this machine (`run --dir`, no disk and no key); `archilPlace` runs it on an Archil disk through a host
 // driver, mints each attempt's mount token itself and takes the run over after a kill. The types match the reference's
-// place seam (examples/reference/place.ts) structurally. The supervisor reads nothing under the run's directory: the
+// place seam (@parcha/agentrun-harness/place) structurally. The supervisor reads nothing under the run's directory: the
 // outcome, the run's record and its delegations come through the place.
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -36,9 +36,10 @@ export type PlaceKill = "process" | "box";
 export type PlacePaths = { id: string; root: string; work: string; store: string };
 /**
  * How the run stood when a runner ended: the instance's own report, or `run.json` as it left it. `status` is the run's
- * word: `complete` when it delivered, else `failed`.
+ * word: `complete` when it delivered, else `failed`. `models`, on any status: the role-to-model ids the run's live parts
+ * chose (`lead`, `eyes`, ...), when the app reported a plain object of strings; absent otherwise, never `{}` in its place.
  */
-export type PlaceOutcome = { status: string; generation: number | null; code?: string | null; message?: string; record?: unknown; storeSha256?: string };
+export type PlaceOutcome = { status: string; generation: number | null; code?: string | null; message?: string; record?: unknown; storeSha256?: string; models?: Record<string, string> };
 /** How a runner ended. `exit`: the exit code or signal (local), or the host's status (`stopped`, `failed`, `gone`) or `SIGKILL` when the place killed it (archil). */
 export type PlaceExit = { exit: number | string | null; signal: string | null; outcome?: PlaceOutcome; stderr: string };
 /** One instance of the run in a place. `epoch`: 1 on a plain directory; on a disk, the generation the instance opens. */
@@ -165,6 +166,7 @@ function outcomeOf(record: RunRecord | null | undefined): PlaceOutcome | undefin
   if (!record) return undefined;
   const detail = record.detail !== null && typeof record.detail === "object" && !Array.isArray(record.detail) ? (record.detail as Record<string, unknown>) : {};
   const delivered = record.status === "done" && "record" in detail && detail.record !== null && detail.record !== undefined;
+  const models = modelsOf(detail.models);
   return {
     status: delivered ? "complete" : "failed",
     generation: record.generation,
@@ -172,7 +174,20 @@ function outcomeOf(record: RunRecord | null | undefined): PlaceOutcome | undefin
     ...(typeof detail.message === "string" ? { message: detail.message } : {}),
     ...("record" in detail ? { record: detail.record } : {}),
     ...(typeof detail.storeSha256 === "string" ? { storeSha256: detail.storeSha256 } : {}),
+    ...(models ? { models } : {}),
   };
+}
+
+/**
+ * The role-to-model ids an outcome carries: a copy of `value` when it is a plain object whose values are all strings,
+ * else undefined, so a malformed report is left out and never stands in as `{}`.
+ */
+function modelsOf(value: unknown): Record<string, string> | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const proto: unknown = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return undefined;
+  const entries = Object.entries(value);
+  return entries.every(([, id]) => typeof id === "string") ? (Object.fromEntries(entries) as Record<string, string>) : undefined;
 }
 
 const pathsUnder = (id: string, root: string): PlacePaths => ({ id, root, work: join(root, "work"), store: join(root, "store") });
@@ -414,12 +429,18 @@ function requestIn(text: string): RequestCrossing | undefined {
   }
 }
 
-/** The `outcome` of a `{"outcome":{...}}` line with at least a status; undefined for any other line. */
+/**
+ * The `outcome` of a `{"outcome":{...}}` line with at least a status; undefined for any other line. Its `models` stays
+ * only when it is a plain object of strings (`modelsOf`), as `run.json`'s does.
+ */
 function outcomeLine(line: string): PlaceOutcome | undefined {
   if (!line.startsWith("{")) return undefined;
   try {
     const parsed = JSON.parse(line) as { outcome?: PlaceOutcome };
-    return parsed.outcome && typeof parsed.outcome === "object" && typeof parsed.outcome.status === "string" ? parsed.outcome : undefined;
+    if (!parsed.outcome || typeof parsed.outcome !== "object" || typeof parsed.outcome.status !== "string") return undefined;
+    const { models: reported, ...outcome } = parsed.outcome as PlaceOutcome & { models?: unknown };
+    const models = modelsOf(reported);
+    return models ? { ...outcome, models } : outcome;
   } catch {
     return undefined;
   }

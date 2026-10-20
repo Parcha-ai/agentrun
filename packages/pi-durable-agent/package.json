@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-durable-agent",
-  "version": "0.1.0-beta.15",
+  "version": "0.1.0-beta.18",
   "private": true,
   "description": "An agent you can carry: its definition, sign-ins and runs, as one directory of pi-durable stores.",
   "keywords": [
@@ -56,8 +56,8 @@
     "@earendil-works/chord": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
     "@earendil-works/pi-durable": "1.1.0",
-    "@parcha/pi-browser": "0.1.0-beta.15",
-    "@parcha/pi-durable-disk": "0.1.0-beta.15"
+    "@parcha/pi-browser": "0.1.0-beta.18",
+    "@parcha/pi-durable-disk": "0.1.0-beta.18"
   },
   "repository": {
     "type": "git",

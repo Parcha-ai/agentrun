@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-serve",
-  "version": "0.1.0-beta.15",
+  "version": "0.1.0-beta.18",
   "private": true,
   "description": "The Agentrun v2 API on your own machine: agent homes and their runs, served on loopback.",
   "keywords": [
@@ -44,8 +44,8 @@
     "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
   },
   "dependencies": {
-    "@parcha/pi-durable-agent": "0.1.0-beta.15",
-    "@parcha/pi-durable-disk": "0.1.0-beta.15"
+    "@parcha/pi-durable-agent": "0.1.0-beta.18",
+    "@parcha/pi-durable-disk": "0.1.0-beta.18"
   },
   "peerDependencies": {
     "@earendil-works/chord": ">=1.1.0 <1.4.0",

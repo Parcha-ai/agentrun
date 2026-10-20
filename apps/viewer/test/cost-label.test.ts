@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
-import { costLabel } from '../src/app.ts';
+import { costLabel } from '../src/counters.ts';
 
 const chrome = process.env.CHROME_PATH ?? '/usr/bin/google-chrome';
 
