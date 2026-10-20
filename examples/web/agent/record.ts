@@ -1,14 +1,14 @@
-// The run's recording, when `RECORD_DIR` names a new or empty directory: agentrun.recording/1 (apps/viewer/RECORDING.md),
-// written by the reference package's recorder inside the run. It holds the store's lines (pi's messages and every
-// document, none dropped) and pi's live events, each at the time it was seen, and the frames the browser showed while
-// nobody else drove it. Before any line is written: the Browserbase key, the browser profile's id (a context id, or a
-// Chrome profile's path), each live view and each word `RECORD_REDACT` names become `[redacted]`, each browser
-// session's id a label of its hash (a session's lines and its frames still read as one session), any `token=` value
-// `[redacted]`, every `liveView` in a document null, and the run's own machine is scrubbed (#733). The ids are learned
-// where they arise, from the provider and the profile, before anything commits them. When the run lets go, each
-// session's frames become a WebM (`frame.track`); start-run.mjs finishes the recording once the run has exited
-// (`finishRunRecording`): the run's `report/` as `manifest.artifact` (the host's "What I remember" page its entry), the
-// manifest, and the scans.
+// The run's recording, when `RECORD_DIR` names a new or empty directory: agentrun.recording/1
+// (apps/viewer/RECORDING.md), written by the reference package's recorder inside the run. It holds the store's lines
+// (pi's messages and every document, none dropped) and pi's live events, each at the time it was seen, and the frames
+// the browser showed while nobody else drove it. Before any line is written: the Browserbase key and project id, the
+// browser profile's id (a context id, or a Chrome profile's path), each live view and each word `RECORD_REDACT` names
+// become `[redacted]`, each browser session's id a label of its hash (a session's lines and its frames still read as
+// one session), any `token=` value `[redacted]`, every `liveView` in a document null, and the run's own machine is
+// scrubbed (#733). The ids are learned where they arise, from the provider and the profile, before anything commits
+// them. When the run lets go, each session's frames become a WebM (`frame.track`); start-run.mjs finishes the recording
+// once the run has exited (`finishRunRecording`): the run's `report/` as `manifest.artifact` (the host's "What I
+// remember" page its entry), the manifest, and the scans.
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { codeOf, cost, finishRecording, openRecorder, openSupervisor, packageCommitRecorder, redactorOf, runScrub, scanPlaced, scanRecording, type Secret, type Supervisor } from "@parcha/agentrun-reference";
@@ -37,8 +37,10 @@ type CommitRecorder = NonNullable<Parameters<typeof openRecorder>[0]["commits"]>
 
 const idsOf = (env: NodeJS.ProcessEnv): Ids => {
   const ids: Ids = { secrets: new Map(), browser: browserIds() };
-  const key = env.BROWSERBASE_API_KEY;
-  if (key && key.length >= MIN_KEY) ids.secrets.set(key, { key: "BROWSERBASE_API_KEY", value: key });
+  for (const name of ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"]) {
+    const value = env[name];
+    if (value && value.length >= MIN_KEY) ids.secrets.set(value, { key: name, value });
+  }
   // Words the person types that a page may also print (a practice site's shared account).
   const words: unknown = env.RECORD_REDACT ? JSON.parse(env.RECORD_REDACT) : [];
   if (!Array.isArray(words) || !words.every((word) => typeof word === "string" && word.length > 0)) throw new Error("RECORD_REDACT is a JSON array of strings");
@@ -210,5 +212,7 @@ export async function finishRunRecording(options: { dir: string; run: string; en
     throw error;
   }
   const kinds = readFileSync(join(dir, "events.jsonl"), "utf8").split("\n").filter(Boolean).map((line) => (JSON.parse(line) as { kind: string }).kind);
-  return { lines, frames: kinds.filter((kind) => kind === "frame").length, tracks: kinds.filter((kind) => kind === "frame.track").length, artifact: artifact ? Object.keys(artifact.files) : [] };
+  // What the scan looked for, by name only: each is in no file of the recording.
+  const scanned = [...new Set(secretsOf(ids).map((secret) => secret.key))];
+  return { lines, frames: kinds.filter((kind) => kind === "frame").length, tracks: kinds.filter((kind) => kind === "frame.track").length, artifact: artifact ? Object.keys(artifact.files) : [], scanned };
 }

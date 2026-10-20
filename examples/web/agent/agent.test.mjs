@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { chmod, cp, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -21,7 +21,7 @@ import { archilEnv } from '@parcha/pi-durable-disk';
 import { frameRecorder } from '@parcha/pi-browser/recorder';
 import { fakeCdp, jpeg as fakeJpeg } from '../../../packages/pi-browser/test/fixtures/fake-cdp.mjs';
 import { browserOptions, createAgent, liveOf, NO_LOCAL_VIEW, PROFILE, promptOf, signInAsked, signInSite, toolsOf } from './app.ts';
-import { CHROME_PROFILE, chromeArgs, chromeProfileFor, startChrome } from './chrome.ts';
+import { CHROME_PROFILE, chromeArgs, chromeProfileFor, listsBrowser, startChrome } from './chrome.ts';
 import { frameStore } from './frames.ts';
 import { ensureAgentHome } from './home.mjs';
 
@@ -448,4 +448,52 @@ test('a stop while the run\'s Chrome starts ends that Chrome by its pid, and the
   const ended = await new Promise((resolve) => launcher.once('exit', (code, signal) => resolve(code ?? signal)));
   assert.equal(ended, 1, 'the launcher exits on its own, after its cleanup');
   assert.throws(() => process.kill(chrome, 0), { code: 'ESRCH' }, 'the Chrome it was starting is gone');
+});
+
+test('an agent that lists web_fetch and no browser tool: Browserbase\'s fetch and search, no browser, the receipt filed, the key and project id redacted', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'web-pages-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const agentDir = join(tmp, 'agent');
+  await mkdir(agentDir);
+  const definition = { id: 'desk', version: 1, name: 'Desk', description: 'Researches one company.', instructions: 'Research it.', skills: [], tools: ['read', 'write', 'web_fetch', 'web_search'] };
+  await writeFile(join(agentDir, 'agent.json'), JSON.stringify(definition));
+  const home = await ensureAgentHome(join(tmp, 'home'), agentDir);
+  assert.equal(listsBrowser(definition), false);
+  assert.equal(listsBrowser((await readAgentHome(await ensureAgentHome(join(tmp, 'wren')))).definition), true, 'Wren lists the browser');
+
+  const key = 'bb_live_0123456789abcdef', project = '01234567-89ab-cdef-0123-456789abcdef';
+  const env = { AGENT_MODEL_BASE_URL: ENV.AGENT_MODEL_BASE_URL, AGENT_MODEL: ENV.AGENT_MODEL, BROWSERBASE_API_KEY: key, BROWSERBASE_PROJECT_ID: project };
+  const fetched = [], searched = [];
+  const fetcher = {
+    fetch: async (request) => (fetched.push(request), { finalUrl: request.url, statusCode: 200, contentType: 'text/markdown', content: `# Acme\nAcme makes anvils. Project ${project}, key ${key}.` }),
+    search: async (request) => (searched.push(request), { results: [{ url: 'https://acme.example/', title: 'Acme' }] }),
+  };
+  const one = await started(home, 'run-1');
+  const { options } = await createAgent(one.where, env, { fetcher, makeContext: async () => assert.fail('no browser profile is made') });
+  assert.deepEqual(options.root.agent.tools.map((tool) => tool.name), ['read', 'write', 'web_fetch', 'web_search']);
+  assert.equal(existsSync(join(one.where.root, 'live.json')), false, 'no browser, so no live view');
+
+  const faux = fauxProvider({ models: [{ id: 'scripted' }] });
+  faux.setResponses([
+    () => fauxAssistantMessage([fauxToolCall('web_search', { query: 'Acme anvils' }, { id: 'call-1' })], { stopReason: 'toolUse' }),
+    () => fauxAssistantMessage([fauxToolCall('web_fetch', { url: 'https://acme.example/' }, { id: 'call-2' })], { stopReason: 'toolUse' }),
+    () => fauxAssistantMessage([fauxText('Acme makes anvils.')], { stopReason: 'stop' }),
+  ]);
+  options.models.setProvider(faux.provider);
+  const harness = await open(t, one.run, options, { env: true });
+  const root = await harness.root(ctx, { ...options.root, agent: { ...options.root.agent, model: { provider: faux.provider.id, modelId: 'scripted' } } });
+  assert.equal((await (await root.submit({ type: 'input', content: 'Research Acme.', requestId: 'ask-1' }, ctx)).wait(ctx)).status, 'done');
+
+  assert.equal(searched[0].query, 'Acme anvils');
+  assert.equal(fetched[0].url, 'https://acme.example/');
+  const results = (await root.entries({}, 20, undefined, ctx)).items.filter((entry) => entry.kind === 'pi.tool-result').map((entry) => entry.model[0].content.map((part) => part.text).join(''));
+  const page = results.find((text) => text.includes('Acme makes anvils'));
+  assert.ok(page, 'the fetched page reaches the model');
+  assert.match(page, /evidence: evidence\/web\//, 'the read is filed in the workspace');
+  for (const text of results) for (const value of [key, project]) assert.equal(text.includes(value), false, 'no tool result holds the key or the project id');
+  const filed = await readdir(join(one.run.workspace, 'evidence', 'web'));
+  assert.ok(filed.some((name) => name.startsWith('web_fetch-')));
+  for (const name of filed) for (const value of [key, project]) assert.equal((await readFile(join(one.run.workspace, 'evidence', 'web', name), 'utf8')).includes(value), false, 'no receipt holds them either');
+
+  await assert.rejects(createAgent((await started(home, 'run-2')).where, { ...env, BROWSERBASE_API_KEY: '' }), /names the tool web_fetch, which this host does not have/, 'without a key the web tools are not listed');
 });

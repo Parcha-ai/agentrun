@@ -27,6 +27,8 @@ const MODEL = { AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9/v1', AGENT_MODEL: 'tes
 const CHROME = { ...MODEL, AGENT_BROWSER: 'chrome', AGENT_CHROME_ENDPOINT: 'http://127.0.0.1:9', AGENT_CHROME_PROFILE: 'shared' };
 /** The practice site's shared account, which its login page prints: words the person types, so the recording holds neither. */
 const ACCOUNT = ['tomsmith', 'SuperSecretPassword!'];
+/** A Browserbase project id, which the page prints here so a recording on Browserbase must take it out. */
+const PROJECT = '0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b';
 const HAVE_FFMPEG = spawnSync('ffmpeg', ['-version']).status === 0;
 const PAGE = '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Secure area</title><style>:root { color-scheme: light dark; }</style></head><body><h1>Secure area</h1><p>The run started signed in: the secure page says so.</p><p><a href="https://the-internet.herokuapp.com/secure">the-internet.herokuapp.com/secure</a></p></body></html>\n';
 
@@ -58,9 +60,9 @@ async function recordedRun(t, { env: base, plant = false, record = true }) {
   const cdp = await fakeCdp();
   t.after(() => cdp.close());
   const sentinels = { ...makeSentinels(), bbConnectUrl: `${cdp.url}?sessionId=none` };
-  const backend = new FakeBackend({ sentinels, start: SECURE, pages: { [SECURE]: fixturePage(SECURE, `Secure Area. Welcome to the Secure Area. Signed in as ${ACCOUNT[0]}; the login page said to use ${ACCOUNT[1]}.`, 'The Internet') } });
+  const backend = new FakeBackend({ sentinels, start: SECURE, pages: { [SECURE]: fixturePage(SECURE, `Secure Area. Welcome to the Secure Area. Signed in as ${ACCOUNT[0]}; the login page said to use ${ACCOUNT[1]}. Project ${PROJECT}.`, 'The Internet') } });
   const contextId = randomUUID();
-  const env = { ...base, ...(record ? { RECORD_DIR: dir, RECORD_REDACT: JSON.stringify(ACCOUNT) } : {}), ...(base.AGENT_BROWSER === 'chrome' ? {} : { BROWSERBASE_API_KEY: sentinels.bbApiKey }) };
+  const env = { ...base, ...(record ? { RECORD_DIR: dir, RECORD_REDACT: JSON.stringify(ACCOUNT) } : {}), ...(base.AGENT_BROWSER === 'chrome' ? {} : { BROWSERBASE_API_KEY: sentinels.bbApiKey, BROWSERBASE_PROJECT_ID: PROJECT }) };
   const agent = await createAgent(where, env, { makeContext: async () => contextId, provider: backend.provider, driver: fakeDriver(backend) });
   const framesFile = join(run.dir, 'frames', 'frames.jsonl');
   const kept = () => (existsSync(framesFile) ? readFileSync(framesFile, 'utf8').trim().split('\n').filter(Boolean).length : 0);
@@ -156,9 +158,10 @@ test('a recorded run on the agent\'s own Chrome: valid, its report the artifact,
   }
 });
 
-test('a recorded run on Browserbase: the context id and the key are redacted everywhere, and a session row a host committed with its live view is recorded with liveView null', { timeout: 60_000 }, async (t) => {
-  const { dir, values } = await recordedRun(t, { env: MODEL, plant: true });
+test('a recorded run on Browserbase: the context id, the key and the project id are redacted everywhere, and a session row a host committed with its live view is recorded with liveView null', { timeout: 60_000 }, async (t) => {
+  const { dir, values, finished } = await recordedRun(t, { env: MODEL, plant: true });
   assert.deepEqual(validateRecording(dir), []);
+  assert.deepEqual(finished.scanned.filter((name) => name.startsWith('BROWSERBASE')), ['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID'], 'the scan looked for both values, by name');
   const lines = linesOf(dir);
   const sessions = lines.filter((line) => line.kind === 'browser.sessions');
   const planted = sessions.at(-1).data.value.sessions.find((row) => 'liveView' in row);
@@ -168,7 +171,7 @@ test('a recorded run on Browserbase: the context id and the key are redacted eve
   const config = lines.filter((line) => line.kind === 'browser.config').at(-1);
   assert.equal(config.data.value.policy.contextId, REDACTED);
   assert.deepEqual(lines.filter((line) => line.kind === 'browser.profiles').at(-1).data.value, { provider: 'browserbase', ref: REDACTED, state: 'ready' });
-  assertAbsent(dir, { 'the context id': values.contextId, 'the key': values.key, ...Object.fromEntries(values.sessions.map((id, n) => [`session ${n + 1}`, id])), 'the live view': values.liveView, 'its token': values.liveToken, 'the planted live view': values.planted, 'the planted token': values.planted.split('token=')[1], 'the planted session': values.plantedSession, 'the connect URL': values.connect });
+  assertAbsent(dir, { 'the context id': values.contextId, 'the key': values.key, 'the project id': PROJECT, ...Object.fromEntries(values.sessions.map((id, n) => [`session ${n + 1}`, id])), 'the live view': values.liveView, 'its token': values.liveToken, 'the planted live view': values.planted, 'the planted token': values.planted.split('token=')[1], 'the planted session': values.plantedSession, 'the connect URL': values.connect });
 });
 
 test('a replay of a run takes out what the recording does: no session id, token or live view in timeline.json or any file, each session under its label', { timeout: 60_000 }, async (t) => {

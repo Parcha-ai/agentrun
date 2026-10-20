@@ -61,7 +61,7 @@ the definition's prompt and tools and the browser's configuration in the commit 
 | Variable | Needed | What |
 | --- | --- | --- |
 | `AGENT_BROWSER` | no | `browserbase` (default) or `chrome`: the run's own Chrome on this machine, so nothing leaves it but the model. Browserbase stays the default until pi-browser ships `./live-view`: without it the person cannot see or drive the local Chrome, so cannot sign in. |
-| `BROWSERBASE_API_KEY` | with Browserbase | Browserbase key. `BROWSERBASE_PROJECT_ID` is optional; Browserbase infers the project from the key. |
+| `BROWSERBASE_API_KEY` | with Browserbase, or for `web_fetch` and `web_search` | Browserbase key. `BROWSERBASE_PROJECT_ID` is optional; Browserbase infers the project from the key. With a key the agent can also list `web_fetch` and `web_search`, which go through Browserbase's own Fetch and Search APIs and open no browser session. An agent that lists no browser tool gets no browser at all: start-run.mjs starts no Chrome for it. A recording redacts both values and its scan checks that neither is in any file. |
 | `CHROME_PATH` | with `chrome` | The Chrome executable start-run.mjs starts. `PI_BROWSER_NO_SANDBOX=1` starts it without its sandbox, only where Chrome cannot start one. |
 | `AGENT_PAGE_ORIGIN` | no | The origin people open the server's page at; the server sets it. A local Chrome's live view allows only that page to frame it. |
 | `AGENT_LIVE_VIEW_MODULE` | no | Where the local Chrome's live view comes from. Default: pi-browser's `./live-view`, when this pi-browser has it. |

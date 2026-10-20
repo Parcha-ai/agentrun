@@ -3,16 +3,17 @@
 // `startRun` of @parcha/pi-durable-agent created (the server does that). It runs `pi-durable-disk run --dir
 // <home>/runs/<id> --app examples/web/agent/app.ts --serve 0` on loopback, so the run's door address is in its run.json
 // (`holder.serve`). SIGTERM or SIGINT goes to the run, which releases its browser and exits 0; starting the same
-// directory again resumes it. With `AGENT_BROWSER=chrome` it first starts the run's own Chrome (chrome.ts) and stops it,
-// by its pid, once the run has exited. With `RECORD_DIR` set, the run's recording is finished once the run has exited
-// (record.ts). Credentials come from the environment and nothing here prints them.
+// directory again resumes it. With `AGENT_BROWSER=chrome` it first starts the run's own Chrome (chrome.ts) and stops
+// it, by its pid, once the run has exited; an agent that lists no browser tool gets no browser. With `RECORD_DIR` set,
+// the run's recording is finished once the run has exited (record.ts). Credentials come from the environment and
+// nothing here prints them.
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openAgentHome, readAgentHome } from '@parcha/pi-durable-agent';
-import { browserOf, chromeProfileFor, startChrome } from './chrome.ts';
+import { browserOf, chromeProfileFor, listsBrowser, startChrome } from './chrome.ts';
 import { seedMemory } from './memory.ts';
 import { finishRunRecording } from './record.ts';
 
@@ -21,23 +22,24 @@ if (!dir || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(basename(resolve(dir)))) {
   console.error('usage: start-run.mjs <home>/runs/<id>   (id: lower-case letters, digits and dashes)');
   process.exit(2);
 }
-let browser;
+const run = resolve(dir);
+if (!existsSync(join(run, 'store', 'run.sqlite'))) {
+  console.error(`${run} is not a started run: create it with startRun of @parcha/pi-durable-agent first (the server does)`);
+  process.exit(2);
+}
+const home = resolve(run, '..', '..');
+const state = await readAgentHome(await openAgentHome(home));
+let browser = null;
 try {
-  browser = browserOf(process.env);
+  if (listsBrowser(state.definition)) browser = browserOf(process.env);
 } catch (error) {
   console.error(error.message);
   process.exit(2);
 }
-const needed = ['AGENT_MODEL_BASE_URL', 'AGENT_MODEL', browser === 'chrome' ? 'CHROME_PATH' : 'BROWSERBASE_API_KEY'];
+const needed = ['AGENT_MODEL_BASE_URL', 'AGENT_MODEL', ...(browser ? [browser === 'chrome' ? 'CHROME_PATH' : 'BROWSERBASE_API_KEY'] : [])];
 const missing = needed.filter((name) => !process.env[name]);
 if (missing.length) {
   console.error(`set ${missing.join(', ')} first (see examples/web/agent/README.md)`);
-  process.exit(2);
-}
-
-const run = resolve(dir);
-if (!existsSync(join(run, 'store', 'run.sqlite'))) {
-  console.error(`${run} is not a started run: create it with startRun of @parcha/pi-durable-agent first (the server does)`);
   process.exit(2);
 }
 
@@ -53,6 +55,7 @@ const finish = async (code) => {
     try {
       const done = await finishRunRecording({ dir: resolve(process.env.RECORD_DIR), run, env: process.env, providers: 'real' });
       console.error(`start-run: recorded ${done.lines} lines, ${done.frames} frames, ${done.tracks} frame tracks, report files ${done.artifact.join(', ') || 'none'}`);
+      console.error(`start-run: the recording holds none of: ${done.scanned.join(', ') || 'no secret was set'}`);
     } catch (error) {
       console.error(`start-run: the recording is not finished: ${error.message}`);
       code = 1;
@@ -71,13 +74,12 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
 }
 
 // The home's memory, into the workspace before the agent starts (memory.ts).
-await seedMemory(resolve(run, '..', '..'), join(run, 'work'));
+await seedMemory(home, join(run, 'work'));
 
 const env = { ...process.env };
 if (browser === 'chrome') {
-  const home = resolve(run, '..', '..');
   try {
-    profile = chromeProfileFor(home, { runId: basename(run), dir: run }, await readAgentHome(await openAgentHome(home)));
+    profile = chromeProfileFor(home, { runId: basename(run), dir: run }, state);
     chrome = await startChrome(process.env.CHROME_PATH, profile.dir, { sandbox: process.env.PI_BROWSER_NO_SANDBOX !== '1', signal: starting.signal, downloads: join(run, 'work', 'downloads') });
   } catch (error) {
     console.error(`start-run: ${error.message}`);

@@ -2,7 +2,9 @@
 // loads it (start-run.mjs does that) on a run that `startRun` of @parcha/pi-durable-agent created in the agent home. It
 // reads the agent's definition and skills from the home and returns pi-durable's Harness options: the model the host
 // picks, the workspace's file tools, a Browserbase browser on the agent's saved sign-in, and `request_sign_in`, which
-// ends the agent's turn while the person signs in.
+// ends the agent's turn while the person signs in. With a Browserbase key it also has `web_fetch` and `web_search`,
+// through Browserbase's own Fetch and Search APIs, which open no browser session; an agent that lists no browser tool
+// gets those and no browser.
 //
 // The sign-in is the run store's `browser.profiles` entry, which `startRun` seeded from the home and `carryBack` returns
 // to it: the Browserbase context id, resolved before the run serves anything, and the sites it is for. `request_sign_in`
@@ -27,14 +29,14 @@ import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import type { ModelThinkingLevel, TSchema } from "@earendil-works/pi-ai";
 import { createRegistry, defineDoc, defineDocFamily, defineExtension, defineTool, wrapTool, type ConversationId, type Harness, type JsonObject, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { DEFAULT_BROWSER_POLICY, type BrowserPolicy, type BrowserProvider, type EvidenceRecord, type SessionChange, type SessionRow } from "@parcha/pi-browser";
-import { createBrowserExtension } from "@parcha/pi-browser/durable";
+import { createBrowserExtension, createWebExtension } from "@parcha/pi-browser/durable";
 import { stagehandDriver } from "@parcha/pi-browser/driver/stagehand";
 import { browserbaseProvider } from "@parcha/pi-browser/providers/browserbase";
 import { cdpProvider } from "@parcha/pi-browser/providers/cdp";
 import { frameRecorder } from "@parcha/pi-browser/recorder";
 import { durableProfileStore, openAgentHome, readAgentHome, type AgentDefinition, type AgentHomeState } from "@parcha/pi-durable-agent";
 import { ArchilCodingTools, type AppContext, type AppOptions } from "@parcha/pi-durable-disk";
-import { browserOf, CHROME_PROFILE, type BrowserKind } from "./chrome.ts";
+import { browserOf, CHROME_PROFILE, listsBrowser, type BrowserKind } from "./chrome.ts";
 import { frameStore } from "./frames.ts";
 import { openRunRecording } from "./record.ts";
 import { writeRememberPage } from "./remember.ts";
@@ -47,6 +49,8 @@ const MODEL_PROVIDER = "agent-model";
 export const PROFILE = "default";
 /** The live frames' pace: enough to follow the agent, little to store. */
 const FRAMES_PER_SECOND = 2;
+/** The endpoint of an agent that lists no browser tool: nothing ever dials it (no tool of the browser is listed). */
+const NO_CHROME = "http://127.0.0.1:9";
 
 /** pi-durable-agent's `browser.profiles`, by its kind: the run's copy of the agent's saved sign-ins, which `carryBack`
  *  returns to the home. Only the host writes it, and no tool reads it. */
@@ -266,21 +270,22 @@ function modelsOf(env: NodeJS.ProcessEnv) {
  * `<home>/runs/<id>`; `AGENT_HOME` names the home when it is elsewhere. `makeContext` makes a new browser profile, a
  * Browserbase context by default; `provider` and `driver` stand in for the browser's own (a test's fakes).
  */
-export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = process.env, { makeContext = (signal: AbortSignal) => createContext(env, signal), provider: given, driver = stagehandDriver() }: { makeContext?: (signal: AbortSignal) => Promise<string>; provider?: BrowserProvider; driver?: ReturnType<typeof stagehandDriver> } = {}) {
-  const chosen = browserOptions(env);
+export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = process.env, { makeContext = (signal: AbortSignal) => createContext(env, signal), provider: given, driver = stagehandDriver(), fetcher }: { makeContext?: (signal: AbortSignal) => Promise<string>; provider?: BrowserProvider; driver?: ReturnType<typeof stagehandDriver>; fetcher?: Pick<BrowserProvider, "fetch" | "search"> } = {}) {
   const homeDir = resolve(env.AGENT_HOME || join(where.root, "..", ".."));
   const state = await readAgentHome(await openAgentHome(homeDir));
   const { definition } = state;
+  const browsing = listsBrowser(definition);
+  const chosen = browsing ? browserOptions(env) : ({ kind: "chrome", options: { endpoint: NO_CHROME } } as const);
   const instructions = promptOf(state);
   const { models, model, thinking } = modelsOf(env);
   // Resolved before the run serves: the root conversation's creating commit carries it.
   let contextId: string | undefined;
   let resolved = false;
   const live = join(where.root, "live.json");
-  const viewer = chosen.kind === "chrome" ? await localLiveView(where, env) : null;
+  const viewer = browsing && chosen.kind === "chrome" ? await localLiveView(where, env) : null;
   const note = chosen.kind === "chrome" && !viewer ? { note: NO_LOCAL_VIEW } : {};
   const page = { browser: chosen.kind, ...note };
-  if (chosen.kind === "chrome") await writePrivate(live, { liveViewUrl: null, sessionId: null, change: "none", updatedAt: new Date().toISOString(), ...page });
+  if (browsing && chosen.kind === "chrome") await writePrivate(live, { liveViewUrl: null, sessionId: null, change: "none", updatedAt: new Date().toISOString(), ...page });
   let liveWrites = Promise.resolve();
   const base = given ?? (chosen.kind === "chrome" ? cdpProvider(chosen.options) : browserbaseProvider(chosen.options));
   // `t` of every frame line is ms since the run started, so a resumed run's frames go on where they stopped; the
@@ -295,7 +300,7 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
   // ---- the sign-in's site, on the run's profile ------------------------------------------------------------------------
   // The profile the run signs in with: the Browserbase context, or a shared local Chrome profile; a Chrome profile of the
   // run's own is thrown away, so it records nothing.
-  const profileKey = chosen.kind === "browserbase" ? PROFILE : env.AGENT_CHROME_PROFILE === "shared" ? CHROME_PROFILE : null;
+  const profileKey = !browsing ? null : chosen.kind === "browserbase" ? PROFILE : env.AGENT_CHROME_PROFILE === "shared" ? CHROME_PROFILE : null;
   const pages = new Map<number, string | null>();
   let pending: { origin: string; answered: boolean } | null = null;
   let opened: Harness | undefined;
@@ -332,22 +337,24 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
     return (profileWrites = profileWrites.then(() => editProfile(harness, BACKGROUND_CONTEXT, (profile) => void (profile.verifiedAt = new Date().toISOString()))).catch(() => undefined));
   }
 
+  // Each read the model cites is filed in the workspace, named by its hash, so a read replayed after a crash files the
+  // same path again.
+  const evidence = {
+    async file(label: string, record: EvidenceRecord) {
+      if (record.status === "ok") void seen(record.facts.final_url ?? null);
+      const body = typeof record.body === "string" ? record.body : Buffer.from(record.body).toString("base64");
+      const text = JSON.stringify({ ...record, body }, null, 2);
+      const path = join("evidence", label, `${record.tool}-${createHash("sha256").update(text).digest("hex").slice(0, 12)}.json`);
+      await mkdir(join(where.work, "evidence", label), { recursive: true });
+      await writeFile(join(where.work, path), text);
+      return { path };
+    },
+  };
+  const keys = [env.BROWSERBASE_API_KEY, env.BROWSERBASE_PROJECT_ID].filter((value): value is string => Boolean(value));
   const browser = createBrowserExtension({
     provider: ({ conversationId }) => recorder.watch(provider, conversationId),
     driver,
-    // Each read the model cites is filed in the workspace, named by its hash, so a read replayed after a crash files the
-    // same path again.
-    evidence: {
-      async file(label: string, record: EvidenceRecord) {
-        if (record.status === "ok") void seen(record.facts.final_url ?? null);
-        const body = typeof record.body === "string" ? record.body : Buffer.from(record.body).toString("base64");
-        const text = JSON.stringify({ ...record, body }, null, 2);
-        const path = join("evidence", label, `${record.tool}-${createHash("sha256").update(text).digest("hex").slice(0, 12)}.json`);
-        await mkdir(join(where.work, "evidence", label), { recursive: true });
-        await writeFile(join(where.work, path), text);
-        return { path };
-      },
-    },
+    evidence,
     redact: { values: () => (contextId ? [contextId] : []) },
     // In the order the changes came: a release written before a late launch would show a dead view.
     onSession: (row, change) => {
@@ -356,14 +363,21 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
       liveWrites = liveWrites.then(() => writePrivate(live, { ...liveOf(row, change), ...page })).catch(() => undefined);
     },
   });
+  // Fetch and search with no browser session: Browserbase's own APIs, on the key. Without one the tools are not listed.
+  const keyed = fetcher ?? (env.BROWSERBASE_API_KEY ? browserbaseProvider({ env }) : null);
+  const web = createWebExtension({
+    providers: keyed ? { name: "browserbase", fetch: keyed.fetch && ((request, signal) => keyed.fetch!(request, signal)), search: keyed.search && ((request, signal) => keyed.search!(request, signal)) } : {},
+    evidence,
+    redact: { values: () => keys },
+  });
   const signIn = signInTool(asked);
-  const tools = toolsOf(definition, { [ArchilCodingTools.name]: ArchilCodingTools.tools ?? [], browser: browser.tools, [SIGN_IN]: [signIn] });
+  const tools = toolsOf(definition, { [ArchilCodingTools.name]: ArchilCodingTools.tools ?? [], browser: browser.tools, web: web.tools, [SIGN_IN]: [signIn] });
   // request_sign_in ends the turn, so the agent's next tool call comes after the person's next message: each of its
   // other tools ends the hold first.
   const afterAnswer = (tool: ToolRegistration): ToolRegistration => ({ ...tool, execute: (args, api, context) => (answered(), tool.execute(args, api, context)) });
   const handover = defineExtension({ name: SIGN_IN, tools: [signIn], wraps: tools.filter((tool) => tool.name !== signIn.name).map((tool) => wrapTool(tool, afterAnswer)) });
   const registry = createRegistry();
-  for (const extension of [ArchilCodingTools, browser.extension, handover]) registry.install(extension);
+  for (const extension of [ArchilCodingTools, browser.extension, web.extension, handover]) registry.install(extension);
 
   /** Every session the run still holds is released (Browserbase saves the context then), and the releases finish. */
   async function releaseBrowsers(harness: Harness, context: Context): Promise<void> {
@@ -414,11 +428,12 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
     // On SIGTERM the instance records its wake and lets go of the run; the browser goes first, so nothing paid stays open.
     wake: async (run, at) => {
       await releaseBrowsers(run.harness, BACKGROUND_CONTEXT).catch(() => undefined);
-      // Beside the agent's report: what it keeps for next time, the sign-in's sites, its memory and its runs, never the ref.
+      // Beside the agent's report, for an agent that remembers: what it keeps for next time, the sign-in's sites, its memory
+      // and its runs, never the ref.
       const saved = profileKey ? await run.harness.snapshot(Profiles, profileKey, BACKGROUND_CONTEXT).catch(() => null) : null;
       const sites = Array.isArray(saved?.allowedOrigins) ? saved.allowedOrigins.filter((site): site is string => typeof site === "string") : [];
       const runs = Object.values(state.runs).map((record) => ({ startedAt: record.startedAt, outcome: record.outcome ?? null })).sort((a, b) => a.startedAt.localeCompare(b.startedAt));
-      await writeRememberPage(where.work, { signIns: saved ? [{ sites, verifiedAt: typeof saved.verifiedAt === "string" ? saved.verifiedAt : null }] : [], runs }).catch(() => undefined);
+      if (definition.skills.includes("memory")) await writeRememberPage(where.work, { signIns: saved ? [{ sites, verifiedAt: typeof saved.verifiedAt === "string" ? saved.verifiedAt : null }] : [], runs }).catch(() => undefined);
       await recording?.detach().catch((error: Error) => console.error(`the recording is refused: ${error.message}`));
       // The default wake, through the run's own API: sleeping, with the deadline its work waits for (null: idle, woken on demand).
       await run.setStatus("sleeping", { reason: at === null ? "idle" : "waiting" }, { wakeAt: at === null ? null : new Date(at).toISOString() });

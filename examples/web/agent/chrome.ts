@@ -7,8 +7,14 @@
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { BROWSER_TOOL_NAMES } from "@parcha/pi-browser";
 
 export type BrowserKind = "browserbase" | "chrome";
+
+/** Whether a definition lists a browser tool: one of pi-browser's, the whole `browser` extension, or the sign-in. An
+ *  agent that lists none gets no browser: start-run.mjs starts no Chrome for it and app.ts never dials one. */
+export const listsBrowser = (definition: { tools: readonly string[] }) =>
+  definition.tools.some((name) => name === "browser" || name === "sign-in" || name === "request_sign_in" || BROWSER_TOOL_NAMES.includes(name));
 /** The agent's local Chrome profile, as a key in the agent home's `browser.profiles` (its save lease decides who opens it). */
 export const CHROME_PROFILE = "local-chrome";
 
