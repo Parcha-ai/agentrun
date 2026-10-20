@@ -110,6 +110,6 @@ test('in Chrome: a workflow run opens with its input as the person\'s first mess
 test('in Chrome: the opening request is the question in words, its other fields as lines and its files as chips', IN_CHROME, async (t) => {
   const { value, until } = await served(t, { fixture: 'reference-job', edit: (dir) => givenInput(dir, { question: 'Is the filing at https://registry.example.test/acme current?', files: ['filing.pdf'], company: 'Acme Ltd' }) });
   await until(`!!d()?.querySelector('.mu-chat .mu-row')`, 'the page drawn');
-  assert.deepEqual(await value(`(() => { const first = d().querySelector('.mu-chat').firstElementChild; return [first.className, first.querySelector('.mu-bubble').textContent, [...first.querySelectorAll('.mu-file')].map((f) => f.textContent)]; })()`),
-  ['mu-row person', 'Is the filing at registry.example.test current?\n\ncompany: Acme Ltd', ['filing.pdf']]);
+  assert.deepEqual(await value(`(() => { const first = d().querySelector('.mu-chat').firstElementChild; return [first.className, [...first.querySelectorAll('.mu-bubble p')].map((p) => p.textContent), [...first.querySelectorAll('.mu-file')].map((f) => f.textContent)]; })()`),
+  ['mu-row person', ['Is the filing at registry.example.test current?', 'company: Acme Ltd'], ['filing.pdf']]);
 });

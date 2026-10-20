@@ -564,6 +564,10 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     for (const line of lines.filter((each) => each.channel === 'durable' && each.kind === 'browser.profiles')) {
       const key = chatStr(chatObj(line.data)?.key) ?? chatStr(chatObj(chatObj(line.data)?.value)?.ref) ?? 'profile';
       const value = chatObj(chatObj(line.data)?.value);
+      // The row's own state: a profile another run holds (a copy made at the run's start, with its address, no verification, state held) is not one this run
+      // was asked to sign in to. Only a ready profile can open a wait; a missing verification alone never says one was asked.
+      const own = chatStr(value?.state);
+      if (own !== undefined && own !== 'ready') continue;
       const site = hostOf(chatStr(value?.startUrl)) ?? chatStr(chatList(value?.allowedOrigins)[0] as Json | undefined)?.replace(/^https?:\/\//, '');
       if (!site) continue;
       if (!seen.has(key)) {

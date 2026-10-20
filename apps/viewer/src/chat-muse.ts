@@ -102,6 +102,19 @@ function signInCard(wait: NonNullable<ChatModel['waits']>[number]): HTMLElement 
   return card(`mu-signin${wait.remembered ? ' mu-remembered' : ''}`, 'shield', 'Secure Store', waiting ? `Sign in to ${wait.site}` : '', state);
 }
 
+/** The run's input as the person's first message (a workflow run keeps it in `model.input`, and its first prompt is no entry of the conversation): the question in words
+ *  (or the text given), its other fields as `name: value` lines, its files as chips. Nothing to say, no row. */
+function openingRequest(input: NonNullable<ChatModel['input']>): HTMLElement | undefined {
+  const words = (input.question ?? input.text ?? '').trim();
+  const fields = (input.fields ?? []).map((field) => `${field.name}: ${field.value}`).join('\n');
+  const files = input.files ?? [];
+  const text = [words, fields].filter((each) => each !== '').join('\n\n');
+  if (text === '' && files.length === 0) return undefined;
+  return reportEl('div', { class: 'mu-row person' }, reportEl('div', { class: 'mu-tag', text: 'You' }),
+    text !== '' && reportEl('div', { class: 'mu-bubble' }, ...reportParagraphs(museShorten(text))),
+    files.length > 0 && reportEl('div', { class: 'mu-files' }, ...files.map((file) => reportEl('span', { class: 'mu-file', title: file, text: file }))));
+}
+
 /** A bubble of the agent's words (a paragraph per blank line), the files it names as chips under them. */
 function agentBubble(text: string, name: string, more: string[] = []): HTMLElement {
   // The files a text names are read from the text as written (an address such as https://host/reports/summary.pdf names one), then every address is shortened.
@@ -216,6 +229,9 @@ export function drawMuse(root: HTMLElement, model: ChatModel, recording: Recordi
   const asked = entries.find((entry) => entry.kind === 'user')?.t ?? 0;
   for (const wait of model.waits ?? []) entries.push({ t: wait.remembered ? Math.max(wait.t0, asked + 1) : wait.t0, order: order++, kind: 'wait', wait });
   entries.sort((a, b) => a.t - b.t || a.order - b.order);
+
+  const opening = model.input && openingRequest(model.input);
+  if (opening) column.append(opening);
 
   // Browser steps with nothing said between them are one card; the thoughts and the other tool steps between two visible things fold into one
   // quiet disclosure ("Thought · 3 steps"), opened to read.
