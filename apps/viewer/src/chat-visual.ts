@@ -12,12 +12,13 @@ import { pdfDrawer } from './pdf.ts';
 
 /** One screenshot of the run: when it was taken, the picture's blob, its size, the page it showed (by the next page read), and whether it is blurred. */
 export type VisualFrame = { t: number; blob: string; w: number; h: number; session: string; title?: string; sensitive: boolean };
-/** A page the run read, as a place in the video (`at`, seconds, never inside a skipped span). `hidden`: it was read inside a blurred span, so it has no place to seek. */
-export type VisualChapter = { title: string; t: number; at: number; hidden: boolean };
+/** A page the run read, as a place in the video (`at`, seconds, never inside a skipped span: a page read while only a blurred frame was on screen has no place, so it is no chapter). */
+export type VisualChapter = { title: string; t: number; at: number };
 /** One fact of the answer and the look that boxed it, as the recording's `manifest.facts` blob says. `box` is in the frame's own pixels, null where the look found none. */
 export type VisualFact = { fact: string; claim: string; frame: string; box: { x: number; y: number; w: number; h: number } | null; label: string; why?: string; inferred?: boolean; receipt?: { sha256?: string; model?: string; usd?: number } };
 export type Visual = {
-  video?: { blob: string; poster?: string; duration: number; segments: [number, number][] };
+  /** `skipEnd`: seconds of the video's start that are never shown (the blurred span is always its prefix: one track per session, blurred from the session's first frame). */
+  video?: { blob: string; poster?: string; duration: number; skipEnd: number; segments: [number, number][] };
   frames: VisualFrame[];
   chapters: VisualChapter[];
   files: { name: string; sha: string }[];
@@ -125,18 +126,15 @@ export async function visualOf(recording: Recording): Promise<Visual | undefined
       if (last && Math.abs(last[1] * 1000 - start) < 1) last[1] = playTo / 1000; else segments.push([start / 1000, playTo / 1000]);
     });
     const poster = frames.find((frame) => !frame.sensitive)?.blob;
-    if (segments.length > 0) video = { blob: videoBlob, ...(poster ? { poster } : {}), duration: (to - from) / 1000, segments };
+    if (segments.length > 0) video = { blob: videoBlob, ...(poster ? { poster } : {}), duration: (to - from) / 1000, skipEnd, segments };
   }
-  const everyPage: VisualChapter[] = pages.map((page) => {
-    const raw = from !== undefined ? (page.t - from) / 1000 : 0;
-    const hidden = raw < skipEnd && frames.some((frame) => frame.sensitive && frame.t <= page.t + 12_000 && page.t - 12_000 <= frame.t) && raw < skipEnd - 0.001 && reads.length > 0 && blurredRead(page.t, frames);
-    return { title: page.title, t: page.t, at: hidden ? 0 : segmentAt(video?.segments ?? [], Math.max(raw, skipEnd)), hidden };
-  });
-
-  // One chapter per distinct page visit: two that land at the same place in the video (a page opened, then the next straight after) are the later one; a place not shown keeps its own.
-  // A chapter with no seek point (its page was read while only a blurred frame was on screen) is no chapter at all.
+  // A page read while only a blurred frame was on screen has no seek point, so it is no chapter; one chapter per distinct page visit: two that land at the same place in the
+  // video (a page opened, then the next straight after) are the later one.
   const chapters: VisualChapter[] = [];
-  for (const chapter of everyPage.filter((each) => !each.hidden)) {
+  for (const page of pages) {
+    const raw = from !== undefined ? (page.t - from) / 1000 : 0;
+    if (raw < skipEnd && blurredRead(page.t, frames)) continue;
+    const chapter = { title: page.title, t: page.t, at: segmentAt(video?.segments ?? [], Math.max(raw, skipEnd)) };
     const last = chapters.at(-1);
     if (last && chapter.at - last.at < MERGE_S) chapters[chapters.length - 1] = chapter; else chapters.push(chapter);
   }
@@ -260,11 +258,12 @@ export function drawVisual(visual: Visual, model: ChatModel, recording: Recordin
   const urlOf = (sha: string) => recording.blobUrl(sha) ?? '';
 
   if (visual.video) {
-    const { blob, poster, segments, duration } = visual.video;
+    const { blob, poster, segments, duration, skipEnd } = visual.video;
     const first = segments[0]![0];
-    const video = reportEl('video', { class: 'mu-video', muted: '', loop: '', playsinline: '', preload: 'auto', controls: '', 'aria-label': 'The run\'s browser, as recorded', ...(poster ? { poster: urlOf(poster) } : {}), src: urlOf(blob) }) as HTMLVideoElement;
+    // Fail closed: with a span that is never shown (a credential on its page), the video has NO native controls, so no scrub bar can drag into it ahead of the page's own jump,
+    // and it starts at the span's end (a media fragment). The only things that move it are the chapters and the loop, and each goes to a kept segment's start.
+    const video = reportEl('video', { class: 'mu-video', muted: '', playsinline: '', preload: 'auto', ...(skipEnd > 0 ? {} : { controls: '' }), 'aria-label': 'The run\'s browser, as recorded', ...(poster ? { poster: urlOf(poster) } : {}), src: skipEnd > 0 ? `${urlOf(blob)}#t=${first}` : urlOf(blob) }) as HTMLVideoElement;
     video.muted = true;
-    video.loop = false;
     // Playback runs only the kept segments: a wait, and any span with a credential on the page, are jumped over; at the end it starts again.
     const next = () => {
       const now = video.currentTime;
@@ -278,9 +277,9 @@ export function drawVisual(visual: Visual, model: ChatModel, recording: Recordin
     video.addEventListener('loadedmetadata', () => { video.currentTime = first; });
     video.addEventListener('seeked', () => { video.dataset.ready = 'true'; });
     const chapters = visual.chapters.length > 0 && reportEl('div', { class: 'mu-chapters', role: 'group', 'aria-label': 'Chapters' }, ...visual.chapters.map((chapter) => {
-      const button = reportEl('button', { class: `mu-chapter${chapter.hidden ? ' hidden' : ''}`, type: 'button', ...(chapter.hidden ? { disabled: '' } : {}), title: chapter.hidden ? 'Not shown: a sign-in was on the page' : `${chapter.title} · ${clock(chapter.at)}` },
-        reportEl('span', { class: 'mu-ch-title', text: chapter.title }), reportEl('span', { class: 'mu-ch-time', text: chapter.hidden ? 'not shown' : clock(chapter.at) }));
-      if (!chapter.hidden) button.addEventListener('click', () => { video.currentTime = chapter.at; void video.play().catch(() => undefined); });
+      const button = reportEl('button', { class: 'mu-chapter', type: 'button', title: `${chapter.title} · ${clock(chapter.at)}` },
+        reportEl('span', { class: 'mu-ch-title', text: chapter.title }), reportEl('span', { class: 'mu-ch-time', text: clock(chapter.at) }));
+      button.addEventListener('click', () => { video.currentTime = chapter.at; void video.play().catch(() => undefined); });
       return button;
     }));
     report.append(reportEl('div', { class: 'mu-stage' }, video, reportEl('div', { class: 'mu-stage-note', text: `Frames the recorder kept · waits skipped${segments.length > 1 ? ` (${clock(duration)} of browsing in ${clock(segments.reduce((sum, [a, b]) => sum + (b - a), 0))})` : ''}` })), ...(chapters ? [chapters] : []));
