@@ -12,11 +12,10 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { normalizePrompts, readQuestion, ruleText } from "./prompts-lib.mjs";
+import { normalizePrompts, questionOf, ruleText } from "./prompts-lib.mjs";
 
-const HERE = fileURLToPath(new URL(".", import.meta.url));
 const USAGE = "usage: config-page.mjs --home DIR --out FILE";
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -106,15 +105,13 @@ details{border:1px solid var(--line);border-radius:6px;margin:8px 0;background:v
 a{color:var(--accent)}ul{margin:6px 0;padding-left:20px}`;
 
 /**
- * The page as one string. `data` is `{ agent: { id, name, description }, prompts, question, runs: [{ id, title, index, record,
- * briefHref }], generatedAt }`; everything in it is text and is escaped.
+ * The page as one string. `data` is `{ agent: { id, name, description }, prompts (the home's, its question row too), runs: [{ id,
+ * title, index, record, briefHref }], generatedAt }`; everything in it is text and is escaped.
  */
 export function renderPage(data) {
-  const prompts = normalizePrompts(data.prompts);
-  const order = { base: 0, overlay: 1, generic: 2 };
-  const sorted = [...prompts].sort((a, b) => (order[a.role] ?? 3) - (order[b.role] ?? 3));
+  const sorted = normalizePrompts(data.prompts).filter((variant) => variant.role !== "question");
+  const question = questionOf(data.prompts);
   const runs = [...(data.runs ?? [])].sort((a, b) => String(b.index?.startedAt ?? "").localeCompare(String(a.index?.startedAt ?? "")) || a.id.localeCompare(b.id));
-  const question = data.question;
   const byId = new Map(sorted.flatMap((v) => [[v.label, v], [v.id ?? v.label, v]]));
   const threshold = sorted.find((v) => v.when)?.when;
   const rule = question
@@ -153,8 +150,8 @@ ${table}
 `;
 }
 
-/** Everything the page shows, read from the agent home at `home`: its state, and each run's directory. */
-export async function collect(home, { api, question, out }) {
+/** Everything the page shows, read from the agent home at `home`: its state (the question is the home's own row), and each run's directory. */
+export async function collect(home, { api, out }) {
   const handle = await api.openAgentHome(home);
   const state = await api.readAgentHome(handle);
   const runs = [];
@@ -166,11 +163,11 @@ export async function collect(home, { api, question, out }) {
     const briefHref = existsSync(brief) && (await stat(brief)).isFile() ? relative(dirname(resolve(out)), brief).split("\\").join("/") : null;
     runs.push({ id, title: typeof web?.title === "string" ? web.title : "", index, record: isObject(record) ? record : null, briefHref });
   }
-  return { agent: { id: state.identity.id, name: state.definition.name, description: state.definition.description }, prompts: state.prompts, question, runs, generatedAt: new Date().toISOString() };
+  return { agent: { id: state.identity.id, name: state.definition.name, description: state.definition.description }, prompts: state.prompts, runs, generatedAt: new Date().toISOString() };
 }
 
 /** The page written whole (a temporary file renamed over `out`). Returns the exit code. */
-export async function main(argv, { api, out = (line) => console.log(line), err = (line) => console.error(line), dir = HERE } = {}) {
+export async function main(argv, { api, out = (line) => console.log(line), err = (line) => console.error(line) } = {}) {
   let values;
   try {
     ({ values } = parseArgs({ args: argv, options: { home: { type: "string" }, out: { type: "string" } }, allowPositionals: false }));
@@ -186,14 +183,13 @@ export async function main(argv, { api, out = (line) => console.log(line), err =
     api ??= await import("@parcha/pi-durable-agent");
     const home = resolve(values.home);
     if (!existsSync(join(home, "agent.sqlite"))) throw new Error(`${basename(home)} is not an agent home`);
-    const question = await readQuestion(join(dir, "question.json")).catch(() => undefined);
-    const data = await collect(home, { api, question, out: values.out });
+    const data = await collect(home, { api, out: values.out });
     const target = resolve(values.out);
     await mkdir(dirname(target), { recursive: true });
     const temp = `${target}.${process.pid}.tmp`;
     await writeFile(temp, renderPage(data));
     await rename(temp, target);
-    out(`wrote ${basename(target)}: ${normalizePrompts(data.prompts).length} prompt variants, ${data.runs.length} runs`);
+    out(`wrote ${basename(target)}: ${normalizePrompts(data.prompts).filter((v) => v.role !== "question").length} prompt variants, ${data.runs.length} runs`);
     return 0;
   } catch (error) {
     err(`no page written: ${error.message}`);
