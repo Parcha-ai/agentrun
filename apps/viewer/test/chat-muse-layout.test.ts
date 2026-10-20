@@ -57,6 +57,19 @@ test('the page\'s styles for the Muse layout are all its own: every rule it adds
   for (const selector of selectors) for (const part of selector.split(',')) assert.match(part.trim(), /^\.mu(?:se)?\b|^\.mu-/, `a Muse rule: ${part.trim()}`);
 });
 
+test('the Muse layout uses the page\'s own colours only: every colour in its rules is one of the viewer\'s tokens (the agentrun.ai palette) or the grid dot', { timeout: 5_000 }, () => {
+  const html = readFileSync(join(here, '..', 'chat.html'), 'utf8');
+  const block = html.slice(html.indexOf('/* The Muse layout'), html.indexOf('</style>')).replace(/\/\*[\s\S]*?\*\//g, '');
+  // The tokens of :root (checked against the live site), the dotted grid main's chat view already uses, and the mask's own black.
+  const root = html.slice(html.indexOf(':root{'), html.indexOf('}', html.indexOf(':root{')));
+  const allowed = new Set([...root.matchAll(/--(?:bg|panel|panel2|line|ink|muted|dim|acc|purple):(#[0-9a-f]{6})/gi)].map((match) => match[1]!.toLowerCase()).concat(['#1d1d21', '#000']));
+  assert.ok(allowed.size >= 9, `the tokens were read (${allowed.size})`);
+  for (const hex of block.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []) assert.ok(allowed.has(hex.toLowerCase()), `a colour of the page's own: ${hex}`);
+  // A translucent bar is the background or the panel token with an alpha, nothing else.
+  for (const rgb of block.matchAll(/rgba\((\d+),(\d+),(\d+),/g)) assert.ok(['8,8,9', '17,17,19'].includes(`${rgb[1]},${rgb[2]},${rgb[3]}`), `a translucent token: ${rgb[0]}`);
+  assert.equal(/box-shadow/.test(block.replace(/box-shadow:none/g, '')), false, 'flat: no shadow, no glow');
+});
+
 test('the Muse layout is never rounded: no rule of its own sets a border radius but none or 0', { timeout: 5_000 }, () => {
   const html = readFileSync(join(here, '..', 'chat.html'), 'utf8');
   const block = html.slice(html.indexOf('/* The Muse layout'), html.indexOf('</style>')).replace(/\/\*[\s\S]*?\*\//g, '');
@@ -110,9 +123,9 @@ test('in Chrome: &muse is a phone chat over the same events, at 1440 and 390: th
   for (const id of ['wide', 'phone']) {
     // The avatar at the top, the agent's name and its state under it (its state follows the scroll: see chat-muse-remember.test.ts).
     assert.deepEqual(await value(`[doc('${id}').querySelector('.mu-name').textContent, ['is working', 'Done'].includes(doc('${id}').querySelector('.mu-state').textContent)]`), ['Wren', true], `${id}: the agent's name and its state`);
-    // The avatar is the one picture file, loaded, in a square frame whose hard shadow is the cards' own.
+    // The avatar is the one picture file, loaded, in a flat square hairline frame; the cards are flat too (no shadow, no glow).
     assert.deepEqual(await value(`(() => { const d = doc('${id}'); const img = d.querySelector('.mu-avatar img'); const card = d.querySelector('.mu-card'); const shadow = (el) => getComputedStyle(el).boxShadow;
-      return [img.getAttribute('src'), img.complete && img.naturalWidth > 0, d.querySelector('.mu-avatar').getBoundingClientRect().width === d.querySelector('.mu-avatar').getBoundingClientRect().height, shadow(d.querySelector('.mu-avatar')) === shadow(card), /^rgb\\(\\d+, \\d+, \\d+\\) 4px 4px 0px 0px$/.test(shadow(card))]; })()`), ['muse-avatar.webp', true, true, true, true], `${id}: the avatar picture, square, with the cards' hard shadow`);
+      return [img.getAttribute('src'), img.complete && img.naturalWidth > 0, d.querySelector('.mu-avatar').getBoundingClientRect().width === d.querySelector('.mu-avatar').getBoundingClientRect().height, shadow(d.querySelector('.mu-avatar')) === 'none', shadow(card) === 'none']; })()`), ['muse-avatar.webp', true, true, true, true], `${id}: the avatar picture in a flat square frame, and flat cards`);
     // Square, and floating: the avatar centred at the top over the conversation, the header and the composer transparent bars that the chat scrolls under.
     assert.deepEqual(await value(`(() => { const d = doc('${id}'); const top = d.querySelector('.mu-top'); const a = d.querySelector('.mu-avatar').getBoundingClientRect(); const mid = top.getBoundingClientRect().left + top.getBoundingClientRect().width / 2;
       const chat = d.querySelector('.mu-chat'); const muse = d.querySelector('.muse').getBoundingClientRect(); const bar = (el) => { const s = getComputedStyle(el); const p = getComputedStyle(el, '::before'); return [s.position, s.backgroundColor, p.backgroundImage.includes('linear-gradient'), p.backdropFilter.includes('blur') || p.webkitBackdropFilter?.includes('blur')]; };
@@ -123,11 +136,13 @@ test('in Chrome: &muse is a phone chat over the same events, at 1440 and 390: th
       const under = [...chat.children].filter((n) => n !== spacer).some((n) => { const r = n.getBoundingClientRect(); return r.top < bottom - 10 && r.bottom > 20; }); const z = (el) => parseInt(getComputedStyle(el).zIndex, 10); const through = getComputedStyle(d.querySelector('.mu-top')).pointerEvents === 'none' && getComputedStyle(d.querySelector('.mu-composer')).pointerEvents === 'none';
       chat.scrollTop = 0; spacer.remove();
       return under && z(d.querySelector('.mu-top')) > 0 && z(d.querySelector('.mu-composer')) > 0 && !(z(chat) > 0) && through; })()`), true, `${id}: the text scrolls under the header; the header and composer paint above it and let the chat take the touch`);
-    // The person's request right-aligned, an address in it shortened; the agent's answer a bubble with its files as chips.
-    const chat = await value<{ person: { text: string; right: boolean }; answer: string; files: string[]; order: string[] }>(`(() => { const d = doc('${id}'); const col = d.querySelector('.mu-chat').getBoundingClientRect(); const p = d.querySelector('.mu-row.person .mu-bubble'); const pb = p.getBoundingClientRect();
-      const agent = d.querySelector('.mu-row.agent'); return { person: { text: p.textContent, right: pb.right > col.left + col.width * 0.85 && pb.left > col.left + 16 }, answer: agent.querySelector('.mu-bubble').textContent, files: [...agent.querySelectorAll('.mu-file')].map((f) => f.textContent),
+    // The person's request a hairline box under a mono YOU label (no coloured bubble), an address in it shortened; the agent's answer under its name's label, with its files as chips.
+    const chat = await value<{ person: { text: string; box: string[] }; tags: string[]; answer: string; files: string[]; order: string[] }>(`(() => { const d = doc('${id}'); const p = d.querySelector('.mu-row.person .mu-bubble');
+      const agent = d.querySelector('.mu-row.agent'); return { person: { text: p.textContent, box: [getComputedStyle(p).borderTopWidth, getComputedStyle(p).borderTopColor, getComputedStyle(p).backgroundColor, getComputedStyle(p).fontFamily.split(',')[0].replace(/["' ]/g, '')] }, tags: [...d.querySelectorAll('.mu-row .mu-tag')].map((t) => [t.textContent, getComputedStyle(t).fontFamily.split(',')[0].replace(/["' ]/g, ''), getComputedStyle(t).textTransform].join('|')), answer: agent.querySelector('.mu-bubble').textContent, files: [...agent.querySelectorAll('.mu-file')].map((f) => f.textContent),
         order: [...d.querySelector('.mu-chat').children].map((n) => n.classList.contains('mu-row') ? (n.classList.contains('person') ? 'person' : 'agent') : n.classList.contains('mu-card') ? [...n.classList].find((c) => c !== 'mu-card') : n.tagName.toLowerCase() + '.' + n.className) }; })()`);
-    assert.equal(chat.person.right, true, `${id}: the person's words sit on the right`);
+    // The agentrun look: a 1px hairline (the line token) on the panel token, the sans body; not the blue bubble.
+    assert.deepEqual(chat.person.box, ['1px', 'rgb(44, 44, 48)', 'rgb(17, 17, 19)', 'Inter'], `${id}: the person's words in a hairline panel box`);
+    assert.deepEqual(chat.tags, ['You|JetBrainsMono|uppercase', 'Wren|JetBrainsMono|uppercase'], `${id}: each message under a mono label, the person's and the agent's name`);
     assert.match(chat.person.text, /^Check my account at shop\.example\.test and download my last bills\.$/, `${id}: the address is shortened to its host`);
     assert.match(chat.answer, /^Amount due: \$112\.40\s*Due date: April 15\s*Downloaded bills:\s*Details are at shop\.example\.test$/s, `${id}: the answer as a bubble, its address shortened, the file lines taken out`);
     assert.deepEqual(chat.files, ['statement-03.pdf', 'statement-02.pdf'], `${id}: the files as chips`);

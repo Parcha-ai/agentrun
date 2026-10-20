@@ -94,9 +94,9 @@ function signInCard(wait: NonNullable<ChatModel['waits']>[number]): HTMLElement 
 }
 
 /** A bubble of the agent's words (a paragraph per blank line), the files it names as chips under them. */
-function agentBubble(text: string): HTMLElement {
+function agentBubble(text: string, name: string): HTMLElement {
   const { text: words, files } = museFiles(museShorten(text));
-  return reportEl('div', { class: 'mu-row agent' }, reportEl('div', { class: 'mu-bubble' }, ...reportParagraphs(words)),
+  return reportEl('div', { class: 'mu-row agent' }, reportEl('div', { class: 'mu-tag', text: name }), reportEl('div', { class: 'mu-bubble' }, ...reportParagraphs(words)),
     files.length > 0 && reportEl('div', { class: 'mu-files' }, ...files.map((name) => reportEl('span', { class: 'mu-file', title: name, text: name }))));
 }
 
@@ -211,10 +211,10 @@ export function drawMuse(root: HTMLElement, model: ChatModel, recording: Recordi
     if (entry.kind === 'wait') column.append(signInCard(entry.wait!));
     else if (entry.kind === 'user') {
       const item = entry.item as Extract<ChatItem, { kind: 'user' }>;
-      if (item.text.trim() !== '') column.append(reportEl('div', { class: 'mu-row person' }, reportEl('div', { class: 'mu-bubble' }, ...reportParagraphs(museShorten(item.text)))));
+      if (item.text.trim() !== '') column.append(reportEl('div', { class: 'mu-row person' }, reportEl('div', { class: 'mu-tag', text: 'You' }), reportEl('div', { class: 'mu-bubble' }, ...reportParagraphs(museShorten(item.text)))));
     } else if (entry.kind === 'agent') {
       const item = entry.item as Extract<ChatItem, { kind: 'assistant' }>;
-      if (item.text.trim() !== '') column.append(agentBubble(item.text));
+      if (item.text.trim() !== '') column.append(agentBubble(item.text, name));
     }
   }
   flushBrowser(); flushQuiet();
