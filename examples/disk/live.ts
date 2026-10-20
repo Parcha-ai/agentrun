@@ -5,9 +5,10 @@
 //   (DAYTONA_API_KEY, ARCHIL_API_KEY and PDA_LIVE_DISK from the caller's credential wrapper)
 //
 // What runs: `--handoff` by default (the first sandbox releases the run at the planned crossing and a second sandbox opens it from the disk and finishes; nothing is killed), or `--kill` with
-// DISK_LIVE_MODE=kill (the first sandbox is deleted there). The lead: with DISK_LIVE_SECRET, the name of a Daytona secret that holds a Gemini key (allowed for generativelanguage.googleapis.com), the run is
-// `--live` on gemini-3.8-flash (model.ts): each sandbox is created with that secret as GEMINI_API_KEY, so the box holds only Daytona's placeholder, and the instance reaches Google through Daytona's egress
-// proxy, which puts the key into the request's header. Without it, the lead is scripted. DISK_LIVE_MAX_USD caps the run's spend (`--max-usd`; else twice demo.json's expectedCost).
+// DISK_LIVE_MODE=kill (the first sandbox is deleted there). The lead: with DISK_LIVE_SECRET, the name of a Daytona secret that holds an Anthropic key (allowed for api.anthropic.com), the run is `--live` on
+// claude-sonnet-5-5 (model.ts): each sandbox is created with that secret as ANTHROPIC_API_KEY, so the box holds only Daytona's placeholder, and the instance reaches Anthropic through Daytona's egress proxy,
+// which puts the key into the request's header. With DISK_LIVE_SECRET_CREATE=1 the runner makes that secret itself from ANTHROPIC_API_KEY in its own environment and deletes it at the end (below).
+// Without DISK_LIVE_SECRET, the lead is scripted. DISK_LIVE_MAX_USD caps the run's spend (`--max-usd`; else twice demo.json's expectedCost).
 // Each box gets the disk package (the live helper's `prepareBox`, or `prepareOnSnapshot` from a runtime snapshot: PDA_LIVE_SNAPSHOT), the workspace packages the harness child imports (packed here,
 // installed in the box) and this demo's directory.
 // It refuses without the keys, caps itself at 25 minutes, and sweeps at the end: every sandbox deleted and confirmed gone, the run's directory removed.
@@ -23,7 +24,7 @@ import { ARCHIL_WRAPPER, confirmGone, deletePrefix, demoClosure, FLEET, guardedC
 import { demo } from '@parcha/agentrun-harness';
 import { fakes } from './fakes.ts';
 import { job } from './job.ts';
-import { live } from './model.ts';
+import { KEY_ENV, live } from './model.ts';
 
 const record = process.argv[2];
 if (!record) throw new Error('usage: live.ts <record-dir>');
@@ -33,6 +34,35 @@ const secret = process.env.DISK_LIVE_SECRET;
 if (secret !== undefined && !/^[A-Za-z0-9._-]{1,100}$/.test(secret)) throw new Error('DISK_LIVE_SECRET names a Daytona secret: letters, digits, dot, dash and underscore');
 const maxUsd = process.env.DISK_LIVE_MAX_USD;
 if (maxUsd !== undefined && !(Number(maxUsd) > 0)) throw new Error('DISK_LIVE_MAX_USD is a number of dollars above 0');
+// DISK_LIVE_SECRET_CREATE=1: the runner makes the secret itself, from the key in its own environment, allowed for the model's host only, and deletes it in the sweep. The key leaves this process only in that one
+// request to Daytona's API. It is taken out of the environment here, before anything starts, so no child of this process and no order ever carries it; it is held only for the grep of what the run left here
+// (the recording, the run's files, the sandboxes' logs), and never printed.
+const createSecret = process.env.DISK_LIVE_SECRET_CREATE === '1';
+if (createSecret && !secret) throw new Error('DISK_LIVE_SECRET_CREATE needs DISK_LIVE_SECRET, the name of the secret to create');
+const heldKey = createSecret ? process.env[KEY_ENV] : undefined;
+if (createSecret && !heldKey) throw new Error(`DISK_LIVE_SECRET_CREATE needs ${KEY_ENV} in the runner's environment`);
+delete process.env[KEY_ENV];
+/** The one host the model's secret is sent to. */
+const MODEL_HOST = 'api.anthropic.com';
+const daytonaBase = (process.env.DAYTONA_API_URL || 'https://app.daytona.io/api').replace(/\/+$/, '');
+/** Daytona's REST API (the organisation's secrets): status and text, never a header; errors carry the status only. */
+async function daytonaApi(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }> {
+  const res = await fetch(`${daytonaBase}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${process.env.DAYTONA_API_KEY}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  return { status: res.status, text: await res.text().catch(() => '') };
+}
+/** A secret's id by its name (the organisation's first pages), or undefined. */
+async function secretIdOf(name: string): Promise<string | undefined> {
+  const listed = await daytonaApi('GET', '/secret/paginated');
+  if (listed.status !== 200) throw new Error(`listing the organisation's secrets answered ${listed.status}`);
+  return ((JSON.parse(listed.text) as { items?: { id: string; name: string }[] }).items ?? []).find((item) => item.name === name)?.id;
+}
+let createdSecretId: string | undefined;
+let secretDelete: { status: number; getAfter: number } | undefined;
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const spec = JSON.parse(readFileSync(new URL('./demo.json', import.meta.url), 'utf8'));
@@ -76,8 +106,8 @@ const covered = snapshotCovers(process.env.PDA_LIVE_SNAPSHOT);
 console.log(`snapshot: ${process.env.PDA_LIVE_SNAPSHOT ?? 'none'}; packs install ${covered.offline ? 'offline' : 'online'} (${covered.why})`);
 
 const guarded = guardedClient();
-// Each box is created with the model's secret attached as GEMINI_API_KEY (Daytona's REST form: one name per entry). The box's environment holds Daytona's placeholder; the key itself never enters it.
-const client: typeof guarded = secret ? { ...guarded, create: (body) => guarded.create({ ...body, secrets: [{ GEMINI_API_KEY: secret }] } as typeof body) } : guarded;
+// Each box is created with the model's secret attached as ANTHROPIC_API_KEY (Daytona's REST form: one name per entry). The box's environment holds Daytona's placeholder; the key itself never enters it.
+const client: typeof guarded = secret ? { ...guarded, create: (body) => guarded.create({ ...body, secrets: [{ [KEY_ENV]: secret }] } as typeof body) } : guarded;
 /** The instance's environment beside the order's (the driver's `env`): with the secret, read from each box as it is prepared (the placeholder and Daytona's proxy, which Node uses only when told to). */
 const boxEnv: Record<string, string> = {};
 const disk = await scratchDisk();
@@ -115,9 +145,9 @@ rm -f /tmp/d4-demo.tgz`, 120);
     if (secret) {
       // The names the model call needs, read in the box: the secret's placeholder and Daytona's egress proxy with its CA (the proxy carries no credential). A value that is not a placeholder is refused: a key
       // never goes into an instance's environment from here. Only the names are printed.
-      const read = await sh(client, box, `for v in GEMINI_API_KEY HTTPS_PROXY HTTP_PROXY NO_PROXY NODE_EXTRA_CA_CERTS; do printf '%s=%s\\n' "$v" "$(printenv "$v")"; done`, 30);
+      const read = await sh(client, box, `for v in ${KEY_ENV} HTTPS_PROXY HTTP_PROXY NO_PROXY NODE_EXTRA_CA_CERTS; do printf '%s=%s\\n' "$v" "$(printenv "$v")"; done`, 30);
       const got = Object.fromEntries(read.split('\n').filter((line) => line.includes('=')).map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
-      if (!/^dtn_secret_[A-Za-z0-9_-]+$/.test(got.GEMINI_API_KEY ?? '')) throw new Error(`the box's GEMINI_API_KEY is not a Daytona secret's placeholder: is ${secret} a secret of this organisation?`);
+      if (!/^dtn_secret_[A-Za-z0-9_-]+$/.test(got[KEY_ENV] ?? '')) throw new Error(`the box's ${KEY_ENV} is not a Daytona secret's placeholder: is ${secret} a secret of this organisation?`);
       for (const name of ['HTTPS_PROXY', 'NODE_EXTRA_CA_CERTS']) if (!got[name]) throw new Error(`the box has no ${name}: Daytona's egress proxy, which puts the key into the request, is not set`);
       Object.assign(boxEnv, got, { NODE_USE_ENV_PROXY: '1' });
       lap(`the model's secret is attached (placeholder) and the proxy set: ${Object.keys(got).filter((name) => got[name]).join(', ')}`);
@@ -177,11 +207,33 @@ async function sweep() {
   await revokeBestEffort(disk as never, runId).catch(() => []);
   report.disk = await deletePrefix(disk as never, `runs/${runId}/`).catch((error) => ({ error: String((error as Error).message).slice(0, 200) }));
   rmSync(scratch, { recursive: true, force: true });
+  // The model's secret, when this runner made it: deleted, and read back to show it is gone. Once, also from the 25 minute cap.
+  if (createdSecretId && !secretDelete) {
+    try {
+      const deleted = await daytonaApi('DELETE', `/secret/${createdSecretId}`);
+      const after = await daytonaApi('GET', `/secret/${createdSecretId}`);
+      secretDelete = { status: deleted.status, getAfter: after.status };
+      ledger.event('daytona-secret-deleted', { name: secret ?? null, id: createdSecretId, status: deleted.status, getAfter: after.status });
+    } catch (error) {
+      report.secretDeleteError = String((error as Error).message).slice(0, 200);
+    }
+    console.log(`the model's secret ${secret}: DELETE answered ${secretDelete?.status ?? 'nothing'}, a GET after it ${secretDelete?.getAfter ?? 'nothing'}`);
+    report.secretDelete = secretDelete ?? null;
+  }
   console.log(`sweep: ${JSON.stringify(report)}`);
   return report;
 }
 
 try {
+  if (createSecret) {
+    if (await secretIdOf(secret!)) throw new Error(`a secret named ${secret} already exists: this runner makes its own and deletes it, and never overwrites one`);
+    const made = await daytonaApi('POST', '/secret', { name: secret, value: heldKey, description: 'the disk take model key; deleted by the runner at its end', hosts: [MODEL_HOST] });
+    if (made.status >= 300) throw new Error(`creating the model's secret answered ${made.status}`);
+    createdSecretId = (JSON.parse(made.text) as { id?: string }).id ?? (await secretIdOf(secret!));
+    if (!createdSecretId) throw new Error("the model's secret was created but its id cannot be read");
+    ledger.event('daytona-secret-created', { name: secret!, id: createdSecretId, hosts: MODEL_HOST });
+    console.log(`the model's secret ${secret} is made, allowed for ${MODEL_HOST} only`);
+  }
   outcome = await demo({
     self: import.meta.url, spec, job, fakes, live,
     place: (context) => {
@@ -230,6 +282,22 @@ try {
 } finally {
   report = await sweep();
 }
+// The key, when this runner held it, must be nowhere in what the run left here: the recording, the run's files brought home, and the sandboxes' logs. A count of files, never the value.
+let keyHits: number | null = null;
+if (heldKey) {
+  let hits = 0;
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const at = join(dir, entry.name);
+      if (entry.isDirectory()) walk(at);
+      else if (entry.isFile() && readFileSync(at).includes(heldKey)) hits += 1;
+    }
+  };
+  for (const dir of [record, runDir]) if (existsSync(dir)) walk(dir);
+  for (const text of boxLogs.values()) if (text.includes(heldKey)) hits += 1;
+  keyHits = hits;
+  console.log(`the key in what the run left here: ${keyHits} file(s) or log(s)`);
+}
 // A take succeeds only when the run delivered, every planned handoff landed, nothing went over the cap or failed to stop, the checks ran and found nothing, and the sweep left nothing behind.
 const why = [
   ...(failure ? [`the run threw: ${String((failure as Error).message).slice(0, 120)}`] : []),
@@ -240,7 +308,9 @@ const why = [
   ...(checkError ? ['the by-code checks could not run'] : checks === null ? ['the by-code checks had no recording to read'] : checks.length ? [`the by-code checks found ${checks.length} problem(s)`] : []),
   ...((report.aliveAfter as unknown[] | undefined)?.length ? ['a sandbox is still alive after the sweep'] : []),
   ...(report.releaseError ? ['the place did not release cleanly'] : []),
+  ...(keyHits ? ['the key is in what the run left here'] : []),
+  ...(createdSecretId && !(secretDelete && secretDelete.status < 300 && secretDelete.getAfter === 404) ? ["the model's secret is not confirmed deleted"] : []),
   ...(((report.disk as { left?: number; error?: string } | undefined)?.left ?? 0) > 0 || (report.disk as { error?: string } | undefined)?.error ? ["the run's directory is still on the disk"] : []),
 ];
-console.log(JSON.stringify({ run: runId, minutes: Math.round((Date.now() - startedAt) / 6000) / 10, spendUsd: ledger.spend(), ...(failure ? { failure: String((failure as Error).message).slice(0, 300) } : {}), mode, live: Boolean(secret), kills: outcome?.kills ?? null, handoffs: outcome?.handoffs ?? null, failedHandoffs: outcome?.failedHandoffs ?? null, processes: outcome?.processes.map((p) => ({ exit: p.exit, status: p.outcome?.status ?? null })) ?? null, usd: outcome?.usd ?? null, overBudget: outcome?.overBudget ?? null, checks, ok: why.length === 0, ...(why.length ? { why } : {}), report }));
+console.log(JSON.stringify({ run: runId, minutes: Math.round((Date.now() - startedAt) / 6000) / 10, spendUsd: ledger.spend(), ...(failure ? { failure: String((failure as Error).message).slice(0, 300) } : {}), mode, live: Boolean(secret), kills: outcome?.kills ?? null, handoffs: outcome?.handoffs ?? null, failedHandoffs: outcome?.failedHandoffs ?? null, processes: outcome?.processes.map((p) => ({ exit: p.exit, status: p.outcome?.status ?? null })) ?? null, usd: outcome?.usd ?? null, overBudget: outcome?.overBudget ?? null, checks, secret: secret ? { name: secret, created: Boolean(createdSecretId), deleted: secretDelete ?? null } : null, keyHits, ok: why.length === 0, ...(why.length ? { why } : {}), report }));
 process.exit(why.length ? 1 : 0);

@@ -12,16 +12,16 @@ Check: `node --version` prints v22.19.0 or later.
 
 ## A real agent on this machine: `npm run demo:disk -- --live --handoff`
 
-The agent is Google's gemini-3.8-flash. The run still lives in a directory of this machine.
+The agent is Anthropic's claude-sonnet-5-5. The run still lives in a directory of this machine.
 
 | Env name | What | Where to create it |
 |---|---|---|
-| `GEMINI_API_KEY` | A Gemini API key, for the review and report agents. | aistudio.google.com: Get API key. |
+| `ANTHROPIC_API_KEY` | An Anthropic API key, for the review and report agents. | console.anthropic.com: API keys. |
 
 Put it in your environment the way you keep secrets (a secrets manager's run wrapper, or `export` in the shell you run
 the demo from). The agent checks that the name is set, never its value.
 
-A run makes about 50 model calls, about $0.25 to $0.50 at list price, and stops at `--max-usd`, $1.00 by default. Each
+A run makes about 50 model calls, about $1 to $2 at list price, and stops at `--max-usd`, $3.00 by default. Each
 process also stops itself after 60 model calls.
 
 ## On Daytona and an Archil disk: `examples/disk/live.ts`
@@ -37,10 +37,10 @@ Each process of the run is a Daytona sandbox, and the run's directory is on an A
 | `PDA_LIVE_REGION` | Optional: the disk's region. Unset means `aws-us-east-1`. | The disk's page in the Archil console. |
 | `DAYTONA_API_KEY` | A Daytona API key for an organisation on Tier 3 or 4: the archil client in the sandbox needs full egress. | The Daytona dashboard: Keys. |
 
-The Gemini key does not go into a sandbox. **You run this yourself:** in the Daytona dashboard, Secrets, create a
-secret that holds your Gemini key and allows only the host `generativelanguage.googleapis.com`. Pass its name to the
-runner in `DISK_LIVE_SECRET` (the name, never the key), which attaches it to each sandbox as `GEMINI_API_KEY`: the sandbox sees Daytona's placeholder, and Daytona puts
-the key into the request when the agent calls Google. Delete the secret when you are done.
+The Anthropic key does not go into a sandbox. **You run this yourself:** in the Daytona dashboard, Secrets, create a
+secret that holds your Anthropic key and allows only the host `api.anthropic.com`. Pass its name to the
+runner in `DISK_LIVE_SECRET` (the name, never the key), which attaches it to each sandbox as `ANTHROPIC_API_KEY`: the sandbox sees Daytona's placeholder, and Daytona puts
+the key into the request when the agent calls Anthropic. Delete the secret when you are done.
 
 ### Programs
 

@@ -8,14 +8,14 @@
         "text",
         "tools"
       ],
-      "default": "google/gemini-3.8-flash"
+      "default": "anthropic/claude-sonnet-5-5"
     }
   },
   "keys": [
     {
-      "env": "GEMINI_API_KEY",
-      "why": "the review and report agents (google/gemini-3.8-flash at medium thinking); in a Daytona sandbox, the placeholder of a Daytona secret that holds the key, so the box never holds it",
-      "where": "aistudio.google.com, Get API key; for the sandbox, a Daytona secret (Daytona dashboard: Secrets) allowed for generativelanguage.googleapis.com only",
+      "env": "ANTHROPIC_API_KEY",
+      "why": "the review and report agents (anthropic/claude-sonnet-5-5 at medium thinking); in a Daytona sandbox, the placeholder of a Daytona secret that holds the key, so the box never holds it",
+      "where": "console.anthropic.com, API keys; for the sandbox, a Daytona secret (Daytona dashboard: Secrets) allowed for api.anthropic.com only",
       "required": true,
       "for": "live"
     },
@@ -49,8 +49,8 @@
     },
     {
       "env": "DISK_LIVE_SECRET",
-      "why": "live.ts only: the NAME of the Daytona secret that holds the Gemini key (never the key), attached to each sandbox as GEMINI_API_KEY; without it the lead is scripted",
-      "where": "the Daytona dashboard: Secrets, a secret allowed for generativelanguage.googleapis.com only",
+      "why": "live.ts only: the NAME of the Daytona secret that holds the Anthropic key (never the key), attached to each sandbox as ANTHROPIC_API_KEY; without it the lead is scripted",
+      "where": "the Daytona dashboard: Secrets, a secret allowed for api.anthropic.com only",
       "required": false,
       "for": "live"
     }
@@ -90,7 +90,7 @@
     }
   ],
   "expectedCalls": 50,
-  "expectedCost": 0.5,
+  "expectedCost": 1.5,
   "kills": [
     {
       "point": "effect.kept charge",
