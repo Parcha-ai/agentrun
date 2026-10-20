@@ -58,7 +58,7 @@ A mandatory category with no valid `unknown` value needs a missing-facts path wh
 }
 ```
 
-A dry run gives every synthetic boolean the value `false`, so an `escalate` on a boolean being `false`, like this one, always fires there: the dry run reports `not_run` and names the escalation in `skipped`. The steps after it are not exercised, and that is not a defect to repair.
+A dry run gives a boolean whose schema leaves it open (no `const` or `enum`) the value `false`, so an `escalate` on such a boolean being `false`, like this one, always fires there: the dry run reports `not_run` and names the escalation in `skipped`. The steps after it are not exercised, and that is not a defect to repair.
 
 For Jev nodes, use the bundled [decision design guide](references/jev-decisions.md), also returned by `describe` under `authoring.jev`. No separate TypeSafe skill installation or live documentation access is required to author this DSL. Give each decision the actual material it must judge: a researcher's summary is a claim, not an independent source. Let code perform exact operations and agents do open-ended research; use Jev for focused semantic decisions with complete context.
 
