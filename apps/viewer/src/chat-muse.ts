@@ -69,7 +69,7 @@ const icon = (name: 'globe' | 'shield' | 'brain'): HTMLElement => {
 const card = (kind: string, glyph: 'globe' | 'shield' | 'brain', title: string, sub: string, ...rest: (HTMLElement | false | undefined)[]): HTMLElement => reportEl('section', { class: `mu-card ${kind}` },
   reportEl('div', { class: 'mu-card-head' }, icon(glyph), reportEl('div', {}, reportEl('div', { class: 'mu-card-title', text: title }), sub !== '' && reportEl('div', { class: 'mu-card-sub', text: sub }))), ...rest);
 
-/** The browser as one card: the latest frame the steps held, who has it, and Take control (shown, disabled: a replay is over). */
+/** The browser as one card: the latest frame the steps held and who has it, as a status line (pi-browser's viewer has no Take control button: the person drives whenever the agent is not acting). */
 function browserCard(recording: Recording, steps: ToolItem[]): HTMLElement {
   const browsers = steps.flatMap((step) => (step.browser ? [step.browser] : []));
   const last = browsers.flatMap((browser) => browser.frames).sort((a, b) => a.t - b.t).at(-1);
@@ -80,10 +80,9 @@ function browserCard(recording: Recording, steps: ToolItem[]): HTMLElement {
     { text: hold.condition ? `Handed the browser over: ${museShorten(hold.condition)}` : 'Handed the browser over', held: true },
     ...(hold.t1 !== undefined ? [{ text: hold.outcome ? `Handed back · ${hold.outcome}` : 'Handed back', held: false }] : []),
   ]);
-  const take = reportEl('button', { class: 'mu-take', type: 'button', disabled: true, title: 'Replay: the run is over', text: 'Take control' });
   return card('mu-browser', 'globe', 'Browser', site ? `Browsing ${site}` : 'Browsing',
     reportEl('div', { class: 'mu-shot' }, src ? reportEl('img', { loading: 'lazy', src, alt: site ? `The browser on ${site}` : 'The browser' }) : reportEl('span', { class: 'mu-shot-none', text: 'No picture was recorded here' })),
-    reportEl('div', { class: 'mu-strip' }, reportEl('div', { class: 'mu-labels' }, ...labels.map((label) => reportEl('span', { class: `mu-label${label.held ? ' held' : ''}`, text: label.text }))), take));
+    reportEl('div', { class: 'mu-strip' }, reportEl('div', { class: 'mu-labels' }, ...labels.map((label) => reportEl('span', { class: `mu-label${label.held ? ' held' : ''}`, text: label.text })))));
 }
 
 /** Where the run waited for a person to sign in: asked, and signed in once the browser's own profile says so. */

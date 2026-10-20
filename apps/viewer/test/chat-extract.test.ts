@@ -408,7 +408,7 @@ test('the Muse view: a hold is read from the session rows and the handoff rows a
   assert.deepEqual(handoff.browser!.frames.map((frame) => frame.t), [4000]);
   assert.equal(browserOf(muse, 'snapshot').browser, undefined, 'a step with no frame and no hold is not a browser step');
   assert.equal(tools(muse).filter((item) => item.tool === 'run' && item.plumbing).length, 1, 'a command with no frame is still plumbing');
-  assert.deepEqual(muse.agent, { name: 'Wren', status: 'done' }, "the host's label names the agent; a manifest that names an artifact is a run that delivered");
+  assert.deepEqual(muse.agent, { name: 'Scout', status: 'done' }, "the host's label names the agent; a manifest that names an artifact is a run that delivered");
   // The same rows with the session never handed back: the hold is open and the run is waiting.
   const held = await model(browserFixture, (events) => events.split('\n').filter((line) => !line.includes('"t":8500')).join('\n'));
   assert.equal(held.agent, undefined, 'and without the option no agent is named');

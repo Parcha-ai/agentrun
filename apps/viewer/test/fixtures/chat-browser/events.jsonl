@@ -1,4 +1,4 @@
-{"channel":"durable","source":"host","kind":"reference.label","conv":1,"t":100,"data":{"doc":"reference.label","value":{"label":"Wren"},"version":1}}
+{"channel":"durable","source":"host","kind":"reference.label","conv":1,"t":100,"data":{"doc":"reference.label","value":{"label":"Scout"},"version":1}}
 {"channel":"live","source":"browser","kind":"frame","conv":7,"t":500,"blobs":["34d38f45d7f3bab7415d19fb368dae33219ecd55449c49ef8c1afa4b1d4e34f5"],"data":{"session":"s1","provider":"local","w":800,"h":353,"mime":"image/png"}}
 {"channel":"durable","source":"pi","kind":"pi.user","conv":7,"t":800,"data":{"model":[{"role":"user","content":"Check my account at https://shop.example.test/account/secret-path?x=1 and download my last bills."}],"conversationId":7,"id":0}}
 {"channel":"durable","source":"pi","kind":"pi.assistant","conv":7,"t":900,"data":{"model":[{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"run","arguments":{"code":"await page.goto(\"https://example.test/\")"}}]}],"conversationId":7,"id":1}}

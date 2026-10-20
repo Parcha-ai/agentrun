@@ -122,7 +122,7 @@ test('in Chrome: &muse is a phone chat over the same events, at 1440 and 390: th
 
   for (const id of ['wide', 'phone']) {
     // The avatar at the top, the agent's name and its state under it (its state follows the scroll: see chat-muse-remember.test.ts).
-    assert.deepEqual(await value(`[doc('${id}').querySelector('.mu-name').textContent, ['is working', 'Done'].includes(doc('${id}').querySelector('.mu-state').textContent)]`), ['Wren', true], `${id}: the agent's name and its state`);
+    assert.deepEqual(await value(`[doc('${id}').querySelector('.mu-name').textContent, ['is working', 'Done'].includes(doc('${id}').querySelector('.mu-state').textContent)]`), ['Scout', true], `${id}: the agent's name and its state`);
     // The avatar is the one picture file, loaded, in a flat square hairline frame; the cards are flat too (no shadow, no glow).
     assert.deepEqual(await value(`(() => { const d = doc('${id}'); const img = d.querySelector('.mu-avatar img'); const card = d.querySelector('.mu-card'); const shadow = (el) => getComputedStyle(el).boxShadow;
       return [img.getAttribute('src'), img.complete && img.naturalWidth > 0, d.querySelector('.mu-avatar').getBoundingClientRect().width === d.querySelector('.mu-avatar').getBoundingClientRect().height, shadow(d.querySelector('.mu-avatar')) === 'none', shadow(card) === 'none']; })()`), ['muse-avatar.webp', true, true, true, true], `${id}: the avatar picture in a flat square frame, and flat cards`);
@@ -142,7 +142,7 @@ test('in Chrome: &muse is a phone chat over the same events, at 1440 and 390: th
         order: [...d.querySelector('.mu-chat').children].map((n) => n.classList.contains('mu-row') ? (n.classList.contains('person') ? 'person' : 'agent') : n.classList.contains('mu-card') ? [...n.classList].find((c) => c !== 'mu-card') : n.tagName.toLowerCase() + '.' + n.className) }; })()`);
     // The agentrun look: a 1px hairline (the line token) on the panel token, the sans body; not the blue bubble.
     assert.deepEqual(chat.person.box, ['1px', 'rgb(44, 44, 48)', 'rgb(17, 17, 19)', 'Inter'], `${id}: the person's words in a hairline panel box`);
-    assert.deepEqual(chat.tags, ['You|JetBrainsMono|uppercase', 'Wren|JetBrainsMono|uppercase'], `${id}: each message under a mono label, the person's and the agent's name`);
+    assert.deepEqual(chat.tags, ['You|JetBrainsMono|uppercase', 'Scout|JetBrainsMono|uppercase'], `${id}: each message under a mono label, the person's and the agent's name`);
     assert.match(chat.person.text, /^Check my account at shop\.example\.test and download my last bills\.$/, `${id}: the address is shortened to its host`);
     assert.match(chat.answer, /^Amount due: \$112\.40\s*Due date: April 15\s*Downloaded bills:\s*Details are at shop\.example\.test$/s, `${id}: the answer as a bubble, its address shortened, the file lines taken out`);
     assert.deepEqual(chat.files, ['statement-03.pdf', 'statement-02.pdf'], `${id}: the files as chips`);
@@ -157,7 +157,8 @@ test('in Chrome: &muse is a phone chat over the same events, at 1440 and 390: th
     assert.deepEqual(await value(`(() => { const c = doc('${id}').querySelector('.mu-memory'); return [c.querySelector('.mu-card-title').textContent, [...c.querySelectorAll('.mu-rh')].map((h) => h.textContent), [...c.querySelectorAll('.mu-rsub')].map((h) => h.textContent), c.textContent.includes('http'), c.textContent.includes('Shop: shop.example.test'), /\\d{4}-\\d{2}-\\d{2}T/.test(c.textContent) || /today|yesterday/i.test(c.textContent), /\\.md\\b|index/i.test(c.textContent), [...c.querySelectorAll('.mu-rlist li')].map((li) => li.textContent).filter((text) => /preferences|amount|\\$100/i.test(text)), c.querySelectorAll('pre, .mu-rpre').length]; })()`), ['What I remember', ['Signed in', 'My memory', 'Runs'], ['Accounts', 'Preferences'], false, true, false, false, ['Only care about the amount and the due date', 'Flag anything over $100'], 0], `${id}: What I remember: plain headings, plain lines, no file names, no raw time, no address`);
     // Nothing of the analyst view, and no web address anywhere in what the page shows.
     assert.deepEqual(await value(`[doc('${id}').querySelectorAll('.app, .report, .step, .tl, .src').length, /https?:\\/\\//.test(doc('${id}').body.innerText)]`), [0, false], `${id}: no report page, no raw address`);
-    assert.deepEqual(await value(`[...doc('${id}').querySelectorAll('.muse, .muse *')].filter((node) => { const s = getComputedStyle(node); return s.borderLeftStyle !== 'none' && parseFloat(s.borderLeftWidth) > parseFloat(s.borderRightWidth); }).map((node) => node.className || node.tagName)`), [], `${id}: no left-edge accent bar`);
+    // Counted with every fold open: a thought's body and a step list are drawn too.
+    assert.deepEqual(await value(`(() => { for (const fold of doc('${id}').querySelectorAll('details')) fold.open = true; return [...doc('${id}').querySelectorAll('.muse, .muse *')].filter((node) => { const s = getComputedStyle(node); return s.borderLeftStyle !== 'none' && parseFloat(s.borderLeftWidth) > parseFloat(s.borderRightWidth); }).map((node) => node.className || node.tagName); })()`), [], `${id}: no left-edge accent bar, every fold open`);
     assert.ok((await value<number>(`wider('${id}')`)) <= 1, `${id}: nothing sideways`);
   }
   // A run that starts signed in: no card that waits, one that says the sign-in was remembered, after the person's words.
