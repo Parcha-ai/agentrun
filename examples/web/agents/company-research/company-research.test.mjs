@@ -382,6 +382,20 @@ test("the page shows the base, each overlay with its Jev rule, the generic, and 
   assert.equal(where("nonsense"), "");
 });
 
+test("a pass shows its choice at the probability the threshold is compared with, and its confidence when that is a different number", () => {
+  const habitat = { version: 1, input: "Habitat", variant: "generic", passes: [{ choice: "nonprofit", confidence: 0.37, probabilities: { nonprofit: 0.5, other: 0.36, public: 0.13 }, cost_usd: 0.00002, latency_ms: 344 }, { choice: "nonprofit", confidence: 0.46, probabilities: { nonprofit: 0.46, other: 0.4 } }], lookup: { used: true, sources: [] }, reason: "r" };
+  const html = renderPage({ ...DATA, runs: [{ id: "run-h", title: "", index: {}, briefHref: null, record: habitat }] });
+  const [first, second] = html.match(/<td><b>nonprofit<\/b>[\s\S]*?<\/td>/g);
+  assert.ok(first.startsWith("<td><b>nonprofit</b> at 0.50<small>nonprofit 0.50 · other 0.36 · public 0.13</small><small>confidence 0.37 · $0.000020 · 344 ms</small>"), first);
+  assert.ok(second.startsWith("<td><b>nonprofit</b> at 0.46<small>nonprofit 0.46 · other 0.40</small>"), "the same number twice is shown once");
+  assert.doesNotMatch(second, /confidence/);
+  const bare = renderPage({ ...DATA, runs: [{ id: "run-i", title: "", index: {}, briefHref: null, record: { version: 1, input: "x", passes: [{ choice: "public", confidence: 0.5, probabilities: {} }] } }] });
+  assert.ok(bare.includes("<td><b>public</b> at 0.50</td>"), "with no probability for the choice, the confidence is the number shown");
+  const noConfidence = renderPage({ ...DATA, runs: [{ id: "run-j", title: "", index: {}, briefHref: null, record: { version: 1, input: "x", passes: [{ choice: "public", probabilities: { public: 0.7 } }, { choice: "other" }] } }] });
+  assert.ok(noConfidence.includes("<td><b>public</b> at 0.70<small>public 0.70</small></td>"), "with no confidence, the probability is shown alone");
+  assert.ok(noConfidence.includes("<td><b>other</b></td>"), "with neither, only the choice");
+});
+
 test("the page has no script, no network address to load and nothing unescaped from a run", () => {
   const html = renderPage(DATA);
   assert.doesNotMatch(html, /<script/i);
