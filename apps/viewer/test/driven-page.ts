@@ -1,7 +1,8 @@
 // A page in a headless Chrome driven over its debugging protocol, in real time: what an expression in the page evaluates
 // to, and a close that ends the browser and every process it started, its crash handler included, before its profile is
 // removed. A browser a test leaves open would keep the test's process alive: `closeLeftBrowsers` ends and names each one.
-// Every wait is bounded and names what it waited for: the browser must be listening within `launchMs`, every request to
+// Every wait is bounded and names what it waited for: the browser must be listening within `launchMs` (one that is not is
+// ended and started once more, as a loaded machine can hang one start and not the next), every request to
 // it answers within `requestMs`, and an answer that can no longer come (the socket closed or failed, the browser exited)
 // fails at once. Two things once held a CI job to its limit and are not used: `spawnSync`, whose timeout sends SIGTERM and
 // then waits for the process to exit with the event loop blocked, and `--dump-dom` with `--virtual-time-budget`, which now
@@ -44,10 +45,24 @@ function crashHandlersOf(group: number): number[] {
 const open = new Map<number, () => Promise<void>>();
 
 export type DrivenPage = Awaited<ReturnType<typeof drivenPage>>;
+type Options = { launchMs?: number; requestMs?: number; path?: string; signal?: AbortSignal };
+
+/** A browser that did not write its DevToolsActivePort within `launchMs`. */
+class NotListening extends Error {}
 
 /** A page in its own headless Chrome. `signal`'s abort (a test's timeout) kills the browser's group at once, before the
- *  test's cleanup removes what it uses; `path` is the browser to start (a stand-in in the bounds' own test). */
-export async function drivenPage(url: string, profile: string, { launchMs = 20_000, requestMs = 10_000, path = chrome, signal: aborted }: { launchMs?: number; requestMs?: number; path?: string; signal?: AbortSignal } = {}) {
+ *  test's cleanup removes what it uses; `path` is the browser to start (a stand-in in the bounds' own test). A browser
+ *  that is not listening within `launchMs` is ended, and one more is started: never after the signal's abort. */
+export async function drivenPage(url: string, profile: string, options: Options = {}) {
+  try {
+    return await startedPage(url, profile, options);
+  } catch (error) {
+    if (!(error instanceof NotListening) || options.signal?.aborted) throw error;
+    return startedPage(url, profile, options);
+  }
+}
+
+async function startedPage(url: string, profile: string, { launchMs = 30_000, requestMs = 10_000, path = chrome, signal: aborted }: Options) {
   // A profile used before may still hold the port file of a browser that is gone.
   rmSync(join(profile, 'DevToolsActivePort'), { force: true });
   // Its own process group: the browser and every helper it starts are ended together, by the group's pid.
@@ -91,7 +106,7 @@ export async function drivenPage(url: string, profile: string, { launchMs = 20_0
       try { port = readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0] || undefined; } catch { /* not up yet */ }
       if (!port) await sleep(100);
     }
-    if (!port) throw new Error(`Chrome starting (its DevToolsActivePort): nothing after ${launchMs / 1000} s`);
+    if (!port) throw new NotListening(`Chrome starting (its DevToolsActivePort): nothing after ${launchMs / 1000} s`);
     const targets = await within(requestMs, 'Chrome listing its pages', fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json())) as { type: string; url: string; webSocketDebuggerUrl: string }[];
     const target = targets.find((each) => each.type === 'page' && each.url.startsWith(url)) ?? targets.find((each) => each.type === 'page');
     if (!target) throw new Error(`Chrome has no page for ${url}`);

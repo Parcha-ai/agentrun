@@ -88,7 +88,7 @@ names with `&parent=<origin>`, each checked.
   `aborted` entry), re-asks (from the store's `pi.live` asks, each ask a kill cut counted once: proven when it had
   committed a partial, possible when only its start, with the turns they fell on; only proven ones count; "not
   measured" when no ask start was committed or its version is unknown), processes, kills, cost (unknown when any part is unknown,
-  never $0; a scripted run, as its manifest's `providers` says, reads "scripted, $0" rather than $0.0000; "at least" when a look may have been paid that no durable line shows), the looks the eyes were paid for
+  never $0; a scripted run, as its manifest's `providers` says, reads "scripted, $0" rather than $0.0000; "at least" when a look may have been paid that no durable line shows; drawn only with `?debug=cost` or `?debug=durability`), the looks the eyes were paid for
   (per look key: a native look charges nothing, and a look read back after a kill is paid once), and the journal's
   opens. Counts come from durable lines and the supervisor's lines only. Repeated and
   asked twice are per call: an effect's outside calls the host reported as applied, in more than one process (repeated)
@@ -128,9 +128,10 @@ job's own token, scoped to Pages, and names no secret. `scripts/pages-workflow.t
 
 `recordings/<id>/` holds the recordings bundled with the build, each a `manifest.json`, an `events.jsonl` and its
 `blobs/`. The build embeds them in `gallery.js` (so the gallery works from `file://`) and copies them beside the page.
-One is bundled: the reference example's job with scripted providers (`recordings/README.md` says how it was recorded).
-The same job killed ten times and resumed is kept, unedited, with the test fixtures (`test/fixtures/ten-kills-seed21`).
-A test holds both to the format and their manifests' cost to the counters' fold. The tests also play a fixture cut by
+None is in git: the Pages job unpacks the gallery's recordings into `recordings/` from the release asset its lock names
+(`recordings/README.md`), and each is an agent run of an example. The reference example's job with scripted providers,
+once uncut and once killed ten times and resumed, is kept, unedited, with the test fixtures (`test/fixtures/reference-job`
+and `test/fixtures/ten-kills-seed21`). A test holds both to the format and their manifests' cost to the counters' fold. The tests also play a fixture cut by
 hand from a real run; it lives in `test/fixtures/` and is never bundled (`test/fixtures/README.md` says how each fixture
 was made). A
 restore is tested on a recording built line by line (`test/restore-drill.ts`), and re-asks on a real 30-kill storm cut
