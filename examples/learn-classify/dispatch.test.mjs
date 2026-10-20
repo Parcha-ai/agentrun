@@ -94,7 +94,7 @@ test('complete: the host runs the promoted workflow on the node model, Opus is n
   assert.deepEqual([...new Set(model.seen.map((r) => `${r.who} ${r.model} ${r.thinking}`))], ['node gpt-6-luna medium']);
   assert.equal(measure.status, HOST_WORKFLOW);
   assert.deepEqual(measure.answer, extractAnswer({ group: { code: job.sic2 }, text: pages[job.website].text, url: job.website }));
-  assert.deepEqual(measure.dispatch, { name: WORKFLOW, revision: dispatch.sha256, key: measure.dispatch.key, outcome: 'complete' });
+  assert.deepEqual(measure.dispatch, { name: WORKFLOW, revision: dispatch.sha256, key: measure.dispatch.key, outcome: 'complete', at: measure.dispatch.at });
   assert.match(measure.dispatch.key, /^host:classify-company:/);
   assert.deepEqual(measure.workflowRuns.map(({ name, outcome, classifiedBy }) => ({ name, outcome, classifiedBy })), [{ name: WORKFLOW, outcome: 'complete', classifiedBy: HOST_WORKFLOW }]);
   assert.ok(measure.usage.costUsd > 0, 'the node conversation is priced at Luna\'s rates');
