@@ -86,6 +86,21 @@ test("serve refuses before any task what the agentrun tool would refuse: a code 
   const lacking = await at(planOf(optional), { input: { amount: 10 } });
   assert.equal(lacking.outcome, "refused");
   assert.match(lacking.detail, /interpolates \{sku\} but no upstream node produces "sku"/);
+  // Past the tool's own workload limits: a map that would quote 100 skus at once.
+  const wide = {
+    v: 2, name: "wide-map",
+    schemas: {
+      In: { type: "object", additionalProperties: false, required: ["skus"], properties: { skus: { type: "array", items: { type: "string" } } } },
+      Quote: { type: "object", required: ["price"], properties: { price: { type: "number" } } },
+      Quotes: { type: "array", items: { type: "object" } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Quotes", path: "quotes" },
+    root: { node: "map", label: "each sku", itemsPath: "skus", maxConcurrency: 100, as: "quotes", body: { node: "call", label: "quote", via: "tool", tool: "prices.quote", args: { sku: "{item}" }, out: "Quote", as: "quote", deadline_s: 20 } },
+  };
+  const many = await at(planOf(wide), { input: { skus: ["A-1", "A-2"] } });
+  assert.equal(many.outcome, "refused");
+  assert.match(many.detail, /Map concurrency must not exceed 8/);
   await run.close();
   assert.deepEqual(tasksIn(run.store), [], "no task was written");
 });

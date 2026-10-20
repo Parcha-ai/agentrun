@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { inspectWorkflow, validateWorkflow, type Workflow } from "@parcha/agentrun-dsl";
+import { WorkflowExtensionService } from "@parcha/agentrun-pi";
 import type { createWorkflowExtension, WorkflowCaller } from "@parcha/agentrun-pi/durable";
 import { WorkflowStore } from "@parcha/agentrun-pi/workflows";
 import type { Repo } from "@parcha/pi-git-remote";
@@ -60,7 +61,8 @@ export type ServeOptions = {
 /**
  * Runs `plan` as a durable workflow task of the run, before the agent says anything. The checks the agentrun tool makes
  * come first, and a workflow that fails one is `refused` with no task: a code node, SOP text, a tool the host does not
- * register, an input the workflow does not take or a node that reads a key the input lacks. A complete run whose output
+ * register, an input the workflow does not take or a node that reads a key the input lacks, and the tool's admission with
+ * its workload limits (`WorkflowExtensionService.preflight`). A complete run whose output
  * `check` accepts is `complete`, the answer; one it refuses is `escalated`, with the problems.
  */
 export async function serve(options: ServeOptions): Promise<ServedRun> {
@@ -80,6 +82,12 @@ export async function serve(options: ServeOptions): Promise<ServedRun> {
   if (missing.length) return refuse(`it uses tools this host does not register: ${missing.join(", ")}`);
   const fits = validateWorkflow(plan.workflow, { executeCode: false, input });
   if (!fits.ok) return refuse(`it does not take this input: ${fits.errors.slice(0, 20).join("; ")}`);
+  // The tool's own admission, its workload limits with it (nodes, a map's concurrency, a parallel's branches).
+  try {
+    new WorkflowExtensionService({ allowedTools: [...options.tools] }).preflight(plan.workflow, input);
+  } catch (error) {
+    return refuse(`the agentrun tool would not start it: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const key = hostKey(plan.name, plan.sha256, input);
   const run = await options.workflows.start(options.harness, { key, workflow: plan.workflow, input }, options.context, { background: true });
   const outcome = await run.wait(options.context);
