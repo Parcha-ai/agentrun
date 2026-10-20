@@ -7,10 +7,10 @@ import type { AddressInfo } from "node:net";
 import { extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { agentView, Agents, etagOf, type AgentEntry } from "./agents.js";
-import { BOUND_TOOLS } from "./app.js";
 import { ApiError, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, modelSource } from "./model.js";
 import { type CarryBackRetry, type Run, Runs } from "./runs.js";
+import { type BrowserKind, toolOffer } from "./tools.js";
 import { checkAgentCreate, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json } from "./validate.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -94,8 +94,9 @@ const ROUTES: Route[] = [
   { method: "GET", pattern: /^\/usage$/, name: "getUsage" },
 ];
 
-/** What this server offers. Every flag is present; an off one answers 501 naming it. */
-export function capabilities(env: NodeJS.ProcessEnv = process.env) {
+/** What this server offers. Every flag is present; an off one answers 501 naming it. `browser` is the one the tool offer
+ *  of this environment's host found (`toolOffer`). */
+export function capabilities(env: NodeJS.ProcessEnv = process.env, browser: BrowserKind = "none") {
   const models = modelSource(env);
   return {
     backend: "local",
@@ -113,7 +114,7 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env) {
       quotes: false,
       usage: { basis: "estimate", meters: ["tokens"] },
       efforts: [...EFFORTS],
-      browser: "none",
+      browser,
       sign_ins: false,
       vault: false,
       query: false,
@@ -161,7 +162,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const doorTokenFile = join(data, DOOR_TOKEN_FILE);
   const doorToken = await tokenIn(doorTokenFile);
   const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}) };
-  const caps = capabilities(env);
+  const offer = await toolOffer(env, join(data, ".offer"));
+  const caps = capabilities(env, offer.browser);
   const agents = new Agents(data);
   const runs = new Runs({ agents, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}) });
   const expected = digest(`Bearer ${token}`);
@@ -252,18 +254,19 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
   // ---- runs -----------------------------------------------------------------------------------------------------------
 
-  /** What keeps the agent from running here, checked before anything starts. */
-  function runnable(entry: AgentEntry): void {
+  /** What keeps the agent from running here, checked before anything starts. A tool it names that this host does not
+   *  bind is refused with the harness's message. */
+  async function runnable(entry: AgentEntry): Promise<void> {
     const { definition, skills } = entry.state;
-    const unbound = definition.tools.filter((name) => !(BOUND_TOOLS as readonly string[]).includes(name));
+    const bound = definition.tools.filter((name) => offer.bound.includes(name));
+    const unbound = definition.tools.filter((name) => !offer.bound.includes(name));
     const why = !caps.models
       ? "No model is bound: start agentrun-serve with --faux MODULE, or set AGENT_MODEL_BASE_URL and AGENT_MODEL."
       : definition.workflow
         ? "agentrun-serve runs agents, not workflows: this definition has a workflow."
-        : unbound.length
-          ? `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; this definition also names ${unbound.join(", ")}.`
-          : definition.skills.filter((name) => !Object.hasOwn(skills, `${name}/SKILL.md`)).map((name) => `The definition names the skill ${name}, and the home has no ${name}/SKILL.md.`)[0];
-    if (why) throw new ApiError("agent_not_runnable", why, { details: { unbound } });
+        : ((await offer.refusal(definition.tools)) ??
+          definition.skills.filter((name) => !Object.hasOwn(skills, `${name}/SKILL.md`)).map((name) => `The definition names the skill ${name}, and the home has no ${name}/SKILL.md.`)[0]);
+    if (why) throw new ApiError("agent_not_runnable", why, { details: { bound, unbound } });
   }
 
   async function createRun(req: IncomingMessage, agentId: string) {
@@ -282,7 +285,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       const schema = entry.state.definition.input_schema ?? DEFAULT_INPUT_SCHEMA;
       const wrong = inputIssues(input, schema as Json);
       if (wrong.length) throw invalid(wrong);
-      runnable(entry);
+      await runnable(entry);
       const content = entry.state.definition.input_schema ? (typeof input.content === "string" && Object.keys(input).length === 1 ? input.content : JSON.stringify(input)) : (input.content as string);
       const title = typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
       const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : entry.state.definition.max_cost_usd;

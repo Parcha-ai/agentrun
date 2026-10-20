@@ -10,35 +10,71 @@ This package is held: it is built and tested in this repository and not publishe
 
 ## Quick start (no key, no network)
 
-Node 22.19 or later. In a checkout of this repository:
+Node 22.19 or later. The package is not on npm yet: install it from the tarballs `npm pack` makes in a checkout of
+this repository (it and the `@parcha` packages it uses), or build the checkout (`npm ci --ignore-scripts && npm run
+build`) and write `node packages/serve/dist/cli.js` where the script below says `node_modules/.bin/agentrun-serve`.
+
+Save a faux model as `faux.mjs`. It stands in for the model, with no key and no network: the agent runs one command
+with `bash`, then answers.
+
+```js
+export default function reply(context, faux) {
+  if (context.messages.at(-1)?.role !== "toolResult") return faux.message(faux.toolCall("bash", { command: "echo hello > hi.txt" }), { stopReason: "toolUse" });
+  return faux.message("I wrote hello into hi.txt.");
+}
+```
+
+Save this as `walk.mjs`. With plain `fetch`, it makes an agent that names `bash`, starts a run, reads the timeline
+until a page says `final`, and prints the run's status, its answer and the file the command wrote:
+
+```js
+const base = process.env.AGENTRUN_BASE_URL;
+const headers = { authorization: `Bearer ${process.env.AGENTRUN_API_KEY}`, "content-type": "application/json" };
+async function api(method, path, body) {
+  const res = await fetch(`${base}${path}`, { method, headers, body: body && JSON.stringify(body) });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`${method} ${path}: ${res.status} ${text}`);
+  return res.headers.get("content-type")?.startsWith("application/json") ? JSON.parse(text) : text;
+}
+
+const { agent_id } = await api("POST", "/agents", {
+  definition: { version: 1, name: "Shell", instructions: "Do what the person asks.", skills: [], tools: ["bash"] },
+});
+const { run_id } = await api("POST", `/agents/${agent_id}/runs`, { input: { content: "Write hello into hi.txt." } });
+for (let after = 0, page; !page?.final; after = page.next_after) {
+  page = await api("GET", `/runs/${run_id}/timeline?after=${after}&wait_ms=5000`);
+}
+const run = await api("GET", `/runs/${run_id}`);
+const file = await api("GET", `/runs/${run_id}/files/hi.txt`);
+console.log(`${run.status}: ${run.result.final_answer} hi.txt: ${file.trim()}`);
+```
+
+Save this as `walk.sh` and run `sh walk.sh`. It starts the server on a free port, exports the two lines it prints
+(`AGENTRUN_BASE_URL` and `AGENTRUN_API_KEY`, the token), runs the walk, and stops the server:
 
 ```sh
-npm ci --ignore-scripts && npm run build
-cat > faux.mjs <<'JS'
-export default (context, faux) => faux.message("The answer is 42.");
-JS
-node packages/serve/dist/cli.js --faux faux.mjs
+node_modules/.bin/agentrun-serve --faux faux.mjs --port 0 > serve.log 2>&1 &
+trap 'kill $!; wait $!' EXIT
+until grep -q '^AGENTRUN_API_KEY=' serve.log; do kill -0 $! || exit 1; sleep 0.2; done
+export $(grep '^AGENTRUN_' serve.log)
+node walk.mjs
 ```
 
-It prints where it listens and the token:
+It prints one line:
 
+```text
+completed: I wrote hello into hi.txt. hi.txt: hello
 ```
+
+Started on its own with no `--port`, the server listens on port 7340 and prints where, and the token:
+
+```text
 agentrun-serve on http://127.0.0.1:7340/v2 (agent homes in ~/.local/share/agentrun/agents)
 AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2
 AGENTRUN_API_KEY=ar_local_...
 ```
 
-Export those two lines and make an agent, start a run, and read its timeline until a page says `final`:
-
-```sh
-H="authorization: Bearer $AGENTRUN_API_KEY"
-curl -s "$AGENTRUN_BASE_URL/agents" -H "$H" -H 'content-type: application/json' \
-  -d '{"definition":{"id":"calc","version":1,"name":"Calc","instructions":"Answer the question.","skills":[],"tools":[]}}'
-run=$(curl -s "$AGENTRUN_BASE_URL/agents/calc/runs" -H "$H" -H 'content-type: application/json' \
-  -d '{"input":{"content":"What is six times seven?"}}' | node -p 'JSON.parse(require("fs").readFileSync(0)).run_id')
-curl -s "$AGENTRUN_BASE_URL/runs/$run/timeline?wait_ms=5000" -H "$H"
-curl -s "$AGENTRUN_BASE_URL/runs/$run" -H "$H"
-```
+The agent's home is in that data directory, and the run's files are in its `runs/<run_id>/work/`.
 
 For a real model, leave out `--faux` and name an OpenAI Responses endpoint: `AGENT_MODEL_BASE_URL`, `AGENT_MODEL`, and
 `AGENT_MODEL_API_KEY` when it needs a key (`AGENT_MODEL_PRICE` is `input,output,cacheRead[,cacheWrite]` in USD per
@@ -70,15 +106,36 @@ Home export and import, `PUT .../definition`, uploads (`/files`), quotes and `PO
 `501 unsupported_here` naming the feature, and capabilities declare each one false. No run waits out `input_wait_s`
 here (`null`), and runs carry no browser sign-ins (`sign_ins: false`).
 
+## Tools
+
+An agent's tools come from [`@parcha/agentrun-harness`](../harness/README.md#serve-uses-this): a definition may name
+any tool of the harness's vocabulary that this server's host offers, and `ask_person`, which is serve's own.
+
+| Name | What | Needs |
+| --- | --- | --- |
+| `read`, `write`, `edit`, `bash` | files and commands in the run's `work/` | nothing |
+| `code` | code mode: a script with `tools.bash`, `vision.see` and `vision.judge` | nothing; `vision.judge` answers only with `TYPESAFE_API_KEY` |
+| `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch` | a browser | `CHROME_PATH` (a Chrome on this machine) or both `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` |
+| `ask_person` | a question to the person who started the run; the turn ends until they answer | nothing |
+
+The server reads what its host offers once, when it starts, from its own environment, and each run's app builds the
+same host from the same environment. Capabilities say which browser it is (`features.browser`: `chrome`,
+`browserbase` or `none`). A definition may name a tool this server does not offer: the agent is created, since a
+definition moves between backends, and a run of it is refused before it starts with `409 agent_not_runnable`, the
+harness's reason, and `details: {bound, unbound}`.
+
+A command the agent runs, through `bash` or `code`, runs with your user's rights; there is no command sandbox yet. It
+gets only `PATH`, `HOME`, `TMPDIR` and `LANG` from the server's environment, so none of its keys.
+
 ## A run's life
 
 1. `POST /agents/{id}/runs` starts the run in the home (`startRun`, host `agentrun-serve`), then its process:
    `pi-durable-disk run --dir <home>/runs/<id> --app <this package's app> --serve 0` on loopback, behind a token of its
    own (`DIR/.door-token`), with its stderr in `runs/<id>/process.log`. The run is `queued` until its first message shows.
-2. The app gives the agent its definition's instructions and skills, the model this server binds, and the tools the
-   definition names: the workspace's `read`, `write` and `edit`, and `ask_person`, which ends the turn; the timeline
-   then shows a `waiting` row, and the run is `input_required` and `waiting` until a message answers it. `bash` is not
-   bound, so a definition that names it is not runnable here.
+2. The app builds the run on the harness (`agentApp` on the host `hostFromEnv` makes from the environment, see
+   [Tools](#tools)): the definition's instructions and skills, the model this server binds, and exactly the tools the
+   definition names. `ask_person` ends the turn; the timeline then shows a `waiting` row, and the run is
+   `input_required` and `waiting` until a message answers it.
 3. While the process runs, the timeline comes from its door's events through `@parcha/pi-durable-agent/timeline`.
 4. Once the run is idle and its newest row is the agent's answer, the server sends the process SIGTERM. When it has
    exited, the run's rows are read from its released store, and `carryBack` records its outcome, answer and cost in the

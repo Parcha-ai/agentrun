@@ -44,6 +44,7 @@
     "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
   },
   "dependencies": {
+    "@parcha/agentrun-harness": "0.1.0-beta.18",
     "@parcha/pi-durable-agent": "0.1.0-beta.18",
     "@parcha/pi-durable-disk": "0.1.0-beta.18"
   },

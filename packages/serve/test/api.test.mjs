@@ -171,11 +171,11 @@ test("a run's input is checked against the default schema {content: string}, and
   assert.deepEqual(noContent.body.error.fields.map((f) => [f.field, f.reason]), [["input.content", "missing"]]);
   const quote = await api("POST", "/agents/plain/runs", { input: { content: "x" }, quote_id: "q" });
   assert.deepEqual([quote.status, quote.body.error.capability], [501, "quotes"]);
-  await api("POST", "/agents", agent("shell", { tools: ["read", "bash"] }));
-  const unbound = await api("POST", "/agents/shell/runs", { input: { content: "x" } });
+  await api("POST", "/agents", agent("elsewhere", { tools: ["read", "teleport"] }));
+  const unbound = await api("POST", "/agents/elsewhere/runs", { input: { content: "x" } });
   assert.equal(unbound.status, 409);
   assert.equal(unbound.body.error.code, "agent_not_runnable");
-  assert.deepEqual(unbound.body.error.details.unbound, ["bash"]);
+  assert.deepEqual(unbound.body.error.details, { bound: ["read"], unbound: ["teleport"] });
   await api("POST", "/agents", agent("flow", { workflow: { nodes: [] } }));
   assert.equal((await api("POST", "/agents/flow/runs", { input: { content: "x" } })).body.error.code, "agent_not_runnable");
   await api("POST", "/agents", agent("typed", { input_schema: { type: "object", required: ["task"], properties: { task: { type: "string" } } } }));
