@@ -687,6 +687,20 @@
               "type": "number",
               "title": "maxConcurrency"
             },
+            "onItemFailure": {
+              "description": "What an item's failure does: `stop` (the default) stops the map and the run; `collect` ends the item as a row\nof `failedAs` when its failure is an item failure (`isItemFailure`), and the other items finish.",
+              "enum": [
+                "collect",
+                "stop"
+              ],
+              "type": "string",
+              "title": "onItemFailure"
+            },
+            "failedAs": {
+              "description": "With `onItemFailure: \"collect\"`, the state key the map writes its failed items under, one row each in item order:\n`{ item_index, label, code, message }`. `as` stays aligned with the items, `null` in a failed item's slot.",
+              "type": "string",
+              "title": "failedAs"
+            },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
               "type": "object",

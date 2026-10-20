@@ -650,7 +650,8 @@ test("a recorded run through writeReplay: its store gives the golden rows, its m
   assert.deepEqual(JSON.parse(await readFile(join(out, "runs", "reference-job", "files.json"), "utf8")).map((f) => f.path), ["result.json"], "the result blob, and no frame, screenshot or evidence");
   assert.deepEqual(await readFile(join(out, "runs", "reference-job", "files", "result.json")), await readFile(new URL(`blobs/${result}.json`, RECORDING)));
   const [listed] = JSON.parse(await readFile(join(out, "runs.json"), "utf8")).runs;
-  assert.deepEqual([listed.title, listed.startedAt, listed.costUsd, listed.live], ["The reference job, no key", "2026-10-14T23:01:10.811Z", null, false], "a scripted recording has no cost");
+  const started = JSON.parse(await readFile(new URL("manifest.json", RECORDING), "utf8")).recorded.started;
+  assert.deepEqual([listed.title, listed.startedAt, listed.costUsd, listed.live], ["The reference job, no key", started, null, false], "the run's start as its manifest says it; a scripted recording has no cost");
   assert.equal(JSON.parse(await readFile(join(out, "runs", "reference-job.json"), "utf8")).costUsd, null);
 });
 

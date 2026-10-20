@@ -1,6 +1,7 @@
 // The demo spec the reference entry reads: the parts of `demo.json` the entry itself acts on. A demo's `demo.json` holds more (the DSL's
 // DemoSpec: models, keys, programs, expected calls; the template's claim, panels, targets); the entry ignores what it does not run.
 
+import { checkKeys, type DemoSpec as SignInSpec } from '@parcha/agentrun-pi/signin';
 
 /** A kill the supervisor makes. `point` names a crossing the child takes (`effect.kept <tool>`, `judge.asked <label>`, `model.request turn 1`, a package's
  *  own such as `vision.filing`); the first time the child crosses it, it is killed with SIGKILL. `kind: 'box'` says the whole machine or sandbox was
@@ -194,6 +195,17 @@ export function refuseJudgeCaps(spec: DemoSpec): void {
 }
 
 /** A model whose provider needs a key the demo does not declare is refused at load, naming the group to add: demo.json stays the one list the child's environment and the setup prompt read, and no key is implied. First case: the Jev judge. */
+/** The programs demo.json declares (`{ cmd, why, required }`, or a `oneOf` of them), checked on this machine's PATH for this run's mode before
+ *  any child starts. A run on fakes still runs the agent's own commands: a missing program would end it later as a model with nothing to say,
+ *  so the run is refused here, naming each program and what it is for. Keys are not checked here. */
+export function checkPrograms(spec: DemoSpec, live: boolean, env: NodeJS.ProcessEnv = process.env): void {
+  const programs = (spec.programs ?? []).filter((item) => item !== null && typeof item === 'object' && ('cmd' in item || 'oneOf' in item)) as SignInSpec['programs'];
+  if (!programs.length) return;
+  const report = checkKeys({ name: spec.name, models: { lead: { needs: [] } }, keys: [], programs, expectedCalls: 0, expectedCost: 0 }, { live, env });
+  if (report.ok) return;
+  throw new Error(`${spec.name} needs these programs on PATH, so nothing started:\n${report.missing.map((item) => `  ${item.name}: ${item.why} (${item.fix})`).join('\n')}`);
+}
+
 export function checkModelKeys(spec: DemoSpec): void {
   if (spec.models?.judge?.jev !== true) return;
   const declared = declaredEnv(spec);

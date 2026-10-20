@@ -6,6 +6,7 @@ import { lanesOf, type Lanes, type Span } from './lanes.ts';
 import { animatedPanels, featuredPanel, panelsFor, type BaselineView, type Node, type Panel, type Props, type ViewContext } from './panels.ts';
 import { frameFold, gapTitle, pictureAt, type FrameState } from './frames.ts';
 import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, linkedTime, timeParam, type Fold } from './replay.ts';
+import { chatGivenInput, chatTitle } from './chat-extract.ts';
 import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
 import { opensInPage } from './blobs.ts';
@@ -496,8 +497,9 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const liveStatus = el('span', { class: 'live-status', text: 'live' });
   const headerOf = () => {
     const { manifest } = recording;
-    if (following) return { header: el('header', {}, el('h1', { text: manifest.title }), el('p', { class: 'meta' }, `following ${live!.url} · `, liveStatus)), problemsNote: undefined };
-    const header = el('header', {}, el('h1', { text: manifest.title }), el('p', { class: 'meta', text:
+    const title = chatTitle(manifest, chatGivenInput(recording.lines));
+    if (following) return { header: el('header', {}, el('h1', { text: title }), el('p', { class: 'meta' }, `following ${live!.url} · `, liveStatus)), problemsNote: undefined };
+    const header = el('header', {}, el('h1', { text: title }), el('p', { class: 'meta', text:
       `${manifest.task} · ${manifest.model}${manifest.providers ? ` · ${manifest.providers} providers` : ''} · recorded ${manifest.recorded.started} · code ${manifest.code.commit.slice(0, 8)}` }));
     if (live) header.append(el('p', { class: 'meta' }, `followed live from ${live.url} · `, liveStatus));
     const problemsNote = problems.length ? el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }) : undefined;
@@ -770,7 +772,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
 function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly { id: string; manifest: Manifest }[], unread?: string) {
   const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {
     // A demo opens in the chat + report view; its inspection is ./?r=<id>, linked from there.
-    const link = Object.assign(el('a', { text: entry.manifest.title }), { href: `chat.html?r=${encodeURIComponent(entry.id)}` });
+    const link = Object.assign(el('a', { text: chatTitle(entry.manifest) }), { href: `chat.html?r=${encodeURIComponent(entry.id)}` });
     return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.model}` }));
   }));
   const picker = Object.assign(el('input'), { type: 'file', multiple: true }) as HTMLInputElement;

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import { chmod, lstat, mkdir, open, readdir, readFile, readlink, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
@@ -7,11 +8,28 @@ import path from "node:path";
 import test from "node:test";
 import { cdpProvider, closeGracefully, copyProfile, ProfileNotRemovedError } from "../dist/providers/cdp.js";
 import { CHROME, NO_CHROME } from "./fixtures/local-chrome.mjs";
-import { processesNaming, scratch } from "./fixtures/scratch.mjs";
+import { processesNaming, scratch, scratchShort } from "./fixtures/scratch.mjs";
 import { startSite } from "./fixtures/site.mjs";
 
 const spec = (tag, profile, metadata = { run: "r1", label: "a" }) => ({ tag, maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata, ...(profile ? { profile } : {}) });
 const signal = () => new AbortController().signal;
+/** SIGKILLs a lease's Chrome and waits until the process is gone, reaped: the provider sees a lease whose child handle has not exited as still running, and a
+ *  Chrome's teardown takes well over a fixed sleep when the box is loaded, so a replacement asked for too early is refused as a second saver. */
+async function crash(t, ref) {
+  const pid = Number(/^local:(\d+):/.exec(ref.id)[1]);
+  const started = Date.now();
+  process.kill(pid, "SIGKILL");
+  for (const end = started + 30_000; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 25))) {
+    try { process.kill(pid, 0); } catch (error) { if (error.code === "ESRCH") { t.diagnostic(`the killed Chrome was gone after ${Date.now() - started} ms`); return; } }
+  }
+  throw new Error(`pid ${pid} still exists 30 s after SIGKILL`);
+}
+const get = (url, headers) => new Promise((resolve, reject) => { http.get(url, { headers }, (res) => { res.resume(); res.on("end", resolve); }).on("error", reject); });
+// A stranger on the host: a port prober sends GET / with Go's HTTP client to every new loopback listener, with no Sec-Fetch-*
+// headers. A test that counts what reached its site counts only the browser's requests.
+const stranger = (base) => get(`${base}/`, { "user-agent": "Go-http-client/1.1" });
+/** The requests a browser sent: a browser sends Sec-Fetch-Dest to 127.0.0.1, while a port prober and Node's fetch do not. */
+const browserRequests = (site) => site.requests.filter((r) => Boolean(r.dest));
 
 async function evaluate(pageWs, expression) {
   const ws = new WebSocket(pageWs);
@@ -49,10 +67,10 @@ async function rig(t) {
   };
   const signIn = (user) => ({ open }) => open("/login").then((ws) => evaluate(ws, `fetch("/login", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "user=${user}&password=x", credentials: "include" }).then((r) => r.status)`));
   const account = async ({ open }) => {
-    const before = site.requests.length;
+    const before = browserRequests(site).length;
     const ws = await open("/account");
     const heading = await evaluate(ws, `new Promise((done) => { const end = Date.now() + 15000; const look = () => (document.querySelector("h1") || Date.now() > end ? done(document.querySelector("h1")?.textContent ?? "") : setTimeout(look, 50)); look(); })`);
-    return { heading, cookie: site.requests.slice(before).find((r) => r.path === "/account")?.cookie ?? null };
+    return { heading, cookie: browserRequests(site).slice(before).find((r) => r.path === "/account")?.cookie ?? null };
   };
   return { site, root, provider, run, signIn, account };
 }
@@ -81,17 +99,25 @@ test("a saved profile's next session opens only the startup page: the previous t
   const { stagehandDriver } = await import("../dist/driver/stagehand.js");
   // Session 1 leaves two pages open when it is released (Chrome writes its tab-restore files as it closes).
   await run({ name: "tabs", save: true }, async ({ open }) => { await open("/a"); await open("/b"); });
+  // Chrome's own requests carry Sec-Fetch-Dest, so counting the browser's requests would see a restored tab.
+  for (const page of ["/a", "/b"]) assert.ok(browserRequests(site).some((r) => r.path === page), `session 1's ${page} is counted as the browser's`);
   const pagesOf = async (target) => { const port = new URL(target.sdkCdpUrl).port; return (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).filter((x) => x.type === "page").map((x) => x.url.replace(site.base, "")); };
-  const before = site.requests.length;
+  const before = browserRequests(site).length;
+  const beforeAny = site.requests.length;
 
   const ref = await provider.create(spec(`cdp-prof-${process.pid}-r`, { name: "tabs", save: true }), signal());
   try {
     const target = await provider.attach(ref);
+    // A stranger's GET / lands while the page set is watched: it is not the browser's, so it is not an old URL reloaded.
+    await stranger(site.base);
     // Chrome restores tabs a moment after it starts: the page set is watched for as long as a restore would take.
     const seen = new Set();
     for (const end = Date.now() + 4_000; Date.now() < end; await new Promise((r) => setTimeout(r, 200))) for (const url of await pagesOf(target)) seen.add(url);
     assert.deepEqual([...seen], ["about:blank"], `only the startup page ever exists: ${JSON.stringify([...seen])}`);
-    assert.deepEqual(site.requests.slice(before).map((r) => r.path), [], "no request reached the site before anything asked for one: no old URL was reloaded");
+    assert.deepEqual(browserRequests(site).slice(before).map((r) => r.path), [], "no browser request reached the site before anything asked for one: no old URL was reloaded");
+    const after = site.requests.slice(beforeAny);
+    assert.deepEqual(after.filter((r) => r.path === "/a" || r.path === "/b").map((r) => r.path), [], "nothing, from any client, asked for an old page");
+    assert.ok(after.some((r) => r.path === "/" && !r.dest), "the stranger's GET / reached the site and was not counted");
     const driver = await stagehandDriver()(target, signal());
     try { assert.equal(await driver.url(), "about:blank", "the driver starts on a blank page"); } finally { await driver.close(); }
   } finally { await provider.release(ref); }
@@ -102,7 +128,17 @@ test("a saved profile's next session opens only the startup page: the previous t
   } finally { await provider.release(plain); }
 });
 
-test("a session that does not save starts from the saved state and leaves it as it was", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
+test("the site's browser requests leave out a stranger's GET /: a port prober and Node's fetch are not counted, a request with Sec-Fetch-Dest is", async (t) => {
+  const site = await startSite();
+  t.after(() => site.close(), { timeout: 30_000 });
+  await stranger(site.base);
+  await fetch(`${site.base}/`).then((r) => r.arrayBuffer());
+  await get(`${site.base}/a`, { "sec-fetch-dest": "document", "sec-fetch-mode": "navigate" });
+  assert.ok(site.requests.filter((r) => r.path === "/").length >= 2 && site.requests.some((r) => r.path === "/a"), "all three reached the site");
+  assert.deepEqual(browserRequests(site).map((r) => r.path), ["/a"], "only the request a browser sends is counted");
+});
+
+test("a session that does not save starts from the saved state and leaves it as it was",{ skip: NO_CHROME, timeout: 120_000 }, async (t) => {
   const { run, signIn, account } = await rig(t);
   await run({ name: "work", save: true }, signIn("ann"));
   const during = await run({ name: "work", save: false }, async (session) => {
@@ -276,15 +312,14 @@ test("a failed start that cannot remove a reader's copy of the saved cookies say
 
 test("a saved lease released while the Chrome that replaced it runs on the same profile removes its own link and private TMPDIR, and touches nothing the replacement holds", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
   const outer = process.env.TMPDIR;
-  const tmp = await scratch(t, "cdp-leases-tmp-");
+  const tmp = await scratchShort(t, "lease-tmp-");
   process.env.TMPDIR = tmp;
   t.after(() => { if (outer === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = outer; }, { timeout: 30_000 });
   const root = await scratch(t, "cdp-leases-");
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, headless: true, sandbox: false, args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost"] } });
   const privateTmps = async () => (await readdir(tmp)).filter((name) => /^pib-/.test(name));
   const crashed = await provider.create(spec(`cdp-crashed-${process.pid}`, { name: "work", save: true }), signal());
-  process.kill(Number(/^local:(\d+):/.exec(crashed.id)[1]), "SIGKILL");
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await crash(t, crashed);
   const replacement = await provider.create(spec(`cdp-replacement-${process.pid}`, { name: "work", save: true }, { run: "r2", label: "b" }), signal());
   assert.equal((await privateTmps()).length, 2, "each lease has its own private TMPDIR");
   await provider.release(crashed, signal());
@@ -295,4 +330,51 @@ test("a saved lease released while the Chrome that replaced it runs on the same 
   assert.ok((await lstat(path.join(root, `cdp-replacement-${process.pid}`))).isSymbolicLink(), "and the replacement's link");
   await provider.release(replacement, signal());
   assert.equal((await privateTmps()).length, 0);
+});
+
+test("a crashed saved lease released through a provider made after the crash removes its own private TMPDIR, though a replacement has taken the profile's marker", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
+  const outer = process.env.TMPDIR;
+  const tmp = await scratchShort(t, "lease-tmp-");
+  process.env.TMPDIR = tmp;
+  t.after(() => { if (outer === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = outer; }, { timeout: 30_000 });
+  const root = await scratch(t, "cdp-leases-");
+  const options = { chrome: { executablePath: CHROME, profileRoot: root, headless: true, sandbox: false, args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost"] } };
+  const privateTmps = async () => (await readdir(tmp)).filter((name) => /^pib-/.test(name));
+  // The provider that made the lease is gone with its process: its in-memory record of the lease's TMPDIR went with it.
+  const crashed = await cdpProvider(options).create(spec(`cdp-crashed-${process.pid}`, { name: "work", save: true }), signal());
+  await crash(t, crashed);
+  const later = cdpProvider(options);
+  const replacement = await later.create(spec(`cdp-replacement-${process.pid}`, { name: "work", save: true }, { run: "r2", label: "b" }), signal());
+  assert.equal((await privateTmps()).length, 2, "each lease has its own private TMPDIR");
+  await later.release(crashed, signal());
+  assert.deepEqual((await readdir(root)).filter((name) => name.startsWith("cdp-crashed") && !name.endsWith(".downloads")), [], "the crashed lease's link is gone");
+  assert.equal((await privateTmps()).length, 1, "and so is its private TMPDIR: only the replacement's is left");
+  assert.equal(await later.status(replacement), "running", "the replacement still runs");
+  const records = async () => (await readdir(path.join(root, ".profiles", ".leases")).catch(() => [])).sort();
+  assert.deepEqual(await records(), [`cdp-replacement-${process.pid}`], "the crashed lease's record went with its release");
+  await later.release(replacement, signal());
+  assert.equal((await privateTmps()).length, 0);
+  assert.deepEqual(await records(), [], "and the replacement's with its own");
+});
+
+test("a crashed saved lease whose replacement crashed too is released by a provider made after both, and its private TMPDIR goes with it", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
+  const outer = process.env.TMPDIR;
+  const tmp = await scratchShort(t, "lease-tmp-");
+  process.env.TMPDIR = tmp;
+  t.after(() => { if (outer === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = outer; }, { timeout: 30_000 });
+  const root = await scratch(t, "cdp-leases-");
+  const options = { chrome: { executablePath: CHROME, profileRoot: root, headless: true, sandbox: false, args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost"] } };
+  const privateTmps = async () => (await readdir(tmp)).filter((name) => /^pib-/.test(name));
+  const crashed = await cdpProvider(options).create(spec(`cdp-crashed-${process.pid}`, { name: "work", save: true }), signal());
+  await crash(t, crashed);
+  const replacement = await cdpProvider(options).create(spec(`cdp-replacement-${process.pid}`, { name: "work", save: true }, { run: "r2", label: "b" }), signal());
+  await crash(t, replacement);
+  assert.equal((await privateTmps()).length, 2, "each lease made its own private TMPDIR");
+  // The profile's marker now names the replacement's directory: the crashed lease's is found only by its own record.
+  const later = cdpProvider(options);
+  await later.release(crashed, signal());
+  assert.equal((await privateTmps()).length, 1, "the crashed lease's private TMPDIR is gone, the other lease's is not touched");
+  await later.release(replacement, signal());
+  assert.equal((await privateTmps()).length, 0);
+  assert.deepEqual((await readdir(path.join(root, ".profiles", ".leases"))).sort(), [], "no record is left");
 });
