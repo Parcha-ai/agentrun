@@ -41,5 +41,26 @@
     "links": [
       "https://www.ironcladfreight.example/annual-report-2025.pdf"
     ]
+  },
+  "https://www.goldenprairie.example": {
+    "title": "Golden Prairie Foods Inc.",
+    "text": "Golden Prairie Foods makes breakfast cereals, snack bars and baking mixes sold in grocery stores across North America.",
+    "links": [
+      "https://www.goldenprairie.example/annual-report-2025.pdf"
+    ]
+  },
+  "https://www.bluestemchem.example": {
+    "title": "Bluestem Chemical Co.",
+    "text": "Bluestem Chemical produces industrial solvents and coatings resins for manufacturers. We operate as one reportable segment.",
+    "links": [
+      "https://www.bluestemchem.example/annual-report-2025.pdf"
+    ]
+  },
+  "https://www.cornerpantry.example": {
+    "title": "Corner Pantry Stores Inc.",
+    "text": "Corner Pantry runs 640 convenience stores with fuel stations across the Southeast.",
+    "links": [
+      "https://www.cornerpantry.example/annual-report-2025.pdf"
+    ]
   }
 }

@@ -193,5 +193,103 @@
     "hqQuote": "Headquarters: Montr\u00e9al, Canada.",
     "subsidiaryQuote": "Exhibit 21: subsidiaries of the registrant: Ironclad Operating Company.",
     "reportQuote": "Ironclad Freight Lines Inc. Annual Report for fiscal year 2025."
+  },
+  "Golden Prairie Foods Inc.": {
+    "sic4": "2000",
+    "segments": [
+      {
+        "name": "Packaged Foods",
+        "share": 0.72
+      },
+      {
+        "name": "Ingredients",
+        "share": 0.28
+      }
+    ],
+    "hq": {
+      "city": "Omaha",
+      "state": "Nebraska",
+      "country": "United States"
+    },
+    "subsidiaries": [
+      {
+        "name": "Golden Prairie Mills LLC"
+      },
+      {
+        "name": "Prairie Ingredients Co."
+      }
+    ],
+    "annualReport": {
+      "url": "https://www.goldenprairie.example/annual-report-2025.pdf",
+      "fiscalYear": 2025
+    },
+    "site": "https://www.goldenprairie.example",
+    "siteQuote": "Golden Prairie Foods makes breakfast cereals, snack bars and baking mixes sold in grocery stores across North America.",
+    "document": "https://www.goldenprairie.example/annual-report-2025.pdf",
+    "segmentQuote": "Revenue by reportable segment: Packaged Foods 72% of revenue; Ingredients 28% of revenue.",
+    "hqQuote": "Headquarters: Omaha, United States.",
+    "subsidiaryQuote": "Exhibit 21: subsidiaries of the registrant: Golden Prairie Mills LLC, Prairie Ingredients Co..",
+    "reportQuote": "Golden Prairie Foods Inc. Annual Report for fiscal year 2025."
+  },
+  "Bluestem Chemical Co.": {
+    "sic4": "2800",
+    "segments": {
+      "oneSegment": true
+    },
+    "hq": {
+      "city": "Houston",
+      "state": "Texas",
+      "country": "United States"
+    },
+    "subsidiaries": [
+      {
+        "name": "Bluestem Specialty Chemicals LLC"
+      }
+    ],
+    "annualReport": {
+      "url": "https://www.bluestemchem.example/annual-report-2025.pdf",
+      "fiscalYear": 2025
+    },
+    "site": "https://www.bluestemchem.example",
+    "siteQuote": "Bluestem Chemical produces industrial solvents and coatings resins for manufacturers",
+    "document": "https://www.bluestemchem.example/annual-report-2025.pdf",
+    "segmentQuote": "Revenue by reportable segment: one reportable segment.",
+    "hqQuote": "Headquarters: Houston, United States.",
+    "subsidiaryQuote": "Exhibit 21: subsidiaries of the registrant: Bluestem Specialty Chemicals LLC.",
+    "reportQuote": "Bluestem Chemical Co. Annual Report for fiscal year 2025."
+  },
+  "Corner Pantry Stores Inc.": {
+    "sic4": "5412",
+    "segments": [
+      {
+        "name": "Stores",
+        "share": 0.9
+      },
+      {
+        "name": "Fuel",
+        "share": 0.1
+      }
+    ],
+    "hq": {
+      "city": "Atlanta",
+      "state": "Georgia",
+      "country": "United States"
+    },
+    "subsidiaries": [
+      {
+        "name": "Corner Operating Company"
+      }
+    ],
+    "annualReport": {
+      "url": "https://www.cornerpantry.example/annual-report-2025.pdf",
+      "fiscalYear": 2025
+    },
+    "site": "https://www.cornerpantry.example",
+    "siteQuote": "Corner Pantry runs 640 convenience stores with fuel stations across the Southeast.",
+    "document": "https://www.cornerpantry.example/annual-report-2025.pdf",
+    "segmentQuote": "Revenue by reportable segment: Stores 90% of revenue; Fuel 10% of revenue.",
+    "hqQuote": "Headquarters: Atlanta, United States.",
+    "subsidiaryQuote": "Exhibit 21: subsidiaries of the registrant: Corner Operating Company.",
+    "reportQuote": "Corner Pantry Stores Inc. Annual Report for fiscal year 2025."
   }
 }

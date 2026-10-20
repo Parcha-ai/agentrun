@@ -38,6 +38,13 @@
   what a page said.
 - `classify-company` takes `{ "name", "ticker"?, "website"? }` and returns
   `{ "sic4", "segments", "hq", "subsidiaries", "annualReport", "cites" }`, the answer's own shape.
+- Once workflows for parts are admitted (`<learned>` lists them), write `classify-company` from them: load each part
+  and embed it as a `workflow` step, a complete inline child whose input comes from this job's input or earlier steps;
+  cover the parts no workflow covers with call, extract or agent steps; return the answer's full shape. Inspect it with
+  this company's input, dry-run it, and save it. A part takes this job's input or fields of it: a part whose input is
+  something a run finds on the way (a document's URL) is never offered to a later run, so it cannot be embedded.
+- When a part gets a new revision, write `classify-company` again with that revision embedded: a revised part does not
+  reach `classify-company` until then.
 - A workflow works for any company. Never put a company's name, domain, answer or a page's words in one. It reads with
   the tools above, decides with pick, judge or route, and hands anything unsure back with escalate.
 

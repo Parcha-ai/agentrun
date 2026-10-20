@@ -34,5 +34,23 @@
     "pages": 9,
     "page": 4,
     "look": "The segment table: Truckload 80% of revenue; Logistics 20% of revenue."
+  },
+  "https://www.goldenprairie.example/annual-report-2025.pdf": {
+    "text": "[page 1] Golden Prairie Foods Inc. Annual Report for fiscal year 2025. Headquarters: Omaha, United States.\n[page 4] Revenue by reportable segment: Packaged Foods 72% of revenue; Ingredients 28% of revenue.\n[page 9] Exhibit 21: subsidiaries of the registrant: Golden Prairie Mills LLC, Prairie Ingredients Co..",
+    "pages": 9,
+    "page": 4,
+    "look": "The segment table: Packaged Foods 72% of revenue; Ingredients 28% of revenue."
+  },
+  "https://www.bluestemchem.example/annual-report-2025.pdf": {
+    "text": "[page 1] Bluestem Chemical Co. Annual Report for fiscal year 2025. Headquarters: Houston, United States.\n[page 4] Revenue by reportable segment: one reportable segment.\n[page 9] Exhibit 21: subsidiaries of the registrant: Bluestem Specialty Chemicals LLC.",
+    "pages": 9,
+    "page": 4,
+    "look": "The segment table: one reportable segment."
+  },
+  "https://www.cornerpantry.example/annual-report-2025.pdf": {
+    "text": "[page 1] Corner Pantry Stores Inc. Annual Report for fiscal year 2025. Headquarters: Atlanta, United States.\n[page 4] Revenue by reportable segment: Stores 90% of revenue; Fuel 10% of revenue.\n[page 9] Exhibit 21: subsidiaries of the registrant: Corner Operating Company.",
+    "pages": 9,
+    "page": 4,
+    "look": "The segment table: Stores 90% of revenue; Fuel 10% of revenue."
   }
 }

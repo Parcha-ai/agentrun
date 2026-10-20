@@ -267,5 +267,141 @@
       "filed": "2026-02-27"
     },
     "subsidiaries": null
+  },
+  {
+    "cik": "0000900107",
+    "name": "Golden Prairie Foods Inc.",
+    "ticker": "GPF",
+    "website": "https://www.goldenprairie.example",
+    "split": "run",
+    "order": 5,
+    "categories": [
+      "multi-segment"
+    ],
+    "sic": "2000",
+    "sic2": "20",
+    "sicDescription": "FOOD AND KINDRED PRODUCTS",
+    "segments": [
+      {
+        "member": "PackagedFoodsMember",
+        "label": "Packaged Foods",
+        "revenue": 720000000,
+        "share": 0.72
+      },
+      {
+        "member": "IngredientsMember",
+        "label": "Ingredients",
+        "revenue": 280000000,
+        "share": 0.28
+      }
+    ],
+    "hq": {
+      "city": "OMAHA",
+      "state": "NE",
+      "country": "US"
+    },
+    "latestAnnual": {
+      "form": "10-K",
+      "fy": 2025,
+      "period": "2025-12-31",
+      "adsh": "0000900100-25-000005",
+      "filed": "2026-02-27"
+    },
+    "subsidiaries": {
+      "exhibit": "EX-21.1",
+      "url": "https://www.sec.gov/Archives/edgar/data/900107/ex21.htm",
+      "count": 2,
+      "items": [
+        {
+          "name": "Golden Prairie Mills LLC",
+          "jurisdiction": "Nebraska"
+        },
+        {
+          "name": "Prairie Ingredients Co.",
+          "jurisdiction": "Delaware"
+        }
+      ]
+    }
+  },
+  {
+    "cik": "0000900108",
+    "name": "Bluestem Chemical Co.",
+    "ticker": "BSC",
+    "website": "https://www.bluestemchem.example",
+    "split": "run",
+    "order": 6,
+    "categories": [
+      "small-cap"
+    ],
+    "sic": "2800",
+    "sic2": "28",
+    "sicDescription": "CHEMICALS & ALLIED PRODUCTS",
+    "segments": {
+      "oneSegment": true
+    },
+    "hq": {
+      "city": "HOUSTON",
+      "state": "TX",
+      "country": "US"
+    },
+    "latestAnnual": {
+      "form": "10-K",
+      "fy": 2025,
+      "period": "2025-12-31",
+      "adsh": "0000900100-25-000006",
+      "filed": "2026-02-27"
+    },
+    "subsidiaries": {
+      "exhibit": "EX-21.1",
+      "url": "https://www.sec.gov/Archives/edgar/data/900108/ex21.htm",
+      "count": 1,
+      "items": [
+        {
+          "name": "Bluestem Specialty Chemicals LLC",
+          "jurisdiction": "Texas"
+        }
+      ]
+    }
+  },
+  {
+    "cik": "0000900109",
+    "name": "Corner Pantry Stores Inc.",
+    "ticker": "CPS",
+    "website": "https://www.cornerpantry.example",
+    "split": "run",
+    "order": 7,
+    "categories": [
+      "multi-segment"
+    ],
+    "sic": "5412",
+    "sic2": "54",
+    "sicDescription": "RETAIL-CONVENIENCE STORES",
+    "segments": [
+      {
+        "member": "StoresMember",
+        "label": "Stores",
+        "revenue": 900000000,
+        "share": 0.9
+      },
+      {
+        "member": "FuelMember",
+        "label": "Fuel",
+        "revenue": 100000000,
+        "share": 0.1
+      }
+    ],
+    "hq": {
+      "city": "ATLANTA",
+      "state": "GA",
+      "country": "US"
+    },
+    "latestAnnual": {
+      "form": "10-K",
+      "fy": 2025,
+      "period": "2025-12-31",
+      "adsh": "0000900100-25-000007",
+      "filed": "2026-02-27"
+    },
+    "subsidiaries": null
   }
 ]

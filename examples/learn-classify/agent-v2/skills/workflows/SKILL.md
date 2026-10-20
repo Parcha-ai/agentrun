@@ -26,6 +26,16 @@ branch with a `route` whose `valuePath` names `given`, and read the value from t
 Stop with an `escalate` (`"kind": "needs_input"`) when a required value is missing or a call found nothing:
 `"when": {"predicate": "empty", "path": "page.text"}`. Test text, not a yes-or-no field of a call or extract: a dry run
 fills their text with placeholders and their yes-or-no fields with false, so a stop on false fires in every dry run.
+A dry run answers every `judge` question yes: ask so that yes means the value holds, and stop on no. A dry run that
+lists anything as skipped did not run every check, and what you save from it is not admitted.
+
+# Compose
+
+A `workflow` step runs a complete inline child: `"workflow"` is its whole document, `"input"` its input from this
+workflow's input or earlier steps, `"out"` a schema here for its output. To build a whole job from saved parts, load
+each part, embed it, and write the steps no part covers as calls, decisions or one agent step. A part saved again
+reaches the whole only once the whole is written again with it embedded. A saved workflow is offered to a later run only
+when that run's input has every field it requires: give a part the job's own input, never a value found on the way.
 
 # Check inside the workflow
 

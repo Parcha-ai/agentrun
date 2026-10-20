@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { dryRunWorkflow, inspectWorkflow } from '@parcha/agentrun-dsl';
 import { WorkflowExtensionService } from '@parcha/agentrun-pi';
+import { dryRunStatus } from './gates.mjs';
 import { ANY_HOST, fetchPageTool } from './tools.mjs';
 
 const HOME = join(import.meta.dirname, 'agent-v2');
@@ -64,11 +65,39 @@ test('the skill is generic: it names nothing of this job', () => {
   for (const word of ['sic', 'segment', 'company', 'companies', 'filing', 'filed', 'ticker', 'revenue', 'sec.gov', 'edgar', 'annual report', 'classif']) {
     assert.doesNotMatch(SKILL.toLowerCase(), new RegExp(`\\b${word.replace('.', '\\.')}`), word);
   }
-  assert.ok(SKILL.split('\n').length <= 64, `${SKILL.split('\n').length} lines`);
+  assert.ok(SKILL.split('\n').length <= 72, `${SKILL.split('\n').length} lines`);
 });
 
 test('the seed home offers the skill', () => {
   const definition = JSON.parse(readFileSync(join(HOME, 'agent.json'), 'utf8'));
   assert.deepEqual(definition.skills, ['classify', 'workflows']);
   assert.match(SKILL, /^---\nname: workflows\ndescription: .+\n---\n/);
+});
+
+test('a judge is answered yes in a dry run: a stop on its no passes the host\'s gate, a stop on its yes never does', async () => {
+  const [example] = workflows;
+  assert.deepEqual(await dryRunStatus(example), { status: 'passed', problems: [], skipped: [] });
+  const flipped = structuredClone(example);
+  const stop = flipped.root.steps.at(-1);
+  stop.when = { predicate: 'field_true', path: 'check.supported' };
+  const status = await dryRunStatus(flipped);
+  assert.equal(status.status, 'not_run');
+  assert.match(status.skipped.join(' '), /escalated:needs_input@check on synthetic values/);
+  assert.match(SKILL, /A dry run answers every `judge` question yes/);
+});
+
+test('compose: a saved part embedded as a workflow step runs as a complete inline child, its input mapped from the parent', async () => {
+  const [part] = workflows;
+  const Input = { type: 'object', properties: { site: { type: 'string', minLength: 1 } }, required: ['site'], additionalProperties: false };
+  const whole = {
+    v: 2, name: 'whole', schemas: { Input, Found: part.schemas.Found },
+    input: { schemaId: 'Input' }, output: { schemaId: 'Found', path: 'found' },
+    root: { node: 'chain', steps: [{ node: 'workflow', label: 'the part', workflow: part, input: { url: '{site}', field: 'opening hours' }, out: 'Found', as: 'found' }] },
+  };
+  const input = { site: 'https://www.example.com/hours' };
+  assert.doesNotThrow(() => inspect(whole, input));
+  assert.deepEqual(await dryRunWorkflow(whole, { input }), { ok: true });
+  assert.equal((await dryRunStatus(whole)).status, 'passed', 'the host gate passes it');
+  assert.deepEqual(inspectWorkflow(whole).requires.tools, ['fetch_page'], 'the child\'s tools are the whole\'s');
+  assert.match(SKILL, /# Compose\n\nA `workflow` step runs a complete inline child/);
 });

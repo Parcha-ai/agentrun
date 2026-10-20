@@ -485,6 +485,22 @@ export function answerOfV4(t, { sic4 = t.sic4, site = t.site, report = t.documen
   };
 }
 
+/** The v4 job by hand, up to the answer: the site (searched for when none is given), the annual report found and its
+ *  segment page looked at (vision), the group, the code. */
+function byHandV4(job, truth) {
+  const site = job.website ?? truth.site;
+  return [
+    ...(job.website ? [] : [{ call: 'search_web', args: { query: `${job.name} ${job.ticker ?? ''} investor relations`.trim() } }]),
+    { call: job.website ? 'fetch_page' : 'browse', args: { url: site } },
+    // Find the segment note, then look at its page (vision) for the table as laid out.
+    { call: 'read_document', args: { url: truth.document, find: 'segment information' } },
+    { call: 'read_document', args: { url: truth.document, pages: [4], question: 'the segment revenue table as laid out' } },
+    { call: 'sic2_groups', args: {} },
+    { call: 'sic_codes', args: { group: truth.sic4.slice(0, 2) } },
+    { call: 'answer', args: answerOfV4(truth) },
+  ];
+}
+
 /**
  * The scripted v4 agent for one job: by hand (search for the site when none is given, read it, read the annual report,
  * the group, the code, the six-part answer), then CLASSIFY_WORKFLOW_V4 saved; or, offered it, load, run and answer from
@@ -514,14 +530,7 @@ export function agentScriptV4({ job, offered, fixtures }) {
   return {
     node,
     root: [
-      ...(job.website ? [] : [{ call: 'search_web', args: { query: `${job.name} ${job.ticker ?? ''} investor relations`.trim() } }]),
-      { call: job.website ? 'fetch_page' : 'browse', args: { url: site } },
-      // Find the segment note, then look at its page (vision) for the table as laid out.
-      { call: 'read_document', args: { url: truth.document, find: 'segment information' } },
-      { call: 'read_document', args: { url: truth.document, pages: [4], question: 'the segment revenue table as laid out' } },
-      { call: 'sic2_groups', args: {} },
-      { call: 'sic_codes', args: { group: truth.sic4.slice(0, 2) } },
-      { call: 'answer', args: answerOfV4(truth) },
+      ...byHandV4(job, truth),
       ...(offered.includes(WORKFLOW) ? [] : [
         { call: 'agentrun', args: { action: 'describe' } },
         { call: 'agentrun', args: { action: 'inspect', workflow: CLASSIFY_WORKFLOW_V4, input: { name: job.name, website: site } } },
@@ -532,4 +541,89 @@ export function agentScriptV4({ job, offered, fixtures }) {
       { say: 'Answered by hand.' },
     ],
   };
+}
+
+// ---- v4 composed: parts first, then classify-company embedding them ----------------------------------------------------
+
+/** The two part workflows the composing scripted agent writes first, each on the job's own input (a part whose input the
+ *  job's input lacks is never offered to a later run): the 4-digit code from the site, and the annual report's link. */
+export const PART_CODE = Object.freeze({
+  v: 2, name: 'classify-sic',
+  schemas: {
+    Company: CLASSIFY_WORKFLOW_V2.schemas.Company, Page: V2_PAGE, Groups: CLASSIFY_WORKFLOW_V2.schemas.Groups, Codes: CLASSIFY_WORKFLOW_V2.schemas.Codes,
+    Picked: { type: 'object', required: ['item'], properties: { item: CLASSIFY_WORKFLOW_V2.schemas.Groups.properties.groups.items } },
+  },
+  input: { schemaId: 'Company' },
+  output: { schemaId: 'Picked', path: 'code' },
+  root: { node: 'chain', steps: CLASSIFY_WORKFLOW_V2.root.steps.slice(0, -1) },
+});
+
+export const PART_FIND_REPORT = Object.freeze({
+  v: 2, name: 'find-annual-report',
+  schemas: { Company: CLASSIFY_WORKFLOW_V2.schemas.Company, Page: V2_PAGE, Report: CLASSIFY_WORKFLOW_V4.schemas.Report },
+  input: { schemaId: 'Company' },
+  output: { schemaId: 'Report', path: 'report' },
+  root: {
+    node: 'chain',
+    steps: [
+      { node: 'call', label: 'read the site', via: 'tool', tool: 'fetch_page', args: { url: '{website}' }, out: 'Page', as: 'page', deadline_s: 30 },
+      { node: 'escalate', label: 'no page', when: { predicate: 'empty', path: 'page.text' }, kind: 'needs_input', stage: 'research', summary: 'the site has no text to read' },
+      { node: 'extract', label: 'the annual report', tools: [], out: 'Report', as: 'report', instructions: 'url is the link to the company\'s latest annual report among the site\'s links.', state: { company: '{name}', links: '{page.links}' } },
+    ],
+  },
+});
+
+/** classify-company composed: the two parts embedded as workflow steps, then the part no workflow covers (the report read
+ *  with a look at its segment table) as a call, then the answer. */
+export const CLASSIFY_COMPOSITE = Object.freeze({
+  ...CLASSIFY_WORKFLOW_V4,
+  schemas: { ...CLASSIFY_WORKFLOW_V4.schemas, Picked: PART_CODE.schemas.Picked },
+  root: {
+    node: 'chain',
+    steps: [
+      { node: 'workflow', label: 'the code', workflow: PART_CODE, input: { name: '{name}', website: '{website}' }, out: 'Picked', as: 'code' },
+      { node: 'workflow', label: 'the annual report', workflow: PART_FIND_REPORT, input: { name: '{name}', website: '{website}' }, out: 'Report', as: 'report' },
+      { node: 'call', label: 'read the report', via: 'tool', tool: 'read_document', args: { url: '{report.url}', question: 'the segment revenue table as laid out' }, out: 'Document', as: 'document', deadline_s: 120 },
+      { node: 'escalate', label: 'no report', when: { predicate: 'empty', path: 'document.text' }, kind: 'needs_input', stage: 'research', summary: 'the annual report has no text to read' },
+      {
+        node: 'extract', label: 'write the answer', tools: [], out: 'Answer', as: 'answer',
+        instructions: 'sic4 is the picked code. segments, hq and subsidiaries are as the report states them; annualReport is the report read, with its fiscal year. cites quote the site and the report pages for each part.',
+        state: { company: '{name}', code: '{code.item}', url: '{website}', report: '{report.url}', document: '{document.text}' },
+      },
+    ],
+  },
+});
+
+/**
+ * The composing scripted v4 agent: by hand at first, saving the two parts; offered both parts, by hand again, then
+ * classify-company composed from them (each loaded, then embedded); offered classify-company, as agentScriptV4.
+ */
+export function agentScriptV4Compose({ job, offered, fixtures }) {
+  const base = agentScriptV4({ job, offered, fixtures });
+  if (offered.includes(WORKFLOW)) return base;
+  const truth = fixtures.truth[job.name];
+  const byHand = byHandV4(job, truth);
+  if (!job.website) return { node: base.node, root: [...byHand, { say: 'Answered by hand.' }] };
+  const company = { name: job.name, website: job.website };
+  const learn = (name, text) => ({ call: 'learn', args: { type: 'workflow', id: name, text } });
+  const parts = [PART_CODE, PART_FIND_REPORT].map((w) => w.name);
+  const composed = parts.every((name) => offered.includes(name))
+    ? [
+      ...parts.map((name) => ({ call: 'agentrun', args: { action: 'load', name, input: company } })),
+      { call: 'agentrun', args: { action: 'inspect', workflow: CLASSIFY_COMPOSITE, input: company } },
+      { call: 'agentrun', args: { action: 'dry-run' } },
+      { call: 'agentrun', args: { action: 'save', name: WORKFLOW } },
+      learn(WORKFLOW, 'Use it for any company whose website is given: it runs the parts.'),
+    ]
+    : [
+      { call: 'agentrun', args: { action: 'describe' } },
+      ...[PART_CODE, PART_FIND_REPORT].flatMap((workflow) => [
+        { call: 'agentrun', args: { action: 'inspect', workflow, input: company } },
+        { call: 'agentrun', args: { action: 'dry-run' } },
+        { call: 'agentrun', args: { action: 'save', name: workflow.name } },
+      ]),
+      learn(PART_CODE.name, 'Use it for the 4-digit code of any company whose website is given.'),
+      learn(PART_FIND_REPORT.name, 'Use it to find the annual report of any company whose website is given.'),
+    ];
+  return { node: base.node, root: [...byHand, ...composed, { say: 'Answered by hand.' }] };
 }
