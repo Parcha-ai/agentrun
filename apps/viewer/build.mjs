@@ -67,6 +67,8 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
   writeFileSync(join(target, 'viewer.css'), readFileSync(join(here, 'viewer.css')));
   writeFileSync(join(target, 'chat.js'), `(() => {\n'use strict';\n${chatParts.join('\n')}\n})();\n`);
   writeFileSync(join(target, 'chat.html'), readFileSync(join(here, 'chat.html')));
+  // The Muse layout's avatar: one small picture beside the page.
+  copyFileSync(join(here, 'muse-avatar.webp'), join(target, 'muse-avatar.webp'));
   // A `.js` name: every static host serves it as JavaScript, which a module script must be.
   mkdirSync(join(target, 'pdfjs'));
   for (const [from, to] of [['pdf.min.mjs', 'pdf.min.js'], ['pdf.worker.min.mjs', 'pdf.worker.min.js'], ['LICENSE.txt', 'LICENSE.txt']]) cpSync(join(here, 'vendor', 'pdfjs', from), join(target, 'pdfjs', to));

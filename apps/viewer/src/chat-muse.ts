@@ -140,6 +140,9 @@ function rememberCard(recording: Recording, artifact: NonNullable<ChatModel['art
   return card('mu-memory', 'brain', 'What I remember', 'Kept between runs', body);
 }
 
+/** The agent's picture: one file beside the page (apps/viewer/muse-avatar.webp, copied by the build), shown in the avatar's square slot. Empty, the slot shows the agent's initial. */
+export const MUSE_AVATAR: string = 'muse-avatar.webp';
+
 const STATE = { done: 'Done', waiting: 'Waiting for you', working: 'is working' } as const;
 
 /** The whole page. `root` takes the Muse layout; nothing of the analyst chat view is drawn. */
@@ -148,9 +151,10 @@ export function drawMuse(root: HTMLElement, model: ChatModel, recording: Recordi
   root.classList.add('muse');
   const name = model.agent?.name ?? model.title;
   const header = reportEl('header', { class: 'mu-top' },
-    reportEl('div', { class: 'mu-avatar', 'aria-hidden': 'true', text: [...name][0]?.toUpperCase() ?? '·' }),
-    reportEl('div', { class: 'mu-name', text: name }),
-    reportEl('div', { class: `mu-state ${model.agent?.status ?? 'working'}`, text: STATE[model.agent?.status ?? 'working'] }));
+    reportEl('div', { class: 'mu-avatar', 'aria-hidden': 'true', ...(MUSE_AVATAR === '' ? { text: [...name][0]?.toUpperCase() ?? '·' } : {}) }, ...(MUSE_AVATAR === '' ? [] : [reportEl('img', { src: MUSE_AVATAR, alt: '' })])),
+    reportEl('div', { class: 'mu-who' },
+      reportEl('div', { class: 'mu-name', text: name }),
+      reportEl('div', { class: `mu-state ${model.agent?.status ?? 'working'}`, text: STATE[model.agent?.status ?? 'working'] })));
   const column = reportEl('main', { class: 'mu-chat', 'aria-label': 'The conversation' });
 
   // Everything in time order: the person's words, the agent's, its thoughts, the browser steps, the sign-in waits.

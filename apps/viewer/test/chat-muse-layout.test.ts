@@ -57,6 +57,15 @@ test('the page\'s styles for the Muse layout are all its own: every rule it adds
   for (const selector of selectors) for (const part of selector.split(',')) assert.match(part.trim(), /^\.mu(?:se)?\b|^\.mu-/, `a Muse rule: ${part.trim()}`);
 });
 
+test('the Muse layout is never rounded: no rule of its own sets a border radius but none or 0', { timeout: 5_000 }, () => {
+  const html = readFileSync(join(here, '..', 'chat.html'), 'utf8');
+  const block = html.slice(html.indexOf('/* The Muse layout'), html.indexOf('</style>')).replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = [...block.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((match) => ({ selector: match[1]!.trim(), body: match[2]! }));
+  assert.ok(rules.length > 30, `the rules were read (${rules.length})`);
+  for (const rule of rules) for (const radius of rule.body.matchAll(/border(?:-[a-z]+)*-radius\s*:\s*([^;}]+)/g)) assert.match(radius[1]!.trim(), /^(?:none|0(?:px)?(?:\s+0(?:px)?)*)$/, `${rule.selector}: ${radius[0]}`);
+  assert.equal(/border-radius/.test(html), false, 'and the page has no rounded corner at all');
+});
+
 test('in Chrome: &muse is a phone chat over the same events, at 1440 and 390: the agent\'s avatar, bubbles, the browser inline, the sign-in card, the answer with file chips, What I remember; nothing of the analyst view', IN_CHROME, async (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-muse-'));
   const held: { page?: Awaited<ReturnType<typeof drivenPage>>; server?: ReturnType<typeof createServer> } = {};
@@ -100,8 +109,20 @@ test('in Chrome: &muse is a phone chat over the same events, at 1440 and 390: th
 
   for (const id of ['wide', 'phone']) {
     // The avatar at the top, the agent's name and its state under it.
-    assert.deepEqual(await value(`[doc('${id}').querySelector('.mu-avatar').textContent, doc('${id}').querySelector('.mu-name').textContent, doc('${id}').querySelector('.mu-state').textContent]`), ['W', 'Wren', 'Done'], `${id}: the header`);
-    assert.equal(await value<boolean>(`(() => { const a = doc('${id}').querySelector('.mu-avatar').getBoundingClientRect(); const top = doc('${id}').querySelector('.mu-top').getBoundingClientRect(); const mid = top.left + top.width / 2; return getComputedStyle(doc('${id}').querySelector('.mu-avatar')).borderRadius !== '0px' && Math.abs(a.left + a.width / 2 - mid) < 2 && a.top < top.top + 40; })()`), true, `${id}: a round avatar, centred at the top`);
+    assert.deepEqual(await value(`[doc('${id}').querySelector('.mu-name').textContent, doc('${id}').querySelector('.mu-state').textContent]`), ['Wren', 'Done'], `${id}: the agent's name and its state`);
+    // The avatar is the one picture file, loaded, in a square frame whose hard shadow is the cards' own.
+    assert.deepEqual(await value(`(() => { const d = doc('${id}'); const img = d.querySelector('.mu-avatar img'); const card = d.querySelector('.mu-card'); const shadow = (el) => getComputedStyle(el).boxShadow;
+      return [img.getAttribute('src'), img.complete && img.naturalWidth > 0, d.querySelector('.mu-avatar').getBoundingClientRect().width === d.querySelector('.mu-avatar').getBoundingClientRect().height, shadow(d.querySelector('.mu-avatar')) === shadow(card), /^rgb\\(\\d+, \\d+, \\d+\\) 4px 4px 0px 0px$/.test(shadow(card))]; })()`), ['muse-avatar.webp', true, true, true, true], `${id}: the avatar picture, square, with the cards' hard shadow`);
+    // Square, and floating: the avatar centred at the top over the conversation, the header and the composer transparent bars that the chat scrolls under.
+    assert.deepEqual(await value(`(() => { const d = doc('${id}'); const top = d.querySelector('.mu-top'); const a = d.querySelector('.mu-avatar').getBoundingClientRect(); const mid = top.getBoundingClientRect().left + top.getBoundingClientRect().width / 2;
+      const chat = d.querySelector('.mu-chat'); const muse = d.querySelector('.muse').getBoundingClientRect(); const bar = (el) => { const s = getComputedStyle(el); const p = getComputedStyle(el, '::before'); return [s.position, s.backgroundColor, p.backgroundImage.includes('linear-gradient'), p.backdropFilter.includes('blur') || p.webkitBackdropFilter?.includes('blur')]; };
+      return { centred: Math.abs(a.left + a.width / 2 - mid) < 2 && a.top < 40, squareRadii: [...d.querySelectorAll('.muse, .muse *')].filter((n) => parseFloat(getComputedStyle(n).borderTopLeftRadius) > 0 || parseFloat(getComputedStyle(n).borderBottomRightRadius) > 0).map((n) => n.className || n.tagName),
+        chatFills: chat.getBoundingClientRect().top <= muse.top + 1 && chat.getBoundingClientRect().bottom >= muse.bottom - 1, top: bar(top), composer: bar(d.querySelector('.mu-composer')) }; })()`), { centred: true, squareRadii: [], chatFills: true, top: ['absolute', 'rgba(0, 0, 0, 0)', true, true], composer: ['absolute', 'rgba(0, 0, 0, 0)', true, true] }, `${id}: a centred avatar, square corners everywhere, transparent bars over a chat that fills the page`);
+    // The conversation passes UNDER the header: scrolled, a card or bubble sits behind it, and the avatar is still what is on top at its own point.
+    assert.equal(await value<boolean>(`(() => { const d = doc('${id}'); const chat = d.querySelector('.mu-chat'); const spacer = d.createElement('div'); spacer.style.cssText = 'flex:none;height:2400px'; chat.append(spacer); chat.scrollTop = 140; const bottom = d.querySelector('.mu-top').getBoundingClientRect().bottom;
+      const under = [...chat.children].filter((n) => n !== spacer).some((n) => { const r = n.getBoundingClientRect(); return r.top < bottom - 10 && r.bottom > 20; }); const z = (el) => parseInt(getComputedStyle(el).zIndex, 10); const through = getComputedStyle(d.querySelector('.mu-top')).pointerEvents === 'none' && getComputedStyle(d.querySelector('.mu-composer')).pointerEvents === 'none';
+      chat.scrollTop = 0; spacer.remove();
+      return under && z(d.querySelector('.mu-top')) > 0 && z(d.querySelector('.mu-composer')) > 0 && !(z(chat) > 0) && through; })()`), true, `${id}: the text scrolls under the header; the header and composer paint above it and let the chat take the touch`);
     // The person's request right-aligned, an address in it shortened; the agent's answer a bubble with its files as chips.
     const chat = await value<{ person: { text: string; right: boolean }; answer: string; files: string[]; order: string[] }>(`(() => { const d = doc('${id}'); const col = d.querySelector('.mu-chat').getBoundingClientRect(); const p = d.querySelector('.mu-row.person .mu-bubble'); const pb = p.getBoundingClientRect();
       const agent = d.querySelector('.mu-row.agent'); return { person: { text: p.textContent, right: pb.right > col.left + col.width * 0.85 && pb.left > col.left + 16 }, answer: agent.querySelector('.mu-bubble').textContent, files: [...agent.querySelectorAll('.mu-file')].map((f) => f.textContent),
