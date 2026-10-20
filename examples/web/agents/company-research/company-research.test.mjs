@@ -103,6 +103,8 @@ test("the prompts: a base, four overlays that each name their own sources, a gen
   assert.doesNotMatch(text.base, SITE_WORDS, "the base names no site");
   assert.doesNotMatch(text.generic, SITE_WORDS, "the generic names no site");
   assert.match(text.generic, /assume nothing/);
+  assert.match(text.generic, /Search for the name with web_search/);
+  assert.doesNotMatch(text.generic, /search results page|HTML page/, "the generic no longer sends the agent to fetch a search page");
   assert.match(text.base, /cited|address/);
 });
 
@@ -110,8 +112,10 @@ test("the skill and the definition name no site, and the definition is one a hom
   const skill = readFileSync(join(HERE, "skills", "research-brief", "SKILL.md"), "utf8");
   assert.doesNotMatch(skill, SITE_WORDS);
   assert.match(skill, /Cite every fact to the address/);
+  assert.match(skill, /web_search[\s\S]*A search result is a lead, not a source/);
   const definition = json("agent.json");
-  assert.deepEqual([definition.name, definition.tools, definition.skills], ["Desk", ["web_fetch", "write", "read"], ["research-brief"]]);
+  assert.match(definition.instructions, /web_search to find pages and web_fetch to read them/);
+  assert.deepEqual([definition.name, definition.tools, definition.skills], ["Desk", ["web_search", "web_fetch", "write", "read"], ["research-brief"]]);
   const dir = join(await fresh("definition"), "home");
   const home = await real.createAgentHome(dir, { definition, skills: { "research-brief/SKILL.md": skill } });
   const state = await real.readAgentHome(home);
