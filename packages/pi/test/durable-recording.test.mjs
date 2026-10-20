@@ -14,7 +14,7 @@ import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import * as recovery from '@parcha/agentrun-dsl/recovery';
 import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
-import { DECISION_ROW_VERSION, appendDecision, createWorkflowExtension, documentStore, durableDoc, recordCommits, recordingLines } from '@parcha/agentrun-pi/durable';
+import { DECISION_ROW_VERSION, appendDecision, createWorkflowExtension, documentStore, durableDoc, recordCommits, recordingLines, snapshotLines } from '@parcha/agentrun-pi/durable';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-recording-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -76,7 +76,8 @@ test('a workflow task\'s store: every revision a line with its whole value, then
   assert.ok(documents.filter((line) => line.kind.startsWith('pi.')).every((line) => line.conv === 1));
 
   // Tasks: every task's current record once, at the last commit, after that commit's other lines, by id.
-  const tasks = lines.filter((line) => line.data.doc === undefined);
+  const tasks = lines.filter((line) => line.data.doc === undefined && line.kind !== 'pi.conversation');
+  assert.ok(lines.some((line) => line.kind === 'pi.conversation' && line.conv === 1), 'the run\'s conversation has its record');
   assert.deepEqual(tasks.map((line) => [line.kind, line.commit, line.data.state.status]), [['agentrun.workflow', last, 'terminal']]);
   assert.equal(lines.at(-1), tasks.at(-1));
 
@@ -98,7 +99,7 @@ test('polled with after = last as commits land, the document lines are one read\
   const whole = recordingLines(file);
   const notTasks = (lines) => lines.filter((line) => line.data.doc !== undefined);
   assert.deepEqual([...notTasks(first.lines), ...notTasks(second.lines)], notTasks(whole.lines));
-  assert.deepEqual(second.lines.filter((line) => line.data.doc === undefined).map((line) => [line.kind, line.data.input.key, line.commit]),
+  assert.deepEqual(second.lines.filter((line) => line.data.doc === undefined && line.kind !== 'pi.conversation').map((line) => [line.kind, line.data.input.key, line.commit]),
     [['agentrun.workflow', 'run-1', whole.last], ['agentrun.workflow', 'run-2', whole.last]]);
   assert.equal(second.last, whole.last);
   assert.ok(second.lines.every((line) => line.commit > first.last));
@@ -139,7 +140,7 @@ const runChild = (mode, file, lines, killAt = '') => new Promise((resolve) => {
   proc.on('close', (code, signal) => resolve({ exit: signal ?? code, err, rows: out.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) }));
 });
 const pick = (result, key) => result.rows.find((row) => row[key] !== undefined)?.[key];
-const isTask = (line) => line.data?.doc === undefined && line.data?.state !== undefined;
+const isTask = (line) => line.data?.doc === undefined && line.data?.state !== undefined && line.kind !== 'pi.conversation';
 const at = (line) => `${line.commit}:${line.order}`;
 const docId = (line) => JSON.stringify([line.data.doc, line.data.key ?? null, line.conv ?? null]);
 
@@ -187,12 +188,13 @@ for (const [point, status] of [['after-admit', 'unknown'], ['after-complete', 'c
 
     // The resumed process's snapshot: every document at its open, equal to the export's latest value at or before it,
     // the effect the lost commit wrote included.
-    const snapshot = recorded.filter((line) => line.snapshot && line.commit === s2);
+    const snapshot = recorded.filter((line) => line.snapshot && line.commit === s2 && line.kind !== 'pi.conversation');
+    assert.ok(recorded.some((line) => line.snapshot && line.commit === s2 && line.kind === 'pi.conversation' && line.conv === 1), 'the snapshot at open carries the conversation\'s record');
     const state = new Map();
     for (const line of exported) if (!isTask(line) && line.data.doc !== undefined && line.commit <= s2) state.set(docId(line), line.data.value);
     assert.deepEqual(new Map(snapshot.map((line) => [docId(line), line.data.value])), state);
     assert.equal(snapshot.find((line) => line.kind === 'agentrun.effects').data.value.status, status);
-    assert.ok(snapshot.every((line, i) => line.order === i));
+    assert.ok(recorded.filter((line) => line.snapshot && line.commit === s2).every((line, i) => line.order === i));
   });
 }
 
@@ -270,4 +272,70 @@ test('a host\'s gen never overrides a driver generation: the recorder takes its 
   assert.deepEqual(await run({ gen: 3, from: [driver] }, [entry]), [4]);
   assert.deepEqual(await run({ gen: 3 }, [entry]), [3], 'no driver revision yet: the host\'s gen');
   assert.deepEqual(await run({ gen: 3, from: [] }, [entry]), [3]);
+});
+
+// ---- draft 54: the recording keeps each conversation's record ----
+
+test('a conversation record is a durable pi.conversation line, { id, parent?, owner? } and nothing else, at its commit and before its entries: a fork, a task-owned conversation and an ownerless one', async () => {
+  let emit;
+  const recorded = [];
+  const stop = recordCommits({ subscribeCommits: (listener) => { emit = listener; return () => {}; } }, { gen: 2, write: (lines) => { recorded.push(...lines); } });
+  emit({ seq: 4, changes: [
+    { type: 'entry', value: { id: 120, conversationId: 51, kind: 'pi.user', message: 'a fork\'s first message' } },
+    { type: 'conversation', value: { id: 51, parent: { conversationId: 33, at: 90 }, owner: { conversationId: 33, taskId: 70 }, title: 'content that is never recorded' } },
+    { type: 'conversation', value: { id: 52, owner: { conversationId: 33, taskId: 71 } } },
+    { type: 'conversation', value: { id: 53 } },
+  ] }, ctx);
+  await stop();
+  const conversations = recorded.filter((line) => line.kind === 'pi.conversation');
+  assert.deepEqual(conversations.map((line) => [line.channel, line.source, line.commit, line.conv, line.gen]), [['durable', 'pi', 4, 51, 2], ['durable', 'pi', 4, 52, 2], ['durable', 'pi', 4, 53, 2]]);
+  assert.deepEqual(conversations.map((line) => line.data), [
+    { id: 51, parent: { conversationId: 33, at: 90 }, owner: { conversationId: 33, taskId: 70 } },
+    { id: 52, owner: { conversationId: 33, taskId: 71 } },
+    { id: 53 },
+  ], 'no title, no message, nothing else from the record');
+  assert.equal(recorded.findIndex((line) => line.kind === 'pi.conversation' && line.conv === 51) < recorded.findIndex((line) => line.kind === 'pi.user'), true, 'a conversation precedes its entries inside the commit');
+  assert.ok(ordered(recorded) && placed(recorded));
+});
+
+test('the snapshot at open carries every conversation\'s record, marked snapshot, at the commit the snapshot is taken', async () => {
+  const items = [{ id: 33 }, { id: 51, parent: { conversationId: 33, at: 90 }, owner: { conversationId: 33, taskId: 70 } }];
+  const storage = { scanConversations: async () => ({ items }), scanTasks: async () => ({ items: [] }), scanDocuments: async () => ({ items: [] }), document: async () => undefined };
+  const lines = await snapshotLines(storage, { at: 9, gen: 3, context: ctx });
+  const conversations = lines.filter((line) => line.kind === 'pi.conversation');
+  assert.deepEqual(conversations.map((line) => [line.commit, line.snapshot, line.conv, line.gen]), [[9, true, 33, 3], [9, true, 51, 3]]);
+  assert.deepEqual(conversations[1].data, { id: 51, parent: { conversationId: 33, at: 90 }, owner: { conversationId: 33, taskId: 70 } });
+  assert.ok(ordered(lines) && placed(lines));
+});
+
+test('a real store: a fork made by a task is a pi.conversation line from recordCommits and from the snapshot of the reopened store, with the same parent and owner pi recorded', async () => {
+  const file = fileOf();
+  const registry = createRegistry();
+  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: {} }, ctx);
+  const recorded = [];
+  let created;
+  try {
+    const stop = recordCommits(harness, { gen: 1, write: (lines) => { recorded.push(...lines); } });
+    const first = await harness.commit(async (tx) => {
+      const root = await tx.createConversation({ ownership: { kind: 'ownerless' } });
+      const entry = await tx.appendEntry(root.id, { kind: 'pi.user', model: [] });
+      return { root, entry };
+    }, ctx);
+    const fork = await harness.commit((tx) => tx.forkConversation(first.root.id, first.entry.id, { ownership: { kind: 'ownerless' } }), ctx);
+    created = { ...first, fork };
+    await stop();
+  } finally { await harness.close(ctx); }
+  const live = recorded.filter((line) => line.kind === 'pi.conversation');
+  // The same store read whole (a bare export) and read as a snapshot after reopening: the same parent and owner.
+  const exported = recordingLines(file).lines.filter((line) => line.kind === 'pi.conversation');
+  assert.deepEqual(exported.map((line) => line.data).sort((a, b) => a.id - b.id), live.map((line) => line.data).sort((a, b) => a.id - b.id), 'the export and the live recorder agree');
+  const storage = await openNodeSqliteStorage(file);
+  const again = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  try {
+    const snapshot = await snapshotLines(storage, { at: lastCommit(file), context: ctx });
+    assert.deepEqual(snapshot.filter((line) => line.kind === 'pi.conversation').map((line) => line.data).sort((a, b) => a.id - b.id), live.map((line) => line.data).sort((a, b) => a.id - b.id), 'the snapshot at open agrees too');
+  } finally { await again.close(ctx); }
+  assert.deepEqual(live.map((line) => line.data.id).sort(), [Number(created.root.id), Number(created.fork.id)].sort());
+  const fork = live.find((line) => line.data.id === Number(created.fork.id));
+  assert.deepEqual(fork.data.parent, { conversationId: Number(created.root.id), at: Number(created.entry.id) });
 });
