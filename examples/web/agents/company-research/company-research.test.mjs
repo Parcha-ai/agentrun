@@ -401,3 +401,19 @@ test("with the built package's setPrompts, the edit tool and the page round-trip
   assert.equal((await run(page, ["--home", dir, "--out", out], real)).code, 0);
   assert.ok(readFileSync(out, "utf8").includes("loads when company_kind is nonprofit at 0.8 or more"));
 });
+
+test("with the built package's prompts, a run started with a prompt shows its variant from the runs index, and its prompt.json beside it", { skip: typeof real.setPrompts === "function" ? false : "this build of @parcha/pi-durable-agent has no setPrompts yet (durable-agent/prompts)" }, async () => {
+  const dir = join(await fresh("real-run"), "home");
+  assert.equal((await run(edit, ["--home", dir, "--init"], real)).code, 0);
+  const home = await real.openAgentHome(dir);
+  const started = await real.startRun(home, { runId: "r1", host: "test", prompt: { id: "nonprofit", reason: "Jev: nonprofit at 91%" } });
+  writeFileSync(join(started.dir, "prompt.json"), JSON.stringify({ version: 1, input: "American Red Cross", passes: [{ pass: 1, lookup: null, choice: "nonprofit", confidence: 0.91, probabilities: { nonprofit: 0.91, other: 0.09 } }], lookup_used: false, chosen: { label: "nonprofit", role: "overlay", reason: "Jev: nonprofit at 91%" } }));
+  await real.startRun(home, { runId: "r2", host: "test", prompt: { id: "generic", reason: "no overlay was sure" } });
+  assert.deepEqual((await real.readAgentHome(home)).runs.r2.prompt, { id: "generic", reason: "no overlay was sure" });
+  await assert.rejects(real.startRun(home, { runId: "r3", host: "test", prompt: { id: "not-a-variant", reason: "x" } }), /not one of the agent's variants/);
+  const out = join(await fresh("real-run-page"), "config.html");
+  assert.equal((await run(page, ["--home", dir, "--out", out], real)).code, 0);
+  const html = readFileSync(out, "utf8");
+  assert.ok(html.includes("American Red Cross") && html.includes("<b>nonprofit</b> at 0.91"), "r1: its prompt.json");
+  assert.ok(html.includes("<b>generic</b>") && html.includes("no overlay was sure"), "r2: no prompt.json, so the index's prompt, shown by its variant's label");
+});
