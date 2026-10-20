@@ -582,8 +582,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       if (overBudget && processes.length > 0) break;
       const queued = remaining.shift();
       const plan = queued ?? { tools: [] };
-      // A kill this attempt plans that the place cannot make is refused before the attempt starts: the run is not stopped first, and no machine loss is recorded.
-      const planned = plan.run?.kind;
+      // A kill this attempt plans that the place cannot make is refused before the attempt starts: the run is not stopped first, and no machine loss is recorded. A planned handoff is no kill (the process
+      // releases the run and exits by itself), so its nominal kind asks nothing of the place: a place that can lose only its box hands off as any other.
+      const planned = plan.run && !('handoff' in plan.run && plan.run.handoff) ? plan.run.kind : undefined;
       if (planned && !place.kills.includes(planned)) throw new Error(`the ${place.name} place cannot lose its ${planned}: this kill is not one it can make`);
       // The operator's kill is a process kill: a place that cannot make one (a box-only place) refuses `--operator-kill` before anything starts, as it refuses a planned kill it cannot make.
       if (operatorKill && !place.kills.includes('process')) throw new Error(`the ${place.name} place cannot lose its process: --operator-kill is not a kill it can make`);

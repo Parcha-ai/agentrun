@@ -171,10 +171,10 @@ const place = (ctx) => {
     const end = async (runner) => ({ ...runner, exited: runner.exited.then((exit) => ({ ...exit, exit: 1 })) });
     return { ...made, start: async (order) => end(await made.start(order)), recover: async (last, kind, order) => { const r = await made.recover(last, kind, order); return { ...r, runner: await end(r.runner) }; } };
   }
-  // As the Archil place reports a clean end: the host driver's word stopped in place of exit 0 (a non-zero exit stays as it is).
+  // As the Archil place on Daytona is: a clean end reads as the host driver's word stopped in place of exit 0 (a non-zero exit stays as it is), and the one thing it can lose is the box.
   if (wrap === 'stopped') {
     const end = async (runner) => ({ ...runner, exited: runner.exited.then((exit) => (exit.exit === 0 ? { ...exit, exit: 'stopped' } : exit)) });
-    return { ...made, start: async (order) => end(await made.start(order)), recover: async (last, kind, order) => { const r = await made.recover(last, kind, order); return { ...r, runner: await end(r.runner) }; } };
+    return { ...made, kills: ['box'], start: async (order) => end(await made.start(order)), recover: async (last, kind, order) => { const r = await made.recover(last, kind, order); return { ...r, runner: await end(r.runner) }; } };
   }
   if (wrap === 'unsealed') return { ...made, status: async () => { const s = await made.status(); return { ...s, record: s.record && { ...s.record, sealedSeq: null } }; } };
   if (wrap === 'status') return { ...made, status: async () => { const s = await made.status(); return { ...s, record: s.record && { ...s.record, status: 'running' } }; } };
@@ -212,7 +212,7 @@ test('handoff.failed, "exit not 0": the crossing is logged but the process did n
   assert.deepEqual(result.failedHandoffs, [{ gen: 1, point: 'effect.kept charge', reason: 'exit not 0' }]);
 });
 
-test('a handoff on a place whose clean end reads `stopped` (the Archil place) lands as on the local place', { timeout: 200_000 }, async (t) => {
+test('a handoff on a place like the Archil place on Daytona (a clean end reads `stopped`, only the box can be lost) lands as on the local place', { timeout: 200_000 }, async (t) => {
   const { ran, lines, result } = await failing(t, { wrap: 'stopped' });
   assert.equal(ran.status, 0, ran.stderr);
   assert.deepEqual(failedOf(lines), []);
