@@ -2,8 +2,7 @@
 packages: @parcha/pi-durable-disk
 kind: fix
 ---
-An instance whose app releases the run itself now exits 0 instead of staying up with no mount.
-`pi-durable-disk run --app` used to keep running after an app called `await run.release()` in `onOpen` and returned (the shipped examples hid it by calling `process.exit(0)`): the unit stayed `active` with the mount gone, and stopping it logged `release failed` ("Session is closed") and exited 1, so the unit ended `failed`.
-- The instance ends with exit 0 as soon as `onOpen` has returned and the run is released; a release the app starts later is joined by a stop (SIGTERM), which then exits 0 without a drain and without writing a wake to the closed run.
-- `DurableRun` gains `releasing`, true once `release()` began, which the instance reads. A caller that implements `DurableRun` itself needs the property.
-- `pi-durable-disk --help`, `help` and `<command> --help` print the usage on stdout and exit 0 (they were an unknown-option usage error, exit 2).
+An instance whose app released the run ends by itself: `pi-durable-disk run --app` exits 0 once `onOpen` has returned and the run is released, so the unit does not stay up with no mount.
+- A stop (SIGTERM or SIGINT) after the app's release, from `onOpen` or later, exits 0 with no drain and no wake written to the released run.
+- `DurableRun` gains `readonly releasing: boolean`, true once `release()` began. A caller that implements `DurableRun` itself must add it.
+- `pi-durable-disk --help`, `help` and `<command> --help` print the usage on stdout and exit 0.
