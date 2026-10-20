@@ -25,6 +25,10 @@ export type CrossingKill = {
 export type StormKill = { storm: { kills: number; gapMs: number }; kind?: 'process' | 'box' };
 export type KillSpec = CrossingKill | StormKill;
 
+/** A handoff the supervisor plans: at the crossing the run's process releases the run (the instance drains: sealed `sleeping`, claim released, exit 0) and the supervisor starts the next process through the
+ *  place. Nothing is killed. The crossing rules are a kill's (`point`, the nth time with `n`, `where`), and it is taken only at a crossing where the process can be held (`effect.kept <tool>`). */
+export type HandoffSpec = { point: string; why: string; n?: number; where?: Record<string, string | number | boolean> };
+
 /** A box a job's tools run in: a directory of this machine (`local`), or a Docker container. Cloud boxes take their provider's package. */
 export type BoxSpec = {
   kind: 'local' | 'docker'; image?: string;
@@ -39,6 +43,8 @@ export type DemoSpec = {
   /** What `--kill` does: each entry in order, one per process, then the run finishes. The template's single `kill` is a list of one. */
   kills?: KillSpec[];
   kill?: { point: string; why: string };
+  /** What `--handoff` does: each entry in order, one per process, then the run finishes. A process releases the run cleanly at the crossing and the next opens it from the disk; no kill line is written. */
+  handoffs?: HandoffSpec[];
   /** The dollars a live run is expected to cost. `--max-usd` defaults to twice this. */
   expectedCost?: number;
   /** The job's input: what it looks like, for `--input` (the job's own `input` is the default). `fixtures` maps a capture's name (`[a-z0-9-]`) to its fixture, a JSON file at `examples/<demo>/fixtures/...`: `--input <name>` runs the job on it. */
@@ -83,10 +89,29 @@ export function killsOf(spec: DemoSpec): KillSpec[] {
   return list;
 }
 
+/** The handoffs a spec asks for, in order, checked at load. A handoff names a point and says why; `n` and `where` are a kill's; nothing else is accepted (a handoff has no kind, target, hold or storm). A spec may hold both lists: the entry runs the one its flag names, and refuses both together. */
+export function handoffsOf(spec: DemoSpec): HandoffSpec[] {
+  const list = spec.handoffs ?? [];
+  if (!Array.isArray(list)) throw new Error('handoffs is a list');
+  for (const handoff of list) {
+    if (handoff === null || typeof handoff !== 'object' || typeof handoff.point !== 'string' || !handoff.point || typeof handoff.why !== 'string') throw new Error('a handoff names a point and says why');
+    for (const name of Object.keys(handoff)) if (!['point', 'why', 'n', 'where'].includes(name)) throw new Error(`a handoff has no ${name}: it names a point, why, and optionally n and where`);
+    if (!handoff.point.startsWith('effect.kept ')) throw new Error(`a handoff point starts with effect.kept : ${JSON.stringify(handoff.point)} does not`);
+    if (handoff.n !== undefined && !(Number.isInteger(handoff.n) && handoff.n >= 1)) throw new Error('a handoff\'s n is a positive integer');
+    if (handoff.where !== undefined && (handoff.where === null || typeof handoff.where !== 'object' || Array.isArray(handoff.where) || !Object.keys(handoff.where).length || !Object.values(handoff.where).every((value) => ['string', 'number', 'boolean'].includes(typeof value)))) throw new Error('a handoff\'s where is an object of fields (strings, numbers, booleans) the crossing\'s info must equal');
+  }
+  return list;
+}
+
 /** One kill the supervisor hands one process: the crossing to die at, or a storm's gap. */
-export type Plan = { point: string; kind: 'process' | 'box'; why: string; target: 'run' | 'tool'; n: number; where?: Record<string, string | number | boolean>; hold?: number; waitMs?: number } | { storm: true; gapMs: number; kind: 'process' | 'box'; why: string; target: 'run' };
+export type Plan = { point: string; kind: 'process' | 'box'; why: string; target: 'run' | 'tool'; n: number; where?: Record<string, string | number | boolean>; hold?: number; waitMs?: number; /** A handoff, not a kill: the process releases the run cleanly at the crossing (kind is `process`: nothing is lost). */ handoff?: true } | { storm: true; gapMs: number; kind: 'process' | 'box'; why: string; target: 'run' };
 /** What one process is handed: the kill that ends it (if any), and the tool boxes it destroys on the way. */
 export type ChildPlan = { run?: Plan; tools: Plan[] };
+
+/** The handoffs as plans, one process each: the same plan a kill is, marked `handoff`. */
+export function handoffPlansOf(handoffs: HandoffSpec[]): Plan[] {
+  return handoffs.map((handoff) => ({ point: handoff.point, kind: 'process' as const, why: handoff.why, target: 'run' as const, n: handoff.n ?? 1, ...(handoff.where ? { where: handoff.where } : {}), handoff: true as const }));
+}
 
 /** The list as one plan per kill (a storm of N is N plans). */
 export function plansOf(kills: KillSpec[]): Plan[] {

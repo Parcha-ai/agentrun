@@ -121,6 +121,7 @@ switch (command) {
         `${PACKAGE_DIR}/dist/index.js`,
         ...["agentrun-dsl", "agentrun-dsl/recovery", "agentrun-pi/durable", "pi-browser", "pi-browser/driver/stagehand", "pi-browser/durable", "pi-browser/providers/cdp", "pi-browser/testing"].map((e) => `@parcha/${e}`),
         ...["pi-transport", "pi-transport/box/docker", "pi-transport/box/local", "pi-transport/hands", "pi-vision", "pi-vision/durable", "pi-vision/node", "pi-vision/testing"].map((e) => `@parcha/${e}`),
+        ...["agentrun-harness", "agentrun-harness/child-app", "agentrun-harness/place"].map((e) => `@parcha/${e}`),
         ...DEMO_EXTRA.map((s) => s.slice(0, s.lastIndexOf("@"))),
       ];
       const result = await boot(arg, async (client, box) => {
