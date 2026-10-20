@@ -161,7 +161,7 @@ test('in Chrome: the answer draws one evidence card per cited look, its boxes vi
   const dense = join(out, 'recordings', 'hand-dense');
   writeRecording(dense);
   const names = ['Visa', 'Mastercard', 'American Express', 'Discover', 'JCB', 'UnionPay'];
-  deliverInstead(dense, { format: 'agentrun.cited/1', title: 'Six brands', rows: [{ label: 'Brands', value: 'six', cites: names.map((note, index) => ({ look: K.page2, fragment: `#page=2&xywh=percent:${5 + index * 14},10,10,8`, note })) }] } as never);
+  deliverInstead(dense, { format: 'agentrun.cited/1', title: 'Six brands', rows: [{ label: 'Brands', value: 'six', cites: [...names, 'Visa'].map((note, index) => ({ look: K.page2, fragment: `#page=2&xywh=percent:${5 + index * 4},10,3,2`, note })) }] } as never);
   build(join(out, 'dist'), join(out, 'recordings'));
   writeFileSync(join(out, 'dist', 'harness.html'), `<!doctype html><body style="margin:0">
 <iframe id="cited" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=hand-answer"></iframe>
@@ -198,8 +198,15 @@ const loaded = (id) => [...doc(id).querySelectorAll('.ev-card img')].every((imag
   assert.ok(card.width > card.pane * 0.9, `the picture is as wide as the pane (${card.width} of ${card.pane})`);
   // The answer is said once: the heading, and no row repeating it under it.
   assert.deepEqual(await value(`[doc('once').querySelectorAll('.arow .alabel').length, (doc('once').querySelector('.report').textContent.match(/Number nine/g) ?? []).length]`), [0, 1], 'once');
-  // Six boxes on one picture: numbered pins on it, and a legend that names them in order.
-  assert.deepEqual(await value(`(() => { const card = doc('dense').querySelector('.ev-card'); return [[...card.querySelectorAll('.jbox span')].map((s) => s.textContent), [...card.querySelectorAll('.ev-legend li')].map((li) => li.textContent), card.querySelectorAll('.jbox').length]; })()`), [['1', '2', '3', '4', '5', '6'], ['Visa', 'Mastercard', 'American Express', 'Discover', 'JCB', 'UnionPay'], 6], 'pins and a legend');
+  // Seven boxes on one picture, the last with the same words as the first: numbered pins (the two Visa boxes share a number), a legend of six entries, and the
+  // small boxes shown again enlarged with the same pins.
+  const crowd = await value<{ pins: string[]; legend: string[]; boxes: number; zoomPins: string[]; zoomBoxes: number; scale: number; zoomShown: boolean }>(`(() => { const card = doc('dense').querySelector('.ev-card'); const zoom = card.querySelector('.ev-zoom');
+    const main = card.querySelector('.media .jbox').getBoundingClientRect(); const big = zoom.querySelector('.jbox').getBoundingClientRect();
+    return { pins: [...card.querySelectorAll('.media .jbox span')].map((s) => s.textContent), legend: [...card.querySelectorAll('.ev-legend li')].map((li) => li.textContent), boxes: card.querySelectorAll('.media .jbox').length,
+      zoomPins: [...zoom.querySelectorAll('.jbox span')].map((s) => s.textContent), zoomBoxes: zoom.querySelectorAll('.jbox').length, scale: big.width / main.width, zoomShown: zoom.checkVisibility() }; })()`);
+  assert.deepEqual([crowd.pins, crowd.legend, crowd.boxes], [['1', '2', '3', '4', '5', '6', '1'], ['Visa', 'Mastercard', 'American Express', 'Discover', 'JCB', 'UnionPay'], 7], 'pins, and one legend entry for the same words');
+  assert.deepEqual([crowd.zoomShown, crowd.zoomBoxes, crowd.zoomPins], [true, 7, crowd.pins], 'the small boxes enlarged, with the same pins');
+  assert.ok(crowd.scale > 3, `the crop enlarges the boxes (${crowd.scale}x)`);
   // A run citing several looks and files: a card per look and per picture, a cite of a PDF stays a chip, and every chip still opens its look.
   const many = await value<{ cards: number; chips: number; pdfChip: boolean }>(`({ cards: doc('cited').querySelectorAll('.ev-card').length, chips: doc('cited').querySelectorAll('.report .cite').length, pdfChip: [...doc('cited').querySelectorAll('.report .cite')].some((chip) => chip.closest('.ev-card') === null) })`);
   assert.ok(many.cards >= 2, `a card for each cited look or picture, got ${many.cards}`);

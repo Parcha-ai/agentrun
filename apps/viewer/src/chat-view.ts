@@ -554,6 +554,45 @@ export function evidenceFinding(source: Pick<ChatSource, 'takeaway' | 'decisions
   return words < 4 || numbers / tokens.length >= 0.25 ? '' : evidenceClip(text, 260);
 }
 
+/** The small boxes of one picture shown again enlarged: when three or more boxes are small (each under half a percent of the picture) and together fill a
+ *  small part of it, a crop of that part, scaled up to the card's width, with the same boxes and pins spread out by the scale. None when the boxes are not
+ *  small or not together: the picture itself is then big enough. Drawn once the picture's size is known (a pixel box needs it). */
+function evidenceZoom(picture: HTMLImageElement, regions: SourceRegion[], numbers: number[]): HTMLElement {
+  const holder = reportEl('div', { class: 'ev-zoom', hidden: true });
+  const build = () => {
+    const width = picture.naturalWidth;
+    const height = picture.naturalHeight;
+    if (!width || !height) return;
+    const boxes = regions.map((region, index) => (region.unit === 'percent'
+      ? { index, x: region.x, y: region.y, w: region.w, h: region.h }
+      : { index, x: region.x / width * 100, y: region.y / height * 100, w: region.w / width * 100, h: region.h / height * 100 }));
+    const small = boxes.filter((box) => box.w * box.h < 50);
+    if (small.length < 3) return;
+    const pad = 2.5;
+    const left = Math.max(0, Math.min(...small.map((box) => box.x)) - pad);
+    const top = Math.max(0, Math.min(...small.map((box) => box.y)) - pad);
+    const right = Math.min(100, Math.max(...small.map((box) => box.x + box.w)) + pad);
+    const bottom = Math.min(100, Math.max(...small.map((box) => box.y + box.h)) + pad);
+    const w = right - left;
+    const h = bottom - top;
+    if (w <= 0 || h <= 0 || w * h / 100 > 30) return;
+    const crop = reportEl('div', { class: 'ev-zoom-crop' });
+    crop.style.aspectRatio = `${w * width} / ${h * height}`;
+    const image = reportEl('img', { src: picture.currentSrc || picture.src, alt: '' });
+    Object.assign(image.style, { width: `${10000 / w}%`, height: `${10000 / h}%`, left: `${-left * 100 / w}%`, top: `${-top * 100 / h}%` });
+    crop.append(image);
+    for (const box of small) {
+      const mark = reportEl('div', { class: 'jbox' }, reportEl('span', { class: 'pin', text: String(numbers[box.index]) }));
+      Object.assign(mark.style, { left: `${(box.x - left) / w * 100}%`, top: `${(box.y - top) / h * 100}%`, width: `${box.w / w * 100}%`, height: `${box.h / h * 100}%` });
+      crop.append(mark);
+    }
+    holder.replaceChildren(crop, reportEl('div', { class: 'ev-zoom-cap', text: 'The small boxes, enlarged' }));
+    holder.hidden = false;
+  };
+  if (picture.complete) build(); else picture.addEventListener('load', build, { once: true });
+  return holder;
+}
+
 /** A row's cites drawn as the evidence they are: one card per cited look (or cited picture), the picture first and as wide as
  *  the pane, with the boxes the cites name over it at once (a cite's own words label its box, else "cited here"), under it what
  *  the look found, and one chip that opens the look as the cites' chips always did. A cite that names no picture stays a chip. */
@@ -587,14 +626,20 @@ function evidenceOf(recording: Recording, model: ChatModel, cites: AnswerCite[],
     const medium = sourceMedium(recording, sha, evidenceSaid(first) ?? (source ? threadPlace(sourceAddresses(source)) : 'The picture cited'), regions, 'evidence-pic');
     if (!medium) continue;
     const found = source ? evidenceFinding(source) : '';
-    // Many boxes on one picture would stack their labels on each other: each box is a numbered pin, and a legend under the picture names them.
+    // Many boxes on one picture would stack their labels on each other: each box is a numbered pin, and a legend under the picture names them. Boxes
+    // whose words are identical are one entry (they share a number), and a cluster of small boxes is shown again enlarged, with the same pins.
     const dense = regions.length > 4;
-    if (dense) [...medium.querySelectorAll('.jbox span')].forEach((pin, index) => { pin.textContent = String(index + 1); pin.classList.add('pin'); });
-    const legend = dense && reportEl('ol', { class: 'ev-legend' }, ...regions.map((region) => reportEl('li', { text: region.label ?? 'cited here' })));
+    const labels = regions.map((region) => region.label ?? 'cited here');
+    const entries = [...new Set(labels)];
+    const numbers = labels.map((label) => entries.indexOf(label) + 1);
+    if (dense) [...medium.querySelectorAll('.jbox span')].forEach((pin, index) => { pin.textContent = String(numbers[index]); pin.classList.add('pin'); });
+    const legend = dense && reportEl('ol', { class: 'ev-legend' }, ...entries.map((label) => reportEl('li', { text: label })));
+    const picture = medium.querySelector('img');
+    const zoom = dense && picture ? evidenceZoom(picture, regions, numbers) : undefined;
     const chip = reportEl('button', { class: 'cite', type: 'button', 'data-look': group.look, 'data-item': first.item, title: first.href || undefined, text: evidenceSaid(first) ?? 'Open the look' });
     chip.addEventListener('click', () => open(first.href, group.look, group.blob ? { blob: group.blob, label: first.label } : undefined));
     for (const cite of group.cites) drawn.add(cite);
-    cards.push(reportEl('figure', { class: 'ev-card' }, medium, legend,
+    cards.push(reportEl('figure', { class: 'ev-card' }, medium, zoom, legend,
       reportEl('figcaption', { class: 'ev-cap' }, found !== '' && reportEl('p', { class: 'ev-said', text: found }), chip)));
   }
   return cards.length ? { node: reportEl('div', { class: 'evidence' }, ...cards), drawn } : undefined;
