@@ -162,6 +162,26 @@ const claimOf = (cite, answer, codes) => {
   }
 };
 
+const MAX_CITE_TEXT = 24_000;
+const PDF_PAGE = /\bpdf p\.\s*(\d+)/i;
+
+/** read_document's text as its "[page N]" blocks. */
+const pageBlocks = (text) => {
+  const marks = [...text.matchAll(/^\[page (\d+)\]/gm)];
+  return marks.map((mark, i) => ({ page: Number(mark[1]), text: text.slice(mark.index, marks[i + 1]?.index ?? text.length).trimEnd() }));
+};
+
+/** What a cite is judged on: for "pdf p. N", the blocks of pages N-1 to N+1 the run read at its URL, however far into the
+ *  report; otherwise, or when none of them was read, everything read there, from the start, cut at the request's size. */
+function citeText(cite, texts) {
+  const page = Number(PDF_PAGE.exec(cite.locator ?? '')?.[1]);
+  if (page) {
+    const near = [...new Set(texts.flatMap(pageBlocks).filter((b) => Math.abs(b.page - page) <= 1).sort((a, b) => a.page - b.page).map((b) => b.text))];
+    if (near.length) return near.join('\n').slice(0, MAX_CITE_TEXT);
+  }
+  return [...new Set(texts)].join('\n\n').slice(0, MAX_CITE_TEXT);
+}
+
 /** The share of the answer's cites that what the run read at their URL supports; a URL it never read supports nothing. */
 export async function scoreCites({ answer, read, codes = {}, judge }) {
   const cites = answer?.cites;
@@ -170,13 +190,12 @@ export async function scoreCites({ answer, read, codes = {}, judge }) {
   for (const cite of cites) {
     const texts = read.filter((r) => sameUrl(r.url) === sameUrl(cite.url)).map((r) => r.text);
     if (!texts.length) continue;
-    const text = [...new Set(texts)].join('\n\n').slice(0, 24_000);
+    const text = citeText(cite, texts);
     if ((await noul(judge, 'score/cite', CITE_QUESTION, { claim: claimOf(cite, answer, codes), quote: cite.quote, locator: cite.locator, url: cite.url, text })) >= 0.5) supported += 1;
   }
   return { evidenceSupported: supported / cites.length };
 }
 
-const PDF_PAGE = /\bpdf p\.\s*\d+/i;
 
 /**
  * The v4 score of one run. `company` is the truth row (companies-v4.json: sic, segments, hq, latestAnnual, subsidiaries;

@@ -11,10 +11,10 @@ import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
 import { renderSkill, renderTrial, skillPath, trialPath } from '@parcha/pi-agent-learn';
 import { renderCurve } from './curve.mjs';
 import { HOST_WORKFLOW } from './dispatch.mjs';
-import { answerV4 } from './host.mjs';
+import { answerV4, textsRead } from './host.mjs';
 import { rerow } from './rerow.mjs';
 import { openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
-import { countryCode, entityName, MAX_SUBSIDIARIES, scoreHq, scoreSegments, scoreSubsidiaries, scoreV4, SEGMENT_PICK } from './score-v4.mjs';
+import { countryCode, entityName, MAX_SUBSIDIARIES, scoreCites, scoreHq, scoreSegments, scoreSubsidiaries, scoreV4, SEGMENT_PICK } from './score-v4.mjs';
 import { CLASSIFY_WORKFLOW_V4, FIXTURES_V2, FIXTURES_V4, readJson, WORKFLOW } from './scripted.mjs';
 import { SETS } from './sets.mjs';
 
@@ -262,6 +262,38 @@ test('the report: the fiscal year against the latest annual filing, read when a 
   assert.deepEqual((await again({ hq: { city: 'Boston', country: 'US' } })).correctOver, ['sic4', 'segments', 'hq'], 'a wrong part with truth counts');
   const none = await scoreV4({ answer: null, company, read, codes: {}, judge: judge().run });
   assert.deepEqual([none.sic4Answer, none.sicCorrect4, none.segmentsF1, none.hqCorrect, none.reportYearCorrect, none.reportRead, none.evidenceSupported, none.correct, none.correctOver], [null, false, 0, false, false, false, null, false, ['sic4', 'segments', 'hq']]);
+});
+
+// A report as read_document returns it: "[page N]" blocks.
+const pages = (from, to, text = (n) => `Filler text of page ${n}. `.repeat(40)) => Array.from({ length: to - from + 1 }, (_, i) => `[page ${from + i}]\n${text(from + i)}`).join('\n');
+
+test('a document read again by its local copy is the document it was first read from: its pages count at its URL', () => {
+  const url = 'https://cdn.example/files/annual-report-2025.pdf';
+  const path = 'documents/ef03c7b59fd15bd6.pdf';
+  const read = textsRead([
+    { tool: 'read_document', args: { url, find: 'Segment Disclosures' }, value: { ok: true, source: url, url, path, sha256: 'ef03', kind: 'pdf', text: '[page 181]\nNote 37 Segment Disclosures', looks: [] } },
+    { tool: 'read_document', args: { path, pages: [194] }, value: { ok: true, source: path, path, sha256: 'ef03', kind: 'pdf', text: '[page 194]\nTransAlta is headquartered in Calgary, Alberta.', looks: [] } },
+    { tool: 'read_document', args: { path: 'documents/other.pdf', pages: [1] }, value: { ok: true, source: 'documents/other.pdf', path: 'documents/other.pdf', sha256: 'aa11', kind: 'pdf', text: '[page 1]\nAnother document.', looks: [] } },
+  ]);
+  assert.deepEqual(read.filter((r) => r.url === url).map((r) => r.text), ['[page 181]\nNote 37 Segment Disclosures', '[page 194]\nTransAlta is headquartered in Calgary, Alberta.']);
+  assert.deepEqual(read.filter((r) => r.url === 'documents/other.pdf').length, 1);
+  assert.ok(!read.some((r) => r.url === url && /Another document/.test(r.text)), 'another sha256 is another document');
+});
+
+test('a cite on "pdf p. N" is judged on that page and its neighbours as read, however far into the report it is', async () => {
+  const url = 'https://www.harborvalve.example/annual-report-2025.pdf';
+  const quote = 'Harbor Valve Works is headquartered in Pittsburgh, Pennsylvania.';
+  // 60 pages of about a thousand characters each, then the cited page: far past what one request holds.
+  const read = [{ tool: 'read_document', url, text: pages(1, 60) }, { tool: 'read_document', url, text: `[page 61]\n${quote}\n[page 62]\nThe next page.` }];
+  const answer = { sic4: '3561', hq: { city: 'Pittsburgh', country: 'US' }, cites: [{ claim: 'hq', url, locator: 'pdf p. 61 (cover page)', quote }, { claim: 'report', url, locator: 'cover page', quote: 'Annual report' }] };
+  const j = judge({ cites: { [url]: 0.9 } });
+  await scoreCites({ answer, read, judge: j.run });
+  const [onPage, unpaged] = j.asked.map((a) => a.state.text);
+  assert.match(onPage, /headquartered in Pittsburgh/);
+  assert.match(onPage, /^\[page 60\]/, 'the page before it too');
+  assert.match(onPage, /\[page 62\]\nThe next page\./);
+  assert.doesNotMatch(onPage, /\[page 59\]/);
+  assert.ok(unpaged.length <= 24_000 && /^\[page 1\]/.test(unpaged), 'no page named: what was read, from the start, cut at the request\'s size');
 });
 
 // ---- the agent home ------------------------------------------------------------------------------------------------------

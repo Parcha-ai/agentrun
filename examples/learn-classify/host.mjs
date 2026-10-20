@@ -486,8 +486,17 @@ export function toolResultsOf(storePath) {
 }
 
 /** What the run read, as `{ tool, url, text }`: each page fetch_page or browse returned, each document read_document read
- *  (its text and what the looks at its pages answered), and each search result's title and snippet. */
+ *  (its text and what the looks at its pages answered), and each search result's title and snippet. A document read again
+ *  by its local copy (`path`) counts at every URL the same document (its sha256) was read from as well. */
 export function textsRead(results) {
+  const urlsOf = new Map();
+  for (const { tool, args, value } of results) {
+    if (tool !== 'read_document' || !value?.sha256) continue;
+    for (const url of [value.url, value.source, args.url].filter((u) => typeof u === 'string' && /^https?:\/\//i.test(u))) {
+      if (!urlsOf.has(value.sha256)) urlsOf.set(value.sha256, new Set());
+      urlsOf.get(value.sha256).add(url);
+    }
+  }
   const out = [];
   for (const { tool, args, value } of results) {
     if (!value) continue;
@@ -496,7 +505,7 @@ export function textsRead(results) {
     }
     if (tool === 'read_document' && (value.text || value.looks?.length)) {
       const looks = (value.looks ?? []).map((l) => (typeof l === 'string' ? l : [l.page !== undefined ? `[page ${l.page}]` : '', l.answer ?? l.text ?? JSON.stringify(l)].join(' '))).join('\n');
-      for (const url of new Set([value.source, value.url, args.url, args.path].filter(Boolean))) out.push({ tool, url, text: [value.text ?? '', looks].filter(Boolean).join('\n') });
+      for (const url of new Set([value.source, value.url, args.url, args.path, ...(urlsOf.get(value.sha256) ?? [])].filter(Boolean))) out.push({ tool, url, text: [value.text ?? '', looks].filter(Boolean).join('\n') });
     }
     if (tool === 'search_web') for (const r of value.results ?? []) out.push({ tool, url: r.url, text: `${r.title ?? ''}\n${r.snippet ?? ''}` });
   }
