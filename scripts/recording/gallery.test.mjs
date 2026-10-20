@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { GALLERY_LIMIT, RECORDING_LIMIT, exampleFolders, galleryOf, packGallery, readLock, readTar, unpackGallery, writeTar } from './gallery.mjs';
+import { GALLERY_LIMIT, RECORDING_LIMIT, VIEW_FLAGS, exampleFolders, galleryOf, packGallery, readLock, readTar, unpackGallery, writeTar } from './gallery.mjs';
 
 const script = fileURLToPath(new URL('./gallery.mjs', import.meta.url));
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -69,8 +69,8 @@ test('the lock reads plain ids and { id, poster?, looks? }, and refuses every ot
   assert.match(problems({ ...good, sha256: 'abc' })[0], /is not a SHA-256/);
   assert.match(problems({ ...good, ids: [] })[0], /ids is not a non-empty list/);
   assert.match(problems({ ...good, ids: ['a', 'a'] })[0], /a is listed twice/);
-  assert.match(problems({ ...good, ids: ['../a'] })[0], /is not \{ id, poster\?, looks\? \} with a plain id/);
-  assert.match(problems({ ...good, ids: [{ id: 'a', rank: 1 }] })[0], /holds \["id","rank"\], not id, poster and looks/);
+  assert.match(problems({ ...good, ids: ['../a'] })[0], /is not \{ id, poster\?, looks\?, title\?, view\? \} with a plain id/);
+  assert.match(problems({ ...good, ids: [{ id: 'a', rank: 1 }] })[0], /holds \["id","rank"\], not id, poster, looks, title and view/);
   assert.deepEqual(readLock(JSON.stringify({ ...good, ids: [{ id: 'a', poster, looks: ['k1', 'k2'] }] })).lock?.ids, [{ id: 'a', poster, looks: ['k1', 'k2'] }], 'looks beside a poster');
   for (const looks of [[], 'k1', [''], [7], ['k1', 'k1']]) assert.match(problems({ ...good, ids: [{ id: 'a', looks }] })[0], /looks .* is not a list of distinct look keys/, JSON.stringify(looks));
   assert.match(problems({ ...good, ids: [{ id: 'a', poster: 'cover.png' }] })[0], /poster "cover\.png" is not a SHA-256/);
@@ -273,4 +273,17 @@ test('the command: fetch --from unpacks a pinned tar and says so; a problem is p
   assert.ok(!existsSync(join(work, 'refused')));
   const usage = await run(['fetch']);
   assert.equal(usage.code, 2);
+});
+
+test('a lock entry may name the words its list shows and the view its link opens, and refuses each way either is wrong', () => {
+  const sha = 'a'.repeat(64);
+  const lock = (each) => ({ asset: 'recordings.tar', sha256: sha, ids: [{ id: 'a', ...each }] });
+  const problems = (each) => readLock(JSON.stringify(lock(each))).problems ?? [];
+  assert.deepEqual(readLock(JSON.stringify(lock({ title: 'Did my last payment go through?', view: ['muse'] }))).lock?.ids, [{ id: 'a', title: 'Did my last payment go through?', view: ['muse'] }], 'both read through');
+  assert.deepEqual(readLock(JSON.stringify(lock({ title: 'Only a title' }))).lock?.ids, [{ id: 'a', title: 'Only a title' }], 'each is optional');
+  assert.deepEqual(VIEW_FLAGS, ['muse'], 'the allowlist is the viewer\'s: today muse alone');
+  for (const [title, why] of [['', 'an empty title'], [' padded ', 'an untrimmed title'], ['x'.repeat(121), 'a title over 120 characters'], ['two\nlines', 'a control character'], [7, 'a title that is not a string']]) assert.match(problems({ title })[0] ?? '', /^a's title .* is not a trimmed string of 1 to 120 characters with no control character$/, why);
+  assert.equal(problems({ title: 'x'.repeat(120) }).length, 0, 'a title of exactly 120 is fine');
+  for (const [view, why] of [[[], 'an empty list'], [['visual'], 'a flag the viewer does not know'], [['muse', 'muse'], 'a duplicate'], ['muse', 'a string, not a list'], [[1], 'a flag that is not a string']]) assert.match(problems({ view })[0] ?? '', /^a's view .* is not a non-empty list of distinct flags from \["muse"\]$/, why);
+  assert.match(problems({ title: 'ok', heading: 'x' })[0] ?? '', /^a holds \["id","title","heading"\], not id, poster, looks, title and view$/, 'any other key is still refused');
 });
