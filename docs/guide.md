@@ -15,16 +15,16 @@ In your project, install the core and save the complete triage workflow:
 
 ```sh
 npm install @parcha/agentrun-dsl@beta
-npx agentrun example workflow.json
-npx agentrun validate workflow.json --trusted
-npx agentrun dry-run workflow.json --trusted
+npx @parcha/agentrun-dsl@beta example workflow.json
+npx @parcha/agentrun-dsl@beta validate workflow.json --trusted
+npx @parcha/agentrun-dsl@beta dry-run workflow.json --trusted
 ```
 
 `example` refuses to overwrite a file. `--trusted` acknowledges that JavaScript in a workflow may execute during validation. Dry-run synthesizes the declared input schema; a workflow without one starts from `{}`. Supply your own JSON object when needed:
 
 ```sh
-npx agentrun validate workflow.json input.json --trusted
-npx agentrun dry-run workflow.json input.json --trusted
+npx @parcha/agentrun-dsl@beta validate workflow.json input.json --trusted
+npx @parcha/agentrun-dsl@beta dry-run workflow.json input.json --trusted
 ```
 
 Structural checks, including unknown node fields, always run. Supplied inputs also check the input schema and reachable input keys. Dry-run checks synthetic execution wiring, not model quality or effect delivery. Its `status` says whether every check ran: `passed`, `failed` (`ok` is false, `problems` say why), or `not_run`: `ok` stays true, but a path could not be exercised (for example, a synthetic judgment escalated or a schema cannot be synthesized), and `skipped` gives the reasons. A `not_run` result is not execution proof. `agentrun dry-run` exits 1 on a failure and 0 otherwise; with `--strict` it exits 3 when the status is `not_run`.
@@ -115,16 +115,16 @@ Confidence is a model output, not an empirically calibrated accuracy guarantee. 
 <a id="pi"></a>
 ## Let Pi build and run a workflow
 
-With [Pi 1.1.0 installed](../packages/pi/README.md#install), run these commands in your project:
+Pi drafts a typed workflow for your task, checks it, dry-runs it for free, runs it, and shows every node on its graph. With [Pi installed](../packages/pi/README.md#install) (1.0.4 to below 1.4; CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0), run these commands in your project:
 
 ```sh
 pi install npm:@parcha/agentrun-pi@beta -l
 pi --offline
 ```
 
-`-l` installs in this project. `--offline` skips startup downloads, not intentional model calls. Pi asks whether you trust the project before loading its extension on first launch.
+`-l` installs in this project. `--offline` skips startup downloads, not intentional model calls. Pi asks whether you trust the project before loading its extension on first launch. If Pi is already open, use `/reload` first. The npm package includes the extension and the authoring skill; no AgentRun checkout is needed.
 
-Inside Pi, run `/agentrun demo` to see a scripted research workflow without making model calls. Run `/agentrun status` to confirm that the authoring skill loaded. If Pi 1.1.0 is already open, use `/reload` first. The npm package includes the extension and skill; no AgentRun checkout is needed.
+Inside Pi, `/agentrun demo` runs a scripted research workflow and shows its graph without a model call. `/agentrun status` confirms that the authoring skill loaded.
 
 With model access configured in Pi, describe a task:
 
@@ -132,7 +132,15 @@ With model access configured in Pi, describe a task:
 /agentrun Research how this repository handles cancellation. Investigate the runtime and tests separately, then report the gaps with file references.
 ```
 
-The packaged skill has Pi inspect the available tools and build a workflow using the selected Pi model. `/agentrun` opens the graph; `/agentrun run` executes it; `/agentrun stop` requests cancellation. Use `/agentrun save` and `/agentrun load` for project-local named definition saves. Saves do not retain input or execution permission. Jev access is needed only for system one decisions. See [Pi setup and limits](../packages/pi/README.md).
+Pi then takes five steps, and you can step in at each one:
+
+1. **Draft.** Pi asks the `agentrun` tool to describe the tools this session offers and the workflow language, then drafts a workflow from them. It is typed: each step that asks a model names the JSON Schema its answer must match.
+2. **Check.** Pi inspects the complete draft with its input. Inspection checks the structure, the schemas, the state paths between steps and the tools each step calls, and runs no code. Pi repairs what it reports and inspects again.
+3. **Dry-run.** Pi dry-runs the inspected workflow on synthetic values, or on the input you gave, with no model, Jev or tool call, so it costs nothing. `passed` means every check ran, `failed` lists the problems, and `not_run` names a check that could not run and proves nothing. A boolean whose schema leaves it open (no `const` or `enum`) is `false` in a dry run, so an `escalate` on such a boolean being `false` always fires there, and the dry run reports `not_run` with that escalation in `skipped`; the steps after it are not exercised. Run one yourself with `/agentrun dry-run`; a workflow with code nodes needs `/agentrun dry-run --trusted`.
+4. **Run.** Pi runs the workflow when you ask it to, or you run it with `/agentrun run`. Agent steps use Pi's current model. Code nodes and the `bash`, `edit` and `write` tools run only after you issue `/agentrun run --trusted`, and only for that run.
+5. **Graph.** `/agentrun` opens the graph. Every node is on it with its state: planned before a run, then running, succeeded, failed or interrupted, and skipped when a route chose another branch. These are the moments `nodeStatus` from `@parcha/agentrun-dsl/graph` reads from a durable run, named for a person: planned and skipped are `not-run`, running is `working`, succeeded is `done`, failed is `failed`, and interrupted is a node still `working` when the run stopped, or `not-run` when it left no mark: a code node cut off before its commit leaves none, so `not-run` does not prove that a node never started. Select a node for its contract, its instructions or criteria, and what the run observed. Closing the view does not stop the run; `/agentrun stop` asks it to stop.
+
+To see the graph before anything runs, ask for a preview ("Do not run it yet."): Pi stops before the run and says so. `/agentrun save <name>` and `/agentrun load <name>` keep a definition in this project for new input; a save keeps neither the input nor permission to run. Jev access is needed only for system one decisions. See [Pi setup and limits](../packages/pi/README.md).
 
 ### Embed the Pi SDK
 
@@ -229,7 +237,7 @@ Verification questions assess the evidence given to them. They are not an indepe
 
 ### Numeric limits
 
-These are engine rules, not provider capacity guarantees. The numeric knobs below carry no upper ceiling — the author picks the number and a host may set a default, but the validator never caps how high it goes. What the validator keeps are lower bounds (a floor a value must sit at or above), structural requirements (a field that must be present), the System-One question shape (a bounded multiple choice), and the parser's own safety guards. Hosts can still impose tighter budgets as defaults.
+These are engine rules, not provider capacity guarantees. The numeric knobs below carry no upper ceiling: the author picks the number and a host may set a default, but the validator never caps how high it goes. What the validator keeps are lower bounds (a floor a value must sit at or above), structural requirements (a field that must be present), the System-One question shape (a bounded multiple choice), and the parser's own safety guards. Hosts can still impose tighter budgets as defaults.
 
 | Setting | Bound / default |
 | --- | --- |
