@@ -3,7 +3,7 @@
 // and Kernel URLs a host test registers), so a host that records one is refused the way a real one would be.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { credentialIn, credentialInFile, credentialInValue } from '../../packages/reference/src/scan.ts';
+import { credentialIn, credentialInFile, credentialInValue } from '../../packages/harness/src/scan.ts';
 import { makeSentinels } from '../../packages/pi-browser/src/testing/sentinels.ts';
 
 const s = makeSentinels();
