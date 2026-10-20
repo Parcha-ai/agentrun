@@ -71,8 +71,8 @@
    "null": 0
   },
   "hqSource": {
-   "cover": 121,
-   "cover+override": 3,
+   "cover": 120,
+   "cover+override": 4,
    "sub.txt": 6,
    "coverDiffersFromSub": 20,
    "subTxtWhy": {
@@ -81,9 +81,9 @@
    }
   },
   "segments": {
-   "truth": 93,
-   "oneSegment": 29,
-   "null": 8
+   "truth": 90,
+   "oneSegment": 31,
+   "null": 9
   },
   "subsidiaries": {
    "truth": 81,
@@ -290,6 +290,30 @@
     "qtrs": 4,
     "sumShare": 1
    },
+   "segmentOverride": {
+    "reason": "tags its service lines on the segment axis, and no archived 20-F can confirm its reportable segments",
+    "before": [
+     {
+      "member": "AirFreightForwardingServices",
+      "label": "Air Freight Forwarding Services",
+      "revenue": 41934661,
+      "share": 0.9513
+     },
+     {
+      "member": "OtherServices",
+      "label": "Other Services",
+      "revenue": 1584129,
+      "share": 0.0359
+     },
+     {
+      "member": "OceanFreightForwardingServices",
+      "label": "Ocean Freight Forwarding Services",
+      "revenue": 564941,
+      "share": 0.0128
+     }
+    ]
+   },
+   "segments": "tags its service lines on the segment axis, and no archived 20-F can confirm its reportable segments",
    "subsidiaries": {
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/1968043/000149315226006875/0001493152-26-006875-index.htm",
@@ -390,7 +414,7 @@
      "copy": "https://web.archive.org/web/20260304215051id_/https://www.sec.gov/Archives/edgar/data/1165002/000116500226000020/whg-20251231.htm"
     },
     "cover": {
-     "city": "Dallas,",
+     "city": "Dallas",
      "state": "TX",
      "country": "US"
     },
@@ -470,13 +494,13 @@
    "cik": "0001877787",
    "name": "ERMENEGILDO ZEGNA N.V.",
    "hq": {
-    "source": "cover",
+    "source": "cover+override",
     "document": {
      "url": "https://www.sec.gov/Archives/edgar/data/1877787/000187778726000015/zgn-20251231.htm",
      "copy": "https://web.archive.org/web/20260320123546id_/https://www.sec.gov/Archives/edgar/data/1877787/000187778726000015/zgn-20251231.htm"
     },
     "cover": {
-     "city": "Trivero",
+     "city": "Valdilana",
      "state": null,
      "country": "IT"
     },
@@ -484,6 +508,10 @@
      "city": "VALDILANA (BIELLA)",
      "state": null,
      "country": "IT"
+    },
+    "override": {
+     "reason": "cover tags the former comune Trivero, merged into Valdilana in 2019",
+     "taggedCity": "Trivero"
     }
    },
    "source": {
@@ -632,7 +660,7 @@
      "copy": "https://web.archive.org/web/20260226152134id_/https://www.sec.gov/Archives/edgar/data/1579684/000157968426000010/tday-20251231.htm"
     },
     "cover": {
-     "city": "Pittsford,",
+     "city": "Pittsford",
      "state": "NY",
      "country": "US"
     },
@@ -740,6 +768,7 @@
     "qtrs": 4,
     "sumShare": 0.9272
    },
+   "segmentFlag": "the filing tags 7 reportable segments; the list holds 5",
    "subsidiaries": {
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/104889/000162828026011405/0001628280-26-011405-index.htm",
@@ -919,7 +948,7 @@
      "copy": "https://web.archive.org/web/20261003191249id_/https://www.sec.gov/Archives/edgar/data/57131/000005713126000019/lzb-20260425.htm"
     },
     "cover": {
-     "city": "Monroe,",
+     "city": "Monroe",
      "state": "MI",
      "country": "US"
     },
@@ -1006,7 +1035,7 @@
      "copy": "https://web.archive.org/web/20260927181329id_/https://www.sec.gov/Archives/edgar/data/63908/000006390826000035/mcd-20251231.htm"
     },
     "cover": {
-     "city": "Chicago,",
+     "city": "Chicago",
      "state": "IL",
      "country": "US"
     },
@@ -1071,6 +1100,29 @@
     "qtrs": 4,
     "sumShare": 1
    },
+   "segmentOverride": {
+    "reason": "tags NumberOfReportableSegments 1 and says \"operates in one operating segment and one reportable segment\"; its members are revenue types",
+    "before": [
+     {
+      "member": "ProductRevenue",
+      "label": "Product Revenue",
+      "revenue": 610000,
+      "share": 0.505
+     },
+     {
+      "member": "LicenseAndRoyaltyRevenue",
+      "label": "License And Royalty Revenue",
+      "revenue": 550000,
+      "share": 0.4553
+     },
+     {
+      "member": "ContractRevenue",
+      "label": "Contract Revenue",
+      "revenue": 48000,
+      "share": 0.0397
+     }
+    ]
+   },
    "subsidiaries": {
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/65770/000149315226008898/0001493152-26-008898-index.htm",
@@ -1092,7 +1144,7 @@
      "copy": "https://web.archive.org/web/20260226152035id_/https://www.sec.gov/Archives/edgar/data/1468174/000146817426000007/h-20251231.htm"
     },
     "cover": {
-     "city": "Chicago,",
+     "city": "Chicago",
      "state": "IL",
      "country": "US"
     },
@@ -1393,6 +1445,35 @@
     "qtrs": 4,
     "sumShare": 1
    },
+   "segmentOverride": {
+    "reason": "Industrial Systems has no revenue (divested); the filing tags 3 reportable segments",
+    "before": [
+     {
+      "member": "IndustrialPowertrainSolutionsSegment",
+      "label": "Industrial Powertrain Solutions",
+      "revenue": 2594100000,
+      "share": 0.4371
+     },
+     {
+      "member": "AutomationAndMotionControlSegment",
+      "label": "Automation And Motion Control",
+      "revenue": 1689800000,
+      "share": 0.2847
+     },
+     {
+      "member": "PowerEfficiencySolutionsSegment",
+      "label": "Power Efficiency Solutions",
+      "revenue": 1650600000,
+      "share": 0.2781
+     },
+     {
+      "member": "IndustrialSystemsSegment",
+      "label": "Industrial Systems",
+      "revenue": 0,
+      "share": 0
+     }
+    ]
+   },
    "subsidiaries": {
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/82811/000008281126000054/0000082811-26-000054-index.htm",
@@ -1476,6 +1557,7 @@
     "qtrs": 4,
     "sumShare": 0.9782
    },
+   "segmentFlag": "the filing tags 4 reportable segments; the list holds 3",
    "subsidiaries": {
     "why": "the filing index lists no EX-8",
     "index": {
@@ -1636,6 +1718,23 @@
     "qtrs": 4,
     "sumShare": 1
    },
+   "segmentOverride": {
+    "reason": "says \"the identified operating segment as one reportable segment\"; its second member has no revenue",
+    "before": [
+     {
+      "member": "CBUServiceAndRelatedTherapy",
+      "label": "CBU Service And Related Therapy",
+      "revenue": 324387,
+      "share": 1
+     },
+     {
+      "member": "ImmuneCellTherapy",
+      "label": "Immune Cell Therapy",
+      "revenue": 0,
+      "share": 0
+     }
+    ]
+   },
    "subsidiaries": {
     "why": "the filing index lists no EX-8",
     "index": {
@@ -1773,7 +1872,7 @@
      "copy": "https://web.archive.org/web/20251118100212id_/https://www.sec.gov/Archives/edgar/data/1020859/000102085925000054/unfi-20250802.htm"
     },
     "cover": {
-     "city": "Providence,",
+     "city": "Providence",
      "state": "RI",
      "country": "US"
     },
@@ -1990,7 +2089,7 @@
     },
     "override": {
      "reason": "the cover tag reads \"Pinheiros, São Paulo, SP,\"; Pinheiros is a district of São Paulo",
-     "taggedCity": "Pinheiros, São Paulo, SP,"
+     "taggedCity": "Pinheiros, São Paulo, SP"
     }
    },
    "source": {
@@ -2156,7 +2255,7 @@
      "copy": "https://web.archive.org/web/20260316104758id_/https://www.sec.gov/Archives/edgar/data/935703/000093570326000025/dltr-20260131.htm"
     },
     "cover": {
-     "city": "Chesapeake,",
+     "city": "Chesapeake",
      "state": "VA",
      "country": "US"
     },
@@ -2758,7 +2857,7 @@
      "copy": "https://web.archive.org/web/20261006233619id_/https://www.sec.gov/Archives/edgar/data/749251/000074925126000112/it-20251231.htm"
     },
     "cover": {
-     "city": "Stamford,",
+     "city": "Stamford",
      "state": "CT",
      "country": "US"
     },
@@ -2779,6 +2878,35 @@
     "period": "20251231",
     "qtrs": 4,
     "sumShare": 1
+   },
+   "segmentOverride": {
+    "reason": "\"Other\" is not a reportable segment; the filing tags 3",
+    "before": [
+     {
+      "member": "Insights",
+      "label": "Insights",
+      "revenue": 5072570000,
+      "share": 0.7807
+     },
+     {
+      "member": "Conferences",
+      "label": "Conferences",
+      "revenue": 644743000,
+      "share": 0.0992
+     },
+     {
+      "member": "Consulting",
+      "label": "Consulting",
+      "revenue": 552499000,
+      "share": 0.085
+     },
+     {
+      "member": "OtherReportableSegment",
+      "label": "Other",
+      "revenue": 227414000,
+      "share": 0.035
+     }
+    ]
    },
    "subsidiaries": {
     "index": {
@@ -2844,7 +2972,7 @@
      "copy": "https://web.archive.org/web/20261001092615id_/https://www.sec.gov/Archives/edgar/data/78239/000007823926000021/pvh-20260201.htm"
     },
     "cover": {
-     "city": "New York,",
+     "city": "New York",
      "state": "NY",
      "country": "US"
     },
@@ -3680,6 +3808,29 @@
     "qtrs": 4,
     "sumShare": 0.9832
    },
+   "segmentOverride": {
+    "reason": "duplicates OriginalEquipmentManufacturers at 0.03% of revenue; the filing tags 2",
+    "before": [
+     {
+      "member": "OriginalEquipmentManufacturers",
+      "label": "Original Equipment Manufacturers",
+      "revenue": 36934000,
+      "share": 0.63
+     },
+     {
+      "member": "DirectToConsumers",
+      "label": "Direct To Consumers",
+      "revenue": 20696000,
+      "share": 0.353
+     },
+     {
+      "member": "OriginalEquipmentManufacturersSegment",
+      "label": "Original Equipment Manufacturers",
+      "revenue": 15728,
+      "share": 0.0003
+     }
+    ]
+   },
    "subsidiaries": {
     "why": "the filing index lists no EX-21",
     "index": {
@@ -3741,7 +3892,7 @@
      "copy": "https://web.archive.org/web/20260226221813id_/https://www.sec.gov/Archives/edgar/data/1379041/000137904126000011/eig-20251231.htm"
     },
     "cover": {
-     "city": "Reno,",
+     "city": "Reno",
      "state": "NV",
      "country": "US"
     },
@@ -3789,7 +3940,7 @@
      "copy": "https://web.archive.org/web/20260415174034id_/https://www.sec.gov/Archives/edgar/data/1836875/000183687526000026/nvve-20251231.htm"
     },
     "cover": {
-     "city": "San Diego,",
+     "city": "San Diego",
      "state": "CA",
      "country": "US"
     },
@@ -3868,7 +4019,7 @@
      "copy": "https://web.archive.org/web/20261004111913id_/https://www.sec.gov/Archives/edgar/data/1408075/000140807526000009/gpk-20251231.htm"
     },
     "cover": {
-     "city": "Atlanta,",
+     "city": "Atlanta",
      "state": "GA",
      "country": "US"
     },
@@ -4349,6 +4500,7 @@
     "qtrs": 4,
     "sumShare": 0.9225
    },
+   "segmentFlag": "the filing tags 4 reportable segments; the list holds 3",
    "subsidiaries": {
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/31462/000110465926018357/0001104659-26-018357-index.htm",
@@ -4560,6 +4712,53 @@
     "period": "20251231",
     "qtrs": 4,
     "sumShare": 1.1256
+   },
+   "segmentOverride": {
+    "reason": "each \"Revenue Information\" member repeats a segment's revenue",
+    "before": [
+     {
+      "member": "ProductPackaging",
+      "label": "Product Packaging",
+      "revenue": 18150000,
+      "share": 0.8744
+     },
+     {
+      "member": "Securities",
+      "label": "Securities",
+      "revenue": 2524000,
+      "share": 0.1216
+     },
+     {
+      "member": "SecuritiesRevenueInformation",
+      "label": "Securities Revenue Information",
+      "revenue": 2524000,
+      "share": 0.1216
+     },
+     {
+      "member": "CommercialBanking",
+      "label": "Commercial Banking",
+      "revenue": 45000,
+      "share": 0.0022
+     },
+     {
+      "member": "CommercialLendingRevenueInformation",
+      "label": "Commercial Lending Revenue Information",
+      "revenue": 45000,
+      "share": 0.0022
+     },
+     {
+      "member": "Biotechnology",
+      "label": "Biotechnology",
+      "revenue": 38000,
+      "share": 0.0018
+     },
+     {
+      "member": "BiotechnologyRevenueInformation",
+      "label": "Biotechnology Revenue Information",
+      "revenue": 38000,
+      "share": 0.0018
+     }
+    ]
    },
    "subsidiaries": {
     "index": {
@@ -5381,6 +5580,35 @@
     "period": "20251231",
     "qtrs": 4,
     "sumShare": 1.0121
+   },
+   "segmentOverride": {
+    "reason": "duplicates VaultHoldingCorporation",
+    "before": [
+     {
+      "member": "RMCEnvironmentalServices",
+      "label": "RMC Environmental Services",
+      "revenue": 4850358,
+      "share": 0.9799
+     },
+     {
+      "member": "VaultHoldingCorporation",
+      "label": "Vault Holding Corporation",
+      "revenue": 60000,
+      "share": 0.0121
+     },
+     {
+      "member": "VaultHoldingCorporations",
+      "label": "Vault Holding Corporations",
+      "revenue": 60000,
+      "share": 0.0121
+     },
+     {
+      "member": "RoyaltyManagementCorporationInvestments",
+      "label": "Royalty Management Corporation Investments",
+      "revenue": 39558,
+      "share": 0.008
+     }
+    ]
    },
    "subsidiaries": {
     "index": {
