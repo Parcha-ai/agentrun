@@ -315,7 +315,7 @@ export function usageTotals(usage) {
  * root agent's model and thinking, and the one every workflow agent node runs on), `judge` the run's metered Jev (`meteredJudge`), `effects` the host tools (`classifyTools`),
  * `answer` the final answer's tool and `text` the job's text. `limitUsd` aborts the run once its model, Jev and tool spend
  * (each tool result's `costUsd`) pass it. `dispatch` (dispatch.mjs `promotedFor`) is a promoted workflow the host runs
- * first; `measure.dispatch` says how it ended. Returns what the host measured; the run's store is closed when it returns.
+ * first, or a canary; `measure.dispatch` says how it ended and when its task did (`at`). Returns what the host measured; the run's store is closed when it returns.
  */
 export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null }) {
   const started = Date.now();
@@ -392,7 +392,7 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
     // answer is the run's answer and the root agent is never asked; any other ending is handed to it with the job. One the
     // host refused never ran: the root agent gets the job alone.
     const hostRun = dispatch ? await runPromoted({ harness, workflows: workflowTool.workflow, dispatch, toolNames: tools.workflowTools.map((t) => t.name), answer, context: ctx }) : null;
-    const dispatched = hostRun ? { dispatch: { name: hostRun.name, revision: hostRun.revision, key: hostRun.key, outcome: hostRun.outcome, ...(hostRun.invalid ? { invalid: hostRun.invalid } : {}), ...(typeof hostRun.detail === 'string' ? { detail: hostRun.detail } : {}) } } : {};
+    const dispatched = hostRun ? { dispatch: { name: hostRun.name, revision: hostRun.revision, key: hostRun.key, outcome: hostRun.outcome, ...(dispatch.canary ? { canary: true } : {}), ...(hostRun.invalid ? { invalid: hostRun.invalid } : {}), ...(typeof hostRun.detail === 'string' ? { detail: hostRun.detail } : {}) } } : {};
     if (hostRun?.outcome === 'complete') {
       measured = { answer: hostRun.output, answers: 1, toolCalls: {}, status: HOST_WORKFLOW, usage: usageTotals(await harness.usage(ctx)), finalText: '', calls: [], results: new Map(), ...dispatched };
     } else {
@@ -419,12 +419,14 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
   const { lines } = recordingLines(run.storePath);
   const { calls, results, ...rest } = measured;
   let workflowRuns = readWorkflowRuns({ calls, results, lines });
-  if (rest.dispatch?.invalid) {
-    // The host's run completed in the store with an output the answer refused: an escalation, whose use is at its task's end.
-    const ended = lines.findLast((line) => line.kind === 'agentrun.workflow' && line.data?.input?.key === rest.dispatch.key)?.data?.endedAt;
+  if (rest.dispatch?.key) {
+    // The host's run's use is at its task's end, as pi-agent-learn's reader dates it (finishJob, hostUses).
+    const task = lines.findLast((line) => line.kind === 'agentrun.workflow' && line.data?.input?.key === rest.dispatch.key)?.data;
+    const ended = typeof task?.endedAt === 'number' ? task.endedAt : task?.startedAt;
     rest.dispatch = { ...rest.dispatch, at: typeof ended === 'number' ? new Date(ended).toISOString() : null };
-    workflowRuns = workflowRuns.map((r) => (r.classifiedBy === HOST_WORKFLOW ? { ...r, outcome: 'escalated' } : r));
   }
+  // The host's run completed in the store with an output the answer refused: an escalation.
+  if (rest.dispatch?.invalid) workflowRuns = workflowRuns.map((r) => (r.classifiedBy === HOST_WORKFLOW ? { ...r, outcome: 'escalated' } : r));
   return {
     ...rest, stopped, workflowRuns, unpricedAnswers: unpricedAnswers(lines),
     judge: { ...judge.meter }, toolSpend: { ...toolSpend }, durationMs: Date.now() - started, reports,
@@ -450,7 +452,7 @@ export async function finishJob({ home, repo, run, job, measure, propose = true 
   await carryBack(home, run, { outcome: measure.stopped ? 'stopped' : 'completed', cost: measure.usage.costUsd + measure.judge.costUsd });
   return inRunStore(run, async (target) => {
     const candidates = await collectCandidates(target);
-    const uses = hostUses(await collectUses({ target, workDir: run.workspace, run: run.runId }), measure.dispatch);
+    const uses = hostUses(await collectUses({ target, workDir: run.workspace, run: run.runId }), measure.dispatch, run.runId);
     const saved = await collectWorkflows({ repo, workDir: run.workspace, target });
     // A saved workflow that copies a page the run read is withheld here; a package without `read` proposes it.
     const proposal = propose ? await proposeLearning({ repo, runId: run.runId, target, workDir: run.workspace, caseValues, untrusted: true, read: pagesRead(run.storePath), uses: () => uses }) : { status: 'not proposed' };

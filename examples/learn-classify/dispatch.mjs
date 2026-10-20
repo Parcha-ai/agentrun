@@ -5,11 +5,13 @@
 // answer. Any other ending, an output the answer refuses included, is an escalation: the root agent gets the job with
 // what the workflow returned and why it was not taken. The task is an `agentrun.workflow` task in the run's store like
 // any other, so pi-agent-learn's uses file counts it; an output the answer refused is counted escalated there too.
+// While a name's live revision is on trial, the revision it superseded (the last one proven) is served instead, as a
+// canary: the trial is still what the agent is offered, so it earns its uses on the jobs the proven one cannot do.
 import { createHash } from 'node:crypto';
 import Ajv from 'ajv';
-import { inspectWorkflow, resolveSchemaForWorkflow, validateWorkflow } from '@parcha/agentrun-dsl';
+import { inspectWorkflow, resolveSchemaForWorkflow, validateWorkflow, workflowSha256 } from '@parcha/agentrun-dsl';
 import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
-import { currentRevision, readTrial } from '@parcha/pi-agent-learn';
+import { currentRevision, readTrial, workflowDir } from '@parcha/pi-agent-learn';
 
 /** A row's `classifiedBy` for a run the host's dispatch answered. */
 export const HOST_WORKFLOW = 'host-workflow';
@@ -57,18 +59,42 @@ export function answersTheJob(workflow, answerSchema, input) {
   }
 }
 
+/** The superseded revision of a trial that was active last (the one a demotion would restore), or undefined. */
+function lastProven(trial) {
+  return trial.revisions.map((revision, index) => ({ revision, index })).filter(({ revision }) => revision.status === 'superseded')
+    .sort((a, b) => (a.revision.since < b.revision.since ? 1 : a.revision.since > b.revision.since ? -1 : b.index - a.index))[0]?.revision;
+}
+
+/** A revision's workflow from its record in the agent repository at `sha`, or undefined when it is missing or does not
+ *  hash to its digest. */
+async function recordedWorkflow(repo, name, sha256, sha) {
+  try {
+    const record = JSON.parse(await repo.read(`${workflowDir(name)}/${sha256}.json`, sha));
+    return record?.digest === sha256 && workflowSha256(record.workflow) === sha256 ? record.workflow : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * The promoted workflow the host runs first for this run, or null. Of the workflows seeded into the run, in their order
- * (active ones first), the first whose live revision at the run's commit is active (promoted: proven over runs) and is
- * the revision seeded, and that `answersTheJob` for `input`, the run's input.
+ * The workflow the host runs first for this run, or null. Of the workflows seeded into the run, in their order (active
+ * ones first), the first whose live revision at the run's commit is the revision seeded and which `answersTheJob` for
+ * `input`, the run's input: the live revision when it is active (promoted: proven over runs); while it is on trial, the
+ * revision it superseded, read from the agent repository at the run's commit (`canary: true`).
  */
 export async function promotedFor({ repo, run, answer, input }) {
   for (const { name, sha256 } of run.workflows?.loaded ?? []) {
     const trial = await readTrial(repo, name, run.sha).catch(() => undefined);
     const live = trial && currentRevision(trial);
-    if (live?.status !== 'active' || live.sha256 !== sha256) continue;
-    const { workflow } = await new WorkflowStore(run.workspace).load(name, sha256);
-    if (answersTheJob(workflow, answer.parameters, input)) return { name, sha256, workflow, input };
+    if (!live || live.sha256 !== sha256) continue;
+    if (live.status === 'active') {
+      const { workflow } = await new WorkflowStore(run.workspace).load(name, sha256);
+      if (answersTheJob(workflow, answer.parameters, input)) return { name, sha256, workflow, input };
+      continue;
+    }
+    const proven = lastProven(trial);
+    const workflow = proven && await recordedWorkflow(repo, name, proven.sha256, run.sha);
+    if (workflow && answersTheJob(workflow, answer.parameters, input)) return { name, sha256: proven.sha256, workflow, input, canary: true };
   }
   return null;
 }
@@ -130,12 +156,16 @@ export function handoffText(hostRun) {
   ].join('\n');
 }
 
-/** The run's uses (pi-agent-learn's `collectUses`) with the host's run of an output the answer refused counted escalated:
- *  its task completed in the store. `dispatch` is the run's `measure.dispatch`. */
-export function hostUses(uses, dispatch) {
-  if (!uses || !dispatch?.invalid) return uses;
-  const escalated = (use) => use.sha256 === dispatch.revision && use.at === dispatch.at && use.outcome === 'frozen';
-  return { ...uses, uses: uses.uses.map((use) => (escalated(use) ? { ...use, outcome: 'escalated' } : use)) };
+/** The run's uses (pi-agent-learn's `collectUses`, or undefined) with the host's run as the host saw it: an output the
+ *  answer refused is escalated though its task completed in the store, and a canary's run is a use of the superseded
+ *  revision, under its own digest. `dispatch` is the run's `measure.dispatch`; a run that never started is no use. */
+export function hostUses(uses, dispatch, runId) {
+  const outcome = { complete: 'frozen', escalated: 'escalated', failed: 'failed' }[dispatch?.outcome];
+  if (!outcome || !dispatch.at) return uses;
+  // The host's view of its own run stands for the store's: a canary's revision is not in the run's workflow store, so the
+  // store's reader never sees its task.
+  const others = (uses?.uses ?? []).filter((use) => !(use.sha256 === dispatch.revision && use.at === dispatch.at));
+  return { version: 1, run: uses?.run ?? runId, uses: [...others, { name: dispatch.name, sha256: dispatch.revision, outcome, at: dispatch.at }] };
 }
 
 /** A job record (job-record.mjs) with the host's run of an output the answer refused as escalated, as in `hostUses`. */

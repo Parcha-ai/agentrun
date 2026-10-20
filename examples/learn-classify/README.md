@@ -300,9 +300,17 @@ Either way the task is a use in pi-agent-learn's uses file, so promotion and dem
 refused is counted escalated there, in the row (`dispatch`, `workflowsUsed`) and in its executions, though the store says
 the workflow completed. Before any task, the host checks the workflow as the agentrun tool's run does, with the run's
 input (code nodes, SOP text, unregistered tools, an input it does not take, a node reading a key the input lacks): one it
-refuses never runs, makes no use, and the root agent gets the job alone. A workflow on trial still runs through the
-agent. `--no-dispatch` turns it off. A v2 or v4 row's `dispatched` says whether the host ran a promoted workflow first,
-however it ended; a row's `dispatch` says how, a refusal included.
+refuses never runs, makes no use, and the root agent gets the job alone. `--no-dispatch` turns it off. A v2 or v4 row's
+`dispatched` says whether the host ran a promoted workflow first, however it ended; a row's `dispatch` says how, a
+refusal included.
+
+A workflow on trial still runs through the agent, and while it is on trial the host serves the revision it superseded,
+the last one proven, as a canary: read from the agent repository at the run's commit, with the same checks. A valid
+answer is the run's, with no root request; anything else hands the job to the root agent, which is offered the trial as
+before, so the trial earns its uses on the jobs the proven revision cannot do. The canary's use is recorded under its
+own digest (the host adds it to the run's uses: the revision is not in the run's workflow store), which pi-agent-learn
+never counts toward the trial's promotion. Once the trial is promoted the host runs it. The row's `dispatch` has
+`canary: true` and the superseded digest as its `revision`.
 
 ## Files
 
@@ -316,7 +324,7 @@ however it ended; a row's `dispatch` says how, a refusal included.
 | `recording.mjs` | a run's store as an `agentrun.recording/1` directory |
 | `curve.mjs` | `curve.html` from the rows: static, no build step |
 | `models.mjs` | the live models (the root's, the nodes', their prices) and Jev, through the gateway |
-| `dispatch.mjs` | the host runs a promoted workflow that answers the whole job before the root agent |
+| `dispatch.mjs` | the host runs a promoted workflow that answers the whole job before the root agent, or the superseded one while its successor is on trial |
 | `scripted.mjs` | the $0 doubles: the scripted agent and Jev, the fixture web `fetch_page` reads, and the hard jobs' fakes of search_web, browse and read_document |
 | `sets.mjs` | the jobs, v1, v2 and v4: what the agent is given, its label tools and its answer |
 | `score-v2.mjs`, `score-v4.mjs` | the v2 and v4 scorers |
