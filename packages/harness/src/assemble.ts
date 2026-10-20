@@ -176,7 +176,8 @@ export async function agentExtensions(place: RunPlace, host: Host, options: RunO
     scope: async (conversationId, id) => ({ label: await labelOf(id), deriveDir: `.derived/${conversationId}` }),
     ...(host.credentials.childEnv ? { env: host.credentials.childEnv } : {}),
     // Jev's typed answers about images (`vision.judge`) go through the host's judge seam: the crossings, the caps and the price it already has, never a key of the agent's.
-    jev: { judge: (params) => host.decisions.runJudge(params as never) as never },
+    // A host with no judge gives vision none: `vision.judge` says so as a typed miss, and never asks a judge that is not there.
+    ...(host.lacks?.judge === undefined ? { jev: { judge: (params: unknown) => host.decisions.runJudge(params as never) as never } } : {}),
     onLook: (look) => status({ source: 'vision', look }),
     onMiss: (miss) => status({ source: 'vision', miss }),
   };

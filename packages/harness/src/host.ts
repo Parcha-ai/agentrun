@@ -72,6 +72,9 @@ export type Host = {
   deliver(result: Delivery): Promise<void>;
   /** 7. Secrets by closure only: strings scrubbed from browser output, and the whole environment of a program vision starts. */
   credentials: { redact?: () => readonly string[]; childEnv?: ChildEnv };
+  /** 8. The planes this host does not have, each with what would give it one: `browser` (its browser plane refuses every use), `judge` (its `runJudge` refuses every question). Absent: it has both.
+   *  `agentApp` refuses a tool whose plane is named here, and on a host with no judge vision's `vision.judge` gets no Jev port. */
+  lacks?: { browser?: string; judge?: string };
 };
 
 /** What a scripted tool is handed beside its arguments: the box provider of the demo's `boxes` (crossings and transport box lines already in it), when it declares one. */

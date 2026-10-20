@@ -10,6 +10,14 @@ export { placeAt } from './assemble.ts';
 export { RUN_KEY } from './assemble.ts';
 /** The no-key host: scripted models, tools, judge and pages from a `Fakes`, a ledger of every fake call, and the events of the run written under the place. Give `recorder` to record the run. */
 export { localHost } from './host.ts';
+/** A host for a run outside `demo()`: the caller's models, Jev with `TYPESAFE_API_KEY`, a browser with `CHROME_PATH` or both Browserbase keys, and evidence and status under the run's directory; it names what it lacks. */
+export { hostFromEnv } from './env-host.ts';
+export type { EnvHostOptions } from './env-host.ts';
+/** The run app for one agent with no workflow, for `pi-durable-disk run --app`: exactly the tools the agent names, and a name this host cannot offer refused when it is called. */
+export { agentApp } from './agent-app.ts';
+/** Every tool an agent run on a host may name, with the plane that registers it and what it needs: the list `agentApp` checks a definition against. */
+export { agentTools } from './agent-app.ts';
+export type { AgentSpec, AgentAppOptions, AgentTool } from './agent-app.ts';
 /** A recorder for this process of the run; pass it to `localHost` as `recorder`. */
 export { openRecorder } from './record.ts';
 /** The supervisor's writer for a recording: the host lines (`process.started`, `kill`, `result`) of a run's processes, from outside them, with no event-level `gen` and a `seq` of its own. */

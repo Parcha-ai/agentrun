@@ -14,7 +14,7 @@ import { hasVersionSection, loadFragments, unreleasedSection } from './changes.m
 const exec = promisify(execFile);
 // The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev and pi, which use it), the
 // packages that depend on none of them after, serve (@parcha/agentrun-serve), which uses pi-durable-disk and pi-durable-agent, and the reference host
-// (@parcha/agentrun-harness), which uses dsl, pi, pi-browser, pi-durable-disk and pi-vision, last. This list is the gate for a new package: a workspace package that is not private and not
+// (@parcha/agentrun-harness), which uses dsl, jev, pi, pi-browser, pi-durable-disk and pi-vision, last. This list is the gate for a new package: a workspace package that is not private and not
 // named here fails the preflight, so a package is never published (or half-released, on a missing trusted publisher) by accident.
 export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser', 'pi-vision': '@parcha/pi-vision', 'pi-transport': '@parcha/pi-transport', 'pi-durable-agent': '@parcha/pi-durable-agent', serve: '@parcha/agentrun-serve', 'pi-git-remote': '@parcha/pi-git-remote', 'pi-agent-learn': '@parcha/pi-agent-learn', harness: '@parcha/agentrun-harness' };
 export const listedPackages = Object.keys(releasePackageNames);
@@ -53,7 +53,7 @@ export function checkManifest(manifest, directory, version, license) {
   if (directory === 'jev' || directory === 'pi') assert.equal(manifest.dependencies?.['@parcha/agentrun-dsl'], version, 'Internal dependencies must use the exact release version');
   if (directory === 'pi') assert.equal(manifest.dependencies?.['@parcha/agentrun-jev'], version, 'Pi must use the exact Jev release version');
   if (directory === 'pi-agent-learn') assert.equal(manifest.dependencies?.['@parcha/pi-git-remote'], version, 'pi-agent-learn must use the exact pi-git-remote release version');
-  if (directory === 'harness') for (const dependency of ['@parcha/agentrun-dsl', '@parcha/agentrun-pi', '@parcha/pi-browser', '@parcha/pi-durable-disk', '@parcha/pi-vision']) assert.equal(manifest.dependencies?.[dependency], version, `The reference host must use the exact ${dependency} release version`);
+  if (directory === 'harness') for (const dependency of ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-browser', '@parcha/pi-durable-disk', '@parcha/pi-vision']) assert.equal(manifest.dependencies?.[dependency], version, `The reference host must use the exact ${dependency} release version`);
 }
 
 // A high or critical advisory blocks publication unless a scoped, expiring exception in
