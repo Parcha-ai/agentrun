@@ -25,7 +25,7 @@ const PROGRAMS = join(dirname(fileURLToPath(import.meta.url)), 'programs');
 /** Where the tile program goes in a box, relative to its workspace. */
 const IN_BOX = 'placed-frames';
 /** A box ends by itself this long after it was made, whatever happens to the run; `release` ends it first. */
-const LIFETIME_MS = 20 * 60_000;
+export const LIFETIME_MS = 20 * 60_000;
 /** The label every box of this example carries, so a person can list what a run left. */
 export const LABELS = { example: 'placed-frames' };
 const JEV = { provider: 'typesafe', modelId: 'jev-latest' };
