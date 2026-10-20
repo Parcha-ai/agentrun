@@ -268,7 +268,7 @@ function tableV2(rows) {
   const cells = rows.map((r) => [
     r.run, r.sic4Answer ?? '-', r.sic4Truth,
     v4(r) ? `${segments(r.segmentsAnswer)}${typeof r.segmentsF1 === 'number' ? `, F1 ${r.segmentsF1.toFixed(2)}` : ''}` : segment(r.segmentAnswer),
-    v4(r) ? (r.segmentsTruth?.length ? `${r.segmentsTruth.length} filed` : '-') : r.segmentTruth ? segment(r.segmentTruth) || r.segmentTruth.kind : '-',
+    v4(r) ? (r.segmentsTruth?.oneSegment ? 'one segment' : r.segmentsTruth?.length ? `${r.segmentsTruth.length} filed` : '-') : r.segmentTruth ? segment(r.segmentTruth) || r.segmentTruth.kind : '-',
     `${r.sicCorrect4 ? 'code' : r.sicCorrect2 ? 'group' : 'no'}${segmentRight(r) === null ? '' : segmentRight(r) ? ', segment' : ', not segment'}${v4(r) && typeof r.hqCorrect === 'boolean' ? (r.hqCorrect ? ', HQ' : ', not HQ') : ''}`,
     r.evidenceSupported === null ? '-' : pct(r.evidenceSupported), r.byWorkflow ? 'workflow' : 'hand', usd(r.costUsd), usd(r.judgeCostUsd), usd(r.browserCostUsd),
     r.workflowsUsed.map((u) => `${u.name ?? 'draft'} ${u.outcome}`).join(', ') || '-', r.workflowsSaved.join(', ') || '-',

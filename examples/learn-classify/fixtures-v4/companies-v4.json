@@ -149,7 +149,7 @@
     "sic": "5812",
     "sic2": "58",
     "sicDescription": "RETAIL-EATING PLACES",
-    "segments": [],
+    "segments": null,
     "hq": {
       "city": "COLUMBUS",
       "state": "OH",
@@ -181,14 +181,9 @@
     "sic": "6022",
     "sic2": "60",
     "sicDescription": "STATE COMMERCIAL BANKS",
-    "segments": [
-      {
-        "member": "BankingMember",
-        "label": "Banking",
-        "revenue": 300000000,
-        "share": 1
-      }
-    ],
+    "segments": {
+      "oneSegment": true
+    },
     "hq": {
       "city": "RICHMOND",
       "state": "VA",

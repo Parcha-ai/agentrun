@@ -49,12 +49,19 @@ async function noul(judge, label, question, state) {
 /**
  * segmentsF1: a one-to-one match of the answer's segments to the filed ones. A name or member that is the same words
  * matches at once; the rest are Jev's, one choice per answer segment over the filed segments not yet taken, the surest
- * first. shareErrorMean is the mean distance of the matched shares, in points. No filed segments: both null.
+ * first. shareErrorMean is the mean distance of the matched shares, in points. A filer that reports one segment
+ * (`{ oneSegment: true }`) has one segment by no name: oneSegment matches it, and so does any one answer segment. No
+ * segment truth: both null.
  */
 export async function scoreSegments({ answer, truth, judge }) {
-  const filed = truth ?? [];
-  if (!filed.length) return { segmentsF1: null, shareErrorMean: null };
   const given = answer?.segments;
+  if (truth?.oneSegment === true) {
+    if (!given) return { segmentsF1: 0, shareErrorMean: null };
+    // Precision 1/n and recall 1 for n answer segments: F1 2/(n+1).
+    return { segmentsF1: Array.isArray(given) ? 2 / (given.length + 1) : given.oneSegment === true ? 1 : 0, shareErrorMean: null };
+  }
+  const filed = Array.isArray(truth) ? truth : [];
+  if (!filed.length) return { segmentsF1: null, shareErrorMean: null };
   if (!given) return { segmentsF1: 0, shareErrorMean: null };
   if (!Array.isArray(given)) return { segmentsF1: given.oneSegment === true && filed.length === 1 ? 1 : 0, shareErrorMean: null };
   const taken = new Set();
@@ -151,7 +158,9 @@ const PDF_PAGE = /\bpdf p\.\s*\d+/i;
 
 /**
  * The v4 score of one run. `company` is the truth row (companies-v4.json: sic, segments, hq, latestAnnual, subsidiaries),
- * `read` what the run read (`textsRead`), `codes` the label set, `judge` a runJudge port.
+ * `read` what the run read (`textsRead`), `codes` the label set, `judge` a runJudge port. `correct` is every part with
+ * truth right: the code always, the segments (F1 0.8 or better) and the headquarters when they have truth; `correctOver`
+ * names the parts that counted.
  */
 export async function scoreV4({ answer, company, read, codes, judge }) {
   const sic4Answer = answer?.sic4 ?? null;
@@ -168,12 +177,14 @@ export async function scoreV4({ answer, company, read, codes, judge }) {
   return {
     sic4Answer, sic4Truth: company.sic, sicCorrect4, sicCorrect2,
     segmentsAnswer: answer?.segments ?? null,
-    segmentsTruth: (company.segments ?? []).map((s) => ({ label: s.label ?? null, member: s.member ?? null, share: typeof s.share === 'number' ? s.share : null })),
+    segmentsTruth: company.segments?.oneSegment === true ? { oneSegment: true } : Array.isArray(company.segments) && company.segments.length
+      ? company.segments.map((s) => ({ label: s.label ?? null, member: s.member ?? null, share: typeof s.share === 'number' ? s.share : null })) : null,
     ...segments,
     hqAnswer: answer?.hq ?? null, hqTruth: company.hq ?? null, ...hq,
     subsidiariesAnswer: answer?.subsidiaries ?? null, subsidiariesTruthCount: Array.isArray(company.subsidiaries) ? company.subsidiaries.length : null, ...subsidiaries,
     reportAnswer: report, reportTruth: company.latestAnnual ?? null, reportYearCorrect, reportRead,
     ...cites,
-    correct: sicCorrect4 && typeof segments.segmentsF1 === 'number' && segments.segmentsF1 >= 0.8 && hq.hqCorrect === true,
+    correct: sicCorrect4 && (segments.segmentsF1 === null || segments.segmentsF1 >= 0.8) && hq.hqCorrect !== false,
+    correctOver: ['sic4', ...(segments.segmentsF1 === null ? [] : ['segments']), ...(hq.hqCorrect === null ? [] : ['hq'])],
   };
 }
