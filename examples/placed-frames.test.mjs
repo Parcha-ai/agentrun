@@ -48,11 +48,15 @@ test('the zoom on fakes: the agent asks for one placed tool call a frame, each a
   const kept = readdirSync(join(run.dir, 'work', 'frames')).filter((name) => name.endsWith('.call.json')).map((name) => JSON.parse(readFileSync(join(run.dir, 'work', 'frames', name), 'utf8')));
   const frames = kept.filter((call) => call.tool === 'frame').map((call) => call.answer).sort((a, b) => a.f - b.f);
   assert.deepEqual(frames.map((frame) => frame.f), [...Array(FRAMES).keys()]);
+  const labelOf = {};
   for (const frame of frames) {
     // The script's split, fixed by hand from params.mjs: 80 + 10 f iterations, heavy from 150.
     const heavy = 80 + 10 * frame.f >= 150;
     assert.deepEqual([frame.environment, frame.provider, frame.placed.by], [heavy ? 'modal' : 'daytona', 'local', 'scripted']);
-    assert.equal(frame.box, heavy ? 'box-2' : 'box-1', 'a box by its label, the same for every frame placed in its environment');
+    // Which environment's box is made first depends on which frame's placement answers first, so the labels are not fixed: each environment has one label, the same for every frame placed in it.
+    assert.match(frame.box, /^box-[12]$/);
+    labelOf[frame.environment] ??= frame.box;
+    assert.equal(frame.box, labelOf[frame.environment], 'a box by its label, the same for every frame placed in its environment');
     // The line is the example's own, composed from the record's target, who decided and the score: never the placer's sentence.
     assert.equal(frame.placed.line, heavy ? 'placed on modal: the script judged the frame needs what daytona cannot do (0.90)' : 'placed on daytona: the script judged daytona can do the frame (0.10)');
     assert.equal(frame.placed.need, heavy ? 0.9 : 0.1);
@@ -60,7 +64,9 @@ test('the zoom on fakes: the agent asks for one placed tool call a frame, each a
     assert.equal(sha256(readFileSync(join(run.dir, 'work', 'frames', `f${frame.f}.idx`))), frame.sha256, 'the frame kept is the one its answer names');
   }
   const released = kept.find((call) => call.tool === 'release').answer;
-  assert.deepEqual(released, { boxes: [{ box: 'box-1', environment: 'daytona', provider: 'local' }, { box: 'box-2', environment: 'modal', provider: 'local' }] }, 'both boxes ended, and no receipt without rates');
+  assert.deepEqual(new Set(Object.values(labelOf)), new Set(['box-1', 'box-2']), 'two environments, two labels');
+  assert.deepEqual(released.boxes, [...Object.entries(labelOf)].map(([environment, box]) => ({ box, environment, provider: 'local' })).sort((a, b) => a.box.localeCompare(b.box, 'en', { numeric: true })), 'both boxes ended, by the labels the frames carry');
+  assert.equal(released.receipts, undefined, 'no receipt without rates');
   for (const environment of ['daytona', 'modal']) assert.deepEqual(readdirSync(join(run.dir, 'boxes', environment)), [], `no ${environment} box is left`);
   // The boxes' own log beside the frames: by label, with when each was made, each command's start and end, and when it ended; no provider id, address or path.
   const boxesText = readFileSync(join(run.dir, 'work', 'frames', 'boxes.json'), 'utf8');
@@ -73,8 +79,9 @@ test('the zoom on fakes: the agent asks for one placed tool call a frame, each a
     assert.ok(box.execs.every((exec) => exec.start <= exec.end && exec.exitCode === 0), `${box.box}: every command has its start, end and exit code`);
   }
   assert.equal(log.boxes.flatMap((box) => box.execs).filter((exec) => exec.what.startsWith('tile ')).length, FRAMES * 4, 'four tiles a frame');
-  // The ids stay in their own internal file in the run's directory: by label, with the provider's id, never in boxes.json or the recording.
-  const ids = JSON.parse(readFileSync(join(run.dir, 'work', 'frames', 'box-ids.internal.json'), 'utf8'));
+  // The ids stay in their own internal file at the root of the run's directory: by label, with the provider's id, never in boxes.json or the recording.
+  const ids = JSON.parse(readFileSync(join(run.dir, 'box-ids.internal.json'), 'utf8'));
+  assert.ok(!readdirSync(join(run.dir, 'work', 'frames')).some((name) => name.includes('box-ids')), 'not under frames/, which a result may cite or copy');
   assert.deepEqual(Object.keys(ids.boxes), ['box-1', 'box-2']);
   assert.ok(Object.values(ids.boxes).every((box) => box.provider === 'local' && /^local-[0-9a-f]{12}$/.test(box.id)), 'each label maps to its provider id');
   assert.doesNotMatch(boxesText, /local-[0-9a-f]{12}|\/home\/|\/tmp\/|\/var\/|https?:/, 'no provider id, path or address');

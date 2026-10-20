@@ -4,6 +4,7 @@
 // environment, and every later frame placed there uses it. Each call also leaves a record beside the frames (`frames/*.call.json`: the tool, its arguments and its answer), which the result cites.
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
@@ -156,8 +157,11 @@ export function placedFrames(hosting: Hosting): Extension {
     if (!work.ok) throw work.error;
     return { work: work.value, root: dirname(work.value) };
   };
-  /** The provider's id of each box the run made, by label, in a file that stays in the run's directory (`frames/box-ids.internal.json`): for whoever checks the accounts after a run, never for a recording or a card. */
-  const keepIds = (env: ExecutionEnv, s: State) => (s.idsWritten = s.idsWritten.catch(() => undefined).then(() => keep(env, 'frames/box-ids.internal.json', JSON.stringify({ format: 'placed-frames.box-ids/1', internal: true, boxes: Object.fromEntries([...s.ids].sort(([a], [b]) => a.localeCompare(b, 'en', { numeric: true }))) }))));
+  /** The provider's id of each box the run made, by label, in a file at the root of the run's directory (`box-ids.internal.json`, beside `work/`, outside `frames/`): for whoever checks the accounts after a run, never for a recording or a card, and not under anything a copy of `frames/` could take. */
+  const keepIds = (env: ExecutionEnv, s: State) => (s.idsWritten = s.idsWritten.catch(() => undefined).then(async () => hostFile(join((await placeOf(env)).root, 'box-ids.internal.json'), JSON.stringify({ format: 'placed-frames.box-ids/1', internal: true, boxes: Object.fromEntries([...s.ids].sort(([a], [b]) => a.localeCompare(b, 'en', { numeric: true }))) }))));
+
+  /** A file outside the call's environment, which is confined to the run's work directory: this host's own file, written whole or not at all. */
+  const hostFile = async (path: string, text: string) => { await writeFile(`${path}.partial`, text); await rename(`${path}.partial`, path); };
 
   /** A file in the run's work directory, written whole or not at all. */
   const keep = async (env: ExecutionEnv, path: string, bytes: Uint8Array | string) => {
