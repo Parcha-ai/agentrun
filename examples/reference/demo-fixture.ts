@@ -37,6 +37,32 @@ const boxTool = process.env.DEMO_BOX_TOOL ? {
     throw new Error('the install failed twice');
   },
 } : undefined;
+// And tool-made boxes on two providers of the demo's own (`DEMO_PROVIDERS`): the harness taps them and hands them to the tools as `context.providers`. Two fake providers, `alpha` and `beta`, are directories of this
+// machine under the run's root. The tool runs two commands in an alpha box (role `worker`) and one in a beta box, ends the alpha box, and ends the beta box too unless `DEMO_PROVIDERS=leave`; it answers each box's label.
+const named = (name: string, provider: BoxProvider): BoxProvider => ({ name, create: (spec, context) => provider.create(spec, context), attach: (id, context) => provider.attach(id, context), list: (labels, context) => provider.list(labels, context) });
+const providers = process.env.DEMO_PROVIDERS ? async (context: { root: string }) => {
+  const { localBoxes } = await import('@parcha/pi-transport/box/local');
+  return { alpha: named('alpha', localBoxes({ root: join(context.root, 'alpha') })), beta: named('beta', localBoxes({ root: join(context.root, 'beta') })) };
+} : undefined;
+const providersTool = process.env.DEMO_PROVIDERS ? {
+  boxes2: async (_args: Record<string, unknown>, context?: ToolContext) => {
+    const { finish } = await import('@parcha/pi-transport');
+    const { BACKGROUND_CONTEXT: ctx } = await import('@earendil-works/chord/context');
+    const given = (context as { providers?: Record<string, BoxProvider> } | undefined)?.providers;
+    if (!given?.alpha || !given.beta) throw new Error('the harness handed the tool no providers');
+    const make = async (provider: BoxProvider, labels: Record<string, string>) => { const made = await provider.create({ maxLifetimeMs: 60_000, labels }, ctx); if (!made.ok) throw made.error; return made.value; };
+    const run = async (box: Awaited<ReturnType<typeof make>>, text: string) => { const ran = await box.exec([process.execPath, '-e', `console.log(${JSON.stringify(text)})`], undefined, ctx); if (!ran.ok) throw ran.error; const done = await finish(ran.value, undefined); if (!done.ok || done.value.exitCode !== 0) throw new Error('a command failed'); };
+    const alpha = await make(given.alpha, { role: 'worker' });
+    const beta = await make(given.beta, {});
+    await run(alpha, 'one');
+    await run(alpha, 'two');
+    await run(beta, 'three');
+    await alpha.destroy(ctx);
+    if (process.env.DEMO_PROVIDERS !== 'leave') await beta.destroy(ctx);
+    return { alpha: (alpha as { label?: string }).label ?? null, beta: (beta as { label?: string }).label ?? null };
+  },
+} : undefined;
+const withProviders = providersTool ? { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Boxed: { type: 'object' } }, root: { ...job.workflow.root, steps: [(job.workflow.root as { steps: unknown[] }).steps[0], { node: 'call', label: 'boxes2', via: 'tool', tool: 'boxes2', args: {}, out: 'Boxed', as: 'boxed', deadline_s: 60 }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(1)] } } } as unknown as typeof job : undefined;
 const withBox = boxTool ? { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Installed: { type: 'object' } }, root: { ...job.workflow.root, steps: [(job.workflow.root as { steps: unknown[] }).steps[0], { node: 'call', label: 'install', via: 'tool', tool: 'install', args: {}, out: 'Installed', as: 'installed', deadline_s: 60 }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(1)] } } } as unknown as typeof job : undefined;
 // And `use_website`: the parent hands the registry check to a site, whose child agent opens the page, reads it and reports with the receipt's path; the parent cites it.
 const siteText = (message: { content: unknown }) => (typeof message.content === 'string' ? message.content : (message.content as Array<{ type: string; text?: string }>).map((block) => (block.type === 'text' ? block.text ?? '' : '')).join(''));
@@ -89,7 +115,7 @@ const withLeak = leaking ? { ...job, workflow: { ...job.workflow, schemas: { ...
 // And a fan-out (DEMO_FANOUT): six branches, four at a time, each a slow tool call. Crossings at the nodes' starts are often taken while another branch's call is in flight, so they are often not eligible kill points.
 const fanning = process.env.DEMO_FANOUT ? { slow: async () => { await new Promise((resolve) => setTimeout(resolve, 120)); return {}; } } : undefined;
 const withFan = fanning ? { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Slow: { type: 'object' } }, root: { ...job.workflow.root, steps: [(job.workflow.root as { steps: unknown[] }).steps[0], { node: 'code', label: 'items', as: 'items', code: '(s) => [1, 2, 3, 4, 5, 6]' }, { node: 'map', label: 'fan', itemsPath: 'items', as: 'fanned', resultPath: 'row', maxConcurrency: 4, body: { node: 'call', label: 'slow', via: 'tool', tool: 'slow', args: {}, out: 'Slow', as: 'row', deadline_s: 30 } }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(1)] } } } as unknown as typeof job : undefined;
-const scripted = { ...fakes, ...(fanning ? { tools: { ...fakes.tools, ...fanning } } : {}), ...(leaking ? { tools: { ...fakes.tools, ...leaking } } : {}), ...(process.env.DEMO_SITES ? { model: sitesLead as typeof fakes.model } : {}), ...(process.env.DEMO_BASH ? { model: bashLead as typeof fakes.model } : process.env.DEMO_CODE ? { model: codeLead as typeof fakes.model } : {}), ...(lingering ? { tools: { ...fakes.tools, ...lingering.tools } } : {}), ...(boxTool ? { tools: { ...fakes.tools, ...(lingering?.tools ?? {}), ...boxTool } } : {}), ...(judgeCost ? { judge: async (request: Parameters<typeof fakes.judge>[0]) => ({ ...(await fakes.judge(request)), cost_usd: judgeCost }) } : {}) };
+const scripted = { ...fakes, ...(fanning ? { tools: { ...fakes.tools, ...fanning } } : {}), ...(leaking ? { tools: { ...fakes.tools, ...leaking } } : {}), ...(process.env.DEMO_SITES ? { model: sitesLead as typeof fakes.model } : {}), ...(process.env.DEMO_BASH ? { model: bashLead as typeof fakes.model } : process.env.DEMO_CODE ? { model: codeLead as typeof fakes.model } : {}), ...(lingering ? { tools: { ...fakes.tools, ...lingering.tools } } : {}), ...(boxTool ? { tools: { ...fakes.tools, ...(lingering?.tools ?? {}), ...boxTool } } : {}), ...(providersTool ? { tools: { ...fakes.tools, ...providersTool } } : {}), ...(judgeCost ? { judge: async (request: Parameters<typeof fakes.judge>[0]) => ({ ...(await fakes.judge(request)), cost_usd: judgeCost }) } : {}) };
 // A test knob: DEMO_OPERATOR_HOLD names the operator's control file. The first process holds the lead's first model call (blocking, in the child) until the control file has appeared and been consumed, then waits for the supervisor's kill: the run cannot
 // finish before the operator's kill lands. A marker beside it lets the process that resumes after the kill go on.
 const holdFile = process.env.DEMO_OPERATOR_HOLD;
@@ -146,5 +172,5 @@ const reportFiles = (dir: string, base = '', out: Record<string, Uint8Array> = {
   return out;
 };
 const withReport = (chosen: typeof job): typeof job => (process.env.DEMO_REPORT ? { ...chosen, files: { ...chosen.files, ...reportFiles(process.env.DEMO_REPORT) } } : chosen);
-export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withReport(withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job), fakes: { ...scriptedHeld, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
+export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withReport(withProviders ?? withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job), fakes: { ...scriptedHeld, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}), ...(providers ? { providers } : {}), ...(process.env.DEMO_WITH_PLACE ? { place: () => { throw new Error('the place is never asked for'); } } : {}) };
 if (process.argv.includes('--child')) await demo(options);
