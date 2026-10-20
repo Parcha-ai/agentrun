@@ -35,7 +35,7 @@ export const FORBIDDEN: readonly (readonly [string, RegExp])[] = [
 
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
-/** A public URL is a site's path, not this machine's (`https://www.businesswire.com/news/home/2025/...`): an http(s) URL token (up to whitespace, a quote, `<` or `>`) is blanked before the machine-path pattern runs. A `file://` URL and a bare path are not blanked: they are paths of a machine. */
+/** A public URL is a site's path, not this machine's (a news site's release URLs have a `home` segment): an http(s) URL token (up to whitespace, a quote, `<` or `>`) is blanked before the machine-path pattern runs. A `file://` URL and a bare path are not blanked: they are paths of a machine. */
 const URL_TOKEN = /https?:\/\/[^\s"'<>]+/gi;
 export const withoutUrls = (text: string): string => text.replace(URL_TOKEN, ' ');
 /** Whether a text holds a machine path, a public URL's path left out. */
