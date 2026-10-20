@@ -24,7 +24,10 @@ const number = (value: unknown): number | null => (typeof value === 'number' ? v
 /** A document's identity: (doc, key, conv, task). */
 const idOf = (line: Line, doc: Line) => [doc.doc, doc.key ?? '', line.conv ?? '', line.task ?? ''].join('\u0001');
 
-/** The cost of the run the lines record: `usd` is the sum of the parts, or null when no part is priced or any part is unknown. */
+/** A price rounded to 1e-8 dollars: it removes float noise from a sum of many small prices (`0.8724838500000002`) and keeps sub-cent precision. Rounded once, here, so the summary, `--json` and the manifest agree. */
+const round = (usd: number | null): number | null => (usd === null ? null : Math.round(usd * 1e8) / 1e8);
+
+/** The cost of the run the lines record: `usd` is the sum of the parts, or null when no part is priced or any part is unknown. Every figure is rounded to 1e-8. */
 export function cost(lines: readonly Line[]): Cost {
   const parts: Record<string, number | null> = {};
   let modelPriced = false;
@@ -102,5 +105,6 @@ export function cost(lines: readonly Line[]): Cost {
   if (looks.costs.length) parts.look = looks.costs.some((usd) => usd === null) ? null : looks.costs.reduce<number>((sum, usd) => sum + (usd as number), 0);
   const all = Object.values(parts);
   const boxKnown = [...boxes.values()].reduce<number>((sum, usd) => sum + (usd ?? 0), 0);
-  return { usd: all.length === 0 || all.some((part) => part === null) ? null : all.reduce<number>((sum, part) => sum + (part as number), 0), parts, boxKnown };
+  const total = all.length === 0 || all.some((part) => part === null) ? null : all.reduce<number>((sum, part) => sum + (part as number), 0);
+  return { usd: round(total), parts: Object.fromEntries(Object.entries(parts).map(([key, usd]) => [key, round(usd)])), boxKnown: round(boxKnown) as number };
 }
