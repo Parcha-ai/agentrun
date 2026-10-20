@@ -81,14 +81,19 @@ export function rowOf({ run, runId, job, seedSha, afterSha, offered, measure, fi
 
 /**
  * A v2 row: v1's fields, with `answer` and `truth` the 4-digit codes and `correct` the headline (the code exact, and the
- * segment not wrong), then the v2 fields of CLASSIFY-CONTRACT.md. `score` is `scoreV2`'s, `stats` `toolStats`'s,
- * `scoringJudge` the scorer's Jev meter.
+ * segment not wrong), then the v2 and v3 fields of CLASSIFY-CONTRACT.md. `score` is `scoreV2`'s, `stats` `toolStats`'s,
+ * `scoringJudge` the scorer's Jev meter, `lineage` `lineageOf`'s, `phase` a sealed row's (before or after).
  */
-export function rowOfV2({ score, stats, scoringJudge, ...v1 }) {
+export function rowOfV2({ score, stats, scoringJudge, lineage, phase, ...v1 }) {
   const row = rowOf({ ...v1, key: 'sic4', tools: [stats.browserCostUsd, stats.searchCostUsd, stats.documentCostUsd] });
   const { job } = v1;
   return {
     ...row,
+    ...(phase ? { phase } : {}),
+    company: job.name,
+    ticker: job.ticker ?? null,
+    born: lineage?.born ?? [],
+    rewritten: lineage?.rewritten ?? [],
     correct: score.correct,
     convention: null,
     set: 'v2',

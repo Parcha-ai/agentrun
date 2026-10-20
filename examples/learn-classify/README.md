@@ -180,11 +180,12 @@ each run, `<out>/hosts/<run>.json` lists the hosts its tools visited, the hosts 
 refused, each with a count, so the refused list can grow.
 
 A live pass runs only in a take: a standalone checkout from `take-checkout.sh` at a pinned commit, run by
-`take-in-docker.sh --image browser`, with the two Browserbase values passed in by name and nothing else from the host.
+`take-in-docker.sh --image browser-git` (git 2.40 or later, which pi-git-remote needs), with the two Browserbase values
+passed in by name and nothing else from the host.
 The take sets `AGENTRUN_BROKER_URL` (the gateway, when `LEARN_CLASSIFY_GATEWAY` is not set) and only `/run` is writable:
 
 ```sh
-take-in-docker.sh --checkout <checkout> --run <run dir> --image browser \
+take-in-docker.sh --checkout <checkout> --run <run dir> --image browser-git \
   --env LEARN_CLASSIFY_GATEWAY_KEY=placeholder --pass-env BROWSERBASE_API_KEY --pass-env BROWSERBASE_PROJECT_ID \
   -- node examples/learn-classify/runner.mjs --set v2 --live --out /run/out --jobs 10 --cap-usd 10 --run-cap-usd 1.5
 ```
@@ -214,6 +215,13 @@ headline, and its `costUsd` includes what the browser, search and the document r
 cost per job with its parts, the code, segment and headline accuracies, and the share of runs workflows did, for the
 answer and for each part.
 
+The chart record (`CLASSIFY-CONTRACT.md`, "v3: the chart record", whose names the chart reads as they are) adds
+`company` and `ticker`, and `born` and `rewritten`: the workflows curate admitted at the run, each `{ name, revision }`
+with the digest main's `latest` names right after it, born when main did not hold the name at the run's seed and
+rewritten when it did. A sealed row adds `phase`, `before` at the seed and `after` at a later main. `rerow.mjs <out>`
+backfills these into a finished pass from its own rows, agent repository and the truth set: it writes `runs.v3.jsonl`
+and `v3-sealed-<sha12>.jsonl` beside them, and never rewrites `runs.jsonl`, fetches or calls a model.
+
 The holding category is a name pattern (Holding(s), Enterprises, Diversified) or SIC 6799. It is used only to choose
 which companies are sampled and misses holding companies without such a name, e.g. Berkshire Hathaway; no answer is
 scored from it.
@@ -233,6 +241,7 @@ scored from it.
 | `scripted.mjs` | the $0 doubles: the scripted agent and Jev, the fixture web `fetch_page` reads, and v2's fakes of search_web, browse and read_document |
 | `sets.mjs` | the two jobs, v1 and v2: what the agent is given, its label tools and its answer |
 | `score-v2.mjs` | the v2 scorer |
+| `lineage.mjs`, `rerow.mjs` | which workflows a run gave main (`born`, `rewritten`), and the v3 backfill of a finished pass |
 | `agent-v2/`, `fixtures-v2/` | the v2 agent, and v2's made-up companies, pages, documents and answers for the scripted pass |
 | `fixtures/` | five made-up companies, their pages and ten groups, for the scripted pass and the tests |
 | `tools.mjs`, `data/` | `fetch_page` and the truth set (lane C1) |
