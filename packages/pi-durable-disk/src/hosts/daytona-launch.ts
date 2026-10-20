@@ -2,9 +2,10 @@
 // alive in place, as a systemd unit does on a host.
 // It runs as root, started through the toolbox, and keeps one instance of a run alive in its box:
 //   start <name>   move the spec and token from the toolbox user's staging directory (`--stage`), spawn `serve` detached (its own session, so the toolbox's process-group kill never reaches it), wait
-//                  until the first incarnation is spawned, print the state
+//                  until the first incarnation is spawned, print the state. `--inherit-env A,B`: those variables of its own
+//                  environment (a secret the box's runtime put on the exec) go to `serve`'s, never to a file
 //   serve <name>   read the spec and the mount token, unlink the token file, run the instance as the run user with the
-//                  token on a pipe to its stdin, restart it after a non-terminal exit (never after 0, 65, 70, 75 or 76,
+//                  token on a pipe to its stdin (and the `--inherit-env` variables of its own environment), restart it after a non-terminal exit (never after 0, 65, 70, 75 or 76,
 //                  and not past the restart limit), forward SIGTERM to it, write `<name>.state` on every change
 //   status <name>  print running, stopped or failed from the state file and whether the processes still live
 //   stop <name>    SIGTERM the launcher (it drains the instance), SIGKILL both after the timeout, print the state
@@ -15,7 +16,7 @@
 // terminal). The token lives in this launcher's memory for the attempt.
 // No cgroup per incarnation: commands a crashed instance detached can outlive it until the box is deleted.
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { procStartTicks, TERMINAL_EXITS } from "./local-host.ts";
@@ -24,6 +25,7 @@ export const LAUNCH_DIR = "/run/pda";
 export const LAUNCH_SCRIPT = fileURLToPath(import.meta.url);
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export interface LaunchSpec {
   /** The instance command and its arguments (absolute program path). */
@@ -39,6 +41,8 @@ export interface LaunchSpec {
   /** More than `burst` restarts within `intervalMs` ends the launcher (systemd's start limit). Default 5 in 60 s. */
   restartLimit?: { burst: number; intervalMs: number };
   terminalExits?: number[];
+  /** The run's mount in the box: `stop --reap-detached` ends the programs that hold it busy (see `mountBlockers`). */
+  mountpoint?: string;
 }
 
 export type LaunchPhase = "running" | "restarting" | "stopping" | "exited";
@@ -128,7 +132,7 @@ function runAs(spec: LaunchSpec): { uid?: number; gid?: number; home: string } {
 }
 
 /** The loop `serve` runs; resolves with the final state. */
-export async function serve(dir: string, name: string): Promise<LaunchState> {
+export async function serve(dir: string, name: string, inheritEnv: string[] = []): Promise<LaunchState> {
   const f = files(dir, name);
   const state: LaunchState = { launcher: process.pid, launcherTicks: procStartTicks(process.pid), phase: "running", instance: null, instanceTicks: null, spawned: 0, restarts: 0, exit: null, signal: null, reason: null, at: new Date().toISOString() };
   const save = (patch: Partial<LaunchState>) => writeState(f.state, Object.assign(state, patch, { at: new Date().toISOString() }));
@@ -145,6 +149,8 @@ export async function serve(dir: string, name: string): Promise<LaunchState> {
     save({ phase: "exited", exit: 1, reason: `refused: ${(err as Error).message}` });
     return state;
   }
+  // What `start` handed over in this launcher's environment; in memory only.
+  const inherited = Object.fromEntries(inheritEnv.flatMap((n) => (process.env[n] === undefined ? [] : [[n, process.env[n]!]])));
   const restart = spec.restart !== false;
   const delay = spec.restartDelayMs ?? 1_000;
   const limit = spec.restartLimit ?? { burst: 5, intervalMs: 60_000 };
@@ -165,7 +171,7 @@ export async function serve(dir: string, name: string): Promise<LaunchState> {
   const recent: number[] = [];
   try {
     for (;;) {
-      const env = { PATH: SAFE_PATH, LANG: "C.UTF-8", HOME: ids.home, ...spec.env };
+      const env = { PATH: SAFE_PATH, LANG: "C.UTF-8", HOME: ids.home, ...spec.env, ...inherited };
       const piped = Boolean(token);
       try {
         child = spawn(spec.argv[0], spec.argv.slice(1), { uid: ids.uid, gid: ids.gid, env, cwd: "/", stdio: [piped ? "pipe" : "ignore", log, log], detached: true });
@@ -216,10 +222,17 @@ export async function serve(dir: string, name: string): Promise<LaunchState> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Spawn `serve` in its own session and wait until its first incarnation is spawned (or the launcher ended without one). */
-export async function start(dir: string, name: string, timeoutMs = 30_000, stage?: string): Promise<LaunchState | null> {
+/**
+ * Spawn `serve` in its own session and wait until its first incarnation is spawned (or the launcher ended without one).
+ * `inheritEnv` names variables of this process's environment that `serve` gets in its own and passes to every incarnation:
+ * their values are never written anywhere. A name this environment does not have fails the start, naming it.
+ */
+export async function start(dir: string, name: string, timeoutMs = 30_000, stage?: string, inheritEnv: string[] = []): Promise<LaunchState | null> {
   const f = files(dir, name);
   if (readState(dir, name)) throw new Error(`${name} was already launched in this box`);
+  for (const n of inheritEnv) if (!ENV_NAME.test(n)) throw new Error(`${JSON.stringify(n)} is not an environment variable name`);
+  const missing = inheritEnv.filter((n) => process.env[n] === undefined);
+  if (missing.length > 0) throw new Error(`the launcher's environment has no ${missing.join(", ")} (inheritEnv)`);
   if (stage) {
     // The toolbox's user uploaded into its own 0700 staging directory; move both files into the root-only directory.
     const from = files(stage, name);
@@ -230,7 +243,9 @@ export async function start(dir: string, name: string, timeoutMs = 30_000, stage
     }
   }
   if (!existsSync(f.spec)) throw new Error(`no launch spec at ${f.spec}`);
-  const child = spawn(process.execPath, [LAUNCH_SCRIPT, "serve", name, "--dir", dir], { detached: true, stdio: "ignore", env: { PATH: SAFE_PATH, LANG: "C.UTF-8" } });
+  const inherited = Object.fromEntries(inheritEnv.map((n) => [n, process.env[n]!]));
+  const args = [LAUNCH_SCRIPT, "serve", name, "--dir", dir, ...(inheritEnv.length > 0 ? ["--inherit-env", inheritEnv.join(",")] : [])];
+  const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", env: { PATH: SAFE_PATH, LANG: "C.UTF-8", ...inherited } });
   child.unref();
   for (const t0 = Date.now(); Date.now() - t0 < timeoutMs; await sleep(25)) {
     const s = readState(dir, name);
@@ -240,7 +255,59 @@ export async function start(dir: string, name: string, timeoutMs = 30_000, stage
 }
 
 /** SIGTERM the launcher (it drains the instance); past the timeout SIGKILL the instance's group and the launcher. */
-export async function stop(dir: string, name: string, timeoutMs: number): Promise<LaunchStatus> {
+/**
+ * The programs that keep `mountpoint` busy: a working directory, root or open file under it, owned by anything but the
+ * instance, its descendants, the caller, the launcher (the instance's parent, `options.launcher`) and archil's own daemon,
+ * and never pid 1 or below (as `stop` never signals them). A program the agent started detached (a server, a browser) has
+ * left the instance's tree, so the instance cannot end it when it drains, and `archil unmount` then leaves the delegation
+ * held. Linux only (/proc); `proc` is the test seam.
+ */
+export function mountBlockers(mountpoint: string, instancePid: number | null, options: { proc?: string; launcher?: number | null } = {}): number[] {
+  const proc = options.proc ?? "/proc";
+  const parents = new Map<number, number>();
+  for (const entry of readdirSync(proc)) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const stat = readFileSync(`${proc}/${entry}/stat`, "utf8");
+      parents.set(Number(entry), Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]));
+    } catch {
+      // gone
+    }
+  }
+  const inTree = (pid: number) => {
+    for (let p: number | undefined = pid, hops = 0; p !== undefined && p > 1 && hops < 64; p = parents.get(p), hops++) {
+      if (p === instancePid || p === process.pid) return true;
+    }
+    return false;
+  };
+  const under = (path: string) => path === mountpoint || path.startsWith(`${mountpoint}/`);
+  const holds = (pid: number) => {
+    const links = [`${proc}/${pid}/cwd`, `${proc}/${pid}/root`];
+    try {
+      for (const fd of readdirSync(`${proc}/${pid}/fd`)) links.push(`${proc}/${pid}/fd/${fd}`);
+    } catch {
+      // not ours to read, or gone
+    }
+    return links.some((link) => {
+      try {
+        return under(readlinkSync(link));
+      } catch {
+        return false;
+      }
+    });
+  };
+  const archilDaemon = (pid: number) => {
+    try {
+      return readFileSync(`${proc}/${pid}/cmdline`, "utf8").split("\0")[0]!.endsWith("archil");
+    } catch {
+      return false;
+    }
+  };
+  // The launcher is the instance's parent, so `inTree` (which walks up from a pid) does not spare it; it is what ends the instance and is not a blocker.
+  return [...parents.keys()].filter((pid) => pid > 1 && pid !== options.launcher && !inTree(pid) && !archilDaemon(pid) && holds(pid));
+}
+
+export async function stop(dir: string, name: string, timeoutMs: number, options: { reapDetached?: boolean } = {}): Promise<LaunchStatus> {
   const kill = (pid: number | null, ticks: number | null, signal: NodeJS.Signals, group = false) => {
     if (!alive(pid, ticks)) return;
     try {
@@ -255,9 +322,33 @@ export async function stop(dir: string, name: string, timeoutMs: number): Promis
     if (s.launcherAlive) kill(s.state!.launcher, s.state!.launcherTicks, "SIGTERM");
     return s;
   }
+  // What holds the mount busy when the instance releases would leave the delegation held: a program the agent detached
+  // before the stop, ended before the instance is signalled, and one a tool detaches while the instance drains, ended at
+  // every look below until the instance is gone (its release makes one unmount attempt).
+  let mountpoint: string | undefined;
+  if (options.reapDetached) {
+    try {
+      mountpoint = (JSON.parse(readFileSync(files(dir, name).spec, "utf8")) as LaunchSpec).mountpoint;
+    } catch {
+      // no spec: nothing to reap
+    }
+  }
+  const { instance, launcher } = s.state!;
+  const reap = () => {
+    if (!mountpoint) return;
+    for (const pid of mountBlockers(mountpoint, instance, { launcher })) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // gone
+      }
+    }
+  };
+  reap();
   if (s.launcherAlive) kill(s.state!.launcher, s.state!.launcherTicks, "SIGTERM");
   else kill(s.state!.instance, s.state!.instanceTicks, "SIGTERM");
   for (const t0 = Date.now(); Date.now() - t0 < timeoutMs; await sleep(50)) {
+    reap();
     s = launchStatus(dir, name);
     if (s.status !== "running") return s;
   }
@@ -275,13 +366,14 @@ async function main(argv: string[]): Promise<number> {
   };
   const dir = opt("--dir") ?? LAUNCH_DIR;
   const timeoutMs = Number(opt("--timeout-ms") ?? 30_000);
+  const inheritEnv = (opt("--inherit-env") ?? "").split(",").filter(Boolean);
   const print = (v: unknown) => process.stdout.write(`${JSON.stringify(v)}\n`);
   switch (verb) {
     case "serve":
-      await serve(dir, name);
+      await serve(dir, name, inheritEnv);
       return 0;
     case "start": {
-      const s = await start(dir, name, timeoutMs, opt("--stage"));
+      const s = await start(dir, name, timeoutMs, opt("--stage"), inheritEnv);
       print(s);
       return s && s.spawned > 0 ? 0 : 1;
     }
@@ -289,10 +381,10 @@ async function main(argv: string[]): Promise<number> {
       print(launchStatus(dir, name));
       return 0;
     case "stop":
-      print(await stop(dir, name, timeoutMs));
+      print(await stop(dir, name, timeoutMs, { reapDetached: rest.includes("--reap-detached") }));
       return 0;
     default:
-      process.stderr.write("usage: daytona-launch.ts start|serve|status|stop NAME [--dir DIR] [--stage DIR] [--timeout-ms MS]\n");
+      process.stderr.write("usage: daytona-launch.ts start|serve|status|stop NAME [--dir DIR] [--stage DIR] [--timeout-ms MS] [--inherit-env A,B] [--reap-detached]\n");
       return 2;
   }
 }

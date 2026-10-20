@@ -1,0 +1,8 @@
+---
+packages: @parcha/pi-durable-disk
+kind: feature
+---
+New host driver `modalHost` (and its client, `modalSandboxes`): one Modal VM per instance, running the whole agent instance with the run's Archil disk mounted in it, as `daytonaHost` does on Daytona. It drives the Modal SDK the caller passes in; no dependency is added. Handles say `driver: "modal"`, and a box's receipt says `provider: "modal"`, unpriced.
+- `runtime: "vm"` (the default) has its own kernel and `/dev/fuse`, so the disk mounts like any FUSE client. `runtime: "gvisor"` (the only runtime Modal offers GPUs on) is refused without `command`, with a `DaytonaHostError` coded `INVALID_ARGUMENT`: a disk mounted under gVisor kept none of ten acknowledged writes, measured.
+- A planned stop of a `modalHost` instance first kills what the agent left running under the run's mount, which the instance's own drain cannot end. A program the agent started detached (a server, a browser) is outside the instance's process tree; it keeps the mount busy, so `archil unmount` fails and the run's delegation stays held after the box is gone. The launcher's `stop --reap-detached` SIGKILLs every process whose working directory, root or open file is under the mount, except the instance's own tree, its launcher, archil's daemon and pid 1. It is on by default in `modalHost` (the box belongs to the run) and opt-in on `daytonaHost` (`reapOnStop`, default false).
+- `daytonaHost` gains a `driver` option (default `"daytona"`): the `driver` of its handles and the `provider` of its box receipts, so a driver built on it names its own. Daytona's list price applies only to `"daytona"`. Nothing changes for existing callers.

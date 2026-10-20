@@ -329,6 +329,25 @@ power-off, a freeze of the instance and its FUSE daemon, and a network partition
 power-off through the orphaned delegation, the freeze and the partition through the lease, the partitioned box stopped by
 the driver), and the thawed instance exited 75. A driver for another compute (a Kubernetes pod, another sandbox product) is the same three calls.
 
+`modalHost({ sdk, appName, image, ... })` runs each instance, the whole agent, in a Modal sandbox of its own, with the run's
+disk mounted in it (library only; pass the Modal SDK's `ModalClient` as `sdk`, Node 22 or later; the package imports nothing
+from it). It is `daytonaHost` over a Modal-backed client (`modalSandboxes`), so the launcher, the staged mount token, the
+restart rules and the status contract are the same. Handles say `driver: "modal"`, and a box's receipt says
+`provider: "modal"` with no price. The image holds Node, the archil client (`libfuse2`), this package and the run user, as a
+Daytona snapshot does; Modal runs the driver's commands as root, so there is no `sudo`. `runtime: "vm"` (the default) gives
+the sandbox its own kernel, which has `/dev/fuse`, so the box mounts the disk like any FUSE client. `runtime: "gvisor"` (the
+only runtime Modal offers GPUs on) is refused without `command`, as `INVALID_ARGUMENT`: a disk mounted under gVisor kept none
+of ten acknowledged writes, measured. With a `command` it runs an agent started another way. A key the agent needs on the box (a model's, Modal's own for the
+tools' sandboxes) comes from a Modal Secret, never through this process: `secrets: ["<name>"]` puts the Secret on the
+driver's commands in the sandbox, and `inheritEnv: ["ANTHROPIC_API_KEY"]` has the launcher hand those variables to the
+instance in memory, so no file, argument or handle on the box holds a value (a name missing there fails the start).
+Fleet and run are sandbox tags,
+set right after create (a lost create answer is finished by the retry's lookup), and the sandbox's timeout, at most 24 h,
+bounds a leak. `stop` drains the instance and terminates the sandbox; `kill` terminates it. A stop first ends whatever the
+agent left running under the run's mount (`reapOnStop`, on by default here, opt-in on `daytonaHost`), never pid 1: a
+detached server or browser is outside the instance's tree and would otherwise keep the mount busy, so the unmount would fail
+and the delegation stay held.
+
 `dockerHost({ image })` (`supervise --host docker --image IMAGE`) runs each instance in a container of its own; one
 container is one incarnation.
 - **Start.** `docker create` named `pda-<run>-<disk key>-g<attempt>` (the disk key is 8 hex digits of the disk and region,
@@ -812,6 +831,24 @@ id and directory as the supervisor computed them.
       directory a process made by path on an Archil mount was seen to refuse file creates afterwards (ENOENT), and one
       made over the control didn't. Every file in them stays the runner's. A refused put fails the start
       (`DIRS_REFUSED`, as the cause of `HOST_START_FAILED`), and without an owner nothing is made.
+  - `labelBox({ provider, key })` (when the driver names its `provider`, as `daytonaHost` and `modalHost` do, and the
+    control can list) gives the run-wide label (`box-N`) of the host box the place started at `key`, its start index.
+    Host boxes and the boxes the run's tools make then share one numbering, so no two boxes of a run share a label.
+    - Only the process that holds the run writes labels. A start puts `HOST_BOX` in its order's environment, as JSON
+      `{ provider, key, run }`, where `run` is the order's `RUN_LABEL` (the supervisor's life, minted per invocation).
+      The runner's process claims that label first on opening the run, in `<root>/box-ids.internal/`. With
+      `ensure.create`, the place makes that directory over the control at each start, as it makes `signals/`.
+    - The place only reads, over S3, until the label lands (every `labelPollMs`, 250 ms, for at most `labelWaitMs`,
+      2 s). A label not landed within that bound is `undefined`, never a guess: the supervisor asks again, and its final
+      read refuses a box that never got one rather than leave it out of the cost. Reads of the labels that fail until
+      the bound are `LABEL_UNREADABLE`, with the read's error.
+    - `status().boxes` lists every box the place started in this life, in start order, ended ones included, so a box's
+      position there is its key. A box the driver gives no receipt for fails the read (`STATUS_FAILED`) rather than
+      shift the boxes after it.
+    - A key this place did not start in this supervisor's life is `LABEL_REFUSED`. Labels are numbered within one
+      supervisor's life: a run with host boxes and tool boxes **cannot resume across a supervisor restart**, `--reuse` of
+      an earlier take included. Its runner refuses the claim, and a failed take is taken again, not resumed.
+    - An order without `RUN_LABEL` asks for no label, and a driver that names no provider gets no `labelBox`.
   - `requestFile(attempt)` is `<root>/signals/kill-<attempt>.json`, in the run's directory and outside `work/`, and
     `signals(attempt)` reads `runs/<id>/signals/kill-<attempt>.json` over S3 every 500 ms (`signalPollMs`). A runner on
     a box of its own can't reach the supervisor's files, so its request travels through the disk. The runner must write
