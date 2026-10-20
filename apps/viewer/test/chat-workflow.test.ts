@@ -10,7 +10,7 @@ import { parseLines, type Json, type Line, type Recording } from '../src/format.
 import { extractChat } from '../src/chat-extract.ts';
 import { chatWorkflowsOf, chatWorkflowStatusAt } from '../src/chat-workflow.ts';
 import type { ChatItem, ChatModel } from '../src/chat-model.ts';
-import { KEY_A, KEY_B, lines, manifest, placeOf } from './workflow-hand.ts';
+import { KEY_A, KEY_B, lines, manifest, placeOf, SUMMARY } from './workflow-hand.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const recordingOf = (run: Line[]): Recording => ({ id: 'two-workflows', manifest: manifest as never, lines: run, blobUrl: () => undefined, blobType: () => undefined });
@@ -26,7 +26,9 @@ test('two executions whose paths collide: each keeps its own graph, node spans, 
   assert.equal(m.workflows?.length, 2);
   assert.deepEqual([a!.key, a!.title, b!.key, b!.title], [KEY_A, 'gather-and-tally', KEY_B, 'check-and-judge'], 'in the order their first lines come');
   assert.deepEqual(a!.graph.nodes.map((node) => `${node.path} ${node.label}`), ['/root chain', '/root/steps/0 gather', '/root/steps/1 tally'], 'drawn from the task\'s own workflow');
-  assert.deepEqual(b!.graph.nodes.map((node) => `${node.path} ${node.label}`), ['/root chain', '/root/steps/0 check', '/root/steps/1 verdict']);
+  assert.deepEqual(b!.graph.nodes.map((node) => `${node.path} ${node.label}`), ['/root chain', '/root/steps/0 check', '/root/steps/1 misspelt', '/root/steps/2 verdict']);
+  const ends = lines.filter((line) => line.kind === 'agentrun.workflow').map(placeOf);
+  assert.deepEqual([a!.outcome, b!.outcome], [{ status: 'complete', t: ends[0] }, { status: 'escalated', path: '/root/steps/1', label: 'misspelt', summary: SUMMARY, t: ends[1] }], 'each ends at its terminal line');
   assert.deepEqual([a!.t0, b!.t0], [placeWhere('agentrun.task', KEY_A), placeWhere('agentrun.task', KEY_B)], 'an execution begins at its first line, not its task record at the end');
   assert.deepEqual([a!.conversations, b!.conversations], [{ '/root/steps/0': ['2'] }, { '/root/steps/0': ['3'] }]);
   const [callA, callB] = tools(m);
@@ -49,8 +51,25 @@ test('a node\'s status at a place: what the driver\'s latest record at or before
   assert.deepEqual(chatWorkflowStatusAt(a!, placeWhere('agentrun.driver', KEY_A, 1)), { '/root': 'working', '/root/steps/0': 'working', '/root/steps/1': 'not-run' }, 'during gather');
   assert.deepEqual(chatWorkflowStatusAt(a!, aWorking!), { '/root': 'working', '/root/steps/0': 'done', '/root/steps/1': 'working' }, 'gather done, tally under way');
   assert.deepEqual(chatWorkflowStatusAt(a!, aSecond!), { '/root': 'done', '/root/steps/0': 'done', '/root/steps/1': 'done' });
-  assert.deepEqual(chatWorkflowStatusAt(b!, aSecond!), { '/root': 'not-run', '/root/steps/0': 'not-run', '/root/steps/1': 'not-run' }, 'the second had not begun');
-  assert.deepEqual(chatWorkflowStatusAt(b!, Infinity), { '/root': 'failed', '/root/steps/0': 'done', '/root/steps/1': 'failed' });
+  assert.deepEqual(chatWorkflowStatusAt(b!, aSecond!), { '/root': 'not-run', '/root/steps/0': 'not-run', '/root/steps/1': 'not-run', '/root/steps/2': 'not-run' }, 'the second had not begun');
+});
+
+test('from its terminal line on, an execution has nothing working: where it escalated is marked, the nodes holding it stopped', async () => {
+  const [a, b] = (await model()).workflows!;
+  const before = b!.outcome!.t - 1;
+  assert.deepEqual(chatWorkflowStatusAt(b!, before), { '/root': 'working', '/root/steps/0': 'done', '/root/steps/1': 'working', '/root/steps/2': 'not-run' }, 'before it, unchanged');
+  assert.deepEqual(chatWorkflowStatusAt(b!, b!.outcome!.t), { '/root': 'stopped', '/root/steps/0': 'done', '/root/steps/1': 'escalated', '/root/steps/2': 'not-run' });
+  assert.deepEqual(chatWorkflowStatusAt(b!, Infinity), chatWorkflowStatusAt(b!, b!.outcome!.t));
+  assert.deepEqual(chatWorkflowStatusAt(a!, Infinity), { '/root': 'done', '/root/steps/0': 'done', '/root/steps/1': 'done' }, 'complete: all done');
+  // A complete run whose record still shows a node working (the record lags the outcome) has none working.
+  const route = { ...a!, outcome: { status: 'complete' as const, t: 1 }, records: [{ t: 0, source: { pin: { done: ['/root/steps/0'], steps: { '/root/steps/1': {} } }, items: [] } }] };
+  assert.deepEqual(Object.values(chatWorkflowStatusAt(route, 1)), ['done', 'done', 'done']);
+  for (const status of ['failed', 'aborted'] as const) {
+    const ended = { ...route, outcome: { status, t: 1 }, records: [{ t: 0, source: { pin: { done: ['/root/steps/0'], steps: { '/root/steps/1': { status: 'failed' } } }, items: [] } }] };
+    assert.deepEqual(chatWorkflowStatusAt(ended, 1), { '/root': 'failed', '/root/steps/0': 'done', '/root/steps/1': 'failed' }, `${status}: failed per the record`);
+    const cut = { ...route, outcome: { status, t: 1 } };
+    assert.deepEqual(chatWorkflowStatusAt(cut, 1), { '/root': 'stopped', '/root/steps/0': 'done', '/root/steps/1': 'stopped' }, `${status}: nothing working`);
+  }
 });
 
 test('with live node lines (a recording with times), a node is working while its live run is open', async () => {

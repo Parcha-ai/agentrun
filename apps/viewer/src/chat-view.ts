@@ -5,7 +5,7 @@
 import type { ChatCall, ChatDecision, ChatItem, ChatModel, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
 import type { Recording } from './format.ts';
 import { drawReport, reportCiteLabel, reportClock, reportEl, reportFragmentOf, reportHeldFile, reportHowHref, reportInline, reportParagraphs } from './chat-report.ts';
-import { chatWorkflowStatusAt, type ChatWorkflow } from './chat-workflow.ts';
+import { chatNodeOf, chatWorkflowStatusAt, type ChatWorkflow } from './chat-workflow.ts';
 import { GRAPH_STATUS_TEXT, graphTree, type GraphTree } from './graph-draw.ts';
 
 type ToolItem = Extract<ChatItem, { kind: 'tool' }>;
@@ -616,7 +616,22 @@ function graphDom(node: GraphTree): globalThis.Node {
   return out;
 }
 
-const WORKFLOW_ORDER = ['done', 'working', 'failed', 'not-run'] as const;
+const WORKFLOW_ORDER = ['done', 'working', 'escalated', 'failed', 'stopped', 'not-run'] as const;
+/** How many characters of an escalation's summary its execution's header shows; the whole is its title. */
+const WORKFLOW_SUMMARY = 140;
+
+/** An execution's outcome in words, once its replay has reached it: "complete", "failed", "aborted", or where it
+ *  escalated and why. */
+function workflowOutcomeOf(run: ChatWorkflow, t: number): HTMLElement | undefined {
+  const ended = run.outcome && run.outcome.t <= t ? run.outcome : undefined;
+  if (!ended) return undefined;
+  if (ended.status !== 'escalated') return reportEl('span', { class: `wf-outcome ${ended.status}`, text: ended.status });
+  const node = ended.path !== undefined ? chatNodeOf(run.graph, ended.path) : undefined;
+  const label = ended.label ?? run.graph.nodes.find((each) => each.path === node)?.label;
+  const summary = ended.summary ?? '';
+  const clipped = summary.length > WORKFLOW_SUMMARY ? `${summary.slice(0, WORKFLOW_SUMMARY - 1).trimEnd()}…` : summary;
+  return reportEl('span', { class: 'wf-outcome escalated', title: summary || undefined, text: `escalated${label ? ` at ${label}` : ''}${clipped ? `: ${clipped}` : ''}` });
+}
 
 /** The Workflow view: one graph per workflow run, in run order, each node marked with what the run had done there at the
  *  replay's time (the run's end until the timeline sets one), above them the replay's time and a scrubber. `pick` gets a
@@ -631,6 +646,7 @@ function workflowViewOf(model: ChatModel, runs: readonly ChatWorkflow[], callTit
   last.addEventListener('click', () => replay.set(end));
   const drawn = runs.map((run, index) => {
     const graph = reportEl('div', { class: 'wf-graph' });
+    const outcome = reportEl('span', { class: 'wf-end-of' });
     const counts = reportEl('span', { class: 'wf-counts' });
     const call = run.call ? callTitle(run.call) : undefined;
     const started = run.call && call ? reportEl('button', { class: 'wf-from', type: 'button', text: call }) : undefined;
@@ -642,9 +658,9 @@ function workflowViewOf(model: ChatModel, runs: readonly ChatWorkflow[], callTit
     const section = reportEl('section', { class: 'wf-run', id: run.id, 'aria-label': run.title },
       reportEl('div', { class: 'kicker', text: runs.length > 1 ? `Workflow ${index + 1} of ${runs.length}` : 'Workflow' }),
       reportEl('h2', { class: 'wf-title', text: run.title }),
-      reportEl('div', { class: 'wf-meta' }, started && reportEl('span', {}, 'started by ', started), counts),
+      reportEl('div', { class: 'wf-meta' }, outcome, started && reportEl('span', {}, 'started by ', started), counts),
       graph);
-    return { run, graph, counts, section };
+    return { run, graph, outcome, counts, section };
   });
   const node = reportEl('div', { class: 'wf' },
     reportEl('div', { class: 'wf-replay' }, reportEl('span', { class: 'lab', text: 'Replay' }), scrub, at, last),
@@ -655,8 +671,11 @@ function workflowViewOf(model: ChatModel, runs: readonly ChatWorkflow[], callTit
     at.textContent = whole ? (model.inOrder ? `end · ${Math.round(end)} lines` : `end · ${timelineAt(model, end, end)}`)
       : model.inOrder ? `${timelineAt(model, t, end)} of ${Math.round(end)}` : `${timelineAt(model, t, end)} / ${timelineAt(model, end, end)}`;
     last.disabled = whole;
-    for (const { run, graph, counts } of drawn) {
+    for (const { run, graph, outcome, counts } of drawn) {
       const statuses = chatWorkflowStatusAt(run, whole ? Infinity : t);
+      const ended = workflowOutcomeOf(run, whole ? Infinity : t);
+      outcome.replaceChildren(...(ended ? [ended] : []));
+      outcome.hidden = !ended;
       graph.replaceChildren(graphDom(graphTree(run.graph, statuses, { row: 'button' })));
       const tally = WORKFLOW_ORDER.map((state) => [state, Object.values(statuses).filter((each) => each === state).length] as const).filter(([, count]) => count > 0);
       counts.replaceChildren(...tally.map(([state, count]) => reportEl('span', { class: `wf-count ${state}`, text: `${count} ${GRAPH_STATUS_TEXT[state]}` })));

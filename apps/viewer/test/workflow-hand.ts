@@ -1,16 +1,18 @@
 // A run built by hand (synthetic), in the shape of a recording exported from a store: no times (every line's `t` is 0)
 // and no live lines. One agent starts two workflows with its `agentrun` tool, one after the other. Both are chains whose
-// steps sit at the same paths (/root/steps/0 and /root/steps/1): the first gathers, then tallies; the second checks, then a
-// judge fails it. Each execution's documents join on its run key (the task's `data.input.key`): the driver's checkpoints,
-// `agentrun.task`, and the node runner's index (`agentrun.nodes`), whose attempt holds a conversation of its own. Each
-// task's record is one line at the end, as an export writes it.
+// steps sit at the same paths (/root/steps/0, /root/steps/1): the first gathers, then tallies, and completes; the second
+// checks, then escalates at its escalate node before its judge runs. Each execution's documents join on its run key (the
+// task's `data.input.key`): the driver's checkpoints, `agentrun.task`, and the node runner's index (`agentrun.nodes`),
+// whose attempt holds a conversation of its own. Each task's record is one line at the end, as an export writes it, with
+// its terminal outcome.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Line } from '../src/format.ts';
 
 const chain = (name: string, steps: { node: string; label: string }[]) => ({ v: 2, name, root: { node: 'chain', steps } });
 export const GATHER = chain('gather-and-tally', [{ node: 'agent', label: 'gather' }, { node: 'code', label: 'tally' }]);
-export const CHECK = chain('check-and-judge', [{ node: 'agent', label: 'check' }, { node: 'judge', label: 'verdict' }]);
+export const CHECK = chain('check-and-judge', [{ node: 'agent', label: 'check' }, { node: 'escalate', label: 'misspelt' }, { node: 'judge', label: 'verdict' }]);
+export const SUMMARY = 'One of the three names is misspelt in the source list, and the run cannot tell which spelling the registry holds, so a person must confirm it before the check goes on.';
 export const KEY_A = `agentrun:1:${'a'.repeat(64)}:${'b'.repeat(64)}`;
 export const KEY_B = `agentrun:1:${'c'.repeat(64)}:${'d'.repeat(64)}`;
 
@@ -47,12 +49,11 @@ export const lines: Line[] = [
   nodes(KEY_B, 'check-and-judge', '/root/steps/0', 3),
   entry('pi.user', 3, { role: 'user', content: 'The runner\'s prompt for check.' }, '/root/steps/0'),
   entry('pi.assistant', 3, said('Checked: one name is misspelt.'), '/root/steps/0'),
-  driver(KEY_B, { done: ['/root/steps/0'], steps: { '/root/steps/1': {} }, inputs: { '/root/steps/1': {} } }),
-  driver(KEY_B, { done: ['/root/steps/0'], steps: { '/root/steps/1': { status: 'failed' } } }),
-  result('call-b', 'The verdict failed.'),
-  entry('pi.assistant', 1, said('Both workflows ran; the check failed its verdict.')),
+  driver(KEY_B, { done: ['/root/steps/0'], inputs: { '/root/steps/1': {} } }),
+  result('call-b', 'Escalated: a name needs a person.'),
+  entry('pi.assistant', 1, said('Both workflows ran; the check stopped for a person.')),
   workflow(5, KEY_A, GATHER, { status: 'completed', result: { status: 'complete', output: { names: 3 } } }),
-  workflow(9, KEY_B, CHECK, { status: 'failed' }),
+  workflow(9, KEY_B, CHECK, { status: 'completed', result: { status: 'escalated', escalation: { kind: 'needs_input', stage: 'check', label: 'misspelt', executionPath: '/root/steps/1', summary: SUMMARY, state: { names: 3 } } } }),
 ];
 
 /** A line's place on the chat view's axis, which in a recording with no times is its position in the file, from 1. */

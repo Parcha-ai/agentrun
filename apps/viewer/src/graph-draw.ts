@@ -6,14 +6,16 @@ import type { GraphEdge, NodeState, WorkflowGraph } from '../../../packages/dsl/
 import { under } from './format.ts';
 
 export type GraphTree = string | { tag: string; class?: string; title?: string; path?: string; children?: GraphTree[] };
-export const GRAPH_STATUS_TEXT: Record<NodeState, string> = { done: 'done', working: 'working', failed: 'failed', 'not-run': 'not run' };
+/** A node's mark: the DSL's `NodeState`, and, once an execution has ended, where it escalated and the nodes it stopped in. */
+export type GraphStatus = NodeState | 'escalated' | 'stopped';
+export const GRAPH_STATUS_TEXT: Record<GraphStatus, string> = { done: 'done', working: 'working', failed: 'failed', 'not-run': 'not run', escalated: 'escalated', stopped: 'stopped' };
 
 const gdEl = (tag: string, props: { class?: string; title?: string; path?: string }, ...children: GraphTree[]): GraphTree => ({ tag, ...props, children });
 
 /** The nodes of `graph` as nested lists, each node marked with `statuses[path]` (not run when absent). `dim` adds a class to
  *  a node outside a focus. `row`: the tag each node's parts are wrapped in, with the node's path on it, for a page that
  *  acts on a node; without it, the parts sit in the node's item as they are. */
-export function graphTree(graph: WorkflowGraph, statuses: Record<string, NodeState>, { dim, row }: { dim?: (path: string) => string; row?: string } = {}): GraphTree {
+export function graphTree(graph: WorkflowGraph, statuses: Record<string, GraphStatus>, { dim, row }: { dim?: (path: string) => string; row?: string } = {}): GraphTree {
   const byPath = new Map(graph.nodes.map((node) => [node.path, node]));
   const into = new Set(graph.edges.map((edge) => edge.to));
   // A `next` edge to a node under its source enters a chain's first step or a loop's body, drawn inside it; one to a node

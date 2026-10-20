@@ -8,14 +8,20 @@
 import { graphNodeOf, nodeStatus, workflowGraph, type NodeState, type WorkflowGraph } from '../../../packages/dsl/src/graph.ts';
 import { under, type Json, type Line } from './format.ts';
 import { docOf } from './durable.ts';
+import type { GraphStatus } from './graph-draw.ts';
 import { runRecordAccepts, runRecordInit, runRecordReduce, statusSource } from './node-status.ts';
 
+/** How an execution ended, from its task's terminal state (`state.outcome`): completed with a complete result, completed
+ *  with an escalated one (where it stopped: the escalation's execution path, label and summary), failed or aborted. */
+export type ChatOutcome = { status: 'complete' | 'failed' | 'aborted' } | { status: 'escalated'; path?: string; label?: string; summary?: string };
+
 /** One execution: its run key, its title (the workflow's label, else its name), its graph, the place of its first line,
- *  the conversation that started it, the tool call that did (`call`, a chat item's id, when the recording says so), each
- *  node's live runs by the node's graph path, the driver's record after each of its lines, and the conversations each
- *  node held, by the node's graph path. */
+ *  the conversation that started it, the tool call that did (`call`, a chat item's id, when the recording says so), how it
+ *  ended and the place of its first terminal line, each node's live runs by the node's graph path, the driver's record
+ *  after each of its lines, and the conversations each node held, by the node's graph path. */
 export type ChatWorkflow = {
   id: string; key: string; title: string; graph: WorkflowGraph; t0: number; conversation?: string; call?: string;
+  outcome?: ChatOutcome & { t: number };
   spans: { path: string; t0: number; t1?: number }[];
   records: { t: number; source: { pin: Json; items: Json[] } }[];
   conversations: Record<string, string[]>;
@@ -26,6 +32,18 @@ const cwObj = (value: Json | undefined): CwObj | undefined => (value && typeof v
 const cwId = (value: Json | undefined): string | undefined => (typeof value === 'string' ? value : typeof value === 'number' ? String(value) : undefined);
 /** An `agentrun.workflow` task line (a task record, not a document). */
 const cwTaskLine = (line: Line) => line.channel === 'durable' && line.kind === 'agentrun.workflow' && cwObj(line.data) !== undefined && cwObj(line.data)!.doc === undefined;
+
+/** A task's terminal outcome (VIZ-DATA-CONTRACT section 1, "The answer"), undefined while it has none. */
+function cwOutcomeOf(state: CwObj | undefined): ChatOutcome | undefined {
+  const outcome = state?.status === 'terminal' ? cwObj(state.outcome) : undefined;
+  if (outcome?.status === 'failed' || outcome?.status === 'aborted') return { status: outcome.status };
+  if (outcome?.status !== 'completed') return undefined;
+  const result = cwObj(outcome.result);
+  const escalation = result?.status === 'escalated' ? cwObj(result.escalation) : undefined;
+  if (result?.status !== 'escalated') return { status: 'complete' };
+  const [path, label, summary] = [cwId(escalation?.executionPath), cwId(escalation?.label), cwId(escalation?.summary)];
+  return { status: 'escalated', ...(path !== undefined ? { path } : {}), ...(label !== undefined ? { label } : {}), ...(summary !== undefined ? { summary } : {}) };
+}
 
 /** The graph node an execution path ran at: the one mapping, the DSL's walk of the graph. */
 export const chatNodeOf = (graph: WorkflowGraph, path: string): string | undefined => graphNodeOf(graph, path)?.path;
@@ -106,6 +124,8 @@ export function chatWorkflowsOf(lines: readonly Line[]): { runs: ChatWorkflow[];
       }
       continue;
     }
+    const ended = !run.outcome && cwTaskLine(line) ? cwOutcomeOf(cwObj(cwObj(line.data)!.state)) : undefined;
+    if (ended) run.outcome = { ...ended, t: line.t };
     if (runRecordAccepts(line)) {
       const record = runRecordReduce(records.get(run.key)!, line);
       records.set(run.key, record);
@@ -124,8 +144,24 @@ export function chatWorkflowsOf(lines: readonly Line[]): { runs: ChatWorkflow[];
 
 /** What the execution had done at each node at place `t`: done or failed as the DSL's `nodeStatus` says of the driver's
  *  latest record at or before `t`; working when a live run of the node had begun by `t` and not ended, or `nodeStatus`
- *  says so; else not run. A node that holds others is working while one of them has begun and it is not done. */
-export function chatWorkflowStatusAt(run: ChatWorkflow, t: number): Record<string, NodeState> {
+ *  says so; else not run. A node that holds others is working while one of them has begun and it is not done. From its
+ *  terminal line on, an execution has nothing working: an escalation marks the node it names escalated and the nodes
+ *  holding it stopped; a complete run's working nodes are done; a failed or aborted run's are stopped. */
+export function chatWorkflowStatusAt(run: ChatWorkflow, t: number): Record<string, GraphStatus> {
+  const out: Record<string, GraphStatus> = cwRunningAt(run, t);
+  const ended = run.outcome && run.outcome.t <= t ? run.outcome : undefined;
+  if (!ended) return out;
+  const at = ended.status === 'escalated' && ended.path !== undefined ? chatNodeOf(run.graph, ended.path) : undefined;
+  for (const node of run.graph.nodes) {
+    if (node.path === at) out[node.path] = 'escalated';
+    else if (at !== undefined && under(at, node.path) && out[node.path] !== 'failed') out[node.path] = 'stopped';
+    else if (out[node.path] === 'working') out[node.path] = ended.status === 'complete' ? 'done' : 'stopped';
+  }
+  return out;
+}
+
+/** The statuses at `t` from the driver's record and the live runs alone. */
+function cwRunningAt(run: ChatWorkflow, t: number): Record<string, NodeState> {
   const record = run.records.filter((each) => each.t <= t).at(-1);
   const said = record ? nodeStatus(run.graph, record.source as Parameters<typeof nodeStatus>[1]) : {};
   const out: Record<string, NodeState> = {};

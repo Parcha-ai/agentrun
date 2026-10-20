@@ -6,7 +6,7 @@
 <title>Agent run</title>
 <meta name="description" content="A recorded agent run as a conversation, beside the report it wrote.">
 <style>
-:root{--bg:#080809;--panel:#111113;--panel2:#17171a;--line:#2c2c30;--ink:#f2f2f2;--muted:#a4a4ad;--dim:#6f6f78;--acc:#ff8700;--green:#8ec9ac;--red:#ff6b5a;--purple:#b4a0ff;--judge:#E551BA;
+:root{--bg:#080809;--panel:#111113;--panel2:#17171a;--line:#2c2c30;--ink:#f2f2f2;--muted:#a4a4ad;--dim:#6f6f78;--acc:#ff8700;--green:#8ec9ac;--red:#ff6b5a;--amber:#f5b83d;--purple:#b4a0ff;--judge:#E551BA;
  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--top:56px;--chat:clamp(380px,38vw,540px);color-scheme:dark}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
@@ -266,7 +266,12 @@ a.addr[href]{color:var(--acc);text-decoration:underline dotted}
 .wf-counts{display:flex;flex-wrap:wrap;gap:4px 12px}
 .wf-count::before{content:"";display:inline-block;width:7px;height:7px;margin-right:6px;border:1px solid currentColor;vertical-align:0}
 .wf-count.done{color:var(--green)}.wf-count.working{color:var(--acc)}.wf-count.failed{color:var(--red)}.wf-count.not-run{color:var(--dim)}
-.wf-count.done::before,.wf-count.working::before,.wf-count.failed::before{background:currentColor}
+.wf-count.escalated{color:var(--amber)}.wf-count.stopped{color:var(--muted)}
+.wf-count.done::before,.wf-count.working::before,.wf-count.failed::before,.wf-count.stopped::before{background:currentColor}
+.wf-count.escalated::before{width:5px;height:5px;border-width:2px}
+.wf-end-of{min-width:0;flex-basis:100%}
+.wf-outcome{display:block;font:500 12px/1.5 var(--mono);overflow-wrap:anywhere}
+.wf-outcome.complete{color:var(--green)}.wf-outcome.escalated{color:var(--amber)}.wf-outcome.failed{color:var(--red)}.wf-outcome.aborted{color:var(--muted)}
 .wf-graph{overflow-x:auto;padding:16px;border:1px solid var(--line);background:var(--panel);background-image:radial-gradient(#1d1d21 1px,transparent 1px);background-size:22px 22px}
 .wf-graph ol{list-style:none;margin:0;padding:0}
 .wf-graph .wg-chain{min-width:280px}
@@ -284,6 +289,11 @@ a.addr[href]{color:var(--acc);text-decoration:underline dotted}
 .wf-graph .done>.wg-row .wg-status{color:var(--green)}
 .wf-graph .working>.wg-row .wg-status{color:var(--acc)}
 .wf-graph .failed>.wg-row .wg-status{color:var(--red)}
+.wf-graph .escalated>.wg-row .wg-status{color:var(--amber)}
+.wf-graph .escalated>.wg-row .wg-status::before{width:5px;height:5px;border-width:2px}
+.wf-graph .escalated>.wg-row{border-color:#6b5414}
+.wf-graph .stopped>.wg-row .wg-status{color:var(--muted)}
+.wf-graph .stopped>.wg-row .wg-status::before{background:currentColor}
 .wf-graph .done>.wg-row .wg-status::before,.wf-graph .working>.wg-row .wg-status::before,.wf-graph .failed>.wg-row .wg-status::before{background:currentColor}
 .wf-graph .working>.wg-row{border-color:#6b4512}
 .wf-graph .failed>.wg-row{border-color:#5a2a24}

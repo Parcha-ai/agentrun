@@ -12,7 +12,7 @@ import { after, test } from 'node:test';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
-import { KEY_A, KEY_B, lines, placeOf, writeRecording } from './workflow-hand.ts';
+import { KEY_A, KEY_B, lines, placeOf, SUMMARY, writeRecording } from './workflow-hand.ts';
 
 const IN_CHROME = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 120_000 };
 after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
@@ -24,7 +24,7 @@ const HARNESS = `<!doctype html><body style="margin:0">
 <script>
 const doc = (id) => document.getElementById(id).contentDocument;
 const ready = (id) => !!doc(id)?.querySelector('main#chat-root > .app .thread');
-const STATES = ['done', 'working', 'failed', 'not-run'];
+const STATES = ['done', 'working', 'escalated', 'failed', 'stopped', 'not-run'];
 const statuses = (id, run) => Object.fromEntries([...doc(id).querySelectorAll('#' + run + ' .wg-node')].map((node) => [node.title, STATES.find((state) => node.classList.contains(state))]));
 const row = (id, run, path) => doc(id).querySelector('#' + run + ' .wg-row[data-path="' + path + '"]');
 const shown = (node) => !!node && node.checkVisibility();
@@ -66,7 +66,10 @@ test('in Chrome: the Workflow view beside the report, a graph per run, its nodes
   const A = 'workflow-1';
   const B = 'workflow-2';
   const END_A = { '/root': 'done', '/root/steps/0': 'done', '/root/steps/1': 'done' };
-  const END_B = { '/root': 'failed', '/root/steps/0': 'done', '/root/steps/1': 'failed' };
+  const END_B = { '/root': 'stopped', '/root/steps/0': 'done', '/root/steps/1': 'escalated', '/root/steps/2': 'not-run' };
+  const ENDED = `({ a: doc(ID).querySelector('#${A} .wf-outcome')?.textContent, b: doc(ID).querySelector('#${B} .wf-outcome')?.textContent, title: doc(ID).querySelector('#${B} .wf-outcome')?.title,
+    counts: [...doc(ID).querySelectorAll('#${B} .wf-count')].map((each) => each.textContent) })`;
+  const ESCALATED = { a: 'complete', b: `escalated at misspelt: ${SUMMARY.slice(0, 139).trimEnd()}…`, title: SUMMARY, counts: ['1 done', '1 escalated', '1 stopped', '1 not run'] };
   await until(`['wide', 'phone', 'none'].every(ready)`, 'every chat page drawn');
 
   // 1440: the switch, the report first, then the Workflow view with a graph per run, in run order, each at its end.
@@ -77,7 +80,8 @@ test('in Chrome: the Workflow view beside the report, a graph per run, its nodes
     titles: [...doc('wide').querySelectorAll('.wf-run')].map((run) => [run.id, run.querySelector('.kicker').textContent, run.querySelector('.wf-title').textContent]) })`),
   { host: true, report: false, hash: '#workflow', titles: [[A, 'Workflow 1 of 2', 'gather-and-tally'], [B, 'Workflow 2 of 2', 'check-and-judge']] });
   assert.deepEqual(await value(`[statuses('wide', '${A}'), statuses('wide', '${B}')]`), [END_A, END_B], 'at the end of the run');
-  assert.deepEqual(await value(`[...doc('wide').querySelectorAll('#${B} .wg-row')].map((each) => each.textContent)`), ['chain chain failed', 'agent check done', 'judge verdict failed']);
+  assert.deepEqual(await value(`[...doc('wide').querySelectorAll('#${B} .wg-row')].map((each) => each.textContent)`), ['chain chain stopped', 'agent check done', 'escalate misspelt escalated', 'judge verdict not run']);
+  assert.deepEqual(await value(ENDED.replaceAll('ID', `'wide'`)), ESCALATED, 'each execution\'s header reads its outcome; the summary is clipped, whole in its title');
   assert.equal(await value<string>(`doc('wide').querySelector('.wf-at').textContent`), `end · ${lines.length} lines`);
   assert.doesNotMatch(await value<string>(`doc('wide').querySelector('.wf-host').textContent`), /kill|chaos|ledger|restor/i, 'no durability marks');
 
@@ -91,19 +95,22 @@ test('in Chrome: the Workflow view beside the report, a graph per run, its nodes
   // The replay, by the file's lines: a press on the timeline sets the line, a drag moves it, the scrubber and End too.
   const drivers = (key: string) => lines.filter((line) => line.kind === 'agentrun.driver' && (line.data as { key: string }).key === key).map(placeOf);
   const [, aGather, aTally] = drivers(KEY_A);
-  const [, bVerdict] = drivers(KEY_B);
+  const [, bEscalate] = drivers(KEY_B);
   await page.evaluate(`doc('wide').querySelector('.tl-toggle').click()`);
   await page.evaluate(`press('wide', ${aGather! + 0.4})`);
   assert.deepEqual(await value(`[statuses('wide', '${A}'), statuses('wide', '${B}')]`), [
-    { '/root': 'working', '/root/steps/0': 'working', '/root/steps/1': 'not-run' }, { '/root': 'not-run', '/root/steps/0': 'not-run', '/root/steps/1': 'not-run' }]);
+    { '/root': 'working', '/root/steps/0': 'working', '/root/steps/1': 'not-run' }, { '/root': 'not-run', '/root/steps/0': 'not-run', '/root/steps/1': 'not-run', '/root/steps/2': 'not-run' }]);
+  assert.deepEqual(await value(`[...doc('wide').querySelectorAll('.wf-outcome')].length`), 0, 'no outcome before an execution ends');
   assert.equal(await value<string>(`doc('wide').querySelector('.wf-at').textContent`), `line ${aGather} of ${lines.length}`, 'a press lands on a line');
   assert.deepEqual(await value(`[...new Set([...doc('wide').querySelectorAll('.tl .playhead')].map((head) => parseFloat(head.style.left).toFixed(2)))]`), [(aGather! / lines.length * 100).toFixed(2)], 'the playhead at the press');
-  await page.evaluate(`(() => { pointer('wide', 'pointerdown', undefined, ${aGather}); pointer('wide', 'pointermove', doc('wide').defaultView, ${aTally}); pointer('wide', 'pointermove', doc('wide').defaultView, ${bVerdict}); pointer('wide', 'pointerup', doc('wide').defaultView, ${bVerdict}); })()`);
-  assert.deepEqual(await value(`[statuses('wide', '${A}'), statuses('wide', '${B}')]`), [END_A, { '/root': 'working', '/root/steps/0': 'done', '/root/steps/1': 'working' }], 'dragged on to the verdict');
+  await page.evaluate(`(() => { pointer('wide', 'pointerdown', undefined, ${aGather}); pointer('wide', 'pointermove', doc('wide').defaultView, ${aTally}); pointer('wide', 'pointermove', doc('wide').defaultView, ${bEscalate}); pointer('wide', 'pointerup', doc('wide').defaultView, ${bEscalate}); })()`);
+  assert.deepEqual(await value(`[statuses('wide', '${A}'), statuses('wide', '${B}')]`), [END_A, { '/root': 'working', '/root/steps/0': 'done', '/root/steps/1': 'working', '/root/steps/2': 'not-run' }],
+    'dragged on to the escalate node, before the terminal line: unchanged');
   await page.evaluate(`(() => { const scrub = doc('wide').querySelector('.scrub'); scrub.value = '${aTally}'; scrub.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   assert.deepEqual(await value(`statuses('wide', '${A}')`), { '/root': 'working', '/root/steps/0': 'done', '/root/steps/1': 'working' }, 'the scrubber: gather done, tally under way');
   await page.evaluate(`doc('wide').querySelector('.wf-end').click()`);
   assert.deepEqual(await value(`[statuses('wide', '${A}'), statuses('wide', '${B}'), doc('wide').querySelector('.wf-end').disabled]`), [END_A, END_B, true]);
+  assert.deepEqual(await value(ENDED.replaceAll('ID', `'wide'`)), ESCALATED);
   // A click on a span still jumps to its conversation, and sets the place where it was pressed.
   await page.evaluate(`(() => { const bar = [...doc('wide').querySelectorAll('.tbar')].find((each) => each.title === 'node gather'); press('wide', ${aGather! + 1}, bar); bar.click(); })()`);
   await until(`doc('wide').querySelector('details.fold[data-item="thread-2"]')?.open === true`, 'the gather node\'s conversation opened from its span');
@@ -124,6 +131,9 @@ test('in Chrome: the Workflow view beside the report, a graph per run, its nodes
   assert.deepEqual(await value(`({ open: doc('phone').querySelector('.art').classList.contains('open'), inSheet: !!doc('phone').querySelector('.art .views'), host: shown(doc('phone').querySelector('.wf-host')),
     page: flat('phone'), pane: doc('phone').querySelector('.wf-host').scrollWidth - doc('phone').querySelector('.wf-host').clientWidth, runs: doc('phone').querySelectorAll('.wf-run').length })`),
   { open: true, inSheet: true, host: true, page: 0, pane: 0, runs: 2 }, 'the graph scrolls inside its own box, never the page');
+  assert.deepEqual(await value(`[statuses('phone', '${A}'), statuses('phone', '${B}')]`), [END_A, END_B]);
+  assert.deepEqual(await value(ENDED.replaceAll('ID', `'phone'`)), ESCALATED);
+  assert.equal(await value(`shown(doc('phone').querySelector('#${B} .wf-outcome'))`), true);
   await page.evaluate(`row('phone', '${B}', '/root/steps/0').click()`);
   await until(`doc('phone').querySelector('details.fold[data-item="thread-3"]')?.open === true && !doc('phone').querySelector('.art').classList.contains('open')`, 'the sheet closed on the conversation');
   assert.deepEqual(await value(`[...doc('phone').querySelectorAll('.wf-chip')].map((each) => each.textContent)`), ['Workflow gather-and-tally', 'Workflow check-and-judge'], 'each call that started a run');

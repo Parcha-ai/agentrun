@@ -19,5 +19,11 @@ kind: feature
   view's scrubber sets it; a click on a span still jumps to it. A node's click opens its conversation in the thread,
   else lights its span, else shows the call that started its execution; that call gets a chip to its graph and is
   never folded as a command.
+- An execution that has ended shows no node working. From its terminal line on (the task's `state.outcome`), an
+  escalation marks the node its `executionPath` names escalated (its own mark and word) and the nodes holding it
+  stopped, a complete run's nodes are done, and a failed or aborted run's working nodes are stopped. Its header reads
+  the outcome: "complete", "failed", "aborted", or "escalated at <label>: <summary>" (clipped, whole in its title), and
+  the counts include the escalated node. Before the terminal line nothing changes. Before, an escalated run's end read
+  "chain working" with the node where it stopped shown as not run.
 - The workflow graph panel's focus is mapped to its node by `graphNodeOf` too.
 - The machine-path scan passes `/root/workflow/...` and `/root/iterations/...`: they are workflow execution paths.

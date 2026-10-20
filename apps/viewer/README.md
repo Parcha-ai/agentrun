@@ -36,7 +36,10 @@ panel uses (`src/graph-draw.ts`). Every node is keyed by its run key and its exe
 documents of an execution join on its run key, and an execution path is mapped to its graph node by the DSL's
 `graphNodeOf`, so two executions whose paths collide keep their own threads, spans and records. A node shows what the
 execution had done there at the replay's place: done or failed as the DSL's `nodeStatus` says of the driver's latest
-record at or before it, working while a live run of the node is open or the record says so, else not run. The place is
+record at or before it, working while a live run of the node is open or the record says so, else not run. From the
+execution's terminal line on (its task's `state.outcome`), nothing is working: an escalation marks the node it names
+escalated and the nodes holding it stopped, a complete run's nodes are done, and a failed or aborted run's working nodes
+are stopped; the header reads the outcome ("complete", "failed", "aborted", or "escalated at <label>: <summary>"). The place is
 the run's end until a press or a drag on the session timeline, or the view's scrubber, sets it; in a recording with no
 times it is a line of the file, and a call spans its entry to its result, a node attempt its conversation. A node's click
 opens its conversation in the thread, else lights its span, else shows the call that started its execution, which
