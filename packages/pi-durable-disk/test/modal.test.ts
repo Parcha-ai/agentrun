@@ -201,11 +201,11 @@ function world(codes = "hold", over: Partial<Parameters<typeof modalHost>[0]> = 
     user: ME,
     boxDir: box,
     stageDir: join(d, "stage"),
-    env: { PDA_TEST_OUT: out, PDA_TEST_CODES: codes },
     pollMs: 5,
     startTimeoutMs: 20_000,
     stopTimeoutMs: 5_000,
     ...over,
+    env: { PDA_TEST_OUT: out, PDA_TEST_CODES: codes, ...over.env },
   });
   const lines = () => (existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   return { ...fake, host, box, out, lines, dir: d };
@@ -459,6 +459,27 @@ test("a planned stop ends what the agent left on the mount before the instance d
     assert.equal(launchStatus(w.box, String(h.name)).status, "stopped", "the instance still drained and exited 0 by itself");
   } finally {
     for (const pid of [holder, bystander]) try { process.kill(pid, "SIGKILL"); } catch {}
+  }
+});
+
+test("a planned stop also ends what a tool detaches on the mount while the instance drains, before the instance exits", async () => {
+  const d = scratch("pda-md-");
+  const mnt = join(d, "mnt");
+  const mountpoint = join(mnt, "runs", REF.id);
+  mkdirSync(mountpoint, { recursive: true });
+  // On SIGTERM the instance detaches a program on the mount, then drains for 800 ms: after the reap that precedes the signal.
+  const w = world("hold", { mountRoot: mnt, env: { PDA_TEST_DRAIN_SPAWN: mountpoint, PDA_TEST_DRAIN_MS: "800" } });
+  const h = await w.host.start(REF, TOKEN);
+  await waitFor("the instance", () => (w.lines().length ? w.lines() : null));
+  let helper = 0;
+  try {
+    await w.host.stop(h);
+    helper = w.lines().find((l) => l.drainSpawned)?.drainSpawned ?? 0;
+    assert.ok(helper > 0, "the instance detached a program while it drained");
+    assert.equal(isAlive(helper), false, "the program it detached on the mount was ended");
+    assert.equal(launchStatus(w.box, String(h.name)).status, "stopped", "the instance drained and exited 0 by itself");
+  } finally {
+    if (helper > 0) try { process.kill(helper, "SIGKILL"); } catch {}
   }
 });
 

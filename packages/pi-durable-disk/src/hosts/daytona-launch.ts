@@ -309,27 +309,33 @@ export async function stop(dir: string, name: string, timeoutMs: number, options
     if (s.launcherAlive) kill(s.state!.launcher, s.state!.launcherTicks, "SIGTERM");
     return s;
   }
+  // What holds the mount busy when the instance releases would leave the delegation held: a program the agent detached
+  // before the stop, ended before the instance is signalled, and one a tool detaches while the instance drains, ended at
+  // every look below until the instance is gone (its release makes one unmount attempt).
+  let mountpoint: string | undefined;
   if (options.reapDetached) {
-    // Before the instance drains and releases: what holds the mount busy then would leave the delegation held.
-    let mountpoint: string | undefined;
     try {
       mountpoint = (JSON.parse(readFileSync(files(dir, name).spec, "utf8")) as LaunchSpec).mountpoint;
     } catch {
       // no spec: nothing to reap
     }
-    if (mountpoint) {
-      for (const pid of mountBlockers(mountpoint, s.state!.instance, { launcher: s.state!.launcher })) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          // gone
-        }
+  }
+  const { instance, launcher } = s.state!;
+  const reap = () => {
+    if (!mountpoint) return;
+    for (const pid of mountBlockers(mountpoint, instance, { launcher })) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // gone
       }
     }
-  }
+  };
+  reap();
   if (s.launcherAlive) kill(s.state!.launcher, s.state!.launcherTicks, "SIGTERM");
   else kill(s.state!.instance, s.state!.instanceTicks, "SIGTERM");
   for (const t0 = Date.now(); Date.now() - t0 < timeoutMs; await sleep(50)) {
+    reap();
     s = launchStatus(dir, name);
     if (s.status !== "running") return s;
   }
