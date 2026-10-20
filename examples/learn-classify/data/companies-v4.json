@@ -9519,7 +9519,7 @@
       }
     ],
     "hq": {
-      "city": "Pinheiros, São Paulo, SP,",
+      "city": "São Paulo",
       "state": null,
       "country": "BR"
     },
@@ -10567,7 +10567,7 @@
       }
     ],
     "hq": {
-      "city": "Millenia Tower",
+      "city": "Singapore",
       "state": null,
       "country": "SG"
     },
@@ -27162,7 +27162,7 @@
     "sicDescription": "SERVICES-EDUCATIONAL SERVICES",
     "segments": null,
     "hq": {
-      "city": "Ontario",
+      "city": "Toronto",
       "state": null,
       "country": "CA"
     },

@@ -71,9 +71,10 @@
    "null": 0
   },
   "hqSource": {
-   "cover": 124,
+   "cover": 121,
+   "cover+override": 3,
    "sub.txt": 6,
-   "coverDiffersFromSub": 22,
+   "coverDiffersFromSub": 20,
    "subTxtWhy": {
     "no copy of the primary document (404)": 3,
     "no copy of the primary document (403)": 3
@@ -1972,13 +1973,13 @@
    "cik": "0001355444",
    "name": "EMBRAER S.A.",
    "hq": {
-    "source": "cover",
+    "source": "cover+override",
     "document": {
      "url": "https://www.sec.gov/Archives/edgar/data/1355444/000162828026021824/erj-20251231.htm",
      "copy": "https://web.archive.org/web/20260330123341id_/https://www.sec.gov/Archives/edgar/data/1355444/000162828026021824/erj-20251231.htm"
     },
     "cover": {
-     "city": "Pinheiros, São Paulo, SP,",
+     "city": "São Paulo",
      "state": null,
      "country": "BR"
     },
@@ -1986,6 +1987,10 @@
      "city": "SAO JOSE DOS CAMPOS",
      "state": null,
      "country": "BR"
+    },
+    "override": {
+     "reason": "the cover tag reads \"Pinheiros, São Paulo, SP,\"; Pinheiros is a district of São Paulo",
+     "taggedCity": "Pinheiros, São Paulo, SP,"
     }
    },
    "source": {
@@ -2406,13 +2411,13 @@
    "cik": "0001611005",
    "name": "KENON HOLDINGS LTD.",
    "hq": {
-    "source": "cover",
+    "source": "cover+override",
     "document": {
      "url": "https://www.sec.gov/Archives/edgar/data/1611005/000117891326001842/zk2634883.htm",
      "copy": "https://web.archive.org/web/20261005052156id_/https://www.sec.gov/Archives/edgar/data/1611005/000117891326001842/zk2634883.htm"
     },
     "cover": {
-     "city": "Millenia Tower",
+     "city": "Singapore",
      "state": null,
      "country": "SG"
     },
@@ -2420,6 +2425,10 @@
      "city": "SINGAPORE",
      "state": null,
      "country": "SG"
+    },
+    "override": {
+     "reason": "the cover tags a building, \"Millenia Tower\", as the city; sub.txt gives Singapore",
+     "taggedCity": "Millenia Tower"
     }
    },
    "source": {
@@ -5428,13 +5437,13 @@
    "cik": "0001892274",
    "name": "VISIONARY HOLDINGS INC.",
    "hq": {
-    "source": "cover",
+    "source": "cover+override",
     "document": {
      "url": "https://www.sec.gov/Archives/edgar/data/1892274/000157587226000048/vedu-20250331.htm",
      "copy": "https://web.archive.org/web/20260128205452id_/https://www.sec.gov/Archives/edgar/data/1892274/000157587226000048/vedu-20250331.htm"
     },
     "cover": {
-     "city": "Ontario",
+     "city": "Toronto",
      "state": null,
      "country": "CA"
     },
@@ -5442,6 +5451,10 @@
      "city": "TORONTO",
      "state": "ON",
      "country": "CA"
+    },
+    "override": {
+     "reason": "the cover tags a province, \"Ontario\", as the city; sub.txt gives Toronto",
+     "taggedCity": "Ontario"
     }
    },
    "source": {
