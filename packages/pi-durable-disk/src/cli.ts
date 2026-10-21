@@ -56,7 +56,7 @@ const USAGE = `usage:
                         [--user U] [--group G] [--app MODULE] [--run-arg ARG ...] [--lease-expiry 90s] [--stonith-timeout 30s]
                         [--start-grace 90s] [--start-backoff-max 10m] [--stop-timeout 30s] [--token-ttl 24h] [--token-prefix P] [--demand] [--create] [--env K=V ...] [--log-dir DIR]
                         [--archil BIN] [--control-timeout 10s] [--sweep-tokens] [--token-grace 15m]
-                        [--park-threshold 60s] [--api-key-env NAME]
+                        [--park-threshold 60s] [--no-restart] [--api-key-env NAME]
                         with --host docker: --image IMAGE [--app-root DIR] [--fleet F] [--name-prefix P] [--run-as USER]
                         [--docker-arg ARG ...] [--apparmor auto|PROFILE|none] [--docker BIN]
   pi-durable-disk supervise --check --disk D --region R [--mount-root DIR] [--user U] [--group G] [--check-id-prefix P]
@@ -66,7 +66,6 @@ const USAGE = `usage:
   pi-durable-disk fork --disk D --region R --id ID --new-id NEW [--mount-root DIR] [--archil BIN] [--token-prefix P]
                         [--api-key-env NAME]`;
 
-/** "30s", "500ms", "2m", "1h", or plain milliseconds. */
 /**
  * Whether the lease watchdog may kill every other process in the instance's cgroup: only inside its own systemd unit,
  * whose cgroup holds nothing but the instance and its commands. Elsewhere the cgroup may be shared (a login session, an
@@ -102,6 +101,7 @@ export function watchdogOwnsCgroup(
   return { owns: true };
 }
 
+/** "30s", "500ms", "2m", "1h", or plain milliseconds. */
 export function parseDuration(text: string): number {
   const m = /^(\d+(?:\.\d+)?)(ms|s|m|h)?$/.exec(text.trim());
   if (!m) throw new UsageError(`not a duration: ${text}`);
@@ -220,7 +220,8 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   if (servePort !== undefined && tokenFile === undefined && !isLoopback(serveHost)) throw new UsageError(`--serve-host ${serveHost} is not loopback: name a --serve-token-file`);
   const serveToken = tokenFile === undefined ? undefined : readServeToken(tokenFile);
   const mountRoot = str(values["mount-root"], DEFAULT_MOUNT_ROOT)!;
-  const root = dir ?? join(mountRoot, runPath(ref.id));
+  // On a disk the id names the run's directory: an unsafe one stops the instance here (INVALID_ARGUMENT), before it serves.
+  if (dir === undefined) runPath(ref.id);
   const log = (event: string, extra: Record<string, unknown> = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event, run: ref.id, ...extra })}\n`);
   // The app's factory runs once the claim is held (`afterClaim`), so `ctx.root` is the live directory whenever app code
   // runs; what it returns opens the Harness. Serve starts before the open, with the root options the factory fills in.

@@ -301,8 +301,9 @@ throws `KILL_FAILED`.
 
 `localHost()` runs instances on this machine as systemd transient units with `KillMode=control-group`, so stopping or
 restarting the unit kills every command the instance started, pi's detached ones included. The unit restarts on failure,
-except after exit 65, 70, 75 or 76. `localHost({ mode: "child" })` runs a detached child process instead, for development,
-without that guarantee.
+except after exit 65, 70, 75 or 76; `restart: false` (`supervise --no-restart`) turns that off, so an instance that exits
+stays down until the supervisor's next pass. `localHost({ mode: "child" })` runs a detached child process instead, for
+development, without that guarantee.
 
 `daytonaHost({ client, snapshot, ... })` runs each instance in a Daytona sandbox of its own (library only: `supervise`
 starts local units, so pass the driver to `ensureRunning`). Its `box(handle)` is that sandbox's receipt: its size

@@ -39,8 +39,6 @@ export function checkModule(file, code) {
   if (bare) throw new Error(`${file} imports ${bare[1]} for its side effect alone; import a name from it, so the build includes it in order`);
 }
 
-/** `recordingsDir`: the recordings bundled into the gallery (a test passes its fixture's directory). `files`: ship them as
- *  files with `recordings/index.json` instead of embedding them in gallery.js. */
 /** One page's script: its entry and the modules it imports, joined in import order into one classic script. */
 function bundle(entry) {
   const names = new Map();
@@ -56,6 +54,8 @@ function bundle(entry) {
   });
 }
 
+/** `recordingsDir`: the recordings bundled into the gallery (a test passes its fixture's directory). `files`: ship them as
+ *  files with `recordings/index.json` instead of embedding them in gallery.js. */
 export function build(target = out, recordingsDir = join(here, 'recordings'), { files = false, lock = recordingsDir === join(here, 'recordings') ? join(here, 'recordings.lock.json') : undefined } = {}) {
   const parts = bundle('app.ts');
   // The chat + report page (chat.html): a second script over the same loader, beside the viewer.
@@ -80,8 +80,11 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
   // The lock (recordings.lock.json) may name a run's title and the view its link opens: carried into the entry, so the list shows them. An id it does not name is as recorded.
   const named = new Map();
   if (lock && existsSync(lock)) for (const each of JSON.parse(readFileSync(lock, 'utf8')).ids ?? []) if (typeof each === 'object' && each !== null && (each.title !== undefined || each.view !== undefined)) named.set(each.id, { ...(each.title !== undefined ? { title: each.title } : {}), ...(each.view !== undefined ? { view: each.view } : {}) });
+  // The gallery lists in the lock's order when it has one (ids the lock does not name come after, by name): the order of a story told in parts is the lock's to set.
+  const order = lock && existsSync(lock) ? (JSON.parse(readFileSync(lock, 'utf8')).ids ?? []).map((each) => (typeof each === 'string' ? each : each?.id)) : [];
+  const rank = (id) => (order.includes(id) ? order.indexOf(id) : order.length);
   const gallery = [];
-  for (const id of existsSync(recordingsDir) ? readdirSync(recordingsDir).sort() : []) {
+  for (const id of (existsSync(recordingsDir) ? readdirSync(recordingsDir).sort() : []).sort((a, b) => rank(a) - rank(b))) {
     const dir = join(recordingsDir, id);
     if (!existsSync(join(dir, 'manifest.json'))) continue;
     const blobs = {};

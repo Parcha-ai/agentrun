@@ -115,7 +115,7 @@ function snapshotEntry(entry: unknown): WorkflowSessionSnapshot | undefined {
   } catch { return undefined; }
 }
 
-function interrupted(s: WorkflowSessionSnapshot): WorkflowSessionSnapshot {
+function markInterrupted(s: WorkflowSessionSnapshot): WorkflowSessionSnapshot {
   if (!s.running) return s;
   s.running = false;
   s.report = { digest: inspectWorkflow(s.workflow).sha256, status: 'interrupted',
@@ -131,7 +131,7 @@ export function restoreWorkflowSession(branch: readonly unknown[]): WorkflowSess
   if (!Array.isArray(branch) || types.isProxy(branch)) return undefined;
   for (let i = branch.length - 1; i >= 0; i--) {
     const snapshot = snapshotEntry(Object.getOwnPropertyDescriptor(branch, String(i))?.value);
-    if (snapshot) return interrupted(snapshot);
+    if (snapshot) return markInterrupted(snapshot);
   }
   return undefined;
 }
@@ -145,7 +145,7 @@ export function workflowRunHistory(branch: readonly unknown[]): WorkflowSessionS
     if (!snapshot || !snapshot.report && !snapshot.running) continue;
     const key = snapshot.runId ?? `entry:${i}`;
     if (seen.has(key)) continue;
-    seen.add(key); results.push(interrupted(snapshot));
+    seen.add(key); results.push(markInterrupted(snapshot));
   }
   return results;
 }

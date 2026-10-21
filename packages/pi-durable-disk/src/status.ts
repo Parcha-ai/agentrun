@@ -8,7 +8,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import type { JsonValue } from "@earendil-works/chord";
-import { FencedError, ownWriteFenced, PdaError } from "./errors.ts";
+import { EXIT_DATAERR, FencedError, ownWriteFenced, PdaError } from "./errors.ts";
 import { fdPath, hold } from "./held-fd.ts";
 import { thisBoot } from "./process-table.ts";
 
@@ -62,7 +62,7 @@ export interface RunRecord {
 /** `run.json` is missing a field, has one of the wrong type, or is not JSON. Exit 65 (EX_DATAERR): a restart cannot fix it. */
 export class RunRecordError extends PdaError {
   constructor(message: string, options: { cause?: unknown } = {}) {
-    super("RUN_JSON_INVALID", message, { cause: options.cause, exitCode: 65 });
+    super("RUN_JSON_INVALID", message, { cause: options.cause, exitCode: EXIT_DATAERR });
   }
 }
 
