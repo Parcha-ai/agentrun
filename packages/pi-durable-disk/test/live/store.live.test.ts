@@ -7,7 +7,7 @@
 // made and released in `after`, also on failure. PDA_P2_RESULTS names a file that receives the measurements as JSON.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync, writeSync, fsyncSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, rmSync, writeFileSync, writeSync, fsyncSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { after, before, describe, it } from "node:test";

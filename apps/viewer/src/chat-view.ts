@@ -132,7 +132,6 @@ function sourceMedium(recording: Recording, sha: string, alt: string, regions: S
 /** What a look's decisions said, in words: a yes or a no, or the choice. */
 const sourceDecisions = (source: ChatSource) => source.decisions.map((each) => `${each.name.replace(/_/g, ' ')}: ${each.kind === 'noul' ? (each.score >= 0.5 ? 'yes' : 'no') : each.choice}`);
 
-/** Regions no picture carries, listed: each label with its address. */
 /** The addresses shown, one a line; each opens in a tab at its page or second when the agent's page holds its file. */
 function sourceAddressList(model: ChatModel, recording: Recording, addresses: string[]): HTMLElement {
   return reportEl('div', { class: 'addrs' }, ...addresses.map((address) => {
@@ -157,13 +156,12 @@ export function sourcePictureFor<P extends { href: string }>(pictures: readonly 
   return cited;
 }
 
+/** Regions no picture carries, listed: each label with its address. */
 const sourceRegionList = (regions: SourceRegion[]) => reportEl('ul', { class: 'regions' },
   ...regions.map((region) => reportEl('li', {}, reportEl('b', { text: region.label ?? 'cited here' }), reportEl('span', { text: region.href }))));
 
 export type SourceShown = { look?: string; item?: ToolItem; href: string; regions: SourceRegion[]; picture?: { blob: string; label?: string } };
 
-/** What a citation or a card points at: what was found, then the medium with the regions given and no other. A page
- *  address shows that page's own picture, whichever look cites it. */
 /** A call's whole command: shown under what it found, or folded under its look's own view so the picture stays first. */
 function sourceCommand(detail: string, folded: boolean): HTMLElement {
   const text = reportEl('pre', { text: detail });
@@ -171,6 +169,8 @@ function sourceCommand(detail: string, folded: boolean): HTMLElement {
     : reportEl('div', { class: 'command' }, reportEl('div', { class: 'kind', text: 'Command' }), text);
 }
 
+/** What a citation or a card points at: what was found, then the medium with the regions given and no other. A page
+ *  address shows that page's own picture, whichever look cites it. */
 function sourceView(recording: Recording, model: ChatModel, shown: SourceShown, back: () => void, pick: (look: string) => void): HTMLElement {
   const pane = sourceViewOf(recording, model, shown, back, pick);
   if (shown.item?.detail && shown.look && model.sources[shown.look]) pane.append(sourceCommand(shown.item.detail, true));

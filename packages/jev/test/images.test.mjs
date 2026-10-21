@@ -195,10 +195,11 @@ test('a reference counts where it sits in a string value of the state, an instru
     { state: 'plain', questions: { level: { type: 'score', instructions: 'How bad?', criteria: ['fine', 'like <photo>'] } } },
   ];
   for (const { state, questions } of cases) {
-    const t = transport(ok({ urgent: { type: 'noul', noul: 0.9 } }));
     const answers = Object.fromEntries(Object.entries(questions).map(([id, q]) => [id, q.type === 'noul' ? { type: 'noul', noul: 0.9 } : q.type === 'choice' ? { type: 'choice', choice: 'a', probabilities: { a: 0.5, b: 0.5 }, confidence: 0.1 } : { type: 'score', score: 0.5, legend: { 0: 'fine', 1: 'like <photo>' }, probabilities: { 0: 0.5, 1: 0.5 }, confidence: 0.1 }]));
-    const run = createJevRunner({ ...quick, fetch: transport(ok(answers)).fetch });
-    await run({ label: 't', kind: 'judge', state, questions, assets: { '<photo>': asPng(png()) } });
-    void t;
+    const t = transport(ok(answers));
+    await createJevRunner({ ...quick, fetch: t.fetch })({ label: 't', kind: 'judge', state, questions, assets: { '<photo>': asPng(png()) } });
+    const [sent] = t.seen;
+    assert.equal(sent.headers[HEADER.toLowerCase()], 'true', 'the request carries the image header');
+    assert.deepEqual(sent.parts[sent.request.assets['<photo>'].part], png(), 'and the image as a file part');
   }
 });

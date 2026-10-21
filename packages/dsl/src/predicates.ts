@@ -59,7 +59,7 @@ export function predicateMatches(predicate: StopPredicate | AcceptPredicate, val
       return count >= predicate.n;
     }
     case "no_new_items": {
-      const target = getPath(value, (predicate as { key: string }).key);
+      const target = getPath(value, predicate.key);
       return Array.isArray(target) ? target.length === 0 : !target;
     }
     case "gte":
