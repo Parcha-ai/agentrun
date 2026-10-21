@@ -30,12 +30,37 @@ async function loadRevision(workflow, tmpRoot) {
   }
 }
 
-/** The DSL's dry run on synthetic values: no model, Jev or tool call. Code never runs in this process here. */
-export async function dryRunStatus(document) {
-  const refuseCode = async (_node, _state, context) => { throw new Error(`code node "${context.label}" does not run in a dry run here`); };
+const refuseCode = async (_node, _state, context) => { throw new Error(`code node "${context.label}" does not run in a dry run here`); };
+
+async function dryRun(document) {
   const result = await dryRunWorkflow(document, { runCode: refuseCode });
   const status = !result.ok ? 'failed' : result.skipped?.length ? 'not_run' : 'passed';
   return { status, problems: result.problems ?? [], skipped: result.skipped ?? [] };
+}
+
+/** `value` with every escalate on a Jev answer's sidecar (`<as>$answers...`) made one that never fires; `quieted` counts them. */
+function withoutConfidenceEscalates(value, quieted) {
+  if (Array.isArray(value)) return value.map((v) => withoutConfidenceEscalates(v, quieted));
+  if (!value || typeof value !== 'object') return value;
+  const path = value.node === 'escalate' ? value.when?.path : undefined;
+  if (typeof path === 'string' && path.split('.')[0].endsWith('$answers')) {
+    quieted.n += 1;
+    return { ...value, when: { predicate: 'lt', path, n: -Number.MAX_VALUE } };
+  }
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withoutConfidenceEscalates(v, quieted)]));
+}
+
+/**
+ * The DSL's dry run on synthetic values: no model, Jev or tool call. Code never runs in this process here. A dry run
+ * answers every Jev question at confidence 0, so an escalate on a `$answers` path always fires there and ends it: a
+ * revision stopped by an escalate is dry run again with those escalates never firing, and its status is that run's.
+ */
+export async function dryRunStatus(document) {
+  const first = await dryRun(document);
+  if (first.status !== 'not_run' || !first.skipped.every((s) => s.startsWith('escalated:'))) return first;
+  const quieted = { n: 0 };
+  const twin = withoutConfidenceEscalates(document, quieted);
+  return quieted.n ? dryRun(twin) : first;
 }
 
 /** Jev's yes-probability that the document names a specific company or case. */

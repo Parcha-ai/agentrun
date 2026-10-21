@@ -411,6 +411,27 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   for (const c of fixtures) for (const word of [c.name.split(' ')[0], c.ticker]) assert.doesNotMatch(job, new RegExp(`\\b${word}\\b`), word);
 });
 
+test('the EDGAR home is the v4 home with only the lookup lifted: the same definition and skills, and the job text differs in the code, its evidence and its sources', () => {
+  const v4 = join(import.meta.dirname, 'agent-v4');
+  const edgar = join(import.meta.dirname, 'agent-v4-edgar');
+  const text = (dir, ...file) => readFileSync(join(dir, ...file), 'utf8');
+  const files = (dir) => execFileSync('find', ['.', '-type', 'f'], { cwd: dir, encoding: 'utf8' }).split('\n').filter(Boolean).sort();
+  assert.deepEqual(files(edgar), files(v4));
+  for (const file of files(v4).filter((f) => f !== './AGENTS.md')) assert.equal(text(edgar, file), text(v4, file), file);
+  // The job text, item by item: every rule but three is the same.
+  const items = (dir) => text(dir, 'AGENTS.md').split(/\n(?=\s*- |#)/).map((item) => item.replace(/\s+/g, ' ').trim());
+  const [before, after] = [items(v4), items(edgar)];
+  assert.equal(after.length, before.length);
+  const changed = before.flatMap((item, i) => (item === after[i] ? [] : [i]));
+  assert.deepEqual(changed.map((i) => before[i].slice(0, 40)), ['- its 4-digit SIC code, from sic_codes: ', '- The code is chosen, not remembered. A ', '- sec.gov and EDGAR are refused by every']);
+  const lifted = changed.map((i) => after[i]).join(' ');
+  for (const words of [/its 4-digit SIC code as the SEC files it, from sic_codes: sic2_groups for the group/, /A code you choose yourself goes by where most revenue comes from/,
+    /A code you remember is a guess, never evidence: the code's cite is the page, read in this run, that it rests on/,
+    /SEC EDGAR pages as the Wayback Machine archived them \(https:\/\/web\.archive\.org\/web\/<time>\/<sec\.gov URL>\)/, /sec\.gov itself, its mirrors and SIC listing sites are refused by every tool/]) assert.match(lifted, words);
+  // A source, never a step: the job text names no EDGAR page, field or key that holds the code.
+  assert.doesNotMatch(lifted, /index|header|SIC:|CIK|browse-edgar|submissions|do not try|revenue reading wins/i);
+});
+
 // ---- scripted passes -----------------------------------------------------------------------------------------------------
 
 const V4_FIELDS = ['dispatched', 'correctOver', 'segmentsAnswer', 'segmentsTruth', 'segmentsShareSum', 'segmentsF1', 'shareErrorMean', 'hqAnswer', 'hqTruth', 'hqCorrect', 'subsidiariesAnswer', 'subsidiariesTruthCount',

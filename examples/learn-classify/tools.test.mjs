@@ -28,6 +28,12 @@ function routes(host, path, req, res, seen) {
     res.writeHead(status, { 'content-type': type, ...headers });
     res.end(body);
   };
+  if (host === 'web.archive.org') {
+    const capture = 'https://web.archive.org/web/20260911112117';
+    if (path === '/web/2026/https://www.sec.gov/Archives/edgar/data/1/a-index.htm') return send(302, 'text/html', '', { location: `${capture}/https://www.sec.gov/Archives/edgar/data/1/a-index.htm` });
+    if (path === '/web/2026/https://www.sec.gov/leaves') return send(302, 'text/html', '', { location: `${capture}/https://www.siccode.com/business/acme` });
+    if (path.startsWith('/web/20260911112117')) return send(200, 'text/html', '<title>Filing index</title><p>SIC: 5961 RETAIL-CATALOG &amp; MAIL-ORDER HOUSES</p>');
+  }
   if (path === '/home') return send(200, 'text/html; charset=utf-8', HOME, { 'set-cookie': 'session=1; Path=/' });
   if (path === '/headers') return send(200, 'text/plain', JSON.stringify({ ua: req.headers['user-agent'], cookie: req.headers.cookie ?? null }));
   if (path === '/wiki/Acme') return send(200, 'text/html', WIKI);
@@ -340,6 +346,31 @@ test('ANY_HOST still refuses SEC, SIC sites, archives, EDGAR, bad schemes, crede
   for (const url of ['http://printer.local/', 'http://box.tailnet.ts.net/', 'http://metadata.google.internal/', 'http://nas.lan/']) await refused(url, /local network name/);
   assert.deepEqual(s.seen.requests, []);
   assert.deepEqual(asked, []);
+});
+
+test('archivedSec opens the Wayback Machine\'s copy of an SEC page, and never sec.gov itself or another archived site', async (t) => {
+  const s = await server(t);
+  const asked = [];
+  const tool = fetchPageTool({ allowDomain: ANY_HOST, fetch: s.fetchVia, lookup: fakeLookup(asked), archivedSec: true });
+  const index = await tool.run({ url: 'https://web.archive.org/web/2026/https://www.sec.gov/Archives/edgar/data/1/a-index.htm' });
+  assert.equal(index.ok, true);
+  assert.equal(index.url, 'https://web.archive.org/web/20260911112117/https://www.sec.gov/Archives/edgar/data/1/a-index.htm');
+  assert.match(index.text, /SIC: 5961/);
+  assert.equal((await tool.run({ url: 'https://web.archive.org/web/20260911112117id_/https://data.sec.gov/submissions/CIK0000000001.json' })).ok, true);
+  assert.match((await tool.run({ url: 'https://web.archive.org/web/2026/https://www.sec.gov/leaves' })).refused, /^redirect to https:\/\/web\.archive\.org\/web\/20260911112117\/https:\/\/www\.siccode\.com\/.*refused list \(archive\.org/);
+  const sent = s.seen.requests.length;
+  for (const url of [
+    'https://www.sec.gov/cgi-bin/browse-edgar?company=acme', 'https://data.sec.gov/submissions/CIK0000320193.json',
+    'https://web.archive.org/web/2026/https://www.siccode.com/business/acme', 'https://web.archive.org/web/2026/https://www.sec.gov.evil.example/',
+    'https://web.archive.org/web/2026/https://notsec.gov/', 'https://web.archive.org/web/2026/https://www.sec.gov@evil.example/',
+    'https://web.archive.org/web/2026/https%3A%2F%2Fwww.sec.gov%2F', 'https://web.archive.org/cdx/search/cdx?url=sec.gov', 'https://archive.org/wayback/available?url=sec.gov',
+  ]) assert.match((await tool.run({ url })).refused, /refused list/, url);
+  assert.equal(s.seen.requests.length, sent);
+  assert.ok(s.seen.requests.every((r) => r.startsWith('web.archive.org/web/')), s.seen.requests.join(' '));
+  assert.match(tool.description, /The Wayback Machine's copy of an SEC page \(https:\/\/web\.archive\.org\/web\/<time>\/<sec\.gov URL>\) is the one exception/);
+  // Off by default: the same copy is refused, as before.
+  assert.match((await anyTool(s, []).run({ url: 'https://web.archive.org/web/2026/https://www.sec.gov/Archives/edgar/data/1/a-index.htm' })).refused, /refused list \(archive\.org/);
+  assert.doesNotMatch(anyTool(s, []).description, /Wayback/);
 });
 
 test('ANY_HOST refuses a name that resolves to a private address, before any request', async (t) => {

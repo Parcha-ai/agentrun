@@ -11,7 +11,7 @@ import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
 import { readTrial } from '@parcha/pi-agent-learn';
 import { validateRecording } from '../../scripts/recording/validate.mjs';
 import { renderCurve } from './curve.mjs';
-import { gatedAdmitter, LEAK_QUESTION } from './gates.mjs';
+import { dryRunStatus, gatedAdmitter, LEAK_QUESTION } from './gates.mjs';
 import { agentHomeFor, answerV1, groupsOf, jobInput, meteredJudge, prepareRun, runJob, sic2GroupsTool } from './host.mjs';
 import { byWorkflowOf, rowOf, spendOf } from './row.mjs';
 import { liveParts, openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
@@ -171,6 +171,40 @@ test('the dry-run gate refuses a revision whose host dry run does not pass, befo
   // A description-only call (no records) goes straight to the package's admitter.
   await admit({ main: 'x', read: async () => undefined, list: async () => [], workflow: { run: 'run-002', name: WORKFLOW, records: {}, description: 'when', untrusted: true } });
   assert.equal(based, 1);
+});
+
+/** CLASSIFY_WORKFLOW with `added` right after its pick. */
+const afterPick = (...added) => ({ ...CLASSIFY_WORKFLOW, root: { node: 'chain', steps: CLASSIFY_WORKFLOW.root.steps.flatMap((s) => (s.node === 'pick' ? [s, ...added] : [s])) } });
+const UNSURE = { node: 'escalate', label: 'unsure of the group', when: { predicate: 'lt', path: 'picked$answers.confidence.pick', n: 0.9 }, kind: 'review', stage: 'confidence', summary: 'the group pick is not sure' };
+
+test('a dry run answers every pick at confidence 0: an escalate on a pick\'s $answers passes the host\'s gate, and every step after it is still dry run', async () => {
+  assert.equal((await dryRunStatus(CLASSIFY_WORKFLOW)).status, 'passed');
+  assert.deepEqual(await dryRunStatus(afterPick(UNSURE)), { status: 'passed', problems: [], skipped: [] });
+  const both = afterPick(UNSURE, { ...UNSURE, label: 'unsure of any answer', when: { predicate: 'lt', path: 'picked$answers.min_confidence', n: 0.5 } });
+  assert.equal((await dryRunStatus(both)).status, 'passed');
+  // An escalate after it that fires on synthetic values is still found: the confidence escalate does not end the dry run.
+  const late = await dryRunStatus(afterPick(UNSURE, { node: 'escalate', label: 'late', when: { predicate: 'field_equals', path: 'page.ok', value: false }, kind: 'review', stage: 'late', summary: 'x' }));
+  assert.equal(late.status, 'not_run');
+  assert.deepEqual(late.skipped, ['escalated:review@late on synthetic values']);
+  // A step after it that fails the dry run still fails it.
+  const broken = await dryRunStatus(afterPick(UNSURE, { node: 'code', label: 'broken', code: 'return {};', as: 'x' }));
+  assert.equal(broken.status, 'failed');
+  // An escalate on any other path is refused as before.
+  const other = await dryRunStatus(afterPick({ ...UNSURE, when: { predicate: 'lt', path: 'picked.index', n: 1 } }));
+  assert.equal(other.status, 'not_run');
+  assert.deepEqual(other.skipped, ['escalated:review@confidence on synthetic values']);
+});
+
+test('the gates admit a revision whose only dry-run escalate reads a pick\'s confidence: Jev is asked and the package admits it', async (t) => {
+  const dir = await scratch(t);
+  const saved = await new WorkflowStore(dir).save(WORKFLOW, afterPick(UNSURE));
+  const store = join(dir, '.pi/agentrun/workflows', WORKFLOW);
+  const records = { [`${saved.digest}.json`]: readFileSync(join(store, `${saved.digest}.json`), 'utf8'), latest: readFileSync(join(store, 'latest'), 'utf8') };
+  let judged = 0;
+  let based = 0;
+  const admit = gatedAdmitter({ judge: async () => { judged += 1; return { answers: { namesCase: { type: 'noul', noul: 0 } } }; }, base: async () => { based += 1; return { status: 'admitted', files: {}, reason: 'ok' }; } });
+  const result = await admit({ main: 'x', read: async () => undefined, list: async () => [], workflow: { run: 'run-001', name: WORKFLOW, records, untrusted: true } });
+  assert.deepEqual([result.status, judged, based], ['admitted', 1, 1]);
 });
 
 test('an agent node inside an in-run workflow is offered fetch_page; a node that names no tools gets both workflow tools, never answer, learn or agentrun', async (t) => {
