@@ -901,3 +901,105 @@ test('in Chrome: a look card passes over a near-black first picture to the first
     await page.close();
   }
 });
+
+/** The records a run answers with: a list of flat records, each with words that carry markdown marks, a yes-or-no and a
+ *  list of words; one more names a column of its own. Wide enough to scroll at 390. */
+const LISTED: { ref: string; summary?: string; kind: string; urgent: boolean; reviewed: boolean; tags: string[]; owner?: string }[] = [...Array.from({ length: 6 }, (_, n) => ({
+  ref: `A-${n + 1}`, summary: `The \`parse()\` call throws on input ${n + 1} that ends in a dot, with **marks** left as typed`, kind: n % 2 ? 'defect' : 'feature',
+  urgent: n % 3 === 0, reviewed: n % 2 === 0, tags: ['parser', `v${n + 1}`, 'needs-triage'],
+})), { ref: 'A-7', kind: 'defect', urgent: false, reviewed: false, tags: [], owner: 'nobody yet' }];
+/** The agent's words: a lead-in, then a pipe table, a line after it, a rule, a table whose separator is short a column,
+ *  and a table with an escaped pipe in its header. */
+const WORDS = ['Here is what I sorted:', '| ref | what | kind | urgent | reviewed | tags |', '| :--- | :--- | --- | ---: | :---: | --- |',
+  ...LISTED.slice(0, 6).map((each) => `| **${each.ref}** | ${each.summary} | \`${each.kind}\` | ${each.urgent} | ${each.reviewed} | ${each.tags.join(', ')} |`),
+  'That is the list.', '', '---', '', '| a | b |\n| --- |\n| 1 | 2 |', '', '| one \\| two | three |', '|---|---|', '| x | y |'].join('\n');
+const SORTING = '**Sorting the list**\n\n| kind | count |\n|---|---|\n| defect | 4 |\n| feature | 3 |';
+
+/** A run that answers with LISTED and writes pipe tables in its thinking and its words. */
+function writeTables(dir: string) {
+  let t = 0;
+  const pi = (commit: number, kind: string, content: unknown): Line => ({ channel: 'durable', source: 'pi', kind, gen: 1, t: (t += 10), commit, order: 0, conv: 1, data: { kind, model: [content] } as never });
+  const run: Line[] = [
+    { channel: 'live', source: 'host', kind: 'process.started', t: (t += 10), seq: 1, data: { gen: 1 } },
+    { channel: 'durable', source: 'workflow', kind: 'agentrun.workflow', gen: 1, t: (t += 10), commit: 1, order: 0, data: { doc: 'agentrun.workflow', input: { input: 'Sort the reports.' } } },
+    { channel: 'durable', source: 'workflow', kind: 'agentrun.nodes', gen: 1, t: (t += 10), commit: 1, order: 1, path: '/root/sorter', data: { doc: 'agentrun.nodes', key: 'tables:sorter', value: { conversation: 1, closed: false }, version: 1 } },
+    pi(2, 'pi.user', { role: 'user', content: 'The host\'s prompt.' }),
+    pi(3, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: SORTING }, { type: 'text', text: WORDS }] }),
+  ];
+  const result = Buffer.from(JSON.stringify({ found: LISTED, count: LISTED.length }));
+  mkdirSync(join(dir, 'blobs'), { recursive: true });
+  writeFileSync(join(dir, 'blobs', `${sha256(result)}.json`), result);
+  const { result: _result, ...rest } = handManifest;
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ ...rest, title: 'The reports, sorted', generations: 1, kills: 0, cost: { usd: 0, parts: {} }, result: { blob: sha256(result), title: 'The sorted list' } }, null, 2));
+  writeFileSync(join(dir, 'events.jsonl'), `${run.map((line) => JSON.stringify(line)).join('\n')}\n`);
+}
+
+const TABLES = `<!doctype html><body style="margin:0">
+<iframe id="wide" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=tables"></iframe>
+<iframe id="phone" style="position:absolute;top:0;left:0;width:390px;height:844px;border:0" src="chat.html?r=tables"></iframe>
+<script>
+const doc = (id) => document.getElementById(id).contentDocument;
+const ready = (id) => !!doc(id)?.querySelector('.arow') && !!doc(id).querySelector('.said-text');
+const tables = (id, where) => [...doc(id).querySelectorAll(where + ' table')].map((t) => ({ head: [...t.querySelectorAll('th')].map((n) => n.textContent), rows: [...t.querySelectorAll('tbody tr')].map((r) => [...r.children].map((n) => n.textContent)) }));
+const flat = (id) => { const d = doc(id); return { page: d.documentElement.scrollWidth - d.documentElement.clientWidth, panes: [...d.querySelectorAll('.thread, .report')].map((n) => n.scrollWidth - n.clientWidth) }; };
+const boxes = (id, where) => [...doc(id).querySelectorAll(where + ' table')].map((t) => { const box = t.parentElement; return { scrolls: box.scrollWidth > box.clientWidth, overflow: getComputedStyle(box).overflowX, inside: box.getBoundingClientRect().right <= doc(id).defaultView.innerWidth + 0.5 }; });
+const square = (id) => [...doc(id).querySelectorAll('table, table *')].flatMap((n) => [n, n.parentElement]).every((n) => getComputedStyle(n).borderRadius === '0px');
+</script></body>`;
+
+test('in Chrome: an answer that is a list of flat records and a pipe table in the agent\'s words are tables; at 390 a wide one scrolls in its own box, never the page', IN_CHROME, async (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-tables-'));
+  const held: { page?: Awaited<ReturnType<typeof drivenPage>>; server?: ReturnType<typeof createServer> } = {};
+  t.after(() => closeAll(held.page ? [held.page] : [], () => {
+    held.server?.closeAllConnections();
+    held.server?.close();
+    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }), { timeout: 20_000 });
+  writeTables(join(out, 'recordings', 'tables'));
+  build(join(out, 'dist'), join(out, 'recordings'), { files: true });
+  writeFileSync(join(out, 'dist', 'harness.html'), TABLES);
+  const TYPES: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.css': 'text/css' };
+  const server = createServer((request, response) => {
+    const file = join(out, 'dist', decodeURIComponent(new URL(request.url!, 'http://localhost').pathname));
+    if (!file.startsWith(join(out, 'dist')) || !existsSync(file) || !extname(file)) { response.writeHead(404).end(); return; }
+    response.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' }).end(readFileSync(file));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  held.server = server;
+  const page = await drivenPage(`http://127.0.0.1:${(server.address() as AddressInfo).port}/harness.html`, join(out, 'profile'), { signal: t.signal });
+  held.page = page;
+  const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
+  try {
+    await page.once(`ready('wide') && ready('phone')`, 'true', 20_000, 'both pages drawn');
+    // The answer: the list as a table, its columns as the records first name them, each cell its words as written.
+    const columns = ['ref', 'summary', 'kind', 'urgent', 'reviewed', 'tags', 'owner'];
+    const cells = LISTED.map((each) => columns.map((column) => {
+      const cell = (each as Record<string, unknown>)[column];
+      return cell === undefined ? '' : typeof cell === 'boolean' ? (cell ? 'yes' : 'no') : Array.isArray(cell) ? cell.join(', ') : String(cell);
+    }));
+    assert.deepEqual(await value(`tables('wide', '.report')`), [{ head: columns, rows: cells }]);
+    assert.deepEqual(await value(`[...doc('wide').querySelectorAll('.report td *')].map((n) => n.tagName)`), [], 'a cell of the answer is plain text: its backticks and stars as typed');
+    assert.deepEqual(await value(`[...doc('wide').querySelectorAll('.report .arow')].map((n) => n.textContent.includes('[{'))`), [false, false], 'the list is not drawn as JSON too');
+    // The agent's words: the lead-in, the table, the line after it, and what is no table as it was written.
+    assert.deepEqual(await value(`[...doc('wide').querySelector('.said-text').children].map((n) => n.querySelector('table') ? 'table' : n.textContent)`),
+      ['Here is what I sorted:', 'table', 'That is the list.', '---', '| a | b |\n| --- |\n| 1 | 2 |', 'table']);
+    assert.deepEqual(await value(`tables('wide', '.said-text')`), [
+      { head: ['ref', 'what', 'kind', 'urgent', 'reviewed', 'tags'], rows: LISTED.slice(0, 6).map((each) => [each.ref, each.summary!.replaceAll('`', '').replaceAll('**', ''), each.kind, String(each.urgent), String(each.reviewed), each.tags.join(', ')]) },
+      { head: ['one | two', 'three'], rows: [['x', 'y']] },
+    ]);
+    assert.deepEqual(await value(`[[...doc('wide').querySelectorAll('.said-text td:first-child strong')].map((n) => n.textContent), [...doc('wide').querySelectorAll('.said-text td code')].length]`),
+      [LISTED.slice(0, 6).map((each) => each.ref), 12], 'a cell of the agent\'s table keeps the inline marks the page draws');
+    assert.deepEqual(await value(`tables('wide', '.thought-body')`), [{ head: ['kind', 'count'], rows: [['defect', '4'], ['feature', '3']] }], 'a table in a thought too');
+    assert.deepEqual(await value(`[flat('wide'), square('wide')]`), [{ page: 0, panes: [0, 0] }, true]);
+
+    // 390, the report opened in its sheet and the thought unfolded: each wide table scrolls in its own box, the page never.
+    await page.evaluate(`doc('phone').querySelector('.report-btn').click(); doc('phone').querySelector('details.thought').open = true`);
+    await page.once(`doc('phone').querySelector('.art').classList.contains('open')`, 'true', 5_000, 'the report sheet open');
+    await page.sleep(500);
+    assert.deepEqual(await value(`flat('phone')`), { page: 0, panes: [0, 0] }, 'at 390 neither the page nor a pane scrolls sideways');
+    assert.deepEqual(await value(`[boxes('phone', '.report'), boxes('phone', '.said-text')[0]]`),
+      [[{ scrolls: true, overflow: 'auto', inside: true }], { scrolls: true, overflow: 'auto', inside: true }], 'a wide table scrolls inside its own box, on the screen');
+    assert.equal(await value(`square('phone')`), true, 'square corners');
+  } finally {
+    await page.close();
+  }
+});
