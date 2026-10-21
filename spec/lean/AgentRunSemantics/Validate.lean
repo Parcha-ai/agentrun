@@ -20,8 +20,9 @@ checks that relationship on its corpus; it is not a proof of implementation equi
 
 namespace AgentRun
 
-/-- `s.startsWith("$")`, written with `front` so the kernel can evaluate it. -/
-@[irreducible] def startsWithDollar (s : String) : Bool := s.front == '$'
+/-- `s.includes("$")`: an engine-owned key holds a `$` (`$host`, `<as>$answers`, `<as>$verify`). Written over the
+    character list so the kernel can evaluate it. -/
+@[irreducible] def holdsDollar (s : String) : Bool := s.toList.contains '$'
 
 mutual
 def tmplRefs : Tmpl → List Path
@@ -196,7 +197,7 @@ def collectErrors (as : String) (oif fa : Option String) : List String :=
     (match fa with
       | none => ["onItemFailure \"collect\" needs failedAs"]
       | some k => if k.trim.isEmpty then ["onItemFailure \"collect\" needs failedAs"]
-        else if startsWithDollar k then ["failedAs must not name an engine-owned \"$\" state key"]
+        else if holdsDollar k then ["failedAs must not name an engine-owned \"$\" state key"]
         else if k == as then ["failedAs must differ from as"] else [])
   else if fa.isSome then ["failedAs is written only with onItemFailure \"collect\""] else [])
 
@@ -204,10 +205,10 @@ def collectErrors (as : String) (oif fa : Option String) : List String :=
 def dollarErrors : Node → List String
   | .code label as | .gen _ label _ as _ _ _ =>
     match as with
-    | some k => if startsWithDollar k then ["\"as\" must not name an engine-owned \"$\" state key"] else []
-    | none => if startsWithDollar label then ["label must not begin with \"$\""] else []
+    | some k => if holdsDollar k then ["\"as\" must not name an engine-owned \"$\" state key"] else []
+    | none => if holdsDollar label then ["label must not contain \"$\""] else []
   | n => match n.declaredAs with
-    | some k => if startsWithDollar k then ["\"as\" must not name an engine-owned \"$\" state key"] else []
+    | some k => if holdsDollar k then ["\"as\" must not name an engine-owned \"$\" state key"] else []
     | none => []
 
 def workspaceRelative (f : String) : Bool :=
