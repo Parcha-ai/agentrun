@@ -17,7 +17,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createSession } from "@earendil-works/pi-durable";
 import { err, getOrThrow, ok, type Result } from "@earendil-works/pi-durable/env";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { type Box, BoxError } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { checkpointStats, localVault, pullCheckpoint, recordSink, restoreNotice } from "../src/home/checkpoint.ts";
@@ -29,6 +29,19 @@ import { linkPair } from "../src/home/link.ts";
 import { MoveError, type Place, recoverHome, type StartRunner } from "../src/home/move.ts";
 import { leaseIn } from "../src/home/ownership.ts";
 import type { CheckpointTaken } from "../src/home/run.ts";
+
+/** A seal of a restore's replayed copy that fails, while a test sets it: every other seal is the real one. */
+const seals = vi.hoisted(() => ({ failReplayed: false }));
+vi.mock("../src/home/store.ts", async (real) => {
+	const store = await real<typeof import("../src/home/store.ts")>();
+	return {
+		...store,
+		sealStore: (path: string, context: Parameters<typeof store.sealStore>[1]) =>
+			seals.failReplayed && path.includes(".replay-")
+				? Promise.resolve(err(new store.StoreError("not_sealed", "the replayed copy could not be sealed")))
+				: store.sealStore(path, context),
+	};
+});
 import { checkpointStore, sealStore } from "../src/home/store.ts";
 import { tapStorage } from "./commit-tap.ts";
 import { walk } from "./home-support.ts";
@@ -858,6 +871,66 @@ describe("recovering a session whose box is gone", () => {
 		expect(move.move.notice).toContain("3 commits made after the checkpoint");
 		// The checkpoint's own copy in the vault is as it was: the replay was made on a copy.
 		expect(getOrThrow(await sealStore(checkpoint?.storeFile ?? "", context))).toEqual(checkpoint?.seal);
+	});
+
+	// A restore that cannot replay the commits shipped after its checkpoint (the log cannot be read, a commit does not apply,
+	// the replayed copy cannot be sealed) is a FAILURE, never "nothing to replay": it restores nothing and keeps the log, so a
+	// retry can replay them. Restoring the checkpoint alone would drop those commits from the log for good.
+	for (const [what, fail] of [
+		["the log cannot be read", "read"],
+		["the first shipped commit does not apply", "first"],
+		["a later shipped commit does not apply", "later"],
+		["the replayed copy cannot be sealed", "seal"],
+	] as const) {
+		it(`refuses to restore, and keeps every shipped commit in the log, when ${what}`, async () => {
+			const r = await lost();
+			const checkpoint = getOrThrow(await r.vault.latest("s", context));
+			const head = checkpoint?.seal.head ?? 0;
+			const shipped = await moreCommits(r.fx.place.store, 3);
+			const broken = (at: number) => shipped.map((entry, i) => (i === at ? { ...entry, writes: "not writes" as never } : entry));
+			getOrThrow(await r.vault.appendLog("s", fail === "first" ? broken(0) : fail === "later" ? broken(1) : shipped, context));
+			getOrThrow(await r.fx.place.box.destroy(context));
+			const vault =
+				fail === "read"
+					? new Proxy(r.vault, {
+							get: (target, name) =>
+								name === "readLog"
+									? async () => err(new Error("the log store is unreachable"))
+									: (Reflect.get(target, name, target) as unknown),
+						})
+					: r.vault;
+			seals.failReplayed = fail === "seal";
+			try {
+				const recovered = await recoverHome(
+					{ session: "s", ownership: r.lease, places: { a: r.fx.place }, start: r.start, notice: "unused", vault, replace: r.replace },
+					context,
+				);
+				expect(recovered.ok).toBe(false);
+				expect(recovered.ok ? "" : recovered.error.code).toBe("replay");
+			} finally {
+				seals.failReplayed = false;
+			}
+			// Every shipped commit is still in the host's log, for a retry to replay.
+			const kept = getOrThrow(await r.vault.readLog("s", head, context));
+			expect(kept.entries.map((entry) => entry.commit)).toEqual(shipped.map((entry) => entry.commit));
+			// Nothing was restored: no new box was made and no runner started.
+			expect(r.replaced()).toBe(0);
+			expect(r.orders).toEqual([]);
+		});
+	}
+
+	it("restores the checkpoint as it is when nothing was shipped after it, and keeps the log as it is", async () => {
+		const r = await lost();
+		const checkpoint = getOrThrow(await r.vault.latest("s", context));
+		getOrThrow(await r.fx.place.box.destroy(context));
+		const recovered = getOrThrow(
+			await recoverHome(
+				{ session: "s", ownership: r.lease, places: { a: r.fx.place }, start: r.start, notice: "unused", vault: r.vault, replace: r.replace },
+				context,
+			),
+		);
+		expect(recovered.restored?.n).toBe(checkpoint?.n);
+		expect(getOrThrow(await sealStore(r.target.store, context))).toEqual(checkpoint?.seal);
 	});
 
 	it("restores the checkpoint as it is when the log does not start where the checkpoint ends", async () => {
