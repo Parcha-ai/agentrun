@@ -206,6 +206,13 @@ a.addr[href]{color:var(--acc);text-decoration:underline dotted}
 .alabel{font:500 13px var(--mono);color:var(--acc);padding-top:3px;overflow-wrap:anywhere}
 .arow p{margin:0 0 8px;overflow-wrap:anywhere}
 .arow p.anote{font-size:13px;color:var(--muted)}
+.arow.full{grid-template-columns:minmax(0,1fr);gap:8px}
+/* a table wider than its box scrolls inside the box; a column of long cells wraps at a reading width, any other keeps each cell on one line */
+.table-box{max-width:100%;overflow-x:auto;margin:0 0 10px;border:1px solid var(--line)}
+.table-box table{min-width:100%;border-collapse:collapse;font:400 13px/1.45 var(--sans)}
+.table-box th,.table-box td{padding:6px 10px;text-align:left;vertical-align:top;white-space:nowrap;border-top:1px solid var(--line)}
+.table-box th{font:500 11px var(--mono);letter-spacing:.3px;color:var(--muted);background:var(--panel);border-top:0}
+.table-box td.long{white-space:normal;min-width:15em;overflow-wrap:anywhere}
 .cites{display:flex;flex-wrap:wrap;gap:6px}
 .cite{font:400 11.5px var(--mono);color:var(--muted);border:1px solid var(--line);padding:1px 7px;background:var(--panel);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cite:hover{color:var(--ink);border-color:var(--acc)}
