@@ -129,6 +129,7 @@ test('the keyed decisions form (one document per row): both folds count each row
   agree([...asKeyed, keyed(3, row('d', null))], null);
   // Another run's row with the same decision id is its own decision.
   agree([...asKeyed, keyed(3, row('a', 0.5, 'other'))], priced + 1.375);
-  // A keyed row restored away (a snapshot below a commit already seen) is still what was spent: the lost branch's decision is not taken back.
-  agree([...asKeyed, { ...keyed(0, rows[0], { commit: 9005, gen: 2 }), snapshot: true }], priced + 0.875);
+  // A restore to before the last row (a snapshot below a commit already seen, starting with a decisions document): the rows it lists were spent, and so was the
+  // row the lost branch wrote after them: the lost branch's decision is not taken back.
+  agree([...asKeyed, { ...keyed(0, rows[0], { commit: 9101, gen: 2, order: 0 }), snapshot: true }, { ...keyed(1, rows[1], { commit: 9101, gen: 2, order: 1 }), snapshot: true }], priced + 0.875);
 });

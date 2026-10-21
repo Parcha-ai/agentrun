@@ -356,7 +356,7 @@ export const counterFold: Fold<CounterState> = {
       if (rows && doc.key !== undefined) {
         // The keyed form: this document is one row, and its run's tally gains it once (a tally is the run's rows so far, as the single document's list was).
         const at = docIdOf(line, doc);
-        if (!state.decisionDocs[at]) {
+        if (!next.decisionDocs[at]) {
           const row = rows[0]!;
           const run = row.run_key ?? '';
           const history = next.decisions[run];
@@ -364,7 +364,7 @@ export const counterFold: Fold<CounterState> = {
           const tally: Tally = { answered: [...before.answered], failed: before.failed, cost: [...before.cost, row.cost_usd ?? null] };
           if (row.error !== undefined) tally.failed += 1;
           else tally.answered.push(`${run} ${row.decision_id ?? ''}`);
-          next.decisionDocs = { ...state.decisionDocs, [at]: true };
+          next.decisionDocs = { ...next.decisionDocs, [at]: true };
           next.decisions = { ...next.decisions, [run]: [...(history ?? (line.snapshot === true ? next.retained?.decisions[run] : undefined) ?? []), [line.commit!, tally]] };
         }
       } else if (rows) {
