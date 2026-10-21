@@ -1,0 +1,274 @@
+// The agent's two tools, a pi extension over the host's sandboxes, one box per environment. `frame` asks the placer where one frame of the zoom runs, draws the frame's four tiles there with the tile
+// program, and keeps the frame on the run's disk; its answer names the environment, the box by its label (`box-1`, never the provider's id) and the line the example composes from the placement record. `release` ends
+// every box the run made and answers which; with rates (an option, off in demo.json) it also answers each box's receipt. A box is made the first time a frame is placed in its
+// environment, and every later frame placed there uses it. Each call also leaves a record beside the frames (`frames/*.call.json`: the tool, its arguments and its answer), which the result cites.
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { rename, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import type { Models } from '@earendil-works/pi-ai';
+import type { ExecutionEnv } from '@earendil-works/pi-durable/env';
+import { defineExtension, defineTool, type Extension, type ToolExecutionResult } from '@earendil-works/pi-durable';
+import { Type } from 'typebox';
+import { type Box, type BoxPrice, type BoxProvider, type BoxReceipt, type BoxSpec, boxReceipts, type EnvironmentFacts, jevPlacer, type Placer, type PlacementRecord } from '@parcha/pi-transport';
+import { boxEnv } from '@parcha/pi-transport/hands';
+import spec from './demo.json' with { type: 'json' };
+import { HEIGHT, TILES_X, TILES_Y, TILE_H, TILE_W, WIDTH, iterationsOf, window_ } from './programs/params.mjs';
+
+/** One place a frame can run: its id, its provider, the author's one line on what it is for, and what its live boxes are made with. */
+export type Environment = { id: string; provider: string; purpose: string; cpus?: number; image?: string };
+export const ENVIRONMENTS = spec.placement.environments as readonly Environment[];
+export const REST = spec.placement.rest;
+/** How sure Jev must be that a frame needs another sandbox for it to move: the placer's own default, named here so the placer and the line agree. */
+export const THRESHOLD = 0.5;
+
+const PROGRAMS = join(dirname(fileURLToPath(import.meta.url)), 'programs');
+/** Where the tile program goes in a box, relative to its workspace. */
+const IN_BOX = 'placed-frames';
+/** A box ends by itself this long after it was made, whatever happens to the run; `release` ends it first. */
+export const LIFETIME_MS = 20 * 60_000;
+/** The label every box of this example carries, so a person can list what a run left. */
+export const LABELS = { example: 'placed-frames' };
+const JEV = { provider: 'typesafe', modelId: 'jev-latest' };
+
+/** What the host brings: a provider for each environment, the models the placer asks, and the rates, if any. */
+export type Hosting = {
+  /** Each environment's provider, by its id, made once with the run's place. */
+  providers(place: { root: string; work: string }): Record<string, BoxProvider> | Promise<Record<string, BoxProvider>>;
+  /** What an environment's boxes are made with beyond the lifetime and the labels (a live sandbox's size and image); nothing for a local box. */
+  specOf?(environment: Environment): Partial<BoxSpec>;
+  /** pi-ai's models with the classifier the placer asks: Jev at TypeSafe, or the fakes' scripted one. */
+  models: Models;
+  /** Who answers the placer: said in each frame's answer, so a scripted run never reads as Jev's. */
+  placer: 'jev' | 'scripted';
+  /** Each kind of box's rate, for a receipt per box. None by default: no receipt is made. */
+  rates?: readonly BoxPrice[] | null;
+};
+
+/** What Jev reads for an environment: the author's line and the facts the config states (the provider is not shown to Jev). */
+export const factsOf = (environment: Environment): EnvironmentFacts => ({
+  id: environment.id, provider: environment.provider, purpose: environment.purpose, capabilities: [],
+  gpu: null, cpus: environment.cpus ?? null, memoryMb: null, isolation: null, region: null,
+});
+
+/** The step Jev places: the frame as numbers, with no word that says where it should go. */
+export function stepOf(f: number, frames: number): string {
+  const closer = Math.round(window_(0).width / window_(f).width).toLocaleString('en-US');
+  return `Draw frame ${f + 1} of ${frames} of a zoom into the Mandelbrot set: ${closer} times closer than the first frame, at ${iterationsOf(f)} iterations per pixel, as four tiles of ${TILE_W} by ${TILE_H} pixels.`;
+}
+
+/**
+ * The line a frame's answer carries about where it went, composed here from the placement record's structured fields (its target, who decided, and Jev's score for the need). The placer's
+ * own sentence is for a session's notice and is never shown by this example. `who` names who judged: Jev live, the script on fakes.
+ */
+export function placedLine(record: Pick<PlacementRecord, 'target' | 'moved' | 'error' | 'answers'>, rest: string, who: 'Jev' | 'the script'): string {
+  if (record.error) return `placed on ${record.target}: ${who} gave no answer (${record.error.code}), so the frame stays on ${record.target}`;
+  const need = record.answers?.need;
+  const probability = need?.type === 'bool' ? need.probability : undefined;
+  const score = probability === undefined ? '' : ` (${probability.toFixed(2)})`;
+  const stays = record.target === rest;
+  // The judgment comes from the need alone, apart from where the frame went: a high need can still end on the resting place, when that is the place Jev chose.
+  if (probability !== undefined && probability >= THRESHOLD) {
+    return stays
+      ? `placed on ${record.target}: ${who} judged the frame needs what ${rest} cannot do${score}, and chose ${record.target} as the place`
+      : `placed on ${record.target}: ${who} judged the frame needs what ${rest} cannot do${score}`;
+  }
+  return stays
+    ? `placed on ${record.target}: ${who} judged ${rest} can do the frame${score}`
+    : `placed on ${record.target}: ${who} placed the frame on ${record.target}${score ? `, with a need score${score}` : ''}`;
+}
+
+/** A command in a box, with its output. */
+async function sh(env: ExecutionEnv, command: string, timeoutS: number): Promise<{ exitCode: number; out: string; errs: string }> {
+  let out = '';
+  let errs = '';
+  const ran = await env.exec(command, { timeout: timeoutS, onOutput: (text, _context, info) => { if (info.stream === 'stderr') errs += text; else out += text; } }, ctx);
+  if (!ran.ok) throw ran.error;
+  return { exitCode: ran.value.exitCode, out, errs };
+}
+
+type Made = { box: Box; env: ExecutionEnv; label: string; provider: string };
+/** What the run's boxes did, by the box's label: when it was made, each command's start and end (what it was, its exit code), and when it ended. No id, address or path. */
+type BoxLog = { box: string; provider: string; created: string; ended?: string; execs: Array<{ what: string; start: string; end: string; exitCode: number }> };
+type State = { /** Sandboxes a failed setup could not end: `release` tries them again. */ orphans: Array<{ box: Box; label: string }>; ids: Map<string, { provider: string; id: string }>; idsWritten: Promise<unknown>; log: Map<string, BoxLog>; providers: Record<string, BoxProvider>; labelOf(provider: string, id: string): string | undefined; receipts: BoxReceipt[]; placer: Placer; boxes: Map<string, Promise<Made>> };
+
+/** A tool's answer as pi keeps it: the JSON text in both the result's `content` and its `output`, so a reader of either sees it. */
+function answered(value: unknown): ToolExecutionResult {
+  const blocks = [{ type: 'text' as const, text: JSON.stringify(value) }];
+  return { content: blocks, output: blocks } as ToolExecutionResult;
+}
+
+/** The agent's extension: `frame` and `release`, sharing the run's boxes (one set of boxes for each run's work directory). */
+export function placedFrames(hosting: Hosting): Extension {
+  const runs = new Map<string, Promise<State>>();
+  const open = (place: { root: string; work: string }) => {
+    let state = runs.get(place.work);
+    if (!state) {
+      state = (async () => {
+        const receipts: BoxReceipt[] = [];
+        const ledger = boxReceipts({ prices: hosting.rates ?? [], write: (receipt) => receipts.push(receipt) });
+        const given = await hosting.providers(place);
+        const providers = Object.fromEntries(ENVIRONMENTS.map((environment) => {
+          const provider = given[environment.id];
+          if (!provider) throw new Error(`no provider for the environment ${environment.id}`);
+          return [environment.id, ledger.wrap(provider)];
+        }));
+        const placer = await jevPlacer(hosting.models, JEV, { rest: REST, timeoutMs: 30_000, threshold: THRESHOLD });
+        if (!placer.ok) throw placer.error;
+        return { orphans: [], ids: new Map(), idsWritten: Promise.resolve(), log: new Map(), providers, labelOf: (provider: string, id: string) => ledger.labelOf(provider, id), receipts, placer: placer.value, boxes: new Map() } satisfies State;
+      })();
+      runs.set(place.work, state);
+    }
+    return state;
+  };
+
+  /** A command in a box, with its start and end noted in the box's log. */
+  const logged = async <T extends { exitCode: number }>(s: State, made: Made, what: string, run: () => Promise<T>): Promise<T> => {
+    const start = new Date().toISOString();
+    const ran = await run();
+    s.log.get(made.label)?.execs.push({ what, start, end: new Date().toISOString(), exitCode: ran.exitCode });
+    return ran;
+  };
+
+  /** The environment's box: made, checked for node and given the tile program the first time, then the same one. */
+  const boxIn = (s: State, environment: Environment): Promise<Made> => {
+    const known = s.boxes.get(environment.id);
+    if (known) return known;
+    const making = (async () => {
+      const provider = s.providers[environment.id]!;
+      const created = await provider.create({ maxLifetimeMs: LIFETIME_MS, labels: LABELS, ...hosting.specOf?.(environment) }, ctx);
+      if (!created.ok) throw created.error;
+      const box = created.value;
+      const env = boxEnv(box);
+      const made = { box, env, label: s.labelOf(provider.name, box.id) ?? 'box-?', provider: provider.name };
+      s.ids.set(made.label, { provider: made.provider, id: box.id });
+      s.log.set(made.label, { box: made.label, provider: made.provider, created: new Date().toISOString(), execs: [] });
+      // Every failure after the box exists ends it: a setup that stops half way must not leave a sandbox running (a paid one, up to its lifetime). One that cannot be ended is kept for `release` to try again.
+      const abandon = async (why: unknown): Promise<never> => {
+        const done = await box.destroy(ctx).catch((cause: unknown) => ({ ok: false as const, error: cause }));
+        if (!done.ok) s.orphans.push({ box, label: made.label });
+        else { const entry = s.log.get(made.label); if (entry) entry.ended = new Date().toISOString(); }
+        throw why;
+      };
+      let node: { exitCode: number };
+      try { node = await logged(s, made, 'check node', () => sh(env, 'node -v', 60)); } catch (cause) { return abandon(cause); }
+      if (node.exitCode !== 0) {
+        return abandon(new Error(`the ${environment.id} sandbox (${provider.name}) has no node: ${environment.provider === 'daytona' ? 'set DAYTONA_SNAPSHOT to a snapshot with node 22 or newer' : 'name an image with node 22 or newer'}`));
+      }
+      try {
+        const uploaded = await box.upload(['tile.mjs', 'params.mjs'].map((name) => ({ path: `${IN_BOX}/${name}`, bytes: new Uint8Array(readFileSync(join(PROGRAMS, name))) })), ctx);
+        if (!uploaded.ok) throw uploaded.error;
+      } catch (cause) { return abandon(cause); }
+      return made;
+    })();
+    s.boxes.set(environment.id, making);
+    // A box that could not be made is asked for again by the next frame placed there.
+    making.catch(() => { if (s.boxes.get(environment.id) === making) s.boxes.delete(environment.id); });
+    return making;
+  };
+
+  /** The run's work directory and its parent, from the call's environment. */
+  const placeOf = async (env: ExecutionEnv | undefined) => {
+    if (!env) throw new Error('this run gives a tool no environment to keep its frames in');
+    const work = await env.absolutePath('.', ctx);
+    if (!work.ok) throw work.error;
+    return { work: work.value, root: dirname(work.value) };
+  };
+  /** The provider's id of each box the run made, by label, in a file at the root of the run's directory (`box-ids.internal.json`, beside `work/`, outside `frames/`): for whoever checks the accounts after a run, never for a recording or a card, and not under anything a copy of `frames/` could take. */
+  const keepIds = (env: ExecutionEnv, s: State) => (s.idsWritten = s.idsWritten.catch(() => undefined).then(async () => hostFile(join((await placeOf(env)).root, 'box-ids.internal.json'), JSON.stringify({ format: 'placed-frames.box-ids/1', internal: true, boxes: Object.fromEntries([...s.ids].sort(([a], [b]) => a.localeCompare(b, 'en', { numeric: true }))) }))));
+
+  /** A file outside the call's environment, which is confined to the run's work directory: this host's own file, written whole or not at all. */
+  const hostFile = async (path: string, text: string) => { await writeFile(`${path}.partial`, text); await rename(`${path}.partial`, path); };
+
+  /** A file in the run's work directory, written whole or not at all. */
+  const keep = async (env: ExecutionEnv, path: string, bytes: Uint8Array | string) => {
+    const wrote = await env.writeFile(`${path}.partial`, bytes, ctx);
+    if (!wrote.ok) throw wrote.error;
+    const moved = await env.renameFile(`${path}.partial`, path, ctx);
+    if (!moved.ok) throw moved.error;
+  };
+
+  const frameTool = defineTool({
+    name: 'frame',
+    description: 'Draw one frame of a zoom into the Mandelbrot set: frame `f` (counting from 0) of `frames`. Each later frame is closer than the one before and takes more iterations per pixel. The host runs the frame in a sandbox it picks and answers which one (`environment`, and the box by its label), what it judged and the frame\'s SHA-256. Frames are independent: ask for several at once.',
+    parameters: Type.Object({ f: Type.Integer({ minimum: 0, description: 'The frame, counting from 0.' }), frames: Type.Integer({ minimum: 2, maximum: 24, description: 'How many frames the zoom has.' }) }),
+    replay: 'safe',
+    execute: async (args, api) => {
+      const { f, frames } = args;
+      if (f >= frames) throw new Error(`frame ${f} is past the last frame, ${frames - 1}`);
+      const env = api.env;
+      const place = await placeOf(env);
+      const s = await open(place);
+      const record = await s.placer.decide({ session: 'placed-frames', phase: 'message', what: 'hands', current: REST, options: ENVIRONMENTS.map(factsOf), next: stepOf(f, frames) }, ctx);
+      const environment = ENVIRONMENTS.find((each) => each.id === record.target)!;
+      const made = await boxIn(s, environment);
+      const cells = Array.from({ length: TILES_X * TILES_Y }, (_, i) => ({ tx: i % TILES_X, ty: Math.floor(i / TILES_X) }));
+      const tiles = await Promise.all(cells.map(async ({ tx, ty }) => {
+        const ran = await logged(s, made, `tile ${f}/${tx}/${ty}`, () => sh(made.env, `node ${IN_BOX}/tile.mjs '${JSON.stringify({ f, tx, ty })}'`, 120));
+        if (ran.exitCode !== 0) throw new Error(`tile ${f}/${tx}/${ty} failed in ${made.label}: ${ran.errs.slice(0, 200)}`);
+        return { tx, ty, px: Buffer.from((JSON.parse(ran.out.trim().split('\n').at(-1)!) as { px: string }).px, 'base64') };
+      }));
+      const pixels = Buffer.alloc(WIDTH * HEIGHT);
+      for (const { tx, ty, px } of tiles) for (let y = 0; y < TILE_H; y += 1) px.copy(pixels, (ty * TILE_H + y) * WIDTH + tx * TILE_W, y * TILE_W, (y + 1) * TILE_W);
+      const made_ = await env!.exec('mkdir -p frames', undefined, ctx);
+      if (!made_.ok) throw made_.error;
+      await keep(env!, `frames/f${f}.idx`, pixels);
+      const need = record.answers?.need?.type === 'bool' ? Number(record.answers.need.probability.toFixed(2)) : null;
+      const answer = {
+        f, environment: environment.id, provider: made.provider, box: made.label,
+        placed: { by: hosting.placer === 'scripted' ? 'scripted' : record.by, need, line: placedLine(record, REST, hosting.placer === 'scripted' ? 'the script' : 'Jev'), ...(record.error ? { error: record.error.code } : {}) },
+        sha256: createHash('sha256').update(pixels).digest('hex'), iterations: iterationsOf(f),
+      };
+      await keep(env!, `frames/f${f}.call.json`, JSON.stringify({ tool: 'frame', args: { f, frames }, answer }));
+      await keepIds(env!, s);
+      return answered(answer);
+    },
+  });
+
+  const releaseTool = defineTool({
+    name: 'release',
+    description: 'End every sandbox this run made and answer which ones. Call it once, after every frame is drawn.',
+    parameters: Type.Object({}),
+    execute: async (_args, api) => {
+      const env = api.env;
+      const place = await placeOf(env);
+      const s = await open(place);
+      const ended: Array<{ box: string; environment: string; provider: string }> = [];
+      // A sandbox a failed setup could not end is tried again here; one that still will not end fails the release, so the run is not taken for finished with a sandbox left.
+      // Every one is tried, and every one that still will not end is kept for the next release: none is forgotten behind another's failure.
+      const stuck: Array<{ box: Box; label: string }> = [];
+      let refusal: unknown;
+      for (const orphan of s.orphans.splice(0)) {
+        const done = await orphan.box.destroy(ctx).catch((cause: unknown) => ({ ok: false as const, error: cause }));
+        if (!done.ok) { stuck.push(orphan); refusal ??= done.error; continue; }
+        const entry = s.log.get(orphan.label);
+        if (entry) entry.ended = new Date().toISOString();
+      }
+      s.orphans.push(...stuck);
+      if (refusal !== undefined) throw refusal;
+      for (const [environment, making] of s.boxes) {
+        const made = await making.catch(() => undefined);
+        if (!made) continue;
+        const done = await made.box.destroy(ctx);
+        if (!done.ok) throw done.error;
+        const entry = s.log.get(made.label);
+        if (entry) entry.ended = new Date().toISOString();
+        ended.push({ box: made.label, environment, provider: made.provider });
+      }
+      ended.sort((a, b) => a.box.localeCompare(b.box, 'en', { numeric: true }));
+      const answer = { boxes: ended, ...(s.receipts.length > 0 ? { receipts: s.receipts } : {}) };
+      const made_ = await env!.exec('mkdir -p frames', undefined, ctx);
+      if (!made_.ok) throw made_.error;
+      await keep(env!, 'frames/release.call.json', JSON.stringify({ tool: 'release', args: {}, answer }));
+      // The boxes' own log, for whoever draws the run: by label, never by the provider's id.
+      const boxes = [...s.log.values()].sort((a, b) => a.box.localeCompare(b.box, 'en', { numeric: true }));
+      await keep(env!, 'frames/boxes.json', JSON.stringify({ format: 'placed-frames.boxes/1', boxes }));
+      await keepIds(env!, s);
+      return answered(answer);
+    },
+  });
+
+  return defineExtension({ name: 'placed-frames', tools: [frameTool, releaseTool] });
+}
