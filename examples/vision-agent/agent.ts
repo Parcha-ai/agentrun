@@ -13,13 +13,13 @@ import type { Job } from '@parcha/agentrun-harness';
 const SKILLS = join(dirname(fileURLToPath(import.meta.resolve('@parcha/pi-vision'))), '..', 'skills');
 /** pi-vision's skills as the package ships them, each without its front matter, in name order. */
 export const skills = (): { name: string; text: string }[] => readdirSync(SKILLS, { withFileTypes: true })
-  .filter((entry) => entry.isDirectory() && existsSync(join(SKILLS, entry.name, 'SKILL.md'))).map((entry) => entry.name).sort()
+  .filter((entry) => entry.isDirectory() && existsSync(join(SKILLS, entry.name, 'SKILL.md'))).map((entry) => entry.name).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
   .map((name) => ({ name, text: readFileSync(join(SKILLS, name, 'SKILL.md'), 'utf8').replace(/^---[\s\S]*?---\n/, '') }));
 
 /** The report's shape, for a package whose skills do not yet include `report`. */
 const REPORT = `Write the report as \`report/index.html\`, one page with its pictures and clips beside it in \`report/\`: inline CSS, no script and no address outside the folder. The answer first, then one finding per point (its words, its picture or clip, its cites), then what you did not check. A cite is \`<a class="cite" href="../FILE#FRAGMENT" data-look="KEY">LABEL</a>\`: the file's own fragment, LABEL that number, KEY the look's key from its receipt (\`facts.key\`).`;
 
-export const INSTRUCTIONS = (skillList = skills()) => `Answer the user's question about the files in your workspace. The question is \`question\`; the files are \`files\`.
+export const instructionsOf = (skillList = skills()) => `Answer the user's question about the files in your workspace. The question is \`question\`; the files are \`files\`.
 
 You never see a picture or hear a sound yourself: you write code with the \`code\` tool. Its sandbox gives you \`tools.bash\` (a shell in your workspace, with ffmpeg, ffprobe, pdftoppm and pdftotext), \`vision.see\` (eyes that look at images, and at a video window with its sound when they take video), \`vision.judge\` (Jev: typed answers and boxes about images, cheap enough to ask of every frame or page) and \`vision.transcribe\` (what a recording says, word by word with its second). The skills below show how to use them for long videos, speech, finding a thing, checking a document, and the report: follow the ones the question needs, and combine them when it needs more than one.
 
@@ -61,7 +61,7 @@ export const workflowOf = (thinking: Thinking) => ({
   input: { schemaId: 'Input' },
   output: { schemaId: 'Answer', path: 'answer' },
   root: { node: 'chain', steps: [
-    { node: 'agent', label: 'vision-agent', out: 'Answer', as: 'answer', tools: ['code'], thinking, state: { question: '{question}', files: '{files}' }, instructions: INSTRUCTIONS() },
+    { node: 'agent', label: 'vision-agent', out: 'Answer', as: 'answer', tools: ['code'], thinking, state: { question: '{question}', files: '{files}' }, instructions: instructionsOf() },
   ] },
 } as const satisfies Workflow);
 export const workflow = workflowOf('medium');

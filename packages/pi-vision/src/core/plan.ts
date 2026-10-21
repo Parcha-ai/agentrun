@@ -11,7 +11,7 @@ import {
   PDF_MAX_DPI, POINTS_PER_INCH, RESULT_BYTES_SHARE, TILE_ASPECT, TILE_KEEP_BELOW, TILE_MAX_EDGE, TILE_OVERLAP, VIDEO_FRAMES_PER_READ,
 } from "./limits.js";
 import type { Limits } from "./limits.js";
-import { base64Chars } from "./primitives.js";
+import { base64Chars, grouped } from "./primitives.js";
 
 /** What is known of a source for free: no render, no decode beyond a header. */
 export type SourceFacts = {
@@ -95,7 +95,6 @@ type Layout = { readonly cuts: readonly Cut[]; readonly shrunk: boolean };
 const WHOLE: Box = Object.freeze({ x0: 0, y0: 0, x1: 1, y1: 1 });
 const IMAGE_DERIVES: ReadonlySet<PlannedPart["derive"]> = new Set(["image", "tile", "page", "frame"]);
 const PRECEDENCE: readonly Reduction[] = ["windowed", "sampled", "tiled", "downscaled"];
-const grouped = (n: number): string => n.toLocaleString("en-US");
 /** Seconds are planned to the millisecond, the resolution of a fragment. */
 const ms = (seconds: number): number => Math.round(seconds * 1000) / 1000;
 const reduced = (applies: Partial<Record<Reduction, boolean>>): Reduction => PRECEDENCE.find((r) => applies[r]) ?? "as_is";
