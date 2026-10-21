@@ -1,11 +1,14 @@
-// A run's decision rows as pi-durable stores them: the session document `agentrun.decisions`, one row per typed
-// question the run asked, in commit order. The row is a stored format (version 1) and does not change with the
+// A run's decision rows as pi-durable stores them, one row per typed question the run asked, in commit order. Two
+// forms, one per store: a run on a fresh store writes the KEYED family (below), one document of kind `agentrun.decisions`
+// per row, written once; a store that already holds the OLD single session document `agentrun.decisions` (its
+// `receipts` list, rewritten at every commit) keeps writing it to the end of its run, so a recording never holds both.
+// The row is a stored format (version 1) and is the same in both forms, byte for byte; it does not change with the
 // interpreter: a host maps `@parcha/agentrun-dsl`'s `DecisionReceipt` to a row, with the facts only the host has (the
 // request's size and metering, whether the node acted on the answers), and this module stores and reads rows without
 // looking inside them.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context, JsonValue } from "@earendil-works/chord";
-import { defineDoc, type DocumentReader, type Harness } from "@earendil-works/pi-durable";
+import { defineDoc, defineDocFamily, type DocumentReader, type Harness, type JsonObject } from "@earendil-works/pi-durable";
 
 /** The session document that holds a run's decision rows. */
 export const DECISION_RECEIPTS_DOC = "agentrun.decisions";
@@ -59,22 +62,71 @@ export type DecisionRow = {
   run_key?: string;
 };
 
+/** The old form: one session document whose `receipts` list is rewritten at every commit. Read, and written only in a store that holds it. */
 const DecisionsDoc = defineDoc<{ receipts: JsonValue[] }>({ kind: DECISION_RECEIPTS_DOC, version: 1, scope: "session", initial: () => ({ receipts: [] }) });
+/** The keyed form: one document per row, of the same kind, keyed by the row's place in the run's rows (`keyOf`), written once. The
+ *  document's value is exactly the row. */
+const DecisionRowDoc = defineDocFamily<JsonObject, null>({ kind: DECISION_RECEIPTS_DOC, version: 1, scope: "session", family: true, initial: () => ({}) });
+/** How many rows the keyed form holds: its next key. A few bytes, so rewriting it at every commit costs the same at every count. */
+export const DECISION_COUNT_DOC = "agentrun.decisions.count";
+const DecisionCountDoc = defineDoc<{ count: number }>({ kind: DECISION_COUNT_DOC, version: 1, scope: "session", initial: () => ({ count: 0 }) });
+/** A keyed row's key: its place, zero-padded so the keys sort in commit order. */
+export const decisionKey = (place: number): string => String(place).padStart(8, "0");
+
+export type DecisionForm = "single" | "keyed";
+type Writer = Pick<Harness, "commit"> & Partial<Pick<DocumentReader, "snapshot">>;
+const forms = new WeakMap<object, Promise<DecisionForm>>();
+/** The form a reader's store holds: `single` when the old document is there, else `keyed`. Settled once per reader (the run's open): a
+ *  run that began on the old document never switches mid-run, and a reader with no way to read says `keyed`. */
+export function decisionForm(read: Partial<Pick<DocumentReader, "snapshot">>, context: Context = BACKGROUND_CONTEXT): Promise<DecisionForm> {
+  if (typeof read.snapshot !== "function") return Promise.resolve("keyed");
+  let known = forms.get(read);
+  if (!known) {
+    known = read.snapshot(DecisionsDoc, context).then((old): DecisionForm => (old === undefined ? "keyed" : "single"));
+    forms.set(read, known);
+    known.catch(() => forms.delete(read));
+  }
+  return known;
+}
 
 /** Commit one row, appended after every row committed before it. */
-export async function appendDecision(harness: Pick<Harness, "commit">, row: DecisionRow, context: Context = BACKGROUND_CONTEXT): Promise<void> {
-  const stored = JSON.parse(JSON.stringify(row)) as JsonValue;
-  await harness.commit(async (tx) => { (await tx.doc(DecisionsDoc)).receipts.push(stored); }, context);
+export async function appendDecision(harness: Writer, row: DecisionRow, context: Context = BACKGROUND_CONTEXT): Promise<void> {
+  const stored = JSON.parse(JSON.stringify(row)) as JsonObject;
+  if ((await decisionForm(harness, context)) === "single") {
+    await harness.commit(async (tx) => { (await tx.doc(DecisionsDoc)).receipts.push(stored); }, context);
+    return;
+  }
+  await harness.commit(async (tx) => {
+    const count = await tx.doc(DecisionCountDoc);
+    const place = count.count;
+    count.count = place + 1;
+    Object.assign(await tx.doc(DecisionRowDoc, decisionKey(place), null), stored);
+  }, context);
 }
 
 /** Every row the run's Session holds, in commit order. */
 export async function readDecisions(read: DocumentReader, context: Context = BACKGROUND_CONTEXT): Promise<DecisionRow[]> {
-  const doc = await read.snapshot(DecisionsDoc, context);
-  return (doc?.receipts ?? []) as unknown as DecisionRow[];
+  return (await readDecisionsFrom(read, 0, context)).rows;
+}
+
+/** The rows from place `from` on and the place after the last: for a keyed store only the new ones are read, so a reader that
+ *  keeps `next` reads each row once. The old document is read whole (its list is the rows; `next` is its length). */
+export async function readDecisionsFrom(read: Pick<DocumentReader, "snapshot">, from: number, context: Context = BACKGROUND_CONTEXT): Promise<{ rows: DecisionRow[]; next: number }> {
+  if ((await decisionForm(read, context)) === "single") {
+    const rows = ((await read.snapshot(DecisionsDoc, context))?.receipts ?? []) as unknown as DecisionRow[];
+    return { rows: rows.slice(from), next: rows.length };
+  }
+  const total = (await read.snapshot(DecisionCountDoc, context))?.count ?? 0;
+  const rows: DecisionRow[] = [];
+  for (let at = from; at < total; at += 64) {
+    const batch = await Promise.all(Array.from({ length: Math.min(64, total - at) }, (_, i) => read.snapshot(DecisionRowDoc, decisionKey(at + i), context)));
+    for (const doc of batch) if (doc !== undefined) rows.push(doc as unknown as DecisionRow);
+  }
+  return { rows, next: total };
 }
 
 /** Where a writer commits: the run's Session, opened when the first row needs it and released by `flush`. */
-export type DecisionSession = { harness: Pick<Harness, "commit">; release(): Promise<void> };
+export type DecisionSession = { harness: Writer; release(): Promise<void> };
 
 export type DecisionWriter = {
   /** Commit `row` after every row recorded before it. It returns at once; a commit that fails is kept for

@@ -6,10 +6,8 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import { apply } from "@earendil-works/chord/delta";
 import type { RecoveryEffect, RecoveryNote } from "@parcha/agentrun-dsl/recovery";
+import { decisionKey } from "./decisions.js";
 import { effectKey } from "./store.js";
-
-/** The key of a keyed decision document: its place in the run's rows, zero-padded to 8 digits (the stored format of `agentrun.decisions`). */
-const decisionKey = (place: number): string => String(place).padStart(8, "0");
 
 type Database = import("node:sqlite").DatabaseSync;
 type Json = any;
