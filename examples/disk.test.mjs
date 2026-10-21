@@ -4,7 +4,7 @@
 // from a run. The scripted lead is the test fixture; a live run is checked by the same checks (examples/disk-review-checks.mjs).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -314,6 +314,39 @@ test('the simulated charge says where it ran: the generation and the holder as a
     assert.deepEqual(whereThisRuns(root), { generation: 3, host: 'host-1', driver: 'daytona' }, 'a host seen before keeps its label');
     assert.ok(!JSON.stringify(charge({ invoice: 'INV-007', cents: 1 }, { place: { root } })).includes('sandbox-'), 'the receipt never names the machine');
     assert.deepEqual(JSON.parse(readFileSync(join(root, HOST_LABELS), 'utf8')), { 'sandbox-aaaa': 'host-1', 'sandbox-bbbb': 'host-2' });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('read_lines reads only the workspace: /proc/self/environ, an absolute path, ../run.json and symlinks out are refused by the run\'s confined environment', async () => {
+  const { readLines } = await import('./disk/tools.ts');
+  const { archilEnv } = await import('@parcha/pi-durable-disk');
+  const { BACKGROUND_CONTEXT } = await import('@earendil-works/chord/context');
+  const root = mkdtempSync(join(tmpdir(), 'disk-confine-'));
+  try {
+    const work = join(root, 'work');
+    mkdirSync(work);
+    writeFileSync(join(root, 'run.json'), '{"status":"running"}\n');
+    writeFileSync(join(work, 'policy.md'), '# policy\none rule\n');
+    symlinkSync('/proc/self/environ', join(work, 'environ'));
+    symlinkSync(join(root, 'run.json'), join(work, 'run-json'));
+    const read = async (env, path) => {
+      try {
+        await readLines.execute({ path }, { env, conversationId: 'c1', callId: 'k1' }, BACKGROUND_CONTEXT);
+        return 'read';
+      } catch {
+        return 'refused';
+      }
+    };
+    const escapes = ['/proc/self/environ', '../run.json', join(root, 'run.json'), 'environ', 'run-json'];
+    // The environment the harness gives a run on its claim (assemble.ts runEnv): every escape is refused, the workspace's own file is read.
+    const confined = archilEnv({ root, work, disk: 'dsk-local' }, { noNewPrivs: false })({});
+    assert.deepEqual(await Promise.all(escapes.map((path) => read(confined, path))), escapes.map(() => 'refused'));
+    assert.equal(await read(confined, 'policy.md'), 'read');
+    // The same reads with the confinement off reach every one of them: what the confined run refuses, the tool alone would not.
+    const open = archilEnv({ root, work, disk: 'dsk-local' }, { noNewPrivs: false, confineFiles: false })({});
+    assert.deepEqual(await Promise.all(escapes.map((path) => read(open, path))), escapes.map(() => 'read'));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
