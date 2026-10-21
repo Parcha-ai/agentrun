@@ -37,6 +37,20 @@ test("usage errors exit 2: no command, unknown command, unknown flag, missing re
   }
 });
 
+test("run refuses a run id that is not one safe path segment before it serves or opens anything", async () => {
+  const quiet = process.stderr.write;
+  let stderr = "";
+  process.stderr.write = (chunk: string | Uint8Array) => ((stderr += String(chunk)), true);
+  try {
+    assert.equal(await main(["run", "--disk", "d", "--region", "r", "--id", "../escape", "--app", "a.ts", "--serve", "0"]), 1);
+  } finally {
+    process.stderr.write = quiet;
+  }
+  const lines = stderr.trim().split("\n");
+  assert.equal(lines.length, 1, stderr);
+  assert.equal(JSON.parse(lines[0]!).error, "INVALID_ARGUMENT");
+});
+
 test("the executable runs through its bin path and prints usage", () => {
   const r = spawnSync(process.execPath, [CLI], { encoding: "utf8" });
   assert.equal(r.status, 2);

@@ -985,14 +985,14 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         if (node.state !== undefined) checkStateMap(node.state, node.label, path);
         if (!node.instructions?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): instructions required`);
         if (node.node !== "report" && !Object.hasOwn(workflow.schemas, node.out)) fail("SCHEMA_UNKNOWN", ptrOf(path), `${path} (${node.label}): out schema "${node.out}" not in workflow.schemas`);
-        if ((node as any).thinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(String((node as any).thinking))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): thinking must be low|medium|high — thinking is never off`);
-        if ((node as any).tools !== undefined && (!Array.isArray((node as any).tools) || (node as any).tools.some((t: unknown) => typeof t !== "string" || !(t as string).trim()))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): tools must be a list of non-empty tool names when present (an empty list disables tools)`);
+        if (node.thinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(String(node.thinking))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): thinking must be low|medium|high — thinking is never off`);
+        if (node.tools !== undefined && (!Array.isArray(node.tools) || node.tools.some((t: unknown) => typeof t !== "string" || !(t as string).trim()))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): tools must be a list of non-empty tool names when present (an empty list disables tools)`);
         checkRequires(node, path);
         if ((node as any).tier !== undefined && !(MODEL_TIERS as readonly string[]).includes(String((node as any).tier))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): tier must be fast|default|strong`);
         if (node.node === "agent" && node.budget_usd !== undefined && !(typeof node.budget_usd === "number" && Number.isFinite(node.budget_usd) && node.budget_usd > 0)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): budget_usd must be a number of dollars greater than 0`);
         if (node.node === "agent" && node.context !== undefined && !(AGENT_CONTEXTS as readonly string[]).includes(String(node.context))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): context must be ${AGENT_CONTEXTS.join("|")}`);
-        if (node.node !== "report" && (node as any).verify !== undefined) {
-          const v = (node as any).verify as VerifyClause;
+        if (node.node !== "report" && node.verify !== undefined) {
+          const v = node.verify as VerifyClause;
           if (!v || typeof v !== "object" || typeof v.out !== "string") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): verify needs an out (a question schema id)`);
           else {
             const qs = checkQuestionSchema(v.out, node.label, path);
@@ -2357,7 +2357,7 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       if (deps.sop) deps.onEvent?.({ type: "sop.coverage", label: node.label, detail: { sections: sopSections.map((s) => ({ name: s, chars: sliceSop(deps.sop as string, s).length })), sliceChars: sopSlice.length, sopChars: (deps.sop as string).length } });
       assertNodeInputs(node, state);
       const promptState = node.state ? interpolateValue(node.state, state, node.label) : promptStateOf(state);
-      const verifier = node.node !== "report" && (node as any).verify ? compileVerifier(workflow, node as WorkflowNode & { verify: VerifyClause; as?: string; label: string; node: string }, state, deps) : null;
+      const verifier = node.node !== "report" && node.verify ? compileVerifier(workflow, node as WorkflowNode & { verify: VerifyClause; as?: string; label: string; node: string }, state, deps) : null;
       // Host policy: the adapter submits against the transport schema (the stage schema plus the host's
       // channels); the decoded domain value is what the stage schema, the verifier and the state see.
       const policy = deps.hostPolicy;
@@ -2402,9 +2402,9 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       system: [sopSlice, deps.skill, node.instructions, ...(policy?.systemBlocks && context ? policy.systemBlocks(context) : [])].filter(Boolean) as string[],
       user: JSON.stringify(promptState),
       schema: transportSchema,
-      ...((node as any).effort ? { effort: (node as any).effort } : {}),
-      ...((node as any).thinking ? { thinking: (node as any).thinking } : {}),
-      ...(Array.isArray((node as any).tools) ? { tools: (node as any).tools } : {}),
+      ...(node.effort ? { effort: node.effort } : {}),
+      ...(node.thinking ? { thinking: node.thinking } : {}),
+      ...(Array.isArray(node.tools) ? { tools: node.tools } : {}),
       });
       const decoded = decode(submission);
       const result = decoded.value as Record<string, unknown>;

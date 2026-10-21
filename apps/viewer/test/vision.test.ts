@@ -10,7 +10,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-// @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { citeStop } from '../src/cite.ts';
 import { parseLines, validate, type Json, type Line } from '../src/format.ts';
@@ -38,7 +37,6 @@ const end = lines.length;
 const stateAt = (p: number, run: Line[] = lines): VisionState => reduceTo(visionPanel, run, p);
 const viewAt = (p: number, context: Partial<ViewContext> = {}, run: Line[] = lines) => visionPanel.view(stateAt(p, run), { t: run[p - 1]?.t ?? 0, json, ...context });
 const killAt = lines.findIndex((line) => line.kind === 'kill');
-const restartAt = lines.findIndex((line, at) => at > killAt && line.kind === 'process.started');
 const receiptOf = (look: Json) => (look as { receipt: string }).receipt;
 /** The panel's meters against the counters the program folded from its own store and wrote into the result. */
 const agrees = (meters: ReturnType<typeof visionMeters>, result: Json) => {

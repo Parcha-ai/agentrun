@@ -5,8 +5,8 @@ import { opensInPage, typeOfName } from './blobs.ts';
 import { sha256Paused } from './receipt-key.ts';
 
 /** A bundled recording: embedded in gallery.js (its lines, and each blob as a data: URL), or, in a build that ships
- *  recordings as files, listed in `recordings/index.json` (each blob as its path in the recording's directory). */
-/** `title` and `view` come from the gallery's lock (recordings.lock.json), never from the recording: the words its list shows, and the flags its link opens with. */
+ *  recordings as files, listed in `recordings/index.json` (each blob as its path in the recording's directory).
+ *  `title` and `view` come from the gallery's lock (recordings.lock.json), never from the recording: the words its list shows, and the flags its link opens with. */
 export type GalleryEntry = { id: string; manifest: Manifest; events: string; blobs: Record<string, string>; title?: string; view?: string[] };
 export type IndexEntry = { id: string; manifest: Manifest; blobs: Record<string, string>; title?: string; view?: string[] };
 declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[]; AGENTRUN_GALLERY_INDEX?: string };
@@ -43,7 +43,7 @@ export function fromGallery(entry: GalleryEntry): Recording {
 /** Every blob a recording names: its lines', its images', its result's, its artifact's files'. */
 export function blobsNamed(manifest: Manifest, lines: Line[]): string[] {
   const named = new Set<string>([manifest.result?.blob, manifest.job?.blob, manifest.store?.blob].filter((sha): sha is string => sha !== undefined));
-  const files = (manifest as { artifact?: { files?: Record<string, unknown> } }).artifact?.files;
+  const files = manifest.artifact?.files;
   for (const sha of Object.values(files ?? {})) if (typeof sha === 'string' && /^[0-9a-f]{64}$/.test(sha)) named.add(sha);
   for (const line of lines) {
     for (const sha of line.blobs ?? []) named.add(sha);
@@ -52,11 +52,6 @@ export function blobsNamed(manifest: Manifest, lines: Line[]): string[] {
   return [...named];
 }
 
-/** The blobs of a recording at a URL: blobs/<sha>.<ext>, where the line names the hash, so the extension is found by
- *  asking. A hash not found is asked again on a later `find`, after 1, 2, 4 and up to 32 of them, so a slow writer never
- *  draws a request for every type of every missing blob on every poll. `whole`: a run still being written may serve a
- *  blob half written, so each one is read and kept only when its bytes hash to its name; one that does not is not
- *  there yet. */
 /** A blob's SHA-256 without holding the page: the browser's own digest where the page has one (a secure origin), else
  *  the viewer's, a MiB at a time. */
 async function digestOf(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
@@ -65,6 +60,11 @@ async function digestOf(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   return [...new Uint8Array(await subtle.digest('SHA-256', bytes))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+/** The blobs of a recording at a URL: blobs/<sha>.<ext>, where the line names the hash, so the extension is found by
+ *  asking. A hash not found is asked again on a later `find`, after 1, 2, 4 and up to 32 of them, so a slow writer never
+ *  draws a request for every type of every missing blob on every poll. `whole`: a run still being written may serve a
+ *  blob half written, so each one is read and kept only when its bytes hash to its name; one that does not is not
+ *  there yet. */
 export function blobsAt(root: string, whole = false) {
   const urls: Record<string, string> = {};
   const types: Record<string, string | undefined> = {};
