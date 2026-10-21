@@ -2,7 +2,7 @@
 // stop in that time must not leave the servers and the run's tree behind.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -41,4 +41,43 @@ test("SIGTERM while live mode is still starting exits cleanly after running its 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+/** Run live mode, stop it during its settling wait, and say which arguments the disk wrapper was called with (one line per call). */
+async function stopAndReadWrapperCalls(env: Record<string, string>): Promise<string[]> {
+  const dir = mkdtempSync(join(tmpdir(), "live-keep-"));
+  try {
+    const log = join(dir, "calls.log");
+    const wrapper = join(dir, "with-archil");
+    writeFileSync(wrapper, `#!/bin/sh\necho "$@" >> '${log}'\necho '{"id":"walks-home","tree":{"objects":0}}'\n`);
+    chmodSync(wrapper, 0o755);
+    const note = join(dir, "note.txt");
+    writeFileSync(note, "a note\n");
+    const child = spawn(process.execPath, [live, "--gpu-image", "im-test", "--gpu-note-file", note, "--port", "0"], { env: { ...process.env, WITH_ARCHIL: wrapper, TAB_DIR: dir, HOME: dir, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (out += d));
+    for (const end = Date.now() + 20_000; !out.includes("the run's tree before the take"); await new Promise((r) => setTimeout(r, 50))) {
+      if (Date.now() > end) throw new Error(`live never reached its first step: ${out}`);
+    }
+    child.kill("SIGTERM");
+    await new Promise((resolve) => child.on("close", resolve));
+    assert.match(out, /the run's tree after live/, "the cleanup ran");
+    return readFileSync(log, "utf8").split("\n").filter(Boolean);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("by default the stop deletes the run's tree (clean-run without --keep), and the start always does", async () => {
+  const calls = await stopAndReadWrapperCalls({});
+  assert.equal(calls.length, 2, calls.join(" | "));
+  for (const call of calls) assert.doesNotMatch(call, /--keep/);
+});
+
+test("ROBOT_KEEP_RUN=1 keeps the trained run at the stop (clean-run --keep: delegations released, the tree stays), while the next start still cleans", async () => {
+  const calls = await stopAndReadWrapperCalls({ ROBOT_KEEP_RUN: "1" });
+  assert.equal(calls.length, 2, calls.join(" | "));
+  assert.doesNotMatch(calls[0]!, /--keep/, "the start's clean is a real clean: a run id with a history would resume that conversation");
+  assert.match(calls[1]!, /--keep/, "the stop's clean keeps the tree");
 });
