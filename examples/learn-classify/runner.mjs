@@ -34,7 +34,7 @@ import { agentScript, agentScriptV2, agentScriptV4, FIXTURES, FIXTURES_V2, FIXTU
 import { isHard, SETS } from './sets.mjs';
 import { ANY_HOST, domainOf, fetchPageTool } from './tools.mjs';
 import { answersTheJob, hostRecord, promotedFor } from './dispatch.mjs';
-import { gateSpend, replayGate } from './promotion-gate.mjs';
+import { GATE, gateSpend, replayGate } from './promotion-gate.mjs';
 import { passSelfTest } from './selftest.mjs';
 import { writeHosts } from './tools-v2.mjs';
 
@@ -536,9 +536,9 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
   const done = new Set(rows.map((r) => r.run));
   const stream = list ? listQueue(parts.companies, list, split, { openTest }) : splitOf(parts.companies, split, { openTest }).sort(byOrder);
   const queue = stream.slice(0, jobs ?? Infinity);
-  // With a bank, a promotion stands only when the replay gate passes it (promotion-gate.mjs). The bank runs at the pass's
-  // concurrency inside curate, which holds the repository: no job starts or curates until the verdict.
-  const gate = parts.bank ? replayGate({ bank: bankOf(parts.companies, parts.bank, stream), runOne: bankRunner({ out, bare, parts, runCapUsd, dropEvidence }), dir: join(out, 'gate'), concurrency, log }) : undefined;
+  // With a bank, a promotion stands only when the replay gate passes it (promotion-gate.mjs). The bank runs inside curate,
+  // which holds the repository: no job starts or curates until the verdict, while the jobs in flight finish beside it.
+  const gate = parts.bank ? replayGate({ bank: bankOf(parts.companies, parts.bank, stream), runOne: bankRunner({ out, bare, parts, runCapUsd, dropEvidence }), dir: join(out, 'gate'), ...(parts.bankConcurrency ? { concurrency: parts.bankConcurrency } : {}), log }) : undefined;
   const judge = parts.judge();
   const spentNow = () => knownSpend(out);
   const tally = curateTally({ out, stream, seedSha: meta.seedSha, checkpoints });
@@ -687,7 +687,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file>] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>]] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -700,7 +700,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         model: { type: 'string' }, thinking: { type: 'string' }, set: { type: 'string' }, list: { type: 'string' }, 'promote-after': { type: 'string' },
         split: { type: 'string' }, 'open-test': { type: 'boolean' }, from: { type: 'string' }, concurrency: { type: 'string' }, shard: { type: 'string' }, 'drop-evidence': { type: 'boolean' },
         'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' }, 'edgar-cache': { type: 'string' }, schedule: { type: 'string' }, checkpoints: { type: 'string' },
-        'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' },
+        'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' },
       },
     }));
   } catch (error) {
@@ -767,7 +767,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       if (values.sealed) { console.error(`--promotion-bank gates a learning pass's promotions: a sealed pass promotes nothing\n${USAGE}`); process.exit(2); }
       if (set !== SETS.v4) { console.error(`--promotion-bank scores the v4 job: pass --set v4\n${USAGE}`); process.exit(2); }
       try { parts.bank = JSON.parse(readFileSync(resolve(values['promotion-bank']), 'utf8')); } catch (error) { console.error(`--promotion-bank ${values['promotion-bank']}: ${error.message}`); process.exit(2); }
-      console.log(`learn-classify: a promotion stands only when it passes the replay gate on ${Array.isArray(parts.bank) ? parts.bank.length : 0} bank companies (<out>/gate)`);
+      const inFlight = values['promotion-bank-concurrency'] === undefined ? GATE.concurrency : Number(values['promotion-bank-concurrency']);
+      if (!(Number.isInteger(inFlight) && inFlight >= 1)) { console.error(`--promotion-bank-concurrency is a whole number from 1\n${USAGE}`); process.exit(2); }
+      parts.bankConcurrency = inFlight;
+      console.log(`learn-classify: a promotion stands only when it passes the replay gate on ${Array.isArray(parts.bank) ? parts.bank.length : 0} bank companies, ${inFlight} at once (<out>/gate)`);
+    } else if (values['promotion-bank-concurrency'] !== undefined) {
+      console.error(`--promotion-bank-concurrency takes --promotion-bank\n${USAGE}`);
+      process.exit(2);
     }
     if (promoteAfter !== undefined) {
       parts.thresholds = { promoteAfter };

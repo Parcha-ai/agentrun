@@ -14,8 +14,9 @@ import { currentRevision, parseTrial, renderTrial, trialPath } from '@parcha/pi-
 import { lastProven, recordedWorkflow } from './dispatch.mjs';
 
 /** Pre-registered 2026-10-21 22:32Z (section 1 of the design, §1.6, the TL's rulings): the parts `correct` counts, valued by
- *  the ±1 utility; the bootstrap; and the first promotion's floor. */
-export const GATE = Object.freeze({ parts: Object.freeze(['sic4', 'segments', 'hq']), resamples: 10_000, seed: 20261021, floor: 0.5 });
+ *  the ±1 utility; the bootstrap; the first promotion's floor; and the bank runs in flight at once (the slots the cell's
+ *  schedule keeps for the gate under its ceiling of 48). */
+export const GATE = Object.freeze({ parts: Object.freeze(['sic4', 'segments', 'hq']), resamples: 10_000, seed: 20261021, floor: 0.5, concurrency: 8 });
 const Z = 1.959963984540054;
 
 /** A bank run's scored parts (scoreV4's score): 1 right, 0 wrong, null where the company has no truth for it. */
@@ -121,7 +122,7 @@ export function gateSpend(dir) {
  * scoreV4's and `outcome` the host's run's (only `complete` is an answer). A run that throws is not kept, and while any did the gate holds: it runs again at the next promotion. Under
  * `dir` go the bank runs (bank/<digest>/<cik>.json) and every verdict (verdicts.jsonl).
  */
-export function replayGate({ bank, runOne, dir, concurrency = 1, floor = GATE.floor, log = () => {} }) {
+export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, floor = GATE.floor, log = () => {} }) {
   if (!bank.length) throw new Error('the promotion gate needs a bank of companies');
   return async ({ name, candidate, serving, main }) => {
     const revisions = serving ? [candidate, serving] : [candidate];
@@ -158,7 +159,7 @@ export function replayGate({ bank, runOne, dir, concurrency = 1, floor = GATE.fl
     const verdict = failed.length
       ? { promote: false, reason: `${failed.length} bank run(s) failed, so nothing was compared; they run again at the next promotion`, failed }
       : verdictOf({ bank, candidate: values.get(candidate.sha256), serving: serving ? values.get(serving.sha256) : null, floor });
-    const line = { at: new Date().toISOString(), name, candidate: candidate.sha256, serving: serving?.sha256 ?? null, main, bank: bank.length, ran: todo.length - failed.length, kept: bank.length * revisions.length - todo.length, costUsd, ...verdict };
+    const line = { at: new Date().toISOString(), name, candidate: candidate.sha256, serving: serving?.sha256 ?? null, main, bank: bank.length, concurrency, ran: todo.length - failed.length, kept: bank.length * revisions.length - todo.length, costUsd, ...verdict };
     mkdirSync(dir, { recursive: true });
     appendFileSync(join(dir, 'verdicts.jsonl'), `${JSON.stringify(line)}\n`);
     log(`  promotion gate on ${name} ${candidate.sha256.slice(0, 8)}${serving ? ` vs ${serving.sha256.slice(0, 8)}` : ''}: ${verdict.promote ? 'promoted' : 'held'}; ${verdict.reason} (${line.ran} bank runs, ${line.kept} kept)`);
