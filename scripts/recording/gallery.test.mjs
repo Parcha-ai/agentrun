@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { GALLERY_LIMIT, RECORDING_LIMIT, exampleFolders, galleryOf, packGallery, readLock, readTar, unpackGallery, writeTar } from './gallery.mjs';
+import { GALLERY_LIMIT, RECORDING_LIMIT, VIEW_FLAGS, exampleFolders, galleryOf, packGallery, readLock, readTar, unpackGallery, writeTar } from './gallery.mjs';
 
 const script = fileURLToPath(new URL('./gallery.mjs', import.meta.url));
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -69,8 +69,8 @@ test('the lock reads plain ids and { id, poster?, looks? }, and refuses every ot
   assert.match(problems({ ...good, sha256: 'abc' })[0], /is not a SHA-256/);
   assert.match(problems({ ...good, ids: [] })[0], /ids is not a non-empty list/);
   assert.match(problems({ ...good, ids: ['a', 'a'] })[0], /a is listed twice/);
-  assert.match(problems({ ...good, ids: ['../a'] })[0], /is not \{ id, poster\?, looks\? \} with a plain id/);
-  assert.match(problems({ ...good, ids: [{ id: 'a', rank: 1 }] })[0], /holds \["id","rank"\], not id, poster and looks/);
+  assert.match(problems({ ...good, ids: ['../a'] })[0], /is not \{ id, poster\?, looks\?, title\?, view\? \} with a plain id/);
+  assert.match(problems({ ...good, ids: [{ id: 'a', rank: 1 }] })[0], /holds \["id","rank"\], not id, poster, looks, title and view/);
   assert.deepEqual(readLock(JSON.stringify({ ...good, ids: [{ id: 'a', poster, looks: ['k1', 'k2'] }] })).lock?.ids, [{ id: 'a', poster, looks: ['k1', 'k2'] }], 'looks beside a poster');
   for (const looks of [[], 'k1', [''], [7], ['k1', 'k1']]) assert.match(problems({ ...good, ids: [{ id: 'a', looks }] })[0], /looks .* is not a list of distinct look keys/, JSON.stringify(looks));
   assert.match(problems({ ...good, ids: [{ id: 'a', poster: 'cover.png' }] })[0], /poster "cover\.png" is not a SHA-256/);
@@ -166,7 +166,9 @@ test('an id is the name of its example folder, as the run\'s own manifest says: 
   const tar = packGallery(dir, lockOf(['a', 'b']));
   const lock = lockOf(['a', 'b'], tar);
   assert.equal(galleryOf(tar, lock, { examples: new Set(['a', 'b', 'c']) }).problems, undefined, 'a by its example, b by its task');
-  assert.deepEqual(galleryOf(tar, lock, { examples: new Set(['a']) }).problems, ['b: names no example folder (examples/b)']);
+  assert.deepEqual(galleryOf(tar, lock, { examples: new Set(['b']) }).problems, ['a: names no example folder (examples/a)']);
+  // b's task names no example folder here, so b names no example: it takes an id of its own.
+  assert.equal(galleryOf(tar, lock, { examples: new Set(['a']) }).problems, undefined);
   // A run filed under another example's id: its manifest says whose it is.
   const swapped = pinned(files(dir).map(({ path, data }) => ({ path, data: path === 'b/manifest.json' ? Buffer.from('{"task":"vision-agent","example":"a"}') : data })), ['a', 'b']);
   assert.deepEqual(galleryOf(swapped.tar, lockOf(['a', 'b'], swapped.tar)).problems, ['b: its manifest names the example "a", not b']);
@@ -174,6 +176,31 @@ test('an id is the name of its example folder, as the run\'s own manifest says: 
   assert.deepEqual(galleryOf(unread.tar, lockOf(['a', 'b'], unread.tar)).problems, ['b: its manifest names the example null, not b']);
   // A second take of one example cannot be listed: the lock refuses an id twice.
   assert.match(readLock(JSON.stringify({ ...lock, ids: ['a', 'b', 'a'] })).problems[0], /^a is listed twice$/);
+});
+
+test('a recording that names no example takes an id of its own, never an example folder\'s', () => {
+  /** The problems of a gallery of one recording, `id`, whose manifest is `manifest`, with these example folders. */
+  const problemsOf = (id, manifest, folders) => {
+    const { tar, lock } = pinned([{ path: `${id}/manifest.json`, data: Buffer.from(`${JSON.stringify(manifest)}\n`) }, { path: `${id}/events.jsonl`, data: Buffer.from('{"t":1}\n') }], [id]);
+    return galleryOf(tar, lock, folders ? { examples: new Set(folders) } : {}).problems;
+  };
+  const question = 'What do I owe now on my utility account?';
+  // A manifest names an example by its `example`, else by a `task` that is an example folder's name.
+  assert.equal(problemsOf('a', { task: 'vision-agent', example: 'a' }, ['a']), undefined, 'its example, the id, a folder');
+  assert.deepEqual(problemsOf('a', { example: 'b' }, ['a', 'b']), ['a: its manifest names the example "b", not a']);
+  assert.equal(problemsOf('a', { task: 'a' }, ['a']), undefined, 'no example, its task the id and a folder (the older shape)');
+  assert.deepEqual(problemsOf('a', { task: 'b' }, ['a', 'b']), ['a: its manifest names the example "b", not a'], 'its task names another example');
+  // One that names none: any id of the lock's form but an example folder's, whatever its task says.
+  assert.equal(problemsOf('utility-bills', { task: question }, ['a', 'b']), undefined, 'no example key, a free task');
+  assert.equal(problemsOf('utility-bills', { example: null, task: question }, ['a']), undefined, 'example null is no example');
+  assert.deepEqual(problemsOf('a', { task: question }, ['a']), ['a: is the example folder examples/a, but its manifest names no example'], 'an example\'s slot holds only its own run');
+  // A manifest that is not a JSON object names nothing, and is refused, whatever its id.
+  const broken = (data) => { const { tar, lock } = pinned([{ path: 'free/manifest.json', data: Buffer.from(data) }, { path: 'free/events.jsonl', data: Buffer.from('{"t":1}\n') }], ['free']); return galleryOf(tar, lock, { examples: new Set(['a']) }).problems; };
+  assert.deepEqual(broken('{'), ['free: its manifest is not a JSON object'], 'unparseable');
+  assert.deepEqual(broken('[]\n'), ['free: its manifest is not a JSON object'], 'an array');
+  // Without the folder list, as before: the manifest's example, else its task, is the id.
+  assert.deepEqual(problemsOf('utility-bills', { task: question }), [`utility-bills: its manifest names the example ${JSON.stringify(question)}, not utility-bills`]);
+  assert.equal(problemsOf('a', { task: 'a' }), undefined);
 });
 
 test('a recording over its limit, or a gallery over its own, is refused', (t) => {
@@ -246,4 +273,17 @@ test('the command: fetch --from unpacks a pinned tar and says so; a problem is p
   assert.ok(!existsSync(join(work, 'refused')));
   const usage = await run(['fetch']);
   assert.equal(usage.code, 2);
+});
+
+test('a lock entry may name the words its list shows and the view its link opens, and refuses each way either is wrong', () => {
+  const sha = 'a'.repeat(64);
+  const lock = (each) => ({ asset: 'recordings.tar', sha256: sha, ids: [{ id: 'a', ...each }] });
+  const problems = (each) => readLock(JSON.stringify(lock(each))).problems ?? [];
+  assert.deepEqual(readLock(JSON.stringify(lock({ title: 'Did my last payment go through?', view: ['muse'] }))).lock?.ids, [{ id: 'a', title: 'Did my last payment go through?', view: ['muse'] }], 'both read through');
+  assert.deepEqual(readLock(JSON.stringify(lock({ title: 'Only a title' }))).lock?.ids, [{ id: 'a', title: 'Only a title' }], 'each is optional');
+  assert.deepEqual(VIEW_FLAGS, ['muse'], 'the allowlist is the viewer\'s: today muse alone');
+  for (const [title, why] of [['', 'an empty title'], [' padded ', 'an untrimmed title'], ['x'.repeat(121), 'a title over 120 characters'], ['two\nlines', 'a control character'], [7, 'a title that is not a string']]) assert.match(problems({ title })[0] ?? '', /^a's title .* is not a trimmed string of 1 to 120 characters with no control character$/, why);
+  assert.equal(problems({ title: 'x'.repeat(120) }).length, 0, 'a title of exactly 120 is fine');
+  for (const [view, why] of [[[], 'an empty list'], [['visual'], 'a flag the viewer does not know'], [['muse', 'muse'], 'a duplicate'], ['muse', 'a string, not a list'], [[1], 'a flag that is not a string']]) assert.match(problems({ view })[0] ?? '', /^a's view .* is not a non-empty list of distinct flags from \["muse"\]$/, why);
+  assert.match(problems({ title: 'ok', heading: 'x' })[0] ?? '', /^a holds \["id","title","heading"\], not id, poster, looks, title and view$/, 'any other key is still refused');
 });

@@ -247,6 +247,7 @@ export async function readAgentHome(home: AgentHome, options: { access?: HomeAcc
  *  `access`. */
 export async function homeRevision(home: AgentHome, options: { access?: HomeAccess } = {}): Promise<number> {
   const read = async (agentDir: string) => {
+    if (!existsSync(path.join(agentDir, AGENT_STORE_FILE))) throw new AgentHomeError("missing", `the claimed directory holds no ${AGENT_STORE_FILE}`);
     const db = new DatabaseSync(path.join(agentDir, AGENT_STORE_FILE), { readOnly: true, timeout: 5_000 });
     try {
       return await readHead(() => db.prepare(HEAD_SQL).get());
