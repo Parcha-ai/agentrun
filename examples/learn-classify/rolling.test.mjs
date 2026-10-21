@@ -103,7 +103,7 @@ test('a stream in batches stays as it was: a batch starts from one main, and its
   assert.equal(rows[2].seedSha, rows[1].afterSha);
 }, { timeout: 300_000 });
 
-test('checkpoints: main frozen after the Nth curate and at the end of each epoch, into checkpoints.json', async (t) => {
+test('checkpoints: main frozen at the seed, after the Nth curate and at the end of each epoch, by label in checkpoints.json', async (t) => {
   const dir = await scratch(t);
   const { data, companies } = await standIn(dir, { train: 3 });
   const list = streamOf(companies, { split: 'train', epochs: 2, seed: 6 });
@@ -111,16 +111,24 @@ test('checkpoints: main frozen after the Nth curate and at the end of each epoch
   const { rows } = await runLoop({ out, parts: parts(data), list, split: 'train', concurrency: 2, checkpoints: [2, 4], record: false });
   const byIndex = new Map(rows.map((r) => [r.curatedIndex, r]));
   const frozen = JSON.parse(readFileSync(join(out, 'checkpoints.json'), 'utf8'));
-  assert.deepEqual(frozen.counts.map((c) => [c.at, c.sha, c.run]), [2, 4].map((n) => [n, byIndex.get(n).afterSha, byIndex.get(n).run]));
-  assert.deepEqual(frozen.epochs.map((e) => e.epoch), [1, 2]);
-  for (const entry of frozen.epochs) {
-    const last = Math.max(...rows.filter((r) => r.epoch === entry.epoch).map((r) => r.curatedIndex));
-    assert.equal(entry.curatedIndex, last);
-    assert.equal(entry.sha, byIndex.get(last).afterSha);
+  assert.deepEqual(Object.keys(frozen).sort(), ['0', '2', '4', 'epoch-1', 'epoch-2']);
+  const seed = JSON.parse(readFileSync(join(out, 'meta.json'), 'utf8')).seedSha;
+  assert.deepEqual({ ...frozen['0'], at: undefined }, { sha: seed, streamIndex: 0, epoch: null, at: undefined });
+  for (const n of [2, 4]) assert.deepEqual({ ...frozen[n], at: undefined }, { sha: byIndex.get(n).afterSha, streamIndex: n, epoch: byIndex.get(n).epoch, at: undefined });
+  for (const epoch of [1, 2]) {
+    const last = Math.max(...rows.filter((r) => r.epoch === epoch).map((r) => r.curatedIndex));
     // A later epoch's runs that landed before this epoch's last are in that main too, and the entry says how many.
-    assert.equal(entry.alsoIncludes, rows.filter((r) => r.epoch > entry.epoch && r.curatedIndex < last).length);
+    const alsoIncludes = rows.filter((r) => r.epoch > epoch && r.curatedIndex < last).length;
+    assert.deepEqual({ ...frozen[`epoch-${epoch}`], at: undefined }, { sha: byIndex.get(last).afterSha, streamIndex: last, epoch, alsoIncludes, at: undefined });
   }
-  assert.deepEqual(frozen.last, { sha: git(join(out, 'agent.git'), 'rev-parse', 'main'), curated: 6 });
+  for (const entry of Object.values(frozen)) assert.ok(!Number.isNaN(Date.parse(entry.at)), entry.at);
+  assert.equal(frozen['epoch-2'].sha, git(join(out, 'agent.git'), 'rev-parse', 'main'));
+  // A label once passed is kept as it was: a resumed or longer pass never moves it.
+  const again = await runLoop({ out, parts: parts(data), list, split: 'train', concurrency: 2, checkpoints: [2, 4, 5], record: false });
+  assert.equal(again.rows.length, 6);
+  const after = JSON.parse(readFileSync(join(out, 'checkpoints.json'), 'utf8'));
+  for (const label of Object.keys(frozen)) assert.deepEqual(after[label], frozen[label]);
+  assert.equal(after['5'].sha, byIndex.get(5).afterSha);
 }, { timeout: 300_000 });
 
 test('a run that ends on a model error is run again once; a second one is the job\'s outcome; every failed call is counted', async (t) => {
@@ -131,7 +139,7 @@ test('a run that ends on a model error is run again once; a second one is the jo
   const out = join(dir, 'train');
   const { rows } = await runLoop({ out, parts: refusing(parts(data), new Map([[once, 1], [twice, 2]])), list, split: 'train', record: false });
   const row = (cik) => rows.find((r) => r.cik === cik);
-  assert.deepEqual([once, twice, clean].map((cik) => [row(cik).infraRetried, row(cik).infraFailed]), [[1, false], [1, true], [0, false]]);
+  assert.deepEqual([once, twice, clean].map((cik) => [row(cik).rerunOf, row(cik).infraFailed]), [['run-001', false], ['run-002', true], [null, false]]);
   assert.deepEqual([once, twice, clean].map((cik) => modelErrors(row(cik))), [1, 2, 0]);
   assert.ok(rows.flatMap((r) => r.limits).every((l) => l.status === 400 && /^\d{4}-\d{2}-\d{2}T\d{2}$/.test(l.hour)));
   // The first attempt is abandoned, never proposed; the second is the job's run.
@@ -150,7 +158,7 @@ test('DEV runs a model error again once, as TRAIN does', async (t) => {
   const devOut = join(dir, 'dev');
   const dev = await runSealed({ out: devOut, parts: refusing(parts(data), new Map([[devOnce, 1]])), at: 'seed', split: 'dev', concurrency: 2 });
   const row = (cik) => dev.rows.find((r) => r.cik === cik);
-  assert.deepEqual([devOnce, devClean].map((cik) => [row(cik).infraRetried, row(cik).infraFailed, modelErrors(row(cik))]), [[1, false, 1], [0, false, 0]]);
+  assert.deepEqual([devOnce, devClean].map((cik) => [row(cik).rerunOf, row(cik).infraFailed, modelErrors(row(cik))]), [[`sealed-${devOnce}`, false, 1], [null, false, 0]]);
   assert.equal(existsSync(join(devOut, 'sealed', dev.label, 'home', 'runs', `sealed-${devOnce}-a2`)), true);
 }, { timeout: 300_000 });
 
