@@ -1,9 +1,9 @@
 import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { GitRemoteError } from "./errors.js";
+import { GitRemoteError, refused } from "./errors.js";
 import { createGitRunner, EMPTY_TREE, gitVersion, type GitCall, type GitIdentity } from "./git.js";
 import {
-  caseCollisions, checkCommitFiles, DEFAULT_LIMITS, type FileContent, type Limits, modeRefusal, pathPrefixes, pathRefusal,
+  caseCollisions, checkCommitFiles, checkPath, DEFAULT_LIMITS, type FileContent, type Limits, modeRefusal, pathPrefixes, pathRefusal, within,
 } from "./limits.js";
 import { checkRemote, type GitCredential, type Remote } from "./remotes.js";
 
@@ -119,9 +119,6 @@ export type Repo = {
   log(options?: LogOptions): Promise<LogEntry[]>;
 };
 
-function refused(message: string, paths: readonly string[] = []): GitRemoteError {
-  return new GitRemoteError("refused", message, paths);
-}
 
 function checkBranch(name: string): string {
   const short = typeof name === "string" && name.startsWith("refs/heads/") ? name.slice("refs/heads/".length) : name;
@@ -134,10 +131,6 @@ function checkBranch(name: string): string {
   return short;
 }
 
-function within(child: string, parent: string): boolean {
-  const rel = path.relative(parent, child);
-  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
-}
 
 function shellQuote(word: string): string {
   return `'${word.replaceAll("'", "'\\''")}'`;
@@ -483,8 +476,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
   }
 
   async function read(file: string, sha: string): Promise<string | undefined> {
-    const reason = pathRefusal(file);
-    if (reason) throw refused(`the path ${JSON.stringify(file)} is refused: ${reason}`, [file]);
+    checkPath(file);
     if (!SHA.test(sha)) await fetchAll();
     const commit = await commitOf(sha);
     const entry = (await git(["ls-tree", "-z", "--full-tree", "-l", commit, "--", file])).stdout.toString("utf8").split("\0").filter(Boolean).map(parseEntry).find((e) => e.path === file);
@@ -497,8 +489,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
   async function list(prefix: string, sha: string): Promise<TreeEntry[]> {
     const trimmed = typeof prefix === "string" ? prefix.replace(/\/+$/, "") : prefix;
     if (trimmed !== "") {
-      const reason = pathRefusal(trimmed);
-      if (reason) throw refused(`the prefix ${JSON.stringify(prefix)} is refused: ${reason}`, [prefix]);
+      checkPath(trimmed, "prefix", prefix);
     }
     if (!SHA.test(sha)) await fetchAll();
     return lsTree(await commitOf(sha), trimmed || undefined);
@@ -570,7 +561,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
       if (line.includes("[remote rejected]")) {
         // The reason is the server's text, so the credential is scrubbed from it as the runner does from stderr.
         const reason = line.split("\t").at(-1)!;
-        throw new GitRemoteError("refused", `the remote refused ${branch}: ${credential ? reason.split(credential.password).join("[credential]") : reason}`);
+        throw refused(`the remote refused ${branch}: ${credential ? reason.split(credential.password).join("[credential]") : reason}`);
       }
       throw new GitRemoteError("git", `git push failed (${result.code}): ${result.stderr.trim()}`);
     }
@@ -630,8 +621,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
 
   async function log(options: LogOptions = {}): Promise<LogEntry[]> {
     if (options.path !== undefined) {
-      const reason = pathRefusal(options.path);
-      if (reason) throw refused(`the path ${JSON.stringify(options.path)} is refused: ${reason}`, [options.path]);
+      checkPath(options.path);
     }
     if (options.trailer !== undefined && (typeof options.trailer.key !== "string" || !TRAILER_KEY.test(options.trailer.key))) throw refused("log's trailer needs a valid key");
     await fetchAll();

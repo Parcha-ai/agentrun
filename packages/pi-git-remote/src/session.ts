@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { GitRemoteError } from "./errors.js";
+import { refused } from "./errors.js";
 import { type Allowlist, compileAllowlist } from "./glob.js";
 import { pathRefusal } from "./limits.js";
 import type { Remote } from "./remotes.js";
@@ -87,7 +87,6 @@ export type SessionCheckout = {
   end(): Promise<EndOutcome>;
 };
 
-const refused = (message: string, paths: readonly string[] = []) => new GitRemoteError("refused", message, paths);
 
 /** The branch for a session: the pattern with the id in it, never a protected name and never the seed's own branch. */
 export function sessionBranch(pattern: string, sessionId: string, ref: string): string {

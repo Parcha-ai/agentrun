@@ -2,9 +2,9 @@ import { lstat, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { GitRemoteError } from "./errors.js";
+import { GitRemoteError, refused } from "./errors.js";
 import type { GitIdentity } from "./git.js";
-import type { Limits } from "./limits.js";
+import { type Limits, within } from "./limits.js";
 import { local, type Remote } from "./remotes.js";
 import { openRepo } from "./repo.js";
 import { createSessionCheckout, DEFAULT_BRANCH, type EndOutcome, privateDirectory, remoteId, type SessionCheckout, SESSION_PLACEHOLDER } from "./session.js";
@@ -47,7 +47,6 @@ type Config = {
   stateDir: string;
 };
 
-const refused = (message: string) => new GitRemoteError("refused", message);
 
 function asRemote(value: Remote | string, cwd: string): Remote {
   if (typeof value !== "string") return value;
@@ -107,10 +106,6 @@ async function realish(target: string): Promise<string> {
   }
 }
 
-const inside = (child: string, parent: string) => {
-  const rel = path.relative(parent, child);
-  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
-};
 
 type Active = { sessionId: string; checkout: SessionCheckout; agents: string | undefined };
 
@@ -159,7 +154,7 @@ export function createGitRemoteExtension(options: GitRemoteOptions = {}): (pi: E
       await privateDirectory(config.stateDir);
       const checkoutDir = path.resolve(ctx.cwd, (config.checkoutDir ?? path.join(config.stateDir, "checkouts", SESSION_PLACEHOLDER)).replaceAll(SESSION_PLACEHOLDER, sessionId));
       const [realCheckout, realCwd] = await Promise.all([realish(checkoutDir), realish(ctx.cwd)]);
-      if (inside(realCheckout, realCwd) || inside(realCwd, realCheckout)) throw refused("the checkout directory and the session's working directory must be apart: the agent's files belong in one and the repository in the other");
+      if (within(realCheckout, realCwd) || within(realCwd, realCheckout)) throw refused("the checkout directory and the session's working directory must be apart: the agent's files belong in one and the repository in the other");
       const repo = await openRepo({
         dir: path.join(config.stateDir, "repos", remoteId(config.remote).slice(0, 16)),
         remote: config.remote,
