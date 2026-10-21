@@ -62,7 +62,7 @@ export type GuardInput = {
  */
 export type Guard = (input: GuardInput) => readonly Refusal[];
 
-// ---------------------------------------------------------------- the curator's ports to the workflows lane
+// ---------------------------------------------------------------- the curator's ports for workflows and their uses
 
 /** Main as curation reads it: the commit it builds on, and reads at a commit. */
 export type RepoRead = {

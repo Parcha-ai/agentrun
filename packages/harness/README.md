@@ -65,6 +65,7 @@ first-demo: complete
 
 The fakes make no priced call, so there is no cost line. Node 22 also prints its SQLite `ExperimentalWarning` on stderr.
 The run's record, `{"id":"x","score":42}`, is in the whole result that `--json` prints.
+`node demo.mjs --record ./rec` keeps the run as an `agentrun.recording/1` folder. Open it in the hosted run viewer, https://parcha-ai.github.io/agentrun/: choose or drop the folder, and it plays in your browser, with nothing uploaded.
 
 `pi-durable-disk run --app` takes this package's child app as a file: `import.meta.resolve('@parcha/agentrun-harness/child-app')`.
 

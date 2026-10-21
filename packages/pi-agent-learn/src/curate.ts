@@ -113,7 +113,7 @@ export type RunReport = {
   readonly held: readonly CurateItem[];
   readonly refused: readonly CurateItem[];
   readonly archived: readonly CurateItem[];
-  /** What the workflows lane decided for each workflow the run's uses name. */
+  /** What the uses settler decided for each workflow the run's uses name. */
   readonly settled: readonly CurateItem[];
   /** Questions put to the judge for this run. */
   readonly questions: number;
@@ -683,7 +683,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     lists.accepted.push({ ...item, reason });
   }
 
-  // The run's workflow uses, settled into their trials by the workflows lane.
+  // The run's workflow uses, settled into their trials by the uses settler.
   const usesText = runFiles[usesPath(runId)];
   if (typeof usesText === "string") {
     const uses = parseUses(usesText, runId);
@@ -748,7 +748,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   return finish(input, lists, files, [...touched].sort(), [...workflowNames].sort(), budget.asked);
 }
 
-/** Why files from the workflows lane may not be written: a rules-tier path, a path outside the named workflows' folders,
+/** Why files from the workflow admitter or the uses settler may not be written: a rules-tier path, a path outside the named workflows' folders,
  *  or a guard hit. Undefined when they may. */
 function workflowFilesRefusal(files: Readonly<Record<string, string | null>>, names: readonly string[], secrets: readonly string[], who: string): string | undefined {
   const paths = Object.keys(files);
