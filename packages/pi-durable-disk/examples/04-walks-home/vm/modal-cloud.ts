@@ -32,6 +32,7 @@ import type { Environment, Move } from "../../03-tab-to-cloud/wire.ts";
 import { DESKTOP_DISPLAY, DESKTOP_PORT, desktopScript, novncUrl, SCREENSHOT_COMMAND } from "./desktop.ts";
 import { awaitPlacement } from "./placement-wait.ts";
 import { GpuPool, type PoolStatus } from "./gpu-pool.ts";
+import { terminateTargets } from "./sweep-open.ts";
 import { vmImageCommands } from "./image.ts";
 import type { GpuProcess, GpuServer } from "../../03-tab-to-cloud/pipe/gpu-rpc.ts";
 
@@ -119,6 +120,8 @@ export interface ModalCloudOptions {
   readonly rewarm?: boolean;
   /** How long close() waits for boxes still being made to land and remove themselves (default 60 s). */
   readonly closeWaitMs?: number;
+  /** After close() has waited for the creates in flight, how long it keeps asking Modal for each still-queued create by its name, to terminate it the moment it places (default 30 s). */
+  readonly closeQueuedMs?: number;
   /**
    * A generic extra of the cloud app (the app's `DEMO_APP_EXTRA`): a module that adds tools, a model provider or an environment wrapper to the session on the VM.
    * `files` (published path in the box's bundle to its source on this server) join the bundle, `module` names which of them is the extra, `env` is added to the app's environment,
@@ -325,6 +328,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   const uid = process.getuid!();
   const gid = process.getgid!();
   const image = options.image ?? (() => (base.images.fromRegistry("ubuntu:24.04") as unknown as { dockerfileCommands(c: string[]): unknown }).dockerfileCommands(vmImageCommands(uid, gid, { desktop: options.desktop })));
+  /** The names of creates Modal has not answered yet: queued, with no sandbox to remove. A stop that exits while one is queued leaves it to place later and run until its TTL, so close() asks for each by name. */
+  const queued = new Set<string>();
   // Every sandbox is in the ledger by its name before the create call returns, and by its id after.
   const sdk: FullSdk = {
     apps: base.apps,
@@ -333,11 +338,13 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     sandboxes: {
       create: async (app, img, params) => {
         options.ledger?.open("modal-sandbox", params.name, "create");
+        queued.add(params.name);
         try {
           const box = await base.sandboxes.create(app, img, params);
           options.ledger?.open("modal-sandbox", box.sandboxId, params.name);
           return box;
         } finally {
+          queued.delete(params.name);
           options.ledger?.close("modal-sandbox", params.name, "create returned");
         }
       },
@@ -1001,12 +1008,13 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       for (const id of [...placed.keys()]) await attempt(`stop ${id}`, () => host.stop({ disk: options.disk, region: options.region, id }, "now"));
       // A box whose create is still in flight lands, finds the cloud closing and removes itself; wait for that (bounded) before the sweep below.
       // (A box past its create is in `live` and is swept; its own steps then fail on the removed sandbox and it cleans up after itself.)
+      let inFlightNote = "";
       if (creates.size > 0) {
         const waitMs = options.closeWaitMs ?? 60_000;
         let timer: NodeJS.Timeout | undefined;
         const settled = await Promise.race([Promise.allSettled([...creates]).then(() => true), new Promise<boolean>((r) => (timer = setTimeout(() => r(false), waitMs)))]);
         clearTimeout(timer);
-        if (!settled) failures.push(`${creates.size} sandbox create(s) still in flight after ${Math.round(waitMs / 1000)} s (they expire by themselves at their lifetime)`);
+        if (!settled) inFlightNote = `${creates.size} sandbox create(s) still in flight after ${Math.round(waitMs / 1000)} s`;
       }
       // A removal that failed is tried again: Modal's errors are mostly transient, and what is left running is billed.
       for (let round = 0; round < 3 && live.size > 0; round++) {
@@ -1023,6 +1031,17 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
         const { left } = await poolClosing;
         if (left > 0) failures.push(`${left} cluster box(es) could not be removed`);
       }
+      // Modal queues a create it has no capacity for and places it later: a box that places after this process is gone runs until its TTL. Whatever is still queued (a remote start's, or a cluster box's) is asked for by its
+      // name, for a bounded time, and terminated the moment it appears.
+      if (queued.size > 0) {
+        const swept = await terminateTargets(sdk, appName, [...queued].map((value) => ({ kind: "name" as const, value })), {
+          waitMs: options.closeQueuedMs ?? 30_000,
+          log: options.log,
+          onGone: (t, how) => options.ledger?.close("modal-sandbox", t.value, how === "terminated" ? "terminated at close: placed after the stop began" : "already gone at close"),
+        });
+        options.log("close.queued", { terminated: swept.terminated.length, left: swept.left });
+        if (swept.left.length > 0) failures.push(`${inFlightNote ? `${inFlightNote}; ` : ""}${swept.left.length} sandbox create(s) still queued after ${Math.round((options.closeQueuedMs ?? 30_000) / 1000)} s more of asking by name, so not terminated (they expire by themselves at their lifetime): ${swept.left.join(", ")}; the ledger has them open by name`);
+      } else if (inFlightNote && creates.size > 0) failures.push(inFlightNote);
       if (failures.length > 0) options.log("close.failures", { failures, left: live.size });
     },
   };
