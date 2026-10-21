@@ -86,7 +86,8 @@ test('a call that is the run\'s first step: with the run\'s input bound it settl
     await unknownRun(kept, workflow, { name: 'one' }, cwd);
     write(cwd, 'out/one.txt');
     const outcome = await settle(kept, workflow, cwd);
-    assert.match(outcome.refused ?? '', /^RECOVERY_RECONCILE_FAILED: .*out\/\{name\}\.txt/);
+    // The refusal says why: the state the call started from is not kept. It never falls back to the template as written.
+    assert.match(outcome.refused ?? '', /^RECOVERY_RECONCILE_FAILED: .*started from is not kept.*out\/\{name\}\.txt/);
     assert.deepEqual(outcome.files, []);
   }
 });
