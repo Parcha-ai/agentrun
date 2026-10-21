@@ -42,7 +42,8 @@ description: How to do the six-part job by hand from the company's annual report
    whatever property it owns. Each group and code names the largest SEC filers under it: they show how the SEC uses the
    code, so between two codes that both fit, the one whose filers do the same business is the SEC's. Cite that revenue
    table for the code.
-7. Cite the words that show each part, with the page or document and where on it.
+7. Cite the words that show each part, with the page or document and where on it. Each quote a step returns is at most
+   300 characters: cut it to the line that carries the fact (a table's row, not the table).
 
 # Parts that make workflows
 
@@ -51,7 +52,8 @@ call found nothing. Read describe's tool list for each tool's arguments and resu
 before a pick: a pick takes at most 240 candidates (for example, the major group before its 4-digit codes). The part
 that reads the headquarters returns the address with its quote, from the cover or else from the head, principal or
 registered office line, and never passes an empty headquarters on, which the answer refuses; it escalates "no HQ found"
-only when the report gives neither.
+only when the report gives neither. In a workflow, every quote field an extract or agent step returns declares
+`maxLength: 300` in its out schema, so the cap holds at the node that makes the quote; the answer refuses a longer cite.
 
 The decision node follows what the decision needs. A choice that needs knowledge the state does not hold (for example,
 what a company does) is one narrow agent step on the host's node model; a choice decidable from evidence already in the
