@@ -228,6 +228,18 @@ The supervisor passes the app on (`--app MODULE`, made absolute), other flags fo
 and the instance's environment as `--env KEY=VALUE`. The API key is read from the environment variable named by
 `--api-key-env` (default `ARCHIL_API_KEY`) by the supervisor commands only; `run` never needs it.
 
+A duration flag takes a number and its unit: `ms`, `s`, `m` or `h`, decimals allowed (`500ms`, `30s`, `1.5m`, `1h`). A
+bare number is refused with exit 2 and a hint (`not a duration: "90": give a unit, e.g. 90s or 90ms`), so `90` is never
+silently 90 milliseconds. Every duration flag of every command is checked before the command acts. Two exceptions:
+- Flags named `-ms` (`--heartbeat-ms`, `--lease-expiry-ms`, `--lease-margin-ms`) keep bare milliseconds; their name
+  carries the unit, and units are still accepted.
+- A bare `0` turns a feature off where 0 means off:
+  - `--park-threshold 0`: no parking.
+  - `--start-grace 0`: no start grace, and so no backoff.
+  - `--start-backoff-max 0`: no backoff; the grace stays at `--start-grace`.
+
+  Anywhere else, `0` takes a unit (`0s`) and behaves as before.
+
 An instance's exit code tells the host's process supervisor what to do:
 
 | Exit | Meaning | Restarted? |
@@ -524,6 +536,10 @@ and a takeover whose start was slowed 5 s before its first `run.json` write star
   boundary is the disk (Archil's own advice): give each tenant its own disk.
 - **The API key stays with the supervisor.** Hosts and instances never hold it, and the local driver never copies its own
   environment into a unit.
+- **The instance's environment is never on a command line.** `localHost`'s `env` and a start's own (`StartAttempt.env`) reach
+  the unit through a root-only file (`EnvironmentFile=`, mode 0600, beside the mount token's), not through `systemd-run
+  --setenv`: `sudo` logs a command line, and a unit's `Environment=` property is readable by every local user. The file is
+  removed when the unit stops or ends for good. A value with a newline is refused rather than mangled.
 - **No privilege for the agent.** The instance, pi's tools and the agent's commands run as an unprivileged user. Every
   command starts under `setpriv --no-new-privs` (on Linux; macOS has no equivalent, see [On macOS](#on-macos)), so a
   command cannot use the run user's sudo rule (sudo refuses: "The no new privileges flag is set"). An app that turns

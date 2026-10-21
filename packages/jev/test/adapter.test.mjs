@@ -312,6 +312,14 @@ test('total deadline aborts response-body streaming', async () => {
   assert.equal(cancelled, true);
 });
 
+test('a client failure that is neither an HTTP response nor a connection failure ends the call after that attempt, without its text', async () => {
+  let calls = 0;
+  const run = createJevRunner({ maxAttempts: 3, client: { systemOne: async () => { calls++; throw new TypeError('host client broke: secret-detail'); } } });
+  await assert.rejects(run(params), error => error instanceof JevError && error.code === 'invalid_request' && error.attempts === 1
+    && error.requestDiagnostic === undefined && !error.message.includes('secret-detail'));
+  assert.equal(calls, 1, 'not retried');
+});
+
 // The SDK times each attempt with the call's remaining budget, so its timer and the runner's deadline end together; whichever fires first, the
 // caller is told the deadline ended the call. A deadline expiry may have been billed, and the error code is what tells a host so.
 test('an attempt the SDK ends with its own timeout is the deadline, never a connection failure, and is not retried', async () => {
