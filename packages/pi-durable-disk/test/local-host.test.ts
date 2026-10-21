@@ -164,6 +164,32 @@ test("stop: the unit, then nothing else when the instance released its own mount
   assert.equal(calls.length, 0, "a handle this driver cannot reach is a no-op");
 });
 
+test("stop and kill act as root only on a handle this driver could have made (its unit prefix, a run's mountpoint under its mount root); any other is refused, with nothing run", async () => {
+  // run.json is the run user's to write, and a handle comes back from it: a unit or mountpoint written there must not
+  // become a systemctl stop or kill, an unmount or an rmdir run as root.
+  const w = world();
+  const { calls, exec } = recorder();
+  const host = localHost({ exec, hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot, user: "1000", group: "1000" });
+  const h = { driver: "local", mode: "systemd", host: "host-a", bootId: currentBootId(), unit: "pda-t-r1-x", mountpoint: w.mp };
+  const foreign = [
+    { ...h, unit: "sshd" },
+    { ...h, unit: "other-r1-x" },
+    { ...h, mountpoint: "/etc" },
+    { ...h, mountpoint: join(w.mountRoot, "runs") },
+    { ...h, mountpoint: `${w.mp}/../../../etc` },
+    { ...h, mountpoint: join(w.mountRoot, "runs", ".hidden") },
+    { ...h, mountpoint: null },
+  ];
+  for (const handle of foreign) {
+    const refused = (what: string) => (e: unknown) => e instanceof LocalHostError && e.code === "INVALID_ARGUMENT" && e.message.includes(`not one this driver starts`) && e.message.endsWith(`nothing ${what}`);
+    await assert.rejects(host.stop(handle), refused("stopped"), `stop ${JSON.stringify(handle)}`);
+    await assert.rejects(host.kill(handle), refused("killed"), `kill ${JSON.stringify(handle)}`);
+  }
+  assert.deepEqual(calls.map((c) => c.argv.join(" ")), [], "nothing ran for a handle the driver did not make");
+  await host.stop(h);
+  assert.equal(calls[0]?.argv.join(" "), "/usr/bin/sudo -n /usr/bin/systemctl stop pda-t-r1-x.service", "its own handle still stops");
+});
+
 test("a start's own environment goes over the driver's; one that sets PATH or PDA_HOLDER, or a name that is not a variable, is refused", async () => {
   const w = world();
   const { calls, exec } = recorder();
@@ -181,7 +207,7 @@ test("a start's own environment goes over the driver's; one that sets PATH or PD
   assert.equal(calls.length, 0, "refused before anything ran");
 });
 
-test("kill: SIGKILL of the unit's whole control group and nothing else; a handle it cannot reach is a no-op; a process kill", async () => {
+test("kill: SIGKILL of the unit's whole control group and nothing else; a handle it cannot reach is a no-op, a malformed one refused; a process kill", async () => {
   const w = world();
   const { calls, exec } = recorder();
   const host = localHost({ exec, hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot, user: "1000", group: "1000" });
@@ -192,7 +218,7 @@ test("kill: SIGKILL of the unit's whole control group and nothing else; a handle
   calls.length = 0;
   await host.kill({ ...h, host: "host-b" });
   await host.kill({ ...h, bootId: "other" });
-  await host.kill({ ...h, unit: "../etc" });
+  await assert.rejects(host.kill({ ...h, unit: "../etc" }), (e: unknown) => e instanceof LocalHostError && e.code === "INVALID_ARGUMENT");
   assert.equal(calls.length, 0);
 });
 
@@ -509,7 +535,7 @@ test("stop: a daemon SIGKILLed through its scope leaves a dead mount behind, whi
   assert.ok(!readFileSync(w.procMounts, "utf8").includes(w.mp));
 });
 
-test("stop of a child-mode handle never signals a group: not pid 1 with its real start ticks, not pid 0 or a handle with no start ticks", async () => {
+test("stop of a child-mode handle never signals a group: not pid 1 with its real start ticks, not pid 0 or a handle with no start ticks; each is refused", async () => {
   // A handle comes back from run.json with whatever was written there. `kill(-1)` is every process this user may signal
   // and `kill(-0)` the supervisor's own group, so process.kill is a spy for the whole test: nothing is really signalled.
   const host = localHost({ mode: "child", command: [process.execPath, FAKE_INSTANCE], hostName: "host-a", mountRoot: "/mnt/x", stopTimeoutMs: 200 });
@@ -521,11 +547,12 @@ test("stop of a child-mode handle never signals a group: not pid 1 with its real
     return true;
   }) as typeof process.kill;
   try {
-    await host.stop({ ...base, pid: 1, startTicks: procStartTicks(1) });
-    await host.stop({ ...base, pid: 0, startTicks: null });
-    await host.stop({ ...base, pid: -4242, startTicks: null });
-    await host.stop({ ...base, pid: "1x", startTicks: null });
-    await host.stop({ ...base, pid: 1.5, startTicks: null });
+    const refused = (e: unknown) => e instanceof LocalHostError && e.code === "INVALID_ARGUMENT" && /not a process this driver started: nothing stopped$/.test(e.message);
+    await assert.rejects(host.stop({ ...base, pid: 1, startTicks: procStartTicks(1) }), refused);
+    await assert.rejects(host.stop({ ...base, pid: 0, startTicks: null }), refused);
+    await assert.rejects(host.stop({ ...base, pid: -4242, startTicks: null }), refused);
+    await assert.rejects(host.stop({ ...base, pid: "1x", startTicks: null }), refused);
+    await assert.rejects(host.stop({ ...base, pid: 1.5, startTicks: null }), refused);
   } finally {
     process.kill = kill;
   }
