@@ -77,7 +77,7 @@ const result = await runJudge({
 console.log(result.answers.team);
 ```
 
-Without a key, `createJevRunner()` throws `JevError` (code `configuration`: "Could not configure Jev. Supply apiKey or set TYPESAFE_API_KEY") on that line, before any request is made. The same holds for `provider: "openrouter"` without `OPENROUTER_API_KEY`.
+Without a key, `createJevRunner()` throws `JevError` (code `configuration`: "Could not configure Jev. Supply apiKey or set TYPESAFE_API_KEY, and check transport options.") on that line, before any request is made. The same holds for `provider: "openrouter"` without `OPENROUTER_API_KEY`.
 
 `judge`, `pick`, `sift`, `route`, semantic predicates, and judgment verification use the same `runJudge` adapter. Choice, Noul, and Score answers retain their raw probabilities. The core validates answer IDs, probability keys and normalization, score rubrics, and value ranges before consuming a result. A typed answer records the model's decision. It does not prove that a real-world claim is true.
 
