@@ -76,6 +76,10 @@ test('a route is diagnosed against the route variant it is: a judged route again
   const byValueBadPath = messages({ node: 'route', label: 'r', valuePath: 7, otherwise: 'a', branches });
   assert.match(byValueBadPath, /valuePath/);
   assert.doesNotMatch(byValueBadPath, /instructions|required properties state/, 'a route by value is never told it needs a question');
+  // A tie (as many errors against each variant) goes to the variant first in the schema, the judged route: a bare route is
+  // asked for what a judged route needs.
+  assert.equal(messages({ node: 'route' }), 'workflow/root: must have required properties branches, instructions, label, state');
+  assert.equal(messages({ node: 'route', label: 'r' }), 'workflow/root: must have required properties branches, instructions, state');
   // The same through inspectWorkflow, which an authoring agent reads: it names the judged route's missing state.
   let inspected = '';
   try { inspectWorkflow(workflow({ node: 'route', label: 'r', instructions: 'Which one?', branches })); } catch (error) { inspected = error.message; }

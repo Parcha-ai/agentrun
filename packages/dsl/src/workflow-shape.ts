@@ -23,7 +23,8 @@ for (const schema of [documentSchema.definitions.Workflow, ...[...nodeSchemas.va
 }
 /** The variant of its kind a node is: the one that accepts it, else the one it has the fewest errors against, so a judged
  *  route missing its state is diagnosed as a judged route, not as a route by value missing its valuePath. Nested nodes are
- *  opaque to a variant's validator, so the count is of the node's own fields. */
+ *  opaque to a variant's validator, so the count is of the node's own fields. A tie goes to the variant that comes first in
+ *  the schema: a bare route is diagnosed as a judged route. */
 const variantOf = (variants: any[], entry: unknown): any => {
   if (variants.length === 1) return variants[0];
   let closest = variants[0], fewest = Infinity;
