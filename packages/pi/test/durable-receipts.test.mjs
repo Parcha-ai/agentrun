@@ -2,7 +2,8 @@
 // paid for is answered from them, and a call equal to an unknown effect is refused; neither reaches the tool.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { canonicalHash, RecoveryError } from '@parcha/agentrun-dsl/recovery';
+import { runWorkflow } from '@parcha/agentrun-dsl';
+import { canonicalHash, memoryStore, openRecovery, RecoveryError, withRecovery } from '@parcha/agentrun-dsl/recovery';
 import { effectResultOf, reuseReceipts, ReceiptIndex, ToolResultKeyError } from '@parcha/agentrun-pi/durable';
 import { hostKey, otherKey, resultOf } from './fixtures/pi-version.mjs';
 
@@ -135,4 +136,40 @@ test('at a workflow call\'s effect boundary, a refused call is the DSL\'s unknow
   // Another tool's own field named outcome is part of its result.
   const inconclusive = { content: [], details: { outcome: 'unknown' } };
   assert.equal(effectResultOf(inconclusive, 'classify'), inconclusive);
+  // A refusal is keyed by the exact shape only reuseReceipts writes ({ isError: true, details: { effect_status:
+  // "unknown", refused: true } }), not by effect_status "unknown" alone: an ordinary classifier that reports its own
+  // verdict as { details: { effect_status: "unknown" } } is its result, never mistaken for a receipt refusal.
+  const ownVerdict = { content: [{ type: 'text', text: 'could not tell' }], details: { effect_status: 'unknown' } };
+  assert.equal(effectResultOf(ownVerdict, 'classify'), ownVerdict, 'effect_status "unknown" without refused is an ordinary result');
+  const erroredVerdict = { isError: true, details: { effect_status: 'unknown' } };
+  assert.equal(effectResultOf(erroredVerdict, 'classify'), erroredVerdict, 'even isError + effect_status "unknown" is not a refusal without refused: true');
+  // The real refusal shape still throws.
+  const refusalShape = { isError: true, details: { effect_status: 'unknown', refused: true } };
+  assert.throws(() => effectResultOf(refusalShape, 'pay'), (error) => error instanceof RecoveryError && error.code === 'FROZEN_EFFECT_UNKNOWN');
+});
+
+test('on the durable path, a host runEffect that passes a refused call through effectResultOf leaves the effect unknown', async () => {
+  // A durable task runs the host's own runEffect; this host wraps its paid tool with reuseReceipts.
+  const workflow = { v: 2, name: 'pay', schemas: { Any: { type: 'object' } }, output: { schemaId: 'Any' },
+    root: { node: 'call', label: 'pay', via: 'tool', tool: 'pay', args: { amount: 5 }, out: 'Any', as: 'paid', deadline_s: 5 } };
+  const reuse = reuseReceipts({ tools: ['pay'], sessionId: 'tail', answer: true, unknown: [{ name: 'pay', argsHash: canonicalHash({ amount: 5 }) }] });
+  const pay = counted('pay');
+  const runEffect = async ({ node, input }) => effectResultOf(await reuse.wrap(pay).execute(input, api(), {}), node.label);
+  const store = memoryStore();
+  const driver = await openRecovery(store, workflow, { key: 'durable-pay' });
+  await assert.rejects(runWorkflow(workflow, {}, withRecovery(driver, { runEffect })), (error) => error.code === 'FROZEN_EFFECT_UNKNOWN');
+  await driver.close();
+  assert.deepEqual(pay.calls, [], 'the refused call was never dispatched');
+  // The next open hands the host the effect as unknown.
+  let left = [];
+  const reopened = await openRecovery(store, workflow, { key: 'durable-pay', reconcile: async (unknown) => { left = unknown; } });
+  await reopened.close();
+  assert.deepEqual(left.map((effect) => effect.status), ['unknown']);
+  // Without effectResultOf the refusal is just a returned value, and the call completes with it.
+  const bare = memoryStore();
+  const plain = await openRecovery(bare, workflow, { key: 'durable-pay' });
+  const done = await runWorkflow(workflow, {}, withRecovery(plain, { runEffect: async ({ input }) => reuse.wrap(counted('pay')).execute(input, api(), {}) }));
+  await plain.close();
+  assert.equal(done.status, 'complete');
+  assert.equal(done.state.paid.details.effect_status, 'unknown');
 });

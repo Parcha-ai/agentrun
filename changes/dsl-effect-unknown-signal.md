@@ -10,4 +10,6 @@ Who breaks: a host whose `runEffect` returned one of those fields to mean "unkno
 
     throw new RecoveryError(message, "FROZEN_EFFECT_UNKNOWN", { cause: observed })
 
-pi does this at its own boundary: a call that `reuseReceipts` refused (`details.effect_status` `"unknown"`) is turned into that throw by `effectResultOf`, exported from `@parcha/agentrun-pi/durable`. The extension's workflow calls use it.
+pi does this at its own boundary: a call that `reuseReceipts` refused (`details.effect_status` `"unknown"`) is turned into that throw by `effectResultOf`, new in `@parcha/agentrun-pi/durable`. The extension's workflow calls use it.
+
+A durable task runs the host's own `runEffect`, so a durable host that wraps tools with `reuseReceipts` calls `effectResultOf` on each wrapped tool's result in that `runEffect`. Without it, a refusal is no longer read as unknown and becomes the call's result.
