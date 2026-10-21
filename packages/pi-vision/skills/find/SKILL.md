@@ -89,15 +89,6 @@ From the receipts of one run on a 47-minute film, a 320x180 copy to scan and wat
 That run scanned 110 frames. The default now is a coarse pass of 40, then halving: about 40 frames, 4 a halving round and 3 to
 check, some 50 Jev requests for a film of that length, $0.002.
 
-## The request budget
-
-A host caps the Jev requests of a run (the reference demo's cap is 200). A search that scans every few seconds of a long
-film spends them all, and the check at the end is refused. `maxJudges` in the task (120) is this search's share, held in one
-place: every Jev request in the scan, the halving and the check counts against it (a kept answer is not a request; each is counted and saved to `task.json` before it is asked, so a call that fails, or a run cut short, has not forgotten it), the scan and
-the halving stop three requests short of it so the check at the end always has its three, and a step that reaches it stops
-with `stopped: "budget"` and its `requests`. Raise it for a search that needs more and the host allows; lower the coarse pass
-(`scanFrames`) before anything else when a run has other Jev work.
-
 ## When to stop
 
 - **Found**: a frame within a second of the eyes' second has a noul of at least 0.8. Answer with its citation, its noul,
@@ -112,12 +103,9 @@ with `stopped: "budget"` and its `requests`. Raise it for a search that needs mo
 - **The check fails** (no frame of the three passes): run steps 4 and 5 once more on the next span where the scan
   scored high after this one. Then stop, and answer with the best frame you have, its noul and box confidence, and say
   the check did not pass.
-- **Not found**: no frame of any window scores 0.5 or more. Scan once more at a quarter of the step where the budget
-  allows (a thing on screen for less than a step falls between frames), then say it was not found, and give the two
+- **Not found**: no frame of any window scores 0.5 or more. Scan once more at a quarter of the step (a thing on screen for
+  less than a step falls between frames), then say it was not found, and give the two
   frames that scored highest with their times and nouls. Never guess a second.
-- **Budget**: every request first checks `spentUsd` in `task.json` against the task's `budgetUsd` (the steps here
-  default to $0.10; the transcript is not counted, it is paid once a video) and `requests` against `maxJudges` (above),
-  and a step that reaches either stops with `stopped: "budget"`. Say what was found so far and what is left to do.
 
 ## 1. Name the search, and narrow by words
 
@@ -130,7 +118,7 @@ Each row with a hit becomes a window from a minute before it to a minute after i
 the same file when there is no other.
 
 ```js
-const task = { video: "film.mp4", best: "film.mp4", thing: "a red umbrella", box: "the umbrella", words: "umbrella|parasol", chapters: null, scanFrames: 40, maxJudges: 120, budgetUsd: 0.1 };
+const task = { video: "film.mp4", best: "film.mp4", thing: "a red umbrella", box: "the umbrella", words: "umbrella|parasol", chapters: null, scanFrames: 40 };
 const dir = ".find/umbrella";
 if (!/^\.find\/[\w-]+$/.test(dir)) throw new Error(`name the search with one word of letters, digits and dashes, like .find/umbrella, not ${dir}`);
 const q = (text) => `'${String(text).replaceAll("'", "'\\''")}'`;
@@ -145,7 +133,7 @@ for (const [start, end] of rows.map((row) => row.split("\t").map(Number)).sort((
   else windows.push([from, to]);
 }
 if (!windows.length) windows.push([0, duration]);
-await tools.bash({ command: `rm -rf ${dir} && mkdir -p ${dir} && cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, duration, windows, scores: [], spentUsd: 0, requests: 0 })}\nEOF` });
+await tools.bash({ command: `rm -rf ${dir} && mkdir -p ${dir} && cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, duration, windows, scores: [], spentUsd: 0 })}\nEOF` });
 return { transcript: heard ? `${heard}/transcript.tsv` : null, hits: rows, windows };
 ```
 
@@ -163,18 +151,15 @@ const q = (text) => `'${String(text).replaceAll("'", "'\\''")}'`;
 const paid = (answer) => (answer.kept ? 0 : answer.costUsd ?? 0);
 const here = { type: "noul", instructions: `Is ${task.thing} in \`images[0].image\`?` };
 const scores = new Map(task.scores);
-let spent = task.spentUsd, requests = task.requests;
-const limit = task.maxJudges - 3;   // the check at the end asks three more
-const save = () => tools.bash({ command: `cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, scores: [...scores].sort((x, y) => x[0] - y[0]), spentUsd: spent, requests })}\nEOF` });
+let spent = task.spentUsd;
+const save = () => tools.bash({ command: `cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, scores: [...scores].sort((x, y) => x[0] - y[0]), spentUsd: spent })}\nEOF` });
 const score = async (t) => {
-  if (scores.has(t) || spent >= task.budgetUsd || requests >= limit) return;
+  if (scores.has(t)) return;
   await tools.bash({ command: `ffmpeg -v error -y -ss ${t} -i ${q(task.video)} -frames:v 1 ${dir}/s${t}.png` });
-  requests += 1; await save();   // counted before it is asked, so a call that fails was still sent and a run cut short has not forgotten it
   const answer = await vision.judge({ paths: [`${dir}/s${t}.png`], fragments: [`${task.video}#t=${t}`], questions: { here } });
-  if (answer.kept) requests -= 1;   // read back from an earlier call, not a request
   scores.set(t, answer.answers.here.noul);
   spent += paid(answer);
-  await save();
+  await save();   // each score is kept as it comes, so a run cut short asks nothing it already has
 };
 const step = Math.max(10, Math.ceil(task.windows.reduce((sum, [from, to]) => sum + to - from, 0) / task.scanFrames));
 for (const [from, to] of task.windows) for (let t = from; t < to; t += step) await score(t);
@@ -185,7 +170,7 @@ const before = held === undefined ? 0 : inWindow(held)[0];
 for (let t = 0; t < before; t += Math.max(step, Math.ceil(before / task.scanFrames))) await score(t);
 const sorted = [...scores].sort((x, y) => x[0] - y[0]);
 await save();
-return { step, frames: sorted.length, likely: likely(), spentUsd: spent, requests, ...(spent >= task.budgetUsd || requests >= limit ? { stopped: "budget" } : {}) };
+return { step, frames: sorted.length, likely: likely(), spentUsd: spent };
 ```
 
 ## 3. Halve to 40 seconds
@@ -199,32 +184,29 @@ const dir = ".find/umbrella";
 const task = JSON.parse(await tools.bash({ command: `cat ${dir}/task.json` }));
 const q = (text) => `'${String(text).replaceAll("'", "'\\''")}'`;
 const paid = (answer) => (answer.kept ? 0 : answer.costUsd ?? 0);
-const limit = task.maxJudges - 3;   // the check at the end asks three more
 const ranked = [...task.scores].sort((x, y) => y[1] - x[1]);
 const first = task.scores.find(([, p]) => p >= 0.7) ?? ranked.find(([, p]) => p >= 0.5);
 if (!first) return { found: false, best: ranked.slice(0, 2) };
 const bar = first[1] >= 0.7 ? 0.7 : 0.5;
 const here = { type: "noul", instructions: `Is ${task.thing} in \`images[0].image\`?` };
 let [a, b] = [task.scores.filter(([t]) => t < first[0]).at(-1)?.[0] ?? 0, first[0]];
-let spent = task.spentUsd, requests = task.requests;
-halving: while (b - a > 40) {
+let spent = task.spentUsd;
+while (b - a > 40) {
   const mid = Math.round((a + b) / 2);
   let seen = false;
   for (const t of [1, 2, 3, 4].map((i) => Math.round(a + ((mid - a) * i) / 4))) {
-    if (spent >= task.budgetUsd || requests >= limit) break halving;
     await tools.bash({ command: `ffmpeg -v error -y -ss ${t} -i ${q(task.video)} -frames:v 1 ${dir}/h${t}.png` });
-    requests += 1; await tools.bash({ command: `cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, spentUsd: spent, requests })}\nEOF` });   // counted before it is asked
     const answer = await vision.judge({ paths: [`${dir}/h${t}.png`], fragments: [`${task.video}#t=${t}`], questions: { here } });
-    if (answer.kept) requests -= 1;
     seen ||= answer.answers.here.noul >= bar;
     spent += paid(answer);
+    await tools.bash({ command: `cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, spentUsd: spent })}\nEOF` });   // the price of each answer is kept as it comes, so a retry does not forget what was paid
   }
   [a, b] = seen ? [a, mid] : [mid, b];
 }
 const middle = Math.round((a + b) / 2);
 const window = [Math.max(0, middle - 30), Math.min(task.duration, middle + 30)];
-await tools.bash({ command: `cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, span: [a, b], window, spentUsd: spent, requests })}\nEOF` });
-return { span: [a, b], window, spentUsd: spent, requests, ...(b - a > 40 ? { stopped: "budget" } : {}) };
+await tools.bash({ command: `cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, span: [a, b], window, spentUsd: spent })}\nEOF` });
+return { span: [a, b], window, spentUsd: spent };
 ```
 
 ## 4. The eyes name the second
@@ -240,7 +222,6 @@ const dir = ".find/umbrella";
 const task = JSON.parse(await tools.bash({ command: `cat ${dir}/task.json` }));
 const q = (text) => `'${String(text).replaceAll("'", "'\\''")}'`;
 const paid = (answer) => (answer.kept ? 0 : answer.costUsd ?? 0);
-if (task.spentUsd >= task.budgetUsd) return { at: null, stopped: "budget", spentUsd: task.spentUsd };
 const [from, to] = task.window;
 const ask = `At which second is ${task.thing} first seen?`;
 let seen, at;
@@ -276,26 +257,23 @@ const q = (text) => `'${String(text).replaceAll("'", "'\\''")}'`;
 const paid = (answer) => (answer.kept ? 0 : answer.costUsd ?? 0);
 const times = [task.at - 1, task.at, task.at + 1].filter((t) => t >= 0 && t < task.duration);
 const checks = (task.checks ?? []).filter((c) => times.includes(c.t));   // the checks already made for these seconds are kept, and not asked again
-let spent = task.spentUsd, requests = task.requests;
-const save = (extra = {}) => tools.bash({ command: `cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, checks, ...extra, spentUsd: spent, requests })}\nEOF` });
+let spent = task.spentUsd;
+const save = (extra = {}) => tools.bash({ command: `cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, checks, ...extra, spentUsd: spent })}\nEOF` });
 for (const t of times) {
   if (checks.some((c) => c.t === t)) continue;
-  if (spent >= task.budgetUsd || requests >= task.maxJudges) break;
   await tools.bash({ command: `ffmpeg -v error -y -ss ${t} -i ${q(task.best)} -frames:v 1 ${dir}/b${t}.png` });
-  requests += 1; await save();   // counted before it is asked
   const answer = await vision.judge({ paths: [`${dir}/b${t}.png`], fragments: [`${task.video}#t=${t}`], questions: {
     here: { type: "noul", instructions: `Is ${task.thing} in \`images[0].image\`?` },
     where: { type: "box", instructions: `${task.box} in \`images[0].image\`` },
   } });
   checks.push({ t, noul: answer.answers.here.noul, confidence: answer.answers.where.confidence, cite: answer.answers.where.fragment });
   spent += paid(answer);
-  if (answer.kept) requests -= 1;
   await save();   // each completed check is kept, so a run cut short does not lose a match the earlier checks confirmed
 }
 const passed = checks.find((c) => c.noul >= 0.8);
 const found = passed ? { ...passed, cite: passed.cite ?? `${task.video}#t=${passed.t}`, loose: passed.confidence < 0.6, ...(passed.cite ? {} : { noBox: true }) } : null;
 await save({ found });
-return { found: Boolean(found), ...(found ?? { checks }), spentUsd: spent, requests, ...((spent >= task.budgetUsd || requests >= task.maxJudges) && checks.length < Math.max(times.length, 1) ? { stopped: "budget" } : {}) };
+return { found: Boolean(found), ...(found ?? { checks }), spentUsd: spent };
 ```
 
 Answer with the citation, the noul and the price: "first seen at `film.mp4#t=1024&xywh=percent:31,6,49,52` (Jev 0.88

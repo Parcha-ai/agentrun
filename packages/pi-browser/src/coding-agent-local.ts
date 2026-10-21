@@ -42,7 +42,8 @@ export function fileEvidenceSink(root: string, relativeTo: string): EvidenceSink
             throw error;
           }
           if (!text) await writeFile(receipt, `${header.join("\n")}\n(the capture is ${path.basename(capture)})\n`);
-          return { path: path.relative(relativeTo, receipt).split(path.sep).join("/"), bodyLine: text ? header.length + 1 : undefined };
+          const rel = (file: string) => path.relative(relativeTo, file).split(path.sep).join("/");
+          return { path: rel(receipt), bodyLine: text ? header.length + 1 : undefined, ...(text ? {} : { bodyPath: rel(capture) }) };
         }
       } catch { return null; }
     },

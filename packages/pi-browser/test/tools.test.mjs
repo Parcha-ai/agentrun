@@ -1,29 +1,40 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import vm from "node:vm";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { pageTools } from "@parcha/pi-browser";
 import { createBrowserExtension } from "@parcha/pi-browser/durable";
 import { FakeBackend, fakeDriver, fixturePage } from "@parcha/pi-browser/testing";
+import { sessionSpec } from "../dist/core/custody.js";
+import { pageDriver } from "../dist/driver/page-driver.js";
+import { fakeStagehand, nameOf, png, unanswered } from "./fixtures/fake-stagehand.mjs";
+import { BrowserFailureError, browserFailure, pageTools as pageToolsOf } from "@parcha/pi-browser";
 
 const START = "https://example.test/start";
 const ARTICLE = { url: START, title: "Filing", text: "Menu Home Acme Corp file number 7741234 Footer", html: "<html><body><nav>Menu Home</nav><article><h1>Acme Corp</h1><p>File number <b>7741234</b></p></article><footer>Footer</footer></body></html>" };
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-async function session(t, calls, { backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } }), between, decisions, provider, policy = {}, reconcileWith = (h) => h, prices, settle = false, tools, onSession, crossing } = {}) {
+async function session(t, calls, { backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } }), between, decisions, provider, policy = {}, reconcileWith = (h) => h, prices, settle = false, tools, onSession, crossing, bodyPaths = true, driver, gates, workspace, handoff } = {}) {
   const filed = [];
   const browser = createBrowserExtension({
-    provider: () => provider ?? backend.provider, driver: fakeDriver(backend),
-    evidence: { file: async (label, record) => { filed.push({ label, record }); return { path: `evidence/${label}/${filed.length}-${record.tool}.md`, bodyLine: 9 }; } },
+    provider: () => (typeof provider === "function" ? provider() : provider ?? backend.provider), driver: driver ?? fakeDriver(backend),
+    evidence: { file: async (label, record) => { filed.push({ label, record }); return { path: `evidence/${label}/${filed.length}-${record.tool}.md`, bodyLine: 9, ...(bodyPaths && typeof record.body !== "string" ? { bodyPath: `evidence/${label}/${filed.length}-${record.tool}.${record.ext}` } : {}) }; } },
     redact: { values: () => ["run-token-0123456789"] },
     ...(decisions ? { decisions } : {}),
     ...(prices ? { prices } : {}),
     ...(tools ? { tools } : {}),
     ...(onSession ? { onSession } : {}),
     ...(crossing ? { crossing } : {}),
+    ...(gates ? { gates } : {}),
+    ...(workspace ? { workspace: () => workspace } : {}),
+    ...(handoff ? { handoff } : {}),
   });
   const model = fauxProvider({ models: [{ id: "faux-1" }] });
   model.setResponses(Array.from({ length: calls.length + 1 }, (_, turn) => async () => {
@@ -231,6 +242,326 @@ test("a Stagehand extension that lost its own CDP connection is a dropped browse
   assert.equal(runs, 1, "the run that may have acted was not repeated");
 });
 
+test("a screenshot the browser never answers is a dropped connection: the read reconnects and runs once more, and the abandoned capture's late bytes are never filed", { timeout: 20_000 }, async (t) => {
+  const hung = unanswered();
+  // The capture answers late in any case, so a driver that waits for it fails here rather than hanging the file.
+  const late = setTimeout(() => hung.answer(png("late")), 5_000);
+  t.after(() => clearTimeout(late));
+  const stagehands = [fakeStagehand({ url: START, screenshot: () => hung.reply }), fakeStagehand({ url: START })];
+  let attaches = 0;
+  const driver = async () => pageDriver(stagehands[attaches++], { batchMs: 60_000, snapshotMs: 200, screenshotMs: 200 });
+  const shot = await session(t, [["screenshot", { type: "png" }]], { driver, between: { 1: async () => { hung.answer(png("late")); await new Promise((resolve) => setTimeout(resolve, 50)); } } });
+  assert.equal(attaches, 2, "the driver whose capture never answered was attached again");
+  const image = shot.seen[0].content.find((c) => c.type === "image");
+  assert.equal(nameOf(Buffer.from(image.data, "base64")), "fresh");
+  assert.deepEqual(shot.filed.map((f) => nameOf(f.record.body)), ["fresh"], "only the reconnected capture was filed");
+});
+
+test("a screenshot that hangs again after a working reconnect is told as a stuck page, with browser_relaunch, not as an unreachable browser", { timeout: 20_000 }, async (t) => {
+  const first = unanswered(), second = unanswered();
+  t.after(() => { first.answer(png("late")); second.answer(png("late")); });
+  const stagehands = [fakeStagehand({ url: START, screenshot: () => first.reply }), fakeStagehand({ url: START, screenshot: () => second.reply })];
+  let attaches = 0;
+  const driver = async () => pageDriver(stagehands[attaches++], { batchMs: 60_000, snapshotMs: 200, screenshotMs: 200 });
+  const shot = await session(t, [["screenshot", { type: "png" }]], { driver });
+  assert.equal(attaches, 2, "the read reconnected once, and the fresh connection reached the browser");
+  const failed = failure(shot.texts[0]);
+  assert.deepEqual([failed.ok, failed.code, failed.retryable], [false, "browser_unavailable", false], shot.texts[0]);
+  assert.match(failed.message, /the page itself is stuck/);
+  assert.match(failed.message, /browser_relaunch/);
+  assert.doesNotMatch(failed.message, /could not be reached|plane is unavailable/, "the browser answered the reconnect, so it is not unreachable");
+  assert.deepEqual(shot.filed, [], "nothing was captured, so nothing was filed");
+});
+
+test("a retried read that loses its connection again after a working reconnect keeps the unreachable-browser answer, not the stuck-page one", { timeout: 20_000 }, async (t) => {
+  const hung = unanswered();
+  t.after(() => hung.answer(png("late")));
+  const closed = () => Promise.reject(Object.assign(new Error("the CDP connection closed"), { name: "CDPConnectionClosedError" }));
+  const stagehands = [fakeStagehand({ url: START, screenshot: () => hung.reply }), fakeStagehand({ url: START, screenshot: closed })];
+  let attaches = 0;
+  const driver = async () => pageDriver(stagehands[attaches++], { batchMs: 60_000, snapshotMs: 200, screenshotMs: 200 });
+  const shot = await session(t, [["screenshot", { type: "png" }]], { driver });
+  assert.equal(attaches, 2, "the read reconnected once");
+  const failed = failure(shot.texts[0]);
+  assert.equal(failed.code, "browser_unavailable", shot.texts[0]);
+  assert.match(failed.message, /could not be reached/);
+  assert.doesNotMatch(failed.message, /stuck/, "a lost connection is not a stuck page");
+});
+
+test("a stuck-page answer points at browser_relaunch in next, as the dropped-for-good one does; a read that loses its connection again gets no next", { timeout: 20_000 }, async (t) => {
+  const first = unanswered(), second = unanswered(), hung = unanswered();
+  t.after(() => { first.answer(png("late")); second.answer(png("late")); hung.answer(png("late")); });
+  const stuck = [fakeStagehand({ url: START, screenshot: () => first.reply }), fakeStagehand({ url: START, screenshot: () => second.reply })];
+  let attaches = 0;
+  const shot = await session(t, [["screenshot", { type: "png" }]], { driver: async () => pageDriver(stuck[attaches++], { batchMs: 60_000, snapshotMs: 200, screenshotMs: 200 }) });
+  const failed = failure(shot.texts[0]);
+  assert.match(failed.message, /the page itself is stuck/, shot.texts[0]);
+  assert.deepEqual(failed.next?.action, "browser_relaunch", "the same structured hint as the dropped-for-good answer");
+  const closed = () => Promise.reject(Object.assign(new Error("the CDP connection closed"), { name: "CDPConnectionClosedError" }));
+  const lost = [fakeStagehand({ url: START, screenshot: () => hung.reply }), fakeStagehand({ url: START, screenshot: closed })];
+  let again = 0;
+  const gone = await session(t, [["screenshot", { type: "png" }]], { driver: async () => pageDriver(lost[again++], { batchMs: 60_000, snapshotMs: 200, screenshotMs: 200 }) });
+  const unreachable = failure(gone.texts[0]);
+  assert.match(unreachable.message, /could not be reached/, gone.texts[0]);
+  assert.equal(unreachable.next, undefined, "a lost connection keeps classify's answer, with no next");
+});
+
+test("the browser_relaunch hint says the next call opens a fresh session only when custody released the stuck one", { timeout: 30_000 }, async (t) => {
+  // perform() against a stub port: the read drops, the one reconnect try fails, and unreachable() did or did not release.
+  const record = { lastUrl: START, navigation: [{ at: "2026-10-16T00:00:00.000Z", url: START }] };
+  const call = { callId: "call-1", conversationId: 1, signal: undefined, label: "node-a", redact: (text) => text, evidence: { file: async () => null } };
+  const tools = pageToolsOf({ reconnect: { budgetMs: 100, tryMs: 10, backoffMs: [] } });
+  const answerWhen = async (released) => {
+    let dropped = false, calls = 0;
+    const driver = { snapshot: async () => { if (!dropped) { dropped = true; throw lostConnection(); } return "page"; }, url: async () => START };
+    const first = { driver, tag: "t-1", sessionId: "s-1", record, notice: null, interrupted: null, recorded: false, effects: null, replaced: null };
+    const port = {
+      session: async () => { calls += 1; if (calls === 1) return first; throw new BrowserFailureError(browserFailure("command_failed", "the provider refused the attach")); },
+      dropped: async () => {},
+      ended: async () => false,
+      unreachable: async () => ({ released, lastUrl: START }),
+    };
+    return JSON.parse((await tools.snapshot({}, port, call)).content[0].text);
+  };
+  const released = await answerWhen(true);
+  assert.equal(released.next?.action, "browser_relaunch");
+  assert.match(released.next.note, /next browser call/, "released: the next ordinary call does open a fresh session");
+  const left = await answerWhen(false);
+  assert.equal(left.next?.action, "browser_relaunch");
+  assert.doesNotMatch(left.next.note, /which opens one/, "not released: only browser_relaunch opens a fresh session");
+  // The stuck page: the reconnect worked, so the session stays attached and the next ordinary call would use it.
+  const first = unanswered(), second = unanswered();
+  t.after(() => { first.answer(png("late")); second.answer(png("late")); });
+  const stuck = [fakeStagehand({ url: START, screenshot: () => first.reply }), fakeStagehand({ url: START, screenshot: () => second.reply })];
+  let attaches = 0;
+  const shot = await session(t, [["screenshot", { type: "png" }]], { driver: async () => pageDriver(stuck[attaches++], { batchMs: 60_000, snapshotMs: 200, screenshotMs: 200 }) });
+  const hung = failure(shot.texts[0]);
+  assert.equal(hung.next?.action, "browser_relaunch", shot.texts[0]);
+  assert.doesNotMatch(hung.next.note, /which opens one/, "a stuck page is still attached: only browser_relaunch opens a fresh session");
+});
+
+const LOOPBACK_LOST = "Stagehand loopback CDP is disconnected";
+const lostConnection = () => new Error(LOOPBACK_LOST, { cause: { code: -32603, message: LOOPBACK_LOST, data: { name: "Error" } } });
+/** A snapshot whose connection drops once each time `drop()` arms it. */
+function droppingOnce(backend) {
+  const snapshot = backend.driverFace.snapshot.bind(backend.driverFace);
+  let drops = 0;
+  backend.driverFace.snapshot = async (id) => { if (drops > 0) { drops -= 1; throw lostConnection(); } return snapshot(id); };
+  return { drop: () => { drops = 1; } };
+}
+const reported = (value) => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
+const attachFailures = (backend) => backend.ledger.filter((row) => row.op === "attach-failed").length;
+const releaseTasksDone = async (harness) => { for (let i = 0; i < 400 && (await harness.inspect(ctx)).tasks.some((task) => task.record.kind === "browser.release"); i += 1) await new Promise((r) => setTimeout(r, 25)); };
+/** #1065's DrivingGate, as a host's live view would report one session. */
+const gateSaying = ({ viewing = false, state = "idle" }) => () => ({ state: () => state, input: () => "driving", model: () => ({ release() {} }), onChange: () => () => {}, viewing: () => viewing, setViewing() {}, end() {} });
+
+test("a dropped connection the provider still runs is retried on a 1 s then 3 s backoff; when every try fails, that call releases the session as lost and points at browser_relaunch, and the next call opens a fresh one that says why", { timeout: 60_000 }, async (t) => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  const net = droppingOnce(backend);
+  const at = [];
+  const done = await session(t, [["run", { code: "await page.click('a')" }], ["snapshot"], ["snapshot"]], { backend, settle: true, between: {
+    1: (b) => { net.drop(); b.fail("attach", 3); at.push(Date.now()); },
+    2: async (_b, { harness }) => { at.push(Date.now()); await releaseTasksDone(harness); },
+  } });
+  assert.equal(attachFailures(backend), 3, "the first reconnect and two retries, no more");
+  assert.ok(at[1] - at[0] >= 4_000, `the retries waited 1 s, then 3 s (${at[1] - at[0]} ms)`);
+  const answer = failure(done.texts[1]);
+  assert.deepEqual([done.seen[1].isError, answer.code, answer.retryable, answer.next?.action], [true, "browser_unavailable", false, "browser_relaunch"], done.texts[1]);
+  assert.match(answer.message, /released/);
+  assert.match(answer.message, /next browser call opens a fresh/);
+  const [old, fresh] = done.sessions.sessions;
+  assert.deepEqual([old.state, old.releaseReason], ["released", "lost"], "released as lost through the release path");
+  assert.equal(backend.tally().releases, 1, "the provider released it once: it stops billing");
+  assert.ok(fresh, "the next call opened a fresh session");
+  assert.match(done.texts[2], /^Your previous browser session could not be reconnected and was released/);
+  assert.ok(done.texts[2].includes(START), "and names the last page");
+  assert.deepEqual(done.seen[2].details?.previous_session, { released: true, reason: "lost", at: old.endedAt });
+});
+
+/** A driver factory whose reconnect meets an earlier init still running in the extension and waits for it, as
+ *  stagehandDriver does (up to its 60 s in-flight wait, here `waitMs`), honouring the attach's signal; a wait that ends
+ *  starts a second init. */
+function initStillRunning(base, waitMs) {
+  const seen = { attaches: 0, secondInits: 0, waitAborted: false };
+  const factory = async (target, signal, options) => {
+    seen.attaches += 1;
+    if (seen.attaches === 1) return base(target, signal, options);
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, waitMs);
+      signal?.addEventListener("abort", () => { clearTimeout(timer); seen.waitAborted = true; reject(signal.reason ?? new Error("aborted")); }, { once: true });
+    });
+    seen.secondInits += 1;
+    return base(target, signal, options);
+  };
+  return { factory, seen };
+}
+
+test("a reconnect whose attach waits on an earlier init ends at the budget: no second init starts, and the session is released as lost", { timeout: 30_000 }, async (t) => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  const net = droppingOnce(backend);
+  const stuck = initStillRunning(fakeDriver(backend), 3_000);
+  // The adapter's own port and guard; only the reconnect timings are the test's: a 400 ms budget, one try.
+  const snapshot = pageToolsOf({ reconnect: { budgetMs: 400, tryMs: 50, backoffMs: [] } }).snapshot;
+  const at = {};
+  const done = await session(t, [["run", { code: "await page.click('a')" }], ["snapshot"]], { backend, driver: stuck.factory, settle: true, tools: { snapshot }, between: {
+    1: () => { net.drop(); at.start = Date.now(); },
+    2: async (_b, { harness }) => { at.end = Date.now(); await releaseTasksDone(harness); },
+  } });
+  assert.equal(stuck.seen.secondInits, 0, "the attach stopped waiting at the budget, so no second init started");
+  assert.equal(done.seen[1].isError, true, `the reconnect ran out of its budget, so the read fails (${done.texts[1].slice(0, 80)})`);
+  const answer = failure(done.texts[1]);
+  assert.equal(answer.code, "browser_unavailable", done.texts[1]);
+  assert.equal(stuck.seen.secondInits, 0, "the attach stopped waiting at the budget, so no second init started");
+  assert.ok(stuck.seen.waitAborted, "the attach's wait for the earlier init was cut by the deadline");
+  assert.ok(at.end - at.start < 400 + 1_000, `the call ended near its budget, not after the attach's wait (${at.end - at.start} ms)`);
+  const [old] = done.sessions.sessions;
+  assert.deepEqual([old.state, old.releaseReason], ["released", "lost"], "released as lost: the provider stops the browser, and the earlier init in its extension with it");
+  assert.equal(backend.tally().releases, 1, "the provider released it once: nothing keeps billing");
+});
+
+test("a deadline the adapter reports as aborted is still a failed reconnect: the session is released as lost, not left as an aborted call", { timeout: 30_000 }, async () => {
+  // perform() against a stub port that classifies as the coding agent does: an attach whose signal aborted is "aborted",
+  // and the deadline is part of that signal. Only the call's own abort may end the reconnect as aborted.
+  const record = { lastUrl: START, navigation: [{ at: "2026-10-16T00:00:00.000Z", url: START }] };
+  let dropped = false, calls = 0, released = 0;
+  const driver = { snapshot: async () => { if (!dropped) { dropped = true; throw lostConnection(); } return "page"; }, url: async () => START };
+  const first = { driver, tag: "t-1", sessionId: "s-1", record, notice: null, interrupted: null, recorded: false, effects: null, replaced: null };
+  const port = {
+    session: async (signal) => {
+      calls += 1;
+      if (calls === 1) return first;
+      await new Promise((resolve) => signal?.addEventListener("abort", resolve, { once: true }));
+      throw new BrowserFailureError(browserFailure("aborted", "the attach was cancelled"));
+    },
+    dropped: async () => {},
+    ended: async () => false,
+    unreachable: async () => { released += 1; return { released: true, lastUrl: START }; },
+  };
+  const call = { callId: "call-1", conversationId: 1, signal: undefined, label: "node-a", redact: (text) => text, evidence: { file: async () => null } };
+  const out = await pageToolsOf({ reconnect: { budgetMs: 200, tryMs: 50, backoffMs: [] } }).snapshot({}, port, call);
+  const answer = JSON.parse(out.content[0].text);
+  assert.deepEqual([answer.code, released], ["browser_unavailable", 1], out.content[0].text);
+  assert.match(answer.message, /released/);
+});
+
+test("a call cancelled during the reconnect's backoff ends aborted and releases nothing", { timeout: 30_000 }, async () => {
+  // perform() against a stub port: the read drops, the first reconnect try fails at the provider (a typed, non-final
+  // failure), and the call is cancelled during the pause before the next try. The session must stay: only the call ended.
+  const record = { lastUrl: START, navigation: [{ at: "2026-10-16T00:00:00.000Z", url: START }] };
+  const controller = new AbortController();
+  let dropped = false, calls = 0, released = 0;
+  const driver = { snapshot: async () => { if (!dropped) { dropped = true; throw lostConnection(); } return "page"; }, url: async () => START };
+  const first = { driver, tag: "t-1", sessionId: "s-1", record, notice: null, interrupted: null, recorded: false, effects: null, replaced: null };
+  const port = {
+    session: async () => {
+      calls += 1;
+      if (calls === 1) return first;
+      if (calls === 2) setTimeout(() => controller.abort(), 50);
+      throw new BrowserFailureError(browserFailure("command_failed", "the provider refused the attach"));
+    },
+    dropped: async () => {},
+    ended: async () => false,
+    unreachable: async () => { released += 1; return { released: true, lastUrl: START }; },
+  };
+  const call = { callId: "call-1", conversationId: 1, signal: controller.signal, label: "node-a", redact: (text) => text, evidence: { file: async () => null } };
+  const out = await pageToolsOf({ reconnect: { budgetMs: 2_000, tryMs: 50, backoffMs: [300] } }).snapshot({}, port, call);
+  const answer = JSON.parse(out.content[0].text);
+  assert.deepEqual([answer.code, released, calls], ["aborted", 0, 2], out.content[0].text);
+});
+
+test("a reconnect that works on its second try keeps the session, its pages and its record", { timeout: 30_000 }, async (t) => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  const net = droppingOnce(backend);
+  const done = await session(t, [["run", { code: "await page.click('a')" }], ["snapshot"]], { backend, between: { 1: (b) => { net.drop(); b.fail("attach", 1); } } });
+  assert.equal(done.seen[1].isError, false, done.texts[1]);
+  assert.match(done.texts[1], /Acme Corp/);
+  assert.deepEqual([backend.tally().creates, attachFailures(backend), backend.tally().releases], [1, 1, 0]);
+  assert.deepEqual([done.sessions.sessions.length, done.sessions.sessions[0].state], [1, "live"]);
+});
+
+test("every reconnect try that starts ends inside the budget: a try that ran most of it gets no second one", { timeout: 30_000 }, async () => {
+  // perform() against a stub port: the read drops, then each reconnect try takes 70 ms and fails at the provider. Budget 100 ms,
+  // a whole try 61 ms, backoff 10 ms then 30 ms: after the first try only 30 ms are left, less than a try, so none starts.
+  const tries = [];
+  let dropped = false;
+  const driver = { snapshot: async () => { if (!dropped) { dropped = true; throw lostConnection(); } return "page"; }, url: async () => START };
+  const record = { lastUrl: START, navigation: [{ at: "2026-10-16T00:00:00.000Z", url: START }] };
+  const first = { driver, tag: "t-1", sessionId: "s-1", record, notice: null, interrupted: null, recorded: false, effects: null, replaced: null };
+  let calls = 0;
+  const port = {
+    session: async () => { calls += 1; if (calls === 1) return first; tries.push(Date.now()); await new Promise((r) => setTimeout(r, 70)); throw new BrowserFailureError(browserFailure("command_failed", "the provider refused the attach")); },
+    dropped: async () => {},
+    ended: async () => false,
+    unreachable: async () => ({ released: true, lastUrl: START }),
+  };
+  const call = { callId: "call-1", conversationId: 1, signal: undefined, label: "node-a", redact: (text) => text, evidence: { file: async () => null } };
+  const tools = pageToolsOf({ reconnect: { budgetMs: 100, tryMs: 61, backoffMs: [10, 30] } });
+  const reconnectStarted = Date.now();
+  const out = await tools.snapshot({}, port, call);
+  const answer = JSON.parse(out.content[0].text);
+  assert.deepEqual([answer.code, answer.next?.action], ["browser_unavailable", "browser_relaunch"]);
+  assert.equal(tries.length, 1, "after a try that took most of the budget, no second one starts");
+  // tries.length proves the bound; this only catches a reconnect that ignored the budget (seconds), with room for late timers.
+  assert.ok(Date.now() - reconnectStarted < 100 + 1_000, `the reconnect ended near the budget (${Date.now() - reconnectStarted} ms)`);
+});
+
+test("a session held for a person is never released when it cannot be reconnected: a typed answer, and it stays held", async (t) => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  const unreachable = async (_args, port) => { await port.session(); await port.hold("handoff-3725"); return reported(await port.unreachable()); };
+  const done = await session(t, [["run", { code: "await page.click('a')" }], ["browser_read"]], { backend, tools: { browser_read: unreachable } });
+  assert.deepEqual(failure(done.texts[1]), { released: false, kept: "held", lastUrl: START });
+  assert.deepEqual([done.sessions.sessions[0].state, backend.tally().releases], ["held", 0]);
+});
+
+test("a session a person views or drives through the live view is never released when it cannot be reconnected", async (t) => {
+  for (const [gate, kept] of [[{ viewing: true }, "viewing"], [{ state: "person" }, "person_driving"]]) {
+    const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+    const unreachable = async (_args, port) => { await port.session(); return reported(await port.unreachable()); };
+    const done = await session(t, [["run", { code: "await page.click('a')" }], ["browser_read"]], { backend, gates: gateSaying(gate), tools: { browser_read: unreachable } });
+    assert.deepEqual(failure(done.texts[1]), { released: false, kept, lastUrl: START }, JSON.stringify(gate));
+    assert.deepEqual([done.sessions.sessions[0].state, backend.tally().releases], ["live", 0]);
+  }
+});
+
+test("an unreachable session nobody is on leaves no gate behind: the gate custody's check looked up is let go when the session is released", async (t) => {
+  const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
+  const registry = createDrivingGates();
+  const looked = [];
+  const gates = (tag) => { const gate = registry(tag); looked.push([tag, gate]); return gate; };
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  const during = [];
+  // No session() first: the call's own driving guard then holds no gate, as when a call's first attach fails and the call goes
+  // straight to the reconnect and on to unreachable.
+  const unreachable = async (_args, port) => { const from = looked.length; const left = await port.unreachable(); during.push(...looked.slice(from)); return reported(left); };
+  const done = await session(t, [["run", { code: "await page.click('a')" }], ["browser_read"]], { backend, gates, settle: true, tools: { browser_read: unreachable } });
+  assert.deepEqual(failure(done.texts[1]), { released: true, lastUrl: START }, "released as lost: nobody was on it");
+  const [tag, gate] = during[0] ?? [];
+  assert.ok(tag, "the check looked the session's gate up");
+  const again = registry(tag);
+  assert.notEqual(again, gate, "a lookup now makes a new gate: the one the check made was let go");
+  again.onChange(() => {})();
+});
+
+test("through the durable extension, an upload whose file input never answers is possibly applied, and its identical retry is refused until a look", { timeout: 20_000 }, async (t) => {
+  const workspace = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "upload-deadline-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(workspace, "a.txt"), "a");
+  const hung = unanswered();
+  t.after(() => hung.answer(undefined));
+  const set = [];
+  const stagehands = [fakeStagehand({ url: START, setInputFiles: (_s, file) => { set.push(["first", file.name]); return hung.reply; } }), fakeStagehand({ url: START, setInputFiles: async (_s, file) => { set.push(["second", file.name]); } })];
+  let attaches = 0;
+  const driver = async () => pageDriver(stagehands[Math.min(attaches++, 1)], { batchMs: 60_000, uploadMs: 200 });
+  const upload = ["browser_upload", { path: "a.txt", selector: "#f" }];
+  const out = await session(t, [upload, upload, ["snapshot"], upload], { driver, workspace });
+  const [cut, refused, , after] = [0, 1, 2, 3].map((i) => (i === 2 ? null : failure(out.texts[i])));
+  assert.deepEqual([cut.code, cut.effect, cut.retryable], ["browser_unavailable", "possibly_effected", true], out.texts[0]);
+  assert.match(cut.message, /did not answer your browser_upload/);
+  assert.deepEqual([refused.code, refused.effect], ["effect_unknown", "possibly_effected"], out.texts[1]);
+  assert.equal(after.ok, true, out.texts[3]);
+  assert.deepEqual(set, [["first", "a.txt"], ["second", "a.txt"]], "set once before the deadline, never on the refused retry, once after the look");
+});
+
 test("an action policy that holds requests never browses without its observer: one that cannot attach makes the browser unavailable", async (t) => {
   const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
   // The observer dials a closed loopback port; the fake driver finds its session by the URL's id.
@@ -260,12 +591,59 @@ test("a relaunch asking for a place under a policy without proxies is refused be
   assert.equal(on.backend.tally().creates, 2);
 });
 
+test("a relaunch whose geolocation the route's model filled with blanks means no place, as if it were left out", async (t) => {
+  for (const geolocation of [{ country: "", state: "", city: "" }, { country: " " }]) {
+    const out = await session(t, [["snapshot"], ["browser_relaunch", { verified: true, geolocation }]]);
+    const answer = failure(out.texts[1]);
+    assert.deepEqual([out.seen[1].isError, answer.ok, answer.verified], [false, true, true], `${JSON.stringify(geolocation)}: ${out.texts[1]}`);
+    assert.equal(out.backend.tally().creates, 2, "relaunched on the run's policy, no place asked for");
+  }
+  const named = await session(t, [["snapshot"], ["browser_relaunch", { geolocation: { country: "", city: "London" } }]], { policy: { proxies: true } });
+  assert.equal(failure(named.texts[1]).code, "refused", "a city without a country is still a request, and still refused");
+});
+
 test("a relaunch answers with the settings the provider honours, not the ones it asked for", async (t) => {
   const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE }, caps: { settings: { proxies: false, verified: false, geolocation: false, region: false, context: false } } });
   const out = await session(t, [["snapshot"], ["browser_relaunch", { verified: true, geolocation: { country: "GB" } }]], { backend, policy: { proxies: true } });
   const answer = failure(out.texts[1]);
   assert.deepEqual([answer.ok, answer.verified, answer.proxies, answer.geolocation], [true, false, false, null], JSON.stringify(answer));
   assert.equal(backend.tally().creates, 2);
+});
+
+test("the run's Verified policy is a floor a relaunch cannot lower: verified: false or none keeps it, and a false is told so", async (t) => {
+  const out = await session(t, [["snapshot"], ["browser_relaunch", { verified: false }], ["browser_relaunch", {}]], { policy: { verified: true } });
+  const [asked, bare] = [failure(out.texts[1]), failure(out.texts[2])];
+  assert.deepEqual([asked.ok, asked.verified], [true, true], out.texts[1]);
+  assert.match(asked.note, /Verified/);
+  assert.deepEqual([bare.ok, bare.verified, bare.note], [true, true, undefined], out.texts[2]);
+  assert.deepEqual(out.backend.ledger.filter((row) => row.op === "create").map((row) => row.verified), [true, true, true], "the provider is asked for a Verified browser every time");
+});
+
+test("on a run whose sessions are not Verified, verified: true raises one relaunch, and false or none keeps the run's setting", async (t) => {
+  const out = await session(t, [["snapshot"], ["browser_relaunch", { verified: true }], ["browser_relaunch", { verified: false }], ["browser_relaunch", {}]]);
+  assert.deepEqual(out.texts.slice(1).map((text) => [failure(text).verified, failure(text).note]), [[true, undefined], [false, undefined], [false, undefined]]);
+  assert.deepEqual(out.backend.ledger.filter((row) => row.op === "create").map((row) => row.verified), [false, true, false, false]);
+});
+
+test("the relaunch the route's model sends with every optional property blank-filled keeps the run's settings and asks for no place", async (t) => {
+  // luna's exact call: a false it did not mean and a geolocation of blanks. Proxies are off, so a place it did ask for is refused.
+  const blankFilled = { verified: false, geolocation: { country: "", state: "", city: "" } };
+  const kept = await session(t, [["snapshot"], ["browser_relaunch", blankFilled], ["snapshot"]], { policy: { verified: true } });
+  const answer = failure(kept.texts[1]);
+  assert.deepEqual([kept.seen[1].isError, answer.ok, answer.verified, answer.geolocation], [false, true, true, null], kept.texts[1]);
+  assert.match(answer.note, /never drop it/, "the false that was not followed is told so");
+  assert.equal(kept.seen[2].isError, false, "the next call reads on the relaunched session");
+  const plain = await session(t, [["snapshot"], ["browser_relaunch", blankFilled]]);
+  const same = failure(plain.texts[1]);
+  assert.deepEqual([plain.seen[1].isError, same.ok, same.verified, same.geolocation, same.note], [false, true, false, null, undefined], plain.texts[1]);
+  assert.deepEqual([kept, plain].map((out) => out.backend.ledger.filter((row) => row.op === "create").map((row) => row.verified)), [[true, true], [false, false]]);
+});
+
+test("sessionSpec takes the run's Verified policy as a floor: an override can raise it and never lower it", () => {
+  const config = (verified) => ({ label: "node-a", run: "run-spec", policy: { proxies: false, verified, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: 60_000 } });
+  for (const [policy, override, verified] of [[true, undefined, true], [true, false, true], [true, true, true], [false, undefined, false], [false, false, false], [false, true, true]]) {
+    assert.equal(sessionSpec(config(policy), "ar-1", override === undefined ? {} : { verified: override }).verified, verified, `policy ${policy}, override ${override}`);
+  }
 });
 
 test("a screenshot's question travels with the capture for the host to answer", async (t) => {
@@ -291,6 +669,212 @@ test("after an idle release, the next call's session still idles out", async (t)
   await session(t, [["snapshot"], ["snapshot"]], { backend, policy: { idleReleaseS: 1 }, between: { 1: (_b, { browser, root }) => browser.release(root, "idle", ctx) } });
   for (let i = 0; i < 100 && backend.tally().releases < 2; i += 1) await new Promise((r) => setTimeout(r, 50));
   assert.deepEqual([backend.tally().creates, backend.tally().releases], [2, 2], "the session the second call opened was released by its idle timer");
+});
+
+const pollSpy = () => {
+  const made = new Map(), realSet = globalThis.setInterval, realClear = globalThis.clearInterval;
+  globalThis.setInterval = (fn, ms, ...rest) => { const handle = realSet(fn, ms, ...rest); made.set(handle, ms); return handle; };
+  globalThis.clearInterval = (handle) => { made.delete(handle); return realClear(handle); };
+  return { pending: () => made.size, restore: () => { globalThis.setInterval = realSet; globalThis.clearInterval = realClear; } };
+};
+
+test("#1098: the idle check leaves no gate behind: after an idle release with nobody on the session, the registry no longer holds the gate the check looked up", async (t) => {
+  const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
+  const registry = createDrivingGates();
+  const looked = [];
+  const gates = (tag) => { const gate = registry(tag); looked.push([tag, gate]); return gate; };
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  await session(t, [["snapshot"]], {
+    backend, policy: { idleReleaseS: 0.05 }, settle: true, gates,
+    between: { 1: async () => { for (let i = 0; i < 100 && backend.tally().releases === 0; i += 1) await new Promise((r) => setTimeout(r, 20)); } },
+  });
+  assert.equal(backend.tally().releases, 1, "released as before: nobody was on it");
+  // The last lookup is the idle check's (each model call before it takes and lets go of the gate on its own).
+  const [tag, gate] = looked.at(-1) ?? [];
+  assert.ok(tag, "the idle check looked the gate up");
+  const again = registry(tag);
+  assert.notEqual(again, gate, "a lookup now makes a new gate: the one the check made was let go");
+  again.onChange(() => {})();
+});
+
+test("#1098: no poll survives the session's release: the model's browser_release, the host's close or the extension's close stops it at once", async (t) => {
+  const { drivingGates } = await import("@parcha/pi-browser/live-view");
+  for (const how of ["browser_release", "host close", "extension close"]) {
+    const tags = [];
+    const spy = pollSpy();
+    t.after(spy.restore);
+    const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+    let polling = 0;
+    let afterClose = null;
+    await session(t, how === "browser_release" ? [["snapshot"], ["browser_release"]] : [["snapshot"]], {
+      backend, policy: { idleReleaseS: 0.1 }, settle: true,
+      onSession: (row) => { if (row.session?.tag && !tags.includes(row.session.tag)) tags.push(row.session.tag); },
+      between: {
+        1: async (_b, { browser, root }) => {
+          drivingGates(tags[0]).setViewing(true);
+          await new Promise((r) => setTimeout(r, 300));
+          polling = spy.pending();
+          if (how === "host close") await browser.release(root, "close", ctx);
+          if (how === "extension close") { await browser.close(); afterClose = spy.pending(); }
+        },
+      },
+    });
+    for (let i = 0; i < 100 && backend.tally().releases === 0 && how !== "extension close"; i += 1) await new Promise((r) => setTimeout(r, 20));
+    const left = afterClose ?? spy.pending();
+    drivingGates(tags[0]).end();
+    spy.restore();
+    assert.ok(polling >= 1, `${how}: the kept session was being watched`);
+    assert.equal(left, 0, `${how}: no poll left after it`);
+  }
+});
+
+test("#1098: a process restart while a person watches the live view: the new process releases nothing at once and keeps nothing for the old viewer; it releases the session one idle window after its next model call", async (t) => {
+  const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  const storage = new MemoryStorage();
+  const tags = [];
+  const config = { label: "node-a", run: "run-restart", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0.1, batchTimeoutMs: 60_000, actions: "allow" } };
+  const incarnation = async (name, gates) => {
+    const browser = createBrowserExtension({ provider: () => backend.provider, driver: fakeDriver(backend), evidence: { file: async () => null }, gates, onSession: (row) => { if (row.session?.tag && !tags.includes(row.session.tag)) tags.push(row.session.tag); } });
+    const model = fauxProvider({ models: [{ id: "faux-1" }] });
+    model.setResponses([async () => fauxAssistantMessage([fauxToolCall("snapshot", {}, { id: `${name}-0` })], { stopReason: "toolUse" }), async () => fauxAssistantMessage([fauxText("done")], { stopReason: "stop" })]);
+    const models = createModels();
+    models.setProvider(model.provider);
+    const registry = createRegistry();
+    registry.install(browser.extension);
+    const harness = await Harness.open(storage, { models, registry }, ctx);
+    const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), config); } });
+    await browser.reconcile(harness, () => true, ctx);
+    return { browser, harness, root, call: async () => (await root.submit({ type: "input", content: "go", requestId: name }, ctx)).wait(ctx) };
+  };
+  const gatesA = createDrivingGates();
+  const a = await incarnation("a", gatesA);
+  await a.call();
+  gatesA(tags[0]).setViewing(true);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(backend.tally().releases, 0, "kept while the person watches, in the first process");
+  // The first process dies: its gates, timers and viewer go with it; the browser stays. (A dead process never closes its
+  // store, and closing this harness would close the storage the next process opens.)
+  await a.browser.close();
+  const b = await incarnation("b", createDrivingGates());
+  t.after(() => b.harness.close(ctx));
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(backend.tally().releases, 0, "the new process releases nothing at once: it has no idle window running");
+  await b.call();
+  const called = Date.now();
+  assert.equal(backend.tally().creates, 1, "its next call attaches the same session");
+  for (const end = called + 3000; Date.now() < end && backend.tally().releases === 0; ) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(backend.tally().releases, 1, "released one idle window after that call: nobody is on the new process's gate");
+  assert.ok(Date.now() - called >= 80, "not at once");
+});
+
+test("#1098: a person who leaves mid-window: the session is released one idle window after they leave, not at once and not never", async (t) => {
+  const { drivingGates } = await import("@parcha/pi-browser/live-view");
+  for (const [mode, on, off] of [["driving", (g) => g.input(), (g) => g.end()], ["watching", (g) => g.setViewing(true), (g) => g.setViewing(false)]]) {
+    const tags = [];
+    const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+    let after = null;
+    await session(t, [["snapshot"], ["browser_read"]], {
+      backend, policy: { idleReleaseS: 0.3 }, settle: true,
+      onSession: (row) => { if (row.session?.tag && !tags.includes(row.session.tag)) tags.push(row.session.tag); },
+      between: {
+        1: async () => {
+          const gate = drivingGates(tags[0]);
+          on(gate);
+          await new Promise((r) => setTimeout(r, 550)); // the window fired once while the person was on it; they leave just before a second one would
+          assert.equal(backend.tally().releases, 0, `${mode}: kept while the person is on it`);
+          off(gate);
+          const left = Date.now();
+          for (const end = left + 3000; Date.now() < end && backend.tally().releases === 0; ) await new Promise((r) => setTimeout(r, 10));
+          after = backend.tally().releases === 1 ? Date.now() - left : null;
+        },
+      },
+    });
+    assert.ok(after !== null, `${mode}: released after the person left (never would be a bug)`);
+    assert.ok(after >= 250 && after <= 300 + 400, `${mode}: released one idle window (300 ms) after the person left, not at once: ${after} ms`);
+  }
+});
+
+test("#1098: an idle window releases nothing while a person drives or watches the live view, and the next window after they leave releases it; with nobody on the session, idle releases as before", async (t) => {
+  const { drivingGates } = await import("@parcha/pi-browser/live-view");
+  const waitFor = async (check, ms = 3000) => { for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 25))) if (check()) return true; return check(); };
+  for (const [mode, on, off] of [["driving", (g) => g.input(), (g) => g.end()], ["watching", (g) => g.setViewing(true), (g) => g.setViewing(false)], ["nobody", () => {}, () => {}]]) {
+    const tags = [];
+    const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+    await session(t, [["snapshot"], ["browser_read"]], {
+      backend, policy: { idleReleaseS: 0.05 }, settle: true,
+      onSession: (row) => { if (row.session?.tag && !tags.includes(row.session.tag)) tags.push(row.session.tag); },
+      between: {
+        1: async () => {
+          const gate = drivingGates(tags[0]);
+          on(gate);
+          await new Promise((r) => setTimeout(r, 400));
+          assert.equal(backend.tally().releases, mode === "nobody" ? 1 : 0, `${mode}: past the idle window`);
+          off(gate);
+          if (mode !== "nobody") assert.ok(await waitFor(() => backend.tally().releases === 1), `${mode}: the next idle window after the person left releases it`);
+        },
+      },
+    });
+    assert.equal(backend.tally().creates, 2, `${mode}: the read after the release opens a fresh session`);
+  }
+});
+
+const idleReleased = async (harness) => { for (let i = 0; i < 200 && (await harness.inspect(ctx)).tasks.some((task) => task.record.kind === "browser.release"); i += 1) await new Promise((r) => setTimeout(r, 25)); };
+const releaseIdle = async (_backend, { browser, harness, root }) => { await browser.release(root, "idle", ctx); await idleReleased(harness); };
+const blankIsEmpty = { classifyPage: async () => ({ wall: "empty_or_template", injection: null, confidence: 0.9 }) };
+
+test("the first call after an idle release says so first and carries previous_session; the call after it does not", async (t) => {
+  const done = await session(t, [["snapshot"], ["snapshot"], ["snapshot"]], { between: { 1: releaseIdle } });
+  const [old] = done.sessions.sessions;
+  assert.equal(typeof old.endedAt, "string");
+  assert.match(done.texts[1], /^Your previous browser session was released/, "the release is the first thing the call says");
+  assert.deepEqual(done.seen[1].details?.previous_session, { released: true, reason: "idle", at: old.endedAt });
+  assert.equal(done.seen[2].details?.previous_session, undefined, "only the first call after the release says it");
+  // A first call that fails says the release first too, never after the failure's own keys.
+  const failing = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  const failed = await session(t, [["snapshot"], ["run", { code: "await page.click('a')" }]], { backend: failing, between: { 1: async (b, opened) => { await releaseIdle(b, opened); b.fail("driver.run", 1); } } });
+  const answer = JSON.parse(failed.texts[1]);
+  assert.equal(failed.seen[1].isError, true);
+  assert.deepEqual(Object.keys(answer).slice(0, 2), ["notice", "previous_session"], "the release leads the failure");
+  assert.match(answer.notice, /^Your previous browser session was released/);
+  assert.deepEqual(answer.previous_session, { released: true, reason: "idle", at: failed.sessions.sessions[0].endedAt });
+});
+
+test("a read of about:blank in a browser that replaced a released one says it is fresh and to navigate to the last page, never a wall verdict", async (t) => {
+  const backend = new FakeBackend({ start: "about:blank", pages: { [START]: ARTICLE } });
+  const done = await session(t, [["snapshot"], ["run", { code: "await page.click('a')" }], ["browser_read"]], { backend, decisions: blankIsEmpty, between: { 1: (b) => b.goto(START), 2: releaseIdle } });
+  const [old] = done.sessions.sessions;
+  assert.equal(old.lastUrl, START, "the replaced session's last page");
+  const answer = JSON.parse(done.texts[2]);
+  assert.equal(done.seen[2].isError, true);
+  assert.equal(Object.keys(answer)[0], "notice");
+  assert.deepEqual(answer.previous_session, { released: true, reason: "idle", at: old.endedAt });
+  assert.equal(answer.wall, undefined, "a fresh browser is not a wall");
+  assert.match(answer.message, /fresh/);
+  assert.ok(answer.message.includes(START), "names the last page");
+  assert.equal(answer.next?.action, "drive_page");
+  assert.ok(answer.next.note.includes(START));
+  // A run that loads no page records about:blank: the browser is still fresh.
+  const ran = await session(t, [["snapshot"], ["run", { code: "await page.click('a')" }], ["run", { code: "return 1" }], ["browser_read"]], { backend: new FakeBackend({ start: "about:blank", pages: { [START]: ARTICLE } }), decisions: blankIsEmpty, between: { 1: (b) => b.goto(START), 2: releaseIdle } });
+  const still = JSON.parse(ran.texts[3]);
+  assert.equal(still.wall, undefined, "a run that loaded no page leaves the browser fresh");
+  assert.match(still.message, /fresh/);
+  assert.ok(still.message.includes(START), "and the last page is still named");
+  // A replacement launch that fails between the release and the next call does not take the release's place (P2).
+  const flaky = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  const after = await session(t, [["snapshot"], ["snapshot"], ["snapshot"]], { backend: flaky, between: { 1: async (b, opened) => { await releaseIdle(b, opened); b.fail("create", 1); } } });
+  assert.equal(after.seen[1].isError, true, "the replacement launch failed");
+  assert.deepEqual(after.seen[2].details?.previous_session, { released: true, reason: "idle", at: after.sessions.sessions[0].endedAt }, "the next call still says the idle release");
+  // A script that wrote into about:blank (a title, text) made a page: it is read, never called fresh (examples.test.mjs's
+  // crash-and-resume sets its title on about:blank).
+  const written = await session(t, [["browser_read"]], { backend: new FakeBackend({ start: "about:blank", pages: { "about:blank": fixturePage("about:blank", "Written by a script.", "Scripted") } }), decisions: { classifyPage: async () => ({ wall: "content", injection: null, confidence: 0.9 }) } });
+  assert.equal(written.seen[0].isError, false, written.texts[0]);
+  assert.match(written.texts[0], /Written by a script/);
+  // A first session that has loaded nothing yet: the same answer, with no release to tell and no last page.
+  const first = await session(t, [["browser_read"]], { backend: new FakeBackend({ start: "about:blank", pages: {} }), decisions: blankIsEmpty });
+  const fresh = JSON.parse(first.texts[0]);
+  assert.deepEqual([fresh.wall, fresh.notice, fresh.previous_session, fresh.next?.action], [undefined, undefined, undefined, "drive_page"]);
+  assert.match(fresh.message, /fresh/);
 });
 
 test("browser_release on a session custody gave up releasing (lost) does not say it was released: the browser may still run", { timeout: 90_000 }, async (t) => {
@@ -402,6 +986,18 @@ test("the session meter: each session tool's result carries the session's time s
   assert.deepEqual([unpriced.sessions.sessions[0].spent.seconds, unpriced.sessions.sessions[0].spent.usd], [60, 0], "the seconds are recorded, no dollars");
 });
 
+test("a host that names no session price is metered at the package's list price and the record says so; its own price, even one equal to the list's, and a deliberate gap carry no such mark", async (t) => {
+  const listed = await session(t, [["snapshot"], ["browser_release"]], { settle: true });
+  const [record] = listed.sessions.sessions;
+  assert.deepEqual([record.spent.state, record.spent.final, record.spent.seconds, record.spent.usd, record.spent.estimatedUsd], ["priced", true, 60, 0.002, 0.002], `the minimum minute at the list's $0.12 an hour, all of it an estimate: ${JSON.stringify(record.spent)}`);
+
+  const own = await session(t, [["snapshot"], ["browser_release"]], { prices: { sessionUsdPerHour: 0.12 }, settle: true });
+  assert.deepEqual([own.sessions.sessions[0].spent.usd, own.sessions.sessions[0].spent.estimatedUsd], [0.002, undefined], "the host's own price is the host's, whatever its value");
+
+  const gap = await session(t, [["snapshot"], ["browser_release"]], { prices: { sessionUsdPerHour: null }, settle: true });
+  assert.deepEqual([gap.sessions.sessions[0].spent.state, gap.sessions.sessions[0].spent.usd, gap.sessions.sessions[0].spent.estimatedUsd], ["unpriced", 0, undefined], "a deliberate gap stays unpriced and is not turned into the list's price");
+});
+
 test("the meter's edges: a host tool that throws before it returns is a typed failure and still metered; the host hears the final bill", async (t) => {
   const thrown = await session(t, [["browser_read"], ["snapshot"]], { prices: { sessionUsdPerHour: 36 }, tools: { snapshot: () => { throw new Error("the host's tool broke"); } } });
   assert.equal(thrown.seen[1].isError, true);
@@ -413,6 +1009,298 @@ test("the meter's edges: a host tool that throws before it returns is a typed fa
   const event = rows.find((r) => r.change === "released");
   assert.deepEqual(event?.spent, released.sessions.sessions[0].spent, "the released event carries the bill the record keeps");
   assert.equal(event?.spent.final, true);
+});
+
+const said = (value) => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
+const codeOf = (promise) => promise.then(() => "acted", (error) => error.failure?.code ?? String(error));
+const holding = (requestId) => async (_args, port) => { await port.session(); return said(await port.hold(requestId)); };
+
+test("a driver attached before a hold cannot act: the read that raced the hold fails waiting_for_human and never reaches the page", async (t) => {
+  const real = pageTools();
+  const raced = (args, port, call) => real.browser_read(args, {
+    ...port,
+    // Forced race: the hold commits after the read attached and before its first driver call.
+    session: async () => { const attached = await port.session(); await port.hold("handoff-7"); return attached; },
+  }, call);
+  const { backend, texts, sessions } = await session(t, [["snapshot"], ["browser_read"], ["snapshot"]], { tools: { browser_read: raced } });
+  assert.deepEqual(backend.dispatched.map((row) => row.op), ["snapshot", "close"], "the stale driver never read the page; the hold closed it");
+  const refused = failure(texts[1]);
+  assert.deepEqual([refused.code, refused.retryable, refused.effect], ["waiting_for_human", false, "none"], texts[1]);
+  assert.match(refused.message, /handoff-7/);
+  assert.equal(failure(texts[2]).code, "waiting_for_human", "the next call sees the hold");
+  assert.equal(backend.tally().attaches, 1, "and attaches nothing");
+  const [record] = sessions.sessions;
+  assert.deepEqual([record.state, record.fence, record.handoff], ["held", 1, "handoff-7"]);
+});
+
+test("a held session handed back: the next call reattaches under the new fence and is told; a driver from before the hold still cannot act", async (t) => {
+  const notice = "A person finished your handoff (done): verify the form was sent on the page before acting.";
+  const handoff = async (_args, port) => {
+    const before = await port.session();
+    await port.hold("handoff-8");
+    await port.resume(notice);
+    await port.resume(null);
+    return said({ fence: before.fence, stale: await codeOf(before.driver.page()) });
+  };
+  const { backend, texts, sessions } = await session(t, [["snapshot"], ["browser_relaunch"], ["snapshot"]], { tools: { browser_relaunch: handoff } });
+  assert.deepEqual(failure(texts[1]), { fence: 0, stale: "stale_snapshot" });
+  assert.ok(texts[2].startsWith(notice), texts[2]);
+  assert.deepEqual([backend.tally().creates, backend.tally().attaches], [1, 2], "the hold let go of the driver; the next call attached again");
+  assert.equal(backend.dispatched.filter((row) => row.op === "read").length, 0);
+  const [record] = sessions.sessions;
+  assert.deepEqual([record.state, record.fence, record.handoff ?? null], ["live", 2, null]);
+});
+
+test("a run journaled, then fenced by a hold before its driver call: the action never reaches the page, and its entry is settled as not sent", async (t) => {
+  const real = pageTools();
+  let raced = false;
+  // The hold commits between the run's journal entry and its driver call: the first run's port holds as soon as dispatching is committed.
+  const run = (args, port, call) => {
+    if (raced) return real.run(args, port, call);
+    raced = true;
+    const racing = new Proxy(port, { get: (target, key) => (key === "dispatching" ? async (effect) => { await target.dispatching(effect); await target.hold("handoff-race"); } : Reflect.get(target, key)) });
+    return real.run(args, racing, call);
+  };
+  const giveBack = async (_args, port) => { await port.resume(null); return said({ ok: true }); };
+  let mid = null;
+  const code = "await page.click('a')";
+  const { backend, texts, sessions } = await session(t, [["snapshot"], ["run", { code }], ["browser_relaunch"], ["run", { code }]], {
+    tools: { run, browser_relaunch: giveBack },
+    between: { 2: async (b, { browser, harness, root }) => { mid = { dispatches: b.tally().dispatches, record: (await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions[0] }; } },
+  });
+  assert.equal(failure(texts[1]).code, "waiting_for_human", texts[1]);
+  assert.equal(mid.dispatches, 0, "the fenced run never reached the page");
+  assert.deepEqual([mid.record.state, mid.record.pendingEffect], ["held", null], "its entry is settled as not sent: nothing waits on a look, before or after a restart");
+  assert.equal(texts[3].startsWith("{\"ok\":false"), false, texts[3]);
+  assert.equal(backend.tally().dispatches, 1, "handed back, the identical run runs, once");
+  assert.equal(sessions.sessions[0].pendingEffect?.finished, true, "and journals as any run does");
+});
+
+test("a run that reached the page before a hold fenced its later driver call keeps its entry: it may have acted", async (t) => {
+  const real = pageTools();
+  // The run's driver call goes through; then the hold commits, and a further call of the same action meets the fence.
+  const run = (args, port, call) => real.run(args, new Proxy(port, { get: (target, key) => (key === "session" ? async () => {
+    const s = await target.session();
+    const driver = s.driver;
+    return { ...s, driver: new Proxy(driver, { get: (d, k) => (k === "run" ? async (input) => { const out = await d.run(input); await target.hold("handoff-late"); await d.page(); return out; } : Reflect.get(d, k)) }) };
+  } : Reflect.get(target, key)) }), call);
+  const { backend, texts, sessions } = await session(t, [["snapshot"], ["run", { code: "await page.click('a')" }]], { tools: { run } });
+  assert.equal(failure(texts[1]).code, "waiting_for_human", texts[1]);
+  assert.equal(backend.tally().dispatches, 1, "the run reached the page");
+  const [record] = sessions.sessions;
+  assert.deepEqual([record.state, record.pendingEffect?.callId, record.pendingEffect?.finished], ["held", "call-1", true], "its entry stays: a resumed run must look before repeating it");
+});
+
+test("a fenced driver counts the calls it lets through; a call made after the fence moved is a FenceRefusal and is not counted", async () => {
+  const { fenced, FenceRefusal, passedThrough } = await import("../dist/core/custody.js");
+  let mark;
+  const seen = [];
+  const driver = fenced({ run: async (input) => { seen.push(input); return input; } }, 1, () => mark);
+  assert.equal(passedThrough(driver), 0);
+  assert.equal(await driver.run("a"), "a");
+  assert.equal(passedThrough(driver), 1);
+  mark = { fence: 2, failure: { ok: false, code: "waiting_for_human", retryable: false, effect: "none", message: "held" } };
+  await assert.rejects(driver.run("b"), (error) => error instanceof FenceRefusal && error.failure.code === "waiting_for_human");
+  assert.deepEqual([passedThrough(driver), seen], [1, ["a"]]);
+  assert.equal(passedThrough({ run: async () => {} }), null, "a driver that is not fenced counts nothing");
+});
+
+test("a journal entry in the shape an earlier build wrote (no prior, no toldBy) still resumes: told once, and one that build marked told is told once more", async (t) => {
+  // The entry an earlier build left: finished, from another process, its answer never saved; `told` as that build marked it.
+  const plant = (told) => async (_backend, { browser, harness, root }) => harness.commit(async (tx) => {
+    const state = await tx.doc(browser.docs.Sessions, root.id);
+    state.sessions[0].pendingEffect = { callId: "call-old", codeSha: "sha-old", url: START, at: "2026-10-14T00:00:00.000Z", finished: true, incarnation: "a-process-before-this-build", after: 0, ...(told ? { told: true } : {}) };
+  }, ctx);
+  for (const told of [false, true]) {
+    const { texts, seen, sessions } = await session(t, [["snapshot"], ["browser_read"], ["snapshot"]], { between: { 1: plant(told) } });
+    assert.match(texts[1], /Your run call call-old on \S+ ran, but the process stopped before its answer reached you/, `told: ${told}: the planted entry is told`);
+    assert.equal(seen[1].details?.pendingEffect?.callId, "call-old", `told: ${told}: with its facts`);
+    assert.doesNotMatch(texts[2], /call-old/, `told: ${told}: and only once`);
+    assert.equal(sessions.sessions[0].pendingEffect?.toldBy, "call-1", `told: ${told}: now told by the call whose answer was saved`);
+  }
+});
+
+test("a hold needs a live session; a second hold for the same handoff answers as the first, another handoff waits", async (t) => {
+  const holds = async (_args, port) => {
+    const none = await codeOf(port.hold("handoff-1"));
+    await port.session();
+    const first = await port.hold("handoff-1");
+    const again = await port.hold("handoff-1");
+    return said({ none, same: JSON.stringify(first) === JSON.stringify(again), other: await codeOf(port.hold("handoff-2")), sessionId: first.sessionId });
+  };
+  const { texts, sessions } = await session(t, [["browser_relaunch"]], { tools: { browser_relaunch: holds } });
+  const [record] = sessions.sessions;
+  assert.deepEqual(failure(texts[0]), { none: "refused", same: true, other: "waiting_for_human", sessionId: record.resourceId });
+  assert.deepEqual([record.fence, record.handoff], [1, "handoff-1"]);
+});
+
+test("while a person holds the browser a relaunch is refused and launches nothing; browser_release ends the hold", async (t) => {
+  const { backend, texts, sessions } = await session(t, [["snapshot"], ["browser_relaunch", { verified: true }], ["browser_release"], ["browser_read"]], { tools: { snapshot: holding("handoff-3") }, settle: true });
+  assert.equal(failure(texts[1]).code, "waiting_for_human", texts[1]);
+  assert.equal(failure(texts[2]).released, true, texts[2]);
+  assert.doesNotMatch(texts[3], /waiting_for_human/);
+  assert.deepEqual([backend.tally().creates, backend.tally().releases, backend.liveCount()], [2, 1, 1]);
+  assert.deepEqual([sessions.sessions[0].state, sessions.sessions[0].releaseReason], ["released", "tool"]);
+});
+
+test("a held session the host assigned answers a relaunch with the hold, not the fixed-session refusal", async (t) => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  const made = await backend.provider.create({ tag: "host-made", maxLifetimeS: 600, idleTimeoutS: 0, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal);
+  const { assignedSessionProvider } = await import("@parcha/pi-browser/providers/assigned");
+  const provider = assignedSessionProvider({ name: "host-site", session: { id: made.id, attach: () => backend.provider.attach(made), status: async () => "running", release: async () => {}, failure: () => null } });
+  const { texts } = await session(t, [["snapshot"], ["browser_relaunch"]], { backend, provider, tools: { snapshot: holding("handoff-fixed") } });
+  assert.equal(failure(texts[1]).code, "waiting_for_human", texts[1]);
+  assert.deepEqual([backend.tally().creates, backend.tally().releases], [1, 0], "nothing launched or released");
+});
+
+test("browser_release through the composed release path (#1001's releasable guard, #1057's already_released body): an open session and a held one are released; an already-released one says so; a lost one does not", { timeout: 90_000 }, async (t) => {
+  // A release that keeps failing retries on a backoff (about 15 s in all) before custody gives up: wait up to a minute.
+  const settled = async (harness) => { for (let i = 0; i < 600 && (await harness.inspect(ctx)).tasks.some((task) => task.record.kind === "browser.release"); i += 1) await new Promise((r) => setTimeout(r, 100)); };
+  // An open (live) record: the guard lets it through, and the release is this call's.
+  const open = await session(t, [["snapshot"], ["browser_release"]], { settle: true });
+  assert.deepEqual([failure(open.texts[1]).released, failure(open.texts[1]).already_released], [true, undefined], open.texts[1]);
+  assert.deepEqual([open.sessions.sessions[0].state, open.sessions.sessions[0].releaseReason], ["released", "tool"]);
+  // A held record: releasable(held, "tool") lets it through too, and it is released as the tool's.
+  let before = null;
+  const held = await session(t, [["snapshot"], ["browser_read"], ["browser_release"]], { tools: { browser_read: holding("handoff-compose") }, settle: true, between: { 2: async (_b, { browser, harness, root }) => { before = (await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions[0].state; } } });
+  assert.equal(typeof failure(held.texts[1]).tag, "string", "the hold took the session");
+  assert.equal(before, "held", "and the record was held when browser_release ran");
+  assert.deepEqual([failure(held.texts[2]).released, failure(held.texts[2]).already_released], [true, undefined], held.texts[2]);
+  assert.deepEqual([held.sessions.sessions[0].state, held.sessions.sessions[0].releaseReason], ["released", "tool"], "the held record was released by the tool");
+  // An already-released record: the guard stops it, and #1057's body says when and by what.
+  const gone = await session(t, [["snapshot"], ["browser_release"]], { between: { 1: async (_b, { browser, harness, root }) => { await browser.release(root, "idle", ctx); await settled(harness); } } });
+  const [record] = gone.sessions.sessions;
+  assert.deepEqual([failure(gone.texts[1]).released, failure(gone.texts[1]).already_released], [false, { reason: "idle", at: record.endedAt }], gone.texts[1]);
+  // A lost record (custody gave up releasing it): the guard stops it, and the body claims no release.
+  const { RELEASE_ATTEMPTS } = await import("@parcha/pi-browser/durable");
+  const lost = await session(t, [["snapshot"], ["browser_release"]], { between: { 1: async (backend, { browser, harness, root }) => { backend.fail("release", RELEASE_ATTEMPTS); await browser.release(root, "idle", ctx); await settled(harness); } } });
+  assert.equal(lost.sessions.sessions[0].state, "lost");
+  assert.deepEqual([failure(lost.texts[1]).released, failure(lost.texts[1]).already_released], [false, undefined], lost.texts[1]);
+});
+
+test("an idle window releases nothing while a person holds the browser; the host's close releases it", async (t) => {
+  const { backend, texts, sessions } = await session(t, [["snapshot"], ["browser_read"], ["browser_read"]], {
+    tools: { snapshot: holding("handoff-4") }, policy: { idleReleaseS: 0.05 }, settle: true,
+    between: { 1: () => new Promise((resolve) => setTimeout(resolve, 300)), 2: async (_backend, { browser, root }) => browser.release(root, "close", ctx) },
+  });
+  assert.equal(failure(texts[1]).code, "waiting_for_human", texts[1]);
+  assert.match(texts[2], /released when the host closed it/);
+  const [held] = sessions.sessions;
+  assert.equal(backend.tally().creates, 2);
+  assert.equal(backend.ledger.filter((row) => row.op === "release" && row.id === held.resourceId).length, 1);
+  assert.deepEqual([held.state, held.releaseReason], ["released", "close"]);
+});
+
+test("a held session the provider ended stops the wait: the next call opens a fresh one, and ended() retires it", async (t) => {
+  const read = await session(t, [["snapshot"], ["browser_read"]], { tools: { snapshot: holding("handoff-5") }, between: { 1: (backend) => backend.endAll() } });
+  assert.doesNotMatch(read.texts[1], /waiting_for_human/);
+  assert.match(read.texts[1], /had ended \(the provider closed it\)/);
+  assert.equal(read.backend.tally().creates, 2);
+  assert.deepEqual([read.sessions.sessions[0].state, read.sessions.sessions[0].releaseReason], ["released", "ended"]);
+
+  const ended = await session(t, [["snapshot"], ["browser_relaunch"]], { tools: { snapshot: holding("handoff-6"), browser_relaunch: async (_args, port) => said({ ended: await port.ended() }) }, between: { 1: (backend) => backend.endAll() } });
+  assert.deepEqual(failure(ended.texts[1]), { ended: true });
+  assert.deepEqual([ended.sessions.sessions[0].state, ended.sessions.sessions[0].releaseReason], ["released", "ended"]);
+});
+
+test("a model browser call while a person drives the live view is refused before it does anything, typed and retryable; once the person has gone it runs", async (t) => {
+  const { drivingGates } = await import("@parcha/pi-browser/live-view");
+  const tags = [];
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  const out = await session(t, [["snapshot"], ["snapshot"], ["browser_read"], ["snapshot"]], {
+    backend,
+    onSession: (row) => { if (!tags.includes(row.session.tag)) tags.push(row.session.tag); },
+    between: [undefined, () => { assert.equal(drivingGates(tags[0]).input(), "driving", "a viewer's input marks the person as driving"); }, undefined, () => { drivingGates(tags[0]).end(); }],
+  });
+  assert.match(out.texts[0], /Acme Corp/, "the first call ran before anyone drove");
+  for (const refused of [out.texts[1], out.texts[2]]) {
+    const failed = failure(refused);
+    assert.deepEqual([failed.ok, failed.code, failed.retryable, failed.effect], [false, "refused", true, "none"], refused);
+    assert.match(failed.message, /^person_driving: /);
+  }
+  assert.deepEqual([out.seen[1].isError, out.seen[2].isError], [true, true]);
+  assert.match(out.texts[3], /Acme Corp/, "the person left (the session's gate ended) and the call runs");
+  assert.equal(backend.tally().creates, 1, "a refused call opened no second session");
+});
+
+test("the live view's URL reaches onSession and nowhere else: not a model result, not the filed evidence, not the session records; a release kills it", async (t) => {
+  const { createLiveView, liveViewProvider } = await import("@parcha/pi-browser/live-view");
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  const host = createLiveView({ hostOrigin: null, viewer: { html: "", js: "", css: "" } });
+  t.after(() => host.close());
+  const rows = [];
+  const out = await session(t, [["snapshot"], ["browser_read"], ["browser_release"]], { backend, provider: liveViewProvider(backend.provider, host), onSession: (row, change) => { rows.push({ view: row.liveView, tag: row.session.tag, change }); }, settle: true });
+  const viewed = rows.filter((r) => r.view?.fullscreen);
+  assert.ok(viewed.length >= 1, "the host's onSession was handed the viewer's URL");
+  const url = new URL(viewed[0].view.fullscreen);
+  const token = new URLSearchParams(url.hash.slice(1)).get("t");
+  const id = url.pathname.split("/").at(-1);
+  assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(new Set(viewed.map((r) => r.view.fullscreen)).size, 1, "every report carries the same URL, so the token is not re-minted");
+  const everything = JSON.stringify({ texts: out.texts, seen: out.seen, filed: out.filed, sessions: out.sessions, usage: out.usage });
+  for (const secret of [token, id, url.host]) assert.equal(everything.includes(secret), false, `${secret.slice(0, 6)}... must not reach a result, a record or the evidence`);
+  assert.equal(host.known(viewed[0].tag), null, "the release ended the token");
+  assert.equal(rows.at(-1).change, "released");
+  assert.equal(rows.at(-1).view, null, "a released session reports no view");
+});
+
+test("browser_release and browser_relaunch are refused while a person drives the live view: nothing is released or created, the person keeps their session", async (t) => {
+  const { drivingGates } = await import("@parcha/pi-browser/live-view");
+  const tags = [];
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  const out = await session(t, [["snapshot"], ["browser_release"], ["browser_relaunch", { verified: true }], ["snapshot"], ["browser_release"]], {
+    backend, policy: { proxies: false },
+    onSession: (row) => { if (!tags.includes(row.session.tag)) tags.push(row.session.tag); },
+    between: [undefined, () => { drivingGates(tags[0]).input(); }, undefined, () => { drivingGates(tags[0]).end(); }, undefined],
+  });
+  for (const refused of [out.texts[1], out.texts[2]]) {
+    const failed = failure(refused);
+    assert.deepEqual([failed.ok, failed.code, failed.retryable, failed.effect], [false, "refused", true, "none"], refused);
+    assert.match(failed.message, /^person_driving: /);
+  }
+  assert.match(out.texts[3], /Acme Corp/, "the same session still serves the next call");
+  assert.deepEqual([backend.tally().creates, out.seen[4].isError], [1, false], "no session was created, and the release goes through once the person has gone");
+  assert.equal(backend.tally().releases, 1, "only the last release released anything");
+});
+
+test("a host's own implementation of a browser tool is a model call on the gate too: refused while a person drives, before it can act", async (t) => {
+  const { drivingGates } = await import("@parcha/pi-browser/live-view");
+  const tags = [];
+  let ran = 0;
+  const own = async (_args, port) => { await port.session(); ran += 1; return { content: [{ type: "text", text: JSON.stringify({ ok: true, host: "ran" }) }] }; };
+  const out = await session(t, [["snapshot"], ["snapshot"]], {
+    tools: { snapshot: own },
+    onSession: (row) => { if (!tags.includes(row.session.tag)) tags.push(row.session.tag); },
+    between: [undefined, () => { drivingGates(tags[0]).input(); }],
+  });
+  assert.equal(JSON.parse(out.texts[0]).host, "ran", "the host's tool serves the first call");
+  const failed = failure(out.texts[1]);
+  assert.deepEqual([failed.ok, failed.code, failed.retryable], [false, "refused", true], out.texts[1]);
+  assert.match(failed.message, /^person_driving: /);
+  assert.equal(ran, 1, "the host's tool did not run while a person drove");
+  drivingGates(tags[0]).end();
+});
+
+test("#1001 x #1065: a session custody holds for a person who is also in the live view and driving: the model's read is refused waiting_for_human, browser_release is refused person_driving and releases nothing, the idle window releases nothing, and only the host's close releases it", async (t) => {
+  const { drivingGates } = await import("@parcha/pi-browser/live-view");
+  const tags = [];
+  const { backend, texts, sessions } = await session(t, [["snapshot"], ["browser_read"], ["browser_release"], ["browser_read"]], {
+    tools: { snapshot: holding("handoff-both") }, policy: { idleReleaseS: 0.05 }, settle: true,
+    onSession: (row) => { if (row.session?.tag && !tags.includes(row.session.tag)) tags.push(row.session.tag); },
+    between: {
+      1: () => { drivingGates(tags[0]).setViewing(true); },
+      2: () => { assert.equal(drivingGates(tags[0]).input(), "driving", "the person in the viewer drives"); return new Promise((resolve) => setTimeout(resolve, 300)); },
+      3: async (_backend, { browser, root }) => { drivingGates(tags[0]).end(); await browser.release(root, "close", ctx); },
+    },
+  });
+  assert.equal(failure(texts[1]).code, "waiting_for_human", texts[1]);
+  const refused = failure(texts[2]);
+  assert.deepEqual([refused.code, refused.retryable, refused.effect], ["refused", true, "none"], texts[2]);
+  assert.match(refused.message, /^person_driving: /);
+  assert.match(texts[3], /released when the host closed it/);
+  const [held] = sessions.sessions;
+  assert.equal(backend.ledger.filter((row) => row.op === "release" && row.id === held.resourceId).length, 1, "the host's close is the one release");
+  assert.deepEqual([held.state, held.releaseReason], ["released", "close"], "not idle, not the tool");
 });
 
 const ME = { name: "work", save: true };
@@ -445,4 +1333,272 @@ test("a profile reaches the provider as asked, the record names it and only its 
 
   const none = await session(t, [["snapshot"]]);
   assert.equal(none.sessions.sessions[0].settings.profile, null);
+});
+
+test("screenshot: the result's details carry the captured image's own facts, and the text stays as it was", async (t) => {
+  const asked = await session(t, [["screenshot", { ask: "Is there a seal?" }], ["screenshot", { ask: "  " }]]);
+  const [first, second] = asked.seen;
+  const bytes = Buffer.from(first.content[1].data, "base64");
+  assert.deepEqual(first.details.media, { kind: "screenshot", path: "evidence/node-a/1-screenshot.jpg", mime: "image/jpeg", bytes: bytes.length, width: 1288, height: 711, ask: "Is there a seal?" });
+  assert.equal(first.details.media.mime, first.content[1].mimeType);
+  assert.deepEqual([first.details.evidence, first.details.sha256], ["evidence/node-a/1-screenshot.md", sha(bytes)], "the receipt and its hash are where they were");
+  assert.match(asked.texts[0], /^url: https:\/\/example\.test\/start\nevidence: evidence\/node-a\/1-screenshot\.md$/, "the text is unchanged: no path of the image, no 'saved:'");
+  assert.equal("ask" in second.details.media, false, "a blank question is no question");
+  assert.equal(second.details.media.path, "evidence/node-a/2-screenshot.jpg");
+
+  const png = await session(t, [["screenshot", { type: "png" }]]);
+  assert.deepEqual([png.seen[0].details.media.mime, png.seen[0].details.media.path], ["image/png", "evidence/node-a/1-screenshot.png"]);
+});
+
+test("screenshot: a sink that filed no capture of its own leaves the media path null, never a guess", async (t) => {
+  const none = await session(t, [["screenshot", {}]], { bodyPaths: false });
+  assert.equal(none.seen[0].details.media.path, null);
+  assert.equal(none.seen[0].details.media.kind, "screenshot");
+  assert.ok(none.seen[0].details.media.bytes > 0);
+});
+
+test("screenshot: after a budget retake the media block describes the image that was kept, not the one that was rejected", async (t) => {
+  const run = await session(t, [["screenshot", { type: "png", fullPage: true, ask: "Is there a seal?" }]], { backend: new FakeBackend({ start: START, pages: { [START]: ARTICLE }, deviceScale: 2 }) });
+  const kept = Buffer.from(run.seen[0].content[1].data, "base64");
+  assert.equal(run.filed[0].record.ext, "jpg", "a PNG request that was over budget is kept as the viewport JPEG");
+  assert.deepEqual(run.seen[0].details.media, { kind: "screenshot", path: "evidence/node-a/1-screenshot.jpg", mime: "image/jpeg", bytes: kept.length, width: 1288, height: 711, ask: "Is there a seal?" });
+  assert.match(run.texts[0], /this is the viewport at 1288x711$/, "and the text says the same size");
+});
+
+test("screenshot: a clip is captured alone, and the media block records it; the text names the clip, not the viewport, after a retake", async (t) => {
+  const clip = { x: 100, y: 50, width: 300, height: 200 };
+  const run = await session(t, [["screenshot", { clip, ask: "What is in the chart?" }]]);
+  const bytes = Buffer.from(run.seen[0].content[1].data, "base64");
+  assert.deepEqual(run.seen[0].details.media, { kind: "screenshot", path: "evidence/node-a/1-screenshot.jpg", mime: "image/jpeg", bytes: bytes.length, width: 300, height: 200, clip, ask: "What is in the chart?" });
+  assert.deepEqual(run.filed[0].record.args, { clip }, "the receipt's arguments name the clip");
+
+  const dense = await session(t, [["screenshot", { type: "png", clip: { x: 0, y: 0, width: 600, height: 500 } }]], { backend: new FakeBackend({ start: START, pages: { [START]: ARTICLE }, deviceScale: 4 }) });
+  assert.deepEqual([dense.seen[0].details.media.width, dense.seen[0].details.media.height, dense.seen[0].details.media.mime], [600, 500, "image/jpeg"], "the retake at CSS scale keeps the clip");
+  assert.deepEqual(dense.seen[0].details.media.clip, { x: 0, y: 0, width: 600, height: 500 });
+  assert.match(dense.texts[0], /this is the clip at 600x500$/);
+});
+
+test("screenshot: an element by snapshot ID or CSS selector is captured as its own box, and the media block names it", async (t) => {
+  const backend = () => new FakeBackend({ start: START, pages: { [START]: ARTICLE }, elements: { "1-42": { x: 20, y: 30, width: 400, height: 250 }, "#chart": { x: 0, y: 0, width: 640, height: 360 }, li: [{ x: 0, y: 0, width: 5, height: 5 }, { x: 0, y: 9, width: 5, height: 5 }] } });
+  const run = await session(t, [["screenshot", { id: "1-42" }], ["screenshot", { selector: "#chart" }]], { backend: backend() });
+  assert.deepEqual([run.seen[0].details.media.width, run.seen[0].details.media.height, run.seen[0].details.media.id, "selector" in run.seen[0].details.media], [400, 250, "1-42", false]);
+  assert.deepEqual(run.seen[0].details.media.clip, { x: 20, y: 30, width: 400, height: 250 });
+  assert.deepEqual([run.seen[1].details.media.width, run.seen[1].details.media.height, run.seen[1].details.media.selector, "id" in run.seen[1].details.media], [640, 360, "#chart", false]);
+  assert.equal(run.filed.length, 2);
+});
+
+test("screenshot: a region that cannot be captured is refused with the typed envelope and no capture is made or filed", async (t) => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE }, elements: { li: [{ x: 0, y: 0, width: 5, height: 5 }, { x: 0, y: 9, width: 5, height: 5 }] } });
+  const run = await session(t, [
+    ["screenshot", { clip: { x: 0, y: 0, width: 0, height: 10 } }], ["screenshot", { clip: { x: 1280, y: 0, width: 100, height: 10 } }],
+    ["screenshot", { selector: "#missing" }], ["screenshot", { selector: "li" }], ["screenshot", { id: "9-9", clip: { x: 0, y: 0, width: 5, height: 5 } }], ["screenshot", { id: "1-1", selector: "#a" }],
+  ], { backend });
+  assert.equal(run.seen.length, 6);
+  for (const [i, why] of [/empty/, /leaves the viewport/, /matches nothing/, /matches 2 elements/, /one of clip, id or selector/, /one of clip, id or selector/].entries()) {
+    assert.equal(run.seen[i].isError, true, `call ${i}`);
+    const f = failure(run.texts[i]);
+    assert.deepEqual([f.code, f.effect, f.retryable], ["refused", "none", false]);
+    assert.match(f.message, why);
+  }
+  assert.equal(run.filed.length, 0, "nothing was filed");
+  assert.equal(backend.dispatched.filter((row) => row.op === "screenshot").length, 0, "the browser took no capture");
+});
+
+test("screenshot: the shapes the route's model really sends (every optional property filled, empty ones blank or zero) capture what was meant, never loop on a refusal", async (t) => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE }, elements: { "#chart": { x: 0, y: 0, width: 640, height: 360 } } });
+  const filled = { fullPage: false, type: "jpeg", quality: 70, ask: "Read the count.", clip: { x: 0, y: 0, width: 0, height: 0 }, id: "", selector: "" };
+  const run = await session(t, [["screenshot", filled], ["screenshot", { ...filled, fullPage: true }], ["screenshot", { ...filled, fullPage: true, selector: "#chart" }]], { backend });
+  assert.deepEqual(run.seen.map((r) => r.isError), [false, false, false], run.texts.join(" | "));
+  assert.equal("clip" in run.seen[0].details.media, false, "an unset region is no region: the viewport");
+  assert.equal(run.seen[1].details.media.height, 8319 > 2000 ? 711 : 8319, "fullPage alone is as it always was (over budget, retaken as the viewport)");
+  assert.deepEqual([run.seen[2].details.media.width, run.seen[2].details.media.height, run.seen[2].details.media.selector], [640, 360, "#chart"], "a region beside fullPage is the region");
+  assert.equal(run.filed.length, 3);
+});
+
+// A challenge hosted in an iframe leaves the top document with no text, and the judge, shown only that text, called the page empty. It is shown the frames' origins too.
+const recordedJudge = () => { const seen = []; return { seen, decisions: { classifyPage: async (page) => { seen.push(page); return { wall: "content", injection: null, confidence: 0.9 }; } } }; };
+
+test("browser_read hands the judge the origins of the page's frames: distinct, origin only (no path, query or fragment), http(s) only, relative sources resolved against the page, at most five, in document order, and on a long page too", async (t) => {
+  const origin = new URL(START).origin;
+  const framed = (text) => ({ url: START, title: "Registry", text, html: `<html><body><iframe src="https://challenges.example/c/h?token=SECRET-FRAME-TOKEN#x"></iframe><iframe src='https://challenges.example/other'></iframe><IFRAME SRC=/ads/one></IFRAME><iframe src="about:blank"></iframe><iframe src="javascript:void(0)"></iframe><iframe src="data:text/html,hi"></iframe><iframe src="https://a.example/"></iframe><iframe src="https://b.example/"></iframe><iframe src="https://c.example/"></iframe><iframe src="https://d.example/"></iframe><iframe src="https://e.example/"></iframe></body></html>` });
+  const expected = ["https://challenges.example", origin, "https://a.example", "https://b.example", "https://c.example"];
+  for (const text of ["", "Search the registry. ".repeat(60)]) {
+    const judge = recordedJudge();
+    await session(t, [["snapshot"], ["browser_read"]], { backend: new FakeBackend({ start: START, pages: { [START]: framed(text) } }), decisions: judge.decisions });
+    assert.equal(judge.seen.length, 1);
+    assert.deepEqual(judge.seen[0].frames, expected, `a page with ${text.length} characters of text: the frames are given whatever the text is`);
+    assert.equal(JSON.stringify(judge.seen[0]).includes("SECRET-FRAME-TOKEN"), false, "no query value of a frame reaches the judge");
+  }
+});
+
+test("a page with no frames, or only frames the judge could not use, gives the judge no frames at all", async (t) => {
+  const judge = recordedJudge();
+  await session(t, [["snapshot"], ["browser_read"]], { backend: new FakeBackend({ start: START, pages: { [START]: ARTICLE } }), decisions: judge.decisions });
+  assert.equal("frames" in judge.seen[0], false, "no frames key when the page has none");
+  const blank = recordedJudge();
+  const page = { url: START, title: "Blank frames", text: "Text", html: '<html><body><iframe src="about:blank"></iframe><iframe srcdoc="<p>x</p>"></iframe><iframe></iframe></body></html>' };
+  await session(t, [["snapshot"], ["browser_read"]], { backend: new FakeBackend({ start: START, pages: { [START]: page } }), decisions: blank.decisions });
+  assert.equal("frames" in blank.seen[0], false, "about:blank, srcdoc and sourceless frames name no origin");
+});
+
+test("browser_read's frames are the page's real frame elements: markup that is not a frame (a script's string, a comment, a template, a noscript, a script template) never counts or fills the five, and a relative source resolves against the page's base href", async (t) => {
+  const html = `<html><head><base href="https://cdn.example/app/"><script>document.write('<iframe src="https://s1.example/x"></iframe>')</script></head><body>`
+    + `<!-- <iframe src="https://c1.example/"></iframe> --><template><iframe src="https://t1.example/"></iframe></template><noscript><iframe src="https://n1.example/ns"></iframe></noscript>`
+    + `<script type="text/template"><iframe src="https://s2.example/"></iframe></script><div id="x"></div><iframe src="frames/c.html"></iframe><IFRAME SRC=https://challenges.example/h></IFRAME></body></html>`;
+  const judge = recordedJudge();
+  await session(t, [["snapshot"], ["browser_read"]], { backend: new FakeBackend({ start: START, pages: { [START]: { url: START, title: "Registry", text: "", html } } }), decisions: judge.decisions });
+  assert.deepEqual(judge.seen[0].frames, ["https://cdn.example", "https://challenges.example"], "only the two real frames, the relative one on the base's host");
+});
+
+test("a frameset page's frame elements count too, in document order (a <frame> outside a frameset is not an element, as in a browser)", async (t) => {
+  const html = '<html><frameset cols="50%,50%"><frame src="https://a.example/left?token=SECRET-FRAMESET"><frame src="/right"></frameset></html>';
+  const judge = recordedJudge();
+  await session(t, [["snapshot"], ["browser_read"]], { backend: new FakeBackend({ start: START, pages: { [START]: { url: START, title: "Frameset", text: "", html } } }), decisions: judge.decisions });
+  assert.deepEqual(judge.seen[0].frames, ["https://a.example", new URL(START).origin]);
+  assert.equal(JSON.stringify(judge.seen[0]).includes("SECRET-FRAMESET"), false);
+});
+
+// The Incapsula block page: a relative frame whose only content is the message the page puts INSIDE the iframe element. A browser does not render it, so innerText is empty; the frame's origin is the page's own.
+test("a frame's fallback text (the text inside the iframe element, collapsed, at most 200 characters, redacted, at most five) reaches the judge beside the origins: the Incapsula block page is not an empty page", async (t) => {
+  const incident = "438000810077296441-372106977187599434";
+  const html = `<html><head><META NAME="robots" CONTENT="noindex,nofollow"></head><body><iframe src="/_Incapsula_Resource?CWUDNSAI=24&xinfo=1-2-3&incident_id=${incident}" frameborder=0 width="100%" height="100%">Request unsuccessful.\n   Incapsula incident ID: ${incident}</iframe></body></html>`;
+  const judge = recordedJudge();
+  await session(t, [["snapshot"], ["browser_read"]], { backend: new FakeBackend({ start: START, pages: { [START]: { url: START, title: "Search", text: "", html } } }), decisions: judge.decisions });
+  assert.deepEqual(judge.seen[0].frames, [new URL(START).origin], "a same-origin frame: the origin alone says nothing");
+  assert.deepEqual(judge.seen[0].frameText, [`Request unsuccessful. Incapsula incident ID: ${incident}`], "the fallback text, whitespace collapsed");
+  assert.equal(JSON.stringify(judge.seen[0]).includes("CWUDNSAI"), false, "the frame's path and query never reach the judge");
+
+  const many = Array.from({ length: 7 }, (_, i) => `<iframe src="https://f${i}.example/">${"x".repeat(i === 0 ? 300 : 5)}-${i} Bearer ${"SECRETSHAPE"}0123456789abcdefghij</iframe>`).join("") + '<template><iframe src="https://t.example/">inert text</iframe></template><iframe src="https://e.example/"></iframe>';
+  const bounded = recordedJudge();
+  await session(t, [["snapshot"], ["browser_read"]], { backend: new FakeBackend({ start: START, pages: { [START]: { url: START, title: "Many", text: "", html: `<html><body>${many}</body></html>` } } }), decisions: bounded.decisions });
+  const texts = bounded.seen[0].frameText;
+  assert.equal(texts.length, 5, "at most five");
+  assert.ok(texts.every((text) => text.length <= 200), "each at most 200 characters");
+  assert.equal(JSON.stringify(bounded.seen[0]).includes("SECRETSHAPE0123456789abcdefghij"), false, "redacted like every other text");
+  assert.equal(JSON.stringify(bounded.seen[0]).includes("inert text"), false, "a template's frame is not a frame");
+
+  const none = recordedJudge();
+  await session(t, [["snapshot"], ["browser_read"]], { backend: new FakeBackend({ start: START, pages: { [START]: { url: START, title: "Plain", text: "", html: '<html><body><iframe src="https://a.example/"></iframe></body></html>' } } }), decisions: none.decisions });
+  assert.equal("frameText" in none.seen[0], false, "a frame with no fallback text adds no frameText");
+});
+
+test("a secret that straddles the 200-character cut of a frame's fallback text is redacted whole before the cut: no half of it reaches the judge", async (t) => {
+  const secret = "run-token-0123456789"; // the fixture's redactor holds this value; a fragment of it would no longer match
+  const judge = recordedJudge();
+  const html = `<html><body><iframe src="https://a.example/">${"x".repeat(190)} ${secret} tail</iframe></body></html>`;
+  await session(t, [["snapshot"], ["browser_read"]], { backend: new FakeBackend({ start: START, pages: { [START]: { url: START, title: "Cut", text: "", html } } }), decisions: judge.decisions });
+  const [text] = judge.seen[0].frameText;
+  assert.ok(text.length <= 200 && text.startsWith("x".repeat(190)), "the text is the first 200 characters of what the page put there");
+  assert.equal(JSON.stringify(judge.seen[0]).includes("run-t"), false, "not even the start of the secret: it was redacted whole, then cut");
+});
+
+const REQUEST = "7d3f2a9c-1b4e-4c8a-9f21-0a6b5c4d3e21";
+const ASK = { request_id: REQUEST, instruction: "Solve the captcha on the page.", completion_condition: "the search results show" };
+const handoffPort = (answers) => {
+  const asked = [], polled = [];
+  return { asked, polled, port: {
+    request: async (ask) => { asked.push(ask); return ask.instruction.startsWith("Refuse") ? { refused: "nobody is at the desk" } : { interactionId: `int-${ask.requestId}` }; },
+    outcome: async (id) => { polled.push(id); return answers.length > 1 ? answers.shift() : answers[0]; },
+  } };
+};
+
+test("browser_request_handoff gives the session to a person, waits for the port's answer, and gets it back under a new fence", async (t) => {
+  const h = handoffPort(["pending", "done"]);
+  const { backend, seen, texts, sessions } = await session(t, [["snapshot"], ["browser_request_handoff", ASK], ["snapshot"]], { handoff: h.port });
+  const answer = failure(texts[1]);
+  assert.deepEqual([answer.ok, answer.outcome, answer.completion_condition], [true, "done", ASK.completion_condition], texts[1]);
+  const [record] = sessions.sessions;
+  assert.deepEqual(h.asked.map((a) => [a.requestId, a.sessionTag, a.sessionId, a.instruction, a.completionCondition]), [[REQUEST, record.tag, record.resourceId, ASK.instruction, ASK.completion_condition]], "the ask names the provider's session id beside the tag");
+  assert.deepEqual(h.polled, [`int-${REQUEST}`, `int-${REQUEST}`], "polled until the port answered");
+  assert.deepEqual([record.state, record.fence, record.handoff ?? null], ["live", 2, null]);
+  assert.equal(seen[2].isError, false, texts[2]);
+  assert.doesNotMatch(texts[2], /handoff/, "the call that waited told the outcome; the next one does not repeat it");
+  assert.equal(backend.tally().creates, 1);
+});
+
+test("a handoff the person cancelled or let expire comes back as the port says; an outright refusal answers refused and waits for nothing", async (t) => {
+  for (const outcome of ["cancelled", "expired"]) {
+    const { texts, sessions } = await session(t, [["snapshot"], ["browser_request_handoff", ASK]], { handoff: handoffPort([outcome]).port });
+    assert.deepEqual([failure(texts[1]).ok, failure(texts[1]).outcome], [true, outcome], texts[1]);
+    assert.deepEqual([sessions.sessions[0].state, sessions.sessions[0].fence], ["live", 2]);
+  }
+  const h = handoffPort(["done"]);
+  const refused = await session(t, [["snapshot"], ["browser_request_handoff", { ...ASK, instruction: "Refuse this one." }], ["snapshot"]], { handoff: h.port });
+  const answer = failure(refused.texts[1]);
+  assert.deepEqual([answer.ok, answer.code, answer.retryable], [false, "refused", false], refused.texts[1]);
+  assert.match(answer.message, /nobody is at the desk/);
+  assert.deepEqual(h.polled, [], "nothing waits on a refusal");
+  assert.deepEqual([refused.sessions.sessions[0].state, refused.sessions.sessions[0].fence], ["live", 2]);
+  assert.equal(refused.seen[2].isError, false, refused.texts[2]);
+});
+
+test("a handoff wait ends, typed, when the held session is released while the port still answers pending (a reconcile found the provider had stopped it)", { timeout: 20_000 }, async (t) => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  let refs = null;
+  const polled = [];
+  const port = {
+    request: async (ask) => ({ interactionId: `int-${ask.requestId}` }),
+    outcome: async (id) => {
+      polled.push(id);
+      // At the first poll the provider stops the browser and a run open's reconcile records the held session released.
+      if (polled.length === 1) { backend.endAll(); await refs.browser.reconcile(refs.harness, () => true, ctx); }
+      return "pending";
+    },
+  };
+  const { seen, texts, sessions } = await session(t, [["snapshot"], ["browser_request_handoff", ASK], ["snapshot"]], { backend, handoff: port, between: { 1: (_b, opened) => { refs = opened; } } });
+  assert.deepEqual([seen[1].isError, failure(texts[1]).code], [true, "session_ended"], texts[1]);
+  assert.deepEqual([sessions.sessions[0].state, sessions.sessions[0].releaseReason], ["released", "ended"]);
+  assert.equal(polled.length, 1, "the wait ended at its next poll, without asking the port again");
+  assert.equal(seen[2].isError, false, texts[2]);
+  assert.equal(backend.tally().creates, 2, "the next call opened a fresh session");
+});
+
+test("browser_request_handoff is listed only when the host gives a handoff port", () => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  const base = { provider: () => backend.provider, driver: fakeDriver(backend), evidence: { file: async () => null } };
+  const listed = (options) => createBrowserExtension(options).tools.some((tool) => tool.name === "browser_request_handoff");
+  assert.deepEqual([listed(base), listed({ ...base, handoff: handoffPort(["done"]).port })], [false, true]);
+});
+
+test("a port whose request throws gives the session straight back and fails typed", async (t) => {
+  const port = { request: async () => { throw Object.assign(new Error("the handoff service is unreachable"), { status: 503 }); }, outcome: async () => "done" };
+  const { seen, texts, sessions } = await session(t, [["snapshot"], ["browser_request_handoff", ASK], ["snapshot"]], { handoff: port });
+  assert.deepEqual([seen[1].isError, failure(texts[1]).ok], [true, false], texts[1]);
+  assert.deepEqual([sessions.sessions[0].state, sessions.sessions[0].fence], ["live", 2]);
+  assert.equal(seen[2].isError, false, texts[2]);
+});
+
+test("a provider that fails after the hold gives the session straight back: nobody was asked, nothing waits", async (t) => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  const h = handoffPort(["done"]);
+  let broken = false;
+  const { seen, texts, sessions } = await session(t, [["snapshot"], ["browser_request_handoff", ASK], ["snapshot"]], {
+    backend, handoff: h.port, provider: () => { if (broken) throw new Error("the provider is unreachable"); return backend.provider; },
+    between: { 1: () => { broken = true; }, 2: () => { broken = false; } },
+  });
+  assert.equal(seen[1].isError, true, texts[1]);
+  assert.deepEqual(h.asked, [], "nobody was asked");
+  assert.deepEqual([sessions.sessions[0].state, sessions.sessions[0].fence], ["live", 2]);
+  assert.equal(seen[2].isError, false, texts[2]);
+});
+
+test("a request retried after more than a page of newer handoffs gets its saved answer and asks nobody again", async (t) => {
+  const ids = Array.from({ length: 52 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+  const h = handoffPort(["done"]);
+  const calls = [["snapshot"], ...ids.map((id) => ["browser_request_handoff", { ...ASK, request_id: id }]), ["browser_request_handoff", { ...ASK, request_id: ids[0] }]];
+  const { texts } = await session(t, calls, { handoff: h.port });
+  assert.equal(h.asked.length, ids.length, "the retried request was answered from its saved wait");
+  assert.deepEqual([failure(texts.at(-1)).ok, failure(texts.at(-1)).outcome], [true, "done"], texts.at(-1));
+});
+
+// The judge is given the redacted page, never the run's registered values.
+test("browser_read hands the page judge text with the run's registered values removed", async (t) => {
+  const page = { ...ARTICLE, text: `Menu echoed run-token-0123456789 Footer` };
+  const backend = new FakeBackend({ start: START, pages: { [START]: page } });
+  const judged = [];
+  const decisions = { classifyPage: async (p) => { judged.push(p.text); return { wall: "content", injection: null, confidence: 0.9 }; } };
+  await session(t, [["browser_read"]], { backend, decisions });
+  assert.equal(judged.length, 1);
+  assert.doesNotMatch(judged[0], /run-token|run-t/);
+  assert.match(judged[0], /\[redacted\]/);
 });

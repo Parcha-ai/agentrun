@@ -4,6 +4,7 @@
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { join, posix, sep } from 'node:path';
 import { Parser } from 'htmlparser2';
+import { BLOB_EXTENSIONS, PAGE_EXTENSIONS, SHEET_EXTENSIONS } from './scan.ts';
 
 /** `manifest.artifact`: `files` maps each path under `report/` to the SHA-256 of its blob (`blobs/<sha>.<the path's extension>`). */
 export type Artifact = { title: string; entry: string; files: Record<string, string> };
@@ -23,7 +24,7 @@ export type Reading = {
   problems: string[];
 };
 
-const PAGE = /\.(?:html?|svg)$/i;
+const PAGE = /\.html?$/i;
 const SHEET = /\.css$/i;
 /** The files read for what they reach; the others (images, clips, documents) are kept whole. */
 export const readsAs = (path: string): 'page' | 'sheet' | undefined => (PAGE.test(path) ? 'page' : SHEET.test(path) ? 'sheet' : undefined);
@@ -32,6 +33,12 @@ const FORBIDDEN_TAGS = new Set(['script', 'iframe', 'frame', 'frameset', 'object
 /** The attributes whose value a browser fetches: each goes through the one check, whatever the element. */
 const LOADING = new Set(['src', 'poster', 'background', 'dynsrc', 'lowsrc', 'manifest', 'icon', 'codebase', 'archive', 'longdesc', 'action', 'formaction']);
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+
+/** Why a file of the artifact may not have this path's extension (draft 50): the blob allowlist, and `html`/`htm`/`css` as the artifact's own pages and stylesheets. `svg`, `xml`, `js` and the rest never. */
+export function extensionProblem(path: string): string | undefined {
+  const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
+  return BLOB_EXTENSIONS.includes(extension) || (PAGE_EXTENSIONS as readonly string[]).includes(extension) || (SHEET_EXTENSIONS as readonly string[]).includes(extension) ? undefined : `has the extension .${extension}, which a report file may not have`;
+}
 
 /** Why a path of the artifact is not allowed, or undefined: relative POSIX, nothing leading `/`, no `..`, no `\`, no scheme, no empty or `.` part. */
 export function pathProblem(path: string): string | undefined {
@@ -162,6 +169,7 @@ export function artifactProblems(artifact: unknown): string[] {
     if (why) out.push(`artifact path ${JSON.stringify(path.slice(0, 80))} ${why}`);
     if (typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash)) out.push(`artifact file ${path} has no 64-hex SHA-256`);
     if (!/\.[A-Za-z0-9]+$/.test(path)) out.push(`artifact path ${path} has no extension for its blob`);
+    else { const why = extensionProblem(path); if (why) out.push(`artifact path ${path} ${why}`); }
     const folded = path.toLowerCase();
     if (seen.has(folded)) out.push(`artifact paths ${seen.get(folded)} and ${path} are one path ignoring case`);
     seen.set(folded, path);
@@ -193,6 +201,8 @@ export function takeArtifact(report: string, keep: (bytes: Buffer, extension: st
     const real = realpathSync(at);
     if (!(real === root || real.startsWith(root + sep)) || !lstatSync(real).isFile()) { problems.push(`${path} is not a file inside report/`); continue; }
     if (!/\.[A-Za-z0-9]+$/.test(path)) { problems.push(`${path} has no extension for its blob`); continue; }
+    const refusedType = extensionProblem(path);
+    if (refusedType) { problems.push(`${path} ${refusedType}`); continue; }
     const bytes = readFileSync(real);
     const kind = readsAs(path);
     if (kind) {

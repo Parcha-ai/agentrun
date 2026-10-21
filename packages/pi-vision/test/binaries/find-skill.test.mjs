@@ -254,23 +254,6 @@ test("the frames checked come from the best copy, and the box is cited on the vi
   near(xywh(checked.cite), [60, 20, 25, 40], 1, "the box on the best copy");
 });
 
-test("a budget: the scan stops once it is spent, and says what it spent", async () => {
-  transcript();
-  const { values: [, scanned] } = await steps([narrowWith("budgetUsd: 0.1", "budgetUsd: 0.0001"), scan]);
-  assert.equal(scanned.frames, 3, "three frames at $0.000042 pass $0.0001");
-  assert.equal(scanned.stopped, "budget");
-  assert.ok(scanned.spentUsd >= 0.0001 && scanned.spentUsd < 0.0002);
-});
-
-test("a budget the scan spends to the end: the eyes and the checks ask nothing", async () => {
-  transcript();
-  const { values: [, scanned, , named, checked], eyes, jev } = await steps([narrowWith("budgetUsd: 0.1", `budgetUsd: ${25.5 * JEV_USD}`), scan, halve, name, check]);
-  assert.deepEqual([scanned.frames, scanned.stopped], [26, "budget"]);
-  assert.deepEqual([named.at, named.stopped], [null, "budget"]);
-  assert.deepEqual([eyes.ledger.length, jev.requests.length], [0, 26]);
-  assert.deepEqual([checked.found, checked.stopped], [false, "budget"]);
-});
-
 test("a step run again asks nothing it has, and counts nothing twice", async () => {
   transcript();
   const { values: [, once, again], jev } = await steps([narrow, scan, scan]);
@@ -348,38 +331,15 @@ test("a box of no size has no fragment: the thing is still found by its noul, ci
   assert.deepEqual([checked.found, checked.t, checked.cite, checked.noBox], [true, FIRST, `film.mp4#t=${FIRST}`, true]);
 });
 
-test("the budget is held in one place: a coarse pass of 40 frames and a request budget of 120, said once in the task and taught in the text", () => {
-  assert.equal((narrow.match(/maxJudges: 120/g) ?? []).length, 1, "one place to change it");
-  assert.match(narrow, /scanFrames: 40, maxJudges: 120, budgetUsd: 0\.1/);
-  const section = SKILL.slice(SKILL.indexOf("## The request budget"), SKILL.indexOf("## When to stop"));
-  for (const words of ["A host caps the Jev requests of a run", "200", "`maxJudges`", "a kept answer is not a request", "three requests short of it", "lower the coarse pass"]) assert.ok(section.includes(words), `the text says ${words}`);
+test("the skill holds the strategy and no spend guard of its own: a coarse pass of 40 frames, then halving and a three-frame check; no request or dollar budget", () => {
+  assert.match(narrow, /scanFrames: 40 \};/, "the one search knob is the coarse pass");
+  assert.doesNotMatch(SKILL, /maxJudges|budgetUsd|stopped: "budget"|request budget|## The request budget|host caps/i);
+  assert.doesNotMatch(SKILL, /task\.requests|requests >= limit|spent >= task/);
   assert.match(SKILL, /A long film is never scanned\s+a frame every few seconds/);
+  assert.match(SKILL, /Halve around the candidate/);
 });
 
-test("a request budget: the scan and the halving stop three requests short of it and the check still has its three; the search never asks for more than it", async () => {
-  transcript();
-  for (const [budget, frames] of [[13, 10], [12, 9]]) {
-    const { values: [, scanned, halved, , checked], jev } = await steps([narrowWith("maxJudges: 120", `maxJudges: ${budget}`), scan, halve, name, check]);
-    assert.deepEqual([scanned.frames, scanned.requests, scanned.stopped], [frames, frames, "budget"], `budget ${budget}`);
-    assert.equal(halved.requests, frames, "the halving asked nothing more: its span is already under 40 seconds");
-    assert.deepEqual([checked.found, checked.t, checked.requests, jev.requests.length], [true, FIRST, budget, budget], "three checks fill the budget, no more");
-  }
-  const { values: [, scanned, halved], jev } = await steps([narrowWith("maxJudges: 120", "maxJudges: 5"), scan, halve]);
-  assert.deepEqual([scanned.frames, scanned.requests, scanned.stopped, jev.requests.length], [2, 2, "budget", 2], "a budget of 5 holds 3 back for the check");
-  assert.deepEqual([halved.requests, halved.stopped, halved.span], [2, "budget", [0, 130]], "the halving asked nothing: the best frame so far is the lookalike at 130, and the budget is spent");
-});
-
-test("a step run again counts no request twice, and a halving that runs out of requests stops and says so", async () => {
-  transcript(null);
-  const { values: [, once, again], jev } = await steps([narrow, scan, scan]);
-  assert.deepEqual([again.requests, once.requests, jev.requests.length], [30, 30, 30], "the second scan asked, and counted, nothing");
-  const small = narrowWith("scanFrames: 40", "scanFrames: 4").replace("maxJudges: 120", "maxJudges: 10");
-  const { values: [, scanned, halved] } = await steps([small, scan, halve]);
-  assert.deepEqual([scanned.frames, scanned.requests], [4, 4], "a coarse pass of 4 frames at 75 seconds");
-  assert.deepEqual([halved.requests, halved.stopped, halved.span], [7, "budget", [150, 225]], "the halving stops at 10 minus 3, keeps the span it had and says so");
-});
-
-test("a 47-minute film is searched in about fifty Jev requests, far under a host's cap of 200, and the second is found", async () => {
+test("a 47-minute film is searched in 47 Jev requests (40 scanned, 4 halved, 3 checked), and the second is found", async () => {
   transcript(null);
   execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x707070:s=160x120:r=1:d=2820", "-vf", "drawbox=x=96:y=24:w=40:h=48:color=red@1:t=fill:enable='between(t,1500,1700)'",
     "-g", "30", "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", path.join(cwd, "long.mp4")]);
@@ -388,49 +348,43 @@ test("a 47-minute film is searched in about fifty Jev requests, far under a host
   assert.deepEqual(scanned.likely, [1562, 1633]);
   assert.deepEqual(halved.span, [1491, 1527], "one round of four frames brought the span from 71 seconds under 40");
   assert.deepEqual([named.at, checked.t, checked.found], [1500, 1500, true]);
-  assert.deepEqual([checked.requests, jev.requests.length], [47, 47], "40 scanned, 4 halved, 3 checked");
-  assert.ok(jev.requests.length < 60, "far under 200");
+  assert.equal(jev.requests.length, 47, "40 scanned, 4 halved, 3 checked");
 });
 
-test("a scan cut short by a failed call keeps its count: the request that failed was sent and counted, and a retry adds only what it asks", async () => {
+test("a scan cut short by a failed call keeps the scores it had, and a retry asks only what is left", async () => {
   transcript();
   const failing = pixelJev({ failAt: 5 });
   await assert.rejects(steps([narrow, scan], { jev: failing }), /503/);
   const kept = JSON.parse(fs.readFileSync(path.join(cwd, ".find", "umbrella", "task.json"), "utf8"));
-  assert.deepEqual([failing.sent, kept.requests, kept.scores.length], [5, 5, 4], "four answered and one that failed, all counted and saved as they happened");
+  assert.deepEqual([failing.sent, kept.scores.length], [5, 4], "four answered and one that failed, each score saved as it came");
   const retry = pixelJev();
-  const { values: [again], task } = await steps([scan], { jev: retry });
+  const { values: [again] } = await steps([scan], { jev: retry });
   assert.deepEqual([retry.sent, again.frames], [22, 26], "the four scored frames are not asked again");
-  assert.deepEqual([again.requests, task.requests, failing.sent + retry.sent], [27, 27, 27], "the count is every call either port got");
 });
 
-test("a halving and a check that fail keep their count too: the request is saved before it is asked", async () => {
+test("a halving cut short by a failed call keeps the price of the answers it had, and no request counter is saved", async () => {
   transcript(null);
   const small = narrowWith("scanFrames: 40", "scanFrames: 4");
   const failing = pixelJev({ failAt: 7 });
   await assert.rejects(steps([small, scan, halve], { jev: failing }), /503/);
   const kept = JSON.parse(fs.readFileSync(path.join(cwd, ".find", "umbrella", "task.json"), "utf8"));
-  assert.deepEqual([failing.sent, kept.requests], [7, 7], "four scanned, then three halving requests, the seventh failing");
-  const retry = pixelJev();
-  const { task } = await steps([halve, name, check], { jev: retry });
-  assert.equal(task.requests, failing.sent + retry.sent, "what the retry asked is added to what the failed run had sent");
-  assert.ok(task.requests <= task.maxJudges);
+  assert.ok(Math.abs(kept.spentUsd - 6 * JEV_USD) < 1e-12, "four scanned and two halving answers priced, the third halving request failed");
+  assert.ok(!("requests" in kept) && !("maxJudges" in kept) && !("budgetUsd" in kept), "the task holds no counter and no budget");
 });
 
 test("a check cut short after two confirmed frames keeps them: the retry asks nothing more and the match is not lost", async () => {
   transcript();
   // The scan and halving as usual, then the check on a Jev that fails on its third call.
-  const first = await steps([narrow, scan, halve, name]);
+  await steps([narrow, scan, halve, name]);
   const failing = pixelJev({ failAt: 3 });
   await assert.rejects(steps([check], { jev: failing }), /503/);
   const kept = JSON.parse(fs.readFileSync(path.join(cwd, ".find", "umbrella", "task.json"), "utf8"));
-  assert.deepEqual([failing.sent, kept.checks.map((c) => c.t), kept.found], [3, [FIRST - 1, FIRST], undefined], "two checks completed and kept, the third sent and counted");
-  assert.equal(kept.requests, first.task.requests + 3);
+  assert.deepEqual([failing.sent, kept.checks.map((c) => c.t), kept.found], [3, [FIRST - 1, FIRST], undefined], "two checks completed and kept, the third sent and failed");
   const retry = pixelJev();
   const { values: [checked], task } = await steps([check], { jev: retry });
   assert.deepEqual([retry.sent, checked.found, checked.t], [1, true, FIRST], "only the third frame is asked, and the match the earlier checks confirmed is kept");
   assert.equal(task.checks.length, 3);
-  // A match confirmed before the budget is spent stays found when the retry has no request left.
+  // With all three checks kept, a retry asks nothing, so a failing port cannot lose the match.
   const { values: [none] } = await steps([check], { jev: pixelJev({ failAt: 1 }) });
   assert.equal(none.found, true, "all three checks are kept: a retry asks nothing, and cannot fail");
 });

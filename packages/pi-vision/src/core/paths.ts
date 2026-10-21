@@ -58,3 +58,7 @@ export function pathSafe(line: string): string {
   }
   return out;
 }
+
+/** A path as a program's argument list takes it: absolute, or `./` first, so a name that starts with `-` is read as a file
+ *  and not as an option, and a name with a `:` is not read as an address. For POSIX paths, which these programs run on. */
+export const argvPath = (path: string): string => (path.startsWith("/") ? path : `./${path}`);

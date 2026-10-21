@@ -148,4 +148,5 @@ see the empty place for themselves; a `same` mark with a part missing cites each
 
 ## When pdftoppm or ffmpeg is missing
 
-The look skill's last section installs them: `poppler-utils` has `pdftoppm`, and `ffmpeg` has `ffprobe` too.
+Do as the look skill's last section says: never install a program yourself; tell the user which is missing and how to
+install it (`pdftoppm` and `pdftotext` come with poppler, `ffprobe` with ffmpeg).

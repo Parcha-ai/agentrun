@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
 import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
+import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, tapBox, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 // ---- run.json host lines from place.status() --------------------------------------------------------------------------------------------------
@@ -385,16 +385,35 @@ test('the slow tick does not queue a carry behind one still running: a place who
 test('a box charge that first appears in the last status read counts against the cap: the run is over budget', { timeout: 300_000 }, async (t) => {
   const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05 });
   const recording = join(tmp, 'recording');
-  let reads = 0;
+  let exited = false;
   const result = await demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
     const inner = localPlace({ self, paths, destroyBoxes, requestFile });
     const box = { provider: 'prov', kind: 'sandbox', from: '2026-10-16T10:00:00.000Z', usdPerSecond: 1, source: 'list', priced: true };
-    // The box's end is first reported by the third read, the last one the supervisor makes (start, exit, end): $60 against a cap of $0.10.
-    return { ...inner, status: async () => { reads += 1; return { record: null, boxes: [reads >= 3 ? { ...box, to: '2026-10-16T10:01:00.000Z' } : box] }; } };
+    // The box's end is first reported by a read made after the runner has exited (the supervisor's last), never by how many reads came before: the slow tick reads too, so a count can land mid-run. $60 against a cap of $0.10.
+    return { ...inner,
+      start: async (order) => { const runner = await inner.start(order); runner.exited.then(() => { exited = true; }, () => { exited = true; }); return runner; },
+      status: async () => ({ record: null, boxes: [exited ? { ...box, to: '2026-10-16T10:01:00.000Z' } : box] }) };
   } });
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
   assert.equal(result.overBudget, true, 'the charge that arrived with the last read is over the cap');
 });
+test('a box charge that first appears in the very last status read the supervisor makes (the second after the runner exits) counts against the cap: the run is over budget, which only the final budget check can see', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05 });
+  const recording = join(tmp, 'recording');
+  let exited = false;
+  let afterExit = 0;
+  const result = await demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    const box = { provider: 'prov', kind: 'sandbox', from: '2026-10-16T10:00:00.000Z', usdPerSecond: 1, source: 'list', priced: true };
+    // The box's end is first reported by the second read after the runner has exited: the first is the exit read, the second the last one the supervisor makes, before its final budget check. A charge that arrived at the exit read could be counted by the meter before that check; the slow tick reads too, so a count can land mid-run. $60 against a cap of $0.10.
+    return { ...inner,
+      start: async (order) => { const runner = await inner.start(order); runner.exited.then(() => { exited = true; }, () => { exited = true; }); return runner; },
+      status: async () => { if (exited) afterExit += 1; return { record: null, boxes: [afterExit >= 2 ? { ...box, to: '2026-10-16T10:01:00.000Z' } : box] }; } };
+  } });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.equal(result.overBudget, true, 'the charge that arrived with the last read is over the cap');
+});
+
 test('a delegation without a path (the package finds it by its inode) is kept: a delegation line and a revoke entry are written without one', { timeout: 300_000 }, async (t) => {
   const { tmp, options } = await specWith(t, { name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] });
   const recording = join(tmp, 'recording');

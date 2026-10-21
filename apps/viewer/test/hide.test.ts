@@ -66,6 +66,16 @@ test('a public replay keeps the meters and the look\'s receipt under Receipts; t
   assert.deepEqual(receipts(vision({ cite: K.page2, debug: ['durability'] })), ['meters: open', 'receipt: open']);
 });
 
+test('the vision panel marks every dollar figure it draws cost: its spend and a receipt\'s price, and nothing else', () => {
+  const costs = find(vision({ cite: K.page2 }), has('cost')).map(text);
+  assert.equal(costs.length, 2, costs.join(' | '));
+  assert.ok(costs.some((part) => part.startsWith('spend')), costs.join(' | '));
+  assert.ok(costs.some((part) => part.startsWith('price')), costs.join(' | '));
+  const dollars = (words: string) => words.split('$').length - 1;
+  assert.ok(dollars(costs.join(' ')) > 0, 'the figures are there, to show under ?debug=cost');
+  assert.equal(dollars(text(vision({ cite: K.page2 }))), dollars(costs.join(' ')), 'no other part names a dollar figure');
+});
+
 test('the workflow map marks its kills, and the strip that says there are none', () => {
   assert.deepEqual(marked(workflowMapPanel.view(workflowMapPanel.init(), { t: 0 })), ['No kill yet.']);
   const killed: Line[] = [{ channel: 'live', source: 'host', kind: 'kill', t: 5, seq: 1, data: { gen: 1, label: 'storm 1', crossing: null } }];
@@ -103,7 +113,7 @@ test('in Chrome: by default no kill, process or repeat is drawn and the payments
     for (const gone of [...DURABILITY, 'looks paid', 'cost']) assert.ok(!counters.includes(gone), `${query}: ${gone} is not drawn: ${counters.join(', ')}`);
     for (const kept of ['paid calls made', 'model turns']) assert.ok(counters.includes(kept), `${query}: ${kept} stays: ${counters.join(', ')}`);
     assert.deepEqual(shown.receipts, ['looks paid', 'cost'], `${query}: the payments and the cost are under Receipts`);
-    assert.equal(shown.opened, 2, `${query}: one click opens them`);
+    assert.equal(shown.opened, 1, `${query}: one click opens them, the cost aside: no dollar figure is drawn by default`);
     assert.ok(Number(shown.lane) > 0 && shown.laneShown === 0, `${query}: the process lane and its kills are in the page, none drawn`);
     assert.equal(shown.viewBox, '0 58 1000 102', `${query}: the timeline starts below the process lane`);
     assert.doesNotMatch(String(shown.chapters), /killed|process \d+ starts/, query);
@@ -116,4 +126,48 @@ test('in Chrome: by default no kill, process or repeat is drawn and the payments
   assert.equal(debug.laneShown, debug.lane);
   assert.equal(debug.viewBox, '0 0 1000 160');
   assert.match(String(debug.chapters), /killed: /);
+});
+
+test('in Chrome: by default no dollar figure and no cost is drawn, Receipts opened included; ?debug=cost draws them, and ?debug=durability too', { ...noChrome, timeout: 120_000 }, async (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-cost-'));
+  const pages: Awaited<ReturnType<typeof drivenPage>>[] = [];
+  t.after(() => closeAll(pages, () => rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })), { timeout: 20_000 });
+  build(join(out, 'dist'), fixtures);
+  let launched = 0;
+  // Every disclosure opened, then what is drawn: the page's words, the labels of the strip's and the panels' counters,
+  // and the tooltip of every element drawn.
+  const seen = `(() => {
+    for (const box of document.querySelectorAll('details')) box.open = true;
+    const drawn = [...document.querySelectorAll('body *')].filter((each) => each.checkVisibility());
+    return JSON.stringify({
+      root: document.documentElement.className,
+      words: document.body.innerText,
+      labels: [...document.querySelectorAll('.counter .label, .tcounters .k, .vz-meter > span, .vz-row .k')].filter((each) => each.checkVisibility()).map((each) => each.textContent.trim()),
+      titles: drawn.map((each) => each.getAttribute('title') ?? '').filter((title) => title !== ''),
+    });
+  })()`;
+  const read = async (query: string) => {
+    const page = await drivenPage(`${pathToFileURL(join(out, 'dist', 'index.html')).href}?${query}`, join(out, `profile-${launched += 1}`), { signal: t.signal });
+    pages.push(page);
+    try { return JSON.parse(String(await page.once('document.body.textContent.includes("paid calls")', seen, 20_000, 'the page drawn'))) as { root: string; words: string; labels: string[]; titles: string[] }; } finally { await page.close(); }
+  };
+  const COST = ['cost', 'spend', 'price'];
+  // The reference job killed and resumed (the strip, priced as scripted), and a transport run (its panel's counters).
+  for (const run of ['reference-killed', 'transport-route-real']) {
+    for (const query of [`r=${run}`, `r=${run}&embed=1`]) {
+      const shown = await read(query);
+      assert.match(shown.root, /(^| )hide-cost( |$)/, query);
+      assert.ok(!shown.words.includes('$'), `${query}: no dollar figure is drawn: ${shown.words.slice(shown.words.indexOf('$') - 80, shown.words.indexOf('$') + 20)}`);
+      assert.deepEqual(shown.labels.filter((label) => COST.includes(label)), [], `${query}: no cost is drawn: ${shown.labels.join(', ')}`);
+      assert.deepEqual(shown.titles.filter((title) => title.includes('$')), [], `${query}: no tooltip names a dollar figure`);
+    }
+    for (const query of [`r=${run}&debug=cost`, `r=${run}&debug=durability`]) {
+      const shown = await read(query);
+      assert.doesNotMatch(shown.root, /hide-cost/, query);
+      assert.ok(shown.labels.includes('cost'), `${query}: the cost is drawn: ${shown.labels.join(', ')}`);
+      assert.ok(shown.words.includes('$') || /cost\s+unknown|unknown\s+cost/.test(shown.words), `${query}: with its figure, or unknown`);
+    }
+    // ?debug=cost draws the cost and no more: the kills stay hidden.
+    assert.match((await read(`r=${run}&debug=cost`)).root, /(^| )hide-durability( |$)/);
+  }
 });

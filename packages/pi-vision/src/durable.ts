@@ -215,22 +215,26 @@ export function createVisionExtension(options: VisionAdapterOptions): VisionHand
     ...(options.onLook ? { onLook: options.onLook } : {}),
     ...(onMiss ? { onMiss } : {}),
   });
-  /** A code-mode global for one call: the script's signal joins the call's, and a setup the host's own callbacks fail
-   *  to make is a typed miss that `onMiss` hears of, never their error. */
+  /** A code-mode global for one call: the script's signal joins the call's, a setup the host's own callbacks fail to
+   *  make is a typed miss that `onMiss` hears of, never their error, and a program it starts gets the child
+   *  environment `read`'s programs get. */
   const codeGlobal = <C extends { readonly name: string }, A>(contract: C, run: (request: unknown, env: VisionEnv | undefined, call: CallContext, made: CallSetup) => Promise<A>) =>
-    (env: VisionEnv | undefined, call: CallContext): CodeGlobal<C, A> => ({
-      ...contract,
-      execute: async (request, script) => {
-        const signal = script?.signal && call.signal ? AbortSignal.any([script.signal, call.signal]) : script?.signal ?? call.signal;
-        const made = await setup(call).catch(async (error: unknown) => {
-          if (signal?.aborted) throw error;
-          const reason = `this host could not set the look up: ${firstLine(error)}`;
-          await onMiss?.({ conversationId: call.conversationId, tool: contract.name, source: contract.name, code: "look_failed", reason, receipt: null });
-          throw new SeeMiss("look_failed", reason);
-        });
-        return run(request, env, { ...call, signal }, made);
-      },
-    });
+    (given: VisionEnv | undefined, call: CallContext): CodeGlobal<C, A> => {
+      const env = given && withChildEnv(given, childEnv);
+      return {
+        ...contract,
+        execute: async (request, script) => {
+          const signal = script?.signal && call.signal ? AbortSignal.any([script.signal, call.signal]) : script?.signal ?? call.signal;
+          const made = await setup(call).catch(async (error: unknown) => {
+            if (signal?.aborted) throw error;
+            const reason = `this host could not set the look up: ${firstLine(error)}`;
+            await onMiss?.({ conversationId: call.conversationId, tool: contract.name, source: contract.name, code: "look_failed", reason, receipt: null });
+            throw new SeeMiss("look_failed", reason);
+          });
+          return run(request, env, { ...call, signal }, made);
+        },
+      };
+    };
   // A setup the host's own callbacks fail to make is a typed miss for the model and the host's `onMiss`, never their error.
   const readFor = async (env: VisionEnv, args: ReadArgs, call: CallContext): Promise<ToolResult | null> => {
     const port = withChildEnv(env, childEnv);

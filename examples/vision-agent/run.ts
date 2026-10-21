@@ -5,7 +5,7 @@
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { demo, type DemoOptions } from '@parcha/agentrun-harness';
-import { exampleAt, inputOf, job, jobOf, thinkingOf, thinkingRefusal } from './agent.ts';
+import { exampleAt, inputOf, job, jobOf, positionalAt, thinkingOf, thinkingRefusal } from './agent.ts';
 import spec from './demo.json' with { type: 'json' };
 import { fakes } from './fakes.ts';
 import { liveParts, preflight } from './live.ts';
@@ -33,11 +33,14 @@ function takeThinking(argv: string[]): { rest: string[]; thinking?: string } {
   return { rest: [...argv.slice(0, at), ...argv.slice(at + (has ? 2 : 1))], thinking: has ? value : '' };
 }
 
-/** The demo's arguments: an example folder becomes --input (its question and files), `--thinking` becomes the input's `thinking`
- *  (the host reads no such flag, and the run's child process is given nothing but the input); the rest pass through. */
+/** The demo's arguments: an example folder (the one argument that is neither a flag nor a flag's value) becomes --input (its question
+ *  and files), `--thinking` becomes the input's `thinking` (the host reads no such flag, and the run's child process is given nothing but
+ *  the input); the rest pass through. A second folder, or one that is not an example, throws: it is refused, never ignored. */
 export function argvFor(argv: string[]): string[] {
   const { rest, thinking } = takeThinking(argv);
-  const at = rest.findIndex((arg, i) => !arg.startsWith('--') && !(rest[i - 1] ?? '').startsWith('--'));
+  const folders = positionalAt(rest);
+  if (folders.length > 1) throw new Error(`one example folder at a time: ${folders.map((i) => rest[i]).join(', ')}`);
+  const at = folders[0] ?? -1;
   const out = at < 0 ? rest : [...rest.slice(0, at), ...rest.slice(at + 1), '--input', JSON.stringify(inputOf(exampleAt(rest[at]!)))];
   if (thinking === undefined) return out;
   const given = out.indexOf('--input');
@@ -57,10 +60,17 @@ const inlineObject = (text: string | undefined): Record<string, unknown> | undef
 };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const argv = argvFor(process.argv.slice(2));
-  // A thinking level that is not low, medium or high, or a live run that lacks a key, is refused here, before the recorder starts:
-  // nothing is written, and no cost is printed. The child process reads its level from the input, which the supervisor gave it.
-  const refused = thinkingRefusal(argv) ?? preflight(argv);
+  let argv: string[] = [];
+  let refused: string | undefined;
+  // A folder that cannot be placed, a thinking level that is not low, medium or high, or a live run that lacks a key, is refused here,
+  // before the recorder starts: nothing is written, and no cost is printed. The child process reads its level from the input, which the
+  // supervisor gave it.
+  try {
+    argv = argvFor(process.argv.slice(2));
+    refused = thinkingRefusal(argv) ?? preflight(argv);
+  } catch (error) {
+    refused = (error as Error).message;
+  }
   if (refused) {
     console.error(refused);
     process.exitCode = 1;

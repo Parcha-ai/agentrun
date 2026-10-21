@@ -4,7 +4,9 @@
 // environment's `exec`, which answers with an exit code and no output: a program's output goes to files beside the call
 // and is read back. The environment's timeout is in seconds, as pi's is.
 import { visionContext } from "../core/env.js";
+import { PROGRAM_OUTPUT_BYTES } from "../core/limits.js";
 import { PDF_RENDER_MAX_PIXELS, PDF_TEXT_TIMEOUT_MS, PdfProviderError, type PdfInfo, type PdfProvider } from "../core/pdf.js";
+import { argvPath } from "../core/paths.js";
 import type { ProviderCall } from "../core/provider.js";
 
 /** The programs' timeout in seconds and the cap on a page's pixels; the defaults hold when they are left out. */
@@ -14,7 +16,20 @@ export type PopplerOptions = { readonly timeoutS?: number; readonly maxPixels?: 
 const CAPTURE = 'o=$1; e=$2; shift 2; exec "$@" >"$o" 2>"$e"';
 const utf8 = (bytes: Uint8Array) => Buffer.from(bytes).toString("utf8");
 const firstLine = (text: string) => text.trim().split("\n")[0] ?? "";
+const MiB = 1024 * 1024;
 let runs = 0;
+
+/** A file a program wrote, read back: never more than `PROGRAM_OUTPUT_BYTES`, which is measured before it is read, so a program
+ *  that writes without end cannot fill this process's memory. */
+async function readOutput(call: ProviderCall, path: string, program: string): Promise<Uint8Array> {
+  const c = visionContext(call.signal);
+  const info = await call.env.fileInfo(path, c);
+  if (!info.ok) throw info.error;
+  if (info.value.size > PROGRAM_OUTPUT_BYTES) throw new PdfProviderError("over_budget", `${program} wrote ${(info.value.size / MiB).toFixed(1)} MiB, over the ${PROGRAM_OUTPUT_BYTES / MiB} MiB this package reads back from a program; read the file with bash`);
+  const read = await call.env.readBinaryFile(path, c);
+  if (!read.ok) throw read.error;
+  return read.value;
+}
 
 /** The program's standard output; a non-zero exit is an error holding the first line of its standard error. */
 async function run(call: ProviderCall, timeoutS: number, argv: readonly string[]): Promise<string> {
@@ -22,13 +37,9 @@ async function run(call: ProviderCall, timeoutS: number, argv: readonly string[]
   const base = `${call.tempDir}/run-${++runs}`;
   const ran = await call.env.exec(["sh", "-c", CAPTURE, "sh", `${base}.out`, `${base}.err`, ...argv], { timeout: timeoutS }, c);
   if (!ran.ok) throw ran.error.code === "timeout" ? new PdfProviderError("over_budget", `${argv[0]} did not finish within ${timeoutS} s`) : ran.error;
-  if (ran.value.exitCode === 0) {
-    const output = await call.env.readBinaryFile(`${base}.out`, c);
-    if (!output.ok) throw output.error;
-    return utf8(output.value);
-  }
-  const diagnostics = await call.env.readBinaryFile(`${base}.err`, c);
-  throw new Error((diagnostics.ok && firstLine(utf8(diagnostics.value))) || `${argv[0]} exited ${ran.value.exitCode}`);
+  if (ran.value.exitCode === 0) return utf8(await readOutput(call, `${base}.out`, argv[0]!));
+  const diagnostics = await readOutput(call, `${base}.err`, argv[0]!).then(utf8, () => "");
+  throw new Error(firstLine(diagnostics) || `${argv[0]} exited ${ran.value.exitCode}`);
 }
 
 const fail = (page: number): never => { throw new Error(`pdfinfo gave no size for page ${page}`); };
@@ -49,7 +60,7 @@ function parseInfo(out: string, first: number, last: number): PdfInfo {
 export function popplerProvider(options: PopplerOptions = {}): PdfProvider {
   const timeoutS = options.timeoutS ?? PDF_TEXT_TIMEOUT_MS / 1000;
   const maxPixels = options.maxPixels ?? PDF_RENDER_MAX_PIXELS;
-  const info = async (call: ProviderCall, path: string, first: number, last: number) => parseInfo(await run(call, timeoutS, ["pdfinfo", "-f", String(first), "-l", String(last), path]), first, last);
+  const info = async (call: ProviderCall, path: string, first: number, last: number) => parseInfo(await run(call, timeoutS, ["pdfinfo", "-f", String(first), "-l", String(last), argvPath(path)]), first, last);
   const versions = new Map<string, string>();
   /** What `detect` found in the call's environment, found now when nothing asked yet. */
   const madeBy = async (call: ProviderCall) => {
@@ -57,7 +68,7 @@ export function popplerProvider(options: PopplerOptions = {}): PdfProvider {
     return { provider: "poppler", version: versions.get(call.env.id) ?? "" };
   };
   const document: PdfProvider["document"] = async (source, call) => {
-    const text = (await run(call, timeoutS, ["pdftotext", "-layout", "-enc", "UTF-8", source.path, "-"])).split("\f");
+    const text = (await run(call, timeoutS, ["pdftotext", "-layout", "-enc", "UTF-8", argvPath(source.path), "-"])).split("\f");
     if (text.length > 1 && !text.at(-1)!.trim()) text.pop();
     return { madeBy: await madeBy(call), pages: text.map((page) => page.trimEnd()), info: await info(call, source.path, 1, text.length) };
   };
@@ -89,17 +100,15 @@ export function popplerProvider(options: PopplerOptions = {}): PdfProvider {
       return { madeBy: read.madeBy, pages: read.pages.map((text, i) => ({ page: i + 1, text })).filter((p) => !request.pages || (p.page >= request.pages.from && p.page <= request.pages.to)) };
     },
     async render(source, request, call) {
-      const c = visionContext(call.signal);
       const [size] = (await info(call, source.path, request.page, request.page)).pageSizes;
       const width = Math.ceil((size!.width * request.dpi) / 72);
       const height = Math.ceil((size!.height * request.dpi) / 72);
       if (width * height > maxPixels) throw new PdfProviderError("over_budget", `page ${request.page} at ${request.dpi} dpi is ${width}x${height} px, over the ${maxPixels} pixel cap; render it at a lower dpi`);
       const stem = `${call.tempDir}/page-${++runs}`;
-      await run(call, timeoutS, ["pdftoppm", "-f", String(request.page), "-l", String(request.page), "-png", "-singlefile", "-cropbox", "-r", String(request.dpi), source.path, stem]);
-      const read = await call.env.readBinaryFile(`${stem}.png`, c);
-      if (!read.ok) throw new Error("pdftoppm wrote no image");
-      const view = Buffer.from(read.value.buffer, read.value.byteOffset, read.value.byteLength);
-      return { madeBy: await madeBy(call), image: { data: read.value, mimeType: "image/png", width: view.readUInt32BE(16), height: view.readUInt32BE(20) } };
+      await run(call, timeoutS, ["pdftoppm", "-f", String(request.page), "-l", String(request.page), "-png", "-singlefile", "-cropbox", "-r", String(request.dpi), argvPath(source.path), stem]);
+      const data = await readOutput(call, `${stem}.png`, "pdftoppm").catch((error) => { throw error instanceof PdfProviderError ? error : new Error("pdftoppm wrote no image"); });
+      const view = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+      return { madeBy: await madeBy(call), image: { data, mimeType: "image/png", width: view.readUInt32BE(16), height: view.readUInt32BE(20) } };
     },
   };
 }

@@ -6,6 +6,7 @@
 
 import type { MissCode } from "./contract.js";
 import { exceedsDecodeGuard, imageHeader, SNIFF_BYTES } from "./kinds.js";
+import { base64Chars, toBase64 } from "./primitives.js";
 import { DECODE_GUARD_PIXELS, DEFAULT_JPEG_QUALITY, FLOOR_EDGE, IMAGES_PER_CALL, TILE_ASPECT, TILE_KEEP_BELOW, TILE_MAX_EDGE, TILE_OVERLAP, type ImageLimits } from "./limits.js";
 
 /** An image the model can take: a supported format, within the limits, as base64. pi-durable's `PreparedImage`. */
@@ -88,8 +89,6 @@ const READERS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 const grouped = (n: number): string => n.toLocaleString("en-US");
-const base64Chars = (rawBytes: number): number => Math.ceil(rawBytes / 3) * 4;
-const base64 = (bytes: Uint8Array): string => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
 const firstLine = (error: unknown): string => String((error as Error)?.message || error).split("\n")[0]!.slice(0, 200);
 const upright = (size: PixelSize & { readonly orientation: number }): PixelSize => (size.orientation >= 5 ? { width: size.height, height: size.width } : { width: size.width, height: size.height });
 const withinEdges = (size: PixelSize, limits: FitLimits): boolean => size.width <= limits.maxWidth && size.height <= limits.maxHeight;
@@ -159,7 +158,7 @@ function crop(raster: Raster, rect: PixelRect): Raster {
  *  each lower quality in turn. Null when no encoding fits. */
 async function encodeWithin(encode: NonNullable<ImageProcessor["encode"]>, raster: Raster, limits: FitLimits): Promise<ImageBlock | null> {
   const quality = limits.jpegQuality ?? DEFAULT_JPEG_QUALITY;
-  const block = (data: Uint8Array, mimeType: string): ImageBlock | null => (base64Chars(data.length) <= limits.maxBytes ? { data: base64(data), mimeType, width: raster.width, height: raster.height } : null);
+  const block = (data: Uint8Array, mimeType: string): ImageBlock | null => (base64Chars(data.length) <= limits.maxBytes ? { data: toBase64(data), mimeType, width: raster.width, height: raster.height } : null);
   const [png, jpeg] = await Promise.all([encode(raster), encode(raster, quality)]);
   const first = png.length <= jpeg.length ? block(png, "image/png") : block(jpeg, "image/jpeg");
   if (first) return first;
@@ -189,13 +188,13 @@ export async function fitImage(processor: ImageProcessor, bytes: Uint8Array, mim
   const small = (size: PixelSize) => Math.min(size.width, size.height) < (limits.minEdge ?? 0);
   const keeps = (limits.formats ? limits.formats.includes(mime) : INLINE_TYPES.has(mime)) && !(limits.baseline && header?.progressive);
   if (stored && original && stored.orientation === 1 && keeps && withinEdges(original, limits) && !small(original) && chars <= limits.maxBytes) {
-    return { fit: "as_is", original, blocks: [{ data: base64(bytes), mimeType: mime, ...original }] };
+    return { fit: "as_is", original, blocks: [{ data: toBase64(bytes), mimeType: mime, ...original }] };
   }
   const { raster, encode } = processor;
   if (!raster || !encode) {
     const fit = await prepared(processor, bytes, mime, limits, original, refuse);
     const [block] = fit.fit === "refused" ? [] : fit.blocks;
-    const unmet = block && (small(block) || !(limits.formats ?? [...INLINE_TYPES]).includes(block.mimeType) || (limits.baseline && imageHeader(Buffer.from(block.data.slice(0, Math.ceil(SNIFF_BYTES / 3) * 4), "base64"))?.progressive));
+    const unmet = block && (small(block) || !(limits.formats ?? [...INLINE_TYPES]).includes(block.mimeType) || (limits.baseline && imageHeader(Buffer.from(block.data.slice(0, base64Chars(SNIFF_BYTES)), "base64"))?.progressive));
     return unmet ? refuse("needs", original ?? null, "this image processor only fits images to their largest size; growing one, re-encoding its format or making a JPEG baseline needs Photon or sharp") : fit;
   }
   if (processor.decodes && !processor.decodes.includes(mime)) return refuse("needs", original ?? null, `this image processor does not decode ${mime}${READERS[mime] ? `; ${READERS[mime]}` : ""}`);
@@ -239,7 +238,7 @@ export async function fitImage(processor: ImageProcessor, bytes: Uint8Array, mim
 async function prepared(processor: ImageProcessor, bytes: Uint8Array, mime: string, limits: FitLimits, original: PixelSize | undefined, refuse: (code: MissCode, size: PixelSize | null, why: string) => ImageFit): Promise<ImageFit> {
   const out = await processor.prepare(bytes, mime, limits).catch(() => undefined);
   if (!out) return refuse("unreadable", original ?? null, "the image processor could not decode it or fit it to the limits");
-  const shown = out.resized?.to ?? imageHeader(Buffer.from(out.data.slice(0, Math.ceil(SNIFF_BYTES / 3) * 4), "base64"));
+  const shown = out.resized?.to ?? imageHeader(Buffer.from(out.data.slice(0, base64Chars(SNIFF_BYTES)), "base64"));
   if (!shown) return refuse("unreadable", original ?? null, "the image processor returned an image whose size cannot be read");
   const block = { data: out.data, mimeType: out.mimeType, width: shown.width, height: shown.height };
   if (!out.resized) return { fit: "as_is", original: original ?? block, blocks: [block] };
