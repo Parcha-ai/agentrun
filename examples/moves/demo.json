@@ -1,0 +1,115 @@
+{
+  "name": "moves",
+  "title": "A run moves to a Modal VM and back",
+  "claim": "One run moves from this machine to a Modal VM and back; its workspace on the Archil disk carries the brief and the result; on the VM, one session forks 8 threads, each with its tools on its own H100 sandbox.",
+  "models": {
+    "lead": {
+      "needs": [
+        "text",
+        "tools"
+      ],
+      "default": "anthropic/claude-sonnet-5-5"
+    }
+  },
+  "keys": [
+    {
+      "env": "ANTHROPIC_API_KEY",
+      "why": "the three agents and the 8 threads (anthropic/claude-sonnet-5-5 at medium thinking); on the Modal VM, the variable comes from a Modal Secret by name, never from this machine",
+      "where": "console.anthropic.com, API keys; for the VM, a Modal secret (Modal dashboard: Secrets)",
+      "required": true,
+      "for": "live"
+    },
+    {
+      "env": "ARCHIL_API_KEY",
+      "why": "the run's directory and its claim live on an Archil disk; the demo mounts it, and creates and deletes run directories and token users on it",
+      "where": "the Archil console, in a SCRATCH organisation (never a production one): API keys",
+      "required": true,
+      "for": "live"
+    },
+    {
+      "env": "PDA_LIVE_DISK",
+      "why": "the disk the run lives on (dsk-...)",
+      "where": "the Archil console, a disk in that scratch organisation that holds nothing else",
+      "required": true,
+      "for": "live"
+    },
+    {
+      "env": "PDA_LIVE_REGION",
+      "why": "the disk's region; aws-us-east-1 when unset",
+      "where": "the Archil console, the disk's page",
+      "required": false,
+      "for": "live"
+    },
+    {
+      "env": "MODAL_TOKEN_ID",
+      "why": "the runner's Modal token: it starts the VM and ends every sandbox by exact id",
+      "where": "the Modal dashboard: Settings, API tokens",
+      "required": true,
+      "for": "live"
+    },
+    {
+      "env": "MODAL_TOKEN_SECRET",
+      "why": "the other half of that token",
+      "where": "the Modal dashboard: Settings, API tokens",
+      "required": true,
+      "for": "live"
+    }
+  ],
+  "programs": [
+    {
+      "cmd": "node",
+      "why": "runs the demo; Node 22.19 or later",
+      "required": true
+    },
+    {
+      "cmd": "archil",
+      "why": "the Archil client mounts the run's directory (0.8.42 or later)",
+      "required": true,
+      "platforms": [
+        "linux"
+      ],
+      "for": "live"
+    },
+    {
+      "cmd": "fusermount",
+      "why": "FUSE, which the archil client mounts through (package fuse3)",
+      "required": true,
+      "platforms": [
+        "linux"
+      ],
+      "for": "live"
+    },
+    {
+      "cmd": "archil-scoped",
+      "why": "this package's wrapper around the archil client, installed root-owned: the one command the run may run as root, through one sudoers line",
+      "required": true,
+      "platforms": [
+        "linux"
+      ],
+      "for": "live"
+    }
+  ],
+  "expectedCalls": 40,
+  "expectedCost": 6,
+  "kills": [],
+  "panels": [
+    "workflow",
+    "disk"
+  ],
+  "targets": [
+    "local"
+  ],
+  "handoffs": [
+    {
+      "point": "effect.kept hand_over",
+      "n": 1,
+      "why": "the brief is written; the run is released to the disk and a Modal VM opens it"
+    },
+    {
+      "point": "effect.kept hand_back",
+      "n": 1,
+      "why": "the threads have reported and the pick is written; the run is released and this machine opens it again"
+    }
+  ],
+  "browser": false
+}
