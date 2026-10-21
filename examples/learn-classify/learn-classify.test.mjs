@@ -44,7 +44,7 @@ test('three scripted jobs: run 1 classifies by hand and saves a workflow, curate
   assert.deepEqual(readRows(join(out, 'runs.jsonl')), rows);
 
   // Every field of the contract, on every row.
-  const fields = ['run', 'cik', 'split', 'seedSha', 'afterSha', 'answer', 'truth', 'correct', 'costUsd', 'tokensIn', 'tokensOut', 'durationMs', 'workflowsOffered', 'workflowsUsed', 'byWorkflow', 'workflowsSaved', 'notes', 'curate', 'judgeCostUsd', 'recording', 'convention'];
+  const fields = ['run', 'cik', 'split', 'seedSha', 'afterSha', 'answer', 'truth', 'correct', 'costUsd', 'costKnownUsd', 'costUnpriced', 'tokensIn', 'tokensOut', 'durationMs', 'workflowsOffered', 'workflowsUsed', 'byWorkflow', 'workflowsSaved', 'notes', 'curate', 'judgeCostUsd', 'recording', 'convention'];
   for (const row of rows) assert.deepEqual(Object.keys(row), fields);
   assert.deepEqual(rows.map((r) => r.run), [1, 2, 3]);
   assert.deepEqual(rows.map((r) => r.correct), [true, true, true]);
@@ -304,11 +304,16 @@ test('byWorkflow is a fact: the answer is the output of a workflow run whose out
   assert.equal(byWorkflowOf({ answer: { sic2: '35' }, workflowRuns: [] }), false);
 });
 
-test('spend: the whole run with its Jev part; null, never 0, when a part is unknown', () => {
+test('spend: the whole run with its Jev part; null, never 0, when a part is unknown, beside what is known and what is not priced', () => {
   const measure = (extra = {}) => ({ usage: { costUsd: 0.02 }, judge: { costUsd: 0.003, unknown: 0 }, unpricedAnswers: 0, ...extra });
-  assert.deepEqual(spendOf(measure(), { costUsd: 0.001, unknown: 0 }), { costUsd: 0.024, judgeCostUsd: 0.004, knownUsd: 0.024 });
-  assert.deepEqual(spendOf(measure(), { costUsd: 0.001, unknown: 1 }), { costUsd: null, judgeCostUsd: null, knownUsd: 0.024 });
-  assert.deepEqual(spendOf(measure({ unpricedAnswers: 1 })), { costUsd: null, judgeCostUsd: 0.003, knownUsd: 0.023 });
+  const none = { modelAnswers: 0, judge: 0, tools: 0, document: 0 };
+  assert.deepEqual(spendOf(measure(), { costUsd: 0.001, unknown: 0 }), { costUsd: 0.024, judgeCostUsd: 0.004, knownUsd: 0.024, unpriced: none });
+  assert.deepEqual(spendOf(measure(), { costUsd: 0.001, unknown: 1 }), { costUsd: null, judgeCostUsd: null, knownUsd: 0.024, unpriced: { ...none, judge: 1 } });
+  assert.deepEqual(spendOf(measure({ unpricedAnswers: 1, judge: { costUsd: 0.003, unknown: 2 } })), { costUsd: null, judgeCostUsd: null, knownUsd: 0.023, unpriced: { ...none, modelAnswers: 1, judge: 2 } });
+  // The tools in the order rows pass them (browser, search, document): a priced part is in knownUsd, an unpriced one counted.
+  const tools = spendOf(measure(), undefined, [0.01, null, null]);
+  assert.deepEqual([tools.costUsd, +tools.knownUsd.toFixed(6), tools.unpriced], [null, 0.033, { ...none, tools: 1, document: 1 }]);
+  assert.deepEqual(spendOf(measure(), undefined, [0.01, 0.002, 0.004]).unpriced, none);
 });
 
 test('the curve marks births and promotions and reads windows of 10', () => {
