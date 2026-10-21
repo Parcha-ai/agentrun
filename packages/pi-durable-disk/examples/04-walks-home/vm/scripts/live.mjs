@@ -200,6 +200,7 @@ try {
             "--cloud-arg", `cluster-skills=${clusterSkills}`,
             ...(clusterReady ? ["--cloud-arg", `cluster-ready=${clusterReady}`] : []),
             ...(clusterReadyTimeout ? ["--cloud-arg", `cluster-ready-timeout-s=${clusterReadyTimeout}`] : []),
+            ...(process.env.ROBOT_CLUSTER_TYPE ? ["--cloud-arg", `cluster-type=${process.env.ROBOT_CLUSTER_TYPE}`] : []),
           ]
         : [
         "--cloud-arg", "vm=false",

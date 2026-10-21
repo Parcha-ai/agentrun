@@ -116,3 +116,9 @@ test("robot-thread-deadline-s sets how long a code-mode thread may work, only wi
   assert.throws(() => modalOptionsFromArgs({ robot: "true", "robot-thread-deadline-s": "300", "cluster-size": "2", "cluster-image": "im-1" }), /needs robot-plan=true/);
   for (const bad of ["10", "4000", "five", "1.5"]) assert.throws(() => modalOptionsFromArgs({ ...base, "robot-thread-deadline-s": bad }), /a whole number of seconds from 30 to 3600/);
 });
+
+test("cluster-type reaches the cluster's GPU type, and without it no type is set (the cluster's own default, the exact H100!, applies)", () => {
+  const base = { "cluster-size": "8", "cluster-image": "im-3" };
+  assert.equal(modalOptionsFromArgs({ ...base, "cluster-type": "H100" }).cluster?.type, "H100");
+  assert.equal("type" in (modalOptionsFromArgs(base).cluster ?? {}), false);
+});
