@@ -5,19 +5,6 @@ description: How to do the six-part job by hand from the company's annual report
 
 # By hand
 
-Sources and evidence, for every part:
-- Sources: any public page, the company's own site and reports, and SEC EDGAR pages as the Wayback Machine archived
-  them (https://web.archive.org/web/<time>/<sec.gov URL>). sec.gov itself, its mirrors and SIC listing sites are
-  refused by every tool. Search with search_web, read pages with fetch_page or browse (browse runs a page's scripts),
-  and read annual reports and other PDFs with read_document.
-- Look at the annual report's cover page and the page of its segment table with read_document `{ pages: [N],
-  question }` (a vision model looks at the page), and cite the segments, the headquarters and the fiscal year from
-  those looks ("pdf p. N"). A table read only as text loses its layout. The cover is the filing's own cover page, the
-  earliest of its first pages that carries the form's header and the registrant's name and address.
-- The code is chosen or read, not remembered. A code you remember is a guess, never evidence: when a remembered code
-  and the revenue reading disagree, the revenue reading wins. The code's cite is the page, read in this run, that it
-  rests on.
-
 1. The official site: the website given, else search_web for the company's name and ticker and its investor relations
    page. A holding company's site may only point to its operating businesses: follow them. When fetch_page returns
    little text, the page needs JavaScript: browse it.
