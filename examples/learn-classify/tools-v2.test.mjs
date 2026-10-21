@@ -496,6 +496,71 @@ test('read_document asks again through the browser when a host turns a plain req
   assert.equal(unopened.via, 'direct');
 });
 
+// An HTML annual report as filed: inline XBRL, whose hidden header (the filing's tagged facts) comes before anything shown,
+// then the cover, the report's text, a segment table, a hidden note and a script. Made up, like every fixture here.
+const FACTS = Array.from({ length: 400 }, (_, i) => `<ix:nonNumeric name="dei:Fact${i}" contextRef="c-${i}">http://fasb.org/us-gaap/2025#Member${i}</ix:nonNumeric>`).join('\n');
+const FILING = `<!DOCTYPE html><html xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"><head><title>Form 20-F</title><style>.cover { text-align: center }</style></head><body>
+<div style="display:none"><ix:header><ix:hidden>${FACTS}</ix:hidden><ix:resources><xbrli:context id="c-1"/></ix:resources></ix:header></div>
+<div class="cover"><p>FORM 20-F</p><p>Harbor Valve Holdings Ltd.</p><p>12&#160;Dock Road, Harbor City, Fujian Province, China</p><p>(Address of principal executive offices)</p></div>
+<div style="color: red; display: none">a hidden note that is never shown</div><p hidden>another hidden line</p>
+${'<p>Item 4. Information on the company: what the company does and where it sells.</p>\n'.repeat(160)}
+<h2>Segment information</h2><table><tr><th>Segment</th><th>Share</th></tr><tr><td>Valves</td><td>70%</td></tr><tr><td>Pumps &amp; parts</td><td>30%</td></tr></table>
+<script>var cover = "principal executive offices";</script>
+</body></html>`;
+// An Exhibit 21 published as its own .htm page: a short table, no inline XBRL.
+const EXHIBIT_21 = '<html><body><p>EXHIBIT 21.1</p><p>SUBSIDIARIES OF THE REGISTRANT</p><table><tr><th>Name</th><th>Jurisdiction</th></tr><tr><td>Harbor Valve Europe GmbH</td><td>Germany</td></tr><tr><td>Harbor Valve Supply, LLC</td><td>Delaware</td></tr></table></body></html>';
+
+test('read_document reads an HTML filing: the inline-XBRL header and hidden parts dropped, its text in pages that find and pages reach', async (t) => {
+  const root = await scratch(t);
+  const web = await localWeb(t, {
+    'ir.harbor.example/20f-2025.htm': send('text/html; charset=utf-8', FILING),
+    'ir.harbor.example/ex21.htm': send('text/html', EXHIBIT_21),
+    'ir.harbor.example/empty.htm': send('text/html', '<html><head><script>checking your browser</script></head><body></body></html>'),
+  });
+  const tool = readDocumentTool({ root, vision: await visionFor({ root, eyes: fakeEyes() }), fetch: web.fetch, lookup: publicLookup });
+  const doc = conforms(tool, await tool.run({ url: 'https://ir.harbor.example/20f-2025.htm' }));
+  assert.equal(doc.ok, true);
+  assert.equal(doc.kind, 'html');
+  assert.ok(doc.pageCount > 2, `pages: ${doc.pageCount}`);
+  assert.match(doc.text, /^\[page 1\]\nFORM 20-F\nHarbor Valve Holdings Ltd\.\n12 Dock Road, Harbor City, Fujian Province, China\n\(Address of principal executive offices\)/);
+  for (const hidden of [/fasb\.org/, /dei:Fact/, /hidden note/, /another hidden line/, /var cover/, /text-align/]) assert.doesNotMatch(doc.text, hidden);
+  assert.match(doc.path, /^documents\/[0-9a-f]{16}\.html$/);
+  assert.equal(doc.costUsd, 0);
+
+  // find and pages work as on a PDF: the cover by its words, the segment table on its page, a kept path read again.
+  const cover = conforms(tool, await tool.run({ url: 'https://ir.harbor.example/20f-2025.htm', find: 'principal executive offices' }));
+  assert.deepEqual(cover.found, [1]);
+  const segments = conforms(tool, await tool.run({ path: doc.path, find: 'Segment information' }));
+  assert.deepEqual(segments.found, [doc.pageCount]);
+  assert.match(segments.text, /Valves 70%\nPumps & parts 30%/);
+  assert.deepEqual(conforms(tool, await tool.run({ path: doc.path, pages: [2] })).pagesShown, [2]);
+  // A look needs a page image, which an HTML page has none of: it says so and costs nothing.
+  const looked = conforms(tool, await tool.run({ path: doc.path, pages: [1], question: 'What is the address?' }));
+  assert.equal(looked.looks[0].miss, 'an HTML document has no page image to look at: read its text');
+  assert.equal(looked.costUsd, 0);
+
+  // An Exhibit 21 on its own page reads as its table.
+  const exhibit = conforms(tool, await tool.run({ url: 'https://ir.harbor.example/ex21.htm' }));
+  assert.equal(exhibit.kind, 'html');
+  assert.match(exhibit.text, /^\[page 1\]\nEXHIBIT 21\.1\nSUBSIDIARIES OF THE REGISTRANT\nName Jurisdiction\nHarbor Valve Europe GmbH Germany\nHarbor Valve Supply, LLC Delaware$/);
+
+  // A page that shows nothing is still not a document.
+  assert.match(conforms(tool, await tool.run({ url: 'https://ir.harbor.example/empty.htm' })).error, /a page, not a file/);
+});
+
+test('read_document asks the browser first for an HTML answer, as for a bot wall, and reads the HTML it downloaded when the browser finds no file there', async (t) => {
+  const root = await scratch(t);
+  const web = await localWeb(t, { 'ir.harbor.example/ex21.htm': send('text/html', EXHIBIT_21) });
+  const scripted = scriptedBrowser({ pages: { 'https://ir.harbor.example/ex21.htm': { title: 'Exhibit 21', text: 'EXHIBIT 21.1', html: EXHIBIT_21 } } });
+  const tool = readDocumentTool({ root, vision: await visionFor({ root, eyes: fakeEyes() }), browser: scripted.browser, driver: scripted.driver, guard: scripted.guard, fetch: web.fetch, lookup: publicLookup });
+  const exhibit = conforms(tool, await tool.run({ url: 'https://ir.harbor.example/ex21.htm', find: 'Delaware' }));
+  assert.equal(exhibit.ok, true);
+  assert.equal(exhibit.kind, 'html');
+  assert.equal(exhibit.via, 'browser');
+  assert.deepEqual(exhibit.found, [1]);
+  assert.deepEqual(scripted.log.requests, ['https://ir.harbor.example/ex21.htm']);
+});
+
 test('the eyes reach the model gateway: Google\'s model over its OpenAI-compatible chat completions at <gateway>/v1, with the gateway\'s key and thinking on', async (t) => {
   const requests = [];
   const server = createServer((req, res) => {
