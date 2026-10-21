@@ -410,7 +410,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
 function hindsightOf({ reflections, proposals = [] }) {
   const costs = reflections.map((r) => r.costUsd);
   return {
-    reflections: reflections.map((r) => ({ field: r.field, hypotheses: r.hypotheses.length, costUsd: r.costUsd, calls: r.calls, archivedSecRead: r.archivedSecRead, truthOnArchivedPage: r.truthOnArchivedPage })),
+    reflections: reflections.map((r) => ({ field: r.field, hypotheses: r.hypotheses.length, costUsd: r.costUsd, calls: r.calls, archivedSecRead: r.archivedSecRead, truthOnArchivedPage: r.truthOnArchivedPage, ...(r.stopped ? { stopped: r.stopped } : {}) })),
     proposals,
     costUsd: costs.every((c) => typeof c === 'number') ? costs.reduce((a, b) => a + b, 0) : null,
   };

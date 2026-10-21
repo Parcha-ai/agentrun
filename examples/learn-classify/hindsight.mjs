@@ -17,8 +17,9 @@ import { archivedSecPage } from './tools.mjs';
 /** The splits a learning pass may reflect on with the truth: TRAIN, and the older sets' run split. Never DEV or TEST. */
 export const HINDSIGHT_SPLITS = Object.freeze(['train', 'run']);
 export const HINDSIGHT_FIELDS = Object.freeze(['sic4', 'hq', 'segments', 'subsidiaries']);
-/** The tool calls one reflection may make before its tools refuse. */
+/** The tool calls one reflection may make before its tools refuse, and what it may spend before it is stopped. */
 export const MAX_REFLECTION_CALLS = 6;
+export const MAX_REFLECTION_USD = 1;
 
 export const HINDSIGHT_RULES = `You review one finished run of a research job, together with the true value of one field the run got wrong. Find why
 the run missed it and where the true value could have been read. You may check a source with fetch_page or
@@ -121,21 +122,36 @@ function budgeted(effects, max) {
   }));
 }
 
-/** One reflection: an agent call on `model` (`{ models, agent }`), offered `effects` and the answer, in its own store. */
-export async function reflect({ model, effects, storePath, prompt, maxCalls = MAX_REFLECTION_CALLS }) {
+/** One reflection: an agent call on `model` (`{ models, agent }`), offered `effects` and the answer, in its own store. It is
+ *  stopped where it is once its spend passes `limitUsd`; `stopped` then says so, and an answer it had not given is none. */
+export async function reflect({ model, effects, storePath, prompt, maxCalls = MAX_REFLECTION_CALLS, limitUsd = MAX_REFLECTION_USD }) {
   const tools = classifyTools({ effects: budgeted(effects, maxCalls), answer: answerHindsight() });
   const registry = createRegistry();
   registry.install(tools.extension);
   const harness = await Harness.open(await openNodeSqliteStorage(storePath), { models: model.models, registry, onReport: () => {} }, ctx);
+  let stopped = null;
+  let unsubscribe = () => {};
   try {
     const root = await harness.root(ctx, { agent: { ...model.agent, extensions: [tools.extension], instructions: HINDSIGHT_RULES } });
+    let checking = false;
+    unsubscribe = harness.subscribeCommits(() => {
+      if (checking || stopped) return;
+      checking = true;
+      harness.usage(ctx).then(async (usage) => {
+        if (usageTotals(usage).costUsd > limitUsd && !stopped) {
+          stopped = `the review passed its limit of $${limitUsd}`;
+          await root.abort(ctx).catch(() => {});
+        }
+      }).catch(() => {}).finally(() => { checking = false; });
+    });
     const submission = await root.submit({ type: 'input', content: prompt }, ctx);
     await submission.wait(ctx);
     const { messages } = await root.context(ctx);
     const results = new Map(messages.filter((m) => m.role === 'toolResult').map((m) => [m.toolCallId, m]));
     const answers = messages.filter((m) => m.role === 'assistant').flatMap((m) => m.content.filter((c) => c.type === 'toolCall' && c.name === 'answer' && !results.get(c.id)?.isError));
-    return { hypotheses: answers.at(-1)?.arguments?.hypotheses ?? [], usage: usageTotals(await harness.usage(ctx)) };
+    return { hypotheses: answers.at(-1)?.arguments?.hypotheses ?? [], usage: usageTotals(await harness.usage(ctx)), stopped };
   } finally {
+    unsubscribe();
     await harness.close(ctx);
   }
 }
@@ -172,8 +188,8 @@ export async function reflectOnRun({ job, run, score, answer, model, effects, fi
   try {
     for (const w of wrong) {
       const storePath = join(storeDir, `${run.runId}-${w.field}.sqlite`);
-      const { hypotheses, usage } = await reflect({ model: on, effects: tools, storePath, prompt: reflectionPrompt({ job, wrong: w, digest, lessons }) });
-      reflections.push({ field: w.field, hypotheses, costUsd: usage.costUsd, ...verifiedBy(storePath, w) });
+      const { hypotheses, usage, stopped } = await reflect({ model: on, effects: tools, storePath, prompt: reflectionPrompt({ job, wrong: w, digest, lessons }) });
+      reflections.push({ field: w.field, hypotheses, costUsd: usage.costUsd, ...(stopped ? { stopped } : {}), ...verifiedBy(storePath, w) });
     }
   } finally {
     for (const tool of tools) await tool.dispose?.();
