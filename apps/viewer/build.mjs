@@ -39,8 +39,6 @@ export function checkModule(file, code) {
   if (bare) throw new Error(`${file} imports ${bare[1]} for its side effect alone; import a name from it, so the build includes it in order`);
 }
 
-/** `recordingsDir`: the recordings bundled into the gallery (a test passes its fixture's directory). `files`: ship them as
- *  files with `recordings/index.json` instead of embedding them in gallery.js. */
 /** One page's script: its entry and the modules it imports, joined in import order into one classic script. */
 function bundle(entry) {
   const names = new Map();
@@ -56,7 +54,9 @@ function bundle(entry) {
   });
 }
 
-export function build(target = out, recordingsDir = join(here, 'recordings'), { files = false } = {}) {
+/** `recordingsDir`: the recordings bundled into the gallery (a test passes its fixture's directory). `files`: ship them as
+ *  files with `recordings/index.json` instead of embedding them in gallery.js. */
+export function build(target = out, recordingsDir = join(here, 'recordings'), { files = false, lock = recordingsDir === join(here, 'recordings') ? join(here, 'recordings.lock.json') : undefined } = {}) {
   const parts = bundle('app.ts');
   // The chat + report page (chat.html): a second script over the same loader, beside the viewer.
   const chatParts = bundle('chat.ts');
@@ -77,8 +77,14 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
   // A recorder writes a blob as `.<sha>.<ext>.tmp-<pid>` and renames it once whole, so a copy of a recording taken while
   // it goes may hold such a name: it is not a blob yet, and is neither listed nor shipped.
   const unfinished = (name) => /^\..*\.tmp-\d+$/.test(name);
+  // The lock (recordings.lock.json) may name a run's title and the view its link opens: carried into the entry, so the list shows them. An id it does not name is as recorded.
+  const named = new Map();
+  if (lock && existsSync(lock)) for (const each of JSON.parse(readFileSync(lock, 'utf8')).ids ?? []) if (typeof each === 'object' && each !== null && (each.title !== undefined || each.view !== undefined)) named.set(each.id, { ...(each.title !== undefined ? { title: each.title } : {}), ...(each.view !== undefined ? { view: each.view } : {}) });
+  // The gallery lists in the lock's order when it has one (ids the lock does not name come after, by name): the order of a story told in parts is the lock's to set.
+  const order = lock && existsSync(lock) ? (JSON.parse(readFileSync(lock, 'utf8')).ids ?? []).map((each) => (typeof each === 'string' ? each : each?.id)) : [];
+  const rank = (id) => (order.includes(id) ? order.indexOf(id) : order.length);
   const gallery = [];
-  for (const id of existsSync(recordingsDir) ? readdirSync(recordingsDir).sort() : []) {
+  for (const id of (existsSync(recordingsDir) ? readdirSync(recordingsDir).sort() : []).sort((a, b) => rank(a) - rank(b))) {
     const dir = join(recordingsDir, id);
     if (!existsSync(join(dir, 'manifest.json'))) continue;
     const blobs = {};
@@ -88,7 +94,7 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
       blobs[file.slice(0, -ext.length - 1)] = files ? `blobs/${inertName(file)}` : `data:${MIME[ext] ?? 'application/octet-stream'};base64,${readFileSync(join(dir, 'blobs', file)).toString('base64')}`;
     }
     const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
-    gallery.push(files ? { id, manifest, blobs } : { id, manifest, events: readFileSync(join(dir, 'events.jsonl'), 'utf8'), blobs });
+    gallery.push({ id, manifest, ...(files ? {} : { events: readFileSync(join(dir, 'events.jsonl'), 'utf8') }), blobs, ...named.get(id) });
     // Beside the page, every blob is published under its inert name: a page, an SVG or a script in a recording (an agent's
     // report, draft 41) is plain text when opened straight, and the viewer reads it into its sandboxed frame.
     const copy = join(target, 'recordings', id);

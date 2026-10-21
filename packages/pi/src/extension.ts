@@ -1,4 +1,3 @@
-import { Type } from 'typebox';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { Compile } from 'typebox/compile';
@@ -68,6 +67,9 @@ type Session = {
   dryRun?: AbortController;
   sessionFile: () => string | undefined;
 };
+
+/** Forgets a session's last run (its observation, report and run id), so the next run starts fresh. */
+const clearRun = (s: Session): void => { s.observation = undefined; s.report = undefined; s.runId = undefined; };
 
 export interface AgentRunExtensionOptions {
   /** Complete host-owned tool allowlist, replacing demo and built-in tools. */
@@ -202,8 +204,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     const changed = !s.draft || inspectWorkflow(s.draft).sha256 !== inspection.sha256;
     const nextInput = input === undefined ? changed ? {} : s.input : structuredClone(input);
     s.draft = nextDraft;
-    if (changed) { s.demo = undefined; s.savedName = undefined; s.observation = undefined; s.report = undefined; s.runId = undefined; }
-    if (input !== undefined) { s.observation = undefined; s.report = undefined; s.runId = undefined; }
+    if (changed) { s.demo = undefined; s.savedName = undefined; clearRun(s); }
+    if (input !== undefined) clearRun(s);
     s.input = nextInput;
     if (workflow !== undefined || input !== undefined) persist(s);
     return { inspection, tree };
@@ -356,8 +358,9 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       persist(s, true);
       const ordinal = ++runOrdinal;
       let sequence = 0;
+      const runDeps = sop ? { ...deps, sop: sop.text } : deps;
       const report = await s.service.run(s.input, {
-        deps: observation.observe(driver ? withRecovery(driver, sop ? { ...deps, sop: sop.text } : deps) : sop ? { ...deps, sop: sop.text } : deps),
+        deps: observation.observe(driver ? withRecovery(driver, runDeps) : runDeps),
         signal: driver ? AbortSignal.any([signal, driver.signal]) : signal,
         ...(configuration.onWorkflowEvent ? { onTraceEvent: (event: AgentRunWorkflowEvent['event']) =>
           configuration.onWorkflowEvent!({ workflowDigest: prepared.digest, runOrdinal: ordinal, sequence: ++sequence, event }) } : {}),
@@ -453,7 +456,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       if (args.action === 'list') { const workflows = await store.list(); return textResult(modelJson(workflows), { workflows }); }
       if (args.action === 'load') {
         const saved = await store.load(args.name ?? '', args.digest);
-        const result = inspect(ctx, s, saved.workflow, args.input); s.input = structuredClone(args.input ?? {}); s.savedName = saved.name; s.demo = undefined; s.report = undefined; s.observation = undefined; s.runId = undefined; persist(s);
+        const result = inspect(ctx, s, saved.workflow, args.input); s.input = structuredClone(args.input ?? {}); s.savedName = saved.name; s.demo = undefined; clearRun(s); persist(s);
         const preview = view(ctx, s);
         return textResult(modelJson({ preview: formatWorkflowView(preview), workflow: s.draft, input: s.input }), { ...result, saved, view: preview });
       }
@@ -519,7 +522,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         } else if (/^load(?:\s|$)/.test(command)) {
           const [, name, digest] = command.split(/\s+/);
           const saved = await new WorkflowStore(ctx.cwd).load(name ?? '', digest);
-          inspect(ctx, s, saved.workflow); s.savedName = saved.name; s.input = {}; s.demo = undefined; s.report = undefined; s.observation = undefined; s.runId = undefined; persist(s);
+          inspect(ctx, s, saved.workflow); s.savedName = saved.name; s.input = {}; s.demo = undefined; clearRun(s); persist(s);
           show(s, `Loaded procedure. Supply new input with /agentrun input. Loading never executes it.\n\n${formatWorkflowView(view(ctx, s))}`);
         } else if (command === 'list') {
           const stored = await new WorkflowStore(ctx.cwd).list();

@@ -35,7 +35,9 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
   the element.
 - **The answer first**, in a sentence or two, then three or four key points, each a link to the finding or the mark it
   stands on. Someone who reads only that much has the answer. A count over rows is stated as what was logged ("34 vehicles
-  logged crossing"), never as the film's true total, unless every moment was looked at and the page says so.
+  logged crossing"), never as the film's true total, unless every moment was looked at and the page says so. Each sentence
+  of the summary restates a finding from the evidence below it with no stronger word: when a finding says most, part or all
+  but one place, the summary says the same, and "none", "all" or "gone" appear only where a finding says so.
 - **Every finding shows its evidence; every row has a thumbnail.** A page that only says is a page nobody checks. Show:
   - **a document:** the page with the cited mark boxed (the embedded page, below) and, in the finding, a close crop of the
     mark with its box in the crop. `crop()` computes the crop and the box in it; you do no arithmetic;
@@ -45,7 +47,8 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
   - **a row** of a row-shaped answer: a thumbnail of its evidence (`thumb()`), small enough for many rows.
   Each picture has a caption in a sentence, from the look's answer: what it shows and why it matters ("the tallest bar is the
   second quarter's"), not what it is ("a chart"). Drop only a duplicate (the same picture twice) and a picture that shows
-  nothing its claim says.
+  nothing its claim says. A caption says only what its own picture shows, in the same measure: a box that holds part water
+  and part land is described that way, never as "completely filled" or "all".
 - **Fold the routine.** What was checked and found as expected goes in a folded section (`<details>`), one line each, its
   evidence inside the fold. What surprised, failed or decided the answer is a finding of its own, open, and first.
 - **A document is embedded.** When the run read a document, the page shows it as a viewer would: each page the findings
