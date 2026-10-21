@@ -312,6 +312,45 @@ a.addr[href]{color:var(--acc);text-decoration:underline dotted}
 .mu-composer{position:absolute;bottom:0;left:0;right:0;z-index:3;padding:36px 16px 16px;pointer-events:none}
 .mu-composer::before{content:"";position:absolute;inset:0;z-index:-1;background:linear-gradient(to top,rgba(8,8,9,.82),rgba(8,8,9,0));-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);-webkit-mask-image:linear-gradient(to top,#000 45%,transparent);mask-image:linear-gradient(to top,#000 45%,transparent)}
 .mu-input{pointer-events:auto;padding:13px 16px;border:1px solid var(--line);background:rgba(17,17,19,.72);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);color:var(--dim);font:400 12.5px var(--mono)}
+.mu-report{display:flex;flex-direction:column;gap:14px;min-width:0}
+.mu-rep-title{font:500 11px var(--mono);letter-spacing:.7px;text-transform:uppercase;color:var(--muted)}
+.mu-stage{border:1px solid var(--line);background:var(--bg);min-width:0}
+.mu-video{display:block;width:100%;height:auto;background:var(--bg)}
+.mu-play{display:block;width:100%;padding:8px 12px;border:0;border-top:1px solid var(--line);background:var(--panel);color:var(--ink);font:500 11.5px var(--mono);letter-spacing:.7px;text-transform:uppercase;text-align:left;cursor:pointer}
+.mu-play:hover{color:var(--acc)}
+.mu-stage-note{padding:8px 12px;border-top:1px solid var(--line);font:400 11.5px var(--mono);color:var(--dim)}
+.mu-chapters{display:flex;flex-wrap:wrap;gap:6px}
+.mu-chapter{display:flex;flex-direction:column;gap:2px;padding:6px 10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font:500 11.5px var(--mono);text-align:left;cursor:pointer}
+.mu-chapter:hover{border-color:var(--acc)}
+.mu-ch-time{font:400 10.5px var(--mono);color:var(--dim)}
+.mu-frames,.mu-docs,.mu-facts{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.mu-facts{grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}
+.mu-shot-tile,.mu-doc,.mu-fact,.mu-skip{margin:0;min-width:0;border:1px solid var(--line);background:var(--panel)}
+.mu-shot-tile{cursor:pointer}
+.mu-shot-tile.blurred{cursor:default}
+.mu-tile-pic,.mu-doc-pic,.mu-crop{position:relative;overflow:hidden;background:var(--bg)}
+.mu-tile-pic img,.mu-tile-pic canvas{display:block;width:100%;height:100%;object-fit:cover}
+.mu-doc-pic{aspect-ratio:3/4;display:grid;place-items:center}
+.mu-doc-pic img{display:block;width:100%;height:100%;object-fit:cover;object-position:top}
+.mu-doc-wait{font:400 11px var(--mono);color:var(--dim)}
+.mu-crop img{display:block}
+.mu-crop img.mu-whole,.mu-crop canvas{display:block;width:100%;height:auto}
+.mu-box{position:absolute;border:2px solid var(--acc);pointer-events:none}
+.mu-cap{padding:6px 8px;font:400 11px var(--mono);color:var(--muted);overflow-wrap:anywhere}
+.mu-skip{display:flex;flex-direction:column}
+.mu-skip-body{flex:1;display:flex;flex-direction:column;justify-content:center;gap:4px;padding:14px 10px;background-image:radial-gradient(#1d1d21 1px,transparent 1px);background-size:11px 11px}
+.mu-skip-title{font:500 11px var(--mono);letter-spacing:.7px;text-transform:uppercase;color:var(--acc)}
+.mu-skip-sub{font:500 12px var(--mono);color:var(--ink)}
+.mu-fact figcaption{display:flex;flex-direction:column}
+.mu-fact-value{padding:8px 8px 0;font:500 16px var(--mono);color:var(--ink)}
+.mu-lightbox{position:absolute;inset:0;z-index:9;display:grid;place-items:center;padding:16px;background:rgba(8,8,9,.92);cursor:zoom-out}
+.mu-lb-stage{position:relative;max-width:100%}
+.mu-lb-stage img{display:block;max-width:100%;max-height:calc(100dvh - 32px);height:auto}
+.muse.mu-visual{max-width:none}
+.mu-visual .mu-chat>*{width:100%;max-width:608px;align-self:center}
+.mu-visual .mu-chat>.mu-report{max-width:1100px}
+.mu-visual .mu-input{max-width:608px;margin-inline:auto}
+@media (min-width:900px){.mu-facts{grid-template-columns:repeat(3,minmax(0,1fr))}.mu-fact.wide{grid-column:span 2}.mu-frames{grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}.mu-docs{grid-template-columns:repeat(auto-fill,minmax(190px,1fr))}}
 </style>
 </head>
 <body>

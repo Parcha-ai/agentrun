@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { visionContext, type VisionResult, type VisionEnvError } from "../core/env.js";
 import { VIDEO_REENCODE_EDGE, VIDEO_REENCODE_FPS } from "../core/limits.js";
 import { argvPath } from "../core/paths.js";
+import { messageLine } from "../core/primitives.js";
 import { detectOnce, type MadeBy, type ProviderCall, type ProviderSource } from "../core/provider.js";
 import { VideoMiss, type VideoFacts, type VideoProvider } from "../core/video.js";
 
@@ -95,7 +96,7 @@ export function ffmpegProvider(): VideoProvider {
           return typeof version === "string" ? { available: true, version } : { available: false, needs: NEEDS, reason: "ffprobe did not report its version" };
         } finally { await env.remove(dir, { recursive: true, force: true }, context); }
       } catch (error) {
-        return { available: false, needs: NEEDS, reason: String((error as Error)?.message ?? error).split("\n")[0]! };
+        return { available: false, needs: NEEDS, reason: messageLine(error) };
       }
     },
 

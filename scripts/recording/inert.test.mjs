@@ -129,6 +129,28 @@ test('every pointer the DSL\'s validation names in a root child workflow passes 
   for (const path of paths) for (const text of [path, JSON.stringify({ issues: [{ path }] })]) assert.equal(credentialIn(text), undefined, text);
 });
 
+test('a read the DSL refuses inside a route branch, past a route or past a parallel of a root child workflow names a pointer the scan passes', async () => {
+  const { validateWorkflow } = await import('@parcha/agentrun-dsl');
+  const fetch = (label) => ({ node: 'call', label, via: 'tool', tool: 'fetch', args: { url: '{url}' }, out: 'Any', as: label, deadline_s: 5 });
+  const agent = (label) => ({ node: 'agent', label, instructions: 'Do it.', out: 'Any', as: label });
+  const route = (a, b) => ({ node: 'route', label: 'r', valuePath: 'topic', otherwise: 'a', branches: { a: { body: a }, b: { body: b } } });
+  const chain = (...steps) => ({ node: 'chain', steps });
+  const schemas = { Any: { type: 'object' }, In: { type: 'object', properties: { topic: { type: 'string' } } } };
+  const cases = {
+    // Each case's root, and the pointer of the read the DSL refuses (STATE_PATH_UNPRODUCED at that node).
+    'inside a route branch': [chain(route(fetch('read'), agent('other'))), '/root/workflow/root/steps/0/branches/a/body'],
+    'past a route': [chain(route(agent('one'), agent('two')), fetch('read')), '/root/workflow/root/steps/1'],
+    'past a parallel': [chain({ node: 'parallel', label: 'p', branches: [agent('one'), agent('two')] }, fetch('read')), '/root/workflow/root/steps/1'],
+  };
+  for (const [where, [root, read]] of Object.entries(cases)) {
+    const child = { v: 2, name: 'child', schemas, input: { schemaId: 'In' }, output: { schemaId: 'Any' }, root };
+    const result = validateWorkflow({ v: 2, name: 'p', schemas, input: { schemaId: 'In' }, output: { schemaId: 'Any' }, root: { node: 'workflow', label: 'kid', workflow: child, input: { topic: 'a' }, out: 'Any', as: 'k' } });
+    const unread = result.ok ? [] : result.issues.filter((issue) => issue.code === 'STATE_PATH_UNPRODUCED' && issue.path === read);
+    assert.ok(unread.length > 0, `${where}: the DSL refuses the read`);
+    for (const { path } of result.issues) for (const text of [path, JSON.stringify({ issues: [{ path }] })]) assert.equal(credentialIn(text), undefined, `${where}: ${text}`);
+  }
+});
+
 test('the recorder records an svg tool output as text, never as .svg, and any other extension it is handed as txt', async (t) => {
   const kept = [];
   const { data } = moveImages({ content: [{ type: 'image', mimeType: 'image/svg+xml', data: Buffer.from('<svg><script>x</script></svg>').toString('base64') }] }, (bytes, extension) => { kept.push(extension); return sha(bytes); });

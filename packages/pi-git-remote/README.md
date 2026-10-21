@@ -191,16 +191,26 @@ pushed: true
 The model gets no tool and never touches git: on start the extension checks a ref out into a directory with no `.git` in
 it, and on shutdown it commits the paths an allowlist names to the session's own branch and pushes that commit by sha.
 
+To try it you need pi on your `PATH` (`npm install -g --ignore-scripts @earendil-works/pi-coding-agent`, or pi's own
+installer), and pi needs a model before anything here works. Give it one of three ways:
+- run `pi`, then `/login` once, for a subscription or an API key;
+- set a provider's API key in the environment (pi's `docs/providers.md` names each variable);
+- add a provider of your own to `~/.pi/agent/models.json` (pi's `docs/models.md`).
+
+Without one, pi stops at `No API key found for the selected model`.
+
 ```sh
 npm ci --ignore-scripts && npm run build -w @parcha/pi-git-remote    # in a checkout of this repository
 PKG=$PWD/packages/pi-git-remote; cd "$(mktemp -d)"
 git init -q --bare -b main acme.git
 git clone -q acme.git seed 2>/dev/null && (cd seed && mkdir notes && echo "Cite every claim." > AGENTS.md && echo hello > notes/hello.md \
-  && git add -A && git commit -qm seed && git push -q origin main)
-pi -e "$PKG" --git-remote ./acme.git --git-allow 'notes/**'
-# ask pi to add a file under the checkout it names (the path is in its AGENTS.md context), then quit
-git -C acme.git branch --list 'sessions/*'    # one branch, one commit on top of main, with a Session-Id trailer
+  && git add -A && git -c user.name=seed -c user.email=seed@example.com commit -qm seed && git push -q origin main)
+pi -e "$PKG" --git-remote ./acme.git --git-allow 'notes/**' -p "Add notes/today.md, one line, in the checkout your AGENTS.md is from."
+git -C acme.git branch --list 'sessions/*'    # one branch, one commit on top of main, with Session-Id and Seeded-From trailers
 ```
+
+`-p` runs the one prompt and exits, and the exit ends the session, so the commit is on the branch when the command
+returns. Without `-p`, pi opens its terminal UI: ask it the same thing, then quit.
 
 Until the package is published, `pi -e <path to this package>` loads it; once it is, `pi -e npm:@parcha/pi-git-remote` or
 `pi install npm:@parcha/pi-git-remote` will. The session's context carries the repository's `AGENTS.md` and its

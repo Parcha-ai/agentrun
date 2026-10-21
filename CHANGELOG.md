@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## 0.1.0-beta.21 (2026-10-21)
+
+- A gallery lock entry (`apps/viewer/recordings.lock.json`) may now name the words its list shows for a run (`title`: a trimmed string of 1 to 120 characters, no control character) and the view its link opens (`view`: a non-empty list of distinct flags the viewer knows, today `muse`, the phone-chat layout). The recordings are not touched: the lock is read by the build, which carries each named id's `title` and `view` into its gallery entry (`gallery.js`, or `recordings/index.json` in a files build), the list shows `title` in place of the recording's own words and links `chat.html?r=<id>` with each flag (`&muse`), and an entry without them is listed and linked exactly as before. `readLock` refuses a wrong type, an empty or untrimmed or over-long title, an unknown or repeated flag, an empty list, and any other key; the gate refuses a built index whose titles or views differ from the lock's. The three utility-account replays in the lock open in the Muse layout under their own titles. The inspection header and the default chat header still use the recording's own title.
+- Validation with input keys now refuses a state read that a run would refuse, inside a route's branches and past route and parallel nodes. Before, the state check stood down there: a `{url}` that nothing produced passed `validateWorkflow` (and so inspection) and failed the run with `interpolation path "url" is not present in the state`, while the same read at the top level was refused. The check now holds what each point of the run holds:
+  - inside a route branch, the state before the route plus the route's `as` (and `<as>$answers` for a route Jev chooses);
+  - after a route, only the keys every branch writes, since one of them runs;
+  - after a parallel, what each branch writes, since all of them run.
+
+  It still stands down after a code node, a map or a loop, as before.
+
+  A workflow that read, after a route, a key only some branches write is now refused at validation, where before it failed at run time through a branch that does not write it. Write the key on every branch, or read it inside the branch that writes it.
+- The gallery's list now follows the lock's order. `build()` lists the recordings in the order of the lock's ids when it is given a lock (the ids the lock does not name come after, by name), the gate checks that the built index lists them in that order, and the lock's ids are in the order the gallery should show: the three earlier recordings as they stand today, then the three utility-account replays as a story told in parts. A lock entry's `title` also refuses the C1 control characters (U+0080 to U+009F), as it already refused the C0 ones and DEL. The recordings and the asset are untouched; the tar, written with its members sorted by path and read by id, does not depend on the lock's order.
+- **`examples/issue-triage`: the host counts the agreement whatever shape the agent's workflow returns**
+  - The session counted the type agreement only when the workflow's result was an object with `rows`; a workflow that returned the list itself got no agreement and a result blob with numbered keys. The rows are now the result itself when it is a list, else its `rows`, and the recording's result holds `{ rows, agreement }` either way.
+  - The summary line reads the spend before the recording is finished (the spool is removed then), so `spentUsd` is the run's spend and not 0.
+- The DSL package's build and type-check reject an unused local, import or parameter (`noUnusedLocals`, `noUnusedParameters`), and the two unused imports they found in the recovery handoff block are gone. The emitted JavaScript and declarations are byte for byte what they were.
+- The README now shows a `runWorkflow` call a reader can run with no key (a scripted `runNode` answers each model step), a CLI `run` line that works, how to import `@parcha/agentrun-dsl/schema` (as JSON), and a link to the host integration guide.
+- The README now starts with the offline sample, which needs no key, then the live call. It says that a missing key fails at `createJevRunner`, before any request, that the TypeScript samples need a TypeScript runner, and it lists the whole public API. It also describes the `Retry-After` wait and the 429 give-up, the `requestDiagnostic` on a refused request, and that `cost_usd` is the reported `usage.cost` first.
+- The README now says that `pi --offline` needs an interactive terminal, that its two startup warnings (`fd not found`, `No models available`) are expected, and what the trust prompt offers. It marks the preview, input, run, save and load steps as needing a model, links the example that lives in the repository, adds `/agentrun triage`, labels the host samples as sketches, and documents the `agentrun-pi` command line from npm with an inputs example.
+
 ## 0.1.0-beta.20 (2026-10-20)
 
 - **The gallery takes a recording that names no example under an id of its own, and shows three utility-account browser replays**

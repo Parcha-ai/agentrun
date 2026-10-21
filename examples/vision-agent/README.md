@@ -9,7 +9,7 @@ cites every claim at the file's own page, second or region. The examples beside 
 files:
 
 ```sh
-npm ci --ignore-scripts && npm run build
+npm ci --ignore-scripts && npm run build                # a few minutes: it builds the whole workspace
 npm run demo:vision -- examples/document-check          # on fakes, $0, no key, no network (its PDFs are committed)
 npm run demo:vision -- examples/hear-and-find --live    # real models, your keys
 ```
@@ -33,8 +33,14 @@ TypeSafe through a proxy of your own. Each example's README lists its programs, 
 live run cost and how long it took.
 
 An example folder holds `question.md` (the question), `inputs.json` (each file by URL, size and SHA-256, or committed
-beside it) and a README. To ask something else, write another folder, or give `--input '{"question": "...", "files":
-["..."]}'` with the files in place.
+beside it) and a README. To ask something else of your own files, write another folder under `examples/` with a
+`question.md`, the files beside it, and an `inputs.json` of `{"items": [{"path": "mydoc.pdf"}]}` (copy `document-check`'s
+for the fuller shape the examples use: each file's `id`, `bytes` and `sha256`, and a `url` for one that is fetched), and
+run it as above. On fakes only, you can instead give `--input '{"question": "...", "files": ["mydoc.pdf"]}'` and name the
+folder that holds the files in `DEMO_FILES_DIR`: each becomes a file of the run's workspace under its bare name (letters,
+digits, dots, dashes and underscores, no directory), and a name that folder lacks is not found. A `--live` run does not
+pass `DEMO_FILES_DIR` on, so use an example folder for it. Putting `"example": "<folder>"` in an `--input` asks a new
+question of that example's own files.
 
 | Flag | What it does |
 |---|---|
@@ -42,12 +48,17 @@ beside it) and a README. To ask something else, write another folder, or give `-
 | `--record <dir>` | keep the run as an `agentrun.recording/1` directory: the repository's recording format, which the [run viewer](../../apps/viewer/README.md) plays |
 | `--fetch-sources` | on fakes, fetch and check the example's files instead of reading committed ones |
 | `--max-usd <n>` | stop a run past n dollars; without it a run stops past $1, twice the $0.50 a run is expected to cost (`expectedCost` in `demo.json`) |
+| `--model <provider/id>` | with `--live`, the model that runs the agent, as `anthropic/claude-sonnet-5-5` does; `--provider <name>` with a bare id makes it `provider/id`; without `--live` both are refused |
+| `--eyes-model <provider/id>` | with `--live`, the model that looks, when it should not be the lead |
+| `--dir <path>` | keep the run's directory there |
+| `--json` | print the result as one JSON object |
 | `--thinking <low\|medium\|high>` | the agent's thinking level for the run (default `medium`); a Claude lead thinks reliably at `high`, while at `medium` it may answer without thinking; it goes with an example folder or an inline JSON `--input`, and is refused with an input file |
 
 [`SETUP-PROMPT.md`](SETUP-PROMPT.md) sets up a live run for you: paste it into your coding agent.
 
 On fakes a scripted lead runs one script whatever is asked (one look at the first file, and a report of it); every
-answer says it is scripted.
+answer says it is scripted. A run prints its cost, its run directory and the path of `report/index.html`: open that file
+in a browser.
 
 ## Keys and programs
 
