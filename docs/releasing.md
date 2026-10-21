@@ -27,7 +27,7 @@ Regenerate schemas, packaged demo data and the dependency inventory when their s
 
 Confirm publishing access to the `@parcha` npm organization. New packages need an initial authenticated publication before a trusted publisher can be associated with them. Arrange that bootstrap with the package owner; the release workflow does not create accounts, grant ownership or complete this first-publication setup. The existing `@parcha/agentrun` package is separate.
 
-Once each package exists, configure its trusted publisher for this repository's `release.yml` workflow. This workflow publishes directly, so the association must allow direct publishing. Configure the `npm-release` GitHub environment with maintainer review and allowed tags. Subsequent workflow releases use OIDC and provenance. See [npm trust](https://docs.npmjs.com/cli/v11/commands/npm-trust/) for publisher configuration.
+Once each package exists, configure its trusted publisher for this repository's `release.yml` workflow. This workflow publishes directly and then moves the `beta` dist-tag, so the association must allow direct publishing and npm dist-tag (off by default). Configure the `npm-release` GitHub environment with maintainer review and allowed tags. Subsequent workflow releases use OIDC and provenance. See [npm trust](https://docs.npmjs.com/cli/v11/commands/npm-trust/) for publisher configuration.
 
 Before creating the release tag:
 
@@ -53,7 +53,7 @@ The preflight checks tag identity, clean source, package versions, licenses and 
 
 ## Publish and verify
 
-Dispatch **Publish verified beta** with the workflow ref and `tag` input set to the same reviewed tag. The workflow requires a public repository, publishes the verified archives with the `beta` tag, and verifies registry integrity and a fresh installed consumer.
+Dispatch **Publish verified beta** with the workflow ref and `tag` input set to the same reviewed tag. The workflow requires a public repository, publishes the verified archives with the `latest` tag, tags each version `beta` as well, and verifies registry integrity and a fresh installed consumer. A version is published as `latest` because npm's package page shows the README of the publish that carried the `latest` tag; moving `latest` later with `npm dist-tag` leaves the page without one.
 
 An npm publish success can mean the package is still processing. The verifier waits up to 20 minutes in each of three phases: for a version's registry document to appear, for its tarball to download, and for npm to list every release version in both the full and the abbreviated (install) metadata. It polls every 5 seconds at first and backs off to every 30. npm took about 5 minutes to show beta.10 and 16 for beta.11's first package; the job's own limit is 45 minutes, so several slow packages in a row can still end the run, and a rerun on the same tag resumes. Only then does it run its one clean installation. It still fails immediately on authentication errors or mismatched integrity. Do not treat npm's acceptance message as a completed release.
 
