@@ -312,5 +312,16 @@ const why = [
   ...(createdSecretId && !(secretDelete && secretDelete.status < 300 && secretDelete.getAfter === 404) ? ["the model's secret is not confirmed deleted"] : []),
   ...(((report.disk as { left?: number; error?: string } | undefined)?.left ?? 0) > 0 || (report.disk as { error?: string } | undefined)?.error ? ["the run's directory is still on the disk"] : []),
 ];
-console.log(JSON.stringify({ run: runId, minutes: Math.round((Date.now() - startedAt) / 6000) / 10, spendUsd: ledger.spend(), ...(failure ? { failure: String((failure as Error).message).slice(0, 300) } : {}), mode, live: Boolean(secret), kills: outcome?.kills ?? null, handoffs: outcome?.handoffs ?? null, failedHandoffs: outcome?.failedHandoffs ?? null, processes: outcome?.processes.map((p) => ({ exit: p.exit, status: p.outcome?.status ?? null })) ?? null, usd: outcome?.usd ?? null, overBudget: outcome?.overBudget ?? null, checks, secret: secret ? { name: secret, created: Boolean(createdSecretId), deleted: secretDelete ?? null } : null, keyHits, ok: why.length === 0, ...(why.length ? { why } : {}), report }));
+// What the run spent, by what each figure counts: the model, from the recording's manifest (what --max-usd counts, with any priced box); the cap; and the sandbox time of this lane's ledger, which is
+// cumulative over every run the ledger has seen and is checked against nothing.
+const modelUsd = ((): number | null => {
+  try {
+    const parts = (JSON.parse(readFileSync(join(record, 'manifest.json'), 'utf8')) as { cost?: { parts?: { model?: unknown } } }).cost?.parts;
+    return typeof parts?.model === 'number' ? parts.model : null;
+  } catch { return null; }
+})();
+const capUsd = outcome?.maxUsd ?? null;
+const sandboxUsdLedger = ledger.spend();
+console.log(`spend: the model $${modelUsd ?? 'unknown'} this run (the recording's manifest); the cap $${capUsd ?? 'none'} (--max-usd, which counts the model and any priced box); sandbox time $${Math.round(sandboxUsdLedger * 10000) / 10000} (cumulative, this lane's ledger)`);
+console.log(JSON.stringify({ run: runId, minutes: Math.round((Date.now() - startedAt) / 6000) / 10, modelUsd, capUsd, sandboxUsdLedger, ...(failure ? { failure: String((failure as Error).message).slice(0, 300) } : {}), mode, live: Boolean(secret), kills: outcome?.kills ?? null, handoffs: outcome?.handoffs ?? null, failedHandoffs: outcome?.failedHandoffs ?? null, processes: outcome?.processes.map((p) => ({ exit: p.exit, status: p.outcome?.status ?? null })) ?? null, usd: outcome?.usd ?? null, overBudget: outcome?.overBudget ?? null, checks, secret: secret ? { name: secret, created: Boolean(createdSecretId), deleted: secretDelete ?? null } : null, keyHits, ok: why.length === 0, ...(why.length ? { why } : {}), report }));
 process.exit(why.length ? 1 : 0);
