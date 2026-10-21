@@ -8,7 +8,7 @@ import { chmod, cp, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { diskProbe, durableCommits } from './disk.mjs';
+import { durableCommits } from './disk.mjs';
 import { agentHomeFor, prepareRun } from './host.mjs';
 import { listQueue, liveParts, openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { FIXTURES_V4 } from './scripted.mjs';
@@ -247,13 +247,8 @@ test('edgarCache: each run of a live pass reads the pinned Wayback captures from
   assert.match((await (await fetchPage('run-2')).run({ url: second.snapshot })).text, /SIC: 3674/);
 });
 
-test('diskProbe and durableCommits: what a run cost the disk, for the switch rule', async (t) => {
+test('durableCommits: how many durable commits a run made', async (t) => {
   const dir = await scratch(t);
-  const probe = diskProbe(dir, { commits: 5 });
-  assert.ok(probe.fsyncMs >= 0 && probe.commits === 5, JSON.stringify(probe));
-  // The probe commits as pi-durable's stores do (WAL, synchronous NORMAL: no fsync per commit), so it measures what a run waits.
-  assert.deepEqual([probe.journal, probe.synchronous], ['wal', 1]);
-  assert.deepEqual(readdirSync(dir), []);
   const { data, companies } = await standIn(dir, { train: 1, dev: 0, test: 0 });
   const out = join(dir, 'train');
   await runLoop({ out, parts: parts(data), list: streamOf(companies, { split: 'train', epochs: 1, seed: 1 }), split: 'train', record: false });
