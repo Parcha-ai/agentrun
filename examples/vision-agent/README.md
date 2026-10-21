@@ -36,10 +36,11 @@ An example folder holds `question.md` (the question), `inputs.json` (each file b
 beside it) and a README. To ask something else of your own files, write another folder under `examples/` with a
 `question.md`, the files beside it, and an `inputs.json` of `{"items": [{"path": "mydoc.pdf"}]}` (copy `document-check`'s
 for the fuller shape the examples use: each file's `id`, `bytes` and `sha256`, and a `url` for one that is fetched), and
-run it as above. Or give `--input '{"question": "...", "files": ["mydoc.pdf"]}'` and name the folder that holds the files
-in `DEMO_FILES_DIR`: each becomes a file of the run's workspace under its bare name (letters, digits, dots, dashes and
-underscores, no directory), and a name that folder lacks is not found. Putting `"example": "<folder>"` in that input asks
-a new question of that example's own files.
+run it as above. On fakes only, you can instead give `--input '{"question": "...", "files": ["mydoc.pdf"]}'` and name the
+folder that holds the files in `DEMO_FILES_DIR`: each becomes a file of the run's workspace under its bare name (letters,
+digits, dots, dashes and underscores, no directory), and a name that folder lacks is not found. A `--live` run does not
+pass `DEMO_FILES_DIR` on, so use an example folder for it. Putting `"example": "<folder>"` in an `--input` asks a new
+question of that example's own files.
 
 | Flag | What it does |
 |---|---|
