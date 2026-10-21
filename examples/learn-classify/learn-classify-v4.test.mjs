@@ -358,6 +358,9 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   assert.equal(answerV4({}).parameters.properties.subsidiaries.anyOf.find((s) => s.properties?.none).properties.note.maxLength, 300);
   assert.match(flat(text(v4, 'AGENTS.md')), /the note saying so in at most 300 characters/);
   assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), /the note a short reason of at most 300 characters/);
+  // The cover is found by its words, not by its page; a document without them is not the filing.
+  for (const words of [/Find the cover by its words, not its page: `find: "principal executive offices"`/, /When no page holds those words, the document is not the filing/])
+    assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), words);
   // The code is chosen from sic_codes by where most revenue comes from, never remembered.
   for (const words of [/its 4-digit SIC code, from sic_codes: sic2_groups for the group/, /chosen by where most revenue comes from/, /A code you remember from EDGAR or elsewhere is a guess, never evidence/, /the revenue reading wins, and the code's cite is the revenue table it rests on/])
     assert.match(flat(text(v4, 'AGENTS.md')), words);
