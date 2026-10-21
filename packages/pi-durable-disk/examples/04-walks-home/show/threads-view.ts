@@ -117,6 +117,15 @@ export function nextToLand(threads: readonly Thread[], runIsHome: boolean): stri
   return threads.find((t) => t.status === "done" && !t.home)?.id ?? null;
 }
 
+/**
+ * The skills that are in the robot now, from facts the run wrote: the robot's home lists the skill (home/skills.json, the assembler's own file), its thread finished, and the run is home.
+ * No clock decides this. A skill already in is not said again.
+ */
+export function homeLandings(threads: readonly Thread[], listed: ReadonlySet<string>, runIsHome: boolean): string[] {
+  if (!runIsHome) return [];
+  return threads.filter((t) => t.status === "done" && !t.home && listed.has(t.id)).map((t) => t.id);
+}
+
 /** What the page knows about how the skills go into the robot, for one run: once the tab has said a skill is installed the stage stops landing them itself, and a new run starts over. */
 export class LandingDriver {
   private installed = false;
@@ -127,6 +136,11 @@ export class LandingDriver {
 
   reset(): void {
     this.installed = false;
+  }
+
+  /** Has the tab said a skill is installed in this run? */
+  installedByTab(): boolean {
+    return this.installed;
   }
 
   next(threads: readonly Thread[], runIsHome: boolean): string | null {

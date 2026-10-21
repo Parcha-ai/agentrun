@@ -4,13 +4,21 @@
 import { esc } from "./page/dom.ts";
 import type { Round, Stumble, Thread } from "./types.ts";
 
-/** home/skills.json: the body the robot has now. Only that field is read. */
-export function parseHomeSkills(text: string): { bodySha: string } | null {
+/** home/skills.json: the body the robot has now, and the names of the skills its home holds (an object keyed by name, as the assembler writes it, or a list). */
+export function parseHomeSkills(text: string): { bodySha: string; skills: string[] } | null {
   try {
     const o = JSON.parse(text) as unknown;
     if (o === null || typeof o !== "object" || Array.isArray(o)) return null;
-    const sha = (o as Record<string, unknown>).body_mjcf_sha256;
-    return typeof sha === "string" && sha !== "" ? { bodySha: sha } : null;
+    const rec = o as Record<string, unknown>;
+    const sha = rec.body_mjcf_sha256;
+    if (typeof sha !== "string" || sha === "") return null;
+    const held = rec.skills;
+    const names = Array.isArray(held)
+      ? held.flatMap((x) => (typeof x === "string" ? [x] : x !== null && typeof x === "object" && typeof (x as { name?: unknown }).name === "string" ? [(x as { name: string }).name] : []))
+      : held !== null && typeof held === "object"
+        ? Object.keys(held)
+        : [];
+    return { bodySha: sha, skills: names.filter((n) => n !== "") };
   } catch {
     return null;
   }

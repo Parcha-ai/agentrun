@@ -23,7 +23,7 @@ test("before any thread exists the poller falls back to the library's names (a r
 test("the heading counts the threads the run forked: 3 threads say 3, 8 say 8, and no waiting tile is invented", () => {
   const three = threadsHtml(["walk", "spin", "wave"].map((id) => T(id, "learning")));
   assert.match(three, /split into 3 threads/);
-  assert.equal((three.match(/class="tile/g) ?? []).length, 3);
+  assert.equal((three.match(/class="tile"/g) ?? []).length, 3);
   const eight = threadsHtml(Array.from({ length: 8 }, (_, i) => T(`s${i}`, "learning")));
   assert.match(eight, /split into 8 threads/);
 });

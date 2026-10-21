@@ -3,14 +3,13 @@
 // D2's per-skill files read from the run's disk). A page that lacks an element skips that piece; with no tab and no threads every piece is empty.
 import { changeCardHtml, checkinLine, checkinNote, fileChanges, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, stumbleNote, toolStripHtml } from "../robot-view.ts";
 import { relearnHtml, relearnSummary } from "../relearn.ts";
-import { SKILLS } from "../skills.ts";
-import { LandingDriver, runIsHome, threadsHtml, threadsPhase } from "../threads-view.ts";
+import { LandingDriver, homeLandings, runIsHome, threadsHtml, threadsPhase } from "../threads-view.ts";
 import type { Note, ShowState } from "../types.ts";
 import { apiUrl } from "./api-base.ts";
 import { esc } from "./dom.ts";
 import type { Feed } from "./feed.ts";
 import { RunScope } from "./run-scope.ts";
-import { SkillsPoller } from "./skills-poller.ts";
+import { SkillsPoller, skillsToPoll } from "./skills-poller.ts";
 import { TabLink, stageKeys, tabEventsFrom } from "./tab-link.ts";
 
 const el = (id: string): HTMLElement | null => document.getElementById(id);
@@ -81,6 +80,7 @@ export function mountRobotPieces(o: { feed: Feed; params: URLSearchParams; api: 
     },
     emit: (e) => feed.fold(e),
     now: () => feed.captionNow(),
+    skills: () => skillsToPoll(feed.state.threads),
   });
   // A new run (a retake, a reset, a new feed) starts all of this over, at the moment the feed says so: a word from the tab right after belongs to the new run.
   const scope = new RunScope();
@@ -94,10 +94,11 @@ export function mountRobotPieces(o: { feed: Feed; params: URLSearchParams; api: 
     scope.sync(feed.generation);
     void poller.tick().catch(() => undefined);
   }, 1000);
-  // With no word from the tab about skills going in, they land in the robot one after another once every thread has finished and the run is home.
+  // A skill is in the robot when the robot's home lists it (home/skills.json, the assembler's file), its thread finished and the run is home: a fact the run wrote, never a clock. The tab's own word
+  // (`skill-installed`) says the same sooner and stops this.
   setInterval(() => {
-    const id = landing.next(feed.state.threads, runIsHome(feed.state));
-    if (id) feed.fold({ t: "thread", at: feed.captionNow(), id, patch: { home: true } });
+    if (landing.installedByTab()) return;
+    for (const id of homeLandings(feed.state.threads, poller.homeListed(), runIsHome(feed.state))) feed.fold({ t: "thread", at: feed.captionNow(), id, patch: { home: true } });
   }, 450);
 
   // ---- Rendering and captions.
@@ -134,7 +135,7 @@ export function mountRobotPieces(o: { feed: Feed; params: URLSearchParams; api: 
   }
 
   function renderThreads(state: ShowState): void {
-    const html = threadsHtml(state.threads, SKILLS);
+    const html = threadsHtml(state.threads);
     if (html === threadsKey) return;
     threadsKey = html;
     const box = el("threads");

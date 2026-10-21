@@ -9,8 +9,17 @@ export type SkillsPollerOptions = {
   emit: (event: ShowEvent) => void;
   /** The stage's clock for the events it makes. */
   now: () => number;
-  skills?: readonly string[];
+  /** The skill folders to read: a list, or a function asked each tick; the page gives `() => skillsToPoll(state.threads)` (the threads the run forked, whatever their names). Without it, the library's names. */
+  skills?: readonly string[] | (() => readonly string[]);
 };
+
+/**
+ * The folders to read: the thread ids the run has (a thread's id is its skill's name, the folder the trainer writes to), so a skill the agent planned from the user's words is read and a name nobody
+ * forked is not. Before any thread exists, the library's names, so a rehearsal that has no relay still reads its files.
+ */
+export function skillsToPoll(threads: readonly Thread[]): readonly string[] {
+  return threads.length > 0 ? threads.map((t) => t.id) : SKILLS;
+}
 
 export class SkillsPoller {
   private readonly o: SkillsPollerOptions;
@@ -20,6 +29,8 @@ export class SkillsPoller {
   private body = "";
   /** round.json last said (its text). */
   private roundText = "";
+  /** The skills the robot's home holds, from the last home/skills.json read (home/skills.json is written by the assembler once the threads are done). */
+  private held = new Set<string>();
   /** Counts the runs: a tick that started in an earlier one drops what it read. */
   private gen = 0;
 
@@ -32,6 +43,7 @@ export class SkillsPoller {
     this.last.clear();
     this.body = "";
     this.roundText = "";
+    this.held = new Set();
     this.gen++;
     this.busy = false;
   }
@@ -46,6 +58,7 @@ export class SkillsPoller {
       const homeText = await this.o.read("home/skills.json").catch(() => undefined);
       if (gen !== this.gen) return;
       const home = homeText !== undefined ? parseHomeSkills(homeText) : null;
+      if (home) this.held = new Set(home.skills);
       if (home && home.bodySha !== this.body) {
         this.body = home.bodySha;
         this.o.emit({ t: "body", at: this.o.now(), sha: home.bodySha });
@@ -60,7 +73,7 @@ export class SkillsPoller {
           this.o.emit({ t: "round", at: this.o.now(), round });
         }
       }
-      for (const dir of this.o.skills ?? SKILLS) {
+      for (const dir of typeof this.o.skills === "function" ? this.o.skills() : (this.o.skills ?? SKILLS)) {
         const [jsonText, progressText] = [await this.o.read(`skills/${dir}/skill.json`).catch(() => undefined), await this.o.read(`skills/${dir}/skill-progress.jsonl`).catch(() => undefined)];
         if (gen !== this.gen) return;
         const json = jsonText !== undefined ? parseSkillJson(jsonText) : null;
@@ -82,5 +95,10 @@ export class SkillsPoller {
     } finally {
       if (gen === this.gen) this.busy = false;
     }
+  }
+
+  /** The names of the skills the robot's home lists, as of the last read. */
+  homeListed(): ReadonlySet<string> {
+    return this.held;
   }
 }

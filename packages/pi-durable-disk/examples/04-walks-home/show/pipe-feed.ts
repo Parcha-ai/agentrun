@@ -15,6 +15,7 @@ import { checkinFromItem, routingFromItem, toolsFromItems } from "./robot-events
 import { untag, type PipeFrame, type Tagged } from "../../03-tab-to-cloud/wire.ts";
 import { parseDecision } from "./decision.ts";
 import { emptyState, reduce } from "./reduce.ts";
+import { SKILL_LABELS } from "./skills.ts";
 import type { ChatTurn, HostKind, Note, NoteKind, ShowCommand, ShowEvent, ShowState } from "./types.ts";
 
 type PipeEnv = { id: string; label: string; phrase: string; kind: "tab" | "cloud" | "remote"; detail?: string };
@@ -69,8 +70,12 @@ export class PipeTranslator {
   /** After the agent arrives on a machine: the tools it had run by then, and whether its first command there has been announced. */
   private setupWatch: { before: Set<string>; emitted: boolean } | undefined;
   private run = "";
+  /** The thread patches already said, by thread id (its skill's name): the host relays a thread's whole transcript in batches and each batch repeats the thread's status, so only a change is said. */
+  private threadsSaid = new Map<string, string>();
+  private log: ((event: string, data?: Record<string, unknown>) => void) | undefined;
 
-  constructor(options: { run: string; origin?: number; clock?: () => number }) {
+  constructor(options: { run: string; origin?: number; clock?: () => number; log?: (event: string, data?: Record<string, unknown>) => void }) {
+    this.log = options.log;
     this.run = options.run;
     this.clock = options.clock ?? Date.now;
     this.origin = options.origin ?? this.clock();
@@ -189,7 +194,7 @@ export class PipeTranslator {
       if (d) this.seenDecisions.add(`${d.id}:${d.phase}`);
     }
     // The transcript so far is history: remember it, announce none of it.
-    for (const e of frame.events) this.fold(e);
+    for (const e of frame.events) if (!this.thread(e, out)) this.fold(e);
     for (const item of this.chat.items()) {
       this.seenItems.add(item.id);
       if (item.kind === "user") this.answeredUsers.add(item.id);
@@ -335,7 +340,31 @@ export class PipeTranslator {
     out.push({ t: "chat", at: this.at(), turns });
   }
 
+  /**
+   * The host's relay of one teaching thread (a child conversation of the agent's: `thread-relay.ts` sends `{ kind: "thread", conversation, name, gpu, teach, status, snapshot | events }` to every viewer, the
+   * same messages the chat's thread rows are made of). A thread's name is its skill's folder, so the tile and the trainer's files meet on it. What this says: that the thread exists, which GPU it holds (its
+   * own number, as the host lists it) and that it failed. It never says learning or done: the trainer's own files say that, and a task that ended is not a skill that passed.
+   */
+  private thread(tagged: Tagged, out: ShowEvent[]): boolean {
+    const m = untag(tagged) as { kind?: unknown; conversation?: unknown; name?: unknown; gpu?: unknown; status?: unknown; teach?: unknown } | undefined;
+    if (m === null || typeof m !== "object" || m.kind !== "thread" || typeof m.name !== "string" || m.name === "") return false;
+    const id = m.name;
+    const failed = m.status === "timed-out" || m.status === "error" || m.status === "failed";
+    const patch = {
+      skill: (SKILL_LABELS as Record<string, string>)[id] ?? id.replace(/-/g, " "),
+      ...(typeof m.gpu === "number" ? { host: `GPU ${m.gpu}` } : {}),
+      ...(failed ? { status: "failed" as const } : {}),
+    };
+    const key = JSON.stringify(patch);
+    if (this.threadsSaid.get(id) === key) return true;
+    this.threadsSaid.set(id, key);
+    out.push({ t: "thread", at: this.at(), id, patch });
+    this.log?.("stage.thread", { name: id, gpu: typeof m.gpu === "number" ? m.gpu : null, status: typeof m.status === "string" ? m.status : null, conversation: typeof m.conversation === "number" ? m.conversation : null, teach: typeof m.teach === "number" ? m.teach : null, ms: this.clock() });
+    return true;
+  }
+
   private events(tagged: Tagged, out: ShowEvent[]): void {
+    if (this.thread(tagged, out)) return;
     this.fold(tagged);
     const at = this.at();
     const items = this.chat.items();
@@ -428,7 +457,7 @@ export class PipeFeed implements FeedSource {
 
   constructor(options: PipeFeedOptions) {
     this.opts = options;
-    this.tr = new PipeTranslator({ run: options.run ?? "", ...(options.clock ? { clock: options.clock } : {}) });
+    this.tr = new PipeTranslator({ run: options.run ?? "", ...(options.clock ? { clock: options.clock } : {}), ...(options.log ? { log: options.log } : {}) });
   }
 
   private target(): PipeTarget | undefined {
@@ -439,7 +468,7 @@ export class PipeFeed implements FeedSource {
 
   /** A different run: nothing of the old one is true any more. */
   private resetFor(run: string): void {
-    this.tr = new PipeTranslator({ run, ...(this.opts.clock ? { clock: this.opts.clock } : {}) });
+    this.tr = new PipeTranslator({ run, ...(this.opts.clock ? { clock: this.opts.clock } : {}), ...(this.opts.log ? { log: this.opts.log } : {}) });
     this.st = emptyState();
     this.events.length = 0;
     this.opts.onReset?.();
@@ -496,7 +525,7 @@ export class PipeFeed implements FeedSource {
     const key = t.key ?? `${t.url}|${t.run}`;
     // The first connection names the run it is for (a feed built from a link file does not know it until now); a later one that
     // names a different run drops everything of the old one.
-    if (this.connectedKey === undefined) this.tr = new PipeTranslator({ run: t.run, ...(this.opts.clock ? { clock: this.opts.clock } : {}) });
+    if (this.connectedKey === undefined) this.tr = new PipeTranslator({ run: t.run, ...(this.opts.clock ? { clock: this.opts.clock } : {}), ...(this.opts.log ? { log: this.opts.log } : {}) });
     else if (key !== this.connectedKey) this.resetFor(t.run);
     this.connectedKey = key;
     const socket = connect(t.url);

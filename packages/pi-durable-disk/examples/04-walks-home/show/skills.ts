@@ -57,7 +57,7 @@ export function parseSkillProgress(text: string): { points: SkillPoint[]; skippe
 export type SkillJson = {
   skill: string;
   label: string | null;
-  status: "training" | "done" | "failed";
+  status: "training" | "done" | "failed" | "refused" | "compiled";
   wallS: number | null;
   passedAt: SkillPoint | null;
   /** The body this skill was trained for (the sha256 of its model file), its name, and when the thread started (epoch seconds). */
@@ -76,7 +76,7 @@ export function parseSkillJson(text: string): SkillJson | null {
     const o = bag(JSON.parse(text));
     if (o === null) return null;
     const skill = str(o.skill);
-    if (skill === null || (o.status !== "training" && o.status !== "done" && o.status !== "failed")) return null;
+    if (skill === null || (o.status !== "training" && o.status !== "done" && o.status !== "failed" && o.status !== "refused" && o.status !== "compiled")) return null;
     const passed = bag(o.passed_at);
     const cpu = bag(o.cpu_estimate);
     const cpuS = num(o.cpu_estimate_s);
@@ -98,7 +98,8 @@ export function parseSkillJson(text: string): SkillJson | null {
   }
 }
 
-const STATUS: Record<SkillJson["status"], Thread["status"]> = { training: "learning", done: "done", failed: "failed" };
+/** The trainer also writes `refused` (the skill cannot be taught on this body: a tile that says so) and `compiled` (the box has its program; training is next). */
+const STATUS: Record<SkillJson["status"], Thread["status"]> = { training: "learning", compiled: "learning", done: "done", failed: "failed", refused: "failed" };
 
 /**
  * The events for what is new in a skill's files: a thread patch (its label, status and what it is measured by) and the checkpoints after `lastN`. `dir` is the skill's folder name, which stands
