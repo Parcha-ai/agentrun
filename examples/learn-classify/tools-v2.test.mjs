@@ -331,6 +331,39 @@ test('the snapshot cache: an uncached URL goes live, an archive that turns the c
   assert.throws(() => snapshotFetch({ dir: join(dir, 'nowhere') }), /no manifest\.jsonl/);
 });
 
+
+test('a request asked again (by the snapshot cache, or through the browser) is on the tool\'s result, so a rate limit it absorbed is still counted', async (t) => {
+  const dir = await snapshotDir(t);
+  const sleep = async () => {};
+  const other = 'https://web.archive.org/web/2026id_/https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000000001';
+  const page = (fetch) => fetchPageTool({ allowDomain: ANY_HOST, archivedSec: true, fetch, lookup: publicLookup });
+  const html = (body) => new Response(body, { status: 200, headers: { 'content-type': 'text/html' } });
+  // Two refused connections, then the page: both tries are on fetch_page's result, as status 0.
+  const flaky = liveWeb((href, n) => { if (n <= 2) throw refusedConnection(); return html('<p>SIC: 5961</p>'); });
+  const read = await page(snapshotFetch({ dir, fetch: flaky.fetch, sleep })).run({ url: other });
+  assert.deepEqual([read.ok, read.retried], [true, [{ status: 0, via: 'cache' }, { status: 0, via: 'cache' }]]);
+  // A 429, then the page.
+  const busy = liveWeb((href, n) => (n === 1 ? new Response('slow down', { status: 429 }) : html('<p>SIC: 5961</p>')));
+  assert.deepEqual((await page(snapshotFetch({ dir, fetch: busy.fetch, sleep })).run({ url: other })).retried, [{ status: 429, via: 'cache' }]);
+  // Given up: the error carries every try, and so does fetch_page's result.
+  const down = liveWeb(() => { throw refusedConnection(); });
+  const failed = await page(snapshotFetch({ dir, fetch: down.fetch, sleep, retries: 2 })).run({ url: other });
+  assert.deepEqual([failed.ok, failed.retried], [false, [{ status: 0, via: 'cache' }, { status: 0, via: 'cache' }]]);
+  // A cache hit, or a plain answer, asked nothing again: no field.
+  assert.equal('retried' in (await page(snapshotFetch({ dir, fetch: down.fetch, sleep })).run({ url: PINNED })), false);
+  // read_document: the cache's tries, and a plain request's 429 that the browser got past.
+  const root = await scratch(t);
+  const scripted = scriptedBrowser({ pages: { 'https://ir.walled.example/ar.pdf': { document: Buffer.from(REPORT), contentType: 'application/pdf' } } });
+  const priced = async () => ({ ...(await scripted.browser()), billedSeconds: (sec) => Math.max(sec, 60), usd: () => 0 });
+  const web = await localWeb(t, { 'ir.walled.example/ar.pdf': (res) => { res.writeHead(429, { 'content-type': 'text/plain' }); res.end('slow down'); } });
+  const tool = readDocumentTool({ root, vision: await visionFor({ root, eyes: fakeEyes() }), browser: priced, driver: scripted.driver, guard: scripted.guard, fetch: web.fetch, lookup: publicLookup });
+  const rescued = conforms(tool, await tool.run({ url: 'https://ir.walled.example/ar.pdf' }));
+  assert.deepEqual([rescued.ok, rescued.via, rescued.retried], [true, 'browser', [{ status: 429, via: 'browser' }]]);
+  const busyAgain = liveWeb((href, n) => (n === 1 ? new Response('slow down', { status: 429 }) : html('<p>SIC: 5961</p>')));
+  const viaCache = readDocumentTool({ root, vision: await visionFor({ root, eyes: fakeEyes() }), archivedSec: true, fetch: snapshotFetch({ dir, fetch: busyAgain.fetch, sleep }), lookup: publicLookup });
+  const doc = conforms(viaCache, await viaCache.run({ url: other }));
+  assert.deepEqual(doc.retried, [{ status: 429, via: 'cache' }]);
+});
 test('with archivedSec, all three hard-job tools take the Wayback Machine\'s copy of an SEC page, and still refuse sec.gov and every other archived site', async (t) => {
   const copy = 'https://web.archive.org/web/20260911112117id_/https://www.sec.gov/Archives/edgar/data/1/0000000001-26-000001-index.htm';
   assert.equal(refusedUrl(copy, { archivedSec: true }), null);
