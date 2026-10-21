@@ -314,6 +314,9 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
     return known ? el("div", { class: "row file" }, "Saved ", el("a", { href: fileHref(known) }, known)) : null;
   }
 
+  /** pi's run is one turn of the agent; this page's run is the whole job, so pi's run phases read as turns. */
+  const phaseText = (r) => ({ start: "Turn started", end: "Turn ended" })[/:run:(start|end)$/.exec(r.id ?? "")?.[1]] ?? r.summary;
+
   function rowNode(r) {
     switch (r.kind) {
       case "user_message":
@@ -330,7 +333,7 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
       case "usage":
         return null;
       default:
-        return (r.kind === "phase" && savedLink(r)) || el("div", { class: "row phase" }, r.summary);
+        return (r.kind === "phase" && savedLink(r)) || el("div", { class: "row phase" }, r.kind === "phase" ? phaseText(r) : r.summary);
     }
   }
 

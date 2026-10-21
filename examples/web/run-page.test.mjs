@@ -9,7 +9,7 @@ import { after, before, test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { startRun } from "@parcha/pi-durable-agent";
-import { renderText, timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { renderText, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { buildSignedInHome, signedInHomeSkip } from "../../packages/pi-durable-agent/test/fixtures/signed-in-home.mjs";
 import { ensureAgentHome } from "./agent/home.mjs";
 import { byId, byTag, fakeDom, settle, shown } from "./fake-dom.mjs";
@@ -113,6 +113,22 @@ test("a live source: the message box, stop, new run and the Browser tab, each ac
   await settle();
   assert.ok(calls.includes("stop r1"));
   assert.deepEqual([...view.fetched, ...view.window.fetched], []);
+});
+
+test("pi's run phases read as the agent's turns: a run waiting for the person never says it finished", async (t) => {
+  // What a live run's door gives while the person signs in: a turn that started and ended, then the wait.
+  const reducer = timelineReducer();
+  reducer.apply([{ type: "run_start", conversationId: "c1" }, { type: "run_end", conversationId: "c1" }]);
+  const live = [...rows.slice(0, 8), ...reducer.rows()];
+  const source = { ...liveSource(), timeline: (id, { signal } = {}) => (async function* () {
+    yield { rows: live, state: "waiting", costUsd: 0.03 };
+    await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+  })() };
+  const view = await mount(t, source, "#/run/r1");
+  const steps = view.find("steps").textContent;
+  assert.match(steps, /Turn started/);
+  assert.match(steps, /Turn ended/);
+  assert.doesNotMatch(steps, /Run finished|Run started/, "the page's run is the whole job; pi's run is one turn of it");
 });
 
 test("a replay whose run has no cost shows no dollar figure anywhere, though its rows carry one", async (t) => {
