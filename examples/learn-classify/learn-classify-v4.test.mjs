@@ -354,6 +354,10 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   // None is a subsidiaries answer only when the report, read, has no subsidiary exhibit or list, and it says why.
   assert.match(flat(text(v4, 'AGENTS.md')), /at most 15, or none \(`\{ "none": true, "note" \}`\) when the report, read, has no subsidiary exhibit or list/);
   assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), /no such exhibit or list, answer `\{ "none": true, "note": "<why>" \}`/);
+  // The answer refuses a note over 300 characters, so the rules and the skill say how long it may be.
+  assert.equal(answerV4({}).parameters.properties.subsidiaries.anyOf.find((s) => s.properties?.none).properties.note.maxLength, 300);
+  assert.match(flat(text(v4, 'AGENTS.md')), /the note saying so in at most 300 characters/);
+  assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), /the note a short reason of at most 300 characters/);
   // The code is chosen from sic_codes by where most revenue comes from, never remembered.
   for (const words of [/its 4-digit SIC code, from sic_codes: sic2_groups for the group/, /chosen by where most revenue comes from/, /A code you remember from EDGAR or elsewhere is a guess, never evidence/, /the revenue reading wins, and the code's cite is the revenue table it rests on/])
     assert.match(flat(text(v4, 'AGENTS.md')), words);
