@@ -99,8 +99,12 @@ export function rederiveDecision(receipt: Pick<DecisionReceipt, "rule" | "answer
       const doubted: string[] = [];
       const unmet: string[] = [];
       for (const [id, threshold] of Object.entries(rule.thresholds)) {
-        if (threshold === null || !(Number(answers[id]?.noul) < threshold)) continue;
-        (rule.present.includes(id) ? doubted : unmet).push(id);
+        if (threshold === null) continue;
+        // A field with a threshold needs its yes/no answer; a receipt missing one, or holding another shape, decided
+        // nothing (null), never a fail-open "accepted".
+        const answer = answers[id];
+        if (answer?.type !== "noul") return null;
+        if (answer.noul < threshold) (rule.present.includes(id) ? doubted : unmet).push(id);
       }
       return { accepted: doubted.length === 0 && unmet.length === 0, doubted, unmet };
     }

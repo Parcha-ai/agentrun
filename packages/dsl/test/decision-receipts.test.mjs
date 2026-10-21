@@ -402,6 +402,17 @@ test('each verify review is its own decision, recorded with its thresholds', asy
   assert.deepEqual(reviews.map((e) => e.detail.decision_id), r.receipts.map((x) => x.id));
 });
 
+test('a verify receipt missing an answer a threshold reads decided nothing: rederiveDecision returns null, never accepted', () => {
+  const rule = { kind: 'verify', thresholds: { text: 0.3, cited: 0.5 }, present: ['text', 'cited'] };
+  // Answered: text is supported (0.9 >= 0.3) and cited is doubted (0.1 < 0.5, a field the draft holds).
+  assert.deepEqual(rederiveDecision({ rule, questions: {}, answers: { text: noul(0.9), cited: noul(0.1) } }), { accepted: false, doubted: ['cited'], unmet: [] });
+  // A non-null threshold whose answer is missing, or is not a yes/no, decided nothing: null, never a fail-open "accepted".
+  assert.equal(rederiveDecision({ rule, questions: {}, answers: { text: noul(0.9) } }), null, 'a missing answer');
+  assert.equal(rederiveDecision({ rule, questions: {}, answers: { text: noul(0.9), cited: { type: 'choice', choice: 'a' } } }), null, 'a non-noul answer');
+  // A null threshold holds its field empty and needs no answer, so it does not make the receipt decide nothing.
+  assert.deepEqual(rederiveDecision({ rule: { kind: 'verify', thresholds: { text: 0.3, note: null }, present: ['text', 'note'] }, questions: {}, answers: { text: noul(0.9) } }), { accepted: true, doubted: [], unmet: [] });
+});
+
 test('a receipt states every threshold its rule applied, so the decision can be evaluated again under another', async () => {
   const workflow = flow({ node: 'chain', steps: [
     // No keep rule: every item is kept. Then a keep on the answer's confidence, with no threshold of the author's.
