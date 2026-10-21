@@ -1,0 +1,5 @@
+---
+packages: repo
+kind: feature
+---
+A gallery lock entry (`apps/viewer/recordings.lock.json`) may now name the words its list shows for a run (`title`: a trimmed string of 1 to 120 characters, no control character) and the view its link opens (`view`: a non-empty list of distinct flags the viewer knows, today `muse`, the phone-chat layout). The recordings are not touched: the lock is read by the build, which carries each named id's `title` and `view` into its gallery entry (`gallery.js`, or `recordings/index.json` in a files build), the list shows `title` in place of the recording's own words and links `chat.html?r=<id>` with each flag (`&muse`), and an entry without them is listed and linked exactly as before. `readLock` refuses a wrong type, an empty or untrimmed or over-long title, an unknown or repeated flag, an empty list, and any other key; the gate refuses a built index whose titles or views differ from the lock's. The three utility-account replays in the lock open in the Muse layout under their own titles. The inspection header and the default chat header still use the recording's own title.

@@ -30,8 +30,10 @@ export function imageSize(bytes: Uint8Array): ImageSize | null {
   return null;
 }
 
-/** `scale: "css"` takes one image pixel per CSS pixel, so a high-density display does not double the size. */
-export type ScreenshotOptions = { fullPage?: boolean; type?: "png" | "jpeg"; quality?: number; scale?: "css" | "device" };
+/** A region of the page in CSS pixels, from the viewport's top-left corner. */
+export type Clip = { x: number; y: number; width: number; height: number };
+/** `scale: "css"` takes one image pixel per CSS pixel, so a high-density display does not double the size. `clip` captures that region alone. */
+export type ScreenshotOptions = { fullPage?: boolean; type?: "png" | "jpeg"; quality?: number; scale?: "css" | "device"; clip?: Clip };
 export type Capture = (options: ScreenshotOptions) => Promise<{ data: string; mimeType: string }>;
 export type BudgetedScreenshot = {
   data: string;
@@ -45,14 +47,14 @@ export class ScreenshotBudgetError extends Error {
   override name = "ScreenshotBudgetError";
 }
 
-/** Over budget, retakes as a viewport JPEG at CSS scale, quality 40, 25, 10; throws ScreenshotBudgetError. */
+/** Over budget, retakes as a viewport JPEG at CSS scale, quality 40, 25, 10 (of the same clip, when there is one); throws ScreenshotBudgetError. */
 export async function captureWithinBudget(capture: Capture, requested: ScreenshotOptions, budget = { maxEdgePx: SCREENSHOT_MAX_EDGE_PX, maxBase64Bytes: SCREENSHOT_MAX_BASE64_BYTES }): Promise<BudgetedScreenshot> {
   const ceiling = requested.type === "png" ? 40 : (requested.quality ?? 40);
   const ladder: ScreenshotOptions[] = [
-    { fullPage: requested.fullPage ?? false, type: requested.type ?? "jpeg", ...(requested.type === "png" ? {} : { quality: requested.quality ?? 40 }), ...(requested.scale ? { scale: requested.scale } : {}) },
-    ...[40, 25, 10].map((quality) => ({ fullPage: false, type: "jpeg" as const, quality: Math.min(ceiling, quality), scale: "css" as const })),
+    { fullPage: requested.fullPage ?? false, type: requested.type ?? "jpeg", ...(requested.type === "png" ? {} : { quality: requested.quality ?? 40 }), ...(requested.scale ? { scale: requested.scale } : {}), ...(requested.clip ? { clip: requested.clip } : {}) },
+    ...[40, 25, 10].map((quality) => ({ fullPage: false, type: "jpeg" as const, quality: Math.min(ceiling, quality), scale: "css" as const, ...(requested.clip ? { clip: requested.clip } : {}) })),
   ];
-  const key = (o: ScreenshotOptions) => `${o.fullPage}:${o.type}:${o.quality}:${o.scale}`;
+  const key = (o: ScreenshotOptions) => `${o.fullPage}:${o.type}:${o.quality}:${o.scale}:${o.clip ? `${o.clip.x},${o.clip.y},${o.clip.width},${o.clip.height}` : ""}`;
   const attempts = ladder.filter((o, i) => ladder.findIndex((other) => key(other) === key(o)) === i);
   let adjusted: BudgetedScreenshot["adjusted"] = null;
   for (const options of attempts) {

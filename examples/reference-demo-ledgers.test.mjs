@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
 import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
+import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, tapBox, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 test('the boxes capability: a tool\'s box is destroyed once at "a box command in flight", the run\'s process lives, no kill line is written, and the transport box lines record the loss', { timeout: 300_000 }, async (t) => {
@@ -33,41 +33,19 @@ test('a run kill at "a box command in flight" is not a kill point inside a tool 
   assert.deepEqual(result.processes.map((process) => process.signal), [null], 'the run was not killed');
   assert.equal(result.processes[0].outcome.status, 'complete');
 });
-test('the judge seam: 50 requests and 40,000 tokens, the next refused with JEV_CAP_REACHED; a failed request counts and a refused one does not; the count survives a restart', async (t) => {
-  assert.deepEqual(JEV_CAPS, { requests: 50, tokens: 40_000 });
-  const tmp = await mkdtemp(join(tmpdir(), 'reference-judge-'));
-  t.after(() => rm(tmp, { recursive: true, force: true }));
+test('the judge seam has no cap: 801 questions and 3,000,000 tokens are all sent, and none is refused', async () => {
   let sent = 0;
-  const ok = async () => { sent += 1; return { answers: {}, usage: { input_tokens: 10, output_tokens: 0 } }; };
-  const file = join(tmp, 'judge.jsonl');
-  const judge = capJudge(ok, file);
-  for (let index = 0; index < 50; index += 1) await judge({ label: 'q' });
-  assert.equal(sent, 50);
-  await assert.rejects(() => judge({ label: 'q' }), (error) => error.code === 'JEV_CAP_REACHED' && /not sent/.test(error.message));
-  assert.equal(sent, 50, 'the 51st was refused and never sent');
-  await assert.rejects(() => capJudge(ok, file)({ label: 'q' }), (error) => error.code === 'JEV_CAP_REACHED', 'a restarted process continues the count');
-  // A failed request counts: three failures leave 47 requests.
-  const file2 = join(tmp, 'judge2.jsonl');
-  const failing = capJudge(async () => { throw new Error('the judge is down'); }, file2);
-  for (let index = 0; index < 3; index += 1) await assert.rejects(() => failing({ label: 'q' }), /the judge is down/);
-  const some = capJudge(ok, file2);
-  for (let index = 0; index < 47; index += 1) await some({ label: 'q' });
-  await assert.rejects(() => some({ label: 'q' }), (error) => error.code === 'JEV_CAP_REACHED', '3 failed + 47 answered = 50: the next is refused');
-  // The token cap: usage in and out, summed across requests.
-  const file3 = join(tmp, 'judge3.jsonl');
-  const big = capJudge(async () => ({ answers: {}, usage: { input_tokens: 15_000, output_tokens: 5_000 } }), file3);
-  await big({ label: 'q' }); await big({ label: 'q' });
-  await assert.rejects(() => big({ label: 'q' }), (error) => error.code === 'JEV_CAP_REACHED', '40,000 tokens spent');
+  const judge = priceJudge(async () => { sent += 1; return { answers: {}, usage: { input_tokens: 3_745, output_tokens: 0 } }; });
+  for (let index = 0; index < 801; index += 1) await judge({ label: 'q' });
+  assert.equal(sent, 801, 'every question was sent: --max-usd is the run\'s dollar stop, and TypeSafe rate-limits');
 });
 test('the judge seam prices at Jev\'s public list price when the answer reports usage and no price of its own, and keeps a price it reports', async (t) => {
   assert.deepEqual([JEV_LIST_PRICE.inputUsdPerMillionTokens, JEV_LIST_PRICE.outputUsdPerMillionTokens], [0.042, 0]);
   assert.match(JEV_LIST_PRICE.source, /TypeSafe cookbook, 2026-07, jev-1.12/);
   assert.equal(jevCost({ input_tokens: 1_000_000, output_tokens: 1_000_000 }), 0.042, 'output is free at list price');
-  const tmp = await mkdtemp(join(tmpdir(), 'reference-judge-'));
-  t.after(() => rm(tmp, { recursive: true, force: true }));
-  const priced = await capJudge(async () => ({ answers: {}, usage: { input_tokens: 500_000, output_tokens: 3 } }), join(tmp, 'a.jsonl'))({ label: 'q' });
+  const priced = await priceJudge(async () => ({ answers: {}, usage: { input_tokens: 500_000, output_tokens: 3 } }))({ label: 'q' });
   assert.equal(priced.cost_usd, 0.021);
-  const own = await capJudge(async () => ({ answers: {}, usage: { input_tokens: 500_000, output_tokens: 3 }, cost_usd: 0.5 }), join(tmp, 'b.jsonl'))({ label: 'q' });
+  const own = await priceJudge(async () => ({ answers: {}, usage: { input_tokens: 500_000, output_tokens: 3 }, cost_usd: 0.5 }))({ label: 'q' });
   assert.equal(own.cost_usd, 0.5);
 });
 test('a scripted tool is handed the run\'s place, so it can read the run\'s evidence files and the job\'s files', async (t) => {
@@ -80,23 +58,7 @@ test('a scripted tool is handed the run\'s place, so it can read the run\'s evid
   await local.host.tools.runEffect({ node: { tool: 'look' }, input: {}, effect: { id: 'e', argsHash: 'h' } });
   assert.deepEqual(seen.place, { root: place.root, work: place.work });
 });
-test('judge cap: a request is counted before it is sent, so concurrent questions cannot pass the check together, and the count is on disk before the answer', async (t) => {
-  const tmp = await mkdtemp(join(tmpdir(), 'reference-judge-'));
-  t.after(() => rm(tmp, { recursive: true, force: true }));
-  const file = join(tmp, 'judge.jsonl');
-  writeFileSync(file, `${JSON.stringify({ requests: 49, tokens: 10 })}\n`);
-  let sent = 0;
-  let release;
-  const held = new Promise((resolve) => { release = resolve; });
-  const judge = capJudge(async () => { sent += 1; await held; return { answers: {}, usage: { input_tokens: 5, output_tokens: 0 } }; }, file);
-  const five = [0, 1, 2, 3, 4].map(() => judge({ label: 'q' }).then(() => 'answered', (error) => error.code));
-  // The first request is in flight and already counted: the file says 50 before any answer.
-  assert.equal(readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line).requests).reduce((a, b) => a + b, 0), 50);
-  release();
-  assert.deepEqual((await Promise.all(five)).sort(), ['JEV_CAP_REACHED', 'JEV_CAP_REACHED', 'JEV_CAP_REACHED', 'JEV_CAP_REACHED', 'answered']);
-  assert.equal(sent, 1, 'only one of five concurrent questions was sent');
-});
-test('live parts: merged member by member FIRST, then the crossings and the judge caps wrap the final host: a live judge is capped, a live status keeps its crossings, tools and decisions keep what the host had', async (t) => {
+test('live parts: merged member by member FIRST, then the crossings and the judge seam wrap the final host: a live judge is priced at the list price, a live status keeps its crossings, tools and decisions keep what the host had', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-compose-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const { localHost, placeAt } = await import('@parcha/agentrun-harness');
@@ -107,14 +69,14 @@ test('live parts: merged member by member FIRST, then the crossings and the judg
   const crossed = [];
   const statuses = [];
   const liveJudge = async () => ({ answers: {}, usage: { input_tokens: 1, output_tokens: 0 } });
-  composeHost(host, { tools: { runEffect: async () => 'live' }, decisions: { runJudge: liveJudge }, status: (event) => { statuses.push(event); } }, (point) => { crossed.push(point); return false; }, { open: 0 }, join(tmp, 'spent.jsonl'));
+  composeHost(host, { tools: { runEffect: async () => 'live' }, decisions: { runJudge: liveJudge }, status: (event) => { statuses.push(event); } }, (point) => { crossed.push(point); return false; }, { open: 0 });
   assert.deepEqual(host.tools.extensions, [probe], 'the host\'s extensions stay');
   assert.equal(typeof host.tools.answered, 'function', 'and its answered');
   await host.status({ source: 'workflow', event: { type: 'node.start' } });
   assert.deepEqual(statuses.length, 1, 'the live status still ran');
   assert.ok(crossed.includes('event workflow.node.start'), 'and it has its crossing');
-  for (let index = 0; index < 50; index += 1) await host.decisions.runJudge({ label: 'q' });
-  await assert.rejects(() => host.decisions.runJudge({ label: 'q' }), (error) => error.code === 'JEV_CAP_REACHED', 'the live judge is held to the cap');
+  const answered = await host.decisions.runJudge({ label: 'q' });
+  assert.equal(answered.cost_usd, jevCost({ input_tokens: 1, output_tokens: 0 }), 'the live judge is priced through the seam');
 });
 test('box cleanup: a run\'s boxes carry its label, tool-made ones too, and cleanup destroys those and no other run\'s, through the provider, so a detached command stops', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-boxes-'));
@@ -247,32 +209,12 @@ test('a held kill waits for every tool call to return before it asks: a tool a p
 });
 // ---- the demo's own Jev caps, and a model whose key the demo does not declare ----------------------------------------------------------------------
 
-test('models.judge.caps sets the demo\'s own Jev caps (positive integers, at most 800 requests and 2,560,000 tokens), the default is unchanged, a value past the ceiling is refused at load, and the run still refuses past the caps', { timeout: 300_000 }, async (t) => {
-  const { judgeCapsOf } = await import('../packages/harness/dist/demo-spec.js');
-  const { composeHost } = await import('../packages/harness/dist/demo.js');
-  const { localHost, placeAt, crossings } = await import('@parcha/agentrun-harness');
-  assert.deepEqual(judgeCapsOf({ name: 'x' }), { requests: 50, tokens: 40_000 }, 'the default is unchanged');
-  assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { jev: true } } }), { requests: 50, tokens: 40_000 });
-  assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { jev: true, caps: { requests: 2, tokens: 100 } } } }), { requests: 2, tokens: 100 });
-  assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { caps: { requests: 200 } } } }), { requests: 200, tokens: 40_000 }, 'one given, the other default');
-  assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { caps: { requests: 800, tokens: 2_560_000 } } } }), { requests: 800, tokens: 2_560_000 }, 'the ceiling itself is allowed: room for a vision demo\'s boxing and grounding requests');
-  for (const [name, value] of [['requests', 801], ['tokens', 2_560_001], ['requests', 0], ['requests', -1], ['tokens', 1.5], ['requests', '3'], ['tokens', null]]) {
-    assert.throws(() => judgeCapsOf({ name: 'x', models: { judge: { caps: { [name]: value } } } }), new RegExp(`models\\.judge\\.caps\\.${name} is a positive integer at most`), `${name} ${value}`);
-  }
-  // Refused at load, before any process starts.
-  await assert.rejects(() => run(t, { models: { judge: { jev: true, caps: { requests: 801 } } }, keys: [{ oneOf: [{ env: 'TYPESAFE_API_KEY', required: true, where: 'w', why: 'y' }], why: 'a Jev key' }] }, ['--json']), /models\.judge\.caps\.requests is a positive integer at most 800/);
-  // The caps are the judge seam\'s: the third question of a demo that set 2 is refused and never sent.
-  const tmp = await mkdtemp(join(tmpdir(), 'reference-caps-'));
-  t.after(() => rm(tmp, { recursive: true, force: true }));
-  const { fakes } = await import('./reference/job.ts');
-  const place = await placeAt(join(tmp, 'run'));
-  const asked = [];
-  const local = localHost(place, { ...fakes, judge: async (request) => { asked.push(request.label); return { answers: {}, usage: { input_tokens: 1, output_tokens: 1 } }; } });
-  composeHost(local.host, undefined, crossings(undefined, undefined), { open: 0 }, join(place.root, 'judge-spent.jsonl'), false, judgeCapsOf({ name: 'x', models: { judge: { jev: true, caps: { requests: 2, tokens: 100 } } } }));
-  const ask = () => local.host.decisions.runJudge({ label: 'q', questions: {} });
-  await ask(); await ask();
-  await assert.rejects(ask, (error) => error.code === 'JEV_CAP_REACHED' && /2 of 2 requests/.test(error.message) && error.requestDiagnostic?.reason === 'cap_reached');
-  assert.equal(asked.length, 2, 'the refused one was never sent, and its request diagnostic says so');
+test('models.judge.caps is refused at load, before any process starts: the harness has no Jev cap', { timeout: 300_000 }, async (t) => {
+  const { refuseJudgeCaps } = await import('../packages/harness/dist/demo-spec.js');
+  assert.doesNotThrow(() => refuseJudgeCaps({ name: 'x', models: { judge: { jev: true } } }));
+  assert.doesNotThrow(() => refuseJudgeCaps({ name: 'x' }));
+  assert.throws(() => refuseJudgeCaps({ name: 'x', models: { judge: { jev: true, caps: { requests: 801 } } } }), /models\.judge\.caps is gone: the harness has no Jev cap\. --max-usd is the run's dollar stop/);
+  await assert.rejects(() => run(t, { models: { judge: { jev: true, caps: { requests: 801 } } }, keys: [{ oneOf: [{ env: 'TYPESAFE_API_KEY', required: true, where: 'w', why: 'y' }], why: 'a Jev key' }] }, ['--json']), /models\.judge\.caps is gone/);
 });
 test('a demo that names models.judge (Jev) without a Jev key group is refused at load, naming the group to add; a TYPESAFE_API_KEY or an OPENROUTER_API_KEY group is enough, and no key is implied', { timeout: 300_000 }, async (t) => {
   await assert.rejects(() => run(t, { models: { judge: { jev: true } } }, ['--json']), /models\.judge \(Jev\) but declares no key for it: add a keys group .*TYPESAFE_API_KEY.*OPENROUTER_API_KEY/s);
@@ -297,13 +239,13 @@ test('a live host whose fallback judge is the fakes\' (already tapped) has each 
   // The entry taps the fakes when the live parts supply tools; the live parts here supply tools only.
   const { tapFakes } = await import('@parcha/agentrun-harness');
   const host = localHost(place, tapFakes(fakes, cross)).host;
-  composeHost(host, { tools: { runEffect: async () => 'live' } }, cross, { open: 0 }, join(tmp, 'spent.jsonl'), true, undefined, true);
+  composeHost(host, { tools: { runEffect: async () => 'live' } }, cross, { open: 0 }, true, true);
   await host.decisions.runJudge({ label: 'verdict' });
   assert.deepEqual(crossed.filter((point) => point.startsWith('judge.')), ['judge.asked verdict', 'judge.answered verdict'], 'once, not twice');
   // A judge the live parts supply has no crossings of its own: it is tapped.
   crossed.length = 0;
   const other = localHost(place, tapFakes(fakes, cross)).host;
-  composeHost(other, { decisions: { runJudge: async () => ({ answers: {}, usage: { input_tokens: 1, output_tokens: 0 } }) } }, cross, { open: 0 }, join(tmp, 'spent2.jsonl'), true, undefined, true);
+  composeHost(other, { decisions: { runJudge: async () => ({ answers: {}, usage: { input_tokens: 1, output_tokens: 0 } }) } }, cross, { open: 0 }, true, true);
   await other.decisions.runJudge({ label: 'verdict' });
   assert.deepEqual(crossed.filter((point) => point.startsWith('judge.')), ['judge.asked verdict', 'judge.answered verdict']);
 

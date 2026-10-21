@@ -6,11 +6,12 @@ import { sha256Paused } from './receipt-key.ts';
 
 /** A bundled recording: embedded in gallery.js (its lines, and each blob as a data: URL), or, in a build that ships
  *  recordings as files, listed in `recordings/index.json` (each blob as its path in the recording's directory). */
-export type GalleryEntry = { id: string; manifest: Manifest; events: string; blobs: Record<string, string> };
-export type IndexEntry = { id: string; manifest: Manifest; blobs: Record<string, string> };
+/** `title` and `view` come from the gallery's lock (recordings.lock.json), never from the recording: the words its list shows, and the flags its link opens with. */
+export type GalleryEntry = { id: string; manifest: Manifest; events: string; blobs: Record<string, string>; title?: string; view?: string[] };
+export type IndexEntry = { id: string; manifest: Manifest; blobs: Record<string, string>; title?: string; view?: string[] };
 declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[]; AGENTRUN_GALLERY_INDEX?: string };
 
-const BLOB_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'json', 'html', 'md', 'txt', 'pdf', 'sqlite', 'css'];
+const BLOB_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'mp4', 'json', 'html', 'html.txt', 'md', 'txt', 'pdf', 'sqlite', 'css'];
 
 /** A recording the index lists: its lines fetched from its directory, each blob at the path the index names. */
 export async function fromIndex(entry: IndexEntry, root: string): Promise<Recording> {

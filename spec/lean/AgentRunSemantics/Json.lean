@@ -140,7 +140,7 @@ partial def node (schemas : Json) (j : Json) : P Node := do
   | "report" => pure (.report label (requires j) (optTmpl j "state"))
   | "artifact" => pure (.artifact label (strD j "type") (optStr j "path") (requires j) (optTmpl j "state"))
   | "map" => pure (.map label (splitPath (strD j "itemsPath")) (← node schemas ((get? j "body").getD .null))
-      (strD j "as") ((optStr j "resultPath").map splitPath))
+      (strD j "as") ((optStr j "resultPath").map splitPath) (optStr j "onItemFailure") (optStr j "failedAs"))
   | "parallel" => match get? j "branches" with
     | some (.arr xs) => pure (.parallel label (← xs.toList.mapM (node schemas)))
     | _ => throw "parallel needs branches"

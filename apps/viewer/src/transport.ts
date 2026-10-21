@@ -252,7 +252,7 @@ function counters(state: TransportState, now: number, providers?: 'real' | 'scri
   const measured = state.durableLines > 0;
   const bytes = state.flights.reduce((sum, flight) => sum + (flight.bytes ?? 0), 0);
   const unknown = state.flights.filter((flight) => flight.bytes === null).length;
-  const row = (name: string, value: string, title?: string, key?: string): Node => h('li', { ...(title ? { title } : {}) }, h('span', { class: 'k' }, name), h('b', key === undefined ? {} : bump(key), value));
+  const row = (name: string, value: string, title?: string, key?: string, className?: string): Node => h('li', { ...(title ? { title } : {}), ...(className ? { class: className } : {}) }, h('span', { class: 'k' }, name), h('b', key === undefined ? {} : bump(key), value));
   return h('ul', { class: 'tcounters' },
     row('processes', String(state.runners.length), 'runners the host started: its own lines', 'processes'),
     row('kills survived', `${survived} of ${state.kills.length} · ${boxKills} box, ${processKills} process`, 'a kill is survived when a runner started after it', 'survived'),
@@ -263,7 +263,7 @@ function counters(state: TransportState, now: number, providers?: 'real' | 'scri
     row('repeated', measured ? repeatedLabel(strip) : 'not measured: no durable lines'),
     // As the shell's strip: a cost nobody priced is unknown, with no durable line or with a part unknown, never $0; the
     // boxes' time named at list price.
-    row('cost', costLabel(strip.cost, strip.costLowerBound, providers, strip.costParts)));
+    row('cost', costLabel(strip.cost, strip.costLowerBound, providers, strip.costParts), undefined, undefined, 'cost'));
 }
 
 function flightNode(state: TransportState, flight: Flight): Node {

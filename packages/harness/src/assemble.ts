@@ -29,10 +29,10 @@ export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: 
 /** How the workflow's task ended, as the task reports it, with the run's generation and what it spent. */
 export type RunResult = WorkflowOutcome & { generation: number; usage: Awaited<ReturnType<Harness['usage']>> };
 
-/** What the host says of the agent a node runs: the lead model, and the node's own thinking level, else `low` (the DSL runner's default). Thinking is never off: the DSL refuses `off` at authoring, and the host never honors it
- *  either, so a node that somehow carries `off` runs at `low`. */
+/** What the host says of the agent a node runs: the lead model, and the node's own thinking level, else `medium` (the DSL runner's default). Thinking is never off: the DSL refuses `off` at authoring, and the host never honors it
+ *  either, so a node that somehow carries `off` runs at `medium`. */
 export function nodeAgent(model: Host['models']['lead'], node: { thinking?: string | undefined }) {
-  const thinkingLevel = node.thinking && node.thinking !== 'off' ? node.thinking : 'low';
+  const thinkingLevel = node.thinking && node.thinking !== 'off' ? node.thinking : 'medium';
   return { model, thinkingLevel } as { model: Host['models']['lead']; thinkingLevel: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' };
 }
 
@@ -149,7 +149,9 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
     ...(host.credentials.redact ? { redact: { values: host.credentials.redact } } : {}),
     ...(host.decisions.browser ? { decisions: host.decisions.browser } : {}),
     ...(host.tools.browser.createDeadlineMs ? { createDeadlineMs: host.tools.browser.createDeadlineMs } : {}),
-    onSession: (row, change) => status({ source: 'browser', change, row }),
+    // A session's live view is a full-control address: it never goes into the run's events or its recording, which anyone
+    // with the recording can read. This host shows no session to a person; one that does asks the provider (`liveView(ref)`).
+    onSession: (row, change) => status({ source: 'browser', change, row: { ...row, liveView: null } }),
   });
   const visionBase: VisionAdapterOptions = {
     evidence: host.evidence,

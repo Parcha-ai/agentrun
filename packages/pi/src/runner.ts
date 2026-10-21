@@ -5,6 +5,7 @@ import {
   type CreateAgentSessionOptions, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { PiRunError } from "./run-error.js";
+import { nodeThinking } from "./thinking.js";
 import type { PiRunnerOptions, PiSession, PiSessionOptions, PiToolDefinition } from "./types.js";
 export type { PiRunnerOptions, PiSession, PiSessionFactory } from "./types.js";
 
@@ -151,7 +152,7 @@ export function createPiRunner(options: PiRunnerOptions): PiRunner {
       const sessionManager = SessionManager.inMemory(cwd);
       const prepared: PiSessionOptions = {
         cwd, model: options.model, modelRuntime: options.modelRuntime,
-        thinkingLevel: request.thinking ?? options.thinkingLevel ?? "low", maxTurns: maxTurns ?? undefined, resourceLoader, settingsManager,
+        thinkingLevel: nodeThinking(request.thinking, options.thinkingLevel), maxTurns: maxTurns ?? undefined, resourceLoader, settingsManager,
         sessionManager,
         tools: [...requested, "submit"],
         customTools: [...(options.tools ?? []).filter(tool => requested.includes(tool.name)).map(tool => ({

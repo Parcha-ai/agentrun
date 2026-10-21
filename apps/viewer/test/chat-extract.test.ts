@@ -2,12 +2,16 @@
 // tool cards and timeline, every label comes from an event field, and nothing is borrowed from another run.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseLines, type Json, type Recording } from '../src/format.ts';
-import { chatCiteHref, chatCommandLine, chatToolTitle, extractChat } from '../src/chat-extract.ts';
-import { blobsNamed } from '../src/load.ts';
+import { chatCiteHref, chatCommandLine, chatSaid, chatToolTitle, extractChat } from '../src/chat-extract.ts';
+import { blobsNamed, fromUrl } from '../src/load.ts';
 import type { ChatItem, ChatModel } from '../src/chat-model.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -27,9 +31,10 @@ const model = async (dir: string, edit?: (text: string) => string): Promise<Chat
 const items = (m: ChatModel): ChatItem[] => m.threads.flatMap((thread) => thread.items);
 const tools = (m: ChatModel) => items(m).filter((item): item is Extract<ChatItem, { kind: 'tool' }> => item.kind === 'tool');
 
-const referenceJob = join(here, '..', 'recordings', 'reference-job');
+const referenceJob = join(here, 'fixtures', 'reference-job');
 const hearAndFind = join(here, 'fixtures', 'chat-hear-and-find');
 const artifact = join(here, 'fixtures', 'chat-artifact');
+const browserFixture = join(here, 'fixtures', 'chat-browser');
 
 /** The first stored entry of `kind`, edited in place. */
 const editFirst = (kind: string, change: (data: { model: Record<string, Json>[] }) => void) => (events: string) => {
@@ -100,6 +105,17 @@ test("a failed call's line is its error's first line, not the markup around it",
   assert.equal(tools(wrapped)[0]?.takeaway, '[error] Command exited with code 1');
   const record = await model(referenceJob, failed(JSON.stringify({ ok: false, error: { kind: 'script', message: 'not a function\nat line 3' } })));
   assert.equal(tools(record)[0]?.takeaway, 'not a function');
+  // A call that made one look says what the look found; one that then failed keeps why, the look its own answer.
+  const { recording } = opened(referenceJob);
+  const start = recording.lines.find((line) => line.kind === 'tool_execution_start')!;
+  const seen = { tool: 'see', args: { path: 'a.png' }, body: 'A round seal at the foot of the page.', facts: { key: 'k1' } };
+  const looked = (events: string) => `${events.trimEnd()}\n${[
+    { channel: 'live', source: 'vision', kind: 'LookEvent', t: start.t + 1, conv: start.conv, data: { tool: 'see', parentToolCallId: (start.data as { toolCallId: string }).toolCallId, record: seen } },
+    { channel: 'durable', source: 'vision', kind: 'vision.looks', t: start.t + 1, data: { doc: 'vision.looks', key: 'k1', value: { looks: [{ record: seen, images: [] }] }, version: 1 } },
+  ].map((line) => JSON.stringify(line)).join('\n')}\n`;
+  assert.equal(tools(await model(referenceJob, looked))[0]?.takeaway, 'A round seal at the foot of the page.');
+  const after = await model(referenceJob, (events) => looked(failed('Timed out after the look.')(events)));
+  assert.deepEqual([tools(after)[0]?.failed, tools(after)[0]?.takeaway, after.sources.k1?.takeaway], [true, 'Timed out after the look.', 'A round seal at the foot of the page.']);
 });
 
 test("the title is the artifact's, else the first line of the input's question", async () => {
@@ -186,32 +202,47 @@ test('a command that opens a quote or a here-document on its first line is title
   assert.equal(chatCommandLine('echo "done"\nls'), 'echo "done"');
 });
 
-test('a step that nothing the agent thought or wrote leads into speaks with what a look of it asked in words, never a line or a result', async () => {
-  const m = await model(hearAndFind);
-  for (const thread of m.threads) thread.items.forEach((item, index) => {
-    if (item.kind !== 'tool') return;
-    const led = ['thinking', 'assistant'].includes(thread.items[index - 1]?.kind ?? '');
-    const asked = item.calls.find((call) => call.look && call.ask)?.ask;
-    assert.equal(item.voice, led ? undefined : asked, item.title);
-  });
-  const code = tools(m).find((item) => item.calls.length > 0)!;
+test("a call whose title clips its one argument keeps it whole where its card opens; one its title shows whole needs no more", async () => {
+  const command = `grep -n "incorporated" ${Array.from({ length: 12 }, (_, n) => `filings/part-${n}.txt`).join(' ')}`;
+  const clipped = tools(await model(referenceJob, editFirst('pi.assistant', (data) => { ((data.model[0]!.content as Json[])[0] as Record<string, Json>).arguments = { command }; })))[0]!;
+  assert.ok(!command.includes('\n') && clipped.title.endsWith('…'), clipped.title);
+  assert.equal(clipped.detail, command, 'a command of one line its title clips');
+  const whole = tools(await model(referenceJob))[0]!;
+  assert.ok(whole.title.length < 90 && whole.detail === undefined, whole.title);
+});
+
+test('a look keeps what it asked in words, never a typed request', async () => {
+  const code = tools(await model(hearAndFind)).find((item) => item.calls.length > 0)!;
   assert.equal(code.calls[0]!.ask, undefined, 'a transcription asks nothing');
   assert.equal(code.calls.find((call) => call.judge)!.ask, undefined, "a judge's typed request is no words");
   const asked = code.calls.find((call) => call.ask);
   assert.ok(asked && !asked.ask!.startsWith('{'), 'a look asked in words keeps its ask');
-  assert.equal(code.voice, asked.ask, 'the step speaks with that ask, not with the first look\'s line');
-  for (const item of tools(m)) if (item.voice) assert.ok(!item.calls.some((call) => call.label === item.voice), `${item.title}: a look's line is never a voice`);
-  assert.ok(tools(m).filter((item) => !item.calls.some((call) => call.look && call.ask)).every((item) => item.voice === undefined), 'a step whose looks asked nothing in words has no voice');
-  const thought = await model(hearAndFind, editFirst('pi.assistant', (data) => { (data.model[0]!.content as Json[]).unshift({ type: 'thinking', thinking: '**Planning**' }); }));
-  const first = thought.threads[0]!.items.findIndex((item) => item.kind === 'thinking');
-  const next = thought.threads[0]!.items[first + 1];
-  assert.ok(next?.kind !== 'tool' || next.voice === undefined, 'a step its thinking leads into has no voice of its own');
 });
 
 test("a redacted thought keeps its mark and none of the provider's placeholder", async () => {
   const m = await model(hearAndFind, editFirst('pi.assistant', (data) => { (data.model[0]!.content as Json[]).unshift({ type: 'thinking', thinking: '[Reasoning redacted]', redacted: true }); }));
   const thought = items(m).find((item) => item.kind === 'thinking');
   assert.deepEqual(thought && { text: thought.text, redacted: 'redacted' in thought && thought.redacted }, { text: '', redacted: true });
+});
+
+test("a look's answer says its first sentence with words: no lead-in, heading, marker or typed answer", () => {
+  assert.equal(chatSaid('Based on page 1 of the document:\n\n* **The seal** sits at the bottom. It is round.'), '**The seal** sits at the bottom.');
+  assert.equal(chatSaid('### Description of Pages 3 and 4\n**Page 3:**\nThe certificate itself begins here. More.'), 'The certificate itself begins here.');
+  assert.equal(chatSaid('**Is there a FILED stamp?**\nYes, at the top right of page 3.'), 'Yes, at the top right of page 3.', 'a wholly bold line is a heading');
+  assert.equal(chatSaid('*Cut 3 (05:52)*\n> CUT 1 shows the orbit.'), 'CUT 1 shows the orbit.');
+  assert.equal(chatSaid('Signed by Jeffrey W. Bullock, Secretary of State. Dated 2022.'), 'Signed by Jeffrey W. Bullock, Secretary of State.', 'never cut at an initial');
+  assert.equal(chatSaid('1.00\t3.15\tWe copy you down.'), 'We copy you down.');
+  assert.equal(chatSaid('* **Is there a stamp?** **No**, there is none. The page is plain.'), '**Is there a stamp?** **No**, there is none.', 'a question it repeats stays with its answer');
+  assert.equal(chatSaid('{"here":{"type":"noul","noul":0.9}}'), undefined, 'a typed answer says nothing in words');
+  assert.equal(chatSaid(''), undefined);
+});
+
+test("a step that only ran a command or a script, with no look and no picture, is plumbing; the run's input splits its question and files", async () => {
+  const m = await model(hearAndFind);
+  for (const item of tools(m)) assert.equal(item.plumbing, item.calls.some((call) => call.look) || item.media.length > 0 || item.tool === 'submit' ? undefined : true, item.title);
+  const asked = await model(referenceJob, eachLine((line) => (line.kind === 'agentrun.workflow'
+    ? { ...line, data: { ...(line.data as Record<string, Json>), input: { input: { question: 'Which marks?', files: ['a.pdf', 'b.pdf'], example: 'x' } } } } : line)));
+  assert.deepEqual(asked.input, { question: 'Which marks?', files: ['a.pdf', 'b.pdf'], fields: [{ name: 'example', value: 'x' }] });
 });
 
 test("a cite's address keeps its file and fragment however the fragment is written", () => {
@@ -327,8 +358,132 @@ test("a takeaway is the result's first line with words, and an artifact's files 
   for (const sha of files) assert.ok(blobsNamed(recording.manifest, recording.lines).includes(sha));
 });
 
-test('an .mp4 blob is a video, and opens in place like a .webm', async () => {
+test('an .mp4 blob is a video, opens in place like a .webm, and is found in a recording opened by its URL (?src=)', async (t) => {
   const { typeOfName, opensInPage } = await import('../src/blobs.ts');
   assert.equal(typeOfName('film-descent.mp4'), 'video/mp4');
   assert.ok(opensInPage(typeOfName('film-descent.mp4')));
+  // The reference job served over http, its agent's page holding a film.
+  const dir = mkdtempSync(join(tmpdir(), 'viewer-src-mp4-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(referenceJob, dir, { recursive: true });
+  const film = Buffer.from('a made-up film');
+  const sha = createHash('sha256').update(film).digest('hex');
+  writeFileSync(join(dir, 'blobs', `${sha}.mp4`), film);
+  const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ ...manifest, artifact: { title: 'A film', entry: 'index.html', files: { 'film.mp4': sha } } }));
+  const server = createServer((request, response) => {
+    const file = join(dir, decodeURIComponent(new URL(request.url!, 'http://localhost').pathname));
+    if (!file.startsWith(dir) || !existsSync(file)) { response.writeHead(404).end(); return; }
+    response.writeHead(200).end(request.method === 'HEAD' ? undefined : readFileSync(file));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const recording = await fromUrl(`http://127.0.0.1:${(server.address() as AddressInfo).port}/`);
+  assert.match(recording.blobUrl(sha) ?? '', new RegExp(`/blobs/${sha}\\.mp4$`));
+  assert.equal(recording.blobType(sha), 'video/mp4');
+});
+
+// The Muse view's pieces are read from the recording's own generic lines (frames, session rows, handoff rows, the host's label),
+// never from a tool's name, and only when asked for.
+const browserOf = (m: ChatModel, tool: string) => tools(m).find((item) => item.tool === tool)!;
+
+test('the Muse view: a frame joins the step that was running at its time, or the latest call before it; one that names no image or no step joins none', async () => {
+  const m = await model(browserFixture);
+  assert.equal(tools(m).some((item) => item.browser), false, 'without the option nothing is a browser step');
+  const { recording, readJson } = opened(browserFixture);
+  const muse = await extractChat(recording, readJson, { muse: true });
+  const run = tools(muse)[0]!;
+  assert.deepEqual(run.browser!.frames.map((frame) => frame.t), [1500, 2500], 'inside the call, then between calls');
+  assert.deepEqual(run.browser!.frames.map((frame) => [frame.w, frame.h]), [[800, 353], [800, 353]]);
+  assert.notEqual(run.browser!.frames[0]!.blob, run.browser!.frames[1]!.blob);
+  assert.equal(run.plumbing, undefined, 'a step that holds frames is never plumbing');
+  assert.equal(tools(muse).flatMap((item) => item.browser?.frames ?? []).length, 3, 'the frame before any call, the one with no image and the one on another conversation join nothing');
+});
+
+test('the Muse view: a hold is read from the session rows and the handoff rows alone, with its ask and its answer, and a run that ends held is waiting', async () => {
+  const { recording, readJson } = opened(browserFixture);
+  const muse = await extractChat(recording, readJson, { muse: true });
+  const handoff = browserOf(muse, 'browser_request_handoff');
+  assert.deepEqual(handoff.browser!.holds, [{ t0: 3200, t1: 8500, condition: 'An option is picked', outcome: 'done' }]);
+  assert.deepEqual(handoff.browser!.frames.map((frame) => frame.t), [4000]);
+  assert.equal(browserOf(muse, 'snapshot').browser, undefined, 'a step with no frame and no hold is not a browser step');
+  assert.equal(tools(muse).filter((item) => item.tool === 'run' && item.plumbing).length, 1, 'a command with no frame is still plumbing');
+  assert.deepEqual(muse.agent, { name: 'Scout', status: 'done' }, "the host's label names the agent; a manifest that names an artifact is a run that delivered");
+  // The same rows with the session never handed back: the hold is open and the run is waiting.
+  const held = await model(browserFixture, (events) => events.split('\n').filter((line) => !line.includes('"t":8500')).join('\n'));
+  assert.equal(held.agent, undefined, 'and without the option no agent is named');
+  const open = opened(browserFixture, (events) => events.split('\n').filter((line) => !line.includes('"t":8500')).join('\n'));
+  const waiting = await extractChat({ ...open.recording, manifest: { ...open.recording.manifest, artifact: undefined } as typeof open.recording.manifest }, open.readJson, { muse: true });
+  assert.deepEqual(browserOf(waiting, 'browser_request_handoff').browser!.holds.map((hold) => [hold.t0, hold.t1, hold.outcome]), [[3200, undefined, undefined]]);
+  assert.equal(waiting.agent!.status, 'waiting');
+});
+
+test('the Muse view: the agent is named by the host label, else the recording title, and is done when the run delivered', async () => {
+  const { recording, readJson } = opened(browserFixture);
+  const undelivered = { ...recording, manifest: { ...recording.manifest, artifact: undefined } as typeof recording.manifest };
+  assert.equal((await extractChat(recording, readJson, { muse: true })).agent!.status, 'done', 'an artifact is a delivery');
+  const unlabelled = { ...undelivered, lines: recording.lines.filter((line) => line.kind !== 'reference.label') };
+  assert.deepEqual((await extractChat(unlabelled, readJson, { muse: true })).agent, { name: 'Muse fixture', status: 'working' });
+  const delivered = { ...undelivered, lines: [...recording.lines, { channel: 'live' as const, source: 'host' as const, kind: 'result', t: 12000, seq: 1, gen: 1, data: {} }] };
+  assert.equal((await extractChat(delivered, readJson, { muse: true })).agent!.status, 'done');
+});
+
+test('the Muse view: a sign-in wait is read from the browser\'s profile document (the address it gains, then its verification), and a step says the host it was on', async () => {
+  const { recording, readJson } = opened(browserFixture);
+  const muse = await extractChat(recording, readJson, { muse: true });
+  assert.deepEqual(muse.waits, [{ t0: 6000, site: 'shop.example.test', t1: 9200 }], 'asked when the profile gains the address, signed in when it is verified');
+  assert.equal(browserOf(muse, 'run').browser!.site, 'shop.example.test', 'the host of the session\'s last address, never the address');
+  // Without the verification row the run ends waiting for the person.
+  const open = opened(browserFixture, (events) => events.split('\n').filter((line) => !line.includes('verifiedAt')).join('\n'));
+  assert.deepEqual((await extractChat(open.recording, open.readJson, { muse: true })).waits, [{ t0: 6000, site: 'shop.example.test' }]);
+  assert.equal((await extractChat(recording, readJson)).waits, undefined, 'and none without the option');
+});
+
+test('the Muse view: a step\'s browser says the host of ITS OWN session, never another session\'s, with two sessions on two hosts', async () => {
+  // Two sessions: the frames before 3000 are session sA's (on one.example.test), the frame after is session sB's (on two.example.test). A row lists both,
+  // and the other session's address is the one listed last: a join across sessions would name it on the first step.
+  const edit = (events: string) => events.split('\n').map((text) => {
+    if (text === '') return text;
+    const line = JSON.parse(text) as { kind: string; t: number; data: { session?: string; value?: { sessions: Record<string, unknown>[] } } };
+    if (line.kind === 'frame') line.data.session = line.t < 3000 ? 'sA' : 'sB';
+    if (line.kind === 'browser.sessions') {
+      const sessions = line.data.value!.sessions;
+      sessions[0] = { ...sessions[0], resourceId: 'sA', lastUrl: 'https://one.example.test/a' };
+      sessions.push({ tag: 'ar-2', state: 'live', resourceId: 'sB', lastUrl: 'https://two.example.test/b' });
+    }
+    return JSON.stringify(line);
+  }).join('\n');
+  const { recording, readJson } = opened(browserFixture, edit);
+  const muse = await extractChat(recording, readJson, { muse: true });
+  assert.equal(browserOf(muse, 'run').browser!.site, 'one.example.test', 'the first step was in session sA');
+  assert.equal(browserOf(muse, 'browser_request_handoff').browser!.site, 'two.example.test', 'the handoff step was in session sB');
+});
+
+test('the Muse view: a saved profile another run holds (a copy with its address, no verification, state held) opens no wait; a profile this run was asked to sign in to still does', async () => {
+  // prepareRun copies a saved account's address into the run's home, drops its verification and marks it held: nobody was asked to sign in to it.
+  const withHeld = (events: string) => `${events.trimEnd()}\n${JSON.stringify({ channel: 'durable', source: 'host', kind: 'browser.profiles', conv: 1, t: 2700, data: { doc: 'browser.profiles', key: 'saved-other', version: 1, value: { provider: 'chrome', ref: '', state: 'held', heldBy: 'run-x', startUrl: 'https://other.example.test/account', allowedOrigins: ['https://other.example.test'] } } })}\n`;
+  const { recording, readJson } = opened(browserFixture, withHeld);
+  assert.deepEqual((await extractChat(recording, readJson, { muse: true })).waits, [{ t0: 6000, site: 'shop.example.test', t1: 9200 }], 'only the profile this run asked about: the held copy opens none');
+  // With no ask of its own, a held copy leaves no wait at all.
+  const only = opened(browserFixture, (events) => withHeld(events.split('\n').filter((line) => !line.includes('"browser.profiles"')).join('\n')));
+  assert.deepEqual((await extractChat(only.recording, only.readJson, { muse: true })).waits ?? [], [], 'none');
+});
+
+test('the Muse view: a profile already signed in the first time the run reads it is a remembered sign-in, not a wait', async () => {
+  const { recording, readJson } = opened(browserFixture);
+  const signed = { ...recording, lines: recording.lines.map((line) => (line.kind === 'browser.profiles'
+    ? { ...line, data: { ...(line.data as object), value: { ...((line.data as { value: object }).value), allowedOrigins: ['https://shop.example.test'], startUrl: 'https://shop.example.test/account', verifiedAt: '2026-10-20T00:00:00.000Z' } } as never }
+    : line)) };
+  assert.deepEqual((await extractChat(signed, readJson, { muse: true })).waits, [{ t0: 2600, t1: 2600, site: 'shop.example.test', remembered: true }], 'one remembered sign-in, at the first read');
+});
+
+test('the Muse option leaves the default model exactly as it was: the same model with or without it asked for, and none of its fields', async () => {
+  const { recording, readJson } = opened(browserFixture);
+  const plain = await extractChat(recording, readJson);
+  assert.deepEqual(await extractChat(recording, readJson, { muse: false }), plain, 'asked not to');
+  assert.deepEqual(await extractChat(recording, readJson, {}), plain, 'asked nothing');
+  assert.equal('agent' in plain || 'waits' in plain, false, 'no agent and no sign-in waits');
+  assert.equal(plain.threads.flatMap((thread) => thread.items).some((item) => item.kind === 'tool' && item.browser !== undefined), false, 'no browser on any step');
+  const withMuse = await extractChat(recording, readJson, { muse: true });
+  assert.notDeepEqual(withMuse, plain, 'and it does differ when asked for');
 });

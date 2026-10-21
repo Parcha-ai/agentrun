@@ -93,13 +93,13 @@ test('a dry run with the seam present hands every code node to the host and neve
   } });
   try {
     const withSeam = await dryRunWorkflow(doc, { runCode: async (node, state) => { seen.push(node.label); return node.label === 'count' ? { n: state.plan.items.length } : { final: { n: state.counted.n } }; } });
-    assert.deepEqual(withSeam, { ok: true });
+    assert.deepEqual(withSeam, { ok: true, status: 'passed' });
     assert.deepEqual(seen, ['count', 'finish']);
     assert.equal(compiled, 0, 'no code body was evaluated in this process');
   } finally { globalThis.Function = Real; }
   // Absent, the dry run runs the bodies itself, and the counter sees it.
   globalThis.Function = new Proxy(Real, { construct(target, args) { const factory = Reflect.construct(target, args); return String(args.at(-1)).includes('s.counted.n') ? new Proxy(factory, { apply(fn, self, callArgs) { compiled += 1; return Reflect.apply(fn, self, callArgs); } }) : factory; } });
-  try { assert.deepEqual(await dryRunWorkflow(doc), { ok: true }); } finally { globalThis.Function = Real; }
+  try { assert.deepEqual(await dryRunWorkflow(doc), { ok: true, status: 'passed' }); } finally { globalThis.Function = Real; }
   assert.ok(compiled > 0, 'without the seam the bodies were evaluated here');
   // A host rejection is a dry-run problem, as any failure on the deterministic path is.
   const refused = await dryRunWorkflow(doc, { runCode: async () => { throw Object.assign(new Error('sandbox refused the body'), { code: 'effect_code_unsafe' }); } });
