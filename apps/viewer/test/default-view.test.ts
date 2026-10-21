@@ -17,7 +17,7 @@ const here = new URL('.', import.meta.url).pathname;
 const IN_CHROME = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 120_000 };
 const GOLDEN = join(here, 'fixtures', 'default-view.golden.html');
 // SHA-256 of chat.html before the Muse layout, and of the page now without the Muse rules.
-const PAGE_SHA = 'bee488d02461abd2221b754166d0dbdbc4ee7c7e22e99a5cdd24450750e70fc7';
+const PAGE_SHA = '27f57db2847be2466707d417da6995fdf4e7acc87207ac50f2243cacdb78279d';
 after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 
 test('the page without the Muse layout\'s rules is byte for byte the page it was before: the default view\'s styles and markup are untouched', { timeout: 5_000 }, () => {

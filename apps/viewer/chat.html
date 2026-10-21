@@ -60,7 +60,7 @@ a{color:inherit}
 .user .bubble.clamped{max-height:calc(8 * 1.6em + 24px);overflow:hidden;-webkit-mask-image:linear-gradient(#000 70%,transparent);mask-image:linear-gradient(#000 70%,transparent)}
 .msg p{margin:0 0 10px;overflow-wrap:anywhere}
 code{font:400 .9em var(--mono);background:var(--panel2);border:1px solid var(--line);padding:0 4px;overflow-wrap:anywhere}
-details.think summary em code{font-style:normal}
+details.think>summary em code{font-style:normal}
 .thought{display:block;min-width:0;margin:6px 0 10px}
 .thought summary{display:block;list-style:none;cursor:pointer}
 .thought summary::-webkit-details-marker{display:none}
@@ -73,13 +73,15 @@ details.think summary em code{font-style:normal}
 div.thought .thought-tag::after{display:none}
 .thought-body p{margin:0 0 8px}
 details.think{padding:2px 0;margin:4px 0 14px;min-width:0}
-details.think summary{list-style:none;cursor:pointer;font:400 12px var(--mono);color:var(--muted);display:flex;align-items:center;gap:6px;min-width:0}
-details.think summary::-webkit-details-marker{display:none}
-details.think summary::before{content:"";flex:none;width:6px;height:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(-45deg);transition:transform .15s}
-details.think[open] summary::before{transform:rotate(45deg)}
-details.think summary .lab{flex:none;white-space:nowrap}
-details.think summary em{font:italic 400 12.5px var(--sans);color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-details.think[open] summary em{display:none}
+.forks{margin:6px 0 2px 14px;min-width:0}
+.forks details.think{margin:2px 0 6px}
+details.think>summary{list-style:none;cursor:pointer;font:400 12px var(--mono);color:var(--muted);display:flex;align-items:center;gap:6px;min-width:0}
+details.think>summary::-webkit-details-marker{display:none}
+details.think>summary::before{content:"";flex:none;width:6px;height:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(-45deg);transition:transform .15s}
+details.think[open]>summary::before{transform:rotate(45deg)}
+details.think>summary .lab{flex:none;white-space:nowrap}
+details.think>summary em{font:italic 400 12.5px var(--sans);color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+details.think[open]>summary em{display:none}
 details.think>div{color:var(--muted);font-size:13.5px;margin-top:8px}
 details.think>div p{margin:0 0 8px}
 details.fold{margin:8px 0 18px}
