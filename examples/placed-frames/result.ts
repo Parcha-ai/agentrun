@@ -1,7 +1,8 @@
 // The result as the recording keeps it: every frame of the zoom on one sheet, a PNG drawn from the frames the run kept on its disk, and a cited record with one row for the
-// sheet and one for each environment. Every row cites what it rests on: the sheet row cites the sheet and each frame's own picture; an environment's row cites each tool call that was
+// sheet and one for each environment, and the report the host keeps with the recording (`work/report/index.html`, draft 41): the zoom as a grid of its frames, each captioned with its box, its environment and Jev's score and citing its frame call.
+// This hook writes the page, not the agent: the agent has no file or command tool by design, so it cannot, and a tool that read or wrote files for it could reach the host's environment. Every row cites what it rests on: the sheet row cites the sheet and each frame's own picture; an environment's row cites each tool call that was
 // placed there (the call kept as a blob: the tool, its arguments and its answer) and the release call that names its box.
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 import type { DemoOptions } from '@parcha/agentrun-harness';
@@ -63,6 +64,61 @@ export function sheet(frames: Buffer[]): Uint8Array {
   return png(width, height, rgb);
 }
 
+const escapeHtml = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const pad = (f: number) => String(f + 1).padStart(2, '0');
+
+/** One frame's caption: where it ran (the box by its label, and its environment) and the score the placer gave the need, from the placement record the answer carries. */
+function caption(call: Call): { title: string; score: string } {
+  const answer = call.answer as { box?: string; environment?: string; placed?: { by?: string; need?: number | null } };
+  const who = answer.placed?.by === 'jev' ? 'Jev' : 'the script';
+  const need = answer.placed?.need;
+  return { title: `${answer.box ?? 'box'} \u00b7 ${answer.environment ?? 'sandbox'}`, score: need === null || need === undefined ? `${who} gave no score` : `${who}'s need score ${need.toFixed(2)}` };
+}
+
+/** The report page: the zoom's frames in order, four to a row, each a picture with its caption and a link to the call that drew it, and the sheet of all of them below. No script, no outside address. */
+export function reportPage(frameCalls: Call[]): string {
+  const figures = frameCalls.map((call) => {
+    const f = call.answer.f!;
+    const { title, score } = caption(call);
+    return `    <figure>
+      <img src="frames/frame-${pad(f)}.png" alt="Frame ${f + 1} of the zoom, drawn in ${escapeHtml(title)}">
+      <figcaption><strong>${escapeHtml(title)}</strong><span>frame ${f + 1} \u00b7 ${escapeHtml(score)}</span><a class="cite" href="calls/frame-${pad(f)}.json">the call for frame ${f + 1}</a></figcaption>
+    </figure>`;
+  }).join('\n');
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A zoom of ${frameCalls.length} frames, each a tool call placed in a sandbox</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fff; --fg: #1a1a1a; --muted: #5c5c5c; --line: #d8d8d8; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0d0d0d; --fg: #ececec; --muted: #a0a0a0; --line: #2c2c2c; } }
+  body { margin: 0 auto; max-width: 72rem; padding: 1.5rem 1rem 3rem; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  p { color: var(--muted); margin: .25rem 0 1.25rem; max-width: 46rem; }
+  .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .75rem; }
+  @media (max-width: 760px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  figure { margin: 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  img { display: block; width: 100%; height: auto; }
+  figcaption { display: grid; gap: .1rem; padding: .5rem .6rem .6rem; font-size: .85rem; }
+  figcaption span, figcaption a { color: var(--muted); }
+  h2 { font-size: 1.1rem; margin: 2rem 0 .5rem; }
+</style>
+</head>
+<body>
+  <h1>A zoom of ${frameCalls.length} frames, each a tool call placed in a sandbox</h1>
+  <p>Each frame is one tool call. Before it ran, the placer read the frame and each sandbox's purpose and picked where it was drawn. The caption names the sandbox and the score the placer gave the need; the link opens the call that drew the frame.</p>
+  <div class="grid">
+${figures}
+  </div>
+  <h2>All the frames on one sheet</h2>
+  <img src="sheet.png" alt="Every frame of the zoom on one sheet">
+</body>
+</html>
+`;
+}
+
 export const result: NonNullable<DemoOptions['result']> = (_record, { dir, keep }) => {
   // Everything the card says is read from the calls the tools answered and the frames the run kept, never from what the agent wrote.
   const calls = callsOf(dir);
@@ -71,7 +127,16 @@ export const result: NonNullable<DemoOptions['result']> = (_record, { dir, keep 
   const count = frameCalls.length;
   // Each frame as the run kept it; a missing frame fails the result.
   const frames = frameCalls.map((call) => readFileSync(join(dir, 'work', 'frames', `f${call.answer.f}.idx`)));
-  const blob = keep(sheet(frames), 'png');
+  const sheetPng = sheet(frames);
+  const blob = keep(sheetPng, 'png');
+  // The report the host keeps with the recording: written here, in `work/report/`, which the host reads when the run is done.
+  const report = join(dir, 'work', 'report');
+  mkdirSync(join(report, 'frames'), { recursive: true });
+  mkdirSync(join(report, 'calls'), { recursive: true });
+  frames.forEach((pixels, i) => writeFileSync(join(report, 'frames', `frame-${pad(frameCalls[i]!.answer.f!)}.png`), framePicture(pixels)));
+  writeFileSync(join(report, 'sheet.png'), sheetPng);
+  for (const call of calls) writeFileSync(join(report, 'calls', call.tool === 'release' ? 'release.json' : `frame-${pad(call.answer.f!)}.json`), JSON.stringify({ tool: call.tool, args: call.args, answer: call.answer }));
+  writeFileSync(join(report, 'index.html'), reportPage(frameCalls));
   // Each tool call is kept as a blob, and cited by it: the row for an environment cites the calls it counts.
   const callBlob = new Map(calls.map((call) => [call, keep(JSON.stringify({ tool: call.tool, args: call.args, answer: call.answer }), 'json')]));
   const placed = new Map<string, number[]>();

@@ -3,6 +3,7 @@
 // boxes are ended; the result is the picture, and every row of its card cites the tool calls it counts; and the recording holds no dollar figure, no provider id and none of the placer's own
 // sentences. Also: Jev through a base URL of the user's, the rates option, and a live run's refusal without its keys.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -87,6 +88,31 @@ test('the zoom on fakes: the agent asks for one placed tool call a frame, each a
   assert.doesNotMatch(boxesText, /local-[0-9a-f]{12}|\/home\/|\/tmp\/|\/var\/|https?:/, 'no provider id, path or address');
   // The agent's own answer says what the results say.
   assert.deepEqual(run.record, { answer: '(scripted) Drew 12 frames: 7 on daytona and 5 on modal.' });
+
+  // The report the host keeps (draft 41): the page the result hook wrote, with every picture and every call it cites. Twelve pictures in a grid, each captioned with its box, its environment and the score,
+  // and each citing the frame call that drew it; the sheet below. No dollar figure, no provider id.
+  const artifact = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8')).artifact;
+  assert.equal(artifact.entry, 'index.html');
+  const blobOfFile = (path) => readFileSync(join(recording, 'blobs', `${artifact.files[path]}.${path.slice(path.lastIndexOf('.') + 1)}`));
+  const page = blobOfFile('index.html').toString('utf8');
+  assert.doesNotMatch(page, /<script|<iframe|<form|\$\s?\d|local-[0-9a-f]{12}|https?:/, 'a page with no script, dollar figure, provider id or outside address');
+  const figures = [...page.matchAll(/<figure>([\s\S]*?)<\/figure>/g)].map((match) => match[1]);
+  assert.equal(figures.length, FRAMES, 'twelve frames in the grid');
+  assert.match(page, /grid-template-columns: repeat\(4,/, 'four to a row');
+  for (const [i, figure] of figures.entries()) {
+    const src = /<img src="([^"]+)"/.exec(figure)[1];
+    assert.equal(src, `frames/frame-${String(i + 1).padStart(2, '0')}.png`, 'in the order of the zoom');
+    assert.deepEqual([...blobOfFile(src).subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], `${src} is a PNG the recording holds`);
+    const caption = /<figcaption>([\s\S]*?)<\/figcaption>/.exec(figure)[1];
+    const call = JSON.parse(blobOfFile(/<a class="cite" href="([^"]+)"/.exec(caption)[1]));
+    assert.deepEqual([call.tool, call.args.f], ['frame', i], 'each picture cites the call that drew it');
+    const heavy = 80 + 10 * i >= 150;
+    assert.match(caption, new RegExp(`<strong>box-[12] \u00b7 ${heavy ? 'modal' : 'daytona'}</strong>`), 'the caption names its box and environment');
+    assert.match(caption, new RegExp(`the script's need score ${heavy ? '0\\.90' : '0\\.10'}`), 'and the score of the placement record');
+    assert.ok(caption.includes(call.answer.box), 'the caption and the call name one box');
+  }
+  assert.ok(artifact.files['sheet.png'], 'the sheet is kept with the report');
+  assert.equal(spawnSync(process.execPath, ['--no-warnings=ExperimentalWarning', join(import.meta.dirname, '..', 'scripts', 'recording', 'validate.mjs'), recording], { encoding: 'utf8' }).status, 0, 'the recording is valid');
 
   // The recording: the picture is the result, and it holds no dollar figure and no provider id.
   const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
