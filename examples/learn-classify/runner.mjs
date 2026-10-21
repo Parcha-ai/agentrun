@@ -24,6 +24,7 @@ import {
 import { writeRecording } from './recording.mjs';
 import { recordingLines } from '@parcha/agentrun-pi/durable';
 import { jobRecordOf } from './job-record.mjs';
+import { diskProbe, durableCommits } from './disk.mjs';
 import { limitsOf } from './limits.mjs';
 import { lineageOf } from './lineage.mjs';
 import { curateOf, rowOf, rowOfV2, rowOfV4, spendOf } from './row.mjs';
@@ -376,6 +377,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
     ...(p.curatedBefore === undefined ? {} : { curatedBefore: p.curatedBefore, lag: job.order - 1 - p.curatedBefore }),
     ...(p.curatedIndex === undefined ? {} : { curatedIndex: p.curatedIndex }),
     rerunOf: p.infraFailed?.[0]?.runId ?? null, infraFailed: modelError(p.measure), limits,
+    durableCommits: durableCommits(run.storePath), fsyncProbeMs: diskProbe(run.dir).fsyncMs,
   };
 }
 
@@ -590,7 +592,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
     const phase = sha === meta.seedSha ? 'before' : 'after';
     const scoredRow = scored ? (parts.set === SETS.v4 ? rowOfV4 : rowOfV2)({ ...v1, score: scored.score, stats: scored.stats, scoringJudge: scored.scoringJudge, phase, jobRecord: hostRecord(jobRecordOf(recordingLines(run.storePath).lines), measure.dispatch) }) : { ...rowOf(v1), phase };
     const limits = limitsOf([...infraFailed.map((f) => f.runId), run.runId].map((id) => runPaths(home, id).storePath), { at: started });
-    const row = { ...scoredRow, rerunOf: infraFailed[0]?.runId ?? null, infraFailed: modelError(measure), limits };
+    const row = { ...scoredRow, rerunOf: infraFailed[0]?.runId ?? null, infraFailed: modelError(measure), limits, durableCommits: durableCommits(run.storePath), fsyncProbeMs: diskProbe(run.dir).fsyncMs };
     spent += spendOf(measure, undefined, tools).knownUsd + (scored?.scoringJudge.costUsd ?? 0);
     appendFileSync(rowsPath, `${JSON.stringify(row)}\n`);
     if (dropEvidence) dropRunFiles(run.dir);
