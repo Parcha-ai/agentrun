@@ -2,7 +2,7 @@
 // The lines are RECORDING.md's (draft 39): `box.created` { box, provider, facts, role? }, `box.exec` { box } per command, `box.ended` { box }, all live lines with source `transport` and
 // a `box-N` label, never a provider id; one host `box.receipt` per box with no rate (`usd_per_second`, `cost_usd`, `source` and `priced` null), so the run's cost reads unknown.
 // The provider ids go only to a directory outside the recording (`--box-ids`, default `<run dir>/box-ids.internal`), one file per label (`box-N.json`), each claimed exclusively,
-// so the place's boxes and the tools' boxes share one numbering across processes and hosts.
+// so two processes of a run never take one label.
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -110,8 +110,8 @@ test('the recording validates, the viewer\'s transport panel lists both boxes by
   assert.ok(!label.includes('$'));
 });
 
-test('a place of the demo\'s own with no labelBox, and tool-made boxes, is refused: the place cannot share the run\'s labels, never two box-1s', async (t) => {
-  await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: '1' }), /labelBox/);
+test('a run whose place makes boxes and whose tools make boxes too is refused: one labeller, never two box-1s', async (t) => {
+  await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: '1' }), /place.*tool-made boxes|tool-made boxes.*place/);
 });
 
 test('the demo.json boxes (local here) are named by label too: box.created, box.exec and box.ended carry box-N, never the provider id', { timeout: 300_000 }, async (t) => {
@@ -221,7 +221,6 @@ test('the app\'s boxes are closed when its run fails before the result: the rece
 
 // ---- one labeller run-wide: the place's boxes and the tools' boxes ----------------------------------------------------------------------------
 
-const { parseHostBox } = await import('../packages/harness/dist/boxes.js');
 
 test('two processes claiming labels in one directory at once get distinct labels, none lost: box-1..box-100', { timeout: 120_000 }, async (t) => {
   const own = await mkdtemp(join(tmpdir(), 'box-ids-race-'));
@@ -238,51 +237,6 @@ for (let i = 0; i < 50; i += 1) ledger.label(process.argv[3], process.argv[3] + 
   const ids = readIds(dir);
   assert.deepEqual(Object.keys(ids), Array.from({ length: 100 }, (_, i) => `box-${i + 1}`), 'labels 1 to 100, none twice, none skipped');
   assert.equal(new Set(Object.values(ids).map((entry) => `${entry.provider}:${entry.id}`)).size, 100, 'every claimed box once');
-});
-
-test('a place that reports host boxes and has no labelBox, in a run with no providers, keeps the supervisor\'s own numbering: its home box is box-1, with its receipt', { timeout: 300_000 }, async (t) => {
-  const { result, recording } = await run(t, {}, ['--json'], { DEMO_WITH_PLACE: 'reporting' });
-  assert.equal(result.processes.at(-1).outcome.status, 'complete');
-  assert.deepEqual(receipts(recording).map((line) => [line.box, line.provider, line.kind, line.to]), [['box-1', 'home', 'host', null]]);
-});
-
-test('the same place with providers is refused: the lifted refusal needs labelBox', async (t) => {
-  await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'reporting' }), /labelBox/);
-});
-
-test('one run, two labellers: the place\'s home box and the tools\' two boxes are box-1, box-2 and box-3 run-wide, never a repeat', { timeout: 300_000 }, async (t) => {
-  const { result, recording } = await run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'labelled' });
-  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
-  const ids = readIds(join(result.dir, 'box-ids.internal'));
-  assert.deepEqual(Object.entries(ids).map(([label, entry]) => [label, entry.owner, entry.provider]), [['box-1', 'place', 'home'], ['box-2', 'tools', 'alpha'], ['box-3', 'tools', 'beta']]);
-  assert.deepEqual(answered(result.dir), { alpha: 'box-2', beta: 'box-3' });
-  const kept = receipts(recording);
-  assert.deepEqual(kept.map((receipt) => [receipt.box, receipt.provider]).sort(), [['box-1', 'home'], ['box-2', 'alpha'], ['box-3', 'beta']], 'one receipt each, by the one numbering');
-});
-
-test('a host box\'s label is claimed by the run\'s process: the same again in the same supervisor life, refused in another, and a malformed identity is refused', async (t) => {
-  const own = await mkdtemp(join(tmpdir(), 'box-ids-host-'));
-  t.after(() => rm(own, { recursive: true, force: true }));
-  const dir = join(own, 'ids');
-  const from = new Date().toISOString();
-  assert.equal(boxLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-a' }, from), 'box-1');
-  assert.equal(boxLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-a' }, from), 'box-1', 'a process restarted in the same supervisor life gets the same label');
-  assert.throws(() => boxLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-b' }, from), /restarted/, 'another supervisor life would renumber: refused');
-  assert.throws(() => boxLedger({ dir }).claimHost({ provider: 'away', key: '0', run: 'life-a' }, from), /box-1 on home, not on away/, 'one key on another provider is not the same box: refused');
-  assert.equal(boxLedger({ dir }).claimHost({ provider: 'home', key: '1', run: 'life-a' }, from), 'box-2');
-  for (const bad of ['not json', '{}', '{"provider":"home","key":"x","run":"a"}', '{"provider":"","key":"0","run":"a"}', '{"provider":"home","key":"0"}']) assert.throws(() => parseHostBox(bad), /HOST_BOX/, bad);
-});
-
-test('a host box the place started but no process claimed refuses the recording at the final read: it is never finished without that box', { timeout: 300_000 }, async (t) => {
-  await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'unclaimed' }), /host box 0 on home has no label: its child never claimed it/);
-});
-
-test('a host box whose label the place cannot read refuses the recording at the final read too: a failed read is no label, never a recording without that box', { timeout: 300_000 }, async (t) => {
-  await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'unreadable' }), /host box 0 on home has no label: its label cannot be read \(the ids cannot be read here\)/);
-});
-
-test('a host box whose label read outlasts the supervisor\'s bound on the final read refuses the recording: a cut-off read is no label, never a recording without that box', { timeout: 300_000 }, async (t) => {
-  await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'slow' }), /host box 0 on home has no label: the final read did not finish reading it inside its bound/);
 });
 
 test('an ids directory a place made beforehand is used as it is, and one that takes no files (ENOENT, though it exists: an Archil directory made by path) is refused by name', async (t) => {
@@ -305,31 +259,4 @@ test('an ids directory a place made beforehand is used as it is, and one that ta
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
   assert.throws(() => boxLedger({ dir: bare }).label('alpha', 'one'), /bare\/ cannot take files: on a disk place it must be made by the place, not by path/);
-});
-
-test('two supervisors on one run directory are two lives: the second, resuming the run, is refused at its host box\'s claim, never given the first one\'s label', { timeout: 300_000 }, async (t) => {
-  const own = await mkdtemp(join(tmpdir(), 'box-ids-lives-'));
-  t.after(() => rm(own, { recursive: true, force: true }));
-  const dir = join(own, 'run');
-  const first = await run(t, {}, ['--json', '--dir', dir], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'labelled' });
-  assert.equal(first.result.processes.at(-1).outcome.status, 'complete');
-  const life = readIds(join(dir, 'box-ids.internal'))['box-1'].run;
-  assert.match(life, /^[0-9a-f-]{36}$/, 'the first life\'s RUN_LABEL');
-  const second = await run(t, {}, ['--json', '--dir', dir], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'labelled' }).catch((error) => ({ error }));
-  const said = second.error ? String(second.error.message) : JSON.stringify(second.result.processes.at(-1));
-  assert.match(said, /restarted/, 'the second life is refused at its host box');
-  assert.equal(readIds(join(dir, 'box-ids.internal'))['box-1'].run, life, 'and box-1 is still the first life\'s');
-});
-
-test('a run started on the single ids file of beta.21 keeps its labels: the file is read into the directory, and new labels number on', async (t) => {
-  const own = await mkdtemp(join(tmpdir(), 'box-ids-migrate-'));
-  t.after(() => rm(own, { recursive: true, force: true }));
-  const { writeFileSync } = await import('node:fs');
-  const dir = join(own, 'box-ids.internal');
-  writeFileSync(`${dir}.json`, JSON.stringify({ 'box-1': { provider: 'alpha', id: 'old-1' }, 'box-2': { provider: 'beta', id: 'old-2', receipt: 'open', kind: 'none', from: '2026-10-20T00:00:00.000Z' } }));
-  const ledger = boxLedger({ dir });
-  assert.equal(ledger.label('alpha', 'old-1'), 'box-1', 'an old label is kept');
-  assert.equal(ledger.label('gamma', 'new-1'), 'box-3', 'a new label numbers on past the old ones');
-  assert.deepEqual(Object.keys(readIds(dir)), ['box-1', 'box-2', 'box-3']);
-  assert.equal(readIds(dir)['box-2'].receipt, 'open', 'an old box\'s receipt state comes along');
 });

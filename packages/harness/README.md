@@ -262,33 +262,10 @@ A box the tool made carries its label (`box.label`): a tool puts that in its res
 tapped providers through `providerExtensions: ({ providers, live, place }) => [extension, ...]`, called once in each process right after the tap, on fakes and on `--live`; every other extension stays on
 `fakes.extensions` and the live parts' `host.tools.extensions`. `providerExtensions` without `providers` is refused. The provider ids go only to `--box-ids` (`box-ids.internal/` in the run's
 directory by default): a directory with one file per label (`box-N.json`), each claimed by an exclusive `link(2)`, so two processes never take one label, and the next process of the run numbers on from
-them. Either path is refused when it resolves inside the recording. `demo.json`'s `boxes` are named by label the same way. A run started on the earlier single file (the directory's name plus `.json`)
-has its labels read into the directory at its first claim.
-
-#### One numbering with a place's host boxes
-
-A demo with a place of its own can pass `providers` when the place has `labelBox({ provider, key })`: the place's host boxes (its `status().boxes`) and the tools' boxes then share one `box-N`
-numbering run-wide.
-
-- The place hands each runner its host box as `HOST_BOX` in the order's environment, JSON `{ provider, key, run }`: `key` is the box's start index in the place's list, and `run` is this
-  supervisor life's `RUN_LABEL`.
-- The runner claims that label first, before any model call or tool box. The place never writes a label: `labelBox` reads it back with a bounded read, and returns `undefined` when it is not there
-  yet. The supervisor asks again on its next read. `labelBox` comes only with the `HOST_BOX` handover (`hostBoxLabel(dir, box)` is the read); the local place starts no host box and
-  has neither.
-- At the run's end, a host box that any read listed and that has no label refuses the recording (`host box <key> on <provider> has no label: ...`), also when the final read did not finish
-  inside its bound.
-- A place without `labelBox` (one that hands over no `HOST_BOX`, like a place that adds `status()` boxes to the local place): in a run with no `providers` the supervisor numbers its
-  host boxes itself (`box-1`, `box-2` in start order), as before; with `providers` it is refused.
-
-Before its first claim the ledger checks that the disk gives an exclusive link (a second link to one name must fail). These refuse the run, so no label is given twice:
-
-- a read-only mount (EROFS: not the run's holder mount);
-- a directory that exists and takes no files (ENOENT: on a disk place the place must make it, not a process by path);
-- a malformed `HOST_BOX`;
-- a damaged label file.
-
-A host box's key is claimed once per supervisor life: a supervisor started again on the same run directory is refused at its host box's claim. So a run with a place's host boxes and `providers`
-is re-taken, not resumed.
+them. Either path is refused when it resolves inside the recording. Before its first claim the ledger checks that the disk gives an exclusive link (a second link to one name must fail). A read-only
+mount (EROFS), a directory that exists but takes no files (ENOENT: on a disk place the place must make it, not a process by path), an ids path that is a file, and a damaged label file each refuse the
+run by name, so no label is given twice. `demo.json`'s `boxes` are named by label the same way. A demo with a place of its own cannot pass `providers` yet: the place's boxes and the
+tools' would need one labeller, so such a run is refused.
 
 ### The judge seam
 

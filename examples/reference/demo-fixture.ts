@@ -90,29 +90,6 @@ const extLead = (messages: readonly Message[]) => {
   const submitting = next.content.some((block) => block.type === 'toolCall' && block.name === 'submit');
   return submitting && !messages.some(isExt) ? fauxAssistantMessage([fauxToolCall('make_boxes', {})], { stopReason: 'toolUse' }) : next;
 };
-// And a place of the demo's own beside its tools' boxes (`DEMO_WITH_PLACE`): `labelled` is the local place that also starts a home box (it reports one in `status()`) and hands the
-// run's process its identity (`HOST_BOX`), which that process claims first; the place only reads the label back (`labelBox`). `unclaimed` reports the home box but never hands it
-// over, so no process claims it. `unreadable` hands it over but its `labelBox` cannot read the run's ids (it throws); `slow` hands it over but its `labelBox` answers only after 40 s,
-// past the supervisor's bound on a read. `reporting` reports the home box but has no `labelBox` and hands nothing over. Any other value is the local place, which has neither.
-const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: string; root: string }; self: string; requestFile: (attempt: number) => string }) => {
-  const { localPlace, hostBoxLabel } = await import('@parcha/agentrun-harness');
-  const inner = localPlace({ self: context.self, paths: context.paths as never, requestFile: context.requestFile });
-  const mode = process.env.DEMO_WITH_PLACE;
-  const from = new Date().toISOString();
-  if (mode === 'reporting') return { ...inner, status: async () => ({ boxes: [{ provider: 'home', kind: 'host', from, to: null }] }) };
-  if (mode !== 'labelled' && mode !== 'unclaimed' && mode !== 'unreadable' && mode !== 'slow') return inner;
-  const handOver = (order: Parameters<typeof inner.start>[0]) => (mode !== 'unclaimed' ? { ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ provider: 'home', key: '0', run: order.env.RUN_LABEL }) } } : order);
-  return {
-    ...inner,
-    start: (order: Parameters<typeof inner.start>[0]) => inner.start(handOver(order)),
-    status: async () => ({ boxes: [{ provider: 'home', kind: 'host', from, to: null }] }),
-    labelBox: async (box: { provider: string; key: string }) => {
-      if (mode === 'unreadable') throw new Error('the ids cannot be read here');
-      if (mode === 'slow') await new Promise((resolve) => { setTimeout(resolve, 40_000).unref(); });
-      return hostBoxLabel(join(context.paths.root, 'box-ids.internal'), box, { waitMs: 500 });
-    },
-  };
-} : undefined;
 const withProviders = providersTool ? { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Boxed: { type: 'object' } }, root: { ...job.workflow.root, steps: [(job.workflow.root as { steps: unknown[] }).steps[0], { node: 'call', label: 'boxes2', via: 'tool', tool: 'boxes2', args: {}, out: 'Boxed', as: 'boxed', deadline_s: 60 }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(1)] } } } as unknown as typeof job : undefined;
 const withBox = boxTool ? { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Installed: { type: 'object' } }, root: { ...job.workflow.root, steps: [(job.workflow.root as { steps: unknown[] }).steps[0], { node: 'call', label: 'install', via: 'tool', tool: 'install', args: {}, out: 'Installed', as: 'installed', deadline_s: 60 }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(1)] } } } as unknown as typeof job : undefined;
 // And `use_website`: the parent hands the registry check to a site, whose child agent opens the page, reads it and reports with the receipt's path; the parent cites it.
@@ -223,5 +200,5 @@ const reportFiles = (dir: string, base = '', out: Record<string, Uint8Array> = {
   return out;
 };
 const withReport = (chosen: typeof job): typeof job => (process.env.DEMO_REPORT ? { ...chosen, files: { ...chosen.files, ...reportFiles(process.env.DEMO_REPORT) } } : chosen);
-export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withReport(withProviders ?? withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job), fakes: { ...scriptedHeld, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}), ...(providers ? { providers } : {}), ...(providerExtensions ? { providerExtensions } : {}), ...(process.env.DEMO_RESULT_THROWS ? { result: () => { throw new Error('the result hook failed'); } } : {}), ...(withPlace ? { place: withPlace } : {}) };
+export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withReport(withProviders ?? withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job), fakes: { ...scriptedHeld, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}), ...(providers ? { providers } : {}), ...(providerExtensions ? { providerExtensions } : {}), ...(process.env.DEMO_RESULT_THROWS ? { result: () => { throw new Error('the result hook failed'); } } : {}), ...(process.env.DEMO_WITH_PLACE ? { place: () => { throw new Error('the place is never asked for'); } } : {}) };
 if (process.argv.includes('--child')) await demo(options);

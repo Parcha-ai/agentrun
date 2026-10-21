@@ -36,10 +36,8 @@ export const RUN_LABEL = 'agentrun-run';
 /** pi-transport's `BoxError` shape (`code` `unknown`), without a runtime import of the optional peer. */
 const boxError = (message: string) => Object.assign(new Error(message), { name: 'BoxError', code: 'unknown' as const });
 
-/** A box's line in the run's ids directory (format v1): a tool's box by its provider id, a place's host box by its start index and the supervisor life that started it. */
-export type LedgerEntry = { provider: string; owner: 'tools' | 'place'; id?: string; key?: string; run?: string; kind?: string; from?: string; receipt?: 'open' | 'written' };
-/** The host box a place started, as it hands it to the run's process (`HOST_BOX`, JSON): that process claims its label first, before any model call or tool box. */
-export type HostBox = { provider: string; key: string; run: string };
+/** A box's line in the run's ids directory (format v1): a tool's box by its provider id, with its receipt state. */
+export type LedgerEntry = { provider: string; owner: 'tools'; id: string; kind?: string; from?: string; receipt?: 'open' | 'written' };
 
 const LABEL_FILE = /^box-(\d+)\.json$/;
 /** A refusal of the ids directory's own: passed on as it is, never wrapped as a write failure. */
@@ -50,6 +48,8 @@ const refused = (what: string, error: unknown) => new Refusal(`${what} (${(error
  *  claimer tries the next. Only the label's owner rewrites its file (for its receipt state). A file that cannot be read refuses; a disk that gives no exclusive link refuses. */
 function labelStore(dir: string) {
   let ready = false;
+  /** A path that is a file (a single ids file given as `--box-ids`), named as such wherever it is found: at a read (ENOTDIR) or at the first claim (EEXIST). */
+  const aFile = () => { try { return statSync(dir).isFile() ? new Refusal(`the box ids path ${dir} is a file: --box-ids names a directory (one file per label); name a directory`) : undefined; } catch { return undefined; } };
   const temp = (entry: unknown) => {
     const path = join(dir, `.tmp-${process.pid}-${randomBytes(4).toString('hex')}`);
     const fd = openSync(path, 'wx');
@@ -60,7 +60,7 @@ function labelStore(dir: string) {
     let names: string[];
     try { names = readdirSync(dir); } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return new Map();
-      throw refused(`the box ids directory ${dir} cannot be read`, error);
+      throw ((error as NodeJS.ErrnoException).code === 'ENOTDIR' && aFile()) || refused(`the box ids directory ${dir} cannot be read`, error);
     }
     const out = new Map<string, LedgerEntry>();
     for (const name of names) {
@@ -68,7 +68,7 @@ function labelStore(dir: string) {
       if (number === undefined) continue;
       let entry: LedgerEntry;
       try { entry = JSON.parse(readFileSync(join(dir, name), 'utf8')) as LedgerEntry; } catch (error) { throw refused(`the box ids file ${join(dir, name)} cannot be read`, error); }
-      if (entry === null || typeof entry !== 'object' || typeof entry.provider !== 'string' || (entry.owner !== 'tools' && entry.owner !== 'place')) throw new Refusal(`the box ids file ${join(dir, name)} cannot be read (not a format v1 entry): refused, so no box label is given twice`);
+      if (entry === null || typeof entry !== 'object' || typeof entry.provider !== 'string' || entry.owner !== 'tools' || typeof entry.id !== 'string') throw new Refusal(`the box ids file ${join(dir, name)} cannot be read (not a format v1 entry): refused, so no box label is given twice`);
       out.set(`box-${number}`, entry);
     }
     return out;
@@ -84,18 +84,6 @@ function labelStore(dir: string) {
       if (twice) throw new Refusal(`the disk under ${dir} gives no exclusive link: refused, so no box label is given twice`);
     } finally { rmSync(from, { force: true }); rmSync(to, { force: true }); }
   };
-  /** A run started on beta.21's single file (`<dir>.json`): its labels come into the directory as they were, so a resumed run numbers on past them. */
-  const migrate = () => {
-    let text: string;
-    try { text = readFileSync(`${dir}.json`, 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw refused(`the box ids file ${dir}.json cannot be read`, error); }
-    let old: Record<string, Partial<LedgerEntry>>;
-    try { old = JSON.parse(text) as Record<string, Partial<LedgerEntry>>; } catch (error) { throw refused(`the box ids file ${dir}.json cannot be read`, error); }
-    for (const [label, entry] of Object.entries(old)) {
-      if (!/^box-\d+$/.test(label) || typeof entry?.provider !== 'string') continue;
-      const from = temp({ ...entry, owner: entry.owner ?? 'tools' });
-      try { linkSync(from, join(dir, `${label}.json`)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; } finally { rmSync(from, { force: true }); }
-    }
-  };
   /** ENOENT on a create in a directory that exists: on an Archil mount, a directory made by path takes no files; a disk place makes it over its control. */
   const cannotTakeFiles = (error: unknown) => {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return undefined;
@@ -105,10 +93,11 @@ function labelStore(dir: string) {
   const ensure = () => {
     if (ready) return;
     // `recursive`: a directory already there (a disk place makes it before the runner starts) is used as it is; the local place has none made, so it is made here.
-    try { mkdirSync(dir, { recursive: true }); probe(); migrate(); } catch (error) {
+    try { mkdirSync(dir, { recursive: true }); probe(); } catch (error) {
       const unusable = cannotTakeFiles(error);
       if (unusable) throw unusable;
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Refusal(`the box ids path ${dir} is a file: --box-ids names a directory (one file per label); name a directory`);
+      const file = (error as NodeJS.ErrnoException).code === 'EEXIST' ? aFile() : undefined;
+      if (file) throw file;
       // A read-only mount (a shared Archil mount answers EROFS) is not the run's holder: only the process that holds the run claims its labels.
       if ((error as NodeJS.ErrnoException).code === 'EROFS') throw new Refusal(`the box ids directory ${dir} is not on the run's holder mount (EROFS, read-only): only the process that holds the run claims labels; refused, so no box label is given twice`);
       if (error instanceof Refusal) throw error;
@@ -118,7 +107,6 @@ function labelStore(dir: string) {
   };
   return {
     list,
-    ensure,
     claim(entry: LedgerEntry): string {
       ensure();
       let from: string;
@@ -142,43 +130,17 @@ function labelStore(dir: string) {
 function memoryStore() {
   const entries = new Map<string, LedgerEntry>();
   return {
-    ensure: () => undefined,
     list: () => new Map(entries),
     claim(entry: LedgerEntry) { const label = `box-${entries.size + 1}`; entries.set(label, { ...entry }); return label; },
     rewrite(label: string, entry: LedgerEntry) { entries.set(label, { ...entry }); },
   };
 }
 
-/** A host box's identity as a place hands it over (`HOST_BOX`), checked before it is claimed: a malformed one is refused, never guessed. */
-export function parseHostBox(text: string): HostBox {
-  let value: unknown;
-  try { value = JSON.parse(text); } catch { throw new Error('HOST_BOX is not JSON: refused'); }
-  const box = value as Partial<HostBox> | null;
-  if (!box || typeof box.provider !== 'string' || !box.provider || typeof box.key !== 'string' || !/^\d+$/.test(box.key) || typeof box.run !== 'string' || !box.run) {
-    throw new Error('HOST_BOX must be { provider, key (a start index), run (the supervisor life) }: refused');
-  }
-  return { provider: box.provider, key: box.key, run: box.run };
-}
-
-/** The label a place's host box was given, read from the run's ids directory: the place never writes there, the run's process claims it. A bounded poll; undefined when it has
- *  not landed in `waitMs`, so the caller reads again later and never guesses. */
-export async function hostBoxLabel(dir: string, box: { provider: string; key: string }, options: { waitMs?: number } = {}): Promise<string | undefined> {
-  const until = Date.now() + (options.waitMs ?? 2_000);
-  for (;;) {
-    const found = [...labelStore(dir).list()].find(([, entry]) => entry.owner === 'place' && entry.key === box.key && entry.provider === box.provider)?.[0];
-    if (found || Date.now() >= until) return found;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-}
-
-/** One labeller for a run's boxes: `box-N` across every process and host of the run, the place's host boxes and the tools' boxes in one numbering, each label a file of its own
- *  in `dir` (outside the recording), claimed exclusively. The directory is read at its first use, never before: a run on a disk not yet mounted has nothing to read. Without a
- *  directory the labels live only in this process. Receipts: a box `open`ed here is `end`ed or, at `finish`, written as still open; its state is kept in its file, so a process that
+/** One labeller for a run's tool boxes: `box-N` across every process of the run, each label a file of its own in `dir` (outside the recording), claimed exclusively. The
+ *  directory is read at its first use, never before: a run on a disk not yet mounted has nothing to read. Without a directory the labels live only in this process. Receipts: a box `open`ed here is `end`ed or, at `finish`, written as still open; its state is kept in its file, so a process that
  *  starts after one was killed writes the receipt of each box that process left open (`recover`). */
 export type BoxLedger = {
   label(provider: string, id: string): string;
-  /** The label of the host box the place started (`HOST_BOX`), claimed by this process before anything else: the same label again in the same supervisor life, refused in another. */
-  claimHost(box: HostBox, from: string): string;
   open(label: string, receipt: { provider: string; kind: string; from: string }): void;
   end(label: string): void;
   /** Every receipt of a box still open: written when the process is done with the run. */
@@ -205,20 +167,8 @@ export function boxLedger(options: { dir?: string; recorder?: Recorder } = {}): 
   };
   return {
     label(provider, id) {
-      // The store is made ready (created, probed, beta.21's file migrated) before it is read, so an old label is found, not given again.
-      store.ensure();
       const had = [...store.list()].find(([, entry]) => entry.owner === 'tools' && entry.provider === provider && entry.id === id)?.[0];
       return had ?? store.claim({ provider, owner: 'tools', id });
-    },
-    claimHost(box, from) {
-      store.ensure();
-      const had = [...store.list()].find(([, entry]) => entry.owner === 'place' && entry.key === box.key);
-      if (had) {
-        if (had[1].run !== box.run) throw new Error(`the host box ${box.key} already has ${had[0]} from another supervisor life: a supervisor restarted mid-run would renumber its host boxes; refused (re-take the run, do not resume it)`);
-        if (had[1].provider !== box.provider) throw new Error(`the host box ${box.key} already has ${had[0]} on ${had[1].provider}, not on ${box.provider}: refused, so no box label is given twice`);
-        return had[0];
-      }
-      return store.claim({ provider: box.provider, owner: 'place', key: box.key, run: box.run, kind: 'host', from });
     },
     open(label, made) {
       const entry = store.list().get(label);
