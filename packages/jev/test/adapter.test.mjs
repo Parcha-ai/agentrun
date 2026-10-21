@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
+import { APITimeoutError } from '@typesafe-ai/sdk';
 import { createJevRunner, JevError } from '../dist/index.js';
 
 const questions = {
@@ -309,4 +310,53 @@ test('total deadline aborts response-body streaming', async () => {
   } });
   await assert.rejects(run(params), code('timeout'));
   assert.equal(cancelled, true);
+});
+
+// The SDK times each attempt with the call's remaining budget, so its timer and the runner's deadline end together; whichever fires first, the
+// caller is told the deadline ended the call. A deadline expiry may have been billed, and the error code is what tells a host so.
+test('an attempt the SDK ends with its own timeout is the deadline, never a connection failure, and is not retried', async () => {
+  let calls = 0;
+  const run = createJevRunner({ maxAttempts: 3, timeoutMs: 10_000, client: { systemOne: async () => { calls++; throw new APITimeoutError(10_000); } } });
+  await assert.rejects(run(params), error => error instanceof JevError && error.code === 'timeout' && error.attempts === 1);
+  assert.equal(calls, 1);
+});
+
+// With timeoutMs null there is no deadline and the runner passes no per-attempt timeout, so a host client's own timer is its own transport
+// failure: a connection failure, retried like any other.
+test('with no deadline, a host client\'s own SDK timeout stays a connection failure and is retried', async () => {
+  let calls = 0;
+  const run = createJevRunner({ timeoutMs: null, maxAttempts: 2, retryBaseMs: 0, retryMaxMs: 0, client: { systemOne: async () => { calls++; throw new APITimeoutError(5_000); } } });
+  await assert.rejects(run(params), error => error instanceof JevError && error.code === 'connection' && error.attempts === 2);
+  assert.equal(calls, 2);
+});
+
+test('a null or missing state is refused before sending, with its diagnostic, as the SDK would refuse it after', async () => {
+  let calls = 0;
+  const run = createJevRunner({ ...settings, fetch: async () => { calls++; return response(payload()); } });
+  for (const state of [null, undefined]) {
+    await assert.rejects(run({ ...params, state }), error => error instanceof JevError && error.code === 'invalid_request' && error.attempts === 0
+      && error.requestDiagnostic?.reason === 'invalid_state');
+  }
+  assert.equal(calls, 0);
+});
+
+test('client: null is no client: it neither lifts the finite-timeout rule nor lets an image go to OpenRouter', async () => {
+  let calls = 0;
+  const fetch = async () => { calls++; return response(payload()); };
+  assert.throws(() => createJevRunner({ ...settings, timeoutMs: null, client: null, fetch }), code('configuration'));
+  const run = createJevRunner({ provider: 'openrouter', apiKey: 'fake-test-key', client: null, fetch });
+  const png = { bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]), mime: 'image/png' };
+  await assert.rejects(run({ ...params, state: 'x <photo>', assets: { '<photo>': png } }), error => error instanceof JevError
+    && error.requestDiagnostic?.reason === 'unsupported_provider');
+  assert.equal(calls, 0);
+});
+
+test('a blank per-call model is refused as a model, not as the question map', async () => {
+  let calls = 0;
+  const run = createJevRunner({ ...settings, fetch: async () => { calls++; return response(payload()); } });
+  for (const model of ['', '  ']) {
+    await assert.rejects(run({ ...params, model }), error => error instanceof JevError && error.code === 'invalid_request' && error.attempts === 0
+      && error.requestDiagnostic?.reason === 'unsupported_model');
+  }
+  assert.equal(calls, 0);
 });

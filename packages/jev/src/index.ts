@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { APIConnectionError, APIError, Image, TypeSafeClient } from "@typesafe-ai/sdk";
+import { APIConnectionError, APIError, APITimeoutError, Image, TypeSafeClient } from "@typesafe-ai/sdk";
 import type { Fetch, RequestOptions, SystemOneRequest } from "@typesafe-ai/sdk";
 import { validateAnswers, SystemOneError, isSystemOneResponseReason } from "@parcha/agentrun-dsl";
 import type { WorkflowDeps, SystemOneResponseReason } from "@parcha/agentrun-dsl";
@@ -153,12 +153,14 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
   const maxAttempts = options.maxAttempts ?? 3;
   const retryBaseMs = options.retryBaseMs ?? 500;
   const retryMaxMs = options.retryMaxMs ?? 5_000;
+  // A JavaScript caller's `client: null` is no client, the same as an absent one.
+  const hostClient = options.client ?? undefined;
   configuration(timeoutMs === null || milliseconds(timeoutMs), `timeoutMs must be null or a positive integer of at most ${MAX_TIMER_MS}.`);
   configuration(maxStateBytes === null || (Number.isSafeInteger(maxStateBytes) && maxStateBytes > 0), "maxStateBytes must be null or a positive safe integer.");
-  configuration(timeoutMs !== null || options.client !== undefined, "The TypeSafe SDK requires a finite timeout. For timeoutMs: null, supply a cancellation-only host client.");
+  configuration(timeoutMs !== null || hostClient !== undefined, "The TypeSafe SDK requires a finite timeout. For timeoutMs: null, supply a cancellation-only host client.");
   configuration(Number.isInteger(maxAttempts) && maxAttempts >= 1 && maxAttempts <= 10, "maxAttempts must be an integer from 1 to 10.");
   configuration(milliseconds(retryBaseMs, true) && milliseconds(retryMaxMs, true) && retryBaseMs <= retryMaxMs, "Retry delays must be nonnegative integers; retryBaseMs cannot exceed retryMaxMs.");
-  configuration(!options.client || (options.apiKey === undefined && options.baseURL === undefined && options.fetch === undefined && options.provider === undefined), "Supply either client or transport options, not both.");
+  configuration(hostClient === undefined || (options.apiKey === undefined && options.baseURL === undefined && options.fetch === undefined && options.provider === undefined), "Supply either client or transport options, not both.");
   const provider = options.provider ?? "typesafe";
   configuration(provider === "typesafe" || provider === "openrouter", "provider must be typesafe or openrouter.");
   const pricing = options.pricing ? { ...options.pricing } : undefined;
@@ -170,7 +172,7 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
     const key = options.apiKey ?? (provider === "openrouter" ? process.env[keyVariable.openrouter] : undefined);
     // The SDK falls back to TYPESAFE_API_KEY when given no key: for OpenRouter that would send one provider's key to another.
     if (provider === "openrouter" && (typeof key !== "string" || key.trim().length === 0)) throw new Error("no key");
-    client = options.client ?? new TypeSafeClient({
+    client = hostClient ?? new TypeSafeClient({
       apiKey: key, baseURL: options.baseURL ?? (provider === "openrouter" ? OPENROUTER_BASE_URL : undefined), fetch: options.fetch,
       defaultModel: model, retry: { maxRetries: 0 }, timeout: timeoutMs ?? undefined, logLevel: "off",
       // Bodies go as they always have: uncompressed JSON, which a host's own fetch, a gateway and OpenRouter all read.
@@ -200,20 +202,21 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
         "invalid_request", message, 0, undefined, { reason,
           ...(typeof params.label === "string" ? { label: params.label.slice(0, 200) } : {}),
           ...(stateBytes === undefined || maxStateBytes === null ? {} : { stateBytes, maxStateBytes }) });
-      const state = params.state ?? null;
+      const state = params.state;
       let serializedState: string;
       try {
-        if (typeof state !== "string" && state !== null && typeof state !== "object") throw new Error();
+        // The SDK refuses a request with no state, so a null or missing state is refused here, before anything is sent.
+        if (typeof state !== "string" && (typeof state !== "object" || state === null)) throw new Error();
         serializedState = JSON.stringify(state);
         if (typeof serializedState !== "string") throw new Error();
       } catch {
-        throw invalid("invalid_state", "Jev state must be JSON-serializable text, an object, an array or null.");
+        throw invalid("invalid_state", "Jev state must be JSON-serializable text, an object or an array.");
       }
       const stateBytes = Buffer.byteLength(serializedState, "utf8");
       if (maxStateBytes !== null && stateBytes > maxStateBytes) throw invalid("state_too_large",
         `Jev assembled state is ${stateBytes} UTF-8 bytes; configured host limit is ${maxStateBytes} bytes. No request was sent.`, stateBytes);
       const callModel = params.model ?? model;
-      if (typeof callModel !== "string" || callModel.trim().length === 0) throw invalid("invalid_questions", "model must be a nonempty string; no request was sent.");
+      if (typeof callModel !== "string" || callModel.trim().length === 0) throw invalid("unsupported_model", "model must be a nonempty string; no request was sent.");
       try {
         body = JSON.stringify({ state: JSON.parse(serializedState), model: callModel, questions: params.questions });
         request = JSON.parse(body) as SystemOneRequest;
@@ -227,7 +230,7 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
       if (!record(given)) throw invalid("invalid_assets", "assets must map each reference to an image; no request was sent.");
       const references = Object.keys(given);
       const carriesImage = references.length > 0;
-      if ((carriesImage || hasBox) && provider !== "typesafe" && options.client === undefined) throw invalid("unsupported_provider", "Images and Box questions are sent to TypeSafe's own API only; the OpenRouter path is not verified for them. No request was sent.");
+      if ((carriesImage || hasBox) && provider !== "typesafe") throw invalid("unsupported_provider", "Images and Box questions are sent to TypeSafe's own API only; the OpenRouter path is not verified for them. No request was sent.");
       if (hasBox && !answersBox(callModel)) throw invalid("unsupported_model", `A Box question needs a model that answers it, by name: ${BOX_MODEL} or later, or jev-preview; jev-latest is refused whatever version it points at. No request was sent.`);
       if (hasBox && !carriesImage) throw invalid("invalid_assets", "A Box question locates something in an image, and the request carries none. No request was sent.");
       let assets: Record<string, Image> | undefined;
@@ -261,7 +264,9 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
             signal, ...(timeoutMs === null ? {} : { timeout: Math.max(1, timeoutMs - (Date.now() - started)) }), retry: { maxRetries: 0 }, ...(headers ? { headers } : {}),
           }), signal, abortError);
         } catch (error) {
-          if (signal.aborted) throw abortError();
+          // Each attempt's timeout is the call's remaining budget, so the client's timer and the deadline end together: whichever fires first,
+          // the deadline ended the call. A timed-out request may have been billed, and its code is what says so.
+          if (signal.aborted || (timeoutMs !== null && error instanceof APITimeoutError)) throw abortError();
           const status = error instanceof APIError ? error.status : undefined;
           const retryable = status === 408 || status === 429 || (status !== undefined && status >= 500 && status <= 599) || error instanceof APIConnectionError;
           if (retryable && status !== 429 && billable === undefined) billable = status === undefined ? {} : { status };
