@@ -545,7 +545,7 @@ const DOCUMENT_RESULT_SCHEMA = {
       description: 'the browser session the download took, when it took one; its cost is in costUsd',
     },
     path: { type: 'string', description: 'where the document is kept: pass it as path to read it again without downloading' },
-    kind: { type: 'string', enum: ['pdf', 'image', 'unknown'] },
+    kind: { type: 'string', enum: ['pdf', 'image', 'html', 'unknown'] },
     sha256: { type: 'string' },
     bytes: { type: 'integer' },
     pageCount: { type: 'integer' },
@@ -570,6 +570,72 @@ function kindOf(bytes) {
   if (Buffer.from(b.subarray(0, 4)).toString('latin1') === 'GIF8') return { kind: 'image', mimeType: 'image/gif', ext: 'gif' };
   if (Buffer.from(b.subarray(0, 4)).toString('latin1') === 'RIFF' && Buffer.from(b.subarray(8, 12)).toString('latin1') === 'WEBP') return { kind: 'image', mimeType: 'image/webp', ext: 'webp' };
   return null;
+}
+
+/** About this many characters of an HTML document's text make one of its pages, so find and pages work as on a PDF. */
+export const HTML_PAGE = 3_000;
+const HTML_KIND = Object.freeze({ kind: 'html', mimeType: 'text/html', ext: 'html' });
+const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', ndash: '\u2013', mdash: '\u2014', lsquo: '\u2018', rsquo: '\u2019', ldquo: '\u201c', rdquo: '\u201d', hellip: '\u2026', bull: '\u2022', middot: '\u00b7', copy: '\u00a9', reg: '\u00ae', trade: '\u2122' };
+
+/** Whether bytes are an HTML document: they open with a tag, and an html element or doctype is near the start. */
+function isHtml(bytes) {
+  const head = Buffer.from(bytes.subarray(0, 2048)).toString('latin1').replace(/^(?:\xEF\xBB\xBF)?\s*/, '');
+  return head.startsWith('<') && /<!doctype html|<html[\s>]/i.test(head);
+}
+
+const hiddenBy = (attrs) => /\bstyle\s*=\s*["'][^"']*\b(?:display\s*:\s*none|visibility\s*:\s*hidden)/i.test(attrs) || /(?:^|\s)hidden(?=[\s=/]|$)/i.test(attrs);
+
+/** The HTML with every hidden element (display:none, visibility:hidden, the hidden attribute) and all it holds left out. */
+function withoutHidden(html) {
+  const open = /<([a-zA-Z][\w:.-]*)\b([^>]*)>/g;
+  let out = '';
+  let at = 0;
+  for (;;) {
+    open.lastIndex = at;
+    let m;
+    while ((m = open.exec(html)) && !hiddenBy(m[2]));
+    if (!m) return out + html.slice(at);
+    out += html.slice(at, m.index);
+    const name = m[1].toLowerCase();
+    if (VOID_TAGS.has(name) || m[2].trimEnd().endsWith('/')) { at = open.lastIndex; continue; }
+    const tag = new RegExp(`<(/?)${name.replace(/[.:-]/g, '\\$&')}\\b[^>]*>`, 'gi');
+    tag.lastIndex = open.lastIndex;
+    let depth = 1;
+    let t;
+    while (depth && (t = tag.exec(html))) depth += t[1] ? -1 : t[0].endsWith('/>') ? 0 : 1;
+    at = depth ? html.length : tag.lastIndex;
+  }
+}
+
+const decodeEntities = (text) => text.replace(/&(?:#(\d+)|#x([0-9a-f]+)|([a-z]+));/gi, (whole, dec, hex, name) => {
+  const code = dec ? Number(dec) : hex ? parseInt(hex, 16) : undefined;
+  if (code !== undefined) return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : ' ';
+  return ENTITIES[name.toLowerCase()] ?? whole;
+});
+
+/**
+ * An HTML document's text as it is shown, by page: the inline-XBRL header (an annual report's tagged facts, hidden before
+ * its cover), the head, scripts, styles, comments and hidden elements left out; a block or a table row to a line, the
+ * cells of a row joined by a space; entities decoded; cut at line breaks into pages of about HTML_PAGE characters.
+ */
+export function htmlPages(html) {
+  const shown = withoutHidden(html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<(head|script|style|noscript|template)\b[\s\S]*?<\/\1\s*>/gi, '')
+    .replace(/<ix:header\b[\s\S]*?<\/ix:header\s*>/gi, ''));
+  const text = decodeEntities(shown
+    .replace(/<\/(?:td|th)\s*>/gi, ' ')
+    .replace(/<(?:br|hr)\b[^>]*>|<\/(?:p|div|tr|li|h[1-6]|table|section|article|header|footer|blockquote|pre|dt|dd|caption)\s*>/gi, '\n')
+    .replace(/<[^>]*>/g, ''));
+  const lines = text.split('\n').map((line) => line.replace(/[\s\u00a0\u2000-\u200b\u3000]+/g, ' ').trim()).filter(Boolean);
+  const pages = [];
+  let page = '';
+  for (const line of lines) {
+    if (page && page.length + 1 + line.length > HTML_PAGE) { pages.push(page); page = ''; }
+    page += (page ? '\n' : '') + line;
+  }
+  return page ? [...pages, page] : pages;
 }
 
 /** A download within the policy: every hop checked before it is sent, at most DOCUMENT_HOPS redirects, `maxBytes` refused
@@ -627,13 +693,34 @@ async function within(root, path) {
   return rel && !rel.startsWith('..') && !isAbsolute(rel) && !rel.split(sep).includes('..') ? target : null;
 }
 
+/** A document's text by page as read_document gives it: `pages` when asked for, else every page from the first that holds
+ *  `find`, as "[page N]" blocks up to MAX_DOCUMENT_TEXT characters, with the pages that hold `find` (at most 200). */
+function byPage(texts, pages, find) {
+  const pageCount = texts.length;
+  const wanted = (pages ?? []).filter((p) => p <= pageCount);
+  const needle = find.toLowerCase();
+  const found = needle ? texts.flatMap((t, i) => (t.toLowerCase().includes(needle) ? [i + 1] : [])) : undefined;
+  const order = wanted.length ? wanted : Array.from({ length: pageCount }, (_, i) => i + 1).slice(found?.length ? found[0] - 1 : 0);
+  let text = '';
+  const pagesShown = [];
+  for (const p of order) {
+    const block = `[page ${p}]\n${texts[p - 1].trim() || '(no text layer: ask a question with pages to look at it)'}\n\n`;
+    if (text && text.length + block.length > MAX_DOCUMENT_TEXT) break;
+    text += block;
+    pagesShown.push(p);
+  }
+  return { wanted, pageCount, ...(found ? { found: found.slice(0, 200) } : {}), pagesShown, text: text.trim().slice(0, MAX_DOCUMENT_TEXT) };
+}
+
 const pagesProblem = (pages) => (pages === undefined ? null
   : !Array.isArray(pages) || !pages.length || pages.length > 10 || !pages.every((p) => Number.isInteger(p) && p >= 1) ? 'pages is a list of 1 to 10 page numbers' : null);
 
 /**
- * read_document: a PDF or an image, from a URL (downloaded within the URL policy, at most 20 MB) or a path under `root`
- * (one this tool or browse kept). A host that turns a plain request away is asked again through `browser` (the same
- * sessions as browse, under the same guard). A PDF comes back as its text layer, page by page; with `find`, the pages that hold
+ * read_document: a PDF or an image, or an HTML document such as a filing published as a page, from a URL (downloaded
+ * within the URL policy, at most 20 MB) or a path under `root` (one this tool or browse kept). A host that turns a plain
+ * request away is asked again through `browser` (the same sessions as browse, under the same guard); an HTML answer the
+ * browser finds no file behind is read as the document. A PDF comes back as its text layer, page by page, and an HTML
+ * document as the text it shows, in pages of about HTML_PAGE characters (`htmlPages`); with `find`, the pages that hold
  * those words; with `pages`, those pages' text. With `question`, the vision model looks at `pages` (or, without them, the
  * scanned pages shown) and answers about each: up to MAX_LOOKS looks a call. An image is looked at whole.
  *
@@ -706,16 +793,21 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
     let bytes;
     let kept;
     let from;
+    let page = false;
     if (url) {
       let got = await download(url, { policy, fetchImpl, maxBytes, timeoutMs, signal });
+      // An HTML answer: a filing published as a page, or a bot wall where a file was asked for.
+      page = Boolean(got.bytes && !kindOf(got.bytes) && (/html/.test(got.type) || isHtml(got.bytes)));
       // A host that turns away a plain request (a bot wall: 401, 403, 406, 429, 503, or a page where a file was asked
-      // for) is asked again through the browser, when there is one.
+      // for) is asked again through the browser, when there is one. When the browser finds no file there either, an HTML
+      // answer is the document itself.
       const walled = WALL_STATUS.has(got.status) || (got.bytes && !kindOf(got.bytes) && /html/.test(got.type));
       if (walled && browser) {
         const viaBrowser = await throughBrowser(url, signal);
         if (viaBrowser.spent.browser) used.browser = viaBrowser.spent;
-        if (viaBrowser.refused || viaBrowser.error) return empty(viaBrowser.refused ? { refused: viaBrowser.refused } : { error: `${got.error ?? 'a page, not a file'}; ${viaBrowser.error}` });
-        got = viaBrowser;
+        if (viaBrowser.refused) return empty({ refused: viaBrowser.refused });
+        if (viaBrowser.error && !page) return empty({ error: `${got.error ?? 'a page, not a file'}; ${viaBrowser.error}` });
+        if (!viaBrowser.error) { got = viaBrowser; page = false; }
       }
       if (got.refused || got.error) return empty(got.refused ? { refused: got.refused } : { error: got.error });
       bytes = got.bytes;
@@ -728,9 +820,12 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
       if (info.size > maxBytes) return empty({ error: `the file is over the ${size(maxBytes)} cap` });
       bytes = await readFile(at);
       kept = at;
+      page = !kindOf(bytes) && isHtml(bytes);
     }
-    const kind = kindOf(bytes);
+    const kind = kindOf(bytes) ?? (page ? HTML_KIND : null);
     if (!kind) return empty({ error: 'not a PDF or an image' });
+    const htmlTexts = kind === HTML_KIND ? htmlPages(new TextDecoder().decode(bytes)) : undefined;
+    if (htmlTexts && !htmlTexts.length) return empty({ error: 'a page, not a file, and it shows no text' });
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     if (!kept) {
       kept = join(root, 'documents', `${sha256.slice(0, 16)}.${kind.ext}`);
@@ -747,6 +842,15 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
       return { ...base, text: '', ...seen, ok: seen.looks.some((l) => l.answer) };
     }
 
+    if (htmlTexts) {
+      const shown = byPage(htmlTexts, args?.pages, find);
+      // A look needs a page image, and an HTML page has none: each page asked about says so.
+      const looks = question ? (shown.wanted.length ? shown.wanted : shown.pagesShown).slice(0, MAX_LOOKS)
+        .map((p) => ({ page: p, fragment: `${name}#page=${p}`, answer: '', costUsd: 0, miss: 'an HTML document has no page image to look at: read its text' })) : [];
+      const { wanted, ...rest } = shown;
+      return { ...base, ...rest, looks, costUsd: 0 };
+    }
+
     const { nodeVisionEnv } = await import('@parcha/pi-vision/node');
     const { packageProviders } = await import('@parcha/pi-vision/durable');
     const ctx = { env: nodeVisionEnv({ cwd: root }), providers: packageProviders(), deriveDir: join(root, 'documents', 'derived'), signal };
@@ -754,21 +858,8 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
     const read = await pdfDocument(pdf, ctx);
     if (!read.ok) return { ...base, ok: false, text: '', looks: [], costUsd: 0, error: `${read.miss.code}: ${read.miss.detail}` };
     const texts = read.value.pages;
-    const pageCount = texts.length;
     const scanPages = texts.flatMap((t, i) => (t.trim() ? [] : [i + 1]));
-    const wanted = (args?.pages ?? []).filter((p) => p <= pageCount);
-    const needle = find.toLowerCase();
-    const found = needle ? texts.flatMap((t, i) => (t.toLowerCase().includes(needle) ? [i + 1] : [])) : undefined;
-    const order = wanted.length ? wanted : Array.from({ length: pageCount }, (_, i) => i + 1).slice(found?.length ? found[0] - 1 : 0);
-    let text = '';
-    const pagesShown = [];
-    for (const p of order) {
-      const block = `[page ${p}]\n${texts[p - 1].trim() || '(no text layer: ask a question with pages to look at it)'}\n\n`;
-      if (text && text.length + block.length > MAX_DOCUMENT_TEXT) break;
-      text += block;
-      pagesShown.push(p);
-    }
-    text = text.trim().slice(0, MAX_DOCUMENT_TEXT);
+    const { wanted, pageCount, found, pagesShown, text } = byPage(texts, args?.pages, find);
     let seen = { looks: [], costUsd: 0 };
     if (question) {
       const toLook = (wanted.length ? wanted : pagesShown.filter((p) => scanPages.includes(p))).slice(0, MAX_LOOKS);
@@ -784,17 +875,17 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
       for (const i of items.filter((i) => i.miss)) seen.looks.push({ page: i.page, fragment: i.fragment, answer: '', costUsd: 0, miss: i.miss });
       seen.looks.sort((a, b) => a.page - b.page);
     }
-    return { ...base, pageCount, ...(scanPages.length ? { scanPages: scanPages.slice(0, 200) } : {}), pagesShown, ...(found ? { found: found.slice(0, 200) } : {}), text, ...seen };
+    return { ...base, pageCount, ...(scanPages.length ? { scanPages: scanPages.slice(0, 200) } : {}), pagesShown, ...(found ? { found } : {}), text, ...seen };
   }
 
   return {
     name: 'read_document',
     label: 'Read document',
-    description: `Read a PDF or an image (an annual report, an investor presentation, a screenshot from browse), from a url (at most ${size(maxBytes)}) or a path this run kept. A PDF comes back as its text, page by page (at most ${MAX_DOCUMENT_TEXT} characters a call): find names words to look for (the pages that hold them are listed and the text starts there), pages picks the pages to read. question has a vision model look at the pages you name (a segment table, a chart, a scan) and answer about each, at most ${MAX_LOOKS} pages a call; an image is always looked at. Each look costs money: name the pages first with find. SEC/EDGAR, SIC listing sites and web archives are refused.`,
+    description: `Read a PDF or an image (an annual report, an investor presentation, a screenshot from browse), or an annual report or exhibit published as an HTML page, from a url (at most ${size(maxBytes)}) or a path this run kept. A PDF comes back as its text, page by page (at most ${MAX_DOCUMENT_TEXT} characters a call), and an HTML document as the text it shows (its inline-XBRL header and hidden parts left out) in pages of about ${HTML_PAGE} characters: find names words to look for (the pages that hold them are listed and the text starts there), pages picks the pages to read. question has a vision model look at the pages of a PDF you name (a segment table, a chart, a scan) and answer about each, at most ${MAX_LOOKS} pages a call; an image is always looked at. Each look costs money: name the pages first with find. SEC/EDGAR, SIC listing sites and web archives are refused.`,
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        url: { type: 'string', description: 'an http(s) URL of a PDF or an image' },
+        url: { type: 'string', description: 'an http(s) URL of a PDF, an image, or an annual report or exhibit published as an HTML page' },
         path: { type: 'string', description: 'a path read_document or browse returned' },
         question: { type: 'string', description: 'what to find out by looking at the pages' },
         pages: { type: 'array', minItems: 1, maxItems: 10, items: { type: 'integer', minimum: 1 }, description: 'the pages to read, and to look at when question is given' },

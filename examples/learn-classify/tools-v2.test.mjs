@@ -421,6 +421,7 @@ test('read_document refuses a refused or private URL and a redirect to one, caps
     'ir.acme.example/big.pdf': send('application/pdf', big, { 'content-length': String(big.length) }),
     'ir.acme.example/streamed.pdf': (res) => { res.writeHead(200, { 'content-type': 'application/pdf', 'transfer-encoding': 'chunked' }); res.end(big); },
     'ir.acme.example/page.html': send('text/html', '<html>not a document</html>'),
+    'ir.acme.example/notes.txt': send('text/plain', 'plain words'),
   });
   const tool = readDocumentTool({ root, vision: await visionFor({ root, eyes: fakeEyes() }), fetch: web.fetch, lookup: publicLookup, maxBytes: 100 * 1024 });
   assert.match(conforms(tool, await tool.run({ url: 'https://www.sec.gov/Archives/x.pdf' })).refused, /refused list/);
@@ -430,7 +431,10 @@ test('read_document refuses a refused or private URL and a redirect to one, caps
   assert.equal(web.seen.some((s) => s.includes('sec.gov') || s.includes('100.64')), false);
   assert.equal(conforms(tool, await tool.run({ url: 'https://ir.acme.example/big.pdf' })).error, 'the file is 150 KB, over the 100 KB cap');
   assert.equal((await tool.run({ url: 'https://ir.acme.example/streamed.pdf' })).error, 'the file is over the 100 KB cap');
-  assert.equal((await tool.run({ url: 'https://ir.acme.example/page.html' })).error, 'not a PDF or an image');
+  // An HTML page is read as the text it shows (read_document reads filings published as pages); other text is not a document.
+  const page = conforms(tool, await tool.run({ url: 'https://ir.acme.example/page.html' }));
+  assert.deepEqual([page.kind, page.text], ['html', '[page 1]\nnot a document']);
+  assert.equal((await tool.run({ url: 'https://ir.acme.example/notes.txt' })).error, 'not a PDF or an image');
   for (const path of ['../../etc/passwd', '/etc/passwd', 'documents/none.pdf']) assert.match((await tool.run({ path })).error, /not a file this run kept/, path);
   assert.match((await tool.run({ url: 'https://ir.acme.example/a.pdf', path: 'x' })).error, /exactly one of url and path/);
   assert.match((await tool.run({ path: 'x', pages: [0] })).error, /pages is a list/);
