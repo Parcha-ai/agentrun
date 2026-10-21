@@ -31,7 +31,8 @@ import { scoreV4 } from './score-v4.mjs';
 import { agentScript, agentScriptV2, agentScriptV4, FIXTURES, FIXTURES_V2, FIXTURES_V4, fakeHardTools, fixtureWeb, scriptedJev, scriptedModel } from './scripted.mjs';
 import { isHard, SETS } from './sets.mjs';
 import { ANY_HOST, domainOf, fetchPageTool } from './tools.mjs';
-import { hostRecord, promotedFor } from './dispatch.mjs';
+import { answersTheJob, hostRecord, promotedFor } from './dispatch.mjs';
+import { gateSpend, replayGate } from './promotion-gate.mjs';
 import { passSelfTest } from './selftest.mjs';
 import { writeHosts } from './tools-v2.mjs';
 
@@ -189,15 +190,16 @@ async function selfTest({ out, repo, parts, log }) {
   if (parts.mode === 'live') await passSelfTest({ out, repo, parts, log });
 }
 
-/** One run of the agent with the set's tools, answer and job text. */
-async function runSet({ parts, repo, run, job, judge, limitUsd, lock = inline }) {
+/** One run of the agent with the set's tools, answer and job text. `dispatch`, when given, is what the host runs first
+ *  instead of what main has promoted; with `hostOnly` the host's run of it is the whole run (the promotion gate's). */
+async function runSet({ parts, repo, run, job, judge, limitUsd, lock = inline, dispatch: given, hostOnly = false }) {
   const { set, data } = parts;
   const effects = [...(await parts.toolsFor(job, run)), ...set.labelTools(data)];
   try {
     const answer = set.answer(data);
     // A promoted workflow that answers the whole job runs first, by the host (dispatch.mjs), unless the pass says not to.
-    const dispatch = parts.dispatch === false ? null : await lock(() => promotedFor({ repo, run, answer, input: set.input(job) }));
-    return await runJob({ run, job, model: await parts.modelFor(job, run), judge, effects, answer, text: set.text, limitUsd, dispatch });
+    const dispatch = given ?? (parts.dispatch === false ? null : await lock(() => promotedFor({ repo, run, answer, input: set.input(job) })));
+    return await runJob({ run, job, model: await parts.modelFor(job, run), judge, effects, answer, text: set.text, limitUsd, dispatch, hostOnly });
   } finally {
     // What a tool kept for this run alone (read_document's large files) goes when the run ends.
     await Promise.all(effects.map((effect) => effect.dispose?.()));
@@ -248,7 +250,8 @@ function knownSpend(out) {
   const dir = join(out, 'progress');
   if (!existsSync(dir)) return 0;
   return readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => readJsonIf(join(dir, f)) ?? {})
-    .reduce((sum, p) => sum + (p.knownUsd ?? 0) + (p.scoringJudge?.costUsd ?? 0) + (p.abandoned ?? []).reduce((s, a) => s + a.costUsd, 0), 0);
+    .reduce((sum, p) => sum + (p.knownUsd ?? 0) + (p.scoringJudge?.costUsd ?? 0) + (p.abandoned ?? []).reduce((s, a) => s + a.costUsd, 0), 0)
+    + gateSpend(join(out, 'gate'));
 }
 
 /** A job's progress file, <out>/progress/<run>.json, and the run ids of its attempts. */
@@ -294,7 +297,7 @@ async function startJob({ out, repo, home, parts, judge, job, runCapUsd, log, lo
 }
 
 /** A job's second half, after startJob: a finished run is proposed and curated (both are idempotent) and gets its row. */
-async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence = false }) {
+async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence = false, gate }) {
   const { state, save: write, idOf } = progressOf(out, job);
   let p = state.p;
   const save = (next) => { p = next; write(next); };
@@ -310,6 +313,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
       repo, judge: curateJudge, ...(parts.thresholds ? { thresholds: parts.thresholds } : {}),
       ...(parts.judgeCuts ? { judgeCuts: parts.judgeCuts } : {}),
       ...(parts.sticky ? { sticky: { file: join(out, 'curate-sticky.json'), cutsId: parts.cutsId ?? 'default' } } : {}),
+      ...(gate ? { gate } : {}),
     });
     save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main });
   }
@@ -354,18 +358,81 @@ export function listQueue(companies, list, split = 'run', { openTest = false } =
   });
 }
 
+/** The promotion gate's bank (`--promotion-bank`): each `{ cik, ticker? }` of the list is a company of the data, never one
+ *  of DEV or TEST, and never one the pass's queue runs, so the bank stays out of the stream. */
+export function bankOf(companies, list, queue = []) {
+  if (!Array.isArray(list) || !list.length) throw new Error('--promotion-bank is an empty list: give the bank\'s companies');
+  const queued = new Set(queue.map((job) => job.cik));
+  const seen = new Set();
+  return list.map((item, i) => {
+    const cik = String(item?.cik ?? '');
+    const company = companies.find((c) => c.cik === cik);
+    if (!company) throw new Error(`--promotion-bank: ${cik || `entry ${i + 1}`} is not in the data`);
+    if (company.split === 'dev' || company.split === 'test') throw new Error(`--promotion-bank: ${cik} (${company.ticker}) is ${company.split}: the bank is TRAIN companies`);
+    if (item.ticker !== undefined && item.ticker !== company.ticker) throw new Error(`--promotion-bank: ${cik} is ${company.ticker}, not ${item.ticker}`);
+    if (queued.has(cik)) throw new Error(`--promotion-bank: ${cik} (${company.ticker}) is in the pass's queue: the bank stays out of the stream`);
+    if (seen.has(cik)) throw new Error(`--promotion-bank: ${cik} is listed twice`);
+    seen.add(cik);
+    return company;
+  });
+}
+
+/**
+ * The promotion gate's runs (promotion-gate.mjs `replayGate`): one revision on one bank company by the host alone, from
+ * the gate's own clone and agent home under <out>/gate, scored as the pass's runs are. A bank run proposes nothing and is
+ * no use of the revision. A revision that does not answer the job for the company's input is not run, and has no answer.
+ */
+function bankRunner({ out, bare, parts, runCapUsd, dropEvidence }) {
+  const lock = serial();
+  let opened;
+  const open = () => (opened ??= (async () => {
+    const repo = await openRepo({ dir: join(out, 'gate', 'repo'), remote: local(bare) });
+    await repo.fetch();
+    return { repo, home: await homeAt(join(out, 'gate', 'home'), repo, await repo.resolve('main')) };
+  })());
+  return async ({ name, sha256, workflow, company, main }) => {
+    const answer = parts.set.answer(parts.data);
+    const input = parts.set.input(company);
+    const judge = meteredJudge(parts.judge());
+    if (!answersTheJob(workflow, answer.parameters, input)) {
+      return { outcome: 'not-served', score: await scoreV4({ answer: null, company, read: [], codes: parts.data.codes, judge: judge.run }), costUsd: 0 };
+    }
+    const { repo, home } = await open();
+    const prepared = await lock(async () => {
+      let attempt = 1;
+      const idOf = (n) => `bank-${sha256.slice(0, 12)}-${company.cik}${n === 1 ? '' : `-a${n}`}`;
+      while (existsSync(runPaths(home, idOf(attempt)).dir)) {
+        await carryBack(home, { runId: idOf(attempt) }, { outcome: 'abandoned' }).catch(() => {});
+        attempt += 1;
+      }
+      return prepareRun({ home, repo, host: HOST, runId: idOf(attempt), input, ref: main });
+    });
+    const measure = await runSet({ parts, repo, run: prepared, job: company, judge, limitUsd: runCapUsd, lock, dispatch: { name, sha256, workflow, input }, hostOnly: true });
+    const run = { runId: prepared.runId, ...runPaths(home, prepared.runId) };
+    await lock(() => carryBack(home, run, { outcome: measure.stopped ? 'stopped' : 'completed' }));
+    const scored = await scoreRun({ parts, run, job: company, measure, hostsDir: join(out, 'gate', 'hosts') });
+    if (dropEvidence) dropRunFiles(run.dir);
+    const tools = [scored.stats.browserCostUsd, scored.stats.searchCostUsd, scored.stats.documentCostUsd];
+    return { outcome: measure.dispatch?.outcome ?? 'not-served', score: scored.score, costUsd: spendOf(measure, undefined, tools).knownUsd + scored.scoringJudge.costUsd };
+  };
+}
+
 /** The learning pass: the first `jobs` companies of `split` ("run" unless named), in order (or of `list`, in its order),
  *  until the spend reaches `capUsd`. With `concurrency` B above 1 the queue goes in batches of B by place: a batch's runs
  *  all start from one main and go side by side, then each is proposed and curated in queue order, so learning lands
  *  between batches. */
 export async function runLoop({ out, parts, jobs, list, split = 'run', openTest = false, concurrency = 1, capUsd, runCapUsd, record = true, dropEvidence = false, log = () => {} }) {
   out = resolve(out);
-  const { repo, meta } = await openOut(out, { mode: parts.mode, set: parts.set, agentDir: parts.agentDir });
+  const { repo, bare, meta } = await openOut(out, { mode: parts.mode, set: parts.set, agentDir: parts.agentDir });
   const home = await agentHomeFor({ dir: join(out, 'home'), repo });
   const rowsPath = join(out, 'runs.jsonl');
   const rows = readRows(rowsPath);
   const done = new Set(rows.map((r) => r.run));
-  const queue = (list ? listQueue(parts.companies, list, split, { openTest }) : splitOf(parts.companies, split, { openTest }).sort(byOrder)).slice(0, jobs ?? Infinity);
+  const whole = list ? listQueue(parts.companies, list, split, { openTest }) : splitOf(parts.companies, split, { openTest }).sort(byOrder);
+  const queue = whole.slice(0, jobs ?? Infinity);
+  // With a bank, a promotion stands only when the replay gate passes it (promotion-gate.mjs); the bank runs at the pass's
+  // concurrency, while the batch that asked waits on its curate.
+  const gate = parts.bank ? replayGate({ bank: bankOf(parts.companies, parts.bank, whole), runOne: bankRunner({ out, bare, parts, runCapUsd, dropEvidence }), dir: join(out, 'gate'), concurrency, log }) : undefined;
   const judge = parts.judge();
   const spentNow = () => knownSpend(out);
   writeFileSync(join(out, 'conventions.json'), `${JSON.stringify(parts.conventions ?? {}, null, 2)}\n`);
@@ -377,7 +444,7 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
     const batch = queue.slice(at, at + concurrency).filter((job) => !done.has(job.order));
     if (!batch.length) continue;
     if (capUsd !== undefined && spentNow() >= capUsd) { stoppedBy = `spent ${usd(spentNow())}, at or over the cap of ${usd(capUsd)}`; break; }
-    const args = (job) => ({ out, repo, home, parts, judge, job, runCapUsd, record, dropEvidence, log, lock });
+    const args = (job) => ({ out, repo, home, parts, judge, job, runCapUsd, record, dropEvidence, log, lock, gate });
     await Promise.all(batch.map((job) => startJob(args(job))));
     for (const job of batch) {
       const row = withEpoch(await endJob(args(job)), job);
@@ -468,7 +535,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]] [--curate-cuts v0.1|default] [--curate-sticky]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file>]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -481,7 +548,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         model: { type: 'string' }, thinking: { type: 'string' }, set: { type: 'string' }, list: { type: 'string' }, 'promote-after': { type: 'string' },
         split: { type: 'string' }, 'open-test': { type: 'boolean' }, from: { type: 'string' }, concurrency: { type: 'string' }, shard: { type: 'string' }, 'drop-evidence': { type: 'boolean' },
         'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' },
-        'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' },
+        'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' },
       },
     }));
   } catch (error) {
@@ -536,6 +603,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     if (values['curate-sticky']) {
       parts.sticky = true;
       console.log('learn-classify: curation judges each learning by the worst answer its text has had (<out>/curate-sticky.json)');
+    }
+    if (values['promotion-bank'] !== undefined) {
+      if (values.sealed) { console.error(`--promotion-bank gates a learning pass's promotions: a sealed pass promotes nothing\n${USAGE}`); process.exit(2); }
+      if (set !== SETS.v4) { console.error(`--promotion-bank scores the v4 job: pass --set v4\n${USAGE}`); process.exit(2); }
+      try { parts.bank = JSON.parse(readFileSync(resolve(values['promotion-bank']), 'utf8')); } catch (error) { console.error(`--promotion-bank ${values['promotion-bank']}: ${error.message}`); process.exit(2); }
+      console.log(`learn-classify: a promotion stands only when it passes the replay gate on ${Array.isArray(parts.bank) ? parts.bank.length : 0} bank companies (<out>/gate)`);
     }
     if (promoteAfter !== undefined) {
       parts.thresholds = { promoteAfter };

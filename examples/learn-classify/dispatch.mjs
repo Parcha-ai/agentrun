@@ -60,14 +60,14 @@ export function answersTheJob(workflow, answerSchema, input) {
 }
 
 /** The superseded revision of a trial that was active last (the one a demotion would restore), or undefined. */
-function lastProven(trial) {
+export function lastProven(trial) {
   return trial.revisions.map((revision, index) => ({ revision, index })).filter(({ revision }) => revision.status === 'superseded')
     .sort((a, b) => (a.revision.since < b.revision.since ? 1 : a.revision.since > b.revision.since ? -1 : b.index - a.index))[0]?.revision;
 }
 
 /** A revision's workflow from its record in the agent repository at `sha`, or undefined when it is missing or does not
  *  hash to its digest. */
-async function recordedWorkflow(repo, name, sha256, sha) {
+export async function recordedWorkflow(repo, name, sha256, sha) {
   try {
     const record = JSON.parse(await repo.read(`${workflowDir(name)}/${sha256}.json`, sha));
     return record?.digest === sha256 && workflowSha256(record.workflow) === sha256 ? record.workflow : undefined;
