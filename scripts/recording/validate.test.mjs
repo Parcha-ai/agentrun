@@ -335,3 +335,14 @@ test('a snapshot restating an earlier process\'s move is not a move of this proc
   const own = [durable(1, 0), durable(2, 0, { t: 12, source: 'transport', kind: 'transport.moves', data: bad })];
   assert.match(first(await recording(t, { lines: own, started: 2, manifestOver: { generations: 2 } })).message, /a restore record has no integer head/);
 });
+
+test('draft 39: a transport box line names its box by its label, box-N, never by its provider\'s id', async t => {
+  const box = (seq, t, kind, id) => live(1, seq, t, { source: 'transport', kind, data: { box: id, provider: 'modal' } });
+  const run = (ids) => [durable(1, 0), box(0, 11, 'box.created', ids[0]), box(1, 12, 'box.killed', ids[1]), box(2, 13, 'box.ended', ids[2])];
+  const problems = async ids => validateRecording(await recording(t, { lines: run(ids), started: 1, manifestOver: { generations: 1, kills: 0 } })).map(problem => problem.message);
+  assert.deepEqual(await problems(['box-1', 'box-1', 'box-1']), [], 'its label on every line');
+  assert.deepEqual(await problems(['sb-lkKzuInj5OcvgWEJ4XVADf', 'box-1', '6f492bb9-d80f-4bc5-bc15-e4fa5bc40ec5']), [
+    'box.created names box "sb-lkKzuInj5OcvgWEJ4XVADf", not a box-N label: a recording names a box by its label, never by its provider\'s id (draft 39)',
+    'box.ended names box "6f492bb9-d80f-4bc5-bc15-e4fa5bc40ec5", not a box-N label: a recording names a box by its label, never by its provider\'s id (draft 39)']);
+  assert.deepEqual(await problems(['box-1', 'c2739682131100dbe042dda8a1a61bf35e176b21fae7796774805888365c8168', 'box-1']), ['box.killed names box "c2739682131100dbe042dda8a1a61bf35e176b21fae7796774805888365c8168", not a box-N label: a recording names a box by its label, never by its provider\'s id (draft 39)']);
+});

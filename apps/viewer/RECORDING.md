@@ -223,6 +223,8 @@ snapshots included. A lost branch (3.2) is events, not state: the per-generation
 - No secret, ever. Packages already keep credentials out of their documents and results; the recorder also passes
   every live line through the host's redactor before writing it.
 - A published recording uses public sources only, chosen and checked before it is recorded.
+- A transport box line (`box.created`, `box.killed`, `box.ended`) names its box by its recorded label, `box-N` by first
+  appearance, never by its provider's id (draft 39). The validator refuses one that names anything else.
 - Blobs are kept whole. A recording too large for a static host replaces its `frame` lines with `frame.track` lines
   (a WebM per session), and only then drops frames; it never drops durable lines.
 
