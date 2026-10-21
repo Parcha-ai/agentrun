@@ -251,6 +251,8 @@ test('diskProbe and durableCommits: what a run cost the disk, for the switch rul
   const dir = await scratch(t);
   const probe = diskProbe(dir, { commits: 5 });
   assert.ok(probe.fsyncMs >= 0 && probe.commits === 5, JSON.stringify(probe));
+  // The probe commits as pi-durable's stores do (WAL, synchronous NORMAL: no fsync per commit), so it measures what a run waits.
+  assert.deepEqual([probe.journal, probe.synchronous], ['wal', 1]);
   assert.deepEqual(readdirSync(dir), []);
   const { data, companies } = await standIn(dir, { train: 1, dev: 0, test: 0 });
   const out = join(dir, 'train');
