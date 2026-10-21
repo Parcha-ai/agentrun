@@ -3,7 +3,7 @@
 // the Wilson floor); a held trial stays a trial with its uses, and the bank runs are kept per (revision, company).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
 import { admitRevision, currentRevision, foldUses, periodUses, promotionDecision, readTrial, renderSkill, renderTrial, skillPath, trialPath, TRIAL_LIMITS } from '@parcha/pi-agent-learn';
 import { bankOf, openOut, runLoop, scriptedParts } from './runner.mjs';
-import { GATE, gatedSettler, pairedDifference, replayGate, undoPromotion, valuesOf, verdictOf, wilson } from './promotion-gate.mjs';
+import { asyncGate, GATE, gatedSettler, pairedDifference, replayGate, undoPromotion, valuesOf, verdictOf, wilson } from './promotion-gate.mjs';
 import { CLASSIFY_WORKFLOW_V4, WORKFLOW } from './scripted.mjs';
 import { SETS } from './sets.mjs';
 
@@ -168,7 +168,7 @@ test('a promotion the gate cannot judge is held, with the trial undone, never pr
   assert.equal(currentRevision(folded.trial).status, 'active');
   const settle = async () => ({ files: { [trialPath(WORKFLOW)]: renderTrial(folded.trial) }, decisions: [{ name: WORKFLOW, action: 'promote', reason: 'its last 3 uses all finished frozen' }] });
   let asked = 0;
-  const gate = async () => { asked += 1; return { promote: true, reason: 'never asked' }; };
+  const gate = { ask: () => { asked += 1; return { status: 'landed', verdict: { promote: true, reason: 'never asked' } }; } };
   // main holds the trial but not the candidate's record.
   const read = async (path) => (path === trialPath(WORKFLOW) ? renderTrial(before) : undefined);
   const result = await gatedSettler({ settle, gate })({ main: 'm', read, list: async () => [], run: 'run-3', uses: [] });
@@ -176,6 +176,46 @@ test('a promotion the gate cannot judge is held, with the trial undone, never pr
   assert.deepEqual(result.decisions, [{ name: WORKFLOW, action: 'hold', reason: 'promotion gate: it could not run: the candidate\'s record is not on main' }]);
   const kept = JSON.parse(result.files[trialPath(WORKFLOW)]);
   assert.deepEqual([kept.status, currentRevision(kept).status, kept.uses.length], ['trial', 'trial', 3]);
+});
+
+const right = () => ({ outcome: 'complete', score: { sicCorrect4: true, segmentsF1: null, hqCorrect: null }, costUsd: 0 });
+const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+test('one comparison runs at a time; a newer candidate for a name replaces the one queued, which never runs', async (t) => {
+  const dir = await scratch(t);
+  const [C, D] = ['c', 'd'].map((x) => x.repeat(64));
+  let open;
+  const opened = new Promise((resolve) => { open = resolve; });
+  const ran = [];
+  const lines = [];
+  const gate = asyncGate({ bank: bankOfN(2), runOne: async ({ sha256 }) => { ran.push(sha256[0]); await opened; return right(); }, dir, log: (line) => lines.push(line) });
+  const ask = (sha256) => gate.ask({ name: WORKFLOW, candidate: { sha256, workflow: {} }, serving: null, main: 'm' }).status;
+  assert.deepEqual([ask(B), ask(B), ask(C), ask(D)], ['running', 'running', 'queued', 'queued']);
+  assert.ok(lines.some((line) => line.endsWith(`${D.slice(0, 8)} replaces the queued ${C.slice(0, 8)}`)), lines.join('\n'));
+  open();
+  await gate.idle();
+  assert.deepEqual(ran, ['b', 'b', 'd', 'd']);
+  assert.deepEqual([ask(B), ask(D)], ['landed', 'landed']);
+  assert.equal(ask(C), 'running', 'the replaced candidate was never compared: asking again starts it');
+  await gate.idle();
+});
+
+test('a crash mid-gate lands nothing, so the trial stays a trial; after it the next ask runs only the bank runs missing', async (t) => {
+  const dir = await scratch(t);
+  const bank = bankOfN(4);
+  const job = { name: WORKFLOW, candidate: { sha256: B, workflow: {} }, serving: null, main: 'm' };
+  // The first process: two bank runs finish, and it dies with the other two in flight.
+  const dying = asyncGate({ bank, runOne: async ({ company }) => (['c0', 'c1'].includes(company.cik) ? right() : new Promise(() => {})), dir, concurrency: 4 });
+  assert.equal(dying.ask(job).status, 'running');
+  await tick();
+  assert.equal(existsSync(join(dir, 'verdicts')), false, 'no verdict: a curate asking now is told it is still to come, and holds');
+  const ran = [];
+  const restarted = asyncGate({ bank, runOne: async ({ company }) => { ran.push(company.cik); return right(); }, dir });
+  assert.equal(restarted.ask(job).status, 'running');
+  await restarted.idle();
+  assert.deepEqual(ran.sort(), ['c2', 'c3']);
+  const asked = restarted.ask(job);
+  assert.deepEqual([asked.status, asked.verdict.ran, asked.verdict.kept], ['landed', 2, 2]);
 });
 
 test('the bank is TRAIN only and stays out of the stream', () => {
@@ -236,47 +276,69 @@ const list = stream.map((c) => ({ cik: c.cik }));
 const verdictsOf = (out) => readFileSync(join(out, 'gate', 'verdicts.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
 const mainTrial = async (repo) => readTrial(repo, WORKFLOW, (await repo.log({ ref: 'main', max: 1 }))[0].sha);
 
-test('the gate: a trial right where the serving revision escalates on the bank is promoted, and the bank runs are no uses', async (t) => {
+// The sixth company comes in a second pass, so a verdict that lands after the fifth curate meets a curate.
+const list6 = [...list, { cik: byName['Quartz Ridge Labs Inc.'].cik }];
+const sites6 = [...sites, 'Quartz Ridge Labs Inc.'];
+const settledOf = async (out, run) => JSON.parse(await readFile(join(out, 'progress', `run-${String(run).padStart(3, '0')}.json`), 'utf8')).curated.report.runs.flatMap((r) => r.settled ?? []).map((x) => x.reason);
+const ON_THE_BANK = 'hold: promotion gate: on the bank now; it stays a trial until the verdict lands';
+
+test('the gate runs beside the stream: jobs go on while it runs, the trial stays a trial, and the next curate applies the verdict', async (t) => {
   const root = await scratch(t);
   const out = join(root, 'out');
   const { repo } = await openOut(out, { mode: 'scripted', set: SETS.v4 });
-  // A escalates on the stream's companies and on the bank's; B on none.
-  const { a, b } = await commitTrial(repo, join(root, 'store'), { a: escalatesFor([...sites, ...bank.map((c) => c.name)]), b: CLASSIFY_WORKFLOW_V4 });
-  const { rows } = await runLoop({ out, parts: { ...parts, bank: bank.map((c) => ({ cik: c.cik })) }, list, jobs: 4, record: false });
-  assert.deepEqual(rows.map((r) => r.curate.promoted), [[], [], [], [WORKFLOW]]);
+  // A escalates on every stream and bank company; B on none.
+  const { a, b } = await commitTrial(repo, join(root, 'store'), { a: escalatesFor([...sites6, ...bank.map((c) => c.name)]), b: CLASSIFY_WORKFLOW_V4 });
+  // The bank runs wait for the fifth job's row: a gate that held the stream would never finish.
+  let open;
+  const opened = new Promise((resolve) => { open = resolve; });
+  const runOne = async ({ sha256 }) => {
+    await opened;
+    return sha256 === b ? right() : { outcome: 'escalated', score: { sicCorrect4: false, segmentsF1: null, hqCorrect: null }, costUsd: 0 };
+  };
+  const lines = [];
+  const gate = asyncGate({ bank, runOne, dir: join(out, 'gate') });
+  const first = await runLoop({ out, parts, list: list6, jobs: 5, record: false, gate, log: (line) => { lines.push(line); if (line.startsWith('run 5 ')) open(); } });
+  assert.deepEqual(first.rows.map((r) => r.curate.promoted), [[], [], [], [], []]);
+  assert.deepEqual([await settledOf(out, 4), await settledOf(out, 5)], [[ON_THE_BANK], [ON_THE_BANK]], 'asked at the third clean use and again at the fourth, while it ran');
+  const waiting = currentRevision(await mainTrial(repo));
+  assert.deepEqual([waiting.sha256, waiting.status], [b, 'trial']);
   const [verdict] = verdictsOf(out);
-  assert.deepEqual([verdict.candidate, verdict.serving, verdict.promote, verdict.ran, verdict.kept, verdict.companies, verdict.concurrency], [b, a, true, 6, 0, 3, 8]);
-  assert.ok(verdict.lo > 0, JSON.stringify(verdict));
-  const outcomes = await Promise.all(bank.map(async (c) => [JSON.parse(await readFile(join(out, 'gate', 'bank', a, `${c.cik}.json`), 'utf8')).outcome, JSON.parse(await readFile(join(out, 'gate', 'bank', b, `${c.cik}.json`), 'utf8')).outcome]));
-  assert.deepEqual(outcomes, bank.map(() => ['escalated', 'complete']));
+  assert.deepEqual([verdict.candidate, verdict.serving, verdict.promote, verdict.ran, verdict.concurrency], [b, a, true, 6, 8]);
+  assert.ok(Date.parse(verdict.at) > Date.parse(JSON.parse(await readFile(join(out, 'progress', 'run-005.json'), 'utf8')).curatedAt), 'the verdict landed after the fifth curate');
+
+  // The next pass's first curate applies it, before it folds that run's uses.
+  const second = await runLoop({ out, parts: { ...parts, bank: bank.map((c) => ({ cik: c.cik })) }, list: list6, jobs: 6, record: false });
+  const row6 = second.rows.find((r) => r.run === 6);
+  assert.deepEqual(row6.gated, [{ name: WORKFLOW, candidate: b, serving: a, promote: true, applied: 'promoted', reason: verdict.reason }]);
   const trial = await mainTrial(repo);
   assert.deepEqual(trial.revisions.map((r) => [r.sha256, r.status]), [[a, 'superseded'], [b, 'active']]);
-  assert.equal(trial.uses.length, 6, 'only the stream\'s runs are uses: three of A escalated, three of B clean');
-  assert.ok(!trial.uses.some((u) => u.run.startsWith('bank-')));
+  assert.equal(verdictsOf(out).length, 1, 'no comparison ran again');
 });
 
-test('the gate: a trial worse than the serving revision on the bank stays a trial, and asking again runs nothing new', async (t) => {
+test('the gate: a trial worse than the serving revision on the bank stays a trial; the held verdict answers the next ask with no bank run', async (t) => {
   const root = await scratch(t);
   const out = join(root, 'out');
   const { repo } = await openOut(out, { mode: 'scripted', set: SETS.v4 });
   // A escalates on the stream's companies only, so the agent runs B there; B escalates on the bank's.
   const { a, b } = await commitTrial(repo, join(root, 'store'), { a: escalatesFor(sites), b: escalatesFor(bank.map((c) => c.name)) });
-  const { rows } = await runLoop({ out, parts: { ...parts, bank: bank.map((c) => ({ cik: c.cik })), bankConcurrency: 2 }, list, jobs: 5, record: false });
-  assert.deepEqual(rows.map((r) => r.curate.promoted), [[], [], [], [], []], 'held at its third clean use and at its fourth');
+  const withBank = { ...parts, bank: bank.map((c) => ({ cik: c.cik })), bankConcurrency: 2 };
+  await runLoop({ out, parts: withBank, list, jobs: 4, record: false });
+  assert.deepEqual(await settledOf(out, 4), [ON_THE_BANK]);
+  const { rows } = await runLoop({ out, parts: withBank, list, jobs: 5, record: false });
   const verdicts = verdictsOf(out);
-  assert.deepEqual(verdicts.map((v) => [v.candidate, v.serving, v.promote, v.ran, v.kept, v.concurrency]), [[b, a, false, 6, 0, 2], [b, a, false, 0, 6, 2]], 'the second gate is all kept runs, at $0');
+  assert.deepEqual(verdicts.map((v) => [v.candidate, v.serving, v.promote, v.ran, v.kept, v.concurrency]), [[b, a, false, 6, 0, 2]], 'one comparison, by the host on the bank');
   assert.ok(verdicts[0].lo < 0 && verdicts[0].diff < 0, JSON.stringify(verdicts[0]));
-  assert.deepEqual(verdicts[1].lo, verdicts[0].lo);
-  assert.equal((await readdir(join(out, 'gate', 'bank', b))).filter((f) => f.endsWith('.json')).length, 3);
+  assert.deepEqual(rows.at(-1).gated, [{ name: WORKFLOW, candidate: b, serving: a, promote: false, applied: 'held', reason: verdicts[0].reason }]);
+  assert.deepEqual(await settledOf(out, 5), ['hold: promotion gate: ±1 utility, candidate minus serving -1.000 over 9 parts of 3 bank companies, 95% CI [-1.000, -1.000]: lower bound not above 0']);
+  assert.deepEqual(rows.map((r) => r.curate.promoted), [[], [], [], [], []]);
+  const outcomes = await Promise.all(bank.map(async (c) => [JSON.parse(await readFile(join(out, 'gate', 'bank', a, `${c.cik}.json`), 'utf8')).outcome, JSON.parse(await readFile(join(out, 'gate', 'bank', b, `${c.cik}.json`), 'utf8')).outcome]));
+  assert.deepEqual(outcomes, bank.map(() => ['complete', 'escalated']));
   const trial = await mainTrial(repo);
   assert.deepEqual(trial.revisions.map((r) => [r.sha256, r.status]), [[a, 'superseded'], [b, 'trial']]);
   const live = currentRevision(trial);
   assert.deepEqual(periodUses(trial, live).map((u) => u.outcome), ['frozen', 'frozen', 'frozen', 'frozen'], 'its uses are kept');
+  assert.ok(!trial.uses.some((u) => u.run.startsWith('bank-')), 'bank runs are no uses');
   assert.equal(promotionDecision(trial, {}).action, 'promote', 'the uses call for it; only the gate holds it');
-  const progress = JSON.parse(await readFile(join(out, 'progress', 'run-004.json'), 'utf8'));
-  const settled = progress.curated.report.runs.flatMap((r) => r.settled ?? []);
-  assert.deepEqual(settled.map((s) => s.workflow), [WORKFLOW]);
-  assert.equal(settled[0].reason, 'hold: promotion gate: ±1 utility, candidate minus serving -1.000 over 9 parts of 3 bank companies, 95% CI [-1.000, -1.000]: lower bound not above 0');
 });
 
 test('the gate: a first promotion that escalates on one bank company in three is under the floor and stays a trial', async (t) => {

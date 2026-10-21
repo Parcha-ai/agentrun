@@ -6,11 +6,12 @@
 //   difference, candidate minus serving over every scored part of every bank company, must have a 95% lower bound above 0.
 // - With none (a first promotion), the share of bank companies the candidate gets right in every scored part must have a
 //   Wilson 95% lower bound above the floor.
-// Otherwise the trial stays a trial, and its uses, this run's included, are kept. A bank run is kept per (revision digest,
-// company), so a revision runs on a bank company once per pass, and a trial held once is held again at $0.
+// The gate never stops the stream: asked when curate would promote, it queues the comparison and the trial stays a trial,
+// the serving revision serving, until the verdict lands; the next curate applies it. A bank run is kept per (revision
+// digest, company), so a revision runs on a bank company once per pass, and a verdict once landed answers at once.
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { currentRevision, parseTrial, renderTrial, trialPath } from '@parcha/pi-agent-learn';
+import { applyDecision, currentRevision, parseTrial, promotionDecision, readTrial, renderTrial, trialPath } from '@parcha/pi-agent-learn';
 import { lastProven, recordedWorkflow } from './dispatch.mjs';
 
 /** Pre-registered 2026-10-21 22:32Z (section 1 of the design, §1.6, the TL's rulings): the parts `correct` counts, valued by
@@ -106,7 +107,14 @@ const readJson = (file) => {
     return undefined;
   }
 };
+const writeJson = (file, value) => {
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(`${file}.pending`, `${JSON.stringify(value, null, 2)}\n`);
+  renameSync(`${file}.pending`, file);
+};
 const bankFile = (dir, sha256, cik) => join(dir, 'bank', sha256, `${cik}.json`);
+const verdictFile = (dir, key) => join(dir, 'verdicts', `${key}.json`);
+const keyOf = (name, candidate, serving) => `${name}/${candidate}-${serving ?? 'first'}`;
 
 /** What the gate's bank runs under `dir` have cost, as far as it is known. */
 export function gateSpend(dir) {
@@ -117,10 +125,11 @@ export function gateSpend(dir) {
 }
 
 /**
- * The gate `gatedSettler` asks. `bank` is the bank's companies (truth rows); `runOne({ name, sha256, workflow, company,
- * main })` runs one revision on one company by the host alone and returns `{ outcome, score, costUsd }`, `score` being
- * scoreV4's and `outcome` the host's run's (only `complete` is an answer). A run that throws is not kept, and while any did the gate holds: it runs again at the next promotion. Under
- * `dir` go the bank runs (bank/<digest>/<cik>.json) and every verdict (verdicts.jsonl).
+ * One comparison on the bank, to its verdict. `bank` is the bank's companies (truth rows); `runOne({ name, sha256,
+ * workflow, company, main })` runs one revision on one company by the host alone and returns `{ outcome, score, costUsd }`,
+ * `score` being scoreV4's and `outcome` the host's run's (only `complete` is an answer). A run that throws is not kept, and
+ * while any did the verdict is a hold with `failed`. Under `dir` go the bank runs (bank/<digest>/<cik>.json) and every
+ * verdict (verdicts.jsonl).
  */
 export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, floor = GATE.floor, log = () => {} }) {
   if (!bank.length) throw new Error('the promotion gate needs a bank of companies');
@@ -144,10 +153,7 @@ export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, 
         try {
           const result = await runOne({ name, sha256: revision.sha256, workflow: revision.workflow, company, main });
           const record = { revision: revision.sha256, cik: company.cik, outcome: result.outcome, answered: result.outcome === 'complete', parts: partsOf(result.score), costUsd: result.costUsd ?? null, at: new Date().toISOString() };
-          const file = bankFile(dir, revision.sha256, company.cik);
-          mkdirSync(dirname(file), { recursive: true });
-          writeFileSync(`${file}.pending`, `${JSON.stringify(record, null, 2)}\n`);
-          renameSync(`${file}.pending`, file);
+          writeJson(bankFile(dir, revision.sha256, company.cik), record);
           values.get(revision.sha256).set(company.cik, valuesOf(record));
           costUsd += record.costUsd ?? 0;
         } catch (error) {
@@ -157,13 +163,94 @@ export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, 
     };
     await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, todo.length)) }, worker));
     const verdict = failed.length
-      ? { promote: false, reason: `${failed.length} bank run(s) failed, so nothing was compared; they run again at the next promotion`, failed }
+      ? { promote: false, reason: `${failed.length} bank run(s) failed, so nothing was compared; they run again at the next ask`, failed }
       : verdictOf({ bank, candidate: values.get(candidate.sha256), serving: serving ? values.get(serving.sha256) : null, floor });
     const line = { at: new Date().toISOString(), name, candidate: candidate.sha256, serving: serving?.sha256 ?? null, main, bank: bank.length, concurrency, ran: todo.length - failed.length, kept: bank.length * revisions.length - todo.length, costUsd, ...verdict };
     mkdirSync(dir, { recursive: true });
     appendFileSync(join(dir, 'verdicts.jsonl'), `${JSON.stringify(line)}\n`);
-    log(`  promotion gate on ${name} ${candidate.sha256.slice(0, 8)}${serving ? ` vs ${serving.sha256.slice(0, 8)}` : ''}: ${verdict.promote ? 'promoted' : 'held'}; ${verdict.reason} (${line.ran} bank runs, ${line.kept} kept)`);
+    log(`  promotion gate on ${name} ${candidate.sha256.slice(0, 8)}${serving ? ` vs ${serving.sha256.slice(0, 8)}` : ''}: ${verdict.promote ? 'passes' : 'holds'}; ${verdict.reason} (${line.ran} bank runs, ${line.kept} kept)`);
     return line;
+  };
+}
+
+/**
+ * The gate as `gatedSettler` asks it, off the stream's path. `ask` answers at once: the landed verdict for that candidate
+ * over that serving revision, or that its comparison (`replayGate`) is running or queued, asking queuing it. One comparison
+ * runs at a time, in the background, never under the pass's repository lock (the bank runs have their own clone and home),
+ * and a name has at most one queued, its newest candidate. A verdict lands in <dir>/verdicts/<name>/<candidate>-<serving or
+ * first>.json once every bank run finished: a crash or a failed run lands nothing, the trial stays a trial, and the next ask
+ * runs only what is missing. `apply` is the next curate's step, under the lock: each landed verdict is reported once, and
+ * a promotion that still holds on main is committed there.
+ */
+export function asyncGate({ bank, runOne, dir, concurrency, floor, log = () => {} }) {
+  const compare = replayGate({ bank, runOne, dir, ...(concurrency ? { concurrency } : {}), ...(floor === undefined ? {} : { floor }), log });
+  const queued = new Map();
+  let running = null;
+  const pump = () => {
+    if (running || !queued.size) return;
+    const [name, job] = queued.entries().next().value;
+    queued.delete(name);
+    const done = compare(job)
+      .then((line) => { if (!line.failed) writeJson(verdictFile(dir, job.key), { ...line, key: job.key }); },
+        (error) => log(`  promotion gate on ${name}: ${String(error?.message ?? error).slice(0, 200)}; no verdict`))
+      .finally(() => { running = null; pump(); });
+    running = { key: job.key, done };
+  };
+  return {
+    ask({ name, candidate, serving, main }) {
+      const key = keyOf(name, candidate.sha256, serving?.sha256);
+      const landed = readJson(verdictFile(dir, key));
+      if (landed) return { status: 'landed', key, verdict: landed };
+      if (running?.key === key) return { status: 'running', key };
+      const before = queued.get(name);
+      if (before && before.key !== key) log(`  promotion gate on ${name}: ${candidate.sha256.slice(0, 8)} replaces the queued ${before.candidate.sha256.slice(0, 8)}`);
+      queued.set(name, { name, candidate, serving, main, key });
+      pump();
+      return { status: running?.key === key ? 'running' : 'queued', key };
+    },
+    /** Resolves when nothing is running or queued. */
+    async idle() {
+      while (running) await running.done;
+    },
+    /**
+     * The landed verdicts not yet applied, each reported once as `{ name, candidate, serving, promote, applied, reason }`:
+     * `promoted` (committed to main now, or promoted already at an ask), `held`, or `stale` when main's trial has moved on
+     * (another live revision or serving one) or its uses no longer call for the promotion; a stale verdict still answers
+     * a later ask for the same pair. `thresholds` are the pass's promotion rule.
+     */
+    async apply({ repo, thresholds }) {
+      const root = join(dir, 'verdicts');
+      if (!existsSync(root)) return [];
+      const landed = readdirSync(root).flatMap((name) => readdirSync(join(root, name)).filter((f) => f.endsWith('.json')).map((f) => readJson(join(root, name, f))))
+        .filter((v) => v && !v.applied).sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+      const reported = [];
+      for (const v of landed) {
+        try {
+          await repo.fetch();
+          const main = await repo.resolve('main');
+          const trial = await readTrial(repo, v.name, main).catch(() => undefined);
+          const live = trial && currentRevision(trial);
+          const same = live?.sha256 === v.candidate && (lastProven(trial)?.sha256 ?? null) === v.serving;
+          let applied = !same ? 'stale' : live.status === 'active' ? 'promoted' : v.promote ? null : 'held';
+          if (applied === null) {
+            const rules = thresholds ? { thresholds } : {};
+            if (promotionDecision(trial, rules).action !== 'promote') applied = 'stale';
+            else {
+              const promoted = applyDecision(trial, { action: 'promote', sha256: v.candidate, reason: v.reason }, new Date().toISOString());
+              const commit = await repo.commitTo('main', { files: { [trialPath(v.name)]: renderTrial(promoted) }, message: `promotion gate: promote ${v.name} ${v.candidate.slice(0, 12)}: ${v.reason}`, parent: main });
+              await repo.push(commit.sha, 'main');
+              applied = 'promoted';
+            }
+          }
+          writeJson(verdictFile(dir, v.key), { ...v, applied: { as: applied, at: new Date().toISOString(), main } });
+          reported.push({ name: v.name, candidate: v.candidate, serving: v.serving, promote: v.promote, applied, reason: v.reason });
+          log(`  promotion gate on ${v.name} ${v.candidate.slice(0, 8)}: verdict ${applied}`);
+        } catch (error) {
+          log(`  promotion gate on ${v.name} ${v.candidate.slice(0, 8)}: not applied yet (${String(error?.message ?? error).slice(0, 200)})`);
+        }
+      }
+      return reported;
+    },
   };
 }
 
@@ -183,8 +270,9 @@ export function undoPromotion(before, after, sha256) {
 
 /**
  * The `settleUses` port with the gate on promotion. `settle` (pi-agent-learn's usesSettler) folds the run's uses as it
- * always does; each promotion it decides is put to `gate` first. One the gate refuses, or cannot judge, is undone
- * (`undoPromotion`) and becomes a hold that says why. Demotions and holds pass as they are.
+ * always does; each promotion it decides is asked of `gate` (`asyncGate`). It stands only on a landed verdict that passes
+ * it; one held, still on the bank, or that cannot be asked is undone (`undoPromotion`) and becomes a hold that says why.
+ * Demotions and holds pass as they are.
  */
 export function gatedSettler({ settle, gate }) {
   return async (input) => {
@@ -218,7 +306,8 @@ export function gatedSettler({ settle, gate }) {
         const served = proven && await recordedWorkflow(input, name, proven.sha256, input.main);
         if (!workflow) throw new Error('the candidate\'s record is not on main');
         if (proven && !served) throw new Error('the serving revision\'s record is not on main');
-        verdict = await gate({ name, candidate: { sha256: live.sha256, workflow }, serving: proven ? { sha256: proven.sha256, workflow: served } : null, main: input.main });
+        const asked = await gate.ask({ name, candidate: { sha256: live.sha256, workflow }, serving: proven ? { sha256: proven.sha256, workflow: served } : null, main: input.main });
+        verdict = asked.status === 'landed' ? asked.verdict : { promote: false, reason: `${asked.status === 'running' ? 'on the bank now' : 'queued for the bank'}; it stays a trial until the verdict lands` };
       } catch (error) {
         verdict = { promote: false, reason: `it could not run: ${String(error?.message ?? error).slice(0, 120)}` };
       }
