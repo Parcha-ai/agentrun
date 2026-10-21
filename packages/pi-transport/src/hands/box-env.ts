@@ -999,6 +999,15 @@ class BoxEnv implements ExecutionEnv {
 		const directory = await this.#resolve(options?.cwd ?? this.cwd, context);
 		if (!directory.ok) return err(new ExecutionError("spawn_error", directory.error.message));
 
+		// A box whose exec carries only the command has nowhere to put a variable but the command itself: it is refused, so no value reaches a command or a disk.
+		if (this.#noStdin && Object.keys(options?.env ?? {}).length > 0) {
+			return err(
+				new ExecutionError(
+					"spawn_error",
+					"this box's exec carries only the command: a value could only ride in the command or on the disk, so a per-call env is refused",
+				),
+			);
+		}
 		const id = randomUUID();
 		const variables = Object.entries(options?.env ?? {}).map(([name, value]) => `${name}=${value}`);
 		const inherit = options?.inheritEnv !== false;

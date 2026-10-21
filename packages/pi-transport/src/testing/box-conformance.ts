@@ -32,6 +32,13 @@ export interface BoxConformanceOptions {
 	 */
 	readonly withoutLiveProcesses?: string;
 	/**
+	 * Set, with the reason, for a provider whose boxes have no env: no value can reach a program except in the command
+	 * itself. The suite then creates its boxes with no env, leaves out the case that reads the spec's env, and adds two
+	 * in its place: a program sees nothing of the host's environment, and a spec with an env is refused with
+	 * `unsupported`. The reason is in the second case's name so a report shows why.
+	 */
+	readonly withoutEnv?: string;
+	/**
 	 * When set, the suite creates one box with this lifetime, starts a long program in it, makes no further call to
 	 * the provider, and requires `ended` to say the box is gone within `graceMs` after the lifetime. This is the bound
 	 * on leaked boxes, so `ended` must look at the machine itself (a process table, a container list, the vendor's
@@ -72,7 +79,7 @@ export function createBoxConformance(options: BoxConformanceOptions): BoxConform
 	const spec: BoxSpec = {
 		maxLifetimeMs: DEFAULT_MAX_LIFETIME_MS,
 		...options.spec,
-		env: { ...options.spec?.env, [SPEC_ENV_NAME]: "yes" },
+		...(options.withoutEnv === undefined ? { env: { ...options.spec?.env, [SPEC_ENV_NAME]: "yes" } } : {}),
 		labels: { ...options.spec?.labels, [CONFORMANCE_LABEL]: label },
 	};
 
@@ -291,6 +298,34 @@ export function createBoxConformance(options: BoxConformanceOptions): BoxConform
 				}),
 		},
 	];
+	if (options.withoutEnv !== undefined) {
+		const readsSpecEnv = "programs see the spec's env and nothing of the host's environment";
+		for (let index = cases.length - 1; index >= 0; index -= 1) {
+			if (cases[index]?.name === readsSpecEnv) cases.splice(index, 1);
+		}
+		cases.push(
+			{
+				name: "programs see nothing of the host's environment",
+				run: () =>
+					withBox(async (box) => {
+						const read = (name: string) => run(box, ["sh", "-c", `printf %s "\${${name}-unset}"`]);
+						for (const name of options.absentEnv ?? []) {
+							assertions.strictEqual((await read(name)).stdout, "unset");
+						}
+					}),
+			},
+			{
+				name: `a spec with an env is refused with unsupported (the box has no env: ${options.withoutEnv})`,
+				run: () =>
+					withProvider(async (provider) => {
+						const refused = await provider.create({ ...spec, env: { [SPEC_ENV_NAME]: "yes" } }, context);
+						if (refused.ok) await refused.value.destroy(context);
+						assertions.strictEqual(refused.ok, false);
+						if (!refused.ok) assertions.strictEqual(refused.error.code, "unsupported");
+					}),
+			},
+		);
+	}
 	if (options.withoutLiveProcesses !== undefined) {
 		const needLiveProcess = new Set([
 			"exec streams output before the program exits and carries input to it",

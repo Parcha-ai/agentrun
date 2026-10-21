@@ -10,6 +10,6 @@ the call, no program kept between calls). A box with `liveProcesses` false is ne
 `MoveError` code `no_live_processes`. Every exec checks out the box's directory with a queue, so a second process on the
 same box waits instead of losing a write; a box's record is a file outside the directory, so `destroy` ends the box at once
 even while a command runs. The conformance suite takes `withoutLiveProcesses: "<why>"` and leaves out the live-program and stdin cases,
-with one case in their place that carries the reason. A box billed per call gets a receipt with `calls` and `usd_per_call`
+with one case in their place that carries the reason, and `withoutEnv: "<why>"` for a box that has no env: Archil's exec carries only the command, so a spec with an env is refused with `unsupported` (the record and every call's command carry none) and a `boxEnv` per-call env on such a box is refused. A box billed per call gets a receipt with `calls` and `usd_per_call`
 in place of `usd_per_second` (`BoxPrice` takes `usdPerCall`; RECORDING.md draft 40). The live suite
 (`PI_TRANSPORT_LIVE_ARCHIL=1`) makes its own disk in aws-us-east-1 and deletes it.

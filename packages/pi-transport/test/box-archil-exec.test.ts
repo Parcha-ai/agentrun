@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
+import type { ShellExecOptions } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
 import { archilExecBoxes } from "../src/box/archil-exec.ts";
 import type { Box, BoxSpec } from "../src/box/box.ts";
@@ -20,7 +21,17 @@ process.env[CANARY] = "the host's environment reached a box";
 const context = BACKGROUND_CONTEXT;
 const SPEC: BoxSpec = { maxLifetimeMs: 60_000, labels: { run: "a" } };
 const WHY = "an exec is one request that answers when the command ends";
+const WHY_ENV = "Archil's exec carries only the command: a value could only ride in the command or on the disk";
 const decoder = new TextDecoder();
+/** A value no test or program writes by itself: found in a file of the disk or a request, it was put there by an env. */
+const MARKER = "PLANTED-MARKER-4f9c1e2a7b";
+
+/** Every file under a directory. */
+function onDisk(root: string): string[] {
+	return readdirSync(root, { recursive: true, withFileTypes: true })
+		.filter((entry) => entry.isFile())
+		.map((entry) => join(entry.parentPath, entry.name));
+}
 
 function unwrap<T>(result: { ok: true; value: T } | { ok: false; error: Error }): T {
 	if (!result.ok) throw result.error;
@@ -51,7 +62,7 @@ registerBoxConformance(
 			close();
 		}
 	},
-	{ absentEnv: [CANARY], withoutLiveProcesses: WHY },
+	{ absentEnv: [CANARY], withoutLiveProcesses: WHY, withoutEnv: WHY_ENV },
 );
 
 describe("archil exec boxes", () => {
@@ -143,16 +154,89 @@ describe("archil exec boxes", () => {
 		}
 	});
 
-	it("puts the argv in single quotes, the box's env in front and a deadline of the command's own in the container", async () => {
+	it("puts the argv in single quotes, with no variable in front, and a deadline of the command's own in the container", async () => {
 		const { fake, provider, close } = rig();
 		try {
-			const box = unwrap(await provider.create({ ...SPEC, env: { GREETING: "it's here", PLAIN: "x" } }, context));
-			const result = await run(box, ["sh", "-c", 'printf "%s|%s|%s" "$GREETING" "$PLAIN" "$1"', "sh", "a'b"], 5_000);
-			expect(result).toMatchObject({ exitCode: 0, stdout: "it's here|x|a'b" });
+			const box = unwrap(await provider.create(SPEC, context));
+			const result = await run(box, ["sh", "-c", 'printf "%s|%s" "$GREETING" "$1"', "sh", "a'b"], 5_000);
+			expect(result).toMatchObject({ exitCode: 0, stdout: "|a'b" });
 			const command = fake.calls.at(-1)?.command ?? "";
 			expect(command).toContain("timeout");
 			expect(command).toContain("'a'\\''b'");
 			expect(command).not.toContain("a'b'");
+			expect(command).toMatch(/env -- 'sh'/);
+		} finally {
+			close();
+		}
+	});
+
+	it("keeps no value of a box's env anywhere: a planted marker in spec.env is refused, and is on no file of the disk and in no request", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			for (const env of [{ SECRET_NAME: MARKER }, { EMPTY: "" }] as Record<string, string>[]) {
+				const refused = await provider.create({ ...SPEC, env }, context);
+				expect(refused.ok).toBe(false);
+				if (!refused.ok) {
+					expect(refused.error.code).toBe("unsupported");
+					expect(refused.error.message).toMatch(/carries only the command/);
+					expect(refused.error.message).not.toContain(MARKER);
+				}
+			}
+			// A box with no env, or an empty one, is made, and its record keeps no env at all.
+			const box = unwrap(await provider.create({ ...SPEC, env: {} }, context));
+			expect((await run(box, ["echo", MARKER])).stdout.trim()).toBe(MARKER);
+			const record = JSON.parse(readFileSync(join(fake.root, "boxes.records", `${box.id}.json`), "utf8")) as Record<
+				string,
+				unknown
+			>;
+			expect(Object.keys(record)).not.toContain("env");
+			expect(fake.calls.every((call) => !JSON.stringify(call).includes("SECRET_NAME"))).toBe(true);
+			// The marker was never given to a box's env: only a program's own argument carried it, in the one request that ran that program.
+			const holding = fake.calls.filter((call) => JSON.stringify(call).includes(MARKER));
+			expect(holding.length).toBe(1);
+			expect(holding[0]?.command).toContain("'echo'");
+			expect(onDisk(fake.root).filter((path) => readFileSync(path, "latin1").includes(MARKER))).toEqual([]);
+		} finally {
+			close();
+		}
+	});
+
+	it("refuses a per-call env of an environment on such a box (a value could only ride in the command), whatever the name", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box);
+			const before = fake.calls.length;
+			const attempts: ShellExecOptions[] = [
+				{ env: { SECRET_NAME: MARKER } },
+				{ env: { PATH: `/usr/bin:/bin:${MARKER}` } },
+				{ env: { A: "1" }, inheritEnv: false },
+			];
+			for (const options of attempts) {
+				const refused = await env.exec("echo hi", options, context);
+				expect(refused.ok).toBe(false);
+				if (!refused.ok) {
+					expect(refused.error.code).toBe("spawn_error");
+					expect(refused.error.message).toMatch(/carries only the command/);
+					expect(refused.error.message).not.toContain(MARKER);
+				}
+			}
+			expect(fake.calls.length).toBe(before);
+			expect(fake.calls.every((call) => !JSON.stringify(call).includes(MARKER))).toBe(true);
+			expect(onDisk(fake.root).filter((path) => readFileSync(path, "latin1").includes(MARKER))).toEqual([]);
+			// With no env of its own, a command runs.
+			let printed = "";
+			const ran = await env.exec(
+				"echo hi",
+				{
+					onOutput: (text) => {
+						printed += text;
+					},
+				},
+				context,
+			);
+			expect(ran.ok && ran.value.exitCode).toBe(0);
+			expect(printed).toBe("hi\n");
 		} finally {
 			close();
 		}
@@ -270,8 +354,8 @@ describe("archil exec boxes", () => {
 		const { provider, close } = rig();
 		try {
 			const plain = unwrap(await provider.create(SPEC, context));
-			const withEnv = unwrap(await provider.create({ ...SPEC, env: { A: "1" } }, context));
-			for (const box of [plain, withEnv]) {
+			const empty = unwrap(await provider.create({ ...SPEC, env: {} }, context));
+			for (const box of [plain, empty]) {
 				const result = await run(box, ["--help"]);
 				expect(result.exitCode, result.stdout).toBe(127);
 			}
@@ -681,16 +765,14 @@ describe("archil exec boxes", () => {
 		}
 	});
 
-	it("keeps labels, env and facts on the disk, so attach and list find the box after a restart", async () => {
+	it("keeps labels and facts on the disk, so attach and list find the box after a restart", async () => {
 		const { fake, provider, close } = rig();
 		try {
-			const box = unwrap(
-				await provider.create({ ...SPEC, env: { MODE: "kept" }, labels: { run: "r1", team: "t" } }, context),
-			);
+			const box = unwrap(await provider.create({ ...SPEC, labels: { run: "r1", team: "t" } }, context));
 			const after = archilExecBoxes({ client: fake.client, disk: fake.disk });
 			const found = unwrap(await after.attach(box.id, context));
 			expect(found?.facts()).toEqual(box.facts());
-			expect((await run(found as Box, ["sh", "-c", 'printf %s "$MODE"'])).stdout).toBe("kept");
+			expect((await run(found as Box, ["echo", "found"])).stdout.trim()).toBe("found");
 			expect(unwrap(await after.list({ run: "r1" }, context))).toEqual([
 				{ id: box.id, labels: { run: "r1", team: "t" } },
 			]);

@@ -122,7 +122,7 @@ const { disk } = await client.disks.create({ name: "agent-work" });
 const provider = archilExecBoxes({ client, disk });
 ```
 
-The box is the directory `boxes/<id>/` of the disk. Its labels, env, facts and end time are the file
+The box is the directory `boxes/<id>/` of the disk. Its labels, facts and end time are the file
 `boxes.records/<id>.json`, outside every directory a command can hold, so `attach` and `list` find the box after a
 restart and a box can be ended while a command runs in it. These are the limits, each one in the facts or refused with
 a typed error:
@@ -164,10 +164,14 @@ a typed error:
 - **The isolation is one VM per call, and the disk is shared.** Each call runs in its own fresh VM container, but boxes on one
   disk share it: a command can read and write every box's directory, and the records, on that disk. Give each agent its own
   work disk, never one disk to two agents.
-- **A box's env is not secret.** It is kept in the box's record on the disk and sent in each call's command, so any command on
-  that disk can read it. Never put a secret in a box's env.
+- **A box has no env.** Archil's exec carries only the command, so a value could only ride in the command or in the box's
+  record on the disk, where any command on that disk can read it. A spec with an env (any name, any value) is refused with
+  `unsupported`, a per-call env of a `boxEnv` environment on such a box (any name, and `PATH`) is refused with a
+  `spawn_error`, and the record and every call's command carry none. A program gets what it is given as arguments or as
+  files. Each exec container's own environment holds the platform's `ARCHIL_CONTAINER_ID`, `ARCHIL_DISK_ID` and
+  `ARCHIL_REGION` (measured; no key).
 - Refused before any call: a GPU, a snapshot, a `workspace`, an isolation other than `vm`, more than 2 vCPU or 3938 MiB
-  (`unsupported`); a label in the providers' namespace, an env name that is not a shell name, a lifetime that is not
+  (`unsupported`); a label in the providers' namespace, an env of any kind, a lifetime that is not
   positive (`invalid`).
 - A box billed per call gets its receipt with `calls` in place of seconds (see
   [receipts](#what-a-box-cost-receipts)).
@@ -811,3 +815,5 @@ A box whose `exec` carries input and streams output can take `uploadByExec` and 
 A provider whose boxes keep no program running between calls and take no input (`facts().liveProcesses` is false) passes
 `withoutLiveProcesses: "<why>"`: the suite then leaves out the cases that need a live program or stdin, and one case in
 their place requires the facts to say so and stdin to be refused with `unsupported`; the reason is in its name.
+A provider whose boxes have no env passes `withoutEnv: "<why>"`: the suite creates its boxes with no env, leaves out the case that
+reads the spec's env, and adds one that requires a spec with an env to be refused with `unsupported`; the reason is in its name.

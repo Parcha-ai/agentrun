@@ -67,6 +67,7 @@ if (process.env.PI_TRANSPORT_LIVE_ARCHIL === "1") {
 		registerBoxConformance({ describe, expect, it }, "archil exec boxes live", (use) => use(provider), {
 			spec: SPEC,
 			withoutLiveProcesses: "an exec is one request that answers when the command ends",
+			withoutEnv: "Archil's exec carries only the command: a value could only ride in the command or on the disk",
 		});
 
 		it("runs boxes in parallel without losing a write, and two processes on one box wait for each other", async () => {

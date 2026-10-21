@@ -103,7 +103,6 @@ type BoxRecord = {
 	readonly id: string;
 	readonly facts: BoxFacts;
 	readonly labels: Readonly<Record<string, string>>;
-	readonly env: Readonly<Record<string, string>>;
 	readonly expiresAt: number;
 };
 
@@ -318,12 +317,11 @@ class ArchilExecBox implements Box {
 		}
 		if (!(await this.#alive())) return err(new BoxError("gone", `box ${this.id} has ended`));
 		const seconds = (timeoutMs ?? DEFAULT_EXEC_MS) / 1000;
-		const env = Object.entries(this.#record.env).map(([name, value]) => `${name}=${quote(value)}`);
 		const line = [
 			// The box is gone when its record is, whatever is left of its directory.
 			`[ -f ${quote(`/mnt/archil/${this.#shared.mount}/${this.#recordKey}`)} ] && cd ${quote(this.#record.facts.workspace)} 2>/dev/null || { echo ${quote(GONE_MARK)} >&2; exit ${EXIT_GONE}; }`,
 			// `env --` first: a program whose name starts with a dash is a name, never an option of timeout or env.
-			`exec timeout -k 1 ${seconds} env -- ${env.length === 0 ? "" : `${env.join(" ")} `}${command.map(quote).join(" ")}`,
+			`exec timeout -k 1 ${seconds} env -- ${command.map(quote).join(" ")}`,
 		].join("; ");
 		// The call is accepted once its request is on its way: a caller that gives up while it waits behind this process's
 		// earlier commands (aborts, or passes its own deadline) has run nothing and is billed nothing.
@@ -547,7 +545,7 @@ class ArchilExecBox implements Box {
  * own and keeps no program running between calls (`facts().liveProcesses` is false), so it fits tool calls and never a
  * home; the box place refuses it with `no_live_processes`.
  *
- * The box is the directory `<root>/<id>/` of the disk. Its labels, env, facts and end time are the file
+ * The box is the directory `<root>/<id>/` of the disk. Its labels, facts and end time (no env: a box has none) are the file
  * `<root>.records/<id>.json`, outside every directory a command can hold, so `attach` and `list` find the box after a restart
  * and a box can be ended while a command still runs in it. Archil has no timer that ends a directory: a box past its
  * `maxLifetimeMs` is ended, and its directory removed, by the first call that looks at it (`attach`, `list`, `exec`,
@@ -555,7 +553,7 @@ class ArchilExecBox implements Box {
  * attached the same box run one command at a time and neither loses a write; this process also orders its own calls.
  * Files go through the object API, which takes no checkout: write a box's files from one process at a time.
  * Refused before any call: a GPU, a snapshot, a `workspace`, an isolation other than `vm`, more than 2 vCPU or 3938 MiB,
- * a label key in the providers' namespace, an env name that is not a shell name, and a lifetime that is not positive.
+ * a label key in the providers' namespace, an env of any kind (an exec carries only the command), and a lifetime that is not positive.
  */
 export function archilExecBoxes(options: ArchilExecBoxesOptions): BoxProvider {
 	const safe = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/;
@@ -611,10 +609,14 @@ export function archilExecBoxes(options: ArchilExecBoxesOptions): BoxProvider {
 			if (reserved !== undefined) {
 				return err(new BoxError("invalid", `the label ${reserved} is in the providers' own namespace`));
 			}
-			for (const name of Object.keys(spec.env ?? {})) {
-				if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-					return err(new BoxError("invalid", `the env name ${name} is not a shell name`));
-				}
+			// An exec carries only the command: a value could ride only in that command, or in the box's record on the disk, where any command on the disk reads it. So a box has no env at all.
+			if (Object.keys(spec.env ?? {}).length > 0) {
+				return err(
+					new BoxError(
+						"unsupported",
+						"Archil's exec carries only the command: a value could only ride in the command or on the disk",
+					),
+				);
 			}
 			if (spec.gpu !== undefined) return err(new BoxError("unsupported", "an Archil exec has no GPU"));
 			if (spec.snapshot !== undefined) return err(new BoxError("unsupported", "an archil-exec box starts empty"));
@@ -650,7 +652,6 @@ export function archilExecBoxes(options: ArchilExecBoxesOptions): BoxProvider {
 				id,
 				facts,
 				labels: { ...spec.labels },
-				env: { ...spec.env },
 				expiresAt: Date.now() + spec.maxLifetimeMs,
 			};
 			try {
