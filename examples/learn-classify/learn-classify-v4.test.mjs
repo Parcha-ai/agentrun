@@ -434,7 +434,7 @@ test('the targets home (T0) is v4 with the job\'s opening and the code stated as
   assert.deepEqual(homeFiles(targets), homeFiles(v4));
   for (const file of homeFiles(v4).filter((f) => f !== './AGENTS.md')) assert.equal(homeText(targets, file), homeText(v4, file), file);
   const { names, after } = changedRules(v4, targets);
-  assert.deepEqual(names, ["- The input is a company's name, and its ", '- its 4-digit SIC code, from sic_codes: ']);
+  assert.deepEqual(names, ["- The input is a company's name, and its", '- its 4-digit SIC code, from sic_codes: ']);
   // Every part comes from a source read in this run, and the report is named as the source of only three of them.
   assert.match(after[0], /Answer in six parts, the way the SEC files them, each from a source read in this run; the latest annual report \(a 10-K, or a 20-F or 40-F for a foreign filer\) is the source for the segments, the subsidiaries and the report:$/);
   assert.equal(after[1], '- its 4-digit SIC code as the SEC files it;');
