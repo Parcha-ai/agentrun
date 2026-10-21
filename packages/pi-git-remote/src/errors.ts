@@ -19,3 +19,7 @@ export class GitRemoteError extends Error {
     this.paths = Object.freeze([...paths]);
   }
 }
+
+export function refused(message: string, paths: readonly string[] = []): GitRemoteError {
+  return new GitRemoteError("refused", message, paths);
+}

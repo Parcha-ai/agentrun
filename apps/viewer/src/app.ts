@@ -418,8 +418,8 @@ export function steerOf(data: unknown, last: number): Steer | undefined {
 export const fromParent = (origin: string, isParent: boolean, allowed: string | undefined): boolean => allowed !== undefined && isParent && origin === allowed;
 
 /** A run the page follows while it goes: the lines that arrived since the last poll, the manifest once it is written (the
- *  run finished), and what the page says of the connection. */
-/** `grow`: `found`, a blob read whole since the last poll, which redraws (and reads the result again) with no new line. */
+ *  run finished), and what the page says of the connection.
+ *  `grow`: `found`, a blob read whole since the last poll, which redraws (and reads the result again) with no new line. */
 export type Follow = { grow(fresh: Line[], found?: boolean): void; restart(whole: Line[]): void; finish(manifest: Manifest, whole: Line[]): void; status(text: string): void };
 
 function play(recording: Recording, root: HTMLElement, params: URLSearchParams, base?: string, live?: { url: string }): Follow {

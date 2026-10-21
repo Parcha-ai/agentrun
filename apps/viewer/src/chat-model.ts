@@ -1,6 +1,8 @@
 // The chat + report view's model of one run, made from a recording's own events by chat-extract.ts and drawn by
 // chat-view.ts and chat-report.ts. The same code for every run: nothing is typed by hand, per recording, or borrowed.
 
+import type { Manifest } from './format.ts';
+
 /** One entry of a recorded conversation: a message as recorded, the run's own thinking, or one tool call. */
 export type ChatItem =
   | { kind: 'user'; id: string; text: string; t?: number }
@@ -103,7 +105,7 @@ export type ChatSource = { href: string; /** The other addresses a look over sev
 export type ChatRow = { label: string; text: string; note?: string; cites: { href: string; look?: string; item?: string; blob?: string; label?: string }[] };
 
 /** The agent's own artifact (manifest.artifact, draft 41): its entry and every file by its SHA-256. */
-export type ChatArtifact = { title: string; entry: string; files: Record<string, string> };
+export type ChatArtifact = NonNullable<Manifest['artifact']>;
 
 /** The run's input as given: a string input as its text; a record as its `question` (the person's words), its
  *  `files`, and its other fields in plain form. */

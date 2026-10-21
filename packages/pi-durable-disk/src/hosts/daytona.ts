@@ -300,7 +300,6 @@ export function sandboxName(prefix: string, runId: string, now: number): string 
   return `${prefix}${slug}-${stamp}`.slice(0, 63);
 }
 
-/** The last line of a command's output that parses as JSON, or null. */
 /**
  * What the launcher printed, for a start it gave no reason for: the last 4 KB, or that it printed nothing. It prints only
  * its state; the mount token is in a root-only file it reads, never in its output.
@@ -310,6 +309,7 @@ function launcherOutput(text: string): string {
   return out ? `the launcher printed: ${out.slice(-4096)}` : "the launcher printed nothing and exited 0";
 }
 
+/** The last line of a command's output that parses as JSON, or null. */
 function lastJson<T>(text: string): T | null {
   for (const line of text.trim().split("\n").reverse()) {
     try {

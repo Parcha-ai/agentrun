@@ -206,9 +206,9 @@ It prints `run-1 proposes | seed`: the run's branch reached `main` as a fast-for
 <a id="transport"></a>
 ## Run an agent's tools where each step needs them
 
-[`@parcha/pi-transport`](../packages/pi-transport/README.md) (not yet published) runs a pi agent's tools on another machine: this machine, a Docker container, or a Daytona or Modal sandbox, behind one `Box` interface. The session, its store and its model calls stay with the host; only the tools go to the box. Use it when a step needs a machine the host is not: a GPU, more memory, or a sandbox apart from the host for code the agent writes and runs. Jev can choose the machine for each step from a one-line purpose you give each environment.
+[`@parcha/pi-transport`](../packages/pi-transport/README.md) runs a pi agent's tools on another machine: this machine, a Docker container, or a Daytona or Modal sandbox, behind one `Box` interface. The session, its store and its model calls stay with the host; only the tools go to the box. Use it when a step needs a machine the host is not: a GPU, more memory, or a sandbox apart from the host for code the agent writes and runs. Jev can choose the machine for each step from a one-line purpose you give each environment.
 
-This runs with no key and no Docker. The box is a directory on this machine, with no isolation:
+Install it with `npm install @parcha/pi-transport@beta`. This runs with no key and no Docker. The box is a directory on this machine, with no isolation:
 
 ```js
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";

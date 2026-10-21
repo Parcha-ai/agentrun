@@ -192,7 +192,6 @@ function chatRaw(body: Json | undefined): string {
   return raw;
 }
 
-/** The chat + report view's model of a recording. `readJson` reads a blob's JSON (the run's cited result). */
 /** Each conversation an agent node of the workflow ran, and that node's path. */
 function chatNodeConversations(lines: readonly Line[]): Map<string, string> {
   const pathOfConversation = new Map<string, string>();
@@ -220,11 +219,12 @@ export function chatGivenInput(lines: readonly Line[]): Json | undefined {
 /** A run's title, by one rule wherever it is shown: the artifact's title, else the first line of the input's question,
  *  else the recording's title. Without the run's lines (a gallery's list) the question is not known. */
 export function chatTitle(manifest: Manifest, inputValue?: Json): string {
-  const artifact = chatObj((manifest as { artifact?: Json }).artifact);
+  const artifact = chatObj(manifest.artifact);
   const question = typeof inputValue === 'string' ? inputValue : chatStr(chatObj(inputValue)?.question);
   return chatStr(artifact?.title) ?? (question?.trim() ? chatClip(chatFirstLine(question), 140) : manifest.title);
 }
 
+/** The chat + report view's model of a recording. `readJson` reads a blob's JSON (the run's cited result). */
 export async function extractChat(recording: Recording, readJson: (sha: string) => Promise<Json | undefined>, options: { muse?: boolean } = {}): Promise<ChatModel> {
   const { manifest } = recording;
   // A recording with no times keeps its file's order: each line placed at its position, the axis read as an order.
@@ -692,8 +692,8 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   const labelled = chatStr(chatObj(chatObj(lines.findLast((line) => line.channel === 'durable' && line.kind === 'reference.label')?.data)?.value)?.label)?.trim();
   const agentName = options.muse ? labelled || chatStr(manifest.title)?.trim() || undefined : undefined;
   const endsHeld = [...toolItems.values()].some((item) => item.browser?.holds.some((hold) => hold.t1 === undefined));
-  const agent: ChatModel['agent'] = agentName ? { name: agentName, status: manifest.result?.blob || resultLine || (manifest as { artifact?: Json }).artifact ? 'done' : endsHeld ? 'waiting' : 'working' } : undefined;
-  const artifact = chatObj((manifest as { artifact?: Json }).artifact);
+  const agent: ChatModel['agent'] = agentName ? { name: agentName, status: manifest.result?.blob || resultLine || manifest.artifact ? 'done' : endsHeld ? 'waiting' : 'working' } : undefined;
+  const artifact = chatObj(manifest.artifact);
   return {
     title: chatTitle(manifest, inputValue),
     ...(input ? { input } : {}),
