@@ -1,6 +1,6 @@
 // The counters strip (RECORDING.md section 6), one fold for every recording. Counts come from durable lines, and
 // processes and kills from the supervisor's host lines; a count only live lines can give is "observed".
-import type { Json, Line } from './format.ts';
+import type { Json } from './format.ts';
 import type { Fold } from './replay.ts';
 import {
   applied, browserChargesOf, callsOf, pageActionsOf, costOf, lookEventOf, lookFilingsOf, decisionRowsOf, docIdOf, docOf, effectOf, entryOf, generationOf, liveGenerationOf, receiptCountOf, stableJson, toolCallsOf,
