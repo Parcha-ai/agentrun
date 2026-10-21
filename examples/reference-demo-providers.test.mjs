@@ -125,6 +125,16 @@ test('a supervised run\'s tool-box receipts are the supervisor\'s (RECORDING.md 
   }
 });
 
+test('an ids directory a later run uses again (the same --box-ids) holds the earlier run\'s boxes: their receipts are never written again, only the new run\'s own', { timeout: 300_000 }, async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-again-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const shared = join(own, 'ids');
+  const first = await run(t, {}, ['--json', '--box-ids', shared], { DEMO_PROVIDERS: '1' });
+  assert.deepEqual(receipts(first.recording).map((receipt) => receipt.box), ['box-1', 'box-2']);
+  const second = await run(t, {}, ['--json', '--box-ids', shared], { DEMO_PROVIDERS: '1' });
+  assert.deepEqual(receipts(second.recording).map((receipt) => receipt.box), ['box-3', 'box-4'], 'the second run\'s own boxes only');
+});
+
 test('a run whose place makes boxes and whose tools make boxes too is refused: one labeller, never two box-1s', async (t) => {
   await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: '1' }), /place.*tool-made boxes|tool-made boxes.*place/);
 });

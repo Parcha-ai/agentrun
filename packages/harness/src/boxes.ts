@@ -168,6 +168,12 @@ export function ledgerBoxes(dir: string): [string, LedgerEntry][] {
   return [...labelStore(dir).list()];
 }
 
+/** The supervisor's mark that a box's receipt is written, so a later run that uses the same ids directory (a reused `--dir`
+ *  or `--box-ids`) never writes it again. A file that says `ended` is no process's to write any more, so the supervisor may. */
+export function markReceiptWritten(dir: string, label: string, entry: LedgerEntry): void {
+  labelStore(dir).rewrite(label, { ...entry, receipt: 'written' });
+}
+
 /** `supervised`: the run's supervisor writes the receipts from `dir` (RECORDING.md 3.1: a process writes no host line), so
  *  this ledger keeps each box's end, and the process that made it, in its file and writes no line. */
 export function boxLedger(options: { dir?: string; recorder?: Recorder; supervised?: { gen?: number } } = {}): BoxLedger {

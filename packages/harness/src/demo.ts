@@ -30,7 +30,7 @@ import type { BoxProvider } from '@parcha/pi-transport';
 import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { CodeModeOptions } from './code-mode.ts';
 import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
-import { boxLedger, ledgerBoxes, RUN_LABEL, supervisedChild, tapBox, type Boxes, type LedgerEntry } from './boxes.ts';
+import { boxLedger, ledgerBoxes, markReceiptWritten, RUN_LABEL, supervisedChild, tapBox, type Boxes, type LedgerEntry } from './boxes.ts';
 import type { Recorder, Redact } from './record.ts';
 import { priceJudge } from './judge.ts';
 import { askToBeKilled, aroundOwnFiling, crossings, tapFakes, tapHost, tapLive, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
@@ -526,7 +526,10 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       ledgerReceipted.add(label);
       const from = entry.from ?? null;
       const to = entry.receipt === 'ended' ? (entry.to ?? null) : null;
-      supervisor.host('box.receipt', { ...(entry.gen !== undefined ? { gen: entry.gen } : {}), box: label, provider: entry.provider, kind: entry.kind ?? null, from, to, seconds: to === null || from === null ? null : Math.max(0, (Date.parse(to) - Date.parse(from)) / 1000), usd_per_second: null, cost_usd: null, source: null, priced: null });
+      // A line that cannot be written (the disk full) ends supervision as the follower's failure does: the runner is stopped
+      // and the error stands, never thrown out of the tick.
+      try { supervisor.host('box.receipt', { ...(entry.gen !== undefined ? { gen: entry.gen } : {}), box: label, provider: entry.provider, kind: entry.kind ?? null, from, to, seconds: to === null || from === null ? null : Math.max(0, (Date.parse(to) - Date.parse(from)) / 1000), usd_per_second: null, cost_usd: null, source: null, priced: null }); } catch (error) { followError ??= error; return; }
+      try { markReceiptWritten(boxIds, label, entry); } catch { /* at worst a later run that reuses this directory writes the receipt again */ }
     }
   };
   // The slow tick does not queue a read behind one still running (a place's reads can take seconds): the boundary reads, which a result waits for, then wait behind at most one.
