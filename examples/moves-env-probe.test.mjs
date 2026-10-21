@@ -90,7 +90,7 @@ test('RED: the scanner finds the value in its own environment', () => {
 
 test('RED: a forbidden or key-like NAME in a readable environment fails the probe even when the value is not one it holds', async () => {
   const secret = { name: 'ANTHROPIC_API_KEY', value: made() };
-  const child = await instance({ env: { ANTHROPIC_API_KEY: 'not-the-held-value', MY_SERVICE_TOKEN_X: 'x', FINE_NAME: 'y' }, code: IDLE });
+  const child = await instance({ env: Object.fromEntries([['ANTHROPIC_API_KEY', made()], ['MY_SERVICE_TOKEN_X', made()], ['FINE_NAME', 'y']]), code: IDLE });
   try {
     const report = scan([secret], { only: [child.pid] });
     assert.ok(report.forbiddenNames.includes('ANTHROPIC_API_KEY'));
