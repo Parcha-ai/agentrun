@@ -30,6 +30,26 @@ const EDGAR_LABEL = /(^|[.-])edgar([.-]|$)/;
 // then an http(s) URL on sec.gov or a subdomain. The copy comes from the archive, so no request reaches sec.gov, and
 // every other page on the archive (another site's copy, the CDX API) stays refused.
 const ARCHIVED_SEC = /^\/web\/\d{1,14}(?:[a-z]{2}_)?\/(?:https?:\/\/)?(?:[a-z0-9-]+\.)*sec\.gov(?:[:/]|$)/i;
+// A fetch that asked a request again before its answer (the snapshot cache's back-off) leaves each try on the response,
+// or on the error it gives up with, under RETRIED: { status, via }, status 0 for a refused connection. The tools put them
+// on their result as `retried`, so a rate limit absorbed on the way is still counted.
+export const RETRIED = Symbol.for('learn-classify.retried');
+export const RETRIED_SCHEMA = {
+  type: 'array',
+  items: { type: 'object', additionalProperties: false, required: ['status', 'via'], properties: { status: { type: 'integer' }, via: { type: 'string', enum: ['cache', 'browser'] } } },
+  description: 'requests asked again before this answer: the status each try got (0 for a refused connection), and what asked again',
+};
+/** `fetch` that adds to `into` every try an answer or an error carries under RETRIED. */
+export const notingRetries = (fetchImpl, into) => async (href, init) => {
+  try {
+    const res = await fetchImpl(href, init);
+    if (Array.isArray(res?.[RETRIED])) into.push(...res[RETRIED]);
+    return res;
+  } catch (error) {
+    if (Array.isArray(error?.[RETRIED])) into.push(...error[RETRIED]);
+    throw error;
+  }
+};
 export const ARCHIVED_SEC_NOTE = 'The Wayback Machine\'s copy of an SEC page (https://web.archive.org/web/<time>/<sec.gov URL>) is the one exception.';
 const WIKIPEDIA = 'wikipedia.org';
 
@@ -170,6 +190,7 @@ const RESULT_SCHEMA = {
     links: { type: 'array', maxItems: MAX_LINKS, items: { type: 'string' }, description: 'same-site links on the page' },
     refused: { type: 'string', description: 'why the URL was not fetched (host outside the allowed set, a refused site, a second redirect)' },
     error: { type: 'string', description: 'why ok is false when nothing was refused (timeout, network error, HTTP error, not a text page, no readable text)' },
+    retried: RETRIED_SCHEMA,
   },
 };
 
@@ -224,13 +245,19 @@ export function fetchPageTool({ allowDomain, fetch: fetchImpl = globalThis.fetch
   const policy = any ? urlPolicy({ lookup, archivedSec }) : null;
   const resolves = async (url) => (policy ? policy.check(url.href) : null);
 
-  async function run(args, { signal } = {}) {
+  async function run(args, options = {}) {
+    const retried = [];
+    const result = await fetchOnce(args, options, notingRetries(fetchImpl, retried));
+    return retried.length ? { ...result, retried } : result;
+  }
+
+  async function fetchOnce(args, { signal } = {}, fetchNow) {
     const raw = typeof args?.url === 'string' ? args.url.trim() : '';
     const first = check(raw);
     if (first.refused) return { ...emptyPage(first.url?.href ?? raw), refused: first.refused };
     const deadline = AbortSignal.timeout(timeoutMs);
     const abort = signal ? AbortSignal.any([signal, deadline]) : deadline;
-    const get = (url) => fetchImpl(url.href, {
+    const get = (url) => fetchNow(url.href, {
       redirect: 'manual',
       signal: abort,
       credentials: 'omit',

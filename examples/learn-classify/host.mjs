@@ -433,7 +433,7 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
       const toolCalls = {};
       for (const call of calls) toolCalls[call.name] = (toolCalls[call.name] ?? 0) + 1;
       measured = {
-        answer: answers.at(-1)?.arguments ?? null, answers: answers.length, toolCalls, status: settled?.status ?? null,
+        answer: answers.at(-1)?.arguments ?? null, answers: answers.length, toolCalls, status: settled?.status ?? null, reason: settled?.reason ?? null,
         usage: usageTotals(await harness.usage(ctx)), finalText: textOf(messages.findLast((m) => m.role === 'assistant')?.content).trim(),
         calls, results, ...dispatched,
       };
