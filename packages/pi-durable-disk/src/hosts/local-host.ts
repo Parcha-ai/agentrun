@@ -14,7 +14,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import { extname, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARCHIL_SCOPED, DEAD_CONNECTION, DEFAULT_MOUNT_ROOT, runPath, type RunRef } from "../claim.ts";
 import { EXIT_DATAERR, EXIT_FENCED, EXIT_HELD, EXIT_SOFTWARE, PdaError } from "../errors.ts";
@@ -207,6 +207,23 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
 
   const mine = (h: HostHandle) => h.driver === "local" && h.host === hostName;
   const mountpointOf = (ref: RunRef) => join(mountRoot, runPath(ref.id));
+  const runMountpoint = (mp: string) => {
+    try {
+      return mp === join(mountRoot, runPath(basename(mp)));
+    } catch {
+      return false;
+    }
+  };
+  /**
+   * The unit of a systemd handle this driver could have made: a safe name with its prefix, whose mountpoint is one run's
+   * under its mount root; undefined for any other. A handle comes back from run.json, which the run's user can write, and
+   * stop and kill act on it as root (systemctl, unmount, rmdir), as the docker and daytona drivers act only on their fleet's.
+   */
+  const ownUnit = (h: HostHandle): string | undefined => {
+    const { unit, mountpoint } = h;
+    if (typeof unit !== "string" || !UNIT_SAFE.test(unit) || !unit.startsWith(prefix)) return undefined;
+    return typeof mountpoint === "string" && runMountpoint(mountpoint) ? unit : undefined;
+  };
   const mounted = async (mp: string) => (await readFile(procMounts, "utf8")).split("\n").some((l) => l.split(" ")[1] === mp);
 
   const parkMs = opts.parkThresholdMs === undefined ? LOCAL_PARK_THRESHOLD_MS : opts.parkThresholdMs;
@@ -413,22 +430,23 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
         if (alive()) process.kill(-pid, "SIGKILL");
         return;
       }
-      if (typeof h.unit !== "string" || !UNIT_SAFE.test(h.unit)) return;
-      const stopUnit = () => root([SYSTEMCTL, "stop", `${h.unit}.service`], { timeoutMs: stopTimeoutMs + 10_000 });
+      const unit = ownUnit(h);
+      if (unit === undefined) return;
+      const stopUnit = () => root([SYSTEMCTL, "stop", `${unit}.service`], { timeoutMs: stopTimeoutMs + 10_000 });
       let r = await stopUnit();
-      if (!okRan(r) && unitStatus(await show(h.unit)) === "running") {
+      if (!okRan(r) && unitStatus(await show(unit)) === "running") {
         // A unit that outlives SIGKILL is wedged in its mount (a FUSE request its daemon never answers): kill the
         // daemon so those requests fail and the processes can die, then stop once more.
-        await killDaemons(h.unit);
+        await killDaemons(unit);
         r = await stopUnit();
-        if (!okRan(r) && unitStatus(await show(h.unit)) === "running") {
-          throw new LocalHostError("STOP_FAILED", `systemctl stop ${h.unit}: ${r.timedOut ? "timed out" : firstLine(r)}`);
+        if (!okRan(r) && unitStatus(await show(unit)) === "running") {
+          throw new LocalHostError("STOP_FAILED", `systemctl stop ${unit}: ${r.timedOut ? "timed out" : firstLine(r)}`);
         }
       }
-      await cleanMount(h.unit, String(h.mountpoint));
-      await root([SYSTEMCTL, "reset-failed", `${h.unit}.service`]);
-      await removeFile(tokenFile(h.unit));
-      await removeFile(envFile(h.unit));
+      await cleanMount(unit, String(h.mountpoint));
+      await root([SYSTEMCTL, "reset-failed", `${unit}.service`]);
+      await removeFile(tokenFile(unit));
+      await removeFile(envFile(unit));
     },
 
     async kill(h) {
@@ -444,12 +462,13 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
         }
         return;
       }
-      if (typeof h.unit !== "string" || !UNIT_SAFE.test(h.unit)) return;
+      const unit = ownUnit(h);
+      if (unit === undefined) return;
       // Every process of the unit's control group at once, the instance's commands included. Its FUSE daemon runs in a
       // scope of its own and keeps the mount, as after an OOM kill; the unit restarts in place unless restart is off.
-      const r = await root([SYSTEMCTL, "kill", "--signal=SIGKILL", "--kill-whom=all", `${h.unit}.service`]);
-      if (!okRan(r) && unitStatus(await show(h.unit)) === "running") {
-        throw new LocalHostError("KILL_FAILED", `systemctl kill ${h.unit}: ${r.timedOut ? "timed out" : firstLine(r)}`);
+      const r = await root([SYSTEMCTL, "kill", "--signal=SIGKILL", "--kill-whom=all", `${unit}.service`]);
+      if (!okRan(r) && unitStatus(await show(unit)) === "running") {
+        throw new LocalHostError("KILL_FAILED", `systemctl kill ${unit}: ${r.timedOut ? "timed out" : firstLine(r)}`);
       }
     },
   };

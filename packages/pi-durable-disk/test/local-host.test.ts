@@ -164,6 +164,31 @@ test("stop: the unit, then nothing else when the instance released its own mount
   assert.equal(calls.length, 0, "a handle this driver cannot reach is a no-op");
 });
 
+test("stop and kill act as root only on a handle this driver could have made (its unit prefix, a run's mountpoint under its mount root); any other is a no-op", async () => {
+  // run.json is the run user's to write, and a handle comes back from it: a unit or mountpoint written there must not
+  // become a systemctl stop or kill, an unmount or an rmdir run as root.
+  const w = world();
+  const { calls, exec } = recorder();
+  const host = localHost({ exec, hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot, user: "1000", group: "1000" });
+  const h = { driver: "local", mode: "systemd", host: "host-a", bootId: currentBootId(), unit: "pda-t-r1-x", mountpoint: w.mp };
+  const foreign = [
+    { ...h, unit: "sshd" },
+    { ...h, unit: "other-r1-x" },
+    { ...h, mountpoint: "/etc" },
+    { ...h, mountpoint: join(w.mountRoot, "runs") },
+    { ...h, mountpoint: `${w.mp}/../../../etc` },
+    { ...h, mountpoint: join(w.mountRoot, "runs", ".hidden") },
+    { ...h, mountpoint: null },
+  ];
+  for (const handle of foreign) {
+    await host.stop(handle);
+    await host.kill(handle);
+  }
+  assert.deepEqual(calls.map((c) => c.argv.join(" ")), [], "nothing ran for a handle the driver did not make");
+  await host.stop(h);
+  assert.equal(calls[0]?.argv.join(" "), "/usr/bin/sudo -n /usr/bin/systemctl stop pda-t-r1-x.service", "its own handle still stops");
+});
+
 test("a start's own environment goes over the driver's; one that sets PATH or PDA_HOLDER, or a name that is not a variable, is refused", async () => {
   const w = world();
   const { calls, exec } = recorder();
