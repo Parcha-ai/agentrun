@@ -557,6 +557,18 @@ test("a run's workflow uses go to the settler; its trial files and decisions lan
   assert.deepEqual((await curate({ repo: none.curator, judge, settleUses: null })).runs[0].held, [{ reason: "uses: no uses settler is installed" }]);
 });
 
+test("a uses file the default settler would not read is refused by curation, never dropped unreported", async () => {
+  const w = await world();
+  await propose(w, "run-1", [], usesFile("run-1", [use("kyb_check", "frozen")]));
+  await propose(w, "run-2", [], usesFile("run-2", Array.from({ length: 33 }, (_, i) => use("kyb", "frozen", `2026-10-16T05:${String(i).padStart(2, "0")}:00.000Z`))));
+  const { judge } = fakeJudge();
+  const report = await curate({ repo: w.curator, judge });
+  assert.deepEqual(report.runs.map((r) => [r.run, r.settled, r.held, r.refused.map((x) => x.reason)]), [
+    ["run-1", [], [], ["uses: the uses file does not parse"]],
+    ["run-2", [], [], ["uses: the uses file does not parse"]],
+  ]);
+});
+
 test("retireLearning takes out a learning a later run used, where a revert conflicts: the file stays, the section drops it, a relearn is held, twice changes nothing", async () => {
   const w = await world();
   await propose(w, "run-1", [candidate(LESSON)]);

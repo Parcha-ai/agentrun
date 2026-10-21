@@ -8,8 +8,8 @@ import { InboxFormatError, type InboxCandidate, parseInbox } from "./inbox.js";
 import { assertNotRulesLocked, CAPS, COMMIT_SHA, inboxPath, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { byUse, indexLine, renderSection } from "./section.js";
 import { learningsAt } from "./seed.js";
-import type { AdmitWorkflow, Refusal, RepoRead, SettleUses, WorkflowCandidate, WorkflowUse } from "./types.js";
-import { revisionOf, usesSettler, workflowAdmitter } from "./workflows.js";
+import type { AdmitWorkflow, Refusal, RepoRead, SettleUses, WorkflowCandidate } from "./types.js";
+import { parseRunUses, type RunUses, revisionOf, usesSettler, workflowAdmitter } from "./workflows.js";
 
 /** The judge: the DSL's System One adapter, `WorkflowDeps["runJudge"]`. `createJevRunner` from `@parcha/agentrun-jev` is one. */
 export type Judge = NonNullable<WorkflowDeps["runJudge"]>;
@@ -686,7 +686,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   // The run's workflow uses, settled into their trials by the workflows lane.
   const usesText = runFiles[usesPath(runId)];
   if (typeof usesText === "string") {
-    const uses = parseUses(usesText, runId);
+    const uses = runUsesOf(usesText, runId);
     if (uses === undefined) lists.refused.push({ reason: "uses: the uses file does not parse" });
     else if (uses.length && !options.settleUses) lists.held.push({ reason: "uses: no uses settler is installed" });
     else if (uses.length && options.settleUses) {
@@ -759,29 +759,15 @@ function workflowFilesRefusal(files: Readonly<Record<string, string | null>>, na
   return refusals.length ? `the workflow's files are refused: ${refusalReason(refusals)}` : undefined;
 }
 
-const OUTCOMES: readonly string[] = ["frozen", "escalated", "failed"];
-const MAX_USES = 256;
-
-/** `uses/<run id>.json`: `{ version: 1, run, uses: [{ name, sha256, outcome, at }] }`, nothing looser; undefined when it is not. */
-function parseUses(text: string, runId: string): WorkflowUse[] | undefined {
-  let parsed: unknown;
+/** `uses/<run id>.json` read by the same rules the uses settler folds by, so a file it could not fold is refused here,
+ *  in the report, instead of reaching the settler; undefined when it does not parse. */
+function runUsesOf(text: string, runId: string): RunUses["uses"] | undefined {
   try {
-    parsed = JSON.parse(text);
-  } catch {
+    return parseRunUses(text, runId).uses;
+  } catch (error) {
+    if (!(error instanceof LearnError)) throw error;
     return undefined;
   }
-  const file = parsed as { version?: unknown; run?: unknown; uses?: unknown } | null;
-  if (!file || typeof file !== "object" || Array.isArray(file) || Object.keys(file).some((k) => !["version", "run", "uses"].includes(k))) return undefined;
-  if (file.version !== 1 || file.run !== runId || !Array.isArray(file.uses) || file.uses.length > MAX_USES) return undefined;
-  const out: WorkflowUse[] = [];
-  for (const raw of file.uses as unknown[]) {
-    const u = raw as Record<string, unknown> | null;
-    if (!u || typeof u !== "object" || Object.keys(u).some((k) => !["name", "sha256", "outcome", "at"].includes(k))) return undefined;
-    if (typeof u.name !== "string" || !WORKFLOW_NAME.test(u.name) || typeof u.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(u.sha256)) return undefined;
-    if (typeof u.outcome !== "string" || !OUTCOMES.includes(u.outcome) || typeof u.at !== "string" || Number.isNaN(Date.parse(u.at)) || new Date(u.at).toISOString() !== u.at) return undefined;
-    out.push({ name: u.name, sha256: u.sha256, outcome: u.outcome as WorkflowUse["outcome"], at: u.at });
-  }
-  return out;
 }
 
 /** A reason from outside this package, kept only when it holds nothing the guard would refuse. */
