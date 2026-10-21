@@ -9,10 +9,16 @@ import type { Box, BoxFacts, BoxProvider, BoxSpec } from "./box.ts";
 export type BoxPrice = {
 	readonly provider: string;
 	readonly kind: string;
-	readonly usdPerSecond: number;
 	readonly source: string;
 	readonly priced: string;
-};
+} & (
+	| { readonly usdPerSecond: number; readonly usdPerCall?: never }
+	| {
+			/** For a provider that bills each `exec` call and not the box's time (`archil-exec`): the list price of one call. */
+			readonly usdPerCall: number;
+			readonly usdPerSecond?: never;
+	  }
+);
 
 /**
  * What one box cost at list price, written once when the box ends: the `data` of a live line with source `transport`
@@ -20,7 +26,8 @@ export type BoxPrice = {
  * provider's id. `from` and `to` are ISO times. `to` is when the ledger saw the box end, but never later than its
  * maximum lifetime as its facts state it (a box found ended long after it expired ran until it expired; a provider that
  * rounds the lifetime up can run a box a little longer). `cost_usd` is an ESTIMATE, `seconds` times the published price
- * per second: not the provider's invoice, which bills by its own rounding, minimums and discounts.
+ * per second (or, for a box billed per call, its `calls` times the price of one): not the provider's invoice, which
+ * bills by its own rounding, minimums and discounts.
  */
 export type BoxReceipt = {
 	readonly box: string;
@@ -29,11 +36,23 @@ export type BoxReceipt = {
 	readonly from: string;
 	readonly to: string;
 	readonly seconds: number;
-	readonly usd_per_second: number;
 	readonly cost_usd: number;
 	readonly source: string;
 	readonly priced: string;
-};
+} & (
+	| { readonly usd_per_second: number; readonly calls?: never; readonly usd_per_call?: never }
+	| {
+			/**
+			 * A box billed per call (RECORDING.md draft 40): `calls` is the `exec` calls it started, one that was aborted or
+			 * given up on included (it ran and is billed), and `usd_per_call` the list price of one. It carries these in
+			 * place of `usd_per_second`, which is then absent, never 0, and `cost_usd` is `calls` times `usd_per_call`
+			 * rounded to 9 decimals. `seconds` stays the box's lifetime, for display only.
+			 */
+			readonly calls: number;
+			readonly usd_per_call: number;
+			readonly usd_per_second?: never;
+	  }
+);
 
 /**
  * A box its provider has just made, as the host's labeler is shown it: the box's own request and facts. Its id is left
@@ -119,6 +138,8 @@ export function boxReceipts(options: BoxReceiptsOptions): BoxReceipts {
 			readonly box: string;
 			// When its provider ends it by its lifetime, at the latest: no receipt runs past it.
 			readonly until: number | undefined;
+			// The calls the box started: what a box billed per call is charged for.
+			calls: number;
 		}
 	>();
 
@@ -130,13 +151,27 @@ export function boxReceipts(options: BoxReceiptsOptions): BoxReceipts {
 		if (price === undefined) return;
 		const to = Math.max(made.from, Math.min(now(), made.until ?? Number.POSITIVE_INFINITY));
 		const seconds = (to - made.from) / 1000;
-		options.write({
+		const common = {
 			box: made.box,
 			provider: made.provider,
 			kind: made.kind,
 			from: new Date(made.from).toISOString(),
 			to: new Date(to).toISOString(),
 			seconds,
+		};
+		if (price.usdPerCall !== undefined) {
+			options.write({
+				...common,
+				calls: made.calls,
+				usd_per_call: price.usdPerCall,
+				cost_usd: Number((made.calls * price.usdPerCall).toFixed(9)),
+				source: price.source,
+				priced: price.priced,
+			});
+			return;
+		}
+		options.write({
+			...common,
 			usd_per_second: price.usdPerSecond,
 			cost_usd: seconds * price.usdPerSecond,
 			source: price.source,
@@ -152,6 +187,15 @@ export function boxReceipts(options: BoxReceiptsOptions): BoxReceipts {
 						const destroyed = await target.destroy(context);
 						if (destroyed.ok) end(key);
 						return destroyed;
+					};
+				}
+				if (property === "exec") {
+					return async (...args: Parameters<Box["exec"]>) => {
+						const started = await target.exec(...args);
+						// A call that was started is billed, however it ends; one refused before it was made is not.
+						const made = open.get(key);
+						if (started.ok && made !== undefined) made.calls += 1;
+						return started;
 					};
 				}
 				if (property === "status") {
@@ -188,6 +232,7 @@ export function boxReceipts(options: BoxReceiptsOptions): BoxReceipts {
 						from,
 						box,
 						until: lifetime > 0 ? from + lifetime : undefined,
+						calls: 0,
 					});
 					return ok(onLedger(key, made.value));
 				},

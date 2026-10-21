@@ -310,3 +310,11 @@ test('total deadline aborts response-body streaming', async () => {
   await assert.rejects(run(params), code('timeout'));
   assert.equal(cancelled, true);
 });
+
+test('a client failure that is neither an HTTP response nor a connection failure ends the call after that attempt, without its text', async () => {
+  let calls = 0;
+  const run = createJevRunner({ maxAttempts: 3, client: { systemOne: async () => { calls++; throw new TypeError('host client broke: secret-detail'); } } });
+  await assert.rejects(run(params), error => error instanceof JevError && error.code === 'invalid_request' && error.attempts === 1
+    && error.requestDiagnostic === undefined && !error.message.includes('secret-detail'));
+  assert.equal(calls, 1, 'not retried');
+});

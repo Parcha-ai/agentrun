@@ -5,7 +5,7 @@ import { type Learning, learningId, parseLearning, renderLearning } from "./entr
 import { LearnError } from "./errors.js";
 import { createGuard, guard } from "./guard.js";
 import { InboxFormatError, type InboxCandidate, parseInbox } from "./inbox.js";
-import { assertNotRulesLocked, CAPS, COMMIT_SHA, inboxPath, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
+import { assertNotRulesLocked, CAPS, COMMIT_SHA, inboxPath, isRulesLocked, LAYOUT, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { byUse, indexLine, renderSection } from "./section.js";
 import { learningsAt } from "./seed.js";
 import type { AdmitWorkflow, Refusal, RepoRead, SettleUses, WorkflowCandidate, WorkflowUse } from "./types.js";
@@ -150,6 +150,8 @@ type Asked = { readonly verdict: Verdict; readonly p?: number };
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 const oneLine = (text: string) => text.replace(/[\s\u0000-\u001f\u007f]+/g, " ").trim();
 const fixed = (p: number | undefined) => (p === undefined ? "?" : p.toFixed(2));
+/** Why a question left a candidate held: the run's budget ran out, or the judge was unsure of `what`. */
+const unsureReason = (a: Asked, what: string) => (a.verdict === "budget" ? "the run's question budget is spent" : `unsure whether ${what} (${fixed(a.p)})`);
 
 function checkThresholds(input: CurateOptions["thresholds"]): Thresholds {
   const out = {} as Record<Question, Cut>;
@@ -200,7 +202,7 @@ export async function curate(options: CurateOptions): Promise<CurateReport> {
   const stamp = options.now === undefined ? {} : { now: () => options.now! };
   const admitWorkflow = options.admitWorkflow === null ? undefined : (options.admitWorkflow ?? workflowAdmitter(stamp));
   const settleUses = options.settleUses === null ? undefined : (options.settleUses ?? usesSettler());
-  const resolved: Resolved = { ...options, ...(admitWorkflow ? { admitWorkflow } : { admitWorkflow: undefined }), ...(settleUses ? { settleUses } : { settleUses: undefined }) };
+  const resolved: Resolved = { ...options, admitWorkflow, settleUses };
   return exclusive(options.repo, () => curateRuns(resolved, thresholds, caps, secrets));
 }
 
@@ -467,16 +469,16 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     if (rules.trim() !== "") {
       const a = await ask("narrowsRules", { learning, rules });
       if (a.verdict === "yes") bad.push(`contradicts or narrows a rule (${fixed(a.p)})`);
-      else if (a.verdict !== "no") unsure.push(a.verdict === "budget" ? "the run's question budget is spent" : `unsure whether it narrows a rule (${fixed(a.p)})`);
+      else if (a.verdict !== "no") unsure.push(unsureReason(a, "it narrows a rule"));
     }
     if (untrusted) {
       const a = await ask("fromContent", { learning });
       if (a.verdict === "yes") bad.push(`an instruction from content the run read (${fixed(a.p)})`);
-      else if (a.verdict !== "no") unsure.push(a.verdict === "budget" ? "the run's question budget is spent" : `unsure whether it came from content the run read (${fixed(a.p)})`);
+      else if (a.verdict !== "no") unsure.push(unsureReason(a, "it came from content the run read"));
     }
     const g = await ask("general", { learning });
     if (g.verdict === "no") bad.push(`about this case, not general (${fixed(g.p)})`);
-    else if (g.verdict !== "yes") unsure.push(g.verdict === "budget" ? "the run's question budget is spent" : `unsure whether it is general (${fixed(g.p)})`);
+    else if (g.verdict !== "yes") unsure.push(unsureReason(g, "it is general"));
     if (bad.length) return { status: "refused", reason: bad.join("; ") };
     if (unsure.length) return { status: "held", reason: [...new Set(unsure)].join("; ") };
     return undefined;
@@ -541,7 +543,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     for (const old of related("retired")) {
       const dup = await ask("duplicate", { candidate: learning, existing: { id: old.id, type: old.type, text: old.text } });
       if (dup.verdict === "no") continue;
-      outcome = { kind: "held", of: old.id, reason: dup.verdict === "budget" ? "the run's question budget is spent" : dup.verdict === "yes" ? `relearns the retired ${old.id} (${fixed(dup.p)})` : `unsure whether it relearns the retired ${old.id} (${fixed(dup.p)})` };
+      outcome = { kind: "held", of: old.id, reason: dup.verdict === "yes" ? `relearns the retired ${old.id} (${fixed(dup.p)})` : unsureReason(dup, `it relearns the retired ${old.id}`) };
       break;
     }
     const replaces: string[] = [];
@@ -553,7 +555,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
         break;
       }
       if (dup.verdict !== "no") {
-        outcome = { kind: "held", of: existing.id, reason: dup.verdict === "budget" ? "the run's question budget is spent" : `unsure whether it repeats ${existing.id} (${fixed(dup.p)})` };
+        outcome = { kind: "held", of: existing.id, reason: unsureReason(dup, `it repeats ${existing.id}`) };
         break;
       }
       const sup = await ask("supersedes", pair);
@@ -562,14 +564,14 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
         continue;
       }
       if (sup.verdict !== "no") {
-        outcome = { kind: "held", of: existing.id, reason: sup.verdict === "budget" ? "the run's question budget is spent" : `unsure whether it replaces ${existing.id} (${fixed(sup.p)})` };
+        outcome = { kind: "held", of: existing.id, reason: unsureReason(sup, `it replaces ${existing.id}`) };
         break;
       }
       const con = await ask("contradicts", pair);
       if (con.verdict !== "no") {
         outcome = {
           kind: "held", of: existing.id,
-          reason: con.verdict === "budget" ? "the run's question budget is spent" : con.verdict === "yes" ? `contradicts ${existing.id} without replacing it (${fixed(con.p)})` : `unsure whether it contradicts ${existing.id} (${fixed(con.p)})`,
+          reason: con.verdict === "yes" ? `contradicts ${existing.id} without replacing it (${fixed(con.p)})` : unsureReason(con, `it contradicts ${existing.id}`),
         };
         break;
       }
@@ -654,7 +656,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
         continue;
       }
       if (a.verdict !== "no") {
-        lists.held.push({ ...item, reason: a.verdict === "budget" ? "the run's question budget is spent" : `unsure whether it names a case or carries an instruction beyond the job (${fixed(a.p)})` });
+        lists.held.push({ ...item, reason: unsureReason(a, "it names a case or carries an instruction beyond the job") });
         continue;
       }
     }
@@ -808,7 +810,6 @@ function finish(input: PlanInput, lists: Lists, files: Record<string, string | n
   const trailers: Record<string, string | string[]> = { [CURATED_RUN]: input.runId };
   if (ids.length) trailers[LEARNING_ID_TRAILER] = [...ids];
   if (workflows.length) trailers[WORKFLOW_TRAILER] = [...workflows];
-  for (const id of ids) if (!LEARNING_ID.test(id)) throw new LearnError("invalid", "a touched learning has no valid id");
   return {
     files,
     message: lines.length ? `${subject}\n\n${lines.join("\n")}` : subject,
