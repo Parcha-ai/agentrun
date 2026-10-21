@@ -268,12 +268,13 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     }
   }
 
-  /** What a live run is doing, the way its page shows it: working, waiting for the person, or idle. */
+  /** What a live run is doing, the way its page shows it: working, waiting for the person, or idle, from the door's rows
+   *  and whether a turn of the agent is running, as the page reads them. The door's busy says only that it is doing
+   *  something (letting go of its browser, for one); it is the state only when the rows cannot be read. */
   async function doorState(door) {
     const busy = await fetch(new URL("/status", door), { signal: AbortSignal.timeout(800) }).then((r) => r.json()).then((s) => s.busy?.kind ?? null, () => null);
-    if (busy !== "idle") return { busy, state: busy === "busy" ? "working" : null, rows: null };
     const live = await doorRows(door).catch(() => null);
-    return { busy, state: live ? stateOf(live.rows, live.working, true) : null, rows: live?.rows ?? null };
+    return { busy, state: live ? stateOf(live.rows, live.working, true) : busy === "busy" ? "working" : null, rows: live?.rows ?? null };
   }
 
   async function summary(run) {
@@ -396,7 +397,8 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       if (run.index.endedAt) return void (children.get(id) === child && child.kill("SIGTERM"));
       const door = doorOf(run.record);
       const live = door ? await doorState(door).catch(() => null) : null;
-      if (live?.state !== "idle" || !answerOf(live.rows)) continue;
+      // A door that is busy (a message taken and its turn not begun, for one) is never released.
+      if (live?.busy !== "idle" || live.state !== "idle" || !answerOf(live.rows)) continue;
       if (children.get(id) === child) child.kill("SIGTERM");
       return;
     }

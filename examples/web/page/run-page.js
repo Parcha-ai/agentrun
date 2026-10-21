@@ -764,7 +764,7 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
     const runs = await source.list().catch(() => null);
     if (!runs) return;
     p.runs.replaceChildren(...runs.map((r) => {
-      const [cls, text] = label(r, r.busy === "busy" ? "working" : (r.state ?? "idle"));
+      const [cls, text] = label(r, r.state ?? "idle");
       return el("li", {}, el("a", { href: `#/run/${enc(r.id)}`, class: r.id === ui.id ? "on" : "" }, el("div", { class: "t" }, r.title), el("div", { class: "meta" }, pill(cls, text), el("span", {}, ago(r.startedAt)), r.costUsd != null ? el("span", {}, usd(r.costUsd)) : null), el("div", { class: "meta" }, [r.agent, r.id].filter(Boolean).join(" · "))));
     }));
   }

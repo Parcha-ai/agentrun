@@ -209,12 +209,14 @@ test("a live run that ended on a successful tool result is waiting; one that is 
     working: await fakeDoor({ snapshot: ended, run: true, hold: false }),
     answered: await fakeDoor({ snapshot: [...ended, assistant(4, [text("Done.")])] }),
     failed: await fakeDoor({ snapshot: [...ended.slice(0, 2), result(3, "c1", "submit_form", "boom", true)] }),
+    // Busy with no turn of the agent's: the instance letting go of its browser after the answer.
+    releasing: await fakeDoor({ snapshot: [...ended, assistant(4, [text("Done.")])], busy: true }),
   };
   t.after(() => Promise.all(Object.values(doors).map((d) => d.close())));
   for (const [id, door] of Object.entries(doors)) await makeRun(home, id, { status: "running", door: door.url });
   const states = {};
   for (const id of Object.keys(doors)) states[id] = (await liveRows(get, id)).state;
-  assert.deepEqual(states, { ended: "waiting", working: "working", answered: "idle", failed: "idle" });
+  assert.deepEqual(states, { ended: "waiting", working: "working", answered: "idle", failed: "idle", releasing: "idle" });
   const listed = Object.fromEntries((await (await get("/runs")).json()).runs.map((r) => [r.id, r.state]));
   assert.deepEqual(listed, states, "the history shows each live run in the state its page shows");
 });

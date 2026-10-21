@@ -131,6 +131,18 @@ test("pi's run phases read as the agent's turns: a run waiting for the person ne
   assert.doesNotMatch(steps, /Run finished|Run started/, "the page's run is the whole job; pi's run is one turn of it");
 });
 
+test("the history shows a live run in the state its page shows: a door busy with no turn running is idle, not running", async (t) => {
+  // The server's summary: the run is live, its door says busy (letting go of its browser), its rows end on the answer.
+  const releasing = summary({ id: "r1", status: "running", live: true, busy: "busy", state: "idle", endedAt: null });
+  const source = { ...liveSource(), list: async () => [releasing], run: async () => releasing, timeline: (id, { signal } = {}) => (async function* () {
+    yield { rows, state: "idle", costUsd: 0.05 };
+    await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+  })() };
+  const view = await mount(t, source, "#/run/r1");
+  assert.match(view.find("runs").textContent, /Idle/);
+  assert.doesNotMatch(view.find("runs").textContent, /Running/, "the history row agrees with the run's own header");
+});
+
 test("a replay whose run has no cost shows no dollar figure anywhere, though its rows carry one", async (t) => {
   assert.ok(rows.some((r) => r.kind === "usage" && r.usage.usd === 0.05 && r.summary.includes("$")), "the rows hold a usage cost");
   const unpriced = summary({ costUsd: null });
