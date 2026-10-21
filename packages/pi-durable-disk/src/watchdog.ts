@@ -32,6 +32,8 @@ function lapsed(shared, now) {
   return true;
 }
 
+// A stat line is "pid (comm) state ppid pgrp ...": its fields are read after the last ")", since comm may hold spaces and
+// parentheses.
 function stat(proc, pid) {
   try {
     const text = fs.readFileSync(path.join(proc, String(pid), "stat"), "utf8");
@@ -145,8 +147,7 @@ export const lapsed: (shared: BigInt64Array, now: bigint) => boolean = compiled.
  * SIGKILL the instance's commands: the process group of each direct child (pi starts each command as its own group's
  * leader), or the child alone when it shares the instance's group; with `ownCgroup`, every other process of the cgroup.
  * Never the instance or its group. A process this user may not signal (sudo's archil helpers) is skipped. Returns the
- * number of signals sent. Where there is no /proc (macOS) the processes come from one ps listing, and there is no cgroup. `stat` lines are `pid (comm) state ppid pgrp ...`, read after the last `)` since comm may hold
- * spaces and parentheses.
+ * number of signals sent. Where there is no /proc (macOS) the processes come from one ps listing, and there is no cgroup.
  */
 export const sweep: (instance: number, options?: SweepOptions) => number = compiled.sweep;
 

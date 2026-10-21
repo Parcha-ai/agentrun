@@ -77,6 +77,11 @@ function json(value: unknown): Json {
   }));
 }
 
+/** A journal effect from its stored document. */
+function storedEffect(id: string, e: EffectRecord): StoredEffect {
+  return { id, name: e.name, argsHash: e.argsHash, status: e.status, session: e.session, result: json(e.result), ...(e.intent ? { intent: json(e.intent) as EffectIntent } : {}), ...(e.args !== undefined ? { args: json(e.args) } : {}), ...(Array.isArray(e.calls) ? { calls: json(e.calls) as unknown[] } : {}) };
+}
+
 /** What a store writes through: a Harness, or the `commit` a running task is handed. */
 export type DocumentStoreHost = Pick<Harness, "commit">;
 
@@ -139,8 +144,7 @@ async function openDocumentJournal(host: DocumentStoreHost, key: string, bound: 
     doc.generation += 1;
     const effects: StoredEffect[] = [];
     for (const id of doc.effects) {
-      const e = await tx.doc(EffectDoc, effectKey(key, id), null);
-      effects.push({ id, name: e.name, argsHash: e.argsHash, status: e.status, session: e.session, result: json(e.result), ...(e.intent ? { intent: json(e.intent) as EffectIntent } : {}), ...(e.args !== undefined ? { args: json(e.args) } : {}), ...(Array.isArray(e.calls) ? { calls: json(e.calls) as unknown[] } : {}) });
+      effects.push(storedEffect(id, await tx.doc(EffectDoc, effectKey(key, id), null)));
     }
     return { existing, generation: doc.generation, revision: doc.revision, state: json(doc.state), notes: json(doc.notes) as RecoveryNote[], effects };
   }, context).catch((error) => { held.undo(); throw storeFailure(error); });
@@ -179,7 +183,6 @@ async function openDocumentJournal(host: DocumentStoreHost, key: string, bound: 
     }, context).then((done) => { revision = done.revision; return done; });
   /** A read in a commit of its own: it writes nothing the caller did not ask for. */
   const read = <T>(body: (tx: Tx) => Promise<T>): Promise<T> => inOrder(() => host.commit(body, context));
-  const storedEffect = (id: string, e: EffectRecord): StoredEffect => ({ id, name: e.name, argsHash: e.argsHash, status: e.status, session: e.session, result: json(e.result), ...(e.intent ? { intent: json(e.intent) as EffectIntent } : {}), ...(e.args !== undefined ? { args: json(e.args) } : {}), ...(Array.isArray(e.calls) ? { calls: json(e.calls) as unknown[] } : {}) });
   return {
     existing: opened.existing, generation: opened.generation, state: opened.state as Json,
     get revision() { return revision; },

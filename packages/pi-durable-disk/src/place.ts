@@ -46,7 +46,6 @@ export type PlaceExit = { exit: number | string | null; signal: string | null; o
 export type PlaceRunner = { epoch: number; pid?: number; exited: Promise<PlaceExit> };
 /** What a runner is handed: its number in the run, its environment, and for a place with a token, the attempt's mount token. */
 export type RunnerOrder = { gen: number; env: Record<string, string>; stdin?: string };
-/** What the place reads of the run, the way it reads it: `run.json`, and on a disk the run's delegations. */
 /**
  * What the place reads of the run, the way it reads it: `run.json`; on a disk, the run's delegations; and the boxes the
  * place made for its runners, each as a receipt (`HostBox`: provider, kind, from, to, list price per second and where
