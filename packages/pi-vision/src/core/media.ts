@@ -97,7 +97,7 @@ const inFlight = new WeakMap<object, Map<string, Promise<unknown>>>();
 
 /** `work` for `key`, once at a time per call: a second ask while the first runs waits for it, alone paying, filing and
  *  telling, and is told it `shared`. */
-export async function once<T>(call: CallContext, key: string, work: () => Promise<T>): Promise<{ readonly value: T; readonly shared: boolean }> {
+export async function singleFlight<T>(call: CallContext, key: string, work: () => Promise<T>): Promise<{ readonly value: T; readonly shared: boolean }> {
   const flying = (call.memo && inFlight.get(call.memo)) || new Map<string, Promise<unknown>>();
   if (call.memo) inFlight.set(call.memo, flying);
   const running = flying.get(key) as Promise<T> | undefined;
