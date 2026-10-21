@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { lstat, mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { CAPS, LearnError, readSeed, renderSection, seedLearning } from "../dist/index.js";
-import { agentRepo, ask, commitMain, plantSymlink, done, learnCalls, learning, learningFiles, openRun, scratch, sectionOf } from "./support.mjs";
+import { agentLearn, CAPS, LearnError, readSeed, renderSection, seedLearning } from "../dist/index.js";
+import { agentRepo, ask, commitMain, ctx, plantSymlink, done, learnCalls, learning, learningFiles, openRun, scratch, sectionOf } from "./support.mjs";
 
 const L1 = learning("L-00000000000a", "Company registries match the legal name without Inc or LLC; search both forms.", { uses: 2 });
 const L2 = learning("L-00000000000b", "The state registry rate-limits at 1 request a second.", { type: "fact" });
@@ -226,4 +226,17 @@ test("renderSection of the recorded seed is the section the extension shows", as
   } finally {
     await run.close();
   }
+});
+
+test("the extension shows no section on a run that was not seeded, and leaves out the learn lines for an agent without the learn tool", async () => {
+  const [section] = agentLearn().sections;
+  const seed = { sha: "a".repeat(40), index: [], omitted: [], workflows: [], copied: false };
+  const render = (record, tools) => section.render({ read: { snapshot: async () => record }, agent: { tools } }, ctx);
+  assert.equal(await render(undefined, [{ name: "learn" }]), undefined, "not seeded: no section");
+  const withLearn = await render(seed, [{ name: "learn" }]);
+  const without = await render(seed, [{ name: "read" }]);
+  assert.equal(withLearn, renderSection(seed, { canLearn: true }));
+  assert.equal(without, renderSection(seed, { canLearn: false }));
+  assert.match(withLearn, /call learn/);
+  assert.doesNotMatch(without, /call learn/);
 });

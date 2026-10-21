@@ -8,7 +8,7 @@ import { basename, isAbsolute, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
-import { ClaimError, FencedError, HeldError, ownWriteFenced } from "./errors.ts";
+import { ClaimError, EXIT_DATAERR, FencedError, HeldError, ownWriteFenced } from "./errors.ts";
 
 export type RunRef = { disk: string; region: string; id: string };
 
@@ -706,7 +706,7 @@ export async function writtenSince(dir: string, since: number, limit = STRAY_CHE
 }
 
 /** The exit of a start refused for the app's own writes before its claim (EX_DATAERR): a restart would write them again. */
-const EXIT_WRITTEN_BEFORE_MOUNT = 65;
+const EXIT_WRITTEN_BEFORE_MOUNT = EXIT_DATAERR;
 
 /** How many entries a directory holds; 0 when it cannot be read. */
 const entries = (dir: string) => readdir(dir).then((names) => names.length, () => 0);
@@ -793,6 +793,12 @@ async function verifyTarget(host: Host, path: string, mountpoint: string, probe:
 }
 
 /**
+ * The token an instance holds when it was given none (`--token-stdin` read nothing): enough to reuse its live mount, never
+ * to mount. A restart in place gets it from a driver that hands the token to the first incarnation only (localHost).
+ */
+export const NO_TOKEN = "none";
+
+/**
  * Take the run's claim: mount `<disk>:/runs/<id>` exclusively at `<mountRoot>/runs/<id>` and verify it. A live mount of
  * the same run already there is kept (in-place restart); a dead one is cleaned first. With no mount there, a stale archil
  * daemon on the mountpoint is killed (`stale`) and entries in it are moved aside to `<mountRoot>/.stray` (`stray`) before
@@ -800,12 +806,6 @@ async function verifyTarget(host: Host, path: string, mountpoint: string, probe:
  * verifying write is refused, MOUNTPOINT_NOT_EMPTY when the mountpoint cannot be emptied or archil still finds it not
  * empty, MOUNT_FAILED (exit 1) for a daemon of this host that is still running there.
  */
-/**
- * The token an instance holds when it was given none (`--token-stdin` read nothing): enough to reuse its live mount, never
- * to mount. A restart in place gets it from a driver that hands the token to the first incarnation only (localHost).
- */
-export const NO_TOKEN = "none";
-
 export async function acquire(opts: AcquireOptions): Promise<Claim> {
   const { ref, token } = opts;
   const path = runPath(ref.id);

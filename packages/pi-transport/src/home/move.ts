@@ -44,8 +44,9 @@ export type StartRunner = (place: Place, epoch: number, context: Context) => Pro
 export type MoveStep = "prepare" | "drain" | "seal" | "ship" | "take" | "resume" | "retire";
 
 /**
- * Why a move did not happen. `no_runtime`: the target's box has no Node, or one below 22.19. `prepare`: the target could
- * not be made ready. Nothing changed after either. `drain`: the session did
+ * Why a move did not happen. `no_runtime`: the target's box has no Node, or one below 22.19. `no_live_processes`: the box
+ * cannot keep a program running between calls (`facts().liveProcesses` is false), so a runner cannot live in it. `prepare`: the target could
+ * not be made ready. Nothing changed after these. `drain`: the session did
  * not come to rest in time (`holdouts` names what ran on); it works on where it was. `seal`, `ship`: the source was
  * told to run again, and the message says whether it did. `target`: the target's runner went away before the take; the
  * source was told to run again. `lost`: another host took the session first (a move's take, or a recovery's); `lease`
@@ -57,6 +58,7 @@ export type MoveStep = "prepare" | "drain" | "seal" | "ship" | "take" | "resume"
  */
 export type MoveErrorCode =
 	| "no_runtime"
+	| "no_live_processes"
 	| "prepare"
 	| "drain"
 	| "seal"
