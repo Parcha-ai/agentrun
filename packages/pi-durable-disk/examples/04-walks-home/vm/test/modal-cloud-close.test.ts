@@ -333,3 +333,26 @@ test("the cluster: a box that places after the slow threshold joins the pool: it
   assert.deepEqual(w.cloud.cluster!.status().boxes.map((b) => b.state), ["ready"], "it joined the pool");
   await w.cloud.close!();
 });
+
+test("a create still queued when close gives up waiting is terminated by its name when Modal places it: close does not return while the queue could still land it", async () => {
+  let open!: () => void;
+  const gate = new Promise<void>((r) => (open = r));
+  const w = await world(() => false, gate, { closeWaitMs: 100, closeQueuedMs: 3_000 });
+  w.cloud.prewarm!(w.ref("run-a")); // Modal queues the create (the gate)
+  await new Promise((r) => setTimeout(r, 50));
+  const closing = w.cloud.close!();
+  setTimeout(open, 400); // placed after close's own wait is over
+  await closing;
+  assert.equal(w.boxes.length, 1, "the queued create had landed by the time close returned");
+  assert.equal(w.boxes[0]!.exit, 137, "and it was terminated, not left to its TTL");
+});
+
+test("a create that never places leaves close with its name in the failures, not silently", async () => {
+  const w = await world(() => false, new Promise<void>(() => undefined), { closeWaitMs: 50, closeQueuedMs: 150 });
+  w.cloud.prewarm!(w.ref("run-a"));
+  await new Promise((r) => setTimeout(r, 50));
+  await w.cloud.close!();
+  const summary = w.logs.find((l) => l.event === "close.failures");
+  assert.ok(summary, "close reports it");
+  assert.match(JSON.stringify(summary!.data), /still queued/);
+});
