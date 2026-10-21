@@ -93,6 +93,20 @@ test('the card goes in the conversation that was ACTIVE last at the handoff, not
   void items;
 });
 
+test('a run that moved before it recorded any chat keeps its card: one per handoff line, in the run\'s own timeline', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'viewer-move-bare-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(join(here, 'fixtures', 'chat-browser'), dir, { recursive: true });
+  movedRun(dir, D3);
+  // Only the host's lines are left: no conversation entry at all.
+  const host = readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').filter((line) => line !== '' && JSON.parse(line).source === 'host');
+  const files = Object.fromEntries(readdirSync(join(dir, 'blobs')).map((name) => [name.split('.')[0]!, name]));
+  const recording: Recording = { id: 'run', manifest: JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')), lines: parseLines(host.join('\n')), blobUrl: (sha) => (files[sha] ? `blobs/${files[sha]}` : undefined), blobType: () => undefined };
+  const model = await extractChat(recording, async () => undefined);
+  assert.equal(model.threads.length, 0, 'no conversation');
+  assert.deepEqual((model.moves ?? []).map((card) => card.text), ['Reopened on host-1 (local) from the same disk; the conversation goes on', 'Reopened on host-1 (local) from the same disk; the conversation goes on'], 'a card per handoff line, kept');
+});
+
 test('in Chrome: the chat view draws one card per handoff line, in words of a move, and none without one; the Muse layout draws none', IN_CHROME, async (t) => {
   const two = await served(t, { query: '', height: 900, edit: (dir) => movedRun(dir, D3) });
   await two.until(`!!d()?.querySelector('main#chat-root .thread')`, 'the chat view drawn');
