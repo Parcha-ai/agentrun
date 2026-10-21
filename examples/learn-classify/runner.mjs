@@ -350,13 +350,14 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
   }
   // Hindsight (hindsight.mjs): one reflection per wrong field of a TRAIN run, asked once; its lessons are proposed below.
   if (parts.hindsight && p.score && p.hindsight === undefined) {
-    const effects = await parts.hindsight.tools(job, run);
-    try {
-      mkdirSync(join(out, 'hindsight'), { recursive: true });
-      save({ ...p, hindsight: await reflectOnRun({ job, run, score: p.score, answer: p.measure.answer, model: parts.hindsight.model(job, run), effects, fields: parts.hindsight.fields, codes: parts.data?.codes, storeDir: join(out, 'hindsight') }) });
-    } finally {
-      for (const effect of effects) await effect.dispose?.();
-    }
+    mkdirSync(join(out, 'hindsight'), { recursive: true });
+    save({
+      ...p,
+      hindsight: await reflectOnRun({
+        job, run, score: p.score, answer: p.measure.answer, fields: parts.hindsight.fields, codes: parts.data?.codes, storeDir: join(out, 'hindsight'),
+        model: () => parts.hindsight.model(job, run), effects: () => parts.hindsight.tools(job, run),
+      }),
+    });
   }
   await lock(async () => {
     if (p.phase === 'ran') save({ ...p, phase: 'proposed', finished: await finishJob({ home, repo, run, job, measure: p.measure }) });

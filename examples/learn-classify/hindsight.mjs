@@ -155,8 +155,10 @@ export function verifiedBy(storePath, wrong) {
 
 /**
  * The reflections for one finished run: one per wrong field among `fields`, each in its own store in `storeDir` (the
- * pass's, never the run's directory or the agent's home: the store holds the truth). None when the run's split is not TRAIN's or no field is wrong. `model` is `{ models, agent }`; `effects` the
- * tools it may check a source with (fetch_page and read_document).
+ * pass's, never the run's directory or the agent's home: the store holds the truth). None when the run's split is not
+ * TRAIN's or no field is wrong. `model` (`{ models, agent }`) and `effects` (the tools it may check a source with,
+ * fetch_page and read_document) are asked for only then, each as a value or a function that makes it; the tools are
+ * disposed of after.
  */
 export async function reflectOnRun({ job, run, score, answer, model, effects, fields = HINDSIGHT_FIELDS, codes, storeDir }) {
   if (!HINDSIGHT_SPLITS.includes(job.split)) return { wrong: [], reflections: [] };
@@ -164,11 +166,17 @@ export async function reflectOnRun({ job, run, score, answer, model, effects, fi
   if (!wrong.length) return { wrong, reflections: [] };
   const digest = digestOf(toolResultsOf(run.storePath), answer);
   const lessons = seededLessons(run.workspace);
+  const on = typeof model === 'function' ? model() : model;
+  const tools = typeof effects === 'function' ? await effects() : effects;
   const reflections = [];
-  for (const w of wrong) {
-    const storePath = join(storeDir, `${run.runId}-${w.field}.sqlite`);
-    const { hypotheses, usage } = await reflect({ model, effects, storePath, prompt: reflectionPrompt({ job, wrong: w, digest, lessons }) });
-    reflections.push({ field: w.field, hypotheses, costUsd: usage.costUsd, ...verifiedBy(storePath, w) });
+  try {
+    for (const w of wrong) {
+      const storePath = join(storeDir, `${run.runId}-${w.field}.sqlite`);
+      const { hypotheses, usage } = await reflect({ model: on, effects: tools, storePath, prompt: reflectionPrompt({ job, wrong: w, digest, lessons }) });
+      reflections.push({ field: w.field, hypotheses, costUsd: usage.costUsd, ...verifiedBy(storePath, w) });
+    }
+  } finally {
+    for (const tool of tools) await tool.dispose?.();
   }
   return { wrong, reflections };
 }
