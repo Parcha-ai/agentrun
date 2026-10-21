@@ -425,9 +425,10 @@ function hindsightOf({ reflections, proposals = [] }) {
  * the Nth curate for each N of `checkpoints`, and "epoch-e" main when the last job of epoch e is curated (`alsoIncludes`
  * counts a later epoch's jobs curated before then, whose learning is in that main too). `stream` is the whole list, so an
  * epoch cut by --jobs never counts as ended. A label once passed is never moved; one passed before a stop is written when
- * the pass opens again. The file is replaced whole (written aside, then renamed).
+ * the pass opens again. The file is replaced whole (written aside, then renamed). With `gates` (the promotion gate's
+ * `pending`), each label also names the gate's comparisons and verdicts no curate had applied when it was written.
  */
-function curateTally({ out, stream, seedSha, checkpoints = [] }) {
+function curateTally({ out, stream, seedSha, checkpoints = [], gates }) {
   const path = join(out, 'checkpoints.json');
   const frozen = readJsonIf(path) ?? {};
   const epochOf = new Map(stream.map((job) => [job.order, job.epoch]));
@@ -446,7 +447,9 @@ function curateTally({ out, stream, seedSha, checkpoints = [] }) {
   const epochs = [...new Set(stream.map((job) => job.epoch).filter((e) => e !== undefined))].sort((a, b) => a - b);
   const pass = () => {
     const before = Object.keys(frozen).length;
-    const add = (label, entry) => { frozen[label] ??= entry; };
+    // With a promotion gate, a checkpoint also names what no curate had applied when it froze (`gates`): a verdict that
+    // lands later is never in that sha.
+    const add = (label, entry) => { frozen[label] ??= { ...entry, ...(gates ? { gates: gates() } : {}) }; };
     add('0', { sha: seedSha, streamIndex: 0, epoch: null, at: new Date().toISOString() });
     for (const n of checkpoints) {
       const at = landed.get(n);
@@ -576,7 +579,7 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
   const gate = given ?? (parts.bank ? asyncGate({ bank: bankOf(parts.companies, parts.bank, stream), runOne: bankRunner({ out, bare, parts, runCapUsd, dropEvidence }), dir: join(out, 'gate'), ...(parts.bankConcurrency ? { concurrency: parts.bankConcurrency } : {}), log }) : undefined);
   const judge = parts.judge();
   const spentNow = () => knownSpend(out);
-  const tally = curateTally({ out, stream, seedSha: meta.seedSha, checkpoints });
+  const tally = curateTally({ out, stream, seedSha: meta.seedSha, checkpoints, ...(gate ? { gates: () => gate.pending() } : {}) });
   writeFileSync(join(out, 'conventions.json'), `${JSON.stringify(parts.conventions ?? {}, null, 2)}\n`);
   let stoppedBy = null;
   const shape = concurrency === 1 ? '' : schedule === 'batch' ? ` in batches of ${concurrency}` : `, ${concurrency} in flight`;
