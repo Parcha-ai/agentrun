@@ -195,10 +195,13 @@ function artifactFileProblems(artifact, dir, lookKeys, lookSources, add) {
   }
 }
 
-/** The kinds a `pi.conversation` record may point at (draft 54): `parent.at` is an entry of one of these kinds, `owner.taskId` a task
- *  record of one of these. Any other kind is refused, so a new kind is a visible change to the format. */
+/** The entry kinds a `pi.conversation` record's `parent.at` may point at (draft 54). Any other kind is refused, so a new entry kind
+ *  is a visible change to the format. */
 export const ENTRY_KINDS = new Set(['pi.user', 'pi.system', 'pi.assistant', 'pi.tool-result']);
-export const TASK_KINDS = new Set(['pi.tool', 'pi.generation', 'agentrun.workflow']);
+
+/** A task record as pi writes one, whatever its kind (any extension may define a task kind): every field pi's TaskRecord requires. */
+const isTaskRecord = (kind, data) => data.kind === kind && Number.isInteger(data.version) && 'input' in data && typeof data.background === 'boolean'
+  && typeof data.abortRequested === 'boolean' && isObject(data.state) && typeof data.state.status === 'string';
 
 /** Every problem in the recording at `dir`, in file order: `{ where, line?, message }`. */
 export function validateRecording(dir) {
@@ -322,8 +325,8 @@ export function validateRecording(dir) {
       if (isInt(event.data?.id)) conversations.add(event.data.id);
     } else if (event.channel === 'durable' && isObject(event.data) && isInt(event.data.id) && isInt(event.data.conversationId)) {
       const pair = `${event.data.conversationId}\u0000${event.data.id}`;
-      if (TASK_KINDS.has(event.kind)) tasks.add(pair);
-      else if (ENTRY_KINDS.has(event.kind)) entries.add(pair);
+      if (ENTRY_KINDS.has(event.kind)) entries.add(pair);
+      else if (isTaskRecord(event.kind, event.data)) tasks.add(pair);
     }
     for (const key of lookKeysOf(event.data)) lookKeys.add(key);
     for (const [key, named] of lookSourcesOf(event.data)) lookSources.set(key, [...(lookSources.get(key) ?? []), ...named]);
@@ -347,7 +350,7 @@ export function validateRecording(dir) {
     if (owner !== undefined) {
       extraKeys(owner, 'owner', ['conversationId', 'taskId']);
       if (!isObject(owner) || !isInt(owner.conversationId) || !isInt(owner.taskId)) add('events.jsonl', `${name}: its owner is not { conversationId, taskId }, each an integer`, line);
-      else if (!tasks.has(`${owner.conversationId}\u0000${owner.taskId}`)) add('events.jsonl', `${name}: its owner names task ${owner.taskId}, which is no task record (${[...TASK_KINDS].join(', ')}) of conversation ${owner.conversationId}`, line);
+      else if (!tasks.has(`${owner.conversationId}\u0000${owner.taskId}`)) add('events.jsonl', `${name}: its owner names task ${owner.taskId}, which is no task record of conversation ${owner.conversationId}`, line);
     }
   }
   if (isObject(manifest?.artifact) && artifactProblems(manifest.artifact).length === 0) artifactFileProblems(manifest.artifact, dir, lookKeys, lookSources, add);

@@ -347,7 +347,9 @@ test('draft 54: a pi.conversation names its parent entry and its owner task, and
     pi(5, 'pi.note', 33, { kind: 'pi.note', id: 46, conversationId: 33, model: [{ role: 'user', content: 'a note' }] }),
     pi(6, 'pi.future', 33, { id: 47, conversationId: 33, kind: 'pi.future', version: 1, input: {}, state: { status: 'running' } }),
     pi(7, 'pi.user', 33, { kind: 'pi.user', id: 48, conversationId: 40, model: [{ role: 'user', content: 'elsewhere' }] }),
-    pi(8, 'pi.conversation', 51, record),
+    // A task of an extension's own kind, as pi writes it: pi lets any extension define a task kind.
+    pi(8, 'recording-test.owner', 33, { id: 49, conversationId: 33, kind: 'recording-test.owner', version: 1, input: null, background: false, abortRequested: false, state: { status: 'running' } }),
+    pi(9, 'pi.conversation', 51, record),
   ];
   const problems = async record => validateRecording(await recording(t, { lines: lines(record), started: 1, manifestOver: { generations: 1 } })).map(problem => problem.message);
   const fork = { id: 51, parent: { conversationId: 33, at: 40 }, owner: { conversationId: 33, taskId: 45 } };
@@ -357,14 +359,15 @@ test('draft 54: a pi.conversation names its parent entry and its owner task, and
   assert.deepEqual(await problems({ ...fork, parent: { conversationId: 70, at: 40 } }), ['pi.conversation 51: its parent names conversation 70, which is not in this recording']);
   assert.deepEqual(await problems({ ...fork, parent: { conversationId: 33, at: 999 } }), ['pi.conversation 51: its parent names entry 999, which is no entry (pi.user, pi.system, pi.assistant, pi.tool-result) of conversation 33']);
   assert.deepEqual(await problems({ ...fork, parent: { conversationId: 33, at: 45 } }), ['pi.conversation 51: its parent names entry 45, which is no entry (pi.user, pi.system, pi.assistant, pi.tool-result) of conversation 33'], 'a task id is not an entry');
-  assert.deepEqual(await problems({ ...fork, owner: { conversationId: 33, taskId: 999 } }), ['pi.conversation 51: its owner names task 999, which is no task record (pi.tool, pi.generation, agentrun.workflow) of conversation 33']);
-  assert.deepEqual(await problems({ ...fork, owner: { conversationId: 33, taskId: 40 } }), ['pi.conversation 51: its owner names task 40, which is no task record (pi.tool, pi.generation, agentrun.workflow) of conversation 33'], 'an entry id is not a task');
-  assert.deepEqual(await problems({ ...fork, owner: { conversationId: 70, taskId: 45 } }), ['pi.conversation 51: its owner names task 45, which is no task record (pi.tool, pi.generation, agentrun.workflow) of conversation 70'], 'a task of another conversation');
+  assert.deepEqual(await problems({ ...fork, owner: { conversationId: 33, taskId: 999 } }), ['pi.conversation 51: its owner names task 999, which is no task record of conversation 33']);
+  assert.deepEqual(await problems({ ...fork, owner: { conversationId: 33, taskId: 40 } }), ['pi.conversation 51: its owner names task 40, which is no task record of conversation 33'], 'an entry id is not a task');
+  assert.deepEqual(await problems({ ...fork, owner: { conversationId: 33, taskId: 49 } }), [], 'a fork an extension\'s task owns: a task is found by pi\'s task record shape, whatever its kind');
+  assert.deepEqual(await problems({ ...fork, owner: { conversationId: 70, taskId: 45 } }), ['pi.conversation 51: its owner names task 45, which is no task record of conversation 70'], 'a task of another conversation');
   assert.deepEqual(await problems({ ...fork, parent: { ...fork.parent, content: 'copied message' } }), ['pi.conversation 51: its parent holds content: a parent keeps only conversationId and at, no content']);
   assert.deepEqual(await problems({ ...fork, owner: { ...fork.owner, title: 'thread 1' } }), ['pi.conversation 51: its owner holds title: an owner keeps only conversationId and taskId, no content']);
-  // By kind, never by a field: a line of another kind is no entry and no task, whatever it carries (fails closed).
+  // An entry is found by kind, and a task by pi's whole task record shape: a line short of either is neither (fails closed).
   assert.deepEqual(await problems({ ...fork, parent: { conversationId: 33, at: 46 } }), ['pi.conversation 51: its parent names entry 46, which is no entry (pi.user, pi.system, pi.assistant, pi.tool-result) of conversation 33'], 'a pi.note with model is no entry');
-  assert.deepEqual(await problems({ ...fork, owner: { conversationId: 33, taskId: 47 } }), ['pi.conversation 51: its owner names task 47, which is no task record (pi.tool, pi.generation, agentrun.workflow) of conversation 33'], 'a pi.future with state is no task');
+  assert.deepEqual(await problems({ ...fork, owner: { conversationId: 33, taskId: 47 } }), ['pi.conversation 51: its owner names task 47, which is no task record of conversation 33'], 'a line with a state but no abortRequested or background is no task');
   assert.deepEqual(await problems({ ...fork, parent: { conversationId: 33, at: 48 } }), ['pi.conversation 51: its parent names entry 48, which is no entry (pi.user, pi.system, pi.assistant, pi.tool-result) of conversation 33'], 'an entry whose data.conversationId is another conversation');
   assert.deepEqual(await problems({ ...fork, parent: { conversationId: 33 } }), ['pi.conversation 51: its parent is not { conversationId, at }, each an integer']);
   assert.deepEqual(await problems({ ...fork, owner: 'tool' }), ['pi.conversation 51: its owner is not { conversationId, taskId }, each an integer']);
