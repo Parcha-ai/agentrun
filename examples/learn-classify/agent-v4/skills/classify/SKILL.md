@@ -23,7 +23,8 @@ description: How to do the six-part job by hand from the company's annual report
    filer's are often abroad even when it lists in the US.
 5. The subsidiaries: the exhibit that lists them, Exhibit 21 of a 10-K or Exhibit 8 of a 20-F. It may be part of the
    report's PDF, near its end, or its own document linked from the report or the investor relations page. Give up to
-   15 of the operating ones, named as listed.
+   15 of the operating ones, named as listed. When the report, read through its exhibit index and its notes, has no
+   such exhibit or list, answer `{ "none": true, "note": "<why>" }`; never guess names.
 6. The SIC code: sic2_groups for the group of the company's main business, then sic_codes with that group for the
    4-digit code. The code follows where most revenue comes from, as the SEC files it, which can differ from how the
    company describes itself: the segment table shows where that is. When the reportable segments are regions, read the

@@ -150,7 +150,7 @@ export function answerV2(codes) {
 export function answerV4(codes) {
   const text = (max) => ({ type: 'string', minLength: 1, maxLength: max });
   return {
-    description: 'Give the final answer, once: the company\'s 4-digit SIC code as the SEC would file it; every reportable operating segment with its share of revenue from the latest annual report (or that the company reports one segment); its headquarters; up to 15 of its operating subsidiaries as the company lists them (the 10-K\'s Exhibit 21, the 20-F\'s Exhibit 8); that annual report with its fiscal year; and 1 to 12 cites from pages and documents read in this run.',
+    description: 'Give the final answer, once: the company\'s 4-digit SIC code as the SEC would file it; every reportable operating segment with its share of revenue from the latest annual report (or that the company reports one segment); its headquarters; up to 15 of its operating subsidiaries as the company lists them (the 10-K\'s Exhibit 21, the 20-F\'s Exhibit 8), or none with the reason when the report has no such exhibit or list; that annual report with its fiscal year; and 1 to 12 cites from pages and documents read in this run.',
     parameters: {
       type: 'object', additionalProperties: false, required: ['sic4', 'segments', 'hq', 'subsidiaries', 'annualReport', 'cites'],
       properties: {
@@ -162,7 +162,15 @@ export function answerV4(codes) {
           ],
         },
         hq: { type: 'object', additionalProperties: false, required: ['city', 'country'], properties: { city: text(100), state: text(100), country: text(100) } },
-        subsidiaries: { type: 'array', minItems: 1, maxItems: 15, items: { type: 'object', additionalProperties: false, required: ['name'], properties: { name: text(200), country: text(100) } } },
+        subsidiaries: {
+          anyOf: [
+            { type: 'array', minItems: 1, maxItems: 15, items: { type: 'object', additionalProperties: false, required: ['name'], properties: { name: text(200), country: text(100) } } },
+            {
+              type: 'object', additionalProperties: false, required: ['none', 'note'],
+              properties: { none: { const: true }, note: { ...text(300), description: 'Why there is none to give: the annual report, read, has no subsidiary exhibit or list.' } },
+            },
+          ],
+        },
         annualReport: { type: 'object', additionalProperties: false, required: ['url', 'fiscalYear'], properties: { url: text(600), fiscalYear: { type: 'integer', minimum: 1990, maximum: 2100 } } },
         cites: {
           type: 'array', minItems: 1, maxItems: 12,

@@ -69,6 +69,8 @@ test('the v4 answer: the code from sic_codes, every segment or one, the headquar
   assert.equal(ok(answer), true);
   assert.equal(ok({ ...answer, segments: { oneSegment: true } }), true);
   assert.equal(ok({ ...answer, hq: { city: 'Toronto', country: 'Canada' } }), true, 'the state is optional');
+  // A report with no subsidiary exhibit or list: none, with the reason stated, and only so.
+  assert.equal(ok({ ...answer, subsidiaries: { none: true, note: 'no subsidiary list in the annual report' } }), true);
   for (const [why, wrong] of [
     ['a code not in sic_codes', { ...answer, sic4: '9999' }],
     ['no segments', { ...answer, segments: [] }],
@@ -77,6 +79,11 @@ test('the v4 answer: the code from sic_codes, every segment or one, the headquar
     ['no country', { ...answer, hq: { city: 'Pittsburgh' } }],
     ['16 subsidiaries', { ...answer, subsidiaries: Array.from({ length: MAX_SUBSIDIARIES + 1 }, (_, i) => ({ name: `Subsidiary ${i}` })) }],
     ['no subsidiaries', { ...answer, subsidiaries: [] }],
+    ['none without its reason', { ...answer, subsidiaries: { none: true } }],
+    ['none with an empty reason', { ...answer, subsidiaries: { none: true, note: '' } }],
+    ['none false', { ...answer, subsidiaries: { none: false, note: 'no list' } }],
+    ['none beside a list', { ...answer, subsidiaries: { none: true, note: 'no list', names: [] } }],
+    ['subsidiaries null', { ...answer, subsidiaries: null }],
     ['a year as text', { ...answer, annualReport: { url: cite.url, fiscalYear: '2025' } }],
     ['13 cites', { ...answer, cites: Array.from({ length: 13 }, () => cite) }],
     ['a claim of another kind', { ...answer, cites: [{ ...cite, claim: 'industry' }] }],
@@ -344,6 +351,9 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   // A new kind of company grows classify-company by a route; a complete run is never a reason to save.
   for (const words of [/When `classify-company` escalates on a kind of company it does not handle yet, grow it rather than rework it: add a route for that kind/, /keep the paths for the kinds it already handles as they are/, /a complete answer is not a reason to rewrite, only an escalation or a failure is/, /Saving a new revision after a complete run starts its trust over/])
     assert.match(flat(v4Rules), words);
+  // None is a subsidiaries answer only when the report, read, has no subsidiary exhibit or list, and it says why.
+  assert.match(flat(text(v4, 'AGENTS.md')), /at most 15, or none \(`\{ "none": true, "note" \}`\) when the report, read, has no subsidiary exhibit or list/);
+  assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), /no such exhibit or list, answer `\{ "none": true, "note": "<why>" \}`/);
   // The code is chosen from sic_codes by where most revenue comes from, never remembered.
   for (const words of [/its 4-digit SIC code, from sic_codes: sic2_groups for the group/, /chosen by where most revenue comes from/, /A code you remember from EDGAR or elsewhere is a guess, never evidence/, /the revenue reading wins, and the code's cite is the revenue table it rests on/])
     assert.match(flat(text(v4, 'AGENTS.md')), words);
@@ -698,3 +708,25 @@ test('promotion after 2 clean uses, as the host sets it: the whole job is promot
   assert.deepEqual(rows.map((r) => r.curate.promoted), [[], [], [WORKFLOW], [], []]);
   assert.deepEqual(rows.map((r) => [r.byWorkflow, r.dispatched]), [[false, false], [true, false], [true, false], [true, true], [true, true]]);
 }, { timeout: 300_000 });
+
+test('subsidiaries none: right when the filing has no subsidiary exhibit, recall 0 when it has one; never part of correct', async () => {
+  const none = { subsidiaries: { none: true, note: 'no subsidiary list in the annual report' } };
+  const j = judge();
+  // KOSS-shaped: the filing has no EX-21 or EX-8, and the answer says none, with its reason.
+  assert.deepEqual(await scoreSubsidiaries({ answer: none, truth: null, judge: j.run }), { subsidiariesRecall: 1, subsidiariesPrecision: 1 });
+  // LLY-shaped: the filing's exhibit lists 40, and the report the job read has none of them: recall 0, as for an empty answer.
+  const listed = { exhibit: 'EX-21', url: 'https://x.example/ex21.htm', count: 40, items: Array.from({ length: 40 }, (_, i) => ({ name: `Unit ${i} LLC` })) };
+  assert.deepEqual(await scoreSubsidiaries({ answer: none, truth: listed, judge: j.run }), { subsidiariesRecall: 0, subsidiariesPrecision: null });
+  assert.equal(j.asked.length, 0, 'none asks Jev nothing');
+  // A list where the filing has none stays unscored, as before.
+  assert.deepEqual(await scoreSubsidiaries({ answer: { subsidiaries: [{ name: 'Unit 1 LLC' }] }, truth: null, judge: j.run }), { subsidiariesRecall: null, subsidiariesPrecision: null });
+  // Outside correct either way, and the cite claim says none.
+  const company = { sic: '3651', segments: { oneSegment: true }, hq: { city: 'MILWAUKEE', country: 'US' }, latestAnnual: { form: '10-K', fy: 2025 }, subsidiaries: null };
+  const report = 'https://koss.example/annual-report-2025.pdf';
+  const cite = { claim: 'subsidiary', url: report, locator: 'pdf p. 40', quote: 'Exhibit index: no subsidiaries exhibit.' };
+  const k = judge({ cites: { [report]: 0.9 } });
+  const score = await scoreV4({ answer: { sic4: '3651', segments: { oneSegment: true }, hq: { city: 'Milwaukee', country: 'US' }, annualReport: { url: report, fiscalYear: 2025 }, cites: [cite], ...none }, company, read: [{ tool: 'read_document', url: report, text: '[page 40] Exhibit index: no subsidiaries exhibit.' }], codes: {}, judge: k.run });
+  assert.deepEqual([score.correct, score.correctOver, score.subsidiariesRecall, score.subsidiariesTruthCount], [true, ['sic4', 'segments', 'hq'], 1, null]);
+  assert.match(k.asked[0].state.claim, /lists no subsidiaries/);
+  assert.equal((await scoreV4({ answer: { sic4: '3652', ...none }, company, read: [], codes: {}, judge: judge().run })).correct, false, 'a right none does not make a wrong code right');
+});

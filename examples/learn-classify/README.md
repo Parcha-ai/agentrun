@@ -239,7 +239,8 @@ node examples/learn-classify/runner.mjs --set v4 --scripted --out /tmp/lc-v4-dry
 
 The answer is the typed `answer` tool: `sic4` (as v2), `segments` (every reportable operating segment, `[{ name, share }]`,
 or `{ oneSegment: true }`), `hq` (`{ city, state?, country }`), `subsidiaries` (1 to 15 `{ name, country? }`, as the
-company lists them in a 10-K's Exhibit 21 or a 20-F's Exhibit 8), `annualReport` (`{ url, fiscalYear }`) and 1 to 12 cites
+company lists them in a 10-K's Exhibit 21 or a 20-F's Exhibit 8, or `{ none: true, note }` when the report has no such
+exhibit or list), `annualReport` (`{ url, fiscalYear }`) and 1 to 12 cites
 (`{ claim: "sic" | "segment" | "hq" | "subsidiary" | "report", url, locator, quote }`).
 
 `score-v4.mjs` scores each run after it ends, from the run's own store; nothing is fetched again:
@@ -265,7 +266,8 @@ company lists them in a 10-K's Exhibit 21 or a 20-F's Exhibit 8), `annualReport`
   one to one: a name the same as a listed one not yet taken matches it, word for word first, then once its legal form
   (Inc., GmbH, Ltd ...) is left out, so two entities named alike in two jurisdictions are two. A name whose listed
   namesakes are taken is a repeat; any other name is Jev's against the whole list. Recall is over at most 15 of the
-  exhibit's `count`, the most an answer may give. No exhibit: both `null`.
+  exhibit's `count`, the most an answer may give. No exhibit: both `null`, unless the answer is none, which is right
+  there (both 1); none where the filing lists some is recall 0. Subsidiaries are not part of `correct`.
 - `reportYearCorrect`: the fiscal year against the latest annual filing's (`latestAnnual.fy`), or the next one where
   `newerPossible` says a newer report may have been filed after the truth's pinned quarters. `reportRead`: a cite on
   the report's URL locates a page of it as "pdf p. N".

@@ -130,13 +130,17 @@ export async function scoreHq({ answer, truth, judge }) {
  * Exhibit 21 or 8), one to one: a name the same as a listed one not yet taken matches it, first word for word, then once
  * the legal form is left out (two entities named alike in two jurisdictions are two). A name whose listed namesakes are
  * all taken is a repeat and matches nothing; any other name is Jev's against the whole list. Recall is over at most 15 of
- * the listed ones (the exhibit's count), the most an answer may give. No list: both null.
+ * the listed ones (the exhibit's count), the most an answer may give. No list: both null, unless the answer is none
+ * (`{ none: true, note }`), which is right there; none where the filing lists some is recall 0.
  */
 export async function scoreSubsidiaries({ answer, truth, judge }) {
   const listed = Array.isArray(truth?.items) ? truth.items : null;
-  if (!listed?.length) return { subsidiariesRecall: null, subsidiariesPrecision: null };
+  // None, with its reason: right when the filing has no subsidiary exhibit, and nothing found when it has one.
+  const none = answer?.subsidiaries?.none === true;
+  if (!listed?.length) return none ? { subsidiariesRecall: 1, subsidiariesPrecision: 1 } : { subsidiariesRecall: null, subsidiariesPrecision: null };
+  if (none) return { subsidiariesRecall: 0, subsidiariesPrecision: null };
   const count = typeof truth.count === 'number' && truth.count >= listed.length ? truth.count : listed.length;
-  const given = [...new Map((answer?.subsidiaries ?? []).map((s) => [folded(s.name), s])).values()];
+  const given = [...new Map((Array.isArray(answer?.subsidiaries) ? answer.subsidiaries : []).map((s) => [folded(s.name), s])).values()];
   if (!given.length) return { subsidiariesRecall: 0, subsidiariesPrecision: null };
   const taken = new Set();
   const take = (same) => {
@@ -163,7 +167,9 @@ const claimOf = (cite, answer, codes) => {
       ? `The company's reportable operating segments include ${answer.segments.map((s) => `${s.name} (${Math.round(s.share * 100)}% of revenue)`).join(', ')}.`
       : 'The company reports one operating segment.';
     case 'hq': return `The company's headquarters are in ${[answer.hq?.city, answer.hq?.state, answer.hq?.country].filter(Boolean).join(', ')}.`;
-    case 'subsidiary': return `At least one of these is a subsidiary of the company: ${(answer.subsidiaries ?? []).map((s) => s.name).join(', ')}.`;
+    case 'subsidiary': return Array.isArray(answer.subsidiaries)
+      ? `At least one of these is a subsidiary of the company: ${answer.subsidiaries.map((s) => s.name).join(', ')}.`
+      : 'The company\'s annual report lists no subsidiaries.';
     default: return `This is the company's annual report for fiscal year ${answer.annualReport?.fiscalYear}.`;
   }
 };
