@@ -6,10 +6,58 @@ Beta, on npm under the `beta` dist-tag (`npm view @parcha/agentrun-jev dist-tags
 
 ```sh
 npm install @parcha/agentrun-dsl@beta @parcha/agentrun-jev@beta
+```
+
+## Offline tests
+
+To exercise the real adapter with no key and no network request, inject a client. After installing the packages, save this as `offline-jev.mjs` and run `node offline-jev.mjs`:
+
+```js
+import assert from 'node:assert/strict';
+import { createJevRunner } from '@parcha/agentrun-jev';
+
+const runJudge = createJevRunner({
+  maxAttempts: 1,
+  client: {
+    async systemOne(request, options) {
+      options.signal?.throwIfAborted();
+      assert.deepEqual(Object.keys(request.questions), ['answersQuestion']);
+      return {
+        answers: { answersQuestion: { type: 'noul', noul: 0.95 } },
+      };
+    },
+  },
+});
+
+const result = await runJudge({
+  label: 'screen-evidence',
+  kind: 'judge',
+  state: {
+    question: 'Can emergency documentation fixes bypass prior approval?',
+    passage: 'During an incident, the on-call engineer may merge a fix immediately; a second person reviews it the next working day.',
+  },
+  questions: {
+    answersQuestion: {
+      type: 'noul',
+      instructions: 'Does the passage contain a specific rule or exception answering the question? Retain conditional and contrary evidence; reject topic mentions and promotional claims.',
+    },
+  },
+});
+assert.equal(result.answers.answersQuestion.noul, 0.95);
+console.log(result.answers.answersQuestion);
+```
+
+This prints `{ type: 'noul', noul: 0.95 }`. The answer is **scripted**; it does not evaluate the passage or adapt to prompt changes. Answer IDs must match the requested question IDs. Noul returns a probability, not a boolean. Reported model and token usage may be omitted; the adapter preserves missing usage/cost as unknown instead of inventing measurements.
+
+## Call Jev
+
+A live call needs a key. Set it, then run the sample below as `live-jev.mjs` (`node live-jev.mjs`). The samples that follow are written in TypeScript; run them with a TypeScript runner such as `npx tsx`, or drop the `type` imports and annotations to run them as `.mjs`.
+
+```sh
 export TYPESAFE_API_KEY="your-key"
 ```
 
-```ts
+```js
 import { createJevRunner } from '@parcha/agentrun-jev';
 
 const runJudge = createJevRunner();
@@ -29,11 +77,13 @@ const result = await runJudge({
 console.log(result.answers.team);
 ```
 
+Without a key, `createJevRunner()` throws `JevError` (code `configuration`: "Could not configure Jev. Supply apiKey or set TYPESAFE_API_KEY") on that line, before any request is made. The same holds for `provider: "openrouter"` without `OPENROUTER_API_KEY`.
+
 `judge`, `pick`, `sift`, `route`, semantic predicates, and judgment verification use the same `runJudge` adapter. Choice, Noul, and Score answers retain their raw probabilities. The core validates answer IDs, probability keys and normalization, score rubrics, and value ranges before consuming a result. A typed answer records the model's decision. It does not prove that a real-world claim is true.
 
 `System One` is TypeSafe's typed-question interface, exposed by the SDK as `systemOne`. A Noul answer is a truth probability from 0 to 1; the DSL converts probabilities of at least 0.5 to `true` and retains the probability beside that value. Choice and Score confidence comes from the response. Jev does not return a separate confidence for Noul; the DSL derives its own gate-strength value from the distance from 0.5, scaled to the range 0 to 1. These numbers are useful gate inputs, not calibrated guarantees.
 
-The public adapter API includes `createJevRunner`, `JevError`, `isJevResponseReason`, and the types `JevOptions`, `JevClient`, `JevErrorCode`, `JevResponseReason`, and `JevResponseDiagnostic`. The shared question, answer and distribution helpers live in `@parcha/agentrun-dsl`.
+The public adapter API includes `createJevRunner`, `jevProviderFromEnv`, `JevError`, `isJevResponseReason`, and the types `JevOptions`, `JevClient`, `JevErrorCode`, `JevResponseReason`, and `JevResponseDiagnostic`. The shared question, answer and distribution helpers live in `@parcha/agentrun-dsl`.
 
 ## Configuration
 
@@ -111,46 +161,7 @@ const { answers, usage, cost_usd } = await judge({
 - Request bodies are sent uncompressed; the SDK's default compresses them with zstd.
 - Box is a preview: Jev's page says its request format, answers and limits can change between releases.
 
-## Offline tests
-
-Inject a client to exercise the real adapter without a key or network request. After installing the DSL and Jev packages, save this as `offline-jev.mjs` and run `node offline-jev.mjs`:
-
-```js
-import assert from 'node:assert/strict';
-import { createJevRunner } from '@parcha/agentrun-jev';
-
-const runJudge = createJevRunner({
-  maxAttempts: 1,
-  client: {
-    async systemOne(request, options) {
-      options.signal?.throwIfAborted();
-      assert.deepEqual(Object.keys(request.questions), ['answersQuestion']);
-      return {
-        answers: { answersQuestion: { type: 'noul', noul: 0.95 } },
-      };
-    },
-  },
-});
-
-const result = await runJudge({
-  label: 'screen-evidence',
-  kind: 'judge',
-  state: {
-    question: 'Can emergency documentation fixes bypass prior approval?',
-    passage: 'During an incident, the on-call engineer may merge a fix immediately; a second person reviews it the next working day.',
-  },
-  questions: {
-    answersQuestion: {
-      type: 'noul',
-      instructions: 'Does the passage contain a specific rule or exception answering the question? Retain conditional and contrary evidence; reject topic mentions and promotional claims.',
-    },
-  },
-});
-assert.equal(result.answers.answersQuestion.noul, 0.95);
-console.log(result.answers.answersQuestion);
-```
-
-This prints `{ type: 'noul', noul: 0.95 }`. The answer is **scripted**; it does not evaluate the passage or adapt to prompt changes. Answer IDs must match the requested question IDs. Noul returns a probability, not a boolean. Reported model and token usage may be omitted; the adapter preserves missing usage/cost as unknown instead of inventing measurements.
+## Testing your own host
 
 The [standalone TypeScript starter](https://github.com/Parcha-ai/agentrun/tree/main/examples/starter#readme) includes npm installation, a complete search-and-screen workflow, and tests for missing evidence and the screening step alone. Its injected client answers every named question generated by `sift`.
 
