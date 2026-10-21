@@ -8,7 +8,7 @@ runs. A credential stays in the host's memory and reaches git only on file descr
 The core is plain Node over the git CLI. It does not import pi, so any host can use it. It is the base for agents that
 learn in a repository: a run proposes on `runs/<id>`, a curator merges to `main`, a bad lesson is reverted. It runs on
 Linux and macOS: git's credential helper here is a shell function that reads `/dev/fd/3`, a timed-out git is killed with
-its process group, and the extension opens its seed records with `O_NOFOLLOW`.
+its process group, and the extension reads the checkout's files with `O_NOFOLLOW`.
 
 This package is held: it is built and tested in this repository and not published yet.
 
