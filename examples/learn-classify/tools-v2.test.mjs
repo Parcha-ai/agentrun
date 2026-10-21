@@ -3,7 +3,7 @@
 // gateway, the three tools inside a learn-classify run (root agent, workflow call nodes, agent nodes), and, where Chrome is
 // installed, browse on a real headless Chrome against the local server, refusals proved by what the server never saw.
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { chmod, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -563,6 +563,28 @@ test('read_document asks the browser first for an HTML answer, as for a bot wall
   assert.equal(exhibit.via, 'browser');
   assert.deepEqual(exhibit.found, [1]);
   assert.deepEqual(scripted.log.requests, ['https://ir.harbor.example/ex21.htm']);
+});
+
+test('the classify skill\'s headquarters hint on an IQV-shaped report: the cover, in the singular, is the earliest hit, and the exhibits\' registered office never is', async (t) => {
+  const skill = readFileSync(join(import.meta.dirname, 'agent-v4', 'skills', 'classify', 'SKILL.md'), 'utf8');
+  const step = skill.slice(skill.indexOf('4. The headquarters'), skill.indexOf('\n5. ')).replace(/\s+/g, ' ');
+  const hint = /`find: "([^"]+)"`, and take the earliest hit/.exec(step)?.[1];
+  assert.ok(hint, 'the skill names words to find the headquarters by, and to take the earliest hit');
+  // Made up, shaped like IQV's 10-K: the cover says "office" in the singular; a bylaws exhibit far on says "offices"; an HR
+  // letter in another exhibit gives a subsidiary's registered office abroad.
+  const report = pdfBytes([
+    { lines: ['FORM 10-K', 'Harbor Valve Holdings Inc.', '12 Dock Road, Durham, North Carolina 27703', '(Address of principal executive office and Zip Code)'] },
+    { lines: ['Item 1. Business', 'We make industrial valves and pumps.'] },
+    { lines: ['Exhibit 3.2 Bylaws', 'The principal executive offices of the Corporation shall be where the Board determines.'] },
+    { lines: ['Exhibit 10.31', 'Welcome to the company.', 'Registered Office: 3 Forbury Place, Reading, United Kingdom'] },
+  ]);
+  const root = await scratch(t);
+  const web = await localWeb(t, { 'ir.harbor.example/10k.pdf': send('application/pdf', Buffer.from(report)) });
+  const tool = readDocumentTool({ root, vision: await visionFor({ root, eyes: fakeEyes() }), fetch: web.fetch, lookup: publicLookup });
+  const doc = conforms(tool, await tool.run({ url: 'https://ir.harbor.example/10k.pdf', find: hint }));
+  assert.equal(doc.found[0], 1, 'the earliest hit is the cover');
+  assert.equal(doc.found.includes(4), false, 'the letter\'s registered office is no hit');
+  assert.match(doc.text, /^\[page 1\]\nFORM 10-K[\s\S]*Durham, North Carolina 27703\n\(Address of principal executive office and Zip Code\)/);
 });
 
 test('the eyes reach the model gateway: Google\'s model over its OpenAI-compatible chat completions at <gateway>/v1, with the gateway\'s key and thinking on', async (t) => {

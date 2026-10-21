@@ -361,11 +361,13 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   // The cover is found by its words, not by its page; a document without them is not the filing.
   for (const words of [/Find the cover by its words, not its page: `find: "principal executive offices"`/, /When no page holds those words, the document is not the filing/])
     assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), words);
-  // The headquarters come from the cover's address line, else from the report's head, principal or registered office; a
-  // workflow never passes an empty headquarters on (the answer refuses one) and escalates only when the report gives none.
-  for (const words of [/else from the address the report gives for the company's head office, principal office or registered office, in that order/,
-    /never passes an empty headquarters on/, /escalates "no HQ found" only when the report gives neither/])
+  // The headquarters are the registrant's own statement of its principal or head office (its cover, else the body before the
+  // exhibits), never an exhibit's, a letter's or a subsidiary's address; Jev checks the quote states this registrant's
+  // office, and with no quote that passes the workflow escalates rather than passing an empty or a wrong headquarters on.
+  for (const words of [/The headquarters are the registrant's own statement of its principal or head office: its cover, else the report's body before the exhibits; never an address from an exhibit, a letter or a subsidiary/,
+    /a Jev judge checks that the quote states this registrant's principal or head office/, /when no quote passes, it escalates "no HQ found"/, /never passes an empty headquarters on/])
     assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), words);
+  assert.match(flat(text(v4, 'AGENTS.md')), /its headquarters, the principal executive offices the registrant states for itself/);
   // A quote is at most 300 characters where it is made: the answer refuses a longer cite, so a workflow's quote fields cap
   // it at the node that writes them.
   for (const words of [/Each quote a step returns is at most 300 characters: cut it to the line that carries the fact/,
