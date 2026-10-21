@@ -97,6 +97,44 @@ async function sse(url: string, signal: AbortSignal, onEvent: (event: string, da
   }
 }
 
+const objectGone = (err: unknown) => {
+  const e = err as { status?: unknown; statusCode?: unknown; code?: unknown; message?: unknown };
+  return e.status === 404 || e.statusCode === 404 || e.code === "NoSuchKey" || (typeof e.message === "string" && /\b404 NoSuchKey\b/.test(e.message));
+};
+
+/**
+ * The run's work/ as the disk has it over S3, as a `files-changed` frame carries it. The disk's mirror rewrites files while a listing is taken, so an object can be listed and gone
+ * when read (404 NoSuchKey): it is left out of `files` and counted in `vanished`. Any other failure throws.
+ */
+export async function workSnapshot(control: Pick<DemoControl, "listAll" | "getObject">, runId: string): Promise<{ signature: string; files: FileEntry[]; vanished: number }> {
+  const prefix = `runs/${runId}/work/`;
+  const objects = (await control.listAll(prefix)) as { key: string; size?: number; etag?: string }[];
+  const signature = JSON.stringify(objects.map((o) => [o.key, o.size, o.etag]));
+  const files: FileEntry[] = [];
+  let vanished = 0;
+  for (const o of objects) {
+    const path = o.key.slice(prefix.length).replace(/\/$/, "");
+    if (path === "") continue;
+    if (o.key.endsWith("/")) {
+      files.push({ path, kind: "directory" });
+      continue;
+    }
+    let data: Uint8Array = new Uint8Array();
+    if ((o.size ?? 0) <= 256 * 1024) {
+      try {
+        data = await control.getObject(o.key);
+      } catch (error) {
+        if (!objectGone(error)) throw error;
+        vanished++;
+        continue;
+      }
+    }
+    files.push({ path, kind: "file", data: toBase64(data), mode: 0o644, mtimeMs: 0 });
+  }
+  files.sort((a, b) => (a.path < b.path ? -1 : 1));
+  return { signature, files, vanished };
+}
+
 /**
  * What a page sees of a run while a cloud host runs it: the placement with the host's generation (from run.json over
  * S3), the run's agent events (over the host's link, or from its serve front), and work/ as the disk has it (S3).
@@ -157,22 +195,11 @@ export async function relayViewer(opts: {
               });
           }
         }
-        const objects = (await control.listAll(`runs/${ref.id}/work/`)) as { key: string; size?: number; etag?: string }[];
-        const signature = JSON.stringify(objects.map((o) => [o.key, o.size, o.etag]));
-        if (signature !== lastFiles) {
-          lastFiles = signature;
-          const files: FileEntry[] = [];
-          for (const o of objects) {
-            const path = o.key.slice(`runs/${ref.id}/work/`.length).replace(/\/$/, "");
-            if (path === "") continue;
-            if (o.key.endsWith("/")) files.push({ path, kind: "directory" });
-            else {
-              const data = (o.size ?? 0) <= 256 * 1024 ? await control.getObject(o.key) : new Uint8Array();
-              files.push({ path, kind: "file", data: toBase64(data), mode: 0o644, mtimeMs: 0 });
-            }
-          }
-          files.sort((a, b) => (a.path < b.path ? -1 : 1));
-          send({ t: "files-changed", files });
+        const snap = await workSnapshot(control, ref.id);
+        if (snap.signature !== lastFiles) {
+          // The listing counts as sent only when every object in it was read: one that vanished is left out of this frame and the next tick lists again.
+          lastFiles = snap.vanished === 0 ? snap.signature : "";
+          send({ t: "files-changed", files: snap.files });
         }
       } catch (error) {
         opts.log("cloud.view-failed", { run: ref.id, error: (error as Error).message });
