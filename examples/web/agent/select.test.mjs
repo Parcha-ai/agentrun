@@ -3,7 +3,7 @@
 // judge's options and the lookups the host gives it. Offline: Jev, Browserbase and Wikipedia are fakes.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { composePrompt, jevOptionsOf, lookups, promptForRun, searchLookup, wikipediaLookup } from './select.ts';
+import { composePrompt, jevOptionsOf, judgeOf, lookups, promptForRun, searchLookup, wikipediaLookup } from './select.ts';
 
 /** A home's variants as readAgentHome gives them: the question row, two overlays on it, the base and the generic. */
 const stored = {
@@ -107,4 +107,9 @@ test('Jev through the model gateway\'s TypeSafe pass-through on the gateway\'s k
   assert.deepEqual(jevOptionsOf({ AGENT_MODEL_BASE_URL: 'http://gateway:9421/v1', AGENT_MODEL_API_KEY: 'gw' }), { apiKey: 'gw', pricing: { inputUsdPerMillionTokens: 0.042, outputUsdPerMillionTokens: 0 }, baseURL: 'http://gateway:9421/typesafe' });
   assert.equal(jevOptionsOf({ AGENT_MODEL_BASE_URL: 'http://gateway:9421/v1', AGENT_MODEL_API_KEY: 'gw', TYPESAFE_API_KEY: 'ts' }).apiKey, 'ts');
   assert.deepEqual(jevOptionsOf({ TYPESAFE_API_KEY: 'ts' }), { apiKey: 'ts', pricing: { inputUsdPerMillionTokens: 0.042, outputUsdPerMillionTokens: 0 } });
+});
+
+test('Jev is made on the first question: no key is needed to start a server, and a question without one fails as Jev\'s configuration error', async () => {
+  const judge = judgeOf({});
+  await assert.rejects(judge({ label: 'kind', kind: 'judge', state: { input: 'x' }, questions: { kind: { type: 'choice', instructions: 'Which?', criteria: { a: 'A', other: null } } } }), (error) => error.code === 'configuration');
 });
