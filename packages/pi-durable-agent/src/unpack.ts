@@ -200,7 +200,7 @@ async function inspectPack(file: string, options: { maxBytes?: number; maxMember
       for (const member of members) {
         const id = member.name.split("/")[1];
         if (!member.name.startsWith("runs/") || id === undefined) continue;
-        if (!agent.runs[id]) bad("format", `${member.name} belongs to run ${id}, which the pack's index does not list`);
+        if (!Object.hasOwn(agent.runs, id)) bad("format", `${member.name} belongs to run ${id}, which the pack's index does not list`);
         else if (live.has(id)) bad("format", `${member.name} belongs to run ${id}, which was live: a live run travels as its index entry only`);
       }
     }
