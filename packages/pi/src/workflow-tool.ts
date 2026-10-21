@@ -7,6 +7,7 @@ import {
 } from '@parcha/agentrun-dsl';
 import type { WorkflowExtensionService } from './extension-service.js';
 import { PI_HOST_ADDENDUM } from './host-addendum.js';
+import { OperatorError } from './operator-error.js';
 
 export const WORKFLOW_TOOL_ACTIONS = ['describe', 'inspect', 'dry-run', 'run', 'save', 'load', 'list'] as const;
 
@@ -38,13 +39,13 @@ export const authoringReferences = (host: AuthorHostAddendum = PI_HOST_ADDENDUM)
  *  refusal throws, naming why. */
 export function inspectCandidate(checker: WorkflowExtensionService, candidate: unknown, input?: Record<string, unknown>) {
   if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
-    throw new Error('Cannot inspect workflow: workflow must be a JSON object, not a JSON-encoded string or array. Pass the complete object directly.');
+    throw new OperatorError('Cannot inspect workflow: workflow must be a JSON object, not a JSON-encoded string or array. Pass the complete object directly.');
   }
   let inspection;
   try {
     inspection = checker.preflight(candidate, input);
   } catch (error) {
-    throw new Error(`Cannot inspect workflow: ${error instanceof Error ? error.message : 'Invalid workflow'}`);
+    throw new OperatorError(`Cannot inspect workflow: ${error instanceof Error ? error.message : 'Invalid workflow'}`);
   }
   return { inspection, tree: formatWorkflowTree(inspection) };
 }
