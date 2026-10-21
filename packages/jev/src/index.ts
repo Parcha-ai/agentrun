@@ -238,7 +238,7 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
       let assetDigests: Record<string, { sha256: string; mime: string; bytes: number }> | undefined;
       if (carriesImage) {
         // A reference is replaced where it sits inside a string value of the state, an instruction or a criterion; keys (question ids, option names) are never replaced.
-        const texts = [...stringValues(JSON.parse(serializedState)), ...Object.values(request.questions).flatMap(question => record(question) ? [...stringValues(question.instructions), ...stringValues(question.criteria)] : [])];
+        const texts = [...stringValues(request.state), ...Object.values(request.questions).flatMap(question => record(question) ? [...stringValues(question.instructions), ...stringValues(question.criteria)] : [])];
         assets = Object.create(null) as Record<string, Image>; assetDigests = Object.create(null) as Record<string, { sha256: string; mime: string; bytes: number }>;
         for (const reference of references) {
           const image = given[reference];
@@ -250,9 +250,9 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
           assets[reference] = new Image(image.bytes);
           assetDigests[reference] = { sha256: createHash("sha256").update(image.bytes).digest("hex"), mime: image.mime, bytes: image.bytes.byteLength };
         }
-        request = { ...request, assets };
         // The hash names the images by their own digests, so it identifies the request that was sent without holding the bytes.
-        body = JSON.stringify({ ...JSON.parse(body), assets: assetDigests });
+        body = JSON.stringify({ ...request, assets: assetDigests });
+        request = { ...request, assets };
       }
       const headers = carriesImage || hasBox ? { [IMAGE_HEADER]: "true" } : undefined;
       // The first attempt that failed in a way the server may have billed (a lost answer, a 408, a 5xx). A later 429 does not make the call free: the give-up reports this one.
@@ -313,9 +313,9 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
         const reported = record(usage) && usage.cost !== undefined && usage.cost !== null;
         const reportedCost = reported && typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0 ? usage.cost : undefined;
         const noCounts = record(usage) && usage.input_tokens === undefined && usage.output_tokens === undefined;
-        if (usage != null && (!record(usage) || (reported ? reportedCost === undefined || !(counted || noCounts) : !counted))) {
-          throw invalidResponse("token_usage", "Jev returned invalid token usage.");
-        }
+        // Accepted: no usage; both counts; or a valid cost with both counts or with neither.
+        const usageValid = usage == null || (record(usage) && (reported ? reportedCost !== undefined && (counted || noCounts) : counted));
+        if (!usageValid) throw invalidResponse("token_usage", "Jev returned invalid token usage.");
         if (result.model != null && (typeof result.model !== "string" || !result.model.trim())) {
           throw invalidResponse("model_identifier", "Jev returned an invalid model identifier.");
         }
