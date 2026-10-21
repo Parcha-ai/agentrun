@@ -24,6 +24,10 @@ its skills, its saved sign-ins and the index of its runs in `agent.sqlite`, and 
 You need Node 22.19 or later. The server itself needs no key and no network. A run needs whatever its agent needs (see
 [agent/README.md](agent/README.md)), and the agent's start command uses the built packages, so build the repository first.
 
+Starting a run needs a Browserbase key (`BROWSERBASE_API_KEY`) and a model endpoint, until pi-browser's `./live-view`
+lets a person sign in through a local Chrome. With no key, use the keyless
+[quickstart](../../packages/pi-durable-agent/README.md#quickstart-no-key-no-network) in the package README instead.
+
 ```sh
 npm ci --ignore-scripts && npm run build
 node --no-warnings=ExperimentalWarning examples/web/server.mjs

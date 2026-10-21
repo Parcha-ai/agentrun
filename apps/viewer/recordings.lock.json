@@ -1,6 +1,6 @@
 {
-  "asset": "recordings.tar",
-  "sha256": "0b98c6be77b4fdb24206e5460120c4d9d93d7c9ada4e8abb74919b4b83f109bc",
+  "asset": "recordings-6b.tar",
+  "sha256": "ab011cd0debe646e3377aea18b040c631fcbae6a4588d5b6a23dc21b8364bdbc",
   "ids": [
     {
       "id": "market-street",
@@ -23,6 +23,30 @@
       "poster": "ec9c40eff682e39cd2d560fe866be2d3399617674fc24d60769a2c3be325ecd1",
       "looks": [
         "0e296a2cd4d03e6195bb20c8d9358ae1a34e7b080fa8de0387877fdab61b662c"
+      ]
+    },
+    {
+      "id": "utility-bills",
+      "poster": "f266ec2ec2f4cf36f4bda3a5e335a25935c52e3ee2b5edc7bff13541bfbc2304",
+      "title": "Check the bill and get the last 3 statements",
+      "view": [
+        "muse"
+      ]
+    },
+    {
+      "id": "utility-amount-owed",
+      "poster": "49087ea2cad90335261084b8fc337de2519de8e2556c229dae5ee5d21620e151",
+      "title": "What do I owe now? (remembered)",
+      "view": [
+        "muse"
+      ]
+    },
+    {
+      "id": "utility-last-payment",
+      "poster": "e1040f0ca564ccf29d737a1ddf05396041b68dea2b3f9e92018aca7987e980eb",
+      "title": "Did my last payment go through?",
+      "view": [
+        "muse"
       ]
     }
   ]
