@@ -47,6 +47,10 @@ a new question of that example's own files.
 | `--record <dir>` | keep the run as an `agentrun.recording/1` directory: the repository's recording format, which the [run viewer](../../apps/viewer/README.md) plays |
 | `--fetch-sources` | on fakes, fetch and check the example's files instead of reading committed ones |
 | `--max-usd <n>` | stop a run past n dollars; without it a run stops past $1, twice the $0.50 a run is expected to cost (`expectedCost` in `demo.json`) |
+| `--model <provider/id>` | with `--live`, the model that runs the agent, as `anthropic/claude-sonnet-5-5` does; `--provider <name>` with a bare id makes it `provider/id`; without `--live` both are refused |
+| `--eyes-model <provider/id>` | with `--live`, the model that looks, when it should not be the lead |
+| `--dir <path>` | keep the run's directory there |
+| `--json` | print the result as one JSON object |
 | `--thinking <low\|medium\|high>` | the agent's thinking level for the run (default `medium`); a Claude lead thinks reliably at `high`, while at `medium` it may answer without thinking; it goes with an example folder or an inline JSON `--input`, and is refused with an input file |
 
 [`SETUP-PROMPT.md`](SETUP-PROMPT.md) sets up a live run for you: paste it into your coding agent.
