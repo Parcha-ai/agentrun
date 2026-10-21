@@ -27,7 +27,7 @@ const documents = (over = {}) => ({
   'train.checkpoints': ['ck-1', { thread: 51, step: 400, place, bytes: 2048, placer: 'jev', placement: 'pl-1', basis: 'scripted' }],
   'train.progress': ['51', { step: 400, steps_total: 1000, reward: 1.25, unit: 'return/episode', skill: 'walk forward', checkpoint: 'ck-1',
     metric: { name: 'speed', value: 0.42, unit: 'm/s', target: { op: '>=', value: 0.4 } }, passes: true, t_s: 31.5, status: 'running',
-    passed_at: { checkpoint: 'ck-1', step: 400, t_s: 31.5 }, diagnosis: 'still-changing', body: 'four legs', basis: 'scripted' }],
+    passed_at: { checkpoint: 'ck-1', step: 400, t_s: 31.5 }, diagnosis: { kind: 'still-changing', text: 'The speed is still rising at the last checkpoint.' }, body: 'four legs', basis: 'scripted' }],
   'train.render': ['51', { blob: sha(WEBM), w: 640, h: 360, step: 400, checkpoint: 'ck-1', basis: 'scripted' }],
   'train.sweeps': ['sweep-1', { checkpoint: 'ck-1', rollouts: 16, score: 0.8, unit: 'success rate', place, placer: 'jev', passes_share: 0.75, min: 0.5, max: 0.95, course: 'flat ground', basis: 'scripted' }],
   'body.design': ['b-1a2b3c4d', { blob: sha(BODY), label: 'four legs', language: 'json', basis: 'agent' }],
@@ -121,14 +121,21 @@ test('draft 55: the shapes: a render\'s size, a curve\'s points, numbers finite,
 
 test('amendment 1: a metric and its target say whether it passes; the new fields and the two body documents', (t) => {
   const progress = base['train.progress'][1];
-  assert.deepEqual(problems(t, with_('train.progress', { passes: false })), ['train.progress "51": its passes is false, but its metric 0.42 >= 0.4 is true']);
-  assert.deepEqual(problems(t, with_('train.progress', { metric: { ...progress.metric, target: { op: '<', value: 0.4 } } })), ['train.progress "51": its passes is true, but its metric 0.42 < 0.4 is false']);
+  // passes is one-way (fix 1): false is allowed on target (a walk that fell); true needs the metric on target.
+  assert.deepEqual(problems(t, with_('train.progress', { passes: false })), [], 'on target and failed another condition');
+  assert.deepEqual(problems(t, with_('train.progress', { metric: { ...progress.metric, target: { op: '<', value: 0.4 } } })), ['train.progress "51": its passes is true, but its metric 0.42 is not < 0.4']);
+  assert.deepEqual(problems(t, with_('train.progress', { metric: { name: 'get up', value: 1, unit: 'tries' } })), [], 'no numeric target: the check does not run');
+  assert.deepEqual(problems(t, with_('train.progress', { metric: { ...progress.metric, value: null } })), [], 'a null value is a gap: the check does not run');
+  assert.deepEqual(problems(t, with_('train.progress', { metric: { ...progress.metric, value: 'fast' } })), ['train.progress "51": its metric\'s value is neither a finite number nor null']);
+  assert.deepEqual(problems(t, with_('train.progress', { status: 'compiled', diagnosis: { kind: 'too-few-checkpoints', text: 'Only one checkpoint was written.' } })), []);
+  assert.deepEqual(problems(t, with_('train.progress', { diagnosis: 'plateaued' })), ['train.progress "51": its diagnosis is not { kind, text }']);
   assert.deepEqual(problems(t, with_('train.progress', { metric: { ...progress.metric, target: '>= 0.4' } })), ['train.progress "51": its metric\'s target is not { op (>=, <=, >, <), value (a finite number) }'], 'never free text');
   assert.deepEqual(problems(t, with_('train.progress', { basis: 'measured', metric: { name: 'speed', value: 0.42 }, passes: undefined })), ['train.progress "51": its metric has no unit, and its basis is measured']);
   assert.deepEqual(problems(t, with_('train.progress', { basis: 'measured', reward: undefined, unit: undefined })), [], 'an absent reward is absent; the rest stays measured');
-  assert.deepEqual(problems(t, with_('train.progress', { status: 'paused', diagnosis: 'slow' })), ['train.progress "51": its status "paused" is not one of running, done, failed, refused', 'train.progress "51": its diagnosis "slow" is not one of never-moved, plateaued, never-settles, never-measured, still-changing, test-raised']);
+  assert.deepEqual(problems(t, with_('train.progress', { status: 'paused', diagnosis: { kind: 'slow', text: 'x' } })), ['train.progress "51": its status "paused" is not one of running, compiled, done, failed, refused', 'train.progress "51": its diagnosis kind "slow" is not one of never-moved, plateaued, never-settles, never-measured, still-changing, test-raised, no-checkpoint, too-few-checkpoints']);
   assert.deepEqual(problems(t, with_('train.progress', { passed_at: { checkpoint: 'ck-9', step: 400, t_s: 31.5 } })), ['train.progress "51": checkpoint "ck-9" names no train.checkpoints key in this recording']);
-  assert.deepEqual(problems(t, with_('train.checkpoints', { passes: false, metric: { name: 'speed', value: 0.5, target: { op: '>=', value: 0.4 } } })), ['train.checkpoints "ck-1": its passes is false, but its metric 0.5 >= 0.4 is true']);
+  assert.deepEqual(problems(t, with_('train.checkpoints', { passes: true, metric: { name: 'speed', value: 0.3, target: { op: '>=', value: 0.4 } } })), ['train.checkpoints "ck-1": its passes is true, but its metric 0.3 is not >= 0.4']);
+  assert.deepEqual(problems(t, with_('train.checkpoints', { passes: false, metric: { name: 'speed', value: 0.5, target: { op: '>=', value: 0.4 } } })), [], 'a fail on target is allowed');
   assert.deepEqual(problems(t, with_('train.sweeps', { passes_share: 1.5, min: 0.9, max: 0.1 })), ['train.sweeps "sweep-1": its passes_share is not a number from 0 to 1', 'train.sweeps "sweep-1": its min 0.9 is above its max 0.1']);
   assert.deepEqual(problems(t, with_('learn.curve', { target: { y: 'fast' }, marks: [{ x: 'a' }] })), ['learn.curve "quadruped": its target y is not a finite number', 'learn.curve "quadruped": its target label is not plain text of at most 40 characters', 'learn.curve "quadruped": its mark 0 is not { x (a finite number), label (plain text of at most 40 characters) }']);
   assert.deepEqual(problems(t, with_('body.run', { kind: 'walk', fits: 'yes', place: { ...place, box: 'box-3' } })), ['body.run "b-1a2b3c4d": its kind "walk" is not one of build, stand, skill', 'body.run "b-1a2b3c4d": its fits is not true or false', 'body.run "b-1a2b3c4d": its place\'s box "box-3" is not a box-N label of a box line in this recording']);

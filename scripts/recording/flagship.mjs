@@ -12,8 +12,8 @@ const PHASES = new Set(['message', 'turn_end']);
 const NEED_THRESHOLD = 'transport.need-threshold/1';
 /** A distribution's probabilities sum to 1 within this (amendment 2). */
 const SUM_SLACK = 0.02;
-const STATUS = new Set(['running', 'done', 'failed', 'refused']);
-const DIAGNOSIS = new Set(['never-moved', 'plateaued', 'never-settles', 'never-measured', 'still-changing', 'test-raised']);
+const STATUS = new Set(['running', 'compiled', 'done', 'failed', 'refused']);
+const DIAGNOSIS = new Set(['never-moved', 'plateaued', 'never-settles', 'never-measured', 'still-changing', 'test-raised', 'no-checkpoint', 'too-few-checkpoints']);
 const RUN_KINDS = new Set(['build', 'stand', 'skill']);
 const BODY_RENDERS = new Set(['png', 'webp', 'webm']);
 /** A body render is a clip of at most 600 KB (amendment 1). */
@@ -101,17 +101,18 @@ function valueProblems(doc, key, value, known) {
   const metric = (m) => {
     if (!isObject(m)) { out.push('its metric is not { name, value, unit?, target? }'); return; }
     need(text(m.name, 24), 'its metric\'s name is not plain text of at most 24 characters');
-    need(finite(m.value), 'its metric\'s value is not a finite number');
+    // A null value is a gap: the test did not measure it (fix 1). Never 0.
+    need(m.value === null || finite(m.value), 'its metric\'s value is neither a finite number nor null');
     unit(m.unit, 'its metric', measured);
     if (m.target !== undefined) need(isObject(m.target) && OPS.has(m.target.op) && finite(m.target.value), `its metric's target is not { op (${[...OPS.keys()].join(', ')}), value (a finite number) }`);
   };
-  // passes, when the metric and its target say it too, is what they say.
+  // passes is one-way (fix 1): a pass is on target, so true needs value op target.value; false may be on target, as a
+  // skill's test has more conditions than its metric. With no numeric target or a null value the check does not run.
   const passes = (v) => {
     if (v.passes !== undefined) need(typeof v.passes === 'boolean', 'its passes is not true or false');
     const m = v.metric, target = isObject(m) ? m.target : undefined;
-    if (typeof v.passes !== 'boolean' || !finite(m?.value) || !isObject(target) || !OPS.has(target.op) || !finite(target.value)) return;
-    const holds = OPS.get(target.op)(m.value, target.value);
-    need(v.passes === holds, `its passes is ${v.passes}, but its metric ${m.value} ${target.op} ${target.value} is ${holds}`);
+    if (v.passes !== true || !finite(m?.value) || !isObject(target) || !OPS.has(target.op) || !finite(target.value)) return;
+    need(OPS.get(target.op)(m.value, target.value), `its passes is true, but its metric ${m.value} is not ${target.op} ${target.value}`);
   };
   const blob = (hash, allowed) => {
     if (!SHA256.test(hash ?? '')) { out.push('its blob is not a SHA-256'); return undefined; }
@@ -150,7 +151,14 @@ function valueProblems(doc, key, value, known) {
           need(nonNegative(value.passed_at.t_s), 'its passed_at t_s is not a number of seconds of at least 0');
         }
       }
-      if (value.diagnosis !== undefined) need(DIAGNOSIS.has(value.diagnosis), `its diagnosis ${JSON.stringify(value.diagnosis)} is not one of ${[...DIAGNOSIS].join(', ')}`);
+      if (value.diagnosis !== undefined) {
+        if (!isObject(value.diagnosis)) out.push('its diagnosis is not { kind, text }');
+        else {
+          need(DIAGNOSIS.has(value.diagnosis.kind), `its diagnosis kind ${JSON.stringify(value.diagnosis.kind)} is not one of ${[...DIAGNOSIS].join(', ')}`);
+          // The trainer's own sentence, shown and never parsed.
+          if (value.diagnosis.text !== undefined) need(typeof value.diagnosis.text === 'string' && value.diagnosis.text.length <= 2000, 'its diagnosis text is not text of at most 2,000 characters');
+        }
+      }
       if (value.body !== undefined) label(value.body, 'body');
       break;
     case 'train.render': {
