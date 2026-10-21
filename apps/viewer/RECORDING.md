@@ -231,11 +231,12 @@ snapshots included. A lost branch (3.2) is events, not state: the per-generation
 - No secret, ever. Packages already keep credentials out of their documents and results; the recorder also passes
   every live line through the host's redactor before writing it.
 - A published recording uses public sources only, chosen and checked before it is recorded.
-- A `pi.conversation` line holds only `id`, `parent` and `owner` (draft 54). Its `parent.conversationId` has lines in the
-  same recording; its `parent.at` is the id of an entry of that conversation, a `pi.user`, `pi.system`, `pi.assistant` or
-  `pi.tool-result` line whose `data.conversationId` is `parent.conversationId`; its `owner.taskId` is the id of a task
-  record, a `pi.tool`, `pi.generation` or `agentrun.workflow` line. A line of any other kind never counts, so a new kind
-  is a change to this format. The validator refuses a record that breaks this, never dropping it silently.
+- A `pi.conversation` line holds only `id`, `parent` and `owner` (draft 54), and `parent` and `owner` hold only their two
+  fields each. Its `parent.conversationId` has lines in the same recording; its `parent.at` is the id of an entry of that
+  conversation, a `pi.user`, `pi.system`, `pi.assistant` or `pi.tool-result` line whose `data.conversationId` is
+  `parent.conversationId`; its `owner.taskId` is the id of a task record of `owner.conversationId`, a `pi.tool`,
+  `pi.generation` or `agentrun.workflow` line whose `data.conversationId` is `owner.conversationId`. A line of any other
+  kind never counts, so a new kind is a change to this format. The validator refuses a record that breaks this, never dropping it silently.
 - Blobs are kept whole. A recording too large for a static host replaces its `frame` lines with `frame.track` lines
   (a WebM per session), and only then drops frames; it never drops durable lines.
 

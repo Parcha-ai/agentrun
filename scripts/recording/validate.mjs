@@ -320,9 +320,10 @@ export function validateRecording(dir) {
     if (event.channel === 'durable' && event.kind === 'pi.conversation') {
       conversationRecords.push({ line, record: event.data });
       if (isInt(event.data?.id)) conversations.add(event.data.id);
-    } else if (event.channel === 'durable' && isObject(event.data) && isInt(event.data.id)) {
-      if (TASK_KINDS.has(event.kind)) tasks.add(event.data.id);
-      else if (ENTRY_KINDS.has(event.kind) && isInt(event.data.conversationId)) entries.add(`${event.data.conversationId}\u0000${event.data.id}`);
+    } else if (event.channel === 'durable' && isObject(event.data) && isInt(event.data.id) && isInt(event.data.conversationId)) {
+      const pair = `${event.data.conversationId}\u0000${event.data.id}`;
+      if (TASK_KINDS.has(event.kind)) tasks.add(pair);
+      else if (ENTRY_KINDS.has(event.kind)) entries.add(pair);
     }
     for (const key of lookKeysOf(event.data)) lookKeys.add(key);
     for (const [key, named] of lookSourcesOf(event.data)) lookSources.set(key, [...(lookSources.get(key) ?? []), ...named]);
@@ -334,14 +335,19 @@ export function validateRecording(dir) {
     const name = `pi.conversation ${record.id}`;
     for (const key of Object.keys(record)) if (!['id', 'parent', 'owner'].includes(key)) add('events.jsonl', `${name} holds ${key}: the line keeps only id, parent and owner, no content`, line);
     const { parent, owner } = record;
+    const extraKeys = (value, role, keys) => {
+      if (isObject(value)) for (const key of Object.keys(value)) if (!keys.includes(key)) add('events.jsonl', `${name}: its ${role} holds ${key}: ${role === 'owner' ? 'an' : 'a'} ${role} keeps only ${keys.join(' and ')}, no content`, line);
+    };
     if (parent !== undefined) {
+      extraKeys(parent, 'parent', ['conversationId', 'at']);
       if (!isObject(parent) || !isInt(parent.conversationId) || !isInt(parent.at)) add('events.jsonl', `${name}: its parent is not { conversationId, at }, each an integer`, line);
       else if (!conversations.has(parent.conversationId)) add('events.jsonl', `${name}: its parent names conversation ${parent.conversationId}, which is not in this recording`, line);
       else if (!entries.has(`${parent.conversationId}\u0000${parent.at}`)) add('events.jsonl', `${name}: its parent names entry ${parent.at}, which is no entry (${[...ENTRY_KINDS].join(', ')}) of conversation ${parent.conversationId}`, line);
     }
     if (owner !== undefined) {
+      extraKeys(owner, 'owner', ['conversationId', 'taskId']);
       if (!isObject(owner) || !isInt(owner.conversationId) || !isInt(owner.taskId)) add('events.jsonl', `${name}: its owner is not { conversationId, taskId }, each an integer`, line);
-      else if (!tasks.has(owner.taskId)) add('events.jsonl', `${name}: its owner names task ${owner.taskId}, which is no task record (${[...TASK_KINDS].join(', ')}) in this recording`, line);
+      else if (!tasks.has(`${owner.conversationId}\u0000${owner.taskId}`)) add('events.jsonl', `${name}: its owner names task ${owner.taskId}, which is no task record (${[...TASK_KINDS].join(', ')}) of conversation ${owner.conversationId}`, line);
     }
   }
   if (isObject(manifest?.artifact) && artifactProblems(manifest.artifact).length === 0) artifactFileProblems(manifest.artifact, dir, lookKeys, lookSources, add);
