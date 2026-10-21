@@ -108,8 +108,11 @@ test('the ten-kill ledger\'s store as recording lines: invariants, values, every
   assert.ok(ordered(lines), 'commit never decreases; (commit, order) strictly increases');
   assert.ok(lines.every((line, i) => line.order === (i > 0 && lines[i - 1].commit === line.commit ? lines[i - 1].order + 1 : 0)), 'order counts from 0 in each commit');
   // A conversation entry belongs to its conversation; so does a conversation's document.
-  const entryLines = lines.filter((line) => line.data?.doc === undefined && !isTask(line));
+  const entryLines = lines.filter((line) => line.data?.doc === undefined && !isTask(line) && line.kind !== 'pi.conversation');
   assert.ok(entryLines.length > 0 && entryLines.every((line) => line.source === 'pi' && line.conv === line.data.conversationId));
+  // A conversation's record (draft 54) is its own line, a pi line of its conversation, { id, parent?, owner? } and nothing else.
+  const records = lines.filter((line) => line.kind === 'pi.conversation');
+  assert.ok(records.length > 0 && records.every((line) => line.source === 'pi' && line.channel === 'durable' && line.conv === line.data.id && Object.keys(line.data).every((key) => ['id', 'parent', 'owner'].includes(key))));
   assert.ok(lines.filter((line) => line.kind.startsWith('pi.') && line.data?.doc !== undefined).every((line) => typeof line.conv === 'number'));
   // The node attempt's conversation: its entries, documents and tasks carry the node's path, so a branch's view holds
   // its agent's turns.
@@ -189,8 +192,11 @@ test('the ten-kill ledger\'s store as recording lines: invariants, values, every
     const snapshot = await snapshotLines(storage, { at: last, gen: ledger.processes, context: ctx });
     assert.ok(snapshot.every((line, i) => line.snapshot === true && line.commit === last && line.order === i));
     assert.ok(snapshot.every((line) => line.gen === durableDoc(file, 'agentrun.driver', RUN_KEY).generation));
-    assert.deepEqual(new Map(snapshot.map((line) => [docId(line.data.doc, line.data.key, line.conv), line.data.value])), new Map([...lastValue].map(([id, line]) => [id, line.data.value])));
-    for (const line of snapshot) {
+    // The snapshot carries each conversation's record (draft 54) beside the documents: the same records the export has.
+    const documents = snapshot.filter((line) => line.kind !== 'pi.conversation');
+    assert.deepEqual(snapshot.filter((line) => line.kind === 'pi.conversation').map((line) => line.data), lines.filter((line) => line.kind === 'pi.conversation').map((line) => line.data));
+    assert.deepEqual(new Map(documents.map((line) => [docId(line.data.doc, line.data.key, line.conv), line.data.value])), new Map([...lastValue].map(([id, line]) => [id, line.data.value])));
+    for (const line of documents) {
       const exported = lastValue.get(docId(line.data.doc, line.data.key, line.conv));
       assert.equal(line.path, exported.path, docId(line.data.doc, line.data.key, line.conv));
     }

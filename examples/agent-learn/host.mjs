@@ -6,7 +6,7 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createSession } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import {
-  agentLearn, currentRevision, curate, guard, LAYOUT, LearnError, proposeLearning, readTrial, seedLearning, seedWorkflows, workflowsToTry,
+  agentLearn, currentRevision, curate, guard, LAYOUT, LearnError, proposeLearning, readTrial, seedLearning, seedWorkflows, usesSettler, workflowsToTry,
 } from '@parcha/pi-agent-learn';
 import {
   AGENT_STORE_FILE, AgentHomeError, carryBack, createAgentHome, openAgentHome, readAgentHome, refreshAgentHome, startRun,
@@ -110,8 +110,9 @@ export async function finishRun({ home, repo, run, secrets = [], caseValues = []
   return { carried, proposal };
 }
 
-// The single writer of main. `judge` is the DSL's runJudge port; curate admits saved workflows as trials and settles
-// their uses with the package's own ports by default.
+// The single writer of main. `judge` is the DSL's runJudge port; curate admits saved workflows as trials with the
+// package's own port, and this host settles their uses promoting after three clean runs (the package's default is two).
+export const PROMOTE_AFTER = 3;
 export function curateNow({ repo, judge, secrets = [], now }) {
-  return curate({ repo, judge, secrets, ...(now ? { now } : {}) });
+  return curate({ repo, judge, secrets, settleUses: usesSettler({ thresholds: { promoteAfter: PROMOTE_AFTER } }), ...(now ? { now } : {}) });
 }

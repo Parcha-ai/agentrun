@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { Compile } from 'typebox/compile';
+import { checkHostTools } from './host-tools.js';
 import { Text } from '@earendil-works/pi-tui';
 import {
   createReadToolDefinition, createBashToolDefinition, createEditToolDefinition, createWriteToolDefinition,
@@ -94,7 +95,8 @@ export function createAgentRunExtension(options: AgentRunExtensionOptions = {}):
   if (options.onToolAttempt !== undefined && typeof options.onToolAttempt !== 'function') throw new Error('onToolAttempt must be a host callback');
   if (options.onWorkflowEvent !== undefined && typeof options.onWorkflowEvent !== 'function') throw new Error('onWorkflowEvent must be a host callback');
   if (options.sop !== undefined && (typeof options.sop !== 'string' || !options.sop.trim())) throw new Error('sop must be nonempty text');
-  const limits = { ...nativeLimits, ...options.runtimeLimits } as AgentRunRuntimeLimits;
+  // A field given as undefined is an omitted one: it keeps its default.
+  const limits = { ...nativeLimits, ...Object.fromEntries(Object.entries(options.runtimeLimits ?? {}).filter(([, value]) => value !== undefined)) } as AgentRunRuntimeLimits;
   for (const [key, value] of Object.entries(limits)) {
     if (!(key in nativeLimits) || value !== null && (!Number.isSafeInteger(value) || value < 1 || value > nativeLimits[key as keyof typeof nativeLimits])) {
       throw new Error('runtimeLimits must use known fields with positive bounded integers or explicit null');
@@ -118,17 +120,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
   const toolSet = (ctx: ExtensionContext, trusted = false): PiToolDefinition[] => {
     if (configuration.hostTools) {
       const supplied = configuration.hostTools(ctx);
-      if (!Array.isArray(supplied) || supplied.length > 100) throw new Error('Host must supply at most 100 explicit tool definitions');
-      const names = new Set<string>();
-      return supplied.map(tool => {
-        if (!tool || typeof tool.name !== 'string' || !tool.name.trim() || tool.name.length > 200
-          || ['agentrun', 'submit'].includes(tool.name) || names.has(tool.name)) throw new Error('Host tools contain an invalid, reserved or duplicate name');
-        if (typeof tool.execute !== 'function' || !tool.parameters || typeof tool.parameters !== 'object') throw new Error('Host tools require an executable definition and parameter schema');
-        Compile(tool.parameters as never);
-        if (tool.resultSchema) Compile(tool.resultSchema as never);
-        names.add(tool.name);
-        return { ...tool, parameters: structuredClone(tool.parameters), ...(tool.resultSchema ? { resultSchema: structuredClone(tool.resultSchema) } : {}) };
-      });
+      checkHostTools(supplied, { reserved: ['agentrun', 'submit'], executable: true });
+      return supplied.map(tool => ({ ...tool, parameters: structuredClone(tool.parameters), ...(tool.resultSchema ? { resultSchema: structuredClone(tool.resultSchema) } : {}) }));
     }
     const active = new Set(pi.getActiveTools());
     const builtins = new Set(pi.getAllTools().filter(t => t.sourceInfo.source === 'builtin').map(t => t.name));

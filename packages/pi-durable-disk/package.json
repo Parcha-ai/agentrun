@@ -1,7 +1,7 @@
 {
   "name": "@parcha/pi-durable-disk",
   "version": "0.1.0-beta.21",
-  "description": "A durable pi host on a network disk (Archil): one owner per run, a fence, durable commits, and a supervisor.",
+  "description": "The agent is the workspace: its conversation and its files live together in one directory on a disk. Mount it on any Linux host or container, release it, and mount it elsewhere: the agent carries on.",
   "keywords": [
     "pi",
     "pi-durable",

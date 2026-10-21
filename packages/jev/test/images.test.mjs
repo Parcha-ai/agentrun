@@ -96,12 +96,25 @@ test('a request that cannot be valid is refused before any send: no image for a 
     'a file over 16 MiB': { assets: { '<photo>': asPng(Object.assign(new Uint8Array(16 * 1024 * 1024 + 1), png())) } },
     'a reference no state or question names': { state: 'no reference here', questions: { open: { type: 'noul', instructions: 'Is it open?' } }, assets: { '<photo>': asPng(png()) } },
     'an image that is not an object': { assets: { '<photo>': 'data:image/png;base64,AAAA' } },
+    'an empty reference': { assets: { '': asPng(png()) } },
+    'a reference over 1024 UTF-8 bytes, under 1024 characters': { state: `x ${'é'.repeat(513)}`, assets: { ['é'.repeat(513)]: asPng(png()) } },
+    'a reference with a double quote': { state: 'x <"photo">', assets: { '<"photo">': asPng(png()) } },
+    'a reference with a backslash': { state: 'x <\\photo>', assets: { '<\\photo>': asPng(png()) } },
+    'a reference with a control character': { state: 'x <photo\n>', assets: { '<photo\n>': asPng(png()) } },
   };
   for (const [name, params] of Object.entries(cases)) {
     const { t, promise } = run(params);
     await assert.rejects(promise, error => { code('invalid_request')(error); assert.equal(error.attempts, 0); return true; }, name);
     assert.equal(t.seen.length, 0, `${name}: nothing was sent`);
   }
+});
+
+test('a reference of exactly 1024 UTF-8 bytes goes out: the limit counts bytes, not characters', async () => {
+  const reference = 'é'.repeat(512);
+  const t = transport(ok(boxAnswers));
+  await createJevRunner({ ...boxModel, fetch: t.fetch })({ label: 't', kind: 'judge', state: `x ${reference}`, questions: boxQuestions, assets: { [reference]: asPng(png()) } });
+  assert.equal(t.seen.length, 1);
+  assert.deepEqual(t.seen[0].parts[t.seen[0].request.assets[reference].part], png());
 });
 
 test('the header is sent on every attempt of a retried image request, and the same bytes', async () => {
