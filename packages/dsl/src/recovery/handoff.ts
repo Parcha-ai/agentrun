@@ -4,7 +4,11 @@ import { escalationContextBlock } from "./handoff-block.js";
 import { inheritedJobDigest, type InheritedSession, type TranscriptMessage } from "./handoff-digest.js";
 import { HANDOFF_FILES_DIR, inputProvenance, writeHandoffFiles } from "./handoff-files.js";
 import { inheritableReceipts, inheritableUnknowns, type InheritedReceipt, type InheritedUnknown } from "./handoff-receipts.js";
-import type { EscalationRow, FrozenSnapshot } from "./frozen-snapshot.js";
+import { FROZEN_SNAPSHOT_SCHEMA_V4, type EscalationRow, type FrozenSnapshot, type FrozenSnapshotV4 } from "./frozen-snapshot.js";
+import { restoreV4, restoreSink } from "./restore-keyed.js";
+import { canonicalHash } from "./canonical-hash.js";
+import { desugarWorkflow, type Workflow } from "../workflow.js";
+import { RecoveryError } from "./errors.js";
 import type { RecoveryJournal } from "./store.js";
 
 /** What a continuation inherits from a run that escalated. The package returns it; the host decides who continues. */
@@ -40,14 +44,32 @@ export type HandoffOptions = {
   sessions?: readonly InheritedSession[];
   /** A step's transcript by its session id, or null when there is none. */
   transcriptOf?: (sessionId: string) => readonly TranscriptMessage[] | null;
+  /** The run's workflow. A run stored in the keyed (v4) layout keeps what its map items produced — their files above
+   *  all — in the items' own records, not the driver's. Pass the workflow so the handoff reads those records the one way
+   *  the driver's restore does (restore-keyed.ts), and a file a map item produced reaches the digest. Without it a v4
+   *  handoff lists only the driver record's own files. A whole-state (v3) run needs nothing here. */
+  workflow?: Workflow;
 };
 
 /** The one place a handoff is built: the escalation row and effects of an open journal, rendered as the continuation's
  *  first turn. The row must be one the driver committed. Deterministic for a journal and a workspace. */
-export async function buildHandoff(journal: Pick<RecoveryJournal, "state" | "effects">, options: HandoffOptions): Promise<Handoff> {
-  const snapshot = journal.state as FrozenSnapshot | null;
-  const row: EscalationRow | undefined = snapshot?.escalation;
+export async function buildHandoff(journal: Pick<RecoveryJournal, "state" | "effects"> & Partial<Pick<RecoveryJournal, "items" | "stateOf">>, options: HandoffOptions): Promise<Handoff> {
+  const stored = journal.state as FrozenSnapshot | FrozenSnapshotV4 | null;
+  const row: EscalationRow | undefined = stored?.escalation;
   if (!row) throw new Error("A handoff is built from an escalation the driver committed");
+  // A run stored in the keyed layout keeps what its map items produced in the items' own records. Rebuild the whole-state
+  // snapshot the one way the driver's restore does, so a map item's files and routes reach the handoff; a whole-state (v3)
+  // run reads straight through. The read seeds a throwaway sink.
+  let snapshot: FrozenSnapshot = (stored ?? { pin: {}, files: {}, clocks: {} }) as FrozenSnapshot;
+  if (stored?.schema === FROZEN_SNAPSHOT_SCHEMA_V4) {
+    if (!options.workflow || typeof journal.items !== "function" || typeof journal.stateOf !== "function") {
+      throw new RecoveryError("A handoff from a keyed-layout run needs its workflow and a journal that reads item records", "FROZEN_CHECKPOINT_INVALID");
+    }
+    snapshot = await restoreV4(stored as FrozenSnapshotV4,
+      { journal, view: desugarWorkflow(options.workflow), driverKey: options.runId, hash: canonicalHash,
+        invalid: (message) => new RecoveryError(message, "FROZEN_CHECKPOINT_INVALID") },
+      restoreSink());
+  }
   const effects = journal.effects();
   const routes = snapshot?.pin?.routes && typeof snapshot.pin.routes === "object" && !Array.isArray(snapshot.pin.routes) ? { ...snapshot.pin.routes } : {};
   let files: string[] = [];

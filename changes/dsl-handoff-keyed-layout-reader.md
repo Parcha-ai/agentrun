@@ -1,0 +1,8 @@
+---
+packages: @parcha/agentrun-dsl
+kind: fix
+---
+**A handoff built from a run stored in the keyed (v4) layout now reads what its map items produced — their files above all — so a file a map item wrote reaches the handoff digest, as it already did for a whole-state (v3) run.**
+- In the keyed layout the driver keeps what lies inside a map item (its states, committed paths, routes, files and effects) in that item's own record, not the driver's. `buildHandoff` read only the driver's own snapshot, so a file a map item produced was listed by a v3 handoff's digest and dropped by a v4 one (the "Files produced in the workspace" section showed it whole, "none" keyed). The route angle did not manifest: a judged route inside a map records no route entry in either layout in this flow.
+- The keyed-layout read is now one function (`restore-keyed.ts`) that both `openRecovery`'s restore and `buildHandoff` run, so a handoff reads item records the one way the driver does and the two cannot diverge. `openRecovery` passes its own write-path bookkeeping as the read's sink; `buildHandoff` passes a throwaway one and uses only the merged snapshot. This replaces the driver's inline `restoreMaps`/`restoreV4` with calls to the shared reader; the restore path is unchanged (the keyed-layout and crash-sweep property suites pass identically).
+- `buildHandoff` takes one new optional `workflow` on its options and reads `items`/`stateOf` off the journal when present. A whole-state run needs neither. A keyed-layout run whose `workflow` is not passed (or whose journal cannot read item records) is refused with `FROZEN_CHECKPOINT_INVALID` rather than silently dropping the items' files.
