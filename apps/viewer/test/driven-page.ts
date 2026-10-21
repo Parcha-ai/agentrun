@@ -13,6 +13,9 @@ import { join } from 'node:path';
 
 export const chrome = process.env.CHROME_PATH ?? '/usr/bin/google-chrome';
 
+/** How long a start may take to listen when nothing shortens it: a cold Chrome on a loaded two-core runner needs this long. */
+export const LAUNCH_MS = 30_000;
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const running = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const signal = (pid: number, name: NodeJS.Signals) => { try { process.kill(pid, name); } catch { /* already ended */ } };
@@ -45,24 +48,26 @@ function crashHandlersOf(group: number): number[] {
 const open = new Map<number, () => Promise<void>>();
 
 export type DrivenPage = Awaited<ReturnType<typeof drivenPage>>;
-type Options = { launchMs?: number; requestMs?: number; path?: string; signal?: AbortSignal };
+type Options = { launchMs?: number; retryLaunchMs?: number; requestMs?: number; path?: string; signal?: AbortSignal };
 
 /** A browser that did not write its DevToolsActivePort within `launchMs`. */
 class NotListening extends Error {}
 
 /** A page in its own headless Chrome. `signal`'s abort (a test's timeout) kills the browser's group at once, before the
  *  test's cleanup removes what it uses; `path` is the browser to start (a stand-in in the bounds' own test). A browser
- *  that is not listening within `launchMs` is ended, and one more is started: never after the signal's abort. */
+ *  that is not listening within `launchMs` is ended, and one more is started: never after the signal's abort. The second
+ *  start has `retryLaunchMs` (default: `launchMs`) and returns the moment its port file appears, so a test that makes the
+ *  first start give up quickly (a short `launchMs`) gives the second, real start the whole `LAUNCH_MS`. */
 export async function drivenPage(url: string, profile: string, options: Options = {}) {
   try {
     return await startedPage(url, profile, options);
   } catch (error) {
     if (!(error instanceof NotListening) || options.signal?.aborted) throw error;
-    return startedPage(url, profile, options);
+    return startedPage(url, profile, { ...options, launchMs: options.retryLaunchMs ?? options.launchMs });
   }
 }
 
-async function startedPage(url: string, profile: string, { launchMs = 30_000, requestMs = 10_000, path = chrome, signal: aborted }: Options) {
+async function startedPage(url: string, profile: string, { launchMs = LAUNCH_MS, requestMs = 10_000, path = chrome, signal: aborted }: Options) {
   // A profile used before may still hold the port file of a browser that is gone.
   rmSync(join(profile, 'DevToolsActivePort'), { force: true });
   // Its own process group: the browser and every helper it starts are ended together, by the group's pid.

@@ -769,10 +769,14 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   };
 }
 
-function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly { id: string; manifest: Manifest }[], unread?: string) {
+/** The flags a gallery link may open its replay with (the lock's `view`): flags of the chat page. The lock's reader keeps the same list (scripts/recording/gallery.mjs). */
+const VIEW_FLAGS = ['muse'];
+
+function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly { id: string; manifest: Manifest; title?: string; view?: string[] }[], unread?: string) {
   const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {
-    // A demo opens in the chat + report view; its inspection is ./?r=<id>, linked from there.
-    const link = Object.assign(el('a', { text: chatTitle(entry.manifest) }), { href: `chat.html?r=${encodeURIComponent(entry.id)}` });
+    // A demo opens in the chat + report view (in the view its lock entry names, if any); its inspection is ./?r=<id>, linked from there. The words are the lock's, else the recording's.
+    const view = (entry.view ?? []).filter((flag) => VIEW_FLAGS.includes(flag)).map((flag) => `&${flag}`).join('');
+    const link = Object.assign(el('a', { text: entry.title ?? chatTitle(entry.manifest) }), { href: `chat.html?r=${encodeURIComponent(entry.id)}${view}` });
     return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.model}` }));
   }));
   const picker = Object.assign(el('input'), { type: 'file', multiple: true }) as HTMLInputElement;

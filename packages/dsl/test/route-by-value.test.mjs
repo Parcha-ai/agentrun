@@ -98,7 +98,8 @@ test('a route by value needs no judge; policy, capability checks, writes and ins
 });
 
 test('the two forms never mix, and each form is checked on its own terms', () => {
-  const judged = { node: 'route', label: 'apply', state: { request: '{policy}' }, instructions: 'Which action?', branches: { proceed: { body: effect('proceed') }, withhold: { body: effect('withhold') } } };
+  // The branches read {applied}: the judged form writes its choice there too, as the route by value does.
+  const judged = { node: 'route', label: 'apply', as: 'applied', state: { request: '{policy}' }, instructions: 'Which action?', branches: { proceed: { body: effect('proceed') }, withhold: { body: effect('withhold') } } };
   const cases = [
     [{ ...route, valuePath: '' }, /valuePath must be the state path of the branch name/],
     [{ ...route, valuePath: {} }, /valuePath must be (the state path of the branch name|a string)/],
