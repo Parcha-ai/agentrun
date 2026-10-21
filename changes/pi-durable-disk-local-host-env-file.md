@@ -1,0 +1,8 @@
+---
+packages: @parcha/pi-durable-disk
+kind: fix
+---
+**SECURITY: `localHost` in systemd mode no longer puts the instance environment on the `systemd-run` command line, which sudo logged to the journal and `systemctl show` exposed; it passes it through a root-only file.**
+- Before, each variable of the driver's `env` and of a start's own environment (`StartAttempt.env`) went to `systemd-run` as `--setenv=NAME=value`, under `sudo -n`. `sudo` logs the whole command line to the journal, and `--setenv` is stored in the unit's `Environment=` property, which any local user reads with `systemctl show`. A secret in either place was in both. The mount token and the API key were never affected: the token travels on stdin and the API key never reaches the driver.
+- Now the environment is written to a root-only (mode 0600) file beside the mount token's, through stdin, and the unit loads it with `-p EnvironmentFile=<path>`. No value is on any argument. The file lives as long as the unit may restart (a restart in place loads it again). It is removed when the unit is stopped, when a start fails, and by the unit itself (`ExecStopPost=`) when it ends for good: a park or a finish, or a terminal exit. A unit that systemd gave up restarting keeps it until `stop`. A value with a newline, a carriage return or a NUL, or a name that is not a variable name, is refused with `INVALID_ARGUMENT` before anything runs, rather than written mangled.
+- A deployment that put a secret in `localHost`'s `env` or in `StartAttempt.env` under systemd mode should treat it as exposed to anyone who could read its journal or run `systemctl show` on the unit, and rotate it. Child mode is unaffected: its environment goes in `spawn`'s `env`.
