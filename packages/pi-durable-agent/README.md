@@ -138,8 +138,9 @@ it like a password, because whoever holds it can open the signed-in session.
 - **A copy of the directory takes it along.** Copy the home as a directory only to a place you would trust with its
   sign-ins. A pack is the way to move a home without them.
 
-A vault, which would keep credentials as ciphertext that only the host decrypts, is not built yet
-([Not yet](#not-yet)).
+A signed-in browser session can also be kept in the session vault, as ciphertext that only the host's key opens, and it
+never travels with a home ([Saved browser sessions](#saved-browser-sessions-the-vault)). Saved credentials, such as
+passwords, are not built yet ([Not yet](#not-yet)).
 
 ## The agent home
 
