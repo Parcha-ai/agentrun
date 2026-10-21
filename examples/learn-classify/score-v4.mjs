@@ -135,9 +135,10 @@ export async function scoreHq({ answer, truth, judge }) {
  */
 export async function scoreSubsidiaries({ answer, truth, judge }) {
   const listed = Array.isArray(truth?.items) ? truth.items : null;
-  // None, with its reason: right when the filing has no subsidiary exhibit, and nothing found when it has one.
+  // None, with its reason: right only when the filing has no subsidiary exhibit (noExhibit true), and nothing found when it
+  // has a list. A filing whose exhibit the truth could not read (noExhibit false), or no truth at all, scores nothing.
   const none = answer?.subsidiaries?.none === true;
-  if (!listed?.length) return none ? { subsidiariesRecall: 1, subsidiariesPrecision: 1 } : { subsidiariesRecall: null, subsidiariesPrecision: null };
+  if (!listed?.length) return none && truth?.noExhibit === true ? { subsidiariesRecall: 1, subsidiariesPrecision: 1 } : { subsidiariesRecall: null, subsidiariesPrecision: null };
   if (none) return { subsidiariesRecall: 0, subsidiariesPrecision: null };
   const count = typeof truth.count === 'number' && truth.count >= listed.length ? truth.count : listed.length;
   const given = [...new Map((Array.isArray(answer?.subsidiaries) ? answer.subsidiaries : []).map((s) => [folded(s.name), s])).values()];
