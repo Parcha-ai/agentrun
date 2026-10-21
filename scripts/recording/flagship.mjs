@@ -1,11 +1,17 @@
-// The flagship's documents (draft 55 and its amendment 1): train.progress, train.render, train.checkpoints, train.sweeps,
-// body.design, learn.curve, body.run and body.render. Each is a durable document a tool writes through the session's store, its value one flat record with one
+// The flagship's documents (draft 55 and its amendments 1 and 2): train.progress, train.render, train.checkpoints,
+// train.sweeps, body.design, learn.curve, body.run, body.render and placement. Each is a durable document a tool writes through the session's store, its value one flat record with one
 // `basis` for the whole document. The validator checks each revision's shape, the basis enum and the unit rule, that a
 // blob is a file of the recording with an extension the document allows, that a conversation, thread or checkpoint it
 // names is in the recording, and that a place's box and host are labels the recording itself gave. `see` is shown each
 // line in file order; `check` then adds the problems, each at its line.
 
-export const FLAGSHIP_DOCUMENTS = new Set(['train.progress', 'train.render', 'train.checkpoints', 'train.sweeps', 'body.design', 'learn.curve', 'body.run', 'body.render']);
+export const FLAGSHIP_DOCUMENTS = new Set(['train.progress', 'train.render', 'train.checkpoints', 'train.sweeps', 'body.design', 'learn.curve', 'body.run', 'body.render', 'placement']);
+const PLACERS = new Set(['jev', 'config']);
+const PHASES = new Set(['message', 'turn_end']);
+/** The placement rule the validator knows, and checks against the record's own inputs (amendment 2). */
+const NEED_THRESHOLD = 'transport.need-threshold/1';
+/** A distribution's probabilities sum to 1 within this (amendment 2). */
+const SUM_SLACK = 0.02;
 const STATUS = new Set(['running', 'done', 'failed', 'refused']);
 const DIAGNOSIS = new Set(['never-moved', 'plateaued', 'never-settles', 'never-measured', 'still-changing', 'test-raised']);
 const RUN_KINDS = new Set(['build', 'stand', 'skill']);
@@ -36,6 +42,9 @@ export function flagshipChecker() {
   const boxes = new Set();
   const hosts = new Set();
   const checkpoints = new Set();
+  const placements = new Set();
+  const documents = new Set();
+  const calls = new Set();
   return {
     see(event, line) {
       if (event.conv !== undefined) conversations.add(event.conv);
@@ -44,9 +53,12 @@ export function flagshipChecker() {
       // A box.created line is a label only once it carries box-N (draft 39); before that it carried the provider's own id.
       if (event.kind === 'box.created' && /^box-\d+$/.test(data?.box ?? '')) boxes.add(data.box);
       if (event.source === 'host' && event.kind === 'run.json' && typeof data?.holder?.host === 'string') hosts.add(data.holder.host);
+      if (event.channel === 'durable' && isObject(data) && typeof data.doc === 'string' && data.value !== null && data.value !== undefined) documents.add(`${data.doc}\u0000${data.key}`);
+      if (event.kind === 'pi.assistant') for (const message of Array.isArray(data?.model) ? data.model : []) for (const part of Array.isArray(message?.content) ? message.content : []) if (part?.type === 'toolCall' && typeof part.id === 'string') calls.add(part.id);
       if (event.channel === 'durable' && isObject(data) && FLAGSHIP_DOCUMENTS.has(data.doc)) {
         revisions.push({ line, doc: data.doc, key: data.key, value: data.value });
         if (data.doc === 'train.checkpoints' && data.value !== null && data.value !== undefined) checkpoints.add(String(data.key));
+        if (data.doc === 'placement' && data.value !== null && data.value !== undefined) placements.add(String(data.key));
       }
     },
     check(add, extensionsOf, sizeOf = () => 0) {
@@ -55,7 +67,7 @@ export function flagshipChecker() {
         if (value === null || value === undefined) continue;
         const problem = (message) => add('events.jsonl', `${doc} ${JSON.stringify(key)}: ${message}`, line);
         if (!isObject(value)) { problem('its value is not a record'); continue; }
-        for (const message of valueProblems(doc, key, value, { conversations, boxes, hosts, checkpoints, extensionsOf, sizeOf })) problem(message);
+        for (const message of valueProblems(doc, key, value, { conversations, boxes, hosts, checkpoints, placements, documents, calls, extensionsOf, sizeOf })) problem(message);
       }
     },
   };
@@ -80,6 +92,11 @@ function valueProblems(doc, key, value, known) {
     else need(text(value, 24), `${what}'s unit is not plain text of at most 24 characters`);
   };
   const nonNegative = (v) => finite(v) && v >= 0;
+  const probability = (v) => finite(v) && v >= 0 && v <= 1;
+  // A document a placer placed names its placement beside its placer (amendment 2).
+  const placedBy = (v) => {
+    if (v.placement !== undefined) need(typeof v.placement === 'string' && known.placements.has(v.placement), `its placement ${JSON.stringify(v.placement)} names no placement in this recording`);
+  };
   const label = (v, what, max = 60) => need(text(v, max), `its ${what} is not plain text of at most ${max} characters`);
   const metric = (m) => {
     if (!isObject(m)) { out.push('its metric is not { name, value, unit?, target? }'); return; }
@@ -155,6 +172,8 @@ function valueProblems(doc, key, value, known) {
       if (value.metric !== undefined) metric(value.metric);
       passes(value);
       if (value.body !== undefined) label(value.body, 'body');
+      if (value.placer !== undefined) need(PLACERS.has(value.placer), `its placer ${JSON.stringify(value.placer)} is not one of jev, config`);
+      placedBy(value);
       break;
     case 'train.sweeps':
       need(KEY(key), 'its key is not plain text of at most 64 characters');
@@ -163,7 +182,8 @@ function valueProblems(doc, key, value, known) {
       need(finite(value.score), 'its score is not a finite number');
       unit(value.unit, 'its score', measured);
       place(value.place);
-      if (value.placer !== undefined) need(value.placer === 'jev', `its placer ${JSON.stringify(value.placer)} is not "jev"`);
+      if (value.placer !== undefined) need(PLACERS.has(value.placer), `its placer ${JSON.stringify(value.placer)} is not one of jev, config`);
+      placedBy(value);
       if (value.passes_share !== undefined) need(finite(value.passes_share) && value.passes_share >= 0 && value.passes_share <= 1, 'its passes_share is not a number from 0 to 1');
       for (const bound of ['min', 'max']) if (value[bound] !== undefined) need(finite(value[bound]), `its ${bound} is not a finite number`);
       if (finite(value.min) && finite(value.max)) need(value.min <= value.max, `its min ${value.min} is above its max ${value.max}`);
@@ -216,7 +236,90 @@ function valueProblems(doc, key, value, known) {
       // MuJoCo's own error line, kept as text and never parsed.
       if (value.error !== undefined) need(typeof value.error === 'string' && value.error.length <= 2000, 'its error is not text of at most 2,000 characters');
       place(value.place);
+      if (value.placer !== undefined) need(PLACERS.has(value.placer), `its placer ${JSON.stringify(value.placer)} is not one of jev, config`);
+      placedBy(value);
       break;
+    case 'placement': {
+      need(KEY(key), 'its key is not plain text of at most 64 characters');
+      label(value.work, 'work');
+      const env = (v) => text(v, 64);
+      need(env(value.current), 'its current is not an environment (plain text of at most 64 characters)');
+      need(env(value.chosen), 'its chosen is not an environment (plain text of at most 64 characters)');
+      need(PLACERS.has(value.placer), `its placer ${JSON.stringify(value.placer)} is not one of jev, config`);
+      if (value.phase !== undefined) need(PHASES.has(value.phase), `its phase ${JSON.stringify(value.phase)} is not one of message, turn_end`);
+      const known_rule = value.rule === NEED_THRESHOLD;
+      if (value.rule !== undefined) need(text(value.rule, 64), 'its rule is not a rule name (plain text of at most 64 characters)');
+      if (value.placer === 'config' || known_rule) need(env(value.rest), `its rest is required ${value.placer === 'config' ? 'for a config placement' : `under ${NEED_THRESHOLD}`}`);
+      else if (value.rest !== undefined) need(env(value.rest), 'its rest is not an environment (plain text of at most 64 characters)');
+      // A Jev runner's request hash belongs to a Jev-runner placement only: the transport classifier has none.
+      if (value.request !== undefined) {
+        need(SHA256.test(value.request ?? ''), 'its request is not the Jev request\'s SHA-256');
+        need(!known_rule, `its request is set, but a ${NEED_THRESHOLD} placement has no request hash`);
+      }
+      if (value.classifier !== undefined) need(isObject(value.classifier) && text(value.classifier.provider, 64) && text(value.classifier.model, 128), 'its classifier is not { provider, model }');
+      if (value.at !== undefined) need(text(value.at, 64), 'its at is not a time (plain text of at most 64 characters)');
+      if (value.error !== undefined) need(typeof value.error === 'string' && value.error.length <= 2000, 'its error is not text of at most 2,000 characters');
+      if (value.ref !== undefined) {
+        const ref = value.ref;
+        const held = typeof ref === 'string' ? known.calls.has(ref)
+          : isObject(ref) && typeof ref.callId === 'string' ? known.calls.has(ref.callId)
+          : isObject(ref) && typeof ref.doc === 'string' && ref.key !== undefined ? known.documents.has(`${ref.doc}\u0000${ref.key}`) : undefined;
+        if (held === undefined) out.push('its ref is not { doc, key } or a call id');
+        else need(held, `its ref ${JSON.stringify(ref)} names nothing in this recording`);
+      }
+      const needs = value.need;
+      if (needs !== undefined) {
+        if (!isObject(needs)) out.push('its need is not { p, threshold }');
+        else {
+          if (needs.p !== undefined) need(probability(needs.p), 'its need p is not a number from 0 to 1');
+          need(probability(needs.threshold), 'its need threshold is not a number from 0 to 1');
+        }
+      }
+      const where = value.where;
+      if (where !== undefined) {
+        if (!isObject(where) || !Array.isArray(where.options) || where.options.length === 0) out.push('its where is not { choice, options: [{ environment, purpose?, p }], confidence? }');
+        else {
+          const options = new Set();
+          where.options.forEach((option, at) => {
+            if (!isObject(option) || !env(option.environment)) { out.push(`its option ${at} has no environment`); return; }
+            options.add(option.environment);
+            if (option.purpose !== undefined) need(typeof option.purpose === 'string' && option.purpose.length <= 2000, `its option ${at}'s purpose is not text`);
+            if (option.p !== undefined) need(probability(option.p), `its option ${at}'s p is not a number from 0 to 1`);
+          });
+          const ps = where.options.map((option) => option?.p);
+          if (ps.every((each) => finite(each))) {
+            const sum = ps.reduce((a, b) => a + b, 0);
+            need(Math.abs(sum - 1) <= SUM_SLACK, `its options' p sum to ${Number(sum.toFixed(4))}, not 1 within ${SUM_SLACK}`);
+          }
+          if (where.confidence !== undefined) need(probability(where.confidence), 'its where confidence is not a number from 0 to 1');
+          if (where.choice !== undefined) need(options.has(where.choice), `its where choice ${JSON.stringify(where.choice)} is not one of its options`);
+          if (env(value.chosen)) need(options.has(value.chosen) || value.chosen === value.current || value.chosen === value.rest, `its chosen ${JSON.stringify(value.chosen)} is none of its options, its current or its rest`);
+        }
+      }
+      // What the record's rule gives from its own inputs, an error first; never the most likely option. An unknown rule is
+      // left unchecked.
+      const p = isObject(needs) && probability(needs.p) ? needs.p : undefined;
+      const threshold = isObject(needs) && probability(needs.threshold) ? needs.threshold : undefined;
+      const choice = isObject(where) && typeof where.choice === 'string' ? where.choice : undefined;
+      // Rule first: when the record names a rule, that rule decides, placer config included. A known rule is checked from
+      // the record's own inputs, an error or an absent need first; an unknown one is left unchecked. Only with no rule named
+      // does config mean chosen == rest, and a plain Jev placement take its one choice (or stay, with an error).
+      const answered = value.error === undefined;
+      let expected;
+      let by;
+      if (known_rule) {
+        by = NEED_THRESHOLD;
+        if (!answered || needs === undefined) expected = value.current;
+        else if (p !== undefined && threshold !== undefined && p >= threshold && choice !== undefined && choice !== value.current) expected = choice;
+        else if (value.phase === 'turn_end' && p !== undefined && threshold !== undefined && p < threshold && value.current !== value.rest) expected = value.rest;
+        else expected = value.current;
+      } else if (value.rule === undefined && value.placer === 'config') { by = 'a config placement'; expected = value.rest; }
+      else if (value.rule === undefined && value.placer === 'jev') { by = 'its one choice question'; expected = answered ? choice : value.current; }
+      if (by !== undefined && (expected !== undefined || by === 'its one choice question')) {
+        need(value.chosen === expected, `its chosen ${JSON.stringify(value.chosen)} is not what ${by} gives, ${JSON.stringify(expected ?? null)}`);
+      }
+      break;
+    }
     case 'body.render': {
       need(BODY_ID.test(String(key ?? '')), 'its key is not a body id, b- and 8 hex digits');
       const ext = blob(value.blob, BODY_RENDERS);
