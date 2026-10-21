@@ -3,6 +3,10 @@
 // A module's own errors extend FencedError or HeldError (overriding `code`) so one `instanceof` or `exitCodeFor` covers
 // them all, e.g. `class StoreFencedError extends FencedError` with `{ code: "STORE_FENCED" }`.
 
+/** EX_DATAERR: the run's data refuses to open (a store behind its seal, an unreadable `run.json`); a restart cannot help. */
+export const EXIT_DATAERR = 65;
+/** EX_SOFTWARE: this package cannot read the head of pi's store (pi's schema moved); a restart cannot help. */
+export const EXIT_SOFTWARE = 70;
 /** EX_TEMPFAIL: the claim was revoked or its mount failed; nothing this process writes can become durable. */
 export const EXIT_FENCED = 75;
 /**

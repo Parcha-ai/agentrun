@@ -1,9 +1,9 @@
 import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { GitRemoteError } from "./errors.js";
-import { createGitRunner, EMPTY_TREE, gitVersion, type GitCall, type GitIdentity, type GitResult } from "./git.js";
+import { GitRemoteError, refused } from "./errors.js";
+import { createGitRunner, EMPTY_TREE, gitVersion, type GitCall, type GitIdentity, type GitResult, scrub } from "./git.js";
 import {
-  caseCollisions, checkCommitFiles, DEFAULT_LIMITS, type FileContent, type Limits, modeRefusal, pathPrefixes, pathRefusal,
+  caseCollisions, checkCommitFiles, checkLimits, checkPath, type FileContent, type Limits, modeRefusal, pathPrefixes, pathRefusal, within,
 } from "./limits.js";
 import { checkRemote, type GitCredential, type Remote } from "./remotes.js";
 
@@ -119,9 +119,6 @@ export type Repo = {
   log(options?: LogOptions): Promise<LogEntry[]>;
 };
 
-function refused(message: string, paths: readonly string[] = []): GitRemoteError {
-  return new GitRemoteError("refused", message, paths);
-}
 
 function checkBranch(name: string): string {
   const short = typeof name === "string" && name.startsWith("refs/heads/") ? name.slice("refs/heads/".length) : name;
@@ -134,10 +131,6 @@ function checkBranch(name: string): string {
   return short;
 }
 
-function within(child: string, parent: string): boolean {
-  const rel = path.relative(parent, child);
-  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
-}
 
 function shellQuote(word: string): string {
   return `'${word.replaceAll("'", "'\\''")}'`;
@@ -189,14 +182,6 @@ async function dirState(dir: string): Promise<"new" | "repo"> {
   if (entries.includes("HEAD")) return "repo";
   if (entries.every((entry) => entry === SCRATCH)) return "new";
   throw refused(`${dir} is neither empty nor a bare repository`);
-}
-
-function checkLimits(input: Partial<Limits> | undefined): Limits {
-  const limits = { ...DEFAULT_LIMITS, ...input };
-  for (const key of ["maxFileBytes", "maxFiles", "maxTreeEntries"] as const) {
-    if (!Number.isSafeInteger(limits[key]) || limits[key] < 1) throw refused(`limits.${key} must be a positive integer`);
-  }
-  return Object.freeze(limits);
 }
 
 // Exit 1 is the only "no" these questions give. A timeout (the runner's 124) or any other failure throws: read as a
@@ -491,8 +476,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
   }
 
   async function read(file: string, sha: string): Promise<string | undefined> {
-    const reason = pathRefusal(file);
-    if (reason) throw refused(`the path ${JSON.stringify(file)} is refused: ${reason}`, [file]);
+    checkPath(file);
     if (!SHA.test(sha)) await fetchAll();
     const commit = await commitOf(sha);
     const entry = (await git(["ls-tree", "-z", "--full-tree", "-l", commit, "--", file])).stdout.toString("utf8").split("\0").filter(Boolean).map(parseEntry).find((e) => e.path === file);
@@ -505,8 +489,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
   async function list(prefix: string, sha: string): Promise<TreeEntry[]> {
     const trimmed = typeof prefix === "string" ? prefix.replace(/\/+$/, "") : prefix;
     if (trimmed !== "") {
-      const reason = pathRefusal(trimmed);
-      if (reason) throw refused(`the prefix ${JSON.stringify(prefix)} is refused: ${reason}`, [prefix]);
+      checkPath(trimmed, "prefix", prefix);
     }
     if (!SHA.test(sha)) await fetchAll();
     return lsTree(await commitOf(sha), trimmed || undefined);
@@ -576,13 +559,21 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
       const line = result.stdout.toString("utf8").split("\n").find((l) => l.startsWith("!\t")) ?? "";
       if (line.includes("[rejected]")) throw new GitRemoteError("conflict", `the remote's ${branch} moved: ${sha} is not a fast-forward of it`);
       if (line.includes("[remote rejected]")) {
-        // The reason is the server's text, so the credential is scrubbed from it as the runner does from stderr.
-        const reason = line.split("\t").at(-1)!;
-        throw new GitRemoteError("refused", `the remote refused ${branch}: ${credential ? reason.split(credential.password).join("[credential]") : reason}`);
+        // The reason is the server's text on stdout, which the runner leaves as it is: scrub it as stderr is.
+        throw refused(`the remote refused ${branch}: ${scrub(line.split("\t").at(-1)!, credential)}`);
       }
       throw new GitRemoteError("git", `git push failed (${result.code}): ${result.stderr.trim()}`);
     }
     await fetchAll();
+  }
+
+  /** The tree `git merge-tree --write-tree` makes of `args`; a conflict throws `conflict` naming its paths. */
+  async function mergeTree(args: readonly string[], conflict: string): Promise<string> {
+    const result = await git(["merge-tree", "--write-tree", "--name-only", "-z", "--no-messages", ...args], { allowFail: true });
+    const parts = result.stdout.toString("utf8").split("\0").filter(Boolean);
+    if (result.code === 1) throw new GitRemoteError("conflict", conflict, [...new Set(parts.slice(1))]);
+    if (result.code !== 0) throw new GitRemoteError("git", `git merge-tree failed (${result.code}): ${result.stderr.trim()}`);
+    return parts[0]!;
   }
 
   async function merge(fromName: string, intoName: string): Promise<MergeResult> {
@@ -600,12 +591,9 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
       await moveBranch(into, source, localBefore);
       return { sha: source, changed: true, fastForward: true };
     }
-    const result = await git(["merge-tree", "--write-tree", "--name-only", "-z", "--no-messages", target, source], { allowFail: true });
-    const parts = result.stdout.toString("utf8").split("\0").filter(Boolean);
-    if (result.code === 1) throw new GitRemoteError("conflict", `merging ${from} into ${into} conflicts`, [...new Set(parts.slice(1))]);
-    if (result.code !== 0) throw new GitRemoteError("git", `git merge-tree failed (${result.code}): ${result.stderr.trim()}`);
-    await checkIntroduced(targetTree, parts[0]!);
-    const sha = await commitTree(parts[0]!, [target, source], formatMessage(`Merge ${from} into ${into}`, { "Merged-Branch": from }));
+    const tree = await mergeTree([target, source], `merging ${from} into ${into} conflicts`);
+    await checkIntroduced(targetTree, tree);
+    const sha = await commitTree(tree, [target, source], formatMessage(`Merge ${from} into ${into}`, { "Merged-Branch": from }));
     await moveBranch(into, sha, localBefore);
     return { sha, changed: true, fastForward: false };
   }
@@ -623,24 +611,18 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     const [entry] = await logOf([commit], { max: 1 });
     const parent = entry!.parents[0];
     if (!parent) throw refused("a root commit cannot be reverted");
-    const result = await git(["merge-tree", "--write-tree", "--name-only", "-z", "--no-messages", `--merge-base=${commit}`, target, parent], { allowFail: true });
-    const parts = result.stdout.toString("utf8").split("\0").filter(Boolean);
-    if (result.code === 1) throw new GitRemoteError("conflict", `reverting ${commit} on ${on} conflicts`, [...new Set(parts.slice(1))]);
-    if (result.code !== 0) throw new GitRemoteError("git", `git merge-tree failed (${result.code}): ${result.stderr.trim()}`);
+    const tree = await mergeTree([`--merge-base=${commit}`, target, parent], `reverting ${commit} on ${on} conflicts`);
     const targetTree = await treeOf(target);
-    if (parts[0] === targetTree) return { sha: target, changed: false };
-    await checkIntroduced(targetTree, parts[0]!);
+    if (tree === targetTree) return { sha: target, changed: false };
+    await checkIntroduced(targetTree, tree);
     const message = formatMessage(`Revert "${entry!.subject}"\n\nThis reverts commit ${commit}.`, { ...options.trailers, Reverts: commit });
-    const sha = await commitTree(parts[0]!, [target], message);
+    const sha = await commitTree(tree, [target], message);
     await moveBranch(on, sha, localBefore);
     return { sha, changed: true };
   }
 
   async function log(options: LogOptions = {}): Promise<LogEntry[]> {
-    if (options.path !== undefined) {
-      const reason = pathRefusal(options.path);
-      if (reason) throw refused(`the path ${JSON.stringify(options.path)} is refused: ${reason}`, [options.path]);
-    }
+    if (options.path !== undefined) checkPath(options.path);
     if (options.trailer !== undefined && (typeof options.trailer.key !== "string" || !TRAILER_KEY.test(options.trailer.key))) throw refused("log's trailer needs a valid key");
     await fetchAll();
     const tip = await resolveCommit(options.ref ?? MAIN);

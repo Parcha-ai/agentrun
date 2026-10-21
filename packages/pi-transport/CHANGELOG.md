@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.21 (2026-10-21)
+
+- `@parcha/pi-transport` is on npm under the beta tag: the guide and the harness README give the install line, `npm install @parcha/pi-transport@beta`, and a demo that declares `boxes` without it installed says to run that line, no longer that the package is not on npm.
+- The package's npm description now names what it does: a pi agent's tools on this machine, in Docker, or in a Daytona or Modal sandbox, behind one `Box` interface, with Jev placing each step. It no longer says the session moves.
+
 ## 0.1.0-beta.20 (2026-10-20)
 
 ### Added

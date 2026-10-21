@@ -496,8 +496,11 @@ describe("pulling a checkpoint", () => {
 			),
 		);
 		expect(stats.last?.ms).toBeGreaterThanOrEqual(400);
-		expect(stats.last?.heldMs).toBeLessThan(300);
-		expect(stats.longestHeldMs).toBeLessThan(300);
+		// Relative to the measured total, never an absolute bound: on a loaded machine the rest of the pull can take any time. Held counts from rest, so the 400 ms drain is not in it
+		// (the 5 ms is the timer's slack); if held counted from the pull's ask it would be about the total, over this bound by the drain.
+		const total = stats.last?.ms ?? 0;
+		expect(stats.last?.heldMs).toBeLessThanOrEqual(total - 395);
+		expect(stats.longestHeldMs).toBeLessThanOrEqual(total - 395);
 	});
 
 	it("counts toward maxPullBytes every file the pull will copy: also one whose time or mode changed with the same content", async () => {
