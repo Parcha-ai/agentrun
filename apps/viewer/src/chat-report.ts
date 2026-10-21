@@ -347,12 +347,12 @@ function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording,
   return { scroller, cited };
 }
 
-/** The right side: the artifact when the run wrote one (the answer when it cannot be read), else the run's answer. A
- *  citation calls `open(href, look)`; `scrollToLook` scrolls to the first element citing that look (or the card a row
- *  cites, or an id) and flashes it; `cited` holds the looks and card ids the report cites once it is read. */
 /** Opens a citation: its address, the look it names, and the picture it names when it names no look. */
 export type ReportOpen = (href: string, look?: string, picture?: { blob: string; label?: string }) => void;
 
+/** The right side: the artifact when the run wrote one (the answer when it cannot be read), else the run's answer. A
+ *  citation calls `open(href, look)`; `scrollToLook` scrolls to the first element citing that look (or the card a row
+ *  cites, or an id) and flashes it; `cited` holds the looks and card ids the report cites once it is read. */
 export function drawReport(pane: HTMLElement, model: ChatModel, recording: Recording, open: ReportOpen): { scrollToLook(look: string): boolean; cited: Promise<Set<string>> } {
   pane.replaceChildren();
   const native = (none?: string) => {

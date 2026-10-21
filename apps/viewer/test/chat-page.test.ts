@@ -13,7 +13,6 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
 import { after, test } from 'node:test';
-// @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import type { ChatSource } from '../src/chat-model.ts';
 import type { Line } from '../src/format.ts';
