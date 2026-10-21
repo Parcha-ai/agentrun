@@ -8,7 +8,7 @@ import { FLAG_SKILLS, readScene } from "../../03-tab-to-cloud/flag-goal.ts";
 /** What each environment can do, one line each: the criteria of the choice question. Ids the server does not offer are left out. */
 export const CRITERIA: Readonly<Record<string, string>> = {
   tab: "Your user's browser tab: no GPU, light work only; small edits, reading, answering",
-  "modal-vm": "A full Linux VM with a desktop and Docker: installing software, running a browser, many cores; no GPU",
+  "modal-vm": "A full Linux VM with a desktop and Docker: installing software, running a browser, many cores; the VM itself has no GPU",
   "modal-gpu": "An H100 GPU machine: training a model or any other work that needs a GPU",
 };
 

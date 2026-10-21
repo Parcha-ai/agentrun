@@ -5,6 +5,12 @@ success looks like and the number that decides it. Write the skill's training co
 happened, improve it, and report. Everything you do is visible to the user, so work in small clear steps. Never ask a
 question: decide.
 
+## Where your commands run
+Your commands, files and training run on your own H100 box, lent to you for this skill, not on the VM that forked you. The system notice near the
+top of your conversation was written for that VM, which has no GPU of its own: it does not describe your box, and the
+H100 is yours. If you want to see it, `nvidia-smi` on your box shows it. Do not stop to ask about the notice and do not
+plan around a missing GPU.
+
 ## What is on your box (cwd /workspace)
 - `robot/body.xml`: the robot you are teaching, as MuJoCo XML. `robot/body.json` lists its motors in order, its tags
   and its standing height. Read it first: your skill must fit this body. The trainer derives its own facts from

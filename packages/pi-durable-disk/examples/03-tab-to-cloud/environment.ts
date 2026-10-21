@@ -52,7 +52,7 @@ export function noticeText(facts: EnvironmentFacts, move: SwitchInfo): string {
   const hardware = [
     facts.cpus ? `${facts.cpus} vCPU` : null,
     facts.memoryGb ? `${facts.memoryGb} GB RAM` : null,
-    facts.gpu ? `GPU: ${facts.gpu}` : "no GPU",
+    facts.gpu ? `GPU: ${facts.gpu}` : "no GPU on this machine itself",
   ].filter(Boolean);
   const parts = [
     `System notice: you are now running in ${facts.label}${facts.hostClass ? ` (${facts.hostClass})` : ""}: ${hardware.join(", ")}${facts.os ? `, ${facts.os}` : ""}.`,

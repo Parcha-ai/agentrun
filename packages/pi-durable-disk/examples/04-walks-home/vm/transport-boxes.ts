@@ -6,6 +6,18 @@ import type { Context } from "@earendil-works/chord";
 import type { Box, BoxError, BoxSpec } from "@parcha/pi-transport";
 import type { GpuProcess } from "../../03-tab-to-cloud/pipe/gpu-rpc.ts";
 
+/** The disk sentence of every Modal VM's environment note: the run's files reach it through the server. */
+const VM_DISK_NOTE = "The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server.";
+
+/**
+ * The note of the Modal VM's environment notice (what the session, and every thread forked from it, reads). With a cluster the truth is two facts told together: this VM has no GPU of its own, and each
+ * teaching thread's commands and training run on an H100 box lent to that thread. Said apart, a thread reads "no GPU" and doubts the H100 it was given.
+ */
+export const modalVmNote = (cluster: boolean): string =>
+  cluster
+    ? `${VM_DISK_NOTE} This VM itself has no GPU: training does not run here. Each teaching thread has an H100 box lent to it for the task, and that thread's commands (nvidia-smi shows the H100) and training run on that box.`
+    : VM_DISK_NOTE;
+
 /** What one cluster box is, for the labels a sweep and a check find it by. */
 export const GPU_ROLE = "gpu";
 

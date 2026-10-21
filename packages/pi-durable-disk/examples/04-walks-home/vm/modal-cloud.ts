@@ -23,7 +23,7 @@ import { BACKGROUND_CONTEXT as boxContext } from "@earendil-works/chord/context"
 import type { Context } from "@earendil-works/chord";
 import type { Box, BoxProvider } from "@parcha/pi-transport";
 import { modalBoxes } from "@parcha/pi-transport/box/modal";
-import { boxLabels, clusterSpec, gpuProcess, runToEnd, unwrap } from "./transport-boxes.ts";
+import { boxLabels, clusterSpec, gpuProcess, modalVmNote, runToEnd, unwrap } from "./transport-boxes.ts";
 import type { DaytonaClient, HostDriver, HostHandle, ModalSandbox, ModalSdk, RunRef, SandboxInfo } from "@parcha/pi-durable-disk";
 import { warmTrain, type WarmTrain } from "../universes/warm-train.ts";
 import { creatureWarmer, type CreatureWarmer } from "./warm-creature.ts";
@@ -510,7 +510,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   const classOf = (envId: string) =>
     envId === gpuEnv?.id && gpuClient && options.gpu
       ? { env: gpuEnv, client: gpuClient, archil: false, cpus: options.gpu.cpu ?? 4, memoryMiB: options.gpu.memoryMiB ?? 16384, ttlMinutes: options.gpu.ttlMinutes ?? DEFAULT_GPU_TTL_MINUTES, className: "modal-gpu", liveFlushMs: 1000, bashMaxSeconds: 150, note: `The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server. ${options.gpu.note ?? ""}`.trim() }
-      : { env, client, archil: true, cpus: 0, memoryMiB: 0, ttlMinutes: 120, className: "modal-vm", liveFlushMs: 0, bashMaxSeconds: 0, note: "The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server." };
+      : { env, client, archil: true, cpus: 0, memoryMiB: 0, ttlMinutes: 120, className: "modal-vm", liveFlushMs: 0, bashMaxSeconds: 0, note: modalVmNote(options.cluster !== undefined) };
   let bundle: Uint8Array | undefined;
   const remotes = new Map<string, SandboxInfo>();
   const warm = new Map<string, Promise<SandboxInfo>>();
