@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
-import { Harness, createRegistry } from '@earendil-works/pi-durable';
+import { Harness, createRegistry, defineExtension, defineTask } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import * as recovery from '@parcha/agentrun-dsl/recovery';
 import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
@@ -308,9 +308,15 @@ test('the snapshot at open carries every conversation\'s record, marked snapshot
   assert.ok(ordered(lines) && placed(lines));
 });
 
-test('a real store: a fork made by a task is a pi.conversation line from recordCommits and from the snapshot of the reopened store, with the same parent and owner pi recorded', async () => {
+test('a real store: a fork made under a task is a pi.conversation line from recordCommits, a bare export and the snapshot of the reopened store, with the parent and owner pi recorded (owner.taskId names the task)', async () => {
   const file = fileOf();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const Owner = defineTask({ name: 'recording-test.owner', version: 1, initial: () => ({ phase: 'run' }),
+    phases: { run: async (_task, runtime, context) => { await gate; await runtime.commit(async () => ({ status: 'terminal', outcome: { status: 'completed' } }), context); } },
+    abort: async (_task, runtime, context) => { await runtime.commit(async () => ({ status: 'terminal', outcome: { status: 'aborted' } }), context); } });
   const registry = createRegistry();
+  registry.install(defineExtension({ name: 'recording-test', tasks: [Owner] }));
   const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: {} }, ctx);
   const recorded = [];
   let created;
@@ -321,10 +327,18 @@ test('a real store: a fork made by a task is a pi.conversation line from recordC
       const entry = await tx.appendEntry(root.id, { kind: 'pi.user', model: [] });
       return { root, entry };
     }, ctx);
-    const fork = await harness.commit((tx) => tx.forkConversation(first.root.id, first.entry.id, { ownership: { kind: 'ownerless' } }), ctx);
-    created = { ...first, fork };
+    const task = await harness.commit((tx) => tx.createTask(Owner, {}, { ownership: { kind: 'conversation' }, conversationId: first.root.id }), ctx);
+    const fork = await harness.commit((tx) => tx.forkConversation(first.root.id, first.entry.id, { ownership: { kind: 'task', taskId: task } }), ctx);
+    const loose = await harness.commit((tx) => tx.forkConversation(first.root.id, first.entry.id, { ownership: { kind: 'ownerless' } }), ctx);
+    created = { ...first, task, fork, loose };
+    release();
+    await harness.waitForTask(task, ctx);
     await stop();
   } finally { await harness.close(ctx); }
+  // The expected record is what pi itself holds for the fork: a parent, and an owner naming the task and the conversation the task is in.
+  assert.deepEqual(created.fork.parent, { conversationId: created.root.id, at: created.entry.id });
+  assert.deepEqual(created.fork.owner, { conversationId: created.root.id, taskId: created.task }, 'pi names the task as the fork\'s owner');
+  assert.equal(created.loose.owner, undefined, 'an ownerless fork has a parent and no owner');
   const live = recorded.filter((line) => line.kind === 'pi.conversation');
   // The same store read whole (a bare export) and read as a snapshot after reopening: the same parent and owner.
   const exported = recordingLines(file).lines.filter((line) => line.kind === 'pi.conversation');
@@ -335,7 +349,8 @@ test('a real store: a fork made by a task is a pi.conversation line from recordC
     const snapshot = await snapshotLines(storage, { at: lastCommit(file), context: ctx });
     assert.deepEqual(snapshot.filter((line) => line.kind === 'pi.conversation').map((line) => line.data).sort((a, b) => a.id - b.id), live.map((line) => line.data).sort((a, b) => a.id - b.id), 'the snapshot at open agrees too');
   } finally { await again.close(ctx); }
-  assert.deepEqual(live.map((line) => line.data.id).sort(), [Number(created.root.id), Number(created.fork.id)].sort());
+  assert.deepEqual(live.map((line) => line.data.id).sort((x, y) => x - y), [Number(created.root.id), Number(created.fork.id), Number(created.loose.id)].sort((x, y) => x - y));
   const fork = live.find((line) => line.data.id === Number(created.fork.id));
-  assert.deepEqual(fork.data.parent, { conversationId: Number(created.root.id), at: Number(created.entry.id) });
+  assert.deepEqual(fork.data, { id: Number(created.fork.id), parent: { conversationId: Number(created.root.id), at: Number(created.entry.id) }, owner: { conversationId: Number(created.root.id), taskId: Number(created.task) } }, 'the fork\'s line is its record: parent and owner');
+  assert.deepEqual(live.find((line) => line.data.id === Number(created.loose.id)).data, { id: Number(created.loose.id), parent: { conversationId: Number(created.root.id), at: Number(created.entry.id) } }, 'an ownerless fork keeps its parent and has no owner');
 });
