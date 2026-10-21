@@ -1,0 +1,29 @@
+#!/usr/bin/env node
+// node pick-issues.mjs <owner/name> [count]: the input of a live run, printed as JSON: the `count` (default 20) newest open issues that carry one of the maintainers' labels, and the
+// label map. Read-only GETs (GITHUB_TOKEN optional). It runs before the workflow, outside it: the classifier never sees which labels these issues carry.
+const [repo, count = '20'] = process.argv.slice(2);
+if (!/^[\w.-]+\/[\w.-]+$/.test(repo ?? '')) { console.error('usage: node pick-issues.mjs owner/name [count]'); process.exit(2); }
+// Only TYPE labels: a waiting-on-reporter label (express's `awaiting more info`) is a process state, not a type, so it is neither picked on nor scored.
+const MAPS = { 'expressjs/express': { bug: 'bug', enhancement: 'feature', docs: 'docs', question: 'question' } };
+const labelMap = MAPS[repo];
+if (!labelMap) { console.error(`no label map for ${repo}: add its maintainers' labels to MAPS`); process.exit(2); }
+const token = process.env.GITHUB_TOKEN?.trim();
+const headers = { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'agentrun-issue-triage-demo', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+const found = [];
+for (let page = 1; found.length < Number(count) && page <= 10; page += 1) {
+  const response = await fetch(`https://api.github.com/repos/${repo}/issues?state=open&sort=created&direction=desc&per_page=100&page=${page}`, { headers });
+  if (!response.ok) { console.error(`GitHub answered ${response.status}`); process.exit(1); }
+  const issues = await response.json();
+  if (!issues.length) break;
+  for (const issue of issues) if (!issue.pull_request && issue.labels.some((label) => Object.hasOwn(labelMap, label.name))) found.push(issue);
+}
+const picked = found.slice(0, Number(count));
+const composition = {};
+for (const issue of picked) { const name = issue.labels.map((label) => label.name).find((n) => Object.hasOwn(labelMap, n)); composition[labelMap[name]] = (composition[labelMap[name]] ?? 0) + 1; }
+process.stderr.write(`picked ${picked.length} issues; maintainers' labels (mapped): ${JSON.stringify(composition)}\n`);
+// The one commit the run reads code at: the default branch's head now (one more API request, so a run is ceil(issues/100) + 1 + two per issue), fixed for the run so a cite points at code that does not move.
+const shaResponse = await fetch(`https://api.github.com/repos/${repo}/commits/HEAD`, { headers: { ...headers, Accept: 'application/vnd.github.sha' } });
+if (!shaResponse.ok) { console.error(`GitHub answered ${shaResponse.status} for the default branch's commit`); process.exit(1); }
+const sha = (await shaResponse.text()).trim();
+if (!/^[0-9a-f]{40}$/.test(sha)) { console.error('GitHub did not answer a commit id'); process.exit(1); }
+console.log(JSON.stringify({ repo, sha, numbers: picked.map((issue) => issue.number), label_map: labelMap }));

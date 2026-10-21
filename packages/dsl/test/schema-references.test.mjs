@@ -67,7 +67,7 @@ test('dry-run generative submissions use inline definitions, including catalog c
       ...(collision ? { Name: { type: 'number' } } : {}),
     });
     assert.equal((await runWorkflow(flow, {}, { runNode: async () => ({ name: 'real name' }) })).status, 'complete');
-    assert.deepEqual(await dryRunWorkflow(flow), { ok: true });
+    assert.deepEqual(await dryRunWorkflow(flow), { ok: true, status: 'passed' });
   }
 });
 
@@ -79,5 +79,5 @@ test('dry-run generative child submissions use the child catalog rather than the
     output: { schemaId: 'Result', path: 'answer' },
     root: { node: 'workflow', label: 'child', workflow: child, input: {}, out: 'Result', as: 'answer' },
   };
-  assert.deepEqual(await dryRunWorkflow(parent), { ok: true });
+  assert.deepEqual(await dryRunWorkflow(parent), { ok: true, status: 'passed' });
 });
