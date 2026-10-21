@@ -131,7 +131,14 @@ export function nodeStatus(graph: WorkflowGraph, source: StatusSource, options: 
   // The node a run's escalation ended at, from its terminal result: by its execution path, as the node it ran as.
   const result = isObject(raw) && isObject(raw.pin) && isObject(raw.result) ? raw.result : undefined;
   const escalation = result?.status === "escalated" && isObject(result.escalation) ? result.escalation : undefined;
-  const stoppedAt = typeof escalation?.executionPath === "string" ? definitionPath(escalation.executionPath) : undefined;
+  const escalatedExecPath = typeof escalation?.executionPath === "string" ? escalation.executionPath : undefined;
+  // When one map item or loop iteration is read on its own (`options.item`), the escalation belongs to this view only if
+  // it fired inside that same instance: another item's escalation, reduced to the shared body, must not mark this one's
+  // body escalated. The item index is in the raw execution path, which `definitionPath` then strips.
+  const itemScope = typeof options.item === "string" ? options.item.replace(/\/$/, "") : undefined;
+  const inThisItem = escalatedExecPath !== undefined
+    && (itemScope === undefined || escalatedExecPath === itemScope || escalatedExecPath.startsWith(`${itemScope}/`));
+  const stoppedAt = escalatedExecPath !== undefined && inThisItem ? definitionPath(escalatedExecPath) : undefined;
   const ended = stoppedAt !== undefined && graph.nodes.some((node) => node.path === stoppedAt) ? stoppedAt : undefined;
   const onPath = (path: string): boolean => ended !== undefined && (path === ended || ended.startsWith(`${path}/`));
 

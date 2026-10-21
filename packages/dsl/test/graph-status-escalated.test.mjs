@@ -47,9 +47,9 @@ test('no result, or a result that names no escalation in the graph, gives the st
   for (const [graph, source] of sources) {
     const before = JSON.stringify(nodeStatus(graph, source));
     for (const result of [undefined, null, { status: 'complete' }, { status: 'escalated' }, { status: 'escalated', escalation: {} },
-      { status: 'escalated', escalation: { node: '/root/steps/99' } }, { status: 'escalated', escalation: { executionPath: 7 } },
+      { status: 'escalated', escalation: { executionPath: '/root/steps/99' } }, { status: 'escalated', escalation: { executionPath: 7 } },
       // Only an escalation marks a node: a run that failed or was cancelled leaves the frame's reading as it is, for now.
-      { status: 'failed', escalation: { node: '/root/steps/3' } }, { status: 'cancelled', escalation: { node: '/root/steps/3' } }]) {
+      { status: 'failed', escalation: { executionPath: '/root/steps/3' } }, { status: 'cancelled', escalation: { executionPath: '/root/steps/3' } }]) {
       assert.equal(JSON.stringify(nodeStatus(graph, { ...source, result })), before, JSON.stringify(result));
     }
   }
@@ -123,4 +123,33 @@ test('a failure the run collected before it escalated still shows on the contain
   // What the frame shows of the collected failure stays: the root holds it, with or without the result.
   assert.equal(alone['/root'], 'failed');
   assert.equal(status['/root'], 'failed');
+});
+
+// A map whose body is a plain chain shared by every item: item 0 runs it through, item 1 stops at the escalate in it.
+const sharedBody = { v: 2, name: 'shared-body-escalate', schemas, output: { schemaId: 'Any', path: 'final' }, root: { node: 'chain', steps: [
+  code('seed', '({ rows: [{ stop: false }, { stop: true }] })'),
+  { node: 'map', label: 'pages', itemsPath: 'rows', as: 'outs', maxConcurrency: 1, body: { node: 'chain', steps: [
+    code('read', '({ read: true })'),
+    { node: 'escalate', label: 'maybe-stop', when: { predicate: 'field_true', path: 'item.stop' }, kind: 'needs_input', stage: 'r', summary: 'This page needs a person.' },
+    code('done-item', '({ ok: true })'),
+  ] } },
+  code('finish', '({ final: { n: s.outs.length } })'),
+] } };
+
+test('reading one committed map item with { item } and the run result: an escalation in another item does not mark this one escalated', async () => {
+  // Item 0 (stop:false) runs the shared chain body to the end and commits; item 1 (stop:true) stops at the escalate in
+  // that same body. The escalation's execution path is in item 1 (/root/steps/1/items/1/body/steps/1). Reading item 0 on
+  // its own with the terminal result must not mark its body's step 1 escalated: definitionPath strips the index to the
+  // shared body, so without item scoping item 0's view would show the escalate node it never ran as escalated.
+  const { result, items } = await recordedRun(sharedBody, {}, { layout: 'v4' });
+  assert.equal(result.status, 'escalated');
+  assert.match(result.escalation.executionPath ?? '', /\/items\/1\/body\/steps\/1$/, 'the escalation fired at item 1 step 1');
+  const graph = workflowGraph(sharedBody);
+  const item0 = items.find((item) => item.index === 0);
+  assert.ok(item0 && item0.status === 'committed', 'item 0 committed successfully');
+  const status = nodeStatus(graph, { pin: item0.frame, items: [item0], result }, { item: '/root/steps/1/items/0' });
+  const stepOf = (i) => '/root/steps/1/body/steps/' + i;
+  assert.notEqual(status[stepOf(1)], 'escalated', "item 0's escalate step did not fire; it is not escalated in item 0's view");
+  assert.equal(status[stepOf(0)], 'done', "item 0 ran the body's first step");
+  assert.equal(status[stepOf(2)], 'done', "item 0 ran the body's last step and committed");
 });
