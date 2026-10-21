@@ -220,7 +220,8 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   if (servePort !== undefined && tokenFile === undefined && !isLoopback(serveHost)) throw new UsageError(`--serve-host ${serveHost} is not loopback: name a --serve-token-file`);
   const serveToken = tokenFile === undefined ? undefined : readServeToken(tokenFile);
   const mountRoot = str(values["mount-root"], DEFAULT_MOUNT_ROOT)!;
-  const root = dir ?? join(mountRoot, runPath(ref.id));
+  // On a disk the id names the run's directory: an unsafe one stops the instance here (INVALID_ARGUMENT), before it serves.
+  if (dir === undefined) runPath(ref.id);
   const log = (event: string, extra: Record<string, unknown> = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event, run: ref.id, ...extra })}\n`);
   // The app's factory runs once the claim is held (`afterClaim`), so `ctx.root` is the live directory whenever app code
   // runs; what it returns opens the Harness. Serve starts before the open, with the root options the factory fills in.
