@@ -131,3 +131,16 @@ test('durableDecisions reads the rows of a store file in commit order in either 
   assert.deepEqual(durableDecisions(oldFile).map((r) => r.decision_id), ['d0', 'd1', 'd2']);
   assert.deepEqual(durableDecisions(join(root, 'no-such-file.sqlite')), []);
 });
+
+test('a writer that cannot read the store is refused, not guessed: an old-shape store given a commit-only writer is never written keyed', async () => {
+  const file = fileOf();
+  const harness = await open(file);
+  try {
+    await seedOld(harness, [row(0)]);
+    const commitOnly = { commit: (change, context) => harness.commit(change, context) };
+    await assert.rejects(appendDecision(commitOnly, row(1), ctx), /cannot tell which form/);
+    assert.deepEqual((await readDecisions(harness, ctx)).map((r) => r.decision_id), ['d0'], 'nothing was written');
+  } finally { await harness.close(ctx); }
+  assert.deepEqual(documentsOf(file, DECISION_RECEIPTS_DOC), { single: 1, family: 0 });
+  assert.deepEqual(documentsOf(file, 'agentrun.decisions.count'), { single: 0, family: 0 });
+});

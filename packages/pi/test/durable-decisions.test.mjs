@@ -67,7 +67,7 @@ function sessionOn(harness, { failOn = new Set() } = {}) {
     open: async () => {
       seen.opened += 1;
       return {
-        harness: { commit: (change, context) => { next += 1; seen.commits += 1; return failOn.has(next) ? Promise.reject(new Error(`commit ${next} refused`)) : harness.commit(change, context); } },
+        harness: { snapshot: (...args) => harness.snapshot(...args), commit: (change, context) => { next += 1; seen.commits += 1; return failOn.has(next) ? Promise.reject(new Error(`commit ${next} refused`)) : harness.commit(change, context); } },
         release: async () => { seen.released += 1; },
       };
     },
@@ -130,7 +130,7 @@ test('a row recorded while flush waits is committed before the Session is releas
     let n = 0;
     const writer = createDecisionWriter({ open: async () => {
       seen.opened += 1;
-      return { harness: { commit: async (change, context) => { n += 1; if (n === 1) await first.shut; return harness.commit(change, context); } }, release: async () => { seen.released += 1; } };
+      return { harness: { snapshot: (...args) => harness.snapshot(...args), commit: async (change, context) => { n += 1; if (n === 1) await first.shut; return harness.commit(change, context); } }, release: async () => { seen.released += 1; } };
     } });
     writer.record(row('first'));
     const flushing = writer.flush();
@@ -169,7 +169,7 @@ test('flush reports the first failed commit even when releasing the Session also
   const harness = await open(new MemoryStorage());
   try {
     const failing = (failCommit) => createDecisionWriter({ open: async () => ({
-      harness: { commit: (change, context) => failCommit ? Promise.reject(new Error('commit refused')) : harness.commit(change, context) },
+      harness: { snapshot: (...args) => harness.snapshot(...args), commit: (change, context) => failCommit ? Promise.reject(new Error('commit refused')) : harness.commit(change, context) },
       release: async () => { throw new Error('release failed'); },
     }) });
     const both = failing(true);

@@ -74,12 +74,14 @@ const DecisionCountDoc = defineDoc<{ count: number }>({ kind: DECISION_COUNT_DOC
 export const decisionKey = (place: number): string => String(place).padStart(8, "0");
 
 export type DecisionForm = "single" | "keyed";
-type Writer = Pick<Harness, "commit"> & Partial<Pick<DocumentReader, "snapshot">>;
+/** What a writer commits through: a Harness, or anything with its `commit` and `snapshot`. It must be able to read the store: the form is the store's, and a writer that could not look would have to guess. */
+type Writer = Pick<Harness, "commit" | "snapshot">;
 const forms = new WeakMap<object, Promise<DecisionForm>>();
 /** The form a reader's store holds: `single` when the old document is there, else `keyed`. Settled once per reader (the run's open): a
- *  run that began on the old document never switches mid-run, and a reader with no way to read says `keyed`. */
+ *  run that began on the old document never switches mid-run. A reader with no way to read the store is refused, never guessed: a guess of `keyed` over an
+ *  old store would write both forms into one recording, and a guess of `single` would write the old list into a fresh one. */
 export function decisionForm(read: Partial<Pick<DocumentReader, "snapshot">>, context: Context = BACKGROUND_CONTEXT): Promise<DecisionForm> {
-  if (typeof read.snapshot !== "function") return Promise.resolve("keyed");
+  if (typeof read.snapshot !== "function") return Promise.reject(new Error("agentrun.decisions: the writer cannot read the store, so it cannot tell which form the store holds; give it a Harness, or an object with commit and snapshot"));
   let known = forms.get(read);
   if (!known) {
     known = read.snapshot(DecisionsDoc, context).then((old): DecisionForm => (old === undefined ? "keyed" : "single"));
