@@ -9,8 +9,8 @@
     SEC uses it;
   - every reportable operating segment, named as the company reports it, with its share of total revenue from 0 to 1,
     from the report's segment table; a company that reports one segment says so;
-  - its headquarters, the principal executive offices the report gives: the city, the state or province when there is
-    one, and the country;
+  - its headquarters, the principal executive offices the registrant states for itself (its cover, else the report
+    before its exhibits): the city, the state or province when there is one, and the country;
   - its operating subsidiaries as the company lists them (a 10-K's Exhibit 21, a 20-F's Exhibit 8), at most 15, or none
     (`{ "none": true, "note" }`) when the report, read, has no subsidiary exhibit or list, the note saying so in at most
     300 characters;
