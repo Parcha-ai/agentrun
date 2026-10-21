@@ -10,7 +10,7 @@ import { agentApp, agentTools, hostFromEnv, placeAt } from "@parcha/agentrun-har
 import { agent, client, follow, scratch, serve, startRun } from "./support.mjs";
 
 const BROWSER_ENV = ["CHROME_PATH", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BB_API_KEY"];
-const NO_BROWSER = "set CHROME_PATH or both BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID";
+const NO_BROWSER = "set CHROME_PATH (this host takes a local Chrome only)";
 
 /** Sets `vars` in this process's environment, which the server and its runs inherit, until test `t` ends. The browser's
  *  variables are cleared first, so a test sees only the browser it sets. */
@@ -26,7 +26,7 @@ function withEnv(t, vars) {
 /** The harness's host on this process's environment, as a run's app builds it. */
 async function harnessHost(t) {
   const place = await placeAt(join(await scratch(t), "run"), "probe");
-  return { place, host: await hostFromEnv(place, { models: createModels(), lead: { provider: "none", modelId: "none" }, env: process.env }) };
+  return { place, host: await hostFromEnv(place, { models: createModels(), lead: { provider: "none", modelId: "none" }, env: process.env, browserbase: false }) };
 }
 
 test("an agent with bash: the command runs in the run's work directory with none of the server's keys, and the run completes", async (t) => {
@@ -71,11 +71,12 @@ test("a definition may name a tool this server does not bind: the agent is creat
   for (const id of ["teleporter", "browsing"]) assert.deepEqual((await api("GET", `/agents/${id}/runs`)).body.runs, [], "nothing started");
 });
 
-test("features.browser is the browser the host offers, as the harness's vocabulary says: chrome, browserbase or none", async (t) => {
+test("features.browser is the browser the host offers, as the harness's vocabulary says: a local Chrome or none, never a billed Browserbase session", async (t) => {
   const cases = [
     ["none", {}],
     ["chrome", { CHROME_PATH: "/nonexistent/chrome" }],
-    ["browserbase", { BROWSERBASE_API_KEY: "bb-key", BROWSERBASE_PROJECT_ID: "bb-project" }],
+    ["none", { BROWSERBASE_API_KEY: "bb-key", BROWSERBASE_PROJECT_ID: "bb-project" }],
+    ["chrome", { CHROME_PATH: "/nonexistent/chrome", BROWSERBASE_API_KEY: "bb-key", BROWSERBASE_PROJECT_ID: "bb-project" }],
     ["none", { BROWSERBASE_API_KEY: "bb-key" }],
   ];
   for (const [expected, vars] of cases) {

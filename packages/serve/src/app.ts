@@ -51,7 +51,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const state = await readAgentHome(await openAgentHome(resolve(join(where.root, "..", ".."))));
   const { models, model } = await runModels(process.env);
   const place = { id: where.ref.id, root: where.root, work: where.work, store: where.store };
-  const host = await hostFromEnv(place, { models, lead: model, env: process.env });
+  // The same host toolOffer reads: a local Chrome only (tools.ts).
+  const host = await hostFromEnv(place, { models, lead: model, env: process.env, browserbase: false });
   // No browser option: the host has a browser only when the environment gives it one, and a browser tool on a host
   // without one is refused with what would give it one.
   const { tools } = state.definition;

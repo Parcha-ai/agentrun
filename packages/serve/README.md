@@ -115,12 +115,13 @@ any tool of the harness's vocabulary that this server's host offers, and `ask_pe
 | --- | --- | --- |
 | `read`, `write`, `edit`, `bash` | files and commands in the run's `work/` | nothing |
 | `code` | code mode: a script with `tools.bash`, `vision.see` and `vision.judge` | nothing; `vision.judge` answers only with `TYPESAFE_API_KEY` |
-| `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch` | a browser | `CHROME_PATH` (a Chrome on this machine) or both `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` |
+| `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch` | a browser | `CHROME_PATH` (a Chrome on this machine) |
 | `ask_person` | a question to the person who started the run; the turn ends until they answer | nothing |
 
 The server reads what its host offers once, when it starts, from its own environment, and each run's app builds the
-same host from the same environment. Capabilities say which browser it is (`features.browser`: `chrome`,
-`browserbase` or `none`). A definition may name a tool this server does not offer: the agent is created, since a
+same host from the same environment. Capabilities say which browser it is (`features.browser`: `chrome` or
+`none`). serve takes no Browserbase browser yet, whatever its keys: a Browserbase session is billed, and serve does
+not count a browser's charge against a run's `max_cost_usd`. A definition may name a tool this server does not offer: the agent is created, since a
 definition moves between backends, and a run of it is refused before it starts with `409 agent_not_runnable`, the
 harness's reason, and `details: {bound, unbound}`.
 
