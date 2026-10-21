@@ -16,7 +16,7 @@
   --purple: #b4a0ff;
   --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --r1: 2px; --r2: 4px; --r3: 6px;
+  --r1: 0; --r2: 0; --r3: 0;
   /* the room a phone's notch and home bar take, never covered by the composer */
   --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-l: env(safe-area-inset-left, 0px); --safe-r: env(safe-area-inset-right, 0px);

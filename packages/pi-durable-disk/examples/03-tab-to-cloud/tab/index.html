@@ -26,7 +26,7 @@ body { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; he
 header { grid-row: 1; } #banner { grid-row: 2; } #checkedout { grid-row: 3; } main { grid-row: 4; } footer { grid-row: 5; }
 header { display: flex; align-items: center; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .run { font: 12px var(--mono); color: var(--muted); }
-.badge { display: flex; align-items: center; gap: 10px; padding: 7px 14px 7px 12px; border-radius: 999px; margin-left: auto; }
+.badge { display: flex; align-items: center; gap: 10px; padding: 7px 14px 7px 12px; border-radius: 0; margin-left: auto; }
 .badge .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
 .badge.tab { color: var(--tab); background: var(--tab-bg); }
 .badge.cloud { color: var(--cloud); background: var(--cloud-bg); }
@@ -40,7 +40,7 @@ header { display: flex; align-items: center; gap: 16px; padding: 14px 20px; bord
 #checkedout ul { margin: 6px 0 0; padding-left: 20px; color: var(--muted); }
 @keyframes pulse { from { opacity: 1 } to { opacity: 0.25 } }
 .actions { display: flex; gap: 10px; align-items: center; }
-button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: 7px 12px; }
+button { font: inherit; cursor: pointer; border-radius: 0; border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: 7px 12px; }
 button.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 button:disabled { opacity: 0.4; cursor: default; }
 #banner { margin: 0; padding: 10px 20px; background: var(--bad-bg); color: var(--bad); font-weight: 550; border-bottom: 1px solid var(--line); }
@@ -49,12 +49,12 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: 0
 #chat > * { flex-shrink: 0; }
 .msg { max-width: 780px; }
 .msg .who { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 3px; }
-.msg.user .body { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; white-space: pre-wrap; }
+.msg.user .body { background: var(--panel); border: 1px solid var(--line); border-radius: 0; padding: 9px 12px; white-space: pre-wrap; }
 .msg.agent .body { white-space: pre-wrap; }
 .msg.agent.streaming .body::after { content: "▍"; animation: pulse 0.6s infinite alternate; }
 .thinking summary { font-size: 12px; color: var(--muted); cursor: pointer; }
 .thinking pre { font: 12px var(--mono); color: var(--muted); white-space: pre-wrap; margin: 4px 0 6px; }
-.tool { max-width: 780px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: hidden; }
+.tool { max-width: 780px; border: 1px solid var(--line); border-radius: 0; background: var(--panel); overflow: hidden; }
 .tool-head { display: flex; justify-content: space-between; padding: 6px 10px; font-size: 12px; border-bottom: 1px solid var(--line); }
 .tool-name { font: 600 12px var(--mono); }
 .tool-status { color: var(--muted); }
@@ -63,10 +63,10 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: 0
 .tool pre { margin: 0; padding: 8px 10px; font: 12px/1.4 var(--mono); white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
 .tool-out { color: var(--muted); border-top: 1px dashed var(--line); }
 .note { font-size: 13px; color: var(--muted); font-style: italic; }
-.notice { max-width: 780px; border-left: 3px solid var(--moving); background: var(--moving-bg); border-radius: 0 10px 10px 0; padding: 8px 12px; font-size: 13px; }
+.notice { max-width: 780px; border-left: 3px solid var(--moving); background: var(--moving-bg); border-radius: 0; padding: 8px 12px; font-size: 13px; }
 .notice.unplanned { border-left-color: var(--other); background: var(--other-bg); }
 .notice .who { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--moving); margin-bottom: 3px; }
-.switcher { display: flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.switcher { display: flex; border: 1px solid var(--line); border-radius: 0; overflow: hidden; }
 .switcher .env { border: 0; border-radius: 0; border-right: 1px solid var(--line); padding: 7px 14px; }
 .switcher .env:last-child { border-right: 0; }
 .switcher .env:disabled { opacity: 0.55; }
@@ -87,7 +87,7 @@ aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; c
 #preview-name { font: 12px var(--mono); text-transform: none; letter-spacing: 0; color: var(--ink); }
 footer { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 20px; display: grid; gap: 6px; }
 #composer { display: flex; gap: 8px; }
-#input { flex: 1; font: inherit; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); resize: none; height: 44px; }
+#input { flex: 1; font: inherit; padding: 9px 12px; border: 1px solid var(--line); border-radius: 0; background: var(--bg); color: var(--ink); resize: none; height: 44px; }
 #stats { font: 11px var(--mono); color: var(--muted); min-height: 14px; }
 /* ?robot=1: the creature page (the robot) takes the side pane, in place of the workspace listing */
 body.robot main { grid-template-columns: minmax(0, 1fr) minmax(380px, 46%); }
@@ -111,7 +111,7 @@ body.phone #phone-actions { display: flex; justify-content: flex-end; gap: 8px; 
 body.phone #new-chat, body.phone #phone-files { min-height: 44px; min-width: 44px; padding: 4px 10px; } /* DESIGN.md: 44 px targets */
 /* the workspace on a phone: a sheet over the chat, opened by Files (#phone-files) or by picking a file, closed by its close or a tap outside it. The tree and the
    preview share it 2 to 3, with no floor for the tree, and on a short screen the sheet takes up to 440 px of it: a picked file always has room */
-body.phone.ws-open aside#workspace { display: grid !important; grid-template-rows: auto minmax(0, 2fr) auto minmax(0, 3fr); position: fixed; left: 0; right: 0; top: auto; bottom: 0; width: 100%; height: max(calc(var(--vvh, 100dvh) * 0.72), min(calc(var(--vvh, 100dvh) - 24px), 440px)); z-index: 30; overflow: hidden; border-radius: 14px 14px 0 0; border-top: 1px solid var(--line); box-shadow: 0 -24px 48px #000a; padding: 0 max(12px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(12px, env(safe-area-inset-left)); }
+body.phone.ws-open aside#workspace { display: grid !important; grid-template-rows: auto minmax(0, 2fr) auto minmax(0, 3fr); position: fixed; left: 0; right: 0; top: auto; bottom: 0; width: 100%; height: max(calc(var(--vvh, 100dvh) * 0.72), min(calc(var(--vvh, 100dvh) - 24px), 440px)); z-index: 30; overflow: hidden; border-radius: 0; border-top: 1px solid var(--line); box-shadow: 0 -24px 48px #000a; padding: 0 max(12px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(12px, env(safe-area-inset-left)); }
 body.phone.ws-open #ws-close { display: inline; min-height: 44px; min-width: 44px; }
 body.phone.ws-open #workspace > h2:first-child { display: flex; justify-content: space-between; align-items: center; }
 body.phone.ws-open::after { content: ""; position: fixed; inset: 0; z-index: 29; background: #0009; }

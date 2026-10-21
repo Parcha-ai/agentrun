@@ -26,35 +26,35 @@ main { position:relative; min-height:0; display:grid; grid-template-columns:minm
 @media (min-width: 1100px) { main { grid-template-columns:420px minmax(0,1fr); } aside { position:static !important; transform:none !important; box-shadow:none !important; } #sketchToggle { display:none; } }
 aside { position:absolute; z-index:5; left:0; top:0; bottom:0; width:min(400px,92%); background:var(--panel); border-right:1px solid var(--line); box-shadow:4px 0 16px rgba(0,0,0,.12); overflow-y:auto; padding:10px 12px; display:flex; flex-direction:column; gap:8px; transform:translateX(-102%); transition:transform .18s; }
 body.sketch-open aside { transform:none; }
-#sketch { flex:none; width:100%; height:260px; background:var(--bg); border:1px solid var(--line); border-radius:8px; touch-action:none; }
+#sketch { flex:none; width:100%; height:260px; background:var(--bg); border:1px solid var(--line); border-radius:0; touch-action:none; }
 h2 { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:2px 0 0; font-weight:600; }
 .row { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
 .pair { display:grid; grid-template-columns:50px 1fr 40px; gap:2px 8px; align-items:center; font-size:11px; }
 .pair b { grid-column:1 / -1; font-size:11px; }
 .pair output { font:10px var(--mono); color:var(--muted); text-align:right; }
 input[type=range] { width:100%; }
-button { font:inherit; cursor:pointer; border-radius:7px; border:1px solid var(--line); background:var(--panel); color:var(--ink); padding:4px 9px; }
+button { font:inherit; cursor:pointer; border-radius:0; border:1px solid var(--line); background:var(--panel); color:var(--ink); padding:4px 9px; }
 button.primary { background:var(--ink); color:var(--bg); border-color:var(--ink); }
 button:disabled { opacity:.4; cursor:default; }
 #stage { position:relative; min-width:0; min-height:0; }
 #view { position:absolute; inset:0; width:100%; height:100%; display:block; }
-#hud { position:absolute; left:8px; top:8px; font:11px/1.3 var(--mono); background:color-mix(in srgb, var(--panel) 80%, transparent); border:1px solid var(--line); border-radius:7px; padding:5px 8px; white-space:pre; pointer-events:none; }
-#toolbar { position:absolute; left:8px; right:8px; bottom:8px; display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; background:color-mix(in srgb, var(--panel) 90%, transparent); border:1px solid var(--line); border-radius:10px; padding:6px 8px; }
+#hud { position:absolute; left:8px; top:8px; font:11px/1.3 var(--mono); background:color-mix(in srgb, var(--panel) 80%, transparent); border:1px solid var(--line); border-radius:0; padding:5px 8px; white-space:pre; pointer-events:none; }
+#toolbar { position:absolute; left:8px; right:8px; bottom:8px; display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; background:color-mix(in srgb, var(--panel) 90%, transparent); border:1px solid var(--line); border-radius:0; padding:6px 8px; }
 #toolbar .grp { display:flex; gap:4px; align-items:center; }
 .lbl { font:10px var(--mono); color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
 #toolbar button { padding:3px 8px; font-size:12px; }
 #policyName { font:11px var(--mono); max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 /* The state of the creature's brain, on the creature, in plain words (always on). */
-#stateLabel { position:absolute; left:50%; top:14px; transform:translateX(-50%); z-index:4; font:700 30px/1.1 var(--sans); letter-spacing:.01em; padding:9px 24px; border-radius:999px; background:#b3261e; color:#fff; pointer-events:none; white-space:nowrap; box-shadow:0 2px 12px rgba(0,0,0,.25); }
+#stateLabel { position:absolute; left:50%; top:14px; transform:translateX(-50%); z-index:4; font:700 30px/1.1 var(--sans); letter-spacing:.01em; padding:9px 24px; border-radius:0; background:#b3261e; color:#fff; pointer-events:none; white-space:nowrap; box-shadow:0 2px 12px rgba(0,0,0,.25); }
 #stateLabel[data-state=learning] { background:#c98a1a; }
 #stateLabel[data-state=trained] { background:#1f7a4d; }
 #stateLabel[data-state=dummy] { background:#555; font-size:18px; }
 #stateLabel[data-state] { transition: background .2s; }
 body[data-fit=mismatch] #stateLabel { background:#b3261e; font-size:20px; }
 /* the robot's name, when the agent gave it one */
-#robotName { position:absolute; left:14px; top:14px; z-index:4; background:rgba(255,255,255,.88); color:#1c1c1e; padding:6px 14px; border-radius:999px; font:700 18px var(--sans); box-shadow:0 2px 10px rgba(0,0,0,.2); pointer-events:none; }
+#robotName { position:absolute; left:14px; top:14px; z-index:4; background:rgba(255,255,255,.88); color:#1c1c1e; padding:6px 14px; border-radius:0; font:700 18px var(--sans); box-shadow:0 2px 10px rgba(0,0,0,.2); pointer-events:none; }
 #robotName[hidden] { display:none; }
-#offlineBadge { position:absolute; right:14px; top:14px; z-index:4; background:#111; color:#fff; padding:7px 16px; border-radius:999px; font:600 18px var(--sans); box-shadow:0 2px 12px rgba(0,0,0,.25); }
+#offlineBadge { position:absolute; right:14px; top:14px; z-index:4; background:#111; color:#fff; padding:7px 16px; border-radius:0; font:600 18px var(--sans); box-shadow:0 2px 12px rgba(0,0,0,.25); }
 /* ?clean=1: the creature, one label, nothing else; the sketcher is a pane only in the draw phase */
 body.clean { grid-template-rows:minmax(0,1fr); }
 body.clean header, body.clean #hud, body.clean #toolbar, body.clean #toast, body.clean #err { display:none !important; }
@@ -67,19 +67,19 @@ body.clean.phase-watch aside { display:none !important; }
 /* the distance since this version started and the drawing, both only once the creature has the pane (watch); the page above keeps its own words */
 #distMarker, #thumb, #stateSub { display:none; position:absolute; z-index:4; pointer-events:none; }
 /* while it learns, a line under the label says the versions are running here, live (the big distance is for the trained creature at home) */
-body.clean[data-brain=learning] #stateSub { display:block; left:50%; top:76px; transform:translateX(-50%); font:600 17px/1.2 var(--sans); color:#fff; background:rgba(17,17,17,.72); padding:5px 16px; border-radius:999px; white-space:nowrap; }
-body.clean.phase-watch[data-brain=trained] #distMarker { display:block; right:14px; top:14px; text-align:center; background:rgba(17,17,17,.82); color:#fff; padding:8px 26px 10px; border-radius:18px; box-shadow:0 2px 12px rgba(0,0,0,.25); }
+body.clean[data-brain=learning] #stateSub { display:block; left:50%; top:76px; transform:translateX(-50%); font:600 17px/1.2 var(--sans); color:#fff; background:rgba(17,17,17,.72); padding:5px 16px; border-radius:0; white-space:nowrap; }
+body.clean.phase-watch[data-brain=trained] #distMarker { display:block; right:14px; top:14px; text-align:center; background:rgba(17,17,17,.82); color:#fff; padding:8px 26px 10px; border-radius:0; box-shadow:0 2px 12px rgba(0,0,0,.25); }
 #distNum { font:800 60px/1 var(--sans); font-variant-numeric:tabular-nums; }
 #distMarker .u { font:700 28px var(--sans); }
 #distMarker .cap { font:600 13px var(--sans); opacity:.8; margin-top:2px; }
-body.clean.phase-watch #thumb { display:block; left:14px; top:14px; background:#f6f4ee; border:2px solid #8a8574; border-radius:10px; padding:6px 6px 4px; box-shadow:0 2px 10px rgba(0,0,0,.2); }
+body.clean.phase-watch #thumb { display:block; left:14px; top:14px; background:#f6f4ee; border:2px solid #8a8574; border-radius:0; padding:6px 6px 4px; box-shadow:0 2px 10px rgba(0,0,0,.2); }
 #thumbCanvas { display:block; width:170px; height:130px; }
 #thumb .cap { font:700 14px var(--sans); color:#4a4638; text-align:center; margin-top:2px; }
 /* a pane under 1000 px has no room for the thumbnail, the label and the distance on one row: the thumbnail and the distance drop under the label */
 @media (max-width: 1000px) {
   body.clean.phase-watch[data-brain=trained] #distMarker { top:150px; }
   body.clean.phase-watch #thumb { top:150px; }
-  body.clean[data-brain=learning] #stateSub { white-space:normal; width:min(92vw,420px); text-align:center; border-radius:18px; }
+  body.clean[data-brain=learning] #stateSub { white-space:normal; width:min(92vw,420px); text-align:center; border-radius:0; }
 }
 /* the offline badge sits under the distance pill, not on it */
 body.clean #offlineBadge { top:132px; }
@@ -92,7 +92,7 @@ body.ep2 #modelTopic { font:800 34px/1.15 var(--sans); color:#ffd27a; max-width:
 body.ep2 #modelMech { font:600 16px var(--sans); opacity:.85; max-width:min(92%,60ch); overflow-wrap:anywhere; }
 body.ep2 #modelTopic:empty, body.ep2 #modelMech:empty { display:none; }
 body.ep2 #modelProgress { font:600 18px var(--sans); opacity:.9; }
-body.ep2 #modelBadge { font:700 16px var(--sans); color:#7fe3a0; border:1px solid #2f6b49; border-radius:999px; padding:5px 14px; max-width:92%; overflow-wrap:anywhere; }
+body.ep2 #modelBadge { font:700 16px var(--sans); color:#7fe3a0; border:1px solid #2f6b49; border-radius:0; padding:5px 14px; max-width:92%; overflow-wrap:anywhere; }
 body.ep2 #modelBadgeSub { font:500 12px var(--sans); opacity:.7; max-width:92%; }
 body.ep2 #modelBadge:empty, body.ep2 #modelBadgeSub:empty { display:none; }
 body.ep2 #modelQs .th { font-style:italic; color:#b8c4ff; border-left:3px solid #6b7bd6; padding-left:8px; margin:2px 0; }
@@ -106,14 +106,14 @@ body.ep2 #modelPanel > * { flex:none; }
 /* the questions are the one part that gives way: on a small pane they scroll inside the card, and the title, topic and status stay in the pane */
 body.ep2 #modelPanel > #modelQs:empty { display:none; }
 body.ep2 #modelPanel > #modelQs { color-scheme:dark; flex:0 1 auto; min-height:0; overflow-y:auto; width:min(92%,640px); display:flex; flex-direction:column; gap:10px; text-align:left; }
-body.ep2 #modelQs .qa { background:#232832; border-radius:10px; padding:8px 12px; font:500 14px/1.35 var(--sans); }
+body.ep2 #modelQs .qa { background:#232832; border-radius:0; padding:8px 12px; font:500 14px/1.35 var(--sans); }
 body.ep2 #modelQs .q { font-weight:800; color:#ffd27a; }
 body.ep2 #modelQs .before, body.ep2 #modelQs .after { white-space:pre-line; overflow-wrap:anywhere; max-height:7.5em; overflow:hidden; } /* a sample is cut at 48 tokens and has line breaks: keep them, bound the height */
 body.ep2 #modelQs .before::before, body.ep2 #modelQs .after::before { font-weight:800; margin-right:6px; opacity:.8; }
 body.ep2 #modelQs .note { font-size:12px; font-weight:600; opacity:.65; margin-top:2px; overflow-wrap:anywhere; } /* outside .before's height cap, so a long answer cannot hide it */
 body.ep2 #modelQs .before::before { content:'before:'; } body.ep2 #modelQs .after::before { content:'after:'; color:#7fe3a0; opacity:1; }
 body.ep2 #modelStatus { font:600 24px/1.3 var(--sans); max-width:34ch; }
-body.ep2 #modelPanel .bar { width:min(80%,520px); height:12px; background:#333a44; border-radius:6px; overflow:hidden; }
+body.ep2 #modelPanel .bar { width:min(80%,520px); height:12px; background:#333a44; border-radius:0; overflow:hidden; }
 body.ep2 #modelBar { display:block; height:100%; width:0; background:#4fb477; transition:width .4s; }
 body.ep2 #modelChip { font:600 16px var(--sans); opacity:.8; }
 body.ep2 #modelPanel[data-failed] #modelStatus { color:#ff8a80; }
@@ -130,7 +130,7 @@ body.banner.hero[data-fit=mismatch] #stateLabel[data-state=trained] { display: b
 body.hero #robotName { top: 12px; bottom: auto; left: 14px; right: 14px; background: none; box-shadow: none; padding: 0; border-radius: 0; color: var(--ink); font: 500 11px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* ?banner=1: the page around the tab shows the home banner and the final label itself, so the tab's own "offline" and "trained" go quiet */
 body.banner #offlineBadge, body.banner #stateLabel[data-state=trained] { display:none !important; }
-#toast { position:absolute; left:50%; top:10px; transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:4px 12px; border-radius:999px; font-weight:600; opacity:0; transition:opacity .2s; pointer-events:none; z-index:3; }
+#toast { position:absolute; left:50%; top:10px; transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:4px 12px; border-radius:0; font-weight:600; opacity:0; transition:opacity .2s; pointer-events:none; z-index:3; }
 #toast.on { opacity:1; }
 #err { color:var(--warn); font-size:12px; position:absolute; left:8px; right:8px; top:64px; pointer-events:none; }
 #memory { position:absolute; inset:0; background:var(--bg); overflow-y:auto; padding:16px 20px; z-index:6; }
@@ -142,7 +142,7 @@ body.banner #offlineBadge, body.banner #stateLabel[data-state=trained] { display
 .tl .host { font:600 12px var(--mono); }
 .tl .when { font:10px var(--mono); color:var(--muted); }
 .tl .note { margin-top:1px; }
-.tl .kind { display:inline-block; font:9px var(--mono); text-transform:uppercase; letter-spacing:.06em; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:0 5px; margin-left:6px; }
+.tl .kind { display:inline-block; font:9px var(--mono); text-transform:uppercase; letter-spacing:.06em; color:var(--muted); border:1px solid var(--line); border-radius:0; padding:0 5px; margin-left:6px; }
 #bodyNotes { display:flex; flex-direction:column; gap:4px; font-size:12px; }
 #bodyNotes div { border-left:3px solid var(--line); padding:3px 8px; }
 #bodyNotes .ok { border-color:var(--accent); }

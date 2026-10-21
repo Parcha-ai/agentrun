@@ -86,7 +86,7 @@ button.icon:hover { color: var(--ink); }
 .turn .note.drafts-status { margin: 0 0 8px; }
 .turn .drafts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0 0 10px; }
 .turn .drafts.picked { grid-template-columns: minmax(0, 1fr); gap: 4px; }
-.turn .draft { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); overflow: hidden; }
+.turn .draft { border: 1px solid var(--line); border-radius: 0; background: var(--panel); overflow: hidden; }
 .turn .draft > summary, .turn .draft.out { font: 400 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 6px 10px; cursor: pointer; }
 .turn .draft.out { opacity: .55; cursor: default; }
 .turn .draft.picked > summary { color: var(--accent); }

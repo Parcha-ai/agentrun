@@ -94,7 +94,7 @@ export function paintCreature(ctx: CanvasRenderingContext2D, design: Design, px:
       }
     }
     ctx.fillStyle = SKETCH_COLORS.torso; ctx.strokeStyle = '#8a5a00'; ctx.lineWidth = 2 * lw * bold;
-    ctx.beginPath(); ctx.roundRect(-torso.length / 2, -torso.width / 2, torso.length, torso.width, 0.03); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.rect(-torso.length / 2, -torso.width / 2, torso.length, torso.width); ctx.fill(); ctx.stroke();
 }
 
 /** Pixels per metre that fit the whole drawing in a w x h box with a margin: the torso and its hips along x, both leg ends along y. */
