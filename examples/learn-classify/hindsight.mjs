@@ -14,8 +14,9 @@ import { join } from 'node:path';
 import { caseValuesOf, classifyTools, groupsOf, toolResultsOf, usageTotals } from './host.mjs';
 import { archivedSecPage } from './tools.mjs';
 
-/** The splits a learning pass may reflect on with the truth: TRAIN, and the older sets' run split. Never DEV or TEST. */
-export const HINDSIGHT_SPLITS = Object.freeze(['train', 'run']);
+/** The splits a learning pass may reflect on with the truth: TRAIN (the 1k set's train and train-legacy) and the older
+ *  sets' run split. Never DEV or TEST. */
+export const HINDSIGHT_SPLITS = Object.freeze(['train', 'train-legacy', 'run']);
 export const HINDSIGHT_FIELDS = Object.freeze(['sic4', 'hq', 'segments', 'subsidiaries']);
 /** The tool calls one reflection may make before its tools refuse, and what it may spend before it is stopped. */
 export const MAX_REFLECTION_CALLS = 6;
