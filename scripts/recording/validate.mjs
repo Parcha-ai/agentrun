@@ -84,7 +84,9 @@ export function lineProblems(event) {
   need(typeof event.kind === 'string' && event.kind !== '', 'kind is not a non-empty string');
   // A durable line has no `gen` before the earliest surviving driver revision, and the supervisor's host lines have none
   // (no run process wrote them); every other line carries the process's.
-  need(event.gen === undefined && (event.channel === 'durable' || event.source === 'host') || isInt(event.gen) && event.gen >= 1, 'gen is not an integer of at least 1');
+  // A live host line is the supervisor's (RECORDING.md 3.1): no event-level gen, the process it is about in data.gen. A process writes none.
+  if (event.channel === 'live' && event.source === 'host') need(event.gen === undefined, `a supervisor line (${event.kind}) has no event-level gen`);
+  else need(event.gen === undefined && event.channel === 'durable' || isInt(event.gen) && event.gen >= 1, 'gen is not an integer of at least 1');
   need(typeof event.t === 'number' && Number.isFinite(event.t) && event.t >= 0, 't is not a non-negative number');
   need('data' in event && event.data !== undefined, 'data is missing');
   if (event.channel === 'durable') {
