@@ -13,6 +13,8 @@ import { admitRevision, guard, parseTrial, readUses, renderInbox, renderTrial, t
 import { gitRead, ISSUES, proposalStatus, runDemo, runOnce, scriptedModel, TRIAGE_WORKFLOW } from './demo.mjs';
 
 const RULE = /In this project an issue whose body has a stack trace is labeled bug and needs-repro/;
+// What the admitter writes as a workflow skill's description: the workflow's input and output fields, by name and type.
+const SCHEMA_DESCRIPTION = /For an input with body \(string\) and title \(string\)\. It returns labels\./;
 
 async function scratch(t) {
   const dir = await mkdtemp(join(tmpdir(), 'agent-learn-demo-test-'));
@@ -99,7 +101,9 @@ test('a correction and a workflow go through the repository: learned, curated, a
   const trial = JSON.parse(trialText);
   assert.equal(trial.status, 'trial');
   assert.deepEqual(trial.revisions.map((r) => [r.sha256, r.status, r.run]), [[digest, 'trial', 'run-2']]);
-  assert.match(git('show', `${out.curate2.main}:.agents/skills/triage-crash/SKILL.md`), /stack trace/);
+  // The skill is described from the workflow's own schemas, never from the run's learn(workflow) note.
+  assert.match(git('show', `${out.curate2.main}:.agents/skills/triage-crash/SKILL.md`), SCHEMA_DESCRIPTION);
+  assert.doesNotMatch(git('show', `${out.curate2.main}:.agents/skills/triage-crash/SKILL.md`), /stack trace/);
 
   // Retiring takes the rule out after it was used; curation does not bring it back; the trial stays.
   assert.equal(out.retire.status, 'retired');
@@ -213,8 +217,8 @@ test('a revision that escalates twice in a row is demoted and the one it replace
   const afterSecond = trialAt(v2.curate.main);
   assert.equal(afterSecond.status, 'trial');
   assert.deepEqual(afterSecond.revisions.map((r) => [r.sha256, r.status]), [[first, 'superseded'], [second, 'trial']]);
-  assert.match(afterSecond.revisions[0].description, /stack trace: it labels the issue bug and needs-repro\.$/, 'the superseded revision keeps its description');
-  assert.match(git('show', `${v2.curate.main}:.agents/skills/triage-crash/SKILL.md`), /hands an issue with no body to a person/);
+  assert.match(afterSecond.revisions[0].description, SCHEMA_DESCRIPTION, 'the superseded revision keeps its description');
+  assert.match(git('show', `${v2.curate.main}:.agents/skills/triage-crash/SKILL.md`), SCHEMA_DESCRIPTION);
 
   // Runs 9 and 10 load that revision and the tool's run escalates at its gate; the store's task ended complete with an escalated result.
   assert.deepEqual(escalated.map((r) => r.run.runId), ['run-9', 'run-10']);
@@ -237,16 +241,16 @@ test('a revision that escalates twice in a row is demoted and the one it replace
   assert.equal(escalated[1].curate.runs[0].settled[0].reason, `demote, back to ${first.slice(0, 12)}: its last 2 uses ended escalated, escalated`);
 
   // The rollback is one commit: the first revision is active again, its description is the skill's, and `latest` names it.
+  // Both revisions take the same input and give the same output, so the restored description is the same text.
   const rolled = trialAt(escalated[1].curate.main);
   assert.equal(rolled.status, 'active');
   assert.deepEqual(rolled.revisions.map((r) => [r.sha256, r.status]), [[first, 'active'], [second, 'demoted']]);
   assert.deepEqual(git('diff', '--name-only', escalated[0].curate.main, escalated[1].curate.main).split('\n').sort(), [
-    '.agents/skills/triage-crash/SKILL.md', TRIAL_JSON, '.pi/agentrun/workflows/triage-crash/latest',
+    TRIAL_JSON, '.pi/agentrun/workflows/triage-crash/latest',
   ].sort());
   assert.equal(git('show', `${escalated[1].curate.main}:.pi/agentrun/workflows/triage-crash/latest`), first);
   const skill = git('show', `${escalated[1].curate.main}:.agents/skills/triage-crash/SKILL.md`);
-  assert.match(skill, /stack trace: it labels the issue bug and needs-repro\./);
-  assert.doesNotMatch(skill, /no body/);
+  assert.match(skill, SCHEMA_DESCRIPTION);
   assert.match(git('show', `${escalated[1].curate.main}:.pi/agentrun/workflows/triage-crash/${second}.json`), /no body to read/, 'the demoted revision stays in history and on main');
 
   // The next run is offered the first revision again, as active, and holds it in its own store.
@@ -352,10 +356,11 @@ test('run 2\'s propose line and step 5 say what happened when run 2 saves a work
     return { out, text: lines.slice(at, lines.indexOf('', at)).join('\n'), lines: lines.join('\n') };
   };
 
+  // A workflow saved with no learn(workflow) note is admitted with a skill all the same: its description comes from its schemas.
   const undescribed = await step5([inspect, save, {}]);
   assert.match(undescribed.text, /^5\. Curate admits the workflow as a trial skill$/m);
-  assert.match(undescribed.text, /^ {3}triage-crash has no skill: no learn\(workflow\) said when to use it, so later runs are not offered it$/m);
-  assert.doesNotMatch(undescribed.out.run3.learned.join('\n'), /Workflows to try/);
+  assert.doesNotMatch(undescribed.text, /has no skill/);
+  assert.match(undescribed.out.run3.learned.join('\n'), /Workflows to try first for this input: triage-crash \(trial\)/);
 
   assert.match(undescribed.lines, /^ {3}proposed on runs\/run-2 at [0-9a-f]{7}: triage-crash's DSL records$/m);
 

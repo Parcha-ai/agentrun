@@ -147,11 +147,15 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
       if (call.signal?.aborted) throw error;
       // A request that threw may still have been billed: its price is not known, so none is filed. A request the port
       // refused before it sent anything (a box asked of a model that has none, a state over the host's limit, an image it
-      // does not take) is marked by its request diagnostic: it cost nothing and began no call.
-      const { status, requestDiagnostic } = (error ?? {}) as { status?: unknown; requestDiagnostic?: { reason?: unknown } };
-      const refused = typeof requestDiagnostic?.reason === "string";
+      // does not take) is marked by its request diagnostic: it cost nothing and began no call. A request TypeSafe rate-limited
+      // to the end of the runner's retries (`http`, HTTP 429) was answered with no work done: it cost nothing too.
+      const { code: jevCode, status, requestDiagnostic } = (error ?? {}) as { code?: unknown; status?: unknown; requestDiagnostic?: { reason?: unknown } };
+      const limited = jevCode === "http" && status === 429;
+      const refused = typeof requestDiagnostic?.reason === "string" || limited;
       const code = requestDiagnostic?.reason === "unsupported_model" ? "unsupported" : status === 413 ? "over_budget" : "look_failed";
-      return fail({ code, reason: `Jev failed: ${firstLine(error)}`, model }, code === "unsupported" || refused ? undefined : lookTiming(call, startedAt));
+      // A rate-limited request was sent and waited: it keeps its timing, at no cost.
+      const spent = limited ? { tokens_in: 0, tokens_out: 0, cost_usd: 0, ...lookTiming(call, startedAt) } : code === "unsupported" || refused ? undefined : lookTiming(call, startedAt);
+      return fail({ code, reason: `Jev failed: ${limited ? "rate limited, " : ""}${firstLine(error)}`, model }, spent);
     }
     const costUsd = result.cost_usd ?? null;
     const usage: Usage | null = result.usage ? { input: result.usage.input_tokens, output: result.usage.output_tokens, cacheRead: 0, cacheWrite: 0, totalTokens: result.usage.input_tokens + result.usage.output_tokens, cost: { input: costUsd ?? 0, output: 0, cacheRead: 0, cacheWrite: 0, total: costUsd ?? 0 } } : null;

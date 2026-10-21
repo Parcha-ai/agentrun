@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type { RouteNode, Workflow, WorkflowDeps, WorkflowNode } from "../workflow.js";
-import { desugarWorkflow } from "../workflow.js";
+import { desugarWorkflow, isItemFailure } from "../workflow.js";
 import { chainStep, childrenOf, completedIteration, enclosingChains, enclosingIterations, isWithin, mapItemOf, nodeAt, topLevelCompletion } from "./execution-path.js";
 import { bindingDigests, LEDGER_FORMAT } from "./binding.js";
 import { canonicalHash as hash } from "./canonical-hash.js";
@@ -13,7 +13,7 @@ import { RecoveryError } from "./errors.js";
 import { gatewayIntentOf } from "./handoff-receipts.js";
 import { validateFrozenSnapshot, openedFrozenSnapshot, serializeFrozenSnapshot,
   frozenStepSessionId, frozenStepId, frozenEffectId, frozenEffectPath, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
-  FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4, stateDelta, applyStateDelta,
+  FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4, stateDelta, applyStateDelta, isItemOutcome,
   type FrozenSnapshot as Snapshot, type FrozenSnapshotV4, type ItemRecord, type MapEntry, type StateDelta,
   type PathFrame, type RouteDecision, type QuestionReceipts, type FrameTag, type StepRecord, type EscalationRow } from "./frozen-snapshot.js";
 import type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryNote, RecoveryParts, RecoveryStore } from "./store.js";
@@ -302,8 +302,13 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         const valid = record.driver === driver && record.map === mapPath && record.index === index && record.base === entry.base && Number.isSafeInteger(record.revision)
           && ["running", "committed", "failed"].includes(record.status) && isRecord(record.frame) && Array.isArray(record.frame.done)
           && [record.frame.states, record.frame.chains, record.frame.loops, record.frame.routes, record.frame.inputs, record.frame.steps, record.clocks, record.files, record.unknownResponses, record.maps].every(isRecord)
-          && Array.isArray(record.effects) && record.effects.every((id) => typeof id === "string");
+          && Array.isArray(record.effects) && record.effects.every((id) => typeof id === "string")
+          // An item that ended on its failure, and only one, holds how it ended; its map collects its items' failures.
+          && (record.status === "failed"
+            ? isItemOutcome(record.outcome) && (nodeAt(view, mapPath) as { onItemFailure?: unknown } | undefined)?.onItemFailure === "collect"
+            : record.outcome === undefined);
         if (!valid) throw invalid(`The record of map item ${path} is not one this run wrote`);
+        if (record.outcome) (frame.failures ??= {})[path] = { ...record.outcome };
         lastItems.set(path, JSON.stringify({ ...record, revision: 0 }));
         frame.done.push(...record.frame.done);
         Object.assign(frame.steps, record.frame.steps);
@@ -453,6 +458,11 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     for (const [name, sha256] of Object.entries(snapshot.files)) { const build = own(fileOwners.get(name)); if (build === undefined) files[name] = sha256; else if (build) build.record.files[name] = sha256; }
     const unknownResponses: Record<string, unknown> = {};
     for (const [id, value] of Object.entries(snapshot.unknownResponses ?? {})) { const build = own(frozenEffectPath(id)?.path); if (build === undefined) unknownResponses[id] = value; else if (build) build.record.unknownResponses[id] = value; }
+    // An item that ended on its failure keeps it in its own record.
+    for (const [item, outcome] of Object.entries(frame.failures ?? {})) {
+      const build = own(`${item}/body`);
+      if (build === undefined) (pin.failures ??= {})[item] = outcome; else if (build) build.record.outcome = outcome;
+    }
     for (const id of new Set([...journal.effects().map((effect) => effect.id), ...queued, ...(admitting === undefined ? [] : [admitting])])) {
       const build = own(frozenEffectPath(id)?.path);
       if (build) build.record.effects.push(id);
@@ -476,7 +486,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     };
     const items: Record<string, ItemRecord> = {};
     for (const build of builds.values()) {
-      build.record.status = finished(build.path) ? "committed" : "running";
+      build.record.status = build.record.outcome ? "failed" : finished(build.path) ? "committed" : "running";
       const text = JSON.stringify(build.record);
       if (lastItems.get(build.path) !== text) { lastItems.set(build.path, text); items[build.path] = build.record; }
     }
@@ -491,7 +501,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     const frame = snapshot.pin;
     const done = new Set(frame.done);
     const paths = [...frame.done, ...Object.keys(frame.states), ...Object.keys(frame.chains), ...Object.keys(frame.inputs), ...Object.keys(frame.steps),
-      ...Object.keys(frame.loops), ...Object.keys(frame.routes)];
+      ...Object.keys(frame.loops), ...Object.keys(frame.routes), ...Object.keys(frame.failures ?? {}).map((item) => `${item}/body`)];
     return paths.every((path) => { const at = mapItemOf(path); return !at || done.has(at.map) || Boolean(maps.get(at.map)?.baseState); });
   };
   /** One write of the driver's state, in the layout this open keeps. */
@@ -661,11 +671,30 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     return undefined;
   };
   /** Drops what no resume can ask for again: the states, chain frontiers, loop counts, route decisions
-   *  and start bindings of the paths `gone` names. Step records stay: a host reads its sessions from them. */
+   *  and start bindings of the paths `gone` names. Step records stay: a host reads its sessions from them; and so do
+   *  failed items, as committed paths do: a map that commits in the write that moves its run writes its items' records
+   *  then, a failed one's with its outcome. */
   const prune = (frame: PathFrame, gone: (at: string) => boolean) => {
     for (const table of [frame.states, frame.chains, frame.loops, frame.routes, frame.inputs] as Array<Record<string, unknown>>) {
       for (const key of Object.keys(table)) if (gone(key)) delete table[key];
     }
+  };
+  /** Whether `at` lies in an item of a map that collects its items' failures, at any depth. */
+  const collectedAt = (at: string, doc: Workflow): boolean => {
+    for (let item = mapItemOf(at); item; item = mapItemOf(item.map)) {
+      const map = nodeAt(doc, item.map);
+      if (map?.node === "map" && map.onItemFailure === "collect") return true;
+    }
+    return false;
+  };
+  /** The item of a map that collects its items' failures whose body is at `at`, or a fault. */
+  const collectingItem = (at: string, doc: Workflow): { item: string; index: number } => {
+    const item = mapItemOf(at);
+    const map = item && nodeAt(doc, item.map);
+    if (!item || `${item.item}/body` !== at || map?.node !== "map" || map.onItemFailure !== "collect") {
+      throw pathFault(at, "Only the body of an item of a map that collects its items' failures ends on a failure");
+    }
+    return item;
   };
   const recovery: NonNullable<WorkflowDeps["recovery"]> = {
     // Every store key below is the interpreter's execution path, so a composed graph (a loop, a route, a
@@ -738,6 +767,33 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       frame.partial = { path: placed(executionPath, doc), as: String((node as { as?: string }).as ?? node.node), results: results.map(result => result === undefined ? null : result) };
       await save();
       await flush();
+    },
+    async failItem(_node, row, executionPath) {
+      // Finished work commits while a pause waits for an effect in flight; it starts nothing.
+      guard();
+      const { frame, doc } = active();
+      const at = placed(executionPath, doc);
+      const { item } = collectingItem(at, doc);
+      if (frame.failures?.[item]) throw pathFault(at, "An item ends on its failure once");
+      // An effect the item admitted and never completed may have happened: that is uncertainty, reconciled before the
+      // run goes on, and never an item failure. A call that threw is one: the driver never certifies a thrown dispatch.
+      const uncertain = journal.effects().find((effect) => effect.status === "unknown" && isWithin(frozenEffectPath(effect.id)?.path ?? "", item));
+      if (uncertain) throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${uncertain.id}: an item whose effect's outcome is unknown does not end on its failure`);
+      // What the item had in progress is no one's now: nothing in it is asked for again. Its committed paths, step
+      // records and effects stay, as a finished item's do.
+      prune(frame, key => isWithin(key, item));
+      (frame.failures ??= {})[item] = { code: row.code, label: row.label, message: row.message };
+      await save();
+      await flush();
+    },
+    async itemFailure(_node, executionPath) {
+      guard();
+      const { frame, doc } = active();
+      const at = placed(executionPath, doc);
+      const { item, index } = collectingItem(at, doc);
+      const held = frame.failures?.[item];
+      // The row as the item's own process wrote it, key for key.
+      return held ? { item_index: index, label: held.label, code: held.code, message: held.message } : undefined;
     },
     pollStartedAt(node, _item, executionPath) {
       guard();
@@ -828,14 +884,18 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     stepAdmitted(executionPath: unknown): boolean { const { frame, at } = llmStep(executionPath); return frame.steps[at] !== undefined; },
     /** The current attempt did not submit: its session closes with its spend kept.
      *  The step is `closed` until a retry is admitted, or `failed` when no attempt remains. */
-    stepAttemptFailed(executionPath: unknown, final = false) {
+    stepAttemptFailed(executionPath: unknown, final = false, error?: unknown) {
       guard();
       const { frame, tag, at } = llmStep(executionPath);
       const step = frame.steps[at];
       if (!step) throw pathFault(at, "Step attempt failed before admission");
       const id = sessionOf(tag, at, step);
       if (options.closeStepSession) void persist(() => options.closeStepSession!(id)).catch(() => undefined);
-      closeFrozenStepAttempt(step, final);
+      // An item failure that fails a step in an item of a map that collects them is kept with the step: the item's own
+      // commit comes after this one, and a process that resumes between the two ends the item on the same failure.
+      const kept = error instanceof Error && isItemFailure(error) && collectedAt(at, view)
+        ? { code: String((error as { code?: unknown }).code), message: String(error.message || error).slice(0, 300) } : undefined;
+      closeFrozenStepAttempt(step, final, kept);
       save();
     },
     /** The step delivered its record; the row and the step record agree before the step commit. */

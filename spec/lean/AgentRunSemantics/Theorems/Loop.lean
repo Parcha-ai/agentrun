@@ -149,7 +149,7 @@ theorem eval_events (O : Oracle) : ∀ (n : Node) (path : ExecPath) (addr : Addr
     · rcases stepWrap_events _ _ _ _ e he with he | he
       · no_events
       · exact he ▸ List.prefix_refl _
-  | .map label itemsPath body as resultPath, path, addr, lp, s => by
+  | .map label itemsPath body as resultPath oif fa, path, addr, lp, s => by
     simp only [eval]; intro e he
     split at he
     · rename_i items _
@@ -157,7 +157,9 @@ theorem eval_events (O : Oracle) : ∀ (n : Node) (path : ExecPath) (addr : Addr
         (fun i x e he => prefix_append_right _ _ _
           (eval_events O body (path ++ ["items", seg i, "body"]) (addr ++ [.body]) lp
             ((s.set "item" x).set "item_index" (.num i)) e he)) 0 items
-      split at he <;> exact hall e he
+      split at he
+      · exact hall e he
+      · split at he <;> exact hall e he
     · simp at he
   | .parallel label branches, path, addr, lp, s => by
     simp only [eval]; intro e he

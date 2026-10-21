@@ -217,8 +217,9 @@ export function parseStartMark(text: string): StartMark | null {
 // watchdog's is (src/watchdog.ts says why). One refresh at a time, all synchronous: a stop (the message) is handled only
 // between two refreshes, so none is still writing once the thread has exited. It writes only while `dir` is still the
 // directory it first saw (its device and inode, read on this thread, so a stalled mount never holds the caller's): a path
-// that names another (a descriptor number reused) or none is never written, and the keeper stops. Its first failure goes
-// to the main thread, once.
+// that names another (a descriptor number reused) or none is never written, and the keeper stops. A rewrite that fails is
+// checked the same way, so a directory that moved between the check and the write is reported as moved, not as a failed
+// write. Its first failure goes to the main thread, once.
 const KEEPER_SOURCE = `"use strict";
 const fs = require("node:fs");
 const path = require("node:path");
@@ -233,19 +234,23 @@ const report = (message) => {
   reported = true;
   parentPort.postMessage(message);
 };
-function refresh() {
-  if (stopped) return;
+// Why dir is no longer the directory the keeper first saw, or null while it is (the first call records it).
+function moved() {
   let now;
   try {
     now = fs.statSync(dir, { bigint: true });
   } catch (error) {
-    stopped = true;
-    return report("its directory cannot be reached (" + (error.code || error.message) + "), so it is no longer the directory the keeper started on");
+    return "its directory cannot be reached (" + (error.code || error.message) + "), so it is no longer the directory the keeper started on";
   }
   first ??= { dev: now.dev, ino: now.ino };
-  if (now.dev !== first.dev || now.ino !== first.ino) {
+  return now.dev === first.dev && now.ino === first.ino ? null : "its directory is no longer the directory the keeper started on";
+}
+function refresh() {
+  if (stopped) return;
+  const away = moved();
+  if (away) {
     stopped = true;
-    return report("its directory is no longer the directory the keeper started on");
+    return report(away);
   }
   let text;
   try {
@@ -278,6 +283,12 @@ function refresh() {
       fs.closeSync(handle);
     }
   } catch (error) {
+    // The directory may have moved after the check above: then that is the reason, and the keeper stops.
+    const away = moved();
+    if (away) {
+      stopped = true;
+      return report(away);
+    }
     report("rewriting it failed (" + (error.code || error.message) + ")");
   }
 }

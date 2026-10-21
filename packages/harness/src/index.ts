@@ -50,8 +50,8 @@ export type { Cross } from './crossings.ts';
 export { tapBox, BOX_CROSSINGS } from './boxes.ts';
 export type { Boxes } from './boxes.ts';
 
-/** The judge seam: Jev's caps (50 requests, 40,000 tokens; the next is refused with JEV_CAP_REACHED, a failed request counts and a refused one does not) and Jev's public list price, for every demo. */
-export { capJudge, jevCost, JEV_CAPS, JEV_LIST_PRICE } from './judge.ts';
+/** The judge seam: Jev's public list price for every demo, with no cap (`--max-usd` is the run's dollar stop, and TypeSafe rate-limits). */
+export { priceJudge, jevCost, JEV_LIST_PRICE } from './judge.ts';
 
 /** The place seam: where the session lives and how its process starts, stops and restarts. The supervisor decides when to kill and writes the kill line first; a place decides how. `localPlace` is the child process of this machine; a package supplies another. */
 export { localPlace } from './place.ts';
