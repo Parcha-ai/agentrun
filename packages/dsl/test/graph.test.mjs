@@ -37,7 +37,8 @@ test('a chain, a parallel and a call: nodes in document order, JSON Pointer path
     { node: 'call', label: 'look', via: 'tool', tool: 'search', args: {}, out: 'Any' },
     { node: 'parallel', label: 'fan', branches: [code('a'), code('b')] },
   ] }));
-  assert.deepEqual(graph.nodes, [
+  // Each node also carries a change check over its own fields (pinned in graph-diff.test.mjs); the shape here is the rest.
+  assert.deepEqual(graph.nodes.map(({ changeCheck, ...node }) => node), [
     { path: '/root', kind: 'chain', label: 'chain' },
     { path: '/root/steps/0', kind: 'call', label: 'look', via: 'tool' },
     { path: '/root/steps/1', kind: 'parallel', label: 'fan' },
