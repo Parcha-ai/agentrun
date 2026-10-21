@@ -74,6 +74,7 @@ export function lookupOfLines(lines, { sic4 } = {}) {
     citeUse: cite ? archived(cite.url) : null,
     byWorkflow: touched.some((t) => t.byWorkflow), byRoot: touched.some((t) => !t.byWorkflow),
     kinds: [...new Set(touched.map(({ value, args }) => pageKind([value.url, args.url].find((u) => typeof u === 'string' && archived(u)))))].sort(),
+    archivedUrls: [...new Set(touched.map(({ value, args }) => [args.url, value.url].find((u) => typeof u === 'string' && archived(u))))].sort(),
   };
 }
 
