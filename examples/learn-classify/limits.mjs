@@ -1,6 +1,8 @@
 // The rate limits a run met, by the hour they happened in, read from its closed store: every model call that ended in an
 // error (each retry is one), by the HTTP status the provider's error message leads with, and the 429s that fetch_page,
-// browse and read_document were answered with, web.archive.org apart from the other sites. The frozen passes ramp on these.
+// browse and read_document were answered with, plus each pushback a tool got past on its own (its result's `retried`:
+// the snapshot cache's back-off, read_document's browser rescue), web.archive.org apart from the other sites. The frozen
+// passes ramp on these.
 import { recordingLines } from '@parcha/agentrun-pi/durable';
 import { existsSync } from 'node:fs';
 
@@ -31,8 +33,9 @@ export function limitsOfLines(lines, { at } = {}) {
     counts.set(key, (counts.get(key) ?? 0) + 1);
   };
   const site = (ms, value, args) => {
-    if (value?.status !== 429) return;
-    add(ms, hostOf(value.url ?? args?.url) === WAYBACK ? 'wayback' : 'site', 429);
+    const source = hostOf(value?.url ?? args?.url) === WAYBACK ? 'wayback' : 'site';
+    if (value?.status === 429) add(ms, source, 429);
+    for (const retry of Array.isArray(value?.retried) ? value.retried : []) if (Number.isInteger(retry?.status)) add(ms, source, retry.status);
   };
   let last = at;
   const calls = new Map();
