@@ -96,3 +96,19 @@ test("a propose with only the run's working directory proposes the workflow it s
     await run.close();
   }
 });
+
+test("a trial.json on main that does not parse holds that workflow, and curation goes on", async () => {
+  const root = await scratch();
+  const { bare, repo } = await agentRepo(root);
+  const damaged = await repo.commitTo("main", { files: { [`.agents/skills/${NAME}/trial.json`]: "not json\n" }, message: "a damaged trial", parent: await repo.resolve("main") });
+  await repo.push(damaged.sha, "main");
+  const { dir: workDir } = await workDirWith({ [NAME]: workflowDoc() });
+  const collected = await collectWorkflows({ repo, workDir, seedSha: damaged.sha });
+  await proposeLearning({ repo, runId: "run-1", target: { snapshot: async () => ({ order: [], byCall: {} }) }, workflows: collected.records });
+  const curator = await openRepo({ dir: path.join(root, "curator"), remote: local(bare) });
+  const report = await curate({ repo: curator, judge });
+  assert.deepEqual(report.runs.map((r) => [r.run, r.held.map((h) => [h.workflow, h.reason]), r.refused]), [
+    ["run-1", [[NAME, "its trial.json on main does not parse (format), so the workflow was held"]], []],
+  ]);
+  assert.equal(await curator.read(`.agents/skills/${NAME}/trial.json`, "main"), "not json\n");
+});

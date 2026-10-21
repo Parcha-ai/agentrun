@@ -236,6 +236,10 @@ export function parseRunUses(text: string, run?: string): RunUses {
   } catch {
     throw new LearnError("format", "the uses file is not JSON");
   }
+  return checkRunUses(parsed, run);
+}
+
+function checkRunUses(parsed: unknown, run?: string): RunUses {
   if (!usesChecker.Check(parsed)) throw new LearnError("format", "the uses file does not match its schema");
   const uses = parsed as RunUses;
   if (run !== undefined && uses.run !== run) throw new LearnError("format", "the uses file names another run");
@@ -925,9 +929,9 @@ export type WorkflowAdmitterOptions = {
  * The curator's `admitWorkflow` port, over `admitInDir`: it copies main's `trial.json` and skill for the name into a scratch
  * directory, validates the run's records through the DSL's store there, saves the revision the run ended on, and writes the
  * skill (from `describe` of its document, unless the caller hands over a `description`) and `trial.json`. `admitted` carries every path changed, text or
- * null, for the one commit. A workflow with code in it, or one with no trial to describe, is `held`; a name pi cannot load, a
- * record the store refuses, a demoted revision and the limits are `refused`. The curator's judgments of the `untrusted` text
- * have already been made when the port is called, so the flag changes nothing here.
+ * null, for the one commit. A workflow with code in it, one with no trial to describe, and one whose trial.json on main does not
+ * parse are `held`; a name pi cannot load, a record the store refuses, a demoted revision and the limits are `refused`. The
+ * curator's judgments of the `untrusted` text have already been made when the port is called, so the flag changes nothing here.
  */
 export function workflowAdmitter(options: WorkflowAdmitterOptions = {}): AdmitWorkflow {
   return async (input: AdmitWorkflowInput): Promise<AdmitWorkflowResult> => {
@@ -936,6 +940,15 @@ export function workflowAdmitter(options: WorkflowAdmitterOptions = {}): AdmitWo
       return { status: "refused", reason: "a workflow name is lowercase letters and digits in words joined by single hyphens, so pi can load it as a skill" };
     }
     const name = workflow.name;
+    const held = await input.read(trialPath(name), input.main);
+    if (held !== undefined) {
+      try {
+        parseTrial(held, name);
+      } catch (error) {
+        if (!(error instanceof LearnError)) throw error;
+        return { status: "held", reason: `its trial.json on main does not parse (${error.code}), so the workflow was held` };
+      }
+    }
     const result = await staged(options.tmpRoot, input, async () => [trialPath(name), skillPath(name)], (dir) => admitInDir({
       dir, runId: workflow.run, name, records: workflow.records,
       description: workflow.description ?? options.describe ?? schemaDescription,
@@ -964,7 +977,7 @@ export function usesSettler(options: UsesSettlerOptions = {}): SettleUses {
     const decisions: { name: string; action: "promote" | "demote" | "hold"; reason: string; rollbackTo?: string }[] = [];
     let uses: RunUses;
     try {
-      uses = parseRunUses(JSON.stringify({ version: 1, run: input.run, uses: input.uses }), input.run);
+      uses = checkRunUses({ version: 1, run: input.run, uses: input.uses }, input.run);
     } catch {
       return { files: {}, decisions: [{ name: "uses", action: "hold", reason: "the uses file is not well formed, so none were folded" }] };
     }
