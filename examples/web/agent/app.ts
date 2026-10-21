@@ -33,6 +33,7 @@ import { createBrowserExtension, createWebExtension } from "@parcha/pi-browser/d
 import { stagehandDriver } from "@parcha/pi-browser/driver/stagehand";
 import { browserbaseProvider } from "@parcha/pi-browser/providers/browserbase";
 import { cdpProvider } from "@parcha/pi-browser/providers/cdp";
+import { kernelProvider } from "@parcha/pi-browser/providers/kernel";
 import { frameRecorder } from "@parcha/pi-browser/recorder";
 import { durableProfileStore, openAgentHome, readAgentHome, type AgentDefinition, type AgentHomeState } from "@parcha/pi-durable-agent";
 import { ArchilCodingTools, type AppContext, type AppOptions } from "@parcha/pi-durable-disk";
@@ -163,21 +164,31 @@ export function liveOf(row: SessionRow, change: SessionChange, at = new Date()) 
   return { liveViewUrl: view?.fullscreen ?? view?.framed ?? null, sessionId: row.session.resourceId, change, updatedAt: at.toISOString() };
 }
 
-// ---- the browser: Browserbase, or the run's own Chrome -------------------------------------------------------------------
+// ---- the browser: the run's own Chrome, Browserbase or Kernel ------------------------------------------------------------
 
 export const NO_LOCAL_VIEW = "live view not available for local Chrome yet";
 
 /** Which browser the run drives (`AGENT_BROWSER`), and the provider options for it: a local Chrome is the one
  *  start-run.mjs started for this run, attached by its endpoint, so a release leaves it running for start-run to stop. */
-export function browserOptions(env: NodeJS.ProcessEnv): { kind: "browserbase"; options: { env: NodeJS.ProcessEnv } } | { kind: "chrome"; options: { endpoint: string } } {
+export function browserOptions(env: NodeJS.ProcessEnv): { kind: "browserbase" | "kernel"; options: { env: NodeJS.ProcessEnv } } | { kind: "chrome"; options: { endpoint: string } } {
   const kind: BrowserKind = browserOf(env);
   if (kind === "browserbase") {
     if (!env.BROWSERBASE_API_KEY) throw new Error("set BROWSERBASE_API_KEY");
     return { kind, options: { env } };
   }
+  if (kind === "kernel") {
+    if (!env.KERNEL_API_KEY) throw new Error("set KERNEL_API_KEY");
+    return { kind, options: { env } };
+  }
   const endpoint = env.AGENT_CHROME_ENDPOINT;
   if (!endpoint || !/^http:\/\/127\.0\.0\.1:\d+$/.test(endpoint)) throw new Error("set AGENT_CHROME_ENDPOINT to the run's Chrome on 127.0.0.1 (start-run.mjs starts it and sets it)");
   return { kind, options: { endpoint } };
+}
+
+/** The provider for the chosen browser: pi-browser's cdp, Kernel or Browserbase provider. */
+export function providerOf(chosen: ReturnType<typeof browserOptions>): BrowserProvider {
+  if (chosen.kind === "chrome") return cdpProvider(chosen.options);
+  return chosen.kind === "kernel" ? kernelProvider(chosen.options) : browserbaseProvider(chosen.options);
 }
 
 /** pi-browser's live view, by shape: the viewer's host, and the provider wrapper that hands its URL to `onSession`. */
@@ -291,7 +302,7 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
   const page = { browser: chosen.kind, ...note };
   if (browsing && chosen.kind === "chrome") await writePrivate(live, { liveViewUrl: null, sessionId: null, change: "none", updatedAt: new Date().toISOString(), ...page });
   let liveWrites = Promise.resolve();
-  const base = given ?? (chosen.kind === "chrome" ? cdpProvider(chosen.options) : browserbaseProvider(chosen.options));
+  const base = given ?? providerOf(chosen);
   // `t` of every frame line is ms since the run started, so a resumed run's frames go on where they stopped; the
   // recording keeps the same clock.
   const startedAt = Date.parse(state.runs[where.ref.id]?.startedAt ?? "") || Date.now();
@@ -303,8 +314,8 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
 
   // ---- the sign-in's site, on the run's profile ------------------------------------------------------------------------
   // The profile the run signs in with: the Browserbase context, or a shared local Chrome profile; a Chrome profile of the
-  // run's own is thrown away, so it records nothing.
-  const profileKey = !browsing ? null : chosen.kind === "browserbase" ? PROFILE : env.AGENT_CHROME_PROFILE === "shared" ? CHROME_PROFILE : null;
+  // run's own is thrown away, so it records nothing, and a Kernel run keeps no sign-in: the person signs in each run.
+  const profileKey = !browsing ? null : chosen.kind === "browserbase" ? PROFILE : chosen.kind === "chrome" && env.AGENT_CHROME_PROFILE === "shared" ? CHROME_PROFILE : null;
   const pages = new Map<number, string | null>();
   let pending: { origin: string; answered: boolean } | null = null;
   let opened: Harness | undefined;
@@ -416,7 +427,7 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
       }
       const made = async (ref: string) => (recording?.profile(ref), ref);
       if (chosen.kind === "browserbase") contextId = await durableProfileStore(harness).resolve(PROFILE, async (signal) => made(await makeContext(signal)));
-      else if (env.AGENT_CHROME_PROFILE === "shared") await durableProfileStore(harness, { provider: "chrome" }).resolve(CHROME_PROFILE, () => made(`chrome/${CHROME_PROFILE}`));
+      else if (chosen.kind === "chrome" && env.AGENT_CHROME_PROFILE === "shared") await durableProfileStore(harness, { provider: "chrome" }).resolve(CHROME_PROFILE, () => made(`chrome/${CHROME_PROFILE}`));
       resolved = true;
       await browser.reconcile(harness, () => true, context);
     },

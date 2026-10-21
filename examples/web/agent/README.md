@@ -15,7 +15,7 @@ page code can still read what the person types into the page, so a real password
 | `agent.json` | The agent definition: `id`, `version`, `name`, `description`, `instructions`, `skills`, `tools`, `input_schema`, `output_schema`, `max_cost_usd`. It names no model: the host picks it. Its tools are `read`, `write` and `edit` in the workspace, the browser's `snapshot`, `run`, `browser_read` and `browser_release`, and `request_sign_in`. A tool name can also be a whole extension (`browser`). |
 | `skills/<name>/SKILL.md` | The skills `agent.json` names, added to the prompt in that order. |
 | `frames.ts` | `frameStore(runDir, clock, kept)`: the sink for pi-browser's frame recorder, which keeps what the browser showed in `<run>/frames/` (owner-only, outside `work/`) for the page's replay player, drops every frame while the person signs in, and hands each line it keeps to `kept` (the run's recording). |
-| `chrome.ts` | The run's own Chrome for `AGENT_BROWSER=chrome`: its profile directory in the home and the save lease that decides who opens it, the run's download folder, its arguments, and its start and stop by pid. |
+| `chrome.ts` | The browser setting (`AGENT_BROWSER`), and the run's own Chrome for `AGENT_BROWSER=local`: its profile directory in the home and the save lease that decides who opens it, the run's download folder, its arguments, and its start and stop by pid. |
 | `memory.ts` | The agent's memory between runs: the home's `memory/` into a new run's `work/memory/`, and the run's folder back to the home when the server carries back the run that owns the sign-in. |
 | `remember.ts` | "What I remember": `report/remember.html`, written beside the agent's report when the run lets go. |
 | `home.mjs` | `ensureAgentHome(dir)`: the agent home of [`@parcha/pi-durable-agent`](../../../packages/pi-durable-agent/README.md), made from `agent.json` and the skills the first time (owner-only), opened after that. |
@@ -33,7 +33,7 @@ agent. By hand, build the packages the app uses, start a run in a home with `sta
 ```sh
 npm ci --ignore-scripts
 npm run build -w @parcha/pi-durable-disk -w @parcha/pi-browser -w @parcha/pi-durable-agent
-export BROWSERBASE_API_KEY=...                       # your Browserbase key
+export AGENT_BROWSER=local CHROME_PATH=$(command -v google-chrome)   # or browserbase or kernel: see "The browser"
 export AGENT_MODEL_BASE_URL=https://api.openai.com/v1 AGENT_MODEL=<model id> AGENT_MODEL_API_KEY=...
 node --input-type=module -e '
 import { startRun } from "@parcha/pi-durable-agent";
@@ -60,9 +60,10 @@ the definition's prompt and tools and the browser's configuration in the commit 
 
 | Variable | Needed | What |
 | --- | --- | --- |
-| `AGENT_BROWSER` | no | `browserbase` (default) or `chrome`: the run's own Chrome on this machine, so nothing leaves it but the model. Browserbase stays the default until pi-browser ships `./live-view`: without it the person cannot see or drive the local Chrome, so cannot sign in. |
-| `BROWSERBASE_API_KEY` | with Browserbase, or for `web_fetch` and `web_search` | Browserbase key. `BROWSERBASE_PROJECT_ID` is optional; Browserbase infers the project from the key. With a key the agent can also list `web_fetch` and `web_search`, which go through Browserbase's own Fetch and Search APIs and open no browser session. An agent that lists no browser tool gets no browser at all: start-run.mjs starts no Chrome for it. A recording redacts both values and its scan checks that neither is in any file. |
-| `CHROME_PATH` | with `chrome` | The Chrome executable start-run.mjs starts. `PI_BROWSER_NO_SANDBOX=1` starts it without its sandbox, only where Chrome cannot start one. |
+| `AGENT_BROWSER` | for an agent with a browser tool | `local`, `browserbase` or `kernel` ([The browser](#the-browser)). There is no default: a run without it is refused. `chrome` is `local` for one more release. |
+| `BROWSERBASE_API_KEY` | with `browserbase`, or for `web_fetch` and `web_search` | Browserbase key. `BROWSERBASE_PROJECT_ID` is optional; Browserbase infers the project from the key. With a key the agent can also list `web_fetch` and `web_search`, which go through Browserbase's own Fetch and Search APIs and open no browser session. An agent that lists no browser tool gets no browser at all: start-run.mjs starts no Chrome for it. A recording redacts both values and its scan checks that neither is in any file. |
+| `CHROME_PATH` | with `local` | The Chrome executable start-run.mjs starts. `PI_BROWSER_NO_SANDBOX=1` starts it without its sandbox, only where Chrome cannot start one. |
+| `KERNEL_API_KEY` | with `kernel` | Kernel key. `KERNEL_BASE_URL` is optional (default `https://api.onkernel.com`). |
 | `AGENT_PAGE_ORIGIN` | no | The origin people open the server's page at; the server sets it. A local Chrome's live view allows only that page to frame it. |
 | `AGENT_LIVE_VIEW_MODULE` | no | Where the local Chrome's live view comes from. Default: pi-browser's `./live-view`, when this pi-browser has it. |
 | `AGENT_MODEL_BASE_URL` | yes | An OpenAI Responses endpoint, or a gateway whose root serves Anthropic's Messages API. |
@@ -147,7 +148,7 @@ or made it. So one run writes at a time, as for sign-ins. `GET /agent` returns t
 **This folder does not travel in a pack yet**: `packHome` copies the agent store and the runs only. Moving it into the
 agent store is pi-durable-agent's to do; `work/memory/` stays the agent's contract either way.
 
-With `AGENT_BROWSER=chrome`, each run's Chrome saves a file the page offers as a download into that run's
+With `AGENT_BROWSER=local`, each run's Chrome saves a file the page offers as a download into that run's
 `work/downloads/` without asking: start-run.mjs sets the profile's download folder again for every run, since the
 profile is shared across runs. The agent's file tools read a downloaded file by its name, and cannot list a folder.
 
@@ -156,12 +157,23 @@ that was last checked, each memory file with its text, and the agent's runs, nev
 `manifest.artifact` entry in a recording. The agent answers in the chat; it writes report files (`report.md`,
 `pages.csv`, `report/index.html`) only when the person asks for a report, and then the two pages link to each other.
 
+## The browser
+
+`AGENT_BROWSER` says which browser a run drives, for an agent that lists a browser tool. There is no default: start-run.mjs
+refuses a run without it, naming the three values. `chrome` is `local` for one more release, with a notice.
+
+| Value | The run's browser | Env it needs | Network it needs |
+| --- | --- | --- | --- |
+| `local` | A Chrome on this machine, started for the run ([A local Chrome](#a-local-chrome)): no key, and every site sees this machine's address | `CHROME_PATH` | none for the browser (the pages it opens) |
+| `browserbase` | A Browserbase session; the sign-in is kept in a Browserbase context for the next run | `BROWSERBASE_API_KEY`; `BROWSERBASE_PROJECT_ID` is optional, as Browserbase infers the project from the key | not listed yet: the hosts come from Browserbase's SDK |
+| `kernel` | A Kernel browser; no sign-in is kept between runs, so the person signs in each run | `KERNEL_API_KEY`; `KERNEL_BASE_URL` is optional | `api.onkernel.com:443` and `*.kernel.sh:8443` (the session's websocket host changes per session) |
+
 ## A local Chrome
 
 Browserbase is the default. A local Chrome is for a run that must keep everything on this machine but the model, and a
 person can sign in through it only once pi-browser ships its live view (`./live-view`).
 
-With `AGENT_BROWSER=chrome`, start-run.mjs starts one headless Chrome for the run, on a debugging port Chrome picks on
+With `AGENT_BROWSER=local`, start-run.mjs starts one headless Chrome for the run, on a debugging port Chrome picks on
 127.0.0.1, and pi-browser attaches to it by endpoint (`AGENT_CHROME_ENDPOINT`). Its profile directory is the sign-in:
 `<home>/chrome/local-chrome`, owner-only and outside every run's `work/`. The run that holds the profile's save lease
 (or the first run, before the agent has the profile) opens it and records it, so `carryBack` gives the home the profile

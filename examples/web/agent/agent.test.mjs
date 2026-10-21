@@ -20,12 +20,12 @@ import { carryBack, readAgentHome, startRun } from '@parcha/pi-durable-agent';
 import { archilEnv } from '@parcha/pi-durable-disk';
 import { frameRecorder } from '@parcha/pi-browser/recorder';
 import { fakeCdp, jpeg as fakeJpeg } from '../../../packages/pi-browser/test/fixtures/fake-cdp.mjs';
-import { browserOptions, createAgent, liveOf, NO_LOCAL_VIEW, PROFILE, promptOf, signInAsked, signInSite, toolsOf } from './app.ts';
+import { browserOptions, createAgent, liveOf, NO_LOCAL_VIEW, PROFILE, promptOf, providerOf, signInAsked, signInSite, toolsOf } from './app.ts';
 import { CHROME_PROFILE, chromeArgs, chromeProfileFor, listsBrowser, startChrome } from './chrome.ts';
 import { frameStore } from './frames.ts';
 import { ensureAgentHome } from './home.mjs';
 
-const ENV = { BROWSERBASE_API_KEY: 'unused', AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9/v1', AGENT_MODEL: 'test-model' };
+const ENV = { AGENT_BROWSER: 'browserbase', BROWSERBASE_API_KEY: 'unused', AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9/v1', AGENT_MODEL: 'test-model' };
 
 async function agentHome(t) {
   const tmp = await mkdtemp(join(tmpdir(), 'web-agent-'));
@@ -354,13 +354,38 @@ test('with the recorder itself: a frame refused during the hold never becomes wh
 
 const CHROME_ENV = { AGENT_MODEL_BASE_URL: ENV.AGENT_MODEL_BASE_URL, AGENT_MODEL: ENV.AGENT_MODEL, AGENT_BROWSER: 'chrome', AGENT_CHROME_ENDPOINT: 'http://127.0.0.1:9', AGENT_PAGE_ORIGIN: 'http://127.0.0.1:8787' };
 
-test('the browser switch: Browserbase by default, the run\'s own Chrome by its loopback endpoint, anything else refused', () => {
-  assert.equal(browserOptions(ENV).kind, 'browserbase');
-  assert.deepEqual(browserOptions({ ...CHROME_ENV, AGENT_CHROME_ENDPOINT: 'http://127.0.0.1:41233' }), { kind: 'chrome', options: { endpoint: 'http://127.0.0.1:41233' } });
-  assert.throws(() => browserOptions({ ...CHROME_ENV, AGENT_CHROME_ENDPOINT: 'http://10.0.0.5:41233' }), /127\.0\.0\.1/);
-  assert.throws(() => browserOptions({ ...CHROME_ENV, AGENT_CHROME_ENDPOINT: '' }), /AGENT_CHROME_ENDPOINT/);
-  assert.throws(() => browserOptions({ ...ENV, AGENT_BROWSER: 'firefox' }), /browserbase or chrome/);
-  assert.throws(() => browserOptions({ ...ENV, BROWSERBASE_API_KEY: '' }), /BROWSERBASE_API_KEY/);
+test('the browser setting: local (the run\'s own Chrome by its loopback endpoint), browserbase or kernel, each with its key; chrome is local; no setting and anything else are refused', () => {
+  const local = { ...CHROME_ENV, AGENT_BROWSER: 'local', AGENT_CHROME_ENDPOINT: 'http://127.0.0.1:41233' };
+  assert.deepEqual(browserOptions(local), { kind: 'chrome', options: { endpoint: 'http://127.0.0.1:41233' } });
+  assert.deepEqual(browserOptions({ ...local, AGENT_BROWSER: 'chrome' }), browserOptions(local), 'chrome is local for one more release');
+  assert.throws(() => browserOptions({ ...local, AGENT_CHROME_ENDPOINT: 'http://10.0.0.5:41233' }), /127\.0\.0\.1/);
+  assert.throws(() => browserOptions({ ...local, AGENT_CHROME_ENDPOINT: '' }), /AGENT_CHROME_ENDPOINT/);
+  assert.deepEqual(browserOptions(ENV), { kind: 'browserbase', options: { env: ENV } });
+  assert.throws(() => browserOptions({ ...ENV, BROWSERBASE_API_KEY: '' }), /^Error: set BROWSERBASE_API_KEY$/);
+  assert.equal(browserOptions({ ...ENV, BROWSERBASE_PROJECT_ID: undefined }).kind, 'browserbase', 'the project id is optional: Browserbase infers it from the key');
+  const kernel = { ...ENV, AGENT_BROWSER: 'kernel', KERNEL_API_KEY: 'k' };
+  assert.deepEqual(browserOptions(kernel), { kind: 'kernel', options: { env: kernel } });
+  assert.throws(() => browserOptions({ ...kernel, KERNEL_API_KEY: '' }), /^Error: set KERNEL_API_KEY$/);
+  for (const value of [undefined, '']) {
+    assert.throws(() => browserOptions({ ...ENV, AGENT_BROWSER: value }), (error) => {
+      assert.equal(error.message, 'set AGENT_BROWSER (or --browser): local (no key; a Chrome on this machine), browserbase (BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID) or kernel (KERNEL_API_KEY)');
+      return true;
+    }, 'no default browser, Browserbase\'s key set or not');
+  }
+  for (const value of ['firefox', 'Local', 'fake']) assert.throws(() => browserOptions({ ...ENV, AGENT_BROWSER: value }), new RegExp(`^Error: AGENT_BROWSER is local, browserbase or kernel, not ${value}$`));
+  assert.deepEqual([local, ENV, kernel].map((env) => providerOf(browserOptions(env)).name), ['cdp', 'browserbase', 'kernel'], 'each value drives its own provider');
+});
+
+test('a Kernel run keeps no sign-in: no Browserbase context is made and no profile is recorded, even with a stray AGENT_CHROME_PROFILE', async (t) => {
+  const { home } = await agentHome(t);
+  const one = await started(home, 'run-1');
+  const { options, browser } = await createAgent(one.where, { ...ENV, AGENT_BROWSER: 'kernel', KERNEL_API_KEY: 'k', BROWSERBASE_API_KEY: '', AGENT_CHROME_PROFILE: 'shared' }, { makeContext: async () => assert.fail('a Kernel run makes no Browserbase context') });
+  const harness = await open(t, one.run, options);
+  const root = await harness.root(ctx, options.root);
+  assert.equal((await harness.snapshot(browser.docs.Config, root.id, ctx)).policy.contextId, null);
+  await harness.close(ctx);
+  await carryBack(home, one.run, { outcome: 'completed' });
+  assert.deepEqual((await readAgentHome(home)).profiles, {}, 'no sign-in kept');
 });
 
 test('the agent\'s Chrome profile is owner-only, in the home and outside every run\'s work/; only the lease holder, or the first run, opens it', async (t) => {
@@ -508,4 +533,22 @@ test('an agent that lists web_fetch and no browser tool: Browserbase\'s fetch an
   for (const name of filed) for (const value of [key, project]) assert.equal((await readFile(join(one.run.workspace, 'evidence', 'web', name), 'utf8')).includes(value), false, 'no receipt holds them either');
 
   await assert.rejects(createAgent((await started(home, 'run-2')).where, { ...env, BROWSERBASE_API_KEY: '' }), /names the tool web_fetch, which this host does not have/, 'without a key the web tools are not listed');
+});
+
+test('start-run.mjs refuses a run with no browser setting in the pinned words, names the key each value needs, and says chrome is now local', async (t) => {
+  const { home } = await agentHome(t);
+  const { run } = await started(home, 'run-1');
+  const base = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(AGENT_|CHROME_PATH|BROWSERBASE_|KERNEL_)/.test(name)));
+  const launch = (extra) => new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--no-warnings', join(import.meta.dirname, 'start-run.mjs'), run.dir], { env: { ...base, AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9/v1', AGENT_MODEL: 'test-model', ...extra }, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => (stderr += chunk));
+    child.once('exit', (code) => resolve({ code, lines: stderr.trim().split('\n') }));
+  });
+  assert.deepEqual(await launch({}), { code: 2, lines: ['set AGENT_BROWSER (or --browser): local (no key; a Chrome on this machine), browserbase (BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID) or kernel (KERNEL_API_KEY)'] });
+  assert.deepEqual(await launch({ AGENT_BROWSER: 'local' }), { code: 2, lines: ['set CHROME_PATH first (see examples/web/agent/README.md)'] });
+  assert.deepEqual(await launch({ AGENT_BROWSER: 'chrome' }), { code: 2, lines: ['AGENT_BROWSER=chrome is now AGENT_BROWSER=local; chrome is accepted for one more release', 'set CHROME_PATH first (see examples/web/agent/README.md)'] });
+  assert.deepEqual(await launch({ AGENT_BROWSER: 'kernel' }), { code: 2, lines: ['set KERNEL_API_KEY first (see examples/web/agent/README.md)'] });
+  assert.deepEqual(await launch({ AGENT_BROWSER: 'browserbase' }), { code: 2, lines: ['set BROWSERBASE_API_KEY first (see examples/web/agent/README.md)'] });
+  assert.deepEqual(await launch({ AGENT_BROWSER: 'firefox' }), { code: 2, lines: ['AGENT_BROWSER is local, browserbase or kernel, not firefox'] });
 });
