@@ -139,9 +139,9 @@ demotion after 2).
 - `curatedBefore`: how many runs of the pass had been curated when this run was prepared, so how many runs' learning its
   main held. `lag` is `run - 1 - curatedBefore`: 0 when the pass runs one job at a time, about K - 1 with K in flight.
   `curatedIndex` is the place of this run's curate in the order curates ran. None of the three is on a sealed row.
-- `infraRetried`: 1 when the job's first run ended on a model error (the provider's errors outlasted the harness's
-  retries) and the job was run again, else 0. `infraFailed`: the run this row counts ended on a model error too; it is
-  the job's outcome, scored as it stands.
+- `rerunOf`: the run id of the job's first run when that run ended on a model error (the provider's errors outlasted the
+  harness's retries) and the job was run again, else `null`. `infraFailed`: the run this row counts ended on a model
+  error too; it is the job's outcome, scored as it stands.
 - `limits`: the rate limits the job's runs met (every attempt's), as `{ hour, source, status, n }`: `hour` is
   `YYYY-MM-DDTHH` in UTC; `source` is `model` (a model call that ended in an error, each retry one, `status` the HTTP
   status the provider's error starts with, else `other`), `site` or `wayback` (a 429 answered to fetch_page, browse or

@@ -10,7 +10,7 @@ import { local, openRepo } from '@parcha/pi-git-remote';
 import { AGENT_STORE_FILE, carryBack, createAgentHome, openAgentHome, runPaths } from '@parcha/pi-durable-agent';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -335,7 +335,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
     if (p.phase === 'proposed') {
       const curateJudge = meteredJudge(judge);
       const curated = await curateJob({ repo, judge: curateJudge, ...(parts.thresholds ? { thresholds: parts.thresholds } : {}) });
-      save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main, ...(tally ? { curatedIndex: ++tally.curated } : {}) });
+      save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main, ...(tally ? { curatedIndex: ++tally.curated, curatedAt: new Date().toISOString() } : {}) });
       tally?.landed(job, p);
     }
     if (!p.lineage) {
@@ -359,20 +359,23 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
     ...row,
     ...(p.curatedBefore === undefined ? {} : { curatedBefore: p.curatedBefore, lag: job.order - 1 - p.curatedBefore }),
     ...(p.curatedIndex === undefined ? {} : { curatedIndex: p.curatedIndex }),
-    infraRetried: (p.infraFailed ?? []).length, infraFailed: modelError(p.measure), limits,
+    rerunOf: p.infraFailed?.[0]?.runId ?? null, infraFailed: modelError(p.measure), limits,
   };
 }
 
 /**
  * The curates of a learning pass, counted in the order they ran (a resumed pass counts on from its progress files), and
- * main frozen in <out>/checkpoints.json: after the Nth curate for each N of `checkpoints`, at the end of each epoch of the
- * stream (when the last of its jobs is curated; `alsoIncludes` counts a later epoch's jobs curated before then, whose
- * learning is in that main too), and as the pass left it. `stream` is the whole list, so an epoch cut by --jobs never
- * counts as ended.
+ * main frozen by label in <out>/checkpoints.json, `{ sha, streamIndex, epoch, at }` each: "0" the seed, "N" main after
+ * the Nth curate for each N of `checkpoints`, and "epoch-e" main when the last job of epoch e is curated (`alsoIncludes`
+ * counts a later epoch's jobs curated before then, whose learning is in that main too). `stream` is the whole list, so an
+ * epoch cut by --jobs never counts as ended. A label once passed is never moved; one passed before a stop is written when
+ * the pass opens again. The file is replaced whole (written aside, then renamed).
  */
-function curateTally({ out, stream, checkpoints = [] }) {
+function curateTally({ out, stream, seedSha, checkpoints = [] }) {
+  const path = join(out, 'checkpoints.json');
+  const frozen = readJsonIf(path) ?? {};
   const epochOf = new Map(stream.map((job) => [job.order, job.epoch]));
-  const landed = [];
+  const landed = new Map();
   const tally = { curated: 0 };
   const dir = join(out, 'progress');
   if (existsSync(dir)) {
@@ -381,31 +384,34 @@ function curateTally({ out, stream, checkpoints = [] }) {
       if (p?.phase !== 'curated') continue;
       tally.curated += 1;
       const order = Number(file.slice(4, -5));
-      if (p.curatedIndex !== undefined) landed.push({ curatedIndex: p.curatedIndex, sha: p.afterSha, order, epoch: epochOf.get(order) });
+      if (p.curatedIndex !== undefined) landed.set(p.curatedIndex, { sha: p.afterSha, epoch: epochOf.get(order), at: p.curatedAt ?? null });
     }
   }
   const epochs = [...new Set(stream.map((job) => job.epoch).filter((e) => e !== undefined))].sort((a, b) => a - b);
-  const write = () => {
-    const at = new Map(landed.map((l) => [l.curatedIndex, l]));
-    const last = landed.reduce((a, b) => (a && a.curatedIndex > b.curatedIndex ? a : b), null);
-    const ended = epochs.flatMap((epoch) => {
-      const mine = landed.filter((l) => l.epoch === epoch);
-      if (mine.length < stream.filter((job) => job.epoch === epoch).length) return [];
-      const end = mine.reduce((a, b) => (a.curatedIndex > b.curatedIndex ? a : b));
-      return [{ epoch, sha: end.sha, curatedIndex: end.curatedIndex, alsoIncludes: landed.filter((l) => l.epoch > epoch && l.curatedIndex < end.curatedIndex).length }];
-    });
-    const frozen = {
-      counts: checkpoints.filter((n) => at.has(n)).map((n) => ({ at: n, sha: at.get(n).sha, run: at.get(n).order })),
-      epochs: ended,
-      last: last ? { sha: last.sha, curated: tally.curated } : null,
-    };
-    writeFileSync(join(out, 'checkpoints.json'), `${JSON.stringify(frozen, null, 2)}\n`);
+  const pass = () => {
+    const before = Object.keys(frozen).length;
+    const add = (label, entry) => { frozen[label] ??= entry; };
+    add('0', { sha: seedSha, streamIndex: 0, epoch: null, at: new Date().toISOString() });
+    for (const n of checkpoints) {
+      const at = landed.get(n);
+      if (at) add(String(n), { sha: at.sha, streamIndex: n, epoch: at.epoch ?? null, at: at.at });
+    }
+    for (const epoch of epochs) {
+      const mine = [...landed].filter(([, l]) => l.epoch === epoch).map(([index]) => index);
+      if (mine.length < stream.filter((job) => job.epoch === epoch).length) continue;
+      const end = Math.max(...mine);
+      const alsoIncludes = [...landed].filter(([index, l]) => l.epoch > epoch && index < end).length;
+      add(`epoch-${epoch}`, { sha: landed.get(end).sha, streamIndex: end, epoch, at: landed.get(end).at, alsoIncludes });
+    }
+    if (Object.keys(frozen).length === before) return;
+    writeFileSync(`${path}.tmp`, `${JSON.stringify(frozen, null, 2)}\n`);
+    renameSync(`${path}.tmp`, path);
   };
   tally.landed = (job, p) => {
-    landed.push({ curatedIndex: p.curatedIndex, sha: p.afterSha, order: job.order, epoch: epochOf.get(job.order) });
-    write();
+    landed.set(p.curatedIndex, { sha: p.afterSha, epoch: epochOf.get(job.order), at: p.curatedAt });
+    pass();
   };
-  tally.write = write;
+  pass();
   return tally;
 }
 
@@ -451,7 +457,7 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
   const queue = stream.slice(0, jobs ?? Infinity);
   const judge = parts.judge();
   const spentNow = () => knownSpend(out);
-  const tally = curateTally({ out, stream, checkpoints });
+  const tally = curateTally({ out, stream, seedSha: meta.seedSha, checkpoints });
   writeFileSync(join(out, 'conventions.json'), `${JSON.stringify(parts.conventions ?? {}, null, 2)}\n`);
   let stoppedBy = null;
   const shape = concurrency === 1 ? '' : schedule === 'batch' ? ` in batches of ${concurrency}` : `, ${concurrency} in flight`;
@@ -490,7 +496,6 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
     };
     await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, pending.length)) }, worker));
   }
-  tally.write();
   await writeCurve(out);
   if (stoppedBy) log(`stopped: ${stoppedBy}`);
   return { rows, stoppedBy, spentUsd: spentNow(), seedSha: meta.seedSha };
@@ -569,7 +574,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
     const phase = sha === meta.seedSha ? 'before' : 'after';
     const scoredRow = scored ? (parts.set === SETS.v4 ? rowOfV4 : rowOfV2)({ ...v1, score: scored.score, stats: scored.stats, scoringJudge: scored.scoringJudge, phase, jobRecord: hostRecord(jobRecordOf(recordingLines(run.storePath).lines), measure.dispatch) }) : { ...rowOf(v1), phase };
     const limits = limitsOf([...infraFailed.map((f) => f.runId), run.runId].map((id) => runPaths(home, id).storePath), { at: started });
-    const row = { ...scoredRow, infraRetried: infraFailed.length, infraFailed: modelError(measure), limits };
+    const row = { ...scoredRow, rerunOf: infraFailed[0]?.runId ?? null, infraFailed: modelError(measure), limits };
     spent += spendOf(measure, undefined, tools).knownUsd + (scored?.scoringJudge.costUsd ?? 0);
     appendFileSync(rowsPath, `${JSON.stringify(row)}\n`);
     if (dropEvidence) dropRunFiles(run.dir);
