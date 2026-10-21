@@ -13,7 +13,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { LIST_PRICES } from '@parcha/pi-browser';
 import { pdfDocument, pdfPage } from '@parcha/pi-vision';
-import { ARCHIVED_SEC_NOTE, refusedHost, refusedUrl, urlPolicy } from './tools.mjs';
+import { ARCHIVED_SEC_NOTE, notingRetries, refusedHost, refusedUrl, RETRIED, RETRIED_SCHEMA, urlPolicy } from './tools.mjs';
 
 // The one URL policy is fetch_page's (tools.mjs); these tools use it, and its parts are exported here too.
 export { blockedAddress, refusedHostOf, refusedUrl, urlPolicy } from './tools.mjs';
@@ -564,6 +564,7 @@ const DOCUMENT_RESULT_SCHEMA = {
     refused: { type: 'string' },
     error: { type: 'string' },
     status: { type: 'integer', description: 'the HTTP status of a request that failed on one' },
+    retried: RETRIED_SCHEMA,
   },
 };
 
@@ -888,8 +889,9 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
   }
 
   async function run(args, { signal } = {}) {
-    const used = {};
-    const result = await read(args, signal, used);
+    const used = { retried: [] };
+    const read1 = await read(args, signal, used);
+    const result = used.retried.length ? { ...read1, retried: used.retried } : read1;
     if (!used.browser) return typeof args?.url === 'string' && args.url.trim() ? { ...result, via: 'direct' } : result;
     return { ...result, via: 'browser', browser: used.browser, costUsd: sumCost(result.costUsd, used.browser.costUsd) };
   }
@@ -911,7 +913,7 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
     let page = false;
     let largeRead;
     if (url) {
-      let got = await download(url, { policy, fetchImpl, maxBytes, timeoutMs, signal, large });
+      let got = await download(url, { policy, fetchImpl: notingRetries(fetchImpl, used.retried), maxBytes, timeoutMs, signal, large });
       // An HTML answer: a filing published as a page, or a bot wall where a file was asked for.
       page = Boolean(got.bytes && !kindOf(got.bytes) && (/html/.test(got.type) || isHtml(got.bytes)));
       // A host that turns away a plain request (a bot wall: 401, 403, 406, 429, 503, or a page where a file was asked
@@ -923,7 +925,11 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
         if (viaBrowser.spent.browser) used.browser = viaBrowser.spent;
         if (viaBrowser.refused) return empty({ refused: viaBrowser.refused });
         if (viaBrowser.error && !page) return empty({ error: `${got.error ?? 'a page, not a file'}; ${viaBrowser.error}`, ...statusOf(got) });
-        if (!viaBrowser.error) { got = viaBrowser; page = false; }
+        if (!viaBrowser.error) {
+          if (WALL_STATUS.has(got.status)) used.retried.push({ status: got.status, via: 'browser' });
+          got = viaBrowser;
+          page = false;
+        }
       }
       if (got.refused || got.error) return empty(got.refused ? { refused: got.refused } : { error: got.error, ...statusOf(got) });
       if (got.file) kept = got.file;
@@ -1152,14 +1158,17 @@ export function snapshotFetch({ dir, fetch: fetchImpl = globalThis.fetch, retrie
     if (!at) return fetchImpl(href, init);
     const cached = await fromCache(at);
     if (cached) return cached;
+    const tries = [];
+    const noted = (value) => (tries.length && value && typeof value === 'object' ? Object.assign(value, { [RETRIED]: tries }) : value);
     for (let attempt = 0; ; attempt++) {
       let res;
       try {
         res = await fetchImpl(href, init);
       } catch (error) {
-        if (attempt >= retries || init.signal?.aborted || !BUSY.has(error?.cause?.code ?? error?.code)) throw error;
+        if (attempt >= retries || init.signal?.aborted || !BUSY.has(error?.cause?.code ?? error?.code)) throw noted(error);
       }
-      if (res && (attempt >= retries || (res.status !== 429 && res.status !== 503))) return res;
+      if (res && (attempt >= retries || (res.status !== 429 && res.status !== 503))) return noted(res);
+      tries.push({ status: res?.status ?? 0, via: 'cache' });
       await res?.body?.cancel();
       await sleep(backoffMs * 2 ** attempt, init.signal);
     }
