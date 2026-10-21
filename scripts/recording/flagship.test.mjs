@@ -1,4 +1,5 @@
-// Draft 55: the flagship's six documents, checked by the validator on a fakes recording that carries all of them.
+// Draft 55 and its amendment 1: the flagship's eight documents, checked by the validator on a fakes recording that carries
+// all of them.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -21,11 +22,16 @@ const place = { environment: 'gpu-pool', kind: 'modal', host: 'host-1', box: 'bo
 /** The six documents, as the flagship's tools write them, with `over` replacing a document's value (null deletes it). */
 const documents = (over = {}) => ({
   'train.checkpoints': ['ck-1', { thread: 51, step: 400, place, bytes: 2048, basis: 'scripted' }],
-  'train.progress': ['51', { step: 400, steps_total: 1000, reward: 1.25, unit: 'm/s', skill: 'walk forward', checkpoint: 'ck-1', basis: 'scripted' }],
+  'train.progress': ['51', { step: 400, steps_total: 1000, reward: 1.25, unit: 'return/episode', skill: 'walk forward', checkpoint: 'ck-1',
+    metric: { name: 'speed', value: 0.42, unit: 'm/s', target: { op: '>=', value: 0.4 } }, passes: true, t_s: 31.5, status: 'running',
+    passed_at: { checkpoint: 'ck-1', step: 400, t_s: 31.5 }, diagnosis: 'still-changing', body: 'four legs', basis: 'scripted' }],
   'train.render': ['51', { blob: sha(WEBM), w: 640, h: 360, step: 400, checkpoint: 'ck-1', basis: 'scripted' }],
-  'train.sweeps': ['sweep-1', { checkpoint: 'ck-1', rollouts: 16, score: 0.8, unit: 'success rate', place, placer: 'jev', basis: 'scripted' }],
-  'body.design': ['quadruped', { blob: sha(BODY), label: 'four legs', language: 'json', basis: 'agent' }],
-  'learn.curve': ['quadruped', { x: { label: 'step', unit: 'steps' }, y: { label: 'reward', unit: 'm/s' }, points: [[0, 0.1], [200, null], [400, 1.25]], basis: 'scripted' }],
+  'train.sweeps': ['sweep-1', { checkpoint: 'ck-1', rollouts: 16, score: 0.8, unit: 'success rate', place, placer: 'jev', passes_share: 0.75, min: 0.5, max: 0.95, course: 'flat ground', basis: 'scripted' }],
+  'body.design': ['b-1a2b3c4d', { blob: sha(BODY), label: 'four legs', language: 'json', basis: 'agent' }],
+  'learn.curve': ['quadruped', { x: { label: 'step', unit: 'steps' }, y: { label: 'reward', unit: 'm/s' }, points: [[0, 0.1], [200, null], [400, 1.25]],
+    target: { y: 0.4, label: 'walks' }, marks: [{ x: 400, label: 'passes' }], basis: 'scripted' }],
+  'body.run': ['b-1a2b3c4d', { kind: 'stand', outcome: 'stood', seconds: 4.2, fits: true, pieces: 9, motors: 8, mass: 2.5, height: 0.31, place, basis: 'scripted' }],
+  'body.render': ['b-1a2b3c4d', { blob: sha(PNG), w: 320, h: 240, basis: 'simulated' }],
   ...Object.fromEntries(Object.entries(over).map(([doc, value]) => [doc, [over[`${doc}.key`] ?? null, value]]).filter(([doc]) => !doc.endsWith('.key'))),
 });
 /** A recording of one process: the run's conversation 51 (an entry), a run.json holder on host-1, a box.receipt for box-1,
@@ -58,7 +64,7 @@ const problems = (t, over, options) => validateRecording(recording(t, over, opti
 const base = documents();
 const with_ = (doc, change) => ({ [doc]: { ...base[doc][1], ...change } });
 
-test('draft 55: a fakes recording with all six documents, basis scripted and one curve gap, is valid', (t) => {
+test('draft 55: a fakes recording with all eight documents, basis scripted and one curve gap, is valid', (t) => {
   assert.deepEqual(problems(t), []);
   assert.deepEqual(problems(t, with_('train.progress', { basis: undefined })), [], 'a missing basis reads as unmeasured');
   assert.deepEqual(problems(t, { 'train.render': null }), [], 'a deleted document has nothing to check');
@@ -88,7 +94,7 @@ test('draft 55: the basis is one tag per document, of the enum', (t) => {
 
 test('draft 55: blobs, conversations and checkpoints are the recording\'s own', (t) => {
   assert.deepEqual(problems(t, with_('train.render', { blob: sha(BODY) })), [`train.render "51": its blob ${sha(BODY)} is a json file, not one of png, jpg, jpeg, webp, gif, webm`]);
-  assert.deepEqual(problems(t, with_('body.design', { blob: sha(PNG) })), [`body.design "quadruped": its blob ${sha(PNG)} is a png file, not one of json, txt, md`]);
+  assert.deepEqual(problems(t, with_('body.design', { blob: sha(PNG) })), [`body.design "b-1a2b3c4d": its blob ${sha(PNG)} is a png file, not one of json, txt, md`]);
   assert.deepEqual(problems(t, with_('train.render', { blob: 'b'.repeat(64) })), [`train.render "51": its blob ${'b'.repeat(64)} is not in blobs/`]);
   assert.deepEqual(problems(t, {}, { keys: { 'train.progress': '77' } }), ['train.progress "77": its key "77" names no conversation in this recording']);
   assert.deepEqual(problems(t, with_('train.checkpoints', { thread: 90 })), ['train.checkpoints "ck-1": its thread 90 names no conversation in this recording']);
@@ -108,4 +114,28 @@ test('draft 55: the shapes: a render\'s size, a curve\'s points, numbers finite,
   assert.deepEqual(problems(t, with_('train.progress', { skill: 'walk\u0007' })), ['train.progress "51": its skill is not plain text of at most 60 characters']);
   assert.deepEqual(problems(t, with_('train.sweeps', { rollouts: 0, placer: 'gpt' })), ['train.sweeps "sweep-1": its rollouts is not an integer above 0', 'train.sweeps "sweep-1": its placer "gpt" is not "jev"']);
   assert.deepEqual(problems(t, with_('train.progress', { steps_total: 10 })), ['train.progress "51": its steps_total is not an integer of at least its step']);
+});
+
+test('amendment 1: a metric and its target say whether it passes; the new fields and the two body documents', (t) => {
+  const progress = base['train.progress'][1];
+  assert.deepEqual(problems(t, with_('train.progress', { passes: false })), ['train.progress "51": its passes is false, but its metric 0.42 >= 0.4 is true']);
+  assert.deepEqual(problems(t, with_('train.progress', { metric: { ...progress.metric, target: { op: '<', value: 0.4 } } })), ['train.progress "51": its passes is true, but its metric 0.42 < 0.4 is false']);
+  assert.deepEqual(problems(t, with_('train.progress', { metric: { ...progress.metric, target: '>= 0.4' } })), ['train.progress "51": its metric\'s target is not { op (>=, <=, >, <), value (a finite number) }'], 'never free text');
+  assert.deepEqual(problems(t, with_('train.progress', { basis: 'measured', metric: { name: 'speed', value: 0.42 }, passes: undefined })), ['train.progress "51": its metric has no unit, and its basis is measured']);
+  assert.deepEqual(problems(t, with_('train.progress', { basis: 'measured', reward: undefined, unit: undefined })), [], 'an absent reward is absent; the rest stays measured');
+  assert.deepEqual(problems(t, with_('train.progress', { status: 'paused', diagnosis: 'slow' })), ['train.progress "51": its status "paused" is not one of running, done, failed, refused', 'train.progress "51": its diagnosis "slow" is not one of never-moved, plateaued, never-settles, never-measured, still-changing, test-raised']);
+  assert.deepEqual(problems(t, with_('train.progress', { passed_at: { checkpoint: 'ck-9', step: 400, t_s: 31.5 } })), ['train.progress "51": checkpoint "ck-9" names no train.checkpoints key in this recording']);
+  assert.deepEqual(problems(t, with_('train.checkpoints', { passes: false, metric: { name: 'speed', value: 0.5, target: { op: '>=', value: 0.4 } } })), ['train.checkpoints "ck-1": its passes is false, but its metric 0.5 >= 0.4 is true']);
+  assert.deepEqual(problems(t, with_('train.sweeps', { passes_share: 1.5, min: 0.9, max: 0.1 })), ['train.sweeps "sweep-1": its passes_share is not a number from 0 to 1', 'train.sweeps "sweep-1": its min 0.9 is above its max 0.1']);
+  assert.deepEqual(problems(t, with_('learn.curve', { target: { y: 'fast' }, marks: [{ x: 'a' }] })), ['learn.curve "quadruped": its target y is not a finite number', 'learn.curve "quadruped": its target label is not plain text of at most 40 characters', 'learn.curve "quadruped": its mark 0 is not { x (a finite number), label (plain text of at most 40 characters) }']);
+  assert.deepEqual(problems(t, with_('body.run', { kind: 'walk', fits: 'yes', place: { ...place, box: 'box-3' } })), ['body.run "b-1a2b3c4d": its kind "walk" is not one of build, stand, skill', 'body.run "b-1a2b3c4d": its fits is not true or false', 'body.run "b-1a2b3c4d": its place\'s box "box-3" is not a box-N label of a box line in this recording']);
+  assert.deepEqual(problems(t, with_('body.render', { blob: sha(BODY) })), [`body.render "b-1a2b3c4d": its blob ${sha(BODY)} is a json file, not one of png, webp, webm`]);
+  assert.deepEqual(problems(t, {}, { keys: { 'body.design': 'quadruped' } }), ['body.design "quadruped": its key is not a body id, b- and 8 hex digits']);
+});
+
+test('amendment 1: a body render is a clip of at most 600 KB', (t) => {
+  const big = Buffer.alloc(600_001, 1);
+  const dir = recording(t, with_('body.render', { blob: sha(big) }));
+  writeFileSync(join(dir, 'blobs', `${sha(big)}.webm`), big);
+  assert.deepEqual(validateRecording(dir).map((problem) => problem.message), [`body.render "b-1a2b3c4d": its blob is 600001 bytes, over the 600000 a body render may be`]);
 });

@@ -338,7 +338,8 @@ export function validateRecording(dir) {
     else if (record.kind === 'move' && Number.isFinite(snapshot.before) && snapshot.commit !== snapshot.before) add('events.jsonl', `a move's snapshot is at commit ${snapshot.commit}, but the highest commit seen before it is ${snapshot.before}; a move keeps one store, so they are equal`, snapshot.line);
     else if (firstCommit.has(record.process) && firstCommit.get(record.process) !== record.head + (atOpen ? 1 : 0)) add('events.jsonl', `a ${record.kind}'s head is ${record.head}, but the process's first commit is ${firstCommit.get(record.process)}${atOpen ? `; with its snapshot at the head (pi's commit at open), the first commit is ${record.head + 1}` : ''}`, record.line);
   }
-  flagship.check(add, (hash) => (blobs.get(hash) ?? []).map((file) => file.split('/').at(-1).split('.')[1]).filter(Boolean));
+  flagship.check(add, (hash) => (blobs.get(hash) ?? []).map((file) => file.split('/').at(-1).split('.')[1]).filter(Boolean),
+    (hash) => Math.max(0, ...(blobs.get(hash) ?? []).map((file) => statSync(file).size)));
   // Every file in blobs/ is a blob of the allowlist (draft 50), named by its own SHA-256, and read as text when it is not media, whether or not a line names it.
   const artifactNames = artifactBlobNames(manifest);
   for (const entry of existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs'), { withFileTypes: true }) : []) {

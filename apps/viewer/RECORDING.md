@@ -162,9 +162,9 @@ the restored generation's snapshot.
   one of its identities in a later generation counts in repeated. A restore can show repeated above 0; the viewer
   shows it, never hides it.
 
-### 3.3 The flagship's documents (draft 55)
+### 3.3 The flagship's documents (draft 55 and its amendment 1)
 
-A run that trains and shows a robot writes six documents through its tools, through the session's own store, at a
+A run that trains and shows a robot writes eight documents through its tools, through the session's own store, at a
 commit like every document (never a host-written line). There is no new line kind: a reader that does not know them
 skips them. A document's revisions in commit order are its series.
 
@@ -175,16 +175,22 @@ skips them. A document's revisions in commit order are its series.
 | `train.checkpoints`, a checkpoint id (<= 64) | `{ thread (a conversation id), step, place, bytes?, basis }` |
 | `train.sweeps`, a sweep id (<= 64) | `{ checkpoint, rollouts (> 0), score (finite), unit?, place, placer? ("jev"), basis }`, no cost |
 | `body.design`, a body id (<= 64) | `{ blob (json, txt or md), label (<= 60 chars), language?, basis }` |
-| `learn.curve`, a curve id (<= 64) | `{ x: { label, unit? }, y: { label, unit? }, points: [[x, y or null], ...] (2 to 2,000; x finite and non-decreasing), basis }` |
+| `learn.curve`, a curve id (<= 64) | `{ x: { label, unit? }, y: { label, unit? }, points: [[x, y or null], ...] (2 to 2,000; x finite and non-decreasing), target?: { y, label }, marks?: [{ x, label }], basis }` |
+| `body.run`, a body id | `{ kind (build, stand or skill), outcome, seconds, fits, pieces?, motors?, mass?, height?, error?, place, basis }`; its revisions are build, then stand, then skill, and `error` is the simulator's own line, never parsed |
+| `body.render`, a body id | `{ blob (png, webp or webm, at most 600 KB), w, h, basis }`, the simulator's picture of the body |
+
+- **Optional fields a panel may draw** (amendment 1): `train.progress` may carry `metric: { name, value, unit?, target?: { op (>=, <=, > or <), value } }`, `passes`, `t_s`, `status` (`running`, `done`, `failed` or `refused`), `passed_at: { checkpoint, step, t_s }`, `diagnosis` (`never-moved`, `plateaued`, `never-settles`, `never-measured`, `still-changing` or `test-raised`) and `body` (a label). `train.checkpoints` may carry `passes`, `metric` and `body`, and `train.render` `body`. `train.sweeps` may carry `passes_share` (0 to 1), `min`, `max` and `course`. When `metric.value`, `metric.target` and `passes` are all there, `passes` is `value op target.value`. An absent field is absent: until a trainer reports its reward, `train.progress` has no `reward`, and the document's basis stands for the numbers it has.
+- **A body id** is `b-` and the first 8 hex digits of the built body's SHA-256, so a changed body is a new id.
 
 - **Place** is `{ environment?, kind?, host?, box? }`: `environment` the placement config's own id (never drawn),
   `kind` one of `local`, `daytona`, `modal`, `archil` or `tab`, `host` a recorded `host-N` and `box` a recorded `box-N`.
-  Never a provider's id, a path or a machine name.
+  Never a provider's id, a path or a machine name. A tool writes `box` from the label of a box it made; it does not write
+  `host`, which a panel takes from the document's generation (its line's `gen`) and that generation's `run.json` holder.
 - **Basis** is one tag per document, for every number in it: `measured`, `scripted`, `unmeasured`, `agent`, `simulated`
   or `reported`. A missing tag reads as `unmeasured`. A number's basis is its provenance relative to this run: a value
   this run's own code or checkpoint computed is `measured`, even inside a simulation. A render's basis says whether the
   picture is a real capture (`measured`) or a simulation's render (`simulated`).
-- **Units.** A `measured` reward, sweep score or curve `y` carries its `unit`; elsewhere a unit is optional.
+- **Units.** A `measured` reward, `metric.value`, sweep score or curve `y` carries its unit; elsewhere a unit is optional.
 - **A null point** `[x, null]` is a gap, read as unmeasured, never 0 and never dropped.
 - **Keys** name what the recording holds: a conversation id is a `conv` of its lines (draft 54), and `checkpoint` a
   `train.checkpoints` key. Work that runs as a workflow is referenced by its run key, never copied.
@@ -255,8 +261,9 @@ snapshots included. A lost branch (3.2) is events, not state: the per-generation
 - No secret, ever. Packages already keep credentials out of their documents and results; the recorder also passes
   every live line through the host's redactor before writing it.
 - A published recording uses public sources only, chosen and checked before it is recorded.
-- Each flagship document (draft 55, section 3.3) has its shape and a `basis` of the enum. A `measured` reward, score
-  or curve `y` has its unit, and a curve's `y` is a finite number or `null`. A `blob` is a file in `blobs/` of an
+- Each flagship document (draft 55 and its amendment 1, section 3.3) has its shape and a `basis` of the enum. A
+  `measured` reward, `metric.value`, score or curve `y` has its unit, a curve's `y` is a finite number or `null`, and
+  `passes` agrees with its metric and target. A `blob` is a file in `blobs/` of an
   extension its document allows. A conversation id, a `thread` and a `checkpoint` name what the recording holds. A
   `place` holds only `environment`, `kind`, `host` and `box`, and its `host` and `box` are labels the recording gave (a
   `run.json` holder's `host`, a box line's `box-N`). The validator refuses anything else, never dropping it silently.
