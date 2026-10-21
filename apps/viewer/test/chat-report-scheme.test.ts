@@ -15,16 +15,22 @@ import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.t
 const fixtures = new URL('fixtures/', import.meta.url).pathname;
 after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 
-/** Agent pages, each the run's whole artifact. */
+/** Agent pages, each the run's whole artifact, each titled with its own id. */
 const PAGES: Record<string, string> = {
   // A light table header and the text left at its default, as an invoice report writes it.
-  light: '<!doctype html><html><head><style>th{background:#eee}</style></head><body><table><tr><th>Invoice</th><th>Amount</th></tr><tr><td>March 2026</td><td>$112.40</td></tr></table></body></html>',
+  light: '<!doctype html><html><head><title>light</title><style>th{background:#eee}</style></head><body><table><tr><th>Invoice</th><th>Amount</th></tr><tr><td>March 2026</td><td>$112.40</td></tr></table></body></html>',
   // The report skill's page: it declares light and dark and draws with its own colour names.
-  skill: '<!doctype html><html><head><style>:root{color-scheme:light dark;--bg:#f7f6f2;--fg:#17181a}@media (prefers-color-scheme:dark){:root{--bg:#0d0d0f;--fg:#ecebe7}}body{background:var(--bg);color:var(--fg)}</style></head><body><h1>The answer</h1><p>Found.</p></body></html>',
+  skill: '<!doctype html><html><head><title>skill</title><style>:root{color-scheme:light dark;--bg:#f7f6f2;--fg:#17181a}@media (prefers-color-scheme:dark){:root{--bg:#0d0d0f;--fg:#ecebe7}}body{background:var(--bg);color:var(--fg)}</style></head><body><h1>The answer</h1><p>Found.</p></body></html>',
   // A page that declares light only.
-  lightOnly: '<!doctype html><html><head><meta name="color-scheme" content="light"></head><body><p>Light only.</p></body></html>',
+  lightOnly: '<!doctype html><html><head><title>lightOnly</title><meta name="color-scheme" content="light"></head><body><p>Light only.</p></body></html>',
   // A page that declares dark through its meta.
-  metaDark: '<!doctype html><html><head><meta name="color-scheme" content="dark light"></head><body><p>Dark too.</p></body></html>',
+  metaDark: '<!doctype html><html><head><title>metaDark</title><meta name="color-scheme" content="dark light"></head><body><p>Dark too.</p></body></html>',
+  // A page for each other place the viewer reads a dark declaration.
+  rootStyle: '<!doctype html><html style="color-scheme:dark"><head><title>rootStyle</title></head><body><p>Dark on the root element.</p></body></html>',
+  htmlRule: '<!doctype html><html><head><title>htmlRule</title><style>html{color-scheme:light dark}</style></head><body><p>Dark by the html selector.</p></body></html>',
+  supports: '<!doctype html><html><head><title>supports</title><style>@supports (color-scheme:dark){:root{color-scheme:light dark}}</style></head><body><p>Dark inside @supports.</p></body></html>',
+  layer: '<!doctype html><html><head><title>layer</title><style>@layer page{:root{color-scheme:dark}}</style></head><body><p>Dark inside @layer.</p></body></html>',
+  nested: '<!doctype html><html><head><title>nested</title><style>@layer page{@supports (color-scheme:dark){@layer theme{html{color-scheme:light dark}}}}</style></head><body><p>Dark three at-rules deep.</p></body></html>',
 };
 
 test('in Chrome: the dark palette goes only over a page that declares dark; any other page is drawn as authored', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 120_000 }, async (t) => {
@@ -59,7 +65,9 @@ test('in Chrome: the dark palette goes only over a page that declares dark; any 
   try {
     for (const id of Object.keys(PAGES)) {
       await page.evaluate(`location.href = '${base}/chat.html?r=${id}'`);
-      await page.once(`!!document.querySelector('.report-frame')?.contentDocument?.body?.children.length`, 'true', 20_000, `${id}: the agent's page drawn`);
+      // Setting the address does not wait for the navigation: until it commits, the previous page's report is still there.
+      const report = `document.querySelector('.report-frame')?.contentDocument`;
+      await page.once(`location.href === '${base}/chat.html?r=${id}' && ${report}?.title === '${id}' && ${report}?.readyState === 'complete'`, 'true', 20_000, `${id}: the agent's page drawn`);
       seen[id] = JSON.parse(String(await page.evaluate(`(() => { const d = document.querySelector('.report-frame').contentDocument; const css = (n) => getComputedStyle(n);
         const th = d.querySelector('th'); return JSON.stringify({ ...(th ? { th: [css(th).color, css(th).backgroundColor] } : {}), body: [css(d.documentElement).colorScheme, css(d.body).backgroundColor, css(d.body).color] }); })()`)));
     }
@@ -75,4 +83,7 @@ test('in Chrome: the dark palette goes only over a page that declares dark; any 
   // A meta names the page's scheme without setting the root's color-scheme property, so that reads "normal".
   assert.deepEqual(seen.lightOnly!.body, ['normal', 'rgba(0, 0, 0, 0)', 'rgb(0, 0, 0)'], 'a page that declares light only is drawn light, nothing forced');
   assert.deepEqual(seen.metaDark!.body, ['dark', 'rgb(8, 8, 9)', 'rgb(242, 242, 242)'], 'a page that declares dark in its meta takes the dark palette');
+  for (const id of ['rootStyle', 'htmlRule', 'supports', 'layer', 'nested']) {
+    assert.deepEqual(seen[id]!.body, ['dark', 'rgb(8, 8, 9)', 'rgb(242, 242, 242)'], `${id}: a page that declares dark there takes the dark palette`);
+  }
 });
