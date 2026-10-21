@@ -14,7 +14,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import { extname, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARCHIL_SCOPED, DEAD_CONNECTION, DEFAULT_MOUNT_ROOT, runPath, type RunRef } from "../claim.ts";
 import { EXIT_DATAERR, EXIT_FENCED, EXIT_HELD, EXIT_SOFTWARE, PdaError } from "../errors.ts";
@@ -123,6 +123,14 @@ export function currentBootId(): string {
   return boot;
 }
 
+/** The uid a user number or name stands for (a name through /etc/passwd), or undefined when nothing names it. */
+async function uidOf(user: string): Promise<number | undefined> {
+  if (/^\d+$/.test(user)) return Number(user);
+  const rows = await readFile("/etc/passwd", "utf8").then((text) => text.split("\n").map((line) => line.split(":")), () => []);
+  const row = rows.find((fields) => fields.length >= 3 && fields[0] === user);
+  return row ? Number(row[2]) : undefined;
+}
+
 const firstLine = (r: Ran) => (r.stderr.trim().split("\n").at(-1) ?? "").slice(0, 300);
 const okRan = (r: Ran) => r.code === 0 && !r.timedOut;
 
@@ -207,6 +215,31 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
 
   const mine = (h: HostHandle) => h.driver === "local" && h.host === hostName;
   const mountpointOf = (ref: RunRef) => join(mountRoot, runPath(ref.id));
+  const runMountpoint = (mp: string) => {
+    try {
+      return mp === join(mountRoot, runPath(basename(mp)));
+    } catch {
+      return false;
+    }
+  };
+  /**
+   * The unit of a systemd handle this driver could have made: a safe name with its prefix, whose mountpoint is one run's
+   * under its mount root; undefined for any other. A handle comes back from run.json, which the run's user can write, and
+   * stop and kill act on it as root (systemctl, unmount, rmdir), as the docker and daytona drivers act only on their fleet's.
+   * They refuse any other with the reason, so a supervisor's log never reports a stop that did not happen.
+   */
+  const ownUnit = (h: HostHandle): string | undefined => {
+    const { unit, mountpoint } = h;
+    if (typeof unit !== "string" || !UNIT_SAFE.test(unit) || !unit.startsWith(prefix)) return undefined;
+    return typeof mountpoint === "string" && runMountpoint(mountpoint) ? unit : undefined;
+  };
+  const notOwnUnit = (h: HostHandle, what: "stopped" | "killed") =>
+    new LocalHostError(
+      "INVALID_ARGUMENT",
+      `the handle's unit ${JSON.stringify(h.unit)} at ${JSON.stringify(h.mountpoint)} is not one this driver starts (${prefix}<run id>-<stamp>, a run's mountpoint under ${mountRoot}): nothing ${what}`,
+    );
+  const notOwnPid = (h: HostHandle, what: "stopped" | "killed") =>
+    new LocalHostError("INVALID_ARGUMENT", `the handle names pid ${JSON.stringify(h.pid)} with start ticks ${JSON.stringify(h.startTicks)}, not a process this driver started: nothing ${what}`);
   const mounted = async (mp: string) => (await readFile(procMounts, "utf8")).split("\n").some((l) => l.split(" ")[1] === mp);
 
   const parkMs = opts.parkThresholdMs === undefined ? LOCAL_PARK_THRESHOLD_MS : opts.parkThresholdMs;
@@ -379,6 +412,17 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
     kills: "process",
     async start(ref, token, attempt?: StartAttempt) {
       runPath(ref.id);
+      // Never as root: the instance and the agent's tools would share a uid with the archil daemon that holds the mount
+      // token, and own run.json and the store outright.
+      if (mode === "systemd" && user.trim() === "") {
+        throw new LocalHostError("INVALID_ARGUMENT", "the user is empty, and systemd runs a unit with an empty User= as root: name the unprivileged user the instance runs as (user)");
+      }
+      if (mode === "systemd" && (await uidOf(user)) === 0) {
+        throw new LocalHostError("INVALID_ARGUMENT", `user ${user} is root: name the unprivileged user the instance runs as (user)`);
+      }
+      if (mode === "child" && process.getuid?.() === 0) {
+        throw new LocalHostError("INVALID_ARGUMENT", "child mode runs the instance as this process's user, which is root: use systemd mode with a user");
+      }
       const extra = attemptEnv(attempt, (m) => new LocalHostError("INVALID_ARGUMENT", m));
       return mode === "systemd" ? startUnit(ref, token, extra) : startChild(ref, token, extra);
     },
@@ -401,7 +445,7 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
         // A handle comes back from run.json with whatever was written there, and stop signals its pid as a group: only a
         // real process, then. A pid of 1 or below names a group (`kill(-0)` is this supervisor's own, `kill(-1)` every
         // process it may signal), and without start ticks nothing tells a reused pid from the instance.
-        if (!Number.isInteger(pid) || pid <= 1 || typeof h.startTicks !== "number") return;
+        if (!Number.isInteger(pid) || pid <= 1 || typeof h.startTicks !== "number") throw notOwnPid(h, "stopped");
         const alive = () => procStartTicks(pid) === h.startTicks;
         if (!alive()) return;
         try {
@@ -413,22 +457,23 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
         if (alive()) process.kill(-pid, "SIGKILL");
         return;
       }
-      if (typeof h.unit !== "string" || !UNIT_SAFE.test(h.unit)) return;
-      const stopUnit = () => root([SYSTEMCTL, "stop", `${h.unit}.service`], { timeoutMs: stopTimeoutMs + 10_000 });
+      const unit = ownUnit(h);
+      if (unit === undefined) throw notOwnUnit(h, "stopped");
+      const stopUnit = () => root([SYSTEMCTL, "stop", `${unit}.service`], { timeoutMs: stopTimeoutMs + 10_000 });
       let r = await stopUnit();
-      if (!okRan(r) && unitStatus(await show(h.unit)) === "running") {
+      if (!okRan(r) && unitStatus(await show(unit)) === "running") {
         // A unit that outlives SIGKILL is wedged in its mount (a FUSE request its daemon never answers): kill the
         // daemon so those requests fail and the processes can die, then stop once more.
-        await killDaemons(h.unit);
+        await killDaemons(unit);
         r = await stopUnit();
-        if (!okRan(r) && unitStatus(await show(h.unit)) === "running") {
-          throw new LocalHostError("STOP_FAILED", `systemctl stop ${h.unit}: ${r.timedOut ? "timed out" : firstLine(r)}`);
+        if (!okRan(r) && unitStatus(await show(unit)) === "running") {
+          throw new LocalHostError("STOP_FAILED", `systemctl stop ${unit}: ${r.timedOut ? "timed out" : firstLine(r)}`);
         }
       }
-      await cleanMount(h.unit, String(h.mountpoint));
-      await root([SYSTEMCTL, "reset-failed", `${h.unit}.service`]);
-      await removeFile(tokenFile(h.unit));
-      await removeFile(envFile(h.unit));
+      await cleanMount(unit, String(h.mountpoint));
+      await root([SYSTEMCTL, "reset-failed", `${unit}.service`]);
+      await removeFile(tokenFile(unit));
+      await removeFile(envFile(unit));
     },
 
     async kill(h) {
@@ -436,7 +481,8 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
       if (h.mode === "child") {
         const pid = Number(h.pid);
         // As in stop: only a real process, and only the one the handle names (its start ticks).
-        if (!Number.isInteger(pid) || pid <= 1 || typeof h.startTicks !== "number" || procStartTicks(pid) !== h.startTicks) return;
+        if (!Number.isInteger(pid) || pid <= 1 || typeof h.startTicks !== "number") throw notOwnPid(h, "killed");
+        if (procStartTicks(pid) !== h.startTicks) return;
         try {
           process.kill(-pid, "SIGKILL");
         } catch {
@@ -444,12 +490,13 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
         }
         return;
       }
-      if (typeof h.unit !== "string" || !UNIT_SAFE.test(h.unit)) return;
+      const unit = ownUnit(h);
+      if (unit === undefined) throw notOwnUnit(h, "killed");
       // Every process of the unit's control group at once, the instance's commands included. Its FUSE daemon runs in a
       // scope of its own and keeps the mount, as after an OOM kill; the unit restarts in place unless restart is off.
-      const r = await root([SYSTEMCTL, "kill", "--signal=SIGKILL", "--kill-whom=all", `${h.unit}.service`]);
-      if (!okRan(r) && unitStatus(await show(h.unit)) === "running") {
-        throw new LocalHostError("KILL_FAILED", `systemctl kill ${h.unit}: ${r.timedOut ? "timed out" : firstLine(r)}`);
+      const r = await root([SYSTEMCTL, "kill", "--signal=SIGKILL", "--kill-whom=all", `${unit}.service`]);
+      if (!okRan(r) && unitStatus(await show(unit)) === "running") {
+        throw new LocalHostError("KILL_FAILED", `systemctl kill ${unit}: ${r.timedOut ? "timed out" : firstLine(r)}`);
       }
     },
   };

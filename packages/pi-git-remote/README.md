@@ -8,13 +8,15 @@ runs. A credential stays in the host's memory and reaches git only on file descr
 The core is plain Node over the git CLI. It does not import pi, so any host can use it. It is the base for agents that
 learn in a repository: a run proposes on `runs/<id>`, a curator merges to `main`, a bad lesson is reverted.
 
-This package is held: it is built and tested in this repository and not published yet.
-
 ## Quickstart (no key, no network)
 
-Node 22.19 or later and git 2.40 or later. In a checkout of this repository, run `npm ci --ignore-scripts` and
-`npm run build -w @parcha/pi-git-remote`, save this as `quickstart.mjs` at the repository root, and run
-`node quickstart.mjs`:
+Node 22.19 or later and git 2.40 or later. In an empty directory:
+
+```sh
+npm install @parcha/pi-git-remote@beta
+```
+
+Save this as `quickstart.mjs` and run `node quickstart.mjs`:
 
 ```js
 import { execFileSync } from "node:child_process";
@@ -200,20 +202,19 @@ installer), and pi needs a model before anything here works. Give it one of thre
 Without one, pi stops at `No API key found for the selected model`.
 
 ```sh
-npm ci --ignore-scripts && npm run build -w @parcha/pi-git-remote    # in a checkout of this repository
-PKG=$PWD/packages/pi-git-remote; cd "$(mktemp -d)"
+cd "$(mktemp -d)" && npm install @parcha/pi-git-remote@beta
 git init -q --bare -b main acme.git
 git clone -q acme.git seed 2>/dev/null && (cd seed && mkdir notes && echo "Cite every claim." > AGENTS.md && echo hello > notes/hello.md \
   && git add -A && git -c user.name=seed -c user.email=seed@example.com commit -qm seed && git push -q origin main)
-pi -e "$PKG" --git-remote ./acme.git --git-allow 'notes/**' -p "Add notes/today.md, one line, in the checkout your AGENTS.md is from."
+pi -e ./node_modules/@parcha/pi-git-remote --git-remote ./acme.git --git-allow 'notes/**' -p "Add notes/today.md, one line, in the checkout your AGENTS.md is from."
 git -C acme.git branch --list 'sessions/*'    # one branch, one commit on top of main, with Session-Id and Seeded-From trailers
 ```
 
 `-p` runs the one prompt and exits, and the exit ends the session, so the commit is on the branch when the command
 returns. Without `-p`, pi opens its terminal UI: ask it the same thing, then quit.
 
-Until the package is published, `pi -e <path to this package>` loads it; once it is, `pi -e npm:@parcha/pi-git-remote` or
-`pi install npm:@parcha/pi-git-remote` will. The session's context carries the repository's `AGENTS.md` and its
+`pi -e` takes the installed package's directory. pi can also fetch it from npm itself: `pi -e npm:@parcha/pi-git-remote`
+for one session, or `pi install npm:@parcha/pi-git-remote` to keep it. The session's context carries the repository's `AGENTS.md` and its
 `.agents/skills/`, so the instructions for where to write belong in the repository.
 
 | Setting | Flag | Default |

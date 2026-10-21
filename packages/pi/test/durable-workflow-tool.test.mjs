@@ -210,6 +210,24 @@ test('inspect refuses a workflow that gives an agent node tools the host did not
   await registered.harness.close(ctx);
 });
 
+test('createWorkflowTool refuses the host tool lists the extension refuses: a reserved, repeated or blank name, more than 100 tools, parameters that are no schema', () => {
+  const task = { run: () => ({ adapters: {} }) };
+  const named = (name, extra = {}) => ({ name, description: `The ${name} tool.`, parameters: { type: 'object', additionalProperties: true }, ...extra });
+  for (const [tools, refusal] of [
+    [[named('submit')], /invalid, reserved or duplicate name/],
+    [[named('agentrun')], /invalid, reserved or duplicate name/],
+    [[named('lookup'), named('lookup')], /invalid, reserved or duplicate name/],
+    [[named(' ')], /invalid, reserved or duplicate name/],
+    [Array.from({ length: 101 }, (_, i) => named(`tool-${i}`)), /at most 100/],
+    [[named('lookup', { parameters: 'none' })], /require a parameter schema/],
+    // A schema the compiler refuses, as parameters or as the result schema: an invalid regular expression.
+    [[named('lookup', { parameters: { type: 'object', properties: { q: { type: 'string', pattern: '[' } } } })], /Invalid regular expression/],
+    [[named('lookup', { resultSchema: { type: 'object', properties: { id: { type: 'string', pattern: '[' } } } })], /Invalid regular expression/],
+  ]) assert.throws(() => createWorkflowTool({ projectDir: root, tools, task }), refusal, JSON.stringify(tools).slice(0, 80));
+  assert.throws(() => createWorkflowTool({ projectDir: root, name: 'workflow', tools: [named('workflow')], task }), /reserved/, 'the tool\'s own name is reserved');
+  assert.doesNotThrow(() => createWorkflowTool({ projectDir: root, tools: [QUOTE, named('read'), named('lookup', { resultSchema: { type: 'object', properties: { id: { type: 'string', pattern: '^[a-z]+$' } } } })], task }));
+});
+
 test('a root agent offers the tools of the extensions it lists: one installed in the registry and not listed is not offered', async () => {
   const learn = defineExtension({ name: 'host.learn', tools: [defineTool({ name: 'learn', description: 'Keep a lesson.', parameters: { type: 'object', additionalProperties: true }, execute: async () => resultOf([{ type: 'text', text: 'kept' }]) })] });
   const listed = await rig([say('hello')], {}, { installed: [learn], listed: (tool) => [learn, tool] });

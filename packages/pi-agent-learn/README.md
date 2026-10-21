@@ -9,15 +9,19 @@ It builds on [`@parcha/pi-git-remote`](https://github.com/Parcha-ai/agentrun/tre
 owns git, and on pi-durable, which owns the run. The host owns git: no model tool commits or pushes, and the
 repository's `.git` is never in the agent's working directory.
 
-This package is held: it is built and tested in this repository and not published yet. This release has the contract
-the model sees, the host step that seeds a run, the guard every write goes through, the host step that proposes a
-run's notes, the curator that merges them to `main`, and saved workflows that are tried and promoted on receipts.
+This release has the contract the model sees, the host step that seeds a run, the guard every write goes through, the
+host step that proposes a run's notes, the curator that merges them to `main`, and saved workflows that are tried and
+promoted on receipts.
 
 ## Quickstart (no key, no network)
 
-Node 22.19 or later and git 2.40 or later. In a checkout of this repository, run `npm ci --ignore-scripts` and
-`npm run build -w @parcha/pi-agent-learn`, save this as `quickstart.mjs` at the repository root, and run
-`node quickstart.mjs`. The model is pi-ai's scripted faux provider.
+Node 22.19 or later and git 2.40 or later. In an empty directory:
+
+```sh
+npm install @parcha/pi-agent-learn@beta @parcha/pi-git-remote@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
+```
+
+Save this as `quickstart.mjs` and run `node quickstart.mjs`. The model is pi-ai's scripted faux provider.
 
 ```js
 import { execFileSync } from "node:child_process";
