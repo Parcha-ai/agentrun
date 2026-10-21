@@ -237,12 +237,17 @@ export function placedFrames(hosting: Hosting): Extension {
       const s = await open(place);
       const ended: Array<{ box: string; environment: string; provider: string }> = [];
       // A sandbox a failed setup could not end is tried again here; one that still will not end fails the release, so the run is not taken for finished with a sandbox left.
+      // Every one is tried, and every one that still will not end is kept for the next release: none is forgotten behind another's failure.
+      const stuck: Array<{ box: Box; label: string }> = [];
+      let refusal: unknown;
       for (const orphan of s.orphans.splice(0)) {
-        const done = await orphan.box.destroy(ctx);
-        if (!done.ok) { s.orphans.push(orphan); throw done.error; }
+        const done = await orphan.box.destroy(ctx).catch((cause: unknown) => ({ ok: false as const, error: cause }));
+        if (!done.ok) { stuck.push(orphan); refusal ??= done.error; continue; }
         const entry = s.log.get(orphan.label);
         if (entry) entry.ended = new Date().toISOString();
       }
+      s.orphans.push(...stuck);
+      if (refusal !== undefined) throw refusal;
       for (const [environment, making] of s.boxes) {
         const made = await making.catch(() => undefined);
         if (!made) continue;

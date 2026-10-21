@@ -247,6 +247,20 @@ test('a sandbox whose setup fails is ended, one that cannot be ended is kept for
   assert.deepEqual([stuck.flaky.counts.created, stuck.flaky.counts.destroyed, stuck.flaky.counts.attempts], [1, 0, 1], 'the first attempt to end it failed');
   await stuck.tool('release').execute({}, stuck.api, BACKGROUND_CONTEXT);
   assert.deepEqual([stuck.flaky.counts.destroyed, stuck.flaky.counts.attempts], [1, 2], 'release tried again, and it ended');
+  // Two sandboxes left by two failed setups, and the first will not end: the second is still tried, and the first stays for the next release.
+  const work = join(tmp, 'work-two');
+  mkdirSync(work, { recursive: true });
+  const two = failingSetup(localBoxes({ root: join(tmp, 'boxes-two'), path: `${process.execPath.replace(/\/[^/]+$/, '')}:/usr/bin:/bin` }), { destroyFailures: 3 });
+  const pair = placedFrames({ providers: () => Object.fromEntries(ENVIRONMENTS.map((environment) => [environment.id, two.provider])), models: scriptedModels(), placer: 'scripted' });
+  const pairTool = (name) => pair.tools.find((each) => each.name === name);
+  const pairApi = { env: new NodeExecutionEnv({ cwd: work }) };
+  await assert.rejects(pairTool('frame').execute({ f: 0, frames: FRAMES }, pairApi, BACKGROUND_CONTEXT), /the upload failed/);
+  await assert.rejects(pairTool('frame').execute({ f: 11, frames: FRAMES }, pairApi, BACKGROUND_CONTEXT), /the upload failed/);
+  assert.deepEqual([two.counts.created, two.counts.destroyed, two.counts.attempts], [2, 0, 2], 'both setups failed and neither could be ended');
+  await assert.rejects(pairTool('release').execute({}, pairApi, BACKGROUND_CONTEXT), /would not end/);
+  assert.deepEqual([two.counts.destroyed, two.counts.attempts], [1, 4], 'the second was tried behind the first one\'s failure and ended');
+  await pairTool('release').execute({}, pairApi, BACKGROUND_CONTEXT);
+  assert.deepEqual([two.counts.destroyed, two.counts.attempts], [2, 5], 'the first was kept, and a later release ended it');
   const hopeless = await run({ destroyFailures: 5 });
   await assert.rejects(hopeless.tool('release').execute({}, hopeless.api, BACKGROUND_CONTEXT), /would not end/, 'a sandbox that will not end fails the release, so the run is not taken for finished');
 });
