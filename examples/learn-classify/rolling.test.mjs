@@ -190,7 +190,7 @@ test('what a run cost the disk, on every TRAIN and DEV row: its durable commits 
   }
 }, { timeout: 300_000 });
 
-test('the limits of a run by the hour: model errors by their leading status, site 429s, web.archive.org apart, a workflow\'s call once', () => {
+test('the limits of a run by the hour: model errors by their leading status, site 429s and the pushbacks a tool got past, web.archive.org apart, a workflow\'s call once', () => {
   const at = (iso) => Date.parse(iso);
   const assistant = (iso, extra) => ({ kind: 'pi.assistant', conv: 1, data: { model: [{ role: 'assistant', content: [], stopReason: 'error', timestamp: at(iso), ...extra }] } });
   const call = (iso, id, args) => ({ kind: 'pi.assistant', conv: 1, data: { model: [{ role: 'assistant', content: [{ type: 'toolCall', id, name: 'x', arguments: args }], stopReason: 'toolUse', timestamp: at(iso) }] } });
@@ -216,6 +216,17 @@ test('the limits of a run by the hour: model errors by their leading status, sit
     { hour: '2026-10-22T04', source: 'model', status: 'other', n: 1 },
     { hour: '2026-10-22T04', source: 'site', status: 429, n: 1 },
     { hour: '2026-10-22T04', source: 'wayback', status: 429, n: 2 },
+  ]);
+  // A pushback the tool got past (the snapshot cache's back-off, read_document's browser rescue) is counted from `retried`.
+  const rescued = [
+    result('2026-10-22T06:01:00Z', 'd1', 'read_document', { ok: true, url: 'https://web.archive.org/web/2024/https://example.com/b.pdf', retried: [{ status: 429, via: 'cache' }, { status: 503, via: 'cache' }, { status: 0, via: 'cache' }] }),
+    result('2026-10-22T06:02:00Z', 'd2', 'read_document', { ok: true, url: 'https://example.com/c.pdf', status: 200, retried: [{ status: 429, via: 'browser' }] }),
+  ];
+  assert.deepEqual(limitsOfLines(rescued), [
+    { hour: '2026-10-22T06', source: 'site', status: 429, n: 1 },
+    { hour: '2026-10-22T06', source: 'wayback', status: 0, n: 1 },
+    { hour: '2026-10-22T06', source: 'wayback', status: 429, n: 1 },
+    { hour: '2026-10-22T06', source: 'wayback', status: 503, n: 1 },
   ]);
   assert.deepEqual(limitsOfLines([effect('k2', 'completed', { status: 429 })]), []);
   assert.deepEqual(limitsOfLines([effect('k2', 'completed', { status: 429 })], { at: at('2026-10-22T05:00:00Z') }), [{ hour: '2026-10-22T05', source: 'wayback', status: 429, n: 1 }]);
