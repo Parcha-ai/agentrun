@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { GitRemoteError } from "./errors.js";
-import { createGitRunner, EMPTY_TREE, gitVersion, type GitCall, type GitIdentity } from "./git.js";
+import { createGitRunner, EMPTY_TREE, gitVersion, type GitCall, type GitIdentity, type GitResult } from "./git.js";
 import {
   caseCollisions, checkCommitFiles, DEFAULT_LIMITS, type FileContent, type Limits, modeRefusal, pathPrefixes, pathRefusal,
 } from "./limits.js";
@@ -199,6 +199,14 @@ function checkLimits(input: Partial<Limits> | undefined): Limits {
   return Object.freeze(limits);
 }
 
+// Exit 1 is the only "no" these questions give. A timeout (the runner's 124) or any other failure throws: read as a
+// "no", it would make a branch's tip the remote's and drop a local commit not yet pushed.
+function answer(command: string, result: GitResult): boolean {
+  if (result.code === 0 || result.code === 1) return result.code === 0;
+  const why = result.code === 124 ? "timed out" : result.stderr.trim().slice(0, 2000);
+  throw new GitRemoteError("git", `git ${command} failed (${result.code}): ${why}`);
+}
+
 export async function openRepo(options: RepoOptions): Promise<Repo> {
   if (!options || typeof options.dir !== "string" || options.dir === "") throw refused("openRepo needs a dir");
   checkRemote(options.remote);
@@ -255,11 +263,11 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
 
   async function revParse(rev: string): Promise<string | undefined> {
     const result = await git(["rev-parse", "--verify", "-q", "--end-of-options", `${rev}^{commit}`], { allowFail: true });
-    return result.code === 0 ? result.stdout.toString("utf8").trim() : undefined;
+    return answer("rev-parse", result) ? result.stdout.toString("utf8").trim() : undefined;
   }
 
   async function isAncestor(a: string, b: string): Promise<boolean> {
-    return (await git(["merge-base", "--is-ancestor", a, b], { allowFail: true })).code === 0;
+    return answer("merge-base", await git(["merge-base", "--is-ancestor", a, b], { allowFail: true }));
   }
 
   /** The remote's tip of `branch`, from the fetch URL and the push URL: the newer of the two, or the push side's when
