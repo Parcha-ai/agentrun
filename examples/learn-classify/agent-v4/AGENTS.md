@@ -12,7 +12,8 @@
   - its headquarters, the principal executive offices the report gives: the city, the state or province when there is
     one, and the country;
   - its operating subsidiaries as the company lists them (a 10-K's Exhibit 21, a 20-F's Exhibit 8), at most 15, or none
-    (`{ "none": true, "note" }`) when the report, read, has no subsidiary exhibit or list, the note saying so;
+    (`{ "none": true, "note" }`) when the report, read, has no subsidiary exhibit or list, the note saying so in at most
+    300 characters;
   - that annual report: its URL as you read it in this run, and the fiscal year it covers;
   - cites for the other five.
 - Finish by calling answer once, with 1 to 12 cites. Each cite names what it supports (the code, a segment, the
