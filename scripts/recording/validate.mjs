@@ -82,7 +82,6 @@ export function lineProblems(event) {
   need(CHANNELS.includes(event.channel), `channel is ${JSON.stringify(event.channel)}, expected durable or live`);
   need(SOURCES.includes(event.source), `source is ${JSON.stringify(event.source)}, expected one of ${SOURCES.join(', ')}`);
   need(typeof event.kind === 'string' && event.kind !== '', 'kind is not a non-empty string');
-  // A durable line has no `gen` before the earliest surviving driver revision; a live line always has the process's.
   // A durable line has no `gen` before the earliest surviving driver revision, and the supervisor's host lines have none
   // (no run process wrote them); every other line carries the process's.
   need(event.gen === undefined && (event.channel === 'durable' || event.source === 'host') || isInt(event.gen) && event.gen >= 1, 'gen is not an integer of at least 1');
@@ -238,15 +237,14 @@ export function validateRecording(dir) {
   let last = { commit: -Infinity, order: -Infinity };
   let lastT = -Infinity;
   const lastSeq = new Map();
-  // The process a line belongs to is the latest one the supervisor started before it (3.2): a snapshot's `gen` is an earlier process's, so
-  // a restore is matched by process, never by generation value.
-  let processIndex = 0;
+  // The processes the supervisor has started so far. A line belongs to the latest of them, number `processes` (3.2): a snapshot's `gen` is
+  // an earlier process's, so a restore is matched by process, never by generation value.
+  let processes = 0;
   const snapshotted = new Set();
   const snapshotAt = new Map();
   const firstCommit = new Map();
   const records = [];
   const drops = [];
-  let processes = 0;
   const lookKeys = new Set();
   const lookSources = new Map();
   const liveGenerations = new Set();
@@ -260,15 +258,15 @@ export function validateRecording(dir) {
     const own = lineProblems(event);
     for (const message of own) add('events.jsonl', message, line);
     if (own.length) return;
-    if (event.source === 'host' && event.kind === 'process.started') { processes += 1; processIndex += 1; }
+    if (event.source === 'host' && event.kind === 'process.started') processes += 1;
     if (event.channel === 'durable' && (event.kind === 'transport.moves' || event.data?.doc === 'transport.moves')) {
       // A snapshot restates the records an earlier process wrote: only a process's own lines are its moves.
       if (!event.snapshot) for (const record of moveRecords(event.data?.value ?? event.data)) {
         if (!isInt(record.head)) add('events.jsonl', `a ${record.kind} record has no integer head`, line);
-        else records.push({ ...record, process: processIndex, line, commit: event.commit });
+        else records.push({ ...record, process: processes, line, commit: event.commit });
       }
     }
-    if (event.channel === 'durable' && !event.snapshot && !firstCommit.has(processIndex)) firstCommit.set(processIndex, event.commit);
+    if (event.channel === 'durable' && !event.snapshot && !firstCommit.has(processes)) firstCommit.set(processes, event.commit);
     if (event.channel === 'live' && event.gen !== undefined) liveGenerations.add(event.gen);
     if (inlineImage(event.data)) add('events.jsonl', 'holds image data inline; an image belongs in blobs/ and its block keeps { type, mimeType, blob }', line);
     for (const hash of imageBlobs(event.data)) {
@@ -279,19 +277,18 @@ export function validateRecording(dir) {
     lastT = Math.max(lastT, event.t);
     if (event.channel === 'durable' && event.gen !== undefined) {
       // A durable line's gen is the driver's, so it never decreases, outside a restore (3.2), whose snapshot starts the generation again.
-      const restores = event.snapshot && !snapshotted.has(processIndex) && event.commit < lastCommit;
+      const restores = event.snapshot && !snapshotted.has(processes) && event.commit < lastCommit;
       if (event.gen < lastGen && !restores) add('events.jsonl', `durable gen ${event.gen} is lower than the previous durable line's ${lastGen}`, line);
       lastGen = restores ? event.gen : Math.max(lastGen, event.gen);
     }
     if (event.channel === 'durable' && event.snapshot) {
       // A snapshot is state at the store's latest commit when its process opened: never below an earlier line's commit, except
       // at a process's first snapshot after a restore (3.2), which is accepted only with that process's restore record, written after it.
-      const proc = processIndex;
-      if (!snapshotted.has(proc)) {
-        snapshotted.add(proc);
-        snapshotAt.set(proc, { commit: event.commit, line, before: lastCommit });
+      if (!snapshotted.has(processes)) {
+        snapshotted.add(processes);
+        snapshotAt.set(processes, { commit: event.commit, line, before: lastCommit });
         if (event.commit < lastCommit) {
-          drops.push({ line, process: proc, commit: event.commit, was: lastCommit });
+          drops.push({ line, process: processes, commit: event.commit, was: lastCommit });
           last = { commit: event.commit, order: Infinity };
           lastCommit = event.commit;
         }
