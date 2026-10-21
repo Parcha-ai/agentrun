@@ -37,7 +37,13 @@ export const RUN_LABEL = 'agentrun-run';
 const boxError = (message: string) => Object.assign(new Error(message), { name: 'BoxError', code: 'unknown' as const });
 
 /** A box's line in the run's ids directory (format v1): a tool's box by its provider id, with its receipt state. */
-export type LedgerEntry = { provider: string; owner: 'tools'; id: string; kind?: string; from?: string; receipt?: 'open' | 'written' };
+export type LedgerEntry = {
+  provider: string; owner: 'tools'; id: string; kind?: string; from?: string;
+  /** `ended`: a supervised run's process is done with the box, and the supervisor writes its receipt from this file. */
+  receipt?: 'open' | 'written' | 'ended';
+  /** A supervised run's: when the box ended (null when its process left it open), and the process that made it. */
+  to?: string | null; gen?: number;
+};
 
 const LABEL_FILE = /^box-(\d+)\.json$/;
 /** A refusal of the ids directory's own: passed on as it is, never wrapped as a write failure. */
@@ -149,7 +155,22 @@ export type BoxLedger = {
   recover(): void;
 };
 
-export function boxLedger(options: { dir?: string; recorder?: Recorder } = {}): BoxLedger {
+/**
+ * Whether this process is a SUPERVISED CHILD: a run process whose supervisor writes its host lines (RECORDING.md 3.1), so it
+ * writes none. The supervisor says so (`HOST_LINES=supervisor`) when it owns the run's box ids directory, from which it writes
+ * the tool boxes' receipts. A process it is false for (no supervisor, or one that does not own that directory) writes them.
+ */
+export const supervisedChild = (env: NodeJS.ProcessEnv): boolean => env.HOST_LINES === 'supervisor';
+
+/** The boxes in a run's ids directory, by label, with their receipt state: what the supervisor of a supervised run reads to
+ *  write their receipts. A file that cannot be read refuses. */
+export function ledgerBoxes(dir: string): [string, LedgerEntry][] {
+  return [...labelStore(dir).list()];
+}
+
+/** `supervised`: the run's supervisor writes the receipts from `dir` (RECORDING.md 3.1: a process writes no host line), so
+ *  this ledger keeps each box's end, and the process that made it, in its file and writes no line. */
+export function boxLedger(options: { dir?: string; recorder?: Recorder; supervised?: { gen?: number } } = {}): BoxLedger {
   const store = options.dir ? labelStore(options.dir) : memoryStore();
   // The labels this process opened a receipt for.
   const opened = new Set<string>();
@@ -161,7 +182,11 @@ export function boxLedger(options: { dir?: string; recorder?: Recorder } = {}): 
   };
   const close = (label: string, to: string | null) => {
     const entry = store.list().get(label);
-    if (!entry || entry.receipt === 'written') return;
+    if (!entry || entry.receipt === 'written' || entry.receipt === 'ended') return;
+    if (options.supervised) {
+      try { store.rewrite(label, { ...entry, to, receipt: 'ended' }); } catch { /* a box's end never fails a call; the supervisor writes it as still open */ }
+      return;
+    }
     receipt(label, entry, to);
     try { store.rewrite(label, { ...entry, receipt: 'written' }); } catch { /* the receipt is written; only a failed save lets a later process write it again */ }
   };
@@ -173,7 +198,7 @@ export function boxLedger(options: { dir?: string; recorder?: Recorder } = {}): 
     open(label, made) {
       const entry = store.list().get(label);
       if (!entry) return;
-      store.rewrite(label, { ...entry, kind: made.kind, from: made.from, receipt: 'open' });
+      store.rewrite(label, { ...entry, kind: made.kind, from: made.from, receipt: 'open', ...(options.supervised?.gen !== undefined ? { gen: options.supervised.gen } : {}) });
       opened.add(label);
     },
     end(label) {
