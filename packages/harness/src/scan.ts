@@ -8,8 +8,8 @@ import { join, relative } from 'node:path';
  *  list (scripts/export-source.mjs). Beyond the shapes every key has, a demo's key whose provider publishes a prefix has a
  *  shape of its own here, a backstop for the moment a run's tool result or a page carries the key itself. */
 export const FORBIDDEN: readonly (readonly [string, RegExp])[] = [
-  // A home directory with or without its trailing slash, a Windows profile, root's home (not a workflow path such as `/root/steps/0`) and a macOS temp folder; the bare `/home/<user>` is not taken inside a URL's path or a longer word, nor emscripten's own `/home/web_user` (the vendored PDF reader's sandbox home).
-  ['machine path', /\/(?:home|Users)\/[A-Za-z0-9._-]+\/|(?<![\w.:/-])\/(?:home|Users)\/(?!web_user(?![\w.-]))[A-Za-z0-9._-]+(?![\w.-])|\b[A-Za-z]:\\Users\\|(?<![\w.:-])\/root\/(?!(?:steps|items|branches|then|else|cases|body|default)\b)|\/var\/folders\//],
+  // A home directory with or without its trailing slash, a Windows profile, root's home (not a workflow path such as `/root/steps/0`, `/root/workflow/root` or `/root/iterations/3/body`, nor a pointer the DSL's validation names in a root child workflow, such as `/root/workflow/schemas/<id>`; each name whole) and a macOS temp folder; the bare `/home/<user>` is not taken inside a URL's path or a longer word, nor emscripten's own `/home/web_user` (the vendored PDF reader's sandbox home).
+  ['machine path', /\/(?:home|Users)\/[A-Za-z0-9._-]+\/|(?<![\w.:/-])\/(?:home|Users)\/(?!web_user(?![\w.-]))[A-Za-z0-9._-]+(?![\w.-])|\b[A-Za-z]:\\Users\\|(?<![\w.:-])\/root\/(?!(?:steps|items|branches|then|else|cases|body|default|workflow\/root|iterations\/\d+)(?![\w.-])|workflow(?:\/(?:name|schemas|input(?:\/schemaId)?|output(?:\/(?:schemaId|path))?))?(?![\w.\/-])|workflow\/schemas\/[^\/\s"']+(?![^\/\s"']|\/))|\/var\/folders\//],
   ['private key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
   ['github token', /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b/],
   ['provider secret', /\bsk-(?:proj-|ant-api\d+-)?[A-Za-z0-9_-]{30,}\b/],
@@ -35,8 +35,82 @@ export const FORBIDDEN: readonly (readonly [string, RegExp])[] = [
 
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
+/** Query parameters that carry a credential whatever their value, compared in lower case. */
+const TOKEN_PARAMETERS: ReadonlySet<string> = new Set(['token', 'access_token', 'apikey', 'api_key', 'key', 'signature', 'sig', 'x-amz-signature', 'x-goog-signature']);
+/** A URL as it sits in a text: from its scheme to the first character that ends one in JSON, HTML, Markdown or prose. */
+const URL_IN_TEXT = /\b(?:https?|wss?):\/\/[^\s"'`<>\\)\]}]+/gi;
+/** A live view's, debugger's or connect endpoint's URL: Browserbase's connect host and its debug and devtools paths, and any
+ *  DevTools or inspector page. Such a URL carries its session's access in its query, so none is published with one. */
+const liveViewUrl = (host: string, path: string): boolean => host === 'connect.browserbase.com'
+  || (/(?:^|\.)browserbase\.com$/.test(host) && /^\/(?:debug|devtools|devtools-fullscreen)(?:\/|$)/.test(path))
+  || /(?:^|\/)(?:devtools|devtools-fullscreen)\/|\/inspector\.html$/.test(path);
+/** A parameter's name as the message may print it: its own characters only, never anything of a value. */
+const nameOf = (raw: string): string => { let name = raw; try { name = decodeURIComponent(raw); } catch { /* kept as written */ } return /^[A-Za-z0-9._-]{1,40}$/.test(name) ? name : 'unnamed'; };
+
+/** A fragment's `t` is a media time (`film.mp4#t=19,21`, `#t=npt:10,20`); a `t` that is anything else is a token (a live view's own link keeps its token there). */
+const MEDIA_TIME = /^(?:npt:)?[0-9.:]+(?:,[0-9.:]+)?$/;
+/** A parameter's name decoded (`%74` is `t`), or null when it cannot be decoded: such a name is never taken as harmless. */
+const decodedName = (raw: string): string | null => { try { return decodeURIComponent(raw); } catch { return null; } };
+const tokenName = (raw: string): boolean => { const name = decodedName(raw); return name === null || TOKEN_PARAMETERS.has(name.toLowerCase()); };
+/** A fragment parameter that carries a token: a token-bearing name, or a `t` (decoded) whose decoded value is not a media time. */
+const fragmentToken = (raw: string, value: string): boolean => {
+  if (tokenName(raw)) return true;
+  if (decodedName(raw)?.toLowerCase() !== 't') return false;
+  const time = decodedName(value);
+  return time === null || !MEDIA_TIME.test(time);
+};
+/** A URL's host as a host and its path: the parser's (no port, no userinfo, lower case, dot segments resolved), the trailing dot of a
+ *  fully qualified name dropped; a URL the parser refuses is split by hand the same way. */
+const hostAndPath = (base: string): { host: string; path: string } => {
+  try {
+    const url = new URL(base);
+    return { host: url.hostname.toLowerCase().replace(/\.$/, ''), path: url.pathname };
+  } catch {
+    const where = /^([a-z]+):\/\/([^/?]*)(\/.*)?$/i.exec(base);
+    const authority = (where?.[2] ?? '').replace(/^.*@/, '');
+    const host = authority.startsWith('[') ? authority.slice(0, authority.indexOf(']') + 1) : authority.replace(/:\d*$/, '');
+    return { host: host.toLowerCase().replace(/\.$/, ''), path: where?.[3] ?? '' };
+  }
+};
+/** Kernel's live view (https://www.kernel.sh/docs/browsers/live-view): api.onkernel.com/browser/live/<token>, optionally ?readOnly=true. The host is also Kernel's API base, so only this path prefix is a capability. */
+const KERNEL_LIVE = { host: 'api.onkernel.com', path: /^\/browser\/live\/./ } as const;
+/** A DevTools websocket endpoint is a capability by its path alone: /devtools/browser/<id>, /devtools/page/<id>. */
+const DEVTOOLS_PATH = /^\/devtools\/(?:browser|page)\/./;
+
+/** The shape of a URL that carries a credential, by name, or undefined. A URL (http, https, ws or wss) is refused when
+ *  - its query holds a token-bearing parameter (`token`, `access_token`, `apiKey`, `api_key`, `key`, `signature`, `sig`,
+ *    `X-Amz-Signature`, `X-Goog-Signature`) with any value;
+ *  - it is a ws:// or wss:// URL with a query, or a live-view, debugger or connect URL with any query;
+ *  - it is a ws:// or wss:// URL to a DevTools path (no query needed), or Kernel's live-view path on its API host;
+ *  - its fragment holds one of those names, or a `t` that is not a media time.
+ *  The name says the parameter or the kind and never a value, so a message that repeats it leaks nothing. There is no
+ *  generic path-token rule: only the named hosts and the DevTools path. */
+export function urlCredentialIn(text: string): string | undefined {
+  for (const [candidate] of text.matchAll(URL_IN_TEXT)) {
+    const hash = candidate.indexOf('#');
+    const head = hash === -1 ? candidate : candidate.slice(0, hash);
+    const fragment = hash === -1 ? '' : candidate.slice(hash + 1);
+    const mark = head.indexOf('?');
+    const base = mark === -1 ? head : head.slice(0, mark);
+    const names = (part: string): [string, string][] => part.split('&').filter((item) => item !== '').map((item) => { const at = item.indexOf('='); return at === -1 ? [item, ''] : [item.slice(0, at), item.slice(at + 1)]; });
+    const queryNames = mark === -1 ? [] : names(head.slice(mark + 1));
+    const { host, path } = hostAndPath(base);
+    const token = queryNames.find(([name]) => tokenName(name));
+    if (token) return `url with a token-bearing query parameter (${nameOf(token[0])})`;
+    if (queryNames.length > 0) {
+      if (/^wss?:/i.test(base)) return `websocket url with a query (${nameOf(queryNames[0][0])})`;
+      if (liveViewUrl(host, path)) return `live-view, debugger or connect url with a query (${nameOf(queryNames[0][0])})`;
+    }
+    if (/^wss?:/i.test(base) && DEVTOOLS_PATH.test(path)) return 'websocket url to a DevTools path';
+    if (host === KERNEL_LIVE.host && KERNEL_LIVE.path.test(path)) return 'kernel live-view url';
+    const inFragment = names(fragment).find(([name, value]) => fragmentToken(name, value));
+    if (inFragment) return `url with a token-bearing fragment parameter (${nameOf(inFragment[0])})`;
+  }
+  return undefined;
+}
+
 /** The first credential shape in a text, by name. */
-export const credentialIn = (text: string): string | undefined => FORBIDDEN.find(([, pattern]) => pattern.test(text))?.[0];
+export const credentialIn = (text: string): string | undefined => FORBIDDEN.find(([, pattern]) => pattern.test(text))?.[0] ?? urlCredentialIn(text);
 
 /** The credential shape in any string or key of a decoded JSON value: the raw text can hide one behind an escape (`sk-`). */
 export function credentialInValue(value: unknown): string | undefined {

@@ -783,8 +783,25 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       for (const key of branch.spread) spreadTaintedKeys.add(key);
       for (const file of branch.files) producedFiles.add(file);
     }
-    // The merged state depends on which branches ran how; later reachability checks stand down, as before.
-    if (reachability) reachability.unknowable = true;
+    // Every branch runs, so the state after holds what each one writes: the check goes on past the parallel, unless the state
+    // before it, or a branch's own, is not known (a code node's keys are probed, not known).
+    if (reachability) reachability.unknowable = before.unknowable || branches.some((branch) => branch.unknowable);
+  };
+  /** After a route node: one branch runs, so the state after holds what every branch leaves. A key some branch may not leave
+   *  is not known; a key's shape is kept only when every branch leaves the same one. A file any branch produces is counted, as
+   *  before. The check goes on past the route unless the state before it, or a branch's own, is not known. */
+  const routeKnowledge = (before: Knowledge, branches: Knowledge[]): void => {
+    restoreKnowledge(before);
+    if (!branches.length) return;
+    if (reachability && branches.every((branch) => branch.available)) {
+      reachability.available = new Set([...branches[0].available!].filter((key) => branches.every((branch) => branch.available!.has(key))));
+      reachability.unknowable = before.unknowable || branches.some((branch) => branch.unknowable);
+    }
+    typedOutputs.clear();
+    for (const [key, value] of branches[0].typed) if (branches.every((branch) => branch.typed.get(key) === value)) typedOutputs.set(key, value);
+    probedSubtrees.clear();
+    for (const key of branches[0].probed.keys()) if (branches.every((branch) => branch.probed.has(key))) probedSubtrees.set(key, [...new Set(branches.flatMap((branch) => branch.probed.get(key)!))]);
+    for (const branch of branches) { for (const key of branch.spread) spreadTaintedKeys.add(key); for (const file of branch.files) producedFiles.add(file); }
   };
   const checkPredicatePath = (when: { path?: string } | undefined, label: string, path: string): void => {
     if (!reachability || !when?.path) return;
@@ -968,14 +985,14 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         if (node.state !== undefined) checkStateMap(node.state, node.label, path);
         if (!node.instructions?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): instructions required`);
         if (node.node !== "report" && !Object.hasOwn(workflow.schemas, node.out)) fail("SCHEMA_UNKNOWN", ptrOf(path), `${path} (${node.label}): out schema "${node.out}" not in workflow.schemas`);
-        if ((node as any).thinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(String((node as any).thinking))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): thinking must be low|medium|high — thinking is never off`);
-        if ((node as any).tools !== undefined && (!Array.isArray((node as any).tools) || (node as any).tools.some((t: unknown) => typeof t !== "string" || !(t as string).trim()))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): tools must be a list of non-empty tool names when present (an empty list disables tools)`);
+        if (node.thinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(String(node.thinking))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): thinking must be low|medium|high — thinking is never off`);
+        if (node.tools !== undefined && (!Array.isArray(node.tools) || node.tools.some((t: unknown) => typeof t !== "string" || !(t as string).trim()))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): tools must be a list of non-empty tool names when present (an empty list disables tools)`);
         checkRequires(node, path);
         if ((node as any).tier !== undefined && !(MODEL_TIERS as readonly string[]).includes(String((node as any).tier))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): tier must be fast|default|strong`);
         if (node.node === "agent" && node.budget_usd !== undefined && !(typeof node.budget_usd === "number" && Number.isFinite(node.budget_usd) && node.budget_usd > 0)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): budget_usd must be a number of dollars greater than 0`);
         if (node.node === "agent" && node.context !== undefined && !(AGENT_CONTEXTS as readonly string[]).includes(String(node.context))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): context must be ${AGENT_CONTEXTS.join("|")}`);
-        if (node.node !== "report" && (node as any).verify !== undefined) {
-          const v = (node as any).verify as VerifyClause;
+        if (node.node !== "report" && node.verify !== undefined) {
+          const v = node.verify as VerifyClause;
           if (!v || typeof v !== "object" || typeof v.out !== "string") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): verify needs an out (a question schema id)`);
           else {
             const qs = checkQuestionSchema(v.out, node.label, path);
@@ -1032,7 +1049,6 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
             after.push(snapshotKnowledge());
           });
           if (after.length) mergeKnowledge(before, after);
-          if (reachability) reachability.unknowable = true;
         }
         return;
       case "loop":
@@ -1139,13 +1155,24 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         if (containsReportNode(node)) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${label}): a report node cannot live inside a route branch — the report is rendered once, after the record is final`);
         if (node.as !== undefined && (typeof node.as !== "string" || !node.as.trim())) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): as must be a state key when present`);
         checkRequires({ label, requires: node.requires }, path);
-        if (reachability) { if (typeof node.as === "string" && node.as.trim()) { reachability.available.add(node.as); if (!byValue) reachability.available.add(`${node.as}$answers`); } reachability.unknowable = true; }
-        for (const name of names) {
-          const branch = (raw.branches as Record<string, any>)[name];
-          if (!branch || typeof branch !== "object" || !branch.body) { fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${label}): branch "${name}" needs a body`); continue; }
-          if (byValue && branch.criteria !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${label}): branch "${name}" criteria are for Jev; a route by valuePath matches the branch name exactly`);
-          else if (branch.criteria !== undefined && typeof branch.criteria !== "string") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): branch "${name}" criteria must be a string`);
-          walk(branch.body, `${path}.branches.${name}`, `${ptr}/branches/${pointerKey(name)}/body`);
+        // The route writes its choice under `as` (and a judged route its answers under `<as>$answers`) before the branch runs.
+        if (typeof node.as === "string" && node.as.trim()) for (const key of byValue ? [node.as] : [node.as, `${node.as}$answers`]) {
+          reachability?.available.add(key); typedOutputs.delete(key); probedSubtrees.delete(key);
+        }
+        {
+          // Each branch starts from the state the route leaves it, never from a sibling's; the state after is what every branch leaves.
+          const before = snapshotKnowledge();
+          const after: Knowledge[] = [];
+          for (const name of names) {
+            const branch = (raw.branches as Record<string, any>)[name];
+            if (!branch || typeof branch !== "object" || !branch.body) { fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${label}): branch "${name}" needs a body`); continue; }
+            if (byValue && branch.criteria !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${label}): branch "${name}" criteria are for Jev; a route by valuePath matches the branch name exactly`);
+            else if (branch.criteria !== undefined && typeof branch.criteria !== "string") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): branch "${name}" criteria must be a string`);
+            restoreKnowledge(before);
+            walk(branch.body, `${path}.branches.${name}`, `${ptr}/branches/${pointerKey(name)}/body`);
+            after.push(snapshotKnowledge());
+          }
+          routeKnowledge(before, after);
         }
         return;
       }
@@ -2330,7 +2357,7 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       if (deps.sop) deps.onEvent?.({ type: "sop.coverage", label: node.label, detail: { sections: sopSections.map((s) => ({ name: s, chars: sliceSop(deps.sop as string, s).length })), sliceChars: sopSlice.length, sopChars: (deps.sop as string).length } });
       assertNodeInputs(node, state);
       const promptState = node.state ? interpolateValue(node.state, state, node.label) : promptStateOf(state);
-      const verifier = node.node !== "report" && (node as any).verify ? compileVerifier(workflow, node as WorkflowNode & { verify: VerifyClause; as?: string; label: string; node: string }, state, deps) : null;
+      const verifier = node.node !== "report" && node.verify ? compileVerifier(workflow, node as WorkflowNode & { verify: VerifyClause; as?: string; label: string; node: string }, state, deps) : null;
       // Host policy: the adapter submits against the transport schema (the stage schema plus the host's
       // channels); the decoded domain value is what the stage schema, the verifier and the state see.
       const policy = deps.hostPolicy;
@@ -2375,9 +2402,9 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       system: [sopSlice, deps.skill, node.instructions, ...(policy?.systemBlocks && context ? policy.systemBlocks(context) : [])].filter(Boolean) as string[],
       user: JSON.stringify(promptState),
       schema: transportSchema,
-      ...((node as any).effort ? { effort: (node as any).effort } : {}),
-      ...((node as any).thinking ? { thinking: (node as any).thinking } : {}),
-      ...(Array.isArray((node as any).tools) ? { tools: (node as any).tools } : {}),
+      ...(node.effort ? { effort: node.effort } : {}),
+      ...(node.thinking ? { thinking: node.thinking } : {}),
+      ...(Array.isArray(node.tools) ? { tools: node.tools } : {}),
       });
       const decoded = decode(submission);
       const result = decoded.value as Record<string, unknown>;

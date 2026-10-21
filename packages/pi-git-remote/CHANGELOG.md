@@ -26,3 +26,5 @@
 - `branches(prefix)` lists the branches under a prefix (`runs/`), here and on the remote, at the commit `resolve` gives;
   `commitTo(branch, { allowEmpty: true })` makes a commit that changes no file, for a commit whose message and trailers are
   the record.
+- The hostile-corpus control for `limit-git-config-filter` triggers the planted clean filter with `git add --renormalize`, so it no longer depends on whether the freshly cloned file is racily clean; it failed a required check on a slow runner.
+- The hostile-corpus control for `attr-filter-operator-driver` triggers the operator's clean filter with `git add --renormalize`, as `limit-git-config-filter` already does: a plain `add` skips the clean filter when the clone left the file stat-clean, so the case failed a required check on a slow runner. Both filter cases now share that trigger and run from the stat-clean state (the index newer than the file), so a trigger that depends on timing fails every time instead of now and then.

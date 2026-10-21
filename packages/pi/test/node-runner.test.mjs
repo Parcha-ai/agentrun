@@ -9,10 +9,11 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-work
 import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from '@earendil-works/pi-durable';
 import { isItemFailure, runWorkflow } from '@parcha/agentrun-dsl';
 import { memoryStore, openRecovery, runStoppedError, withRecovery } from '@parcha/agentrun-dsl/recovery';
-import { hostScope, NodeIndex } from '../dist/durable/node.js';
+import { hostScope, NodeIndex, taskScope } from '../dist/durable/node.js';
 import { NodeDoc, NodeFailure, nodeRunner } from '../dist/durable/node-runner.js';
 import { RecordDoc } from '../dist/durable/record-tool.js';
 import { atLeast, resultOf } from './fixtures/pi-version.mjs';
+import { defineTask } from '@earendil-works/pi-durable';
 
 const MODEL = { provider: 'faux', modelId: 'faux-1' };
 const VERDICT = { type: 'object', additionalProperties: false, required: ['verdict'], properties: { verdict: { type: 'string', description: 'buy or pass' } } };
@@ -271,6 +272,41 @@ test('a conversation that is no node is left as it is: no task section, no nudge
   await harness.close(ctx);
 });
 
+test('a fork of a node\'s conversation is no node: it answers on its own, its submit is refused, and the node goes on to deliver', async () => {
+  // A host tool the node calls: it forks the node's conversation where its task was given, owned by the call, asks the fork
+  // one thing, and answers with what the fork said. The runner never reaches the fork, so nothing of the fork may wait for it.
+  let child;
+  const fork = defineTool({
+    name: 'fork', description: 'Fork this conversation and ask the fork.', parameters: { type: 'object', additionalProperties: true },
+    async execute(_args, api, context) {
+      child = await api.commit(async (tx) => {
+        const at = (await tx.scanEntries({ conversationId: api.conversationId }, 50)).items.find((entry) => entry.kind === 'pi.user')?.id;
+        return (await tx.forkConversation(api.conversationId, at, { ownership: { kind: 'task', taskId: api.taskId } })).id;
+      }, context);
+      const handle = await api.conversation(child, context);
+      const settled = await (await handle.submit({ type: 'input', content: 'Say hello.', requestId: 'fork-1' }, context)).wait(context);
+      return resultOf([{ type: 'text', text: `the fork's input ended ${settled?.status}` }]);
+    },
+  });
+  const forking = defineExtension({ name: 'host-fork', tools: [fork] });
+  const { harness, runNode, requests } = await rig(
+    [fauxAssistantMessage([fauxToolCall('fork', {})], { stopReason: 'toolUse' }), submit({ verdict: 'buy' }), say('hello'), submit({ verdict: 'pass' }), say('never asked')],
+    { agent: () => ({ model: MODEL, extensions: [forking], tools: [fork] }) }, [forking]);
+  let timer;
+  const hung = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('the node did not deliver in 10 s: a request of the fork waits for the runner')), 10_000); });
+  try {
+    assert.deepEqual(await Promise.race([runNode(verdict()), hung]), { verdict: 'pass' });
+  } finally { clearTimeout(timer); }
+  assert.equal(requests.length, 4, 'the node asks twice and the fork twice');
+  const [, forkFirst, forkSecond, nodeSecond] = requests;
+  assert.equal(systemOf(forkFirst)?.sections?.task, undefined, 'the fork has no task section');
+  assert.match(toolResults(forkSecond).at(-1), /submit was called in a conversation that is no workflow node/);
+  assert.equal(toolResults(nodeSecond).at(-1), 'the fork\'s input ended done', 'the fork answered once, and was not nudged');
+  assert.equal((await harness.snapshot(NodeDoc, child, ctx))?.schema ?? null, null, 'the fork starts with no node configuration');
+  assert.equal((await harness.snapshot(RecordDoc, child, ctx))?.record ?? null, null);
+  await harness.close(ctx);
+});
+
 test('under the recovery driver a failed attempt is closed and the second is a new conversation that delivers', async () => {
   const asked = [];
   const written = [];
@@ -294,6 +330,48 @@ test('under the recovery driver a failed attempt is closed and the second is a n
   assert.equal(closed[0], asked[0].sessionId);
   assert.deepEqual(written, [[0, opened[0].conversation, 'the Verdict record'], [1, opened[1].conversation, 'the Verdict record']], 'the host writes in each creating commit, after the runner\'s document');
   assert.deepEqual({ ...(await harness.snapshot(NodeIndex, closed[0], ctx)), startedMs: 0, digest: '' }, { conversation: opened[0].conversation, digest: '', startedMs: 0, closed: true });
+  await harness.close(ctx);
+});
+
+/** A scripted turn that notes the thinking level its request was sent at (none when the conversation's level is off). */
+const heard = (levels, turn) => (_context, options) => { levels.push(options?.reasoning ?? 'off'); return turn; };
+
+test('a node owned by no task thinks at its own level, else the host\'s, else medium: never off', async () => {
+  const levels = [];
+  const { harness, runNode } = await rig([1, 2, 3, 4, 5].map(() => heard(levels, submit({ verdict: 'buy' }))), {
+    agent: (node) => ({ model: MODEL, ...(node.label === 'High' ? { thinkingLevel: 'high' } : node.label === 'Off' ? { thinkingLevel: 'off' } : {}) }),
+  });
+  const at = (n, extra) => verdict({ executionPath: `/root/steps/${n}`, step: step(0, n), ...extra });
+  await runNode(at(0));
+  await runNode(at(1, { thinking: 'low' }));
+  await runNode(at(2, { label: 'High' }));
+  await runNode(at(3, { label: 'High', thinking: 'low' }));
+  await runNode(at(4, { label: 'Off' }));
+  assert.deepEqual(levels, ['medium', 'low', 'high', 'low', 'medium'], 'none named; the node\'s low; the host\'s high; the node\'s low over the host\'s high; the host\'s off');
+  await harness.close(ctx);
+});
+
+test('a node under a task whose root thinks at low thinks at medium when neither it nor the host names a level', async () => {
+  const levels = [];
+  let nodes;
+  const Owner = defineTask({
+    name: 'node-runner-test.owner', version: 1, initial: () => ({ phase: 'run' }),
+    phases: { run: async (_task, runtime, context) => {
+      const record = await nodes.on(taskScope(runtime), context).runNode(verdict());
+      await runtime.commit(async () => ({ status: 'terminal', outcome: { status: 'completed', result: { record } } }), context);
+    } },
+    abort: async (_task, runtime, context) => { await runtime.commit(async () => ({ status: 'terminal', outcome: { status: 'aborted' } }), context); },
+  });
+  const rigged = await rig([heard(levels, submit({ verdict: 'buy' })), heard(levels, say('hello'))], {}, [defineExtension({ name: 'owner-task', tasks: [Owner] })]);
+  ({ nodes } = rigged);
+  const { harness, opened } = rigged;
+  const root = await harness.root(ctx, { agent: { model: MODEL, thinkingLevel: 'low' } });
+  const task = await root.commit((tx) => tx.createTask(Owner, {}, { ownership: { kind: 'conversation' } }), ctx);
+  const settled = await harness.waitForTask(task, ctx);
+  assert.deepEqual(settled.state.outcome, { status: 'completed', result: { record: { verdict: 'buy' } } });
+  assert.equal((await harness.commit((tx) => tx.conversation(opened[0].conversation), ctx)).owner.taskId, task, 'the task owns the node\'s conversation');
+  await (await root.submit({ type: 'input', content: 'Chat.', requestId: 'chat-1' }, ctx)).wait(ctx);
+  assert.deepEqual(levels, ['medium', 'low'], 'the node at medium; the root it would have copied at low');
   await harness.close(ctx);
 });
 

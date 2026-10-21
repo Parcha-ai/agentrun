@@ -9,7 +9,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FORBIDDEN, MEDIA_FILE, PAGE_EXTENSIONS, credentialInFile } from '../../packages/harness/src/scan.ts';
 import { artifactBlobNames, blobNameProblem, validateRecording } from './validate.mjs';
 
@@ -24,8 +24,11 @@ const isObject = (value) => typeof value === 'object' && value !== null && !Arra
 /** A value's JSON with every object's keys sorted, so two copies of one manifest compare equal. */
 const canonical = (value) => JSON.stringify(value, (_key, item) => (isObject(item) ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]])) : item));
 
-/** Every problem with publishing the built viewer at `dist`, each `{ path, message }` with `path` relative to it. */
-export function gateProblems(dist) {
+/** The gallery's lock, `apps/viewer/recordings.lock.json` of this checkout: what the built index's titles and views must equal. */
+const LOCK = fileURLToPath(new URL('../../apps/viewer/recordings.lock.json', import.meta.url));
+
+/** Every problem with publishing the built viewer at `dist`, each `{ path, message }` with `path` relative to it. `lock`: the gallery's lock (read from the checkout when not given). */
+export function gateProblems(dist, lock = existsSync(LOCK) ? JSON.parse(readFileSync(LOCK, 'utf8')) : undefined) {
   const problems = [];
   const add = (path, message) => problems.push({ path, message });
   const recordings = join(dist, 'recordings');
@@ -81,11 +84,23 @@ export function gateProblems(dist) {
   const beside = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
   const ids = gallery.map((entry) => entry.id);
   if (canonical([...ids].sort()) !== canonical(beside)) add(where, `${files ? 'lists' : 'embeds'} ${JSON.stringify(ids)}, not the recordings beside it`);
+  // In the lock's order (the ids it does not name after them, by name): the page lists the gallery as the lock sets it.
+  if (lock && Array.isArray(lock.ids)) {
+    const named = lock.ids.map((each) => (isObject(each) ? each.id : each));
+    const expected = [...named.filter((id) => ids.includes(id)), ...ids.filter((id) => !named.includes(id)).sort()];
+    if (canonical(ids) !== canonical(expected)) add(where, `lists ${JSON.stringify(ids)}, not in the lock's order ${JSON.stringify(expected)}`);
+  }
   for (const entry of gallery) {
     if (!beside.includes(entry.id)) continue;
     const dir = join(recordings, entry.id);
-    const keys = [...(files ? ['blobs', 'id', 'manifest'] : ['blobs', 'events', 'id', 'manifest']), ...('card' in entry ? ['card'] : [])].sort();
+    const keys = [...(files ? ['blobs', 'id', 'manifest'] : ['blobs', 'events', 'id', 'manifest']), ...('card' in entry ? ['card'] : []), ...('title' in entry ? ['title'] : []), ...('view' in entry ? ['view'] : [])].sort();
     if (canonical(Object.keys(entry).sort()) !== canonical(keys)) add(where, `holds ${JSON.stringify(Object.keys(entry))} for ${entry.id}, not ${JSON.stringify(keys)}`);
+    // The words and the view of its list entry are the lock's: the page can never drift from it.
+    if (lock) {
+      const named = (Array.isArray(lock.ids) ? lock.ids : []).find((each) => isObject(each) && each.id === entry.id) ?? {};
+      if (canonical(entry.title) !== canonical(named.title)) add(where, `holds the title ${JSON.stringify(entry.title)} for ${entry.id}, not the lock's ${JSON.stringify(named.title)}`);
+      if (canonical(entry.view) !== canonical(named.view)) add(where, `holds the view ${JSON.stringify(entry.view)} for ${entry.id}, not the lock's ${JSON.stringify(named.view)}`);
+    }
     let manifest;
     try { manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')); } catch { manifest = undefined; }
     if (canonical(entry.manifest) !== canonical(manifest)) add(where, `holds a manifest for ${entry.id} other than its manifest.json`);

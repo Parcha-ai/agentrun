@@ -1,12 +1,12 @@
 # @parcha/agentrun-dsl
 
-Composable, typed workflows for agents. The core provides the v2 workflow types, validator, interpreter, events, schema, and an offline CLI. Supply agent, judgment, and effect functions only when a workflow needs them.
+Typed workflows that your agent writes. It drafts a workflow, checks it, dry-runs it for free, then runs it, and every node shows on its graph. The core provides the v2 workflow types, validator, interpreter, events, schema, and an offline CLI. Supply agent, judgment, and effect functions only when a workflow needs them.
 
 Beta, on npm under the `beta` dist-tag (`npm view @parcha/agentrun-dsl dist-tags`). Requires Node 22.19+; TypeScript consumers require TypeScript 5.4+.
 
 ```sh
 npm install @parcha/agentrun-dsl@beta
-npx agentrun demo
+npx @parcha/agentrun-dsl@beta demo
 ```
 
 For the JavaScript API, save this as `demo.mjs` and run `node demo.mjs`:
@@ -19,9 +19,90 @@ console.log(result.output); // { queue: 'billing', priority: 'normal' }
 
 The demo runs real control flow with scripted judgments. `ambiguous` escalates. No model SDK or API key is required by the core. Optional `@parcha/agentrun-jev` and `@parcha/agentrun-pi` adapters add live judgments and agent steps.
 
+## From a draft to a run
+
+A workflow is a JSON document of typed nodes: each node that asks a model names the JSON Schema its answer must match, and the workflow names the schemas of its input and output. An agent writes the document. This package checks it, tries it without a model, and runs it.
+
+1. **Draft.** In Pi, `/agentrun <task>` has the agent draft the workflow with the packaged author skill (see [the Pi extension](../pi/README.md)). In your own host, `authorWorkflow` gives your agent the same author contract and keeps the candidate and its feedback without running it.
+2. **Check.** `validateWorkflow(workflow)` checks the structure, the schemas, the state paths between nodes and the predicates, with no model call. A refused workflow lists its `issues`: each names the node or schema at fault with a JSON Pointer `path`, and the rule it breaks with a `code`, so the agent repairs that node and checks again. `inspectWorkflow` shows the tree and the tools and adapters it needs, without running any code.
+3. **Dry-run, for free.** `dryRunWorkflow(workflow)` runs the whole workflow on synthetic values made from its schemas, with no model, Jev or tool call. Its `status` is `passed` when every check ran, `failed` with the `problems`, or `not_run` when a check could not run, with the reasons in `skipped`. A `not_run` dry run proves nothing.
+4. **Run.** `runWorkflow(workflow, input, deps)` runs it with your agent, judgment and effect functions, and returns an output that matches the output schema, or an escalation. `deps` is the object of adapters your application supplies (`runNode`, `runJudge`, `runEffect`); [Integrate with your application](https://github.com/Parcha-ai/agentrun/blob/main/docs/host-integration.md) says what each one owes the engine.
+5. **Watch every node.** `workflowGraph(workflow)` from `@parcha/agentrun-dsl/graph` lists every node and edge from the JSON alone, and `nodeStatus` marks each node `done`, `working`, `failed` or `not-run` from what a durable run kept. Pi's `/agentrun` view draws the same graph, with each node's state as the run goes.
+
+The same checks from a shell, in the project where you installed the package, on one of the author skill's examples that ships with it (an agent extracts the change in each release note, then summarizes the migration):
+
+```sh
+cp node_modules/@parcha/agentrun-dsl/skills/author/examples/review-release-notes.json workflow.json
+npx @parcha/agentrun-dsl@beta inspect workflow.json
+npx @parcha/agentrun-dsl@beta validate workflow.json --trusted
+npx @parcha/agentrun-dsl@beta dry-run workflow.json --trusted
+```
+
+Its dry run is `passed`: every node ran on synthetic values, with no model call. The demo's workflow (`npx @parcha/agentrun-dsl@beta example demo.json`) comes back `not_run` instead: its confidence check escalates on a synthetic answer, so the queue choice after it is not exercised, and `skipped` says so. `dry-run --strict` exits 3 on `not_run`, for a script that must stop there; a failure exits 1.
+
+### Run it with no key
+
+`runWorkflow` calls back into your application for every model step. To see a run end to end with no key and no network, give it a `runNode` that returns a fixed record. Save this as `run.mjs` next to `node_modules` and run `node run.mjs`:
+
+```js
+import { readFileSync } from 'node:fs';
+import { runWorkflow } from '@parcha/agentrun-dsl';
+
+const dir = 'node_modules/@parcha/agentrun-dsl/skills/author/examples/';
+const workflow = JSON.parse(readFileSync(dir + 'review-release-notes.json', 'utf8'));
+const input = JSON.parse(readFileSync(dir + 'review-release-notes.input.json', 'utf8'));
+
+// deps holds the adapters your application supplies. This runNode answers each
+// model step with a fixed record instead of calling a model.
+const deps = {
+  async runNode({ label, user }) {
+    const state = JSON.parse(user); // the node's projected state, as JSON text
+    if (label === 'extract-change') {
+      return { breakingChange: state.text, migrationAction: 'Follow the release note.' };
+    }
+    return { summary: `${state.changes.length} breaking changes.`, changes: state.changes };
+  },
+};
+
+const result = await runWorkflow(workflow, input, deps);
+console.log(result.status, result.output);
+```
+
+It prints `complete` and a report with the two changes. Each answer is checked against the node's schema: a `runNode` that returns `{}` makes the run throw `submission does not satisfy schema "Change"`. A node whose adapter you did not supply fails with a message that names the node and the adapter (`extract node "extract-change" requires runNode`). The three adapters take different parameters, listed in `WorkflowDeps`: `runNode` (agent, decide, extract and report nodes) receives `kind`, `label`, `system`, `user`, `schema`, `tools` and `signal`, which a real host forwards to its agent; `runJudge` (judge, pick, sift, route and ask) receives `label`, `kind`, `state` and `questions`, and returns an object with the `answers`; `runEffect` (call nodes) receives `node`, `input`, `attempt`, `idempotencyKey` and `signal`, and returns the tool's result.
+
+The `run` command of the CLI supplies no adapters, so it runs only a workflow that needs none, such as one made of `code` nodes. Save this as `total.json`:
+
+```json
+{
+  "v": 2,
+  "name": "total",
+  "schemas": {
+    "Input": { "type": "object", "properties": { "items": { "type": "array", "items": { "type": "number" } } }, "required": ["items"] },
+    "Output": { "type": "object", "properties": { "total": { "type": "number" } }, "required": ["total"] }
+  },
+  "input": { "schemaId": "Input" },
+  "output": { "schemaId": "Output" },
+  "root": { "node": "code", "label": "sum", "code": "(s) => ({ total: s.items.reduce((a, b) => a + b, 0) })" }
+}
+```
+
+Save its input as `total.input.json`:
+
+```json
+{ "items": [1, 2, 3] }
+```
+
+Then run it:
+
+```sh
+npx @parcha/agentrun-dsl@beta run total.json total.input.json --trusted
+```
+
+It prints `"status": "complete"` and an output with `"total": 6`. The shipped examples each need an adapter, so `run` stops on them naming it: `review-release-notes.json` needs `runNode`, `evidence-gate.json` needs `runJudge`, and `read-file.json` and `read-source-decision.json` need `runEffect` (the latter also `runJudge`). Run those with `runWorkflow` and your own adapters.
+
 The `agentrun` CLI provides `demo`, `example`, `inspect`, `validate`, `dry-run`, and deterministic `run`. `inspect workflow.json [--json]` displays structure without executing code. Validation/run require `--trusted` because workflow JavaScript can execute, including during validation. This package is not an isolation boundary.
 
-`runWorkflow(workflow, input, deps)` returns a complete schema-validated output or an escalation; its TypeScript output type is `unknown`. `defineWorkflow` binds Standard JSON Schema contracts, including supported Zod schemas, to a frozen v2 document; `runTypedWorkflow` infers those input/output types and delegates to the same interpreter. Intermediate state paths remain runtime-validated. Execution and verification failures throw. Hosts own tools, durable storage, file delivery, idempotency, recovery, and activation.
+`runWorkflow(workflow, input, deps)` returns a complete schema-validated output or an escalation; its TypeScript output type is `unknown`. `defineWorkflow` binds Standard JSON Schema contracts, including supported Zod schemas, to a frozen v2 document; `runTypedWorkflow` infers those input/output types and delegates to the same interpreter. Intermediate state paths remain runtime-validated. Execution and verification failures throw. Hosts own tools, durable storage, file delivery, idempotency, recovery, and activation. A durable run's store keeps each effect's arguments as given, so redact secrets before they reach an effect.
 
 Raw JSON schemas retain `unknown` boundary types. Zod transforms, refinements, defaults and coercion are rejected rather than silently dropped. The core does not depend on Zod at runtime. Other Standard JSON Schema providers must faithfully represent their contracts. Typed execution accepts the original `defineWorkflow` result; copied or deserialized documents use `runWorkflow`.
 
@@ -49,13 +130,13 @@ The schema helpers resolve the owning workflow's schema catalog; `stageSchemaFor
 
 `@parcha/agentrun-dsl/graph` imports nothing, so a static viewer bundles it and a reader with no Node runs it. `workflowGraph(workflow)` returns `{ nodes, edges }` for a workflow document, computed from its JSON alone: a node is `{ path, kind, label, via? }` with `path` a JSON Pointer into the document as written (`/root/steps/1`, `/root/branches/<name>/body`, `/root/body` for a map's or a loop's body, `/root/workflow/root` for a child; the pointers `inspectWorkflow` and a validation issue use), and an edge is `{ from, to, kind }` with `kind` one of `next` (a chain's steps in order, a loop into its body), `branch` (a parallel node's branches), `route` (a route's branches), `item` (a map into its body) and `child` (a workflow node into its child's root). `nodeStatus(graph, source)` says, for each node, `done`, `working`, `failed` or `not-run`, read from what the recovery driver kept: its frame (the `pin` of the frozen snapshot), the map items' records (`agentrun.items`, keyed layout), or both as `{ pin, items }`. A run's map item or loop iteration has no node of its own: its instances count toward the body's node, and a node inside a map's or loop's body is done only once the map or loop is. To read one item's record on its own, pass `{ item: "<map path>/items/<index>" }` as a third argument: that item is then the instance, and its body is done when the item is. `graphNodeOf(graph, executionPath)` names the node an execution path (an event's or a record's) ran at: `{ path, at }`, where `path` is the node's pointer and `at` lists the map items (`{ kind: "item", index }`) and loop iterations (`{ kind: "iteration", index }`) it ran in, outermost first. An execution path is the node's pointer with `items/<i>` before a map's `body` and `iterations/<i>` before a loop's; the path is read by walking the graph by node kind, so a route branch named `items` stays a branch, and a path the graph does not have is `undefined`. The pi session's text view draws the same graph.
 
-The separate `@parcha/agentrun-dsl/demo` entrypoint provides the support-triage example. `@parcha/agentrun-dsl/schema` provides the generated workflow JSON Schema.
+The separate `@parcha/agentrun-dsl/demo` entrypoint provides the support-triage example. `@parcha/agentrun-dsl/schema` provides the generated workflow JSON Schema, a JSON file: import it with `import schema from '@parcha/agentrun-dsl/schema' with { type: 'json' };` (a plain `import` throws `ERR_IMPORT_ATTRIBUTE_MISSING`), or load it with `require('@parcha/agentrun-dsl/schema')` in CommonJS.
 
 Children can contain maps, loops, routes, parallel branches and other children, and appear inside those structures. Their input/state and schema catalogs stay isolated; terminal report/artifact delivery remains parent-owned. New composed structures require path-aware recovery stores when recovery is enabled. `executionPath` is supplied to adapters, events and checkpoint/recovery hooks. Existing host validators and durable-cursor limits remain authoritative.
 
 ## Bounds
 
-These are the current beta's validation rules. The numeric knobs below carry no upper ceiling: the author picks the number, and a host may set its own default, but the validator never caps how high it goes. What remains are lower bounds and structural requirements — a floor a value must sit at or above, a field that must be present — plus the parser's own safety guards, and the System-One question shape (a bounded multiple choice). Hosts may still impose their own budgets as defaults.
+These are the current beta's validation rules. The numeric knobs below carry no upper ceiling: the author picks the number, and a host may set its own default, but the validator never caps how high it goes. What remains are lower bounds and structural requirements (a floor a value must sit at or above, a field that must be present), plus the parser's own safety guards, and the System-One question shape (a bounded multiple choice). Hosts may still impose their own budgets as defaults.
 
 | Setting | Bound |
 | --- | --- |

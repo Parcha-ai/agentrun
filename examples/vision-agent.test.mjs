@@ -12,7 +12,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { exampleAt, fileName, inputOf, INSTRUCTIONS, job, jobOf, skills, thinkingOf, thinkingRefusal } from './vision-agent/agent.ts';
+import { exampleAt, fileName, inputOf, instructionsOf, job, jobOf, skills, thinkingOf, thinkingRefusal } from './vision-agent/agent.ts';
 import { argvFor, options } from './vision-agent/run.ts';
 import { scriptFor } from './vision-agent/fakes.ts';
 import { jevKeyOf, jevOptionsOf, liveParts, missingKeys, namedModels, preflight } from './vision-agent/live.ts';
@@ -44,6 +44,26 @@ test('the lake-mead run is given its map key as a file: inputs.json lists map-ke
   try { assert.deepEqual([...jobOf().files['map-key.md']], [...bytes], 'the job carries it as the run\'s own file'); } finally { delete process.env.INPUT; }
 });
 
+test('the lake-mead run is given the elevation record as a file beside the images and the map key: fifteen inputs in all, each checked, and the job copies it into the workspace', () => {
+  const example = exampleAt('lake-mead');
+  assert.equal(example.items.length, 15, 'thirteen images, the map key and the elevation record');
+  const record = example.items.find((item) => item.path === 'lake-mead-elevation.json');
+  assert.ok(record, 'inputs.json lists lake-mead-elevation.json as a committed file');
+  assert.equal(inputOf(example).files.length, 15, 'the run is told of every one');
+  assert.ok(inputOf(example).files.includes('lake-mead-elevation.json'));
+  const bytes = readFileSync(join(example.dir, 'lake-mead-elevation.json'));
+  assert.deepEqual([bytes.length, sha256(bytes)], [record.bytes, record.sha256]);
+  const data = JSON.parse(bytes.toString());
+  assert.deepEqual(data.columns, ['year', 'month', 'elevation_ft']);
+  assert.match(data.source, /Bureau of Reclamation, Lower Colorado Region, https:\/\/www\.usbr\.gov\/lc\/region\/g4000\/hourly\/mead-elv\.html, retrieved 2026-10-19$/);
+  assert.equal(data.license, 'a work of the U.S. federal government, public domain');
+  assert.equal(data.rows.length, 1091);
+  assert.ok(data.rows.every(([year, month, feet]) => Number.isInteger(year) && Number.isInteger(month) && month >= 1 && month <= 12 && feet > 600 && feet < 1300), 'a row a month: year, month, feet');
+  for (const row of [[2000, 5, 1207.67], [2003, 7, 1141.93], [2022, 7, 1040.92]]) assert.ok(data.rows.some((have) => have.join() === row.join()), `${row} is the table's value`);
+  process.env.INPUT = JSON.stringify({ example: 'lake-mead' });
+  try { assert.deepEqual([...jobOf().files['lake-mead-elevation.json']], [...bytes], 'the job carries it as the run\'s own file'); } finally { delete process.env.INPUT; }
+});
+
 test('each example is a question, its files with their sources and checks, and a README; nothing in it is code', () => {
   const assets = readFileSync(join(import.meta.dirname, '..', 'ASSETS.md'), 'utf8');
   for (const name of EXAMPLES) {
@@ -66,7 +86,7 @@ test('each example is a question, its files with their sources and checks, and a
 });
 
 test('the agent\'s instructions carry the question\'s place, the functions, the citation rule, the report, and every skill the package ships', () => {
-  const text = INSTRUCTIONS();
+  const text = instructionsOf();
   for (const word of ['`question`', '`files`', 'vision.see', 'vision.judge', 'vision.transcribe', '#page=N', '#t=', 'report/']) assert.ok(text.includes(word), word);
   for (const skill of skills()) assert.ok(text.includes(`The ${skill.name} skill:`) && text.includes(skill.text.slice(0, 200)), skill.name);
   assert.ok(skills().some((skill) => skill.name === 'look') && skills().some((skill) => skill.name === 'find'));
@@ -260,11 +280,11 @@ test('the report is report/index.html everywhere: the scripted lead writes and r
   assert.match(script, /report: "report\/index\.html" \}/);
   assert.match(script, /in report\/index\.html\./);
   assert.doesNotMatch(script, /report\.html/);
-  const withSkill = INSTRUCTIONS(skills());
+  const withSkill = instructionsOf(skills());
   assert.ok(skills().some((skill) => skill.name === 'report'), 'the package ships the report skill');
   assert.match(withSkill, /report\/index\.html/, 'the report skill names its entry');
   assert.doesNotMatch(withSkill, /report\.html/);
-  const without = INSTRUCTIONS([]);
+  const without = instructionsOf([]);
   assert.match(without, /Write the report as `report\/index\.html`/);
   assert.match(without, /\(`report\/index\.html`\)/);
   assert.doesNotMatch(without, /report\.html/);

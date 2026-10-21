@@ -16,7 +16,7 @@ const noulQuestions = { urgent: { type: 'noul', instructions: 'Is action urgent?
 const boxQuestions = { mug: { type: 'box', instructions: 'the mug in <photo>' }, open: { type: 'noul', instructions: 'Is the lid of the mug in <photo> open?' } };
 const boxAnswers = { mug: { type: 'box', box, confidence: 0.8 }, open: { type: 'noul', noul: 0.2 } };
 const quick = { retryBaseMs: 1, retryMaxMs: 2, apiKey: 'fake-test-key' };
-// Box needs the model that answers it: jev-latest is 1.13.
+// Box needs a model that answers it, by name: jev-latest is refused whatever version it points at.
 const boxModel = { ...quick, model: 'jev-1.14.0' };
 const code = expected => error => { assert.ok(error instanceof JevError, String(error)); assert.equal(error.code, expected); return true; };
 
@@ -96,12 +96,25 @@ test('a request that cannot be valid is refused before any send: no image for a 
     'a file over 16 MiB': { assets: { '<photo>': asPng(Object.assign(new Uint8Array(16 * 1024 * 1024 + 1), png())) } },
     'a reference no state or question names': { state: 'no reference here', questions: { open: { type: 'noul', instructions: 'Is it open?' } }, assets: { '<photo>': asPng(png()) } },
     'an image that is not an object': { assets: { '<photo>': 'data:image/png;base64,AAAA' } },
+    'an empty reference': { assets: { '': asPng(png()) } },
+    'a reference over 1024 UTF-8 bytes, under 1024 characters': { state: `x ${'é'.repeat(513)}`, assets: { ['é'.repeat(513)]: asPng(png()) } },
+    'a reference with a double quote': { state: 'x <"photo">', assets: { '<"photo">': asPng(png()) } },
+    'a reference with a backslash': { state: 'x <\\photo>', assets: { '<\\photo>': asPng(png()) } },
+    'a reference with a control character': { state: 'x <photo\n>', assets: { '<photo\n>': asPng(png()) } },
   };
   for (const [name, params] of Object.entries(cases)) {
     const { t, promise } = run(params);
     await assert.rejects(promise, error => { code('invalid_request')(error); assert.equal(error.attempts, 0); return true; }, name);
     assert.equal(t.seen.length, 0, `${name}: nothing was sent`);
   }
+});
+
+test('a reference of exactly 1024 UTF-8 bytes goes out: the limit counts bytes, not characters', async () => {
+  const reference = 'é'.repeat(512);
+  const t = transport(ok(boxAnswers));
+  await createJevRunner({ ...boxModel, fetch: t.fetch })({ label: 't', kind: 'judge', state: `x ${reference}`, questions: boxQuestions, assets: { [reference]: asPng(png()) } });
+  assert.equal(t.seen.length, 1);
+  assert.deepEqual(t.seen[0].parts[t.seen[0].request.assets[reference].part], png());
 });
 
 test('the header is sent on every attempt of a retried image request, and the same bytes', async () => {
@@ -147,13 +160,14 @@ test('OpenRouter is not asked for images: that path is unverified, so the reques
   assert.equal(t.seen.length, 0);
 });
 
-test('a Box question is refused before any request unless the named model answers Box (jev-1.14.0, jev-preview): jev-latest is 1.13', async () => {
+test('a Box question is refused before any request unless the named model answers Box (jev-1.14.0, jev-preview), by name: jev-latest is refused whatever version it points at', async () => {
   const params = { label: 't', kind: 'judge', state: 'x <photo>', questions: boxQuestions, assets: { '<photo>': asPng(png()) } };
   for (const model of [undefined, 'jev-latest', 'jev-1.13', 'jev-1.13.2', 'typesafe/jev-1.13', 'something-else']) {
     const t = transport(ok(boxAnswers));
     await assert.rejects(createJevRunner({ ...quick, ...(model ? { model } : {}), fetch: t.fetch })(params), error => {
       code('invalid_request')(error); assert.equal(error.attempts, 0); assert.equal(error.requestDiagnostic.reason, 'unsupported_model');
-      assert.match(error.message, /jev-1\.14\.0/, 'the message names the model Box needs'); return true;
+      assert.match(error.message, /jev-1\.14\.0/, 'the message names the model Box needs');
+      assert.doesNotMatch(error.message, /jev-latest is \d/, 'the message gives the alias no version: it moves'); return true;
     }, String(model));
     assert.equal(t.seen.length, 0, `${model}: nothing was sent`);
   }
@@ -181,10 +195,11 @@ test('a reference counts where it sits in a string value of the state, an instru
     { state: 'plain', questions: { level: { type: 'score', instructions: 'How bad?', criteria: ['fine', 'like <photo>'] } } },
   ];
   for (const { state, questions } of cases) {
-    const t = transport(ok({ urgent: { type: 'noul', noul: 0.9 } }));
     const answers = Object.fromEntries(Object.entries(questions).map(([id, q]) => [id, q.type === 'noul' ? { type: 'noul', noul: 0.9 } : q.type === 'choice' ? { type: 'choice', choice: 'a', probabilities: { a: 0.5, b: 0.5 }, confidence: 0.1 } : { type: 'score', score: 0.5, legend: { 0: 'fine', 1: 'like <photo>' }, probabilities: { 0: 0.5, 1: 0.5 }, confidence: 0.1 }]));
-    const run = createJevRunner({ ...quick, fetch: transport(ok(answers)).fetch });
-    await run({ label: 't', kind: 'judge', state, questions, assets: { '<photo>': asPng(png()) } });
-    void t;
+    const t = transport(ok(answers));
+    await createJevRunner({ ...quick, fetch: t.fetch })({ label: 't', kind: 'judge', state, questions, assets: { '<photo>': asPng(png()) } });
+    const [sent] = t.seen;
+    assert.equal(sent.headers[HEADER.toLowerCase()], 'true', 'the request carries the image header');
+    assert.deepEqual(sent.parts[sent.request.assets['<photo>'].part], png(), 'and the image as a file part');
   }
 });

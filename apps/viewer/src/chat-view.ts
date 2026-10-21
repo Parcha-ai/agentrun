@@ -132,7 +132,6 @@ function sourceMedium(recording: Recording, sha: string, alt: string, regions: S
 /** What a look's decisions said, in words: a yes or a no, or the choice. */
 const sourceDecisions = (source: ChatSource) => source.decisions.map((each) => `${each.name.replace(/_/g, ' ')}: ${each.kind === 'noul' ? (each.score >= 0.5 ? 'yes' : 'no') : each.choice}`);
 
-/** Regions no picture carries, listed: each label with its address. */
 /** The addresses shown, one a line; each opens in a tab at its page or second when the agent's page holds its file. */
 function sourceAddressList(model: ChatModel, recording: Recording, addresses: string[]): HTMLElement {
   return reportEl('div', { class: 'addrs' }, ...addresses.map((address) => {
@@ -157,13 +156,12 @@ export function sourcePictureFor<P extends { href: string }>(pictures: readonly 
   return cited;
 }
 
+/** Regions no picture carries, listed: each label with its address. */
 const sourceRegionList = (regions: SourceRegion[]) => reportEl('ul', { class: 'regions' },
   ...regions.map((region) => reportEl('li', {}, reportEl('b', { text: region.label ?? 'cited here' }), reportEl('span', { text: region.href }))));
 
 export type SourceShown = { look?: string; item?: ToolItem; href: string; regions: SourceRegion[]; picture?: { blob: string; label?: string } };
 
-/** What a citation or a card points at: what was found, then the medium with the regions given and no other. A page
- *  address shows that page's own picture, whichever look cites it. */
 /** A call's whole command: shown under what it found, or folded under its look's own view so the picture stays first. */
 function sourceCommand(detail: string, folded: boolean): HTMLElement {
   const text = reportEl('pre', { text: detail });
@@ -171,6 +169,8 @@ function sourceCommand(detail: string, folded: boolean): HTMLElement {
     : reportEl('div', { class: 'command' }, reportEl('div', { class: 'kind', text: 'Command' }), text);
 }
 
+/** What a citation or a card points at: what was found, then the medium with the regions given and no other. A page
+ *  address shows that page's own picture, whichever look cites it. */
 function sourceView(recording: Recording, model: ChatModel, shown: SourceShown, back: () => void, pick: (look: string) => void): HTMLElement {
   const pane = sourceViewOf(recording, model, shown, back, pick);
   if (shown.item?.detail && shown.look && model.sources[shown.look]) pane.append(sourceCommand(shown.item.detail, true));
@@ -199,7 +199,10 @@ function sourceViewOf(recording: Recording, model: ChatModel, shown: SourceShown
     if (shown.regions.length) pane.append(sourceRegionList(shown.regions));
     return pane;
   }
-  const said = source?.takeaway || shown.item?.takeaway || '';
+  // A failed step says why, apart from what its look found.
+  const error = shown.item?.failed ? shown.item.takeaway : '';
+  if (error) pane.append(reportEl('div', { class: 'said failed' }, reportEl('div', { class: 'kind', text: 'Failed' }), reportEl('p', { text: error })));
+  const said = source?.takeaway || (shown.item?.failed ? '' : shown.item?.takeaway) || '';
   const decisions = source ? sourceDecisions(source) : [];
   if (said || decisions.length) pane.append(reportEl('div', { class: 'said' }, reportEl('div', { class: 'kind', text: source ? SOURCE_SAID[kind] : 'Result' }),
     said !== '' && reportEl('p', { text: said }), decisions.length > 0 && reportEl('ul', { class: 'decisions' }, ...decisions.map((text) => reportEl('li', { text })))));
@@ -481,13 +484,10 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
     more.addEventListener('click', () => toggle());
     for (const node of rest) fold(node, () => toggle(true));
   }
-  // Tagged as the ask, so it never reads as the agent talking.
-  const voice = item.voice && reportEl('p', { class: 'voice' }, reportEl('span', { class: 'voice-tag', text: 'asked' }), reportEl('span', { class: 'voice-text' }, ...reportInline(item.voice)));
   // A step that made looks shows them first; the step itself is a quiet line under them, its result and command a click
   // away.
   if (item.looks.length > 0) {
     const named = item.title.startsWith(`${item.tool} `) ? item.title.slice(item.tool.length + 1) : item.title;
-    // Its looks speak for it (the first card's ask), so its voice line is not drawn.
     return reportEl('div', { class: `step looking${item.failed ? ' failed' : ''}${item.judge ? ' judge' : ''}`, 'data-item': item.id },
       reportEl('div', { class: 'calls' }, ...calls, more),
       reportEl('button', { class: 'made', type: 'button', 'data-open': item.id, title: item.title },
@@ -495,8 +495,6 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
         item.failed && reportEl('small', { class: 'tag', text: 'failed' })));
   }
   return reportEl('div', { class: `step${item.failed ? ' failed' : ''}${item.judge ? ' judge' : ''}`, 'data-item': item.id },
-    // A step nothing the agent thought or wrote leads into speaks with what its look asked, inside its card.
-    voice,
     reportEl('button', { class: thumb ? 'step-main' : 'step-main bare', type: 'button', 'data-open': item.id },
       reportEl('div', {}, reportEl('div', { class: 't' }, threadIcon(sourceKindOf(source?.href ?? '')), item.judge && threadJudge(), reportEl('span', { text: item.title }), item.failed && reportEl('small', { class: 'tag', text: 'failed' })),
         item.takeaway !== '' && reportEl('div', { class: 'k', text: item.takeaway })),
@@ -739,7 +737,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
   const closeSheet = () => { art.classList.remove('open'); scrim.classList.remove('on'); };
   const showReport = () => { source.hidden = true; source.replaceChildren(); shown = undefined; mark(); };
   const toolOf = (id: string | undefined) => { const found = id ? items.get(id)?.item : undefined; return found?.kind === 'tool' ? found : undefined; };
-  const showSource = (next: SourceShown, sheet = true) => {
+  const showSource = (next: SourceShown) => {
     shown = next;
     // The card of the call that made the look shown is opened in the chat, wherever it was folded.
     const made = next.look ? thread.querySelector<HTMLElement>(`.call[data-look="${CSS.escape(next.look)}"]`) : null;
@@ -748,12 +746,12 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     source.hidden = false;
     source.scrollTop = 0;
     mark();
-    if (sheet) openSheet();
+    openSheet();
   };
   // A look opened from its card: its own address and the regions its answer boxed.
-  const showLook = (look: string, item = toolOf(model.sources[look]?.item), sheet = true) => {
+  const showLook = (look: string, item = toolOf(model.sources[look]?.item)) => {
     const found = model.sources[look]!;
-    showSource({ look, ...(item ? { item } : {}), href: found.href, regions: found.regions.flatMap((region) => sourceRegionOf(region.href, region.label) ?? []) }, sheet);
+    showSource({ look, ...(item ? { item } : {}), href: found.href, regions: found.regions.flatMap((region) => sourceRegionOf(region.href, region.label) ?? []) });
   };
   const openCard = (item: ToolItem) => {
     const look = threadLookOf(model, item);
@@ -832,6 +830,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
 
   const linked = /^#look=(.+)$/.exec(location.hash);
   const look = linked ? decodeURIComponent(linked[1]!) : undefined;
-  if (look && model.sources[look]) showLook(look, undefined, false);
+  // A look's link opens that look, on a phone in its sheet.
+  if (look && model.sources[look]) showLook(look);
   else mark();
 }

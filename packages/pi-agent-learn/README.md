@@ -5,8 +5,9 @@ tool, `learn`, which costs nothing. The host proposes those notes on the run's b
 `main`, and every later run reads them in a short `<learned>` section of its prompt, taken from the commit it was seeded
 from. A bad lesson is undone with `git revert`, and history keeps it.
 
-It builds on [`@parcha/pi-git-remote`](../pi-git-remote), which owns git, and on pi-durable, which owns the run. The
-host owns git: no model tool commits or pushes, and the repository's `.git` is never in the agent's working directory.
+It builds on [`@parcha/pi-git-remote`](https://github.com/Parcha-ai/agentrun/tree/main/packages/pi-git-remote), which
+owns git, and on pi-durable, which owns the run. The host owns git: no model tool commits or pushes, and the
+repository's `.git` is never in the agent's working directory.
 
 This package is held: it is built and tested in this repository and not published yet. This release has the contract
 the model sees, the host step that seeds a run, the guard every write goes through, the host step that proposes a
@@ -96,7 +97,6 @@ repo/
   inbox/<run id>.md                a run's candidates, on runs/<run id> only
   inbox/<run id>/workflows/<name>/ a workflow the run saved, the DSL's records byte for byte, on runs/<run id> only
   uses/<run id>.json               a run's workflow uses, on runs/<run id> only
-  inbox/<run id>/workflows/<name>/ a run's saved workflow records, as the DSL wrote them, on runs/<run id> only
 ```
 
 `RULES_LOCKED` is the frozen list `["agent.json", "AGENTS.md"]`. `isRulesLocked(path)` is true for either name in any
@@ -159,6 +159,9 @@ agent's tools, the lines that ask it to call `learn` are left out.
 
 ## Host steps
 
+The blocks from here on are a host's lines, not programs to run: `repo` is an `openRepo` result and `harness` a
+pi-durable Harness, as in the quickstart; `run` is the host's record of the run, and `vault.values()` its secret values.
+
 ```ts
 const seeded = await seedLearning({ repo, ref: "main", target: harness, into: run.workspace, workflows });
 const extension = agentLearn({ guard, secrets: () => vault.values(), caseValues: () => run.inputValues });
@@ -176,7 +179,8 @@ when its store already holds a seed, that commit is used again and the record is
 run to a newer commit. `readSeed` returns the record; `collectCandidates` returns the run's candidates in order.
 `workflows` is a list of `{ name, status: "trial" | "active" }`, at most 8: what `workflowsToTry` returns (below).
 
-With [`@parcha/pi-durable-agent`](../pi-durable-agent), the run starts at the same commit: the host reads `agent.json` and
+With [`@parcha/pi-durable-agent`](https://github.com/Parcha-ai/agentrun/tree/main/packages/pi-durable-agent), the run
+starts at the same commit: the host reads `agent.json` and
 `.agents/skills/` at the sha with `repo.read` and `repo.list`, keeps the agent home on it (`createAgentHome(dir, {
 definition, skills, sha })`, then `refreshAgentHome(home, { sha, from, definition, skills })` when main moves), starts the
 run with `startRun(home, { host, sha })`, and seeds it with `seedLearning({ repo, ref: started.sha, target, into:
@@ -224,7 +228,8 @@ const result = await proposeLearning({ repo, runId, target: harness, secrets: va
 ```
 
 `proposeLearning` is the host step at a run's terminal. It collects the run's candidates, renders `inbox/<run id>.md`
-(and `uses/<run id>.json` from the optional `uses` hook, which a later part supplies), adds the workflow records the
+(and `uses/<run id>.json` from the run's workflow uses: the `uses` option, or, with `workDir`, what the run's store
+holds; see [Workflows](#workflows)), adds the workflow records the
 host collected from the run's DSL store (`workflows`: per name, `{ files: { "<sha256>.json": text, latest: text } }`,
 committed byte for byte under `inbox/<run id>/workflows/<name>/`; a name or file name of any other shape refuses the
 proposal), guards the whole proposal as the
@@ -267,7 +272,8 @@ it reaches the judge. Then it judges each candidate, writes the result, and make
 that commit's message, so a run that only held still gets its commit and is curated once.
 
 The judge is the DSL's System One port, `WorkflowDeps["runJudge"]` from `@parcha/agentrun-dsl`: `createJevRunner` from
-`@parcha/agentrun-jev` is one, and a test passes a scripted function. Each question is asked on its own, as a yes-or-no
+`@parcha/agentrun-jev` is one (a separate install, `npm install @parcha/agentrun-jev@beta`, that reads its key from
+the environment as its README says), and a test passes a scripted function. Each question is asked on its own, as a yes-or-no
 probability, over the candidate's own text, never a paraphrase (`QUESTIONS` holds the wording):
 
 | Question | Asked of | Yes at or above, no at or below | A yes |

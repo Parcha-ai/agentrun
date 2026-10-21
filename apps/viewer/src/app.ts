@@ -418,8 +418,8 @@ export function steerOf(data: unknown, last: number): Steer | undefined {
 export const fromParent = (origin: string, isParent: boolean, allowed: string | undefined): boolean => allowed !== undefined && isParent && origin === allowed;
 
 /** A run the page follows while it goes: the lines that arrived since the last poll, the manifest once it is written (the
- *  run finished), and what the page says of the connection. */
-/** `grow`: `found`, a blob read whole since the last poll, which redraws (and reads the result again) with no new line. */
+ *  run finished), and what the page says of the connection.
+ *  `grow`: `found`, a blob read whole since the last poll, which redraws (and reads the result again) with no new line. */
 export type Follow = { grow(fresh: Line[], found?: boolean): void; restart(whole: Line[]): void; finish(manifest: Manifest, whole: Line[]): void; status(text: string): void };
 
 function play(recording: Recording, root: HTMLElement, params: URLSearchParams, base?: string, live?: { url: string }): Follow {
@@ -769,10 +769,14 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   };
 }
 
-function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly { id: string; manifest: Manifest }[], unread?: string) {
+/** The flags a gallery link may open its replay with (the lock's `view`): flags of the chat page. The lock's reader keeps the same list (scripts/recording/gallery.mjs). */
+const VIEW_FLAGS = ['muse'];
+
+function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly { id: string; manifest: Manifest; title?: string; view?: string[] }[], unread?: string) {
   const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {
-    // A demo opens in the chat + report view; its inspection is ./?r=<id>, linked from there.
-    const link = Object.assign(el('a', { text: chatTitle(entry.manifest) }), { href: `chat.html?r=${encodeURIComponent(entry.id)}` });
+    // A demo opens in the chat + report view (in the view its lock entry names, if any); its inspection is ./?r=<id>, linked from there. The words are the lock's, else the recording's.
+    const view = (entry.view ?? []).filter((flag) => VIEW_FLAGS.includes(flag)).map((flag) => `&${flag}`).join('');
+    const link = Object.assign(el('a', { text: entry.title ?? chatTitle(entry.manifest) }), { href: `chat.html?r=${encodeURIComponent(entry.id)}${view}` });
     return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.model}` }));
   }));
   const picker = Object.assign(el('input'), { type: 'file', multiple: true }) as HTMLInputElement;

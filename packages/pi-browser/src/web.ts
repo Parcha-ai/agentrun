@@ -6,6 +6,7 @@ import type { Decisions } from "./core/decisions.js";
 import type { EvidenceSink } from "./core/evidence.js";
 import type { FetchRequest, FetchResult, PriceTable, SearchRequest, SearchResult } from "./core/host.js";
 import { providerKeyValues } from "./core/session-control.js";
+import { toolUsage } from "./core/usage.js";
 import { createWebTools, type RenderedPage, type WebBackup, type WebOutcome, type WebToolsOptions } from "./core/web.js";
 import { forModel } from "./durable-result.js";
 
@@ -29,8 +30,6 @@ export type WebExtensionOptions = {
   section?: { addendum?: string };
 };
 
-const usage = (usd: number) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: usd } });
-
 export function createWebExtension(options: WebExtensionOptions): { extension: ReturnType<typeof defineExtension>; tools: readonly ToolRegistration[] } {
   const tools = createWebTools({
     name: options.providers.name ?? "provider",
@@ -46,7 +45,7 @@ export function createWebExtension(options: WebExtensionOptions): { extension: R
     pdf: options.pdf,
   });
   const run = { web_fetch: tools.fetch, web_search: tools.search } as const;
-  const result = ({ text, isError, details, usd }: WebOutcome) => ({ ...forModel([{ type: "text" as const, text }]), isError, details: details as JsonValue, usage: usage(usd) });
+  const result = ({ text, isError, details, usd }: WebOutcome) => ({ ...forModel([{ type: "text" as const, text }]), isError, details: details as JsonValue, usage: toolUsage(usd).usage });
   const registrations = WEB_TOOLS
     .filter((tool) => (tool.listedWhen === "fetch" ? options.providers.fetch || options.render?.enabled || options.backups?.length : options.providers.search))
     .map((tool) => defineTool({

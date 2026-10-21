@@ -192,7 +192,6 @@ function chatRaw(body: Json | undefined): string {
   return raw;
 }
 
-/** The chat + report view's model of a recording. `readJson` reads a blob's JSON (the run's cited result). */
 /** Each conversation an agent node of the workflow ran, and that node's path. */
 function chatNodeConversations(lines: readonly Line[]): Map<string, string> {
   const pathOfConversation = new Map<string, string>();
@@ -220,12 +219,13 @@ export function chatGivenInput(lines: readonly Line[]): Json | undefined {
 /** A run's title, by one rule wherever it is shown: the artifact's title, else the first line of the input's question,
  *  else the recording's title. Without the run's lines (a gallery's list) the question is not known. */
 export function chatTitle(manifest: Manifest, inputValue?: Json): string {
-  const artifact = chatObj((manifest as { artifact?: Json }).artifact);
+  const artifact = chatObj(manifest.artifact);
   const question = typeof inputValue === 'string' ? inputValue : chatStr(chatObj(inputValue)?.question);
   return chatStr(artifact?.title) ?? (question?.trim() ? chatClip(chatFirstLine(question), 140) : manifest.title);
 }
 
-export async function extractChat(recording: Recording, readJson: (sha: string) => Promise<Json | undefined>): Promise<ChatModel> {
+/** The chat + report view's model of a recording. `readJson` reads a blob's JSON (the run's cited result). */
+export async function extractChat(recording: Recording, readJson: (sha: string) => Promise<Json | undefined>, options: { muse?: boolean } = {}): Promise<ChatModel> {
   const { manifest } = recording;
   // A recording with no times keeps its file's order: each line placed at its position, the axis read as an order.
   const clocked = recording.lines.some((line) => typeof line.t === 'number' && line.t > 0);
@@ -316,9 +316,12 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
             const name = chatStr(p.name) ?? 'tool';
             const times = toolTimes.get(callId);
             const said = Object.values(chatObj(p.arguments) ?? {});
-            const detail = said.length === 1 && typeof said[0] === 'string' && said[0].trim().includes('\n') ? said[0] : undefined;
-            if (said.length === 1 && typeof said[0] === 'string') commands.add(callId);
-            const item: Extract<ChatItem, { kind: 'tool' }> = { kind: 'tool', id: `item-${++counter}`, tool: name, title: chatToolTitle(name, p.arguments), ...(detail ? { detail } : {}), takeaway: '', media: [], looks: [], calls: [], ...(chatIsJudge(name) ? { judge: true as const } : {}),
+            const only = said.length === 1 && typeof said[0] === 'string' ? said[0] : undefined;
+            const title = chatToolTitle(name, p.arguments);
+            // Its one argument in full wherever its title does not show it whole: one of several lines, or one line clipped.
+            const detail = only?.trim() && title !== `${name} ${only.trim()}` ? only : undefined;
+            if (only !== undefined) commands.add(callId);
+            const item: Extract<ChatItem, { kind: 'tool' }> = { kind: 'tool', id: `item-${++counter}`, tool: name, title, ...(detail ? { detail } : {}), takeaway: '', media: [], looks: [], calls: [], ...(chatIsJudge(name) ? { judge: true as const } : {}),
               ...(times?.t0 !== undefined ? { t0: times.t0 } : {}), ...(times?.t1 !== undefined ? { t1: times.t1 } : {}) };
             thread.items.push(item);
             toolItems.set(callId, item);
@@ -468,23 +471,118 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     sources[key] = { href, ...(addresses.length > 1 ? { more: addresses.slice(1) } : {}), ...(pictures ? { pictures } : {}), takeaway: text, decisions, media, regions, ...(lookItem.has(key) ? { item: lookItem.get(key)! } : {}) };
   }
 
-  // A call that made exactly one look says what that look found; its own first line is the tool's framing.
+  // A call that made exactly one look says what that look found; its own first line is the tool's framing. A call that
+  // failed keeps its error: why it failed is not what its look found.
   for (const item of toolItems.values()) {
     const only = item.looks.length === 1 ? sources[item.looks[0]!] : undefined;
-    if (only?.takeaway) item.takeaway = only.takeaway;
+    if (only?.takeaway && !item.failed) item.takeaway = only.takeaway;
   }
 
-  // A step that ran a command or a script and made no look and no picture is plumbing.
-  for (const [callId, item] of toolItems) if (commands.has(callId) && !item.calls.some((call) => call.look) && item.media.length === 0) item.plumbing = true;
+  // The browser each step drove, decided by the recording's own lines and never by a tool's name: every `frame` line joins the step
+  // of its conversation that was running at its time (a frame between calls, the latest call before it); every hold joins the step
+  // that was running when the session first said held. A hold is read from the rows alone: `browser.sessions` says held (and with
+  // which request) and then not, `browser.handoff` holds what was asked and how it was answered. Nothing records who acted.
+  const stepAt = (conversation: string | undefined, t: number) => (conversation === undefined ? undefined : (threads.get(conversation)?.items ?? [])
+    .filter((item): item is Extract<ChatItem, { kind: 'tool' }> => item.kind === 'tool' && item.t0 !== undefined && item.t0 <= t)
+    .reduce<Extract<ChatItem, { kind: 'tool' }> | undefined>((latest, item) => (latest === undefined || item.t0! >= latest.t0! ? item : latest), undefined));
+  const browserOf = (item: Extract<ChatItem, { kind: 'tool' }>) => (item.browser ??= { frames: [], holds: [] });
+  const lastFrame = new Map<Extract<ChatItem, { kind: 'tool' }>, { t: number; session: string }>();
+  for (const line of options.muse ? live('frame') : []) {
+    const d = chatObj(line.data);
+    const sha = chatStr(line.blobs?.[0] as Json | undefined);
+    const item = stepAt(chatId(line.conv), line.t);
+    if (!item || !sha || !recording.blobUrl(sha) || typeof d?.w !== 'number' || typeof d?.h !== 'number') continue;
+    browserOf(item).frames.push({ t: line.t, blob: sha, w: d.w, h: d.h });
+    // The session that took the step's latest frame: the host a step names is its own session's, never another's.
+    const session = chatStr(d.session);
+    if (session && line.t >= (lastFrame.get(item)?.t ?? -1)) lastFrame.set(item, { t: line.t, session });
+  }
+  const handoffs = new Map<string, { condition: string; outcome?: string }>();
+  for (const line of options.muse ? lines.filter((each) => each.channel === 'durable' && each.kind === 'browser.handoff') : []) {
+    const d = chatObj(line.data);
+    const input = chatObj(d?.input);
+    const id = chatStr(input?.requestId);
+    if (!id) continue;
+    const outcome = chatStr(chatObj(chatObj(chatObj(d?.state)?.outcome)?.result)?.outcome);
+    const before = handoffs.get(id);
+    const condition = chatStr(input?.completionCondition) ?? before?.condition ?? '';
+    handoffs.set(id, { condition, ...(outcome ?? before?.outcome ? { outcome: (outcome ?? before?.outcome)! } : {}) });
+  }
+  const opened = new Map<string, { t0: number; id: string; conversation: string | undefined }>();
+  const closeHold = (tag: string, t1: number | undefined) => {
+    const hold = opened.get(tag);
+    if (!hold) return;
+    opened.delete(tag);
+    const item = stepAt(hold.conversation, hold.t0);
+    const ask = handoffs.get(hold.id);
+    if (item) browserOf(item).holds.push({ t0: hold.t0, ...(t1 !== undefined ? { t1 } : {}), condition: ask?.condition ?? '', ...(ask?.outcome ? { outcome: ask.outcome } : {}) });
+  };
+  for (const line of options.muse ? lines.filter((each) => each.channel === 'durable' && each.kind === 'browser.sessions') : []) {
+    for (const each of chatList(chatObj(chatObj(line.data)?.value)?.sessions)) {
+      const session = chatObj(each);
+      const tag = chatStr(session?.tag);
+      if (!session || !tag) continue;
+      const handoff = chatStr(session.handoff);
+      if (session.state === 'held' && handoff) { if (!opened.has(tag)) opened.set(tag, { t0: line.t, id: handoff, conversation: chatId(line.conv) }); }
+      else if (opened.has(tag)) closeHold(tag, line.t);
+    }
+  }
+  for (const tag of [...opened.keys()]) closeHold(tag, undefined);
+  // The host each session was on, row by row: a step's browser says where it was at its last frame.
+  const hostOf = (address: string | undefined): string | undefined => { try { return address ? new URL(address).host || undefined : undefined; } catch { return undefined; } };
+  // Each session's addresses over time, keyed by what a frame names (the session's `resourceId`) and by its tag.
+  const sitesOf = new Map<string, { t: number; host: string }[]>();
+  const tags = new Set<string>();
+  const sitesBy = (key: string, t: number, host: string) => { const list = sitesOf.get(key) ?? []; list.push({ t, host }); sitesOf.set(key, list); };
+  if (options.muse) {
+    for (const line of lines.filter((each) => each.channel === 'durable' && each.kind === 'browser.sessions')) {
+      for (const each of chatList(chatObj(chatObj(line.data)?.value)?.sessions)) {
+        const session = chatObj(each);
+        const tag = chatStr(session?.tag);
+        const host = hostOf(chatStr(session?.lastUrl));
+        if (tag) tags.add(tag);
+        if (!host) continue;
+        const resourceId = chatStr(session?.resourceId);
+        if (resourceId) sitesBy(`resource:${resourceId}`, line.t, host);
+        if (tag) sitesBy(`tag:${tag}`, line.t, host);
+      }
+    }
+    for (const item of toolItems.values()) {
+      const last = item.browser?.frames.at(-1);
+      const frame = lastFrame.get(item);
+      // A frame joins its own session; a recording whose frames name no session the rows know joins only when the whole run had one session.
+      const history = frame ? sitesOf.get(`resource:${frame.session}`) ?? (tags.size === 1 ? sitesOf.get(`tag:${[...tags][0]!}`) : undefined) : undefined;
+      const seen = last ? history?.filter((site) => site.t <= last.t + 2000).at(-1) : undefined;
+      if (item.browser && seen) item.browser.site = seen.host;
+    }
+  }
+  // The sign-in waits, from the browser's profile documents: asked when one gains the address it signs in to, signed in when it is verified.
+  const waits: NonNullable<ChatModel['waits']> = [];
+  if (options.muse) {
+    const open = new Map<string, { t0: number; site: string }>();
+    const seen = new Set<string>();
+    for (const line of lines.filter((each) => each.channel === 'durable' && each.kind === 'browser.profiles')) {
+      const key = chatStr(chatObj(line.data)?.key) ?? chatStr(chatObj(chatObj(line.data)?.value)?.ref) ?? 'profile';
+      const value = chatObj(chatObj(line.data)?.value);
+      // The row's own state: a profile another run holds (a copy made at the run's start, with its address, no verification, state held) is not one this run
+      // was asked to sign in to. Only a ready profile can open a wait; a missing verification alone never says one was asked.
+      const own = chatStr(value?.state);
+      if (own !== undefined && own !== 'ready') continue;
+      const site = hostOf(chatStr(value?.startUrl)) ?? chatStr(chatList(value?.allowedOrigins)[0] as Json | undefined)?.replace(/^https?:\/\//, '');
+      if (!site) continue;
+      if (!seen.has(key)) {
+        seen.add(key);
+        // The first row that has the address: already verified, it is a sign-in the run found there (remembered); not yet, it is the ask.
+        if (value?.verifiedAt) waits.push({ t0: line.t, t1: line.t, site, remembered: true });
+        else open.set(key, { t0: line.t, site });
+      } else if (value?.verifiedAt && open.has(key)) { const asked = open.get(key)!; open.delete(key); waits.push({ ...asked, t1: line.t }); }
+    }
+    for (const asked of open.values()) waits.push(asked);
+  }
+  for (const item of toolItems.values()) if (item.browser) item.browser.frames.sort((a, b) => a.t - b.t);
 
-  // A step that nothing the agent thought or wrote leads into speaks for itself with what a look of it asked in words;
-  // a step whose looks asked nothing in words has no voice (a look's line and a call's result are logs, never a voice).
-  for (const thread of ordered) thread.items.forEach((item, index) => {
-    const before = thread.items[index - 1];
-    if (item.kind !== 'tool' || before?.kind === 'thinking' || before?.kind === 'assistant') return;
-    const asked = item.calls.find((call) => call.look && call.ask)?.ask;
-    if (asked) item.voice = asked;
-  });
+  // A step that ran a command or a script and made no look and no picture is plumbing; a step that drove a browser is never.
+  for (const [callId, item] of toolItems) if (commands.has(callId) && !item.calls.some((call) => call.look) && item.media.length === 0 && !item.browser) item.plumbing = true;
 
   // The run's answer: its cited result, each cite on the look (and the card) that made it; else the result record it
   // submitted, a field of evidence paths as its cites; else its final assistant text.
@@ -540,7 +638,14 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
 
   const times = lines.map((line) => line.t).filter((t) => typeof t === 'number' && t > 0);
   const resultLine = lines.findLast((line) => line.kind === 'result');
-  const artifact = chatObj((manifest as { artifact?: Json }).artifact);
+  // The agent the header names (the Muse view only): the name the host labelled the run with, else the recording's title;
+  // done when the run delivered (the manifest names a result or an artifact, or a result line was recorded), waiting when a hold is
+  // still open at the run's end, else working.
+  const labelled = chatStr(chatObj(chatObj(lines.findLast((line) => line.channel === 'durable' && line.kind === 'reference.label')?.data)?.value)?.label)?.trim();
+  const agentName = options.muse ? labelled || chatStr(manifest.title)?.trim() || undefined : undefined;
+  const endsHeld = [...toolItems.values()].some((item) => item.browser?.holds.some((hold) => hold.t1 === undefined));
+  const agent: ChatModel['agent'] = agentName ? { name: agentName, status: manifest.result?.blob || resultLine || manifest.artifact ? 'done' : endsHeld ? 'waiting' : 'working' } : undefined;
+  const artifact = chatObj(manifest.artifact);
   return {
     title: chatTitle(manifest, inputValue),
     ...(input ? { input } : {}),
@@ -552,5 +657,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     ...(artifact && chatStr(artifact.entry) && chatObj(artifact.files) ? { artifact: { title: chatStr(artifact.title) ?? manifest.title, entry: chatStr(artifact.entry)!, files: chatObj(artifact.files) as Record<string, string> } } : {}),
     ...(times.length ? { durationMs: Math.max(...times) } : {}),
     ...(resultLine ? { answeredAt: resultLine.t } : {}),
+    ...(agent ? { agent } : {}),
+    ...(waits.length ? { waits } : {}),
   };
 }

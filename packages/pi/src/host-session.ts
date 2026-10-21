@@ -73,9 +73,10 @@ export function createPiHostSessionFactory(context: PiHostContext): PiSessionFac
 
 export function createPiHostRunner(context: PiHostContext, options: PiHostRunnerOptions = {}): PiRunner {
   const model = selectedModel(context);
+  // The host session's thinking level is not a node's: a node that names none thinks at medium, unless the caller
+  // passes its own `thinkingLevel`.
   return createPiRunner({
     ...options, model, cwd: options.cwd ?? context.cwd,
-    thinkingLevel: options.thinkingLevel ?? context.thinkingLevel,
     sessionFactory: createPiHostSessionFactory(context),
   });
 }

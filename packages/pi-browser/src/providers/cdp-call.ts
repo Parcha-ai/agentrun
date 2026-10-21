@@ -14,7 +14,12 @@ export function cdpCall(url: string, method: string, params: object = {}, timeou
     };
     const timer = setTimeout(() => finish(new Error(`the browser did not answer ${method}`)), timeoutMs);
     socket.onopen = () => socket.send(JSON.stringify({ id: 1, method, params }));
-    socket.onmessage = (event) => { const reply = JSON.parse(String(event.data)); if (reply.id === 1) finish(reply.error ? new Error(String(reply.error.message ?? "refused")) : null, reply.result); };
+    // A throw in a socket listener ends the process: a frame that is not JSON is dropped, and the timeout still ends the call.
+    socket.onmessage = (event) => {
+      let reply: any;
+      try { reply = JSON.parse(String(event.data)); } catch { return; }
+      if (reply?.id === 1) finish(reply.error ? new Error(String(reply.error.message ?? "refused")) : null, reply.result);
+    };
     socket.onerror = () => finish(new Error(`the CDP socket to ${new URL(url).host} failed`));
   });
 }

@@ -6,9 +6,11 @@
 // - the tar hashes to the lock's SHA-256;
 // - it holds only directories and regular files (no link, device or other entry), each at `<id>/manifest.json`,
 //   `<id>/events.jsonl` or `<id>/blobs/<sha256>.<ext>` of an id the lock names, once each;
-// - it holds exactly the lock's ids, each with its manifest and its lines, each id once and the name of the example
-//   folder (`examples/<id>`) whose run it is, as its own manifest says (`example`, else `task`): one recording per
-//   example, so a re-take replaces its id;
+// - it holds exactly the lock's ids, each with its manifest and its lines, each id once. A manifest names an example by
+//   its `example`, else by a `task` that is an example folder's name: such a run's id is that example folder
+//   (`examples/<id>`), one recording per example, so a re-take replaces its id. A run whose manifest names no example
+//   (its `example` absent or null, its task free text) takes an id of its own, never an example folder's, so an
+//   example's id only ever holds that example's run;
 // - no recording is over 80 MB and the gallery is not over 300 MB, measured raw on the files it unpacks (a run's
 //   pi.live revisions are whole documents, which the format keeps as recorded);
 // - a poster is an image blob (PNG, JPEG, WebP or GIF, by its bytes) of the recording it is the poster of;
@@ -31,6 +33,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 export const RELEASE = 'gallery';
 export const RECORDING_LIMIT = 80_000_000;
 export const GALLERY_LIMIT = 300_000_000;
+/** The views a lock entry may open its replay in: flags of the viewer's own chat page (`chat.html?r=<id>&muse`). The viewer keeps the same list (apps/viewer/src/app.ts). */
+export const VIEW_FLAGS = ['muse'];
+export const TITLE_LIMIT = 120;
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -40,7 +45,9 @@ const IMAGE = { png: [0x89, 0x50, 0x4e, 0x47], jpg: [0xff, 0xd8, 0xff], jpeg: [0
 const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
-/** The lock, read: `{ asset, sha256, ids: [{ id, poster?, looks? }] }` (a plain id reads as `{ id }`), or its problems.
+/** The lock, read: `{ asset, sha256, ids: [{ id, poster?, looks?, title?, view? }] }` (a plain id reads as `{ id }`), or its problems.
+ *  `title`: the words the gallery list shows for the run, in place of the recording's own (a plain trimmed string of 1 to 120 characters, no control character: C0, DEL or C1).
+ *  `view`: the flags its link opens with, distinct ones from VIEW_FLAGS (today `muse`: the phone chat layout).
  *  `looks`: the keys of looks the run filed on one image, which its card shows with their boxes (the gate checks the run
  *  filed them). */
 export function readLock(text) {
@@ -54,10 +61,12 @@ export function readLock(text) {
   const ids = (Array.isArray(lock.ids) ? lock.ids : []).map((each) => (typeof each === 'string' ? { id: each } : each));
   const seen = new Set();
   for (const each of ids) {
-    if (!isObject(each) || typeof each.id !== 'string' || !ID.test(each.id)) { problems.push(`${JSON.stringify(each)} is not { id, poster?, looks? } with a plain id`); continue; }
+    if (!isObject(each) || typeof each.id !== 'string' || !ID.test(each.id)) { problems.push(`${JSON.stringify(each)} is not { id, poster?, looks?, title?, view? } with a plain id`); continue; }
     if (seen.has(each.id)) problems.push(`${each.id} is listed twice`);
     seen.add(each.id);
-    if (Object.keys(each).some((key) => !['id', 'poster', 'looks'].includes(key))) problems.push(`${each.id} holds ${JSON.stringify(Object.keys(each))}, not id, poster and looks`);
+    if (Object.keys(each).some((key) => !['id', 'poster', 'looks', 'title', 'view'].includes(key))) problems.push(`${each.id} holds ${JSON.stringify(Object.keys(each))}, not id, poster, looks, title and view`);
+    if (each.title !== undefined && !(typeof each.title === 'string' && each.title !== '' && each.title === each.title.trim() && each.title.length <= TITLE_LIMIT && !/[\u0000-\u001f\u007f-\u009f]/.test(each.title))) problems.push(`${each.id}'s title ${JSON.stringify(each.title)} is not a trimmed string of 1 to ${TITLE_LIMIT} characters with no control character`);
+    if (each.view !== undefined && !(Array.isArray(each.view) && each.view.length > 0 && each.view.every((flag) => typeof flag === 'string' && VIEW_FLAGS.includes(flag)) && new Set(each.view).size === each.view.length)) problems.push(`${each.id}'s view ${JSON.stringify(each.view)} is not a non-empty list of distinct flags from ${JSON.stringify(VIEW_FLAGS)}`);
     if (each.looks !== undefined && !(Array.isArray(each.looks) && each.looks.length > 0 && each.looks.every((key) => typeof key === 'string' && key !== '') && new Set(each.looks).size === each.looks.length)) problems.push(`${each.id}'s looks ${JSON.stringify(each.looks)} is not a list of distinct look keys`);
     if (each.poster !== undefined && (typeof each.poster !== 'string' || !SHA256.test(each.poster))) problems.push(`${each.id}'s poster ${JSON.stringify(each.poster)} is not a SHA-256`);
   }
@@ -152,7 +161,8 @@ export function writeTar(files) {
 
 /** What the tar `bytes` would unpack to under `lock`, as `{ files, problems }`: `files` each `{ id, path, data }` and only
  *  when there is no problem. `limits`: the most a recording and the gallery may hold, in bytes, and `examples`, the
- *  example folders an id may name (every name when absent). */
+ *  example folders. Without `examples`, a manifest's `example`, else its `task`, must be its id, and no folder is
+ *  checked. */
 export function galleryOf(bytes, lock, limits = {}) {
   const { recording: recordingLimit = RECORDING_LIMIT, gallery: galleryLimit = GALLERY_LIMIT, examples } = limits;
   const problems = [];
@@ -182,12 +192,25 @@ export function galleryOf(bytes, lock, limits = {}) {
   }
   for (const { id, poster } of lock.ids) {
     if (!seen.has(`${id}/manifest.json`) || !seen.has(`${id}/events.jsonl`)) problems.push(`${id}: the asset holds no ${seen.has(`${id}/manifest.json`) ? 'events.jsonl' : 'manifest.json'} for it`);
-    if (examples && !examples.has(id)) problems.push(`${id}: names no example folder (examples/${id})`);
     const manifest = files.find((file) => file.path === `${id}/manifest.json`);
+    let value;
+    try { value = manifest ? JSON.parse(manifest.data.toString('utf8')) : undefined; } catch { value = undefined; }
+    const example = isObject(value) && typeof value.example === 'string' ? value.example : undefined;
     if (manifest) {
-      let named;
-      try { const value = JSON.parse(manifest.data.toString('utf8')); named = isObject(value) ? (typeof value.example === 'string' ? value.example : value.task) : undefined; } catch { named = undefined; }
-      if (named !== id) problems.push(`${id}: its manifest names the example ${JSON.stringify(named ?? null)}, not ${id}`);
+      if (!examples) {
+        const named = isObject(value) ? (example ?? value.task) : undefined;
+        if (named !== id) problems.push(`${id}: its manifest names the example ${JSON.stringify(named ?? null)}, not ${id}`);
+      } else if (!isObject(value)) {
+        problems.push(`${id}: its manifest is not a JSON object`);
+      } else {
+        // The example the run names: its `example`, else its task when that is an example folder's name.
+        const task = typeof value.task === 'string' ? value.task : undefined;
+        const named = example ?? (task !== undefined && examples.has(task) ? task : undefined);
+        if (named === undefined) {
+          if (examples.has(id)) problems.push(`${id}: is the example folder examples/${id}, but its manifest names no example`);
+        } else if (named !== id) problems.push(`${id}: its manifest names the example ${JSON.stringify(named)}, not ${id}`);
+        else if (!examples.has(id)) problems.push(`${id}: names no example folder (examples/${id})`);
+      }
     }
     if ((sizes.get(id) ?? 0) > recordingLimit) problems.push(`${id}: is ${sizes.get(id)} bytes, over the ${recordingLimit} a recording may be`);
     if (poster === undefined) continue;
