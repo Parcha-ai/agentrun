@@ -66,7 +66,6 @@ const USAGE = `usage:
   pi-durable-disk fork --disk D --region R --id ID --new-id NEW [--mount-root DIR] [--archil BIN] [--token-prefix P]
                         [--api-key-env NAME]`;
 
-/** "30s", "500ms", "2m", "1h", or plain milliseconds. */
 /**
  * Whether the lease watchdog may kill every other process in the instance's cgroup: only inside its own systemd unit,
  * whose cgroup holds nothing but the instance and its commands. Elsewhere the cgroup may be shared (a login session, an
@@ -102,6 +101,7 @@ export function watchdogOwnsCgroup(
   return { owns: true };
 }
 
+/** "30s", "500ms", "2m", "1h", or plain milliseconds. */
 export function parseDuration(text: string): number {
   const m = /^(\d+(?:\.\d+)?)(ms|s|m|h)?$/.exec(text.trim());
   if (!m) throw new UsageError(`not a duration: ${text}`);
