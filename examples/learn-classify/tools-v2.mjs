@@ -6,8 +6,10 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { lookup as dnsLookup } from 'node:dns/promises';
+import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, open, readFile, realpath, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { LIST_PRICES } from '@parcha/pi-browser';
 import { pdfDocument, pdfPage } from '@parcha/pi-vision';
@@ -1085,6 +1087,81 @@ export async function gatewayEyes(gateway, { model = 'gemini-3.8-flash', thinkin
   const eyes = modelsEyes(models, { provider: 'google', modelId: model }, { thinking });
   if (!eyes) throw new Error(`${model} takes no images`);
   return eyes;
+}
+
+const WAYBACK_CAPTURE = /^\/web\/(\d{1,14})([a-z]{2}_)?\/(.+)$/;
+const SNAPSHOT_TYPES = { '.htm': 'text/html; charset=utf-8', '.html': 'text/html; charset=utf-8', '.json': 'application/json', '.txt': 'text/plain; charset=utf-8' };
+const BUSY = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET']);
+
+/** A Wayback capture's time, flag and archived URL, and the archived URL's key (no scheme, no leading www., host lowercased). */
+function captureOf(href) {
+  let url;
+  try { url = new URL(href); } catch { return null; }
+  if (url.hostname.toLowerCase() !== 'web.archive.org') return null;
+  const m = WAYBACK_CAPTURE.exec(url.pathname);
+  if (!m) return null;
+  const original = `${m[3]}${url.search}`;
+  const rest = original.replace(/^https?:\/\//i, '');
+  const slash = rest.search(/[/?#]|$/);
+  const key = `${rest.slice(0, slash).toLowerCase().replace(/^www\./, '')}${rest.slice(slash)}`;
+  return { time: m[1], flag: m[2] ?? '', original, key };
+}
+
+/**
+ * A read-only cache of pinned Wayback captures of SEC pages, in front of `fetch`, so a pass reads the same bytes in every
+ * run and the archive's rate limit on this host does not decide what a run finds. `dir` holds C1's manifest.jsonl (per
+ * line, `chosen` and any `extra` captures, each { snapshot, body, sha256, contentType? }, body relative to `dir`) and the
+ * bodies; it is read when the cache is made. A request for a cached page at its pinned time gets those bytes; at any
+ * other time, a redirect to the pinned time, as the archive resolves a time to a capture. A body that is missing, outside
+ * `dir` or not its sha256 is never served. Everything else goes to `fetch`; on web.archive.org, a refused connection or a
+ * 429/503 is asked again `retries` times, `backoffMs` doubling. The tools see the same URLs and result shapes either way.
+ */
+export function snapshotFetch({ dir, fetch: fetchImpl = globalThis.fetch, retries = 3, backoffMs = 1000, sleep = (ms, signal) => delay(ms, undefined, { signal }) }) {
+  let manifest;
+  try {
+    manifest = readFileSync(join(dir, 'manifest.jsonl'), 'utf8');
+  } catch {
+    throw new Error(`the snapshot cache ${dir} has no manifest.jsonl`);
+  }
+  const root = resolve(dir);
+  const pinned = new Map();
+  for (const line of manifest.split('\n')) {
+    let row;
+    try { row = JSON.parse(line); } catch { continue; }
+    for (const capture of [row?.chosen, ...(Array.isArray(row?.extra) ? row.extra : [])]) {
+      const at = capture?.snapshot && captureOf(capture.snapshot);
+      const body = typeof capture?.body === 'string' ? resolve(root, capture.body) : null;
+      if (!at || !body || !body.startsWith(`${root}${sep}`) || typeof capture.sha256 !== 'string') continue;
+      const type = capture.contentType ?? SNAPSHOT_TYPES[body.slice(body.lastIndexOf('.')).toLowerCase()] ?? 'text/html; charset=utf-8';
+      pinned.set(at.key, { time: at.time, body, sha256: capture.sha256, type });
+    }
+  }
+  const fromCache = async (at) => {
+    const hit = pinned.get(at.key);
+    if (!hit) return null;
+    if (at.time !== hit.time) return new Response(null, { status: 302, headers: { location: `https://web.archive.org/web/${hit.time}${at.flag}/${at.original}` } });
+    let bytes;
+    try { bytes = await readFile(hit.body); } catch { return null; }
+    if (createHash('sha256').update(bytes).digest('hex') !== hit.sha256) return null;
+    return new Response(bytes, { status: 200, headers: { 'content-type': hit.type, 'content-length': String(bytes.length) } });
+  };
+  return async (href, init = {}) => {
+    const at = captureOf(href);
+    if (!at) return fetchImpl(href, init);
+    const cached = await fromCache(at);
+    if (cached) return cached;
+    for (let attempt = 0; ; attempt++) {
+      let res;
+      try {
+        res = await fetchImpl(href, init);
+      } catch (error) {
+        if (attempt >= retries || init.signal?.aborted || !BUSY.has(error?.cause?.code ?? error?.code)) throw error;
+      }
+      if (res && (attempt >= retries || (res.status !== 429 && res.status !== 503))) return res;
+      await res?.body?.cancel();
+      await sleep(backoffMs * 2 ** attempt, init.signal);
+    }
+  };
 }
 
 /**
