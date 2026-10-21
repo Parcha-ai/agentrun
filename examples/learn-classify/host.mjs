@@ -14,6 +14,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { learnExtension } from '../agent-learn/host.mjs';
 import { stickyJudge } from './curate-cuts.mjs';
+import { gatedSettler } from './promotion-gate.mjs';
 import { HOST_WORKFLOW, handoffText, hostRunName, hostUses, runPromoted } from './dispatch.mjs';
 import { gatedAdmitter } from './gates.mjs';
 
@@ -337,9 +338,12 @@ export function usageTotals(usage) {
  * root agent's model and thinking, and the one every workflow agent node runs on), `judge` the run's metered Jev (`meteredJudge`), `effects` the host tools (`classifyTools`),
  * `answer` the final answer's tool and `text` the job's text. `limitUsd` aborts the run once its model, Jev and tool spend
  * (each tool result's `costUsd`) pass it. `dispatch` (dispatch.mjs `promotedFor`) is a promoted workflow the host runs
- * first, or a canary; `measure.dispatch` says how it ended and when its task did (`at`). Returns what the host measured; the run's store is closed when it returns.
+ * first, or a canary; `measure.dispatch` says how it ended and when its task did (`at`). With `hostOnly` the root agent is
+ * never asked: the host's run of `dispatch` is the whole run, and any ending but complete leaves no answer (the promotion
+ * gate's bank runs). Returns what the host measured; the run's store is closed when it returns.
  */
-export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null }) {
+export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null, hostOnly = false }) {
+  if (hostOnly && !dispatch) throw new Error('a host-only run needs a workflow to dispatch');
   const started = Date.now();
   const caseValues = caseValuesOf(job);
   const learn = learnExtension({ caseValues });
@@ -415,8 +419,9 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
     // host refused never ran: the root agent gets the job alone.
     const hostRun = dispatch ? await runPromoted({ harness, workflows: workflowTool.workflow, dispatch, toolNames: tools.workflowTools.map((t) => t.name), answer, context: ctx }) : null;
     const dispatched = hostRun ? { dispatch: { name: hostRun.name, revision: hostRun.revision, key: hostRun.key, outcome: hostRun.outcome, ...(dispatch.canary ? { canary: true } : {}), ...(hostRun.invalid ? { invalid: hostRun.invalid } : {}), ...(typeof hostRun.detail === 'string' ? { detail: hostRun.detail } : {}) } } : {};
-    if (hostRun?.outcome === 'complete') {
-      measured = { answer: hostRun.output, answers: 1, toolCalls: {}, status: HOST_WORKFLOW, usage: usageTotals(await harness.usage(ctx)), finalText: '', calls: [], results: new Map(), ...dispatched };
+    if (hostRun?.outcome === 'complete' || hostOnly) {
+      const answered = hostRun.outcome === 'complete';
+      measured = { answer: answered ? hostRun.output : null, answers: answered ? 1 : 0, toolCalls: {}, status: HOST_WORKFLOW, usage: usageTotals(await harness.usage(ctx)), finalText: '', calls: [], results: new Map(), ...dispatched };
     } else {
       const prompt = hostRun && hostRun.outcome !== 'refused' ? `${text(job)}\n\n${handoffText(hostRun, dispatch)}` : text(job);
       const submission = await root.submit({ type: 'input', content: prompt }, ctx);
@@ -585,14 +590,15 @@ export function usageOfStore(storePath) {
  * `thresholds` is the host's promotion rule over pi-agent-learn's defaults (`{ promoteAfter, demoteAfter }`).
  * `judgeCuts` are the cuts curate's questions are judged by (CURATE_CUTS_V01 is the pre-registered set); without them,
  * the package's own. With `sticky` (`{ file, cutsId }`), a learning's text is judged by the worst answer it has had
- * (curate-cuts.mjs). Neither is on unless given: a run that asks for neither curates exactly as the package does.
+ * (curate-cuts.mjs). With `gate` (promotion-gate.mjs `replayGate`), a promotion the uses call for stands only when the
+ * gate passes it. None is on unless given: a run that asks for none curates exactly as the package does.
  */
-export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, sticky }) {
+export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, sticky, gate }) {
   const gates = [];
   const settled = [];
   const rules = { ...(tmpRoot ? { tmpRoot } : {}), ...(thresholds ? { thresholds } : {}) };
   const admit = gatedAdmitter({ judge: judge.run, base: workflowAdmitter({ when: schemaWhen, ...rules }), ...(tmpRoot ? { tmpRoot } : {}) });
-  const settle = usesSettler(rules);
+  const settle = gate ? gatedSettler({ settle: usesSettler(rules), gate }) : usesSettler(rules);
   const report = await curate({
     repo,
     judge: sticky ? stickyJudge(judge.run, sticky) : judge.run,
