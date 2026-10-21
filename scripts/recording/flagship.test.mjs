@@ -1,0 +1,111 @@
+// Draft 55: the flagship's six documents, checked by the validator on a fakes recording that carries all of them.
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { validateRecording } from './validate.mjs';
+
+const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const PNG = Buffer.from('a still, not really a png');
+const WEBM = Buffer.from('a rollout, not really a webm');
+const BODY = Buffer.from('{"legs":4}\n');
+const manifest = {
+  format: 'agentrun.recording/1', title: 'Teach it to walk (fakes)', task: 'teach-it-to-walk',
+  recorded: { started: '2026-10-21T00:00:00.000Z', ended: '2026-10-21T00:00:09.000Z' },
+  code: { repo: 'agentrun', commit: 'abc1234', packages: { '@parcha/agentrun-dsl': '0.1.0', '@earendil-works/pi-durable': '1.1.0', '@earendil-works/pi-ai': '1.1.0' } },
+  model: 'faux/faux-1', generations: 1, kills: 0, cost: { usd: 0, parts: {} }, source: { run: 'run-1', store_sha256: 'a'.repeat(64) },
+};
+const place = { environment: 'gpu-pool', kind: 'modal', host: 'host-1', box: 'box-1' };
+/** The six documents, as the flagship's tools write them, with `over` replacing a document's value (null deletes it). */
+const documents = (over = {}) => ({
+  'train.checkpoints': ['ck-1', { thread: 51, step: 400, place, bytes: 2048, basis: 'scripted' }],
+  'train.progress': ['51', { step: 400, steps_total: 1000, reward: 1.25, unit: 'm/s', skill: 'walk forward', checkpoint: 'ck-1', basis: 'scripted' }],
+  'train.render': ['51', { blob: sha(WEBM), w: 640, h: 360, step: 400, checkpoint: 'ck-1', basis: 'scripted' }],
+  'train.sweeps': ['sweep-1', { checkpoint: 'ck-1', rollouts: 16, score: 0.8, unit: 'success rate', place, placer: 'jev', basis: 'scripted' }],
+  'body.design': ['quadruped', { blob: sha(BODY), label: 'four legs', language: 'json', basis: 'agent' }],
+  'learn.curve': ['quadruped', { x: { label: 'step', unit: 'steps' }, y: { label: 'reward', unit: 'm/s' }, points: [[0, 0.1], [200, null], [400, 1.25]], basis: 'scripted' }],
+  ...Object.fromEntries(Object.entries(over).map(([doc, value]) => [doc, [over[`${doc}.key`] ?? null, value]]).filter(([doc]) => !doc.endsWith('.key'))),
+});
+/** A recording of one process: the run's conversation 51 (an entry), a run.json holder on host-1, a box.receipt for box-1,
+ *  then each document at its own commit. */
+function recording(t, over = {}, { keys = {}, raw = [] } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'flagship-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, 'blobs'));
+  for (const [bytes, ext] of [[PNG, 'png'], [WEBM, 'webm'], [BODY, 'json']]) writeFileSync(join(dir, 'blobs', `${sha(bytes)}.${ext}`), bytes);
+  const base = documents();
+  const lines = [
+    { channel: 'live', source: 'host', kind: 'process.started', t: 0, seq: 0, data: { gen: 1, pid: 1 } },
+    { channel: 'live', source: 'host', kind: 'run.json', t: 1, seq: 1, data: { gen: 1, holder: { driver: 'modal', host: 'host-1' } } },
+    { channel: 'live', source: 'host', kind: 'box.receipt', t: 2, seq: 2, data: { box: 'box-1', provider: 'modal' } },
+    { channel: 'durable', source: 'pi', kind: 'pi.user', gen: 1, t: 3, commit: 1, order: 0, conv: 51, data: { kind: 'pi.user', id: 1, conversationId: 51, model: [{ role: 'user', content: 'walk' }] } },
+  ];
+  let commit = 2;
+  for (const doc of Object.keys(base)) {
+    const value = doc in over ? over[doc] : base[doc][1];
+    const key = keys[doc] ?? base[doc][0];
+    lines.push({ channel: 'durable', source: 'host', kind: doc, gen: 1, t: 2 + commit, commit, order: 0, data: { doc, key, value, version: 1 } });
+    commit += 1;
+  }
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest));
+  // `raw` replaces text in the file: JSON.stringify cannot write a number such as 1e999, which JSON.parse reads as Infinity.
+  writeFileSync(join(dir, 'events.jsonl'), raw.reduce((file, [from, to]) => file.replace(from, to), `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`));
+  return dir;
+}
+const problems = (t, over, options) => validateRecording(recording(t, over, options)).map((problem) => problem.message);
+const base = documents();
+const with_ = (doc, change) => ({ [doc]: { ...base[doc][1], ...change } });
+
+test('draft 55: a fakes recording with all six documents, basis scripted and one curve gap, is valid', (t) => {
+  assert.deepEqual(problems(t), []);
+  assert.deepEqual(problems(t, with_('train.progress', { basis: undefined })), [], 'a missing basis reads as unmeasured');
+  assert.deepEqual(problems(t, { 'train.render': null }), [], 'a deleted document has nothing to check');
+});
+
+test('draft 55: a measured story number needs its unit: a reward, a sweep\'s score and a curve\'s y', (t) => {
+  assert.deepEqual(problems(t, with_('train.progress', { basis: 'measured', unit: undefined })), ['train.progress "51": its reward has no unit, and its basis is measured']);
+  assert.deepEqual(problems(t, with_('train.sweeps', { basis: 'measured', unit: undefined })), ['train.sweeps "sweep-1": its score has no unit, and its basis is measured']);
+  assert.deepEqual(problems(t, with_('learn.curve', { basis: 'measured', y: { label: 'reward' } })), ['learn.curve "quadruped": its y axis has no unit, and its basis is measured']);
+  assert.deepEqual(problems(t, with_('learn.curve', { y: { label: 'reward' } })), [], 'not measured: the unit is optional');
+});
+
+test('draft 55: a place holds only labels the recording gave, and kinds', (t) => {
+  assert.deepEqual(problems(t, with_('train.sweeps', { place: { ...place, box: 'box-7' } })), ['train.sweeps "sweep-1": its place\'s box "box-7" is not a box-N label of a box line in this recording']);
+  assert.deepEqual(problems(t, with_('train.sweeps', { place: { ...place, box: 'sb-9f3a2c' } })), ['train.sweeps "sweep-1": its place\'s box "sb-9f3a2c" is not a box-N label of a box line in this recording'], 'a provider\'s id is no label');
+  assert.deepEqual(problems(t, with_('train.checkpoints', { place: { ...place, host: 'host-2' } })), ['train.checkpoints "ck-1": its place\'s host "host-2" is not a host-N label of a run.json holder in this recording']);
+  assert.deepEqual(problems(t, with_('train.checkpoints', { place: { ...place, kind: 'gcp' } })), ['train.checkpoints "ck-1": its place\'s kind "gcp" is not one of local, daytona, modal, archil, tab']);
+  assert.deepEqual(problems(t, with_('train.checkpoints', { place: { ...place, provider: 'modal', sandbox: 'sb-1' } })), [
+    'train.checkpoints "ck-1": its place holds provider: a place keeps only environment, kind, host and box, never an id, a path or a machine name',
+    'train.checkpoints "ck-1": its place holds sandbox: a place keeps only environment, kind, host and box, never an id, a path or a machine name']);
+});
+
+test('draft 55: the basis is one tag per document, of the enum', (t) => {
+  assert.deepEqual(problems(t, with_('train.progress', { basis: 'estimated' })), ['train.progress "51": basis "estimated" is not one of measured, scripted, unmeasured, agent, simulated, reported']);
+  assert.deepEqual(problems(t, with_('train.progress', { basis: { reward: 'measured' } })), ['train.progress "51": basis {"reward":"measured"} is not one of measured, scripted, unmeasured, agent, simulated, reported'], 'no per-field form');
+});
+
+test('draft 55: blobs, conversations and checkpoints are the recording\'s own', (t) => {
+  assert.deepEqual(problems(t, with_('train.render', { blob: sha(BODY) })), [`train.render "51": its blob ${sha(BODY)} is a json file, not one of png, jpg, jpeg, webp, gif, webm`]);
+  assert.deepEqual(problems(t, with_('body.design', { blob: sha(PNG) })), [`body.design "quadruped": its blob ${sha(PNG)} is a png file, not one of json, txt, md`]);
+  assert.deepEqual(problems(t, with_('train.render', { blob: 'b'.repeat(64) })), [`train.render "51": its blob ${'b'.repeat(64)} is not in blobs/`]);
+  assert.deepEqual(problems(t, {}, { keys: { 'train.progress': '77' } }), ['train.progress "77": its key "77" names no conversation in this recording']);
+  assert.deepEqual(problems(t, with_('train.checkpoints', { thread: 90 })), ['train.checkpoints "ck-1": its thread 90 names no conversation in this recording']);
+  assert.deepEqual(problems(t, with_('train.sweeps', { checkpoint: 'ck-9' })), ['train.sweeps "sweep-1": checkpoint "ck-9" names no train.checkpoints key in this recording']);
+  assert.deepEqual(problems(t, with_('train.progress', { checkpoint: undefined })), [], 'progress may name no checkpoint');
+});
+
+test('draft 55: the shapes: a render\'s size, a curve\'s points, numbers finite, text plain and short', (t) => {
+  assert.deepEqual(problems(t, with_('train.render', { w: undefined })), ['train.render "51": its w is not an integer above 0'], 'a video has its size too');
+  assert.deepEqual(problems(t, with_('learn.curve', { points: [[0, 1], [2, 'Infinity']] })), ['learn.curve "quadruped": its point 1 has a y that is neither a finite number nor null'], 'a string');
+  assert.deepEqual(problems(t, with_('learn.curve', { points: [[0, 1], [2, 7777]] }), { raw: [['[2,7777]', '[2,1e999]']] }), ['learn.curve "quadruped": its point 1 has a y that is neither a finite number nor null'], 'a number JSON reads as Infinity');
+  assert.deepEqual(problems(t, with_('learn.curve', { points: [[0, 1], [2, null]] })), [], 'a null y is a gap');
+  assert.deepEqual(problems(t, with_('learn.curve', { points: [[5, 1], [2, 2]] })), ['learn.curve "quadruped": its point 1\'s x 2 is below the one before it, 5']);
+  assert.deepEqual(problems(t, with_('learn.curve', { points: [[0, 1]] })), ['learn.curve "quadruped": its points are not 2 to 2,000 pairs']);
+  assert.deepEqual(problems(t, {}, { keys: { 'learn.curve': 'c'.repeat(65) } }), [`learn.curve "${'c'.repeat(65)}": its key is not plain text of at most 64 characters`]);
+  assert.deepEqual(problems(t, with_('train.progress', { reward: Number.NaN })), ['train.progress "51": its reward is not a finite number']);
+  assert.deepEqual(problems(t, with_('train.progress', { skill: 'walk\u0007' })), ['train.progress "51": its skill is not plain text of at most 60 characters']);
+  assert.deepEqual(problems(t, with_('train.sweeps', { rollouts: 0, placer: 'gpt' })), ['train.sweeps "sweep-1": its rollouts is not an integer above 0', 'train.sweeps "sweep-1": its placer "gpt" is not "jev"']);
+  assert.deepEqual(problems(t, with_('train.progress', { steps_total: 10 })), ['train.progress "51": its steps_total is not an integer of at least its step']);
+});

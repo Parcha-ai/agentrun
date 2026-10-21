@@ -162,6 +162,35 @@ the restored generation's snapshot.
   one of its identities in a later generation counts in repeated. A restore can show repeated above 0; the viewer
   shows it, never hides it.
 
+### 3.3 The flagship's documents (draft 55)
+
+A run that trains and shows a robot writes six documents through its tools, through the session's own store, at a
+commit like every document (never a host-written line). There is no new line kind: a reader that does not know them
+skips them. A document's revisions in commit order are its series.
+
+| Document, key | Value |
+|---|---|
+| `train.progress`, a conversation id | `{ step (int >= 0), steps_total?, reward (finite), unit?, skill (<= 60 chars), checkpoint?, basis }` |
+| `train.render`, a conversation id | `{ blob (png, jpg, jpeg, webp, gif or webm), w, h, step?, checkpoint?, basis }` |
+| `train.checkpoints`, a checkpoint id (<= 64) | `{ thread (a conversation id), step, place, bytes?, basis }` |
+| `train.sweeps`, a sweep id (<= 64) | `{ checkpoint, rollouts (> 0), score (finite), unit?, place, placer? ("jev"), basis }`, no cost |
+| `body.design`, a body id (<= 64) | `{ blob (json, txt or md), label (<= 60 chars), language?, basis }` |
+| `learn.curve`, a curve id (<= 64) | `{ x: { label, unit? }, y: { label, unit? }, points: [[x, y or null], ...] (2 to 2,000; x finite and non-decreasing), basis }` |
+
+- **Place** is `{ environment?, kind?, host?, box? }`: `environment` the placement config's own id (never drawn),
+  `kind` one of `local`, `daytona`, `modal`, `archil` or `tab`, `host` a recorded `host-N` and `box` a recorded `box-N`.
+  Never a provider's id, a path or a machine name.
+- **Basis** is one tag per document, for every number in it: `measured`, `scripted`, `unmeasured`, `agent`, `simulated`
+  or `reported`. A missing tag reads as `unmeasured`. A number's basis is its provenance relative to this run: a value
+  this run's own code or checkpoint computed is `measured`, even inside a simulation. A render's basis says whether the
+  picture is a real capture (`measured`) or a simulation's render (`simulated`).
+- **Units.** A `measured` reward, sweep score or curve `y` carries its `unit`; elsewhere a unit is optional.
+- **A null point** `[x, null]` is a gap, read as unmeasured, never 0 and never dropped.
+- **Keys** name what the recording holds: a conversation id is a `conv` of its lines (draft 54), and `checkpoint` a
+  `train.checkpoints` key. Work that runs as a workflow is referenced by its run key, never copied.
+- **Blobs** stay inside section 7's allowlist and count against the stills budget and the recording cap.
+- **Cost** is not in these documents: it stays in box receipts.
+
 ## 4. The rules every panel keeps
 
 1. **Counts come from durable lines, or from host lines written outside the run's processes.** Anything the viewer
@@ -186,6 +215,9 @@ the restored generation's snapshot.
 6. **Time is for drawing.** `t` places a line on the timeline. It never orders durable facts; `commit` does.
 7. **Unknown kinds are skipped.** A panel ignores kinds it does not know; the format adds kinds without a version bump.
    A change to a field's meaning is `agentrun.recording/2`.
+10. **A number shows its basis (draft 55).** A panel prints each flagship document's `basis` beside its numbers; a
+   number with no recorded basis is shown as `unmeasured`, never hidden and never as measured. A replay shows recorded
+   renders only: a recording carries no wasm or js, so nothing is simulated again.
 
 ## 5. Kinds, by source and channel
 
@@ -223,6 +255,11 @@ snapshots included. A lost branch (3.2) is events, not state: the per-generation
 - No secret, ever. Packages already keep credentials out of their documents and results; the recorder also passes
   every live line through the host's redactor before writing it.
 - A published recording uses public sources only, chosen and checked before it is recorded.
+- Each flagship document (draft 55, section 3.3) has its shape and a `basis` of the enum. A `measured` reward, score
+  or curve `y` has its unit, and a curve's `y` is a finite number or `null`. A `blob` is a file in `blobs/` of an
+  extension its document allows. A conversation id, a `thread` and a `checkpoint` name what the recording holds. A
+  `place` holds only `environment`, `kind`, `host` and `box`, and its `host` and `box` are labels the recording gave (a
+  `run.json` holder's `host`, a box line's `box-N`). The validator refuses anything else, never dropping it silently.
 - Blobs are kept whole. A recording too large for a static host replaces its `frame` lines with `frame.track` lines
   (a WebM per session), and only then drops frames; it never drops durable lines.
 
