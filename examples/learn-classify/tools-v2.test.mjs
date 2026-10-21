@@ -23,8 +23,8 @@ import { openOut, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { SETS } from './sets.mjs';
 import { FIXTURES, fixtureFetch, readJson, scriptedJev, scriptedModel } from './scripted.mjs';
 import {
-  blockedAddress, browserbaseSearchProvider, browserFromEnv, browseTool, gatewayEyes, guardSelfTest, hardJobTools, hostsOf, MAX_DOCUMENT_BYTES,
-  readDocumentTool, refusedUrl, searchFromEnv, searchWebTool, SELF_TEST_URL, urlPolicy, visionFor, writeHosts,
+  blockedAddress, browserbaseSearchProvider, browserFromEnv, browseTool, fontRowsOf, gatewayEyes, guardSelfTest, hardJobTools, hostsOf, MAX_DOCUMENT_BYTES,
+  MAX_LARGE_DOCUMENT_BYTES, readDocumentTool, refusedUrl, searchFromEnv, searchWebTool, SELF_TEST_URL, urlPolicy, visionFor, writeHosts,
 } from './tools-v2.mjs';
 
 const ajv = new Ajv({ strict: false, allErrors: true });
@@ -615,6 +615,89 @@ test('the classify skill\'s cover read on three report shapes: it reads the firs
   // The plural phrase lands on IQV's bylaws exhibit, not its cover: why the cover is located by what it is.
   const byPhrase = conforms(tool, await tool.run({ url: 'https://ir.harbor.example/iqv.pdf', find: 'principal executive offices' }));
   assert.deepEqual(byPhrase.found, [8]);
+});
+
+const KB = 1024;
+async function bigReport() {
+  // A page of noise makes the file larger than the in-memory cap the tests set, as a 150 MB 20-F is larger than 20 MB.
+  const noise = await sharp({ create: { width: 700, height: 700, channels: 3, noise: { type: 'gaussian', mean: 128, sigma: 70 } } }).jpeg({ quality: 95 }).toBuffer();
+  return Buffer.from(pdfBytes([{ lines: ['FORM 10-K', 'Harbor Valve Holdings Inc.'] }, { jpeg: new Uint8Array(noise), width: 700, height: 700 }, { lines: ['Note 9: Segment information', 'Valves 70%'] }]));
+}
+
+test('read_document reads a PDF over its in-memory cap up to the hard cap: streamed to a file kept outside the run\'s evidence, read by pages and find, and gone when the tool is disposed', async (t) => {
+  const big = await bigReport();
+  assert.ok(big.length > 100 * KB && big.length < 2048 * KB, `${big.length} bytes`);
+  const root = await scratch(t);
+  const largeRoot = await scratch(t);
+  const web = await localWeb(t, {
+    'ir.harbor.example/big.pdf': send('application/pdf', big, { 'content-length': String(big.length) }),
+    'ir.harbor.example/streamed.pdf': (res) => { res.writeHead(200, { 'content-type': 'application/pdf', 'transfer-encoding': 'chunked' }); res.end(big); },
+    'ir.harbor.example/huge.pdf': send('application/pdf', Buffer.concat([big, Buffer.alloc(2048 * KB)]), { 'content-length': String(big.length + 2048 * KB) }),
+  });
+  const vision = await visionFor({ root, eyes: fakeEyes() });
+  const tool = readDocumentTool({ root, vision, fetch: web.fetch, lookup: publicLookup, maxBytes: 100 * KB, largeRoot, largeBytes: 2048 * KB });
+  const doc = conforms(tool, await tool.run({ url: 'https://ir.harbor.example/big.pdf', find: 'Segment information' }));
+  assert.equal(doc.ok, true, doc.error);
+  assert.deepEqual([doc.kind, doc.bytes, doc.pageCount, doc.found], ['pdf', big.length, 3, [3]]);
+  assert.match(doc.path, /^large\/[0-9a-f]{16}\.pdf$/);
+  // The file is kept in the tool's own directory under largeRoot, never under the run's evidence (which a recording reads).
+  const [dir] = await readdir(largeRoot);
+  assert.equal(readFileSync(join(largeRoot, dir, doc.path.slice('large/'.length))).length, big.length);
+  assert.equal((await readdir(root, { recursive: true })).some((f) => f.endsWith(doc.path.slice('large/'.length))), false);
+  // Read again by its path without downloading, by pages.
+  const seen = web.seen.length;
+  assert.match(conforms(tool, await tool.run({ path: doc.path, pages: [1] })).text, /^\[page 1\]\nFORM 10-K/);
+  assert.equal(web.seen.length, seen);
+  // A file with no declared length is streamed the same way; one over the hard cap is refused.
+  assert.equal(conforms(tool, await tool.run({ url: 'https://ir.harbor.example/streamed.pdf' })).sha256, doc.sha256);
+  assert.match(conforms(tool, await tool.run({ url: 'https://ir.harbor.example/huge.pdf' })).error, /over the 2 MB cap/);
+  // Disposed with its run, the kept files are gone.
+  await tool.dispose();
+  assert.deepEqual(await readdir(largeRoot), []);
+  // Without a place for large files, the in-memory cap stands as before.
+  const plain = readDocumentTool({ root, vision, fetch: web.fetch, lookup: publicLookup, maxBytes: 100 * KB });
+  assert.match((await plain.run({ url: 'https://ir.harbor.example/big.pdf' })).error, /over the 100 KB cap/);
+  assert.equal(MAX_LARGE_DOCUMENT_BYTES, 256 * 1024 * 1024);
+});
+
+test('read_document reports a page whose fonts all lack a Unicode map like a scan: no text, in scanPages, out of find, and a question looks at it', async (t) => {
+  // pdffonts, as poppler prints it for a 20-F whose text fonts are CID fonts with no ToUnicode map.
+  const listing = [
+    'name                                 type              encoding         emb sub uni object ID',
+    '------------------------------------ ----------------- ---------------- --- --- --- ---------',
+    'DNFJBK+Arial-BoldMT                  CID TrueType      Identity-H       yes yes no    3330  0',
+    'DNFJAA+Calibri                       TrueType          Custom           yes yes yes   3301  0',
+    'Helvetica                            Type 1            WinAnsi          no  no  no      12  0',
+  ].join('\n');
+  assert.deepEqual(fontRowsOf(listing).map((f) => [f.encoding, f.uni, f.decodable]), [['Identity-H', false, false], ['Custom', true, true], ['WinAnsi', false, true]]);
+  const report = pdfBytes([{ lines: ['FORM 20-F', 'Harbor Valve Holdings SE'] }, { lines: ['81,7(\'67$7(6 Segment 6(&85,7,(6'] }, { lines: ['Note 9: Segment information', 'Valves 70%'] }]);
+  const root = await scratch(t);
+  const web = await localWeb(t, { 'ir.harbor.example/20f.pdf': send('application/pdf', Buffer.from(report)) });
+  const asked = [];
+  // The fonts of the whole file, and of one page; page 2 uses only a font with no Unicode map.
+  const fonts = async (file, page) => { asked.push(page ?? 'all'); return page === 2 ? [fontRowsOf(listing)[0]] : page === undefined ? fontRowsOf(listing) : fontRowsOf(listing).slice(1); };
+  const eyes = fakeEyes();
+  const tool = readDocumentTool({ root, vision: await visionFor({ root, eyes }), fetch: web.fetch, lookup: publicLookup, fonts });
+  const found = conforms(tool, await tool.run({ url: 'https://ir.harbor.example/20f.pdf', find: 'Segment' }));
+  assert.deepEqual(found.found, [3], 'the undecodable page is out of find');
+  assert.ok(found.scanPages?.includes(2), JSON.stringify(found.scanPages));
+  const looked = conforms(tool, await tool.run({ path: found.path, pages: [2], question: 'What does this page say?' }));
+  assert.match(looked.text, /^\[page 2\]\n\(no text layer/);
+  assert.equal(looked.looks.length, 1);
+  assert.equal(eyes.ledger.length, 1, 'the question went to the eyes');
+  // A file whose fonts all decode is never asked about page by page.
+  const plainFonts = async (file, page) => { if (page !== undefined) throw new Error('no page check for a file whose fonts decode'); return fontRowsOf(listing).slice(1); };
+  const plain = readDocumentTool({ root, vision: await visionFor({ root, eyes: fakeEyes() }), fetch: web.fetch, lookup: publicLookup, fonts: plainFonts });
+  assert.deepEqual(conforms(plain, await plain.run({ url: 'https://ir.harbor.example/20f.pdf', find: 'Segment' })).found, [2, 3]);
+});
+
+test('a run disposes its tools when it ends, so a large document kept for it is gone after the run', async (t) => {
+  const out = join(await scratch(t), 'out');
+  let disposed = 0;
+  const base = scriptedParts({ set: SETS.v2 });
+  const parts = { ...base, toolsFor: async (job, run) => { const [first, ...rest] = await base.toolsFor(job, run); return [{ ...first, dispose: async () => { disposed += 1; } }, ...rest]; } };
+  await runLoop({ out, parts, jobs: 2 });
+  assert.equal(disposed, 2);
 });
 
 test('the eyes reach the model gateway: Google\'s model over its OpenAI-compatible chat completions at <gateway>/v1, with the gateway\'s key and thinking on', async (t) => {
