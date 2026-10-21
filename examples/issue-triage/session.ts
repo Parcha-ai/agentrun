@@ -108,6 +108,16 @@ const spoolLines = (dir: string): Array<Record<string, unknown>> => {
 /** What is known to have been spent: the priced parts of the lines summed, so a part whose price is unknown never switches the cap off. */
 export const spentOf = (lines: Parameters<typeof cost>[0]): number => Object.values(cost(lines).parts).reduce<number>((sum, part) => sum + (part ?? 0), 0);
 
+/** The rows of a workflow's result: the result itself when it is a list, else its `rows`. */
+export const rowsOf = (record: unknown): unknown[] | null => (Array.isArray(record) ? record : Array.isArray((record as { rows?: unknown })?.rows) ? (record as { rows: unknown[] }).rows : null);
+
+/** What the recording keeps as the run's result: the rows and the host's agreement, whatever shape the workflow returned (a list is held as `rows`, never spread into numbered keys). */
+export function resultOf(raw: unknown, agreement: unknown): Record<string, unknown> | null {
+  if (raw === null || raw === undefined) return null;
+  if (Array.isArray(raw)) return { rows: raw, agreement };
+  return typeof raw === 'object' ? { ...(raw as Record<string, unknown>), agreement } : { result: raw, agreement };
+}
+
 /** How often the type the agent gave matches the maintainers' label, counted by the host from the rows (the agent does not count its own matches). A row is compared when it carries one of the maintainers' type labels (`label_map`); the rest are left out and said so. Null when the result has no rows. */
 export function agreementOf(rows: unknown, labelMap: Record<string, string>): { matched: number; compared: number; total: number; summary: string } | null {
   if (!Array.isArray(rows)) return null;
@@ -244,10 +254,14 @@ export async function session(options: { dir: string; input: Input; record?: str
     await harness.close(ctx).catch(() => undefined);
     await durable.release().catch(() => undefined);
   }
-  const raw = (() => { try { return JSON.parse(readFileSync(join(options.dir, 'out', 'record.json'), 'utf8')).record as { rows?: unknown[] } & Record<string, unknown>; } catch { return null; } })();
+  const raw = (() => { try { return JSON.parse(readFileSync(join(options.dir, 'out', 'record.json'), 'utf8')).record as unknown; } catch { return null; } })();
+  // The agent chooses the workflow's output shape: the rows themselves, or an object that holds them as `rows`.
+  const resultRows = rowsOf(raw);
   // The agreement is the host's count over the agent's rows, never the agent's own (any `agreement` it wrote is replaced).
-  const agreement = raw ? agreementOf(raw.rows, input.label_map) : null;
-  const recorded = raw ? { ...raw, agreement } : null;
+  const agreement = resultRows ? agreementOf(resultRows, input.label_map) : null;
+  const recorded = resultOf(raw, agreement);
+  // The spool goes when the recording is finished: the spend is read before.
+  const spentUsd = Number(spentOf(spoolLines(meterDir)).toFixed(4));
   if (options.record) {
     const title = 'An agent writes the workflow, and runs it';
     const blob = openRecorder({ dir: options.record }).blob(JSON.stringify(recorded ?? { error: 'no result' }), 'json');
@@ -255,7 +269,7 @@ export async function session(options: { dir: string; input: Input; record?: str
     const jobBlob = job ? openRecorder({ dir: options.record }).blob(JSON.stringify({ ...job, files: [] }), 'json') : undefined;
     finishRecording(options.record, { ...(jobBlob ? { job: { blob: jobBlob, sha256: jobBlob } } : {}), title, task: 'issue-triage', model: 'live', generations: 1, kills: 0, code: codeOf(ROOT), cost, source: { run: 'issue-triage', store: join(options.dir, 'store', 'run.sqlite') }, result: { blob, title }, providers: 'real' } as never);
   }
-  console.log(JSON.stringify({ outcome: outcome.status, agreement: agreement?.summary ?? null, rows: Array.isArray(raw?.rows) ? raw.rows.length : 0, spentUsd: Number(spentOf(spoolLines(meterDir)).toFixed(4)), ...(options.record ? { recording: options.record } : {}), ...(outcome.message ? { message: outcome.message } : {}) }));
+  console.log(JSON.stringify({ outcome: outcome.status, agreement: agreement?.summary ?? null, rows: resultRows?.length ?? 0, spentUsd, ...(options.record ? { recording: options.record } : {}), ...(outcome.message ? { message: outcome.message } : {}) }));
   if (outcome.status !== 'complete') process.exitCode = 1;
 }
 

@@ -1,7 +1,6 @@
-import fs from "node:fs";
 import path from "node:path";
 import { redactSensitiveValue, redactText } from "./handoff-redact.js";
-import { HANDOFF_FILES_DIR, WALK_DEPTH, type InputProvenance } from "./handoff-files.js";
+import { HANDOFF_FILES_DIR, type InputProvenance } from "./handoff-files.js";
 
 // The handoff a run's attempt leaves for its continuation, rendered for the model from the durable escalation row and the
 // journal alone: a resumed continuation rebuilds the same words from the same journal. Every section has its own budget

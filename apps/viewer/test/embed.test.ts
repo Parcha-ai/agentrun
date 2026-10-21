@@ -9,7 +9,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-// @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 import { chapterAt, embedMessage, fromParent, parentOrigin, parentParam, steerOf } from '../src/app.ts';

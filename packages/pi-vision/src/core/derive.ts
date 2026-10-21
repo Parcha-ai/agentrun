@@ -1,7 +1,8 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type { MissCode } from "./contract.js";
 import { visionContext, type VisionEnv } from "./env.js";
 import type { Kind } from "./kinds.js";
+import { sha256Hex } from "./primitives.js";
 import { detectOnce, type Capability, type Provider, type ProviderCall, type ProviderSource } from "./provider.js";
 
 /** A derivation that could not be made: the miss code, and the cause the model reads. */
@@ -53,7 +54,6 @@ const KEPT_PATHS = 10_000;
  *  that name: one another process left, or one a command wrote or changed, is made again. Held in this process's
  *  memory, which nothing the environment runs can change. */
 const kept = new Map<string, Set<string>>();
-const sha256Of = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 function remember(slot: string, digest: string): void {
   const digests = kept.get(slot) ?? new Set<string>();
@@ -73,7 +73,7 @@ export function derivations(ctx: Pick<DeriveContext, "env" | "deriveDir" | "sign
       const digests = at ? kept.get(slot(at)) : undefined;
       if (!at || !digests) return null;
       const read = await ctx.env.readBinaryFile(at, visionContext(ctx.signal));
-      return read.ok && digests.has(sha256Of(read.value)) ? read.value : null;
+      return read.ok && digests.has(sha256Hex(read.value)) ? read.value : null;
     },
     async keep(name, bytes) {
       const at = path(name);
@@ -82,7 +82,7 @@ export function derivations(ctx: Pick<DeriveContext, "env" | "deriveDir" | "sign
       const temp = `${at}.${randomBytes(4).toString("hex")}.tmp`;
       const done = (await ctx.env.createDir(ctx.deriveDir!, { recursive: true }, c)).ok && (await ctx.env.writeFile(temp, bytes, c)).ok && (await ctx.env.renameFile(temp, at, c)).ok;
       if (!done) await ctx.env.remove(temp, { force: true }, visionContext());
-      else remember(slot(at), sha256Of(bytes));
+      else remember(slot(at), sha256Hex(bytes));
       return done ? at : null;
     },
   };
