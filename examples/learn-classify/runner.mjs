@@ -9,6 +9,7 @@
 import { local, openRepo } from '@parcha/pi-git-remote';
 import { AGENT_STORE_FILE, carryBack, createAgentHome, openAgentHome, runPaths } from '@parcha/pi-durable-agent';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -91,25 +92,29 @@ async function agentFiles(dir) {
 }
 
 /** The pass's directory: the agent's bare repository (its remote), the host's clone, and `meta.json` with the seed commit,
- *  the agent as it starts, with nothing learned. A directory serves one mode and one set. */
-export async function openOut(out, { mode, set = SETS.v1 }) {
+ *  the agent as it starts, with nothing learned, from `agentDir` (the set's agent home unless named). A directory serves
+ *  one mode, one set and one agent home: a pass that names a home other than the one it was seeded from is refused. */
+export async function openOut(out, { mode, set = SETS.v1, agentDir }) {
   await mkdir(out, { recursive: true });
   const bare = join(out, 'agent.git');
   if (!existsSync(bare)) execFileSync('git', ['init', '-q', '--bare', '--template=', '-b', 'main', bare], { env: gitEnv(out) });
   const repo = await openRepo({ dir: join(out, 'host-repo'), remote: local(bare) });
   const metaPath = join(out, 'meta.json');
   let meta = readJsonIf(metaPath);
+  const agent = await agentFiles(agentDir ?? set.agentDir);
+  const agentSha256 = createHash('sha256').update(JSON.stringify(Object.entries(agent).sort(([a], [b]) => (a < b ? -1 : 1)))).digest('hex');
   if (!meta) {
     await repo.fetch();
     let seedSha = await repo.resolve('main');
     if (!seedSha) {
-      const seed = await repo.commitTo('main', { files: await agentFiles(set.agentDir), message: 'the agent: definition, rules and the classify skill' });
+      const seed = await repo.commitTo('main', { files: agent, message: 'the agent: definition, rules and the classify skill' });
       await repo.push(seed.sha, 'main');
       seedSha = seed.sha;
     }
-    meta = { seedSha, mode, set: set.name, created: new Date().toISOString() };
+    meta = { seedSha, mode, set: set.name, agentSha256, created: new Date().toISOString() };
     writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`);
   }
+  if (agentDir !== undefined && meta.agentSha256 !== undefined && meta.agentSha256 !== agentSha256) throw new Error(`${out} was seeded from another agent home than ${agentDir}; that pass needs its own --out`);
   if (meta.mode !== mode) throw new Error(`${out} holds a ${meta.mode} pass; a ${mode} pass needs its own --out`);
   if ((meta.set ?? 'v1') !== set.name) throw new Error(`${out} holds a ${meta.set ?? 'v1'} pass; a ${set.name} pass needs its own --out`);
   return { repo, bare, meta };
@@ -150,7 +155,7 @@ export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 ? FIXTURES
 /** The paid parts: the model and Jev through the gateway (models.mjs), fetch_page, and in v2 lane C3's tools
  *  (tools-v2.mjs: search and the browser on Browserbase with the key read at each call, else a local Chrome; the eyes
  *  through the gateway), their evidence and the browser's profile under the run's own directory. */
-export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, env = process.env } = {}) {
+export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, env = process.env, archivedSec = false } = {}) {
   const { gatewayJev, gatewayModels, gatewayOf, ROOT } = await import('./models.mjs');
   const gateway = gatewayOf(env);
   // The root agent on Opus at high thinking unless --model / --thinking name another; the nodes on the host's NODE.
@@ -163,16 +168,18 @@ export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, e
   }
   return {
     mode: 'live', providers: 'real', modelName: `gateway/${models.agent.model.modelId}`, set, data: d, labels: d.labels, companies: d.companies, conventions: conventionsOf(d.report),
+    // With archivedSec every tool also opens the Wayback Machine's copy of an SEC page (tools.mjs), and nothing else there.
+    archivedSec,
     judge: () => jev,
     toolsFor: async (job, run) => [
-      fetchPageTool({ allowDomain: allowedDomain(job, set) }),
+      fetchPageTool({ allowDomain: allowedDomain(job, set), archivedSec }),
       // A PDF over read_document's in-memory cap is kept under the system's temporary directory, outside the pass's out
       // dir, so it never reaches a recording, the agent's repository or a page; the run disposes of it when it ends.
-      ...(hard ? await hard.hardJobTools({ root: join(run.dir, 'evidence'), profileRoot: join(run.dir, 'chrome'), eyes: await hard.gatewayEyes(gateway), env, largeRoot: tmpdir() }) : []),
+      ...(hard ? await hard.hardJobTools({ root: join(run.dir, 'evidence'), profileRoot: join(run.dir, 'chrome'), eyes: await hard.gatewayEyes(gateway), env, largeRoot: tmpdir(), archivedSec }) : []),
     ],
     modelFor: () => models,
     // The browser's guard on the browser the pass will use, checked by the pass's self-test.
-    ...(hard ? { browserCheck: (dir) => hard.guardSelfTest({ root: dir, profileRoot: join(dir, 'chrome'), env }) } : {}),
+    ...(hard ? { browserCheck: (dir) => hard.guardSelfTest({ root: dir, profileRoot: join(dir, 'chrome'), env, archivedSec }) } : {}),
   };
 }
 
@@ -435,7 +442,7 @@ export function listQueue(companies, list, split = 'run', { openTest = false } =
 export async function runLoop({ out, parts, jobs, list, split = 'run', openTest = false, concurrency = 1, schedule = 'rolling', checkpoints = [], capUsd, runCapUsd, record = true, dropEvidence = false, log = () => {} }) {
   if (!['rolling', 'batch'].includes(schedule)) throw new Error(`the schedule is rolling or batch, not ${schedule}`);
   out = resolve(out);
-  const { repo, meta } = await openOut(out, { mode: parts.mode, set: parts.set });
+  const { repo, meta } = await openOut(out, { mode: parts.mode, set: parts.set, agentDir: parts.agentDir });
   const home = await agentHomeFor({ dir: join(out, 'home'), repo });
   const rowsPath = join(out, 'runs.jsonl');
   const rows = readRows(rowsPath);
@@ -504,7 +511,7 @@ async function homeAt(dir, repo, sha) {
 export async function runSealed({ out, parts, at = 'main', from, split = 'sealed', openTest = false, concurrency = 1, shard, capUsd, runCapUsd, record = false, dropEvidence = false, log = () => {} }) {
   out = resolve(out);
   if (from !== undefined) adoptFrom(out, from, { mode: parts.mode, set: parts.set });
-  const { repo, meta } = await openOut(out, { mode: parts.mode, set: parts.set });
+  const { repo, meta } = await openOut(out, { mode: parts.mode, set: parts.set, agentDir: parts.agentDir });
   await repo.fetch();
   const sha = at === 'seed' ? meta.seedSha : await repo.resolve(at);
   if (!sha) throw new Error(`the agent repository has no ${at}`);
@@ -591,7 +598,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -603,6 +610,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'no-dispatch': { type: 'boolean' },
         model: { type: 'string' }, thinking: { type: 'string' }, set: { type: 'string' }, list: { type: 'string' }, 'promote-after': { type: 'string' },
         split: { type: 'string' }, 'open-test': { type: 'boolean' }, from: { type: 'string' }, concurrency: { type: 'string' }, shard: { type: 'string' }, 'drop-evidence': { type: 'boolean' },
+        'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' },
       },
     }));
   } catch (error) {
@@ -640,9 +648,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const set = SETS[values.set ?? 'v1'];
     if (!set) { console.error(`--set is v1, v2 or v4\n${USAGE}`); process.exit(2); }
     const parts = values.live
-      ? await liveParts({ set, ...(values.data ? { data: resolve(values.data) } : {}), ...(values.model ? { model: values.model } : {}), ...(values.thinking ? { thinking: values.thinking } : {}) })
+      ? await liveParts({ set, ...(values.data ? { data: resolve(values.data) } : {}), ...(values.model ? { model: values.model } : {}), ...(values.thinking ? { thinking: values.thinking } : {}), archivedSec: Boolean(values['edgar-archive']) })
       : scriptedParts({ set, ...(values.data ? { data: resolve(values.data) } : {}) });
     if (values['no-dispatch']) parts.dispatch = false;
+    if (values['agent-dir'] !== undefined) {
+      const agentDir = resolve(values['agent-dir']);
+      if (!existsSync(join(agentDir, 'agent.json'))) { console.error(`--agent-dir ${values['agent-dir']} is not an agent home (no agent.json)\n${USAGE}`); process.exit(2); }
+      parts.agentDir = agentDir;
+    }
     if (promoteAfter !== undefined) {
       parts.thresholds = { promoteAfter };
       console.log(`learn-classify: promotion after ${promoteAfter} clean uses`);

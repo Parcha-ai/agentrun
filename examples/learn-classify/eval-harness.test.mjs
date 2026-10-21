@@ -8,8 +8,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { agentHomeFor, prepareRun } from './host.mjs';
-import { listQueue, openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
+import { listQueue, liveParts, openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { FIXTURES_V4 } from './scripted.mjs';
+import { ARCHIVED_SEC_NOTE } from './tools.mjs';
 import { SETS } from './sets.mjs';
 import { streamOf } from './stream.mjs';
 
@@ -185,6 +186,34 @@ test('dropEvidence: once a job\'s row is written its run keeps its store and los
   assert.equal(keep.rows.length, 1);
   assert.equal(existsSync(join(dir, 'keep', 'home', 'runs', 'run-001', 'evidence', 'documents', 'report.pdf')), true);
 }, { timeout: 300_000 });
+
+test('agentDir seeds the repository from another agent home; a pass resumed with a different one is refused', async (t) => {
+  const dir = await scratch(t);
+  const { data, companies } = await standIn(dir, { train: 1, dev: 0, test: 0 });
+  const home = join(dir, 'agent-marked');
+  await cp(SETS.v4.agentDir, home, { recursive: true });
+  writeFileSync(join(home, 'AGENTS.md'), `${readFileSync(join(home, 'AGENTS.md'), 'utf8')}\nA marker only this home has.\n`);
+  const out = join(dir, 'train');
+  const result = await runLoop({ out, parts: { ...parts(data), agentDir: home }, list: streamOf(companies, { split: 'train', epochs: 1, seed: 1 }), split: 'train', record: false });
+  assert.match(git(join(out, 'agent.git'), 'show', `${result.seedSha}:AGENTS.md`), /A marker only this home has/);
+  await assert.rejects(runLoop({ out, parts: { ...parts(data), agentDir: SETS.v4.agentDir }, split: 'train', record: false }), /seeded from another agent home/);
+}, { timeout: 300_000 });
+
+test('edgarArchive: every tool of a live pass, and its browser check, opens the Wayback copy of an SEC page', async (t) => {
+  const env = { LEARN_CLASSIFY_GATEWAY: 'http://127.0.0.1:9/' };
+  const dir = await scratch(t);
+  const job = { name: 'X', website: 'https://www.example.com' };
+  const off = await liveParts({ set: SETS.v4, data: FIXTURES_V4, env });
+  const on = await liveParts({ set: SETS.v4, data: FIXTURES_V4, env, archivedSec: true });
+  const descriptions = async (p) => Object.fromEntries((await p.toolsFor(job, { dir })).map((tool) => [tool.name, tool.description]));
+  const [plain, archived] = [await descriptions(off), await descriptions(on)];
+  for (const name of ['fetch_page', 'search_web', 'browse', 'read_document']) {
+    assert.ok(archived[name]?.includes(ARCHIVED_SEC_NOTE), `${name} with the archive`);
+    assert.ok(!plain[name]?.includes(ARCHIVED_SEC_NOTE), `${name} without`);
+  }
+  assert.equal(on.archivedSec, true);
+  assert.equal(off.archivedSec, false);
+});
 
 test('the CLI: --split, --from, --concurrency and --shard are checked; the test split needs --open-test', async (t) => {
   const dir = await scratch(t);
