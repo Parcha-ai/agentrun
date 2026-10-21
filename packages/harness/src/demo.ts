@@ -520,7 +520,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const ledgerReceipts = (final: boolean): void => {
     if (boxIds === undefined) return;
     let boxes: [string, LedgerEntry][];
-    try { boxes = ledgerBoxes(boxIds); } catch { return; }
+    // A tick that cannot read the ledger reads it again at the next; the final pass that cannot fails the run as the
+    // follower's failure does, so the receipts it still owes never vanish without a note.
+    try { boxes = ledgerBoxes(boxIds); } catch (error) { if (final) followError ??= error; return; }
     for (const [label, entry] of boxes) {
       if (ledgerReceipted.has(label) || !(entry.receipt === 'ended' || (final && entry.receipt === 'open'))) continue;
       ledgerReceipted.add(label);

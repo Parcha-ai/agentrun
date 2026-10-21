@@ -135,6 +135,26 @@ test('an ids directory a later run uses again (the same --box-ids) holds the ear
   assert.deepEqual(receipts(second.recording).map((receipt) => receipt.box), ['box-3', 'box-4'], 'the second run\'s own boxes only');
 });
 
+test('a box ids directory the supervisor cannot read at its final pass fails the run by name: the receipts it still owes are never dropped without a note', { timeout: 300_000 }, async (t) => {
+  const { mkdirSync, watch, writeFileSync } = await import('node:fs');
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-damaged-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const shared = join(own, 'ids');
+  mkdirSync(shared);
+  // Once the run's last box has ended (its file says so), a damaged file lands beside it: after every write the run's
+  // process makes, before the supervisor's last read.
+  let damaged = false;
+  const watcher = watch(shared, (_event, name) => {
+    if (damaged || name !== 'box-2.json') return;
+    try { if (JSON.parse(readFileSync(join(shared, name), 'utf8')).receipt !== 'ended') return; } catch { return; }
+    damaged = true;
+    writeFileSync(join(shared, 'box-9.json'), '{ not a ledger entry');
+  });
+  t.after(() => watcher.close());
+  await assert.rejects(run(t, {}, ['--json', '--box-ids', shared], { DEMO_PROVIDERS: '1' }), /box ids file .*box-9\.json cannot be read/);
+  assert.ok(damaged, 'the damage landed while the run went on');
+});
+
 test('a run whose place makes boxes and whose tools make boxes too is refused: one labeller, never two box-1s', async (t) => {
   await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: '1' }), /place.*tool-made boxes|tool-made boxes.*place/);
 });
