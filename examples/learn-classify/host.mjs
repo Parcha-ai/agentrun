@@ -13,6 +13,7 @@ import { carryBack } from '@parcha/pi-durable-agent';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { learnExtension } from '../agent-learn/host.mjs';
+import { stickyJudge } from './curate-cuts.mjs';
 import { HOST_WORKFLOW, handoffText, hostRunName, hostUses, runPromoted } from './dispatch.mjs';
 import { gatedAdmitter } from './gates.mjs';
 
@@ -582,8 +583,11 @@ export function usageOfStore(storePath) {
  * The single writer of main, with this example's gates on every saved workflow. Returns curate's report and, per run,
  * what the two workflow ports decided (`gates`: the admitter's answers; `settled`: promote, demote or hold per name).
  * `thresholds` is the host's promotion rule over pi-agent-learn's defaults (`{ promoteAfter, demoteAfter }`).
+ * `judgeCuts` are the cuts curate's questions are judged by (CURATE_CUTS_V01 is the pre-registered set); without them,
+ * the package's own. With `sticky` (`{ file, cutsId }`), a learning's text is judged by the worst answer it has had
+ * (curate-cuts.mjs). Neither is on unless given: a run that asks for neither curates exactly as the package does.
  */
-export async function curateJob({ repo, judge, tmpRoot, thresholds }) {
+export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, sticky }) {
   const gates = [];
   const settled = [];
   const rules = { ...(tmpRoot ? { tmpRoot } : {}), ...(thresholds ? { thresholds } : {}) };
@@ -591,7 +595,8 @@ export async function curateJob({ repo, judge, tmpRoot, thresholds }) {
   const settle = usesSettler(rules);
   const report = await curate({
     repo,
-    judge: judge.run,
+    judge: sticky ? stickyJudge(judge.run, sticky) : judge.run,
+    ...(judgeCuts ? { thresholds: judgeCuts } : {}),
     admitWorkflow: async (input) => {
       const result = await admit(input);
       gates.push({ run: input.workflow.run, name: input.workflow.name, status: result.status, reason: result.reason });

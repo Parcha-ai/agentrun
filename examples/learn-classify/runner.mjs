@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { CURATE_CUTS_V01 } from './curate-cuts.mjs';
 import { writeCurve } from './curve.mjs';
 import {
   agentHomeFor, curateJob, finishJob, groupsOf, meteredJudge, prepareRun, readAgentAt, runJob, textsRead, toolResultsOf, toolStats, usageOfStore,
@@ -345,7 +346,11 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
     if (p.phase === 'ran') save({ ...p, phase: 'proposed', finished: await finishJob({ home, repo, run, job, measure: p.measure }) });
     if (p.phase === 'proposed') {
       const curateJudge = meteredJudge(judge);
-      const curated = await curateJob({ repo, judge: curateJudge, ...(parts.thresholds ? { thresholds: parts.thresholds } : {}) });
+      const curated = await curateJob({
+        repo, judge: curateJudge, ...(parts.thresholds ? { thresholds: parts.thresholds } : {}),
+        ...(parts.judgeCuts ? { judgeCuts: parts.judgeCuts } : {}),
+        ...(parts.sticky ? { sticky: { file: join(out, 'curate-sticky.json'), cutsId: parts.cutsId ?? 'default' } } : {}),
+      });
       save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main, ...(tally ? { curatedIndex: ++tally.curated, curatedAt: new Date().toISOString() } : {}) });
       tally?.landed(job, p);
     }
@@ -614,7 +619,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -627,6 +632,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         model: { type: 'string' }, thinking: { type: 'string' }, set: { type: 'string' }, list: { type: 'string' }, 'promote-after': { type: 'string' },
         split: { type: 'string' }, 'open-test': { type: 'boolean' }, from: { type: 'string' }, concurrency: { type: 'string' }, shard: { type: 'string' }, 'drop-evidence': { type: 'boolean' },
         'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' }, 'edgar-cache': { type: 'string' }, schedule: { type: 'string' }, checkpoints: { type: 'string' },
+        'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' },
       },
     }));
   } catch (error) {
@@ -678,6 +684,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       const agentDir = resolve(values['agent-dir']);
       if (!existsSync(join(agentDir, 'agent.json'))) { console.error(`--agent-dir ${values['agent-dir']} is not an agent home (no agent.json)\n${USAGE}`); process.exit(2); }
       parts.agentDir = agentDir;
+    }
+    if (values['curate-cuts'] !== undefined) {
+      if (values['curate-cuts'] !== 'v0.1' && values['curate-cuts'] !== 'default') { console.error(`--curate-cuts is v0.1 or default\n${USAGE}`); process.exit(2); }
+      parts.judgeCuts = values['curate-cuts'] === 'v0.1' ? CURATE_CUTS_V01 : null;
+      parts.cutsId = values['curate-cuts'];
+      console.log(`learn-classify: curation judged by the ${values['curate-cuts'] === 'v0.1' ? 'pre-registered v0.1 cuts' : "package's default cuts"}`);
+    }
+    if (values['curate-sticky']) {
+      parts.sticky = true;
+      console.log('learn-classify: curation judges each learning by the worst answer its text has had (<out>/curate-sticky.json)');
     }
     if (promoteAfter !== undefined) {
       parts.thresholds = { promoteAfter };
