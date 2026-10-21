@@ -26,6 +26,9 @@ browser, set in the server's environment, which it passes to every run it starts
 [agent/README.md](agent/README.md#run-one)). The agent's start command uses the built packages, so build the repository
 first.
 
+With no model endpoint, the keyless [quickstart](../../packages/pi-durable-agent/README.md#quickstart-no-key-no-network)
+in the package README shows the agent home on its own.
+
 ```sh
 npm ci --ignore-scripts && npm run build
 export AGENT_MODEL_BASE_URL=https://api.openai.com/v1 AGENT_MODEL=<model id> AGENT_MODEL_API_KEY=...   # any OpenAI Responses endpoint
