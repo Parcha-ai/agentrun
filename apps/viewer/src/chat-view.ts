@@ -601,6 +601,20 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
   // A planned move between hosts: one card, a move and not a failure (the process lane stays behind ?debug=durability).
   const moveNode = (item: Extract<ChatItem, { kind: 'move' }>) => reportEl('div', { class: 'move-card', 'data-item': item.id }, reportEl('div', { class: 'move-lead', text: item.lead }), reportEl('div', { class: 'move-text', text: item.text }));
   const agentMessage = (className = 'msg') => reportEl('div', { class: className }, reportEl('div', { class: 'who' }, threadIcon('brand'), 'Agent'));
+  // The conversations drawn at an item: forked there, or made by that call.
+  const nestedAt = new Map<string, ChatThread[]>();
+  for (const each of model.threads) if (each.under) nestedAt.set(each.under, [...(nestedAt.get(each.under) ?? []), each]);
+  const forksAt = (id: string): HTMLElement | undefined => { const made = nestedAt.get(id); return made ? reportEl('div', { class: 'forks' }, ...made.map((each) => fold(each))) : undefined; };
+  // A conversation other than the first, folded under its label and its opening line.
+  const fold = (each: ChatThread): HTMLElement => {
+    const first = each.items.find((item) => item.kind === 'user' || item.kind === 'host' || item.kind === 'tool');
+    const preview = first?.kind === 'tool' ? first.title : first?.text ?? '';
+    const node = reportEl('details', { class: 'think fold', 'data-item': each.id },
+      reportEl('summary', {}, reportEl('span', { class: 'lab', text: each.label }), reportEl('em', { text: preview.split('\n')[0] ?? '' })),
+      reportEl('div', { class: 'fold-body' }, ...drawThread(each)));
+    nodes.set(each.id, node);
+    return node;
+  };
   const drawThread = (thread: ChatThread): HTMLElement[] => {
     const out: HTMLElement[] = [];
     let agent: HTMLElement | undefined;
@@ -637,7 +651,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
         steps = undefined;
         const node = threadYou(reportEl('div', { class: 'bubble', text: item.text }), threadLong(item.text), item.id);
         nodes.set(item.id, node);
-        out.push(node);
+        out.push(node, ...[forksAt(item.id)].filter((each): each is HTMLElement => !!each));
         continue;
       }
       if (item.kind === 'move') {
@@ -651,15 +665,19 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
         // A message the host added sits where it was recorded, inside the agent's turn, as the host's.
         endPlumbing();
         steps = undefined;
-        const node = reportEl('div', { class: 'host-note', 'data-item': item.id }, reportEl('span', { class: 'host-who', text: 'Host' }), reportEl('span', { class: 'host-text', text: item.text }));
+        const node = reportEl('div', { class: 'host-note', 'data-item': item.id }, reportEl('span', { class: 'host-who', text: item.by ?? 'Host' }), reportEl('span', { class: 'host-text', text: item.text }));
         nodes.set(item.id, node);
-        if (agent) agent.append(node); else out.push(node);
+        const forks = forksAt(item.id);
+        if (agent) agent.append(node, ...(forks ? [forks] : [])); else out.push(node, ...(forks ? [forks] : []));
         continue;
       }
       if (!agent) { agent = agentMessage(); out.push(agent); }
       if (item.kind === 'tool') {
         if (!steps) { steps = reportEl('div', { class: 'steps' }); agent.append(steps); }
         const card = threadCard(recording, model, item, (node, open) => openers.set(node, open), (id, node) => nodes.set(id, node));
+        // The conversations the call made, or forked at it, under its card (they fold with it).
+        const forks = forksAt(item.id);
+        if (forks) card.append(forks);
         cards.set(item.id, card);
         nodes.set(item.id, card);
         if (item.plumbing) {
@@ -684,27 +702,23 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
       const node = item.kind === 'thinking' ? (item.redacted ? threadRedacted() : threadThinking(item.text)) : reportEl('div', { class: 'said-text', 'data-item': item.id }, ...reportParagraphs(item.text));
       nodes.set(item.id, node);
       agent.append(node);
+      const forks = forksAt(item.id);
+      if (forks) agent.append(forks);
     }
     endPlumbing();
     return out;
   };
   const input = model.input && threadInput(model.input);
   const thread = reportEl('div', { class: 'thread' }, input);
-  model.threads.forEach((each, index) => {
+  model.threads.filter((each) => !each.under).forEach((each, index) => {
     if (index === 0) {
       const drawn = drawThread(each);
       if (drawn[0]) nodes.set(each.id, drawn[0]);
       thread.append(...drawn);
       return;
     }
-    const first = each.items.find((item) => item.kind === 'user' || item.kind === 'tool');
-    const preview = first?.kind === 'user' ? first.text : first?.kind === 'tool' ? first.title : '';
-    const fold = reportEl('details', { class: 'think fold', 'data-item': each.id },
-      reportEl('summary', {}, reportEl('span', { class: 'lab', text: each.label }), reportEl('em', { text: preview.split('\n')[0] ?? '' })),
-      reportEl('div', { class: 'fold-body' }, ...drawThread({ ...each, items: each.items.filter((item) => item.kind !== 'move') })));
-    nodes.set(each.id, fold);
-    thread.append(fold);
-    // A move that happened while a folded conversation was the active one is drawn after it, in the run's own timeline, where a closed fold cannot hide it.
+    // A folded conversation's moves are drawn after its fold, in the run's own timeline, where a closed fold cannot hide them.
+    thread.append(fold({ ...each, items: each.items.filter((item) => item.kind !== 'move') }));
     for (const item of each.items) if (item.kind === 'move') thread.append(moveNode(item));
   });
   if (model.threads.length === 0) thread.append(reportEl('p', { class: 'none', text: 'This run recorded no conversation.' }));
@@ -732,11 +746,13 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     }
   });
 
-  /** Opens every fold that hides a node: its conversation's, and each folded group it sits in. */
+  /** Opens every fold that hides a node: each conversation's it sits in (a fork's, and every conversation's around it), and
+   *  each folded group. */
   const reveal = (node: HTMLElement) => {
-    const fold = node.closest<HTMLDetailsElement>('details.fold');
-    if (fold) fold.open = true;
-    for (let at: HTMLElement | null = node; at; at = at.parentElement) if (at.hidden) openers.get(at)?.();
+    for (let at: HTMLElement | null = node; at; at = at.parentElement) {
+      if (at instanceof HTMLDetailsElement && at.classList.contains('fold')) at.open = true;
+      if (at.hidden) openers.get(at)?.();
+    }
   };
   let shown: SourceShown | undefined;
   const mark = () => {

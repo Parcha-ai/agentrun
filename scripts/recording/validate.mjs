@@ -195,6 +195,14 @@ function artifactFileProblems(artifact, dir, lookKeys, lookSources, add) {
   }
 }
 
+/** The entry kinds a `pi.conversation` record's `parent.at` may point at (draft 54). Any other kind is refused, so a new entry kind
+ *  is a visible change to the format. */
+export const ENTRY_KINDS = new Set(['pi.user', 'pi.system', 'pi.assistant', 'pi.tool-result']);
+
+/** A task record as pi writes one, whatever its kind (any extension may define a task kind): every field pi's TaskRecord requires. */
+const isTaskRecord = (kind, data) => data.kind === kind && Number.isInteger(data.version) && 'input' in data && typeof data.background === 'boolean'
+  && typeof data.abortRequested === 'boolean' && isObject(data.state) && typeof data.state.status === 'string';
+
 /** Every problem in the recording at `dir`, in file order: `{ where, line?, message }`. */
 export function validateRecording(dir) {
   const problems = [];
@@ -248,6 +256,11 @@ export function validateRecording(dir) {
   const lookKeys = new Set();
   const lookSources = new Map();
   const liveGenerations = new Set();
+  // Draft 54: the conversations, entries and task records (by kind) the recording holds, and its pi.conversation lines.
+  const conversations = new Set();
+  const entries = new Set();
+  const tasks = new Set();
+  const conversationRecords = [];
   lines.forEach((text, index) => {
     const line = index + 1;
     if (text.trim() === '') return add('events.jsonl', 'has an empty line', line);
@@ -306,10 +319,40 @@ export function validateRecording(dir) {
       if (before !== undefined && event.seq <= before) add('events.jsonl', `seq ${event.seq} does not increase past ${before} in ${event.gen === undefined ? 'the supervisor\'s lines' : `generation ${event.gen}`}`, line);
       lastSeq.set(space, event.seq);
     }
+    if (event.conv !== undefined) conversations.add(event.conv);
+    if (event.channel === 'durable' && event.kind === 'pi.conversation') {
+      conversationRecords.push({ line, record: event.data });
+      if (isInt(event.data?.id)) conversations.add(event.data.id);
+    } else if (event.channel === 'durable' && isObject(event.data) && isInt(event.data.id) && isInt(event.data.conversationId)) {
+      const pair = `${event.data.conversationId}\u0000${event.data.id}`;
+      if (ENTRY_KINDS.has(event.kind)) entries.add(pair);
+      else if (isTaskRecord(event.kind, event.data)) tasks.add(pair);
+    }
     for (const key of lookKeysOf(event.data)) lookKeys.add(key);
     for (const [key, named] of lookSourcesOf(event.data)) lookSources.set(key, [...(lookSources.get(key) ?? []), ...named]);
     for (const hash of event.blobs ?? []) checkBlob(hash, 'events.jsonl', line);
   });
+  // A conversation's record (draft 54) holds no content, and its parent entry and owner task are in this recording.
+  for (const { line, record } of conversationRecords) {
+    if (!isObject(record) || !isInt(record.id)) { add('events.jsonl', 'a pi.conversation line has no integer id: its data is the record, { id, parent?, owner? }', line); continue; }
+    const name = `pi.conversation ${record.id}`;
+    for (const key of Object.keys(record)) if (!['id', 'parent', 'owner'].includes(key)) add('events.jsonl', `${name} holds ${key}: the line keeps only id, parent and owner, no content`, line);
+    const { parent, owner } = record;
+    const extraKeys = (value, role, keys) => {
+      if (isObject(value)) for (const key of Object.keys(value)) if (!keys.includes(key)) add('events.jsonl', `${name}: its ${role} holds ${key}: ${role === 'owner' ? 'an' : 'a'} ${role} keeps only ${keys.join(' and ')}, no content`, line);
+    };
+    if (parent !== undefined) {
+      extraKeys(parent, 'parent', ['conversationId', 'at']);
+      if (!isObject(parent) || !isInt(parent.conversationId) || !isInt(parent.at)) add('events.jsonl', `${name}: its parent is not { conversationId, at }, each an integer`, line);
+      else if (!conversations.has(parent.conversationId)) add('events.jsonl', `${name}: its parent names conversation ${parent.conversationId}, which is not in this recording`, line);
+      else if (!entries.has(`${parent.conversationId}\u0000${parent.at}`)) add('events.jsonl', `${name}: its parent names entry ${parent.at}, which is no entry (${[...ENTRY_KINDS].join(', ')}) of conversation ${parent.conversationId}`, line);
+    }
+    if (owner !== undefined) {
+      extraKeys(owner, 'owner', ['conversationId', 'taskId']);
+      if (!isObject(owner) || !isInt(owner.conversationId) || !isInt(owner.taskId)) add('events.jsonl', `${name}: its owner is not { conversationId, taskId }, each an integer`, line);
+      else if (!tasks.has(`${owner.conversationId}\u0000${owner.taskId}`)) add('events.jsonl', `${name}: its owner names task ${owner.taskId}, which is no task record of conversation ${owner.conversationId}`, line);
+    }
+  }
   if (isObject(manifest?.artifact) && artifactProblems(manifest.artifact).length === 0) artifactFileProblems(manifest.artifact, dir, lookKeys, lookSources, add);
   // A restore or a move names the head of the store its target generation opened, anchored on that generation's snapshot at open
   // (the store's latest commit then). A generation with no snapshot (a bare export) skips the continuity check. A restore's
