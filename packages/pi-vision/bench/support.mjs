@@ -11,6 +11,11 @@ export const HEADER = ["provider", "job", "file", "ms", "bytes", "pixels", "peak
 export const sharpFactory = (input, options) => sharp(input, options);
 export const peakRssMb = () => Math.round(process.resourceUsage().maxRSS / 1024);
 
+export const text = async (provider, file, call) => {
+  const out = await provider.text(file.source, {}, call);
+  return { bytes: out.pages.reduce((sum, page) => sum + Buffer.byteLength(page.text), 0), pixels: "-" };
+};
+
 /** Writes each file into `dir`; returns, by name, its bytes, its page (for a render) and the source a provider reads. */
 export async function writeFiles(dir, entries) {
   const files = {};
