@@ -3,7 +3,7 @@
 //   node scripts/sweep-open.mjs --ledger <file> [--app <modal app name>] [--wait-s 120]
 // The last line reads `sweep-open: terminated N, already gone M, left K`; K above 0 is money that may still be running, and the names are printed.
 import { parseArgs } from "node:util";
-import { Ledger } from "../../03-tab-to-cloud/pipe/control.ts";
+import { Ledger } from "../../../03-tab-to-cloud/pipe/control.ts";
 import { openTargets, terminateTargets } from "../sweep-open.ts";
 
 const { values } = parseArgs({ options: { ledger: { type: "string" }, app: { type: "string", default: "pda-demo" }, "wait-s": { type: "string", default: "120" } } });

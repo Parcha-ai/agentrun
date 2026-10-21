@@ -67,3 +67,21 @@ test("a queued create that never places within the wait is reported as left, by 
   assert.deepEqual(out.left, ["never"]);
   assert.deepEqual(out.terminated, []);
 });
+
+test("scripts/sweep-open.mjs loads (its imports resolve) and, over a ledger with nothing open, terminates nothing and exits 0", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join, dirname } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const dir = mkdtempSync(join(tmpdir(), "sweep-open-"));
+  try {
+    const script = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "sweep-open.mjs");
+    const run = spawnSync(process.execPath, [script, "--ledger", join(dir, "ledger.json"), "--wait-s", "1"], { encoding: "utf8", env: { PATH: process.env.PATH, HOME: process.env.HOME, MODAL_TOKEN_ID: "ak-test", MODAL_TOKEN_SECRET: "as-test" } });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /0 sandbox\(es\) open in the ledger/);
+    assert.match(run.stdout, /terminated 0, already gone 0, left 0/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
