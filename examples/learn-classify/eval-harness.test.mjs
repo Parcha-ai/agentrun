@@ -67,7 +67,7 @@ test('the stream: each epoch is every company of the split once, in an order the
   assert.deepEqual(held.filter((e) => e.epoch === 1).map((e) => e.cik), stream.filter((e) => e.epoch === 1 && !bank.some((b) => b.cik === e.cik)).map((e) => e.cik));
   assert.throws(() => streamOf(companies, { split: 'train', epochs: 1, seed: 7, exclude: [{ cik: '9999999999' }] }), /9999999999 is not a company of the set/);
   // A bank already given its own split is already out of the stream: excluding it again changes nothing.
-  assert.deepEqual(streamOf(companies, { split: 'train', epochs: 2, seed: 7, exclude: [{ cik: companies[11].cik }] }), stream);
+  assert.deepEqual(streamOf(companies, { split: 'train', epochs: 3, seed: 7, exclude: [{ cik: companies[11].cik }] }), stream);
 });
 
 test('a list names a split; a company may come back in a later epoch, never twice in one; the test split stays closed unless opened', async (t) => {
