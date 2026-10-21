@@ -1039,8 +1039,9 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
           log: options.log,
           onGone: (t, how) => options.ledger?.close("modal-sandbox", t.value, how === "terminated" ? "terminated at close: placed after the stop began" : "already gone at close"),
         });
-        options.log("close.queued", { terminated: swept.terminated.length, left: swept.left });
-        if (swept.left.length > 0) failures.push(`${inFlightNote ? `${inFlightNote}; ` : ""}${swept.left.length} sandbox create(s) still queued after ${Math.round((options.closeQueuedMs ?? 30_000) / 1000)} s more of asking by name, so not terminated (they expire by themselves at their lifetime): ${swept.left.join(", ")}; the ledger has them open by name`);
+        options.log("close.queued", { terminated: swept.terminated.length, notRunning: swept.notRunning, left: swept.left });
+        if (swept.left.length > 0) failures.push(`${swept.left.length} sandbox(es) found running and not removable: ${swept.left.join(", ")}`);
+        if (swept.notRunning.length > 0) failures.push(`${inFlightNote ? `${inFlightNote}; ` : ""}${swept.notRunning.length} sandbox create(s) still queued after ${Math.round((options.closeQueuedMs ?? 30_000) / 1000)} s more of asking by name: Modal has no running sandbox by that name (still queued, or already gone), so there is nothing to terminate now; a queued one that places later expires at its lifetime: ${swept.notRunning.join(", ")}; the ledger has them open by name`);
       } else if (inFlightNote && creates.size > 0) failures.push(inFlightNote);
       if (failures.length > 0) options.log("close.failures", { failures, left: live.size });
     },

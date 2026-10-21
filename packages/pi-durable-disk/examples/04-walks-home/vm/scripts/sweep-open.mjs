@@ -1,7 +1,8 @@
 // The stop's last step: terminate by name (or id) every sandbox the ledger still has open, then say what is left. A create Modal queued when the stop began is only a name until it places;
 // this keeps asking for it, for a bounded time, and terminates it when it appears. Needs Modal's token in the environment (the with-modal wrapper) and the ledger file the 03 server wrote (--ledger).
 //   node scripts/sweep-open.mjs --ledger <file> [--app <modal app name>] [--wait-s 120]
-// The last line reads `sweep-open: terminated N, already gone M, left K`; K above 0 is money that may still be running, and the names are printed.
+// The last line reads `sweep-open: terminated N, already gone M, not running R, left K`. `not running` are names under which Modal has no RUNNING sandbox (it ended, or a create is still queued: nothing to terminate);
+// `left` is a sandbox that was found and would not terminate: money still running, exit 1, names printed.
 import { parseArgs } from "node:util";
 import { Ledger } from "../../../03-tab-to-cloud/pipe/control.ts";
 import { openTargets, terminateTargets } from "../sweep-open.ts";
@@ -18,6 +19,7 @@ const out = await terminateTargets(sdk, values.app, targets, {
   log: (event, data) => console.log(JSON.stringify({ event, ...data })),
   onGone: (t, how) => ledger.close("modal-sandbox", t.value, how === "terminated" ? "terminated by the stop's sweep" : "already gone at the stop's sweep"),
 });
-if (out.left.length > 0) console.log(`not found or not removable: ${out.left.join(", ")}`);
-console.log(`sweep-open: terminated ${out.terminated.length}, already gone ${out.gone.length}, left ${out.left.length}`);
+if (out.left.length > 0) console.log(`found running and not removable: ${out.left.join(", ")}`);
+if (out.notRunning.length > 0) console.log(`no running sandbox by this name (ended, or a create still queued): ${out.notRunning.join(", ")}`);
+console.log(`sweep-open: terminated ${out.terminated.length}, already gone ${out.gone.length}, not running ${out.notRunning.length}, left ${out.left.length}`);
 process.exit(out.left.length > 0 ? 1 : 0);

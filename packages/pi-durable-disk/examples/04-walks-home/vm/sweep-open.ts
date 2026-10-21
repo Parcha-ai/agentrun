@@ -34,13 +34,14 @@ export interface SweepOptions {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** One attempt on one target: "done" (terminated or already gone), or "retry" (not there yet, or Modal would not take it). */
-async function attempt(sdk: SweepSdk, appName: string, target: Target, log: NonNullable<SweepOptions["log"]>): Promise<"terminated" | "already gone" | "retry"> {
+async function attempt(sdk: SweepSdk, appName: string, target: Target, log: NonNullable<SweepOptions["log"]>): Promise<"terminated" | "already gone" | "retry" | "not found"> {
   let box: Box;
   try {
     box = target.kind === "id" ? await sdk.sandboxes.fromId(target.value) : await sdk.sandboxes.fromName(appName, target.value);
   } catch {
-    // An id Modal no longer knows is gone; a name it does not know yet is a create still queued.
-    return target.kind === "id" ? "already gone" : "retry";
+    // An id Modal no longer knows is gone. A name is looked up among RUNNING sandboxes only (Modal's own rule), so one it does not find is a sandbox that already ended or a create still queued: nothing
+    // can be terminated now, and the two cannot be told apart by name. It is asked for again until the wait ends.
+    return target.kind === "id" ? "already gone" : "not found";
   }
   if (target.kind === "id" && box.poll && (await box.poll().catch(() => null)) !== null) return "already gone";
   try {
@@ -52,21 +53,27 @@ async function attempt(sdk: SweepSdk, appName: string, target: Target, log: NonN
   }
 }
 
-/** Terminate every target. Returns what was terminated and what is left (not found or not removable within `waitMs`). */
-export async function terminateTargets(sdk: SweepSdk, appName: string, targets: readonly Target[], options: SweepOptions = {}): Promise<{ terminated: string[]; gone: string[]; left: string[] }> {
+/**
+ * Terminate every target. Returns what was terminated, what was already gone, the names under which Modal has NO RUNNING sandbox (`notRunning`: ended already, or a create still queued: nothing to terminate, and
+ * a queued one is caught only if it places within `waitMs`), and what is `left`: a sandbox that was found and would not terminate within `waitMs`. Only `left` is a sandbox known to be running.
+ */
+export async function terminateTargets(sdk: SweepSdk, appName: string, targets: readonly Target[], options: SweepOptions = {}): Promise<{ terminated: string[]; gone: string[]; notRunning: string[]; left: string[] }> {
   const log = options.log ?? (() => undefined);
   const waitMs = options.waitMs ?? 30_000;
   const pollMs = options.pollMs ?? 2_000;
   const terminated: string[] = [];
   const gone: string[] = [];
   let todo = [...targets];
+  const located = new Set<string>();
   const deadline = Date.now() + waitMs;
   for (;;) {
     const next: Target[] = [];
     for (const target of todo) {
       const how = await attempt(sdk, appName, target, log);
-      if (how === "retry") next.push(target);
-      else {
+      if (how === "retry" || how === "not found") {
+        if (how === "retry") located.add(target.value);
+        next.push(target);
+      } else {
         (how === "terminated" ? terminated : gone).push(target.value);
         options.onGone?.(target, how);
       }
@@ -75,5 +82,5 @@ export async function terminateTargets(sdk: SweepSdk, appName: string, targets: 
     if (todo.length === 0 || Date.now() + pollMs > deadline) break;
     await sleep(pollMs);
   }
-  return { terminated, gone, left: todo.map((t) => t.value) };
+  return { terminated, gone, notRunning: todo.filter((t) => !located.has(t.value)).map((t) => t.value), left: todo.filter((t) => located.has(t.value)).map((t) => t.value) };
 }
