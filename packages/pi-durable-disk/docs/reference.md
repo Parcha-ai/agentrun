@@ -228,6 +228,18 @@ The supervisor passes the app on (`--app MODULE`, made absolute), other flags fo
 and the instance's environment as `--env KEY=VALUE`. The API key is read from the environment variable named by
 `--api-key-env` (default `ARCHIL_API_KEY`) by the supervisor commands only; `run` never needs it.
 
+A duration flag takes a number and its unit: `ms`, `s`, `m` or `h`, decimals allowed (`500ms`, `30s`, `1.5m`, `1h`). A
+bare number is refused with exit 2 and a hint (`not a duration: "90": give a unit, e.g. 90s or 90ms`), so `90` is never
+silently 90 milliseconds. Every duration flag of every command is checked before the command acts. Two exceptions:
+- Flags named `-ms` (`--heartbeat-ms`, `--lease-expiry-ms`, `--lease-margin-ms`) keep bare milliseconds; their name
+  carries the unit, and units are still accepted.
+- A bare `0` turns a feature off where 0 means off:
+  - `--park-threshold 0`: no parking.
+  - `--start-grace 0`: no start grace, and so no backoff.
+  - `--start-backoff-max 0`: no backoff; the grace stays at `--start-grace`.
+
+  Anywhere else, `0` takes a unit (`0s`) and behaves as before.
+
 An instance's exit code tells the host's process supervisor what to do:
 
 | Exit | Meaning | Restarted? |
