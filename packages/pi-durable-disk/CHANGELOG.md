@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+## 0.1.0-beta.20 (2026-10-20)
+
+- A start mark keeper whose rewrite fails because the run's directory moved after its check now warns that the directory is no longer the one it started on, and stops. Before, the `PDA_START_MARK` warning said the rewrite failed (ENOENT or ENOTDIR). Nothing is written in either case; only the stated reason changes.
+- The local-disk env conformance cases watch with a 100 ms poll, so pi's fixed 3 s wait for a report keeps seconds of slack on a loaded runner; the product's 1 s watch default is unchanged.
+
+## 0.1.0-beta.19 (2026-10-20)
+
+- An instance whose app released the run ends by itself: `pi-durable-disk run --app` exits 0 once `onOpen` has returned and the run is released, so the unit does not stay up with no mount.
+  - A stop (SIGTERM or SIGINT) after the app's release, from `onOpen` or later, exits 0 with no drain and no wake written to the released run.
+  - `DurableRun` gains `readonly releasing: boolean`, true once `release()` began. A caller that implements `DurableRun` itself must add it.
+  - `pi-durable-disk --help`, `help` and `<command> --help` print the usage on stdout and exit 0.
+- **The README is the overview, `docs/reference.md` the reference; three new keyless examples**
+  - The package README is now the overview: what it is (an agent's home and runs live on a disk, so any host can open a run where
+    the last one released it), when to use it, a keyless example to run from an npm install, Archil as "bring your own disk",
+    what you can do with it, what it costs, what it does not do, the install lines, and the low-level API (`openDurableRun`, `localRun`, `seed`, `localPlace` and
+    `archilPlace`, `PlaceOutcome`, `withClaim`, `recordHome`) with an example or test for each. The reference sections moved,
+    with their headings, to `docs/reference.md` (requirements, the quickstarts on a disk, the app, the CLI, host drivers and the
+    supervisor, the failure table, security, the layout, the library). `docs/` is not in the published package, so the README's
+    links to it resolve on npm's and GitHub's pages, as the links to `examples/` do. Two fixes in the moved text: `readReleased`
+    returns `{ bytes, etag }` or null (a snippet bound it to the bytes), and the quickstarts say what the run does (it moves to
+    another host from the disk) with the kill as one line.
+  - New examples, all keyless: `pick-up-a-run` (three processes open one run in turn; the README's first example, which the
+    stranger test runs), `seed-a-run` (what `seed` writes, once, and the next open keeps what the run changed) and
+    `place-outcome` (`localPlace` reports a run that delivers as `complete` and one that gives up as `failed`, with the models).
+    `01-durable-chat/on-a-directory.mjs` stays and is still run in CI.
+  - The install lines in the README and in `examples/README.md` no longer pin the pi packages to 1.2: the published beta's peers
+    are `>=1.0.4 <1.4.0`.
+- The README and `docs/reference.md` say that an instance ends after its app releases the run: returning from `onOpen` after
+  `await run.release()` is enough, and the examples' `process.exit(0)` is fine too. This follows the fix that makes such an
+  instance exit 0 and a stop after the release clean.
+
 ## 0.1.0-beta.17 (2026-10-18)
 
 - **A claim directory's descriptor is closed by `close()` only, never by garbage collection (GRE-3853)**
