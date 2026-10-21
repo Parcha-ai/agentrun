@@ -99,7 +99,7 @@ test('each thread had a sandbox of its own, asked to be an H100 on gVisor, and e
   const created = boxes.filter((b) => b.ev === 'create');
   assert.equal(created.length, THREADS);
   assert.equal(new Set(created.map((b) => b.id)).size, THREADS);
-  for (const b of created) assert.deepEqual([b.spec.gpu, b.spec.isolation, typeof b.spec.image, b.spec.labels.run], ['H100!', 'gvisor', 'string', 'moves']);
+  for (const b of created) assert.deepEqual([b.spec.gpu, b.spec.isolation, typeof b.spec.image, b.spec.labels.run, b.spec.maxLifetimeMs], ['H100!', 'gvisor', 'string', 'moves', 900_000]);
   assert.deepEqual(boxes.filter((b) => b.ev === 'destroy').map((b) => b.id).sort(), created.map((b) => b.id).sort(), 'the same eight, ended');
 });
 

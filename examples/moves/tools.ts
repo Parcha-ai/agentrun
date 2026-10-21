@@ -10,7 +10,7 @@ import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { NodeDoc } from "@parcha/agentrun-pi/durable";
 import type { Box, BoxProvider } from "@parcha/pi-transport";
 import { boxEnv } from "@parcha/pi-transport/hands";
-import { GPU, GPU_IMAGE, THREADS } from "./config.ts";
+import { BOX_LIFETIME_MS, GPU, GPU_IMAGE, THREADS } from "./config.ts";
 
 type Context = Parameters<ToolExecutionApi["details"]>[1];
 
@@ -61,7 +61,7 @@ export function movesExtensions(deps: MovesTools): { session: Extension; thread:
     if (!box) {
       box = (async () => {
         const provider = await deps.provider(workspace);
-        const made = await provider.create({ gpu: GPU, image: GPU_IMAGE, isolation: "gvisor", maxLifetimeMs: 30 * 60_000, labels: deps.labels }, context);
+        const made = await provider.create({ gpu: GPU, image: GPU_IMAGE, isolation: "gvisor", maxLifetimeMs: BOX_LIFETIME_MS, labels: deps.labels }, context);
         if (!made.ok) throw made.error;
         return made.value;
       })();
