@@ -8,4 +8,5 @@ Errors from `createJevRunner` now say what happened, and its checks match what w
 - `client: null` from a JavaScript caller is no client. Before, it lifted the rule that the SDK path needs a finite `timeoutMs`, and let an image or a Box question go to OpenRouter.
 - A blank per-call `model` is refused with `requestDiagnostic.reason` `unsupported_model`, the reason a model refusal already had. It was `invalid_questions`, which named the question map.
 - Answers are checked against the questions as they were sent. A criterion whose value is `undefined` is not carried by JSON, so Jev is never asked about it; it is no longer required in the answer, and a right answer to the questions sent is no longer refused as `invalid_response`. The DSL's interpreter still checks a workflow's answers against its own questions.
+- An `apiKey` that is empty or only spaces is a configuration error when the runner is created, on the TypeSafe path as it already was on OpenRouter. Before, it was sent as an empty bearer token and every call failed as `http` 401.
 - `@parcha/agentrun-pi`'s message for an invalid Jev state no longer lists `null` as accepted.

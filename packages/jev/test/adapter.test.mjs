@@ -371,3 +371,14 @@ test('answers are checked against the questions as sent, so a criterion JSON dro
   assert.deepEqual(Object.keys(sent.questions.team.criteria), ['billing', 'other'], 'undefined is not sent');
   assert.equal(result.answers.team.choice, 'billing');
 });
+
+test('a blank apiKey is a configuration error on either provider, before any request', async () => {
+  let calls = 0;
+  const fetch = async () => { calls++; return response(payload()); };
+  for (const apiKey of ['', '  ']) {
+    for (const provider of [undefined, 'openrouter']) {
+      assert.throws(() => createJevRunner({ apiKey, fetch, ...(provider ? { provider } : {}) }), code('configuration'), `${JSON.stringify(apiKey)} on ${provider ?? 'typesafe'}`);
+    }
+  }
+  assert.equal(calls, 0);
+});
