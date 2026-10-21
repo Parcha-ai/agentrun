@@ -68,7 +68,7 @@ if (done.ok) console.log(done.value.exitCode, new TextDecoder().decode(done.valu
 await box.destroy(BACKGROUND_CONTEXT);
 ```
 
-The examples are ES modules: save them as `.mjs` (or set `"type": "module"`), and install the peers, `@earendil-works/chord` and `@earendil-works/pi-durable`, beside `@parcha/pi-transport`. Node 22.19 or later.
+The examples are ES modules: save them as `.mjs` (or set `"type": "module"`); the `transport()` example below has TypeScript types, so save that one as `.mts` (Node runs it as it is). Install the peers, `@earendil-works/chord` and `@earendil-works/pi-durable`, beside `@parcha/pi-transport`. Node 22.19 or later.
 
 Expected failures are returned as `Result` values with a `BoxError` and a code. Every box has a maximum lifetime
 that its provider enforces with no call from the host, so a host that dies does not leave boxes behind. A program in
