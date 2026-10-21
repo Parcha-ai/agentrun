@@ -2,10 +2,33 @@
 
 **Experimental.** The API changes without notice between releases.
 
-Run a [pi-durable](https://github.com/earendil-works/pi) session's tools in another machine, or move the session
-there. This release holds the first layers: the `Box` interface with two providers and a conformance suite, `boxEnv`,
-which runs a session's tools in a box, and `transport()`, which sends each conversation's tools to the box its
-config names.
+A pi agent's tool calls go to Daytona and Modal sandboxes, and Jev places each one on the sandbox that fits it.
+
+Tool calls can also run as serverless calls on an Archil disk (`archilExecBoxes`).
+
+`boxEnv(box)` gives a [pi](https://github.com/earendil-works/pi) agent's `read`, `write`, `edit` and `bash` a box: it
+is pi's `ExecutionEnv` over the box, for a pi-durable Harness. `transport(config, host)` does it for each conversation,
+from a config that names the environments. The session, its store and its model calls stay with the host; only the
+tool calls go to the box. Every provider is behind one `Box` interface:
+
+| Where | Provider | Isolation |
+| --- | --- | --- |
+| This machine | `localBoxes`, from `@parcha/pi-transport/box/local` | none: for development and tests |
+| Docker | `dockerBoxes`, from `@parcha/pi-transport/box/docker` | a container per box |
+| Daytona | `daytonaBoxes`, from `@parcha/pi-transport/box/daytona` | a container per box on the host kernel; a `linux-vm` snapshot is a VM |
+| Modal | `modalBoxes`, from `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
+| Archil exec | `archilExecBoxes`, from `@parcha/pi-transport/box/archil-exec` | a directory of the agent's work disk; each `exec` is one serverless call in a fresh VM container, and boxes on one disk share it |
+
+Jev places a call from each environment's one-line `purpose`: the host asks `jevPlacer`, Jev reads the step and those
+lines and says where it should run, and the host points its tools there.
+
+The reference below takes each part in turn: [a box](#a-box), [tools in a box](#hands-tools-run-in-a-box),
+[where tools run](#where-tools-run-is-a-line-of-config),
+[a store and a workspace](#moving-a-home-a-store-and-a-workspace),
+[a home](#a-home-the-session-runs-somewhere-and-can-stop-without-a-cut), [Jev's placement](#where-a-session-runs-the-placer),
+[ownership](#ownership-one-writer-per-session), [the box place](#a-sessions-place-in-a-box-place),
+[receipts](#what-a-box-cost-receipts), [a program kept alive in a box](#home-a-program-kept-alive-in-a-box) and
+[writing a provider](#writing-a-provider).
 
 ## A box
 
@@ -30,14 +53,7 @@ await box.destroy(BACKGROUND_CONTEXT);
 Expected failures are returned as `Result` values with a `BoxError` and a code. Every box has a maximum lifetime
 that its provider enforces with no call from the host, so a host that dies does not leave boxes behind. A program in
 a box never receives the host process's environment. A provider refuses a spec field it cannot honour instead of
-ignoring it.
-
-| Provider | Import | Isolation |
-| --- | --- | --- |
-| This machine | `@parcha/pi-transport/box/local` | none: for development and tests |
-| Docker | `@parcha/pi-transport/box/docker` | a container per box |
-| Daytona | `@parcha/pi-transport/box/daytona` | a container per box on the host kernel; a `linux-vm` snapshot is a VM |
-| Modal | `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
+ignoring it. The table above lists the providers; the sections below say what each one does with a spec.
 
 ### Daytona
 
@@ -88,6 +104,82 @@ It refuses `image`, `snapshot`, `cpus`, `memoryMb`, `gpu`, `region` and any `iso
 `dockerBoxes` runs `sleep` for the lifetime in place of the image's own entrypoint, so Docker ends the box. It refuses
 `snapshot`, `region` and any `isolation` but `container`. Docker cannot choose a GPU model: any `gpu` gives the
 container every GPU of the host.
+
+### Archil exec
+
+`archilExecBoxes({ client, disk })` makes a box of a directory of an agent's Archil WORK disk (never the disk of its
+store), and runs each `exec` as one Archil serverless `exec`: a fresh container with the disk mounted, one request that
+answers when the command ends. It takes the host's own SDK, so this package depends on none: `client` is `new Archil({
+apiKey, region })` and `disk` is a disk of it, from the `disk` package (version 1.9.0 was measured; `npm install
+--no-save disk@1.9.0`).
+
+```ts
+import * as archil from "disk";
+import { archilExecBoxes } from "@parcha/pi-transport/box/archil-exec";
+
+const client = new archil.Archil({ apiKey, region: "aws-us-east-1" });
+const { disk } = await client.disks.create({ name: "agent-work" });
+const provider = archilExecBoxes({ client, disk });
+```
+
+The box is the directory `boxes/<id>/` of the disk. Its labels, facts and end time are the file
+`boxes.records/<id>.json`, outside every directory a command can hold, so `attach` and `list` find the box after a
+restart and a box can be ended while a command runs in it. These are the limits, each one in the facts or refused with
+a typed error:
+
+- **One request per command.** `facts().liveProcesses` is `false`: no program keeps running between calls, and a
+  command's output arrives after it ended. A box like this never serves as a home: the box place refuses it with
+  `MoveError` code `no_live_processes`. Use it for tools.
+- **A 300 s limit.** `facts().maxExecMs` is 300 000. A `timeoutMs` above it is refused with `invalid`; a command with
+  none still gets a deadline of 295 s of its own inside the container, so nothing runs past the point where the
+  platform cuts a call and loses its later writes. A command ended by its deadline is a `timeout` error; an exit code
+  of 124, which is what ends a command at its deadline, is read that way too.
+- **No stdin.** `stdin.write` rejects with `unsupported`. Output is text: bytes that are not UTF-8 come back as U+FFFD,
+  so move bytes with `upload` and `download`, which use the disk's object API and carry every byte value (8 MiB measured
+  in about 0.3 s each way).
+- **Aborting the context ends the wait at once.** The SDK has no signal to stop the command in the container, so the
+  command ends at its own deadline (an abort of the raw HTTP request was measured to stop a command at the platform, but
+  not through this SDK).
+- **Through `boxEnv` (the file and bash tools).** An environment on such a box reads and writes files through `upload` and
+  `download`, so a write keeps every byte and a binary read is exact. Each transfer runs under the operation deadline and is
+  cancelled with its call, so one still queued behind a command is not run after a timeout or an abort. An append is the bytes
+  uploaded to a file of their own and one command that appends it, so a command queued beside it keeps its change. A binary
+  reader refuses a file over its limit before moving a byte. A path outside the box's workspace can be read as text only, and
+  not written. A command's own deadline is the caller's `timeout`, and a caller that gives up never has its command run later.
+  A command stopped by a timeout or an abort cannot be killed: nothing reaches a running call, so it ends at its own deadline
+  and the next call to the box waits for it. Temporary and spill files go under the workspace. A watcher bills one call per
+  interval.
+- **One command at a time per box, across processes.** Every `exec` checks out the box's directory with a queue
+  (`queueMs`, default 60 s), so a second process that attached the same box (a restore, another host) waits for the
+  first instead of being refused (a plain write without a checkout loses writes: 3 of 5 parallel appends were refused),
+  and this process also runs a box's execs in the order they were asked. Boxes do not wait for each other. A file
+  written through `upload` takes no checkout: it waits for this process's own commands and retries while another process
+  holds the directory, up to `queueMs`.
+- **`destroy` ends the box for every client at once**, whatever still runs in it, by deleting its record; the directory
+  is removed through its parent (`destroyWaitMs`, default 5 s) and a directory a running command held is removed by the
+  next `list`, which sweeps every directory with no record.
+- **A lifetime is checked, not enforced by a timer.** Archil has no timer that ends a directory: a box past its
+  `maxLifetimeMs` is ended, and its directory removed, by the first call that looks at it (`attach`, `list`, `exec`,
+  `status`, `upload`, `download`). A box nobody calls again stays on the disk until a `list` finds it.
+- **The isolation is one VM per call, and the disk is shared.** Each call runs in its own fresh VM container, but boxes on one
+  disk share it: a command can read and write every box's directory, and the records, on that disk. Give each agent its own
+  work disk, never one disk to two agents.
+- **A box has no env.** Archil's exec carries only the command, so a value could only ride in the command or in the box's
+  record on the disk, where any command on that disk can read it. A spec with an env (any name, any value) is refused with
+  `unsupported`, a per-call env of a `boxEnv` environment on such a box (any name, and `PATH`) is refused with a
+  `spawn_error`, and the record and every call's command carry none. A program gets what it is given as arguments or as
+  files. Each exec container's own environment holds the platform's `ARCHIL_CONTAINER_ID`, `ARCHIL_DISK_ID` and
+  `ARCHIL_REGION` (measured; no key).
+- Refused before any call: a GPU, a snapshot, a `workspace`, an isolation other than `vm`, more than 2 vCPU or 3938 MiB
+  (`unsupported`); a label in the providers' namespace, an env of any kind, a lifetime that is not
+  positive (`invalid`).
+- A box billed per call gets its receipt with `calls` in place of seconds (see
+  [receipts](#what-a-box-cost-receipts)).
+
+The live suite spends money and runs only when asked. It needs the key in `ARCHIL_API_KEY` and the SDK:
+`PI_TRANSPORT_LIVE_ARCHIL=1 npm run test:live -w @parcha/pi-transport` (`PI_TRANSPORT_LIVE_ARCHIL_SDK` names the SDK's
+entry file when `disk` here is another version). It makes its own new disk in `aws-us-east-1`, deletes it at the end and
+checks that none is left.
 
 ## Hands: tools run in a box
 
@@ -141,43 +233,6 @@ Where it differs from `NodeExecutionEnv`, on purpose:
   Node reads the ranges it is asked for. `readTextLines` with `maxLines` brings only those lines out of the box.
 
 Not covered by hands: MCP servers, code mode and model calls stay with the Harness.
-## Moving a home: a store and a workspace
-
-`@parcha/pi-transport/home` holds the two movers a session needs when there is no disk the boxes share. They know
-nothing of sessions beyond "a SQLite file and a directory". Node only.
-
-- **A store.** `sealStore(path)` returns a `Seal` (head, SHA-256, size) of a store its owner has closed; a store with a
-  write-ahead log that holds content is refused with `not_sealed`. `checkpointStore(path, to)` takes a consistent copy
-  of a store that is still open, with `VACUUM INTO` through a second read-only connection; the copy appears whole or
-  not at all. `verifyStore(path, seal)` checks size, hash, SQLite's quick check and the head, in that order. The head is
-  one read of `durable_metadata.next_seq`, the only knowledge of pi's schema here.
-- **A file.** `moveFile(from, path, to, path, seal)` copies one file between boxes through this process and checks it by
-  hash on the way and on the target; it appears at its path whole or not at all.
-- **A directory.** `manifestOf(box, root, { exclude })` lists a directory in the box: every path with its kind, size,
-  mode, link target and, for files, SHA-256. `moveWorkspace(from, to, { fromRoot, toRoot, exclude, maxBytes })` copies it
-  as a `tar` stream, relayed a chunk at a time with no temporary file, then checks the target against the source:
-  `too_large` and `unsupported_entry` (a socket, device or pipe, named) are decided from the listing before a byte
-  moves; `changed` says the source changed during the copy; `mismatch` names the first path where the target differs.
-  The receipt has bytes, files, the time of each part, MB per second and which side the relay waited on more.
-
-Kept: file contents, permission bits, symbolic links as links, empty directories, modification times in whole
-seconds, names with any bytes. Not kept: owners and groups, extended attributes, ACLs, and the access times. A target
-that already holds other files fails the check. The boxes need `tar`, `find`, `xargs`, `split` and `sha256sum` from GNU
-coreutils and findutils, as `boxEnv` does.
-
-**How the bytes travel.** Each side of a move decides for itself by its box's `facts().bulk`: `stream` moves the
-archive through the streams of `exec`, and is what `localBoxes` and `dockerBoxes` say; anything else, including a box
-that says nothing, moves it as files through `upload` and `download`, because a remote provider's streams can be far
-slower than its file calls (measured: Daytona's at 0.1 to 2.8 MB/s against 25 to 40 MB/s for files, a Modal sandbox's
-at 2 MB/s against 31 to 35). Out of Docker into Daytona the archive streams out and arrives as files. A host can
-override either side in the options (`fromPipe`, `toPipe`) and set the size of the parts (`chunkBytes`, default
-32 MiB). With files, the archive is cut into parts in a directory of its own under the box's temporary directory
-(`TMPDIR`, else `/tmp`); every part is hashed where it is made and checked where it lands, so a part that is missing,
-short or flipped is `mismatch`; the directories are removed on success, on failure and on abort.
-
-**Disk a move needs.** A side that moves files holds the archive once more: the source box needs free space for the
-archive next to the tree it is packing (about the size of the files), and the target box for the archive next to the
-tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
 
 ### Where tools run is a line of config
 
@@ -243,7 +298,47 @@ a provider may store and return, and never in a command line.
 node --experimental-strip-types examples/01-hands.ts examples/hands.docker.json 'hostname; pwd'
 ```
 
+## Moving a home: a store and a workspace
+
+`@parcha/pi-transport/home` holds the two movers a session needs when there is no disk the boxes share. They know
+nothing of sessions beyond "a SQLite file and a directory". Node only.
+
+- **A store.** `sealStore(path)` returns a `Seal` (head, SHA-256, size) of a store its owner has closed; a store with a
+  write-ahead log that holds content is refused with `not_sealed`. `checkpointStore(path, to)` takes a consistent copy
+  of a store that is still open, with `VACUUM INTO` through a second read-only connection; the copy appears whole or
+  not at all. `verifyStore(path, seal)` checks size, hash, SQLite's quick check and the head, in that order. The head is
+  one read of `durable_metadata.next_seq`, the only knowledge of pi's schema here.
+- **A file.** `moveFile(from, path, to, path, seal)` copies one file between boxes through this process and checks it by
+  hash on the way and on the target; it appears at its path whole or not at all.
+- **A directory.** `manifestOf(box, root, { exclude })` lists a directory in the box: every path with its kind, size,
+  mode, link target and, for files, SHA-256. `moveWorkspace(from, to, { fromRoot, toRoot, exclude, maxBytes })` copies it
+  as a `tar` stream, relayed a chunk at a time with no temporary file, then checks the target against the source:
+  `too_large` and `unsupported_entry` (a socket, device or pipe, named) are decided from the listing before a byte
+  moves; `changed` says the source changed during the copy; `mismatch` names the first path where the target differs.
+  The receipt has bytes, files, the time of each part, MB per second and which side the relay waited on more.
+
+Kept: file contents, permission bits, symbolic links as links, empty directories, modification times in whole
+seconds, names with any bytes. Not kept: owners and groups, extended attributes, ACLs, and the access times. A target
+that already holds other files fails the check. The boxes need `tar`, `find`, `xargs`, `split` and `sha256sum` from GNU
+coreutils and findutils, as `boxEnv` does.
+
+**How the bytes travel.** Each side of a move decides for itself by its box's `facts().bulk`: `stream` moves the
+archive through the streams of `exec`, and is what `localBoxes` and `dockerBoxes` say; anything else, including a box
+that says nothing, moves it as files through `upload` and `download`, because a remote provider's streams can be far
+slower than its file calls (measured: Daytona's at 0.1 to 2.8 MB/s against 25 to 40 MB/s for files, a Modal sandbox's
+at 2 MB/s against 31 to 35). Out of Docker into Daytona the archive streams out and arrives as files. A host can
+override either side in the options (`fromPipe`, `toPipe`) and set the size of the parts (`chunkBytes`, default
+32 MiB). With files, the archive is cut into parts in a directory of its own under the box's temporary directory
+(`TMPDIR`, else `/tmp`); every part is hashed where it is made and checked where it lands, so a part that is missing,
+short or flipped is `mismatch`; the directories are removed on success, on failure and on abort.
+
+**Disk a move needs.** A side that moves files holds the archive once more: the source box needs free space for the
+archive next to the tree it is packing (about the size of the files), and the target box for the archive next to the
+tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
+
 ## A home: the session runs somewhere, and can stop without a cut
+
+A session can live in a box too: it moves between boxes, and comes back from a killed process or a lost box.
 
 `openHome(options)` is one place a session can run: its store, its workspace and pi's Harness over them. It does
 nothing by itself. A host gives it orders, in its own process today and over a link later:
@@ -629,10 +724,16 @@ It makes the box, and
 
 ## What a box cost: receipts
 
+`boxReceipts` names each box by a label (`box-1`, `box-2`, never the provider's id) and writes its receipt when it
+ends: the provider, the kind of box, when it started and ended, and its cost at the rates the host passes. This
+package holds no price table; a box the host gives no rate gets no receipt.
+
 `boxReceipts({ prices, write })` keeps a ledger of the boxes its providers make: `ledger.wrap(provider)` is the same
 provider, and each box it makes gets one receipt when it ends, destroyed through it, found ended by `status`, or found
 gone by `attach` (a lifetime that ran out, or a sweep). The host writes each receipt as a live line, source
-`transport`, kind `box.receipt`: `{ box, provider, kind, from, to, seconds, usd_per_second, cost_usd, source, priced }`.
+`transport`, kind `box.receipt`: `{ box, provider, kind, from, to, seconds, usd_per_second, cost_usd, source, priced }`;
+a box its provider bills per call instead (`archil-exec`) carries `calls` and `usd_per_call` in place of `usd_per_second`,
+which is then absent, never 0 (RECORDING.md draft 40).
 `box` is a label, `box-1`, `box-2` as the boxes are made, never the provider's id. Hand the wrapped providers to
 everything that makes boxes: a box place, and the transport's hands pools (`TransportHost.providers`).
 
@@ -647,8 +748,10 @@ The prices are the host's (`prices: [{ provider, kind, usdPerSecond, source, pri
 was read from and `priced` the date it was read): this package holds no price table. A box's `kind` is found from its
 facts (`gpu:<gpu>` for a box with a GPU, else its isolation), or by the host's `kindOf`. A box with no price writes no
 receipt, so its cost stays unknown, never 0. `cost_usd` is an estimate at list price, `seconds` times the price per
-second: not the provider's invoice, which bills by its own rounding, minimums and discounts. A box another process or
-host made is its maker's to receipt.
+second: not the provider's invoice, which bills by its own rounding, minimums and discounts. A price with `usdPerCall`
+(and no `usdPerSecond`) is for a box billed per call: its receipt counts the `exec` calls the box started, one aborted or
+given up on included, and `cost_usd` is `calls` times `usd_per_call` rounded to 9 decimals; `seconds` stays its lifetime,
+for display only. A call refused before it is made is not counted. A box another process or host made is its maker's to receipt.
 
 ## Home: a program kept alive in a box
 
@@ -708,3 +811,9 @@ registerBoxConformance({ describe, expect, it }, "my boxes", (use) => use(myBoxe
 ```
 
 A box whose `exec` carries input and streams output can take `uploadByExec` and `downloadByExec` as its file calls.
+
+A provider whose boxes keep no program running between calls and take no input (`facts().liveProcesses` is false) passes
+`withoutLiveProcesses: "<why>"`: the suite then leaves out the cases that need a live program or stdin, and one case in
+their place requires the facts to say so and stdin to be refused with `unsupported`; the reason is in its name.
+A provider whose boxes have no env passes `withoutEnv: "<why>"`: the suite creates its boxes with no env, leaves out the case that
+reads the spec's env, and adds one that requires a spec with an env to be refused with `unsupported`; the reason is in its name.

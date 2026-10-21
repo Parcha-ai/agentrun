@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -73,6 +74,8 @@ const allowedEndpoints = {
     ['dist/providers/cdp.js', 'http://127.0.0.1:${own.port}'],
     // The fake provider in the test kit (`./testing`) serves its pages from a loopback server of its own.
     ['dist/testing/backend.js', 'http://127.0.0.1:${server.address().port}'],
+    // The live view starts its own server on loopback when the host mounts none (never 0.0.0.0), and tells the host the viewer's address.
+    ['dist/live-view/server.js', 'http://127.0.0.1:${s.address().port}'],
   ],
   serve: [
     // The address agentrun-serve binds by default, which its quick start points a client at.
@@ -93,7 +96,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'harness'];
   const tarballs = [];
   for (const directory of packageDirectories) {
     const cwd = join(root, 'packages', directory);
@@ -237,6 +240,8 @@ syncBuiltinESMExports();
   const transportRoot = join(consumer, 'node_modules/@parcha/pi-transport');
   const transportExports = (await json(join(transportRoot, 'package.json'))).exports;
   const boxProviders = (await readdir(join(transportRoot, 'dist/box'))).filter(file => file.endsWith('.js')).map(file => file.slice(0, -3)).filter(name => transportExports[`./box/${name}`] !== null).sort();
+  // A file name like archil-exec exports archilExecBoxes.
+  const boxFactory = name => `${name.replace(/-(\w)/g, (_, letter) => letter.toUpperCase())}Boxes`;
   assert.ok(['docker', 'local'].every(name => boxProviders.includes(name)), `pi-transport exports the providers ${boxProviders.join(', ')}`);
   await writeFile(join(consumer, 'smoke.mjs'), `import assert from 'node:assert/strict';
 import { runWorkflow, validateWorkflow, defineWorkflow, runTypedWorkflow, inspectWorkflow, formatWorkflowTree, authorWorkflow, authorContract, loadAuthorReference } from '@parcha/agentrun-dsl';
@@ -277,6 +282,10 @@ import { execFileSync } from 'node:child_process';
 import * as agentExport from '@parcha/pi-durable-agent/export';
 import * as serve from '@parcha/agentrun-serve';
 import * as piSignin from '@parcha/agentrun-pi/signin';
+import * as reference from '@parcha/agentrun-harness';
+import * as referenceScan from '@parcha/agentrun-harness/scan';
+import * as referencePlace from '@parcha/agentrun-harness/place';
+import { fileURLToPath } from 'node:url';
 const { createPiRunner } = pi;
 assert.equal('authorWorkflow' in pi, false);
 assert.equal(validateWorkflow(supportTriage).ok,true);
@@ -304,7 +313,7 @@ assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserAgent.crea
 assert.deepEqual(Object.keys(vision.READ_MEDIA_PARAMETERS),['ask','from_s','to_s','page','char_offset']); assert.equal(vision.resolveLimits(undefined).image.maxWidth,2000); assert.equal(vision.citation('a.pdf',{page:{from:3,to:3}}),'a.pdf#page=3'); assert.equal(typeof visionDurable.createVisionExtension,'function');
 assert.equal((await visionTesting.fakeEyes().see({parts:[],ask:'q'},new AbortController().signal)).text,'fake answer');
 assert.equal(typeof transport.parseTransportConfig,'function'); assert.equal(typeof transportHome.moveWorkspace,'function'); assert.equal(typeof transportHome.sealStore,'function'); assert.equal(typeof transportTesting.createBoxConformance,'function');
-for (const name of ${JSON.stringify(boxProviders)}) assert.equal(typeof (await import('@parcha/pi-transport/box/'+name))[name+'Boxes'],'function',name);
+for (const name of ${JSON.stringify(boxProviders)}) assert.equal(typeof (await import('@parcha/pi-transport/box/'+name))[${JSON.stringify(Object.fromEntries(boxProviders.map(name => [name, boxFactory(name)])))}[name]],'function',name);
 assert.equal(typeof transportHands.boxEnv,'function');
 assert.equal(typeof transportHands.transport,'function'); assert.equal(typeof transport.TransportError,'function');
 assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
@@ -320,7 +329,8 @@ assert.deepEqual([agentExport.EXPORTABLE_KINDS,agentExport.SECRET_KINDS,agentExp
 { const ready=piSignin.checkKeys({name:'consumer',models:{lead:{needs:['text']}},keys:[{env:'CONSUMER_KEY',why:'w',where:'x',required:true}],programs:[],expectedCalls:0,expectedCost:0},{env:{}}); assert.equal(ready.exitCode,2); assert.equal(typeof piSignin.resolveModel,'function'); }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
 { assert.equal(typeof serve.startServe,'function'); const caps=serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.equal(caps.models,undefined); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,serve:true,git:true,learn:true,network:'prohibited'}));
+for (const name of ['demo','run','placeAt','localHost','codeOf','tapBox']) assert.equal(typeof reference[name],'function',name); assert.equal(typeof referenceScan.credentialIn,'function'); assert.equal(typeof referencePlace.localPlace,'function'); assert.ok(existsSync(fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app'))),'the child app resolves to a file');
+console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,serve:true,git:true,learn:true,harness:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, runtimeSmokeChecks);
@@ -442,10 +452,10 @@ void [limits, vision, unfiled];
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'vision-consumer.ts'], consumer);
   await writeFile(join(consumer, 'transport-consumer.ts'), `import type { ExecutionEnv } from '@earendil-works/pi-durable/env';
 import { parseTransportConfig, type Box, type BoxProvider, type Transport, type TransportConfig, type TransportHost } from '@parcha/pi-transport';
-${boxProviders.map(name => `import { ${name}Boxes } from '@parcha/pi-transport/box/${name}';`).join('\n')}
+${boxProviders.map(name => `import { ${boxFactory(name)} } from '@parcha/pi-transport/box/${name}';`).join('\n')}
 import { moveWorkspace, sealStore, type Seal } from '@parcha/pi-transport/home';
 import { boxEnv, transport as openTransport } from '@parcha/pi-transport/hands';
-const providers: [${boxProviders.map(name => `(...options: Parameters<typeof ${name}Boxes>) => BoxProvider`).join(', ')}] = [${boxProviders.map(name => `${name}Boxes`).join(', ')}];
+const providers: [${boxProviders.map(name => `(...options: Parameters<typeof ${boxFactory(name)}>) => BoxProvider`).join(', ')}] = [${boxProviders.map(boxFactory).join(', ')}];
 const transport: [typeof parseTransportConfig, Box | undefined, typeof moveWorkspace, typeof sealStore, Seal | undefined] = [parseTransportConfig, undefined, moveWorkspace, sealStore, undefined];
 // What a host hands to pi's Harness as a conversation's environment.
 const hands = (box: Box): ExecutionEnv => boxEnv(box);
@@ -505,6 +515,26 @@ const curated = (repo: Repo, judge: Judge): Promise<CurateReport> => curate({ re
 void [start, code, curated, agentLearn({ guard, secrets: () => [] })];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'learn-consumer.ts'], consumer);
+  // @parcha/agentrun-harness without @parcha/pi-transport, its optional peer: the package and its @parcha dependencies alone,
+  // where its public types compile under --strict with no skipLibCheck. @google/genai's types (under pi-ai) import the MCP
+  // SDK, genai's own optional peer, so a strict consumer of pi-ai supplies it at the range genai names.
+  const bare = join(temporary, 'consumer-reference');
+  await mkdir(bare);
+  await writeFile(join(bare, 'package.json'), JSON.stringify({ name: 'agentrun-harness-consumer', version: '1.0.0', private: true, type: 'module', overrides }));
+  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', ...['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'harness'].map(directory => tarballs[packageDirectories.indexOf(directory)])], bare);
+  const mcp = (await json(join(bare, 'node_modules', '@google', 'genai', 'package.json'))).peerDependencies?.['@modelcontextprotocol/sdk'];
+  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-dev', '--save-exact', `typescript@${typescript.version}`, `@types/node@${nodeTypes.version}`, ...(mcp ? [`@modelcontextprotocol/sdk@${mcp}`] : [])], bare);
+  assert.equal(existsSync(join(bare, 'node_modules', '@parcha', 'pi-transport')), false, 'the reference consumer holds no @parcha/pi-transport');
+  await writeFile(join(bare, 'reference-consumer.ts'), `import { demo, localHost, placeAt, type Boxes, type DemoOptions, type Fakes, type Job, type ToolContext } from '@parcha/agentrun-harness';
+const fakes: Fakes = { model: () => { throw new Error('no model'); }, tools: { lookup: (args) => ({ id: String(args.id), score: 1 }) }, judge: async () => { throw new Error('no judge'); }, pages: {}, start: '' };
+const job: Job = { workflow: { v: 2, name: 'typed', schemas: { Any: { type: 'object' } }, output: { schemaId: 'Any', path: 'final' }, root: { node: 'code', label: 'finish', code: 's => ({ final: {} })' } }, input: {} };
+const options: DemoOptions = { self: import.meta.url, spec: { name: 'typed' }, job, fakes };
+const boxes: Boxes = { name: 'none' };
+const useTool = (context: ToolContext): boolean => context.live;
+void [demo, localHost, placeAt, options, boxes, useTool];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'reference-consumer.ts'], bare);
+  receipt.checks.push('@parcha/agentrun-harness, installed with its @parcha dependencies and without @parcha/pi-transport, compiles under --strict with no skipLibCheck.');
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
   await rm(join(receiptDir, 'packages'), { recursive: true, force: true });
   await mkdir(join(receiptDir, 'packages'), { recursive: true });

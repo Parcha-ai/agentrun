@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { accepts, checkResolved, companionDependencies, extraCopies, legOf, lsProblems, parseRange, readWorkspaces, resolvedFrom } from './pi-leg.mjs';
+import { accepts, buildOf, checkResolved, companionDependencies, extraCopies, legOf, lsProblems, parseRange, readWorkspaces, resolvedFrom } from './pi-leg.mjs';
 
 const script = fileURLToPath(new URL('./pi-leg.mjs', import.meta.url));
 const repo = dirname(dirname(script));
@@ -59,6 +59,13 @@ test('a leg workspace that depends on a pi workspace outside the leg is refused:
   assert.deepEqual(legOf([pi, ws('@parcha/pi-durable-disk', WIDE)], '1.2.0').refused, []);
   assert.deepEqual(legOf([pi, ws('@parcha/pi-durable-disk', WIDE), ws('@parcha/pi-vision', WIDE)], '1.0.4', ['@parcha/agentrun-pi']).refused,
     [{ name: '@parcha/agentrun-pi', needs: ['@parcha/pi-durable-disk'] }], '--only that leaves the dependency out is refused too');
+});
+
+test('a leg builds its workspaces and those they use, in workspace order, and not a workspace outside it that uses one in it', () => {
+  const dep = (name, dependencies) => ({ ...ws(name), manifest: { ...ws(name).manifest, dependencies } });
+  const workspaces = [ws('@parcha/agentrun-dsl'), dep('@parcha/agentrun-pi', { '@parcha/agentrun-dsl': '1' }), ws('@parcha/pi-durable-disk'), ws('@parcha/pi-vision'), dep('@parcha/agentrun-harness', { '@parcha/agentrun-pi': '1', '@parcha/pi-durable-disk': '1', '@parcha/pi-vision': '1' })];
+  assert.deepEqual(buildOf(workspaces, ['@parcha/pi-durable-disk', '@parcha/agentrun-pi']), ['@parcha/agentrun-dsl', '@parcha/agentrun-pi', '@parcha/pi-durable-disk']);
+  assert.deepEqual(buildOf(workspaces, ['@parcha/agentrun-harness']), workspaces.map((w) => w.name), 'a leg workspace that uses the others builds them all');
 });
 
 test('--only narrows the leg to named pi workspaces and refuses a name that is not one', () => {

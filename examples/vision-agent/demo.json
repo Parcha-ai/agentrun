@@ -1,0 +1,56 @@
+{
+  "name": "vision-agent",
+  "title": "A Vision Agent",
+  "targets": ["local"],
+  "browser": false,
+  "codeMode": { "timeoutMs": 2700000 },
+  "claim": "One agent answers a question about the files it is given, in plain words, by writing code that looks, listens and judges, and ends with a report that cites every claim at the file's own page, second or region.",
+  "models": {
+    "lead": { "needs": ["text", "tools"], "default": "google/gemini-3.8-flash" },
+    "eyes": { "needs": ["video"], "default": "google/gemini-3.8-flash" },
+    "judge": { "jev": true }
+  },
+  "keys": [
+    {
+      "oneOf": [
+        { "env": "GEMINI_API_KEY", "why": "The lead and the eyes (google/gemini-3.8-flash, which take a video window with its sound).", "where": "aistudio.google.com, Get API key", "required": true, "for": "live" },
+        { "env": "OPENAI_API_KEY", "why": "The lead and the eyes (openai/gpt-6-luna and openai/gpt-6-sol, which take frames, not video) when it is the only key.", "where": "platform.openai.com, API keys", "required": true, "for": "live" },
+        { "env": "ANTHROPIC_API_KEY", "why": "The lead and the eyes (anthropic/claude-haiku-5-5, which takes frames) when it is the only key.", "where": "console.anthropic.com, API keys", "required": true, "for": "live" },
+        [
+          { "env": "VIDEO_MODEL_BASE_URL", "why": "An OpenAI-compatible gateway that serves the models under their public ids, instead of provider keys.", "where": "your gateway's base URL, ending in /v1", "required": true },
+          { "env": "VIDEO_MODEL_API_KEY", "why": "The gateway's credential.", "where": "your gateway", "required": true }
+        ]
+      ],
+      "why": "A model provider's key for --live (the run names every model by provider and public id).",
+      "for": "live"
+    },
+    {
+      "oneOf": [
+        { "env": "TYPESAFE_API_KEY", "why": "Jev at TypeSafe: jev-1.14.0, the first Jev that draws boxes, judges frames and pages.", "where": "typesafe.ai", "required": true, "for": "live" },
+        [
+          { "env": "VIDEO_MODEL_BASE_URL", "why": "A gateway passes Jev through at its /typesafe.", "where": "your gateway's base URL, ending in /v1", "required": true },
+          { "env": "VIDEO_MODEL_API_KEY", "why": "The gateway's credential, which is Jev's key too when TYPESAFE_API_KEY is not set.", "where": "your gateway", "required": true }
+        ]
+      ],
+      "why": "Jev's key for --live: TypeSafe's own, or the gateway's.",
+      "for": "live"
+    },
+    { "env": "TYPESAFE_BASE_URL", "why": "Another address for TypeSafe's API, when you reach it through a proxy of your own; with VIDEO_MODEL_BASE_URL set, Jev goes through that gateway's /typesafe instead.", "where": "your proxy's base URL", "required": false, "for": "live" },
+    { "env": "FAL_KEY", "why": "Scribe v2 on fal, which writes what a recording says with each word's second, for a question about speech; not needed when the gateway passes fal's queue through (/fal-queue).", "where": "fal.ai, API keys", "required": false, "for": "live" }
+  ],
+  "programs": [
+    { "cmd": "ffmpeg", "why": "The agent's code cuts frames, windows, clips and audio with it.", "required": true },
+    { "cmd": "ffprobe", "why": "The agent's code reads a recording's length with it.", "required": true },
+    { "cmd": "pdftoppm", "why": "The agent's code renders PDF pages with it (poppler).", "required": true },
+    { "cmd": "pdftotext", "why": "The agent's code reads a PDF's text layer with it, when the PDF has one (poppler).", "required": true },
+    { "cmd": "node", "why": "The transcribe skill names a recording's folder with it.", "required": true }
+  ],
+  "expectedCalls": 150,
+  "expectedCost": 0.5,
+  "panels": ["workflow-map", "vision"],
+  "tools": [],
+  "input": {
+    "shape": "examples/vision-agent/agent.ts, Input: the question in plain words, and the names of the files in the workspace",
+    "default": "an example folder's question.md and inputs.json (npm run demo:vision -- examples/<folder>)"
+  }
+}

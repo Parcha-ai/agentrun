@@ -68,18 +68,20 @@ async function look(bytes) {
 }
 
 /** A Jev port that answers from the pixels of the one image it is sent: red is the thing, orange looks like it. */
-function pixelJev() {
+function pixelJev({ confidence = 0.9, flat = false, failAt = 0 } = {}) {
   const requests = [];
+  let sent = 0;   // every call the port gets, the one that fails too
   const judge = async (params) => {
+    if (++sent === failAt) throw new Error("503 Service Unavailable");
     const { bytes } = params.assets[params.state.images[0].image];
     const { red, orange } = await look(bytes);
     requests.push({ source: params.state.images[0].source, size: imageHeader(bytes), questions: params.questions });
     const answers = Object.fromEntries(Object.entries(params.questions).map(([key, q]) => [key, q.type === "noul"
       ? { type: "noul", noul: red ? 0.95 : orange ? 0.6 : 0.05 }
-      : { type: "box", box: red ?? { top: 0, bottom: 1, left: 0, right: 1 }, confidence: red ? 0.9 : 0.2 }]));
+      : { type: "box", box: red && flat ? { top: red.top, bottom: red.top, left: red.left, right: red.left } : red ?? { top: 0, bottom: 1, left: 0, right: 1 }, confidence: red ? confidence : 0.2 }]));
     return { answers, model: params.model, usage: { input_tokens: 1000, output_tokens: 0 }, cost_usd: JEV_USD };
   };
-  return { judge, requests };
+  return { judge, requests, get sent() { return sent; } };
 }
 
 /** The first second of a clip with red, decoded as a decoder that ignores the edit list decodes it; null when none. */
@@ -161,6 +163,21 @@ test("heard: every time the phrase is said, with the rows around it; a phrase cu
   assert.deepEqual((await steps([heard])).values[0], { transcript: null, hits: [] });
 });
 
+test("heard twice, word for word: each hit comes with what follows it and its place, and the skill says to pick by them, in general words", async () => {
+  transcript(["5.00\t7.00\tPreviously, on the show.", "8.00\t10.00\tThe doors are open.", "10.50\t12.00\tComing up after the titles.",
+    "60.00\t63.00\tThe crowd waits outside the hall.", "64.00\t66.00\tThe doors are open.", "66.50\t69.00\tThe crowd walks in and fills the seats.", "120.00\t124.00\tThat is the end."]);
+  const twice = heard.replace('phrase: "umbrella by the door"', 'phrase: "the doors are open"');
+  assert.notEqual(twice, heard);
+  const { values: [found] } = await steps([twice]);
+  assert.deepEqual(found.hits.map((h) => [h.at, h.said, h.after, h.place]), [
+    [8, "The doors are open.", "Coming up after the titles. The crowd waits outside the hall.", 6],
+    [64, "The doors are open.", "The crowd walks in and fills the seats. That is the end.", 52],
+  ], "the same words twice; what follows and where each sits tell them apart");
+  const rule = SKILL.slice(SKILL.indexOf("When there is more than one hit"), SKILL.indexOf("```js"));
+  for (const words of ["the rows before it and the rows after it", "not a recap, a title, a preview or a replay", "what comes after each hit", "`place`", "Look at each candidate's window with the eyes", "Say which you picked and why"]) assert.ok(rule.includes(words), words);
+  assert.doesNotMatch(SKILL, /apollo|eagle|tranquility|houston|moon/i, "the skill names no film");
+});
+
 test("the loop: the transcript's hit narrows the search, Jev scans the window, the eyes name the second, Jev checks it and boxes it", async () => {
   transcript();
   const { values: [words, scanned, halved, named, checked], eyes, jev, task } = await steps([narrow, scan, halve, name, check]);
@@ -202,7 +219,7 @@ test("only a lookalike: the search starts from the best frame, and the eyes, see
 
 test("a coarse scan is halved to a minute before the eyes watch it", async () => {
   transcript(null);
-  const { values: [, scanned, halved, named, checked], jev } = await steps([narrowWith("scanFrames: 300", "scanFrames: 4"), scan, halve, name, check]);
+  const { values: [, scanned, halved, named, checked], jev } = await steps([narrowWith("scanFrames: 40", "scanFrames: 4"), scan, halve, name, check]);
   assert.deepEqual([scanned.step, scanned.likely], [75, [225]], "frames at 0, 75, 150 and 225: the span 150 to 225 holds the first second");
   assert.deepEqual(jev.requests.slice(4, 8).map((r) => r.source), [160, 169, 179, 188].map((t) => `film.mp4#t=${t}`), "four frames across the span's first half");
   assert.deepEqual(halved.window, [139, 199], "one halving: 150 to 188 is under a minute");
@@ -237,23 +254,6 @@ test("the frames checked come from the best copy, and the box is cited on the vi
   near(xywh(checked.cite), [60, 20, 25, 40], 1, "the box on the best copy");
 });
 
-test("a budget: the scan stops once it is spent, and says what it spent", async () => {
-  transcript();
-  const { values: [, scanned] } = await steps([narrowWith("budgetUsd: 0.1", "budgetUsd: 0.0001"), scan]);
-  assert.equal(scanned.frames, 3, "three frames at $0.000042 pass $0.0001");
-  assert.equal(scanned.stopped, "budget");
-  assert.ok(scanned.spentUsd >= 0.0001 && scanned.spentUsd < 0.0002);
-});
-
-test("a budget the scan spends to the end: the eyes and the checks ask nothing", async () => {
-  transcript();
-  const { values: [, scanned, , named, checked], eyes, jev } = await steps([narrowWith("budgetUsd: 0.1", `budgetUsd: ${25.5 * JEV_USD}`), scan, halve, name, check]);
-  assert.deepEqual([scanned.frames, scanned.stopped], [26, "budget"]);
-  assert.deepEqual([named.at, named.stopped], [null, "budget"]);
-  assert.deepEqual([eyes.ledger.length, jev.requests.length], [0, 26]);
-  assert.deepEqual([checked.found, checked.stopped], [false, "budget"]);
-});
-
 test("a step run again asks nothing it has, and counts nothing twice", async () => {
   transcript();
   const { values: [, once, again], jev } = await steps([narrow, scan, scan]);
@@ -273,7 +273,7 @@ test("words say where to look first: a sighting before the window they name is f
 
 test("a thing first seen right at a scanned frame is inside the minute the eyes watch", async () => {
   transcript(null);
-  const { values: [, scanned, halved, named, checked] } = await steps([narrowWith('video: "film.mp4", best: "film.mp4", thing: "a red umbrella", box: "the umbrella", words: "umbrella|parasol", chapters: null, scanFrames: 300', 'video: "late.mp4", best: "late.mp4", thing: "a red umbrella", box: "the umbrella", words: "umbrella|parasol", chapters: null, scanFrames: 5'), scan, halve, name, check]);
+  const { values: [, scanned, halved, named, checked] } = await steps([narrowWith('video: "film.mp4", best: "film.mp4", thing: "a red umbrella", box: "the umbrella", words: "umbrella|parasol", chapters: null, scanFrames: 40', 'video: "late.mp4", best: "late.mp4", thing: "a red umbrella", box: "the umbrella", words: "umbrella|parasol", chapters: null, scanFrames: 5'), scan, halve, name, check]);
   assert.deepEqual([scanned.step, scanned.likely], [60, [240]]);
   assert.deepEqual([halved.span, halved.window], [[210, 240], [195, 255]], "halved below 40 seconds, the minute holds 240");
   assert.deepEqual([named.at, checked.t], [240, 240]);
@@ -313,4 +313,90 @@ test("a search named by more than one word is refused before anything is asked: 
   assert.equal(jev.requests.length, 0);
   await steps([narrowWith('const dir = ".find/umbrella";', 'const dir = ".find/red-umbrella_2";')]);
   assert.ok(fs.existsSync(path.join(cwd, ".find", "red-umbrella_2", "task.json")), "one word with digits, dashes and underscores is a name");
+});
+
+test("a box Jev is not sure of is still the answer: the thing is found by its noul, and the box is called loose", async () => {
+  transcript();
+  const { values: [, , , , checked] } = await steps([narrow, scan, halve, name, check], { jev: pixelJev({ confidence: 0.31 }) });
+  assert.deepEqual([checked.found, checked.t, checked.loose], [true, FIRST, true], "found at its second, its box loose");
+  assert.match(checked.cite, /^film\.mp4#t=187&xywh=percent:/);
+  near(xywh(checked.cite), [60, 20, 25, 40], 2, "the box, as Jev drew it");
+  const sure = await steps([narrow, scan, halve, name, check]);
+  assert.deepEqual([sure.values[4].found, sure.values[4].loose], [true, false], "a box at confidence 0.9 is not loose");
+});
+
+test("a box of no size has no fragment: the thing is still found by its noul, cited at its second, with no box", async () => {
+  transcript();
+  const { values: [, , , , checked] } = await steps([narrow, scan, halve, name, check], { jev: pixelJev({ confidence: 0.31, flat: true }) });
+  assert.deepEqual([checked.found, checked.t, checked.cite, checked.noBox], [true, FIRST, `film.mp4#t=${FIRST}`, true]);
+});
+
+test("the skill holds the strategy and no spend guard of its own: a coarse pass of 40 frames, then halving and a three-frame check; no request or dollar budget", () => {
+  assert.match(narrow, /scanFrames: 40 \};/, "the one search knob is the coarse pass");
+  assert.doesNotMatch(SKILL, /maxJudges|budgetUsd|stopped: "budget"|request budget|## The request budget|host caps/i);
+  assert.doesNotMatch(SKILL, /task\.requests|requests >= limit|spent >= task/);
+  assert.match(SKILL, /A long film is never scanned\s+a frame every few seconds/);
+  assert.match(SKILL, /Halve around the candidate/);
+});
+
+test("a 47-minute film is searched in 47 Jev requests (40 scanned, 4 halved, 3 checked), and the second is found", async () => {
+  transcript(null);
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x707070:s=160x120:r=1:d=2820", "-vf", "drawbox=x=96:y=24:w=40:h=48:color=red@1:t=fill:enable='between(t,1500,1700)'",
+    "-g", "30", "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", path.join(cwd, "long.mp4")]);
+  const { values: [words, scanned, halved, named, checked], jev } = await steps([narrowWith('video: "film.mp4", best: "film.mp4"', 'video: "long.mp4", best: "long.mp4"'), scan, halve, name, check]);
+  assert.deepEqual([words.windows, scanned.step, scanned.frames], [[[0, 2820]], 71, 40], "a coarse pass of 40 frames, one every 71 seconds, where the old default asked 282");
+  assert.deepEqual(scanned.likely, [1562, 1633]);
+  assert.deepEqual(halved.span, [1491, 1527], "one round of four frames brought the span from 71 seconds under 40");
+  assert.deepEqual([named.at, checked.t, checked.found], [1500, 1500, true]);
+  assert.equal(jev.requests.length, 47, "40 scanned, 4 halved, 3 checked");
+});
+
+test("a scan cut short by a failed call keeps the scores it had, and a retry asks only what is left", async () => {
+  transcript();
+  const failing = pixelJev({ failAt: 5 });
+  await assert.rejects(steps([narrow, scan], { jev: failing }), /503/);
+  const kept = JSON.parse(fs.readFileSync(path.join(cwd, ".find", "umbrella", "task.json"), "utf8"));
+  assert.deepEqual([failing.sent, kept.scores.length], [5, 4], "four answered and one that failed, each score saved as it came");
+  const retry = pixelJev();
+  const { values: [again] } = await steps([scan], { jev: retry });
+  assert.deepEqual([retry.sent, again.frames], [22, 26], "the four scored frames are not asked again");
+});
+
+test("a halving cut short by a failed call keeps the price of the answers it had, and no request counter is saved", async () => {
+  transcript(null);
+  const small = narrowWith("scanFrames: 40", "scanFrames: 4");
+  const failing = pixelJev({ failAt: 7 });
+  await assert.rejects(steps([small, scan, halve], { jev: failing }), /503/);
+  const kept = JSON.parse(fs.readFileSync(path.join(cwd, ".find", "umbrella", "task.json"), "utf8"));
+  assert.ok(Math.abs(kept.spentUsd - 6 * JEV_USD) < 1e-12, "four scanned and two halving answers priced, the third halving request failed");
+  assert.ok(!("requests" in kept) && !("maxJudges" in kept) && !("budgetUsd" in kept), "the task holds no counter and no budget");
+});
+
+test("a check cut short after two confirmed frames keeps them: the retry asks nothing more and the match is not lost", async () => {
+  transcript();
+  // The scan and halving as usual, then the check on a Jev that fails on its third call.
+  await steps([narrow, scan, halve, name]);
+  const failing = pixelJev({ failAt: 3 });
+  await assert.rejects(steps([check], { jev: failing }), /503/);
+  const kept = JSON.parse(fs.readFileSync(path.join(cwd, ".find", "umbrella", "task.json"), "utf8"));
+  assert.deepEqual([failing.sent, kept.checks.map((c) => c.t), kept.found], [3, [FIRST - 1, FIRST], undefined], "two checks completed and kept, the third sent and failed");
+  const retry = pixelJev();
+  const { values: [checked], task } = await steps([check], { jev: retry });
+  assert.deepEqual([retry.sent, checked.found, checked.t], [1, true, FIRST], "only the third frame is asked, and the match the earlier checks confirmed is kept");
+  assert.equal(task.checks.length, 3);
+  // With all three checks kept, a retry asks nothing, so a failing port cannot lose the match.
+  const { values: [none] } = await steps([check], { jev: pixelJev({ failAt: 1 }) });
+  assert.equal(none.found, true, "all three checks are kept: a retry asks nothing, and cannot fail");
+});
+
+test("the checks kept for another second are dropped: a new second is checked afresh", async () => {
+  transcript();
+  await steps([narrow, scan, halve, name, check]);
+  const kept = path.join(cwd, ".find", "umbrella", "task.json");
+  const task = JSON.parse(fs.readFileSync(kept, "utf8"));
+  fs.writeFileSync(kept, JSON.stringify({ ...task, at: FIRST + 40, found: null }));
+  const jev = pixelJev();
+  const { task: after } = await steps([check], { jev });
+  assert.equal(jev.sent, 3, "the three frames around the new second are asked");
+  assert.deepEqual(after.checks.map((c) => c.t), [FIRST + 39, FIRST + 40, FIRST + 41]);
 });

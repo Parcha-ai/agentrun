@@ -2,7 +2,7 @@
 // kill (agentrun's reference demo) is the same for every place; the place decides how. `localPlace` runs the instance on
 // a directory of this machine (`run --dir`, no disk and no key); `archilPlace` runs it on an Archil disk through a host
 // driver, mints each attempt's mount token itself and takes the run over after a kill. The types match the reference's
-// place seam (examples/reference/place.ts) structurally. The supervisor reads nothing under the run's directory: the
+// place seam (@parcha/agentrun-harness/place) structurally. The supervisor reads nothing under the run's directory: the
 // outcome, the run's record and its delegations come through the place.
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -46,7 +46,6 @@ export type PlaceExit = { exit: number | string | null; signal: string | null; o
 export type PlaceRunner = { epoch: number; pid?: number; exited: Promise<PlaceExit> };
 /** What a runner is handed: its number in the run, its environment, and for a place with a token, the attempt's mount token. */
 export type RunnerOrder = { gen: number; env: Record<string, string>; stdin?: string };
-/** What the place reads of the run, the way it reads it: `run.json`, and on a disk the run's delegations. */
 /**
  * What the place reads of the run, the way it reads it: `run.json`; on a disk, the run's delegations; and the boxes the
  * place made for its runners, each as a receipt (`HostBox`: provider, kind, from, to, list price per second and where

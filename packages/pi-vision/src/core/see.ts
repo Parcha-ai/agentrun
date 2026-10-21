@@ -12,6 +12,8 @@ import type { CallContext, CallSetup, EyesAnswer } from "./host.js";
 import { fitImage } from "./image.js";
 import { aboutMedium, AS_IS, gatherMedia, namesMedia, once, requestedAbout, throwMiss, type About, type MediaMiss, type MediaRequest } from "./media.js";
 import { firstLine } from "./misses.js";
+import { base64Chars, toBase64 } from "./primitives.js";
+import { lookTiming } from "./timing.js";
 import { packRequests, type Part } from "./plan.js";
 
 export { SeeMiss } from "./media.js";
@@ -53,7 +55,7 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
     if (!items.length && about) {
       return {
         tool: "look", args: { path: about.path, ask, model, native: false }, status: "ok", body,
-        facts: { sha256: about.sha256, kind: about.kind, fragment: about.fragment, key: lookKey({ sha256: about.sha256, fragment: about.fragment, ask, model }), shown_blocks: 0, ...facts },
+        facts: { sha256: about.sha256, kind: about.kind, fragment: about.fragment, key: lookKey({ sha256: about.sha256, fragment: about.fragment, ask, model }), shown_blocks: 0, ...lookTiming(call), ...facts },
       };
     }
     const fragment = [...new Set(items.map((item) => item.fragment))].join(", ");
@@ -61,7 +63,7 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
     return {
       tool: "look", args: { path: fragment, ask, model, native: false }, status: "ok", body,
       // The key names each block's own line in order, so the same images named otherwise are another look.
-      facts: { sha256, kind: items.some(isVideo) ? "video" : "image", fragment: "", key: lookKey({ sha256, fragment: items.map((item) => item.caption).join("\n"), ask, model }), shown_blocks: items.length, ...facts },
+      facts: { sha256, kind: items.some(isVideo) ? "video" : "image", fragment: "", key: lookKey({ sha256, fragment: items.map((item) => item.caption).join("\n"), ask, model }), shown_blocks: items.length, ...lookTiming(call), ...facts },
     };
   };
   // A miss before any request cost nothing; one after a request says what it knows of that request.
@@ -72,49 +74,51 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
   const media = await gatherMedia(request, env, call, setup, VISION_SEE.name, fail);
 
   // Each image within the eyes' own limits and what one request to them carries; a video clip as it is, when they take it.
-  const box = { ...eyes.limits.image, maxBytes: Math.min(eyes.limits.image.maxBytes, eyes.limits.requestBytes), imagesPerCall: eyes.limits.imagesPerCall };
-  const clipChars = Math.min(Math.ceil(eyes.limits.video.inlineBytes / 3) * 4, eyes.limits.requestBytes);
+  const requestLimits = { ...eyes.limits.image, maxBytes: Math.min(eyes.limits.image.maxBytes, eyes.limits.requestBytes), imagesPerCall: eyes.limits.imagesPerCall };
+  const clipChars = Math.min(base64Chars(eyes.limits.video.inlineBytes), eyes.limits.requestBytes);
   const items: Item[] = [];
   for (const { bytes, mimeType, fragment } of media) {
     if (isVideo({ mimeType })) {
-      const data = Buffer.from(bytes).toString("base64");
+      const data = toBase64(bytes);
       if (!eyes.accepts.video) return fail({ code: "video_unseeable", reason: `${fragment}: the vision route ${eyes.model} does not take video; cut frames with ffmpeg and pass them as images`, model: eyes.model, about: aboutMedium(fragment, "video", bytes) });
       if (data.length > clipChars) return fail({ code: "over_budget", reason: `${fragment} is ${data.length} base64 characters, over the ${clipChars} one request to ${eyes.model} carries; cut a shorter window`, model: eyes.model, about: aboutMedium(fragment, "video", bytes) });
       items.push({ data, mimeType, fragment, caption: fragment });
       continue;
     }
-    const fit = await fitImage(setup.images ?? AS_IS, bytes, mimeType, box);
+    const fit = await fitImage(setup.images ?? AS_IS, bytes, mimeType, requestLimits);
     if (fit.fit === "refused") return fail({ code: setup.images ? fit.code : "needs", reason: `${fragment}: ${fit.limit}, and ${setup.images ? fit.why : "no image processor is installed to fit it (Photon or sharp)"}`, model: eyes.model, about: aboutMedium(fragment, "image", bytes) });
     fit.blocks.forEach((block, k) => items.push({ ...block, fragment, caption: fit.blocks.length > 1 ? `${fragment} (tile ${k + 1} of ${fit.blocks.length})` : fragment }));
   }
 
-  const ask1 = async (items: readonly Item[], at: LookRecord): Promise<Asked> => {
+  const askRequest = async (items: readonly Item[], at: LookRecord): Promise<Asked> => {
     // Each image goes with the line that names it, so the eyes can say where they saw a thing.
     const parts = items.flatMap((item): Part[] => [{ type: "text", text: item.caption, fragment: item.fragment },
       isVideo(item) ? { type: "video", data: item.data, mimeType: item.mimeType, fragment: item.fragment }
         : { type: "image", data: item.data, mimeType: item.mimeType, width: item.width!, height: item.height!, fragment: item.fragment }]);
     let look: EyesAnswer, readBack: boolean;
+    // When this call's request began; none when the answer is read back, and a request that threw is timed all the same.
+    let startedAt: number | undefined;
     try {
-      ({ answer: look, readBack } = await keptAnswer<EyesAnswer>(call.memo, at.facts.key, () => eyes.see({ parts, ask }, call.signal ?? new AbortController().signal)));
+      ({ answer: look, readBack } = await keptAnswer<EyesAnswer>(call.memo, at.facts.key, () => { startedAt = Date.now(); return eyes.see({ parts, ask }, call.signal ?? new AbortController().signal); }));
     } catch (error) {
       if (call.signal?.aborted) throw error;
       // A request that threw may still have been billed: its price is not known, so none is filed.
-      return fail({ code: "look_failed", reason: `the vision route ${eyes.model} failed: ${firstLine(error)}`, model: eyes.model }, items, {});
+      return fail({ code: "look_failed", reason: `the vision route ${eyes.model} failed: ${firstLine(error)}`, model: eyes.model }, items, lookTiming(call, startedAt));
     }
-    const facts = { tokens_in: look.usage.input + look.usage.cacheRead + look.usage.cacheWrite, tokens_out: look.usage.output, cost_usd: look.costUsd, ...(look.billedBy ? { provider: look.billedBy } : {}), ...(readBack ? { kept: true as const } : {}) };
+    const facts = { tokens_in: look.usage.input + look.usage.cacheRead + look.usage.cacheWrite, tokens_out: look.usage.output, cost_usd: look.costUsd, ...(look.billedBy ? { provider: look.billedBy } : {}), ...(readBack ? { kept: true as const } : {}), ...lookTiming(call, startedAt) };
     if (!look.text.trim()) return fail({ code: "look_failed", reason: `the vision route ${look.model} returned no text`, model: look.model }, items, facts);
     const filed = { ...at, args: { ...at.args, model: look.model }, body: look.text.trim(), facts: { ...at.facts, ...facts } };
     const receipt = await fileTold(call.memo, at.facts.key, filing, (to, told) => fileLook(to, VISION_SEE.name, filed, told ? { ...look, kept: true } : look));
     return { look, readBack, receipt, body: filed.body };
   };
 
-  const most = Math.max(1, Math.floor(eyes.limits.imagesPerCall));
-  const requests = packRequests(items, (item) => item.data.length, (item) => (isVideo(item) ? 1 : most), eyes.limits.requestBytes);
+  const imagesPerRequest = Math.max(1, Math.floor(eyes.limits.imagesPerCall));
+  const requests = packRequests(items, (item) => item.data.length, (item) => (isVideo(item) ? 1 : imagesPerRequest), eyes.limits.requestBytes);
   const texts: string[] = [], receipts: string[] = [];
   let costUsd: number | null = 0, kept = true, model = eyes.model;
   for (const items of requests) {
     const at = record(items, eyes.model, "");
-    const { value: { look, readBack, receipt, body }, shared } = await once(call, at.facts.key, () => ask1(items, at));
+    const { value: { look, readBack, receipt, body }, shared } = await once(call, at.facts.key, () => askRequest(items, at));
     texts.push(requests.length > 1 ? `(${at.args.path}${receipt ? `; look filed at ${receipt}` : ""})\n${body}` : body);
     if (receipt) receipts.push(receipt);
     costUsd = costUsd === null || look.costUsd === null ? null : costUsd + look.costUsd;

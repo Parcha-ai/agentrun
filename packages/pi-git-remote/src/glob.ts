@@ -1,4 +1,4 @@
-import { GitRemoteError } from "./errors.js";
+import { refused } from "./errors.js";
 
 const MAX_PATTERN_BYTES = 512;
 
@@ -36,16 +36,16 @@ function matchSegment(pattern: string, text: string): boolean {
 }
 
 function checkPattern(pattern: unknown): string {
-  if (typeof pattern !== "string" || pattern === "") throw new GitRemoteError("refused", "an allowlist pattern must be a non-empty string");
+  if (typeof pattern !== "string" || pattern === "") throw refused("an allowlist pattern must be a non-empty string");
   const shown = JSON.stringify(pattern);
-  if (Buffer.byteLength(pattern, "utf8") > MAX_PATTERN_BYTES) throw new GitRemoteError("refused", `the allowlist pattern ${shown} is too long`);
-  if (/[\u0000-\u001f\u007f\\[\]{}]/.test(pattern)) throw new GitRemoteError("refused", `the allowlist pattern ${shown} uses a character this matcher does not read: only * ? and ** are special`);
-  if (pattern.startsWith("!")) throw new GitRemoteError("refused", `the allowlist pattern ${shown} negates: an allowlist only names paths`);
-  if (pattern.startsWith("/")) throw new GitRemoteError("refused", `the allowlist pattern ${shown} is absolute: it is relative to the repository root`);
+  if (Buffer.byteLength(pattern, "utf8") > MAX_PATTERN_BYTES) throw refused(`the allowlist pattern ${shown} is too long`);
+  if (/[\u0000-\u001f\u007f\\[\]{}]/.test(pattern)) throw refused(`the allowlist pattern ${shown} uses a character this matcher does not read: only * ? and ** are special`);
+  if (pattern.startsWith("!")) throw refused(`the allowlist pattern ${shown} negates: an allowlist only names paths`);
+  if (pattern.startsWith("/")) throw refused(`the allowlist pattern ${shown} is absolute: it is relative to the repository root`);
   for (const segment of pattern.split("/")) {
-    if (segment === "") throw new GitRemoteError("refused", `the allowlist pattern ${shown} has an empty segment (a trailing slash names no file: use dir/**)`);
-    if (segment === "." || segment === "..") throw new GitRemoteError("refused", `the allowlist pattern ${shown} has a ${segment} segment`);
-    if (segment.includes("**") && segment !== "**") throw new GitRemoteError("refused", `the allowlist pattern ${shown} uses ** inside a segment: ** must be a whole segment`);
+    if (segment === "") throw refused(`the allowlist pattern ${shown} has an empty segment (a trailing slash names no file: use dir/**)`);
+    if (segment === "." || segment === "..") throw refused(`the allowlist pattern ${shown} has a ${segment} segment`);
+    if (segment.includes("**") && segment !== "**") throw refused(`the allowlist pattern ${shown} uses ** inside a segment: ** must be a whole segment`);
   }
   return pattern;
 }
@@ -57,7 +57,7 @@ function checkPattern(pattern: unknown): string {
  * special, and a pattern that tries (a bracket, a brace, a leading `!`) is refused rather than read as literal text.
  */
 export function compileAllowlist(patterns: readonly string[]): Allowlist {
-  if (!Array.isArray(patterns) || patterns.length === 0) throw new GitRemoteError("refused", "the allowlist is empty: name the paths that may be committed");
+  if (!Array.isArray(patterns) || patterns.length === 0) throw refused("the allowlist is empty: name the paths that may be committed");
   const compiled = patterns.map((pattern) => checkPattern(pattern).split("/"));
 
   const walk = (pattern: readonly string[], parts: readonly string[], below: boolean): boolean => {

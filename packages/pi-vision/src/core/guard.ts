@@ -13,6 +13,7 @@ import { RESULT_BYTES_SHARE, type Limits } from "./limits.js";
 import { firstLine, linkSafe, MISS_ACTION, reportMiss, type Miss } from "./misses.js";
 import { pathSafe } from "./paths.js";
 import { packRequests, type Fit, type Part } from "./plan.js";
+import { lookTiming } from "./timing.js";
 
 /** The question the eyes answer when the agent asked none: say what is shown, completely and only that. */
 export const DESCRIBE_ASK =
@@ -134,7 +135,7 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
       tool: "look",
       args: { path: source, ...(ask ? { ask } : {}), ...(media.fromS !== undefined ? { from_s: media.fromS } : {}), ...(media.toS !== undefined ? { to_s: media.toS } : {}), ...(media.page !== undefined ? { page: media.page } : {}), model, native },
       status: "ok",
-      facts: { ...(media.original ? { original: media.original } : {}), ...facts, ...dropped, sha256, kind: kindOf(media, unit.some(isVideo)), fragment, ...(media.fit ? { fit: media.fit } : {}), key: keyOf(unit, model), ...(media.derived?.length ? { derived: media.derived } : {}) },
+      facts: { ...(media.original ? { original: media.original } : {}), ...facts, ...dropped, sha256, kind: kindOf(media, unit.some(isVideo)), fragment, ...(media.fit ? { fit: media.fit } : {}), key: keyOf(unit, model), ...(media.derived?.length ? { derived: media.derived } : {}), ...lookTiming(call) },
       body,
     };
   };
@@ -219,11 +220,13 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
     let failed: Miss;
     // A request that threw may still have been billed: its price is not known, so none is filed.
     let spent: Partial<LookRecord["facts"]> = {};
+    // When this call's request began; none when the answer is read back, and a request that threw is timed all the same.
+    let startedAt: number | undefined;
     try {
-      const { answer: look, readBack } = await keptAnswer<EyesAnswer>(call.memo, key, () => eyes.see({ parts, ask: ask ?? DESCRIBE_ASK }, call.signal ?? new AbortController().signal));
+      const { answer: look, readBack } = await keptAnswer<EyesAnswer>(call.memo, key, () => { startedAt = Date.now(); return eyes.see({ parts, ask: ask ?? DESCRIBE_ASK }, call.signal ?? new AbortController().signal); });
       // pi counts a result's usage only when it commits the result, and a kept answer's result never committed.
       usage = addUsage(usage, look.usage);
-      const facts = { ...(video ? {} : shownFacts(unit as Sized[])), tokens_in: look.usage.input + look.usage.cacheRead + look.usage.cacheWrite, tokens_out: look.usage.output, cost_usd: look.costUsd, ...(look.billedBy ? { provider: look.billedBy } : {}), ...(readBack ? { kept: true as const } : {}) };
+      const facts = { ...(video ? {} : shownFacts(unit as Sized[])), tokens_in: look.usage.input + look.usage.cacheRead + look.usage.cacheWrite, tokens_out: look.usage.output, cost_usd: look.costUsd, ...(look.billedBy ? { provider: look.billedBy } : {}), ...(readBack ? { kept: true as const } : {}), ...lookTiming(call, startedAt) };
       if (look.text.trim()) {
         const receipt = await fileTold(call.memo, key, filing, (to, told) => fileLook(to, tool, record(unit, false, look.model, look.text.trim(), facts), told ? { ...look, kept: true } : look));
         const head = `(${what} seen for you by ${look.model}${ask ? ` \u2014 your question: ${ask}` : ""}${saved ? `; the file is saved at ${saved}` : ""}${receipt ? `; look filed at ${receipt}` : ""}:)`;
@@ -236,6 +239,7 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
     } catch (error) {
       if (call.signal?.aborted) throw error;
       failed = { code: "look_failed", reason: `the vision route ${eyes.model} failed: ${firstLine(error)}`, model: eyes.model };
+      if (startedAt !== undefined) spent = { startedAt };
     }
     return miss(what, unit, failed, spent);
   };

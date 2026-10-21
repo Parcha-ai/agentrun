@@ -9,7 +9,7 @@
 //                  updatedAt, detail }. A generation that goes up with a new holder is a claim; a non-null `sealedSeq`, or a
 //                  status of paused, sleeping, done or failed, is a release. A line is written when status, generation,
 //                  holder or sealedSeq changes (a poll, so a short-lived generation can be missed).
-//     `delegation` the Archil delegation of the run's own path: { gen?, clientId, inodeId, isOrphaned, isPending, path? }.
+//     `delegation` the Archil delegation of the run's own path: { gen?, clientId, inodeId, isOrphaned, isPending, path? }; a client or inode id is a number or a label (a non-empty string).
 //                  The first line with `isOrphaned` marks the first poll that SAW the orphan, not the instant it happened.
 //     `revoke`     { gen?, revoked: [{ clientId, inodeId, path, isOrphaned }], ms }; `ms` is the whole takeover (the
 //                  revoke plus the start of the next holder), never the revoke alone.
@@ -154,7 +154,9 @@ function diskReduce(state: DiskState, line: Line): DiskState {
     }
     case 'delegation': {
       const client = diskStr(data?.clientId) ?? (diskNum(data?.clientId) !== undefined ? String(diskNum(data?.clientId)) : undefined);
-      const inode = diskNum(data?.inodeId);
+      // An inode id is a number or a label the recorder wrote for it (`inode-1`), any non-empty string: read as it comes, never pattern-matched. A claim is told apart by the text of its client and inode, so the same inode as a number
+      // and as a label are two claims here: the reader cannot link 7001 to `inode-1`, and does not pretend to (a recording uses one scheme).
+      const inode = diskNum(data?.inodeId) !== undefined ? String(diskNum(data?.inodeId)) : (diskStr(data?.inodeId) || undefined);
       if (client === undefined || inode === undefined) return next;
       const key = `${client}:${inode}`;
       const before = next.delegations[key];

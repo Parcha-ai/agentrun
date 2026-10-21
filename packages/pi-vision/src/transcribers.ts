@@ -7,6 +7,7 @@ import { ProviderMiss } from "./core/derive.js";
 import type { Transcriber, TranscriptWord } from "./core/transcribe.js";
 
 type Fetch = typeof globalThis.fetch;
+const FAL_QUEUE = "https://queue.fal.run";
 type Common = {
   /** The key for each request, read when the request is made. */
   readonly apiKey: () => string | undefined;
@@ -57,9 +58,21 @@ export type FalTranscriberOptions = Common & {
  *  a ten-minute piece ffmpeg cuts runs a little over its 2.4 MB) was measured to work, 4.8 MB to fail. */
 export function falTranscriber(options: FalTranscriberOptions): Transcriber {
   const model = options.model ?? "fal-ai/elevenlabs/speech-to-text/scribe-v2";
-  const queue = (options.queueUrl ?? "https://queue.fal.run").replace(/\/+$/, "");
+  const queue = (options.queueUrl ?? FAL_QUEUE).replace(/\/+$/, "");
   const fetch = options.fetch ?? globalThis.fetch;
-  const via = (url: string) => url.replace("https://queue.fal.run", queue);
+  /** fal's own address in an answer, rewritten to the queue's when the host named another. */
+  const via = (url: string) => (url.startsWith(`${FAL_QUEUE}/`) ? `${queue}${url.slice(FAL_QUEUE.length)}` : url);
+  /** A job address from fal's answer, as the URL the key may go to: on the queue's own origin, under this model's job paths
+   *  (fal names a job under the model's `owner/app`, a prefix of a longer model path), with no credentials of its own. Any
+   *  other address is refused before a request carries the key; the message names its origin, never the key. */
+  const own = (what: string, given: unknown): string => {
+    const home = new URL(queue);
+    const roots = [model, model.split("/").slice(0, 2).join("/")].map((root) => `${home.pathname.replace(/\/+$/, "")}/${root}/requests/`);
+    const url = URL.canParse(via(String(given))) ? new URL(via(String(given))) : undefined;
+    if (url && url.origin === home.origin && !url.username && !url.password && roots.some((root) => url.pathname.startsWith(root))) return url.href;
+    const where = !url ? "that is not an address" : url.origin !== home.origin ? `at ${url.origin}, not on the queue at ${home.origin}` : `on ${url.origin} outside the job paths of ${model}`;
+    throw new Error(`fal named a ${what} ${where}; the key was not sent there`);
+  };
   const usd = options.usdPerMinute ?? (model === "fal-ai/elevenlabs/speech-to-text/scribe-v2" ? 0.008 : undefined);
   return {
     provider: "fal", model, maxBytes: 2_500_000, limit: "2.5 MB (measured: 10 minutes 25 seconds at 32 kbps)",
@@ -71,9 +84,10 @@ export function falTranscriber(options: FalTranscriberOptions): Transcriber {
       const submitted = await fetch(`${queue}/${model}`, { method: "POST", headers: { ...auth(), "Content-Type": "application/json" }, body, ...(signal ? { signal } : {}) });
       if (!submitted.ok) await refused(submitted, "fal refused the request");
       const job = (await submitted.json()) as { status_url: string; response_url: string };
+      const [statusUrl, responseUrl] = [own("status_url", job.status_url), own("response_url", job.response_url)];
       const deadline = Date.now() + timeoutMs;
       for (;;) {
-        const polled = await fetch(via(job.status_url), { headers: auth(), ...(signal ? { signal } : {}) });
+        const polled = await fetch(statusUrl, { headers: auth(), ...(signal ? { signal } : {}) });
         if (!polled.ok) await refused(polled, "fal refused a status poll");
         const { status, error } = (await polled.json()) as { status?: string; error?: string };
         if (error) throw new Error(`fal: ${String(error).slice(0, 300)}`);
@@ -81,7 +95,7 @@ export function falTranscriber(options: FalTranscriberOptions): Transcriber {
         if (Date.now() >= deadline) throw new Error(`fal: no answer within timeoutMs ${timeoutMs}; the job was ${status ?? "without a status"}`);
         await pause(options.pollMs ?? 1000, signal);
       }
-      const answered = await fetch(via(job.response_url), { headers: auth(), ...(signal ? { signal } : {}) });
+      const answered = await fetch(responseUrl, { headers: auth(), ...(signal ? { signal } : {}) });
       if (!answered.ok) await refused(answered, "fal refused the answer");
       const answer = (await answered.json()) as { text?: string; words?: unknown; error?: unknown };
       if (!Array.isArray(answer.words)) throw new Error(`fal: no words (${JSON.stringify(answer.error ?? answer).slice(0, 300)})`);

@@ -15,7 +15,7 @@ import type { SqliteDatabase, SqliteExecutor } from "@earendil-works/pi-durable/
 import { acquire, type AcquireOptions, type ArchilHost, type Claim, type RunRef } from "./claim.ts";
 import { reapOrRefuse } from "./commands.ts";
 import { archilEnv } from "./env.ts";
-import { EXIT_FENCED, FencedError, HeldError, ownWriteFenced, PdaError } from "./errors.ts";
+import { EXIT_DATAERR, EXIT_FENCED, EXIT_SOFTWARE, FencedError, HeldError, ownWriteFenced, PdaError } from "./errors.ts";
 import { openArchilStore, type ArchilStore, type Profile } from "./store.ts";
 import { LeaseWatchdog } from "./watchdog.ts";
 import {
@@ -41,10 +41,7 @@ import {
 export const OWNER_LOCK = "owner.lock";
 /** pi's store under the claim's `store/` directory. */
 export const STORE_FILE = "run.sqlite";
-/** EX_DATAERR: the run's data refuses to open (a store behind its seal, an unreadable `run.json`); a restart cannot help. */
-export const EXIT_DATAERR = 65;
-/** EX_SOFTWARE: this package cannot read the head of pi's store (pi's schema moved); a restart cannot help. */
-export const EXIT_SOFTWARE = 70;
+export { EXIT_DATAERR, EXIT_SOFTWARE };
 
 export type RunErrorCode = "INVALID_ARGUMENT" | "STORE_HEAD_UNREADABLE" | "RUN_RELEASED";
 
@@ -345,6 +342,8 @@ export interface DurableRun {
   /** `run.json` as last written. */
   readonly record: RunRecord;
   readonly fenced: boolean;
+  /** True once `release()` began: the Harness is closed, the status is final, and the instance has nothing left to serve. */
+  readonly releasing: boolean;
   /** Write a status transition. `done` and `failed` run the barrier first, so a terminal status never names workspace files that are not durable. */
   setStatus(status: RunStatus, detail?: JsonValue | null, options?: { readonly wakeAt?: string | null }): Promise<void>;
   /**
@@ -1065,6 +1064,10 @@ class Run implements DurableRun {
       if (this.#harness) await this.#harness.close(this.#context);
       else if (this.#store) await this.#store.storage.close(this.#context);
     });
+  }
+
+  get releasing(): boolean {
+    return this.#releasing !== undefined || this.#released;
   }
 
   async setStatus(status: RunStatus, detail: JsonValue | null = null, options: { readonly wakeAt?: string | null } = {}): Promise<void> {

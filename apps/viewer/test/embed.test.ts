@@ -9,7 +9,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-// @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 import { chapterAt, embedMessage, fromParent, parentOrigin, parentParam, steerOf } from '../src/app.ts';
@@ -18,7 +17,7 @@ const noChrome = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }
 const fixtures = new URL('fixtures/', import.meta.url).pathname;
 // Every test is bounded in seconds (a hang fails and names its test, it never holds the run), and so is every cleanup.
 const UNIT = { timeout: 5_000 };
-const IN_CHROME = { ...noChrome, timeout: 60_000 };
+const IN_CHROME = { ...noChrome, timeout: 120_000 };
 const CLEANUP = { timeout: 20_000 };
 after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 

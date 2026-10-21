@@ -42,6 +42,8 @@ export type Manifest = {
   cost: { usd: number | null; parts: Record<string, number | null> };
   source: { run: string; store_sha256: string };
   result?: { blob: string; title: string };
+  /** The agent's report page (draft 41, RECORDING.md 7.1): its title, its entry, and each path under report/ to its blob's SHA-256. */
+  artifact?: { title: string; entry: string; files: Record<string, string> };
   /** The job that ran (`{ workflow, input, files }`), as a JSON blob (draft 24). */
   job?: { blob: string; sha256: string };
   /** The run's store at its end, a SQLite blob, and the commit of the generation it was taken at (draft 24). */
@@ -57,7 +59,10 @@ export type Recording = { id: string; manifest: Manifest; lines: Line[]; blobUrl
   /** Read from a server, whose `blobs/` cannot be listed: finds blobs by their names there, and says how many it found. */
   find?(shas: readonly string[]): Promise<number>;
   /** The text of a blob the shell already read whole (a followed run's JSON), undefined for any other. */
-  heldText?(sha: string): string | undefined };
+  heldText?(sha: string): string | undefined;
+  /** The bytes of a blob the page holds without fetching it (a dropped folder's file, a followed run's PDF), undefined
+   *  for any other. */
+  heldBytes?(sha: string): Promise<Uint8Array> | undefined };
 
 const SOURCES = new Set(['workflow', 'pi', 'browser', 'vision', 'transport', 'host']);
 const isInt = (value: unknown, min = 0) => Number.isInteger(value) && (value as number) >= min;
@@ -203,7 +208,6 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
   const snapshotGen = new Map<number, number>();
   {
     let first = -1;
-    restoresOf(lines);
     let inSnapshot = false;
     let opened = false;
     lines.forEach((line, index) => {

@@ -3,7 +3,7 @@
 import { after, test } from "node:test";
 import { spawn, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,7 +62,7 @@ test("systemd start: a transient unit that kills its control group, restarts in 
     assert.match(unit, /^pda-t-r1-[0-9a-z]+$/);
 
     const file = `/run/pi-durable-disk/${unit}.mount-token`;
-    const [cred, run, empty] = calls;
+    const [cred, envWrite, run, empty] = calls;
     assert.equal(cred.argv[0], "/usr/bin/sudo");
     assert.equal(cred.input, TOKEN, "the token goes into a root-only file through stdin");
     assert.equal(cred.argv.at(-1), file);
@@ -74,7 +74,11 @@ test("systemd start: a transient unit that kills its control group, restarts in 
     for (const p of ["KillMode=control-group", "Restart=on-failure", "RestartPreventExitStatus=65 70 75 76", "User=1000", "Group=1000", `StandardInput=file:${file}`, "TimeoutStopSec=30s"]) {
       assert.ok(prop(p), `property ${p}`);
     }
-    const holder = JSON.parse(a.find((x) => x.startsWith("--setenv=PDA_HOLDER="))!.slice("--setenv=PDA_HOLDER=".length));
+    assert.ok(prop(`EnvironmentFile=/run/pi-durable-disk/${unit}.env`), "the environment (PDA_HOLDER among it) is loaded from a root-only file, not set on the command line");
+    assert.ok(!a.some((x) => x.startsWith("--setenv")), "no --setenv on systemd-run's argv");
+    assert.equal(cred.input, TOKEN);
+    assert.equal(envWrite.argv.at(-1), `/run/pi-durable-disk/${unit}.env`);
+    const holder = JSON.parse(/^PDA_HOLDER="(.*)"$/m.exec(envWrite.input!)![1].replace(/\\(["\\])/g, "$1"));
     assert.deepEqual(holder, { driver: "local", mode: "systemd", host: "host-a", bootId: currentBootId(), unit, mountpoint: w.mp });
     assert.ok(!a.some((x) => /ImportCredential|LoadCredential|SetCredential|TOKEN/.test(x)), "no systemd credential the run's user could read");
     const cmd = a.slice(a.indexOf("--") + 1);
@@ -115,7 +119,7 @@ test("systemd start that fails: the credential file is still removed and the err
   assert.ok(calls.at(-1)!.argv.includes("/bin/rm"));
   const noRestart = recorder();
   await localHost({ exec: noRestart.exec, mountRoot: w.mountRoot, restart: false }).start(REF, TOKEN);
-  assert.ok(!noRestart.calls[1].argv.some((x) => x.startsWith("Restart")), "restart: false drops Restart=");
+  assert.ok(!noRestart.calls.find((c) => c.argv.includes("/usr/bin/systemd-run"))!.argv.some((x) => x.startsWith("Restart")), "restart: false drops Restart=");
 });
 
 test("status: the unit's state, a foreign host is unknown, another boot is gone", async () => {
@@ -151,8 +155,9 @@ test("stop: the unit, then nothing else when the instance released its own mount
   assert.equal(argvs[0], "/usr/bin/sudo -n /usr/bin/systemctl stop pda-t-r1-x.service");
   assert.ok(argvs.some((a) => a.includes("list-units --all --plain --no-legend --type=scope pda-t-r1-x-fuse-*")), "the unit's FUSE scope is looked for even with nothing mounted");
   assert.ok(!argvs.some((a) => /\/usr\/bin\/archil|fusermount|umount|stat |kill/.test(a)), "nothing mounted and no scope: nothing to clean");
-  assert.equal(argvs.at(-2), "/usr/bin/sudo -n /usr/bin/systemctl reset-failed pda-t-r1-x.service");
-  assert.equal(argvs.at(-1), "/usr/bin/sudo -n /bin/rm -f /run/pi-durable-disk/pda-t-r1-x.mount-token", "stop removes the unit's token file");
+  assert.equal(argvs.at(-3), "/usr/bin/sudo -n /usr/bin/systemctl reset-failed pda-t-r1-x.service");
+  assert.equal(argvs.at(-2), "/usr/bin/sudo -n /bin/rm -f /run/pi-durable-disk/pda-t-r1-x.mount-token", "stop removes the unit's token file");
+  assert.equal(argvs.at(-1), "/usr/bin/sudo -n /bin/rm -f /run/pi-durable-disk/pda-t-r1-x.env", "and its environment file");
   calls.length = 0;
   await host.stop({ ...h, host: "host-b" });
   await host.stop({ ...h, bootId: "other" });
@@ -164,8 +169,11 @@ test("a start's own environment goes over the driver's; one that sets PATH or PD
   const { calls, exec } = recorder();
   const host = localHost({ exec, mountRoot: w.mountRoot, procMounts: w.procMounts, hostName: "host-a", user: "1000", group: "1000", command: ["/n", "/c"], env: { A: "1", PLAN: "driver's" } });
   const h = await host.start(REF, TOKEN, { attempt: 2, env: { PLAN: '{"tools":["x y"]}' } });
-  const set = calls.find((c) => c.argv.includes("/usr/bin/systemd-run"))!.argv.filter((x) => x.startsWith("--setenv="));
-  assert.deepEqual(set, ["--setenv=A=1", '--setenv=PLAN={"tools":["x y"]}', "--setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", `--setenv=PDA_HOLDER=${JSON.stringify(h)}`]);
+  const unit = String(h.unit);
+  const written = calls.find((c) => c.argv.at(-1) === `/run/pi-durable-disk/${unit}.env`)!.input!;
+  assert.ok(!calls.some((c) => c.argv.some((x) => x.startsWith("--setenv"))), "nothing on a command line");
+  assert.deepEqual(written.split("\n").slice(0, 3), ['A="1"', 'PLAN="{\\"tools\\":[\\"x y\\"]}"', 'PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"'], "the driver's env, the start's over it, then the driver's own keys");
+  assert.match(written, new RegExp(`^PDA_HOLDER="${JSON.stringify(h).replace(/[\\"]/g, "\\\\$&").replace(/[.*+?^${}()|[\]]/g, "\\$&")}"$`, "m"));
   calls.length = 0;
   for (const env of [{ "NOT-A-NAME": "x" }, { PATH: "/elsewhere" }, { PDA_HOLDER: "{}" }] as Record<string, string>[]) {
     await assert.rejects(host.start(REF, TOKEN, { attempt: 3, env }), (e: unknown) => e instanceof LocalHostError && e.code === "INVALID_ARGUMENT", JSON.stringify(env));
@@ -522,4 +530,126 @@ test("stop of a child-mode handle never signals a group: not pid 1 with its real
     process.kill = kill;
   }
   assert.deepEqual(signals, []);
+});
+
+// ---- the instance's environment never travels on a command line -----------------------------------------------------------
+//
+// `systemd-run` runs under `sudo -n`, which logs the whole command line, and a `--setenv=K=V` lands in the unit's
+// `Environment=` property, which any local user reads with `systemctl show`. So the environment goes into a root-only file the
+// unit loads with `EnvironmentFile=`, written through stdin like the mount token, and the file lives and dies with the unit.
+
+const ENV_SECRET = "env-secret-must-not-travel";
+const TOKEN_DIR = "/run/pi-durable-disk";
+
+/**
+ * A runner that really executes the commands that write, empty and remove the unit's root-only files, with the token
+ * directory moved into `dir` (nothing here is root), and records everything, systemd-run included, as it was asked.
+ */
+function filesystemRunner(dir: string, answer: (argv: string[]) => Ran | undefined = () => undefined) {
+  const calls: { argv: string[]; input?: string }[] = [];
+  const moved = (x: string) => (x.startsWith(TOKEN_DIR) ? join(dir, x.slice(TOKEN_DIR.length)) : x);
+  const exec: Runner = async (argv, opts) => {
+    calls.push({ argv, input: opts?.input });
+    const a = argv.slice(argv[0] === "/usr/bin/sudo" ? 2 : 0);
+    const mine = a[0] === "/bin/sh" || a[0] === "/bin/rm";
+    const overridden = answer(argv);
+    if (!mine || overridden) return overridden ?? ok();
+    const run = spawnSync(a[0], a.slice(1).map(moved), { input: opts?.input ?? "", encoding: "utf8" });
+    return { code: run.status ?? 1, timedOut: false, stdout: run.stdout, stderr: run.stderr };
+  };
+  return { calls, exec, file: (unit: string, ext: string) => join(dir, `${unit}${ext}`) };
+}
+
+function hostWithSecret(w: ReturnType<typeof world>, exec: Runner, extra: Partial<Parameters<typeof localHost>[0]> = {}) {
+  return localHost({ exec, mountRoot: w.mountRoot, procMounts: w.procMounts, hostName: "host-a", user: "1000", group: "1000", command: ["/n", "/c"], unitPrefix: "pda-t-", env: { DB_DSN: ENV_SECRET }, ...extra });
+}
+
+test("systemd start: a secret in the environment is in no command line, and reaches the unit through a root-only EnvironmentFile", async () => {
+  const w = world();
+  const dir = scratch("pda-envfile-");
+  const { calls, exec, file } = filesystemRunner(dir);
+  const host = hostWithSecret(w, exec);
+  const handle = await host.start(REF, TOKEN, { attempt: 1, env: { PER_START_SECRET: `${ENV_SECRET}-attempt` } });
+  const unit = String(handle.unit);
+  const argvs = calls.map((c) => c.argv);
+  assert.ok(!JSON.stringify(argvs).includes(ENV_SECRET), "the secret is in no argv element: not systemd-run's, not sudo's, not the file writer's");
+  assert.ok(!argvs.flat().some((x) => x.startsWith("--setenv")), "no --setenv at all");
+  const run = argvs.find((a) => a.includes("/usr/bin/systemd-run"))!;
+  assert.ok(run.some((x, i) => run[i - 1] === "-p" && x === `EnvironmentFile=${TOKEN_DIR}/${unit}.env`), "the unit loads its environment from a file under the token directory");
+  const envFile = file(unit, ".env");
+  assert.equal(statSync(envFile).mode & 0o777, 0o600, "root-only");
+  const text = readFileSync(envFile, "utf8");
+  assert.match(text, new RegExp(`^DB_DSN="${ENV_SECRET}"$`, "m"));
+  assert.match(text, new RegExp(`^PER_START_SECRET="${ENV_SECRET}-attempt"$`, "m"));
+  assert.match(text, /^PATH="\/usr\/local\/sbin:/m);
+  const holder = /^PDA_HOLDER="(.*)"$/m.exec(text)?.[1];
+  assert.ok(holder, "the holder travels in the file too");
+  assert.deepEqual(JSON.parse(holder!.replace(/\\(["\\])/g, "$1")), { ...handle });
+  assert.ok(existsSync(envFile), "it stays while the unit lives: a restart in place loads it again");
+});
+
+test("the environment file is removed by stop, and by a start that fails", async () => {
+  const w = world();
+  const dir = scratch("pda-envfile-");
+  const { exec, file } = filesystemRunner(dir);
+  const host = hostWithSecret(w, exec);
+  const handle = await host.start(REF, TOKEN);
+  const unit = String(handle.unit);
+  assert.ok(existsSync(file(unit, ".env")) && existsSync(file(unit, ".mount-token")));
+  await host.stop(handle);
+  assert.ok(!existsSync(file(unit, ".env")), "stop removes the environment file");
+  assert.ok(!existsSync(file(unit, ".mount-token")), "and the token file, as before");
+
+  const failing = filesystemRunner(dir, (argv) => (argv.includes("/usr/bin/systemd-run") ? { code: 1, timedOut: false, stdout: "", stderr: "Failed to start transient service unit: Unit already exists." } : undefined));
+  const err = await hostWithSecret(w, failing.exec).start(REF, TOKEN).then(() => null, (e: unknown) => e);
+  assert.ok(err instanceof PdaError && err.code === "START_FAILED", String(err));
+  const unitFailed = failing.calls.find((c) => c.argv.includes("/usr/bin/systemd-run"))!.argv.find((x) => x.startsWith("--unit="))!.slice("--unit=".length);
+  assert.ok(!existsSync(failing.file(unitFailed, ".env")), "a failed start leaves no environment file");
+  assert.ok(!existsSync(failing.file(unitFailed, ".mount-token")), "nor a token file");
+});
+
+test("a unit that ends for good removes its own environment file, and one systemd will restart keeps it", async () => {
+  const w = world();
+  const dir = scratch("pda-envfile-");
+  const { calls, exec, file } = filesystemRunner(dir);
+  const handle = await hostWithSecret(w, exec).start(REF, TOKEN);
+  const unit = String(handle.unit);
+  const stopPost = calls.find((c) => c.argv.includes("/usr/bin/systemd-run"))!.argv.find((x) => x.startsWith("ExecStopPost="));
+  assert.ok(stopPost, "the unit carries an ExecStopPost for its environment file");
+  const m = /^ExecStopPost=\+\/bin\/sh -c '(.*)' sh (\S+)$/.exec(stopPost!);
+  assert.ok(m, stopPost);
+  assert.equal(m![2], `${TOKEN_DIR}/${unit}.env`, "it names the file under the token directory");
+  // systemd turns $$ into $ and hands the script its own SERVICE_RESULT and EXIT_STATUS; do the same here.
+  const script = m![1].replaceAll("$$", "$");
+  const after = (env: Record<string, string>) => {
+    writeFileSync(file(unit, ".env"), 'K="v"\n');
+    spawnSync("/bin/sh", ["-c", script, "sh", file(unit, ".env")], { env: { PATH: "/usr/bin:/bin", ...env } });
+    return existsSync(file(unit, ".env"));
+  };
+  for (const [result, status] of [["success", "0"], ["exit-code", "65"], ["exit-code", "70"], ["exit-code", "75"], ["exit-code", "76"]]) {
+    assert.equal(after({ SERVICE_RESULT: result, EXIT_STATUS: status }), false, `${result}/${status}: the instance parked, finished or cannot be restarted: the file goes`);
+  }
+  for (const [result, status] of [["exit-code", "1"], ["exit-code", "137"], ["signal", "KILL"], ["timeout", "TERM"], ["core-dump", "SEGV"]]) {
+    assert.equal(after({ SERVICE_RESULT: result, EXIT_STATUS: status }), true, `${result}/${status}: systemd restarts it and the restart loads the file again`);
+  }
+
+  const noRestart = filesystemRunner(dir);
+  const h2 = await hostWithSecret(w, noRestart.exec, { restart: false }).start(REF, TOKEN);
+  const argv = noRestart.calls.find((c) => c.argv.includes("/usr/bin/systemd-run"))!.argv;
+  assert.ok(argv.includes(`ExecStopPost=+/bin/rm -f ${TOKEN_DIR}/${String(h2.unit)}.env`), "with no restart every exit is the last one");
+});
+
+test("an environment value that cannot be written into the file faithfully is refused before anything runs, and a hostile one is written escaped", async () => {
+  const w = world();
+  const dir = scratch("pda-envfile-");
+  for (const env of [{ A: "line one\nline two" }, { A: "carriage\rreturn" }, { A: "nul\0byte" }, { "NOT-A-NAME": "x" }] as Record<string, string>[]) {
+    const { calls, exec } = filesystemRunner(dir);
+    await assert.rejects(hostWithSecret(w, exec, { env }).start(REF, TOKEN), (e: unknown) => e instanceof LocalHostError && e.code === "INVALID_ARGUMENT", JSON.stringify(env));
+    assert.equal(calls.length, 0, `refused before anything ran: ${JSON.stringify(env)}`);
+  }
+  const { exec, file } = filesystemRunner(dir);
+  const handle = await hostWithSecret(w, exec, { env: { Q: 'say "hi" \\ $HOME `id` #x', E: "" } }).start(REF, TOKEN);
+  const text = readFileSync(file(String(handle.unit), ".env"), "utf8");
+  assert.match(text, /^Q="say \\"hi\\" \\\\ \$HOME `id` #x"$/m, "quotes and backslashes escaped; nothing else is special in a double-quoted value");
+  assert.match(text, /^E=""$/m);
 });

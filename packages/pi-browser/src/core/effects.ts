@@ -1,5 +1,6 @@
 // Nothing about a request leaves this module but its method, origin, path, query-key and form-field names: never a
 // body, a header or a value.
+import { openDial } from "./dial.js";
 import type { Decisions, EffectRequest, EffectVerdict } from "./decisions.js";
 import type { AttachTarget, ObserverFailure, SentEffect } from "./host.js";
 
@@ -77,20 +78,26 @@ export class EffectObserver {
 
   /** `decide` null observes without holding; a decision not made within `decideMs` is a refusal. */
   static async open(target: AttachTarget, decide: EffectDecider | null, decideMs = 60_000): Promise<EffectObserver> {
-    const init = target.dial?.headers ? { headers: target.dial.headers } : undefined;
-    const ws = new (WebSocket as unknown as new (url: string, init?: object) => WebSocket)(target.dial?.url ?? target.sdkCdpUrl, init);
+    const ws = openDial(target);
     await new Promise<void>((resolve, reject) => { ws.onopen = () => resolve(); ws.onerror = () => reject(failed("attach_refused", "the effect observer could not reach the browser")); });
     const observer = new EffectObserver(ws, decide, decideMs);
-    ws.onmessage = (event) => observer.receive(JSON.parse(String(event.data)));
+    // A throw in a socket listener is an uncaught exception that ends the process: a frame the observer cannot read is dropped.
+    ws.onmessage = (event) => { try { observer.receive(JSON.parse(String(event.data))); } catch {} };
     ws.onclose = () => { observer.closed = true; for (const p of observer.pending.values()) p.reject(failed("cdp_closed", "the effect observer's socket closed")); observer.pending.clear(); };
-    // New targets start paused, so nothing they send escapes before their Network and Fetch domains are on.
-    await observer.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
-    await new Promise((r) => setTimeout(r, 150));
-    const attached = new Set([...observer.sessions.values()].map((s) => s.targetId));
-    for (const t of (await observer.send("Target.getTargets")).targetInfos) {
-      if (t.type === "page" && !attached.has(t.targetId)) await observer.send("Target.attachToTarget", { targetId: t.targetId, flatten: true });
+    try {
+      // New targets start paused, so nothing they send escapes before their Network and Fetch domains are on.
+      await observer.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+      await new Promise((r) => setTimeout(r, 150));
+      const attached = new Set([...observer.sessions.values()].map((s) => s.targetId));
+      for (const t of (await observer.send("Target.getTargets")).targetInfos) {
+        if (t.type === "page" && !attached.has(t.targetId)) await observer.send("Target.attachToTarget", { targetId: t.targetId, flatten: true });
+      }
+      return observer;
+    } catch (error) {
+      // An observer that failed its setup is never returned, so nothing else would close its socket.
+      observer.close();
+      throw error;
     }
-    return observer;
   }
 
   /** Journal every effect from now on (a held one before it is sent); returns the stop. Lifts the previous call's cut. */
@@ -131,7 +138,7 @@ export class EffectObserver {
       if (m.error) p?.reject(failed("cdp_error", m.error.message)); else p?.resolve(m.result);
       return;
     }
-    if (m.method === "Target.attachedToTarget") void this.setup(m.params);
+    if (m.method === "Target.attachedToTarget") this.setup(m.params).catch(() => {});
     else if (m.method === "Target.detachedFromTarget") { this.sessions.delete(m.params.sessionId); for (const [id, entry] of [...this.announced]) if (entry.sessionId === m.params.sessionId) this.unannounce(id); }
     else if (m.method === "Network.requestWillBeSent") { this.announce(m.sessionId!, m.params); this.track(this.sent(m.sessionId!, m.params)); }
     else if (m.method === "Fetch.requestPaused") {
@@ -204,7 +211,9 @@ export class EffectObserver {
   private async paused(sessionId: string, p: { requestId: string; networkId?: string; request: { method: string; url: string; postData?: string; headers?: Record<string, string> } }): Promise<void> {
     const { method, url, postData, headers } = p.request;
     if (SAFE.has(method) || !this.decide) return this.send("Fetch.continueRequest", { requestId: p.requestId }, sessionId);
-    const request = describeRequest(method, url, postData, headers);
+    let request: EffectRequest;
+    // A request the observer cannot describe cannot be judged or journaled, and a held request nobody answers waits forever: refuse it.
+    try { request = describeRequest(method, url, postData, headers); } catch { return this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "BlockedByClient" }, sessionId); }
     const cutoff = this.cutoff;
     // Journaled `pending` and committed before deciding: a process that dies mid-decision loses the hold and the
     // request goes, so the journal must already name it. A request whose row could not be saved never leaves.

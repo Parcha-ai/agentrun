@@ -78,7 +78,7 @@
       "why": "a single-page app that answers \"Requested URL no longer exists\" on direct links; reaching a chart needs menu navigation"
     }
   ],
-  "sources": [
+  "pages": [
     {
       "id": "caiso",
       "operator": "California ISO (CAISO)",

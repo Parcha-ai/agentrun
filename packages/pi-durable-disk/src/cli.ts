@@ -56,7 +56,7 @@ const USAGE = `usage:
                         [--user U] [--group G] [--app MODULE] [--run-arg ARG ...] [--lease-expiry 90s] [--stonith-timeout 30s]
                         [--start-grace 90s] [--start-backoff-max 10m] [--stop-timeout 30s] [--token-ttl 24h] [--token-prefix P] [--demand] [--create] [--env K=V ...] [--log-dir DIR]
                         [--archil BIN] [--control-timeout 10s] [--sweep-tokens] [--token-grace 15m]
-                        [--park-threshold 60s] [--api-key-env NAME]
+                        [--park-threshold 60s] [--no-restart] [--api-key-env NAME]
                         with --host docker: --image IMAGE [--app-root DIR] [--fleet F] [--name-prefix P] [--run-as USER]
                         [--docker-arg ARG ...] [--apparmor auto|PROFILE|none] [--docker BIN]
   pi-durable-disk supervise --check --disk D --region R [--mount-root DIR] [--user U] [--group G] [--check-id-prefix P]
@@ -64,9 +64,10 @@ const USAGE = `usage:
   pi-durable-disk status --disk D --region R --id ID [--host-name NAME] [--api-key-env NAME] [--docker BIN]
   pi-durable-disk release --id ID [--mount-root DIR]
   pi-durable-disk fork --disk D --region R --id ID --new-id NEW [--mount-root DIR] [--archil BIN] [--token-prefix P]
-                        [--api-key-env NAME]`;
+                        [--api-key-env NAME]
+durations take a unit (500ms, 30s, 1.5m, 1h); flags named -ms take bare milliseconds; a bare 0 turns off
+--park-threshold, --start-grace and --start-backoff-max`;
 
-/** "30s", "500ms", "2m", "1h", or plain milliseconds. */
 /**
  * Whether the lease watchdog may kill every other process in the instance's cgroup: only inside its own systemd unit,
  * whose cgroup holds nothing but the instance and its commands. Elsewhere the cgroup may be shared (a login session, an
@@ -102,18 +103,64 @@ export function watchdogOwnsCgroup(
   return { owns: true };
 }
 
-export function parseDuration(text: string): number {
-  const m = /^(\d+(?:\.\d+)?)(ms|s|m|h)?$/.exec(text.trim());
-  if (!m) throw new UsageError(`not a duration: ${text}`);
-  return Math.round(Number(m[1]) * { ms: 1, s: 1000, m: 60_000, h: 3_600_000 }[(m[2] ?? "ms") as "ms" | "s" | "m" | "h"]);
+/**
+ * A duration: a number and its unit, `ms`, `s`, `m` or `h` ("500ms", "30s", "1.5m", "1h"). A bare number is refused with
+ * a hint, so "90" is never silently 90 ms. A flag whose name carries its unit (`bareMs`, the `-ms` flags) takes a bare
+ * number as milliseconds; a flag whose 0 turns its feature off (`zeroOff`) also takes a bare `0`.
+ */
+export function parseDuration(text: string, rule: DurationRule = {}): number {
+  const t = text.trim();
+  const m = /^(\d+(?:\.\d+)?)(ms|s|m|h)?$/.exec(t);
+  if (!m) throw new UsageError(`not a duration: "${text}": a number and its unit (ms, s, m or h), e.g. 90s`);
+  if (m[2] === undefined) {
+    if (rule.bareMs) return Math.round(Number(m[1]));
+    if (rule.zeroOff && Number(m[1]) === 0) return 0;
+    throw new UsageError(`not a duration: "${text}": give a unit, e.g. ${t}s or ${t}ms`);
+  }
+  return Math.round(Number(m[1]) * { ms: 1, s: 1000, m: 60_000, h: 3_600_000 }[m[2] as "ms" | "s" | "m" | "h"]);
+}
+
+/** How a duration flag reads a bare number: as milliseconds (`bareMs`), or a bare `0` as off (`zeroOff`); otherwise never. */
+export type DurationRule = { readonly bareMs?: boolean; readonly zeroOff?: boolean };
+
+/**
+ * Every duration flag of every command, with its rule. The `-ms` flags carry their unit in their name. A bare `0` turns
+ * off parking (`--park-threshold`), the start grace and its backoff (`--start-grace`), and the backoff alone
+ * (`--start-backoff-max`, the grace then stays at `--start-grace`).
+ */
+const DURATION_FLAGS: Readonly<Record<string, DurationRule>> = {
+  "heartbeat-ms": { bareMs: true },
+  "lease-expiry-ms": { bareMs: true },
+  "lease-margin-ms": { bareMs: true },
+  "park-threshold": { zeroOff: true },
+  "park-idle": {},
+  "drain-timeout": {},
+  "stop-timeout": {},
+  "control-timeout": {},
+  "lease-expiry": {},
+  "stonith-timeout": {},
+  "start-grace": { zeroOff: true },
+  "start-backoff-max": { zeroOff: true },
+  "token-grace": {},
+  every: {},
+};
+
+/** A duration flag's value in milliseconds, by the flag's rule; undefined when the flag is absent. */
+function durationFlag(values: Record<string, unknown>, name: string): number | undefined {
+  const value = values[name];
+  return typeof value === "string" ? parseDuration(value, DURATION_FLAGS[name]) : undefined;
 }
 
 function parse(argv: string[], options: ParseArgsConfig["options"]) {
+  let values: Record<string, string | boolean | string[] | undefined>;
   try {
-    return parseArgs({ args: argv, options, allowPositionals: false, strict: true }).values as Record<string, string | boolean | string[] | undefined>;
+    values = parseArgs({ args: argv, options, allowPositionals: false, strict: true }).values as Record<string, string | boolean | string[] | undefined>;
   } catch (err) {
     throw new UsageError((err as Error).message);
   }
+  // Every duration flag given is checked here, before the command does anything with any of them.
+  for (const name of Object.keys(DURATION_FLAGS)) durationFlag(values, name);
+  return values;
 }
 
 /** A user or group name or number, as a number (from /etc/passwd or /etc/group). */
@@ -209,7 +256,7 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   if (runAs && process.getuid?.() !== 0) throw new UsageError("--run-as needs an instance that runs as root (inside a container); elsewhere run the instance as the run user");
   const onSigterm = str(values["on-sigterm"], "resume");
   if (onSigterm !== "resume" && onSigterm !== "pause") throw new UsageError("--on-sigterm is resume or pause");
-  const ms = (name: string) => (typeof values[name] === "string" ? parseDuration(values[name] as string) : undefined);
+  const ms = (name: string) => durationFlag(values, name);
   const lease = { heartbeatMs: ms("heartbeat-ms"), expiryMs: ms("lease-expiry-ms"), marginMs: ms("lease-margin-ms") };
   const parkMs = ms("park-threshold") || undefined;
   const drainMs = ms("drain-timeout") ?? 0;
@@ -220,7 +267,8 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   if (servePort !== undefined && tokenFile === undefined && !isLoopback(serveHost)) throw new UsageError(`--serve-host ${serveHost} is not loopback: name a --serve-token-file`);
   const serveToken = tokenFile === undefined ? undefined : readServeToken(tokenFile);
   const mountRoot = str(values["mount-root"], DEFAULT_MOUNT_ROOT)!;
-  const root = dir ?? join(mountRoot, runPath(ref.id));
+  // On a disk the id names the run's directory: an unsafe one stops the instance here (INVALID_ARGUMENT), before it serves.
+  if (dir === undefined) runPath(ref.id);
   const log = (event: string, extra: Record<string, unknown> = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event, run: ref.id, ...extra })}\n`);
   // The app's factory runs once the claim is held (`afterClaim`), so `ctx.root` is the live directory whenever app code
   // runs; what it returns opens the Harness. Serve starts before the open, with the root options the factory fills in.
@@ -298,13 +346,15 @@ export interface InstanceLife {
  * A drain stops new submissions and waits up to `life.drainMs` for running work; with `resume` it then writes the run
  * sleeping with its wake (the deadline its work waits for, null when idle and idle parking is on, otherwise now), so
  * the supervisor starts it again and a deploy never strands it; a wake hook that refuses falls back to a due wake.
- * `pause` seals it paused. A rejection of `onOpen` is the app failing (exit 1), except once a drain or a park's release
+ * `pause` seals it paused. An app that released the run itself (`run.release()`, in `onOpen` or after it) has nothing left to
+ * serve: the instance exits 0 when `onOpen` returns, and a stop after that exits 0 without a drain, since the Harness is
+ * closed and the run's status final. A rejection of `onOpen` is the app failing (exit 1), except once a drain or a park's release
  * began: closing the Harness under the app makes its work reject ("Session is closed"), and ending the process there
  * would cut the release before its unmount (a container's FUSE daemon dies with the process, leaving the delegation
  * orphaned).
  */
 export function serveUntilDone(
-  run: Pick<DurableRun, "setStatus" | "release" | "record">,
+  run: Pick<DurableRun, "setStatus" | "release" | "record"> & Partial<Pick<DurableRun, "releasing">>,
   onOpen: ((run: DurableRun) => void | Promise<void>) | undefined,
   onSigterm: string | undefined,
   log: (event: string, extra?: Record<string, unknown>) => void,
@@ -325,10 +375,22 @@ export function serveUntilDone(
     let releasing = false;
     let parking: Parking | undefined;
     const sleeping = (at: number | null) => run.setStatus("sleeping", { reason: "drained" }, { wakeAt: at === null ? null : new Date(at).toISOString() });
+    // The app released the run: wait for its release to end (a second `release()` joins it) and leave.
+    const leaveReleased = async (event: Record<string, unknown>) => {
+      try {
+        await run.release();
+        log("released", { ...event, record: run.record as unknown as Json });
+        done(0);
+      } catch (err) {
+        log("release failed", { code: (err as PdaError).code, message: (err as Error).message });
+        done(exitCodeFor(err));
+      }
+    };
     const shutdown = async (signal: string) => {
       if (releasing) return;
       releasing = true;
       log("draining", { signal, onSigterm, drainMs });
+      if (run.releasing === true) return leaveReleased({ drained: "released" });
       try {
         if (await parking?.stop()) return done(0);
         life.server?.pause();
@@ -377,6 +439,11 @@ export function serveUntilDone(
     // onOpen may return at once (work submitted) or run for the instance's life.
     Promise.resolve()
       .then(() => onOpen?.(durable))
+      .then(() => {
+        if (releasing || run.releasing !== true) return;
+        releasing = true;
+        void leaveReleased({ drained: "app" });
+      })
       .catch((err: unknown) => {
         if (releasing) return;
         const e = new AppError(`onOpen failed: ${(err as Error).message}`, { cause: err });
@@ -398,7 +465,7 @@ export function instanceRunArgs(values: Record<string, unknown>): string[] {
 
 /** `--park-threshold` for either driver: absent keeps the driver's default, 0 turns parking off. */
 const parkThreshold = (values: Record<string, unknown>): { parkThresholdMs?: number | null } =>
-  values["park-threshold"] === undefined ? {} : { parkThresholdMs: parseDuration(str(values["park-threshold"])!) || null };
+  values["park-threshold"] === undefined ? {} : { parkThresholdMs: durationFlag(values, "park-threshold") || null };
 
 function driverFrom(values: Record<string, unknown>): HostDriver {
   const env = Object.fromEntries(
@@ -426,7 +493,7 @@ function driverFrom(values: Record<string, unknown>): HostDriver {
       dockerArgs: (values["docker-arg"] as string[] | undefined) ?? [],
       apparmor: apparmor === "none" ? false : apparmor,
       note: (line) => emit({ event: "docker", note: line }),
-      stopTimeoutMs: values["stop-timeout"] ? parseDuration(str(values["stop-timeout"])!) : undefined,
+      stopTimeoutMs: values["stop-timeout"] ? durationFlag(values, "stop-timeout") : undefined,
       ...parkThreshold(values),
     });
   }
@@ -441,7 +508,7 @@ function driverFrom(values: Record<string, unknown>): HostDriver {
     user: str(values.user),
     group: str(values.group),
     runArgs,
-    stopTimeoutMs: values["stop-timeout"] ? parseDuration(str(values["stop-timeout"])!) : undefined,
+    stopTimeoutMs: values["stop-timeout"] ? durationFlag(values, "stop-timeout") : undefined,
     restart: values["no-restart"] ? false : undefined,
     logDir: str(values["log-dir"]),
     archil: str(values.archil),
@@ -471,7 +538,7 @@ async function supervise(values: Record<string, unknown>): Promise<number> {
   if (docker && values.check) throw new UsageError("--check proves this host's own mounts; with --host docker the containers mount, so it does not apply");
   if (docker && (typeof values.image !== "string" || !values.image)) throw new UsageError("--host docker needs --image");
   const disk = await cliControl(values);
-  const controlTimeoutMs = values["control-timeout"] ? parseDuration(str(values["control-timeout"])!) : CONTROL_TIMEOUT_MS;
+  const controlTimeoutMs = values["control-timeout"] ? durationFlag(values, "control-timeout")! : CONTROL_TIMEOUT_MS;
   if (values.check) {
     const report = await checkHost({
       control: disk,
@@ -497,10 +564,10 @@ async function supervise(values: Record<string, unknown>): Promise<number> {
   const host = driverFrom(values);
   const opts = {
     control: disk,
-    leaseExpiryMs: values["lease-expiry"] ? parseDuration(str(values["lease-expiry"])!) : undefined,
-    stonithTimeoutMs: values["stonith-timeout"] ? parseDuration(str(values["stonith-timeout"])!) : undefined,
-    startGraceMs: values["start-grace"] !== undefined ? parseDuration(str(values["start-grace"])!) : undefined,
-    startBackoffMaxMs: values["start-backoff-max"] !== undefined ? parseDuration(str(values["start-backoff-max"])!) : undefined,
+    leaseExpiryMs: values["lease-expiry"] ? durationFlag(values, "lease-expiry") : undefined,
+    stonithTimeoutMs: values["stonith-timeout"] ? durationFlag(values, "stonith-timeout") : undefined,
+    startGraceMs: durationFlag(values, "start-grace"),
+    startBackoffMaxMs: durationFlag(values, "start-backoff-max"),
     tokenTtl: str(values["token-ttl"]),
     tokenPrefix: str(values["token-prefix"]),
     demand: Boolean(values.demand),
@@ -527,7 +594,7 @@ async function supervise(values: Record<string, unknown>): Promise<number> {
       prefix: str(values["token-prefix"], TOKEN_PREFIX)!,
       runs: values.id ? refs.map((x) => x.id) : undefined,
       expired: Boolean(values["sweep-tokens"]),
-      graceMs: values["token-grace"] ? parseDuration(str(values["token-grace"])!) : undefined,
+      graceMs: values["token-grace"] ? durationFlag(values, "token-grace") : undefined,
     }).catch((e: unknown) => ({ removed: [], failed: [{ identifier: "*", error: (e as Error).message }] }));
     if (r.removed.length || r.failed.length) emit({ event: "token-sweep", ...r });
   };
@@ -535,7 +602,7 @@ async function supervise(values: Record<string, unknown>): Promise<number> {
     await tick();
     return failures ? 1 : 0;
   }
-  const every = parseDuration(str(values.every)!);
+  const every = durationFlag(values, "every")!;
   let stopped = false;
   process.once("SIGTERM", () => (stopped = true));
   process.once("SIGINT", () => (stopped = true));
@@ -648,6 +715,10 @@ const COMMON = { disk: { type: "string" }, region: { type: "string" }, id: { typ
 
 export async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
+  if (command === "--help" || command === "-h" || command === "help" || (command !== undefined && rest[0] === "--help")) {
+    process.stdout.write(`${USAGE}\n`);
+    return 0;
+  }
   try {
     switch (command) {
       case "run":
