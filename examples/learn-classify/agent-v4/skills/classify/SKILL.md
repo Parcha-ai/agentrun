@@ -11,10 +11,12 @@ description: How to do the six-part job by hand from the company's annual report
 2. The annual report: the latest 10-K, or 20-F or 40-F for a foreign filer, linked from the investor relations page (a
    PDF, or an HTML page). Read it with read_document: `find` names words to look for and lists the pages that hold them,
    `pages` reads those pages. What it returns is marked by page, and those pages are what you cite ("pdf p. N"). The
-   cover page gives the fiscal year and the address of the principal executive offices. Find the cover by its words, not
-   its page: `find: "principal executive offices"` lists the page of the cover's address line, since page 1 of a
-   designed annual report or of a site's copy of the filing is not the cover. When no page holds those words, the
-   document is not the filing: find the filing itself.
+   cover is the filing's own cover page, among its first pages: the page with the form's header (Form 10-K, 20-F or
+   40-F, or the annual report's title page) and the registrant's name and address block. Read the first pages (`pages:
+   [1, 2, 3, 4, 5]`), take the earliest page that is the cover, and take the fiscal year and the headquarters statement
+   from it; a site's copy or a designed report can put pages before it, and words are only a hint (for example
+   "principal executive office" or the form's name). When none of the first pages is the cover, the document is not the
+   filing: find the filing itself.
 3. The segments: the segment note of the financial statements (often "segment information"), revenue by reportable
    segment. Once `find` has located it, look at that page: read_document with `pages: [N]` and `question: "the segment
    revenue table as laid out"`, and take the segments from that look (cite it as "pdf p. N"). Tables lose their layout
@@ -51,11 +53,13 @@ description: How to do the six-part job by hand from the company's annual report
 Each step above is a part: a call of the tool it uses, a decision over what the call returned, and an escalate when the
 call found nothing. Read describe's tool list for each tool's arguments and result fields; do not invent them. Narrow
 before a pick: a pick takes at most 240 candidates (for example, the major group before its 4-digit codes). The part
-that reads the headquarters returns the registrant's own statement with its quote, and a Jev judge checks that the quote
-states this registrant's principal or head office, not an exhibit's, a letter's or a subsidiary's address; when no quote
-passes, it escalates "no HQ found", and it never passes an empty headquarters on, which the answer refuses. In a
-workflow, every quote field an extract or agent step returns declares `maxLength: 300` in its out schema, so the cap
-holds at the node that makes the quote; the answer refuses a longer cite.
+that reads the cover reads the report's first pages, and a Jev judge checks the page: is this page the registrant's
+cover? It takes the earliest page that is, and escalates "no cover found" when none is. The part that reads the
+headquarters returns the registrant's own statement with its quote, and a Jev judge checks that the quote states this
+registrant's principal or head office, not an exhibit's, a letter's or a subsidiary's address; when no quote passes, it
+escalates "no HQ found", and it never passes an empty headquarters on, which the answer refuses. In a workflow, every
+quote field an extract or agent step returns declares `maxLength: 300` in its out schema, so the cap holds at the node
+that makes the quote; the answer refuses a longer cite.
 
 The decision node follows what the decision needs. A choice that needs knowledge the state does not hold (for example,
 what a company does) is one narrow agent step on the host's node model; a choice decidable from evidence already in the
