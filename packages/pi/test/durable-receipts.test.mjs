@@ -2,8 +2,8 @@
 // paid for is answered from them, and a call equal to an unknown effect is refused; neither reaches the tool.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { canonicalHash } from '@parcha/agentrun-dsl/recovery';
-import { reuseReceipts, ReceiptIndex, ToolResultKeyError } from '@parcha/agentrun-pi/durable';
+import { canonicalHash, RecoveryError } from '@parcha/agentrun-dsl/recovery';
+import { effectResultOf, reuseReceipts, ReceiptIndex, ToolResultKeyError } from '@parcha/agentrun-pi/durable';
 import { hostKey, otherKey, resultOf } from './fixtures/pi-version.mjs';
 
 /** pi-durable's call api over a map: `snapshot` reads a document of the family, `commit` runs a transaction that edits one. */
@@ -124,4 +124,15 @@ test("a paid result with its blocks only under the key the loaded pi-durable doe
   const stale = { name: 'search', execute: async () => ({ [otherKey()]: [{ type: 'text', text: 'rows' }] }) };
   await assert.rejects(reuse.wrap(stale).execute({ q: 'a' }, calls, {}), (error) => error instanceof ToolResultKeyError && error.tool === 'search');
   assert.equal(calls.held.size, 0);
+});
+
+test('at a workflow call\'s effect boundary, a refused call is the DSL\'s unknown-outcome signal; any other result passes as it is', async () => {
+  const reuse = reuseReceipts({ tools: ['pay'], sessionId: 'tail', answer: true, unknown: [{ name: 'pay', argsHash: canonicalHash({ amount: 5 }) }] });
+  const refused = await reuse.wrap(counted('pay')).execute({ amount: 5 }, api(), {});
+  assert.throws(() => effectResultOf(refused, 'pay'), (error) => error instanceof RecoveryError && error.code === 'FROZEN_EFFECT_UNKNOWN' && error.cause === refused);
+  const paid = await reuse.wrap(counted('pay')).execute({ amount: 6 }, api(), {});
+  assert.equal(effectResultOf(paid, 'pay'), paid);
+  // Another tool's own field named outcome is part of its result.
+  const inconclusive = { content: [], details: { outcome: 'unknown' } };
+  assert.equal(effectResultOf(inconclusive, 'classify'), inconclusive);
 });

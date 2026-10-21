@@ -178,7 +178,12 @@ export type RecoveryOptions = {
 /** What a host's effect adapter receives under the driver: the interpreter's parameters, `call`, which keeps each
  *  outside call the effect makes on its record as the call ends, and `effect`, the admitted effect: its journal id and
  *  the hash of its arguments, as the journal stores them and the same in every process of the run. A host that keeps
- *  what an outside call answered under them can settle an effect whose call was cut with `journal.complete`. */
+ *  what an outside call answered under them can settle an effect whose call was cut with `journal.complete`.
+ *
+ *  What the adapter returns is the effect's result, whatever its fields. An adapter that cannot know whether the outside
+ *  call happened throws: a `RecoveryError` with code `FROZEN_EFFECT_UNKNOWN`, its `cause` what it observed (kept for the
+ *  operator in the checkpoint's `unknownResponses`), or an `EffectOutcomeUnknownError`. The effect then stays unknown,
+ *  is never dispatched again, and the run resumes only once the host reconciles it, as after any call that throws. */
 export type RecoveryEffectParams = Parameters<NonNullable<WorkflowDeps["runEffect"]>>[0] & {
   call?: (record: unknown) => void;
   effect?: { id: string; argsHash: string };
@@ -1066,16 +1071,18 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           const keep = (record: unknown) => { calls.push(record); const held = [...calls]; persist(() => journal.called(id, held)).catch(() => undefined); };
           let value: unknown;
           try { value = await run({ ...params, signal, call: keep, effect: { id, argsHash } }); }
+          catch (error) {
+            // The host's one signal that it cannot know the outcome: what it observed is kept for the operator, without
+            // certifying completion. Any other throw leaves the effect unknown too, with nothing observed.
+            if (error instanceof RecoveryError && error.code === "FROZEN_EFFECT_UNKNOWN") {
+              if (calls.length) await flush();
+              if (error.cause !== undefined) { (snapshot.unknownResponses ??= {})[id] = error.cause; await save(); await flush(); }
+              throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id}: the host reported an unknown outcome`);
+            }
+            throw error;
+          }
           finally { if (calls.length) await flush(); }
           if (signal.aborted) throw signal.reason;
-          const returned = value as { outcome?: unknown; effect_status?: unknown; details?: { outcome?: unknown; effect_status?: unknown } } | null;
-          if (returned?.outcome === "unknown" || returned?.effect_status === "unknown"
-            || returned?.details?.outcome === "unknown" || returned?.details?.effect_status === "unknown") {
-            (snapshot.unknownResponses ??= {})[id] = value;
-            await save(); // Preserve the observation without certifying completion.
-            await flush();
-            throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id}: tool returned an unknown outcome`);
-          }
           const files = fileHashes(params.produces);
           // A tool effect's receipt names the external call it paid for (the tool and its arguments),
           // so a continuation that inherits the receipt can answer the same call from it. Any other
