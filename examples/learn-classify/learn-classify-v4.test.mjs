@@ -363,8 +363,8 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   // A decision node follows what the decision needs: evidence in the state is Jev's; knowledge the state does not hold
   // (what a company does, its SIC code) is one narrow agent step, given the company's name from the job's input; and Jev
   // keeps the check the state can decide, that the revenue line the code rests on is quoted from the report.
-  for (const words of [/A choice decidable from evidence already in the state is a Jev pick/, /A choice that needs knowledge the state does not hold, such as what a company does, is one narrow agent step on the host's node model/,
-    /the company's name from the job's input/, /a judge that the revenue line the code rests on is quoted from the report/]) assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), words);
+  for (const words of [/a choice decidable from evidence already in the state is a Jev pick/, /A choice that needs knowledge the state does not hold \(for example, what a company does\) is one narrow agent step on the host's node model/,
+    /the company's name from the job's input/, /a judge that the revenue line the code rests on is quoted from the report/, /Decide per workflow/, /For example, the 4-digit SIC code/]) assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), words);
   assert.match(flat(v4Rules), /A choice among listed options that needs knowledge the state does not hold .* is an agent node on the host's node model/);
   // Looking at the pages is a rule of the job, not only the skill's advice.
   assert.match(flat(text(v4, 'AGENTS.md')), /look at the annual report's cover page and the page of its segment table with read_document/i);
