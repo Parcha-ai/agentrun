@@ -1,11 +1,13 @@
 # The web example's agent
 
 An agent that signs in to a website through a person, then reads the pages behind the sign-in and writes what it found
-to files. A person asks it in a chat. It opens a real browser on Browserbase, opens the site's sign-in page and calls
+to files. A person asks it in a chat. It opens a real browser (a Chrome on your machine, Browserbase or Kernel:
+[The browser](#the-browser)), opens the site's sign-in page and calls
 `request_sign_in`, which ends its turn. The person signs in in the browser's live view and replies "done". The agent goes
 on, answers in the chat (and writes `report.md`, `pages.csv` and `report/index.html` when the person asks for a report),
 keeps what the person said they want in its memory, and releases the browser. The next run of the same agent starts
-signed in, because both runs use the agent's Browserbase context, and reads its memory first.
+signed in, because both runs use the agent's saved sign-in (a local Chrome's profile, or a Browserbase context; Kernel
+keeps none), and reads its memory first.
 
 Use a test account on a practice site, such as https://the-internet.herokuapp.com/login. In this release the model's
 page code can still read what the person types into the page, so a real password must not go through the live view.
@@ -20,10 +22,11 @@ page code can still read what the person types into the page, so a real password
 | `remember.ts` | "What I remember": `report/remember.html`, written beside the agent's report when the run lets go. |
 | `home.mjs` | `ensureAgentHome(dir)`: the agent home of [`@parcha/pi-durable-agent`](../../../packages/pi-durable-agent/README.md), made from `agent.json` and the skills the first time (owner-only), opened after that. |
 | `app.ts` | The app `pi-durable-disk run --app` loads: the definition and skills from the home, the model from the environment, the file tools, the browser on the agent's saved sign-in and its frame recorder (2 frames a second), and `request_sign_in`. |
-| `record.ts` | The run's recording when `RECORD_DIR` is set: the reference package's recorder inside the run, its redaction, and the finish start-run.mjs calls once the run has exited. |
-| `redact.ts` | The rules a recording and a replay (`../replay.mjs`) share: the browser profile's id `[redacted]`, a session's id as its label, any `token=` value `[redacted]`, every `liveView` null, and the ids read from a run's store. It loads node's own modules only. |
+| `record.ts` | The run's recording when `RECORD_DIR` is set: the harness package's recorder inside the run, its redaction, and the finish start-run.mjs calls once the run has exited. |
+| `select.ts` | A run's prompt, for a home that keeps prompt variants: Jev as `choosePrompt`'s judge (through the model gateway's `/typesafe`, or TypeSafe on `TYPESAFE_API_KEY`), the lookup (a Browserbase web search with a key, and Wikipedia's summary), and the run's guide (the base prompt and the chosen variant). |
+| `redact.ts` | The rules a recording and a replay (`../replay.mjs`) share: the browser profile's id `[redacted]`, a session's id as its label, any URL parameter that carries a credential (`token`, `key`, `apiKey`, a signature: its name with its value) `[redacted]`, any email address `[email]`, every `liveView` null, and the ids read from a run's store. It loads node's own modules only. |
 | `start-run.mjs` | Runs one started run, with its door on loopback, and finishes its recording. |
-| `agent.test.mjs`, `record.test.mjs`, `memory.test.mjs` | Offline tests: no network, no key, no model call. |
+| `agent.test.mjs`, `record.test.mjs`, `memory.test.mjs`, `select.test.mjs` | Offline tests: no network, no key, no model call. |
 
 ## Run one
 
@@ -32,8 +35,8 @@ agent. By hand, build the packages the app uses, start a run in a home with `sta
 
 ```sh
 npm ci --ignore-scripts
-npm run build -w @parcha/pi-durable-disk -w @parcha/pi-browser -w @parcha/pi-durable-agent
-export AGENT_BROWSER=local CHROME_PATH=$(command -v google-chrome)   # or browserbase or kernel: see "The browser"
+npm run build
+export AGENT_BROWSER=local CHROME_PATH=$(command -v google-chrome)   # or browserbase or kernel: see "The browser"; on macOS, CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 export AGENT_MODEL_BASE_URL=https://api.openai.com/v1 AGENT_MODEL=<model id> AGENT_MODEL_API_KEY=...
 node --input-type=module -e '
 import { startRun } from "@parcha/pi-durable-agent";
@@ -76,8 +79,8 @@ the definition's prompt and tools and the browser's configuration in the commit 
 | `RECORD_DIR` | no | A new or empty directory: the run is recorded there (below). |
 | `RECORD_REDACT` | no | With `RECORD_DIR`: a JSON array of words the recording must not hold, taken out wherever they appear. |
 
-SIGTERM stops a run. It releases its Browserbase session first, so the sign-in is saved and nothing paid stays open, then
-lets go of the run (`run.json` says `sleeping`) and exits 0. Starting the same directory again resumes it. Then
+SIGTERM stops a run. It releases its browser first (Browserbase saves the sign-in into its context, and nothing paid
+stays open; a local Chrome writes its cookies when start-run.mjs closes it), then lets go of the run (`run.json` says `sleeping`) and exits 0. Starting the same directory again resumes it. Then
 `carryBack(home, { runId }, { outcome })` returns the run's sign-in to the home; the server does this once a run has
 answered.
 
@@ -115,19 +118,22 @@ browser's cost), and the scans.
 
 What a recording never holds, and how:
 
-- The Browserbase key, the browser profile's id (the context id, or the Chrome profile's path), every live view, any
-  `token=` value, and each word `RECORD_REDACT` names (a JSON array: words the person types that a page may also print,
-  such as a practice site's shared account): each is `[redacted]`. The ids are learned where they arise, from the provider's answers and from the
-  profile as it resolves, before anything writes them; the finish reads every id the run's store holds once more.
+- The Browserbase key and project id, the browser profile's id (the context id, or the Chrome profile's path), every
+  live view, any URL parameter that carries a credential (its name with its value: `token`, `key`, `apiKey`, a
+  signature), and each word `RECORD_REDACT` names (a JSON array: words the person types that a page may also print,
+  such as a practice site's shared account): each is `[redacted]`. Email addresses a page printed are `[email]`. The
+  ids are learned where they arise, from the provider's answers and from the profile as it resolves, before anything
+  writes them; the finish reads every id the run's store holds once more.
 - A browser session's id: `session-` and 12 hex digits of its hash, so a session's lines and its frames still go together.
 - A `liveView` in a document: null.
-- The machine: the reference's scrub takes out the user name, the home directory and the run's directories.
+- The machine: the harness's scrub takes out the user name, the home directory and the run's directories.
 - A frame while the person drives: the frame store keeps none, so the recording has none.
 
 Before it lets go, the run scans what it placed for every id it learned, its live views included. The finish scans every
 file of the recording for every id the store holds and the key, and writes no manifest when it finds one. Both name the
 key and the file, never the value. A replay of the run (`writeReplay`, [`../replay.mjs`](../replay.mjs)) takes the
-browser's ids, tokens and live views out of its rows and text files by the same rules (`redact.ts`).
+browser's ids, credential parameters, email addresses and live views out of its rows and text files by the same rules
+(`redact.ts`).
 
 A recording is of one run, finished when the run's process exits: a run started with `RECORD_DIR` naming a finished
 recording fails, so record each run into a directory of its own. The server passes its environment to every run it
@@ -164,14 +170,14 @@ refuses a run without it, naming the three values. `chrome` is `local` for one m
 
 | Value | The run's browser | Env it needs | Network it needs |
 | --- | --- | --- | --- |
-| `local` | A Chrome on this machine, started for the run ([A local Chrome](#a-local-chrome)): no key, and every site sees this machine's address | `CHROME_PATH` | none for the browser (the pages it opens) |
+| `local` | A Chrome on this machine, started for the run ([A local Chrome](#a-local-chrome)): no key, and every site sees this machine's address | `CHROME_PATH` | the sites the agent opens, straight from this machine; nothing else |
 | `browserbase` | A Browserbase session; the sign-in is kept in a Browserbase context for the next run | `BROWSERBASE_API_KEY`; `BROWSERBASE_PROJECT_ID` is optional, as Browserbase infers the project from the key | not listed yet: the hosts come from Browserbase's SDK |
 | `kernel` | A Kernel browser; no sign-in is kept between runs, so the person signs in each run | `KERNEL_API_KEY`; `KERNEL_BASE_URL` is optional | `api.onkernel.com:443` and `*.kernel.sh:8443` (the session's websocket host changes per session) |
 
 ## A local Chrome
 
-Browserbase is the default. A local Chrome is for a run that must keep everything on this machine but the model, and a
-person can sign in through it only once pi-browser ships its live view (`./live-view`).
+A local Chrome keeps everything on this machine but the model: no key, and every site sees this machine's address. The
+person signs in through pi-browser's live view (below).
 
 With `AGENT_BROWSER=local`, start-run.mjs starts one headless Chrome for the run, on a debugging port Chrome picks on
 127.0.0.1, and pi-browser attaches to it by endpoint (`AGENT_CHROME_ENDPOINT`). Its profile directory is the sign-in:
@@ -193,18 +199,20 @@ yet: live.json then says `live view not available for local Chrome yet`, and the
 - `request_sign_in({ site, reason })` answers `Asked the person to sign in to <site> in the live view; waiting for them
   to reply done.` and ends the run: no model request and no tool call follow until the person's next message, so nothing
   touches the browser while the person signs in. An idle run whose newest entry is that result is waiting for the person.
-- The sign-in is the agent's browser profile `default`: a Browserbase context. `startRun` copies the home's
-  `browser.profiles` into the run store. Before the run serves anything, the app resolves the profile there with
-  `durableProfileStore(harness).resolve("default", make)`: a saved context, or a new one `make` creates in Browserbase and
-  commits to the run store. The browser opens on it, and Browserbase saves the context when the session ends.
-  `carryBack` returns it to the home, so the next run opens the same context, signed in.
-- The home and the run stores hold the context id, which opens a signed-in session: the home is created owner-only, and
-  the model's file tools reach only `work/`.
+- The sign-in is the agent's browser profile: `default`, a Browserbase context, with `browserbase`; `local-chrome`,
+  the Chrome profile directory under the home's `chrome/`, with `local`; none with `kernel`. `startRun` copies the
+  home's `browser.profiles` into the run store, and the app resolves the profile there before the run serves anything
+  (`durableProfileStore(harness).resolve(key, make)`): the saved one, or a new one `make` creates (a Browserbase context,
+  or the local profile directory). The browser opens on it; Browserbase saves the context when the session ends, and a
+  local Chrome writes its cookies when start-run.mjs closes it. `carryBack` returns it to the home, so the next run opens
+  it, signed in.
+- The home and the run stores hold the profile's reference (a context id, or the local profile's path), which opens a
+  signed-in session: the home is created owner-only, and the model's file tools reach only `work/`.
 - When a session opens, and each time its page changes, the app writes `<run>/live.json` (mode 0600):
-  `{ liveViewUrl, sessionId, change, updatedAt }`. `liveViewUrl` is Browserbase's interactive live view and carries a
-  token, so it goes only to the person's page: never to the model, a log or a transcript. It is null once the session is
-  released.
-- The context id never reaches the model: the browser's redactor scrubs it from every tool result. It is in the run's
+  `{ liveViewUrl, sessionId, change, updatedAt }`. `liveViewUrl` is the live view (Browserbase's interactive view, or
+  a local Chrome's viewer at `/live/<run id>/`) and carries a token, so it goes only to the person's page: never to the
+  model, a log or a transcript. It is null once the session is released.
+- The profile's reference never reaches the model: the browser's redactor scrubs it from every tool result. It is in the run's
   store, in the browser's configuration document, which the model does not read.
 - Without `RECORD_DIR` the only recorder is the frame recorder above, and the agent has no screenshot tool.
 

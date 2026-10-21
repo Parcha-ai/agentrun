@@ -21,13 +21,18 @@ its skills, its saved sign-ins and the index of its runs in `agent.sqlite`, and 
 
 ## Run it
 
-You need Node 22.19 or later. The server itself needs no key and no network. A run needs whatever its agent needs (see
-[agent/README.md](agent/README.md)), and the agent's start command uses the built packages, so build the repository first.
+You need Node 22.19 or later. The server itself needs no key and no network. A run needs a model endpoint and a
+browser, set in the server's environment, which it passes to every run it starts (all of it is in
+[agent/README.md](agent/README.md#run-one)). The agent's start command uses the built packages, so build the repository
+first.
 
 ```sh
 npm ci --ignore-scripts && npm run build
+export AGENT_MODEL_BASE_URL=https://api.openai.com/v1 AGENT_MODEL=<model id> AGENT_MODEL_API_KEY=...   # any OpenAI Responses endpoint
 AGENT_BROWSER=local CHROME_PATH=$(command -v google-chrome) node --no-warnings=ExperimentalWarning examples/web/server.mjs
 ```
+
+On macOS, `CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"`.
 
 Open `http://127.0.0.1:8787/`, type what the agent should do and press Start run. The agent home is
 `examples/web/.data/agent-home`, ignored by git. The server makes it from `agent/agent.json` and `agent/skills/` the first
