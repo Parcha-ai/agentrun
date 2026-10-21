@@ -347,6 +347,9 @@ const TAMPERED = {
   "a member inside a file": [(m) => [...m, { name: "runs/signed-in/work/notes.txt/inner", data: Buffer.from("x") }], "format", /is inside runs\/signed-in\/work\/notes\.txt, which is a file/],
   "the manifest not first": [(m) => [...m.slice(1), m[0]], "format", /first member/],
   "a higher format": [(m) => withManifest(m, (manifest) => { manifest.format = "agentrun.home/2"; }), "format", /this version reads agentrun\.home\/1/],
+  "a manifest that is not an object": [(m) => m.map((member) => (member.name === "manifest.json" ? { ...member, data: Buffer.from("[]\n") } : member)), "format", /manifest\.json is not an object/],
+  "a format that is not agentrun.home/N": [(m) => withManifest(m, (manifest) => { manifest.format = "zip"; }), "format", /the pack's format "zip" is not agentrun\.home\/N/],
+  "a source sha that is not a commit sha": [(m) => withManifest(m, (manifest) => { manifest.source = { sha: "main", refreshed_at: manifest.source.refreshed_at }; }), "format", /source sha is not a commit sha/],
   "an unknown manifest field": [(m) => withManifest(m, (manifest) => { manifest.extra = 1; }), "format", /fields it does not keep: extra/],
   "a vault entry with a value": [(m) => withManifest(m, (manifest) => { manifest.vault = [{ name: "k", value: "v" }]; }), "format", /vault entries are not \{name\}/],
   "a source in the package's own names": [(m) => withManifest(m, (manifest) => { manifest.source = { sha: manifest.source.sha, refreshedAt: manifest.source.refreshed_at }; }), "format", /source is not null or \{sha, refreshed_at\}/],
@@ -375,6 +378,22 @@ test("tampered packs are refused by readPack and importPack, and importPack writ
   assert.deepEqual(readdirSync(f.dir).filter((entry) => entry.startsWith(".")), []);
 });
 
+
+test("readPack closes the pack when it cannot make its scratch directory", skip, async () => {
+  const f = await fixture();
+  await packHome(f.home, { out: f.out, now: NOW });
+  const open = () => readdirSync("/proc/self/fd").length;
+  const before = open();
+  const tmp = process.env.TMPDIR;
+  process.env.TMPDIR = path.join(f.dir, "no-such-directory");
+  try {
+    for (let attempt = 0; attempt < 20; attempt++) await assert.rejects(readPack(f.out), /ENOENT/);
+  } finally {
+    if (tmp === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = tmp;
+  }
+  assert.ok(open() - before < 5, `${open() - before} descriptors stayed open`);
+});
 test("a store in the pack that holds a sign-in kind is refused, in agent.sqlite or in a run store", skip, async () => {
   const f = await fixture();
   await packHome(f.home, { out: f.out, now: NOW });

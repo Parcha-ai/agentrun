@@ -3,16 +3,15 @@ import { existsSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, open, rename, rm, rmdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { EXPORTABLE_KINDS } from "./export.js";
+import { EXPORTABLE_KINDS, SECRET_KINDS } from "./export.js";
 import { AGENT_STORE_FILE, type AgentHome, type AgentHomeState, checkDefinition, checkSha, ID_PATTERN, isSkillPath, openAgentHome, readState, sha256 } from "./home.js";
 import { DefinitionDoc, FORMAT_VERSION, IdentityDoc, put, RunsDoc, SkillsDoc, SourceDoc } from "./kinds.js";
 import {
   byName, canonical, documentKinds, type HomeManifest, invalid, isObject, isRunId, iso, MANIFEST_LIMIT, MAX_MEMBERS, memberProblem, PACK_FORMAT, SIDE_FILES,
   secretIn, SQLITE_MAGIC,
 } from "./pack-shared.js";
-import { SECRET_KINDS } from "./export.js";
 import { AgentHomeError, type HomeCheck, IMPORT_JOURNAL, markCommitted, openStore, recoverImport, withHome, writeJournal } from "./store.js";
-import { copyRange, listTar, readAt, type TarMember } from "./tar.js";
+import { copyRange, listTar, readAt } from "./tar.js";
 
 // --- reading a pack ---------------------------------------------------------------------------------------------------
 
@@ -21,27 +20,36 @@ type Inspection = { manifest: HomeManifest | null; problems: Problem[]; state?: 
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const TOP_KEYS = ["format", "agent_id", "definition", "skills", "sign_ins", "vault", "runs", "size_bytes", "created_at", "source"];
-const count = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 
 /** The manifest as typed, or the problems with it. A format above this version's is not judged further. */
 function readManifest(raw: unknown): { manifest: HomeManifest | null; problems: Problem[] } {
   const problems: Problem[] = [];
   const bad = (check: Problem["check"], message: string) => void problems.push({ check, message });
-  if (!isObject(raw)) return bad("format", "manifest.json is not an object"), { manifest: null, problems };
+  const refuse = (message: string) => {
+    bad("format", message);
+    return { manifest: null, problems };
+  };
+  if (!isObject(raw)) return refuse("manifest.json is not an object");
   const match = typeof raw.format === "string" ? /^agentrun\.home\/(\d+)$/.exec(raw.format) : null;
-  if (!match) return bad("format", `the pack's format ${JSON.stringify(raw.format)} is not agentrun.home/N`), { manifest: null, problems };
-  if (Number(match[1]) > FORMAT_VERSION) return bad("format", `the pack is ${String(raw.format)}; this version reads ${PACK_FORMAT}`), { manifest: null, problems };
+  if (!match) return refuse(`the pack's format ${JSON.stringify(raw.format)} is not agentrun.home/N`);
+  if (Number(match[1]) > FORMAT_VERSION) return refuse(`the pack is ${String(raw.format)}; this version reads ${PACK_FORMAT}`);
   const extra = Object.keys(raw).filter((key) => !TOP_KEYS.includes(key));
   if (extra.length) bad("format", `manifest.json has fields it does not keep: ${extra.join(", ")}`);
-  const skillsOk = Array.isArray(raw.skills) && raw.skills.every((skill) => isObject(skill) && typeof skill.path === "string" && isSkillPath(skill.path) && typeof skill.sha256 === "string" && HEX64.test(skill.sha256) && count(skill.size_bytes));
+  const skillsOk = Array.isArray(raw.skills) && raw.skills.every((skill) => isObject(skill) && typeof skill.path === "string" && isSkillPath(skill.path) && typeof skill.sha256 === "string" && HEX64.test(skill.sha256) && isCount(skill.size_bytes));
   if (!skillsOk) bad("format", "manifest.json's skills are not {path, sha256, size_bytes}");
   if (!Array.isArray(raw.sign_ins) || !raw.sign_ins.every((entry) => isObject(entry) && typeof entry.key === "string" && typeof entry.provider === "string")) bad("format", "manifest.json's sign_ins are not {key, provider}");
   if (!Array.isArray(raw.vault) || !raw.vault.every((entry) => isObject(entry) && typeof entry.name === "string" && Object.keys(entry).length === 1)) bad("format", "manifest.json's vault entries are not {name}: never a value");
-  if (!isObject(raw.runs) || !count(raw.runs.count) || !count(raw.runs.live) || raw.runs.live > raw.runs.count) bad("format", "manifest.json's runs are not {count, live}");
-  if (!count(raw.size_bytes)) bad("format", "manifest.json's size_bytes is not a count");
+  if (!isObject(raw.runs) || !isCount(raw.runs.count) || !isCount(raw.runs.live) || raw.runs.live > raw.runs.count) bad("format", "manifest.json's runs are not {count, live}");
+  if (!isCount(raw.size_bytes)) bad("format", "manifest.json's size_bytes is not a count");
   if (typeof raw.created_at !== "string" || Number.isNaN(Date.parse(raw.created_at))) bad("format", "manifest.json's created_at is not a timestamp");
-  if (raw.source !== null && !(isObject(raw.source) && Object.keys(raw.source).length === 2 && typeof raw.source.sha === "string" && typeof raw.source.refreshed_at === "string" && !Number.isNaN(Date.parse(raw.source.refreshed_at)))) bad("format", "manifest.json's source is not null or {sha, refreshed_at}");
-  else if (isObject(raw.source)) try { checkSha(raw.source.sha); } catch { bad("format", "manifest.json's source sha is not a commit sha"); }
+  if (raw.source !== null) {
+    if (!(isObject(raw.source) && Object.keys(raw.source).length === 2 && typeof raw.source.sha === "string" && typeof raw.source.refreshed_at === "string" && !Number.isNaN(Date.parse(raw.source.refreshed_at)))) {
+      bad("format", "manifest.json's source is not null or {sha, refreshed_at}");
+    } else {
+      try { checkSha(raw.source.sha); } catch { bad("format", "manifest.json's source sha is not a commit sha"); }
+    }
+  }
   if (typeof raw.agent_id !== "string" || !ID_PATTERN.test(raw.agent_id)) bad("format", "manifest.json's agent_id is not an id: letters, digits, \".\", \"_\" or \"-\", at most 128");
   try {
     checkDefinition(raw.definition as never, String(raw.agent_id));
@@ -67,7 +75,10 @@ async function inspectPack(file: string, options: { maxBytes?: number; maxMember
     return { manifest: null, problems, bytes: info.size };
   }
   const handle = await open(file, "r");
-  const scratch = await mkdtemp(path.join(tmpdir(), "pi-durable-agent-read-"));
+  const scratch = await mkdtemp(path.join(tmpdir(), "pi-durable-agent-read-")).catch(async (error) => {
+    await handle.close();
+    throw error;
+  });
   let manifest: HomeManifest | null = null;
   let state: AgentHomeState | undefined;
   try {
@@ -75,7 +86,7 @@ async function inspectPack(file: string, options: { maxBytes?: number; maxMember
     const listed = await listTar(handle, info.size, options.maxMembers ?? MAX_MEMBERS);
     await options.inject?.({ name: "parsed", index: listed.headers });
     for (const problem of listed.problems) bad("format", problem);
-    const members: TarMember[] = listed.members;
+    const { members } = listed;
     const seen = new Set<string>();
     const refusedNames = new Set<string>();
     for (const member of members) {
@@ -113,15 +124,15 @@ async function inspectPack(file: string, options: { maxBytes?: number; maxMember
     if (!seen.has(AGENT_STORE_FILE)) bad("format", `the pack has no ${AGENT_STORE_FILE}`);
     if (manifest && options.maxBytes !== undefined && manifest.size_bytes > options.maxBytes) bad("size", `the manifest says ${manifest.size_bytes} bytes, over the limit of ${options.maxBytes}`);
     // Nothing is extracted from a pack that already fails a check or is over the limit.
-    if (!manifest || problems.some((problem) => problem.check !== "size" || options.extractTo)) return { manifest, problems, bytes: info.size };
+    if (!manifest || problems.some((problem) => problem.check !== "size" || Boolean(options.extractTo))) return { manifest, problems, bytes: info.size };
 
     let probes = 0;
-    let extracted = 0;
+    let extractedBytes = 0;
     const live = new Set<string>();
     for (const member of members) {
       if (member.name === "manifest.json") continue;
-      extracted += member.size;
-      if (options.extractTo && options.maxBytes !== undefined && extracted > options.maxBytes) {
+      extractedBytes += member.size;
+      if (options.extractTo && options.maxBytes !== undefined && extractedBytes > options.maxBytes) {
         bad("size", `the pack holds more than the limit of ${options.maxBytes} bytes`);
         return { manifest, problems, bytes: info.size };
       }
@@ -131,20 +142,17 @@ async function inspectPack(file: string, options: { maxBytes?: number; maxMember
         if (dest) await mkdir(dest, { recursive: true });
         continue;
       }
-      let copy: string | undefined;
       const sqlite = member.size >= SQLITE_MAGIC.length && (await readAt(handle, SQLITE_MAGIC.length, member.offset)).equals(SQLITE_MAGIC);
       if (!sqlite && member.name.endsWith(".sqlite")) bad("format", `${member.name} is not a SQLite database`);
       if (sqlite) for (const suffix of SIDE_FILES) if (seen.has(`${member.name}${suffix}`)) bad("format", `${member.name} has a ${suffix} file beside it in the pack`);
-      if (dest || sqlite) {
-        const target = dest ?? path.join(scratch, `member-${probes++}`);
-        await mkdir(path.dirname(target), { recursive: true });
-        const out = await open(target, "wx", member.mode & 0o111 ? 0o755 : 0o644);
-        try { await copyRange(handle, member.offset, member.size, out); } finally { await out.close(); }
-        copy = target;
-      }
-      if (!sqlite || !copy) continue;
-      const probe = dest ? path.join(scratch, `probe-${probes++}`) : copy;
-      if (dest) await copyFile(copy, probe);
+      if (!dest && !sqlite) continue;
+      const target = dest ?? path.join(scratch, `member-${probes++}`);
+      await mkdir(path.dirname(target), { recursive: true });
+      const out = await open(target, "wx", member.mode & 0o111 ? 0o755 : 0o644);
+      try { await copyRange(handle, member.offset, member.size, out); } finally { await out.close(); }
+      if (!sqlite) continue;
+      const probe = dest ? path.join(scratch, `probe-${probes++}`) : target;
+      if (dest) await copyFile(target, probe);
       let kinds: string[] | undefined;
       try {
         kinds = documentKinds(probe);
@@ -206,9 +214,9 @@ async function inspectPack(file: string, options: { maxBytes?: number; maxMember
 
 function checksOf(manifest: HomeManifest | null, problems: Problem[], bytes: number): HomeCheck[] {
   const judge = (name: "format" | "definition" | "size", ok: string): HomeCheck => {
-    const own = problems.filter((problem) => problem.check === name);
-    if (!own.length) return { name, status: "ok", message: ok };
-    return { name, status: "fail", message: own[0]!.message, ...(own.length > 1 ? { detail: { problems: own.map((problem) => problem.message) } } : {}) };
+    const found = problems.filter((problem) => problem.check === name);
+    if (!found.length) return { name, status: "ok", message: ok };
+    return { name, status: "fail", message: found[0]!.message, ...(found.length > 1 ? { detail: { problems: found.map((problem) => problem.message) } } : {}) };
   };
   const live = manifest?.runs.live ?? 0;
   const signIns = (manifest?.sign_ins ?? []).map((entry) => entry.key);
@@ -229,7 +237,7 @@ function checksOf(manifest: HomeManifest | null, problems: Problem[], bytes: num
  * Judge the pack in `file` without writing a home: the manifest first and in format, every member on the allowlist (no
  * "..", no absolute path, no link or device), every SQLite file free of sign-in kinds, the agent store's identity,
  * definition and skills as the manifest says, the size as the manifest says. Only temporary files are written, and removed.
- * The checks are the contract's names for what this package can judge: format, definition, size and live_runs.
+ * The checks are the contract's names for what this package can judge: format, definition, sign_ins, size and live_runs.
  */
 export async function readPack(file: string, options: { maxBytes?: number; maxMembers?: number; /** @internal */ inject?: (step: ImportStep) => void | Promise<void> } = {}): Promise<{ ok: boolean; manifest: HomeManifest | null; checks: HomeCheck[] }> {
   const inspection = await inspectPack(file, options);
@@ -257,7 +265,7 @@ export type ImportOptions = {
 };
 
 /** Mark the runs that were live at the source as ended here: nothing will ever carry them back. */
-const endedHere = (run: AgentHomeState["runs"][string], now: number) => (run.endedAt === undefined ? { ...run, endedAt: iso(now), outcome: "not_carried_back" } : run);
+const markEndedHere = (run: AgentHomeState["runs"][string], now: number) => (run.endedAt === undefined ? { ...run, endedAt: iso(now), outcome: "not_carried_back" } : run);
 
 /**
  * Write the pack in `file` as an agent home in `dir`. The pack is judged first (`readPack`) and extracted to a directory
@@ -301,7 +309,7 @@ export async function importPack(file: string, dir: string, options: ImportOptio
       const store = await openStore(path.join(extracted, AGENT_STORE_FILE));
       try {
         await store.session.commit(async (tx) => {
-          for (const [id, run] of Object.entries(state.runs)) if (run.endedAt === undefined) put(await tx.doc(RunsDoc, id, null), endedHere(run, now));
+          for (const [id, run] of Object.entries(state.runs)) if (run.endedAt === undefined) put(await tx.doc(RunsDoc, id, null), markEndedHere(run, now));
         }, BACKGROUND_CONTEXT);
       } finally {
         await store.close();
@@ -331,10 +339,10 @@ export async function importPack(file: string, dir: string, options: ImportOptio
       replaces = true;
       await withHome(target, async () => {
         if (!isHome()) throw invalid(`the home at ${dir} went away while the pack was read`);
-        const file = path.join(target, AGENT_STORE_FILE);
+        const agentFile = path.join(target, AGENT_STORE_FILE);
         let current: AgentHomeState;
         let from: number;
-        const reading = await openStore(file);
+        const reading = await openStore(agentFile);
         try {
           current = await readState(reading);
           from = await reading.head();
@@ -346,9 +354,9 @@ export async function importPack(file: string, dir: string, options: ImportOptio
         }
         if (!options.replace) throw new AgentHomeError("exists", `${dir} already holds an agent home; replace it with replace`);
         if (current.identity.id !== manifest.agent_id) throw invalid(`${dir} holds agent ${current.identity.id}, not the pack's agent ${manifest.agent_id}`);
-        const live = Object.entries(current.runs).filter(([, run]) => run.endedAt === undefined).map(([id]) => id);
-        if (live.length) {
-          const refusal: HomeCheck = { name: "live_runs", status: "fail", message: `the target has ${live.length} live run${live.length === 1 ? "" : "s"}: ${live.join(", ")}`, detail: { live } };
+        const liveIds = Object.entries(current.runs).filter(([, run]) => run.endedAt === undefined).map(([id]) => id);
+        if (liveIds.length) {
+          const refusal: HomeCheck = { name: "live_runs", status: "fail", message: `the target has ${liveIds.length} live run${liveIds.length === 1 ? "" : "s"}: ${liveIds.join(", ")}`, detail: { live: liveIds } };
           throw new AgentHomeError("check", `the import was refused: ${refusal.message}`, { checks: checks.map((check) => (check.name === "live_runs" ? refusal : check)) });
         }
 
@@ -367,7 +375,7 @@ export async function importPack(file: string, dir: string, options: ImportOptio
             if (move.hasNew) await rename(path.join(extracted, "runs", move.id), runDir(move.id));
             await step("moved", index);
           }
-          const writing = await openStore(file);
+          const writing = await openStore(agentFile);
           try {
             await writing.session.commit(async (tx) => {
               put(await tx.doc(IdentityDoc), state.identity);
@@ -376,7 +384,7 @@ export async function importPack(file: string, dir: string, options: ImportOptio
               else if (current.source) await tx.retireDoc(SourceDoc);
               for (const key of Object.keys(current.skills)) if (!Object.hasOwn(state.skills, key)) await tx.retireDoc(SkillsDoc, key);
               for (const [key, skill] of Object.entries(state.skills)) put(await tx.doc(SkillsDoc, key, null), skill);
-              for (const [id, run] of Object.entries(state.runs)) put(await tx.doc(RunsDoc, id, null), endedHere(run, now));
+              for (const [id, run] of Object.entries(state.runs)) put(await tx.doc(RunsDoc, id, null), markEndedHere(run, now));
             }, BACKGROUND_CONTEXT);
           } finally {
             await writing.close();
@@ -406,10 +414,10 @@ export async function importPack(file: string, dir: string, options: ImportOptio
       });
     }
     const home = await openAgentHome(target);
-    const live = manifest.runs.live;
+    const liveAtSource = manifest.runs.live;
     const report: ImportReport = {
       ok: true, agent_id: manifest.agent_id, written: true, replaces,
-      checks: checks.map((check) => (check.name === "live_runs" && live > 0 ? { ...check, message: `${live} runs were live at the source; they are ended index entries here` } : check)),
+      checks: checks.map((check) => (check.name === "live_runs" && liveAtSource > 0 ? { ...check, message: `${liveAtSource} runs were live at the source; they are ended index entries here` } : check)),
     };
     return { home, report };
   } finally {
