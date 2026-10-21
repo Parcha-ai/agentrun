@@ -303,16 +303,19 @@ test('the slow status tick does not queue a read behind one still running: ticks
   // The first read is held for 15 s, past the supervisor's two-second ticks while the child lives (about five), then released; the others answer at once. A tick that fell while the read ran asked for nothing; one that queued a read behind it would run the moment the held read returns, in a burst. The ticks are the supervisor's own timer, so a slow runner only fires fewer of them: the count of the burst does not depend on the runner's speed.
   const HOLD_MS = 15_000;
   const starts = [];
+  let releasedAt;
   await demo({ ...options, argv: ['--json', '--record', join(tmp, 'recording')], place: ({ paths, self, destroyBoxes, requestFile }) => ({
     ...localPlace({ self, paths, destroyBoxes, requestFile }),
     status: async () => {
       starts.push(Date.now());
-      if (starts.length === 1) await new Promise((resolve) => setTimeout(resolve, HOLD_MS));
+      if (starts.length === 1) { await new Promise((resolve) => setTimeout(resolve, HOLD_MS)); releasedAt = Date.now(); }
       return { record: null };
     },
   }) });
   assert.ok(starts.length > 1, 'the run went on after the held read');
-  const released = starts[0] + HOLD_MS;
+  // The burst is counted from the moment the held read actually returned (a timer that fires late moves the release, not the window).
+  const released = releasedAt;
+  assert.ok(released !== undefined, 'the held read returned');
   // Right after the release: the run's exit read and its end read, and at most one tick. A queued read for each tick of the hold would be three or more on top.
   const burst = starts.slice(1).filter((at) => at >= released && at < released + 1000).length;
   assert.ok(burst <= 3, `${burst} reads started within a second of the held read's release: a tick queued a read behind the running one`);
