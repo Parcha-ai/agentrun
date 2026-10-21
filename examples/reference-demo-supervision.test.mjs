@@ -221,18 +221,16 @@ test('the child reads KILL_NONCE once and removes it before anything starts: a c
 });
 // ---- the operator's kill ------------------------------------------------------------------------------------------------------------------------
 
-test('an operator kill (a control file the supervisor watches, never the child\'s request file) kills through the place, writes a kill line with crossing null and label operator, and the run resumes with repeated 0', { timeout: 300_000 }, async (t) => {
+/** The operator's page, here a test: a spec file, the control file the supervisor watches, and a place that makes the control file once the first process has asked its first model request (where the fixture holds it until the control file is consumed, so the run cannot finish first). Each test below makes its own, so each has its own time to run under load. */
+async function operatorRun(t) {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-operator-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'spec.json');
   writeFileSync(file, JSON.stringify({ name: 'reference' }));
-  Object.assign(process.env, { DEMO_SPEC: file, DEMO_OPERATOR_HOLD: join(tmp, 'control', 'kill-now') });
-  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
-  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
   const control = join(tmp, 'control', 'kill-now');
+  Object.assign(process.env, { DEMO_SPEC: file, DEMO_OPERATOR_HOLD: control });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
   mkdirSync(join(tmp, 'control'));
-  const recording = join(tmp, 'recording');
-  // The operator\'s page, here a test: once the first process has asked its first model request (where the fixture holds it until the control file is consumed, so the run cannot finish first), it makes the control file.
   const killed = [];
   const placeOn = (trigger) => ({ paths, self, destroyBoxes, requestFile }) => {
     const inner = localPlace({ self, paths, destroyBoxes, requestFile });
@@ -243,8 +241,15 @@ test('an operator kill (a control file the supervisor watches, never the child\'
       return runner;
     } };
   };
-  const place = placeOn('model.request turn 0');
-  const result = await demo({ ...options, argv: ['--json', '--record', recording, '--operator-kill', control], place });
+  const optionsNow = async () => (await import(`${FIXTURE}?options=${Date.now()}`)).options;
+  // A run that does not end in four minutes fails with what the operator's side saw, rather than waiting for the test's timeout to say nothing: the next occurrence on a runner names where it stopped.
+  const within = (run) => Promise.race([run, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error(`the run did not end in 240 s: the operator's trigger fired for generations [${killed}], the control file ${existsSync(control) ? 'is still there (not consumed)' : 'is gone (consumed or never made)'}, the recording holds ${existsSync(join(tmp, 'recording')) ? readdirSync(join(tmp, 'recording')).join(', ') : 'nothing'}`)), 240_000); timer.unref(); })]);
+  return { tmp, file, control, killed, placeOn, optionsNow, within, recording: join(tmp, 'recording') };
+}
+
+test('an operator kill (a control file the supervisor watches, never the child\'s request file) kills through the place, writes a kill line with crossing null and label operator, and the run resumes with repeated 0', { timeout: 300_000 }, async (t) => {
+  const { control, placeOn, optionsNow, within, recording } = await operatorRun(t);
+  const result = await within(demo({ ...await optionsNow(), argv: ['--json', '--record', recording, '--operator-kill', control], place: placeOn('model.request turn 0') }));
   assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, 'complete']], JSON.stringify(result.processes));
   assert.equal(result.record.company, 'Acme Ltd');
   assert.ok(!existsSync(control), 'the supervisor consumed the control file');
@@ -255,18 +260,19 @@ test('an operator kill (a control file the supervisor watches, never the child\'
   const counted = fold(lines);
   assert.deepEqual([counted.processes, counted.kills, counted.repeated, counted.unknown], [2, 1, 0, 0]);
   assert.deepEqual(validateRecording(recording), []);
-  // The plan\'s own kill is not lost: an operator kill that ends an attempt first leaves its planned kill for the next one.
-  killed.length = 0;
+});
+test('the plan\'s own kill is not lost: an operator kill that ends an attempt first leaves its planned kill for the next one', { timeout: 300_000 }, async (t) => {
+  const { file, control, placeOn, optionsNow, within } = await operatorRun(t);
   writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'planned' }] }));
-  rmSync(join(tmp, 'control', 'kill-now.held'), { force: true });
-  const { options: planned } = await import(`${FIXTURE}?options=${Date.now()}`);
-  const both = await demo({ ...planned, argv: ['--kill', '--json', '--operator-kill', control], place: placeOn('model.request turn 0') });
+  const both = await within(demo({ ...await optionsNow(), argv: ['--kill', '--json', '--operator-kill', control], place: placeOn('model.request turn 0') }));
   assert.deepEqual(both.kills.map((kill) => [kill.gen, kill.point ?? 'operator']), [[1, 'operator'], [2, 'judge.asked verdict']]);
   assert.deepEqual(both.unlanded, []);
   assert.equal(both.processes.at(-1).outcome.status, 'complete');
-  // A stale control file would kill the first process at once: it is refused.
+});
+test('a stale control file would kill the first process at once: it is refused', { timeout: 120_000 }, async (t) => {
+  const { control, optionsNow } = await operatorRun(t);
   writeFileSync(control, '');
-  await assert.rejects(() => demo({ ...options, argv: ['--json', '--operator-kill', control] }), /already exists/);
+  await assert.rejects(async () => demo({ ...await optionsNow(), argv: ['--json', '--operator-kill', control] }), /already exists/);
 });
 test('a kill request written in short pieces is whole when it is renamed into place: the supervisor reads the complete request', { timeout: 60_000 }, async (t) => {
   const { spawn } = await import('node:child_process');
