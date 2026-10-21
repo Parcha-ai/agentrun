@@ -7,7 +7,6 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
-// @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { closeAll, drivenPage } from './driven-page.ts';
 

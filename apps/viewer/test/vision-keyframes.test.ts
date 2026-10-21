@@ -11,7 +11,6 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-// @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { typeOfName } from '../src/blobs.ts';
 import { parseLines, validate, type Json, type Line } from '../src/format.ts';
