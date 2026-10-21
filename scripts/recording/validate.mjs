@@ -197,6 +197,10 @@ function artifactFileProblems(artifact, dir, lookKeys, lookSources, add) {
   }
 }
 
+/** A transport box line names its box by its recorded label, `box-N` by first appearance, never by its provider's id (draft 39). */
+const BOX_LINES = new Set(['box.created', 'box.killed', 'box.ended']);
+const BOX_LABEL = /^box-\d+$/;
+
 export function validateRecording(dir) {
   const problems = [];
   const add = (where, message, line) => problems.push({ where, ...(line === undefined ? {} : { line }), message });
@@ -270,6 +274,7 @@ export function validateRecording(dir) {
     }
     if (event.channel === 'durable' && !event.snapshot && !firstCommit.has(processIndex)) firstCommit.set(processIndex, event.commit);
     if (event.channel === 'live' && event.gen !== undefined) liveGenerations.add(event.gen);
+    if (BOX_LINES.has(event.kind) && isObject(event.data) && !BOX_LABEL.test(String(event.data.box ?? ''))) add('events.jsonl', `${event.kind} names box ${JSON.stringify(event.data.box ?? null)}, not a box-N label: a recording names a box by its label, never by its provider's id (draft 39)`, line);
     if (inlineImage(event.data)) add('events.jsonl', 'holds image data inline; an image belongs in blobs/ and its block keeps { type, mimeType, blob }', line);
     for (const hash of imageBlobs(event.data)) {
       if (!SHA256.test(hash ?? '')) add('events.jsonl', 'an image block has no 64-hex blob', line);
