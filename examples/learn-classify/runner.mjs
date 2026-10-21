@@ -34,7 +34,7 @@ import { agentScript, agentScriptV2, agentScriptV4, FIXTURES, FIXTURES_V2, FIXTU
 import { isHard, SETS } from './sets.mjs';
 import { ANY_HOST, domainOf, fetchPageTool } from './tools.mjs';
 import { answersTheJob, hostRecord, promotedFor } from './dispatch.mjs';
-import { GATE, gateSpend, replayGate } from './promotion-gate.mjs';
+import { asyncGate, GATE, gateSpend } from './promotion-gate.mjs';
 import { passSelfTest } from './selftest.mjs';
 import { writeHosts } from './tools-v2.mjs';
 import { HINDSIGHT_FIELDS, proposeHindsight, reflectOnRun } from './hindsight.mjs';
@@ -368,6 +368,8 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
       save({ ...p, hindsight: { ...p.hindsight, proposals: await proposeHindsight({ repo, job, run, seedSha: p.seedSha, wrong: p.hindsight.wrong, reflections: p.hindsight.reflections }) } });
     }
     if (p.phase === 'proposed') {
+      // The promotion gate's verdicts that landed since the last curate are applied first, so this curate starts from them.
+      const gated = gate ? await gate.apply({ repo, thresholds: parts.thresholds }) : [];
       const curateJudge = meteredJudge(judge);
       const curated = await curateJob({
         repo, judge: curateJudge, ...(parts.thresholds ? { thresholds: parts.thresholds } : {}),
@@ -375,7 +377,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
         ...(parts.sticky ? { sticky: { file: join(out, 'curate-sticky.json'), cutsId: parts.cutsId ?? 'default' } } : {}),
         ...(gate ? { gate } : {}),
       });
-      save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main, ...(tally ? { curatedIndex: ++tally.curated, curatedAt: new Date().toISOString() } : {}) });
+      save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main, ...(gated.length ? { gated } : {}), ...(tally ? { curatedIndex: ++tally.curated, curatedAt: new Date().toISOString() } : {}) });
       tally?.landed(job, p);
     }
     if (!p.lineage) {
@@ -401,6 +403,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
     ...(hindsight ? { hindsight, costUsd: row.costUsd === null || hindsight.costUsd === null ? null : row.costUsd + hindsight.costUsd, costKnownUsd: (row.costKnownUsd ?? 0) + (hindsight.costUsd ?? 0) } : {}),
     ...(p.curatedBefore === undefined ? {} : { curatedBefore: p.curatedBefore, lag: job.order - 1 - p.curatedBefore }),
     ...(p.curatedIndex === undefined ? {} : { curatedIndex: p.curatedIndex }),
+    ...(p.gated ? { gated: p.gated } : {}),
     rerunOf: p.infraFailed?.[0]?.runId ?? null, infraFailed: modelError(p.measure), limits,
     durableCommits: durableCommits(run.storePath),
   };
@@ -557,7 +560,7 @@ function bankRunner({ out, bare, parts, runCapUsd, dropEvidence }) {
  *  curated as it lands. `batch` takes the queue in batches of K by place: a batch's runs all start from one main and go
  *  side by side, then each is curated in queue order, so learning lands between batches. Rows go to runs.jsonl as jobs
  *  land; `checkpoints` freezes main after those curates (curateTally). */
-export async function runLoop({ out, parts, jobs, list, split = 'run', openTest = false, concurrency = 1, schedule = 'rolling', checkpoints = [], capUsd, runCapUsd, record = true, dropEvidence = false, log = () => {} }) {
+export async function runLoop({ out, parts, jobs, list, split = 'run', openTest = false, concurrency = 1, schedule = 'rolling', checkpoints = [], capUsd, runCapUsd, record = true, dropEvidence = false, gate: given, log = () => {} }) {
   if (!['rolling', 'batch'].includes(schedule)) throw new Error(`the schedule is rolling or batch, not ${schedule}`);
   out = resolve(out);
   const { repo, bare, meta } = await openOut(out, { mode: parts.mode, set: parts.set, agentDir: parts.agentDir });
@@ -567,9 +570,10 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
   const done = new Set(rows.map((r) => r.run));
   const stream = list ? listQueue(parts.companies, list, split, { openTest }) : splitOf(parts.companies, split, { openTest }).sort(byOrder);
   const queue = stream.slice(0, jobs ?? Infinity);
-  // With a bank, a promotion stands only when the replay gate passes it (promotion-gate.mjs). The bank runs inside curate,
-  // which holds the repository: no job starts or curates until the verdict, while the jobs in flight finish beside it.
-  const gate = parts.bank ? replayGate({ bank: bankOf(parts.companies, parts.bank, stream), runOne: bankRunner({ out, bare, parts, runCapUsd, dropEvidence }), dir: join(out, 'gate'), ...(parts.bankConcurrency ? { concurrency: parts.bankConcurrency } : {}), log }) : undefined;
+  // With a bank, a promotion stands only when the replay gate passes it (promotion-gate.mjs). The gate runs beside the
+  // stream, never holding it: a curate that would promote queues it, and a later curate applies its verdict. `gate` gives
+  // the pass one already made.
+  const gate = given ?? (parts.bank ? asyncGate({ bank: bankOf(parts.companies, parts.bank, stream), runOne: bankRunner({ out, bare, parts, runCapUsd, dropEvidence }), dir: join(out, 'gate'), ...(parts.bankConcurrency ? { concurrency: parts.bankConcurrency } : {}), log }) : undefined);
   const judge = parts.judge();
   const spentNow = () => knownSpend(out);
   const tally = curateTally({ out, stream, seedSha: meta.seedSha, checkpoints });
@@ -611,6 +615,8 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
     };
     await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, pending.length)) }, worker));
   }
+  // A comparison still on the bank finishes, so its verdict lands for the next curate (a resumed pass) to apply.
+  if (gate) await gate.idle();
   await writeCurve(out);
   if (stoppedBy) log(`stopped: ${stoppedBy}`);
   return { rows, stoppedBy, spentUsd: spentNow(), seedSha: meta.seedSha };
