@@ -1577,7 +1577,7 @@ function shapeFromSchema(schema: Record<string, unknown>): unknown {
   return Object.fromEntries(Object.entries(properties).map(([key, sub]) => [key, shapeFromSchema(sub as Record<string, unknown>)]));
 }
 
-function interpolateValue(value: unknown, state: Record<string, unknown>, stage: string = "interpolation"): unknown {
+export function interpolateValue(value: unknown, state: Record<string, unknown>, stage: string = "interpolation"): unknown {
   if (typeof value === "string") {
     const whole = value.match(/^\{([a-zA-Z0-9_.$]+)\}$/);
     if (whole) {
