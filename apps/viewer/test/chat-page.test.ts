@@ -909,11 +909,12 @@ const LISTED: { ref: string; summary?: string; kind: string; urgent: boolean; re
   urgent: n % 3 === 0, reviewed: n % 2 === 0, tags: ['parser', `v${n + 1}`, 'needs-triage'],
 })), { ref: 'A-7', kind: 'defect', urgent: false, reviewed: false, tags: [], owner: 'nobody yet' }];
 /** The agent's words: a lead-in, then a pipe table, a line after it, a rule, a table whose separator is short a column,
- *  a table with a line of more cells than its header, and a table with an escaped pipe in its header, then a line of
- *  prose with a pipe in it. */
+ *  a table with a line of more cells than its header, a header whose first line has more cells than it (no row) with a
+ *  table after it, and a table with an escaped pipe in its header, then a line of prose with a pipe in it. */
 const WORDS = ['Here is what I sorted:', '| ref | what | kind | urgent | reviewed | tags |', '| :--- | :--- | --- | ---: | :---: | --- |',
   ...LISTED.slice(0, 6).map((each) => `| **${each.ref}** | ${each.summary} | \`${each.kind}\` | ${each.urgent} | ${each.reviewed} | ${each.tags.join(', ')} |`),
   'That is the list.', '', '---', '', '| a | b |\n| --- |\n| 1 | 2 |', '', '| p | q |', '|---|---|', '| 1 | 2 |', '| 3 | 4 | EXTRA-CELL-WORDS |',
+  '', '| HEADER-ONLY-WORDS | h2 |', '|---|---|', '| 5 | 6 | MORE-THAN-HEADER |', '| r | s |', '|---|---|', '| 7 | 8 |',
   '', '| one \\| two | three |', '|---|---|', '| x | y |', 'Then prose with a pipe: use a | b here.'].join('\n');
 const SORTING = '**Sorting the list**\n\n| kind | count |\n|---|---|\n| defect | 4 |\n| feature | 3 |';
 
@@ -986,12 +987,17 @@ test('in Chrome: an answer that is a list of flat records and a pipe table in th
     assert.deepEqual(await value(`(() => { const said = doc('wide').querySelector('.said-text'); const outside = said.cloneNode(true); for (const box of outside.querySelectorAll('.table-box')) box.remove();
       return { extra: outside.textContent.includes('EXTRA-CELL-WORDS'), prose: [...said.querySelectorAll(':scope > p')].some((p) => p.textContent === 'Then prose with a pipe: use a | b here.'),
         split: [...said.querySelectorAll('td')].some((td) => td.textContent.includes('b here.')) }; })()`), { extra: true, prose: true, split: false });
+    // A header whose first line is no row of it heads no table: the header, its separator and that line stay words, in order.
+    assert.deepEqual(await value(`(() => { const outside = doc('wide').querySelector('.said-text').cloneNode(true); for (const box of outside.querySelectorAll('.table-box')) box.remove();
+      return { empty: [...doc('wide').querySelectorAll('table')].filter((t) => t.querySelectorAll('tbody tr').length === 0).length,
+        words: ['HEADER-ONLY-WORDS', 'MORE-THAN-HEADER'].filter((each) => outside.textContent.includes(each)) }; })()`), { empty: 0, words: ['HEADER-ONLY-WORDS', 'MORE-THAN-HEADER'] });
     // The agent's words: the lead-in, the table, the line after it, and what is no table as it was written.
     assert.deepEqual(await value(`[...doc('wide').querySelector('.said-text').children].map((n) => n.querySelector('table') ? 'table' : n.textContent)`),
-      ['Here is what I sorted:', 'table', 'That is the list.', '---', '| a | b |\n| --- |\n| 1 | 2 |', 'table', '| 3 | 4 | EXTRA-CELL-WORDS |', 'table', 'Then prose with a pipe: use a | b here.']);
+      ['Here is what I sorted:', 'table', 'That is the list.', '---', '| a | b |\n| --- |\n| 1 | 2 |', 'table', '| 3 | 4 | EXTRA-CELL-WORDS |', '| HEADER-ONLY-WORDS | h2 |\n|---|---|\n| 5 | 6 | MORE-THAN-HEADER |', 'table', 'table', 'Then prose with a pipe: use a | b here.']);
     assert.deepEqual(await value(`tables('wide', '.said-text')`), [
       { head: ['ref', 'what', 'kind', 'urgent', 'reviewed', 'tags'], rows: LISTED.slice(0, 6).map((each) => [each.ref, each.summary!.replaceAll('`', '').replaceAll('**', ''), each.kind, String(each.urgent), String(each.reviewed), each.tags.join(', ')]) },
       { head: ['p', 'q'], rows: [['1', '2']] },
+      { head: ['r', 's'], rows: [['7', '8']] },
       { head: ['one | two', 'three'], rows: [['x', 'y']] },
     ]);
     assert.deepEqual(await value(`[[...doc('wide').querySelectorAll('.said-text td:first-child strong')].map((n) => n.textContent), [...doc('wide').querySelectorAll('.said-text td code')].length]`),
