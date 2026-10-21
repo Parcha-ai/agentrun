@@ -59,11 +59,14 @@ export const SETS = Object.freeze({
       companies: readJson(join(data, 'companies-v4.json')),
       labels: readJson(join(data, 'sic2.json')),
       codes: readJson(join(data, 'sic-codes.json')),
+      /** The SEC's own vocabulary (build-sic-filers.mjs): the codes and groups it files companies under, and its largest
+       *  filers under each. A data directory without it offers every code, as v2 does. */
+      vocabulary: readJsonIf(join(data, 'sic-filers.json')),
       report: readJsonIf(join(data, 'build-report-v4.json')),
     }),
     input: jobInputV2,
     text: jobTextV2,
-    labelTools: (d) => [sic2GroupsTool(d.labels), sicCodesTool(d.codes)],
+    labelTools: (d) => [sic2GroupsTool(d.labels, d.vocabulary), sicCodesTool(d.codes, d.vocabulary)],
     answer: (d) => answerV4(d.codes),
     answerKey: 'sic4',
   }),

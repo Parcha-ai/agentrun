@@ -19,7 +19,7 @@ import { cache, DATA, OPEN_UA, provenance, readTsv, secFile, unzipEntry, via } f
 import { numRows, segmentTruth } from './build-truth-v2.mjs';
 
 // Oldest first; `fsds` is 2026q1. A later quarter's annual report replaces an earlier one.
-const QUARTERS = ['fsds2025q3', 'fsds2025q4', 'fsds', 'fsds2026q2'];
+export const QUARTERS = ['fsds2025q3', 'fsds2025q4', 'fsds', 'fsds2026q2'];
 const ANNUAL = new Set(['10-K', '10-KT', '20-F', '40-F']);
 const EXHIBIT = { '10-K': /^EX-21(\.\d+)?$/, '10-KT': /^EX-21(\.\d+)?$/, '20-F': /^EX-8(\.\d+)?$/ };
 // The newest pinned quarter ends 2026-06-30; a report whose next fiscal year ended 60 days or more before AS_OF may have a

@@ -71,24 +71,37 @@ const CODE_LIST = (key) => ({
   properties: { [key]: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['code', 'name'], properties: { code: { type: 'string' }, name: { type: 'string' } } } } },
 });
 
-/** sic2_groups: the 2-digit SIC major groups, code and name, in code order. */
-export function sic2GroupsTool(labels) {
-  const groups = groupsOf(labels);
+/** A code or group under its name and, when the SEC's vocabulary names them, the largest SEC filers filed under it. */
+const withFilers = (name, examples) => (examples?.length ? `${name} (SEC filers here include ${examples.join('; ')})` : name);
+
+/** sic2_groups: the 2-digit SIC major groups, code and name, in code order. With the SEC's vocabulary
+ *  (data/sic-filers.json), only the groups the SEC files companies under, each named with its largest filers. */
+export function sic2GroupsTool(labels, vocabulary) {
+  const groups = vocabulary
+    ? groupsOf(labels).filter((g) => vocabulary.groups[g.code]).map((g) => ({ code: g.code, name: withFilers(g.name, vocabulary.groups[g.code].examples) }))
+    : groupsOf(labels);
   return {
     name: 'sic2_groups',
-    description: 'The industry groups to classify into: every 2-digit SIC major group, its code and its name.',
+    description: vocabulary
+      ? 'The industry groups to classify into: every 2-digit SIC major group the SEC files companies under, its code and its name, with the largest SEC filers in it.'
+      : 'The industry groups to classify into: every 2-digit SIC major group, its code and its name.',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     resultSchema: CODE_LIST('groups'),
     run: async () => ({ groups }),
   };
 }
 
-/** sic_codes: the SEC's 4-digit SIC codes, all of them or one 2-digit group's (a Jev pick holds at most 240 options). */
-export function sicCodesTool(codes) {
-  const all = groupsOf(codes);
+/** sic_codes: the SEC's 4-digit SIC codes, all of them or one 2-digit group's (a Jev pick holds at most 240 options). With
+ *  the SEC's vocabulary, only the codes the SEC files companies under, each under its SEC title and its largest filers. */
+export function sicCodesTool(codes, vocabulary) {
+  const all = vocabulary
+    ? groupsOf(codes).filter((c) => vocabulary.codes[c.code]).map((c) => ({ code: c.code, name: withFilers(c.name, vocabulary.codes[c.code].examples) }))
+    : groupsOf(codes);
   return {
     name: 'sic_codes',
-    description: 'The SEC\'s 4-digit SIC codes, code and name: all of them, or only those of one 2-digit group (`group`, such as "35").',
+    description: vocabulary
+      ? 'The SEC\'s 4-digit SIC codes that it files companies under, code and name (the SEC\'s title, then the largest SEC filers under it): all of them, or only those of one 2-digit group (`group`, such as "35").'
+      : 'The SEC\'s 4-digit SIC codes, code and name: all of them, or only those of one 2-digit group (`group`, such as "35").',
     parameters: { type: 'object', additionalProperties: false, properties: { group: { type: 'string', pattern: '^[0-9]{2}$', description: 'A 2-digit group from sic2_groups.' } } },
     resultSchema: CODE_LIST('codes'),
     run: async ({ group } = {}) => ({ codes: group ? all.filter((c) => c.code.startsWith(group)) : all }),

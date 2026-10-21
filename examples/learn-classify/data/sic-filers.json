@@ -1,0 +1,3471 @@
+{
+ "codes": {
+  "1000": {
+   "filers": 67,
+   "examples": [
+    "BHP Group Ltd",
+    "SOUTHERN COPPER CORP/",
+    "RIO TINTO PLC"
+   ]
+  },
+  "1040": {
+   "filers": 88,
+   "examples": [
+    "NEWMONT Corp /DE/",
+    "AGNICO EAGLE MINES LTD",
+    "BARRICK MINING CORP"
+   ]
+  },
+  "1090": {
+   "filers": 17,
+   "examples": [
+    "CAMECO CORP",
+    "NexGen Energy Ltd.",
+    "URANIUM ENERGY CORP"
+   ]
+  },
+  "1220": {
+   "filers": 5,
+   "examples": [
+    "WARRIOR MET COAL, INC.",
+    "Core Natural Resources, Inc.",
+    "Ramaco Resources, Inc."
+   ]
+  },
+  "1221": {
+   "filers": 5,
+   "examples": [
+    "ALLIANCE RESOURCE PARTNERS LP",
+    "PEABODY ENERGY CORP",
+    "Alpha Metallurgical Resources, Inc."
+   ]
+  },
+  "1311": {
+   "filers": 113,
+   "examples": [
+    "Shell plc",
+    "PETROBRAS - PETROLEO BRASILEIRO SA",
+    "CANADIAN NATURAL RESOURCES Ltd"
+   ]
+  },
+  "1381": {
+   "filers": 13,
+   "examples": [
+    "Noble Corp plc",
+    "Transocean Ltd.",
+    "Valaris Ltd"
+   ]
+  },
+  "1382": {
+   "filers": 15,
+   "examples": [
+    "PEMBINA PIPELINE CORP",
+    "ZION OIL & GAS INC",
+    "DAWSON GEOPHYSICAL CO"
+   ]
+  },
+  "1389": {
+   "filers": 22,
+   "examples": [
+    "SLB LIMITED/NV",
+    "HALLIBURTON CO",
+    "WaterBridge Infrastructure LLC"
+   ]
+  },
+  "1400": {
+   "filers": 27,
+   "examples": [
+    "MARTIN MARIETTA MATERIALS INC",
+    "TECK RESOURCES LTD",
+    "CHEMICAL & MINING CO OF CHILE INC"
+   ]
+  },
+  "1520": {
+   "filers": 10,
+   "examples": [
+    "LENNAR CORP /NEW/",
+    "Installed Building Products, Inc.",
+    "GEO GROUP INC"
+   ]
+  },
+  "1531": {
+   "filers": 21,
+   "examples": [
+    "HORTON D R INC /DE/",
+    "PULTEGROUP INC/MI/",
+    "NVR INC"
+   ]
+  },
+  "1540": {
+   "filers": 3,
+   "examples": [
+    "TUTOR PERINI CORP",
+    "DirectBooking Technology Co., Ltd."
+   ]
+  },
+  "1600": {
+   "filers": 13,
+   "examples": [
+    "Ferrovial N.V.",
+    "JACOBS SOLUTIONS INC.",
+    "STERLING INFRASTRUCTURE, INC."
+   ]
+  },
+  "1623": {
+   "filers": 8,
+   "examples": [
+    "MASTEC INC",
+    "DYCOM INDUSTRIES INC",
+    "MYR GROUP INC."
+   ]
+  },
+  "1700": {
+   "filers": 25,
+   "examples": [
+    "Legence Corp.",
+    "Brookfield Business Corp",
+    "ARGAN INC"
+   ]
+  },
+  "1731": {
+   "filers": 5,
+   "examples": [
+    "QUANTA SERVICES, INC.",
+    "COMFORT SYSTEMS USA INC",
+    "EMCOR Group, Inc."
+   ]
+  },
+  "2000": {
+   "filers": 23,
+   "examples": [
+    "Mondelez International, Inc.",
+    "CONAGRA BRANDS INC.",
+    "CAMPBELL'S Co"
+   ]
+  },
+  "2011": {
+   "filers": 1,
+   "examples": [
+    "JBS N.V."
+   ]
+  },
+  "2013": {
+   "filers": 3,
+   "examples": [
+    "Mama's Creations, Inc.",
+    "Wing Yip Food Holdings Group Ltd",
+    "BRIDGFORD FOODS CORP"
+   ]
+  },
+  "2015": {
+   "filers": 1,
+   "examples": [
+    "TYSON FOODS, INC."
+   ]
+  },
+  "2020": {
+   "filers": 1,
+   "examples": [
+    "Lifeway Foods, Inc."
+   ]
+  },
+  "2024": {
+   "filers": 2,
+   "examples": [
+    "Magnum Ice Cream Co N.V.",
+    "TOFUTTI BRANDS INC"
+   ]
+  },
+  "2030": {
+   "filers": 7,
+   "examples": [
+    "Kraft Heinz Co",
+    "Lamb Weston Holdings, Inc.",
+    "MARZETTI CO"
+   ]
+  },
+  "2033": {
+   "filers": 3,
+   "examples": [
+    "J M SMUCKER Co",
+    "Seneca Foods Corp",
+    "Farmmi, Inc."
+   ]
+  },
+  "2040": {
+   "filers": 6,
+   "examples": [
+    "GENERAL MILLS INC",
+    "Ingredion Inc",
+    "Freshpet, Inc."
+   ]
+  },
+  "2052": {
+   "filers": 1,
+   "examples": [
+    "J&J SNACK FOODS CORP"
+   ]
+  },
+  "2060": {
+   "filers": 4,
+   "examples": [
+    "HERSHEY CO",
+    "TOOTSIE ROLL INDUSTRIES INC",
+    "SANFILIPPO JOHN B & SON INC"
+   ]
+  },
+  "2070": {
+   "filers": 5,
+   "examples": [
+    "Archer-Daniels-Midland Co",
+    "Bunge Global SA",
+    "DARLING INGREDIENTS INC."
+   ]
+  },
+  "2080": {
+   "filers": 25,
+   "examples": [
+    "COCA COLA CO",
+    "PEPSICO INC",
+    "DIAGEO PLC"
+   ]
+  },
+  "2082": {
+   "filers": 3,
+   "examples": [
+    "MOLSON COORS BEVERAGE CO",
+    "BOSTON BEER CO INC",
+    "UNITED BREWERIES CO INC"
+   ]
+  },
+  "2086": {
+   "filers": 12,
+   "examples": [
+    "Monster Beverage Corp",
+    "COCA-COLA EUROPACIFIC PARTNERS plc",
+    "MEXICAN ECONOMIC DEVELOPMENT INC"
+   ]
+  },
+  "2090": {
+   "filers": 6,
+   "examples": [
+    "MCCORMICK & CO INC",
+    "Utz Brands, Inc.",
+    "MEDIFAST INC"
+   ]
+  },
+  "2092": {
+   "filers": 1,
+   "examples": [
+    "Blue Star Foods Corp."
+   ]
+  },
+  "2100": {
+   "filers": 3,
+   "examples": [
+    "Turning Point Brands, Inc.",
+    "AIR Global PLC",
+    "Healthier Choices Management Corp."
+   ]
+  },
+  "2111": {
+   "filers": 8,
+   "examples": [
+    "Philip Morris International Inc.",
+    "British American Tobacco p.l.c.",
+    "ALTRIA GROUP, INC."
+   ]
+  },
+  "2200": {
+   "filers": 2,
+   "examples": [
+    "UNIFI INC",
+    "Moolec Science SA"
+   ]
+  },
+  "2211": {
+   "filers": 2,
+   "examples": [
+    "CULP INC",
+    "CROWN CRAFTS INC"
+   ]
+  },
+  "2221": {
+   "filers": 1,
+   "examples": [
+    "ALBANY INTERNATIONAL CORP /DE/"
+   ]
+  },
+  "2273": {
+   "filers": 3,
+   "examples": [
+    "MOHAWK INDUSTRIES INC",
+    "INTERFACE INC",
+    "DIXIE GROUP INC"
+   ]
+  },
+  "2300": {
+   "filers": 17,
+   "examples": [
+    "Amer Sports, Inc.",
+    "lululemon athletica inc.",
+    "LEVI STRAUSS & CO"
+   ]
+  },
+  "2320": {
+   "filers": 5,
+   "examples": [
+    "CINTAS CORP",
+    "RALPH LAUREN CORP",
+    "V F CORP"
+   ]
+  },
+  "2330": {
+   "filers": 2,
+   "examples": [
+    "J.Jill, Inc.",
+    "NITCHES INC"
+   ]
+  },
+  "2340": {
+   "filers": 1,
+   "examples": []
+  },
+  "2390": {
+   "filers": 3,
+   "examples": [
+    "INNOVATIVE DESIGNS INC",
+    "MaxsMaking Inc.",
+    "Sound Cave Technology Inc."
+   ]
+  },
+  "2400": {
+   "filers": 4,
+   "examples": [
+    "LOUISIANA-PACIFIC CORP",
+    "TREX CO INC",
+    "Koppers Holdings Inc."
+   ]
+  },
+  "2421": {
+   "filers": 2,
+   "examples": [
+    "WEST FRASER TIMBER CO., LTD",
+    "UFP INDUSTRIES INC"
+   ]
+  },
+  "2430": {
+   "filers": 3,
+   "examples": [
+    "Fortune Brands Innovations, Inc.",
+    "JELD-WEN Holding, Inc."
+   ]
+  },
+  "2451": {
+   "filers": 4,
+   "examples": [
+    "Champion Homes, Inc.",
+    "CAVCO INDUSTRIES, INC.",
+    "Legacy Housing Corp"
+   ]
+  },
+  "2510": {
+   "filers": 10,
+   "examples": [
+    "SOMNIGROUP INTERNATIONAL INC.",
+    "Compass Diversified Holdings",
+    "XMax Inc."
+   ]
+  },
+  "2511": {
+   "filers": 3,
+   "examples": [
+    "MasterBrand, Inc.",
+    "ETHAN ALLEN INTERIORS INC",
+    "BASSETT FURNITURE INDUSTRIES INC"
+   ]
+  },
+  "2520": {
+   "filers": 1,
+   "examples": [
+    "MILLERKNOLL, INC."
+   ]
+  },
+  "2522": {
+   "filers": 1,
+   "examples": []
+  },
+  "2531": {
+   "filers": 1,
+   "examples": [
+    "VIRCO MFG CORPORATION"
+   ]
+  },
+  "2540": {
+   "filers": 1,
+   "examples": [
+    "Intelligent Living Application Group Inc."
+   ]
+  },
+  "2611": {
+   "filers": 3,
+   "examples": [
+    "RAYONIER ADVANCED MATERIALS INC.",
+    "MERCER INTERNATIONAL INC."
+   ]
+  },
+  "2621": {
+   "filers": 6,
+   "examples": [
+    "INTERNATIONAL PAPER CO /NEW/",
+    "Suzano S.A.",
+    "Sylvamo Corp"
+   ]
+  },
+  "2631": {
+   "filers": 1,
+   "examples": [
+    "Clearwater Paper Corp"
+   ]
+  },
+  "2650": {
+   "filers": 2,
+   "examples": [
+    "Smurfit Westrock plc",
+    "SONOCO PRODUCTS CO"
+   ]
+  },
+  "2670": {
+   "filers": 5,
+   "examples": [
+    "KIMBERLY CLARK CORP",
+    "Avery Dennison Corp",
+    "Ranpak Holdings Corp."
+   ]
+  },
+  "2673": {
+   "filers": 1,
+   "examples": [
+    "Reynolds Consumer Products Inc."
+   ]
+  },
+  "2711": {
+   "filers": 4,
+   "examples": [
+    "NEWS CORP",
+    "NEW YORK TIMES CO",
+    "LEE ENTERPRISES, Inc"
+   ]
+  },
+  "2721": {
+   "filers": 2,
+   "examples": [
+    "Generation Essentials Group",
+    "SOBR Safe, Inc."
+   ]
+  },
+  "2731": {
+   "filers": 2,
+   "examples": [
+    "JOHN WILEY & SONS, INC.",
+    "SCHOLASTIC CORP"
+   ]
+  },
+  "2741": {
+   "filers": 3,
+   "examples": [
+    "THOMSON REUTERS CORP /CAN/",
+    "McGraw Hill, Inc.",
+    "WEBTOON Entertainment Inc."
+   ]
+  },
+  "2750": {
+   "filers": 6,
+   "examples": [
+    "CIMPRESS plc",
+    "Quad/Graphics, Inc.",
+    "CPI Card Group Inc."
+   ]
+  },
+  "2761": {
+   "filers": 1,
+   "examples": [
+    "ENNIS, INC."
+   ]
+  },
+  "2780": {
+   "filers": 2,
+   "examples": [
+    "DELUXE CORP",
+    "ACCO BRANDS Corp"
+   ]
+  },
+  "2800": {
+   "filers": 16,
+   "examples": [
+    "Solstice Advanced Materials Inc.",
+    "BALCHEM CORP",
+    "Perimeter Solutions, Inc."
+   ]
+  },
+  "2810": {
+   "filers": 11,
+   "examples": [
+    "LINDE PLC",
+    "Air Products & Chemicals, Inc.",
+    "MINERALS TECHNOLOGIES INC"
+   ]
+  },
+  "2820": {
+   "filers": 3,
+   "examples": [
+    "Celanese Corp",
+    "Kraig Biocraft Laboratories, Inc."
+   ]
+  },
+  "2821": {
+   "filers": 12,
+   "examples": [
+    "DOW INC.",
+    "DuPont de Nemours, Inc.",
+    "ALBEMARLE CORP"
+   ]
+  },
+  "2833": {
+   "filers": 39,
+   "examples": [
+    "Regencell Bioscience Holdings Ltd",
+    "Curaleaf Holdings, Inc.",
+    "Trulieve Cannabis Corp."
+   ]
+  },
+  "2834": {
+   "filers": 604,
+   "examples": [
+    "JOHNSON & JOHNSON",
+    "AbbVie Inc.",
+    "Merck & Co., Inc."
+   ]
+  },
+  "2835": {
+   "filers": 19,
+   "examples": [
+    "IDEXX LABORATORIES INC /DE",
+    "Lantheus Holdings, Inc.",
+    "NEOGEN CORP"
+   ]
+  },
+  "2836": {
+   "filers": 187,
+   "examples": [
+    "AMGEN INC",
+    "GILEAD SCIENCES, INC.",
+    "Moderna, Inc."
+   ]
+  },
+  "2840": {
+   "filers": 10,
+   "examples": [
+    "PROCTER & GAMBLE Co",
+    "UNILEVER PLC",
+    "CHURCH & DWIGHT CO INC /DE/"
+   ]
+  },
+  "2842": {
+   "filers": 3,
+   "examples": [
+    "CLOROX CO /DE/",
+    "Zone Frontier Inc."
+   ]
+  },
+  "2844": {
+   "filers": 23,
+   "examples": [
+    "COLGATE PALMOLIVE CO",
+    "ESTEE LAUDER COMPANIES INC",
+    "Kenvue Inc."
+   ]
+  },
+  "2851": {
+   "filers": 3,
+   "examples": [
+    "PPG INDUSTRIES INC",
+    "RPM INTERNATIONAL INC/DE/",
+    "Axalta Coating Systems Ltd."
+   ]
+  },
+  "2860": {
+   "filers": 31,
+   "examples": [
+    "INTERNATIONAL FLAVORS & FRAGRANCES INC",
+    "LyondellBasell Industries N.V.",
+    "NEWMARKET CORP"
+   ]
+  },
+  "2870": {
+   "filers": 13,
+   "examples": [
+    "Nutrien Ltd.",
+    "MOSAIC CO",
+    "SCOTTS MIRACLE-GRO CO"
+   ]
+  },
+  "2890": {
+   "filers": 11,
+   "examples": [
+    "Element Solutions Inc",
+    "CABOT CORP",
+    "WD 40 CO"
+   ]
+  },
+  "2891": {
+   "filers": 2,
+   "examples": [
+    "CSW INDUSTRIALS, INC.",
+    "FULLER H B CO"
+   ]
+  },
+  "2911": {
+   "filers": 17,
+   "examples": [
+    "CHEVRON CORP",
+    "Marathon Petroleum Corp",
+    "VALERO ENERGY CORP/TX"
+   ]
+  },
+  "2990": {
+   "filers": 2,
+   "examples": [
+    "VALVOLINE INC",
+    "QUAKER CHEMICAL CORP"
+   ]
+  },
+  "3011": {
+   "filers": 1,
+   "examples": [
+    "GOODYEAR TIRE & RUBBER CO /OH/"
+   ]
+  },
+  "3021": {
+   "filers": 3,
+   "examples": [
+    "NIKE, Inc.",
+    "On Holding AG",
+    "DECKERS OUTDOOR CORP"
+   ]
+  },
+  "3050": {
+   "filers": 1,
+   "examples": [
+    "Enpro Inc."
+   ]
+  },
+  "3060": {
+   "filers": 3,
+   "examples": [
+    "CARLISLE COMPANIES INC",
+    "YUNHONG GREEN CTI LTD.",
+    "Vystar Corp"
+   ]
+  },
+  "3080": {
+   "filers": 1,
+   "examples": [
+    "Lightwave Logic, Inc."
+   ]
+  },
+  "3081": {
+   "filers": 1,
+   "examples": [
+    "NewHydrogen, Inc."
+   ]
+  },
+  "3086": {
+   "filers": 1,
+   "examples": [
+    "ADVANCED DRAINAGE SYSTEMS, INC."
+   ]
+  },
+  "3089": {
+   "filers": 10,
+   "examples": [
+    "APTARGROUP, INC.",
+    "ARMSTRONG WORLD INDUSTRIES INC",
+    "NEWELL BRANDS INC."
+   ]
+  },
+  "3100": {
+   "filers": 5,
+   "examples": [
+    "TAPESTRY, INC.",
+    "Capri Holdings Ltd",
+    "Vera Bradley, Inc."
+   ]
+  },
+  "3140": {
+   "filers": 7,
+   "examples": [
+    "Birkenstock Holding plc",
+    "STEVEN MADDEN, LTD.",
+    "WOLVERINE WORLD WIDE INC /DE/"
+   ]
+  },
+  "3211": {
+   "filers": 1,
+   "examples": [
+    "Tecnoglass Holdings Inc."
+   ]
+  },
+  "3221": {
+   "filers": 1,
+   "examples": [
+    "O-I Glass, Inc. /DE/"
+   ]
+  },
+  "3231": {
+   "filers": 1,
+   "examples": [
+    "APOGEE ENTERPRISES, INC."
+   ]
+  },
+  "3241": {
+   "filers": 6,
+   "examples": [
+    "CRH PUBLIC LTD CO",
+    "Amrize Ltd",
+    "CEMEX SAB DE CV"
+   ]
+  },
+  "3260": {
+   "filers": 1,
+   "examples": [
+    "CPS TECHNOLOGIES CORP/DE/"
+   ]
+  },
+  "3272": {
+   "filers": 3,
+   "examples": [
+    "James Hardie Industries plc",
+    "Suncrete, Inc.",
+    "SMITH MIDLAND CORP"
+   ]
+  },
+  "3281": {
+   "filers": 1,
+   "examples": [
+    "Caesarstone Ltd."
+   ]
+  },
+  "3290": {
+   "filers": 2,
+   "examples": [
+    "Owens Corning",
+    "ReTo Eco-Solutions, Inc."
+   ]
+  },
+  "3310": {
+   "filers": 7,
+   "examples": [
+    "GERDAU S.A.",
+    "WORTHINGTON ENTERPRISES, INC.",
+    "Worthington Steel, Inc."
+   ]
+  },
+  "3312": {
+   "filers": 11,
+   "examples": [
+    "NUCOR CORP",
+    "STEEL DYNAMICS INC",
+    "TENARIS SA"
+   ]
+  },
+  "3317": {
+   "filers": 5,
+   "examples": [
+    "ATI INC",
+    "NWPX Infrastructure, Inc.",
+    "Luda Technology Group Ltd"
+   ]
+  },
+  "3330": {
+   "filers": 2,
+   "examples": [
+    "UNITED STATES ANTIMONY CORP",
+    "Stardust Power Inc."
+   ]
+  },
+  "3334": {
+   "filers": 2,
+   "examples": [
+    "Alcoa Corp",
+    "CENTURY ALUMINUM CO"
+   ]
+  },
+  "3341": {
+   "filers": 2,
+   "examples": [
+    "CONSTELLIUM SE",
+    "Aqua Metals, Inc."
+   ]
+  },
+  "3350": {
+   "filers": 6,
+   "examples": [
+    "Howmet Aerospace Inc.",
+    "MUELLER INDUSTRIES INC",
+    "Quanex Building Products CORP"
+   ]
+  },
+  "3357": {
+   "filers": 3,
+   "examples": [
+    "CORNING INC /NY",
+    "BELDEN INC.",
+    "ASIA PACIFIC WIRE & CABLE CORP LTD"
+   ]
+  },
+  "3360": {
+   "filers": 3,
+   "examples": [
+    "MATTHEWS INTERNATIONAL CORP",
+    "BROADWIND, INC.",
+    "HUHUTECH International Group Inc."
+   ]
+  },
+  "3390": {
+   "filers": 1,
+   "examples": [
+    "DMC Global Inc."
+   ]
+  },
+  "3411": {
+   "filers": 2,
+   "examples": [
+    "SILGAN HOLDINGS INC",
+    "Ardagh Metal Packaging S.A."
+   ]
+  },
+  "3412": {
+   "filers": 2,
+   "examples": [
+    "GREIF, INC",
+    "JBDI Holdings Ltd"
+   ]
+  },
+  "3420": {
+   "filers": 9,
+   "examples": [
+    "Snap-on Inc",
+    "STANLEY BLACK & DECKER, INC.",
+    "Simpson Manufacturing Co., Inc."
+   ]
+  },
+  "3430": {
+   "filers": 3,
+   "examples": [
+    "MASCO CORP /DE/",
+    "Omega Flex, Inc.",
+    "FGI Industries Ltd."
+   ]
+  },
+  "3433": {
+   "filers": 1,
+   "examples": [
+    "BRENX LTD."
+   ]
+  },
+  "3440": {
+   "filers": 6,
+   "examples": [
+    "VALMONT INDUSTRIES INC",
+    "Arcosa, Inc.",
+    "Proto Labs Inc"
+   ]
+  },
+  "3442": {
+   "filers": 3,
+   "examples": [
+    "GRIFFON CORP",
+    "Janus International Group, Inc.",
+    "Mingteng International Corp Inc."
+   ]
+  },
+  "3443": {
+   "filers": 5,
+   "examples": [
+    "X-Energy, Inc.",
+    "NUSCALE POWER Corp",
+    "Terrestrial Energy Inc. /DE/"
+   ]
+  },
+  "3448": {
+   "filers": 1,
+   "examples": []
+  },
+  "3452": {
+   "filers": 1,
+   "examples": [
+    "ZJK Industrial Co., Ltd."
+   ]
+  },
+  "3460": {
+   "filers": 5,
+   "examples": [
+    "MATERION Corp",
+    "TRIMAS CORP",
+    "PARK OHIO HOLDINGS CORP"
+   ]
+  },
+  "3470": {
+   "filers": 5,
+   "examples": [
+    "AZZ INC",
+    "XPEL, Inc.",
+    "NORTHERN TECHNOLOGIES INTERNATIONAL CORP"
+   ]
+  },
+  "3480": {
+   "filers": 4,
+   "examples": [
+    "AXON ENTERPRISE, INC.",
+    "STURM RUGER & CO INC",
+    "SMITH & WESSON BRANDS, INC."
+   ]
+  },
+  "3490": {
+   "filers": 8,
+   "examples": [
+    "Parker-Hannifin Corp",
+    "Crane Co",
+    "WATTS WATER TECHNOLOGIES INC"
+   ]
+  },
+  "3510": {
+   "filers": 7,
+   "examples": [
+    "CUMMINS INC",
+    "BRUNSWICK CORP",
+    "POWER SOLUTIONS INTERNATIONAL, INC."
+   ]
+  },
+  "3523": {
+   "filers": 8,
+   "examples": [
+    "DEERE & CO",
+    "AGCO CORP /DE",
+    "ALAMO GROUP INC"
+   ]
+  },
+  "3524": {
+   "filers": 1,
+   "examples": [
+    "TORO CO"
+   ]
+  },
+  "3531": {
+   "filers": 8,
+   "examples": [
+    "CATERPILLAR INC",
+    "CNH Industrial N.V.",
+    "DOUGLAS DYNAMICS, INC"
+   ]
+  },
+  "3533": {
+   "filers": 17,
+   "examples": [
+    "Baker Hughes Co",
+    "TechnipFMC plc",
+    "NOV Inc."
+   ]
+  },
+  "3537": {
+   "filers": 2,
+   "examples": [
+    "TEREX CORP",
+    "HYSTER-YALE, INC."
+   ]
+  },
+  "3540": {
+   "filers": 3,
+   "examples": [
+    "LINCOLN ELECTRIC HOLDINGS INC",
+    "NN INC",
+    "CHICAGO RIVET & MACHINE CO"
+   ]
+  },
+  "3541": {
+   "filers": 1,
+   "examples": [
+    "KENNAMETAL INC"
+   ]
+  },
+  "3550": {
+   "filers": 4,
+   "examples": [
+    "nVent Electric plc",
+    "PENTAIR plc",
+    "JBT MAREL Corp"
+   ]
+  },
+  "3555": {
+   "filers": 1,
+   "examples": [
+    "Kornit Digital Ltd."
+   ]
+  },
+  "3559": {
+   "filers": 16,
+   "examples": [
+    "ASML HOLDING NV",
+    "LAM RESEARCH CORP",
+    "ACM Research, Inc."
+   ]
+  },
+  "3560": {
+   "filers": 9,
+   "examples": [
+    "ILLINOIS TOOL WORKS INC",
+    "Ingersoll Rand Inc.",
+    "ZEBRA TECHNOLOGIES CORP"
+   ]
+  },
+  "3561": {
+   "filers": 7,
+   "examples": [
+    "Xylem Inc.",
+    "IDEX CORP /DE/",
+    "GRACO INC"
+   ]
+  },
+  "3562": {
+   "filers": 2,
+   "examples": [
+    "RBC Bearings INC",
+    "TIMKEN CO"
+   ]
+  },
+  "3567": {
+   "filers": 1,
+   "examples": [
+    "Mag Mile Capital, Inc."
+   ]
+  },
+  "3569": {
+   "filers": 14,
+   "examples": [
+    "Symbotic Inc.",
+    "NORDSON CORP",
+    "Hesai Group"
+   ]
+  },
+  "3570": {
+   "filers": 3,
+   "examples": [
+    "INTERNATIONAL BUSINESS MACHINES CORP",
+    "Hewlett Packard Enterprise Co",
+    "HP INC"
+   ]
+  },
+  "3571": {
+   "filers": 8,
+   "examples": [
+    "Apple Inc.",
+    "Dell Technologies Inc.",
+    "Super Micro Computer, Inc."
+   ]
+  },
+  "3572": {
+   "filers": 6,
+   "examples": [
+    "Sandisk Corp",
+    "Seagate Technology Holdings plc",
+    "WESTERN DIGITAL CORP"
+   ]
+  },
+  "3576": {
+   "filers": 14,
+   "examples": [
+    "Arista Networks, Inc.",
+    "F5, INC.",
+    "EXTREME NETWORKS INC"
+   ]
+  },
+  "3577": {
+   "filers": 16,
+   "examples": [
+    "Fortinet, Inc.",
+    "LOGITECH INTERNATIONAL S.A.",
+    "Corsair Gaming, Inc."
+   ]
+  },
+  "3579": {
+   "filers": 1,
+   "examples": [
+    "PITNEY BOWES INC /DE/"
+   ]
+  },
+  "3580": {
+   "filers": 6,
+   "examples": [
+    "MIDDLEBY Corp",
+    "Alliance Laundry Holdings Inc.",
+    "STANDEX INTERNATIONAL CORP/DE/"
+   ]
+  },
+  "3585": {
+   "filers": 9,
+   "examples": [
+    "Johnson Controls International plc",
+    "CARRIER GLOBAL Corp",
+    "LENNOX INTERNATIONAL INC"
+   ]
+  },
+  "3590": {
+   "filers": 14,
+   "examples": [
+    "Eaton Corp plc",
+    "CURTISS WRIGHT CORP",
+    "MOOG INC."
+   ]
+  },
+  "3612": {
+   "filers": 1,
+   "examples": [
+    "King Resources, Inc."
+   ]
+  },
+  "3613": {
+   "filers": 2,
+   "examples": [
+    "LITTELFUSE INC /DE",
+    "POWELL INDUSTRIES INC"
+   ]
+  },
+  "3620": {
+   "filers": 12,
+   "examples": [
+    "Bloom Energy Corp",
+    "Woodward, Inc.",
+    "Forgent Power Solutions, Inc."
+   ]
+  },
+  "3621": {
+   "filers": 6,
+   "examples": [
+    "FRANKLIN ELECTRIC CO INC",
+    "AMERICAN SUPERCONDUCTOR CORP /DE/",
+    "374Water Inc."
+   ]
+  },
+  "3630": {
+   "filers": 7,
+   "examples": [
+    "SharkNinja, Inc.",
+    "WHIRLPOOL CORP /DE/",
+    "Traeger, Inc."
+   ]
+  },
+  "3634": {
+   "filers": 4,
+   "examples": [
+    "HELEN OF TROY LTD",
+    "Hamilton Beach Brands Holding Co",
+    "Aterian, Inc."
+   ]
+  },
+  "3640": {
+   "filers": 8,
+   "examples": [
+    "ACUITY INC. (DE)",
+    "LSI INDUSTRIES INC",
+    "SKYX Platforms Corp."
+   ]
+  },
+  "3651": {
+   "filers": 8,
+   "examples": [
+    "Sony Group Corp",
+    "Knowles Corp",
+    "Sonos Inc"
+   ]
+  },
+  "3661": {
+   "filers": 10,
+   "examples": [
+    "CIENA CORP",
+    "Fabrinet",
+    "NETGEAR, INC."
+   ]
+  },
+  "3663": {
+   "filers": 24,
+   "examples": [
+    "QUALCOMM INC/DE",
+    "Motorola Solutions, Inc.",
+    "NOKIA CORP"
+   ]
+  },
+  "3669": {
+   "filers": 16,
+   "examples": [
+    "Lumentum Holdings Inc.",
+    "ESCO TECHNOLOGIES INC",
+    "NAPCO SECURITY TECHNOLOGIES, INC"
+   ]
+  },
+  "3670": {
+   "filers": 8,
+   "examples": [
+    "HUBBELL INC",
+    "MERCURY SYSTEMS INC",
+    "VISHAY INTERTECHNOLOGY INC"
+   ]
+  },
+  "3672": {
+   "filers": 12,
+   "examples": [
+    "CELESTICA INC",
+    "JABIL INC",
+    "TTM TECHNOLOGIES INC"
+   ]
+  },
+  "3674": {
+   "filers": 102,
+   "examples": [
+    "NVIDIA CORP",
+    "Broadcom Inc.",
+    "MICRON TECHNOLOGY INC"
+   ]
+  },
+  "3677": {
+   "filers": 1,
+   "examples": [
+    "BEL FUSE INC /NJ"
+   ]
+  },
+  "3678": {
+   "filers": 4,
+   "examples": [
+    "AMPHENOL CORP /DE/",
+    "METHODE ELECTRONICS INC",
+    "R F INDUSTRIES LTD"
+   ]
+  },
+  "3679": {
+   "filers": 12,
+   "examples": [
+    "VICOR CORP",
+    "ADVANCED ENERGY INDUSTRIES INC",
+    "IMPINJ INC"
+   ]
+  },
+  "3690": {
+   "filers": 52,
+   "examples": [
+    "CAE INC",
+    "EnerSys",
+    "NOVANTA INC"
+   ]
+  },
+  "3711": {
+   "filers": 36,
+   "examples": [
+    "Tesla, Inc.",
+    "TOYOTA MOTOR CORP/",
+    "General Motors Co"
+   ]
+  },
+  "3713": {
+   "filers": 4,
+   "examples": [
+    "Blue Bird Corp",
+    "MILLER INDUSTRIES INC /TN/",
+    "Scage Future"
+   ]
+  },
+  "3714": {
+   "filers": 45,
+   "examples": [
+    "BORGWARNER INC",
+    "Aptiv PLC",
+    "Allison Transmission Holdings Inc"
+   ]
+  },
+  "3715": {
+   "filers": 1,
+   "examples": [
+    "WABASH NATIONAL Corp"
+   ]
+  },
+  "3716": {
+   "filers": 2,
+   "examples": [
+    "THOR INDUSTRIES INC",
+    "WINNEBAGO INDUSTRIES INC"
+   ]
+  },
+  "3720": {
+   "filers": 1,
+   "examples": [
+    "AAR CORP"
+   ]
+  },
+  "3721": {
+   "filers": 15,
+   "examples": [
+    "AeroVironment Inc",
+    "Joby Aviation, Inc.",
+    "BETA Technologies, Inc."
+   ]
+  },
+  "3724": {
+   "filers": 5,
+   "examples": [
+    "RTX Corp",
+    "HEICO CORP",
+    "StandardAero, Inc."
+   ]
+  },
+  "3728": {
+   "filers": 13,
+   "examples": [
+    "TransDigm Group INC",
+    "Arxis, Inc.",
+    "Loar Holdings Inc."
+   ]
+  },
+  "3730": {
+   "filers": 7,
+   "examples": [
+    "GENERAL DYNAMICS CORP",
+    "MasterCraft Boat Holdings, Inc.",
+    "MALIBU BOATS, INC."
+   ]
+  },
+  "3743": {
+   "filers": 6,
+   "examples": [
+    "WESTINGHOUSE AIR BRAKE TECHNOLOGIES CORP",
+    "TRINITY INDUSTRIES INC",
+    "GREENBRIER COMPANIES INC"
+   ]
+  },
+  "3751": {
+   "filers": 7,
+   "examples": [
+    "HARLEY-DAVIDSON, INC.",
+    "FOX FACTORY HOLDING CORP",
+    "LiveWire Group, Inc."
+   ]
+  },
+  "3760": {
+   "filers": 10,
+   "examples": [
+    "LOCKHEED MARTIN CORP",
+    "Rocket Lab Corp",
+    "KRATOS DEFENSE & SECURITY SOLUTIONS, INC."
+   ]
+  },
+  "3790": {
+   "filers": 4,
+   "examples": [
+    "BRP Inc.",
+    "Polaris Inc.",
+    "Massimo Group"
+   ]
+  },
+  "3812": {
+   "filers": 8,
+   "examples": [
+    "GARMIN LTD",
+    "TELEDYNE TECHNOLOGIES INC",
+    "Leonardo DRS, Inc."
+   ]
+  },
+  "3821": {
+   "filers": 1,
+   "examples": [
+    "KEWAUNEE SCIENTIFIC CORP /DE/"
+   ]
+  },
+  "3824": {
+   "filers": 1,
+   "examples": [
+    "BADGER METER INC"
+   ]
+  },
+  "3825": {
+   "filers": 11,
+   "examples": [
+    "TERADYNE, INC",
+    "Veralto Corp",
+    "ITRON, INC."
+   ]
+  },
+  "3826": {
+   "filers": 26,
+   "examples": [
+    "AGILENT TECHNOLOGIES, INC.",
+    "WATERS CORP /DE/",
+    "ILLUMINA, INC."
+   ]
+  },
+  "3827": {
+   "filers": 6,
+   "examples": [
+    "COHERENT CORP.",
+    "NOVA LTD.",
+    "CAMTEK LTD"
+   ]
+  },
+  "3829": {
+   "filers": 11,
+   "examples": [
+    "THERMO FISHER SCIENTIFIC INC.",
+    "TRIMBLE INC.",
+    "ONTO INNOVATION INC."
+   ]
+  },
+  "3841": {
+   "filers": 154,
+   "examples": [
+    "STRYKER CORP",
+    "3M CO",
+    "BOSTON SCIENTIFIC CORP"
+   ]
+  },
+  "3842": {
+   "filers": 33,
+   "examples": [
+    "INTUITIVE SURGICAL INC",
+    "Edwards Lifesciences Corp",
+    "STERIS plc"
+   ]
+  },
+  "3843": {
+   "filers": 3,
+   "examples": [
+    "Envista Holdings Corp",
+    "Dror Ortho-Design, Inc."
+   ]
+  },
+  "3844": {
+   "filers": 6,
+   "examples": [
+    "GE HealthCare Technologies Inc.",
+    "KONINKLIJKE PHILIPS NV",
+    "Butterfly Network, Inc."
+   ]
+  },
+  "3845": {
+   "filers": 39,
+   "examples": [
+    "Medtronic plc",
+    "Integer Holdings Corp",
+    "LivaNova PLC"
+   ]
+  },
+  "3851": {
+   "filers": 8,
+   "examples": [
+    "ALCON INC",
+    "COOPER COMPANIES, INC.",
+    "Bausch & Lomb Corp"
+   ]
+  },
+  "3861": {
+   "filers": 5,
+   "examples": [
+    "IMAX CORP",
+    "EASTMAN KODAK CO",
+    "GoPro, Inc."
+   ]
+  },
+  "3873": {
+   "filers": 2,
+   "examples": [
+    "MOVADO GROUP INC",
+    "Fossil Group, Inc."
+   ]
+  },
+  "3910": {
+   "filers": 2,
+   "examples": [
+    "Brilliant Earth Group, Inc."
+   ]
+  },
+  "3942": {
+   "filers": 1,
+   "examples": [
+    "MATTEL INC /DE/"
+   ]
+  },
+  "3944": {
+   "filers": 4,
+   "examples": [
+    "HASBRO, INC.",
+    "JAKKS PACIFIC INC",
+    "K-TECH SOLUTIONS CO LTD"
+   ]
+  },
+  "3949": {
+   "filers": 14,
+   "examples": [
+    "Acushnet Holdings Corp.",
+    "PELOTON INTERACTIVE, INC.",
+    "JOHNSON OUTDOORS INC"
+   ]
+  },
+  "3990": {
+   "filers": 13,
+   "examples": [
+    "Amcor plc",
+    "Oil-Dri Corp of America",
+    "DAKTRONICS INC /SD/"
+   ]
+  },
+  "4011": {
+   "filers": 8,
+   "examples": [
+    "UNION PACIFIC CORP",
+    "CSX CORP",
+    "CANADIAN PACIFIC KANSAS CITY LTD/CN"
+   ]
+  },
+  "4210": {
+   "filers": 8,
+   "examples": [
+    "UNITED PARCEL SERVICE INC",
+    "ZTO Express (Cayman) Inc.",
+    "TFI International Inc."
+   ]
+  },
+  "4213": {
+   "filers": 12,
+   "examples": [
+    "OLD DOMINION FREIGHT LINE, INC.",
+    "HUNT J B TRANSPORT SERVICES INC",
+    "SAIA INC"
+   ]
+  },
+  "4220": {
+   "filers": 1,
+   "examples": [
+    "Armlogi Holding Corp."
+   ]
+  },
+  "4400": {
+   "filers": 24,
+   "examples": [
+    "Viking Holdings Ltd",
+    "Carnival Corp Ltd.",
+    "KIRBY CORP"
+   ]
+  },
+  "4412": {
+   "filers": 45,
+   "examples": [
+    "Frontline plc",
+    "CMB.TECH NV",
+    "Scorpio Tankers Inc."
+   ]
+  },
+  "4512": {
+   "filers": 19,
+   "examples": [
+    "DELTA AIR LINES, INC.",
+    "United Airlines Holdings, Inc.",
+    "RYANAIR HOLDINGS PLC"
+   ]
+  },
+  "4513": {
+   "filers": 2,
+   "examples": [
+    "FEDEX CORP",
+    "AIR T INC"
+   ]
+  },
+  "4522": {
+   "filers": 7,
+   "examples": [
+    "Bristow Group Inc.",
+    "Wheels Up Experience Inc.",
+    "SURF AIR MOBILITY INC."
+   ]
+  },
+  "4581": {
+   "filers": 5,
+   "examples": [
+    "Pacific Airport Group",
+    "Central North Airport Group",
+    "CORPORACION AMERICA AIRPORTS S.A."
+   ]
+  },
+  "4610": {
+   "filers": 8,
+   "examples": [
+    "ENBRIDGE INC",
+    "MPLX LP",
+    "HF Sinclair Corp"
+   ]
+  },
+  "4700": {
+   "filers": 21,
+   "examples": [
+    "Expedia Group, Inc.",
+    "XPO, Inc.",
+    "GATX CORP"
+   ]
+  },
+  "4731": {
+   "filers": 14,
+   "examples": [
+    "EXPEDITORS INTERNATIONAL OF WASHINGTON INC",
+    "BRINKS CO",
+    "Hub Group, Inc."
+   ]
+  },
+  "4812": {
+   "filers": 12,
+   "examples": [
+    "CHUNGHWA TELECOM CO LTD",
+    "VODAFONE GROUP PUBLIC LTD CO",
+    "MILLICOM INTERNATIONAL CELLULAR SA"
+   ]
+  },
+  "4813": {
+   "filers": 29,
+   "examples": [
+    "VERIZON COMMUNICATIONS INC",
+    "AT&T INC.",
+    "AMERICA MOVIL SAB DE CV/"
+   ]
+  },
+  "4822": {
+   "filers": 4,
+   "examples": [
+    "ZIFF DAVIS, INC.",
+    "TechTarget, Inc.",
+    "Myseum.AI, Inc."
+   ]
+  },
+  "4832": {
+   "filers": 10,
+   "examples": [
+    "Spotify Technology S.A.",
+    "Tencent Music Entertainment Group",
+    "iHeartMedia, Inc."
+   ]
+  },
+  "4833": {
+   "filers": 14,
+   "examples": [
+    "Skydance Corp",
+    "Fox Corp",
+    "Liberty Media Corp"
+   ]
+  },
+  "4841": {
+   "filers": 17,
+   "examples": [
+    "COMCAST CORP",
+    "ROKU, INC",
+    "CHARTER COMMUNICATIONS, INC. /MO/"
+   ]
+  },
+  "4899": {
+   "filers": 31,
+   "examples": [
+    "EchoStar CORP",
+    "AST SpaceMobile, Inc.",
+    "Globalstar, Inc."
+   ]
+  },
+  "4900": {
+   "filers": 3,
+   "examples": [
+    "MGE ENERGY INC"
+   ]
+  },
+  "4911": {
+   "filers": 75,
+   "examples": [
+    "NEXTERA ENERGY INC",
+    "SOUTHERN CO",
+    "Constellation Energy Corp"
+   ]
+  },
+  "4922": {
+   "filers": 18,
+   "examples": [
+    "WILLIAMS COMPANIES, INC.",
+    "NATIONAL GRID PLC",
+    "ENTERPRISE PRODUCTS PARTNERS L.P."
+   ]
+  },
+  "4923": {
+   "filers": 7,
+   "examples": [
+    "ONEOK INC /NEW/",
+    "Southwest Gas Holdings, Inc.",
+    "Brookfield Infrastructure Corp"
+   ]
+  },
+  "4924": {
+   "filers": 15,
+   "examples": [
+    "Cheniere Energy, Inc.",
+    "Venture Global, Inc.",
+    "Cheniere Energy Partners, L.P."
+   ]
+  },
+  "4931": {
+   "filers": 29,
+   "examples": [
+    "XCEL ENERGY INC",
+    "EXELON CORP",
+    "CONSOLIDATED EDISON INC"
+   ]
+  },
+  "4932": {
+   "filers": 5,
+   "examples": [
+    "SEMPRA",
+    "UGI CORP /PA/",
+    "Clean Energy Fuels Corp."
+   ]
+  },
+  "4941": {
+   "filers": 12,
+   "examples": [
+    "American Water Works Company, Inc.",
+    "COMPANHIA DE SANEAMENTO BASICO DO ESTADO DE SAO PAULO-SABESP",
+    "Essential Utilities, Inc."
+   ]
+  },
+  "4950": {
+   "filers": 1,
+   "examples": [
+    "CDT Environmental Technology Investment Holdings Ltd"
+   ]
+  },
+  "4953": {
+   "filers": 14,
+   "examples": [
+    "WASTE MANAGEMENT INC",
+    "REPUBLIC SERVICES, INC.",
+    "Waste Connections, Inc."
+   ]
+  },
+  "4955": {
+   "filers": 8,
+   "examples": [
+    "CLEAN HARBORS INC",
+    "PERMA FIX ENVIRONMENTAL SERVICES INC",
+    "Sky Quarry Inc."
+   ]
+  },
+  "5000": {
+   "filers": 3,
+   "examples": [
+    "W.W. GRAINGER, INC.",
+    "JX Luxventure Group Inc.",
+    "TAP REAL ESTATE TECHNOLOGIES, INC."
+   ]
+  },
+  "5010": {
+   "filers": 4,
+   "examples": [
+    "LKQ CORP",
+    "INNEOVA Holdings Ltd",
+    "CHEETAH NET SUPPLY CHAIN SERVICE INC."
+   ]
+  },
+  "5013": {
+   "filers": 2,
+   "examples": [
+    "GENUINE PARTS CO",
+    "Charging Robotics Inc."
+   ]
+  },
+  "5030": {
+   "filers": 6,
+   "examples": [
+    "QXO, Inc.",
+    "BOISE CASCADE Co",
+    "ASPEN AEROGELS INC"
+   ]
+  },
+  "5031": {
+   "filers": 1,
+   "examples": [
+    "BlueLinx Holdings Inc."
+   ]
+  },
+  "5040": {
+   "filers": 2,
+   "examples": [
+    "SiteOne Landscape Supply, Inc.",
+    "EURO TECH HOLDINGS CO LTD"
+   ]
+  },
+  "5045": {
+   "filers": 8,
+   "examples": [
+    "TD SYNNEX CORP",
+    "Ingram Micro Holding Corp",
+    "PC CONNECTION INC"
+   ]
+  },
+  "5047": {
+   "filers": 2,
+   "examples": [
+    "HENRY SCHEIN INC",
+    "ACCENDRA HEALTH INC/VA/"
+   ]
+  },
+  "5050": {
+   "filers": 2,
+   "examples": [
+    "M2i Global, Inc.",
+    "GD Culture Group Ltd"
+   ]
+  },
+  "5051": {
+   "filers": 5,
+   "examples": [
+    "RELIANCE, INC.",
+    "Ryerson Holding Corp",
+    "FOSTER L B CO"
+   ]
+  },
+  "5064": {
+   "filers": 1,
+   "examples": [
+    "Polibeli Group Ltd"
+   ]
+  },
+  "5065": {
+   "filers": 10,
+   "examples": [
+    "TE Connectivity plc",
+    "ARROW ELECTRONICS, INC.",
+    "AVNET INC"
+   ]
+  },
+  "5072": {
+   "filers": 3,
+   "examples": [
+    "RESIDEO TECHNOLOGIES, INC.",
+    "Latch, Inc.",
+    "Crown PropTech Acquisitions"
+   ]
+  },
+  "5080": {
+   "filers": 7,
+   "examples": [
+    "APPLIED INDUSTRIAL TECHNOLOGIES INC",
+    "Distribution Solutions Group, Inc.",
+    "WILLIS LEASE FINANCE CORP"
+   ]
+  },
+  "5084": {
+   "filers": 5,
+   "examples": [
+    "DXP ENTERPRISES INC",
+    "GLOBAL INDUSTRIAL Co",
+    "ALTA EQUIPMENT GROUP INC."
+   ]
+  },
+  "5090": {
+   "filers": 6,
+   "examples": [
+    "POOL CORP",
+    "Sino Green Land Corp.",
+    "One & one Green Technologies. INC"
+   ]
+  },
+  "5094": {
+   "filers": 2,
+   "examples": [
+    "Gold.com, Inc.",
+    "AsiaStrategy"
+   ]
+  },
+  "5099": {
+   "filers": 5,
+   "examples": [
+    "Core & Main, Inc.",
+    "ALLIANCE ENTERTAINMENT HOLDING CORP",
+    "Greenlane Holdings, Inc."
+   ]
+  },
+  "5110": {
+   "filers": 1,
+   "examples": []
+  },
+  "5122": {
+   "filers": 11,
+   "examples": [
+    "Cencora, Inc.",
+    "CARDINAL HEALTH INC",
+    "HERBALIFE LTD."
+   ]
+  },
+  "5130": {
+   "filers": 5,
+   "examples": [
+    "WEYCO GROUP INC",
+    "VitaNova Life Sciences Corp",
+    "Stark Focus Group, Inc."
+   ]
+  },
+  "5140": {
+   "filers": 6,
+   "examples": [
+    "SYSCO CORP",
+    "US Foods Holding Corp.",
+    "DOMINOS PIZZA INC"
+   ]
+  },
+  "5141": {
+   "filers": 8,
+   "examples": [
+    "Performance Food Group Co",
+    "Chefs' Warehouse, Inc.",
+    "Marwynn Holdings, Inc."
+   ]
+  },
+  "5150": {
+   "filers": 6,
+   "examples": [
+    "SEABOARD CORP /DE/",
+    "Andersons, Inc.",
+    "UNIVERSAL CORP /VA/"
+   ]
+  },
+  "5160": {
+   "filers": 3,
+   "examples": [
+    "ASHLAND INC.",
+    "HAWKINS INC",
+    "Texxon Holding Ltd"
+   ]
+  },
+  "5171": {
+   "filers": 2,
+   "examples": [
+    "GLOBAL PARTNERS LP",
+    "MARTIN MIDSTREAM PARTNERS L.P."
+   ]
+  },
+  "5180": {
+   "filers": 3,
+   "examples": [
+    "Agencia Comercial Spirits Ltd.",
+    "MGP INGREDIENTS INC",
+    "Epsium Enterprise Ltd"
+   ]
+  },
+  "5190": {
+   "filers": 7,
+   "examples": [
+    "CENTRAL GARDEN & PET CO",
+    "Vestis Corp",
+    "EDUCATIONAL DEVELOPMENT CORP"
+   ]
+  },
+  "5200": {
+   "filers": 7,
+   "examples": [
+    "SHERWIN WILLIAMS CO",
+    "FASTENAL CO",
+    "TRACTOR SUPPLY CO /DE/"
+   ]
+  },
+  "5211": {
+   "filers": 4,
+   "examples": [
+    "LOWES COMPANIES INC",
+    "Builders FirstSource, Inc.",
+    "Floor & Decor Holdings, Inc."
+   ]
+  },
+  "5311": {
+   "filers": 4,
+   "examples": [
+    "Burlington Stores, Inc.",
+    "DILLARD'S, INC.",
+    "Macy's, Inc."
+   ]
+  },
+  "5331": {
+   "filers": 8,
+   "examples": [
+    "Walmart Inc.",
+    "COSTCO WHOLESALE CORP /NEW",
+    "TARGET CORP"
+   ]
+  },
+  "5400": {
+   "filers": 2,
+   "examples": [
+    "Krispy Kreme, Inc.",
+    "ANVI GLOBAL HOLDINGS, INC."
+   ]
+  },
+  "5411": {
+   "filers": 11,
+   "examples": [
+    "KROGER CO",
+    "BBB FOODS INC",
+    "Albertsons Companies, Inc."
+   ]
+  },
+  "5412": {
+   "filers": 2,
+   "examples": [
+    "ARKO Corp."
+   ]
+  },
+  "5500": {
+   "filers": 19,
+   "examples": [
+    "CARVANA CO.",
+    "COPART INC",
+    "PENSKE AUTOMOTIVE GROUP, INC."
+   ]
+  },
+  "5531": {
+   "filers": 8,
+   "examples": [
+    "O REILLY AUTOMOTIVE INC",
+    "AUTOZONE INC",
+    "ADVANCE AUTO PARTS INC"
+   ]
+  },
+  "5600": {
+   "filers": 10,
+   "examples": [
+    "Citi Trends Inc",
+    "Torrid Holdings Inc.",
+    "Zumiez Inc"
+   ]
+  },
+  "5621": {
+   "filers": 1,
+   "examples": [
+    "Victoria's Secret & Co."
+   ]
+  },
+  "5651": {
+   "filers": 8,
+   "examples": [
+    "GAP INC",
+    "URBAN OUTFITTERS INC",
+    "ABERCROMBIE & FITCH CO /DE/"
+   ]
+  },
+  "5661": {
+   "filers": 3,
+   "examples": [
+    "Boot Barn Holdings, Inc.",
+    "Designer Brands Inc."
+   ]
+  },
+  "5700": {
+   "filers": 4,
+   "examples": [
+    "WILLIAMS SONOMA INC",
+    "AMC Robotics Corp",
+    "TILE SHOP HOLDINGS, INC."
+   ]
+  },
+  "5712": {
+   "filers": 6,
+   "examples": [
+    "RH",
+    "Bob's Discount Furniture, Inc.",
+    "Arhaus, Inc."
+   ]
+  },
+  "5731": {
+   "filers": 2,
+   "examples": [
+    "BEST BUY CO INC",
+    "ICZOOM Group Inc."
+   ]
+  },
+  "5734": {
+   "filers": 3,
+   "examples": [
+    "GameStop Corp.",
+    "Crown Equity Holdings, Inc.",
+    "SENTIENT BRANDS HOLDINGS INC."
+   ]
+  },
+  "5810": {
+   "filers": 8,
+   "examples": [
+    "Luckin Coffee Inc.",
+    "Shake Shack Inc.",
+    "Chagee Holdings Ltd."
+   ]
+  },
+  "5812": {
+   "filers": 49,
+   "examples": [
+    "YUM BRANDS INC",
+    "CHIPOTLE MEXICAN GRILL INC",
+    "Restaurant Brands International Inc."
+   ]
+  },
+  "5900": {
+   "filers": 21,
+   "examples": [
+    "FirstCash Holdings, Inc.",
+    "EZCORP INC",
+    "Savers Value Village, Inc."
+   ]
+  },
+  "5912": {
+   "filers": 6,
+   "examples": [
+    "CVS HEALTH Corp",
+    "Guardian Pharmacy Services, Inc.",
+    "111, Inc."
+   ]
+  },
+  "5940": {
+   "filers": 9,
+   "examples": [
+    "DICK'S SPORTING GOODS, INC.",
+    "Academy Sports & Outdoors, Inc.",
+    "Barnes & Noble Education, Inc."
+   ]
+  },
+  "5944": {
+   "filers": 3,
+   "examples": [
+    "SIGNET JEWELERS LTD",
+    "Envela Corp",
+    "BIRKS GROUP INC."
+   ]
+  },
+  "5945": {
+   "filers": 1,
+   "examples": [
+    "BUILD-A-BEAR WORKSHOP INC"
+   ]
+  },
+  "5960": {
+   "filers": 11,
+   "examples": [
+    "BILI Social International, Inc.",
+    "Global AI, Inc.",
+    "Able View Global Inc."
+   ]
+  },
+  "5961": {
+   "filers": 29,
+   "examples": [
+    "Coupang, Inc.",
+    "Chewy, Inc.",
+    "Vipshop Holdings Ltd"
+   ]
+  },
+  "5990": {
+   "filers": 19,
+   "examples": [
+    "JD.com, Inc.",
+    "Bath & Body Works, Inc.",
+    "ATRenew Inc."
+   ]
+  },
+  "6021": {
+   "filers": 93,
+   "examples": [
+    "CITIGROUP INC",
+    "UBS Group AG",
+    "MIZUHO FINANCIAL GROUP INC"
+   ]
+  },
+  "6022": {
+   "filers": 188,
+   "examples": [
+    "BANK OF NOVA SCOTIA",
+    "Itau Unibanco Holding S.A.",
+    "Bank of New York Mellon Corp"
+   ]
+  },
+  "6029": {
+   "filers": 38,
+   "examples": [
+    "ROYAL BANK OF CANADA",
+    "MITSUBISHI UFJ FINANCIAL GROUP INC",
+    "TORONTO DOMINION BANK"
+   ]
+  },
+  "6035": {
+   "filers": 45,
+   "examples": [
+    "HSBC HOLDINGS PLC",
+    "Axos Financial, Inc.",
+    "Eastern Bankshares, Inc."
+   ]
+  },
+  "6036": {
+   "filers": 37,
+   "examples": [
+    "FLAGSTAR BANK, NATIONAL ASSOCIATION",
+    "Beacon Financial Corp",
+    "HERITAGE FINANCIAL CORP /WA/"
+   ]
+  },
+  "6099": {
+   "filers": 2,
+   "examples": [
+    "LESAKA TECHNOLOGIES INC",
+    "Usio, Inc."
+   ]
+  },
+  "6111": {
+   "filers": 14,
+   "examples": [
+    "FEDERAL NATIONAL MORTGAGE ASSOCIATION FANNIE MAE",
+    "FEDERAL AGRICULTURAL MORTGAGE CORP",
+    "FEDERAL HOME LOAN MORTGAGE CORP"
+   ]
+  },
+  "6141": {
+   "filers": 16,
+   "examples": [
+    "Affirm Holdings, Inc.",
+    "OneMain Holdings, Inc.",
+    "CREDIT ACCEPTANCE CORP"
+   ]
+  },
+  "6153": {
+   "filers": 11,
+   "examples": [
+    "ENCORE CAPITAL GROUP INC",
+    "Jefferson Capital, Inc. / DE",
+    "PRA GROUP INC"
+   ]
+  },
+  "6159": {
+   "filers": 9,
+   "examples": [
+    "ORIX CORP",
+    "Troops, Inc. /Cayman Islands/",
+    "STANDARD PREMIUM FINANCE HOLDINGS, INC."
+   ]
+  },
+  "6162": {
+   "filers": 9,
+   "examples": [
+    "Rocket Companies, Inc.",
+    "PennyMac Financial Services, Inc.",
+    "UWM Holdings Corp"
+   ]
+  },
+  "6163": {
+   "filers": 4,
+   "examples": [
+    "Figure Technology Solutions, Inc.",
+    "FinVolution Group",
+    "LendingTree, Inc."
+   ]
+  },
+  "6199": {
+   "filers": 149,
+   "examples": [
+    "Nu Holdings Ltd.",
+    "Coinbase Global, Inc.",
+    "Synchrony Financial"
+   ]
+  },
+  "6211": {
+   "filers": 33,
+   "examples": [
+    "MORGAN STANLEY",
+    "GOLDMAN SACHS GROUP INC",
+    "BlackRock, Inc."
+   ]
+  },
+  "6221": {
+   "filers": 125,
+   "examples": [
+    "Sprott Physical Gold Trust",
+    "Sprott Physical Silver Trust",
+    "Sprott Physical Gold & Silver Trust"
+   ]
+  },
+  "6282": {
+   "filers": 63,
+   "examples": [
+    "Blackstone Inc.",
+    "KKR & Co. Inc.",
+    "Brookfield Asset Management Ltd."
+   ]
+  },
+  "6311": {
+   "filers": 31,
+   "examples": [
+    "MANULIFE FINANCIAL CORP",
+    "METLIFE INC",
+    "SUN LIFE FINANCIAL INC"
+   ]
+  },
+  "6321": {
+   "filers": 3,
+   "examples": [
+    "AFLAC INC",
+    "Unum Group",
+    "CNO Financial Group, Inc."
+   ]
+  },
+  "6324": {
+   "filers": 11,
+   "examples": [
+    "UNITEDHEALTH GROUP INC",
+    "Elevance Health, Inc.",
+    "Cigna Group"
+   ]
+  },
+  "6331": {
+   "filers": 57,
+   "examples": [
+    "BERKSHIRE HATHAWAY INC",
+    "Chubb Ltd",
+    "PROGRESSIVE CORP/OH/"
+   ]
+  },
+  "6351": {
+   "filers": 7,
+   "examples": [
+    "Essent Group Ltd.",
+    "MGIC INVESTMENT CORP",
+    "RADIAN GROUP INC"
+   ]
+  },
+  "6361": {
+   "filers": 5,
+   "examples": [
+    "Fidelity National Financial, Inc.",
+    "First American Financial Corp",
+    "STEWART INFORMATION SERVICES CORP"
+   ]
+  },
+  "6399": {
+   "filers": 3,
+   "examples": [
+    "ASSURANT, INC.",
+    "International General Insurance Holdings Ltd."
+   ]
+  },
+  "6411": {
+   "filers": 36,
+   "examples": [
+    "MARSH & MCLENNAN COMPANIES, INC.",
+    "Arthur J. Gallagher & Co.",
+    "Aon plc"
+   ]
+  },
+  "6500": {
+   "filers": 56,
+   "examples": [
+    "CBRE GROUP, INC.",
+    "Terreno Realty Corp",
+    "Millrose Properties, Inc."
+   ]
+  },
+  "6510": {
+   "filers": 6,
+   "examples": [
+    "Invitation Homes Inc.",
+    "BOSTON OMAHA Corp",
+    "Reitar Logtech Holdings Ltd"
+   ]
+  },
+  "6512": {
+   "filers": 7,
+   "examples": [
+    "BROOKFIELD Corp /ON/",
+    "Piedmont Realty Trust, Inc.",
+    "MAYS J W INC"
+   ]
+  },
+  "6513": {
+   "filers": 4,
+   "examples": [
+    "NEW ENGLAND REALTY ASSOCIATES LIMITED PARTNERSHIP",
+    "INTERGROUP CORP",
+    "SUNRISE REAL ESTATE GROUP INC"
+   ]
+  },
+  "6519": {
+   "filers": 3,
+   "examples": [
+    "GLADSTONE COMMERCIAL CORP",
+    "Star Holdings",
+    "REGIONAL HEALTH PROPERTIES, INC"
+   ]
+  },
+  "6531": {
+   "filers": 19,
+   "examples": [
+    "KE Holdings Inc.",
+    "JONES LANG LASALLE INC",
+    "Compass, Inc."
+   ]
+  },
+  "6552": {
+   "filers": 9,
+   "examples": [
+    "ST JOE Co",
+    "IRSA INVESTMENTS & REPRESENTATIONS INC",
+    "AMREP CORP."
+   ]
+  },
+  "6770": {
+   "filers": 351,
+   "examples": [
+    "BOXABL Inc.",
+    "Drugs Made In America Acquisition II Corp.",
+    "Churchill Capital Corp XI"
+   ]
+  },
+  "6792": {
+   "filers": 4,
+   "examples": [
+    "Texas Pacific Land Corp",
+    "LandBridge Corp",
+    "EagleRock Land, LLC"
+   ]
+  },
+  "6794": {
+   "filers": 12,
+   "examples": [
+    "Dolby Laboratories, Inc.",
+    "Digital Turbine, Inc.",
+    "ACACIA RESEARCH CORP"
+   ]
+  },
+  "6795": {
+   "filers": 5,
+   "examples": [
+    "ROYAL GOLD INC",
+    "SSR MINING INC.",
+    "Triple Flag Precious Metals Corp."
+   ]
+  },
+  "6798": {
+   "filers": 261,
+   "examples": [
+    "WELLTOWER INC.",
+    "Prologis, Inc.",
+    "EQUINIX INC"
+   ]
+  },
+  "6799": {
+   "filers": 8,
+   "examples": [
+    "HA Sustainable Infrastructure Capital, Inc.",
+    "Metalpha Technology Holding Ltd",
+    "DevvStream Corp."
+   ]
+  },
+  "7000": {
+   "filers": 5,
+   "examples": [
+    "Hilton Grand Vacations Inc.",
+    "Target Hospitality Corp.",
+    "ModuLink Inc."
+   ]
+  },
+  "7011": {
+   "filers": 27,
+   "examples": [
+    "Hilton Worldwide Holdings Inc.",
+    "LAS VEGAS SANDS CORP",
+    "INTERCONTINENTAL HOTELS GROUP PLC /NEW/"
+   ]
+  },
+  "7200": {
+   "filers": 21,
+   "examples": [
+    "SERVICE CORP INTERNATIONAL",
+    "H&R BLOCK INC",
+    "UNIFIRST CORP"
+   ]
+  },
+  "7310": {
+   "filers": 23,
+   "examples": [
+    "Ibotta, Inc.",
+    "MNTN, Inc.",
+    "Angi Inc."
+   ]
+  },
+  "7311": {
+   "filers": 15,
+   "examples": [
+    "OMNICOM GROUP INC.",
+    "WPP plc",
+    "Stagwell Inc"
+   ]
+  },
+  "7320": {
+   "filers": 7,
+   "examples": [
+    "S&P Global Inc.",
+    "MOODYS CORP /DE/",
+    "EQUIFAX INC"
+   ]
+  },
+  "7331": {
+   "filers": 2,
+   "examples": [
+    "HARTE HANKS INC",
+    "Antiaging Quantum Living Inc."
+   ]
+  },
+  "7340": {
+   "filers": 7,
+   "examples": [
+    "Airbnb, Inc.",
+    "APi Group Corp",
+    "ROLLINS INC"
+   ]
+  },
+  "7350": {
+   "filers": 4,
+   "examples": [
+    "FTAI Aviation Ltd.",
+    "HERC HOLDINGS INC",
+    "WillScot Holdings Corp"
+   ]
+  },
+  "7359": {
+   "filers": 16,
+   "examples": [
+    "UNITED RENTALS, INC.",
+    "Sunbelt Rentals Holdings, Inc.",
+    "AerCap Holdings N.V."
+   ]
+  },
+  "7361": {
+   "filers": 6,
+   "examples": [
+    "KORN FERRY",
+    "GEE Group Inc.",
+    "Syra Health Corp"
+   ]
+  },
+  "7363": {
+   "filers": 21,
+   "examples": [
+    "ROBERT HALF INC.",
+    "ManpowerGroup Inc.",
+    "Everforth Inc"
+   ]
+  },
+  "7370": {
+   "filers": 95,
+   "examples": [
+    "Alphabet Inc.",
+    "AppLovin Corp",
+    "Nebius Group N.V."
+   ]
+  },
+  "7371": {
+   "filers": 62,
+   "examples": [
+    "Infosys Ltd",
+    "Zscaler, Inc.",
+    "COGNIZANT TECHNOLOGY SOLUTIONS CORP"
+   ]
+  },
+  "7372": {
+   "filers": 288,
+   "examples": [
+    "Palantir Technologies Inc.",
+    "ORACLE CORP",
+    "SAP SE"
+   ]
+  },
+  "7373": {
+   "filers": 52,
+   "examples": [
+    "Samsara Inc.",
+    "Leidos Holdings, Inc.",
+    "GoDaddy Inc."
+   ]
+  },
+  "7374": {
+   "filers": 110,
+   "examples": [
+    "Workday, Inc.",
+    "Reddit, Inc.",
+    "Verisk Analytics, Inc."
+   ]
+  },
+  "7377": {
+   "filers": 1,
+   "examples": [
+    "Bragg Gaming Group Inc."
+   ]
+  },
+  "7380": {
+   "filers": 16,
+   "examples": [
+    "Sea Ltd",
+    "Donnelley Financial Solutions, Inc.",
+    "JOCOM HOLDINGS CORP."
+   ]
+  },
+  "7381": {
+   "filers": 7,
+   "examples": [
+    "Allegion plc",
+    "ADT Inc.",
+    "Arlo Technologies, Inc."
+   ]
+  },
+  "7389": {
+   "filers": 134,
+   "examples": [
+    "VISA INC.",
+    "Mastercard Inc",
+    "Alibaba Group Holding Ltd"
+   ]
+  },
+  "7500": {
+   "filers": 9,
+   "examples": [
+    "Boyd Group Services Inc.",
+    "Driven Brands Holdings Inc.",
+    "EVgo Inc."
+   ]
+  },
+  "7510": {
+   "filers": 7,
+   "examples": [
+    "U-Haul Holding Co /NV/",
+    "RYDER SYSTEM INC",
+    "AVIS BUDGET GROUP, INC."
+   ]
+  },
+  "7600": {
+   "filers": 2,
+   "examples": [
+    "TEAM INC",
+    "E-Home Household Service Holdings Ltd"
+   ]
+  },
+  "7812": {
+   "filers": 14,
+   "examples": [
+    "Lionsgate Studios Corp.",
+    "Angel Studios, Inc.",
+    "STARZ ENTERTAINMENT CORP /CN/"
+   ]
+  },
+  "7819": {
+   "filers": 3,
+   "examples": [
+    "MMEX Resources Corp",
+    "Nexus Advanced Technologies Inc."
+   ]
+  },
+  "7822": {
+   "filers": 1,
+   "examples": [
+    "Goliath Film & Media Holdings"
+   ]
+  },
+  "7830": {
+   "filers": 4,
+   "examples": [
+    "Cinemark Holdings, Inc.",
+    "AMC ENTERTAINMENT HOLDINGS, INC.",
+    "MARCUS CORP"
+   ]
+  },
+  "7841": {
+   "filers": 3,
+   "examples": [
+    "NETFLIX INC",
+    "iQIYI, Inc.",
+    "Cineverse Corp."
+   ]
+  },
+  "7900": {
+   "filers": 32,
+   "examples": [
+    "Live Nation Entertainment, Inc.",
+    "Warner Music Group Corp.",
+    "Liberty Live Holdings, Inc."
+   ]
+  },
+  "7948": {
+   "filers": 2,
+   "examples": [
+    "Churchill Downs Inc",
+    "Canterbury Park Holding Corp"
+   ]
+  },
+  "7990": {
+   "filers": 33,
+   "examples": [
+    "Walt Disney Co",
+    "Madison Square Garden Sports Corp.",
+    "DraftKings Inc."
+   ]
+  },
+  "7997": {
+   "filers": 4,
+   "examples": [
+    "Life Time Group Holdings, Inc.",
+    "Planet Fitness, Inc.",
+    "ONESPAWORLD HOLDINGS Ltd"
+   ]
+  },
+  "8000": {
+   "filers": 20,
+   "examples": [
+    "LifeStance Health Group, Inc.",
+    "Privia Health Group, Inc.",
+    "GeneDx Holdings Corp."
+   ]
+  },
+  "8011": {
+   "filers": 11,
+   "examples": [
+    "Hims & Hers Health, Inc.",
+    "Teladoc Health, Inc.",
+    "Starling Oncology, Inc."
+   ]
+  },
+  "8050": {
+   "filers": 3,
+   "examples": [
+    "Brookdale Senior Living Inc.",
+    "SONIDA SENIOR LIVING, INC.",
+    "HEALTHCARE SERVICES GROUP INC"
+   ]
+  },
+  "8051": {
+   "filers": 3,
+   "examples": [
+    "ENSIGN GROUP, INC",
+    "PACS Group, Inc.",
+    "NATIONAL HEALTHCARE CORP"
+   ]
+  },
+  "8060": {
+   "filers": 3,
+   "examples": [
+    "Encompass Health Corp",
+    "Pediatrix Medical Group, Inc."
+   ]
+  },
+  "8062": {
+   "filers": 7,
+   "examples": [
+    "HCA Healthcare, Inc.",
+    "TENET HEALTHCARE CORP",
+    "UNIVERSAL HEALTH SERVICES INC"
+   ]
+  },
+  "8071": {
+   "filers": 29,
+   "examples": [
+    "Natera, Inc.",
+    "QUEST DIAGNOSTICS INC",
+    "Guardant Health, Inc."
+   ]
+  },
+  "8082": {
+   "filers": 9,
+   "examples": [
+    "BrightSpring Health Services, Inc.",
+    "CHEMED CORP",
+    "Option Care Health, Inc."
+   ]
+  },
+  "8090": {
+   "filers": 14,
+   "examples": [
+    "Sotera Health Co",
+    "Progyny, Inc.",
+    "agilon health, inc."
+   ]
+  },
+  "8093": {
+   "filers": 6,
+   "examples": [
+    "Concentra Group Holdings Parent, Inc.",
+    "Acadia Healthcare Company, Inc.",
+    "Elite Health Systems Inc."
+   ]
+  },
+  "8111": {
+   "filers": 1,
+   "examples": [
+    "CRA INTERNATIONAL, INC."
+   ]
+  },
+  "8200": {
+   "filers": 53,
+   "examples": [
+    "New Oriental Education & Technology Group Inc.",
+    "TAL Education Group",
+    "LAUREATE EDUCATION, INC."
+   ]
+  },
+  "8351": {
+   "filers": 2,
+   "examples": [
+    "BRIGHT HORIZONS FAMILY SOLUTIONS INC.",
+    "KinderCare Learning Companies, Inc."
+   ]
+  },
+  "8700": {
+   "filers": 4,
+   "examples": [
+    "PAYCHEX INC",
+    "FORRESTER RESEARCH, INC.",
+    "Galaxy Payroll Group Ltd"
+   ]
+  },
+  "8711": {
+   "filers": 7,
+   "examples": [
+    "TETRA TECH INC",
+    "STANTEC INC",
+    "AECOM"
+   ]
+  },
+  "8731": {
+   "filers": 13,
+   "examples": [
+    "INCYTE CORP",
+    "Medpace Holdings, Inc.",
+    "ICON PLC"
+   ]
+  },
+  "8734": {
+   "filers": 4,
+   "examples": [
+    "UL Solutions Inc.",
+    "NEOGENOMICS INC",
+    "20/20 Biolabs, Inc."
+   ]
+  },
+  "8741": {
+   "filers": 9,
+   "examples": [
+    "RENTOKIL INITIAL PLC /FI",
+    "Evolent Health, Inc.",
+    "Bryn Inc."
+   ]
+  },
+  "8742": {
+   "filers": 61,
+   "examples": [
+    "CGI INC",
+    "Booz Allen Hamilton Holding Corp",
+    "Genpact LTD"
+   ]
+  },
+  "8744": {
+   "filers": 3,
+   "examples": [
+    "V2X, Inc.",
+    "SIMPPLE LTD.",
+    "VCI Global Ltd"
+   ]
+  },
+  "8900": {
+   "filers": 2,
+   "examples": [
+    "GPO Plus, Inc."
+   ]
+  },
+  "0100": {
+   "filers": 24,
+   "examples": [
+    "Corteva, Inc.",
+    "Adecoagro S.A.",
+    "DEL MONTE CORP"
+   ]
+  },
+  "0200": {
+   "filers": 5,
+   "examples": [
+    "CAL-MAINE FOODS INC",
+    "NOCERA, INC.",
+    "Megan Holdings Ltd."
+   ]
+  },
+  "0700": {
+   "filers": 12,
+   "examples": [
+    "Mission Produce, Inc.",
+    "BrightView Holdings, Inc.",
+    "BNB Standard Corp"
+   ]
+  },
+  "0900": {
+   "filers": 2,
+   "examples": [
+    "AQUABOUNTY TECHNOLOGIES INC",
+    "NaturalShrimp Inc"
+   ]
+  }
+ },
+ "groups": {
+  "10": {
+   "examples": [
+    "BHP Group Ltd",
+    "SOUTHERN COPPER CORP/",
+    "RIO TINTO PLC",
+    "NEWMONT Corp /DE/"
+   ]
+  },
+  "12": {
+   "examples": [
+    "WARRIOR MET COAL, INC.",
+    "Core Natural Resources, Inc.",
+    "ALLIANCE RESOURCE PARTNERS LP",
+    "PEABODY ENERGY CORP"
+   ]
+  },
+  "13": {
+   "examples": [
+    "Shell plc",
+    "PETROBRAS - PETROLEO BRASILEIRO SA",
+    "CANADIAN NATURAL RESOURCES Ltd",
+    "ENI SPA"
+   ]
+  },
+  "14": {
+   "examples": [
+    "MARTIN MARIETTA MATERIALS INC",
+    "TECK RESOURCES LTD",
+    "CHEMICAL & MINING CO OF CHILE INC",
+    "HECLA MINING CO/DE/"
+   ]
+  },
+  "15": {
+   "examples": [
+    "HORTON D R INC /DE/",
+    "PULTEGROUP INC/MI/",
+    "LENNAR CORP /NEW/",
+    "NVR INC"
+   ]
+  },
+  "16": {
+   "examples": [
+    "Ferrovial N.V.",
+    "JACOBS SOLUTIONS INC.",
+    "MASTEC INC",
+    "STERLING INFRASTRUCTURE, INC."
+   ]
+  },
+  "17": {
+   "examples": [
+    "QUANTA SERVICES, INC.",
+    "COMFORT SYSTEMS USA INC",
+    "EMCOR Group, Inc.",
+    "Legence Corp."
+   ]
+  },
+  "20": {
+   "examples": [
+    "COCA COLA CO",
+    "PEPSICO INC",
+    "Monster Beverage Corp",
+    "Mondelez International, Inc."
+   ]
+  },
+  "21": {
+   "examples": [
+    "Philip Morris International Inc.",
+    "British American Tobacco p.l.c.",
+    "ALTRIA GROUP, INC.",
+    "RLX Technology Inc."
+   ]
+  },
+  "22": {
+   "examples": [
+    "MOHAWK INDUSTRIES INC",
+    "INTERFACE INC",
+    "ALBANY INTERNATIONAL CORP /DE/",
+    "UNIFI INC"
+   ]
+  },
+  "23": {
+   "examples": [
+    "CINTAS CORP",
+    "RALPH LAUREN CORP",
+    "Amer Sports, Inc.",
+    "lululemon athletica inc."
+   ]
+  },
+  "24": {
+   "examples": [
+    "WEST FRASER TIMBER CO., LTD",
+    "LOUISIANA-PACIFIC CORP",
+    "Fortune Brands Innovations, Inc.",
+    "TREX CO INC"
+   ]
+  },
+  "25": {
+   "examples": [
+    "SOMNIGROUP INTERNATIONAL INC.",
+    "MILLERKNOLL, INC.",
+    "MasterBrand, Inc.",
+    "Compass Diversified Holdings"
+   ]
+  },
+  "26": {
+   "examples": [
+    "KIMBERLY CLARK CORP",
+    "Smurfit Westrock plc",
+    "INTERNATIONAL PAPER CO /NEW/",
+    "Avery Dennison Corp"
+   ]
+  },
+  "27": {
+   "examples": [
+    "THOMSON REUTERS CORP /CAN/",
+    "NEWS CORP",
+    "NEW YORK TIMES CO",
+    "McGraw Hill, Inc."
+   ]
+  },
+  "28": {
+   "examples": [
+    "JOHNSON & JOHNSON",
+    "AbbVie Inc.",
+    "PROCTER & GAMBLE Co",
+    "Merck & Co., Inc."
+   ]
+  },
+  "29": {
+   "examples": [
+    "CHEVRON CORP",
+    "Marathon Petroleum Corp",
+    "VALERO ENERGY CORP/TX",
+    "BP PLC"
+   ]
+  },
+  "30": {
+   "examples": [
+    "NIKE, Inc.",
+    "CARLISLE COMPANIES INC",
+    "On Holding AG",
+    "DECKERS OUTDOOR CORP"
+   ]
+  },
+  "31": {
+   "examples": [
+    "TAPESTRY, INC.",
+    "Birkenstock Holding plc",
+    "STEVEN MADDEN, LTD.",
+    "Capri Holdings Ltd"
+   ]
+  },
+  "32": {
+   "examples": [
+    "CRH PUBLIC LTD CO",
+    "Amrize Ltd",
+    "James Hardie Industries plc",
+    "CEMEX SAB DE CV"
+   ]
+  },
+  "33": {
+   "examples": [
+    "CORNING INC /NY",
+    "Howmet Aerospace Inc.",
+    "NUCOR CORP",
+    "STEEL DYNAMICS INC"
+   ]
+  },
+  "34": {
+   "examples": [
+    "Parker-Hannifin Corp",
+    "AXON ENTERPRISE, INC.",
+    "Snap-on Inc",
+    "MASCO CORP /DE/"
+   ]
+  },
+  "35": {
+   "examples": [
+    "Apple Inc.",
+    "ASML HOLDING NV",
+    "LAM RESEARCH CORP",
+    "CATERPILLAR INC"
+   ]
+  },
+  "36": {
+   "examples": [
+    "NVIDIA CORP",
+    "Broadcom Inc.",
+    "MICRON TECHNOLOGY INC",
+    "ADVANCED MICRO DEVICES INC"
+   ]
+  },
+  "37": {
+   "examples": [
+    "Tesla, Inc.",
+    "RTX Corp",
+    "TOYOTA MOTOR CORP/",
+    "LOCKHEED MARTIN CORP"
+   ]
+  },
+  "38": {
+   "examples": [
+    "THERMO FISHER SCIENTIFIC INC.",
+    "INTUITIVE SURGICAL INC",
+    "Medtronic plc",
+    "STRYKER CORP"
+   ]
+  },
+  "39": {
+   "examples": [
+    "Amcor plc",
+    "HASBRO, INC.",
+    "MATTEL INC /DE/",
+    "Acushnet Holdings Corp."
+   ]
+  },
+  "40": {
+   "examples": [
+    "UNION PACIFIC CORP",
+    "CSX CORP",
+    "CANADIAN PACIFIC KANSAS CITY LTD/CN",
+    "CANADIAN NATIONAL RAILWAY CO"
+   ]
+  },
+  "42": {
+   "examples": [
+    "UNITED PARCEL SERVICE INC",
+    "OLD DOMINION FREIGHT LINE, INC.",
+    "HUNT J B TRANSPORT SERVICES INC",
+    "ZTO Express (Cayman) Inc."
+   ]
+  },
+  "44": {
+   "examples": [
+    "Viking Holdings Ltd",
+    "Carnival Corp Ltd.",
+    "Frontline plc",
+    "KIRBY CORP"
+   ]
+  },
+  "45": {
+   "examples": [
+    "FEDEX CORP",
+    "DELTA AIR LINES, INC.",
+    "United Airlines Holdings, Inc.",
+    "RYANAIR HOLDINGS PLC"
+   ]
+  },
+  "46": {
+   "examples": [
+    "ENBRIDGE INC",
+    "MPLX LP",
+    "HF Sinclair Corp",
+    "PLAINS ALL AMERICAN PIPELINE LP"
+   ]
+  },
+  "47": {
+   "examples": [
+    "Expedia Group, Inc.",
+    "EXPEDITORS INTERNATIONAL OF WASHINGTON INC",
+    "XPO, Inc.",
+    "GATX CORP"
+   ]
+  },
+  "48": {
+   "examples": [
+    "VERIZON COMMUNICATIONS INC",
+    "AT&T INC.",
+    "Spotify Technology S.A.",
+    "COMCAST CORP"
+   ]
+  },
+  "49": {
+   "examples": [
+    "NEXTERA ENERGY INC",
+    "SOUTHERN CO",
+    "Constellation Energy Corp",
+    "WASTE MANAGEMENT INC"
+   ]
+  },
+  "50": {
+   "examples": [
+    "W.W. GRAINGER, INC.",
+    "TE Connectivity plc",
+    "RELIANCE, INC.",
+    "TD SYNNEX CORP"
+   ]
+  },
+  "51": {
+   "examples": [
+    "Cencora, Inc.",
+    "CARDINAL HEALTH INC",
+    "SYSCO CORP",
+    "US Foods Holding Corp."
+   ]
+  },
+  "52": {
+   "examples": [
+    "LOWES COMPANIES INC",
+    "SHERWIN WILLIAMS CO",
+    "FASTENAL CO",
+    "TRACTOR SUPPLY CO /DE/"
+   ]
+  },
+  "53": {
+   "examples": [
+    "Walmart Inc.",
+    "COSTCO WHOLESALE CORP /NEW",
+    "TARGET CORP",
+    "Burlington Stores, Inc."
+   ]
+  },
+  "54": {
+   "examples": [
+    "KROGER CO",
+    "BBB FOODS INC",
+    "Albertsons Companies, Inc.",
+    "Sprouts Farmers Market, Inc."
+   ]
+  },
+  "55": {
+   "examples": [
+    "O REILLY AUTOMOTIVE INC",
+    "CARVANA CO.",
+    "AUTOZONE INC",
+    "COPART INC"
+   ]
+  },
+  "56": {
+   "examples": [
+    "GAP INC",
+    "URBAN OUTFITTERS INC",
+    "Victoria's Secret & Co.",
+    "ABERCROMBIE & FITCH CO /DE/"
+   ]
+  },
+  "57": {
+   "examples": [
+    "WILLIAMS SONOMA INC",
+    "BEST BUY CO INC",
+    "GameStop Corp.",
+    "RH"
+   ]
+  },
+  "58": {
+   "examples": [
+    "YUM BRANDS INC",
+    "CHIPOTLE MEXICAN GRILL INC",
+    "Restaurant Brands International Inc.",
+    "Yum China Holdings, Inc."
+   ]
+  },
+  "59": {
+   "examples": [
+    "CVS HEALTH Corp",
+    "JD.com, Inc.",
+    "Coupang, Inc.",
+    "DICK'S SPORTING GOODS, INC."
+   ]
+  },
+  "60": {
+   "examples": [
+    "HSBC HOLDINGS PLC",
+    "ROYAL BANK OF CANADA",
+    "MITSUBISHI UFJ FINANCIAL GROUP INC",
+    "CITIGROUP INC"
+   ]
+  },
+  "61": {
+   "examples": [
+    "Nu Holdings Ltd.",
+    "Coinbase Global, Inc.",
+    "ORIX CORP",
+    "Rocket Companies, Inc."
+   ]
+  },
+  "62": {
+   "examples": [
+    "MORGAN STANLEY",
+    "GOLDMAN SACHS GROUP INC",
+    "BlackRock, Inc.",
+    "SCHWAB CHARLES CORP"
+   ]
+  },
+  "63": {
+   "examples": [
+    "BERKSHIRE HATHAWAY INC",
+    "UNITEDHEALTH GROUP INC",
+    "Chubb Ltd",
+    "PROGRESSIVE CORP/OH/"
+   ]
+  },
+  "64": {
+   "examples": [
+    "MARSH & MCLENNAN COMPANIES, INC.",
+    "Arthur J. Gallagher & Co.",
+    "Aon plc",
+    "WILLIS TOWERS WATSON PLC"
+   ]
+  },
+  "65": {
+   "examples": [
+    "BROOKFIELD Corp /ON/",
+    "CBRE GROUP, INC.",
+    "KE Holdings Inc.",
+    "Invitation Homes Inc."
+   ]
+  },
+  "67": {
+   "examples": [
+    "WELLTOWER INC.",
+    "Prologis, Inc.",
+    "EQUINIX INC",
+    "AMERICAN TOWER CORP /MA/"
+   ]
+  },
+  "70": {
+   "examples": [
+    "Hilton Worldwide Holdings Inc.",
+    "LAS VEGAS SANDS CORP",
+    "INTERCONTINENTAL HOTELS GROUP PLC /NEW/",
+    "H World Group Ltd"
+   ]
+  },
+  "72": {
+   "examples": [
+    "SERVICE CORP INTERNATIONAL",
+    "H&R BLOCK INC",
+    "UNIFIRST CORP",
+    "YELP INC"
+   ]
+  },
+  "73": {
+   "examples": [
+    "Alphabet Inc.",
+    "VISA INC.",
+    "Mastercard Inc",
+    "Palantir Technologies Inc."
+   ]
+  },
+  "75": {
+   "examples": [
+    "U-Haul Holding Co /NV/",
+    "RYDER SYSTEM INC",
+    "AVIS BUDGET GROUP, INC.",
+    "Boyd Group Services Inc."
+   ]
+  },
+  "76": {
+   "examples": [
+    "TEAM INC",
+    "E-Home Household Service Holdings Ltd"
+   ]
+  },
+  "78": {
+   "examples": [
+    "NETFLIX INC",
+    "Cinemark Holdings, Inc.",
+    "Lionsgate Studios Corp.",
+    "AMC ENTERTAINMENT HOLDINGS, INC."
+   ]
+  },
+  "79": {
+   "examples": [
+    "Walt Disney Co",
+    "Live Nation Entertainment, Inc.",
+    "Warner Music Group Corp.",
+    "Madison Square Garden Sports Corp."
+   ]
+  },
+  "80": {
+   "examples": [
+    "HCA Healthcare, Inc.",
+    "Natera, Inc.",
+    "QUEST DIAGNOSTICS INC",
+    "Guardant Health, Inc."
+   ]
+  },
+  "81": {
+   "examples": [
+    "CRA INTERNATIONAL, INC."
+   ]
+  },
+  "82": {
+   "examples": [
+    "New Oriental Education & Technology Group Inc.",
+    "TAL Education Group",
+    "LAUREATE EDUCATION, INC.",
+    "Covista Inc."
+   ]
+  },
+  "83": {
+   "examples": [
+    "BRIGHT HORIZONS FAMILY SOLUTIONS INC.",
+    "KinderCare Learning Companies, Inc."
+   ]
+  },
+  "87": {
+   "examples": [
+    "PAYCHEX INC",
+    "INCYTE CORP",
+    "Medpace Holdings, Inc.",
+    "CGI INC"
+   ]
+  },
+  "89": {
+   "examples": [
+    "GPO Plus, Inc."
+   ]
+  },
+  "01": {
+   "examples": [
+    "Corteva, Inc.",
+    "Adecoagro S.A.",
+    "DEL MONTE CORP",
+    "Green Thumb Industries Inc."
+   ]
+  },
+  "02": {
+   "examples": [
+    "CAL-MAINE FOODS INC",
+    "NOCERA, INC.",
+    "Megan Holdings Ltd.",
+    "Trans American Aquaculture, Inc"
+   ]
+  },
+  "07": {
+   "examples": [
+    "Mission Produce, Inc.",
+    "BrightView Holdings, Inc.",
+    "BNB Standard Corp",
+    "Pinnacle Food Group Ltd"
+   ]
+  },
+  "09": {
+   "examples": [
+    "AQUABOUNTY TECHNOLOGIES INC",
+    "NaturalShrimp Inc"
+   ]
+  }
+ }
+}
