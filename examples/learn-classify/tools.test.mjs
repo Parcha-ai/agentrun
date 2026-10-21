@@ -37,6 +37,7 @@ function routes(host, path, req, res, seen) {
   if (path === '/home') return send(200, 'text/html; charset=utf-8', HOME, { 'set-cookie': 'session=1; Path=/' });
   if (path === '/headers') return send(200, 'text/plain', JSON.stringify({ ua: req.headers['user-agent'], cookie: req.headers.cookie ?? null }));
   if (path === '/wiki/Acme') return send(200, 'text/html', WIKI);
+  if (path === '/data.json') return send(200, 'application/json', '{"name":"ACME CORP","sic":"5961","addresses":{"business":{"city":"SPRINGFIELD"}}}');
   if (path === '/plain') return send(200, 'text/plain; charset=utf-8', 'line one\n\n\n   line   two  \nline two\n');
   if (path === '/latin1') return send(200, 'text/html; charset=iso-8859-1', Buffer.from('<title>Caf\xe9</title><p>Caf\xe9 cr\xe8me</p>', 'latin1'));
   if (path === '/pdf') return send(200, 'application/pdf', '%PDF-1.4');
@@ -185,6 +186,19 @@ test('other hosts, SEC, EDGAR and SIC listing sites are refused before any reque
   assert.equal((await tool.run({})).refused, '"" is not a URL');
   assert.equal((await tool.run({ url: 42 })).refused, '"" is not a URL');
   assert.deepEqual(s.seen.requests, []);
+});
+
+test('the EDGAR and filing mirrors the passes reached are refused, and so is any host whose label starts with edgar', () => {
+  for (const host of ['www.financialfilings.com', 'www.open10k.com', 'edgarlookup.com', 'sectracker.app', 'www.secfilingdata.com', 'api.secfilingdata.com', 'tickerfilings.com', 'getfilings.com',
+    'sec-api.io', 'openfilings.org', 'edgarscout.com', 'secprobe.io', 'sec2md.com', 'secfeedapi.com', 'filings.edgarsearch.example']) assert.ok(refusedHost(host), host);
+  for (const host of ['fedgarage.example', 'www.acme.example', 'ir.rdgfilings.example', 'secure.acme.example']) assert.equal(refusedHost(host), null, host);
+});
+
+test('a JSON answer is read as text', async (t) => {
+  const s = await server(t);
+  const page = await acme(s).run({ url: 'https://www.acme.example/data.json' });
+  assert.equal(page.ok, true);
+  assert.match(page.text, /"sic":"5961"/);
 });
 
 test('the refused list wins over allowDomain, which must name a real domain', () => {

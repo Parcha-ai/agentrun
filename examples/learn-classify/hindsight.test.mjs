@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { HINDSIGHT_SPLITS, MAX_REFLECTION_USD, reflect, reflectOnRun, wrongFields } from './hindsight.mjs';
+import { caseValuesOf } from './host.mjs';
 import { readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { FIXTURES_V4, readJson, scriptedModel } from './scripted.mjs';
 import { SETS } from './sets.mjs';
@@ -136,4 +137,9 @@ test('a reflection stops at its spend limit ($1 by default) and its tools at 6 c
   const results = many.requests.at(-1).messages.filter((m) => m.role === 'toolResult' && m.toolName === 'fetch_page').map((m) => JSON.parse(m.content[0].text));
   assert.deepEqual(results.map((r) => Boolean(r.refused)), [false, false, false, false, false, false, true]);
   assert.equal(busy.hypotheses.length, 2);
+});
+
+test('a case value is the CIK both padded and as a number, so the guard refuses either', () => {
+  const values = caseValuesOf({ name: 'Acorn Energy Inc.', cik: '0000880984', ticker: 'ACFN', website: 'https://www.acornenergy.example/' });
+  for (const v of ['0000880984', '880984', 'Acorn Energy Inc.']) assert.ok(values.includes(v), v);
 });
