@@ -83,9 +83,8 @@ test('a child killed by a signal, or closed with no code, is a failing exit', ()
 });
 
 test('the local box spec accepts the host kernel name, and the Docker spec requires Linux', async () => {
-  const output = name => `ok: true\nexitCode: 0\nstdout: Uint8Array(7) [\n  ${name}\n]`;
-  const linux = '76, 105, 110, 117, 120, 32, 120';
-  const darwin = '68, 97, 114, 119, 105, 110, 32';
+  const output = name => `0 ${name} host 6.8.0 #1 SMP x86_64 GNU/Linux\n\n`;
+  const [linux, darwin] = ['Linux', 'Darwin'];
   const local = await loadSpec('pi-transport');
   const docker = await loadSpec('pi-transport-docker');
   assert.deepEqual([linux, darwin].map(name => judge(local, { exitCode: 0, stdout: output(name), stderr: '', timedOut: false }).length), [0, 0]);
