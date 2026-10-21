@@ -191,5 +191,11 @@ test('amendment 2: a placement follows its named rule from its own inputs, an er
   assert.deepEqual(rule({ phase: 'soon' }), ['placement "pl-1": its phase "soon" is not one of message, turn_end']);
   assert.deepEqual(problems(t, with_('train.checkpoints', { copy_ms: 12.5 })), ['train.checkpoints "ck-1": its copy_ms is not an integer of milliseconds of at least 0']);
   assert.deepEqual(problems(t, with_('train.checkpoints', { copy_ms: -1 })), ['train.checkpoints "ck-1": its copy_ms is not an integer of milliseconds of at least 0']);
+  // Any path in a checkpoint is relative, in any field, never absolute.
+  assert.deepEqual(problems(t, with_('train.checkpoints', { path: 'checkpoints/ck-1.pt', files: [{ path: 'ck-1/policy.pt', bytes: 10 }] })), [], 'relative paths');
+  const absolute = (at, path) => `train.checkpoints "ck-1": its ${at} ${JSON.stringify(path)} is an absolute path: a checkpoint's paths are relative to the run's work directory, never absolute`;
+  assert.deepEqual(problems(t, with_('train.checkpoints', { path: '/var/run/ck-1.pt' })), [absolute('path', '/var/run/ck-1.pt')]);
+  assert.deepEqual(problems(t, with_('train.checkpoints', { files: [{ path: 'ok.pt' }, { path: 'C:\\runs\\ck.pt' }] })), [absolute('files[1].path', 'C:\\runs\\ck.pt')]);
+  assert.deepEqual(problems(t, with_('train.checkpoints', { from: '~/runs/ck.pt', to: 'file:///srv/ck.pt' })), [absolute('from', '~/runs/ck.pt'), absolute('to', 'file:///srv/ck.pt')]);
   assert.deepEqual(problems(t, with_('train.checkpoints', { placement: 'pl-9' })), ['train.checkpoints "ck-1": its placement "pl-9" names no placement in this recording']);
 });

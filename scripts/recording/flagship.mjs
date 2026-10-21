@@ -19,6 +19,12 @@ const BODY_RENDERS = new Set(['png', 'webp', 'webm']);
 /** A body render is a clip of at most 600 KB (amendment 1). */
 const BODY_RENDER_BYTES = 600_000;
 const BODY_ID = /^b-[0-9a-f]{8}$/;
+/** An absolute path, on any system: POSIX, a home, a Windows drive or share, or a file URL. */
+const ABSOLUTE = /^(?:\/|~(?:\/|$)|[A-Za-z]:[\\/]|\\\\|file:)/;
+/** Each string in `value`, at any depth, with where it sits. */
+const stringsOf = (value, at = '') => (typeof value === 'string' ? [[at, value]]
+  : Array.isArray(value) ? value.flatMap((each, index) => stringsOf(each, `${at}[${index}]`))
+  : value !== null && typeof value === 'object' ? Object.entries(value).flatMap(([key, each]) => stringsOf(each, at ? `${at}.${key}` : key)) : []);
 const OPS = new Map([['>=', (a, b) => a >= b], ['<=', (a, b) => a <= b], ['>', (a, b) => a > b], ['<', (a, b) => a < b]]);
 export const BASIS = new Set(['measured', 'scripted', 'unmeasured', 'agent', 'simulated', 'reported']);
 export const PLACE_KINDS = new Set(['local', 'daytona', 'modal', 'archil', 'tab']);
@@ -179,6 +185,8 @@ function valueProblems(doc, key, value, known) {
       if (value.bytes !== undefined) need(isInt(value.bytes) && value.bytes >= 0, 'its bytes is not an integer of at least 0');
       // The measured copy time behind "no copy, no boot": its unit is in its name.
       if (value.copy_ms !== undefined) need(isInt(value.copy_ms) && value.copy_ms >= 0, 'its copy_ms is not an integer of milliseconds of at least 0');
+      // A checkpoint's paths are relative to the run's work directory, or a checkpoint label: never absolute, in any field.
+      for (const [at, string] of stringsOf(value)) if (ABSOLUTE.test(string)) out.push(`its ${at} ${JSON.stringify(string)} is an absolute path: a checkpoint's paths are relative to the run's work directory, never absolute`);
       if (value.metric !== undefined) metric(value.metric);
       passes(value);
       if (value.body !== undefined) label(value.body, 'body');
