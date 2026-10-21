@@ -11,7 +11,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { promisify } from 'node:util';
 import { LIST_PRICES } from '@parcha/pi-browser';
 import { pdfDocument, pdfPage } from '@parcha/pi-vision';
-import { refusedHost, refusedUrl, urlPolicy } from './tools.mjs';
+import { ARCHIVED_SEC_NOTE, refusedHost, refusedUrl, urlPolicy } from './tools.mjs';
 
 // The one URL policy is fetch_page's (tools.mjs); these tools use it, and its parts are exported here too.
 export { blockedAddress, refusedHostOf, refusedUrl, urlPolicy } from './tools.mjs';
@@ -81,7 +81,7 @@ function refusedQuery(query) {
  * shape: `{ name, secrets?: () => string[], search({ query, n }, { signal }) }` answering
  * `{ results: [{ url, title, snippet? }], costUsd: number | null }`. `secrets` names the values kept out of an error's words.
  */
-export function searchWebTool({ provider, maxResults = MAX_RESULTS, allowPrivate = false }) {
+export function searchWebTool({ provider, maxResults = MAX_RESULTS, allowPrivate = false, archivedSec = false }) {
   if (!provider || typeof provider.search !== 'function') throw new TypeError('searchWebTool needs a provider with search()');
   const max = Math.min(maxResults, MAX_RESULTS);
   async function run(args, { signal } = {}) {
@@ -111,7 +111,7 @@ export function searchWebTool({ provider, maxResults = MAX_RESULTS, allowPrivate
         continue;
       }
       url.hash = '';
-      if (refusedUrl(url.href, { allowPrivate })) { filtered += 1; continue; }
+      if (refusedUrl(url.href, { allowPrivate, archivedSec })) { filtered += 1; continue; }
       if (seen.has(url.href) || results.length >= max) continue;
       seen.add(url.href);
       results.push({ url: url.href, title: String(row?.title ?? '').slice(0, 300), snippet: String(row?.snippet ?? '').slice(0, 500) });
@@ -122,7 +122,7 @@ export function searchWebTool({ provider, maxResults = MAX_RESULTS, allowPrivate
   return {
     name: 'search_web',
     label: 'Search the web',
-    description: `Search the web: up to ${max} results, each a URL, a title and a snippet. Use it to find a company's official site, its investor pages and its annual report. Results on SEC/EDGAR, SIC listing sites and web archives are dropped, and a query naming one of those sites is refused.`,
+    description: `Search the web: up to ${max} results, each a URL, a title and a snippet. Use it to find a company's official site, its investor pages and its annual report. Results on SEC/EDGAR, SIC listing sites and web archives are dropped, and a query naming one of those sites is refused.${archivedSec ? ` ${ARCHIVED_SEC_NOTE}` : ''}`,
     parameters: {
       type: 'object', additionalProperties: false, required: ['query'],
       properties: { query: { type: 'string', description: 'what to search for, in words' } },
@@ -452,10 +452,10 @@ async function withBrowser({ browser, driver, openGuard = cdpRequestGuard, check
  * policy, so a redirect, a click or a frame to a refused site is stopped before it is sent. `root` is where screenshots are
  * written; their paths are relative to it.
  */
-export function browseTool({ browser, root, driver, guard: openGuard = cdpRequestGuard, allowPrivate = false, lookup = dnsLookup, timeoutMs = BROWSE_TIMEOUT_MS }) {
+export function browseTool({ browser, root, driver, guard: openGuard = cdpRequestGuard, allowPrivate = false, lookup = dnsLookup, archivedSec = false, timeoutMs = BROWSE_TIMEOUT_MS }) {
   if (typeof browser !== 'function') throw new TypeError('browseTool needs browser: () => { name, provider, usd }');
   if (!root) throw new TypeError('browseTool needs root, where screenshots are written');
-  const policy = urlPolicy({ allowPrivate, lookup });
+  const policy = urlPolicy({ allowPrivate, lookup, archivedSec });
   const empty = (url, extra = {}) => ({ ok: false, url, status: 0, title: '', text: '', links: [], costUsd: 0, ...extra });
 
   async function run(args, { signal } = {}) {
@@ -512,7 +512,7 @@ export function browseTool({ browser, root, driver, guard: openGuard = cdpReques
   return {
     name: 'browse',
     label: 'Browse',
-    description: `Open a web page in a real browser, run its scripts, and read its visible text (at most ${MAX_TEXT} characters), up to ${MAX_LINKS} same-site links and links to PDFs and images. Use it for sites that need JavaScript or that fetch_page cannot read. actions, in order after the page loads: click (by visible text), scroll, wait (ms) or goto (url). screenshot: true saves a picture of the page that read_document can look at. SEC/EDGAR, SIC listing sites and web archives are refused on every navigation, redirect and click.`,
+    description: `Open a web page in a real browser, run its scripts, and read its visible text (at most ${MAX_TEXT} characters), up to ${MAX_LINKS} same-site links and links to PDFs and images. Use it for sites that need JavaScript or that fetch_page cannot read. actions, in order after the page loads: click (by visible text), scroll, wait (ms) or goto (url). screenshot: true saves a picture of the page that read_document can look at. SEC/EDGAR, SIC listing sites and web archives are refused on every navigation, redirect and click.${archivedSec ? ` ${ARCHIVED_SEC_NOTE}` : ''}`,
     parameters: {
       type: 'object', additionalProperties: false, required: ['url'],
       properties: {
@@ -779,10 +779,10 @@ const pagesProblem = (pages) => (pages === undefined ? null
  * The looks go through pi-vision's `vision.see` on `vision` (createVisionExtension) with `eyes` (`gatewayEyes`, through
  * the model gateway, or scripted ones), and each is filed as a receipt under `root`/evidence.
  */
-export function readDocumentTool({ root, vision, browser, driver, guard: openGuard = cdpRequestGuard, allowPrivate = false, lookup = dnsLookup, fetch: fetchImpl = globalThis.fetch, maxBytes = MAX_DOCUMENT_BYTES, timeoutMs = DOCUMENT_TIMEOUT_MS, largeRoot, largeBytes = MAX_LARGE_DOCUMENT_BYTES, fonts = pdffonts }) {
+export function readDocumentTool({ root, vision, browser, driver, guard: openGuard = cdpRequestGuard, allowPrivate = false, lookup = dnsLookup, archivedSec = false, fetch: fetchImpl = globalThis.fetch, maxBytes = MAX_DOCUMENT_BYTES, timeoutMs = DOCUMENT_TIMEOUT_MS, largeRoot, largeBytes = MAX_LARGE_DOCUMENT_BYTES, fonts = pdffonts }) {
   if (!root) throw new TypeError('readDocumentTool needs root, where documents are kept');
   if (!vision?.see) throw new TypeError('readDocumentTool needs vision: createVisionExtension(...) from @parcha/pi-vision/durable');
-  const policy = urlPolicy({ allowPrivate, lookup });
+  const policy = urlPolicy({ allowPrivate, lookup, archivedSec });
   let calls = 0;
 
   // A PDF over maxBytes is kept in a directory of this tool's own under largeRoot, outside the run's evidence (which a
@@ -1016,7 +1016,7 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
   return {
     name: 'read_document',
     label: 'Read document',
-    description: `Read a PDF or an image (an annual report, an investor presentation, a screenshot from browse), or an annual report or exhibit published as an HTML page, from a url (at most ${size(maxBytes)}${large ? `; a PDF up to ${size(largeBytes)} is read from a copy kept for the run` : ''}) or a path this run kept. A PDF comes back as its text, page by page (at most ${MAX_DOCUMENT_TEXT} characters a call), and an HTML document as the text it shows (its inline-XBRL header and hidden parts left out) in pages of about ${HTML_PAGE} characters: find names words to look for (the pages that hold them are listed and the text starts there), pages picks the pages to read. question has a vision model look at the pages of a PDF you name (a segment table, a chart, a scan) and answer about each, at most ${MAX_LOOKS} pages a call; an image is always looked at. Each look costs money: name the pages first with find. SEC/EDGAR, SIC listing sites and web archives are refused.`,
+    description: `Read a PDF or an image (an annual report, an investor presentation, a screenshot from browse), or an annual report or exhibit published as an HTML page, from a url (at most ${size(maxBytes)}${large ? `; a PDF up to ${size(largeBytes)} is read from a copy kept for the run` : ''}) or a path this run kept. A PDF comes back as its text, page by page (at most ${MAX_DOCUMENT_TEXT} characters a call), and an HTML document as the text it shows (its inline-XBRL header and hidden parts left out) in pages of about ${HTML_PAGE} characters: find names words to look for (the pages that hold them are listed and the text starts there), pages picks the pages to read. question has a vision model look at the pages of a PDF you name (a segment table, a chart, a scan) and answer about each, at most ${MAX_LOOKS} pages a call; an image is always looked at. Each look costs money: name the pages first with find. SEC/EDGAR, SIC listing sites and web archives are refused.${archivedSec ? ` ${ARCHIVED_SEC_NOTE}` : ''}`,
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -1093,10 +1093,10 @@ export async function gatewayEyes(gateway, { model = 'gemini-3.8-flash', thinkin
  * (`gatewayEyes`, or scripted ones). `root` is where the run's documents and screenshots go. `search`, `browser`,
  * `driver`, `guard`, `lookup` and `fetch` replace the live parts in tests.
  */
-export async function hardJobTools({ root, profileRoot, search, eyes, env = process.env, browser, driver, guard, lookup, fetch, allowPrivate, largeRoot } = {}) {
+export async function hardJobTools({ root, profileRoot, search, eyes, env = process.env, browser, driver, guard, lookup, fetch, allowPrivate, archivedSec, largeRoot } = {}) {
   await mkdir(root, { recursive: true });
-  const shared = { ...(allowPrivate ? { allowPrivate } : {}), ...(lookup ? { lookup } : {}) };
-  const tools = [searchWebTool({ provider: search ?? browserbaseSearchProvider({ env }), ...(allowPrivate ? { allowPrivate } : {}) })];
+  const shared = { ...(allowPrivate ? { allowPrivate } : {}), ...(lookup ? { lookup } : {}), ...(archivedSec ? { archivedSec } : {}) };
+  const tools = [searchWebTool({ provider: search ?? browserbaseSearchProvider({ env }), ...(allowPrivate ? { allowPrivate } : {}), ...(archivedSec ? { archivedSec } : {}) })];
   tools.push(browseTool({ browser: browser ?? browserFromEnv({ env, profileRoot }), root, ...(driver ? { driver } : {}), ...(guard ? { guard } : {}), ...shared }));
   tools.push(readDocumentTool({ root, vision: await visionFor({ root, eyes }), browser: browser ?? browserFromEnv({ env, profileRoot }), ...(driver ? { driver } : {}), ...(guard ? { guard } : {}), ...(fetch ? { fetch } : {}), ...(largeRoot ? { largeRoot } : {}), ...shared }));
   return tools;

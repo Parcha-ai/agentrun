@@ -2,7 +2,8 @@
 // Wikipedia only, and never SEC/EDGAR or a site that lists SIC codes, so the label comes from what the company says it does.
 // With allowDomain ANY_HOST (truth set v2, where half the companies come without a website) any public host is allowed,
 // the refused list still applies, and a host on this machine or its network, by name or by what it resolves to, is
-// refused. That address policy (blockedAddress, refusedHostOf, refusedUrl, urlPolicy) is the one every v2 tool uses.
+// refused. That address policy (blockedAddress, refusedHostOf, refusedUrl, urlPolicy) is the one every v2 tool uses. With
+// `archivedSec` (off by default), every tool also opens the Wayback Machine's copy of an SEC page, and nothing else there.
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 
@@ -25,6 +26,11 @@ export const REFUSED_DOMAINS = Object.freeze([
 ]);
 // Any host with a label naming EDGAR is refused too (edgar.example.com, edgar-filings.net).
 const EDGAR_LABEL = /(^|[.-])edgar([.-]|$)/;
+// With `archivedSec`, the one way to an SEC page: the Wayback Machine's copy of it, web.archive.org/web/<time>[<flag>_]/
+// then an http(s) URL on sec.gov or a subdomain. The copy comes from the archive, so no request reaches sec.gov, and
+// every other page on the archive (another site's copy, the CDX API) stays refused.
+const ARCHIVED_SEC = /^\/web\/\d{1,14}(?:[a-z]{2}_)?\/(?:https?:\/\/)?(?:[a-z0-9-]+\.)*sec\.gov(?:[:/]|$)/i;
+export const ARCHIVED_SEC_NOTE = 'The Wayback Machine\'s copy of an SEC page (https://web.archive.org/web/<time>/<sec.gov URL>) is the one exception.';
 const WIKIPEDIA = 'wikipedia.org';
 
 const TWO_LEVEL_SUFFIXES = new Set(['co.uk', 'org.uk', 'com.au', 'net.au', 'co.jp', 'com.br', 'co.in', 'com.cn', 'com.hk', 'co.nz', 'co.za', 'com.mx', 'com.sg', 'co.il', 'com.tw']);
@@ -42,6 +48,11 @@ export function domainOf(website) {
   const labels = host.split('.');
   const keep = TWO_LEVEL_SUFFIXES.has(labels.slice(-2).join('.')) ? 3 : 2;
   return labels.slice(-keep).join('.');
+}
+
+/** True when `url` (a URL) is the Wayback Machine's copy of a page on sec.gov. */
+export function archivedSecPage(url) {
+  return normalHost(url.hostname) === 'web.archive.org' && ARCHIVED_SEC.test(url.pathname);
 }
 
 export function refusedHost(host) {
@@ -110,13 +121,14 @@ export function refusedUrl(raw, options = {}) {
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return `only http and https URLs are opened, not ${url.protocol}`;
   if (url.username || url.password) return 'URLs with credentials are not opened';
+  if (options.archivedSec && archivedSecPage(url)) return null;
   return refusedHostOf(url.hostname, options);
 }
 
 /** The URL check every request of a tool goes through: the name, then what the name resolves to here (once per host per
  *  policy). A name that does not resolve is left to the request to fail. A name whose answer changes between this
  *  lookup and the connection is not caught. */
-export function urlPolicy({ allowPrivate = false, lookup = dnsLookup } = {}) {
+export function urlPolicy({ allowPrivate = false, lookup = dnsLookup, archivedSec = false } = {}) {
   const resolved = new Map();
   const resolvesBlocked = (host) => {
     if (!resolved.has(host)) {
@@ -128,9 +140,9 @@ export function urlPolicy({ allowPrivate = false, lookup = dnsLookup } = {}) {
   };
   return {
     allowPrivate,
-    lexical: (raw) => refusedUrl(raw, { allowPrivate }),
+    lexical: (raw) => refusedUrl(raw, { allowPrivate, archivedSec }),
     async check(raw) {
-      const why = refusedUrl(raw, { allowPrivate });
+      const why = refusedUrl(raw, { allowPrivate, archivedSec });
       if (why || allowPrivate) return why;
       const host = normalHost(new URL(raw).hostname);
       return isIP(host) ? null : resolvesBlocked(host);
@@ -168,17 +180,18 @@ const PARAMETERS = {
   properties: { url: { type: 'string', description: 'an http(s) URL on the company\'s own domain or on wikipedia.org' } },
 };
 
-const ANY_PARAMETERS = {
+const anyParameters = (archivedSec) => ({
   type: 'object',
   additionalProperties: false,
   required: ['url'],
-  properties: { url: { type: 'string', description: 'an http(s) URL on any public site except SEC/EDGAR, SIC listing sites and web archives' } },
-};
+  properties: { url: { type: 'string', description: `an http(s) URL on any public site except SEC/EDGAR, SIC listing sites and web archives${archivedSec ? ', or the Wayback Machine\'s copy of an SEC page' : ''}` } },
+});
 
 const emptyPage = (url, status = 0) => ({ ok: false, url, status, title: '', text: '', links: [] });
 
 // `lookup` resolves a host name to its addresses, only in ANY_HOST mode (through urlPolicy); tests pass their own.
-export function fetchPageTool({ allowDomain, fetch: fetchImpl = globalThis.fetch, timeoutMs = TIMEOUT_MS, maxBytes = MAX_BYTES, lookup = dnsLookup }) {
+// `archivedSec` also opens the Wayback Machine's copy of an SEC page (archivedSecPage), off by default.
+export function fetchPageTool({ allowDomain, fetch: fetchImpl = globalThis.fetch, timeoutMs = TIMEOUT_MS, maxBytes = MAX_BYTES, lookup = dnsLookup, archivedSec = false }) {
   const any = allowDomain === ANY_HOST;
   const domain = any ? ANY_HOST : normalHost(String(allowDomain ?? ''));
   if (!any && (!domain || (!domain.includes('.') && !domain.includes(':')))) throw new TypeError(`allowDomain must be a domain such as example.com, not ${JSON.stringify(allowDomain)}`);
@@ -193,6 +206,10 @@ export function fetchPageTool({ allowDomain, fetch: fetchImpl = globalThis.fetch
     }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return { url, refused: `only http and https URLs are fetched, not ${url.protocol}` };
     if (url.username || url.password) return { url, refused: 'URLs with credentials are not fetched' };
+    if (archivedSec && archivedSecPage(url)) {
+      url.hash = '';
+      return { url };
+    }
     const host = normalHost(url.hostname);
     const refused = refusedHost(host);
     if (refused) return { url, refused };
@@ -204,7 +221,7 @@ export function fetchPageTool({ allowDomain, fetch: fetchImpl = globalThis.fetch
     return { url };
   };
 
-  const policy = any ? urlPolicy({ lookup }) : null;
+  const policy = any ? urlPolicy({ lookup, archivedSec }) : null;
   const resolves = async (url) => (policy ? policy.check(url.href) : null);
 
   async function run(args, { signal } = {}) {
@@ -264,9 +281,9 @@ export function fetchPageTool({ allowDomain, fetch: fetchImpl = globalThis.fetch
     name: 'fetch_page',
     label: 'Fetch page',
     description: any
-      ? `Fetch one web page as text: its title, readable text (at most ${MAX_TEXT} characters) and up to ${MAX_LINKS} same-site links. Any public http(s) site is allowed except SEC/EDGAR, SIC listing sites and web archives, which are always refused. No JavaScript runs, so a page that builds itself in the browser may come back empty.`
-      : `Fetch one web page as text: its title, readable text (at most ${MAX_TEXT} characters) and up to ${MAX_LINKS} same-site links. Only ${domain} (and its subdomains) and *.wikipedia.org are allowed; SEC/EDGAR and SIC listing sites are always refused. No JavaScript runs, so a page that builds itself in the browser may come back empty.`,
-    parameters: any ? ANY_PARAMETERS : PARAMETERS,
+      ? `Fetch one web page as text: its title, readable text (at most ${MAX_TEXT} characters) and up to ${MAX_LINKS} same-site links. Any public http(s) site is allowed except SEC/EDGAR, SIC listing sites and web archives, which are ${archivedSec ? `refused. ${ARCHIVED_SEC_NOTE}` : 'always refused.'} No JavaScript runs, so a page that builds itself in the browser may come back empty.`
+      : `Fetch one web page as text: its title, readable text (at most ${MAX_TEXT} characters) and up to ${MAX_LINKS} same-site links. Only ${domain} (and its subdomains) and *.wikipedia.org are allowed; SEC/EDGAR and SIC listing sites are ${archivedSec ? `refused. ${ARCHIVED_SEC_NOTE}` : 'always refused.'} No JavaScript runs, so a page that builds itself in the browser may come back empty.`,
+    parameters: any ? anyParameters(archivedSec) : PARAMETERS,
     resultSchema: RESULT_SCHEMA,
     run,
   };
