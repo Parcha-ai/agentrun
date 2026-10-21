@@ -366,6 +366,9 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   for (const words of [/a choice decidable from evidence already in the state is a Jev pick/, /A choice that needs knowledge the state does not hold \(for example, what a company does\) is one narrow agent step on the host's node model/,
     /the company's name from the job's input/, /a judge that the revenue line the code rests on is quoted from the report/, /Decide per workflow/, /For example, the 4-digit SIC code/]) assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), words);
   assert.match(flat(v4Rules), /A choice among listed options that needs knowledge the state does not hold .* is an agent node on the host's node model/);
+  // A pick takes at most 240 candidates (more is refused, and inside a collecting map the refusal stops the whole map):
+  // a workflow narrows before it picks.
+  assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), /Narrow before a pick: a pick takes at most 240 candidates \(for example, the major group before its 4-digit codes\)/);
   // Looking at the pages is a rule of the job, not only the skill's advice.
   assert.match(flat(text(v4, 'AGENTS.md')), /look at the annual report's cover page and the page of its segment table with read_document/i);
   // classify-company takes the job's input as given, a website or none.
