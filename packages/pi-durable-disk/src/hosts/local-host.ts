@@ -389,6 +389,9 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
       runPath(ref.id);
       // Never as root: the instance and the agent's tools would share a uid with the archil daemon that holds the mount
       // token, and own run.json and the store outright.
+      if (mode === "systemd" && user.trim() === "") {
+        throw new LocalHostError("INVALID_ARGUMENT", "the user is empty, and systemd runs a unit with an empty User= as root: name the unprivileged user the instance runs as (user)");
+      }
       if (mode === "systemd" && (await uidOf(user)) === 0) {
         throw new LocalHostError("INVALID_ARGUMENT", `user ${user} is root: name the unprivileged user the instance runs as (user)`);
       }

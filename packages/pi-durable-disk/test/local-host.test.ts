@@ -303,11 +303,12 @@ test("as root, the driver refuses to run instances (and so the agent's tools) as
   }
 });
 
-test("start refuses to run the instance (and so the agent's tools) as root: a user that is uid 0, or child mode in a root process", async () => {
+test("start refuses to run the instance (and so the agent's tools) as root: a user that is uid 0 or empty, or child mode in a root process", async () => {
   const w = world();
   const { calls, exec } = recorder();
   const refused = (e: unknown) => e instanceof LocalHostError && e.code === "INVALID_ARGUMENT" && /root/.test(e.message);
-  for (const user of ["root", "0", 0]) {
+  // An empty user reaches systemd as `User=`, which runs the unit as root.
+  for (const user of ["root", "0", 0, "", " "]) {
     const host = localHost({ exec, hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot, user, group: "1000" });
     await assert.rejects(host.start(REF, TOKEN), refused, `user ${JSON.stringify(user)}`);
   }
