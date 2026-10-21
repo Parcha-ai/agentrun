@@ -122,3 +122,10 @@ test("cluster-type reaches the cluster's GPU type, and without it no type is set
   assert.equal(modalOptionsFromArgs({ ...base, "cluster-type": "H100" }).cluster?.type, "H100");
   assert.equal("type" in (modalOptionsFromArgs(base).cluster ?? {}), false);
 });
+
+test("cluster-start reaches the cluster (now: the boxes place when the server starts), the default is the first page, and a bad value is an error", () => {
+  const base = { "cluster-size": "8", "cluster-image": "im-3" };
+  assert.equal(modalOptionsFromArgs({ ...base, "cluster-start": "now" }).cluster?.start, "now");
+  assert.equal("start" in (modalOptionsFromArgs(base).cluster ?? {}), false);
+  assert.throws(() => modalOptionsFromArgs({ ...base, "cluster-start": "soon" }), /attach or now/);
+});

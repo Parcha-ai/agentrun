@@ -104,10 +104,10 @@ const GPU_NOTE = robot ? "" : readFileSync(gpuNoteFile, "utf8").trim();
 const kids = [];
 // The host's wrapper that gives a command the disk's credentials (WITH_ARCHIL names it; default: on PATH).
 const WITH_ARCHIL = process.env.WITH_ARCHIL ?? "with-archil";
-/** Delete the run's tree from the disk: a run id that already has a history would resume that conversation, and one left behind is a leak. */
-const cleanRun = (run) =>
+/** Delete the run's tree from the disk: a run id that already has a history would resume that conversation, and one left behind is a leak. `keep` (the stop with ROBOT_KEEP_RUN=1) leaves the tree and only releases what holds it. */
+const cleanRun = (run, { keep = false } = {}) =>
   new Promise((resolve) => {
-    const k = spawn(WITH_ARCHIL, ["--", process.execPath, join(here, "clean-run.ts"), run], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "pipe"] });
+    const k = spawn(WITH_ARCHIL, ["--", process.execPath, join(here, "clean-run.ts"), run, ...(keep ? ["--keep"] : [])], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "pipe"] });
     let text = "";
     k.stdout.on("data", (d) => (text += d));
     k.stderr.on("data", (d) => (text += d));
@@ -201,6 +201,7 @@ try {
             ...(clusterReady ? ["--cloud-arg", `cluster-ready=${clusterReady}`] : []),
             ...(clusterReadyTimeout ? ["--cloud-arg", `cluster-ready-timeout-s=${clusterReadyTimeout}`] : []),
             ...(process.env.ROBOT_CLUSTER_TYPE ? ["--cloud-arg", `cluster-type=${process.env.ROBOT_CLUSTER_TYPE}`] : []),
+            ...(process.env.ROBOT_CLUSTER_START ? ["--cloud-arg", `cluster-start=${process.env.ROBOT_CLUSTER_START}`] : []),
           ]
         : [
         "--cloud-arg", "vm=false",
@@ -321,6 +322,6 @@ try {
   await writer?.close().catch(() => {});
   for (const k of kids.slice().reverse()) k.kill("SIGTERM");
   await sleep(8000);
-  console.log(JSON.stringify({ name: "the run's tree after live", cleaned: await cleanRun(runId) }));
+  console.log(JSON.stringify({ name: "the run's tree after live", cleaned: process.env.ROBOT_KEEP_RUN === "1" ? `kept (ROBOT_KEEP_RUN=1): ${await cleanRun(runId, { keep: true })}` : await cleanRun(runId) }));
 }
 process.exit(failed ? 1 : 0);
