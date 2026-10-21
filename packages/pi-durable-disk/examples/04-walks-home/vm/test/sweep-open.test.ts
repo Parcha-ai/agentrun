@@ -43,7 +43,7 @@ test("a create that is still queued when the stop begins is terminated by its na
   const sdk = fake(new Map(), new Map([["queued-a", () => (++asked >= 3 ? placed : undefined)]]));
   const closed: string[] = [];
   const out = await terminateTargets(sdk, "app", [{ kind: "name", value: "queued-a" }], { waitMs: 2_000, pollMs: 10, onGone: (t) => void closed.push(t.value) });
-  assert.deepEqual(out, { terminated: ["queued-a"], gone: [], left: [] });
+  assert.deepEqual(out, { terminated: ["queued-a"], gone: [], notRunning: [], left: [] });
   assert.equal(placed.exit, 137, "it was terminated, not left to its TTL");
   assert.ok(asked >= 3, "it was asked for again until it appeared");
   assert.deepEqual(closed, ["queued-a"], "its ledger row is closed");
@@ -61,11 +61,17 @@ test("a running sandbox is terminated by its id, one that already ended or that 
   assert.equal(flaky.tries, 2);
 });
 
-test("a queued create that never places within the wait is reported as left, by its name, so the stop can say so", async () => {
+test("a name Modal has no RUNNING sandbox under (a terminated one, or a create still queued) is reported as not running, never as left: only a sandbox that was found and would not terminate is left", async () => {
   const sdk = fake(new Map(), new Map());
-  const out = await terminateTargets(sdk, "app", [{ kind: "name", value: "never" }], { waitMs: 80, pollMs: 20 });
-  assert.deepEqual(out.left, ["never"]);
-  assert.deepEqual(out.terminated, []);
+  const out = await terminateTargets(sdk, "app", [{ kind: "name", value: "terminated-or-queued" }], { waitMs: 80, pollMs: 20 });
+  assert.deepEqual(out, { terminated: [], gone: [], notRunning: ["terminated-or-queued"], left: [] });
+});
+
+test("a running sandbox that will not terminate within the wait is left, by its name", async () => {
+  const stuck = new Box("sb-5", 1_000);
+  const sdk = fake(new Map(), new Map([["stuck", () => stuck]]));
+  const out = await terminateTargets(sdk, "app", [{ kind: "name", value: "stuck" }], { waitMs: 80, pollMs: 20 });
+  assert.deepEqual(out, { terminated: [], gone: [], notRunning: [], left: ["stuck"] });
 });
 
 test("scripts/sweep-open.mjs loads (its imports resolve) and, over a ledger with nothing open, terminates nothing and exits 0", async () => {
@@ -80,7 +86,7 @@ test("scripts/sweep-open.mjs loads (its imports resolve) and, over a ledger with
     const run = spawnSync(process.execPath, [script, "--ledger", join(dir, "ledger.json"), "--wait-s", "1"], { encoding: "utf8", env: { PATH: process.env.PATH, HOME: process.env.HOME, MODAL_TOKEN_ID: "ak-test", MODAL_TOKEN_SECRET: "as-test" } });
     assert.equal(run.status, 0, run.stdout + run.stderr);
     assert.match(run.stdout, /0 sandbox\(es\) open in the ledger/);
-    assert.match(run.stdout, /terminated 0, already gone 0, left 0/);
+    assert.match(run.stdout, /terminated 0, already gone 0, not running 0, left 0/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

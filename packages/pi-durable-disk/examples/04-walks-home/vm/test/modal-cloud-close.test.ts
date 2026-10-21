@@ -355,4 +355,5 @@ test("a create that never places leaves close with its name in the failures, not
   const summary = w.logs.find((l) => l.event === "close.failures");
   assert.ok(summary, "close reports it");
   assert.match(JSON.stringify(summary!.data), /still queued/);
+  assert.match(JSON.stringify(summary!.data), /no running sandbox by that name/);
 });
