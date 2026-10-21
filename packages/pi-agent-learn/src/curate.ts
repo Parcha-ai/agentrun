@@ -8,7 +8,7 @@ import { InboxFormatError, type InboxCandidate, parseInbox } from "./inbox.js";
 import { assertNotRulesLocked, CAPS, COMMIT_SHA, inboxPath, isRulesLocked, LAYOUT, learningPath, RECORD_FILE, RUN_ID, SHA256, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { byUse, indexLine, renderSection } from "./section.js";
 import { learningsAt } from "./seed.js";
-import type { AdmitWorkflow, Refusal, RepoRead, SettleUses, WorkflowCandidate, WorkflowUse } from "./types.js";
+import { type AdmitWorkflow, ENTRY_TYPES, type EntryType, type LearnType, type Refusal, type RepoRead, type SettleUses, type WorkflowCandidate, type WorkflowUse } from "./types.js";
 import { revisionOf, usesSettler, workflowAdmitter } from "./workflows.js";
 
 /** The judge: the DSL's System One adapter, `WorkflowDeps["runJudge"]`. `createJevRunner` from `@parcha/agentrun-jev` is one. */
@@ -135,7 +135,6 @@ const LEARNING_ID_TRAILER = "Learning-Id";
 const WORKFLOW_TRAILER = "Workflow";
 const RUN_ID_TRAILER = "Run-Id";
 const RUNS = "runs/";
-const ENTRY_TYPES_COMPARED = ["lesson", "fact", "correction"] as const;
 const CONTENT_REASONS: readonly Refusal["reason"][] = ["secret_value", "secret_shape", "invisible_unicode", "case_data"];
 /** A learning lists at most this many proposing runs, so a popular one stays under the file cap; its uses keep counting. */
 const MAX_PROVENANCE_RUNS = 16;
@@ -149,6 +148,7 @@ type Asked = { readonly verdict: Verdict; readonly p?: number };
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 const oneLine = (text: string) => text.replace(/[\s\u0000-\u001f\u007f]+/g, " ").trim();
 const fixed = (p: number | undefined) => (p === undefined ? "?" : p.toFixed(2));
+const isEntryType = (type: LearnType): type is EntryType => (ENTRY_TYPES as readonly LearnType[]).includes(type);
 /** Why a question left a candidate held: the run's budget ran out, or the judge was unsure of `what`. */
 const unsureReason = (a: Asked, what: string) => (a.verdict === "budget" ? "the run's question budget is spent" : `unsure whether ${what} (${fixed(a.p)})`);
 
@@ -214,16 +214,8 @@ async function curateRuns(options: Resolved, thresholds: Thresholds, caps: Curat
   const skipped: { branch: string; reason: string }[] = [];
   let pushes = 0;
 
-  let main = await mainTip(repo);
-  // A commit this host made on main and never pushed (a push that failed for another reason than a moved main) is
-  // published before anything is read from main, so no run is taken as curated on the strength of a local commit.
   pushes += 1;
-  try {
-    await repo.push(main, "main");
-  } catch (error) {
-    if (!(error instanceof GitRemoteError) || error.code !== "conflict") throw error;
-    main = await mainTip(repo);
-  }
+  let main = await publishPending(repo);
   let curated = { at: main, runs: await curatedRuns(repo, main) };
 
   for (const branch of await runsRepo.branches(RUNS)) {
@@ -296,13 +288,7 @@ export async function retireLearning(options: RetireOptions): Promise<RetireResu
   const secrets = [...(options.secrets ?? [])];
   const { repo, id } = options;
   return exclusive(repo, async () => {
-    let main = await mainTip(repo);
-    try {
-      await repo.push(main, "main");
-    } catch (error) {
-      if (!(error instanceof GitRemoteError) || error.code !== "conflict") throw error;
-      main = await mainTip(repo);
-    }
+    let main = await publishPending(repo);
     for (let attempt = 0; ; attempt++) {
       const text = await repo.read(path, main);
       if (text === undefined) throw new LearnError("missing", `${id} is not on main`);
@@ -331,6 +317,19 @@ async function mainTip(repo: Pick<Repo, "fetch" | "resolve">): Promise<string> {
   const main = await repo.resolve("main");
   if (!main) throw new LearnError("missing", "the agent repository has no main");
   return main;
+}
+
+/** Main's tip, after publishing a commit this host made on main and never pushed (a push that failed for another reason than
+ *  a moved main), so nothing read from main counts a local commit as published. */
+async function publishPending(repo: Pick<Repo, "fetch" | "resolve" | "push">): Promise<string> {
+  const main = await mainTip(repo);
+  try {
+    await repo.push(main, "main");
+    return main;
+  } catch (error) {
+    if (!(error instanceof GitRemoteError) || error.code !== "conflict") throw error;
+    return mainTip(repo);
+  }
 }
 
 async function curatedRuns(repo: CurateRepo, main: string): Promise<Set<string>> {
@@ -485,7 +484,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
 
   for (const [i, candidate] of candidates.entries()) {
     const at = i + 1;
-    const type = candidate.type as string;
+    const type = candidate.type;
     if (type === "used") {
       const target = candidate.id === undefined ? undefined : entries.get(candidate.id);
       if (!target || target.status !== "active") {
@@ -517,7 +516,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
       workflows.set(name, { candidate: at, untrusted: candidate.untrusted === true });
       continue;
     }
-    if (!(ENTRY_TYPES_COMPARED as readonly string[]).includes(type)) {
+    if (!isEntryType(type)) {
       lists.refused.push({ candidate: at, reason: "not a type curation knows" });
       continue;
     }
@@ -591,7 +590,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
       continue;
     }
     const made: Learning = {
-      id, type: type as Learning["type"], scope: "all", status: "active",
+      id, type, scope: "all", status: "active",
       provenance: { runs: [runId], ...origin, untrusted: candidate.untrusted === true }, uses: 0, supersedes: replaces, text: candidate.text,
     };
     try {
