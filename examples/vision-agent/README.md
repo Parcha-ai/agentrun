@@ -9,7 +9,7 @@ cites every claim at the file's own page, second or region. The examples beside 
 files:
 
 ```sh
-npm ci --ignore-scripts && npm run build
+npm ci --ignore-scripts && npm run build                # a few minutes: it builds the whole workspace
 npm run demo:vision -- examples/document-check          # on fakes, $0, no key, no network (its PDFs are committed)
 npm run demo:vision -- examples/hear-and-find --live    # real models, your keys
 ```
@@ -33,8 +33,13 @@ TypeSafe through a proxy of your own. Each example's README lists its programs, 
 live run cost and how long it took.
 
 An example folder holds `question.md` (the question), `inputs.json` (each file by URL, size and SHA-256, or committed
-beside it) and a README. To ask something else, write another folder, or give `--input '{"question": "...", "files":
-["..."]}'` with the files in place.
+beside it) and a README. To ask something else of your own files, write another folder under `examples/` with a
+`question.md`, the files beside it, and an `inputs.json` of `{"items": [{"path": "mydoc.pdf"}]}` (copy `document-check`'s
+for the fuller shape the examples use: each file's `id`, `bytes` and `sha256`, and a `url` for one that is fetched), and
+run it as above. Or give `--input '{"question": "...", "files": ["mydoc.pdf"]}'` and name the folder that holds the files
+in `DEMO_FILES_DIR`: each becomes a file of the run's workspace under its bare name (letters, digits, dots, dashes and
+underscores, no directory), and a name that folder lacks is not found. Putting `"example": "<folder>"` in that input asks
+a new question of that example's own files.
 
 | Flag | What it does |
 |---|---|
@@ -47,7 +52,8 @@ beside it) and a README. To ask something else, write another folder, or give `-
 [`SETUP-PROMPT.md`](SETUP-PROMPT.md) sets up a live run for you: paste it into your coding agent.
 
 On fakes a scripted lead runs one script whatever is asked (one look at the first file, and a report of it); every
-answer says it is scripted.
+answer says it is scripted. A run prints its cost, its run directory and the path of `report/index.html`: open that file
+in a browser.
 
 ## Keys and programs
 
