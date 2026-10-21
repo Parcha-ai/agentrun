@@ -13,6 +13,16 @@ import type { AppContext, AppOptions } from '@parcha/pi-durable-disk';
 import { appOf } from './assemble.ts';
 import { IMPORTING_DEMO, outcomeOf, prepareChild, type DemoOptions } from './demo.ts';
 
+/** `run`, and on its failure `close` before the failure stands: the app's boxes and recorder are closed whether or not the run reaches its result. */
+export function closeOnFailure<A extends unknown[], R>(run: (...args: A) => Promise<R>, close: () => Promise<void>): (...args: A) => Promise<R> {
+  return async (...args: A) => {
+    try { return await run(...args); } catch (error) {
+      await close().catch(() => undefined);
+      throw error;
+    }
+  };
+}
+
 export default async function app(ctx: AppContext): Promise<AppOptions> {
   const entry = process.env.DEMO_ENTRY;
   if (!entry) throw new Error('child-app needs DEMO_ENTRY, the file URL of the demo module that exports `options`.');
@@ -26,11 +36,14 @@ export default async function app(ctx: AppContext): Promise<AppOptions> {
   const killNonce = process.env.KILL_NONCE;
   delete process.env.KILL_NONCE;
   const prepared = await prepareChild(options, process.env, { id: ctx.ref.id, root: ctx.root, work: ctx.work, store: ctx.store }, killNonce);
+  // The receipts of the boxes still open, then the recorder's detach: once, from the result or from a run that failed before it.
+  let closed = false;
+  const close = async () => { if (closed) return; closed = true; prepared.boxesDone(); await prepared.recorder?.detach(); };
   const opened = await appOf(prepared.place, prepared.host, prepared.job, prepared.runOptions, async ({ result, storeSha256 }) => {
     // The recorder is detached and the prepared parts released whether or not the result hook and the report succeed.
     try {
-      const made = await prepared.made(result);
-      await prepared.recorder?.detach();
+      let made: Awaited<ReturnType<typeof prepared.made>>;
+      try { made = await prepared.made(result); } finally { await close(); }
       // Printed once the final status is written and the run released (the supervisor reads this line as how the run ended).
       // Written whole before the process exits: the outcome can be large, and a line still waiting to enter the pipe when the process ends is cut off.
       // The demo's shaped result is also the final status's detail: a place that reads only run.json (a box or Archil place) keeps it, so its recording has the cited result and not the raw record.
@@ -42,5 +55,7 @@ export default async function app(ctx: AppContext): Promise<AppOptions> {
   // Nothing under the run's directory is written before the claim is open: the recorder, the fetched files and the box start here, once the store is open and before it resumes (a write earlier would land on the bare
   // mountpoint, which the mount then hides). The lines produced before this are held in memory and written, in order, when the recorder starts.
   const beforeResume = opened.beforeResume;
-  return { ...opened, beforeResume: async (input) => { await prepared.open(); await beforeResume?.(input); } };
+  const onOpen = opened.onOpen;
+  const guarded = onOpen ? { onOpen: closeOnFailure(async (durable: Parameters<NonNullable<typeof onOpen>>[0]) => { await onOpen(durable); }, close) } : {};
+  return { ...opened, ...guarded, beforeResume: async (input) => { await prepared.open(); await beforeResume?.(input); } };
 }
