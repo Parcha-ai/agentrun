@@ -708,12 +708,12 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         runner!.send({ t: "run-here", switchId: move.id });
       }
       if (target.kind !== "cloud") {
-        // A page that never attaches leaves the run parked, sealed, for whoever opens it next.
+        // A page that never attaches leaves the run parked, sealed, for whoever opens it next. 120 s for a tab as for a remote host: a page behind a tunnel took 32 s to attach on the move home (a 30 s window parked the run and the late attach closed no switch).
         setTimeout(() => {
           if (state.switching?.move.id !== move.id) return;
           state.switching = undefined;
           if (!state.pipe && !state.opening) setPlacement(state, { where: "parked", detail: `${target.label} did not attach` });
-        }, target.kind === "remote" ? 120_000 : 30_000).unref();
+        }, 120_000).unref();
         return;
       }
       if (options.cloud?.notifiesSwitched) {
