@@ -26,8 +26,8 @@ const visionObj = (value: Json | undefined): VisionObj | undefined => (typeof va
 const visionStr = (value: Json | undefined): string | undefined => (typeof value === 'string' ? value : undefined);
 const visionNum = (value: Json | undefined): number | undefined => (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
 
-/** A picture the eyes saw: its blob, and its second in the film when the host named it. */
-/** `keyframe`: not what the eyes saw, but the keyframe a cited result pairs with the look (the row's label). */
+/** A picture the eyes saw: its blob, and its second in the film when the host named it.
+ *  `keyframe`: not what the eyes saw, but the keyframe a cited result pairs with the look (the row's label). */
 export type VisionImage = { blob: string; at?: number; caption?: string; keyframe?: string };
 /** One filing of a LookRecord. `cost` is null when the price is not known; a native look has none of its own. */
 export type VisionLook = {
@@ -46,8 +46,8 @@ export type VisionState = {
   running: Record<string, VisionRead>;
   counters: CounterState;
   /** Live: looks the eyes answered and misses told, by key or receipt, that no durable line has filed yet; a miss with
-   *  no receipt is never filed. */
-  /** Looks and misses only live lines tell of: `native` when the lead looked at the image itself. */
+   *  no receipt is never filed.
+   *  Looks and misses only live lines tell of: `native` when the lead looked at the image itself. */
   told: Record<string, { what: 'look' | 'miss'; source: string; fragment?: string; code?: string; native?: true; receipt: boolean; t: number }>;
   /** Live: the pictures each read showed, by `visionShownKey`. */
   shown: Record<string, VisionImage[]>;
@@ -63,9 +63,9 @@ export type VisionState = {
  *  how many the eyes could not read, and each one it does not hold (with the typed time it stands for, when the run
  *  names it). */
 export type VisionTimes = { pages: number; times: number; inTyped: number; unreadable: number; misread: { page: number; read: string; truth?: string; receipt: string }[] };
+export type VisionCite = { item: string; fragment: string; receipt: string };
 /** The account a run delivers: its entries, the sentences left out, the photo sort and its accuracy against the
  *  captions, the times read off the pages, and the same pages through weaker eyes. */
-export type VisionCite = { item: string; fragment: string; receipt: string };
 export type VisionAccount = {
   entries: { time: string; text: string; cites: VisionCite[] }[];
   dropped: string[];

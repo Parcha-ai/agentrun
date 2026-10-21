@@ -39,8 +39,6 @@ export function checkModule(file, code) {
   if (bare) throw new Error(`${file} imports ${bare[1]} for its side effect alone; import a name from it, so the build includes it in order`);
 }
 
-/** `recordingsDir`: the recordings bundled into the gallery (a test passes its fixture's directory). `files`: ship them as
- *  files with `recordings/index.json` instead of embedding them in gallery.js. */
 /** One page's script: its entry and the modules it imports, joined in import order into one classic script. */
 function bundle(entry) {
   const names = new Map();
@@ -56,6 +54,8 @@ function bundle(entry) {
   });
 }
 
+/** `recordingsDir`: the recordings bundled into the gallery (a test passes its fixture's directory). `files`: ship them as
+ *  files with `recordings/index.json` instead of embedding them in gallery.js. */
 export function build(target = out, recordingsDir = join(here, 'recordings'), { files = false, lock = recordingsDir === join(here, 'recordings') ? join(here, 'recordings.lock.json') : undefined } = {}) {
   const parts = bundle('app.ts');
   // The chat + report page (chat.html): a second script over the same loader, beside the viewer.

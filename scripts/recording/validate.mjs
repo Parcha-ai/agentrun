@@ -166,7 +166,6 @@ const blobFiles = dir => {
   return out;
 };
 
-/** Every problem in the recording at `dir`, in file order: `{ where, line?, message }`. */
 /** What the report's files do (draft 41): each blob is `blobs/<hash>.<the path's extension>`, present and hashing to its name (two paths with one content and two extensions are two blobs); every page is read with the parser: no script, no on* attribute, no data: URL, no iframe, object, embed, form, base or meta refresh, every load inside `files`, and each `data-look` names a look the run filed. A relative link to a file the report does not hold is a document link: it is allowed only when it carries a `data-look` and names the file that look read. */
 function artifactFileProblems(artifact, dir, lookKeys, lookSources, add) {
   const where = 'manifest.json';
@@ -197,6 +196,7 @@ function artifactFileProblems(artifact, dir, lookKeys, lookSources, add) {
   }
 }
 
+/** Every problem in the recording at `dir`, in file order: `{ where, line?, message }`. */
 export function validateRecording(dir) {
   const problems = [];
   const add = (where, message, line) => problems.push({ where, ...(line === undefined ? {} : { line }), message });
