@@ -3,8 +3,10 @@
 // order as v2 (companies-v2.json), and for each, from its latest annual report in the SEC's Financial Statement Data
 // Sets: every reportable segment with its revenue and share (num.txt), the head office (sub.txt cityba, stprba,
 // countryba) and the report itself (form, fiscal year, period, accession). Subsidiaries come from the report's exhibit
-// (EX-21 for a 10-K, EX-8 for a 20-F; a 40-F has none), read from the EDGAR filing's archived copy. --via=wayback reads
-// every SEC file from the Internet Archive and records each copy's URL and capture time.
+// (EX-21 for a 10-K, EX-8 for a 20-F; a 40-F has none), read from the EDGAR filing's archived copy, else another capture
+// of it or the filing's complete submission file. Without a list, subsidiaries is { noExhibit }: true only when the
+// filing has no exhibit, false when one exists but was not read (unscored). --via=wayback reads every SEC file from the
+// Internet Archive and records each copy's URL and capture time.
 //
 // A one-segment report (a lone segment member, or only a member for all segments together) is { oneSegment }; a report
 // with no segment facts and no such evidence has no segment truth (null), never oneSegment.
@@ -33,14 +35,16 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // One EDGAR archive file: from sec.gov, or the Internet Archive's capture nearest 2026-01-01 (filings never change).
 // Cached with the copy it came from.
 let lastFetch = 0;
-async function edgarFile(url) {
-  const key = url.replace(/^https:\/\/www\.sec\.gov\/Archives\/edgar\/data\//, '').replaceAll('/', '_');
+async function edgarFile(url, at = '2026') {
+  const key = url.replace(/^https:\/\/www\.sec\.gov\/Archives\/edgar\/data\//, '').replaceAll('/', '_') + (at === '2026' ? '' : `@${at}`);
   const file = join(cache, 'edgar', key);
   const meta = `${file}.json`;
   try {
     return { body: await readFile(file), ...JSON.parse(await readFile(meta, 'utf8')) };
   } catch {}
-  const from = via === 'wayback' ? `https://web.archive.org/web/2026id_/${url}` : url;
+  // `at` is a capture timestamp (prefix), or 'cdx' for the archive's index of the URL's captures.
+  const from = via !== 'wayback' ? url : at === 'cdx' ? `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&output=json&filter=statuscode:200`
+    : `https://web.archive.org/web/${at}id_/${url}`;
   // A failed connection or server error is tried once more, then left uncached for the next build.
   let record;
   let body = Buffer.alloc(0);
@@ -64,6 +68,23 @@ async function edgarFile(url) {
     await writeFile(meta, JSON.stringify(record));
   }
   return { body, ...record };
+}
+
+// Every capture the archive holds of one URL with a 200, oldest first (its CDX index), cached like a file.
+async function captures(url) {
+  if (via !== 'wayback') return [];
+  const listing = await edgarFile(url, 'cdx');
+  return listing.status === 200 && listing.body.length ? JSON.parse(listing.body.toString('utf8')).slice(1).map((row) => row[1]) : [];
+}
+
+/** The document of a complete submission file (<adsh>.txt) whose type matches, as its text; null when there is none. */
+export function submissionSection(text, pattern) {
+  for (const [, type, body] of text.matchAll(/<DOCUMENT>\s*<TYPE>([^\n<]+)([\s\S]*?)<\/DOCUMENT>/g)) {
+    if (!pattern.test(type.trim())) continue;
+    const inner = /<TEXT>([\s\S]*?)<\/TEXT>/.exec(body);
+    return inner ? inner[1] : null;
+  }
+  return null;
 }
 
 const cellText = (s) => s.replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#160;|&#xa0;/gi, ' ').replace(/&amp;/g, '&').replace(/&#39;|&rsquo;|&#8217;/g, "'")
@@ -263,18 +284,36 @@ async function hqOf(cik, filing, sub) {
   };
 }
 
+// The exhibit's text: the default capture; else any other capture of it; else its document in the filing's complete
+// submission file (<adsh>.txt), which holds every exhibit. `copy` is the capture read, `from` says which way.
+async function exhibitText(base, filing, exhibit, pattern) {
+  const first = await edgarFile(base + exhibit.file);
+  if (first.status === 200) return { copy: first, text: first.body.toString('utf8') };
+  for (const at of await captures(base + exhibit.file)) {
+    const copy = await edgarFile(base + exhibit.file, at);
+    if (copy.status === 200) return { copy, text: copy.body.toString('utf8'), from: 'another capture' };
+  }
+  const whole = await edgarFile(`${base}${filing.adsh}.txt`);
+  const text = whole.status === 200 ? submissionSection(whole.body.toString('utf8'), pattern) : null;
+  if (text) return { copy: whole, text, from: 'the complete submission file' };
+  return { copy: first, text: null, why: `no copy of ${exhibit.file} (${first.status})` };
+}
+
+// noExhibit: the filing has none (a 40-F, or an index that lists no EX-21 / EX-8). An exhibit the archive holds no copy
+// of, or one the reader finds nothing in, is unscored: no list, and noExhibit false.
 async function subsidiariesOf(cik, filing) {
   const pattern = EXHIBIT[filing.form];
-  if (!pattern) return { truth: null, why: `a ${filing.form} files no subsidiaries exhibit` };
+  if (!pattern) return { truth: null, noExhibit: true, why: `a ${filing.form} files no subsidiaries exhibit` };
   const { base, index, documents } = await filingIndex(cik, filing);
-  if (index.status !== 200) return { truth: null, why: `no copy of the filing index (${index.status})` };
+  if (index.status !== 200) return { truth: null, noExhibit: false, why: `no copy of the filing index (${index.status})` };
   const exhibit = documents.find((d) => pattern.test(d.type));
-  if (!exhibit) return { truth: null, why: `the filing index lists no ${filing.form === '20-F' ? 'EX-8' : 'EX-21'}`, index };
-  const copy = await edgarFile(base + exhibit.file);
-  if (copy.status !== 200) return { truth: null, why: `no copy of ${exhibit.file} (${copy.status})`, index };
-  const items = readSubsidiaries(copy.body.toString('utf8'));
-  if (!items.length) return { truth: null, why: `${exhibit.file} lists nothing this reader can read`, index, copy };
-  return { truth: { exhibit: exhibit.type, url: copy.url, count: items.length, items }, index, copy };
+  if (!exhibit) return { truth: null, noExhibit: true, why: `the filing index lists no ${filing.form === '20-F' ? 'EX-8' : 'EX-21'}`, index };
+  const { copy, text, from, why } = await exhibitText(base, filing, exhibit, pattern);
+  if (!text) return { truth: null, noExhibit: false, why, index };
+  const items = readSubsidiaries(text);
+  if (!items.length) return { truth: null, noExhibit: false, why: `${exhibit.file} lists nothing this reader can read`, index, copy };
+  const url = from === 'the complete submission file' ? base + exhibit.file : copy.url;
+  return { truth: { exhibit: exhibit.type, url, ...(from ? { copy: copy.copy } : {}), count: items.length, items }, index, copy, from };
 }
 
 // The latest annual report the pinned quarters hold: an original before an amendment, then the latest filed.
@@ -350,7 +389,7 @@ async function main() {
     const f = filings.get(c.cik);
     const row = {
       cik: c.cik, name: c.name, ticker: c.ticker, website: c.website, split: c.split, order: c.order, categories: c.categories,
-      sic: c.sic, sic2: c.sic2, sicDescription: c.sicDescription, segments: null, hq: null, latestAnnual: null, subsidiaries: null,
+      sic: c.sic, sic2: c.sic2, sicDescription: c.sicDescription, segments: null, hq: null, latestAnnual: null, subsidiaries: { noExhibit: false },
     };
     const notes = { cik: c.cik, name: c.name };
     if (!f) {
@@ -396,9 +435,10 @@ async function main() {
       }
       if (SEGMENT_FLAGS[c.cik]) notes.segmentFlag = SEGMENT_FLAGS[c.cik];
       const subs = await subsidiariesOf(c.cik, f);
-      row.subsidiaries = subs.truth;
+      row.subsidiaries = subs.truth ?? { noExhibit: subs.noExhibit };
       notes.subsidiaries = {
         ...(subs.truth ? {} : { why: subs.why }),
+        ...(subs.from ? { from: subs.from } : {}),
         ...(subs.index ? { index: { url: subs.index.url, copy: subs.index.copy } } : {}),
         ...(subs.copy ? { exhibit: { url: subs.copy.url, copy: subs.copy.copy } } : {}),
       };
@@ -419,10 +459,13 @@ async function main() {
     hqCity: field((c) => c.hq?.city), hqState: field((c) => c.hq?.state), hqCountry: field((c) => c.hq?.country),
     hqSource: hqSources(report),
     segments: { truth: count((c) => Array.isArray(c.segments)), oneSegment: count((c) => c.segments?.oneSegment), null: count((c) => !c.segments) },
-    subsidiaries: { ...field((c) => c.subsidiaries), byForm: byForm((c) => c.subsidiaries), nullReasons: nullReasons(report) },
+    subsidiaries: {
+      ...field((c) => c.subsidiaries.items), noExhibit: count((c) => c.subsidiaries.noExhibit === true), unscored: count((c) => c.subsidiaries.noExhibit === false),
+      byForm: byForm((c) => c.subsidiaries.items), nullReasons: nullReasons(report),
+    },
   };
   const out = {
-    builtWith: { via, asOf: AS_OF, secFiles: provenance.secFiles, edgar: via === 'wayback' ? 'each file from https://web.archive.org/web/2026id_/<sec.gov url>, the capture in companies[].subsidiaries' : 'sec.gov' },
+    builtWith: { via, asOf: AS_OF, secFiles: provenance.secFiles, edgar: via === 'wayback' ? 'each file from https://web.archive.org/web/2026id_/<sec.gov url>; an exhibit missing there from another capture (CDX) or the filing\'s complete submission file, the capture in companies[].subsidiaries.copy' : 'sec.gov' },
     rules: {
       quarters: QUARTERS, annualForms: [...ANNUAL], exhibits: Object.fromEntries(Object.entries(EXHIBIT).map(([k, v]) => [k, v.source])),
       segments: 'build-truth-v2.mjs segmentTruth on the latest annual report: every member of the business-segment axis; a single-segment report is { oneSegment }',

@@ -28,7 +28,7 @@
     "retrievedAt": "2026-10-20T01:48:37.814Z"
    }
   },
-  "edgar": "each file from https://web.archive.org/web/2026id_/<sec.gov url>, the capture in companies[].subsidiaries"
+  "edgar": "each file from https://web.archive.org/web/2026id_/<sec.gov url>; an exhibit missing there from another capture (CDX) or the filing's complete submission file, the capture in companies[].subsidiaries.copy"
  },
  "rules": {
   "quarters": [
@@ -86,12 +86,14 @@
    "null": 9
   },
   "subsidiaries": {
-   "truth": 81,
-   "null": 49,
+   "truth": 85,
+   "null": 45,
+   "noExhibit": 38,
+   "unscored": 7,
    "byForm": {
     "10-K": {
      "of": 87,
-     "with": 68
+     "with": 72
     },
     "20-F": {
      "of": 31,
@@ -105,8 +107,7 @@
    "nullReasons": {
     "a 40-F files no subsidiaries exhibit": 12,
     "the filing index lists no EX-21 / EX-8": 26,
-    "the archive holds no copy of the exhibit": 9,
-    "the exhibit could not be fetched": 1,
+    "the archive holds no copy of the exhibit": 6,
     "the reader found no subsidiaries in the exhibit": 1
    }
   }
@@ -1518,10 +1519,14 @@
     "sumShare": 1
    },
    "subsidiaries": {
-    "why": "no copy of brc-20250731xex21.htm (404)",
+    "from": "the complete submission file",
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/746598/000074659825000045/0000746598-25-000045-index.htm",
      "copy": "https://web.archive.org/web/20260916071659id_/https://www.sec.gov/Archives/edgar/data/746598/000074659825000045/0000746598-25-000045-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/746598/000074659825000045/0000746598-25-000045.txt",
+     "copy": "https://web.archive.org/web/20261016043000id_/https://www.sec.gov/Archives/edgar/data/746598/000074659825000045/0000746598-25-000045.txt"
     }
    }
   },
@@ -1639,10 +1644,14 @@
     "sumShare": 1
    },
    "subsidiaries": {
-    "why": "no copy of ex-2111231202510xk.htm (404)",
+    "from": "the complete submission file",
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/1478242/000162828026008322/0001628280-26-008322-index.htm",
      "copy": "https://web.archive.org/web/20260908195006id_/https://www.sec.gov/Archives/edgar/data/1478242/000162828026008322/0001628280-26-008322-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1478242/000162828026008322/0001628280-26-008322.txt",
+     "copy": "https://web.archive.org/web/20260218143704id_/https://www.sec.gov/Archives/edgar/data/1478242/000162828026008322/0001628280-26-008322.txt"
     }
    }
   },
@@ -2409,10 +2418,14 @@
     }
    },
    "subsidiaries": {
-    "why": "no copy of a25q4ex211.htm (403)",
+    "from": "another capture",
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/1828108/000182810826000016/0001828108-26-000016-index.htm",
      "copy": "https://web.archive.org/web/20260916033516id_/https://www.sec.gov/Archives/edgar/data/1828108/000182810826000016/0001828108-26-000016-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1828108/000182810826000016/a25q4ex211.htm",
+     "copy": "https://web.archive.org/web/20260211223129id_/https://www.sec.gov/Archives/edgar/data/1828108/000182810826000016/a25q4ex211.htm"
     }
    }
   },
@@ -5343,10 +5356,14 @@
     "sumShare": 1
    },
    "subsidiaries": {
-    "why": "no copy of sbh-ex21_1.htm (404)",
+    "from": "the complete submission file",
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/1368458/000119312525280122/0001193125-25-280122-index.htm",
      "copy": "https://web.archive.org/web/20251205061352id_/https://www.sec.gov/Archives/edgar/data/1368458/000119312525280122/0001193125-25-280122-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1368458/000119312525280122/0001193125-25-280122.txt",
+     "copy": "https://web.archive.org/web/20251205075617id_/https://www.sec.gov/Archives/edgar/data/1368458/000119312525280122/0001193125-25-280122.txt"
     }
    }
   },

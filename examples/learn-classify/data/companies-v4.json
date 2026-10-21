@@ -57,7 +57,9 @@
       "adsh": "0001144800-26-000015",
       "filed": "2026-02-27"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001283699",
@@ -1042,7 +1044,9 @@
       "adsh": "0001213900-26-004364",
       "filed": "2026-01-14"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001968043",
@@ -1155,7 +1159,9 @@
       "adsh": "0001104659-26-020411",
       "filed": "2026-02-26"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001427570",
@@ -1270,7 +1276,9 @@
       "adsh": "0001165002-26-000020",
       "filed": "2026-03-04"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001985139",
@@ -1326,7 +1334,9 @@
       "adsh": "0001493152-26-004368",
       "filed": "2026-01-30"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001877787",
@@ -2216,7 +2226,9 @@
       "adsh": "0000827054-26-000016",
       "filed": "2026-05-21"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": false
+    }
   },
   {
     "cik": "0001674930",
@@ -5225,7 +5237,9 @@
       "adsh": "0001493152-26-012661",
       "filed": "2026-03-25"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0000844551",
@@ -5816,7 +5830,9 @@
       "adsh": "0001104659-26-027443",
       "filed": "2026-03-13"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0000057131",
@@ -5857,7 +5873,9 @@
       "adsh": "0000057131-26-000019",
       "filed": "2026-06-16"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": false
+    }
   },
   {
     "cik": "0001627282",
@@ -7403,7 +7421,9 @@
       "adsh": "0001171843-26-000984",
       "filed": "2026-02-20"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0000880984",
@@ -8264,7 +8284,9 @@
       "adsh": "0001171843-26-000985",
       "filed": "2026-02-20"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0000082811",
@@ -8492,7 +8514,350 @@
       "filed": "2025-09-04",
       "newerPossible": true
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "exhibit": "EX-21",
+      "url": "https://www.sec.gov/Archives/edgar/data/746598/000074659825000045/brc-20250731xex21.htm",
+      "copy": "https://web.archive.org/web/20261016043000id_/https://www.sec.gov/Archives/edgar/data/746598/000074659825000045/0000746598-25-000045.txt",
+      "count": 84,
+      "items": [
+        {
+          "name": "Brady Corporation",
+          "jurisdiction": "Wisconsin"
+        },
+        {
+          "name": "American Barcode and RFID LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Brady Holdings Mexico LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "GravoTech, Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "The Code Corporation",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Tricor Direct, Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Worldmark of Wisconsin Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Brady International Co.",
+          "jurisdiction": "Wisconsin"
+        },
+        {
+          "name": "Brady Worldwide, Inc.",
+          "jurisdiction": "Wisconsin"
+        },
+        {
+          "name": "Precision Dynamics Corporation",
+          "jurisdiction": "California"
+        },
+        {
+          "name": "Brady Australia Holdings Pty. Ltd.",
+          "jurisdiction": "Australia"
+        },
+        {
+          "name": "Brady Australia Pty. Ltd.",
+          "jurisdiction": "Australia"
+        },
+        {
+          "name": "Carroll Australasia Pty. Ltd.",
+          "jurisdiction": "Australia"
+        },
+        {
+          "name": "Gravotech Australia Pty. Ltd.",
+          "jurisdiction": "Australia"
+        },
+        {
+          "name": "Gravotech GmbH",
+          "jurisdiction": "Austria"
+        },
+        {
+          "name": "Gravotech Benelux N.V.",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "Precision Dynamics Europe SRL",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "W.H. Brady N.V.",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "W.H.B. do Brasil Ltda.",
+          "jurisdiction": "Brazil"
+        },
+        {
+          "name": "New Hermes Limited",
+          "jurisdiction": "Canada"
+        },
+        {
+          "name": "W.H.B. Identification Solutions Inc.",
+          "jurisdiction": "Canada"
+        },
+        {
+          "name": "Brady (Beijing) Co. Ltd.",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "Brady (Xiamen) Co., Ltd.",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "Brady Investment Management (Shanghai) Co., Ltd.",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "Brady Printing (Shenzhen) Co., Ltd.",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "Brady Technology (Wuxi) Co. Ltd.",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "Gravotech (Shanghai) Engraving Equipment Co., Ltd.",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "Brady A/S",
+          "jurisdiction": "Denmark"
+        },
+        {
+          "name": "Nordic ID Oyj",
+          "jurisdiction": "Finland"
+        },
+        {
+          "name": "Braton Europe S.A.R.L.",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "Brady Groupe S.A.S.",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "Gravotech Holding SAS",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "Gravotech Marking SAS",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "Securimed S.A.S.",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "Brady GmbH",
+          "jurisdiction": "Germany"
+        },
+        {
+          "name": "Gravotech GmbH",
+          "jurisdiction": "Germany"
+        },
+        {
+          "name": "Bakee Metal Manufactory Company Limited",
+          "jurisdiction": "Hong Kong"
+        },
+        {
+          "name": "Brady Corporation Hong Kong Limited",
+          "jurisdiction": "Hong Kong"
+        },
+        {
+          "name": "Brady Company India Private Limited",
+          "jurisdiction": "India"
+        },
+        {
+          "name": "Gravotech Engineering Private Limited",
+          "jurisdiction": "India"
+        },
+        {
+          "name": "Brady Italia, S.r.l.",
+          "jurisdiction": "Italy"
+        },
+        {
+          "name": "Gravotech Italia S.R.L.",
+          "jurisdiction": "Italy"
+        },
+        {
+          "name": "Gravotech K.K.",
+          "jurisdiction": "Japan"
+        },
+        {
+          "name": "Nippon Brady K.K.",
+          "jurisdiction": "Japan"
+        },
+        {
+          "name": "Brady IDS Korea LLC",
+          "jurisdiction": "Korea"
+        },
+        {
+          "name": "Brady Finance Luxembourg S.à.r.l.",
+          "jurisdiction": "Luxembourg"
+        },
+        {
+          "name": "Brady Luxembourg S.à.r.l.",
+          "jurisdiction": "Luxembourg"
+        },
+        {
+          "name": "Brady S.à.r.l.",
+          "jurisdiction": "Luxembourg"
+        },
+        {
+          "name": "Brady Technology SDN. BHD.",
+          "jurisdiction": "Malaysia"
+        },
+        {
+          "name": "Brady Mexico, S. de R.L. de C.V.",
+          "jurisdiction": "Mexico"
+        },
+        {
+          "name": "Gravotech S. de R.L. de C.V.",
+          "jurisdiction": "Mexico"
+        },
+        {
+          "name": "W.H. Brady S. de R.L. de C.V.",
+          "jurisdiction": "Mexico"
+        },
+        {
+          "name": "Brady B.V.",
+          "jurisdiction": "Netherlands"
+        },
+        {
+          "name": "Brady Finance B.V.",
+          "jurisdiction": "Netherlands"
+        },
+        {
+          "name": "Code Corporation B.V.",
+          "jurisdiction": "Netherlands"
+        },
+        {
+          "name": "Brady AS",
+          "jurisdiction": "Norway"
+        },
+        {
+          "name": "Pervaco AS",
+          "jurisdiction": "Norway"
+        },
+        {
+          "name": "Brady Philippines Services Inc.",
+          "jurisdiction": "Philippines"
+        },
+        {
+          "name": "Brady Polska Sp. Z.o.o.",
+          "jurisdiction": "Poland"
+        },
+        {
+          "name": "Gravotech Sp. Z.o.o.",
+          "jurisdiction": "Poland"
+        },
+        {
+          "name": "Brady Arabia Manufacturing Company",
+          "jurisdiction": "Saudi Arabia"
+        },
+        {
+          "name": "Brady Asia Holding Pte. Ltd.",
+          "jurisdiction": "Singapore"
+        },
+        {
+          "name": "Brady Asia Pacific Pte. Ltd.",
+          "jurisdiction": "Singapore"
+        },
+        {
+          "name": "Brady Corporation Asia Pte. Ltd.",
+          "jurisdiction": "Singapore"
+        },
+        {
+          "name": "Brady Singapore Pte. Ltd.",
+          "jurisdiction": "Singapore"
+        },
+        {
+          "name": "Gravotech Singapore Pte. Ltd.",
+          "jurisdiction": "Singapore"
+        },
+        {
+          "name": "Brady s.r.o.",
+          "jurisdiction": "Slovakia"
+        },
+        {
+          "name": "Grafo Wiremarkers Pty. Ltd.",
+          "jurisdiction": "South Africa"
+        },
+        {
+          "name": "Wiremarkers Africa Pty. Ltd.",
+          "jurisdiction": "South Africa"
+        },
+        {
+          "name": "Brady Identificación S.L.U.",
+          "jurisdiction": "Spain"
+        },
+        {
+          "name": "Brady AB",
+          "jurisdiction": "Sweden"
+        },
+        {
+          "name": "Brady Sweden Holding AB",
+          "jurisdiction": "Sweden"
+        },
+        {
+          "name": "Gravograph AG",
+          "jurisdiction": "Switzerland"
+        },
+        {
+          "name": "Brady (Thailand) Co., Ltd.",
+          "jurisdiction": "Thailand"
+        },
+        {
+          "name": "Brady Etiket ve Isaretleme Ticaret Ltd. Sirketi",
+          "jurisdiction": "Turkey"
+        },
+        {
+          "name": "Brady Middle East FZE",
+          "jurisdiction": "United Arab Emirates"
+        },
+        {
+          "name": "Gravotech DMCC",
+          "jurisdiction": "United Arab Emirates"
+        },
+        {
+          "name": "B.I. (UK) Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Brady Corporation Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Brady European Holdings Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Gravotech Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Magicard Holdings Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Magicard Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Brady Vietnam Company Limited",
+          "jurisdiction": "Vietnam"
+        }
+      ]
+    }
   },
   {
     "cik": "0001837429",
@@ -8541,7 +8906,9 @@
       "adsh": "0001837429-26-000008",
       "filed": "2026-03-26"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0000879764",
@@ -8602,7 +8969,9 @@
       "adsh": "0001104659-26-035876",
       "filed": "2026-03-27"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001478242",
@@ -8651,7 +9020,1742 @@
       "adsh": "0001628280-26-008322",
       "filed": "2026-02-17"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "exhibit": "EX-21.1",
+      "url": "https://www.sec.gov/Archives/edgar/data/1478242/000162828026008322/ex-2111231202510xk.htm",
+      "copy": "https://web.archive.org/web/20260218143704id_/https://www.sec.gov/Archives/edgar/data/1478242/000162828026008322/0001628280-26-008322.txt",
+      "count": 432,
+      "items": [
+        {
+          "name": "159 Solutions, LLC",
+          "jurisdiction": "California"
+        },
+        {
+          "name": "159 Technology Solutions Private Ltd",
+          "jurisdiction": "India"
+        },
+        {
+          "name": "1HQ (NL) B.V.",
+          "jurisdiction": "Netherlands"
+        },
+        {
+          "name": "1HQ Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "1HQ Singapore Pte Ltd",
+          "jurisdiction": "Singapore"
+        },
+        {
+          "name": "1HQ USA, LLC",
+          "jurisdiction": "New York"
+        },
+        {
+          "name": "Accurate Health Auditing and Consulting Société Anonyme of Coordination Organisation & Health Investments",
+          "jurisdiction": "Greece"
+        },
+        {
+          "name": "AECIO IT Solutions India Private Ltd.",
+          "jurisdiction": "India"
+        },
+        {
+          "name": "AIT Bioscience LLC",
+          "jurisdiction": "Indiana"
+        },
+        {
+          "name": "ALIMED Egészségügyi Szolgáltató Korlátolt Felelősségű Társaság",
+          "jurisdiction": "Hungary"
+        },
+        {
+          "name": "Allcare Plus Pharmacy LLC",
+          "jurisdiction": "Massachusetts"
+        },
+        {
+          "name": "Apira Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Apuro.com K.K.",
+          "jurisdiction": "Japan"
+        },
+        {
+          "name": "Arc Bio Communications Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Ascott Sales Integration Pty Ltd",
+          "jurisdiction": "Australia"
+        },
+        {
+          "name": "Asesorias IQVIA Solutions Chile Limitada",
+          "jurisdiction": "Chile"
+        },
+        {
+          "name": "Asserta Centroamerica Medicion de Mercados, S.A.",
+          "jurisdiction": "Guatemala"
+        },
+        {
+          "name": "Avacare Clinical Research Network (Shanghai) Co., Ltd.",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "Battaerd Mansley Pty. Ltd.",
+          "jurisdiction": "Australia"
+        },
+        {
+          "name": "Benefit Holding, Inc.",
+          "jurisdiction": "North Carolina"
+        },
+        {
+          "name": "Bioaxis Healthcare Southeast Europe Home Health Services Single Member Societe Anonyme",
+          "jurisdiction": "Greece"
+        },
+        {
+          "name": "Biofortis, LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Bioteknica, LLC",
+          "jurisdiction": "Florida"
+        },
+        {
+          "name": "Brandshapers Ltd",
+          "jurisdiction": "Ireland"
+        },
+        {
+          "name": "Bridgethorne Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "BuzzeoPDMA LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "BYKAIROS SAS",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "CDS - Centre de Service SAS",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "Cedar Gate Partners, LLC",
+          "jurisdiction": "Connecticut"
+        },
+        {
+          "name": "Cedar Gate Services Pvt. Ltd.",
+          "jurisdiction": "Nepal"
+        },
+        {
+          "name": "Cedar Gate Technologies, Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Cedar Gate Technology Solutions, Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Cegedim Venezuela C.A.",
+          "jurisdiction": "Venezuela"
+        },
+        {
+          "name": "Cenduit Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Ceuta Healthcare Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Ceuta Holdings Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Ceuta International Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "CFS Clinical UK Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Citra Health Solutions Datawing, LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Click Consult Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Clinical Financial Services, LLC",
+          "jurisdiction": "Pennsylvania"
+        },
+        {
+          "name": "Clinical Lab Minority Shareholder Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Clintec International (Pty) Ltd.",
+          "jurisdiction": "South Africa"
+        },
+        {
+          "name": "Clintec International (Thailand) Limited",
+          "jurisdiction": "Thailand"
+        },
+        {
+          "name": "Clintec International doo",
+          "jurisdiction": "Serbia"
+        },
+        {
+          "name": "Clintec International FZ-LLC",
+          "jurisdiction": "United Arab Emirates"
+        },
+        {
+          "name": "Clintec International LLC",
+          "jurisdiction": "Ukraine"
+        },
+        {
+          "name": "Clintec International Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Clintec International Norway AS",
+          "jurisdiction": "Norway"
+        },
+        {
+          "name": "Clintec International Off-Shore S.A.L.",
+          "jurisdiction": "Lebanon"
+        },
+        {
+          "name": "Clintec International Pte Ltd.",
+          "jurisdiction": "Singapore"
+        },
+        {
+          "name": "Clintec International RUS LLC",
+          "jurisdiction": "Russia"
+        },
+        {
+          "name": "Clintec Luxembourg S.A.",
+          "jurisdiction": "Luxembourg"
+        },
+        {
+          "name": "Clintec Turkey Medikal ve Farmasotik Hizmetler Ticaret Limited Sirketi",
+          "jurisdiction": "Turkey"
+        },
+        {
+          "name": "Cogvio, s.r.o.",
+          "jurisdiction": "Czechia"
+        },
+        {
+          "name": "Compliant Community Projects (Pty) Ltd.",
+          "jurisdiction": "South Africa"
+        },
+        {
+          "name": "CONVEMA Versorgungsmanagement GmbH",
+          "jurisdiction": "Germany"
+        },
+        {
+          "name": "CQT Zorg & Gezondheid B.V",
+          "jurisdiction": "Netherlands"
+        },
+        {
+          "name": "CRO Solutions Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "CT Consulting Inc.",
+          "jurisdiction": "Philippines"
+        },
+        {
+          "name": "Data Niche Associates, Inc.",
+          "jurisdiction": "Illinois"
+        },
+        {
+          "name": "Dataline Software Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Datandina Ecuador S.A.",
+          "jurisdiction": "Ecuador"
+        },
+        {
+          "name": "Datec Industria e Comercio, Distribudora Grafica e Mala Direta Ltda.",
+          "jurisdiction": "Brazil"
+        },
+        {
+          "name": "DAVASO GmbH",
+          "jurisdiction": "Germany"
+        },
+        {
+          "name": "Deerwalk, Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "DrugDev Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Emerald Star Holdings LLC",
+          "jurisdiction": "Washington"
+        },
+        {
+          "name": "Enli Health Intelligence Corporation",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "EPG Communication Holdings Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "EURL IQVIA ALGERIA",
+          "jurisdiction": "Algeria"
+        },
+        {
+          "name": "EUROPEAN PHARMACEUTICAL PROMOTION EPP SAS",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "Excel Life Sciences Private Limited",
+          "jurisdiction": "India"
+        },
+        {
+          "name": "FACT",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "Fallon Medica LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Forcea NV",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "Foresight IT Solutions and Consulting India Private Limited",
+          "jurisdiction": "India"
+        },
+        {
+          "name": "GCE Clin Solutions Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "GCE Global Solutions, LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "GCE Solutions International, LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "GCE Solutions, S. de R.L. de C.V.",
+          "jurisdiction": "Mexico"
+        },
+        {
+          "name": "Gen-Pharma (UK) Ltd",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "GHA Buyer, Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "GHA Intermediate, Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Gha Orthopedic Alliance, LLC",
+          "jurisdiction": "Texas"
+        },
+        {
+          "name": "Gha Women'S Health Alliance, LLC",
+          "jurisdiction": "Texas"
+        },
+        {
+          "name": "Global Cardiovascular Alliance, LLC",
+          "jurisdiction": "Texas"
+        },
+        {
+          "name": "Global Crown Investment Limited",
+          "jurisdiction": "Hong Kong"
+        },
+        {
+          "name": "Global Healhcare Alliance Holdings, Inc.",
+          "jurisdiction": "Texas"
+        },
+        {
+          "name": "Global Healthcare Alliance, Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Grace Data Corp.",
+          "jurisdiction": "California"
+        },
+        {
+          "name": "HCP Management Operations, Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Healthcare Business Information Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Hotel Lot C-8B, LLC",
+          "jurisdiction": "North Carolina"
+        },
+        {
+          "name": "Iasist Holdco Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Iasist SAU Agencia en Chile",
+          "jurisdiction": "Chile"
+        },
+        {
+          "name": "ILANE SAS",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "IM Associates BV",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "ImmunXperts",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "IMR International (Australia) PTY Ltd",
+          "jurisdiction": "Australia"
+        },
+        {
+          "name": "IMS (UK) Pension Plan Trustee Company Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IMS Health de Venezuela, C.A.",
+          "jurisdiction": "Venezuela"
+        },
+        {
+          "name": "IMS Health Group Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IMS Health Information Solutions Australia Pty. Ltd",
+          "jurisdiction": "Australia"
+        },
+        {
+          "name": "IMS Health Information Solutions India Private Ltd.",
+          "jurisdiction": "India"
+        },
+        {
+          "name": "IMS Health Networks Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IMS Health Paraguay Srl",
+          "jurisdiction": "Paraguay"
+        },
+        {
+          "name": "IMS Health Uruguay S.A.",
+          "jurisdiction": "Uruguay"
+        },
+        {
+          "name": "IMS Meridian Limited",
+          "jurisdiction": "Hong Kong"
+        },
+        {
+          "name": "IMS Meridian Research Limited",
+          "jurisdiction": "British Virgin Islands"
+        },
+        {
+          "name": "IMS Software Services Ltd.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Incarnus Malaysia Sdn Bhd",
+          "jurisdiction": "Malaysia"
+        },
+        {
+          "name": "Innovex Merger Corp.",
+          "jurisdiction": "North Carolina"
+        },
+        {
+          "name": "Innovex Sağlık Hizmetleri Araştırma Pazarlama Danışmanlık Sanayi ve Ticaret Limited Şirketi",
+          "jurisdiction": "Turkey"
+        },
+        {
+          "name": "Innovex Saglik Urunleri Pazarlama ve Hizmet Danismanlik Anonim Sirketi",
+          "jurisdiction": "Turkey"
+        },
+        {
+          "name": "Inteliquet, Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Intercontinental Medical Statistics International, Ltd.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Intercontinental Medical Statistics Kenya Ltd.",
+          "jurisdiction": "Kenya"
+        },
+        {
+          "name": "Interface Clinical Services Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Interstatistik AG",
+          "jurisdiction": "Switzerland"
+        },
+        {
+          "name": "IPP Informacion Promocional y Publicitaria S.A. de C.V.",
+          "jurisdiction": "Mexico"
+        },
+        {
+          "name": "IQVIA Medical Development (Dalian) Co., Ltd.",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "IQVIA (Thailand) Co., Ltd.",
+          "jurisdiction": "Thailand"
+        },
+        {
+          "name": "IQVIA Adriatic d.o.o. za Konzalting",
+          "jurisdiction": "Croatia"
+        },
+        {
+          "name": "IQVIA Afrique de l'Ouest Francophone",
+          "jurisdiction": "Cote d'Ivoire"
+        },
+        {
+          "name": "IQVIA AG",
+          "jurisdiction": "Switzerland"
+        },
+        {
+          "name": "IQVIA Analytics Services Private Limited",
+          "jurisdiction": "India"
+        },
+        {
+          "name": "IQVIA Asia Pacific Commercial Holdings LLC",
+          "jurisdiction": "North Carolina"
+        },
+        {
+          "name": "IQVIA Beteiligungsgesellschaft mbH",
+          "jurisdiction": "Germany"
+        },
+        {
+          "name": "IQVIA BioSciences Holdings, LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA Biotech LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA Biotech Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Cancer Research",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "IQVIA Chinametrik LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA Clinical AB",
+          "jurisdiction": "Sweden"
+        },
+        {
+          "name": "IQVIA Commercial Deutschland Gmbh",
+          "jurisdiction": "Germany"
+        },
+        {
+          "name": "IQVIA Commercial Finance Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA Commercial GmbH & Co. OHG",
+          "jurisdiction": "Germany"
+        },
+        {
+          "name": "IQVIA Commercial I LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA Commercial Rus LLC",
+          "jurisdiction": "Russia"
+        },
+        {
+          "name": "IQVIA Commercial Trading LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA Consulting and Information Services India Private Limited",
+          "jurisdiction": "India"
+        },
+        {
+          "name": "IQVIA CSMS GmbH",
+          "jurisdiction": "Germany"
+        },
+        {
+          "name": "IQVIA CSMS US Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA Digital Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA Finance Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Finland Oy",
+          "jurisdiction": "Finland"
+        },
+        {
+          "name": "IQVIA FZ-LLC",
+          "jurisdiction": "United Arab Emirates"
+        },
+        {
+          "name": "IQVIA Government Solutions Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA Health Transformation Private Limited",
+          "jurisdiction": "India"
+        },
+        {
+          "name": "IQVIA Healthcare - Sole Proprietorship L.L.C.",
+          "jurisdiction": "United Arab Emirates"
+        },
+        {
+          "name": "IQVIA Healthcare Consulting LLC",
+          "jurisdiction": "Palestine"
+        },
+        {
+          "name": "IQVIA Healthcare for Health Consulting LLC",
+          "jurisdiction": "Palestine"
+        },
+        {
+          "name": "IQVIA Hellas Technology Solutions Single Member S.A.",
+          "jurisdiction": "Greece"
+        },
+        {
+          "name": "IQVIA Holdings (UK) Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Holdings Asia Pte. Ltd.",
+          "jurisdiction": "Singapore"
+        },
+        {
+          "name": "IQVIA Holdings France SAS",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "IQVIA Holdings Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA IES Brasil Ltda.",
+          "jurisdiction": "Brazil"
+        },
+        {
+          "name": "IQVIA IES Denmark ApS",
+          "jurisdiction": "Denmark"
+        },
+        {
+          "name": "IQVIA IES Europe Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA IES European Holdings",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA IES Overseas Holdings Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA IES Puerto Rico Inc.",
+          "jurisdiction": "Puerto Rico"
+        },
+        {
+          "name": "IQVIA IES South Africa (Pty) Limited",
+          "jurisdiction": "South Africa"
+        },
+        {
+          "name": "IQVIA IES UK Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA Information Medical Statistics (Israel) Ltd.",
+          "jurisdiction": "Israel"
+        },
+        {
+          "name": "IQVIA Information Solutions GmbH",
+          "jurisdiction": "Austria"
+        },
+        {
+          "name": "IQVIA Information, S.A.",
+          "jurisdiction": "Spain"
+        },
+        {
+          "name": "IQVIA Integrated Services NL",
+          "jurisdiction": "Netherlands"
+        },
+        {
+          "name": "IQVIA Investment Holdings Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Korea Co. Ltd.",
+          "jurisdiction": "Republic of Korea"
+        },
+        {
+          "name": "IQVIA Laboratories (Beijing) Co. Ltd.",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "IQVIA Laboratories Asia Pte. Ltd.",
+          "jurisdiction": "Singapore"
+        },
+        {
+          "name": "IQVIA Laboratories Canada Inc.",
+          "jurisdiction": "Canada"
+        },
+        {
+          "name": "IQVIA Laboratories Holdings LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA Laboratories Japan K.K.",
+          "jurisdiction": "Japan"
+        },
+        {
+          "name": "IQVIA Laboratories LLC",
+          "jurisdiction": "North Carolina"
+        },
+        {
+          "name": "IQVIA Laboratories Ltd",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Lebanon S.a.r.l.",
+          "jurisdiction": "Lebanon"
+        },
+        {
+          "name": "IQVIA Life Sciences Solutions (Shanghai) Co., Ltd",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "IQVIA Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Maroc S.à r.l.",
+          "jurisdiction": "Morocco"
+        },
+        {
+          "name": "IQVIA Medical Development (Hefei) Co., Ltd.",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "IQVIA MedTech Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA MedTech NV",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "IQVIA Operations France SAS",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "IQVIA Pharma Inc.",
+          "jurisdiction": "North Carolina"
+        },
+        {
+          "name": "IQVIA Pharma Services Corp.",
+          "jurisdiction": "North Carolina"
+        },
+        {
+          "name": "IQVIA Pharmaceutical Marketing Services Ltd.",
+          "jurisdiction": "Slovenia"
+        },
+        {
+          "name": "IQVIA Phase One Services LLC",
+          "jurisdiction": "Kansas"
+        },
+        {
+          "name": "IQVIA Quality Metric Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA RDS (India) Private Ltd.",
+          "jurisdiction": "India"
+        },
+        {
+          "name": "IQVIA RDS (Shanghai) Co., Ltd.",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "IQVIA RDS and Integrated Services Belgium NV",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "IQVIA RDS Argentina S.R.L.",
+          "jurisdiction": "Argentina"
+        },
+        {
+          "name": "IQVIA RDS Asia Inc.",
+          "jurisdiction": "North Carolina"
+        },
+        {
+          "name": "IQVIA RDS Austria GmbH",
+          "jurisdiction": "Austria"
+        },
+        {
+          "name": "IQVIA RDS Brasil Ltda.",
+          "jurisdiction": "Brazil"
+        },
+        {
+          "name": "IQVIA RDS Bulgaria EOOD",
+          "jurisdiction": "Bulgaria"
+        },
+        {
+          "name": "IQVIA RDS Canada ULC",
+          "jurisdiction": "Canada"
+        },
+        {
+          "name": "IQVIA RDS Canada West ULC",
+          "jurisdiction": "Canada"
+        },
+        {
+          "name": "IQVIA RDS Chile",
+          "jurisdiction": "Chile"
+        },
+        {
+          "name": "IQVIA RDS Clindata (Pty.) Ltd.",
+          "jurisdiction": "South Africa"
+        },
+        {
+          "name": "IQVIA RDS Clindepharm (Pty.) Ltd.",
+          "jurisdiction": "South Africa"
+        },
+        {
+          "name": "IQVIA RDS Colombia S.A.S.",
+          "jurisdiction": "Colombia"
+        },
+        {
+          "name": "IQVIA RDS Costa Rica S.A.",
+          "jurisdiction": "Costa Rica"
+        },
+        {
+          "name": "IQVIA RDS Czech Republic s.r.o.",
+          "jurisdiction": "Czechia"
+        },
+        {
+          "name": "IQVIA RDS d.o.o. Beograd",
+          "jurisdiction": "Serbia"
+        },
+        {
+          "name": "IQVIA RDS Denmark A/S",
+          "jurisdiction": "Denmark"
+        },
+        {
+          "name": "IQVIA RDS East Africa Limited",
+          "jurisdiction": "Kenya"
+        },
+        {
+          "name": "IQVIA RDS East Asia Pte. Ltd.",
+          "jurisdiction": "Singapore"
+        },
+        {
+          "name": "IQVIA RDS Eastern Holdings GmbH",
+          "jurisdiction": "Austria"
+        },
+        {
+          "name": "IQVIA RDS Egypt LLC",
+          "jurisdiction": "Egypt"
+        },
+        {
+          "name": "IQVIA RDS Estonia OU",
+          "jurisdiction": "Estonia"
+        },
+        {
+          "name": "IQVIA RDS Finland Oy",
+          "jurisdiction": "Finland"
+        },
+        {
+          "name": "IQVIA RDS France SAS",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "IQVIA RDS Funding LLC",
+          "jurisdiction": "North Carolina"
+        },
+        {
+          "name": "IQVIA RDS GesmbH",
+          "jurisdiction": "Austria"
+        },
+        {
+          "name": "IQVIA RDS GmbH",
+          "jurisdiction": "Germany"
+        },
+        {
+          "name": "IQVIA RDS Guatemala, S.A.",
+          "jurisdiction": "Guatemala"
+        },
+        {
+          "name": "IQVIA RDS Hellas Single Member S.A.",
+          "jurisdiction": "Greece"
+        },
+        {
+          "name": "IQVIA RDS Holdings",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA RDS Hong Kong Limited",
+          "jurisdiction": "Hong Kong"
+        },
+        {
+          "name": "IQVIA RDS Hungary Pharmaceutical Development and Consulting Limited Liability Company",
+          "jurisdiction": "Hungary"
+        },
+        {
+          "name": "IQVIA RDS Inc.",
+          "jurisdiction": "North Carolina"
+        },
+        {
+          "name": "IQVIA RDS Ireland Ltd.",
+          "jurisdiction": "Ireland"
+        },
+        {
+          "name": "IQVIA RDS Israel Ltd.",
+          "jurisdiction": "Israel"
+        },
+        {
+          "name": "IQVIA RDS Italy SRL",
+          "jurisdiction": "Italy"
+        },
+        {
+          "name": "IQVIA RDS Latin America LLC",
+          "jurisdiction": "North Carolina"
+        },
+        {
+          "name": "IQVIA RDS Latvia SIA",
+          "jurisdiction": "Latvia"
+        },
+        {
+          "name": "IQVIA RDS Malaysia Sdn. Bhd.",
+          "jurisdiction": "Malaysia"
+        },
+        {
+          "name": "IQVIA RDS Netherlands B.V.",
+          "jurisdiction": "Netherlands"
+        },
+        {
+          "name": "IQVIA RDS Nigeria Limited",
+          "jurisdiction": "Nigeria"
+        },
+        {
+          "name": "IQVIA RDS Norway",
+          "jurisdiction": "Norway"
+        },
+        {
+          "name": "IQVIA RDS Panama Inc.",
+          "jurisdiction": "Panama"
+        },
+        {
+          "name": "IQVIA RDS Peru S.r.l.",
+          "jurisdiction": "Peru"
+        },
+        {
+          "name": "IQVIA RDS Philippines Inc.",
+          "jurisdiction": "Philippines"
+        },
+        {
+          "name": "IQVIA RDS Poland Sp. Zoo",
+          "jurisdiction": "Poland"
+        },
+        {
+          "name": "IQVIA RDS Pty. Limited",
+          "jurisdiction": "Australia"
+        },
+        {
+          "name": "IQVIA RDS Pty. Ltd.",
+          "jurisdiction": "New Zealand"
+        },
+        {
+          "name": "IQVIA RDS Slovakia, s.r.o.",
+          "jurisdiction": "Slovakia"
+        },
+        {
+          "name": "IQVIA RDS Software Services LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA RDS South Africa (Pty.) Ltd.",
+          "jurisdiction": "South Africa"
+        },
+        {
+          "name": "IQVIA RDS Spain S.L.",
+          "jurisdiction": "Spain"
+        },
+        {
+          "name": "IQVIA RDS Taiwan Ltd.",
+          "jurisdiction": "Taiwan"
+        },
+        {
+          "name": "IQVIA RDS UAB",
+          "jurisdiction": "Lithuania"
+        },
+        {
+          "name": "IQVIA RDS UK Holdings Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA RDS Ukraine",
+          "jurisdiction": "Ukraine"
+        },
+        {
+          "name": "IQVIA RDS Vietnam LLC",
+          "jurisdiction": "Vietnam"
+        },
+        {
+          "name": "IQVIA Regional Headquarter",
+          "jurisdiction": "Saudi Arabia"
+        },
+        {
+          "name": "IQVIA Research and Development Solutions Saudi Arabia Limited",
+          "jurisdiction": "Saudi Arabia"
+        },
+        {
+          "name": "IQVIA Romania S.R.L.",
+          "jurisdiction": "Romania"
+        },
+        {
+          "name": "IQVIA Services Japan LLC/IQVIA Services Japan G.K.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA Site Solutions Japan GK",
+          "jurisdiction": "Japan"
+        },
+        {
+          "name": "IQVIA Soluções de Tecnologia do Brasil Ltda",
+          "jurisdiction": "Brazil"
+        },
+        {
+          "name": "IQVIA Solutions (NZ) Limited",
+          "jurisdiction": "New Zealand"
+        },
+        {
+          "name": "IQVIA Solutions (Pty.) Ltd.",
+          "jurisdiction": "South Africa"
+        },
+        {
+          "name": "IQVIA Solutions a.s.",
+          "jurisdiction": "Czechia"
+        },
+        {
+          "name": "IQVIA Solutions Argentina S.A.",
+          "jurisdiction": "Argentina"
+        },
+        {
+          "name": "IQVIA Solutions Asia Pte. Ltd",
+          "jurisdiction": "Singapore"
+        },
+        {
+          "name": "IQVIA Solutions Australia Holdings Pty. Ltd.",
+          "jurisdiction": "Australia"
+        },
+        {
+          "name": "IQVIA Solutions Australia Pty. Ltd.",
+          "jurisdiction": "Australia"
+        },
+        {
+          "name": "IQVIA Solutions B.V.",
+          "jurisdiction": "Netherlands"
+        },
+        {
+          "name": "IQVIA Solutions Bangladesh Limited",
+          "jurisdiction": "Bangladesh"
+        },
+        {
+          "name": "IQVIA Solutions Belgium BV",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "IQVIA Solutions Bolivia S.R.L.",
+          "jurisdiction": "Bolivia"
+        },
+        {
+          "name": "IQVIA Solutions Bulgaria Eood",
+          "jurisdiction": "Bulgaria"
+        },
+        {
+          "name": "IQVIA Solutions Canada Inc.",
+          "jurisdiction": "Canada"
+        },
+        {
+          "name": "IQVIA Solutions Colombia S.A.",
+          "jurisdiction": "Colombia"
+        },
+        {
+          "name": "IQVIA Solutions Consulting Myanmar Company Limited",
+          "jurisdiction": "Myanmar"
+        },
+        {
+          "name": "IQVIA Solutions del Peru S.A.",
+          "jurisdiction": "Peru"
+        },
+        {
+          "name": "IQVIA Solutions Denmark AS",
+          "jurisdiction": "Denmark"
+        },
+        {
+          "name": "IQVIA Solutions do Brasil Ltda.",
+          "jurisdiction": "Brazil"
+        },
+        {
+          "name": "IQVIA Solutions Egypt Ltd.",
+          "jurisdiction": "Egypt"
+        },
+        {
+          "name": "IQVIA Solutions Enterprise Management Consulting (Hainan) Co., Ltd.",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "IQVIA Solutions Enterprise Management Consulting (Shanghai) Co., Ltd.",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "IQVIA Solutions Finance B.V.",
+          "jurisdiction": "Netherlands"
+        },
+        {
+          "name": "IQVIA Solutions Finance UK I Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Solutions Finance UK II Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Solutions Finance UK III Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Solutions Finance UK V Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Solutions Global Holdings UK Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Solutions Hong Kong Limited",
+          "jurisdiction": "Hong Kong"
+        },
+        {
+          "name": "IQVIA Solutions HQ Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Solutions Ireland Limited",
+          "jurisdiction": "Ireland"
+        },
+        {
+          "name": "IQVIA Solutions Italy S.r.l.",
+          "jurisdiction": "Italy"
+        },
+        {
+          "name": "IQVIA Solutions Japan LLC/IQVIA Solutions Japan G.K.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA Solutions Kazakhstan LLC",
+          "jurisdiction": "Kazakhstan"
+        },
+        {
+          "name": "IQVIA Solutions Korea Ltd.",
+          "jurisdiction": "Republic of Korea"
+        },
+        {
+          "name": "IQVIA Solutions Kuwait for Technical Consultations",
+          "jurisdiction": "Kuwait"
+        },
+        {
+          "name": "IQVIA Solutions Lanka (Private) Limited",
+          "jurisdiction": "Sri Lanka"
+        },
+        {
+          "name": "IQVIA Solutions LLC",
+          "jurisdiction": "Russia"
+        },
+        {
+          "name": "IQVIA Solutions Luxembourg S.à r.l.",
+          "jurisdiction": "Luxembourg"
+        },
+        {
+          "name": "IQVIA Solutions Malaysia Sdn. Bhd.",
+          "jurisdiction": "Malaysia"
+        },
+        {
+          "name": "IQVIA Solutions Norway AS",
+          "jurisdiction": "Norway"
+        },
+        {
+          "name": "IQVIA Solutions Operations Center Philippines Inc.",
+          "jurisdiction": "Philippines"
+        },
+        {
+          "name": "IQVIA Solutions Pakistan (Private) Limited",
+          "jurisdiction": "Pakistan"
+        },
+        {
+          "name": "IQVIA Solutions Philippines Inc.",
+          "jurisdiction": "Philippines"
+        },
+        {
+          "name": "IQVIA Solutions Poland Sp. z o.o",
+          "jurisdiction": "Poland"
+        },
+        {
+          "name": "IQVIA Solutions Portugal, Unipessoal Lda",
+          "jurisdiction": "Portugal"
+        },
+        {
+          "name": "IQVIA Solutions Puerto Rico Inc.",
+          "jurisdiction": "Puerto Rico"
+        },
+        {
+          "name": "IQVIA Solutions Regional Pte. Ltd.",
+          "jurisdiction": "Singapore"
+        },
+        {
+          "name": "IQVIA Solutions Republica Dominicana, S.R.L.",
+          "jurisdiction": "Dominican Republic"
+        },
+        {
+          "name": "IQVIA Solutions s.r.o.",
+          "jurisdiction": "Slovakia"
+        },
+        {
+          "name": "IQVIA Solutions Saudi Arabia Limited",
+          "jurisdiction": "Saudi Arabia"
+        },
+        {
+          "name": "IQVIA Solutions Services Ltd.",
+          "jurisdiction": "Hungary"
+        },
+        {
+          "name": "IQVIA Solutions Taiwan Ltd.",
+          "jurisdiction": "Taiwan"
+        },
+        {
+          "name": "IQVIA Solutions Tunisia S.à r.l.",
+          "jurisdiction": "Tunisia"
+        },
+        {
+          "name": "IQVIA Solutions UK Investments Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Solutions UK Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Sweden AB",
+          "jurisdiction": "Sweden"
+        },
+        {
+          "name": "IQVIA Technology Services Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Technology Solutions Colombia Ltda.",
+          "jurisdiction": "Colombia"
+        },
+        {
+          "name": "IQVIA Technology Solutions Egypt LLC",
+          "jurisdiction": "Egypt"
+        },
+        {
+          "name": "IQVIA Technology Solutions Romania Srl",
+          "jurisdiction": "Romania"
+        },
+        {
+          "name": "IQVIA Technology Solutions s.r.o.",
+          "jurisdiction": "Slovakia"
+        },
+        {
+          "name": "IQVIA Technology Solutions s.r.o.",
+          "jurisdiction": "Czechia"
+        },
+        {
+          "name": "IQVIA Technology Solutions Ukraine LLC",
+          "jurisdiction": "Ukraine"
+        },
+        {
+          "name": "IQVIA Technology Tunisia S.à r.l.",
+          "jurisdiction": "Tunisia"
+        },
+        {
+          "name": "IQVIA Tibbi Istatistik Ticaret ve Musavirlik Ltd. Sirketi",
+          "jurisdiction": "Turkey"
+        },
+        {
+          "name": "IQVIA Trading Management Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "IQVIA West Africa",
+          "jurisdiction": "Senegal"
+        },
+        {
+          "name": "IQVIA World Publications Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "IQVIA Zagreb d.o.o.",
+          "jurisdiction": "Croatia"
+        },
+        {
+          "name": "IVM Plus GmbH",
+          "jurisdiction": "Germany"
+        },
+        {
+          "name": "Kun Tai Medical Development Hong Kong Limited",
+          "jurisdiction": "Hong Kong"
+        },
+        {
+          "name": "Kun Tuo Medical Research & Development (Beijing) Co. Ltd.",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "Laboratorio Commuq Pharma SLU",
+          "jurisdiction": "Spain"
+        },
+        {
+          "name": "LH Perspectives Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Linguamatics Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Linguamatics Solutions Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "LINICA, Inc.",
+          "jurisdiction": "Japan"
+        },
+        {
+          "name": "M&H Informatics (BD) Ltd.",
+          "jurisdiction": "Bangladesh"
+        },
+        {
+          "name": "MCRA (U.K.) Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "MCRA Germany GmbH",
+          "jurisdiction": "Germany"
+        },
+        {
+          "name": "MCRA Switzerland GmbH",
+          "jurisdiction": "Switzerland"
+        },
+        {
+          "name": "MCRA, LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "MedForce Medical Education, LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Medicines Evaluation Unit Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Medpages International Proprietary Limited",
+          "jurisdiction": "South Africa"
+        },
+        {
+          "name": "Med-Vantage, Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Mercados Y Analisis, S.A.",
+          "jurisdiction": "Spain"
+        },
+        {
+          "name": "Mercurial Insights Holding Pty. Ltd.",
+          "jurisdiction": "Australia"
+        },
+        {
+          "name": "Mercurial Insights Pty. Ltd.",
+          "jurisdiction": "Australia"
+        },
+        {
+          "name": "Meridian Research Vietnam Ltd.",
+          "jurisdiction": "Vietnam"
+        },
+        {
+          "name": "Metrika Business Intelligence Consulting, Inc.",
+          "jurisdiction": "Canada"
+        },
+        {
+          "name": "Mighty myT, Inc",
+          "jurisdiction": "Japan"
+        },
+        {
+          "name": "MZI Healthcare, LLC",
+          "jurisdiction": "Florida"
+        },
+        {
+          "name": "New Experimental Therapeutics Of San Antonio, LLC",
+          "jurisdiction": "Texas"
+        },
+        {
+          "name": "Nexelis Europe",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "Nexelis Group LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Nexelis Marburg GmbH",
+          "jurisdiction": "Germany"
+        },
+        {
+          "name": "NEXT BRASIL LTDA.",
+          "jurisdiction": "Brazil"
+        },
+        {
+          "name": "Next Texas, LLC",
+          "jurisdiction": "Texas"
+        },
+        {
+          "name": "NEXT Virginia, LLC",
+          "jurisdiction": "Texas"
+        },
+        {
+          "name": "Novasyte Services Corp.",
+          "jurisdiction": "Canada"
+        },
+        {
+          "name": "Novasyte, LLC",
+          "jurisdiction": "California"
+        },
+        {
+          "name": "Novex Pharma Laboratorio S.L.",
+          "jurisdiction": "Spain"
+        },
+        {
+          "name": "Nuevo Health Pty Limited",
+          "jurisdiction": "Australia"
+        },
+        {
+          "name": "Omni Care Consult",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "Open Applications Consulting Limited",
+          "jurisdiction": "Ireland"
+        },
+        {
+          "name": "Operaciones Centralizadas Latinoamericana Limitada",
+          "jurisdiction": "Chile"
+        },
+        {
+          "name": "Optimum Contact Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Orange Health Solutions, Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Outcome Sciences, LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Penderwood Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Pharma Deals Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Pharma Strategy Group Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Pharmaforce, S.A. de C.V.",
+          "jurisdiction": "Mexico"
+        },
+        {
+          "name": "PharmaReview Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Pharmaspectra Group Ltd.",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Pharmaspectra Informatics Private Limited",
+          "jurisdiction": "India"
+        },
+        {
+          "name": "Phoenix Group Holdings, LLC",
+          "jurisdiction": "New Jersey"
+        },
+        {
+          "name": "PJ Monoceros-O K.K.",
+          "jurisdiction": "Japan"
+        },
+        {
+          "name": "PJ Monoceros-OO K.K.",
+          "jurisdiction": "Japan"
+        },
+        {
+          "name": "Polaris Management Partners, LLC",
+          "jurisdiction": "New Jersey"
+        },
+        {
+          "name": "Polaris Solutions Ltd.",
+          "jurisdiction": "Hong Kong"
+        },
+        {
+          "name": "Polaris Solutions, LLC",
+          "jurisdiction": "New York"
+        },
+        {
+          "name": "PR Editions S.A.S.",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "Prioritis Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Privacy Analytics Inc.",
+          "jurisdiction": "Canada"
+        },
+        {
+          "name": "Prometheus Research, LLC",
+          "jurisdiction": "Connecticut"
+        },
+        {
+          "name": "PT IQVIA RDS Indonesia",
+          "jurisdiction": "Indonesia"
+        },
+        {
+          "name": "PT IQVIA Solutions Indonesia",
+          "jurisdiction": "Indonesia"
+        },
+        {
+          "name": "Purple Moon Agency LLC",
+          "jurisdiction": "Colorado"
+        },
+        {
+          "name": "Q Squared Solutions (Pty) Ltd",
+          "jurisdiction": "South Africa"
+        },
+        {
+          "name": "Q Squared Solutions (Quest) LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Q Squared Solutions B.V.",
+          "jurisdiction": "Netherlands"
+        },
+        {
+          "name": "Q Squared Solutions BioSciences LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Q Squared Solutions China (Quest) Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Q Squared Solutions China Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Q Squared Solutions Expression Analysis LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Q Squared Solutions Group Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Q Squared Solutions Holdings B.V.",
+          "jurisdiction": "Netherlands"
+        },
+        {
+          "name": "Q Squared Solutions Holdings Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Q Squared Solutions Holdings LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Q Squared Solutions S.A.",
+          "jurisdiction": "Argentina"
+        },
+        {
+          "name": "QCare Site Services, Inc.",
+          "jurisdiction": "North Carolina"
+        },
+        {
+          "name": "Q-Consult Zorg Groep B.V.",
+          "jurisdiction": "Netherlands"
+        },
+        {
+          "name": "QH Research Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Q-Talent B.V.",
+          "jurisdiction": "Netherlands"
+        },
+        {
+          "name": "Quality Health Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "Quintiles Benin S.A.R.L.U.",
+          "jurisdiction": "Benin"
+        },
+        {
+          "name": "Quintiles Commercial Laboratorio S.L.U.",
+          "jurisdiction": "Spain"
+        },
+        {
+          "name": "Quintiles Finance Uruguay S.r.L.",
+          "jurisdiction": "Uruguay"
+        },
+        {
+          "name": "Quintiles Mauritius Holdings",
+          "jurisdiction": "Mauritius"
+        },
+        {
+          "name": "Quintiles Medical Development (Shanghai) Co., Ltd.",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "Quintiles Mexico, S. de R.L. de C.V.",
+          "jurisdiction": "Mexico"
+        },
+        {
+          "name": "Quintiles West Africa Limited",
+          "jurisdiction": "Ghana"
+        },
+        {
+          "name": "RCA Factory SAS",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "RedPharma SA",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "REPSCO Promotion SAS",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "REPSCO RECRUTEMENT FORMATION SAS",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "Rules-Based Medicine Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "RxJet Transportation Services Corp.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Sales & Marketing Outsource Solutions Ltd",
+          "jurisdiction": "Ireland"
+        },
+        {
+          "name": "Salesway SAS",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "Shanghai Illuminera Digital Technology Co., Ltd.",
+          "jurisdiction": "China"
+        },
+        {
+          "name": "Simpson Healthcare Executives, LLC",
+          "jurisdiction": "Connecticut"
+        },
+        {
+          "name": "Source Informatics Limited",
+          "jurisdiction": "United Kingdom"
+        },
+        {
+          "name": "StatFin Estonia OÜ",
+          "jurisdiction": "Estonia"
+        },
+        {
+          "name": "STI Technologies Limited",
+          "jurisdiction": "Canada"
+        },
+        {
+          "name": "Summit Global Health, LLC",
+          "jurisdiction": "Connecticut"
+        },
+        {
+          "name": "Throtle Holdings Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "UAB IQVIA Commercial",
+          "jurisdiction": "Lithuania"
+        },
+        {
+          "name": "Value Outcomes s.r.o.",
+          "jurisdiction": "Czechia"
+        },
+        {
+          "name": "Valuecentric Privacy Solutions LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Vivacity Health Pty. Ltd.",
+          "jurisdiction": "Australia"
+        },
+        {
+          "name": "Vorpal Technologies KK",
+          "jurisdiction": "Japan"
+        },
+        {
+          "name": "WHIZDOTAI INDIA PRIVATE LIMITED",
+          "jurisdiction": "India"
+        }
+      ]
+    }
   },
   {
     "cik": "0001616262",
@@ -8699,7 +10803,9 @@
       "adsh": "0001193125-26-248296",
       "filed": "2026-05-29"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": false
+    }
   },
   {
     "cik": "0001873093",
@@ -8731,7 +10837,9 @@
       "adsh": "0001493152-26-013813",
       "filed": "2026-03-31"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001900720",
@@ -8793,7 +10901,9 @@
       "filed": "2026-01-14",
       "newerPossible": true
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0000733099",
@@ -8841,7 +10951,9 @@
       "adsh": "0000733099-26-000009",
       "filed": "2026-03-06"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001665300",
@@ -8987,7 +11099,9 @@
       "filed": "2025-10-01",
       "newerPossible": true
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": false
+    }
   },
   {
     "cik": "0001456346",
@@ -9035,7 +11149,9 @@
       "adsh": "0001104659-26-032133",
       "filed": "2026-03-19"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001334036",
@@ -9361,7 +11477,9 @@
       "adsh": "0001213900-26-036917",
       "filed": "2026-03-31"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001951222",
@@ -9740,7 +11858,9 @@
       "adsh": "0000726958-26-000046",
       "filed": "2026-06-22"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": false
+    }
   },
   {
     "cik": "0001823239",
@@ -9940,7 +12060,9 @@
       "adsh": "0001062993-26-001679",
       "filed": "2026-03-30"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001581990",
@@ -10350,7 +12472,26 @@
       "adsh": "0001828108-26-000016",
       "filed": "2026-02-11"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "exhibit": "EX-21.1",
+      "url": "https://www.sec.gov/Archives/edgar/data/1828108/000182810826000016/a25q4ex211.htm",
+      "copy": "https://web.archive.org/web/20260211223129id_/https://www.sec.gov/Archives/edgar/data/1828108/000182810826000016/a25q4ex211.htm",
+      "count": 3,
+      "items": [
+        {
+          "name": "Aurora Innovation Holdings, Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Aurora Operations, Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Other subsidiaries*",
+          "jurisdiction": "Various"
+        }
+      ]
+    }
   },
   {
     "cik": "0001648087",
@@ -10605,7 +12746,9 @@
       "adsh": "0001104659-26-019005",
       "filed": "2026-02-24"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0000056701",
@@ -10636,7 +12779,9 @@
       "filed": "2025-08-29",
       "newerPossible": true
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001050446",
@@ -11580,7 +13725,9 @@
       "adsh": "0000849399-26-000017",
       "filed": "2026-05-21"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": false
+    }
   },
   {
     "cik": "0001474735",
@@ -13166,7 +15313,9 @@
       "adsh": "0001178913-26-000749",
       "filed": "2026-03-05"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001847409",
@@ -13214,7 +15363,9 @@
       "adsh": "0001628280-26-004157",
       "filed": "2026-01-29"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001027664",
@@ -13274,7 +15425,9 @@
       "adsh": "0001027664-26-000005",
       "filed": "2026-03-17"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001298675",
@@ -14598,7 +16751,9 @@
       "adsh": "0001545772-26-000006",
       "filed": "2026-02-27"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001674101",
@@ -15403,7 +17558,9 @@
       "adsh": "0001104659-26-023553",
       "filed": "2026-03-04"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001048268",
@@ -15829,7 +17986,9 @@
       "adsh": "0001493152-26-013635",
       "filed": "2026-03-30"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001843586",
@@ -16091,7 +18250,9 @@
       "adsh": "0001493152-26-006699",
       "filed": "2026-02-13"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001408075",
@@ -16580,7 +18741,9 @@
       "adsh": "0001140361-26-009238",
       "filed": "2026-03-12"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001668717",
@@ -16621,7 +18784,9 @@
       "adsh": "0001193125-26-088105",
       "filed": "2026-03-03"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001574565",
@@ -16722,7 +18887,9 @@
       "adsh": "0001185185-26-000710",
       "filed": "2026-03-02"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001844505",
@@ -16754,7 +18921,9 @@
       "adsh": "0001628280-26-020909",
       "filed": "2026-03-25"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0000105418",
@@ -16850,7 +19019,9 @@
       "adsh": "0000932696-26-000007",
       "filed": "2026-02-12"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": false
+    }
   },
   {
     "cik": "0001100682",
@@ -19117,7 +21288,9 @@
       "adsh": "0001193125-26-128771",
       "filed": "2026-03-27"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0000761648",
@@ -19491,7 +21664,9 @@
       "adsh": "0000837465-26-000010",
       "filed": "2026-02-27"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0000838875",
@@ -19532,7 +21707,9 @@
       "adsh": "0001199835-26-000061",
       "filed": "2026-03-24"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0000868675",
@@ -19561,7 +21738,9 @@
       "adsh": "0001104659-26-013854",
       "filed": "2026-02-12"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0000894871",
@@ -25398,7 +27577,206 @@
       "adsh": "0001193125-25-280122",
       "filed": "2025-11-13"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "exhibit": "EX-21.1",
+      "url": "https://www.sec.gov/Archives/edgar/data/1368458/000119312525280122/sbh-ex21_1.htm",
+      "copy": "https://web.archive.org/web/20251205075617id_/https://www.sec.gov/Archives/edgar/data/1368458/000119312525280122/0001193125-25-280122.txt",
+      "count": 48,
+      "items": [
+        {
+          "name": "Arcadia Beauty Labs LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Arcadia Beauty Labs II LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Armstrong McCall Holdings, Inc.",
+          "jurisdiction": "Texas"
+        },
+        {
+          "name": "Armstrong McCall Holdings, L.L.C.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Armstrong McCall Management, L.C.",
+          "jurisdiction": "Texas"
+        },
+        {
+          "name": "Armstrong McCall, L.P.",
+          "jurisdiction": "Texas"
+        },
+        {
+          "name": "Beauty Holding LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Beauty Systems Group (Canada), Inc.",
+          "jurisdiction": "Canada"
+        },
+        {
+          "name": "Beauty Systems Group LLC",
+          "jurisdiction": "Virginia"
+        },
+        {
+          "name": "BSG Canada Holdings Company",
+          "jurisdiction": "Canada"
+        },
+        {
+          "name": "Diorama Services Company, LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Gen X Beauty LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Innovations-Successful Salon Services",
+          "jurisdiction": "California"
+        },
+        {
+          "name": "Kapperscentrale Bauwens N.V.",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "Loxa Beauty LLC",
+          "jurisdiction": "Indiana"
+        },
+        {
+          "name": "MHR Limited",
+          "jurisdiction": "England"
+        },
+        {
+          "name": "Neka Salon Supply, Inc.",
+          "jurisdiction": "New Hampshire"
+        },
+        {
+          "name": "Procare Laboratories, Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Pro-Duo Deutschland GmbH",
+          "jurisdiction": "Germany"
+        },
+        {
+          "name": "Pro-Duo France SAS",
+          "jurisdiction": "France"
+        },
+        {
+          "name": "Pro-Duo NV",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "Sally Beauty Canada Holdings LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Sally Beauty de Puerto Rico, Inc.",
+          "jurisdiction": "Puerto Rico"
+        },
+        {
+          "name": "Sally Beauty International Finance LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Sally Beauty International, Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Sally Beauty Military Supply LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Sally Beauty Netherlands BV",
+          "jurisdiction": "Netherlands"
+        },
+        {
+          "name": "Sally Beauty Supply BV",
+          "jurisdiction": "Netherlands"
+        },
+        {
+          "name": "Sally Beauty Supply LLC",
+          "jurisdiction": "Virginia"
+        },
+        {
+          "name": "Sally Capital Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Sally Chile Global Holdings SpA",
+          "jurisdiction": "Chile"
+        },
+        {
+          "name": "Sally Chile Holding SpA",
+          "jurisdiction": "Chile"
+        },
+        {
+          "name": "Sally Chile Worldwide Holdings SpA",
+          "jurisdiction": "Chile"
+        },
+        {
+          "name": "Sally Holdings LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Sally International Holdings LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Sally Investment Holdings LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Sally Salon Services (Ireland) Ltd",
+          "jurisdiction": "Ireland"
+        },
+        {
+          "name": "Sally Salon Services Ltd",
+          "jurisdiction": "England"
+        },
+        {
+          "name": "Sally UK Holdings Limited",
+          "jurisdiction": "England"
+        },
+        {
+          "name": "Salon Success International, LLC",
+          "jurisdiction": "Florida"
+        },
+        {
+          "name": "SBCBSG Company de Mexico, S. de R.L. de C.V.",
+          "jurisdiction": "Mexico"
+        },
+        {
+          "name": "SBCEDIS Company de Mexico, S. de R.L. de C.V.",
+          "jurisdiction": "Mexico"
+        },
+        {
+          "name": "SBH Inspires Foundation",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "SBIFCO Company de Mexico, S.A. de C.V.",
+          "jurisdiction": "Mexico"
+        },
+        {
+          "name": "Sinelco Group BV",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "Sinelco International BV",
+          "jurisdiction": "Belgium"
+        },
+        {
+          "name": "Sinelco Italiana SRL",
+          "jurisdiction": "Italy"
+        },
+        {
+          "name": "Vigox BV",
+          "jurisdiction": "Belgium"
+        }
+      ]
+    }
   },
   {
     "cik": "0001546417",
@@ -26142,7 +28520,9 @@
       "adsh": "0001722387-26-000004",
       "filed": "2026-03-25"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001747079",
@@ -27054,7 +29434,9 @@
       "adsh": "0001493152-26-009371",
       "filed": "2026-03-09"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0001892274",
@@ -27085,7 +29467,9 @@
       "filed": "2026-01-28",
       "newerPossible": true
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   },
   {
     "cik": "0002018222",
@@ -27118,6 +29502,8 @@
       "adsh": "0001493152-26-002647",
       "filed": "2026-01-16"
     },
-    "subsidiaries": null
+    "subsidiaries": {
+      "noExhibit": true
+    }
   }
 ]
