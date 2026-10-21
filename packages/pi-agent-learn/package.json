@@ -2,7 +2,7 @@
   "name": "@parcha/pi-agent-learn",
   "version": "0.1.0-beta.20",
   "private": true,
-  "description": "An agent that learns in its own git repository: a learn tool that costs nothing, a <learned> prompt section read at a fixed commit, and the host steps that seed a run from it.",
+  "description": "An agent that learns in its own git repository: a learn tool that costs nothing, a <learned> prompt section read at a fixed commit, host steps that seed a run and propose what it learned, a curator that merges it to main, and saved workflows promoted on receipts.",
   "keywords": [
     "pi",
     "pi-durable",
