@@ -37,8 +37,9 @@ import { askToBeKilled, aroundOwnFiling, crossings, tapFakes, tapHost, tapLive, 
 import { keepLooks, shownShots } from './looks.ts';
 import { transcriberFromEnv } from './transcriber.ts';
 import type { LookRecord } from '@parcha/pi-vision';
+import { cleanExit, releasedOutcome, type HandoffFailure } from './handoff.ts';
 import { localPlace, type Exit, type Place, type Runner } from './place.ts';
-import { checkModelKeys, checkPrograms, refuseJudgeCaps, inputOf, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, killsOf, maxUsdOf, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
+import { checkModelKeys, checkPrograms, refuseJudgeCaps, inputOf, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, handoffPlansOf, handoffsOf, killsOf, maxUsdOf, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
 import { cost } from './fold.ts';
 import { checkItems, fetchSources, missingCommitted, readSources, withSources } from './sources.ts';
 import { localHost, type BrowserPlane, type Fakes, type Host, type RunPlace } from './host.ts';
@@ -52,7 +53,7 @@ import { scanPlaced, scanRecording, signInFile, trackSecrets } from './secrets.t
 export type LiveParts = { host?: Partial<Host>; /** The live tools, the same name -> function map as `Fakes.tools`: on `--live` the effect door (evidence, receipts, kill crossings) dispatches to these. A tool missing here runs from `fakes.tools` only when demo.json's `tools` entry for it says `local: "fakes"`, else the call fails `no live source for <tool>`. Without `tools`, every tool runs from `fakes.tools` as before. */ tools?: Fakes['tools']; /** Which models the live parts chose (flags, defaults, the sign-in's plan): reported with the run's outcome, and handed to `manifest` as `models`. */ models?: Record<string, string>; /** The live vision options, built from the host and the running run exactly as `fakes.vision` is: one seam for both. */ vision?: (host: Host, running: { readonly harness: Harness | undefined }, context: { input: Record<string, unknown>; place: { root: string; work: string } }) => Partial<VisionAdapterOptions> };
 /** The model choices on the command line, handed to the demo's `live` part. */
 export type LiveModels = { provider?: string; model?: string; eyesModel?: string };
-const RESERVED = new Set(['format', 'title', 'task', 'model', 'generations', 'kills', 'code', 'cost', 'recorded', 'source', 'result', 'providers', 'see_also', 'job', 'store', 'baseline', 'artifact']);
+const RESERVED = new Set(['format', 'title', 'task', 'model', 'generations', 'kills', 'handoffs', 'code', 'cost', 'recorded', 'source', 'result', 'providers', 'see_also', 'job', 'store', 'baseline', 'artifact']);
 export type DemoOptions = {
   /** How long the live recorder holds a line before placing it in `events.jsonl` (default 1000 ms, the time every writer has to get it to a spool). A test knob; a place whose clock is far from the host's wants it longer. */
   followHoldMs?: number;
@@ -107,9 +108,13 @@ export type DemoResult = {
   failedSignals: Array<{ gen: number; code: string }>;
   /** The points of planned kills that never landed: the process finished without taking the crossing. A demo whose kill does not land is broken. */
   unlanded: string[];
+  /** The handoffs that landed: a process released the run sealed at its planned crossing and the next opened it. */
+  handoffs: number;
+  /** Planned handoffs that did not land, with why (`handoff.failed` lines); a public take has none. */
+  failedHandoffs: Array<{ gen: number; point: string; reason: HandoffFailure }>;
 };
 
-const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, debug: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true }, 'operator-kill': { type: 'string' } } as const;
+const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, handoff: { type: 'boolean' }, debug: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true }, 'operator-kill': { type: 'string' } } as const;
 /** The repository a demo lives in: `options.root`, else the nearest folder above the demo's own file that holds a
  *  `package.json` or a `.git`. Never this package's own location, which is inside `node_modules` once installed. */
 function rootOf(options: { root?: string; self: string }): string {
@@ -130,9 +135,9 @@ export async function demo(options: DemoOptions): Promise<DemoResult | undefined
   if (values.child) { await child(options); return undefined; }
   const result = await supervise(options, values);
   if (values.json) console.log(JSON.stringify(result));
-  else summarize(options, result, Boolean(values.kill || values.debug));
+  else summarize(options, result, Boolean(values.kill || values.handoff || values.debug));
   // A command line ends with a failing code when the run did not complete or went past its cap; a caller that passed its own arguments reads the result.
-  if (options.argv === undefined && (result.overBudget || result.failedKills.length || result.failedSignals.length || result.unlanded.length || result.processes.at(-1)?.outcome?.status !== 'complete')) process.exitCode = 1;
+  if (options.argv === undefined && (result.overBudget || result.failedKills.length || result.failedSignals.length || result.failedHandoffs.length || result.unlanded.length || result.processes.at(-1)?.outcome?.status !== 'complete')) process.exitCode = 1;
   return result;
 }
 
@@ -383,7 +388,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   refuseJudgeCaps(spec);
   // A place of the caller's runs the job somewhere else, with that machine's programs; the default place runs it here.
   if (!options.place) checkPrograms(spec, live);
-  const plans = values.kill ? plansOf(killsOf(spec)) : [];
+  // `--kill` runs the spec's kills, `--handoff` its handoffs (a process releases the run cleanly and the next opens it), neither runs none, and both together are refused. A spec may hold both lists; only the one that runs is checked.
+  if (values.kill && values.handoff) throw new Error('--kill and --handoff are different runs: pass one.');
+  const plans = values.kill ? plansOf(killsOf(spec)) : values.handoff ? handoffPlansOf(handoffsOf(spec)) : [];
   const maxUsd = maxUsdOf(values['max-usd'], spec);
   // The operator's control file: a path the caller names (`--operator-kill`), which must not exist yet (a stale one would kill the first process).
   const operatorKill = values['operator-kill'] ? resolve(values['operator-kill']) : undefined;
@@ -444,6 +451,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const failedKills: DemoResult['failedKills'] = [];
   const failedSignals: DemoResult['failedSignals'] = [];
   const unlanded: string[] = [];
+  let handoffs = 0;
+  const failedHandoffs: DemoResult['failedHandoffs'] = [];
   let overBudget = false;
   // Where the session lives, as paths in the place: computed, not made. The supervisor touches nothing under them; the place makes them.
   // A directory a run already used keeps its identity (run.json's `run`, whatever name this version would give it): a saved run resumes under the name it was started with.
@@ -458,6 +467,11 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // (RECORDING.md's host row). Read at the boundaries (a runner's start and exit, a kill, a result) and on a slow tick while a runner runs; a place without `status()` writes none, and a reading never fails the run.
   let lastRunRecord = '';
   let lastGeneration: number | undefined;
+  // What the last reading of run.json said: the run's status and the label of the holder it last named (a released run names none), for a handoff's line.
+  let lastRunStatus: string | undefined;
+  let lastRunSeal: number | null = null;
+  const sealOf = new Map<number, number | null>();
+  let lastHolderLabel: string | undefined;
   let currentGen = 0;
   const delegationSeen = new Map<string, string>();
   const hostLabels = new Map<string, string>();
@@ -483,6 +497,12 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         const record = status?.record;
         if (record && typeof record.run === 'string' && Number.isInteger(record.generation)) {
           lastGeneration = record.generation as number;
+          lastRunStatus = typeof record.status === 'string' ? record.status : undefined;
+          // What run.json carries of the seal (the disk package's status.ts): `sealedSeq` is the store's last committed sequence at a clean release, null once the generation's store is open and while it runs, and the previous release's seal only
+          // between a claim and that point. It does not name its generation; the record's `generation` (incremented on every claim) is the generation that wrote it, and a release writes status and seal into that same record.
+          const seal = Number.isInteger(record.sealedSeq) ? record.sealedSeq as number : null;
+          sealOf.set(record.generation as number, seal);
+          lastRunSeal = seal;
           const key = JSON.stringify([record.status, record.generation, record.holder, record.sealedSeq]);
           if (key !== lastRunRecord) {
             lastRunRecord = key;
@@ -491,6 +511,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
             const holder = record.holder && typeof record.holder === 'object' ? (record.holder as Record<string, unknown>) : undefined;
             const kept = (source: Record<string, unknown>, names: readonly string[]) => Object.fromEntries(names.filter((name) => source[name] !== undefined).map((name) => [name, source[name]]));
             const safeHolder = holder ? { ...kept(holder, ['driver', 'pid', 'since']), ...(typeof holder.host === 'string' ? { host: labelOf(hostLabels, 'host', holder.host) } : {}), ...(typeof holder.bootId === 'string' ? { bootId: labelOf(bootLabels, 'boot', holder.bootId) } : {}) } : undefined;
+            if (typeof safeHolder?.host === 'string') lastHolderLabel = safeHolder.host;
             const detail = record.detail === undefined || record.detail === null ? undefined : plainText(record.detail);
             supervisor.host('run.json', { gen: record.generation, ...kept(record, ['run', 'status', 'generation', 'sealedSeq', 'wakeAt', 'heartbeatAt', 'updatedAt']), ...(safeHolder ? { holder: safeHolder } : {}), ...(detail ? { detail } : {}) });
           }
@@ -551,6 +572,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
     // The follower's hold reads the place's clock allowance from here on (it was assigned before the place existed, so it was never seen).
     placeRef = place;
+    // A handoff is told by the run's own record (`sleeping` or `paused` after the process left), which a place reads through `status()`: a place without it cannot hand off, and is refused before anything starts.
+    if (plans.some((entry) => 'handoff' in entry && entry.handoff) && !place.status) throw new Error(`the ${place.name} place cannot report the run's status, which a handoff is told by: --handoff is not one it can make`);
     const remaining = childPlansOf(plans);
     let runner: Runner | undefined;
     let previous: { runner: Runner; kind: 'process' | 'box' } | undefined;
@@ -559,8 +582,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       if (overBudget && processes.length > 0) break;
       const queued = remaining.shift();
       const plan = queued ?? { tools: [] };
-      // A kill this attempt plans that the place cannot make is refused before the attempt starts: the run is not stopped first, and no machine loss is recorded.
-      const planned = plan.run?.kind;
+      // A kill this attempt plans that the place cannot make is refused before the attempt starts: the run is not stopped first, and no machine loss is recorded. A planned handoff is no kill (the process
+      // releases the run and exits by itself), so its nominal kind asks nothing of the place: a place that can lose only its box hands off as any other.
+      const planned = plan.run && !('handoff' in plan.run && plan.run.handoff) ? plan.run.kind : undefined;
       if (planned && !place.kills.includes(planned)) throw new Error(`the ${place.name} place cannot lose its ${planned}: this kill is not one it can make`);
       // The operator's kill is a process kill: a place that cannot make one (a box-only place) refuses `--operator-kill` before anything starts, as it refuses a planned kill it cannot make.
       if (operatorKill && !place.kills.includes('process')) throw new Error(`the ${place.name} place cannot lose its process: --operator-kill is not a kill it can make`);
@@ -575,6 +599,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       const order = { gen, env: { ...base, CROSS_LOG: log, KILL_REQUEST: request, KILL_NONCE: nonce, RECORD_GEN: String(gen), RECORD_STARTED: startedText, PLAN: JSON.stringify(plan) }, ...(token !== undefined ? { stdin: token } : {}) };
       if (previous && !place.kills.includes(previous.kind)) throw new Error(`the ${place.name} place cannot lose its ${previous.kind}: this kill is not one it can make`);
       currentGen = gen;
+      // The generation run.json was at before this attempt's process opened the run: the released generation must be a later one.
+      const generationBefore = lastGeneration ?? 0;
       const recovered = previous ? await place.recover(previous.runner, previous.kind, order) : undefined;
       runner = recovered ? recovered.runner : await place.start(order);
       supervisor.host('process.started', { gen, pid: runner.pid });
@@ -656,6 +682,32 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       if (followError) break;
       processes.push(result);
       if (killFailed || signalsFailed || (killed && killed.label === 'max-usd')) break;
+      // A handoff: the process took the planned crossing, released the run (the instance drained: sealed `sleeping` or `paused`, claim released) and exited 0. The supervisor decides only now, from the process's own log, its exit and the
+      // run.json it has just read again (a poll can miss a generation): the crossing logged, the exit 0, and the status `sleeping` or `paused` AND a seal the released generation added. Nothing was killed, so no kill line: one `handoff` line,
+      // and the next process is started through the place, not recovered from a loss. Anything else is a `handoff.failed` line with its reason, and the run goes on as for a process that ended on its own.
+      if (!killed && plan.run && !('storm' in plan.run) && plan.run.handoff) {
+        const landed = rows<Crossing>(log).find((crossing) => crossing.handoff);
+        // The release is complete when run.json, read after the exit, is of a generation this process opened (later than the one before it started), says `sleeping` or `paused`, and carries a seal that is not below the store's sequence when that
+        // generation opened: the seal the previous release wrote, which no earlier generation's can exceed. Not "a seal is present": a running record may carry an old one. The opening sequence is taken from the earlier generations' records, not from this
+        // generation's first read, because a poll can miss a generation that seals before it is first read. If no earlier generation's seal was ever read (a first run, or polls that missed it), the opening sequence is 0 and the rest is the rule.
+        // That fallback is safe because it never stands alone: the crossing-logged check below comes first, a handoff point is an `effect.kept` crossing, and a LOGGED one means this generation's store was opened and `live()` cleared any earlier
+        // `sealedSeq`, so a seal present after the exit can only be this generation's own.
+        const opening = Math.max(0, ...[...sealOf].filter(([generation, seal]) => generation < lastGeneration! && seal !== null).map(([, seal]) => seal!));
+        const sealed = lastGeneration !== undefined && lastGeneration > generationBefore && lastRunSeal !== null && lastRunSeal >= opening;
+        const reason: HandoffFailure | undefined = !landed ? 'crossing not logged' : !cleanExit(result.exit) ? 'exit not 0' : (lastRunStatus === 'sleeping' || lastRunStatus === 'paused') && sealed ? undefined : 'not released';
+        if (!reason && landed) {
+          // The line is ranked before the next process's start (as a kill's is), so it must be later than the run.json line just read by more than the recording's tick: a tie in one millisecond would sort it before that line.
+          await new Promise((resolve) => setTimeout(resolve, 3));
+          supervisor.host('handoff', { gen, point: plan.run.point, n: landed.n, why: plainText(plan.run.why), ...(lastHolderLabel ? { from: lastHolderLabel } : {}) });
+          handoffs += 1;
+          // The place reads a run left sealed `sleeping` as a failed outcome; this process did what it was asked: it released the run.
+          result.outcome = releasedOutcome(result.outcome, result.exit, lastRunStatus, true);
+          previous = undefined;
+          continue;
+        }
+        supervisor.host('handoff.failed', { gen, point: plan.run.point, n: plan.run.n, reason });
+        failedHandoffs.push({ gen, point: plan.run.point, reason: reason! });
+      }
       // A tool kill of an attempt that ended in a process kill and did not fire never will (the plan is consumed): it is reported, not carried off with the attempt.
       const missed = () => { for (const entry of notLanded(plan.tools, log)) unlanded.push('point' in entry ? entry.point : `storm (gap ${entry.gapMs} ms)`); };
       if (killed) {
@@ -678,7 +730,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // The process ended on its own with a kill still planned for it (and any that follow): none of them landed.
       for (const left of [plan, ...remaining]) {
         const tools = left === plan ? notLanded(left.tools, log) : left.tools;
-        for (const entry of [...(left.run ? [left.run] : []), ...tools]) if ('point' in entry) unlanded.push(entry.point); else unlanded.push(`storm (gap ${entry.gapMs} ms)`);
+        // A planned handoff that was not taken is a `handoff.failed` line, never an unlanded kill: this process's was written above, those planned for processes that never started are written here.
+        if (left !== plan && left.run && 'point' in left.run && left.run.handoff) { supervisor.host('handoff.failed', { gen, point: left.run.point, n: left.run.n, reason: 'crossing not logged' }); failedHandoffs.push({ gen, point: left.run.point, reason: 'crossing not logged' }); }
+        for (const entry of [...(left.run && !('handoff' in left.run && left.run.handoff) ? [left.run] : []), ...tools]) if ('point' in entry) unlanded.push(entry.point); else unlanded.push(`storm (gap ${entry.gapMs} ms)`);
       }
       break;
     }
@@ -709,7 +763,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     scanPlaced(recordDir, tracked?.final() ?? []);
     finishRecording(recordDir, {
       ...(redact ? { redact } : {}), job: { blob: jobBlob, sha256: jobBlob },
-      title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? chosen?.lead ?? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length,
+      title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? chosen?.lead ?? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length, handoffs,
       code: codeOf(rootOf(options)), cost, source: { run: runName, ...(last?.storeSha256 ? { store_sha256: last.storeSha256 } : {}) }, ...(seeAlso.length ? { see_also: seeAlso } : {}), ...(extra ? { extra } : {}), ...(resultBlob ? { result: resultBlob } : {}), ...(artifact ? { artifact } : {}), ...(live ? { providers: 'real' as const } : {}),
     });
     // The record-time scan: a recording that still holds a secret is refused (its manifest removed, so it is not a finished recording), naming the key and the file, never the value.
@@ -717,7 +771,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const spent = cost(readEventsOf(recordDir));
     const usd = spent.usd;
     const priced = Object.keys(spent.parts).length > 0;
-    return { processes, kills, record: delivered?.record ?? null, dir, runId, ...(values.record ? { recording: values.record } : {}), usd, priced, maxUsd, overBudget, failedKills, failedSignals, unlanded };
+    return { processes, kills, record: delivered?.record ?? null, dir, runId, ...(values.record ? { recording: values.record } : {}), usd, priced, maxUsd, overBudget, failedKills, failedSignals, unlanded, handoffs, failedHandoffs };
   } finally {
     clearInterval(following);
     if (meterTimer) clearInterval(meterTimer);
@@ -761,16 +815,21 @@ export function notLanded<T extends object>(tools: readonly T[], log: string): T
 
 const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'events.jsonl'));
 
-/** `counts` (with `--kill` or `--debug`) adds how many processes the run took and how many were killed; the default line names only how the run ended. */
+/** `counts` (with `--kill`, `--handoff` or `--debug`) adds how many processes the run took and how many were killed or handed off (a handoff run is worded as
+ *  handoffs: the word kill is not in its summary unless a kill happened); the default line names only how the run ended. */
 export function summarize(options: DemoOptions, result: DemoResult, counts = false) {
   const status = result.processes.at(-1)?.outcome?.status ?? 'no outcome';
-  console.log(`${options.spec.title ?? options.spec.name}: ${status}${counts ? ` in ${result.processes.length} process${result.processes.length === 1 ? '' : 'es'}, ${result.kills.length} kill${result.kills.length === 1 ? '' : 's'}` : ''}`);
+  const failedHandoffs = result.failedHandoffs ?? [];
+  const handed = (result.handoffs ?? 0) > 0 || failedHandoffs.length > 0;
+  const tally = [...(handed && result.kills.length === 0 ? [] : [`${result.kills.length} kill${result.kills.length === 1 ? '' : 's'}`]), ...(handed ? [`${result.handoffs ?? 0} handoff${result.handoffs === 1 ? '' : 's'}`] : [])].join(', ');
+  console.log(`${options.spec.title ?? options.spec.name}: ${status}${counts ? ` in ${result.processes.length} process${result.processes.length === 1 ? '' : 'es'}, ${tally}` : ''}`);
   for (const kill of result.kills) console.log(`  killed process ${kill.gen} (${kill.kind}) at ${kill.point ?? 'no named crossing'}${kill.planned !== undefined && kill.n !== kill.planned ? ` (planned n=${kill.planned}, landed at n=${kill.n})` : ''}: ${kill.why}`);
   if (result.failedSignals.length) console.log(`the place's signals failed: ${result.failedSignals.map((entry) => `process ${entry.gen} (${entry.code})`).join(', ')}`);
   if (result.failedKills.length) console.log(`kills the place could not make: ${result.failedKills.map((kill) => `process ${kill.gen} (${kill.code})`).join(', ')}`);
   const last = result.processes.at(-1)?.outcome;
   if (last && last.status !== 'complete' && last.message) console.log(`  stopped: ${last.message}`);
   if (result.unlanded.length) console.log(`kills that never landed: ${result.unlanded.join(', ')}`);
+  if (failedHandoffs.length) console.log(`handoffs that did not land: ${failedHandoffs.map((entry) => `process ${entry.gen} at ${entry.point} (${entry.reason})`).join(', ')}`);
   // A run that made no priced call has no cost line, unless it has a cap.
   const none = result.usd === null && !result.priced;
   if (!none || result.maxUsd !== null) console.log(`cost: ${none ? 'none' : result.usd === null ? 'unknown' : `$${result.usd}`}${result.maxUsd === null ? '' : ` (cap $${result.maxUsd})`}${result.overBudget ? ' — over the cap' : ''}`);

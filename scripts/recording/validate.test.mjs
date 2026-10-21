@@ -335,3 +335,21 @@ test('a snapshot restating an earlier process\'s move is not a move of this proc
   const own = [durable(1, 0), durable(2, 0, { t: 12, source: 'transport', kind: 'transport.moves', data: bad })];
   assert.match(first(await recording(t, { lines: own, started: 2, manifestOver: { generations: 2 } })).message, /a restore record has no integer head/);
 });
+
+test('manifest.handoffs counts the host handoff lines, and an absent count reads as 0', async t => {
+  // A supervisor's handoff line (a host line, its own seq space), after the two process.started lines `started: 2` places.
+  const handoff = { channel: 'live', source: 'host', kind: 'handoff', t: 22, seq: 2, data: { gen: 1, point: 'effect.kept charge', n: 5 } };
+  assert.deepEqual(validateRecording(await recording(t, { lines: [...events, handoff], manifestOver: { handoffs: 1 }, started: 2 })), []);
+  assert.match(first(await recording(t, { lines: [...events, handoff], started: 2 })).message, /handoffs is 0, but the recording has 1 host handoff lines/);
+  assert.match(first(await recording(t, { manifestOver: { handoffs: 1 }, started: 2 })).message, /handoffs is 1, but the recording has 0 host handoff lines/);
+  assert.deepEqual(validateRecording(await recording(t, { started: 2 })), [], 'no handoff line and no count is a recording without a handoff');
+  assert.deepEqual(validateRecording(await recording(t, { manifestOver: { handoffs: 0 }, started: 2 })), []);
+  assert.match(first(await recording(t, { manifestOver: { handoffs: -1 }, started: 2 })).message, /handoffs is not a non-negative integer/);
+});
+
+test('manifest.handoffs counts only landed handoffs: a handoff.failed line is not one', async t => {
+  const failed = { channel: 'live', source: 'host', kind: 'handoff.failed', t: 22, seq: 2, data: { gen: 1, point: 'effect.kept charge', n: 5, reason: 'crossing not logged' } };
+  assert.deepEqual(validateRecording(await recording(t, { lines: [...events, failed], manifestOver: { handoffs: 0 }, started: 2 })), []);
+  assert.deepEqual(validateRecording(await recording(t, { lines: [...events, failed], started: 2 })), [], 'absent reads as 0');
+  assert.match(first(await recording(t, { lines: [...events, failed], manifestOver: { handoffs: 1 }, started: 2 })).message, /handoffs is 1, but the recording has 0 host handoff lines/);
+});

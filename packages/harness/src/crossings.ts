@@ -10,9 +10,11 @@ import type { ChildPlan } from './demo-spec.ts';
 export type Cross = ((point: string, options?: { cut?: boolean; /** Facts about this crossing (`{ tool: 'install' }`): logged with it, and what a kill's `where` is matched against. */ info?: Info }) => boolean) & {
   /** A crossing that parks (`vision.filing`): when a kill with `hold` is planned for this point, the nth filing and those after it are parked, forever, and the process is killed once `hold` are parked or `waitMs` has passed. The caller awaits what this returns. */
   park?(point: string, info?: Info): Promise<never> | undefined;
+  /** A handoff that is due holds the process at its crossing, so the run is released at that crossing and not some calls later: once the process has signalled itself, this is a promise that never settles (the drain ends the process), and the caller at an awaiting seam awaits it. Undefined otherwise. */
+  held?(): Promise<never> | undefined;
 };
 export type Info = Record<string, string | number | boolean>;
-export type Crossing = { point: string; n: number; pid: number; info?: Info; /** A tool kill that fired at this crossing: its place in the attempt's plan (`plan.tools`), so a landed kill is credited to the entry that fired, never to another at the same point. */ landed?: true; tool?: number };
+export type Crossing = { point: string; n: number; pid: number; info?: Info; /** A tool kill that fired at this crossing: its place in the attempt's plan (`plan.tools`), so a landed kill is credited to the entry that fired, never to another at the same point. */ landed?: true; tool?: number; /** The process released the run here (a planned handoff): written to the log as the crossing is taken, before the process signals itself. */ handoff?: true };
 
 /** A kill's `where` holds when every field it names equals the crossing's info field. */
 const matches = (where: Info | undefined, info: Info | undefined) => !where || Object.entries(where).every(([field, value]) => info?.[field] === value);
@@ -20,6 +22,8 @@ const matches = (where: Info | undefined, info: Info | undefined) => !where || O
 /** What a process does when its planned kill is due at a crossing. Default: it ends itself with SIGKILL. A process under a supervisor asks it instead (`askToBeKilled`): the supervisor writes the kill line first and kills it through the place. */
 export type Kill = (crossing: Crossing) => void;
 const selfKill: Kill = () => { process.kill(process.pid, 'SIGKILL'); };
+/** What a process does when its planned handoff is due: what a deploy does to an instance. The instance drains (the run sealed `sleeping`, the claim released) and exits 0; the supervisor starts the next process. */
+const selfTerm: Kill = () => { process.kill(process.pid, 'SIGTERM'); };
 
 /** Asks the supervisor to kill this process at the crossing, and waits: the request is a file written durably (a temporary file beside it, synced, renamed into place, the directory synced), it carries the attempt's `nonce`
  *  (the supervisor minted it for this attempt and put it in the process's environment, which the process read once and removed: the supervisor honors a request only with its attempt's nonce, so a stray file on a shared mount never makes a kill), the wait blocks this thread,
@@ -40,7 +44,7 @@ export function askToBeKilled(file: string, nonce?: string): Kill {
 }
 
 /** The child's crossing function for the kills planned for this process (none: it only logs). */
-export function crossings(plan: ChildPlan | undefined, log: string | undefined, started = Date.now(), kill: Kill = selfKill, window: EffectWindow = { open: 0 }): Cross {
+export function crossings(plan: ChildPlan | undefined, log: string | undefined, started = Date.now(), kill: Kill = selfKill, window: EffectWindow = { open: 0 }, handoff: Kill = selfTerm): Cross {
   let n = 0;
   // A storm takes no crossing before the process has opened the journal and begun its first node: a kill earlier than that leaves a generation the journal never recorded.
   let begun = false;
@@ -52,6 +56,7 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
   let fired = false;
   let parkedCount = 0;
   let killAsked = false;
+  let held: Promise<never> | undefined;
   const cross = ((point: string, options: { cut?: boolean; info?: Info } = {}) => {
     // A crossing taken while any tool call is between its dispatch and its kept answer is never a run kill point, whichever seam it is at: a kill there would leave that call unknown.
     const cut = options.cut !== false && window.open === 0;
@@ -79,9 +84,16 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : ordinal > 0 && ordinal >= run.n && !fired;
     if (point === 'event workflow.node.start') begun = true;
     // The crossing's own number for a named kill; a storm has none (its kill is at whichever crossing comes), so it keeps the process's crossing counter.
-    if (due) { fired = true; kill({ point, n: 'storm' in run ? n : ordinal, pid: process.pid }); }
+    if (due && !('storm' in run) && run.handoff) {
+      // A handoff: the crossing is written first (the supervisor tells a handoff from a crash by it), then the process asks to be drained, not killed.
+      fired = true;
+      if (log) appendFileSync(log, `${JSON.stringify({ point, n: ordinal, pid: process.pid, handoff: true, ...(info ? { info } : {}) } satisfies Crossing)}\n`);
+      held = new Promise<never>(() => {});
+      handoff({ point, n: ordinal, pid: process.pid });
+    } else if (due) { fired = true; kill({ point, n: 'storm' in run ? n : ordinal, pid: process.pid }); }
     return false;
   }) as Cross;
+  (cross as { held: NonNullable<Cross['held']> }).held = () => held;
   (cross as { park: NonNullable<Cross['park']> }).park = (point, info) => {
     const run = plan?.run;
     if (!run || 'storm' in run || run.hold === undefined || run.point !== point || !matches(run.where, info) || window.open > 0) return undefined;
@@ -147,6 +159,9 @@ export function tapHost(host: Host, cross: Cross, window: EffectWindow = { open:
     let value: unknown;
     try { value = await runEffect(request); } finally { window.open -= 1; }
     cross(`effect.kept ${request.node.tool}`, { cut: window.open === 0 });
+    // A handoff due here holds the call until the drain ends the process: the answer is kept and not committed, as a kill here would leave it.
+    const held = cross.held?.();
+    if (held) await held;
     return value;
   } };
   const { evidence, status, deliver } = host;

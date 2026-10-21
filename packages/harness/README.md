@@ -223,6 +223,7 @@ await demo({ self: import.meta.url, spec, job, fakes });
 | `--live` | real models and services; refused unless the demo supplies them (`live`) |
 | `--kill` | the spec's `kills`, in order, each ending one process; a fresh process resumes on the same directory (see [Recovery](#recovery)) |
 | `--debug` | the summary line also counts the processes and the kills (`--kill` always does) |
+| `--handoff` | the spec's `handoffs`, in order: at the crossing (an `effect.kept <tool>` one) a process releases the run cleanly (sealed `sleeping`) and exits 0, and the next process is started through the place and opens it. Nothing is killed: the recording has a `handoff` line, and `handoff.failed` with a reason if one did not land. The place must report the run's status. Not with `--kill` |
 | `--record <dir>` | an `agentrun.recording/1` directory, through the reference recorder |
 | `--input <path\|json>` | the job's input; the job's own is the default |
 | `--max-usd <n>` | stops the run past n dollars, metered on the recording's lines (default twice `expectedCost`); a run that finishes past it says so and exits 1 |
