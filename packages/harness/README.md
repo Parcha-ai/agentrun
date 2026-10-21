@@ -211,6 +211,8 @@ sessions open until the provider ends them. `use_website`'s child agent browses 
 so naming `use_website` means naming every other browser tool too, or the call is refused.
 `hostFromEnv` files evidence under the run's `work/` (`evidence/<label>/...`): the path a browser or vision result
 returns is one the agent's `read` reaches, and one `agentrun-serve` serves as a run file.
+With `browserbase: false`, `hostFromEnv` ignores Browserbase's keys and takes a local Chrome only (`CHROME_PATH`), for a
+host that counts no browser charge against a run's spending limit (`agentrun-serve` today).
 
 `hostFromEnv(place, { models, lead, env })` is the host for a run outside `demo()`: the models the caller binds, Jev
 with `TYPESAFE_API_KEY`, a browser with both `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` or a local Chrome at

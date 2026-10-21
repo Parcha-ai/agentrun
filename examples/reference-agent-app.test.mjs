@@ -42,6 +42,21 @@ test('a host from the environment files evidence under the run\'s work/, so the 
   assert.ok(!existsSync(join(place.root, path)), 'and not beside the run\'s store');
 });
 
+test('a host from the environment that takes no Browserbase browser ignores its keys and says to set CHROME_PATH', async (t) => {
+  const keys = { BROWSERBASE_API_KEY: 'bb-key', BROWSERBASE_PROJECT_ID: 'bb-project' };
+  const scratchDir = join(await scratch(t), 'run');
+  const place = await placeAt(scratchDir, 'agent');
+  const faux = fauxProvider();
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const lead = { provider: faux.provider.id, modelId: faux.getModel().id };
+  const local = await hostFromEnv(place, { models, lead, env: keys, browserbase: false });
+  assert.equal(local.lacks.browser, 'set CHROME_PATH (this host takes a local Chrome only)');
+  await assert.rejects(agentApp(place, local, { instructions: '', tools: ['browser_read'] }), { message: 'the definition names the tool browser_read, and this host has no browser: set CHROME_PATH (this host takes a local Chrome only)' });
+  const paid = await hostFromEnv(place, { models, lead, env: keys });
+  assert.equal(paid.lacks?.browser, undefined, 'by default both keys give a Browserbase browser');
+});
+
 const offered = (app) => app.root.agent.tools.map((tool) => tool.name);
 const installed = (app) => app.registry.snapshot().tools().map(({ tool }) => tool.name).sort();
 

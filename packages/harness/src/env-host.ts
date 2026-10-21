@@ -12,6 +12,8 @@ import { JEV_LIST_PRICE, priceJudge } from './judge.ts';
 
 /** What gives a host from the environment a browser, and a judge: the words `lacks` carries when it has none. */
 const NO_BROWSER = 'set CHROME_PATH or both BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID';
+/** The same, for a host that takes a local Chrome only (`browserbase: false`). */
+const NO_CHROME = 'set CHROME_PATH (this host takes a local Chrome only)';
 const NO_JUDGE = 'set TYPESAFE_API_KEY';
 
 const refuse = (why: string): never => { throw new Error(why); };
@@ -19,16 +21,18 @@ const refuse = (why: string): never => { throw new Error(why); };
 /** No scripted part: `localHost` is built for its evidence, status and record, and every member that would answer from a script is replaced. */
 const UNSCRIPTED: Fakes = { model: () => refuse('this host has no scripted model'), tools: {}, judge: async () => refuse('this host has no scripted judge'), pages: {}, start: 'about:blank' };
 
-export type EnvHostOptions = { /** pi-ai's models, with the lead's provider set. */ models: Models; lead: ModelRef; /** Default: this process's environment. */ env?: NodeJS.ProcessEnv };
+export type EnvHostOptions = { /** pi-ai's models, with the lead's provider set. */ models: Models; lead: ModelRef; /** Default: this process's environment. */ env?: NodeJS.ProcessEnv;
+  /** False: Browserbase's keys are ignored and only a local Chrome is a browser, for a host that counts no browser charge against a run's spending limit. Default true. */ browserbase?: boolean };
 
 /** A host for one run at `place`: `models` and `lead` as given; Jev (`TYPESAFE_API_KEY`, `TYPESAFE_BASE_URL` when set) priced at its list price; a Browserbase browser with both of its keys, else a local Chrome at
  *  `CHROME_PATH`; evidence under the run's `work/` (the path a tool returns is one the agent's `read` reaches), status and the record under the run's directory. Its `runEffect` refuses: an agent run has no workflow `call` node. */
-export async function hostFromEnv(place: RunPlace, { models, lead, env = process.env }: EnvHostOptions): Promise<Host> {
-  const browser = await browserFrom(place, env);
+export async function hostFromEnv(place: RunPlace, { models, lead, env = process.env, browserbase = true }: EnvHostOptions): Promise<Host> {
+  const noBrowser = browserbase ? NO_BROWSER : NO_CHROME;
+  const browser = await browserFrom(place, browserbase ? env : withoutBrowserbase(env));
   const key = env.TYPESAFE_API_KEY?.trim();
-  const local = localHost(place, UNSCRIPTED, { evidenceRoot: place.work, browser: browser ?? { provider: () => refuse(`this host has no browser: ${NO_BROWSER}`), driver: async () => refuse(`this host has no browser: ${NO_BROWSER}`) } });
+  const local = localHost(place, UNSCRIPTED, { evidenceRoot: place.work, browser: browser ?? { provider: () => refuse(`this host has no browser: ${noBrowser}`), driver: async () => refuse(`this host has no browser: ${noBrowser}`) } });
   const judge = key ? priceJudge(createJevRunner({ apiKey: key, pricing: { inputUsdPerMillionTokens: JEV_LIST_PRICE.inputUsdPerMillionTokens, outputUsdPerMillionTokens: JEV_LIST_PRICE.outputUsdPerMillionTokens }, ...(env.TYPESAFE_BASE_URL ? { baseURL: env.TYPESAFE_BASE_URL } : {}) }) as unknown as RunJudge) : undefined;
-  const lacks = { ...(browser ? {} : { browser: NO_BROWSER }), ...(judge ? {} : { judge: NO_JUDGE }) };
+  const lacks = { ...(browser ? {} : { browser: noBrowser }), ...(judge ? {} : { judge: NO_JUDGE }) };
   const secrets = [env.TYPESAFE_API_KEY, env.BROWSERBASE_API_KEY, env.BB_API_KEY].map((value) => value?.trim()).filter((value): value is string => Boolean(value));
   mergeParts(local.host, {
     models: { catalog: models, lead },
@@ -39,6 +43,9 @@ export async function hostFromEnv(place: RunPlace, { models, lead, env = process
   });
   return local.host;
 }
+
+/** The environment without Browserbase's keys, so `chooseBrowser` sees only a local Chrome. */
+const withoutBrowserbase = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith('BROWSERBASE_') && !name.startsWith('BB_')));
 
 /** The browser `chooseBrowser` picks for a live run, with a local Chrome allowed when `CHROME_PATH` is set; none when it picks none. */
 async function browserFrom(place: RunPlace, env: NodeJS.ProcessEnv): Promise<BrowserPlane | undefined> {
