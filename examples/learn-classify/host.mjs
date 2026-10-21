@@ -50,7 +50,10 @@ export const jobInput = (job) => ({ name: job.name, website: job.website });
  *  Only whole values: a bare word of a name ("Target") would refuse ordinary prose. A shorter name or a word of one is the
  *  leak gate's and the curator's to catch. The guard never matches a value under 4 characters, so a ticker is left out. */
 export function caseValuesOf(job) {
-  const values = [job.name, job.website, job.cik, job.ticker];
+  // The CIK as filed (zero-padded) and as a number, the way pages and URLs also write it; a number under 5 digits would
+  // match too much else, so it is left out.
+  const bare = job.cik ? String(Number(job.cik)) : '';
+  const values = [job.name, job.website, job.cik, ...(bare.length >= 5 ? [bare] : []), job.ticker];
   if (job.website) try {
     const host = new URL(job.website).hostname.toLowerCase();
     values.push(host, host.replace(/^www\./, ''));

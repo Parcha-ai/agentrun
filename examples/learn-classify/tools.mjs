@@ -23,9 +23,12 @@ export const REFUSED_DOMAINS = Object.freeze([
   'fintel.io', 'stockanalysis.com', 'companiesmarketcap.com', 'macroaxis.com', 'whalewisdom.com', 'annualreports.com',
   'craft.co', 'cbinsights.com', 'owler.com', 'datanyze.com',
   'archive.org', 'archive.ph', 'archive.is', 'archive.today', 'webcache.googleusercontent.com',
+  // EDGAR and filing mirrors that passes reached (their hosts logs): their company pages print the filer's code.
+  'financialfilings.com', 'open10k.com', 'sectracker.app', 'secfilingdata.com', 'tickerfilings.com', 'getfilings.com', 'sec-api.io',
+  'openfilings.org', 'secprobe.io', 'sec2md.com', 'secfeedapi.com',
 ]);
-// Any host with a label naming EDGAR is refused too (edgar.example.com, edgar-filings.net).
-const EDGAR_LABEL = /(^|[.-])edgar([.-]|$)/;
+// Any host with a label that starts with EDGAR is refused too (edgar.example.com, edgar-filings.net, edgarlookup.com).
+const EDGAR_LABEL = /(^|[.-])edgar/;
 // With `archivedSec`, the one way to an SEC page: the Wayback Machine's copy of it, web.archive.org/web/<time>[<flag>_]/
 // then an http(s) URL on sec.gov or a subdomain. The copy comes from the archive, so no request reaches sec.gov, and
 // every other page on the archive (another site's copy, the CDX API) stays refused.
@@ -285,7 +288,7 @@ export function fetchPageTool({ allowDomain, fetch: fetchImpl = globalThis.fetch
         }
       }
       const type = (res.headers.get('content-type') ?? '').toLowerCase();
-      const kind = /html|xml/.test(type) ? 'html' : type.startsWith('text/') || !type ? 'text' : null;
+      const kind = /html|xml/.test(type) ? 'html' : type.startsWith('text/') || /[/+]json\b/.test(type) || !type ? 'text' : null;
       if (!kind) {
         await res.body?.cancel();
         return { ...emptyPage(url.href, res.status), error: `not a text page (${type.split(';')[0]})` };
