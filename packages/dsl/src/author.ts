@@ -181,7 +181,8 @@ export function authorContract(options: { host?: AuthorHostAddendum } = {}): str
 export interface CandidatePolicyOptions {
   /** Authoritative rubric text by section name. Every generative node must name every section. */
   rubricSections?: Record<string, string>;
-  /** Admits code, call and artifact nodes. */
+  /** Admits code, call and artifact nodes. A candidate's code is syntax-checked before acceptance and run only after
+   *  its host accepts it; in-process code is not a sandbox (see the README's `code` node note). */
   allowExecutableCandidates?: boolean;
   /** Direct tool calls admitted without executable authorization. */
   allowedEffectTools?: readonly string[];
@@ -270,6 +271,8 @@ export interface AuthorWorkflowOptions {
   /** Keys available to a candidate without an input schema; defaults to the host's initial state keys. */
   inputKeys?: string[];
   rubricSections?: Record<string, string>;
+  /** Admits code, call and artifact nodes. A candidate's code is syntax-checked before acceptance and run only after
+   *  its host accepts it; in-process code is not a sandbox (see the README's `code` node note). */
   allowExecutableCandidates?: boolean;
   maxCandidates?: number;
   /** Host acceptance over a structurally valid candidate, in the interpreter's view (`applyHostOutputTypes`):
@@ -319,7 +322,9 @@ export async function authorWorkflow(options: AuthorWorkflowOptions): Promise<Au
         const errors = candidatePolicyErrors(value, options);
         if (!errors.length) {
           try {
-            const verdict = validateWorkflow(applyHostOutputTypes(value as Workflow, options.host), { inputKeys });
+            // executeCode: false — a candidate's code is syntax-checked here, never run, so a candidate runs nothing
+            // until its host accepts it. Runs and dry runs after acceptance still probe the code.
+            const verdict = validateWorkflow(applyHostOutputTypes(value as Workflow, options.host), { inputKeys, executeCode: false });
             if (!verdict.ok) errors.push(...verdict.errors);
           } catch (error) { errors.push(`Invalid workflow: ${error instanceof Error ? error.message : String(error)}`); }
         }
