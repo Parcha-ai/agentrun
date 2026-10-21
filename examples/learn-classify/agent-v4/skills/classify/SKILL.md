@@ -41,7 +41,8 @@ description: How to do the six-part job by hand from the company's annual report
 # Parts that make workflows
 
 Each step above is a part: a call of the tool it uses, a decision over what the call returned, and an escalate when the
-call found nothing. Read describe's tool list for each tool's arguments and result fields; do not invent them.
+call found nothing. Read describe's tool list for each tool's arguments and result fields; do not invent them. Narrow
+before a pick: a pick takes at most 240 candidates (for example, the major group before its 4-digit codes).
 
 The decision node follows what the decision needs. A choice that needs knowledge the state does not hold (for example,
 what a company does) is one narrow agent step on the host's node model; a choice decidable from evidence already in the
