@@ -4,8 +4,10 @@
 
 ## 0.1.0-beta.22 (2026-10-21)
 
+First release of `@parcha/pi-git-remote`, versioned with the other packages of the repository it is published from.
+
 - `https(url, credential, { pushUrl? })` and `codeStorage({ origin, repo, token, hidden? })` make the remotes a host needs beyond `local`. `https` takes any https git host and a credential callback asked once for each git process, so a short-lived token is minted fresh each time; a URL with userinfo, a query or a fragment is refused before any git process starts. `codeStorage` builds `<origin>/<repo>.git` from a host-supplied origin (there is no default hostname) and sends the JWT `token()` returns as the Basic password of user `t`, over plain git with no SDK; with `hidden: true`, pushes go to `<repo>+ephemeral.git`, a namespace a normal clone does not see, while reads fetch `<repo>.git`. The tests run a TLS smart-HTTP server over `git http-backend` that requires the generated token and refuses `main` for the run's identity in a pre-receive hook: the token stays in the fd-3 file (never argv, the environment, a URL or a file), and a refused push is a `refused` error whose message holds `[credential]` where a server's reason repeats the token.
-- New held package `@parcha/pi-git-remote`: a git repository a host keeps for its agent. `openRepo({ dir, remote })` opens
+- New package `@parcha/pi-git-remote`: a git repository a host keeps for its agent. `openRepo({ dir, remote })` opens
   the host's own bare repository and keeps it in step with a remote (`local(path)`, a bare repository on this machine, in
   this release; the `Remote` object takes an https URL, a push URL and a credential callback). `commitTo` builds one commit
   through plumbing on a temporary index and is idempotent by a `Run-Id` trailer found here or on the remote, so a restarted

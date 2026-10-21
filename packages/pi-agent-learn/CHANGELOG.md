@@ -4,7 +4,9 @@
 
 ## 0.1.0-beta.22 (2026-10-21)
 
-- New held package `@parcha/pi-agent-learn`: an agent that learns in its own git repository, on top of
+First release of `@parcha/pi-agent-learn`, versioned with the other packages of the repository it is published from.
+
+- New package `@parcha/pi-agent-learn`: an agent that learns in its own git repository, on top of
   `@parcha/pi-git-remote`. `agentLearn()` is a pi-durable extension with one tool, `learn({ type, text, evidence?, id? })`
   (a lesson, a fact, a correction, a `used` mark on a learning that helped, or a `workflow` note on when to use a workflow
   the run saved), which stores one candidate per call id in the run's store, is replay safe and makes no model call; an id
