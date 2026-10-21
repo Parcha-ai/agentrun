@@ -46,7 +46,9 @@ runner installs the workspace packages offline over it only when the snapshot's 
 `ARCHIL_API_KEY` and `PDA_LIVE_DISK` from your credential wrapper, refuses without them, stops itself after 25 minutes, and ends by deleting every sandbox it made and the run's directory.
 
 What a live run spends is bounded twice. Each process may make at most 60 model calls, each answer at most 8192 tokens with its thinking (`model.ts`); `--max-usd` caps the whole run (twice
-`expectedCost`, $3.00, unless `DISK_LIVE_MAX_USD` says otherwise). A run is about 50 model calls, about $1 to $2 at list price, and two sandboxes for a few minutes.
+`expectedCost`, $3.00, unless `DISK_LIVE_MAX_USD` says otherwise). Two rehearsals on Daytona made 22 model calls each, $0.11 and $0.12 at list price (prompt caching took most of the input),
+in two sandboxes for two to four minutes. The cap counts the model, and a box only when the box is priced: the Daytona sandbox time, about a cent a run, is not priced in the recording, so the
+cap does not count it. The runner's last line names each figure: `modelUsd` (this run, from the recording), `capUsd`, and `sandboxUsdLedger` (cumulative over this lane's ledger).
 
 ## Keys and programs
 

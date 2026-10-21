@@ -21,7 +21,7 @@ The agent is Anthropic's claude-sonnet-5-5. The run still lives in a directory o
 Put it in your environment the way you keep secrets (a secrets manager's run wrapper, or `export` in the shell you run
 the demo from). The agent checks that the name is set, never its value.
 
-A run makes about 50 model calls, about $1 to $2 at list price, and stops at `--max-usd`, $3.00 by default. Each
+A run makes about 25 model calls, about $0.15 at list price, and stops at `--max-usd`, $3.00 by default. Each
 process also stops itself after 60 model calls.
 
 ## On Daytona and an Archil disk: `examples/disk/live.ts`
