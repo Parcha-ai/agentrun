@@ -556,3 +556,13 @@ test('a route receipt without its branch answer decided nothing: rederiveDecisio
   assert.deepEqual(rederiveDecision({ rule: rule({ branch: 'b', gte: 0.5 }), answers: { branch: choice(['a', 'b'], 'a', 0.9) }, questions: {} }), { branch: 'a', taken: 'a', unsure: false });
   assert.deepEqual(rederiveDecision({ rule: rule({ branch: 'b', gte: 0.5 }), answers: { branch: choice(['a', 'b'], 'a', 0.3) }, questions: {} }), { branch: 'a', taken: 'b', unsure: true });
 });
+
+test('a pick receipt without its pick answer decided nothing: rederiveDecision returns null', () => {
+  // An answered pick carries its pick answer; a receipt that lost it decided nothing, as for a route.
+  const rule = { kind: 'pick', options: ['a', 'b'], none: null };
+  assert.equal(rederiveDecision({ rule, answers: {}, questions: {} }), null);
+  assert.equal(rederiveDecision({ rule, answers: { pick: 'a' }, questions: {} }), null, 'a bare string is no answer');
+  // With its answer the pick decides as before, including its none option.
+  assert.deepEqual(rederiveDecision({ rule, answers: { pick: choice(['a', 'b'], 'b') }, questions: {} }), { index: 1, none: false });
+  assert.deepEqual(rederiveDecision({ rule: { ...rule, none: 'neither' }, answers: { pick: choice(['a', 'b', 'neither'], 'neither') }, questions: {} }), { index: null, none: true });
+});

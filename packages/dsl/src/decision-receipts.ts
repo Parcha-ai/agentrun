@@ -75,7 +75,10 @@ export function rederiveDecision(receipt: Pick<DecisionReceipt, "rule" | "answer
   switch (rule.kind) {
     case "judge": return answersToValue(receipt.answers, receipt.questions as CompiledQuestions);
     case "pick": {
-      const choice = answers.pick?.choice;
+      // An answered pick carries its pick answer; a receipt without one decided nothing.
+      const answer = answers.pick;
+      if (!answer || typeof answer !== "object") return null;
+      const choice = answer.choice;
       const none = rule.none !== null && choice === rule.none;
       return { index: none ? null : rule.options.indexOf(choice), none };
     }
