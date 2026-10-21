@@ -12,7 +12,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { codeOf, cost, finishRecording, openRecorder, openSupervisor, packageCommitRecorder, redactorOf, runScrub, scanPlaced, scanRecording, type Secret, type Supervisor } from "@parcha/agentrun-harness";
+import { codeOf, cost, finishRecording, openRecorder, openSupervisor, packageCommitRecorder, redactorOf, runScrub, scanPlaced, scanSecretValues, type Secret, type Supervisor } from "@parcha/agentrun-harness";
 import type { BrowserProvider, LeaseRef, LiveView } from "@parcha/pi-browser";
 import { exportFrameTracks, type FrameLine } from "@parcha/pi-browser/recorder";
 import { openAgentHome, readAgentHome } from "@parcha/pi-durable-agent";
@@ -219,7 +219,7 @@ export async function finishRunRecording(options: { dir: string; run: string; en
     ...(artifact ? { extra: { artifact } } : {}),
   });
   try {
-    scanRecording(dir, secretsOf(ids));
+    scanSecretValues(dir, secretsOf(ids));
   } catch (error) {
     rmSync(join(dir, "manifest.json"), { force: true });
     throw error;

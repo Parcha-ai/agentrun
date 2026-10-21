@@ -25,7 +25,7 @@ export { redactorOf } from './secrets.ts';
 /** The scrub of the machine a run is on (#733): its user name, its home (`~`) and the run's directories `DIR`, `RECORD_DIR` and `HOME` (`<run>`). */
 export { runScrub } from './secrets.ts';
 /** The record-time scan of a finished recording: every file, text and bytes alike, holds none of the values; it throws naming the key and the file. */
-export { scanRecording } from './secrets.ts';
+export { scanRecording as scanSecretValues } from './secrets.ts';
 /** The scan of what a viewer following the run could already have fetched (`events.jsonl` as placed, and every blob). */
 export { scanPlaced } from './secrets.ts';
 /** A secret value and the name a finding reports it by. */
