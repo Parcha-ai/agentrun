@@ -133,6 +133,15 @@ test('no exhibit is only a filing that has none: a 40-F, or an index that lists 
   }
 });
 
+test('two exhibits read as they are, each with a note in the report: AUR keeps its "Other subsidiaries" row, NSIT is unscored', () => {
+  const note = (ticker) => report.companies.find((r) => r.cik === v4.find((c) => c.ticker === ticker).cik).subsidiaries?.note;
+  const aur = v4.find((c) => c.ticker === 'AUR');
+  assert.ok(aur.subsidiaries.items.some((s) => /^Other subsidiaries/.test(s.name)), 'the row stays as parsed');
+  assert.match(note('AUR'), /Other subsidiaries/);
+  assert.deepEqual(v4.find((c) => c.ticker === 'NSIT').subsidiaries, { noExhibit: false });
+  assert.match(note('NSIT'), /image/);
+});
+
 test('a complete submission file yields the exhibit document by its type', () => {
   const doc = (type, text) => `<DOCUMENT>\n<TYPE>${type}\n<SEQUENCE>2\n<FILENAME>x.htm\n<TEXT>\n${text}\n</TEXT>\n</DOCUMENT>\n`;
   const file = `<SEC-DOCUMENT>\n${doc('10-K', '<p>annual</p>')}${doc('EX-21.1', '<table><tr><td>Acme Ltd</td><td>Delaware</td></tr></table>')}${doc('EX-23', '<p>consent</p>')}</SEC-DOCUMENT>`;
