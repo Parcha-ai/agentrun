@@ -13,8 +13,8 @@ import { SHAPES } from './fixtures/graph/generate.mjs';
 const DIR = new URL('./fixtures/graph/', import.meta.url);
 const read = (file) => JSON.parse(readFileSync(new URL(file, DIR), 'utf8'));
 // A recorded run that stopped at its fourth step: the graph of the revision it ran, the driver's frame at its last commit,
-// and the run's terminal result (its status and the escalation's node). It is a recording, so it lives beside the
-// generated graph fixtures, not among them.
+// and the run's terminal result (its status and the escalation's execution path; the fixture's note says what was renamed).
+// It is a recording, so it lives beside the generated graph fixtures, not among them.
 const recorded = JSON.parse(readFileSync(new URL('./fixtures/escalated-run.json', import.meta.url), 'utf8'));
 
 test('a recorded run that escalated at its fourth step: that node is escalated and so is the chain; before it done, after it not-run', () => {
@@ -30,6 +30,12 @@ test('a recorded run that escalated at its fourth step: that node is escalated a
   const alone = nodeStatus(graph, { pin: frame });
   assert.equal(alone['/root/steps/3'], 'not-run');
   assert.equal(alone['/root'], 'working');
+});
+
+test('an escalation named only by a field the DSL does not write (`node`) is not read: the status is byte for byte the frame\'s', () => {
+  const { graph, frame, result } = recorded;
+  const byNode = { status: 'escalated', escalation: { node: result.escalation.executionPath, label: result.escalation.label } };
+  assert.equal(JSON.stringify(nodeStatus(graph, { pin: frame, result: byNode })), JSON.stringify(nodeStatus(graph, { pin: frame })));
 });
 
 test('no result, or a result that names no escalation in the graph, gives the status byte for byte as before', () => {
@@ -92,8 +98,6 @@ test('an escalation inside a route branch inside a map item: the node, its branc
   });
   // The escalation names the node at its execution path, inside the map's second item; the status is the node's.
   assert.match(result.escalation.executionPath ?? '', /^\/root\/steps\/1\/items\/1\/body\/branches\/b\/body\/steps\/1$/);
-  // A host that records the escalation's node instead (a terminal result with `escalation.node`) reads the same.
-  assert.deepEqual(nodeStatus(graph, { pin: state.pin, result: { status: 'escalated', escalation: { node: result.escalation.executionPath } } }), status);
   // Without the result: the escalate node not-run, the map and the root working.
   const alone = nodeStatus(graph, { pin: state.pin });
   assert.deepEqual([alone[`${b}/steps/1`], alone['/root/steps/1'], alone['/root']], ['not-run', 'working', 'working']);

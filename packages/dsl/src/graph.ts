@@ -74,9 +74,9 @@ export type NodeState = "done" | "working" | "failed" | "not-run" | "escalated";
 type Frame = { done?: unknown; steps?: unknown; inputs?: unknown; partial?: unknown };
 /** The part of an `agentrun.items` value the status reads: the map item's `status` and its frame. */
 export type ItemRecordLike = { map?: unknown; index?: unknown; status?: unknown; frame?: Frame };
-/** The part of a run's terminal result the status reads: its `status` and, for an escalation, the node it stopped at, as
- *  `runWorkflow` returns it (`escalation.executionPath`) or as a host records it (`escalation.node`). */
-export type TerminalResultLike = { status?: unknown; escalation?: { executionPath?: unknown; node?: unknown } };
+/** The part of a run's terminal result the status reads: its `status` and, for an escalation, the execution path of the
+ *  node it stopped at (`escalation.executionPath`, as `runWorkflow` returns it). */
+export type TerminalResultLike = { status?: unknown; escalation?: { executionPath?: unknown } };
 /** What `nodeStatus` reads: a driver frame (the `pin` of a frozen snapshot: `done`, `steps`, `inputs`), a frozen snapshot
  *  (its `pin`), or the map items' records, alone or together with the driver's record (`{ pin, items }`), and with it the
  *  run's terminal `result` once the run has ended. */
@@ -131,8 +131,7 @@ export function nodeStatus(graph: WorkflowGraph, source: StatusSource, options: 
   // The node a run's escalation ended at, from its terminal result: by its execution path, as the node it ran as.
   const result = isObject(raw) && isObject(raw.pin) && isObject(raw.result) ? raw.result : undefined;
   const escalation = result?.status === "escalated" && isObject(result.escalation) ? result.escalation : undefined;
-  const named = typeof escalation?.executionPath === "string" ? escalation.executionPath : typeof escalation?.node === "string" ? escalation.node : undefined;
-  const stoppedAt = named === undefined ? undefined : definitionPath(named);
+  const stoppedAt = typeof escalation?.executionPath === "string" ? definitionPath(escalation.executionPath) : undefined;
   const ended = stoppedAt !== undefined && graph.nodes.some((node) => node.path === stoppedAt) ? stoppedAt : undefined;
   const onPath = (path: string): boolean => ended !== undefined && (path === ended || ended.startsWith(`${path}/`));
 

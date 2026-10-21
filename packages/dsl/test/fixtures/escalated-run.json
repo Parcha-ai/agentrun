@@ -1,4 +1,5 @@
 {
+ "note": "A recorded run's graph, its driver frame at the last commit and its terminal result, kept to what nodeStatus reads; the host recorded the escalation's node as `node`, renamed here to the DSL's `executionPath`.",
  "graph": {
   "nodes": [
    {
@@ -192,7 +193,7 @@
  "result": {
   "status": "escalated",
   "escalation": {
-   "node": "/root/steps/3",
+   "executionPath": "/root/steps/3",
    "label": "no-report",
    "kind": "needs_input",
    "stage": "locate"
