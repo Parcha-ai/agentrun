@@ -216,7 +216,7 @@ export function openRecorder(options: { dir: string; /** The recording's clock, 
       // The process a host line is about goes in its data: the line itself has no event-level gen (RECORDING.md 3.1).
       const named = data !== null && typeof data === 'object' && !Array.isArray(data) && !('gen' in data) ? { gen, ...data } : data;
       if (options.supervisor) return options.supervisor.host(kind, named, meta);
-      // No supervisor in this process (a run's child, a box's recorder): the line is written the supervisor's way, with no event-level gen. Its seq is this process's own; the supervisor's lines and every process's are numbered once, in order, when the recording is finished.
+      // No supervisor in this process (an unsupervised run, or a supervised child whose tool boxes write a receipt): the line is written the supervisor's way, with no event-level gen. Its seq is this recorder's own, and every writer's are numbered once, in order, when the recording is finished, so the finished recording has one writer's numbering. (Once the supervisor writes a child's box receipts itself, a supervised child writes no host line and this is the unsupervised run's path only.)
       const moved = moveImages(named === undefined ? null : named, keep);
       const blobs = [...new Set([...(meta.blobs ?? []), ...moved.blobs])];
       const line = { channel: 'live', source: 'host', kind, t: Math.max(0, Date.now() - started), seq: hostSeq++, ...(meta.path !== undefined ? { path: meta.path } : {}), ...(meta.conv !== undefined ? { conv: meta.conv } : {}), data: moved.data, ...(blobs.length ? { blobs } : {}) };
