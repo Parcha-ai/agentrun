@@ -369,6 +369,9 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   // A pick takes at most 240 candidates (more is refused, and inside a collecting map the refusal stops the whole map):
   // a workflow narrows before it picks.
   assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), /Narrow before a pick: a pick takes at most 240 candidates \(for example, the major group before its 4-digit codes\)/);
+  // Jev checks evidence, never fit: whether a code fits a business needs knowledge the state does not hold.
+  for (const words of [/Do not ask a Jev judge whether a code fits a business; that needs knowledge the state does not hold\./, /A Jev check after an agent choice tests evidence only \(the cited line is quoted from the report\)\./])
+    assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), words);
   // Looking at the pages is a rule of the job, not only the skill's advice.
   assert.match(flat(text(v4, 'AGENTS.md')), /look at the annual report's cover page and the page of its segment table with read_document/i);
   // classify-company takes the job's input as given, a website or none.
