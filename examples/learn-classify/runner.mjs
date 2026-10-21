@@ -103,7 +103,7 @@ export async function openOut(out, { mode, set = SETS.v1, agentDir }) {
   const repo = await openRepo({ dir: join(out, 'host-repo'), remote: local(bare) });
   const metaPath = join(out, 'meta.json');
   let meta = readJsonIf(metaPath);
-  const agent = await agentFiles(agentDir ?? set.agentDir);
+  const agent = agentDir === undefined && set.agentFiles ? set.agentFiles() : await agentFiles(agentDir ?? set.agentDir);
   const agentSha256 = createHash('sha256').update(JSON.stringify(Object.entries(agent).sort(([a], [b]) => (a < b ? -1 : 1)))).digest('hex');
   if (!meta) {
     await repo.fetch();
@@ -134,7 +134,7 @@ const fixtureLookup = async () => [{ address: '93.184.216.34', family: 4 }];
 
 /** The $0 parts: the scripted agent and Jev, lane C1's fetch_page reading fixture pages instead of the web, and in v2 and
  *  v4 fakes of lane C3's tools over the fixtures. A data directory without pages.json gets 404s. */
-export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 ? FIXTURES_V4 : set === SETS.v2 ? FIXTURES_V2 : FIXTURES } = {}) {
+export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 || set === SETS.facts ? FIXTURES_V4 : set === SETS.v2 ? FIXTURES_V2 : FIXTURES } = {}) {
   const d = set.load(data);
   const pages = readJsonIf(join(data, 'pages.json')) ?? {};
   const hard = isHard(set);
@@ -678,6 +678,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   try {
     const set = SETS[values.set ?? 'v1'];
     if (!set) { console.error(`--set is v1, v2 or v4\n${USAGE}`); process.exit(2); }
+    if (set === SETS.facts) { console.error(`the facts set runs with eval-facts.mjs, not as a learning or sealed pass\n${USAGE}`); process.exit(2); }
     const parts = values.live
       ? await liveParts({ set, ...(values.data ? { data: resolve(values.data) } : {}), ...(values.model ? { model: values.model } : {}), ...(values.thinking ? { thinking: values.thinking } : {}), archivedSec: Boolean(values['edgar-archive']), ...(values['edgar-cache'] ? { edgarCache: resolve(values['edgar-cache']) } : {}) })
       : scriptedParts({ set, ...(values.data ? { data: resolve(values.data) } : {}) });
