@@ -366,6 +366,11 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   for (const words of [/else from the address the report gives for the company's head office, principal office or registered office, in that order/,
     /never passes an empty headquarters on/, /escalates "no HQ found" only when the report gives neither/])
     assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), words);
+  // A quote is at most 300 characters where it is made: the answer refuses a longer cite, so a workflow's quote fields cap
+  // it at the node that writes them.
+  for (const words of [/Each quote a step returns is at most 300 characters: cut it to the line that carries the fact/,
+    /every quote field an extract or agent step returns declares `maxLength: 300` in its out schema/])
+    assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), words);
   // The code is chosen from sic_codes by where most revenue comes from, never remembered.
   for (const words of [/its 4-digit SIC code, from sic_codes: sic2_groups for the group/, /chosen by where most revenue comes from/, /A code you remember from EDGAR or elsewhere is a guess, never evidence/, /the revenue reading wins, and the code's cite is the revenue table it rests on/])
     assert.match(flat(text(v4, 'AGENTS.md')), words);
