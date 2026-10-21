@@ -3,6 +3,9 @@
 //       arrays, so `escalate when gte scores.0 5` never fired on `{scores: [9]}` while `{scores.0}` read 9.
 //   F7  the parallel `$host` merge let an array append silently replace a scalar a sibling had written,
 //       while the reverse branch order was a conflict; shape must never decide which write survives.
+//   P10 a map's `resultPath` selected the item result with its own split(".").reduce, so a path like
+//       `res.list.length` picked an array's length where getPath — and therefore requires and
+//       output.path reading the same shape — resolves undefined. It now reads through getPath.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runWorkflow, validateWorkflow, getPath } from "../dist/index.js";
@@ -88,6 +91,32 @@ test("F9: a loop condition on an array index terminates when the indexed value i
   const result = await runWorkflow(wf, { scores: [0] }, {});
   assert.equal(result.status, "complete");
   assert.deepEqual(result.output, { rounds: 3 }, "three increments reach 3; the loop did not run to its bound");
+});
+
+// ─── P10 ───
+
+const mapResult = (resultPath) => ({
+  v: 2, name: "map-result-path",
+  schemas: { Input: object({ items: { type: "array" } }), Item: { type: "object" }, Out: { type: "array" } },
+  input: { schemaId: "Input" }, output: { schemaId: "Out", path: "out" },
+  root: { node: "chain", steps: [
+    { node: "map", label: "each", itemsPath: "items", as: "out", resultPath, body: { node: "agent", label: "look", instructions: "x", out: "Item", as: "res" } },
+  ] },
+});
+
+test("P10: a map resultPath selects through getPath, so an array .length is not an item result", async () => {
+  // The body writes { list: [...] } under `as: res`. resultPath "res.list.0" names an element (getPath
+  // and the old ad-hoc reader agree); "res.list.length" names an array property getPath refuses, so the
+  // item result is missing rather than the array's length.
+  const runNode = async () => ({ list: ["a", "b", "c"] });
+  const indexed = await runWorkflow(mapResult("res.list.0"), { items: [{}] }, { runNode });
+  assert.equal(indexed.status, "complete");
+  assert.deepEqual(indexed.state.out, ["a"], "an in-range index resolves, as it does for every reader");
+  await assert.rejects(
+    runWorkflow(mapResult("res.list.length"), { items: [{}] }, { runNode }),
+    (error) => error.reason === "missing_map_result" && /res\.list\.length/.test(error.message),
+    "an array .length is not an element: the item result is missing, not 3",
+  );
 });
 
 // ─── F7 ───

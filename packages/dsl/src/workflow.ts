@@ -2457,7 +2457,7 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
             const itemState = snapshotState({ ...state, item: items[i], item_index: i });
             const out = await runNodeOnState(node.body, itemState, workflow, itemDeps);
             if (node.resultPath !== undefined) {
-              const selected = node.resultPath.split(".").reduce<unknown>((value, key) => value == null ? undefined : (value as Record<string, unknown>)[key], out);
+              const selected = getPath(out, node.resultPath);
               if (selected === undefined) throw new WorkflowStateError(`map node "${node.label}": resultPath "${node.resultPath}" is missing from item ${i}`, node.label, node.resultPath, "missing_map_result");
               results[i] = structuredClone(selected);
             } else results[i] = (node.body as any).as ? (out as any)[(node.body as any).as] : out;

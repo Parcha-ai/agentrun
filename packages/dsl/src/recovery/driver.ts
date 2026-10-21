@@ -10,6 +10,7 @@ import { chainStep, childrenOf, completedIteration, enclosingChains, enclosingIt
 import { bindingDigests, LEDGER_FORMAT } from "./binding.js";
 import { canonicalHash as hash } from "./canonical-hash.js";
 import { RecoveryError } from "./errors.js";
+import { getPath } from "../predicates.js";
 import { gatewayIntentOf } from "./handoff-receipts.js";
 import { validateFrozenSnapshot, openedFrozenSnapshot, serializeFrozenSnapshot,
   frozenStepSessionId, frozenStepId, frozenEffectId, frozenEffectPath, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
@@ -715,7 +716,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       if (doneOf(frame).has(at)) throw pathFault(at, "A committed path was asked for again after its state was released");
       // A map that starts, or starts again, names the base its items are kept against: the state it starts from.
       if ((layoutV4 || moving) && node.node === "map") {
-        const list = String(node.itemsPath).split(".").reduce<unknown>((value, key) => (value as Record<string, unknown> | null | undefined)?.[key], state);
+        const list = getPath(state, String(node.itemsPath));
         maps.set(at, { length: Array.isArray(list) ? list.length : 0, items: maps.get(at)?.items ?? 0, base: digestOf(state), baseState: state });
       }
       // A node started in an earlier process starts again from the same state, or not at all. The
