@@ -364,45 +364,43 @@ type Lists = { [K in "accepted" | "superseded" | "duplicates" | "used" | "held" 
 // Reason codes only: a refused path's name can itself carry what was refused.
 const refusalReason = (refusals: readonly Refusal[]) => [...new Set(refusals.map((r) => r.reason))].join(", ");
 
-/** What curating one run would write, judged against main at `main`; undefined when the branch adds nothing to main. */
-async function planRun(input: PlanInput): Promise<Plan | undefined> {
-  const { options, runId, tip, main } = input;
-  const { repo } = options;
-  const runsRepo = options.runs ?? repo;
-  const lists: Lists = { accepted: [], superseded: [], duplicates: [], used: [], held: [], refused: [], archived: [], settled: [] };
-  const { budget } = input;
+type RunRead = {
+  readonly runFiles: Record<string, string | null>;
+  readonly candidates: readonly InboxCandidate[];
+  /** The commit the run was seeded from, or its branch's base, marked so, when its inbox does not say. */
+  readonly origin: Pick<Learning["provenance"], "sha" | "shaFrom">;
+};
 
-  const mainHistory = new Set((await repo.log({ ref: main })).map((c) => c.sha));
+/** The run's own commits, read back and guarded as the run again, with the host's secrets of now: what the run proposes, the
+ *  reason to refuse the whole run, or undefined when the branch adds nothing to main. */
+async function readRun(input: PlanInput): Promise<RunRead | string | undefined> {
+  const { options, runId, tip, main } = input;
+  const runsRepo = options.runs ?? options.repo;
+  const mainHistory = new Set((await options.repo.log({ ref: main })).map((c) => c.sha));
   const own = (await runsRepo.log({ ref: tip })).filter((c) => !mainHistory.has(c.sha));
   if (own.length === 0) return undefined;
 
-  const refuseRun = (reason: string): Plan => {
-    lists.refused.push({ reason });
-    return finish(input, lists, {}, [], [], budget.asked);
-  };
-
   const ownShas = new Set(own.map((c) => c.sha));
   const bases = new Set(own.map((c) => c.parents[0]).filter((p): p is string => p !== undefined && !ownShas.has(p)));
-  if (own.some((c) => c.parents.length !== 1 || !(c.trailers[RUN_ID_TRAILER] ?? []).includes(runId))) return refuseRun("the run branch holds a commit that is not this run's");
+  if (own.some((c) => c.parents.length !== 1 || !(c.trailers[RUN_ID_TRAILER] ?? []).includes(runId))) return "the run branch holds a commit that is not this run's";
   const base = bases.size === 1 ? [...bases][0]! : undefined;
-  if (!base || !mainHistory.has(base)) return refuseRun("the run branch does not start from main's history");
+  if (!base || !mainHistory.has(base)) return "the run branch does not start from main's history";
 
-  // Everything the run's commits changed, read back and guarded as the run again, with the host's secrets of now.
   const before = new Map((await runsRepo.list("", base)).map((e) => [e.path, e]));
   const after = new Map((await runsRepo.list("", tip)).map((e) => [e.path, e]));
   const changed = [...new Set([...before.keys(), ...after.keys()])].filter((p) => before.get(p)?.oid !== after.get(p)?.oid || before.get(p)?.mode !== after.get(p)?.mode).sort();
-  if (changed.length > CAPS.files) return refuseRun(`too_many: the run changed ${changed.length} paths`);
+  if (changed.length > CAPS.files) return `too_many: the run changed ${changed.length} paths`;
   const runFiles: Record<string, string | null> = {};
   for (const path of changed) {
-    if (isRulesLocked(path)) return refuseRun("rules_locked: the run changed a rules-tier file");
+    if (isRulesLocked(path)) return "rules_locked: the run changed a rules-tier file";
     const entry = after.get(path);
     if (!entry) {
       runFiles[path] = null;
       continue;
     }
     const mode = entry.type === "blob" ? modeRefusal(entry.mode) : `a ${entry.type}`;
-    if (mode) return refuseRun(`path_not_allowed: the run wrote ${mode}`);
-    if ((entry.size ?? 0) > CAPS.file) return refuseRun(`too_large: a file the run wrote is ${entry.size} bytes`);
+    if (mode) return `path_not_allowed: the run wrote ${mode}`;
+    if ((entry.size ?? 0) > CAPS.file) return `too_large: a file the run wrote is ${entry.size} bytes`;
     runFiles[path] = (await runsRepo.read(path, tip)) ?? "";
   }
   const inboxText = runFiles[inboxPath(runId)];
@@ -411,29 +409,26 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   if (typeof inboxText === "string") {
     try {
       const inbox = parseInbox(inboxText);
-      if (inbox.run !== runId) return refuseRun("the inbox names another run");
+      if (inbox.run !== runId) return "the inbox names another run";
       candidates = inbox.candidates;
       seed = inbox.seed;
     } catch (error) {
       if (!(error instanceof InboxFormatError)) throw error;
-      return refuseRun("the inbox does not parse");
+      return "the inbox does not parse";
     }
   }
   const runRefusals = guard({ role: "run", runId, files: runFiles, candidates, secrets: input.secrets });
-  if (runRefusals.length) return refuseRun(`the run's files are refused: ${refusalReason(runRefusals)}`);
-
-  // A learning names the commit its run was seeded from; an inbox that does not say gets its branch's base, marked so.
+  if (runRefusals.length) return `the run's files are refused: ${refusalReason(runRefusals)}`;
   const seeded = typeof seed === "string" && COMMIT_SHA.test(seed) && mainHistory.has(seed) ? seed : undefined;
-  const origin = seeded ? { sha: seeded } : { sha: base, shaFrom: "branch-base" as const };
-  const { learnings } = await learningsAt(repo, main);
-  const entries = new Map(learnings.map((l) => [l.id, l]));
-  const touched = new Set<string>();
-  const fresh = new Set<string>();
-  const usedOnce = new Set<string>();
-  const rules = options.rules ?? (await repo.read(LAYOUT.rules, main)) ?? "";
-  const workflows = new Map<string, { candidate: number; untrusted: boolean }>();
+  return { runFiles, candidates, origin: seeded ? { sha: seeded } : { sha: base, shaFrom: "branch-base" } };
+}
 
-  const ask = async (q: Question, state: Record<string, unknown>): Promise<Asked> => {
+type Ask = (q: Question, state: Record<string, unknown>) => Promise<Asked>;
+
+/** The judge for one run: an answer already given in this curation is free; a new one spends the run's question budget. */
+function judgeFor(input: PlanInput): Ask {
+  const { options, runId, budget } = input;
+  return async (q, state) => {
     const key = sha256(JSON.stringify([q, state]));
     let p = input.memo.get(key);
     if (p === undefined) {
@@ -459,28 +454,69 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     const cut = input.thresholds[q];
     return { verdict: p >= cut.yes ? "yes" : p <= cut.no ? "no" : "unsure", p };
   };
+}
 
-  /** The atomic questions: refused, held, or undefined when the text passes. */
-  const atomic = async (learning: Record<string, unknown>, untrusted: boolean): Promise<{ status: "refused" | "held"; reason: string } | undefined> => {
-    const bad: string[] = [];
-    const unsure: string[] = [];
-    if (rules.trim() !== "") {
-      const a = await ask("narrowsRules", { learning, rules });
-      if (a.verdict === "yes") bad.push(`contradicts or narrows a rule (${fixed(a.p)})`);
-      else if (a.verdict !== "no") unsure.push(unsureReason(a, "it narrows a rule"));
-    }
-    if (untrusted) {
-      const a = await ask("fromContent", { learning });
-      if (a.verdict === "yes") bad.push(`an instruction from content the run read (${fixed(a.p)})`);
-      else if (a.verdict !== "no") unsure.push(unsureReason(a, "it came from content the run read"));
-    }
-    const g = await ask("general", { learning });
-    if (g.verdict === "no") bad.push(`about this case, not general (${fixed(g.p)})`);
-    else if (g.verdict !== "yes") unsure.push(unsureReason(g, "it is general"));
-    if (bad.length) return { status: "refused", reason: bad.join("; ") };
-    if (unsure.length) return { status: "held", reason: [...new Set(unsure)].join("; ") };
-    return undefined;
+/** The atomic questions about one learning: refused, held, or undefined when the text passes. */
+async function atomicVerdict(ask: Ask, rules: string, learning: Record<string, unknown>, untrusted: boolean): Promise<{ status: "refused" | "held"; reason: string } | undefined> {
+  const bad: string[] = [];
+  const unsure: string[] = [];
+  if (rules.trim() !== "") {
+    const a = await ask("narrowsRules", { learning, rules });
+    if (a.verdict === "yes") bad.push(`contradicts or narrows a rule (${fixed(a.p)})`);
+    else if (a.verdict !== "no") unsure.push(unsureReason(a, "it narrows a rule"));
+  }
+  if (untrusted) {
+    const a = await ask("fromContent", { learning });
+    if (a.verdict === "yes") bad.push(`an instruction from content the run read (${fixed(a.p)})`);
+    else if (a.verdict !== "no") unsure.push(unsureReason(a, "it came from content the run read"));
+  }
+  const g = await ask("general", { learning });
+  if (g.verdict === "no") bad.push(`about this case, not general (${fixed(g.p)})`);
+  else if (g.verdict !== "yes") unsure.push(unsureReason(g, "it is general"));
+  if (bad.length) return { status: "refused", reason: bad.join("; ") };
+  if (unsure.length) return { status: "held", reason: [...new Set(unsure)].join("; ") };
+  return undefined;
+}
+
+/** The active learnings to archive, least used and older first, this run's own (`fresh`) only after them, until the derived
+ *  `<learned>` index fits `cap` bytes. Marks them archived in `entries`. */
+function archiveToCap(entries: Map<string, Learning>, fresh: ReadonlySet<string>, main: string, cap: number): Learning[] {
+  const indexBytes = () => {
+    const lines = [...entries.values()].filter((l) => l.status === "active").sort(byUse).map(indexLine).filter((l): l is string => l !== undefined);
+    return Buffer.byteLength(renderSection({ sha: main, index: lines, omitted: [], workflows: [], copied: true }), "utf8");
   };
+  const archived: Learning[] = [];
+  while (indexBytes() > cap) {
+    const victim = [...entries.values()]
+      .filter((l) => l.status === "active")
+      .sort((a, b) => Number(fresh.has(a.id)) - Number(fresh.has(b.id)) || a.uses - b.uses || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0];
+    if (!victim) break;
+    entries.set(victim.id, { ...victim, status: "archived" });
+    archived.push(victim);
+  }
+  return archived;
+}
+
+/** What curating one run would write, judged against main at `main`; undefined when the branch adds nothing to main. */
+async function planRun(input: PlanInput): Promise<Plan | undefined> {
+  const { options, runId, main, budget } = input;
+  const { repo } = options;
+  const lists: Lists = { accepted: [], superseded: [], duplicates: [], used: [], held: [], refused: [], archived: [], settled: [] };
+  const read = await readRun(input);
+  if (read === undefined) return undefined;
+  if (typeof read === "string") {
+    lists.refused.push({ reason: read });
+    return finish(input, lists, {}, [], [], budget.asked);
+  }
+  const { runFiles, candidates, origin } = read;
+  const { learnings } = await learningsAt(repo, main);
+  const entries = new Map(learnings.map((l) => [l.id, l]));
+  const touched = new Set<string>();
+  const fresh = new Set<string>();
+  const usedOnce = new Set<string>();
+  const rules = options.rules ?? (await repo.read(LAYOUT.rules, main)) ?? "";
+  const workflows = new Map<string, { candidate: number; untrusted: boolean }>();
+  const ask = judgeFor(input);
 
   for (const [i, candidate] of candidates.entries()) {
     const at = i + 1;
@@ -527,7 +563,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
       continue;
     }
     const learning = { type, text: candidate.text };
-    const verdict = await atomic(learning, candidate.untrusted === true);
+    const verdict = await atomicVerdict(ask, rules, learning, candidate.untrusted === true);
     if (verdict) {
       lists[verdict.status].push({ candidate: at, id, reason: verdict.reason });
       continue;
@@ -712,17 +748,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     }
   }
 
-  // The derived index stays under its cap: archive the least-used older learnings first, this run's own only after them.
-  const indexBytes = () => {
-    const lines = [...entries.values()].filter((l) => l.status === "active").sort(byUse).map(indexLine).filter((l): l is string => l !== undefined);
-    return Buffer.byteLength(renderSection({ sha: main, index: lines, omitted: [], workflows: [], copied: true }), "utf8");
-  };
-  while (indexBytes() > input.caps.index) {
-    const victim = [...entries.values()]
-      .filter((l) => l.status === "active")
-      .sort((a, b) => Number(fresh.has(a.id)) - Number(fresh.has(b.id)) || a.uses - b.uses || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0];
-    if (!victim) break;
-    entries.set(victim.id, { ...victim, status: "archived" });
+  for (const victim of archiveToCap(entries, fresh, main, input.caps.index)) {
     touched.add(victim.id);
     lists.archived.push({ id: victim.id, reason: `least used (uses ${victim.uses}): archived to keep the <learned> index within ${input.caps.index} bytes` });
   }
