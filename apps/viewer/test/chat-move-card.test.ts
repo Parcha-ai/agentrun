@@ -57,6 +57,13 @@ test('where the holder\'s label is the one it left, the card says it reopened, n
   assert.match(eleventh.cards[0]!.lead, /^after the 11th charge/);
 });
 
+test('a tab is a driver kind (draft 47, amendment 2): the card names a move from the tab, and a driver that is no kind is dropped from the card', async (t) => {
+  const { cards } = await moved(t, { ...D2, gens: [{ host: 'host-1', driver: 'tab' }, { host: 'host-2', driver: 'modal' }] });
+  assert.deepEqual(cards.map((card) => [card.lead, card.text]), [['after the 5th charge on host-1 (tab)', 'Moved to host-2 (modal) from the same disk; the conversation goes on']]);
+  const unknown = await moved(t, { ...D2, gens: [{ host: 'host-1', driver: 'a-machine-name' }, { host: 'host-2', driver: 'i-0a1b2c3d4e5f' }] });
+  assert.deepEqual(unknown.cards.map((card) => [card.lead, card.text]), [['after the 5th charge on host-1', 'Moved to host-2 from the same disk; the conversation goes on']], 'a value that is no driver kind (a name, an id) is never drawn');
+});
+
 test('a point that is not an effect kept drops the "after" clause, and nothing else is read from it', async (t) => {
   const { cards } = await moved(t, { ...D2, moves: [{ t: 10_000, point: 'model.request', n: 3 }] });
   assert.deepEqual(cards.map((card) => [card.lead, card.text]), [['On host-1 (daytona)', 'Moved to host-2 (daytona) from the same disk; the conversation goes on']]);

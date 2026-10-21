@@ -341,9 +341,9 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
 
   // A planned move between hosts leaves a card in the timeline at the host's `handoff` line, between the last line of generation N and the first of N+1. Only fields are read: the
   // handoff's gen, point, n and `from`, and the holder (its host label and its driver kind) of each side's `run.json`. Never the handoff's prose, never a pid or a boot id; a host is
-  // named only by a recorded `host-N` label, a driver only by a kind (local, daytona, modal). `handoff.failed` is another kind of line and draws nothing.
+  // named only by a recorded `host-N` label, a driver only by a kind (local, daytona, modal, tab). `handoff.failed` is another kind of line and draws nothing.
   const hostLabel = (value: Json | undefined) => { const text = chatStr(value); return text && /^host-\d{1,3}$/.test(text) ? text : undefined; };
-  const driverKind = (value: Json | undefined) => { const text = chatStr(value); return text && ['local', 'daytona', 'modal'].includes(text) ? text : undefined; };
+  const driverKind = (value: Json | undefined) => { const text = chatStr(value); return text && ['local', 'daytona', 'modal', 'tab'].includes(text) ? text : undefined; };
   const side = (label: string | undefined, kind: string | undefined) => (label ? `${label}${kind ? ` (${kind})` : ''}` : undefined);
   const ordinalOf = (n: number) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? 'th' : (['th', 'st', 'nd', 'rd'][n % 10] ?? 'th')}`;
   const holders = live('run.json').flatMap((line) => { const d = chatObj(line.data); const holder = chatObj(d?.holder); return typeof d?.gen === 'number' ? [{ gen: d.gen, t: line.t, label: hostLabel(holder?.host), kind: driverKind(holder?.driver) }] : []; });
