@@ -24,7 +24,7 @@ const documents = (over = {}) => ({
   'placement': ['pl-1', { work: 'train', ref: { doc: 'train.checkpoints', key: 'ck-1' }, current: 'local', phase: 'message', rest: 'local',
     need: { p: 0.8, threshold: 0.5 }, where: { choice: 'gpu-pool', options: [{ environment: 'gpu-pool', purpose: 'GPU training', p: 0.7 }, { environment: 'local', purpose: 'this machine', p: 0.3 }] },
     chosen: 'gpu-pool', rule: 'transport.need-threshold/1', placer: 'jev', classifier: { provider: 'typesafe', model: 'jev-1' }, at: '2026-10-21T00:00:04.000Z', basis: 'scripted' }],
-  'train.checkpoints': ['ck-1', { thread: 51, step: 400, place, bytes: 2048, placer: 'jev', placement: 'pl-1', basis: 'scripted' }],
+  'train.checkpoints': ['ck-1', { thread: 51, step: 400, place, bytes: 2048, copy_ms: 0, placer: 'jev', placement: 'pl-1', basis: 'scripted' }],
   'train.progress': ['51', { step: 400, steps_total: 1000, reward: 1.25, unit: 'return/episode', skill: 'walk forward', checkpoint: 'ck-1',
     metric: { name: 'speed', value: 0.42, unit: 'm/s', target: { op: '>=', value: 0.4 } }, passes: true, t_s: 31.5, status: 'running',
     passed_at: { checkpoint: 'ck-1', step: 400, t_s: 31.5 }, diagnosis: { kind: 'still-changing', text: 'The speed is still rising at the last checkpoint.' }, body: 'four legs', basis: 'scripted' }],
@@ -189,5 +189,7 @@ test('amendment 2: a placement follows its named rule from its own inputs, an er
   assert.deepEqual(rule({ classifier: { provider: 'typesafe' } }), ['placement "pl-1": its classifier is not { provider, model }']);
   assert.deepEqual(rule({ ref: { doc: 'train.checkpoints', key: 'ck-9' } }), ['placement "pl-1": its ref {"doc":"train.checkpoints","key":"ck-9"} names nothing in this recording']);
   assert.deepEqual(rule({ phase: 'soon' }), ['placement "pl-1": its phase "soon" is not one of message, turn_end']);
+  assert.deepEqual(problems(t, with_('train.checkpoints', { copy_ms: 12.5 })), ['train.checkpoints "ck-1": its copy_ms is not an integer of milliseconds of at least 0']);
+  assert.deepEqual(problems(t, with_('train.checkpoints', { copy_ms: -1 })), ['train.checkpoints "ck-1": its copy_ms is not an integer of milliseconds of at least 0']);
   assert.deepEqual(problems(t, with_('train.checkpoints', { placement: 'pl-9' })), ['train.checkpoints "ck-1": its placement "pl-9" names no placement in this recording']);
 });

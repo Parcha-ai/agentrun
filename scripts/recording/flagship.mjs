@@ -177,6 +177,8 @@ function valueProblems(doc, key, value, known) {
       need(isInt(value.step) && value.step >= 0, 'its step is not an integer of at least 0');
       place(value.place);
       if (value.bytes !== undefined) need(isInt(value.bytes) && value.bytes >= 0, 'its bytes is not an integer of at least 0');
+      // The measured copy time behind "no copy, no boot": its unit is in its name.
+      if (value.copy_ms !== undefined) need(isInt(value.copy_ms) && value.copy_ms >= 0, 'its copy_ms is not an integer of milliseconds of at least 0');
       if (value.metric !== undefined) metric(value.metric);
       passes(value);
       if (value.body !== undefined) label(value.body, 'body');
