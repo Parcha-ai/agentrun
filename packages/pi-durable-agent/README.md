@@ -166,8 +166,10 @@ const saved = await vault.restore({ sessionKey: "acme", origins: ["https://app.a
   `forgetAll()` destroys every key and the vault key itself.
 - **What comes back.** A capture keeps only the cookies and localStorage of the origins it names. A restore returns
   what was captured for the origins asked for, never more. A persistent cookie keeps its own expiry; a session cookie
-  comes back for at most 24 hours after its capture (`maxSessionCookieAgeMs` lowers it; it cannot go higher). With
-  `runId`, a capture is refused (`busy`) while another live run holds that session's save lease.
+  comes back for at most 24 hours after its capture (`maxSessionCookieAgeMs` lowers it; it cannot go higher). A
+  capture is dated by its state's `capturedAt` (a time still to come counts as now), and one older than the session
+  already kept is ignored, so a late capture never replaces a newer one. With `runId`, a capture is refused (`busy`)
+  while another live run holds that session's save lease.
 - **Never anywhere else.** `agent.vault` is on `SECRET_KINDS`: never exported, packed or seeded into a run; a pack's
   manifest names the sessions (`vault`), never a value, and `vault.keys` never travels. No value is in an error or a
   log. `handedOut()` lists every value `restore` returned, for a redactor such as pi-browser's `redact.values`.

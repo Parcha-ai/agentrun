@@ -209,8 +209,9 @@ const recordAad = (agentId: string, sessionKey: string, keyId: string, kind: str
  * `agent.vault` (a secret kind: never exported, packed or seeded into a run) under its own item key; a capture mints a
  * new item key and destroys the one before it, `forget` destroys a session's key and `forgetAll` every key. The first
  * capture binds the home to `hostKey`; any other host key is refused (`key`). Session cookies come back for at most
- * `maxSessionCookieAgeMs` after their capture (24 hours, the most; a host may only lower it). With `runId`, a capture
- * is refused (`busy`) while another live run holds that session's save lease.
+ * `maxSessionCookieAgeMs` after their capture (24 hours, the most; a host may only lower it). A capture is dated by its
+ * state's `capturedAt` (a time to come counts as now), and one older than the session already kept is ignored. With
+ * `runId`, a capture is refused (`busy`) while another live run holds that session's save lease.
  */
 export function sessionVault(home: AgentHome, options: { hostKey: HostKey; maxSessionCookieAgeMs?: number; runId?: string; access?: HomeAccess; now?: () => number }): SessionVault {
   const hostKey = options?.hostKey;
@@ -250,6 +251,9 @@ export function sessionVault(home: AgentHome, options: { hostKey: HostKey; maxSe
       const sessionKey = checkSessionKey(input?.sessionKey);
       const origins = checkOrigins(input?.origins);
       const kept = keptOf(input?.state, origins);
+      const stamp = (input.state as { capturedAt?: unknown }).capturedAt;
+      const taken = typeof stamp === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(stamp) ? Date.parse(stamp) : Number.NaN;
+      if (!Number.isFinite(taken)) throw invalid("the captured state's capturedAt is not an ISO 8601 time");
       await inVault(async (store, agentDir) => {
         const state = await readState(store);
         const agentId = state.identity.id;
@@ -269,7 +273,11 @@ export function sessionVault(home: AgentHome, options: { hostKey: HostKey; maxSe
           const wrapped = await hostKey.wrap(homeKey, homeKeyContext(agentId, homeKeyId));
           keys = { v: 1, agentId, hostKeyId: hostKey.id, homeKey: { id: homeKeyId, wrapped: Buffer.from(wrapped).toString("base64") }, items: {} };
         }
-        const capturedAt = new Date(now()).toISOString();
+        // When the browser was read, never later than now: an older capture never replaces a newer session.
+        const at = Math.min(taken, now());
+        const held = own(await readFamily<VaultRecord>(store, VaultDoc), sessionKey);
+        if (held && Date.parse(held.capturedAt) > at) return;
+        const capturedAt = new Date(at).toISOString();
         const plain = Buffer.from(JSON.stringify({ ...kept, capturedAt }), "utf8");
         if (plain.length > MAX_PLAIN_BYTES) throw invalid(`the captured state is ${plain.length} bytes; a session holds at most ${MAX_PLAIN_BYTES}`);
         const keyId = newId();

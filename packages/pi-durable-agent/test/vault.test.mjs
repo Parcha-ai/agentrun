@@ -275,6 +275,30 @@ test("a session key is 1 to 128 of letters, digits, _, ., : or -, starting with 
   assert.equal((await vault.list()).length, 5);
 });
 
+test("a capture is dated by its state's capturedAt: an older one never replaces a newer session, an equal one does, a time to come counts as now, and one that is not a time is refused", async () => {
+  const h = await home();
+  const c = clock(T0 + 2 * HOUR);
+  const vault = sessionVault(h, { hostKey: KEY, now: c.now });
+  const at = (ms, value) => ({ ...chromeState(), capturedAt: new Date(ms).toISOString(), cookies: [cookie("sid", value, "app.acme.example")], localStorage: {} });
+  const value = async () => (await vault.restore({ sessionKey: "acme", origins: [A] })).cookies[0].value;
+  await vault.capture({ sessionKey: "acme", origins: [A], state: at(T0 + HOUR, "newer") });
+  const kept = await rowOf(h, "acme");
+  assert.equal(kept.capturedAt, new Date(T0 + HOUR).toISOString(), "dated when the browser was read, not when the capture arrived");
+  const keys = readFileSync(path.join(h.dir, VAULT_KEYS_FILE), "utf8");
+  await vault.capture({ sessionKey: "acme", origins: [A], state: at(T0, "older") });
+  assert.deepEqual(await rowOf(h, "acme"), kept, "the older capture changed nothing");
+  assert.equal(readFileSync(path.join(h.dir, VAULT_KEYS_FILE), "utf8"), keys, "not even the key file");
+  assert.equal(await value(), "newer");
+  await vault.capture({ sessionKey: "acme", origins: [A], state: at(T0 + HOUR, "same time") });
+  assert.equal(await value(), "same time", "a capture as new as the kept one replaces it");
+  await vault.capture({ sessionKey: "acme", origins: [A], state: at(T0 + 50 * HOUR, "future") });
+  assert.equal((await rowOf(h, "acme")).capturedAt, new Date(T0 + 2 * HOUR).toISOString(), "a time still to come counts as now, so no cookie outlives the cap");
+  for (const capturedAt of ["yesterday", "7", undefined, 7, "2026-13-45T99:99"]) {
+    await assert.rejects(vault.capture({ sessionKey: "acme", origins: [A], state: { ...at(T0, "x"), capturedAt } }), refused("invalid", /capturedAt is not an ISO 8601 time/), String(capturedAt));
+  }
+  assert.equal(await value(), "future");
+});
+
 test("a changed ciphertext, or one moved to another session's row, is refused and never decrypts to the wrong session", async () => {
   const h = await home();
   const vault = sessionVault(h, { hostKey: KEY, now: NOW });
