@@ -8,7 +8,7 @@ import { chmod, cp, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { diskProbe, durableCommits } from './disk.mjs';
+import { durableCommits } from './disk.mjs';
 import { agentHomeFor, prepareRun } from './host.mjs';
 import { listQueue, liveParts, openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { FIXTURES_V4 } from './scripted.mjs';
@@ -65,7 +65,9 @@ test('the stream: each epoch is every company of the split once, in an order the
   assert.equal(held.length, 16);
   assert.ok(held.every((e) => !bank.some((b) => b.cik === e.cik)));
   assert.deepEqual(held.filter((e) => e.epoch === 1).map((e) => e.cik), stream.filter((e) => e.epoch === 1 && !bank.some((b) => b.cik === e.cik)).map((e) => e.cik));
-  assert.throws(() => streamOf(companies, { split: 'train', epochs: 1, seed: 7, exclude: [{ cik: '9999999999' }] }), /9999999999 is not in the train split/);
+  assert.throws(() => streamOf(companies, { split: 'train', epochs: 1, seed: 7, exclude: [{ cik: '9999999999' }] }), /9999999999 is not a company of the set/);
+  // A bank already given its own split is already out of the stream: excluding it again changes nothing.
+  assert.deepEqual(streamOf(companies, { split: 'train', epochs: 3, seed: 7, exclude: [{ cik: companies[11].cik }] }), stream);
 });
 
 test('a list names a split; a company may come back in a later epoch, never twice in one; the test split stays closed unless opened', async (t) => {
@@ -247,11 +249,8 @@ test('edgarCache: each run of a live pass reads the pinned Wayback captures from
   assert.match((await (await fetchPage('run-2')).run({ url: second.snapshot })).text, /SIC: 3674/);
 });
 
-test('diskProbe and durableCommits: what a run cost the disk, for the switch rule', async (t) => {
+test('durableCommits: how many durable commits a run made', async (t) => {
   const dir = await scratch(t);
-  const probe = diskProbe(dir, { commits: 5 });
-  assert.ok(probe.fsyncMs >= 0 && probe.commits === 5, JSON.stringify(probe));
-  assert.deepEqual(readdirSync(dir), []);
   const { data, companies } = await standIn(dir, { train: 1, dev: 0, test: 0 });
   const out = join(dir, 'train');
   await runLoop({ out, parts: parts(data), list: streamOf(companies, { split: 'train', epochs: 1, seed: 1 }), split: 'train', record: false });

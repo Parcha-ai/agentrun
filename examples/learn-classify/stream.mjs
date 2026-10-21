@@ -18,7 +18,8 @@ export function streamOf(companies, { split = 'train', epochs = 1, seed = 1, res
   if (split === 'test') throw new Error('the test split is opened once per finalist, never streamed');
   if (!(Number.isInteger(epochs) && epochs >= 1)) throw new Error('epochs is a whole number from 1');
   const held = new Set(exclude.map((e) => String(e?.cik ?? e)));
-  for (const cik of held) if (!companies.some((c) => c.cik === cik && c.split === split)) throw new Error(`${cik} is not in the ${split} split`);
+  // A company of another split (a bank given its own) is already out of the stream; one the set lacks is a mistake.
+  for (const cik of held) if (!companies.some((c) => c.cik === cik)) throw new Error(`${cik} is not a company of the set`);
   const pool = companies.filter((c) => c.split === split && !held.has(c.cik));
   if (!pool.length) throw new Error(`no company is in the ${split} split`);
   const chosen = new Set(orderOf(pool, seed, 1).slice(0, first ?? pool.length).map((c) => c.cik));

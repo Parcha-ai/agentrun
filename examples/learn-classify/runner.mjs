@@ -24,7 +24,7 @@ import {
 import { writeRecording } from './recording.mjs';
 import { recordingLines } from '@parcha/agentrun-pi/durable';
 import { jobRecordOf } from './job-record.mjs';
-import { diskProbe, durableCommits } from './disk.mjs';
+import { durableCommits } from './disk.mjs';
 import { limitsOf } from './limits.mjs';
 import { lineageOf } from './lineage.mjs';
 import { curateOf, rowOf, rowOfV2, rowOfV4, spendOf } from './row.mjs';
@@ -37,6 +37,7 @@ import { answersTheJob, hostRecord, promotedFor } from './dispatch.mjs';
 import { asyncGate, GATE, gateSpend } from './promotion-gate.mjs';
 import { passSelfTest } from './selftest.mjs';
 import { writeHosts } from './tools-v2.mjs';
+import { HINDSIGHT_FIELDS, proposeHindsight, reflectOnRun } from './hindsight.mjs';
 
 export const DATA = join(import.meta.dirname, 'data');
 /** Where a pass writes when no --out is given, as the demo's contract names it. */
@@ -104,7 +105,7 @@ export async function openOut(out, { mode, set = SETS.v1, agentDir }) {
   const repo = await openRepo({ dir: join(out, 'host-repo'), remote: local(bare) });
   const metaPath = join(out, 'meta.json');
   let meta = readJsonIf(metaPath);
-  const agent = await agentFiles(agentDir ?? set.agentDir);
+  const agent = agentDir === undefined && set.agentFiles ? set.agentFiles() : await agentFiles(agentDir ?? set.agentDir);
   const agentSha256 = createHash('sha256').update(JSON.stringify(Object.entries(agent).sort(([a], [b]) => (a < b ? -1 : 1)))).digest('hex');
   if (!meta) {
     await repo.fetch();
@@ -135,7 +136,7 @@ const fixtureLookup = async () => [{ address: '93.184.216.34', family: 4 }];
 
 /** The $0 parts: the scripted agent and Jev, lane C1's fetch_page reading fixture pages instead of the web, and in v2 and
  *  v4 fakes of lane C3's tools over the fixtures. A data directory without pages.json gets 404s. */
-export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 ? FIXTURES_V4 : set === SETS.v2 ? FIXTURES_V2 : FIXTURES } = {}) {
+export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 || set === SETS.facts ? FIXTURES_V4 : set === SETS.v2 ? FIXTURES_V2 : FIXTURES } = {}) {
   const d = set.load(data);
   const pages = readJsonIf(join(data, 'pages.json')) ?? {};
   const hard = isHard(set);
@@ -158,7 +159,7 @@ export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 ? FIXTURES
 /** The paid parts: the model and Jev through the gateway (models.mjs), fetch_page, and in v2 lane C3's tools
  *  (tools-v2.mjs: search and the browser on Browserbase with the key read at each call, else a local Chrome; the eyes
  *  through the gateway), their evidence and the browser's profile under the run's own directory. */
-export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, env = process.env, archivedSec = false, edgarCache, lookup } = {}) {
+export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, env = process.env, archivedSec = false, edgarCache, lookup, hindsight } = {}) {
   const { gatewayJev, gatewayModels, gatewayOf, ROOT } = await import('./models.mjs');
   const gateway = gatewayOf(env);
   // The root agent on Opus at high thinking unless --model / --thinking name another; the nodes on the host's NODE.
@@ -175,23 +176,27 @@ export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, e
     // Made once here so a cache with no manifest stops the pass before its first job.
     hard.snapshotFetch({ dir: edgarCache });
   }
+  const toolsFor = async (job, run) => {
+    // One snapshot cache per run: it reads C1's manifest when made, so captures added mid-pass reach later runs.
+    const fetch = edgarCache !== undefined ? hard.snapshotFetch({ dir: edgarCache }) : undefined;
+    const seams = { ...(fetch ? { fetch } : {}), ...(lookup ? { lookup } : {}) };
+    return [
+      fetchPageTool({ allowDomain: allowedDomain(job, set), archivedSec, ...seams }),
+      // A PDF over read_document's in-memory cap is kept under the system's temporary directory, outside the pass's out
+      // dir, so it never reaches a recording, the agent's repository or a page; the run disposes of it when it ends.
+      ...(hard ? await hard.hardJobTools({ root: join(run.dir, 'evidence'), profileRoot: join(run.dir, 'chrome'), eyes: await hard.gatewayEyes(gateway), env, largeRoot: tmpdir(), archivedSec, ...seams }) : []),
+    ];
+  };
+  if (hindsight && !hard) throw new Error(`hindsight needs a hard set, not ${set.name}`);
   return {
     mode: 'live', providers: 'real', modelName: `gateway/${models.agent.model.modelId}`, set, data: d, labels: d.labels, companies: d.companies, conventions: conventionsOf(d.report),
     // With archivedSec every tool also opens the Wayback Machine's copy of an SEC page (tools.mjs), and nothing else there.
     archivedSec,
     judge: () => jev,
-    toolsFor: async (job, run) => {
-      // One snapshot cache per run: it reads C1's manifest when made, so captures added mid-pass reach later runs.
-      const fetch = edgarCache !== undefined ? hard.snapshotFetch({ dir: edgarCache }) : undefined;
-      const seams = { ...(fetch ? { fetch } : {}), ...(lookup ? { lookup } : {}) };
-      return [
-        fetchPageTool({ allowDomain: allowedDomain(job, set), archivedSec, ...seams }),
-        // A PDF over read_document's in-memory cap is kept under the system's temporary directory, outside the pass's out
-        // dir, so it never reaches a recording, the agent's repository or a page; the run disposes of it when it ends.
-        ...(hard ? await hard.hardJobTools({ root: join(run.dir, 'evidence'), profileRoot: join(run.dir, 'chrome'), eyes: await hard.gatewayEyes(gateway), env, largeRoot: tmpdir(), archivedSec, ...seams }) : []),
-      ];
-    },
+    toolsFor,
     modelFor: () => models,
+    // Hindsight's reflections (hindsight.mjs) on the root agent's model, with fetch_page and read_document as the run has them.
+    ...(hindsight ? { hindsight: { fields: hindsight, model: () => models, tools: async (job, run) => (await toolsFor(job, run)).filter((t) => t.name === 'fetch_page' || t.name === 'read_document') } } : {}),
     // The browser's guard on the browser the pass will use, checked by the pass's self-test.
     ...(hard ? { browserCheck: (dir) => hard.guardSelfTest({ root: dir, profileRoot: join(dir, 'chrome'), env, archivedSec }) } : {}),
   };
@@ -346,8 +351,22 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
   if (p.phase === 'ran' && isHard(parts.set) && p.scoringJudge === undefined) {
     save({ ...p, ...await scoreRun({ parts, run, job, measure: p.measure, hostsDir: join(out, 'hosts') }) });
   }
+  // Hindsight (hindsight.mjs): one reflection per wrong field of a TRAIN run, asked once; its lessons are proposed below.
+  if (parts.hindsight && p.score && p.hindsight === undefined) {
+    mkdirSync(join(out, 'hindsight'), { recursive: true });
+    save({
+      ...p,
+      hindsight: await reflectOnRun({
+        job, run, score: p.score, answer: p.measure.answer, fields: parts.hindsight.fields, codes: parts.data?.codes, storeDir: join(out, 'hindsight'),
+        model: () => parts.hindsight.model(job, run), effects: () => parts.hindsight.tools(job, run),
+      }),
+    });
+  }
   await lock(async () => {
     if (p.phase === 'ran') save({ ...p, phase: 'proposed', finished: await finishJob({ home, repo, run, job, measure: p.measure }) });
+    if (p.phase === 'proposed' && p.hindsight?.reflections?.length && !p.hindsight.proposals) {
+      save({ ...p, hindsight: { ...p.hindsight, proposals: await proposeHindsight({ repo, job, run, seedSha: p.seedSha, wrong: p.hindsight.wrong, reflections: p.hindsight.reflections }) } });
+    }
     if (p.phase === 'proposed') {
       // The promotion gate's verdicts that landed since the last curate are applied first, so this curate starts from them.
       const gated = gate ? await gate.apply({ repo, thresholds: parts.thresholds }) : [];
@@ -378,13 +397,25 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
   const attempts = [...p.abandoned, ...(p.infraFailed ?? [])].map((a) => a.runId);
   const limits = limitsOf([...attempts, runId].map((id) => runPaths(home, id).storePath), { at: p.started });
   if (dropEvidence) dropRunFiles(run.dir);
+  const hindsight = p.hindsight?.reflections?.length ? hindsightOf(p.hindsight) : null;
   return {
     ...row,
+    ...(hindsight ? { hindsight, costUsd: row.costUsd === null || hindsight.costUsd === null ? null : row.costUsd + hindsight.costUsd, costKnownUsd: (row.costKnownUsd ?? 0) + (hindsight.costUsd ?? 0) } : {}),
     ...(p.curatedBefore === undefined ? {} : { curatedBefore: p.curatedBefore, lag: job.order - 1 - p.curatedBefore }),
     ...(p.curatedIndex === undefined ? {} : { curatedIndex: p.curatedIndex }),
     ...(p.gated ? { gated: p.gated } : {}),
     rerunOf: p.infraFailed?.[0]?.runId ?? null, infraFailed: modelError(p.measure), limits,
-    durableCommits: durableCommits(run.storePath), fsyncProbeMs: diskProbe(run.dir).fsyncMs,
+    durableCommits: durableCommits(run.storePath),
+  };
+}
+
+/** A row's hindsight: per reflection its field, how many hypotheses, its cost and what it read; each proposal's status. */
+function hindsightOf({ reflections, proposals = [] }) {
+  const costs = reflections.map((r) => r.costUsd);
+  return {
+    reflections: reflections.map((r) => ({ field: r.field, hypotheses: r.hypotheses.length, costUsd: r.costUsd, calls: r.calls, archivedSecRead: r.archivedSecRead, truthOnArchivedPage: r.truthOnArchivedPage, ...(r.stopped ? { stopped: r.stopped } : {}) })),
+    proposals,
+    costUsd: costs.every((c) => typeof c === 'number') ? costs.reduce((a, b) => a + b, 0) : null,
   };
 }
 
@@ -664,7 +695,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
     const phase = sha === meta.seedSha ? 'before' : 'after';
     const scoredRow = scored ? (parts.set === SETS.v4 ? rowOfV4 : rowOfV2)({ ...v1, score: scored.score, stats: scored.stats, scoringJudge: scored.scoringJudge, phase, jobRecord: hostRecord(jobRecordOf(recordingLines(run.storePath).lines), measure.dispatch) }) : { ...rowOf(v1), phase };
     const limits = limitsOf([...infraFailed.map((f) => f.runId), run.runId].map((id) => runPaths(home, id).storePath), { at: started });
-    const row = { ...scoredRow, rerunOf: infraFailed[0]?.runId ?? null, infraFailed: modelError(measure), limits, durableCommits: durableCommits(run.storePath), fsyncProbeMs: diskProbe(run.dir).fsyncMs };
+    const row = { ...scoredRow, rerunOf: infraFailed[0]?.runId ?? null, infraFailed: modelError(measure), limits, durableCommits: durableCommits(run.storePath) };
     spent += spendOf(measure, undefined, tools).knownUsd + (scored?.scoringJudge.costUsd ?? 0);
     appendFileSync(rowsPath, `${JSON.stringify(row)}\n`);
     if (dropEvidence) dropRunFiles(run.dir);
@@ -693,7 +724,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>]] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>]] [--hindsight all|<field,...>] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -706,7 +737,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         model: { type: 'string' }, thinking: { type: 'string' }, set: { type: 'string' }, list: { type: 'string' }, 'promote-after': { type: 'string' },
         split: { type: 'string' }, 'open-test': { type: 'boolean' }, from: { type: 'string' }, concurrency: { type: 'string' }, shard: { type: 'string' }, 'drop-evidence': { type: 'boolean' },
         'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' }, 'edgar-cache': { type: 'string' }, schedule: { type: 'string' }, checkpoints: { type: 'string' },
-        'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' },
+        'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, hindsight: { type: 'string' },
       },
     }));
   } catch (error) {
@@ -742,6 +773,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   if (values.schedule !== undefined && !['rolling', 'batch'].includes(values.schedule)) { console.error(`--schedule is rolling or batch\n${USAGE}`); process.exit(2); }
   const checkpoints = values.checkpoints === undefined ? undefined : values.checkpoints.split(',').map(Number);
   if (checkpoints && !checkpoints.every((n, i) => Number.isInteger(n) && n >= 1 && (i === 0 || n > checkpoints[i - 1]))) { console.error(`--checkpoints is ascending whole numbers from 1\n${USAGE}`); process.exit(2); }
+  const hindsight = values.hindsight === undefined ? undefined : values.hindsight === 'all' ? [...HINDSIGHT_FIELDS] : values.hindsight.split(',');
+  if (hindsight && !hindsight.every((f) => HINDSIGHT_FIELDS.includes(f))) { console.error(`--hindsight is all or fields among ${HINDSIGHT_FIELDS.join(', ')}\n${USAGE}`); process.exit(2); }
+  if (hindsight && (values.sealed || !values.live)) { console.error(`--hindsight takes a live learning pass: the truth is TRAIN's alone, and a reflection is a model call\n${USAGE}`); process.exit(2); }
   if (values['edgar-cache'] !== undefined && !values['edgar-archive']) { console.error(`--edgar-cache needs --edgar-archive: the cache serves only the Wayback copies of SEC pages\n${USAGE}`); process.exit(2); }
   let list;
   if (values.list !== undefined) {
@@ -750,8 +784,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   try {
     const set = SETS[values.set ?? 'v1'];
     if (!set) { console.error(`--set is v1, v2 or v4\n${USAGE}`); process.exit(2); }
+    if (set === SETS.facts) { console.error(`the facts set runs with eval-facts.mjs, not as a learning or sealed pass\n${USAGE}`); process.exit(2); }
     const parts = values.live
-      ? await liveParts({ set, ...(values.data ? { data: resolve(values.data) } : {}), ...(values.model ? { model: values.model } : {}), ...(values.thinking ? { thinking: values.thinking } : {}), archivedSec: Boolean(values['edgar-archive']), ...(values['edgar-cache'] ? { edgarCache: resolve(values['edgar-cache']) } : {}) })
+      ? await liveParts({ set, ...(values.data ? { data: resolve(values.data) } : {}), ...(values.model ? { model: values.model } : {}), ...(values.thinking ? { thinking: values.thinking } : {}), archivedSec: Boolean(values['edgar-archive']), ...(values['edgar-cache'] ? { edgarCache: resolve(values['edgar-cache']) } : {}), ...(hindsight ? { hindsight } : {}) })
       : scriptedParts({ set, ...(values.data ? { data: resolve(values.data) } : {}) });
     if (values['no-dispatch']) parts.dispatch = false;
     if (values['agent-dir'] !== undefined) {

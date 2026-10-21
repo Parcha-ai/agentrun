@@ -44,7 +44,7 @@ test('three scripted jobs: run 1 classifies by hand and saves a workflow, curate
   assert.deepEqual(readRows(join(out, 'runs.jsonl')), rows);
 
   // Every field of the contract, on every row.
-  const fields = ['run', 'cik', 'split', 'seedSha', 'afterSha', 'answer', 'truth', 'correct', 'costUsd', 'costKnownUsd', 'costUnpriced', 'tokensIn', 'tokensOut', 'durationMs', 'workflowsOffered', 'workflowsUsed', 'byWorkflow', 'workflowsSaved', 'notes', 'curate', 'judgeCostUsd', 'recording', 'convention', 'curatedBefore', 'lag', 'curatedIndex', 'rerunOf', 'infraFailed', 'limits', 'durableCommits', 'fsyncProbeMs'];
+  const fields = ['run', 'cik', 'split', 'seedSha', 'afterSha', 'answer', 'truth', 'correct', 'costUsd', 'costKnownUsd', 'costUnpriced', 'tokensIn', 'tokensOut', 'durationMs', 'workflowsOffered', 'workflowsUsed', 'byWorkflow', 'workflowsSaved', 'notes', 'curate', 'judgeCostUsd', 'recording', 'convention', 'curatedBefore', 'lag', 'curatedIndex', 'rerunOf', 'infraFailed', 'limits', 'durableCommits'];
   for (const row of rows) assert.deepEqual(Object.keys(row), fields);
   assert.deepEqual(rows.map((r) => r.run), [1, 2, 3]);
   assert.deepEqual(rows.map((r) => r.correct), [true, true, true]);
