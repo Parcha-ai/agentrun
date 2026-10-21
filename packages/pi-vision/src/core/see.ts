@@ -74,7 +74,7 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
   const media = await gatherMedia(request, env, call, setup, VISION_SEE.name, fail);
 
   // Each image within the eyes' own limits and what one request to them carries; a video clip as it is, when they take it.
-  const box = { ...eyes.limits.image, maxBytes: Math.min(eyes.limits.image.maxBytes, eyes.limits.requestBytes), imagesPerCall: eyes.limits.imagesPerCall };
+  const requestLimits = { ...eyes.limits.image, maxBytes: Math.min(eyes.limits.image.maxBytes, eyes.limits.requestBytes), imagesPerCall: eyes.limits.imagesPerCall };
   const clipChars = Math.min(base64Chars(eyes.limits.video.inlineBytes), eyes.limits.requestBytes);
   const items: Item[] = [];
   for (const { bytes, mimeType, fragment } of media) {
@@ -85,12 +85,12 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
       items.push({ data, mimeType, fragment, caption: fragment });
       continue;
     }
-    const fit = await fitImage(setup.images ?? AS_IS, bytes, mimeType, box);
+    const fit = await fitImage(setup.images ?? AS_IS, bytes, mimeType, requestLimits);
     if (fit.fit === "refused") return fail({ code: setup.images ? fit.code : "needs", reason: `${fragment}: ${fit.limit}, and ${setup.images ? fit.why : "no image processor is installed to fit it (Photon or sharp)"}`, model: eyes.model, about: aboutMedium(fragment, "image", bytes) });
     fit.blocks.forEach((block, k) => items.push({ ...block, fragment, caption: fit.blocks.length > 1 ? `${fragment} (tile ${k + 1} of ${fit.blocks.length})` : fragment }));
   }
 
-  const ask1 = async (items: readonly Item[], at: LookRecord): Promise<Asked> => {
+  const askRequest = async (items: readonly Item[], at: LookRecord): Promise<Asked> => {
     // Each image goes with the line that names it, so the eyes can say where they saw a thing.
     const parts = items.flatMap((item): Part[] => [{ type: "text", text: item.caption, fragment: item.fragment },
       isVideo(item) ? { type: "video", data: item.data, mimeType: item.mimeType, fragment: item.fragment }
@@ -112,13 +112,13 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
     return { look, readBack, receipt, body: filed.body };
   };
 
-  const most = Math.max(1, Math.floor(eyes.limits.imagesPerCall));
-  const requests = packRequests(items, (item) => item.data.length, (item) => (isVideo(item) ? 1 : most), eyes.limits.requestBytes);
+  const imagesPerRequest = Math.max(1, Math.floor(eyes.limits.imagesPerCall));
+  const requests = packRequests(items, (item) => item.data.length, (item) => (isVideo(item) ? 1 : imagesPerRequest), eyes.limits.requestBytes);
   const texts: string[] = [], receipts: string[] = [];
   let costUsd: number | null = 0, kept = true, model = eyes.model;
   for (const items of requests) {
     const at = record(items, eyes.model, "");
-    const { value: { look, readBack, receipt, body }, shared } = await once(call, at.facts.key, () => ask1(items, at));
+    const { value: { look, readBack, receipt, body }, shared } = await once(call, at.facts.key, () => askRequest(items, at));
     texts.push(requests.length > 1 ? `(${at.args.path}${receipt ? `; look filed at ${receipt}` : ""})\n${body}` : body);
     if (receipt) receipts.push(receipt);
     costUsd = costUsd === null || look.costUsd === null ? null : costUsd + look.costUsd;

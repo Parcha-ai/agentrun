@@ -18,11 +18,11 @@ export class WorkflowStoreError extends Error {
   }
 }
 
-const validName = (name: string): void => {
+const assertValidName = (name: string): void => {
   if (typeof name !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name))
     throw new WorkflowStoreError('invalid_name', 'Use a workflow name of 1–64 lowercase letters, digits, hyphens or underscores, starting with a letter or digit.');
 };
-const validDigest = (digest: string): void => {
+const assertValidDigest = (digest: string): void => {
   if (typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest))
     throw new WorkflowStoreError('invalid_revision', 'A workflow revision must be its complete SHA-256 digest.');
 };
@@ -57,7 +57,7 @@ export class WorkflowStore {
   constructor(projectDirectory: string) { this.projectDirectory = resolve(projectDirectory); }
 
   private async directory(name?: string, create = false): Promise<string | undefined> {
-    if (name !== undefined) validName(name);
+    if (name !== undefined) assertValidName(name);
     let directory = await realpath(this.projectDirectory);
     for (const component of ['.pi', 'agentrun', 'workflows', ...(name === undefined ? [] : [name])]) {
       directory = join(directory, component);
@@ -74,7 +74,7 @@ export class WorkflowStore {
   }
 
   private async read(name: string, digest: string): Promise<StoredWorkflow> {
-    validName(name); validDigest(digest);
+    assertValidName(name); assertValidDigest(digest);
     const directory = await this.directory(name);
     if (!directory) throw new WorkflowStoreError('not_found', 'Saved workflow revision not found.');
     const path = join(directory, `${digest}.json`);
@@ -130,7 +130,7 @@ export class WorkflowStore {
     const revisions: WorkflowRevision[] = [];
     const latest = new Map<string, string>();
     for (const name of await readdir(directory)) {
-      validName(name);
+      assertValidName(name);
       const child = await this.directory(name);
       if (!child) continue;
       const active = await this.latest(name);
@@ -148,7 +148,7 @@ export class WorkflowStore {
   }
 
   async load(name: string, digest?: string): Promise<StoredWorkflow> {
-    validName(name);
+    assertValidName(name);
     if (digest !== undefined) return this.read(name, digest);
     const latest = await this.latest(name);
     if (latest) return this.read(name, latest);
@@ -163,7 +163,7 @@ export class WorkflowStore {
 
   /** Publish a complete immutable revision atomically; identical saves are idempotent. */
   async save(name: string, value: unknown): Promise<StoredWorkflow> {
-    validName(name);
+    assertValidName(name);
     const { workflow, digest } = checkedWorkflow(value);
     const directory = (await this.directory(name, true))!;
     const temporary = join(directory, `.pending-${randomUUID()}`);
