@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,6 +33,29 @@ async function envHost(t, env = {}) {
   models.setProvider(faux.provider);
   return { place, host: await hostFromEnv(place, { models, lead: { provider: faux.provider.id, modelId: faux.getModel().id }, env }) };
 }
+
+test('a host from the environment files evidence under the run\'s work/, so the path a tool returns is one the agent\'s read reaches', async (t) => {
+  const { place, host } = await envHost(t);
+  const { path } = await host.evidence.file('run', { tool: 'browser_read', args: {}, status: 'ok', body: 'x'.repeat(9000) });
+  assert.match(path, /^evidence\/run\/browser_read-[0-9a-f]{12}\.json$/);
+  assert.ok(existsSync(join(place.work, path)), 'under work/, relative to where the agent reads');
+  assert.ok(!existsSync(join(place.root, path)), 'and not beside the run\'s store');
+});
+
+test('a host from the environment that takes no Browserbase browser ignores its keys and says to set CHROME_PATH', async (t) => {
+  const keys = { BROWSERBASE_API_KEY: 'bb-key', BROWSERBASE_PROJECT_ID: 'bb-project' };
+  const scratchDir = join(await scratch(t), 'run');
+  const place = await placeAt(scratchDir, 'agent');
+  const faux = fauxProvider();
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const lead = { provider: faux.provider.id, modelId: faux.getModel().id };
+  const local = await hostFromEnv(place, { models, lead, env: keys, browserbase: false });
+  assert.equal(local.lacks.browser, 'set CHROME_PATH (this host takes a local Chrome only)');
+  await assert.rejects(agentApp(place, local, { instructions: '', tools: ['browser_read'] }), { message: 'the definition names the tool browser_read, and this host has no browser: set CHROME_PATH (this host takes a local Chrome only)' });
+  const paid = await hostFromEnv(place, { models, lead, env: keys });
+  assert.equal(paid.lacks?.browser, undefined, 'by default both keys give a Browserbase browser');
+});
 
 const offered = (app) => app.root.agent.tools.map((tool) => tool.name);
 const installed = (app) => app.registry.snapshot().tools().map(({ tool }) => tool.name).sort();
@@ -79,6 +102,12 @@ test('an unknown name, a browser tool on a host with no browser, and a browser t
   assert.equal(typeof browsing.root.init, 'function', 'the browser\'s configuration is in the commit that creates the conversation');
   await assert.rejects(agentApp(place, local.host, { instructions: '', tools: ['browser_read'] }, { browser: false }), { message: 'the definition names the tool browser_read, and this run has no browser (its options say browser: false)' });
   assert.equal((await agentTools(place, local.host)).find((tool) => tool.name === 'browser_read').unmet, undefined);
+  // use_website's child browses with the parent's browser tools: naming it alone is refused, naming them all is accepted.
+  const sites = { registry: { title: 'The company registry', description: 'Company records.', startUrl: 'http://registry.example/companies/01234567' } };
+  const browserTools = (await agentTools(place, local.host, { sites })).filter((tool) => tool.plane === 'browser' && tool.name !== 'use_website').map((tool) => tool.name);
+  await assert.rejects(agentApp(place, local.host, { instructions: '', tools: ['use_website'] }, { sites }), { message: `the definition names the tool use_website, whose child agent browses with this agent's browser tools: name ${browserTools.join(', ')} too` });
+  const website = await agentApp(place, local.host, { instructions: '', tools: ['use_website', ...browserTools] }, { sites });
+  assert.deepEqual(offered(website), ['use_website', ...browserTools]);
 });
 
 test('a browser tool in an agent run: its configuration is in the conversation\'s first commit, it is reconciled before the resume, and its sessions are released before the run lets go', { timeout: 120_000 }, async (t) => {

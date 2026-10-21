@@ -118,7 +118,7 @@ const quiet = <T,>(report: (event: T) => void) => (event: T) => { try { report(e
 export type LocalHost = { host: Host; backend?: FakeBackend; ledger(): LedgerRow[]; evidence(): string[]; /** Makes the two logs empty files: done by `localHost` itself unless `options.deferLogs`, which a process on a disk not yet mounted sets and calls this once its claim is open. */ touchLogs(): void };
 
 /** The no-key host for a run at `place`, from the job's `fakes`: scripted lead, tools, judge and browser pages, a ledger row for every fake call, and the run's events under the place. `options.browser` swaps the fake browser for another; `options.recorder` records the run. */
-export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder; boxes?: Boxes; live?: boolean; deferLogs?: boolean; /** On a live run, the live parts' tools (`LiveParts.tools`): the effect door dispatches to these. A tool missing here runs from `fakes.tools` only when it is in `fakesDeclared` (demo.json's `tools` entry says `local: "fakes"`), else the call fails `no live source for <tool>`. Absent, every tool runs from `fakes.tools` as before. */ liveTools?: Fakes['tools']; fakesDeclared?: ReadonlySet<string> } = {}): LocalHost {
+export function localHost(place: RunPlace, fakes: Fakes, options: { /** Where evidence files go: the run's directory (default), or its `work/` for an agent whose `read` must reach the paths its tools return. */ evidenceRoot?: string; browser?: BrowserPlane; recorder?: Recorder; boxes?: Boxes; live?: boolean; deferLogs?: boolean; /** On a live run, the live parts' tools (`LiveParts.tools`): the effect door dispatches to these. A tool missing here runs from `fakes.tools` only when it is in `fakesDeclared` (demo.json's `tools` entry says `local: "fakes"`), else the call fails `no live source for <tool>`. Absent, every tool runs from `fakes.tools` as before. */ liveTools?: Fakes['tools']; fakesDeclared?: ReadonlySet<string> } = {}): LocalHost {
   const recorder = options.recorder;
   const ledgerFile = join(place.root, 'ledger.jsonl');
   // Kept by the effect's id (hashed into a file name): two effects with one `argsHash`, a poll and its next, never share an answer.
@@ -213,8 +213,9 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
         const { startedAt: _startedAt, parentToolCallId: _parentToolCallId, ...facts } = (record.facts ?? {}) as Record<string, unknown>;
         const named = 'facts' in record ? JSON.stringify({ ...record, facts, body }, null, 2) : text;
         const path = join('evidence', label, `${record.tool}-${createHash('sha256').update(named).digest('hex').slice(0, 12)}.json`);
-        await mkdir(join(place.root, 'evidence', label), { recursive: true });
-        await writeFile(join(place.root, path), text);
+        const evidenceRoot = options.evidenceRoot ?? place.root;
+        await mkdir(join(evidenceRoot, 'evidence', label), { recursive: true });
+        await writeFile(join(evidenceRoot, path), text);
         status({ source: 'evidence', label, tool: record.tool, path });
         recorder?.live(record.tool.startsWith('vision') || record.tool === 'look' ? 'vision' : 'browser', 'EvidenceRecord', { label, tool: record.tool, path }, { blobs: [recorder.blob(text, 'json')] });
         return { path };
