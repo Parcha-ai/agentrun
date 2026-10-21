@@ -1144,8 +1144,8 @@ export const SELF_TEST_URL = 'https://httpbin.org/redirect-to?url=https%3A%2F%2F
  * pass will use and require that it comes back refused, with the refused request listed in `blocked`. Throws otherwise,
  * so the pass stops before its first job. Returns browse's result (its costUsd is the test's).
  */
-export async function guardSelfTest({ root, profileRoot, env = process.env, url = SELF_TEST_URL, browser, driver, guard, lookup, allowPrivate }) {
-  const tool = browseTool({ browser: browser ?? browserFromEnv({ env, profileRoot }), root, ...(driver ? { driver } : {}), ...(guard ? { guard } : {}), ...(lookup ? { lookup } : {}), ...(allowPrivate ? { allowPrivate } : {}) });
+export async function guardSelfTest({ root, profileRoot, env = process.env, url = SELF_TEST_URL, browser, driver, guard, lookup, allowPrivate, archivedSec }) {
+  const tool = browseTool({ browser: browser ?? browserFromEnv({ env, profileRoot }), root, ...(driver ? { driver } : {}), ...(guard ? { guard } : {}), ...(lookup ? { lookup } : {}), ...(allowPrivate ? { allowPrivate } : {}), ...(archivedSec ? { archivedSec } : {}) });
   const result = await tool.run({ url });
   const stopped = (result.blocked ?? []).some((blocked) => refusedHost(new URL(blocked).hostname));
   if (!result.refused || !stopped || result.text) {

@@ -885,6 +885,10 @@ test('the guard self-test passes when a redirect to sec.gov comes back refused a
   assert.match(passed.refused, /www\.sec\.gov is on the refused list/);
   assert.deepEqual(passed.blocked, ['https://www.sec.gov/']);
   assert.deepEqual(held.log.requests.map((r) => new URL(r).hostname), ['httpbin.org']);
+  // Under a pass's archivedSec policy, the redirect to sec.gov itself is refused all the same.
+  const archived = scriptedBrowser({ pages: {}, redirects: { [SELF_TEST_URL]: 'https://www.sec.gov/' } });
+  const passedArchived = await guardSelfTest({ root, browser: archived.browser, driver: archived.driver, guard: archived.guard, lookup: publicLookup, archivedSec: true });
+  assert.deepEqual(passedArchived.blocked, ['https://www.sec.gov/']);
 
   // A guard that lets the redirect through: the self-test throws, naming what came back.
   const open = scriptedBrowser({ pages: { 'https://www.sec.gov/': { title: 'SEC', text: 'EDGAR full-text search' } }, redirects: { [SELF_TEST_URL]: 'https://www.sec.gov/' } });
