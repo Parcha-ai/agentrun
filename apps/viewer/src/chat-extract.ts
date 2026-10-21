@@ -238,15 +238,16 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   for (const line of live('node.end')) { const node = nodeAt.get(line.path ?? ''); if (node) node.t1 = line.t; }
   const pathOfConversation = chatNodeConversations(lines);
   // Each conversation's record (pi.conversation): the conversation it was forked from, and the conversation and task that made it.
-  const records = new Map<string, { parent?: string; owner?: string; task?: string }>();
+  const records = new Map<string, { parent?: string; at?: string; owner?: string; task?: string }>();
   for (const line of lines) {
     if (line.channel !== 'durable' || line.kind !== 'pi.conversation') continue;
     const d = chatObj(line.data);
     const id = chatId(d?.id);
     if (!id) continue;
     const parent = chatId(chatObj(d?.parent)?.conversationId);
+    const at = chatId(chatObj(d?.parent)?.at);
     const owner = chatObj(d?.owner);
-    records.set(id, { ...(parent ? { parent } : {}), ...(chatId(owner?.conversationId) ? { owner: chatId(owner?.conversationId)!, task: chatId(owner?.taskId) } : {}) });
+    records.set(id, { ...(parent ? { parent, ...(at ? { at } : {}) } : {}), ...(chatId(owner?.conversationId) ? { owner: chatId(owner?.conversationId)!, task: chatId(owner?.taskId) } : {}) });
   }
   // A tool task's record (pi.tool) names the call it runs.
   const callOfTask = new Map<string, string>();
@@ -296,6 +297,8 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   const assistantItems = new Map<string, { id: string; t: number }[]>();
   const seen = new Set<string>();
   const prompted = new Set<string>();
+  /** The last item each stored entry drew, in file order: where a conversation forked at that entry is drawn. */
+  const entryItems: { conversation: string; entry: string; item: string }[] = [];
   let counter = 0;
   const threadOf = (conversation: string, t: number): ChatThread => {
     let thread = threads.get(conversation);
@@ -320,6 +323,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     if (!conversation || (entry && seen.has(`${conversation}:${entry}`))) continue;
     if (entry) seen.add(`${conversation}:${entry}`);
     const thread = threadOf(conversation, line.t);
+    const drawn = thread.items.length;
     for (const message of chatList(d?.model)) {
       const m = chatObj(message);
       if (!m) continue;
@@ -369,26 +373,39 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
         item.media = (line.blobs ?? []).filter((sha) => (recording.blobType(sha) ?? '').startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(recording.blobUrl(sha) ?? ''));
       }
     }
+    if (entry && thread.items.length > drawn) entryItems.push({ conversation, entry, item: thread.items.at(-1)!.id });
   }
-  // A conversation a call made sits under that call's card: its owner's task names the call. It is named by its own label,
-  // else by its parent's label and its place among the call's conversations; its maker's messages are the tool's.
+  // A conversation forked from another is drawn in it at the entry it was forked at (parent.at): under the call that made it
+  // when its owner's task names one, else at that entry's item (the latest at or before it). It is named by its own label,
+  // else by its parent's label and its place among the parent's conversations; a call's conversations open with the tool's words.
   const labelOf = new Map<string, string>();
   for (const line of lines) if (line.channel === 'durable' && line.kind === 'reference.label') { const label = chatStr(chatObj(chatObj(line.data)?.value)?.label)?.trim(); const conversation = chatId(line.conv); if (label && conversation) labelOf.set(conversation, label); }
   const madeBy = (conversation: string) => { const task = records.get(conversation)?.task; const call = task ? callOfTask.get(task) : undefined; return call ? toolItems.get(call) : undefined; };
+  const forkedAt = (conversation: string): string | undefined => {
+    const record = records.get(conversation);
+    if (!record?.parent || record.at === undefined) return undefined;
+    return entryItems.filter((each) => each.conversation === record.parent && Number(each.entry) <= Number(record.at)).at(-1)?.item;
+  };
   const nested = new Set<string>();
+  const drawnAt = new Map<string, number>();
   for (const conversation of [...threads.keys()].sort((a, b) => Number(a) - Number(b) || a.localeCompare(b))) {
     const call = madeBy(conversation);
-    if (!call) continue;
+    const at = call?.id ?? forkedAt(conversation);
+    if (!at) continue;
     const thread = threads.get(conversation)!;
     const record = records.get(conversation)!;
     const source = record.parent ?? record.owner ?? '';
     const path = pathOfConversation.get(source);
     const above = (path !== undefined ? nodeAt.get(path)?.label : undefined) ?? labelOf.get(source) ?? threads.get(source)?.label;
     const own = labelOf.get(conversation);
-    (call.forks ??= []).push(thread.id);
-    thread.under = call.id;
-    thread.label = own && own !== above ? own : `${above ?? call.tool} · ${call.forks.length}`;
-    for (const item of thread.items) if (item.kind === 'host') item.by = call.tool;
+    const place = (drawnAt.get(source) ?? 0) + 1;
+    drawnAt.set(source, place);
+    if (call) {
+      (call.forks ??= []).push(thread.id);
+      for (const item of thread.items) if (item.kind === 'host') item.by = call.tool;
+    }
+    thread.under = at;
+    thread.label = own && own !== above ? own : `${above ?? call?.tool ?? 'conversation'} · ${place}`;
     nested.add(conversation);
   }
   const ordered = [...threads.values()].sort((a, b) => (a.t0 ?? 0) - (b.t0 ?? 0));

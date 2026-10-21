@@ -19,5 +19,9 @@
 {"channel":"durable","source":"pi","kind":"pi.assistant","conv":11,"t":602,"data":{"model":[{"role":"assistant","content":[{"type":"text","text":"Thread 2 done: final loss 0.22."}]}],"conversationId":11,"id":3}}
 {"channel":"durable","source":"pi","kind":"pi.assistant","conv":12,"t":603,"data":{"model":[{"role":"assistant","content":[{"type":"text","text":"Thread 3 done: final loss 0.32."}]}],"conversationId":12,"id":3}}
 {"channel":"live","source":"pi","kind":"tool_execution_end","conv":1,"t":700,"data":{"type":"tool_execution_end","toolCallId":"fork-1","toolName":"fork_threads"}}
+{"channel":"durable","source":"pi","kind":"pi.conversation","conv":13,"t":705,"data":{"id":13,"parent":{"conversationId":1,"at":1}}}
+{"channel":"durable","source":"pi","kind":"pi.user","conv":13,"t":706,"data":{"model":[{"role":"user","content":"Look again from the start."}],"conversationId":13,"id":2}}
+{"channel":"durable","source":"pi","kind":"pi.submission","conv":13,"t":707,"data":{"id":"s-2","conversationId":13,"type":"input","requestId":"steer-2","status":"placed","entry":2}}
+{"channel":"durable","source":"pi","kind":"pi.assistant","conv":13,"t":708,"data":{"model":[{"role":"assistant","content":[{"type":"text","text":"From the start: the same answer."}]}],"conversationId":13,"id":3}}
 {"channel":"durable","source":"pi","kind":"pi.tool-result","conv":1,"t":710,"data":{"model":[{"role":"toolResult","toolCallId":"fork-1","toolName":"fork_threads","content":[{"type":"text","text":"3 threads finished."}],"isError":false}],"conversationId":1,"id":4}}
 {"channel":"durable","source":"pi","kind":"pi.assistant","conv":1,"t":800,"data":{"model":[{"role":"assistant","content":[{"type":"text","text":"All three threads finished; the best final loss is 0.12."}]}],"conversationId":1,"id":5}}

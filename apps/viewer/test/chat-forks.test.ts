@@ -39,13 +39,19 @@ test('a call\'s forks are its conversations: under its card, named by their own 
     ['fork_threads: Thread 3 of 3. Train a tiny regression and report its final loss.'],
   ], 'the opening is the tool\'s; the one input a person submitted (draft 45) is You');
   assert.equal((await chat(opened(), true)).agent?.name, 'threads', 'the header names the agent by its own label, not a fork\'s');
+  // A fork with a parent and no owner sits in its parent at the entry it was forked at: the person's first message.
+  const ownerless = model.threads.find((thread) => thread.id === 'thread-13')!;
+  const asked = model.threads.find((thread) => thread.id === 'thread-1')!.items.find((item) => item.kind === 'user')!;
+  assert.equal(ownerless.under, asked.id, 'drawn at parent.at, never a top-level row');
+  assert.equal(ownerless.label, 'threads · 4', 'named by its parent\'s label and its place among the parent\'s conversations');
+  assert.deepEqual(said(ownerless.items), ['You: Look again from the start.'], 'no owner: its user entry follows the submission rule, a person\'s here');
 });
 
-test('without the submissions a recording keeps, nothing in a fork is You', async () => {
+test('without the submissions a recording keeps, nothing in a fork a call made is You', async () => {
   const model = await chat(opened((m) => ({ ...m, recorded: { started: (m.recorded as { started: string }).started, ended: (m.recorded as { ended: string }).ended } })));
-  const forks = model.threads.filter((thread) => thread.under);
+  const forks = model.threads.filter((thread) => ['thread-10', 'thread-11', 'thread-12'].includes(thread.id));
   assert.equal(forks.length, 3);
-  assert.ok(forks.every((fork) => fork.items.every((item) => item.kind !== 'user')), 'a steer no submission names is the maker\'s, not a person\'s');
+  assert.ok(forks.every((fork) => fork.items.every((item) => item.kind !== 'user')), 'in an owned fork a steer no submission names is the maker\'s, not a person\'s');
 });
 
 test('in Chrome: the forks fold under the fork_threads card, labelled, opened by the tool, and only the person\'s steer reads You', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 120_000 }, async (t) => {
@@ -69,18 +75,20 @@ test('in Chrome: the forks fold under the fork_threads card, labelled, opened by
   const page = await drivenPage(`http://127.0.0.1:${(server.address() as AddressInfo).port}/chat.html?r=chat-forks`, join(out, 'profile'), { signal: t.signal });
   held.page = page;
   try {
-    await page.once(`document.querySelectorAll('.forks details.fold').length === 3`, 'true', 20_000, 'three forks under the call');
+    await page.once(`document.querySelectorAll('.forks details.fold').length === 4`, 'true', 20_000, 'the three forks under the call and the one at the person\'s message');
     const seen = JSON.parse(String(await page.evaluate(`JSON.stringify({
       underCall: [...document.querySelectorAll('.step .forks details.fold')].map((fold) => fold.querySelector('summary .lab').textContent),
       top: [...document.querySelectorAll('.thread > details.fold')].length,
+      atMessage: [...document.querySelectorAll('.thread > .forks > details.fold')].map((fold) => [fold.querySelector('summary .lab').textContent, fold.previousElementSibling === null && fold.parentElement.previousElementSibling.classList.contains('user')]),
       who: [...document.querySelectorAll('.forks .host-who')].map((who) => who.textContent),
       you: [...document.querySelectorAll('.forks .msg.user')].map((you) => you.textContent),
     })`)));
     assert.deepEqual(seen.underCall, ['threads · 1', 'threads · 2', 'warm start']);
     assert.equal(seen.top, 0, 'no fork is a top-level row');
+    assert.deepEqual(seen.atMessage, [['threads · 4', true]], 'the ownerless fork folds right after the message it was forked at');
     assert.deepEqual(seen.who, ['fork_threads', 'fork_threads', 'fork_threads'], 'each opening is the tool\'s');
-    assert.equal(seen.you.length, 1, 'only the person\'s steer reads You');
-    assert.match(seen.you[0], /Use a smaller learning rate/);
+    assert.equal(seen.you.length, 2, 'only the people\'s submitted inputs read You');
+    assert.deepEqual([...seen.you].sort().map((you: string) => you.replace(/^You/, '')), ['Look again from the start.', 'Use a smaller learning rate.']);
   } finally {
     await page.close();
   }

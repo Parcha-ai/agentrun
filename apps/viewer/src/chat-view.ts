@@ -599,7 +599,10 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     run.more.textContent = open ? 'Show less' : `+ ${run.extras.length} more`;
   };
   const agentMessage = (className = 'msg') => reportEl('div', { class: className }, reportEl('div', { class: 'who' }, threadIcon('brand'), 'Agent'));
-  const threadById = new Map(model.threads.map((each) => [each.id, each]));
+  // The conversations drawn at an item: forked there, or made by that call.
+  const nestedAt = new Map<string, ChatThread[]>();
+  for (const each of model.threads) if (each.under) nestedAt.set(each.under, [...(nestedAt.get(each.under) ?? []), each]);
+  const forksAt = (id: string): HTMLElement | undefined => { const made = nestedAt.get(id); return made ? reportEl('div', { class: 'forks' }, ...made.map((each) => fold(each))) : undefined; };
   // A conversation other than the first, folded under its label and its opening line.
   const fold = (each: ChatThread): HTMLElement => {
     const first = each.items.find((item) => item.kind === 'user' || item.kind === 'host' || item.kind === 'tool');
@@ -646,7 +649,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
         steps = undefined;
         const node = threadYou(reportEl('div', { class: 'bubble', text: item.text }), threadLong(item.text), item.id);
         nodes.set(item.id, node);
-        out.push(node);
+        out.push(node, ...[forksAt(item.id)].filter((each): each is HTMLElement => !!each));
         continue;
       }
       if (item.kind === 'host') {
@@ -655,13 +658,17 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
         steps = undefined;
         const node = reportEl('div', { class: 'host-note', 'data-item': item.id }, reportEl('span', { class: 'host-who', text: item.by ?? 'Host' }), reportEl('span', { class: 'host-text', text: item.text }));
         nodes.set(item.id, node);
-        if (agent) agent.append(node); else out.push(node);
+        const forks = forksAt(item.id);
+        if (agent) agent.append(node, ...(forks ? [forks] : [])); else out.push(node, ...(forks ? [forks] : []));
         continue;
       }
       if (!agent) { agent = agentMessage(); out.push(agent); }
       if (item.kind === 'tool') {
         if (!steps) { steps = reportEl('div', { class: 'steps' }); agent.append(steps); }
         const card = threadCard(recording, model, item, (node, open) => openers.set(node, open), (id, node) => nodes.set(id, node));
+        // The conversations the call made, or forked at it, under its card (they fold with it).
+        const forks = forksAt(item.id);
+        if (forks) card.append(forks);
         cards.set(item.id, card);
         nodes.set(item.id, card);
         if (item.plumbing) {
@@ -674,8 +681,6 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
           continue;
         }
         if (plumbing || item.looks.length > 0 || (run && run.tool !== item.tool)) endPlumbing();
-        // The conversations the call made, under its card (they fold with it).
-        if (item.forks?.length) card.append(reportEl('div', { class: 'forks' }, ...item.forks.flatMap((id) => { const made = threadById.get(id); return made ? [fold(made)] : []; })));
         steps.append(card);
         if (item.looks.length === 0) {
           run ??= { tool: item.tool, cards: [] };
@@ -688,6 +693,8 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
       const node = item.kind === 'thinking' ? (item.redacted ? threadRedacted() : threadThinking(item.text)) : reportEl('div', { class: 'said-text', 'data-item': item.id }, ...reportParagraphs(item.text));
       nodes.set(item.id, node);
       agent.append(node);
+      const forks = forksAt(item.id);
+      if (forks) agent.append(forks);
     }
     endPlumbing();
     return out;

@@ -66,7 +66,7 @@ export type ChatCall = { id: string; name: string; label: string; raw: string; l
 /** One recorded conversation: an agent node's, named by its node; a run of one conversation has one thread. Its first
  *  user entry is the prompt the host composed from the node's input, so it is not an item. */
 export type ChatThread = { id: string; label: string; items: ChatItem[]; t0?: number; t1?: number;
-  /** The call it is drawn under (a tool item's id): the conversation was made by that call. */
+  /** The item it is drawn under: the call that made it, else the item of the entry it was forked at. */
   under?: string };
 
 /** A span on the session timeline, from the events: a workflow node, an LLM call, a tool call, or a model call made
