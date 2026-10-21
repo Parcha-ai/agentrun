@@ -264,6 +264,14 @@ async function startJob({ out, repo, home, parts, judge, job, runCapUsd, log, lo
     log(`  ${run.runId} did not finish before the stop: abandoned (${usd(costUsd)} of model spend), starting ${idOf(p.attempt)}`);
   }
   if (p.phase === 'new') {
+    // A stop inside the last prepare left its run in the home with no progress saying so: abandoned as a started one is.
+    while (existsSync(runPaths(home, idOf(p.attempt)).dir)) {
+      const run = { runId: idOf(p.attempt), ...runPaths(home, idOf(p.attempt)) };
+      const costUsd = existsSync(run.storePath) ? usageOfStore(run.storePath).costUsd : 0;
+      await lock(() => carryBack(home, run, { outcome: 'abandoned' }).catch(() => {}));
+      save(p = { ...p, attempt: p.attempt + 1, abandoned: [...p.abandoned, { runId: run.runId, costUsd }] });
+      log(`  ${run.runId} was started before the stop but never recorded: abandoned, starting ${idOf(p.attempt)}`);
+    }
     const runId = idOf(p.attempt);
     const prepared = await lock(() => prepareRun({ home, repo, host: HOST, runId, input: parts.set.input(job) }));
     save(p = { ...p, phase: 'started', seedSha: prepared.sha, offered: prepared.workflows.loaded.map((w) => w.name), started: Date.now() });
