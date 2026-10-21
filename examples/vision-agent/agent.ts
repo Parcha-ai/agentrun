@@ -68,7 +68,7 @@ export const workflow = workflowOf('medium');
 
 /** The flags that take a value: the host's `string` options (`demo.ts` in the harness declares them, and a test holds this list to it) and
  *  `--thinking`. The token after one is its value; every other flag is a switch and takes none. */
-const VALUE_FLAGS = new Set(['record', 'input', 'max-usd', 'cache', 'dir', 'provider', 'model', 'eyes-model', 'see-also', 'operator-kill', 'thinking']);
+const VALUE_FLAGS = new Set(['record', 'input', 'max-usd', 'cache', 'dir', 'box-ids', 'provider', 'model', 'eyes-model', 'see-also', 'operator-kill', 'thinking']);
 
 /** The positions of the arguments that are neither a flag nor a flag's value: the example folder among them. A folder after a switch
  *  (`--live examples/x`) is one; the token after `--max-usd` is not. */

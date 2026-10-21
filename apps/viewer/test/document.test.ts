@@ -238,8 +238,8 @@ after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every brows
 
 /** A strict static host's policy: scripts, workers and fetches from its own origin only, and no eval. */
 const POLICY = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'; object-src 'none'";
-/** Kept in the page before anything else runs: each request the policy refused. */
-/** The listener, a file of the page's own origin (its policy runs no inline script), loaded first in the page. */
+/** Kept in the page before anything else runs: each request the policy refused.
+ *  The listener, a file of the page's own origin (its policy runs no inline script), loaded first in the page. */
 const LISTENER = "window.refused=[];document.addEventListener('securitypolicyviolation',(e)=>refused.push(e.violatedDirective+' '+e.blockedURI));";
 const LISTEN = '<script src="/listen.js"></script>';
 

@@ -82,7 +82,6 @@ export function lineProblems(event) {
   need(CHANNELS.includes(event.channel), `channel is ${JSON.stringify(event.channel)}, expected durable or live`);
   need(SOURCES.includes(event.source), `source is ${JSON.stringify(event.source)}, expected one of ${SOURCES.join(', ')}`);
   need(typeof event.kind === 'string' && event.kind !== '', 'kind is not a non-empty string');
-  // A durable line has no `gen` before the earliest surviving driver revision; a live line always has the process's.
   // A durable line has no `gen` before the earliest surviving driver revision, and the supervisor's host lines have none
   // (no run process wrote them); every other line carries the process's.
   need(event.gen === undefined && (event.channel === 'durable' || event.source === 'host') || isInt(event.gen) && event.gen >= 1, 'gen is not an integer of at least 1');
@@ -166,7 +165,6 @@ const blobFiles = dir => {
   return out;
 };
 
-/** Every problem in the recording at `dir`, in file order: `{ where, line?, message }`. */
 /** What the report's files do (draft 41): each blob is `blobs/<hash>.<the path's extension>`, present and hashing to its name (two paths with one content and two extensions are two blobs); every page is read with the parser: no script, no on* attribute, no data: URL, no iframe, object, embed, form, base or meta refresh, every load inside `files`, and each `data-look` names a look the run filed. A relative link to a file the report does not hold is a document link: it is allowed only when it carries a `data-look` and names the file that look read. */
 function artifactFileProblems(artifact, dir, lookKeys, lookSources, add) {
   const where = 'manifest.json';
@@ -197,6 +195,15 @@ function artifactFileProblems(artifact, dir, lookKeys, lookSources, add) {
   }
 }
 
+/** The entry kinds a `pi.conversation` record's `parent.at` may point at (draft 54). Any other kind is refused, so a new entry kind
+ *  is a visible change to the format. */
+export const ENTRY_KINDS = new Set(['pi.user', 'pi.system', 'pi.assistant', 'pi.tool-result']);
+
+/** A task record as pi writes one, whatever its kind (any extension may define a task kind): every field pi's TaskRecord requires. */
+const isTaskRecord = (kind, data) => data.kind === kind && Number.isInteger(data.version) && 'input' in data && typeof data.background === 'boolean'
+  && typeof data.abortRequested === 'boolean' && isObject(data.state) && typeof data.state.status === 'string';
+
+/** Every problem in the recording at `dir`, in file order: `{ where, line?, message }`. */
 export function validateRecording(dir) {
   const problems = [];
   const add = (where, message, line) => problems.push({ where, ...(line === undefined ? {} : { line }), message });
@@ -238,18 +245,24 @@ export function validateRecording(dir) {
   let last = { commit: -Infinity, order: -Infinity };
   let lastT = -Infinity;
   const lastSeq = new Map();
-  // The process a line belongs to is the latest one the supervisor started before it (3.2): a snapshot's `gen` is an earlier process's, so
-  // a restore is matched by process, never by generation value.
-  let processIndex = 0;
+  // The processes the supervisor has started so far. A line belongs to the latest of them, number `processes` (3.2): a snapshot's `gen` is
+  // an earlier process's, so a restore is matched by process, never by generation value.
+  let processes = 0;
   const snapshotted = new Set();
   const snapshotAt = new Map();
   const firstCommit = new Map();
   const records = [];
   const drops = [];
-  let processes = 0;
   const lookKeys = new Set();
   const lookSources = new Map();
   const liveGenerations = new Set();
+  // `agentrun.decisions` has two forms: the single document (a `receipts` list in one document) and the keyed documents (one row each, with a `key`). A recording holds one.
+  const decisionForms = { single: undefined, keyed: undefined };
+  // Draft 54: the conversations, entries and task records (by kind) the recording holds, and its pi.conversation lines.
+  const conversations = new Set();
+  const entries = new Set();
+  const tasks = new Set();
+  const conversationRecords = [];
   lines.forEach((text, index) => {
     const line = index + 1;
     if (text.trim() === '') return add('events.jsonl', 'has an empty line', line);
@@ -260,15 +273,19 @@ export function validateRecording(dir) {
     const own = lineProblems(event);
     for (const message of own) add('events.jsonl', message, line);
     if (own.length) return;
-    if (event.source === 'host' && event.kind === 'process.started') { processes += 1; processIndex += 1; }
+    if (event.channel === 'durable' && event.kind === 'agentrun.decisions' && isObject(event.data)) {
+      if (event.data.key !== undefined) decisionForms.keyed ??= line;
+      else if (isObject(event.data.value) && Array.isArray(event.data.value.receipts)) decisionForms.single ??= line;
+    }
+    if (event.source === 'host' && event.kind === 'process.started') processes += 1;
     if (event.channel === 'durable' && (event.kind === 'transport.moves' || event.data?.doc === 'transport.moves')) {
       // A snapshot restates the records an earlier process wrote: only a process's own lines are its moves.
       if (!event.snapshot) for (const record of moveRecords(event.data?.value ?? event.data)) {
         if (!isInt(record.head)) add('events.jsonl', `a ${record.kind} record has no integer head`, line);
-        else records.push({ ...record, process: processIndex, line, commit: event.commit });
+        else records.push({ ...record, process: processes, line, commit: event.commit });
       }
     }
-    if (event.channel === 'durable' && !event.snapshot && !firstCommit.has(processIndex)) firstCommit.set(processIndex, event.commit);
+    if (event.channel === 'durable' && !event.snapshot && !firstCommit.has(processes)) firstCommit.set(processes, event.commit);
     if (event.channel === 'live' && event.gen !== undefined) liveGenerations.add(event.gen);
     if (inlineImage(event.data)) add('events.jsonl', 'holds image data inline; an image belongs in blobs/ and its block keeps { type, mimeType, blob }', line);
     for (const hash of imageBlobs(event.data)) {
@@ -279,19 +296,18 @@ export function validateRecording(dir) {
     lastT = Math.max(lastT, event.t);
     if (event.channel === 'durable' && event.gen !== undefined) {
       // A durable line's gen is the driver's, so it never decreases, outside a restore (3.2), whose snapshot starts the generation again.
-      const restores = event.snapshot && !snapshotted.has(processIndex) && event.commit < lastCommit;
+      const restores = event.snapshot && !snapshotted.has(processes) && event.commit < lastCommit;
       if (event.gen < lastGen && !restores) add('events.jsonl', `durable gen ${event.gen} is lower than the previous durable line's ${lastGen}`, line);
       lastGen = restores ? event.gen : Math.max(lastGen, event.gen);
     }
     if (event.channel === 'durable' && event.snapshot) {
       // A snapshot is state at the store's latest commit when its process opened: never below an earlier line's commit, except
       // at a process's first snapshot after a restore (3.2), which is accepted only with that process's restore record, written after it.
-      const proc = processIndex;
-      if (!snapshotted.has(proc)) {
-        snapshotted.add(proc);
-        snapshotAt.set(proc, { commit: event.commit, line, before: lastCommit });
+      if (!snapshotted.has(processes)) {
+        snapshotted.add(processes);
+        snapshotAt.set(processes, { commit: event.commit, line, before: lastCommit });
         if (event.commit < lastCommit) {
-          drops.push({ line, process: proc, commit: event.commit, was: lastCommit });
+          drops.push({ line, process: processes, commit: event.commit, was: lastCommit });
           last = { commit: event.commit, order: Infinity };
           lastCommit = event.commit;
         }
@@ -309,10 +325,40 @@ export function validateRecording(dir) {
       if (before !== undefined && event.seq <= before) add('events.jsonl', `seq ${event.seq} does not increase past ${before} in ${event.gen === undefined ? 'the supervisor\'s lines' : `generation ${event.gen}`}`, line);
       lastSeq.set(space, event.seq);
     }
+    if (event.conv !== undefined) conversations.add(event.conv);
+    if (event.channel === 'durable' && event.kind === 'pi.conversation') {
+      conversationRecords.push({ line, record: event.data });
+      if (isInt(event.data?.id)) conversations.add(event.data.id);
+    } else if (event.channel === 'durable' && isObject(event.data) && isInt(event.data.id) && isInt(event.data.conversationId)) {
+      const pair = `${event.data.conversationId}\u0000${event.data.id}`;
+      if (ENTRY_KINDS.has(event.kind)) entries.add(pair);
+      else if (isTaskRecord(event.kind, event.data)) tasks.add(pair);
+    }
     for (const key of lookKeysOf(event.data)) lookKeys.add(key);
     for (const [key, named] of lookSourcesOf(event.data)) lookSources.set(key, [...(lookSources.get(key) ?? []), ...named]);
     for (const hash of event.blobs ?? []) checkBlob(hash, 'events.jsonl', line);
   });
+  // A conversation's record (draft 54) holds no content, and its parent entry and owner task are in this recording.
+  for (const { line, record } of conversationRecords) {
+    if (!isObject(record) || !isInt(record.id)) { add('events.jsonl', 'a pi.conversation line has no integer id: its data is the record, { id, parent?, owner? }', line); continue; }
+    const name = `pi.conversation ${record.id}`;
+    for (const key of Object.keys(record)) if (!['id', 'parent', 'owner'].includes(key)) add('events.jsonl', `${name} holds ${key}: the line keeps only id, parent and owner, no content`, line);
+    const { parent, owner } = record;
+    const extraKeys = (value, role, keys) => {
+      if (isObject(value)) for (const key of Object.keys(value)) if (!keys.includes(key)) add('events.jsonl', `${name}: its ${role} holds ${key}: ${role === 'owner' ? 'an' : 'a'} ${role} keeps only ${keys.join(' and ')}, no content`, line);
+    };
+    if (parent !== undefined) {
+      extraKeys(parent, 'parent', ['conversationId', 'at']);
+      if (!isObject(parent) || !isInt(parent.conversationId) || !isInt(parent.at)) add('events.jsonl', `${name}: its parent is not { conversationId, at }, each an integer`, line);
+      else if (!conversations.has(parent.conversationId)) add('events.jsonl', `${name}: its parent names conversation ${parent.conversationId}, which is not in this recording`, line);
+      else if (!entries.has(`${parent.conversationId}\u0000${parent.at}`)) add('events.jsonl', `${name}: its parent names entry ${parent.at}, which is no entry (${[...ENTRY_KINDS].join(', ')}) of conversation ${parent.conversationId}`, line);
+    }
+    if (owner !== undefined) {
+      extraKeys(owner, 'owner', ['conversationId', 'taskId']);
+      if (!isObject(owner) || !isInt(owner.conversationId) || !isInt(owner.taskId)) add('events.jsonl', `${name}: its owner is not { conversationId, taskId }, each an integer`, line);
+      else if (!tasks.has(`${owner.conversationId}\u0000${owner.taskId}`)) add('events.jsonl', `${name}: its owner names task ${owner.taskId}, which is no task record of conversation ${owner.conversationId}`, line);
+    }
+  }
   if (isObject(manifest?.artifact) && artifactProblems(manifest.artifact).length === 0) artifactFileProblems(manifest.artifact, dir, lookKeys, lookSources, add);
   // A restore or a move names the head of the store its target generation opened, anchored on that generation's snapshot at open
   // (the store's latest commit then). A generation with no snapshot (a bare export) skips the continuity check. A restore's
@@ -352,6 +398,7 @@ export function validateRecording(dir) {
     const beyond = [...liveGenerations].filter(gen => gen > processes);
     if (beyond.length) add('events.jsonl', `a live line carries gen ${Math.max(...beyond)}, beyond the ${processes} processes that started`);
   }
+  if (decisionForms.single !== undefined && decisionForms.keyed !== undefined) add('events.jsonl', `holds agentrun.decisions in both forms (the single document from line ${decisionForms.single}, keyed documents from line ${decisionForms.keyed}): a recording holds one`, Math.max(decisionForms.single, decisionForms.keyed));
   return problems;
 }
 

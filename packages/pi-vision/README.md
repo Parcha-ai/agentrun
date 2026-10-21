@@ -53,8 +53,8 @@ pi-vision is a library, not a command line: an extension for a pi-durable host, 
 and [pi-ai](https://www.npmjs.com/package/@earendil-works/pi-ai) and installs this package's extension.
 [`examples/reference`](https://github.com/Parcha-ai/agentrun/tree/main/examples/reference) is such a host, and
 [what a host supplies](https://github.com/Parcha-ai/agentrun/blob/main/docs/reference-host.md) says what each package asks
-of one. There is no pi coding-agent extension: a plain `pi install npm:@parcha/pi-vision` loads only
-the skills, and the `vision.see` they call is not defined there.
+of one. There is no pi coding-agent extension: `pi install npm:@parcha/pi-vision@beta` adds
+the five skills (`find`, `look`, `report`, `transcribe`, `verify`) and no tool, and the `vision.see` they call is not defined there.
 
 ## What it does
 
