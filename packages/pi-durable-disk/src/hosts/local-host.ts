@@ -218,12 +218,20 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
    * The unit of a systemd handle this driver could have made: a safe name with its prefix, whose mountpoint is one run's
    * under its mount root; undefined for any other. A handle comes back from run.json, which the run's user can write, and
    * stop and kill act on it as root (systemctl, unmount, rmdir), as the docker and daytona drivers act only on their fleet's.
+   * They refuse any other with the reason, so a supervisor's log never reports a stop that did not happen.
    */
   const ownUnit = (h: HostHandle): string | undefined => {
     const { unit, mountpoint } = h;
     if (typeof unit !== "string" || !UNIT_SAFE.test(unit) || !unit.startsWith(prefix)) return undefined;
     return typeof mountpoint === "string" && runMountpoint(mountpoint) ? unit : undefined;
   };
+  const notOwnUnit = (h: HostHandle, what: "stopped" | "killed") =>
+    new LocalHostError(
+      "INVALID_ARGUMENT",
+      `the handle's unit ${JSON.stringify(h.unit)} at ${JSON.stringify(h.mountpoint)} is not one this driver starts (${prefix}<run id>-<stamp>, a run's mountpoint under ${mountRoot}): nothing ${what}`,
+    );
+  const notOwnPid = (h: HostHandle, what: "stopped" | "killed") =>
+    new LocalHostError("INVALID_ARGUMENT", `the handle names pid ${JSON.stringify(h.pid)} with start ticks ${JSON.stringify(h.startTicks)}, not a process this driver started: nothing ${what}`);
   const mounted = async (mp: string) => (await readFile(procMounts, "utf8")).split("\n").some((l) => l.split(" ")[1] === mp);
 
   const parkMs = opts.parkThresholdMs === undefined ? LOCAL_PARK_THRESHOLD_MS : opts.parkThresholdMs;
@@ -418,7 +426,7 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
         // A handle comes back from run.json with whatever was written there, and stop signals its pid as a group: only a
         // real process, then. A pid of 1 or below names a group (`kill(-0)` is this supervisor's own, `kill(-1)` every
         // process it may signal), and without start ticks nothing tells a reused pid from the instance.
-        if (!Number.isInteger(pid) || pid <= 1 || typeof h.startTicks !== "number") return;
+        if (!Number.isInteger(pid) || pid <= 1 || typeof h.startTicks !== "number") throw notOwnPid(h, "stopped");
         const alive = () => procStartTicks(pid) === h.startTicks;
         if (!alive()) return;
         try {
@@ -431,7 +439,7 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
         return;
       }
       const unit = ownUnit(h);
-      if (unit === undefined) return;
+      if (unit === undefined) throw notOwnUnit(h, "stopped");
       const stopUnit = () => root([SYSTEMCTL, "stop", `${unit}.service`], { timeoutMs: stopTimeoutMs + 10_000 });
       let r = await stopUnit();
       if (!okRan(r) && unitStatus(await show(unit)) === "running") {
@@ -454,7 +462,8 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
       if (h.mode === "child") {
         const pid = Number(h.pid);
         // As in stop: only a real process, and only the one the handle names (its start ticks).
-        if (!Number.isInteger(pid) || pid <= 1 || typeof h.startTicks !== "number" || procStartTicks(pid) !== h.startTicks) return;
+        if (!Number.isInteger(pid) || pid <= 1 || typeof h.startTicks !== "number") throw notOwnPid(h, "killed");
+        if (procStartTicks(pid) !== h.startTicks) return;
         try {
           process.kill(-pid, "SIGKILL");
         } catch {
@@ -463,7 +472,7 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
         return;
       }
       const unit = ownUnit(h);
-      if (unit === undefined) return;
+      if (unit === undefined) throw notOwnUnit(h, "killed");
       // Every process of the unit's control group at once, the instance's commands included. Its FUSE daemon runs in a
       // scope of its own and keeps the mount, as after an OOM kill; the unit restarts in place unless restart is off.
       const r = await root([SYSTEMCTL, "kill", "--signal=SIGKILL", "--kill-whom=all", `${unit}.service`]);
