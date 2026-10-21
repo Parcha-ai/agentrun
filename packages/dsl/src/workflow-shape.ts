@@ -11,12 +11,30 @@ const isRecord = (value: unknown): value is RecordValue => value !== null && typ
 // Select the declared discriminator's schema, checking nested nodes separately so
 // their own discriminators also get useful errors. Never evaluate authored code.
 const diagnosticDefinitions = { ...documentSchema.definitions, WorkflowNode: {}, Workflow: {} };
-const nodeSchemas = new Map<string, any>(documentSchema.definitions.WorkflowNode.anyOf.map((schema: any) =>
-  [schema.properties.node.const, schema]));
+// A node kind may have more than one schema (a judged route and a route by value are both "route"): every variant is kept.
+const nodeSchemas = new Map<string, any[]>();
+for (const schema of documentSchema.definitions.WorkflowNode.anyOf) {
+  const kind = schema.properties.node.const;
+  nodeSchemas.set(kind, [...(nodeSchemas.get(kind) ?? []), schema]);
+}
 const diagnosticValidators = new Map<any, ReturnType<typeof Compile>>();
-for (const schema of [documentSchema.definitions.Workflow, ...nodeSchemas.values()]) {
+for (const schema of [documentSchema.definitions.Workflow, ...[...nodeSchemas.values()].flat()]) {
   diagnosticValidators.set(schema, Compile({ ...schema, definitions: diagnosticDefinitions }));
 }
+/** The variant of its kind a node is: the one that accepts it, else the one it has the fewest errors against, so a judged
+ *  route missing its state is diagnosed as a judged route, not as a route by value missing its valuePath. Nested nodes are
+ *  opaque to a variant's validator, so the count is of the node's own fields. */
+const variantOf = (variants: any[], entry: unknown): any => {
+  if (variants.length === 1) return variants[0];
+  let closest = variants[0], fewest = Infinity;
+  for (const variant of variants) {
+    const validator = diagnosticValidators.get(variant)!;
+    if (validator.Check(entry)) return variant;
+    const count = [...validator.Errors(entry)].length;
+    if (count < fewest) { closest = variant; fewest = count; }
+  }
+  return closest;
+};
 const pointer = (key: string) => key.replace(/~/g, "~0").replace(/\//g, "~1");
 function discriminatedErrors(value: unknown): ShapeIssue[] {
   const errors: ShapeIssue[] = [];
@@ -32,8 +50,8 @@ function discriminatedErrors(value: unknown): ShapeIssue[] {
   const visit = (schema: any, entry: unknown, path: string): void => {
     if (!schema || typeof schema !== "object" || errors.length >= 8) return;
     if (schema.$ref === "#/definitions/WorkflowNode") {
-      const selected = isRecord(entry) && typeof entry.node === "string" ? nodeSchemas.get(entry.node) : undefined;
-      if (selected) check(selected, entry, path);
+      const variants = isRecord(entry) && typeof entry.node === "string" ? nodeSchemas.get(entry.node) : undefined;
+      if (variants) check(variantOf(variants, entry), entry, path);
       return; // Unknown/missing discriminators retain the full validator's fallback.
     }
     if (schema.$ref === "#/definitions/Workflow") { check(documentSchema.definitions.Workflow, entry, path); return; }
