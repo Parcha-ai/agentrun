@@ -5,6 +5,17 @@ description: How to do the six-part job by hand from the company's annual report
 
 # By hand
 
+Sources and evidence, for every part:
+- sec.gov and EDGAR are refused by every tool, and so are their mirrors and SIC listing sites: do not try them. Search
+  with search_web, read pages with fetch_page or browse (browse runs a page's scripts), and read annual reports and
+  other PDFs with read_document.
+- Look at the annual report's cover page and the page of its segment table with read_document `{ pages: [N],
+  question }` (a vision model looks at the page), and cite the segments, the headquarters and the fiscal year from
+  those looks ("pdf p. N"). A table read only as text loses its layout. The cover is the filing's own cover page, the
+  earliest of its first pages that carries the form's header and the registrant's name and address.
+- The code is chosen, not remembered. A code you remember from EDGAR or elsewhere is a guess, never evidence: when it
+  and the revenue reading disagree, the revenue reading wins, and the code's cite is the revenue table it rests on.
+
 1. The official site: the website given, else search_web for the company's name and ticker and its investor relations
    page. A holding company's site may only point to its operating businesses: follow them. When fetch_page returns
    little text, the page needs JavaScript: browse it.
