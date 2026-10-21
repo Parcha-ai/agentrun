@@ -42,6 +42,41 @@ const readJsonIf = (file) => (existsSync(file) ? JSON.parse(readFileSync(file, '
 export const readRows = (file) => (existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []);
 const gitEnv = (home) => ({ PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', HOME: home });
 
+/** One at a time: the agent repository's clone and the agent home take one job's step at a time, while the jobs' runs go
+ *  on side by side. */
+function serial() {
+  let last = Promise.resolve();
+  return (step) => {
+    const next = last.then(step, step);
+    last = next.catch(() => {});
+    return next;
+  };
+}
+const inline = (step) => step();
+
+/** The companies of one split. The test split is opened once per finalist, so a pass on it says so. */
+export function splitOf(companies, split, { openTest = false } = {}) {
+  if (split === 'test' && !openTest) throw new Error('the test split is opened once per finalist: pass --open-test');
+  return companies.filter((c) => c.split === split);
+}
+const byOrder = (a, b) => (a.order ?? 0) - (b.order ?? 0) || a.cik.localeCompare(b.cik);
+const withEpoch = (row, job) => (job.epoch === undefined ? row : { ...row, epoch: job.epoch });
+
+/** A sealed pass on another pass's repository (`from`: its agent.git, or a bundle of it): main is fetched once into
+ *  this pass's own repository, the seed is that history's first commit, and the other repository is only read. */
+export function adoptFrom(out, from, { mode, set }) {
+  const metaPath = join(out, 'meta.json');
+  if (existsSync(metaPath)) return;
+  mkdirSync(out, { recursive: true });
+  const bare = join(out, 'agent.git');
+  const env = gitEnv(out);
+  if (!existsSync(bare)) execFileSync('git', ['init', '-q', '--bare', '--template=', '-b', 'main', bare], { env });
+  execFileSync('git', ['--git-dir', bare, 'fetch', '-q', '--no-tags', from, '+refs/heads/main:refs/heads/main'], { env });
+  const roots = execFileSync('git', ['--git-dir', bare, 'rev-list', '--max-parents=0', 'main'], { env, encoding: 'utf8' }).split('\n').filter(Boolean);
+  if (roots.length !== 1) throw new Error(`${from}: main has ${roots.length} first commits, not one seed`);
+  writeFileSync(metaPath, `${JSON.stringify({ seedSha: roots[0], mode, set: set.name, from, created: new Date().toISOString() }, null, 2)}\n`);
+}
+
 async function agentFiles(dir) {
   const files = {
     'agent.json': await readFile(join(dir, 'agent.json'), 'utf8'),
@@ -144,13 +179,13 @@ async function selfTest({ out, repo, parts, log }) {
 }
 
 /** One run of the agent with the set's tools, answer and job text. */
-async function runSet({ parts, repo, run, job, judge, limitUsd }) {
+async function runSet({ parts, repo, run, job, judge, limitUsd, lock = inline }) {
   const { set, data } = parts;
   const effects = [...(await parts.toolsFor(job, run)), ...set.labelTools(data)];
   try {
     const answer = set.answer(data);
     // A promoted workflow that answers the whole job runs first, by the host (dispatch.mjs), unless the pass says not to.
-    const dispatch = parts.dispatch === false ? null : await promotedFor({ repo, run, answer, input: set.input(job) });
+    const dispatch = parts.dispatch === false ? null : await lock(() => promotedFor({ repo, run, answer, input: set.input(job) }));
     return await runJob({ run, job, model: await parts.modelFor(job, run), judge, effects, answer, text: set.text, limitUsd, dispatch });
   } finally {
     // What a tool kept for this run alone (read_document's large files) goes when the run ends.
@@ -205,34 +240,46 @@ function knownSpend(out) {
     .reduce((sum, p) => sum + (p.knownUsd ?? 0) + (p.scoringJudge?.costUsd ?? 0) + (p.abandoned ?? []).reduce((s, a) => s + a.costUsd, 0), 0);
 }
 
-/**
- * One job, in phases kept in <out>/progress/<run>.json, so a stopped pass picks the job up where it stopped: a run that
- * never finished is abandoned (carried back, its spend kept) and the job starts again as the next attempt; a finished
- * run is proposed and curated (both are idempotent) and gets its row.
- */
-async function oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, log }) {
+/** A job's progress file, <out>/progress/<run>.json, and the run ids of its attempts. */
+function progressOf(out, job) {
   const base = `run-${String(job.order).padStart(3, '0')}`;
   mkdirSync(join(out, 'progress'), { recursive: true });
-  const progressPath = join(out, 'progress', `${base}.json`);
-  let p = readJsonIf(progressPath) ?? { attempt: 1, phase: 'new', abandoned: [] };
-  const save = (next) => { p = next; writeFileSync(progressPath, `${JSON.stringify(p, null, 2)}\n`); };
-  const idOf = (attempt) => (attempt === 1 ? base : `${base}-a${attempt}`);
+  const path = join(out, 'progress', `${base}.json`);
+  const state = { p: readJsonIf(path) ?? { attempt: 1, phase: 'new', abandoned: [] } };
+  const save = (next) => { state.p = next; writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`); };
+  return { state, save, idOf: (attempt) => (attempt === 1 ? base : `${base}-a${attempt}`) };
+}
+
+/** A job's first half: a run that never finished is abandoned (carried back, its spend kept) and the job starts again as
+ *  the next attempt; a new attempt is prepared from main and run. `lock` takes the steps on the home and the repository
+ *  one at a time, so the jobs of a batch run side by side. */
+async function startJob({ out, repo, home, parts, judge, job, runCapUsd, log, lock = inline }) {
+  const { state, save, idOf } = progressOf(out, job);
+  let p = state.p;
   if (p.phase === 'started') {
     const run = { runId: idOf(p.attempt), ...runPaths(home, idOf(p.attempt)) };
     const costUsd = existsSync(run.storePath) ? usageOfStore(run.storePath).costUsd : 0;
-    await carryBack(home, run, { outcome: 'abandoned' }).catch(() => {});
-    save({ ...p, attempt: p.attempt + 1, phase: 'new', abandoned: [...p.abandoned, { runId: run.runId, costUsd }] });
+    await lock(() => carryBack(home, run, { outcome: 'abandoned' }).catch(() => {}));
+    save(p = { ...p, attempt: p.attempt + 1, phase: 'new', abandoned: [...p.abandoned, { runId: run.runId, costUsd }] });
     log(`  ${run.runId} did not finish before the stop: abandoned (${usd(costUsd)} of model spend), starting ${idOf(p.attempt)}`);
   }
-  const runId = idOf(p.attempt);
   if (p.phase === 'new') {
-    const prepared = await prepareRun({ home, repo, host: HOST, runId, input: parts.set.input(job) });
-    save({ ...p, phase: 'started', seedSha: prepared.sha, offered: prepared.workflows.loaded.map((w) => w.name), started: Date.now() });
+    const runId = idOf(p.attempt);
+    const prepared = await lock(() => prepareRun({ home, repo, host: HOST, runId, input: parts.set.input(job) }));
+    save(p = { ...p, phase: 'started', seedSha: prepared.sha, offered: prepared.workflows.loaded.map((w) => w.name), started: Date.now() });
     const runJudge = meteredJudge(judge);
-    const measure = await runSet({ parts, repo, run: prepared, job, judge: runJudge, limitUsd: runCapUsd });
-    save({ ...p, phase: 'ran', measure, ended: Date.now() });
+    const measure = await runSet({ parts, repo, run: prepared, job, judge: runJudge, limitUsd: runCapUsd, lock });
+    save(p = { ...p, phase: 'ran', measure, ended: Date.now() });
     if (measure.stopped) log(`  ${runId} stopped: ${measure.stopped}`);
   }
+}
+
+/** A job's second half, after startJob: a finished run is proposed and curated (both are idempotent) and gets its row. */
+async function endJob({ out, repo, home, parts, judge, job, record }) {
+  const { state, save: write, idOf } = progressOf(out, job);
+  let p = state.p;
+  const save = (next) => { p = next; write(next); };
+  const runId = idOf(p.attempt);
   const run = { runId, ...runPaths(home, runId) };
   if (p.phase === 'ran') {
     const finished = await finishJob({ home, repo, run, job, measure: p.measure });
@@ -259,48 +306,60 @@ async function oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, l
 }
 
 /**
- * The queue of a pass on a list (the hill-climb's fixed companies): each `{ cik, ticker?, cause? }` in the list's order,
- * numbered by its place in it. A company not in the run split, a sealed one, one listed twice or a ticker that is not the
- * company's is refused, so a list cannot quietly run something else.
+ * The queue of a pass on a list (the hill-climb's fixed companies, or a TRAIN stream from stream.mjs): each
+ * `{ cik, ticker?, epoch?, cause? }` in the list's order, numbered by its place in it. A company not in the split, one
+ * listed twice in an epoch, a ticker that is not the company's or an epoch that is not a whole number from 1 is refused,
+ * so a list cannot quietly run something else. A company may come back in a later epoch.
  */
-export function listQueue(companies, list) {
+export function listQueue(companies, list, split = 'run', { openTest = false } = {}) {
   if (!Array.isArray(list) || !list.length) throw new Error('--list is an empty list: give the companies to run, in order');
+  splitOf(companies, split, { openTest });
   const seen = new Set();
   return list.map((item, i) => {
     const cik = String(item?.cik ?? '');
     const company = companies.find((c) => c.cik === cik);
-    if (!company) throw new Error(`--list: ${cik || `entry ${i + 1}`} is not in the run split`);
-    if (company.split !== 'run') throw new Error(`--list: ${cik} (${company.ticker}) is ${company.split}: a pass on a list takes the run split only`);
-    if (seen.has(cik)) throw new Error(`--list: ${cik} is listed twice`);
+    if (!company) throw new Error(`--list: ${cik || `entry ${i + 1}`} is not in the ${split} split`);
+    if (company.split !== split) throw new Error(`--list: ${cik} (${company.ticker}) is ${company.split}: a pass on a list takes the ${split} split only`);
+    if (item.epoch !== undefined && !(Number.isInteger(item.epoch) && item.epoch >= 1)) throw new Error(`--list: ${cik}'s epoch is a whole number from 1`);
+    const key = `${cik}@${item.epoch ?? 1}`;
+    if (seen.has(key)) throw new Error(`--list: ${cik} is listed twice${item.epoch === undefined ? '' : ` in epoch ${item.epoch}`}`);
     if (item.ticker !== undefined && item.ticker !== company.ticker) throw new Error(`--list: ${cik} is ${company.ticker}, not ${item.ticker}`);
-    seen.add(cik);
-    return { ...company, order: i + 1 };
+    seen.add(key);
+    return { ...company, order: i + 1, ...(item.epoch === undefined ? {} : { epoch: item.epoch }) };
   });
 }
 
-/** The learning pass: the first `jobs` companies of split "run", in order (or of `list`, in its order), until the spend
- *  reaches `capUsd`. */
-export async function runLoop({ out, parts, jobs, list, capUsd, runCapUsd, record = true, log = () => {} }) {
+/** The learning pass: the first `jobs` companies of `split` ("run" unless named), in order (or of `list`, in its order),
+ *  until the spend reaches `capUsd`. With `concurrency` B above 1 the queue goes in batches of B by place: a batch's runs
+ *  all start from one main and go side by side, then each is proposed and curated in queue order, so learning lands
+ *  between batches. */
+export async function runLoop({ out, parts, jobs, list, split = 'run', openTest = false, concurrency = 1, capUsd, runCapUsd, record = true, log = () => {} }) {
   out = resolve(out);
   const { repo, meta } = await openOut(out, { mode: parts.mode, set: parts.set });
   const home = await agentHomeFor({ dir: join(out, 'home'), repo });
   const rowsPath = join(out, 'runs.jsonl');
   const rows = readRows(rowsPath);
   const done = new Set(rows.map((r) => r.run));
-  const queue = (list ? listQueue(parts.companies, list) : parts.companies.filter((c) => c.split === 'run').sort((a, b) => a.order - b.order)).slice(0, jobs ?? Infinity);
+  const queue = (list ? listQueue(parts.companies, list, split, { openTest }) : splitOf(parts.companies, split, { openTest }).sort(byOrder)).slice(0, jobs ?? Infinity);
   const judge = parts.judge();
   const spentNow = () => knownSpend(out);
   writeFileSync(join(out, 'conventions.json'), `${JSON.stringify(parts.conventions ?? {}, null, 2)}\n`);
   let stoppedBy = null;
-  log(`learn-classify: ${parts.mode} pass in ${out}, seed ${short(meta.seedSha)}, ${queue.length} job(s)${capUsd === undefined ? '' : `, cap ${usd(capUsd)}`}`);
+  log(`learn-classify: ${parts.mode} pass in ${out}, seed ${short(meta.seedSha)}, ${queue.length} job(s)${concurrency > 1 ? ` in batches of ${concurrency}` : ''}${capUsd === undefined ? '' : `, cap ${usd(capUsd)}`}`);
   if (queue.some((job) => !done.has(job.order))) await selfTest({ out, repo, parts, log });
-  for (const job of queue) {
-    if (done.has(job.order)) continue;
+  const lock = concurrency > 1 ? serial() : inline;
+  for (let at = 0; at < queue.length; at += concurrency) {
+    const batch = queue.slice(at, at + concurrency).filter((job) => !done.has(job.order));
+    if (!batch.length) continue;
     if (capUsd !== undefined && spentNow() >= capUsd) { stoppedBy = `spent ${usd(spentNow())}, at or over the cap of ${usd(capUsd)}`; break; }
-    const row = await oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, log });
-    appendFileSync(rowsPath, `${JSON.stringify(row)}\n`);
-    rows.push(row);
-    log(lineOf(row));
+    const args = (job) => ({ out, repo, home, parts, judge, job, runCapUsd, record, log, lock });
+    await Promise.all(batch.map((job) => startJob(args(job))));
+    for (const job of batch) {
+      const row = withEpoch(await endJob(args(job)), job);
+      appendFileSync(rowsPath, `${JSON.stringify(row)}\n`);
+      rows.push(row);
+      log(lineOf(row));
+    }
   }
   await writeCurve(out);
   if (stoppedBy) log(`stopped: ${stoppedBy}`);
@@ -314,10 +373,14 @@ async function homeAt(dir, repo, sha) {
   return createAgentHome(dir, { definition, skills, sha });
 }
 
-/** The sealed companies at one commit of the agent repository, with no learning: nothing is proposed or curated. Its own
- *  agent home, kept at that commit. Rows go to <out>/sealed-<sha12>.jsonl. */
-export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, record = false, log = () => {} }) {
+/** The companies of `split` ("sealed" unless named) at one commit of the agent repository, with no learning: nothing is
+ *  proposed or curated, and every job is seeded from that commit. Its own agent home, kept at that commit. Rows go to
+ *  <out>/sealed-<sha12>.jsonl, each numbered by the company's place in the split. `from` takes the commit from another
+ *  pass's repository (adoptFrom); `concurrency` runs that many jobs side by side; `shard` { index, count } takes every
+ *  count-th company from the index-th, for a pass spread over several takes. */
+export async function runSealed({ out, parts, at = 'main', from, split = 'sealed', openTest = false, concurrency = 1, shard, capUsd, runCapUsd, record = false, log = () => {} }) {
   out = resolve(out);
+  if (from !== undefined) adoptFrom(out, from, { mode: parts.mode, set: parts.set });
   const { repo, meta } = await openOut(out, { mode: parts.mode, set: parts.set });
   await repo.fetch();
   const sha = at === 'seed' ? meta.seedSha : await repo.resolve(at);
@@ -327,47 +390,59 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
   const rowsPath = join(out, `sealed-${label}.jsonl`);
   const rows = readRows(rowsPath);
   const done = new Set(rows.map((r) => r.cik));
-  const queue = parts.companies.filter((c) => c.split === 'sealed').sort((a, b) => a.cik.localeCompare(b.cik));
+  const queue = splitOf(parts.companies, split, { openTest }).sort((a, b) => a.cik.localeCompare(b.cik))
+    .map((job, i) => ({ job, place: i + 1 }))
+    .filter(({ place }) => !shard || (place - 1) % shard.count === shard.index - 1);
+  const pending = queue.filter(({ job }) => !done.has(job.cik));
   const judge = parts.judge();
   let spent = rows.reduce((sum, r) => sum + (r.costUsd ?? 0) + (r.scoreCostUsd ?? 0), 0);
   let stoppedBy = null;
-  log(`learn-classify: sealed pass at ${label}${sha === meta.seedSha ? ' (the seed: nothing learned)' : ''}, ${queue.length} companies`);
-  if (queue.some((job) => !done.has(job.cik))) await selfTest({ out, repo, parts, log });
-  for (const [i, job] of queue.entries()) {
-    if (done.has(job.cik)) continue;
-    if (capUsd !== undefined && spent >= capUsd) { stoppedBy = `spent ${usd(spent)}, at or over the cap of ${usd(capUsd)}`; break; }
-    let attempt = 1;
-    const idOf = (n) => `sealed-${job.cik}${n === 1 ? '' : `-a${n}`}`;
-    while (existsSync(runPaths(home, idOf(attempt)).dir)) {
-      await carryBack(home, { runId: idOf(attempt) }, { outcome: 'abandoned' }).catch(() => {});
-      attempt += 1;
-    }
-    const prepared = await prepareRun({ home, repo, host: HOST, runId: idOf(attempt), input: parts.set.input(job), ref: sha });
+  log(`learn-classify: sealed pass at ${label}${sha === meta.seedSha ? ' (the seed: nothing learned)' : ''}, ${queue.length} companies of ${split}${shard ? ` (shard ${shard.index}/${shard.count})` : ''}${concurrency > 1 ? `, ${concurrency} at once` : ''}`);
+  if (pending.length) await selfTest({ out, repo, parts, log });
+  const lock = concurrency > 1 ? serial() : inline;
+  const oneSealed = async ({ job, place }) => {
+    const prepared = await lock(async () => {
+      let attempt = 1;
+      const idOf = (n) => `sealed-${job.cik}${n === 1 ? '' : `-a${n}`}`;
+      while (existsSync(runPaths(home, idOf(attempt)).dir)) {
+        await carryBack(home, { runId: idOf(attempt) }, { outcome: 'abandoned' }).catch(() => {});
+        attempt += 1;
+      }
+      return prepareRun({ home, repo, host: HOST, runId: idOf(attempt), input: parts.set.input(job), ref: sha });
+    });
     const started = Date.now();
     const runJudge = meteredJudge(judge);
-    const measure = await runSet({ parts, repo, run: prepared, job, judge: runJudge, limitUsd: runCapUsd });
+    const measure = await runSet({ parts, repo, run: prepared, job, judge: runJudge, limitUsd: runCapUsd, lock });
     const run = { runId: prepared.runId, ...runPaths(home, prepared.runId) };
-    const finished = await finishJob({ home, repo, run, job, measure, propose: false });
+    const finished = await lock(() => finishJob({ home, repo, run, job, measure, propose: false }));
     const scored = isHard(parts.set) ? await scoreRun({ parts, run, job, measure, hostsDir: join(out, 'sealed', label, 'hosts') }) : undefined;
     const tools = scored ? [scored.stats.browserCostUsd, scored.stats.searchCostUsd, scored.stats.documentCostUsd] : [];
     const recording = record
       ? await writeRecording({ into: join(out, 'sealed', label, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started, ended: Date.now(), spend: spendOf(measure, undefined, tools), modelUsd: measure.unpricedAnswers ? null : measure.usage.costUsd })
       : null;
-    const v1 = { run: i + 1, runId: prepared.runId, job, seedSha: sha, afterSha: sha, offered: prepared.workflows.loaded.map((w) => w.name), measure, finished, curated: null, recording, convention: parts.conventions?.[job.cik] };
+    const v1 = { run: place, runId: prepared.runId, job, seedSha: sha, afterSha: sha, offered: prepared.workflows.loaded.map((w) => w.name), measure, finished, curated: null, recording, convention: parts.conventions?.[job.cik] };
     const phase = sha === meta.seedSha ? 'before' : 'after';
     const row = scored ? (parts.set === SETS.v4 ? rowOfV4 : rowOfV2)({ ...v1, score: scored.score, stats: scored.stats, scoringJudge: scored.scoringJudge, phase, jobRecord: hostRecord(jobRecordOf(recordingLines(run.storePath).lines), measure.dispatch) }) : { ...rowOf(v1), phase };
     spent += spendOf(measure, undefined, tools).knownUsd + (scored?.scoringJudge.costUsd ?? 0);
     appendFileSync(rowsPath, `${JSON.stringify(row)}\n`);
     rows.push(row);
     log(lineOf(row));
-  }
+  };
+  let next = 0;
+  const worker = async () => {
+    while (next < pending.length && !stoppedBy) {
+      if (capUsd !== undefined && spent >= capUsd) { stoppedBy = `spent ${usd(spent)}, at or over the cap of ${usd(capUsd)}`; break; }
+      await oneSealed(pending[next++]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, pending.length)) }, worker));
   const correct = rows.filter((r) => r.correct).length;
   log(`sealed at ${label}: ${correct} of ${rows.length} correct${stoppedBy ? `; stopped: ${stoppedBy}` : ''}`);
   await writeCurve(out);
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--sealed --at seed|main|<sha>]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -378,6 +453,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'cap-usd': { type: 'string' }, 'run-cap-usd': { type: 'string' }, 'no-record': { type: 'boolean' }, sealed: { type: 'boolean' }, at: { type: 'string' },
         'no-dispatch': { type: 'boolean' },
         model: { type: 'string' }, thinking: { type: 'string' }, set: { type: 'string' }, list: { type: 'string' }, 'promote-after': { type: 'string' },
+        split: { type: 'string' }, 'open-test': { type: 'boolean' }, from: { type: 'string' }, concurrency: { type: 'string' }, shard: { type: 'string' },
       },
     }));
   } catch (error) {
@@ -398,6 +474,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   if (values.list !== undefined && values.sealed) { console.error(`--list runs a learning pass: a sealed pass takes the sealed split\n${USAGE}`); process.exit(2); }
   const promoteAfter = values['promote-after'] === undefined ? undefined : Number(values['promote-after']);
   if (promoteAfter !== undefined && !(Number.isInteger(promoteAfter) && promoteAfter >= 1)) { console.error(`--promote-after is a whole number from 1\n${USAGE}`); process.exit(2); }
+  const concurrency = values.concurrency === undefined ? 1 : Number(values.concurrency);
+  if (!(Number.isInteger(concurrency) && concurrency >= 1)) { console.error(`--concurrency is a whole number from 1\n${USAGE}`); process.exit(2); }
+  const shardMatch = values.shard === undefined ? null : /^(\d+)\/(\d+)$/.exec(values.shard);
+  const shard = shardMatch ? { index: Number(shardMatch[1]), count: Number(shardMatch[2]) } : undefined;
+  if (values.shard !== undefined && !(shard && shard.index >= 1 && shard.index <= shard.count)) { console.error(`--shard is i/N with 1 <= i <= N\n${USAGE}`); process.exit(2); }
+  for (const name of ['shard', 'from']) {
+    if (values[name] !== undefined && !values.sealed) { console.error(`--${name} takes a sealed pass\n${USAGE}`); process.exit(2); }
+  }
+  if (values.split === 'test' && !values['open-test']) { console.error('the test split is opened once per finalist: pass --open-test'); process.exit(2); }
   let list;
   if (values.list !== undefined) {
     try { list = JSON.parse(readFileSync(resolve(values.list), 'utf8')); } catch (error) { console.error(`--list ${values.list}: ${error.message}`); process.exit(2); }
@@ -421,9 +506,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       console.error(`--out ${out} is not writable (${error.code ?? error.message}); in a take only /run is: use --out /run/out`);
       process.exit(2);
     }
-    const common = { out, parts, capUsd: number('cap-usd'), runCapUsd: number('run-cap-usd'), log: (line) => console.log(line) };
+    const common = {
+      out, parts, capUsd: number('cap-usd'), runCapUsd: number('run-cap-usd'), concurrency, openTest: Boolean(values['open-test']), log: (line) => console.log(line),
+      ...(values.split ? { split: values.split } : {}),
+    };
     const result = values.sealed
-      ? await runSealed({ ...common, at: values.at, record: !values['no-record'] })
+      ? await runSealed({ ...common, at: values.at, record: !values['no-record'], ...(values.from ? { from: values.from } : {}), ...(shard ? { shard } : {}) })
       : await runLoop({ ...common, jobs: number('jobs'), list, record: !values['no-record'] });
     if (result.stoppedBy) process.exitCode = 3;
   } catch (error) {
