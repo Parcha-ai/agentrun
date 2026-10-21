@@ -17,7 +17,7 @@ import { hostname } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARCHIL_SCOPED, DEAD_CONNECTION, DEFAULT_MOUNT_ROOT, runPath, type RunRef } from "../claim.ts";
-import { EXIT_FENCED, EXIT_HELD, PdaError } from "../errors.ts";
+import { EXIT_DATAERR, EXIT_FENCED, EXIT_HELD, EXIT_SOFTWARE, PdaError } from "../errors.ts";
 import { LOCAL_PARK_THRESHOLD_MS } from "../park.ts";
 import { processTable, thisBoot } from "../process-table.ts";
 import type { HostDriver, HostHandle, HostStatus, Json, StartAttempt } from "../supervise.ts";
@@ -90,10 +90,6 @@ const FUSERMOUNT = "/usr/bin/fusermount";
 const UMOUNT = "/usr/bin/umount";
 /** How long a stat of the mountpoint may take before its daemon counts as alive but stuck (never removed). */
 const STAT_TIMEOUT_MS = 3_000;
-/** EX_DATAERR: a store behind its seal or a bad run.json (run.ts names it EXIT_DATAERR). */
-const EXIT_DATAERR = 65;
-/** EX_SOFTWARE: the store's head is unreadable (pi's schema moved); run.json says failed, STORE_HEAD_UNREADABLE. */
-const EXIT_SOFTWARE = 70;
 /** Exits a restart cannot fix: 65 data error, 70 store head unreadable, 75 fenced, 76 held. */
 export const TERMINAL_EXITS = [EXIT_DATAERR, EXIT_SOFTWARE, EXIT_FENCED, EXIT_HELD] as const;
 
