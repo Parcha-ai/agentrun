@@ -13,6 +13,7 @@ import { lstat, mkdir, mkdtemp, open, readFile, rename, rm, writeFile, type File
 import { constants as os, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { hideDirs } from "./core/paths.js";
+import { MS_PER_SECOND } from "./core/primitives.js";
 import type { VisionBinaryReader, VisionContext, VisionEnv, VisionEnvError, VisionFileInfo, VisionResult } from "./core/env.js";
 
 type Result<T> = VisionResult<T, VisionEnvError>;
@@ -167,7 +168,7 @@ export function nodeVisionEnv(options: { cwd: string; env?: ChildEnv }): NodeVis
         let cause: "timeout" | "aborted" | undefined;
         const stop = (why: "timeout" | "aborted") => { cause ??= why; killGroup(child.pid); };
         const onAbort = () => stop("aborted");
-        const timer = run?.timeout === undefined ? undefined : setTimeout(() => stop("timeout"), run.timeout * 1000);
+        const timer = run?.timeout === undefined ? undefined : setTimeout(() => stop("timeout"), run.timeout * MS_PER_SECOND);
         context.abortSignal?.addEventListener("abort", onAbort, { once: true });
         const done = (result: Result<{ exitCode: number }>) => {
           clearTimeout(timer);

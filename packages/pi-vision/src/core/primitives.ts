@@ -10,3 +10,5 @@ export const mib = (bytes: number): string => `${(bytes / 1048576).toFixed(1)} M
 
 /** The first line of an error's message, as it stands: no redaction and no cut (`firstLine` in misses.ts does both). */
 export const messageLine = (error: unknown): string => String((error as Error)?.message ?? error).split("\n")[0]!;
+
+export const MS_PER_SECOND = 1000;
