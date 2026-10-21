@@ -4,7 +4,7 @@
  * No red: a failure is muted text, never an alarm.
  */
 :root {
-  --accent: #ff8700; --green: #8ec9ac; --purple: #b4a0ff; --r1: 4px; --r2: 8px; --r3: 14px; --gutter: 24px;
+  --accent: #ff8700; --green: #8ec9ac; --purple: #b4a0ff; --r1: 0; --r2: 0; --r3: 0; --gutter: 24px;
   --bg: #080809; --panel: #111113; --line: #2c2c30; --ink: #f2f2f2; --muted: #a4a4ad;
   --tab: var(--green); --ok: var(--green); --gpu: var(--purple); --vm: var(--purple); --sandbox: var(--purple); --pipe: var(--muted);
   --bad: var(--accent); --win: var(--green);
@@ -32,11 +32,11 @@ html body #net { top: 17px; right: var(--gutter); padding: 0; border: 0; border-
 html body #net::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 html body #net[data-online="true"]::before { background: var(--green); } html body #net[data-online="false"]::before { background: var(--accent); }
 html body #net[data-online="true"], html body #net[data-online="false"] { color: var(--ink); }
-html body #opentab { font: 500 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; border-radius: var(--r2); }
+html body #opentab { font: 500 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; border-radius: 0; }
 
 /* ---- cards: a panel and a hairline; the eyebrow above, the one sentence below ---- */
 html body #robotside { gap: 10px; }
-html body .rc, html body .cc, html body .rl, html body #robotside .line { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r2); padding: 14px 16px; color: var(--ink); }
+html body .rc, html body .cc, html body .rl, html body #robotside .line { background: var(--panel); border: 1px solid var(--line); border-radius: 0; padding: 14px 16px; color: var(--ink); }
 html body .rc .k, html body .cc .k, html body .rl .k { font: 500 11px/1.2 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
 html body .rc .who, html body .cc .who, html body .rl .who { font: 600 20px/1.25 var(--sans); letter-spacing: -.005em; margin: 5px 0 6px; }
 html body .rc .why { font: 400 15px/1.45 var(--sans); color: var(--muted); }
@@ -61,7 +61,7 @@ html body .ts .tr .cmd { color: var(--ink); } html body .ts .more { font: 500 11
 html body #threads { background: var(--bg); padding: 22px var(--gutter) 10px; }
 html body #threads .thead { font: 500 12px/1.2 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
 html body #threads .tiles { gap: 12px; }
-html body #threads .tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r2); padding: 16px 18px; gap: 8px; justify-content: space-between; }
+html body #threads .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 0; padding: 16px 18px; gap: 8px; justify-content: space-between; }
 html body #threads .tile .top { align-items: center; }
 html body #threads .tile .skill { font: 600 17px/1.2 var(--sans); white-space: normal; overflow: visible; text-overflow: clip; }
 html body #threads .tile .st { font-size: 0; display: inline-flex; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
@@ -71,9 +71,9 @@ html body #threads .tile .spark { height: 26px; opacity: .8; } html body #thread
 html body #threads .tile .val { font: 400 13px/1.3 var(--mono); color: var(--muted); }
 html body #threads .tile .val .n { display: block; font: 500 34px/1.1 var(--mono); letter-spacing: -.02em; color: var(--ink); font-variant-numeric: tabular-nums; margin: 2px 0; }
 html body #threads .tile .val.none { font: 400 13px/1.3 var(--sans); }
-html body #threads .tile .bar { height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; } html body #threads .tile .bar i { display: block; height: 100%; background: var(--purple); transition: width .6s ease; } html body #threads .tile .bar.yes i { background: var(--green); }
+html body #threads .tile .bar { height: 3px; border-radius: 0; background: var(--line); overflow: hidden; } html body #threads .tile .bar i { display: block; height: 100%; background: var(--purple); transition: width .6s ease; } html body #threads .tile .bar.yes i { background: var(--green); }
 html body #threads .tile .pass { font: 500 12px var(--mono); letter-spacing: .04em; } html body #threads .tile .pass.yes { color: var(--green); } html body #threads .tile .pass.no { color: var(--muted); }
-html body #threads .skills { gap: 8px; } html body #threads .skills .skill { font: 500 13px var(--mono); padding: 6px 12px; border-radius: var(--r2); border: 1px solid var(--line); color: var(--muted); box-shadow: none; }
+html body #threads .skills { gap: 8px; } html body #threads .skills .skill { font: 500 13px var(--mono); padding: 6px 12px; border-radius: 0; border: 1px solid var(--line); color: var(--muted); box-shadow: none; }
 html body #threads .skills .skill.in { color: var(--green); border-color: color-mix(in srgb, var(--green) 55%, var(--line)); background: none; box-shadow: none; }
 html body #threads .skills .skill.failed { color: var(--muted); text-decoration: line-through; }
 html body #threads[data-phase="landing"], html body #threads[data-phase="home"] { background: linear-gradient(to bottom, var(--bg) 70%, transparent); }
@@ -88,12 +88,12 @@ html body #chatlog .turn.user { align-self: flex-end; text-align: right; } html 
 html body #chatlog .turn.agent { align-self: flex-start; }
 html body #chatlog .turn .caret { background: var(--accent); width: 7px; height: 1em; }
 html body #chathint { font: 400 18px/1.45 var(--sans); color: var(--muted); text-align: left; top: 24px; }
-html body #chatin { font: 400 16px/1.3 var(--sans); min-height: 44px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r3); color: var(--ink); }
+html body #chatin { font: 400 16px/1.3 var(--sans); min-height: 44px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 0; color: var(--ink); }
 html body #chatin:focus { border-color: var(--accent); outline: none; }
 html body #chaterr { color: var(--muted); }
 
 /* ---- the banner and the caption ---- */
-html body #modelbanner { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r2); font: 500 16px/1.4 var(--sans); padding: 12px 16px; }
+html body #modelbanner { background: var(--panel); border: 1px solid var(--line); border-radius: 0; font: 500 16px/1.4 var(--sans); padding: 12px 16px; }
 html body #modelbanner[data-phase="failed"] { background: var(--panel); border-color: var(--line); color: var(--muted); }
 html body #modelbanner .note { font: 400 14px/1.45 var(--sans); }
 html body #vcaption { background: none; border: 0; box-shadow: none; padding: 0; gap: 14px; }
@@ -127,7 +127,7 @@ html body #vcaptionwrap { background: none; }
   html body #threads .thead { font-size: 10px; }
   html body #threads .skills { gap: 6px; } html body #threads .skills .skill { font-size: 11px; padding: 4px 8px; }
   html body.v2 #vcaptionwrap { position: absolute; left: 12px; right: 12px; bottom: 10px; }
-  html body #vcaption { background: color-mix(in srgb, var(--panel) 94%, transparent); border-radius: var(--r2); padding: 8px 12px; }
+  html body #vcaption { background: color-mix(in srgb, var(--panel) 94%, transparent); border-radius: 0; padding: 8px 12px; }
   html body #vcaption .txt { font-size: 14px; }
   html body #chatlog .turn .said { font-size: 16px; }
   html body #chathint { font-size: 16px; top: 18%; }

@@ -31,7 +31,7 @@ export function renderTimeline(state: ShowState, now: number, width: number, hei
 function lane(id: string, y: number, h: number, state: ShowState, x: (t: number) => number, now: number, big: boolean, label: string): string {
   const out: string[] = [];
   out.push(`<text x="${PAD_L - 6}" y="${y + h / 2 + 3}" text-anchor="end" fill="var(--muted)" font-size="${big ? 10 : 8}" font-family="var(--mono)">${esc(label.slice(0, 11))}</text>`);
-  out.push(`<rect x="${PAD_L}" y="${y}" width="${x(1e12) - PAD_L}" height="${h}" fill="var(--panel2)" rx="3"/>`);
+  out.push(`<rect x="${PAD_L}" y="${y}" width="${x(1e12) - PAD_L}" height="${h}" fill="var(--panel2)"/>`);
   for (const s of state.stays.filter((st) => st.lane === id)) out.push(stay(s, y, h, x, now, big, state.source === "scripted"));
   return out.join("");
 }
@@ -42,7 +42,7 @@ function stay(s: Stay, y: number, h: number, x: (t: number) => number, now: numb
   const color = KIND_COLOR[s.hostKind] ?? "var(--pipe)";
   const live = s.to === null;
   const out: string[] = [];
-  out.push(`<rect x="${x0}" y="${y}" width="${x1 - x0}" height="${h}" rx="3" fill="${color}" opacity="${live ? 0.95 : 0.55}"><title>${esc(s.host)}</title></rect>`);
+  out.push(`<rect x="${x0}" y="${y}" width="${x1 - x0}" height="${h}" fill="${color}" opacity="${live ? 0.95 : 0.55}"><title>${esc(s.host)}</title></rect>`);
   if (big && x1 - x0 > 46) {
     out.push(`<clipPath id="c${esc(s.id)}"><rect x="${x0}" y="${y}" width="${x1 - x0}" height="${h}"/></clipPath>`);
     out.push(`<text clip-path="url(#c${esc(s.id)})" x="${x0 + 6}" y="${y + 18}" fill="#0b0f0d" font-size="11" font-weight="700" font-family="var(--sans)">${esc(s.host)}</text>`);

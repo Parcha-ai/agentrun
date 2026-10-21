@@ -51,6 +51,8 @@ export function plainSwitch(n: Note): Note {
   if (!m) return n;
   const secs = (Number(m[2]) / 1000).toFixed(1);
   const label = m[1]!;
-  const text = /^(this tab|your browser|the tab)$/i.test(label) ? `Came home to your browser in ${secs} s` : `Moved to ${/^(the|a|an) /i.test(label) ? "" : "the "}${label} in ${secs} s`;
+  // A place's label starts a sentence in the environment list ("Your browser tab", "A Modal VM"); in the middle of this one it is lower case, and a label that carries its own article gets no second.
+  const mid = /^(your|the|a|an) /i.test(label) ? label.charAt(0).toLowerCase() + label.slice(1) : `the ${label}`;
+  const text = /^(this tab|your browser|the tab)$/i.test(label) ? `Came home to your browser in ${secs} s` : `Moved to ${mid} in ${secs} s`;
   return { ...n, text };
 }

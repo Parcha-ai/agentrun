@@ -130,8 +130,9 @@ export function relearnHtml(r: Relearn | null): string {
   }
   const head = r.done && r.fromRound ? (r.relearning ? "Relearned its new body" : "Learned its body") : r.relearning ? "Learning a new body" : "The robot's body";
   // D2's times count from each thread's own start (warm-up and the pool's acquire time are not in them).
-  const learned = r.passedS !== null ? `all ${r.gpus} skills passed in ${span(r.passedS)} (from each thread's start)` : `${r.passed} of ${r.gpus} skills have passed`;
+  const one = r.gpus === 1;
+  const learned = r.passedS !== null ? `${one ? "the 1 skill" : `all ${r.gpus} skills`} passed in ${span(r.passedS)} (from each thread's start)` : `${r.passed} of ${r.gpus} ${one ? "skill has" : "skills have"} passed`;
   const home = r.homeS !== null ? `<div class="line">All home in ${esc(span(r.homeS))}</div>` : "";
   const cpu = r.cpuS !== null && r.cpuCores !== null ? `<div class="cpu">On one machine with ${esc(r.cpuCores)}, one skill after another: about ${esc(span(r.cpuS))} (an estimate from this run's own steps and a measured throughput)</div>` : "";
-  return `<div class="rl" data-done="${r.done}"><div class="k">${head}</div><div class="who">${esc(name)}</div><div class="line">${r.gpus} GPUs, one skill each: ${esc(learned)}</div>${home}${cpu}</div>`;
+  return `<div class="rl" data-done="${r.done}"><div class="k">${head}</div><div class="who">${esc(name)}</div><div class="line">${one ? "1 GPU, one skill" : `${r.gpus} GPUs, one skill each`}: ${esc(learned)}</div>${home}${cpu}</div>`;
 }
