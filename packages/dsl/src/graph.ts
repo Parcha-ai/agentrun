@@ -11,9 +11,10 @@
  *  use for the same node. `label` is the node's label, or its kind when it has none. `via` is a `call` node's transport.
  *  `changeCheck` detects a change to the node's own fields from one graph to another: 8 hex digits, the FNV-1a hash of
  *  the canonical JSON (keys sorted) of the node with its children left out as the walk leaves them out (a chain's steps,
- *  a parallel's branches, a map's or a loop's body, each route branch's body, a child workflow's root). It is not an
- *  identity and not a saved revision's sha256: two nodes with the same check are not the same node, and a check that
- *  stayed only means no change was seen. A graph built by hand may leave it out. */
+ *  a parallel's branches, a map's or a loop's body, each route branch's body, a child workflow's root). A route's branch
+ *  names are its own fields, since they decide which branch runs, so a route that gains or loses a branch is rewritten. It
+ *  is not an identity and not a saved revision's sha256: two nodes with the same check are not the same node, and a check
+ *  that stayed only means no change was seen. A graph built by hand may leave it out. */
 export type GraphNode = { path: string; kind: string; label: string; via?: string; changeCheck?: string };
 
 /** How control reaches `to` from `from`.
@@ -34,12 +35,18 @@ const pointer = (part: string): string => part.replace(/~/g, "~0").replace(/\//g
 const MAX_DEPTH = 128;
 
 /** A value as canonical JSON: object keys sorted, undefined members left out, other values as JSON writes them. Deeper
- *  than `MAX_DEPTH` a value is written as one marker, so a value that is not JSON (a cycle) still ends. */
+ *  than `MAX_DEPTH` a value is written as one marker, so a value that is not JSON (a cycle) still ends. A leaf JSON
+ *  cannot encode (a bigint, a symbol) is written as a marker of its type, so changeCheck is total: `workflowGraph` never
+ *  throws on a node the validator accepts, and such a leaf still changes the check when it changes value. */
+const leaf = (value: unknown): string => {
+  try { return JSON.stringify(value) ?? "null"; }
+  catch { return JSON.stringify(`[${typeof value}:${String(value)}]`); }
+};
 const canonicalJson = (value: unknown, depth = 0): string => {
   if (depth > MAX_DEPTH) return '"…"';
   if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item, depth + 1)).join(",")}]`;
   if (isObject(value)) return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key], depth + 1)}`).join(",")}}`;
-  return JSON.stringify(value) ?? "null";
+  return leaf(value);
 };
 /** FNV-1a (32 bits) over the UTF-16 code units of `text`, as 8 hex digits. */
 const fnv1a = (text: string): string => {

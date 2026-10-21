@@ -172,3 +172,19 @@ test('every node of a graph carries a change check: 8 hex digits that differ whe
   const checks = new Set(graph.nodes.map((node) => node.changeCheck));
   assert.equal(checks.size, graph.nodes.length, 'nodes with different own fields have different checks here');
 });
+
+test('P2: changeCheck is total — workflowGraph never throws on a value JSON cannot encode, and still detects its change', () => {
+  // A node's own field may hold a value canonical JSON cannot encode (a bigint, a symbol). workflowGraph used to throw
+  // (JSON.stringify of a bigint throws), refusing a document the validator would accept. It now writes such a leaf as a
+  // marker of its type and value: no throw, and the check still changes when the value does.
+  const callWith = (args) => flow(chain({ node: 'call', label: 'c', via: 'tool', tool: 'f', args, out: 'Any', as: 'c' }));
+  const checkOf = (args) => {
+    let graph;
+    assert.doesNotThrow(() => { graph = workflowGraph(callWith(args)); }, `workflowGraph threw on ${String(Object.values(args)[0])}`);
+    return graph.nodes.find((node) => node.label === 'c').changeCheck;
+  };
+  assert.match(checkOf({ n: 10n }), /^[0-9a-f]{8}$/);
+  assert.notEqual(checkOf({ n: 10n }), checkOf({ n: 11n }), 'a bigint that changes value changes the check');
+  assert.notEqual(checkOf({ n: 10n }), checkOf({ n: 10 }), 'a bigint is not the same leaf as the number');
+  assert.match(checkOf({ s: Symbol('x') }), /^[0-9a-f]{8}$/, 'a symbol is handled too');
+});
