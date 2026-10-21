@@ -300,7 +300,8 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
         }
         if (!record(result)) throw invalidResponse("response_shape", "Jev returned an invalid response.");
         const answers = result.answers;
-        try { validateAnswers(params.questions, answers); }
+        // Checked against the questions as they were sent: a value JSON cannot carry (an undefined criterion) was never asked.
+        try { validateAnswers(request.questions as typeof params.questions, answers); }
         catch (error) {
           throw invalidResponse(error instanceof SystemOneError && isSystemOneResponseReason(error.responseReason) ? error.responseReason : "answer_validation",
             "Jev returned invalid answers or probability distributions.");

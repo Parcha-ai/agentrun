@@ -360,3 +360,14 @@ test('a blank per-call model is refused as a model, not as the question map', as
   }
   assert.equal(calls, 0);
 });
+
+// A question map is sent as JSON, so a criterion whose value is undefined is not part of what Jev is asked. Its answers are checked against
+// the questions that were sent.
+test('answers are checked against the questions as sent, so a criterion JSON drops is not required in the answer', async () => {
+  const asked = { team: { type: 'choice', instructions: 'Which team?', criteria: { billing: 'Invoices', other: 'The rest', gone: undefined } } };
+  let sent;
+  const run = createJevRunner({ client: { systemOne: async (request) => { sent = request; return { answers: { team: { type: 'choice', choice: 'billing', probabilities: { billing: 0.7, other: 0.3 }, confidence: 0.4 } } }; } } });
+  const result = await run({ ...params, questions: asked });
+  assert.deepEqual(Object.keys(sent.questions.team.criteria), ['billing', 'other'], 'undefined is not sent');
+  assert.equal(result.answers.team.choice, 'billing');
+});
