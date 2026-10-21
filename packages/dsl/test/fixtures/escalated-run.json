@@ -1,0 +1,201 @@
+{
+ "graph": {
+  "nodes": [
+   {
+    "path": "/root",
+    "kind": "chain",
+    "label": "chain"
+   },
+   {
+    "path": "/root/steps/0",
+    "kind": "extract",
+    "label": "read-input"
+   },
+   {
+    "path": "/root/steps/1",
+    "kind": "call",
+    "label": "search-report",
+    "via": "tool"
+   },
+   {
+    "path": "/root/steps/2",
+    "kind": "agent",
+    "label": "locate-report"
+   },
+   {
+    "path": "/root/steps/3",
+    "kind": "escalate",
+    "label": "no-report"
+   },
+   {
+    "path": "/root/steps/4",
+    "kind": "agent",
+    "label": "read-report"
+   },
+   {
+    "path": "/root/steps/5",
+    "kind": "escalate",
+    "label": "no-segments-quote"
+   },
+   {
+    "path": "/root/steps/6",
+    "kind": "escalate",
+    "label": "no-hq"
+   },
+   {
+    "path": "/root/steps/7",
+    "kind": "judge",
+    "label": "check-facts"
+   },
+   {
+    "path": "/root/steps/8",
+    "kind": "escalate",
+    "label": "segments-unsupported"
+   },
+   {
+    "path": "/root/steps/9",
+    "kind": "escalate",
+    "label": "hq-unsupported"
+   },
+   {
+    "path": "/root/steps/10",
+    "kind": "call",
+    "label": "list-groups",
+    "via": "tool"
+   },
+   {
+    "path": "/root/steps/11",
+    "kind": "pick",
+    "label": "pick-group"
+   },
+   {
+    "path": "/root/steps/12",
+    "kind": "call",
+    "label": "list-codes",
+    "via": "tool"
+   },
+   {
+    "path": "/root/steps/13",
+    "kind": "escalate",
+    "label": "no-codes"
+   },
+   {
+    "path": "/root/steps/14",
+    "kind": "pick",
+    "label": "pick-code"
+   },
+   {
+    "path": "/root/steps/15",
+    "kind": "extract",
+    "label": "assemble-answer"
+   }
+  ],
+  "edges": [
+   {
+    "from": "/root",
+    "to": "/root/steps/0",
+    "kind": "next"
+   },
+   {
+    "from": "/root/steps/0",
+    "to": "/root/steps/1",
+    "kind": "next"
+   },
+   {
+    "from": "/root/steps/1",
+    "to": "/root/steps/2",
+    "kind": "next"
+   },
+   {
+    "from": "/root/steps/2",
+    "to": "/root/steps/3",
+    "kind": "next"
+   },
+   {
+    "from": "/root/steps/3",
+    "to": "/root/steps/4",
+    "kind": "next"
+   },
+   {
+    "from": "/root/steps/4",
+    "to": "/root/steps/5",
+    "kind": "next"
+   },
+   {
+    "from": "/root/steps/5",
+    "to": "/root/steps/6",
+    "kind": "next"
+   },
+   {
+    "from": "/root/steps/6",
+    "to": "/root/steps/7",
+    "kind": "next"
+   },
+   {
+    "from": "/root/steps/7",
+    "to": "/root/steps/8",
+    "kind": "next"
+   },
+   {
+    "from": "/root/steps/8",
+    "to": "/root/steps/9",
+    "kind": "next"
+   },
+   {
+    "from": "/root/steps/9",
+    "to": "/root/steps/10",
+    "kind": "next"
+   },
+   {
+    "from": "/root/steps/10",
+    "to": "/root/steps/11",
+    "kind": "next"
+   },
+   {
+    "from": "/root/steps/11",
+    "to": "/root/steps/12",
+    "kind": "next"
+   },
+   {
+    "from": "/root/steps/12",
+    "to": "/root/steps/13",
+    "kind": "next"
+   },
+   {
+    "from": "/root/steps/13",
+    "to": "/root/steps/14",
+    "kind": "next"
+   },
+   {
+    "from": "/root/steps/14",
+    "to": "/root/steps/15",
+    "kind": "next"
+   }
+  ]
+ },
+ "frame": {
+  "done": [
+   "/root/steps/0",
+   "/root/steps/1",
+   "/root/steps/2"
+  ],
+  "steps": {
+   "/root/steps/0": {
+    "status": "submitted"
+   },
+   "/root/steps/2": {
+    "status": "submitted"
+   }
+  },
+  "inputs": {}
+ },
+ "result": {
+  "status": "escalated",
+  "escalation": {
+   "node": "/root/steps/3",
+   "label": "no-report",
+   "kind": "needs_input",
+   "stage": "locate"
+  }
+ }
+}
