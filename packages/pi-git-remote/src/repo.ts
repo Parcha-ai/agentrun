@@ -567,6 +567,15 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     await fetchAll();
   }
 
+  /** The tree `git merge-tree --write-tree` makes of `args`; a conflict throws `conflict` naming its paths. */
+  async function mergeTree(args: readonly string[], conflict: string): Promise<string> {
+    const result = await git(["merge-tree", "--write-tree", "--name-only", "-z", "--no-messages", ...args], { allowFail: true });
+    const parts = result.stdout.toString("utf8").split("\0").filter(Boolean);
+    if (result.code === 1) throw new GitRemoteError("conflict", conflict, [...new Set(parts.slice(1))]);
+    if (result.code !== 0) throw new GitRemoteError("git", `git merge-tree failed (${result.code}): ${result.stderr.trim()}`);
+    return parts[0]!;
+  }
+
   async function merge(fromName: string, intoName: string): Promise<MergeResult> {
     const from = checkBranch(fromName);
     const into = checkBranch(intoName);
@@ -582,12 +591,9 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
       await moveBranch(into, source, localBefore);
       return { sha: source, changed: true, fastForward: true };
     }
-    const result = await git(["merge-tree", "--write-tree", "--name-only", "-z", "--no-messages", target, source], { allowFail: true });
-    const parts = result.stdout.toString("utf8").split("\0").filter(Boolean);
-    if (result.code === 1) throw new GitRemoteError("conflict", `merging ${from} into ${into} conflicts`, [...new Set(parts.slice(1))]);
-    if (result.code !== 0) throw new GitRemoteError("git", `git merge-tree failed (${result.code}): ${result.stderr.trim()}`);
-    await checkIntroduced(targetTree, parts[0]!);
-    const sha = await commitTree(parts[0]!, [target, source], formatMessage(`Merge ${from} into ${into}`, { "Merged-Branch": from }));
+    const tree = await mergeTree([target, source], `merging ${from} into ${into} conflicts`);
+    await checkIntroduced(targetTree, tree);
+    const sha = await commitTree(tree, [target, source], formatMessage(`Merge ${from} into ${into}`, { "Merged-Branch": from }));
     await moveBranch(into, sha, localBefore);
     return { sha, changed: true, fastForward: false };
   }
@@ -605,15 +611,12 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     const [entry] = await logOf([commit], { max: 1 });
     const parent = entry!.parents[0];
     if (!parent) throw refused("a root commit cannot be reverted");
-    const result = await git(["merge-tree", "--write-tree", "--name-only", "-z", "--no-messages", `--merge-base=${commit}`, target, parent], { allowFail: true });
-    const parts = result.stdout.toString("utf8").split("\0").filter(Boolean);
-    if (result.code === 1) throw new GitRemoteError("conflict", `reverting ${commit} on ${on} conflicts`, [...new Set(parts.slice(1))]);
-    if (result.code !== 0) throw new GitRemoteError("git", `git merge-tree failed (${result.code}): ${result.stderr.trim()}`);
+    const tree = await mergeTree([`--merge-base=${commit}`, target, parent], `reverting ${commit} on ${on} conflicts`);
     const targetTree = await treeOf(target);
-    if (parts[0] === targetTree) return { sha: target, changed: false };
-    await checkIntroduced(targetTree, parts[0]!);
+    if (tree === targetTree) return { sha: target, changed: false };
+    await checkIntroduced(targetTree, tree);
     const message = formatMessage(`Revert "${entry!.subject}"\n\nThis reverts commit ${commit}.`, { ...options.trailers, Reverts: commit });
-    const sha = await commitTree(parts[0]!, [target], message);
+    const sha = await commitTree(tree, [target], message);
     await moveBranch(on, sha, localBefore);
     return { sha, changed: true };
   }
