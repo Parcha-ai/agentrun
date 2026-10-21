@@ -20,6 +20,8 @@ const A = "https://app.acme.example";
 const B = "https://billing.acme.example";
 const OTHER = "https://other.example";
 const KEY = localHostKey("host-1", Buffer.alloc(32, 1));
+/** The tests' clock: every vault reads the time from it, so no cookie's expiry depends on the day the tests run. */
+const NOW = () => T0;
 
 /** Secret markers: no file, document, log, message or pack may hold one, in UTF-8 or UTF-16. */
 const marker = (name) => `vault-secret-${name}-7f3a`;
@@ -109,25 +111,25 @@ test("a local Chrome session and a provider context go in as ciphertext and come
 
 test("the vault is bound to its host key: another key, or the right id with other bytes, opens nothing and says so by id only; a copied folder with the key works", async () => {
   const h = await home();
-  await sessionVault(h, { hostKey: KEY }).capture({ sessionKey: "acme", origins: [A], state: chromeState() });
+  await sessionVault(h, { hostKey: KEY, now: NOW }).capture({ sessionKey: "acme", origins: [A], state: chromeState() });
   const other = localHostKey("host-2", Buffer.alloc(32, 1));
-  await assert.rejects(sessionVault(h, { hostKey: other }).restore({ sessionKey: "acme", origins: [A] }), refused("key", /^the vault is bound to host key host-1; this host gave host-2$/));
-  await assert.rejects(sessionVault(h, { hostKey: other }).capture({ sessionKey: "acme", origins: [A], state: chromeState() }), refused("key"));
+  await assert.rejects(sessionVault(h, { hostKey: other, now: NOW }).restore({ sessionKey: "acme", origins: [A] }), refused("key", /^the vault is bound to host key host-1; this host gave host-2$/));
+  await assert.rejects(sessionVault(h, { hostKey: other, now: NOW }).capture({ sessionKey: "acme", origins: [A], state: chromeState() }), refused("key"));
   const forged = localHostKey("host-1", Buffer.alloc(32, 2));
-  await assert.rejects(sessionVault(h, { hostKey: forged }).restore({ sessionKey: "acme", origins: [A] }), refused("key", /^the host key host-1 does not open this home's vault key$/));
-  for (const bad of [undefined, {}, { id: "x" }, { id: "has space", wrap() {}, unwrap() {} }]) assert.throws(() => sessionVault(h, { hostKey: bad }), refused("invalid", /the host key is not/));
+  await assert.rejects(sessionVault(h, { hostKey: forged, now: NOW }).restore({ sessionKey: "acme", origins: [A] }), refused("key", /^the host key host-1 does not open this home's vault key$/));
+  for (const bad of [undefined, {}, { id: "x" }, { id: "has space", wrap() {}, unwrap() {} }]) assert.throws(() => sessionVault(h, { hostKey: bad, now: NOW }), refused("invalid", /the host key is not/));
   assert.throws(() => localHostKey("k", Buffer.alloc(31)), refused("invalid", /32 bytes/));
 
   const copy = path.join(await scratch(), "copied");
   cpSync(h.dir, copy, { recursive: true });
   const moved = { dir: copy, identity: h.identity };
-  assert.equal((await sessionVault(moved, { hostKey: KEY }).restore({ sessionKey: "acme", origins: [A] })).cookies.length, 2, "the folder and the host key are all another machine needs");
-  await assert.rejects(sessionVault(moved, { hostKey: forged }).restore({ sessionKey: "acme", origins: [A] }), refused("key"));
+  assert.equal((await sessionVault(moved, { hostKey: KEY, now: NOW }).restore({ sessionKey: "acme", origins: [A] })).cookies.length, 2, "the folder and the host key are all another machine needs");
+  await assert.rejects(sessionVault(moved, { hostKey: forged, now: NOW }).restore({ sessionKey: "acme", origins: [A] }), refused("key"));
 });
 
 test("forget destroys the session's key: its row goes, and its old revision, brought back, no longer decrypts; a recapture gets a new key and destroys the one before", async () => {
   const h = await home();
-  const vault = sessionVault(h, { hostKey: KEY });
+  const vault = sessionVault(h, { hostKey: KEY, now: NOW });
   await vault.capture({ sessionKey: "acme", origins: [A], state: chromeState() });
   const first = await rowOf(h, "acme");
   await vault.capture({ sessionKey: "acme", origins: [A], state: chromeState() });
@@ -150,7 +152,7 @@ test("forget destroys the session's key: its row goes, and its old revision, bro
 
 test("forgetAll destroys every key and the home's vault key: nothing old decrypts, and the next capture binds a new vault key", async () => {
   const h = await home();
-  const vault = sessionVault(h, { hostKey: KEY });
+  const vault = sessionVault(h, { hostKey: KEY, now: NOW });
   await vault.capture({ sessionKey: "acme", origins: [A], state: chromeState() });
   const old = await rowOf(h, "acme");
   const homeKeyId = keysOf(h).homeKey.id;
@@ -193,7 +195,7 @@ test("a session cookie comes back for at most 24 hours after its capture, or the
 
 test("a restore never widens origins: the captured ones met by the requested ones; origins are scheme, host and port", async () => {
   const h = await home();
-  const vault = sessionVault(h, { hostKey: KEY });
+  const vault = sessionVault(h, { hostKey: KEY, now: NOW });
   const state = {
     kind: "cdp", capturedAt: new Date(T0).toISOString(),
     cookies: [cookie("a", "1", "app.acme.example"), cookie("b", "2", "billing.acme.example"), cookie("both", "3", ".acme.example")],
@@ -214,7 +216,7 @@ test("a restore never widens origins: the captured ones met by the requested one
 
 test("nothing of a saved session reaches a pack, a run's store or work files", async () => {
   const h = await home();
-  await sessionVault(h, { hostKey: KEY }).capture({ sessionKey: "acme", origins: [A], state: chromeState() });
+  await sessionVault(h, { hostKey: KEY, now: NOW }).capture({ sessionKey: "acme", origins: [A], state: chromeState() });
   const run = await startRun(h, { runId: "r1", host: "laptop" });
   assert.ok(!(documentKinds(run.storePath) ?? []).includes("agent.vault"), "startRun seeds nothing from the vault");
   const runBytes = Buffer.concat([readFileSync(run.storePath), ...readdirSync(run.workspace, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => readFileSync(path.join(e.parentPath ?? e.path, e.name)))]);
@@ -240,7 +242,7 @@ test("no secret value reaches a log, an error's message or its stack, on any pat
   const errors = [];
   const attempt = async (fn) => { try { await fn(); } catch (error) { errors.push(`${error.message}\n${error.stack}`); } };
   try {
-    const vault = sessionVault(h, { hostKey: KEY });
+    const vault = sessionVault(h, { hostKey: KEY, now: NOW });
     await vault.capture({ sessionKey: "acme", origins: [A], state: chromeState() });
     await vault.restore({ sessionKey: "acme", origins: [A] });
     await attempt(() => sessionVault(h, { hostKey: localHostKey("host-1", Buffer.alloc(32, 9)) }).restore({ sessionKey: "acme", origins: [A] }));
@@ -261,9 +263,21 @@ test("no secret value reaches a log, an error's message or its stack, on any pat
   for (const name of ["session", "persistent", "storage", "context"]) assert.ok(!text.includes(marker(name)), `${name} is not in any log or error`);
 });
 
+test("a session key is 1 to 128 of letters, digits, _, ., : or -, as pi-browser's vault side takes one; anything else is refused before the home is touched", async () => {
+  const h = await home();
+  const vault = sessionVault(h, { hostKey: KEY, now: NOW });
+  for (const sessionKey of ["local-chrome", "acme.example", "profile:1", "a_b", "x".repeat(128)]) await vault.capture({ sessionKey, origins: [A], state: chromeState() });
+  for (const sessionKey of ["", "x".repeat(129), "has space", "a/b", "ü", "tab\there", "new\nline", 7, undefined]) {
+    await assert.rejects(vault.capture({ sessionKey, origins: [A], state: chromeState() }), refused("invalid", /the session key is not 1 to 128 of letters, digits/), JSON.stringify(sessionKey));
+    await assert.rejects(vault.restore({ sessionKey, origins: [A] }), refused("invalid"), JSON.stringify(sessionKey));
+    await assert.rejects(vault.forget(sessionKey), refused("invalid"), JSON.stringify(sessionKey));
+  }
+  assert.equal((await vault.list()).length, 5);
+});
+
 test("a changed ciphertext, or one moved to another session's row, is refused and never decrypts to the wrong session", async () => {
   const h = await home();
-  const vault = sessionVault(h, { hostKey: KEY });
+  const vault = sessionVault(h, { hostKey: KEY, now: NOW });
   await vault.capture({ sessionKey: "acme", origins: [A], state: chromeState() });
   await vault.capture({ sessionKey: "billing", origins: [A], state: { ...chromeState(), cookies: [cookie("sid", marker("billing"), "app.acme.example")], localStorage: {} } });
   const acme = await rowOf(h, "acme");
@@ -277,7 +291,7 @@ test("a changed ciphertext, or one moved to another session's row, is refused an
 
 test("a key no session names, left by a write that stopped between the key file and the store, is dropped at the next write", async () => {
   const h = await home();
-  const vault = sessionVault(h, { hostKey: KEY });
+  const vault = sessionVault(h, { hostKey: KEY, now: NOW });
   await vault.capture({ sessionKey: "acme", origins: [A], state: chromeState() });
   const keys = keysOf(h);
   writeFileSync(path.join(h.dir, VAULT_KEYS_FILE), JSON.stringify({ ...keys, items: { ...keys.items, orphan: keys.items[(await rowOf(h, "acme")).keyId] } }), { mode: 0o600 });
@@ -295,21 +309,21 @@ test("with a run id, a capture is refused while another live run holds the sessi
   try {
     await store.session.commit(async (tx) => {
       put(await tx.doc(RunsDoc, "theirs", null), { path: "runs/theirs", host: "laptop", startedAt: new Date().toISOString() });
-      put(await tx.doc(LeasesDoc, "acme", null), { runId: "theirs", expiresAt: new Date(Date.now() + HOUR).toISOString() });
+      put(await tx.doc(LeasesDoc, "acme", null), { runId: "theirs", expiresAt: new Date(T0 + HOUR).toISOString() });
     }, ctx);
   } finally { await store.close(); }
-  const capture = (runId) => sessionVault(h, { hostKey: KEY, runId }).capture({ sessionKey: "acme", origins: [A], state: chromeState() });
+  const capture = (runId) => sessionVault(h, { hostKey: KEY, runId, now: NOW }).capture({ sessionKey: "acme", origins: [A], state: chromeState() });
   await assert.rejects(capture("mine"), refused("busy", /^the save lease for acme is held by run theirs$/));
   await assert.rejects(capture("ghost"), refused("invalid", /ghost is not a run of this agent/));
   await capture("theirs");
   await capture(undefined);
-  await sessionVault(h, { hostKey: KEY, runId: "mine" }).capture({ sessionKey: "free", origins: [A], state: chromeState() });
+  await sessionVault(h, { hostKey: KEY, runId: "mine", now: NOW }).capture({ sessionKey: "free", origins: [A], state: chromeState() });
   const ended = await openStore(path.join(h.dir, "agent.sqlite"));
   try {
     await ended.session.commit(async (tx) => { put(await tx.doc(RunsDoc, "theirs", null), { path: "runs/theirs", host: "laptop", startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), outcome: "completed" }); }, ctx);
   } finally { await ended.close(); }
   await capture("mine");
-  assert.deepEqual((await sessionVault(h, { hostKey: KEY }).list()).map((entry) => entry.sessionKey).sort(), ["acme", "free"]);
+  assert.deepEqual((await sessionVault(h, { hostKey: KEY, now: NOW }).list()).map((entry) => entry.sessionKey).sort(), ["acme", "free"]);
 });
 
 test("on a home reached through an access (a disk), the key file lives in the claimed directory beside agent.sqlite and changes only inside the claim", async () => {
@@ -327,7 +341,7 @@ test("on a home reached through an access (a disk), the key file lives in the cl
     runStore: async (run) => path.join(h.dir, run.path, "store", "run.sqlite"),
   };
   const elsewhere = { dir: path.join(await scratch(), "not-the-home"), identity: h.identity };
-  const vault = sessionVault(elsewhere, { hostKey: KEY, access });
+  const vault = sessionVault(elsewhere, { hostKey: KEY, access, now: NOW });
   await vault.capture({ sessionKey: "acme", origins: [A], state: chromeState() });
   const written = snapshot();
   assert.notEqual(written, "absent");

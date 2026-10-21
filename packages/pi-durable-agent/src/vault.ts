@@ -90,10 +90,11 @@ export function localHostKey(id: string, key: Uint8Array): HostKey {
   };
 }
 
+/** A session key as pi-browser's vault side takes one, so neither accepts a key the other refuses. */
+const SESSION_KEY = /^[A-Za-z0-9_.:-]{1,128}$/;
+
 function checkSessionKey(sessionKey: unknown): string {
-  if (typeof sessionKey !== "string" || sessionKey === "" || sessionKey.length > 128 || /[\u0000-\u001f\u007f]/.test(sessionKey)) {
-    throw invalid("the session key is not 1 to 128 characters with no control character");
-  }
+  if (typeof sessionKey !== "string" || !SESSION_KEY.test(sessionKey)) throw invalid("the session key is not 1 to 128 of letters, digits, \"_\", \".\", \":\" or \"-\"");
   return sessionKey;
 }
 
