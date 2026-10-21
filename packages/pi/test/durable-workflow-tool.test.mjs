@@ -220,9 +220,12 @@ test('createWorkflowTool refuses the host tool lists the extension refuses: a re
     [[named(' ')], /invalid, reserved or duplicate name/],
     [Array.from({ length: 101 }, (_, i) => named(`tool-${i}`)), /at most 100/],
     [[named('lookup', { parameters: 'none' })], /require a parameter schema/],
+    // A schema the compiler refuses, as parameters or as the result schema: an invalid regular expression.
+    [[named('lookup', { parameters: { type: 'object', properties: { q: { type: 'string', pattern: '[' } } } })], /Invalid regular expression/],
+    [[named('lookup', { resultSchema: { type: 'object', properties: { id: { type: 'string', pattern: '[' } } } })], /Invalid regular expression/],
   ]) assert.throws(() => createWorkflowTool({ projectDir: root, tools, task }), refusal, JSON.stringify(tools).slice(0, 80));
   assert.throws(() => createWorkflowTool({ projectDir: root, name: 'workflow', tools: [named('workflow')], task }), /reserved/, 'the tool\'s own name is reserved');
-  assert.doesNotThrow(() => createWorkflowTool({ projectDir: root, tools: [QUOTE, named('read')], task }));
+  assert.doesNotThrow(() => createWorkflowTool({ projectDir: root, tools: [QUOTE, named('read'), named('lookup', { resultSchema: { type: 'object', properties: { id: { type: 'string', pattern: '^[a-z]+$' } } } })], task }));
 });
 
 test('a root agent offers the tools of the extensions it lists: one installed in the registry and not listed is not offered', async () => {
