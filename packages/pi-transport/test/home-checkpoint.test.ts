@@ -931,6 +931,27 @@ describe("recovering a session whose box is gone", () => {
 			// Nothing was restored: no new box was made and no runner started.
 			expect(r.replaced()).toBe(0);
 			expect(r.orders).toEqual([]);
+			// A read or a seal that failed once can pass the next time: that recovery replays every commit the log kept.
+			if (fail === "read" || fail === "seal") {
+				const retried = getOrThrow(
+					await recoverHome(
+						{
+							session: "s",
+							ownership: r.lease,
+							places: { a: r.fx.place },
+							start: r.start,
+							notice: "unused",
+							vault: r.vault,
+							replace: r.replace,
+						},
+						context,
+					),
+				);
+				expect(getOrThrow(await sealStore(r.target.store, context)).head).toBe(head + 3);
+				expect(retried.lease.seal).toMatchObject({ head: head + 3 });
+				const order = (r.orders[0] as { order: { move: { replayed: unknown } } }).order;
+				expect(order.move.replayed).toEqual({ from: head, to: head + 2 });
+			}
 		});
 	}
 
