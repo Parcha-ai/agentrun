@@ -8,7 +8,7 @@ import { basename, isAbsolute, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
-import { ClaimError, FencedError, HeldError, ownWriteFenced } from "./errors.ts";
+import { ClaimError, EXIT_DATAERR, FencedError, HeldError, ownWriteFenced } from "./errors.ts";
 
 export type RunRef = { disk: string; region: string; id: string };
 
@@ -706,7 +706,7 @@ export async function writtenSince(dir: string, since: number, limit = STRAY_CHE
 }
 
 /** The exit of a start refused for the app's own writes before its claim (EX_DATAERR): a restart would write them again. */
-const EXIT_WRITTEN_BEFORE_MOUNT = 65;
+const EXIT_WRITTEN_BEFORE_MOUNT = EXIT_DATAERR;
 
 /** How many entries a directory holds; 0 when it cannot be read. */
 const entries = (dir: string) => readdir(dir).then((names) => names.length, () => 0);
