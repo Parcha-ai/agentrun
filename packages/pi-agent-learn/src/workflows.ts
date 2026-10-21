@@ -85,14 +85,20 @@ const absolute = (dir: string, what: string) => {
   return dir;
 };
 
-async function scratch<T>(use: (dir: string) => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(path.join(tmpdir(), "pi-agent-learn-wf-"));
+async function scratch<T>(use: (dir: string) => Promise<T>, root = tmpdir()): Promise<T> {
+  const dir = await mkdtemp(path.join(root, "pi-agent-learn-wf-"));
   try {
     return await use(dir);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+/** One DSL record, loaded through the store from a scratch directory, so the store checks it as it would its own. */
+const storedRecord = (name: string, sha256: string, record: string) => scratch(async (tmp) => {
+  await writeRegular(tmp, `${workflowDir(name)}/${sha256}.json`, record);
+  return new WorkflowStore(tmp).load(name, sha256);
+});
 
 // ---------------------------------------------------------------- the skill
 
@@ -584,11 +590,7 @@ export async function revisionOf(name: string, records: Readonly<Record<string, 
   const record = records[`${sha256}.json`];
   if (typeof record !== "string" || !WORKFLOW_NAME.test(name)) return undefined;
   try {
-    return await scratch(async (tmp) => {
-      await writeRegular(tmp, `${workflowDir(name)}/${sha256}.json`, record);
-      const stored = await new WorkflowStore(tmp).load(name, sha256);
-      return { workflow: stored.workflow, sha256 };
-    });
+    return { workflow: (await storedRecord(name, sha256, record)).workflow, sha256 };
   } catch {
     return undefined;
   }
@@ -648,10 +650,7 @@ export async function admitInDir(input: AdmitInDirInput): Promise<AdmitInDirResu
     if (typeof record !== "string" || bytes(record) > CAPS.file) return refuse(name, "records", `a record is text of at most ${CAPS.file} bytes`);
     let stored;
     try {
-      stored = await scratch(async (tmp) => {
-        await writeRegular(tmp, `${workflowDir(name)}/${sha256}.json`, record);
-        return new WorkflowStore(tmp).load(name, sha256);
-      });
+      stored = await storedRecord(name, sha256, record);
     } catch (error) {
       return refuse(name, "records", `the store refuses the record: ${reasonOf(error)}`);
     }
@@ -882,10 +881,7 @@ export async function seedWorkflows(options: SeedWorkflowsOptions): Promise<Seed
         loaded.push({ name, sha256: live.sha256 });
         continue;
       }
-      const stored = await scratch(async (tmp) => {
-        await writeRegular(tmp, `${workflowDir(name)}/${live.sha256}.json`, record);
-        return new WorkflowStore(tmp).load(name, live.sha256);
-      });
+      const stored = await storedRecord(name, live.sha256, record);
       await new WorkflowStore(into).save(name, stored.workflow);
       loaded.push({ name, sha256: live.sha256 });
     } catch (error) {
@@ -898,17 +894,14 @@ export async function seedWorkflows(options: SeedWorkflowsOptions): Promise<Seed
 // ---------------------------------------------------------------- the curator's ports
 
 /** Copies `paths` at main into a fresh directory under `root`, as regular files, and hands it to `use`; removes it after. */
-async function staged<T>(root: string | undefined, from: RepoRead, paths: (dir: string) => Promise<readonly string[]>, use: (dir: string) => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(path.join(root ?? tmpdir(), "pi-agent-learn-stage-"));
-  try {
-    for (const file of await paths(dir)) {
+function staged<T>(root: string | undefined, from: RepoRead, paths: readonly string[], use: (dir: string) => Promise<T>): Promise<T> {
+  return scratch(async (dir) => {
+    for (const file of paths) {
       const text = await from.read(file, from.main);
       if (text !== undefined) await writeRegular(dir, file, text);
     }
-    return await use(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+    return use(dir);
+  }, root);
 }
 
 export type WorkflowAdmitterOptions = {
@@ -949,7 +942,7 @@ export function workflowAdmitter(options: WorkflowAdmitterOptions = {}): AdmitWo
         return { status: "held", reason: `its trial.json on main does not parse (${error.code}), so the workflow was held` };
       }
     }
-    const result = await staged(options.tmpRoot, input, async () => [trialPath(name), skillPath(name)], (dir) => admitInDir({
+    const result = await staged(options.tmpRoot, input, [trialPath(name), skillPath(name)], (dir) => admitInDir({
       dir, runId: workflow.run, name, records: workflow.records,
       description: workflow.description ?? options.describe ?? schemaDescription,
       ...(options.when ? { when: options.when } : {}), ...(options.allowExecutableCode ? { allowExecutableCode: true } : {}), ...(options.now ? { now: options.now } : {}),
@@ -981,7 +974,7 @@ export function usesSettler(options: UsesSettlerOptions = {}): SettleUses {
     } catch {
       return { files: {}, decisions: [{ name: "uses", action: "hold", reason: "the uses file is not well formed, so none were folded" }] };
     }
-    const result = await staged(options.tmpRoot, input, async () => [], async (dir) => {
+    const result = await staged(options.tmpRoot, input, [], async (dir) => {
       for (const name of [...new Set(uses.uses.map((use) => use.name))].sort()) {
         const text = await input.read(trialPath(name), input.main);
         if (text === undefined) continue;
