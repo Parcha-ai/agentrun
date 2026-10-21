@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { Compile } from 'typebox/compile';
+import { checkHostTools } from './host-tools.js';
 import { Text } from '@earendil-works/pi-tui';
 import {
   createReadToolDefinition, createBashToolDefinition, createEditToolDefinition, createWriteToolDefinition,
@@ -118,17 +119,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
   const toolSet = (ctx: ExtensionContext, trusted = false): PiToolDefinition[] => {
     if (configuration.hostTools) {
       const supplied = configuration.hostTools(ctx);
-      if (!Array.isArray(supplied) || supplied.length > 100) throw new Error('Host must supply at most 100 explicit tool definitions');
-      const names = new Set<string>();
-      return supplied.map(tool => {
-        if (!tool || typeof tool.name !== 'string' || !tool.name.trim() || tool.name.length > 200
-          || ['agentrun', 'submit'].includes(tool.name) || names.has(tool.name)) throw new Error('Host tools contain an invalid, reserved or duplicate name');
-        if (typeof tool.execute !== 'function' || !tool.parameters || typeof tool.parameters !== 'object') throw new Error('Host tools require an executable definition and parameter schema');
-        Compile(tool.parameters as never);
-        if (tool.resultSchema) Compile(tool.resultSchema as never);
-        names.add(tool.name);
-        return { ...tool, parameters: structuredClone(tool.parameters), ...(tool.resultSchema ? { resultSchema: structuredClone(tool.resultSchema) } : {}) };
-      });
+      checkHostTools(supplied, { reserved: ['agentrun', 'submit'], executable: true });
+      return supplied.map(tool => ({ ...tool, parameters: structuredClone(tool.parameters), ...(tool.resultSchema ? { resultSchema: structuredClone(tool.resultSchema) } : {}) }));
     }
     const active = new Set(pi.getActiveTools());
     const builtins = new Set(pi.getAllTools().filter(t => t.sourceInfo.source === 'builtin').map(t => t.name));
