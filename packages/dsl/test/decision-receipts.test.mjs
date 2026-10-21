@@ -544,3 +544,15 @@ test('a recorded review answers only the candidate it reviewed', async () => {
   // The second run's first review is of another candidate: it is asked. The third run's is the first run's: it is not.
   assert.deepEqual(reviewed, ['one', 'two']);
 });
+
+test('a route receipt without its branch answer decided nothing: rederiveDecision returns null, and never throws', () => {
+  // An answered route always carries its branch answer; a receipt that lost it (a damaged or hand-built one) decided nothing.
+  const rule = (unsure) => ({ kind: 'route', branches: ['a', 'b'], unsure });
+  for (const unsure of [{ branch: 'b', gte: 0.5 }, null]) {
+    assert.equal(rederiveDecision({ rule: rule(unsure), answers: {}, questions: {} }), null, `unsure ${JSON.stringify(unsure)}`);
+    assert.equal(rederiveDecision({ rule: rule(unsure), answers: { branch: 'a' }, questions: {} }), null, `a bare string is no answer (unsure ${JSON.stringify(unsure)})`);
+  }
+  // With its answer the route decides as before, sure or unsure.
+  assert.deepEqual(rederiveDecision({ rule: rule({ branch: 'b', gte: 0.5 }), answers: { branch: choice(['a', 'b'], 'a', 0.9) }, questions: {} }), { branch: 'a', taken: 'a', unsure: false });
+  assert.deepEqual(rederiveDecision({ rule: rule({ branch: 'b', gte: 0.5 }), answers: { branch: choice(['a', 'b'], 'a', 0.3) }, questions: {} }), { branch: 'a', taken: 'b', unsure: true });
+});

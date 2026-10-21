@@ -80,8 +80,11 @@ export function rederiveDecision(receipt: Pick<DecisionReceipt, "rule" | "answer
       return { index: none ? null : rule.options.indexOf(choice), none };
     }
     case "route": {
-      const branch = answers.branch?.choice;
-      const unsure = Boolean(rule.unsure && answers.branch.confidence < rule.unsure.gte);
+      // An answered route carries its branch answer; a receipt without one decided nothing.
+      const answer = answers.branch;
+      if (!answer || typeof answer !== "object") return null;
+      const branch = answer.choice;
+      const unsure = Boolean(rule.unsure && answer.confidence < rule.unsure.gte);
       return { branch, taken: unsure ? rule.unsure!.branch : branch, unsure };
     }
     case "sift": {
