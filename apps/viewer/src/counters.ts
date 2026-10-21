@@ -47,6 +47,8 @@ export type CounterState = {
   inSnapshot: boolean;
   opened: boolean;
   decisions: Record<string, History<Tally>>;
+  /** The keyed decision documents counted so far (a snapshot at a process's open lists them again, and counts none twice); a restore starts over. */
+  decisionDocs: Record<string, true>;
   committedTurns: Record<string, number>;
   /** The model part of cost: unknown until an assistant entry prices it, and unknown again when one carries no price. */
   modelCost: number;
@@ -137,7 +139,7 @@ export const COST_PARTS: CostPart[] = ['lead', 'judge', 'eyes', 'browser', 'boxe
 
 export const counterFold: Fold<CounterState> = {
   init: () => ({ effects: {}, receipts: {}, appliedIn: {}, listed: {}, effectsSeen: {}, reported: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
-    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, looks: { seen: {}, here: {}, gens: {}, okSeen: {}, costs: [], priced: {}, native: 0, started: {}, filed: {}, ended: {} }, pages: { order: {}, gen: {}, reached: {}, seen: false, timed: false }, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined, boxes: { receipts: {}, started: {} } }),
+    highest: -1, inSnapshot: false, opened: false, decisions: {}, decisionDocs: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, looks: { seen: {}, here: {}, gens: {}, okSeen: {}, costs: [], priced: {}, native: 0, started: {}, filed: {}, ended: {} }, pages: { order: {}, gen: {}, reached: {}, seen: false, timed: false }, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined, boxes: { receipts: {}, started: {} } }),
   accepts: (line) => line.channel === 'durable' || line.source === 'host' || (line.source === 'vision' && line.kind === 'LookEvent') || (line.source === 'transport' && line.kind === 'box.created'),
   reduce(state, line) {
     const next: CounterState = { ...state };
@@ -210,6 +212,7 @@ export const counterFold: Fold<CounterState> = {
         next.effects = {};
         next.receipts = {};
         next.decisions = {};
+        next.decisionDocs = {};
         next.highest = line.commit;
       } else next.highest = Math.max(state.highest, line.commit);
     }
@@ -350,7 +353,21 @@ export const counterFold: Fold<CounterState> = {
         if (doc.key !== undefined && !next.paidKeys[doc.key]) next.paidKeys = { ...next.paidKeys, [doc.key]: true };
       }
       const rows = decisionRowsOf(doc);
-      if (rows) {
+      if (rows && doc.key !== undefined) {
+        // The keyed form: this document is one row, and its run's tally gains it once (a tally is the run's rows so far, as the single document's list was).
+        const at = docIdOf(line, doc);
+        if (!next.decisionDocs[at]) {
+          const row = rows[0]!;
+          const run = row.run_key ?? '';
+          const history = next.decisions[run];
+          const before = history ? history.at(-1)![1] : ZERO;
+          const tally: Tally = { answered: [...before.answered], failed: before.failed, cost: [...before.cost, row.cost_usd ?? null] };
+          if (row.error !== undefined) tally.failed += 1;
+          else tally.answered.push(`${run} ${row.decision_id ?? ''}`);
+          next.decisionDocs = { ...next.decisionDocs, [at]: true };
+          next.decisions = { ...next.decisions, [run]: [...(history ?? (line.snapshot === true ? next.retained?.decisions[run] : undefined) ?? []), [line.commit!, tally]] };
+        }
+      } else if (rows) {
         const decisions: Record<string, Tally> = {};
         for (const row of rows) {
           const run = row.run_key ?? '';

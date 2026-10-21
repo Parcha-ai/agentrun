@@ -19,7 +19,7 @@ test("the section: rules win, the index most used first, the workflows to try, a
     `- ${id(7)} lesson: Company registries match the legal name without Inc or LLC; search both forms. (used 4)`,
     `- ${id(11)} fact: The state registry rate-limits at 1 request a second.`,
     "The full entries are in .agent/learnings/.",
-    "Workflows to try first for this input: kyb-us-registry (trial). Run one with the agentrun tool; if it escalates, continue yourself.",
+    "Workflows to try first for this input: kyb-us-registry (trial). Run one with the agentrun tool; if it escalates, continue yourself. A workflow on trial earns trust only from its own clean runs: run it before doing the job yourself, and change it only after it escalates or fails.",
     'When you notice something general that would help next time, call learn. When a line above helped, call learn with type "used" and its id.',
     "Never put names, ids or data from this case into a learning.",
   ].join("\n"));

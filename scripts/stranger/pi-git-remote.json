@@ -1,0 +1,9 @@
+{
+  "package": "@parcha/pi-git-remote",
+  "install": ["pi-git-remote"],
+  "companions": [],
+  "files": [{ "name": "quickstart.mjs", "readme": "packages/pi-git-remote/README.md", "heading": "Quickstart (no key, no network)", "fence": "js", "index": 0 }],
+  "command": ["node", "quickstart.mjs"],
+  "expect": { "exitCode": 0, "pattern": "(?<![\\s\\S])again: false\nchecked out: AGENTS\\.md, inbox/run-1\\.md\nlog: run-1 proposes \\{\"Run-Id\":\\[\"run-1\"\\]\\} \\| seed \\{\\}\n(?![\\s\\S])" },
+  "timeoutMs": 120000
+}

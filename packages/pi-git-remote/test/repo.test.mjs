@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { existsSync, statSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { GitRemoteError, local, MAIN, openRepo, RUN_ID_TRAILER } from "../dist/index.js";
-import { bareRepo, rawGit, recordingGit, refsOf, scratch, seededRemote } from "./support.mjs";
+import { bareRepo, rawGit, REAL_GIT, recordingGit, refsOf, scratch, seededRemote } from "./support.mjs";
 
 const count = async (gitDir, range) => Number((await rawGit(["rev-list", "--count", range], { gitDir })).toString().trim());
 
@@ -362,4 +362,32 @@ test("a directory reopened without its push URL ignores the push side's refs, an
   assert.equal(await plain.resolve(MAIN), main, "the fetch URL's main, not the push side's");
   assert.equal((await plain.commitTo("runs/r1", { files: { "inbox/r1.md": "y\n" }, message: "r1", trailers: { "Run-Id": "r1" } })).created, true);
   assert.equal(await split.resolve(MAIN), ahead.sha, "the handle with the push URL still sees the newer tip");
+});
+
+/** A git that never answers the calls whose argv holds `word`; every other call runs the real git. */
+async function hangingGit(root, word) {
+  const file = path.join(root, `git-hangs-on${word}`);
+  await writeFile(file, `#!/bin/sh\nfor a in "$@"; do [ "$a" = ${word} ] && exec sleep 60; done\nexec '${REAL_GIT}' "$@"\n`);
+  await chmod(file, 0o755);
+  return file;
+}
+
+test("a merge-base that times out while picking a branch's tip fails the write; it never builds on the remote and drops an unpushed commit", async () => {
+  const root = await scratch();
+  const { remote } = await seededRemote(root);
+  const dir = path.join(root, "host");
+  const unpushed = await (await openRepo({ dir, remote })).commitTo(MAIN, { files: { "kept.md": "unpushed\n" }, message: "unpushed" });
+  const hung = await openRepo({ dir, remote, git: await hangingGit(root, "merge-base"), timeoutMs: 2000 });
+  await assert.rejects(hung.commitTo(MAIN, { files: { "next.md": "next\n" }, message: "next" }), (error) => error instanceof GitRemoteError && error.code === "git");
+  assert.equal((await rawGit(["rev-parse", MAIN], { gitDir: dir })).toString().trim(), unpushed.sha, "main still holds the unpushed commit");
+});
+
+test("a rev-parse that times out is a git failure, not a ref that is missing", async () => {
+  const root = await scratch();
+  const { remote } = await seededRemote(root);
+  const dir = path.join(root, "host");
+  const unpushed = await (await openRepo({ dir, remote })).commitTo(MAIN, { files: { "kept.md": "unpushed\n" }, message: "unpushed" });
+  const hung = await openRepo({ dir, remote, git: await hangingGit(root, "--verify"), timeoutMs: 2000 });
+  await assert.rejects(hung.commitTo(MAIN, { files: { "next.md": "next\n" }, message: "next" }), (error) => error instanceof GitRemoteError && error.code === "git");
+  assert.equal((await rawGit(["rev-parse", MAIN], { gitDir: dir })).toString().trim(), unpushed.sha, "main still holds the unpushed commit");
 });

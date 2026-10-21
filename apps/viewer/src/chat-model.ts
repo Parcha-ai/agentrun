@@ -6,8 +6,9 @@ import type { Manifest } from './format.ts';
 /** One entry of a recorded conversation: a message as recorded, the run's own thinking, or one tool call. */
 export type ChatItem =
   | { kind: 'user'; id: string; text: string; t?: number }
-  /** A message the workflow's runner added to a conversation one of its nodes holds. */
-  | { kind: 'host'; id: string; text: string; t?: number }
+  /** A message the workflow's runner added to a conversation one of its nodes holds, or one the creator of an owned conversation
+   *  wrote into it (a fork's opening, written by the tool that made it): `by` names that tool. Never a person's. */
+  | { kind: 'host'; id: string; text: string; t?: number; by?: string }
   | { kind: 'assistant'; id: string; text: string; t?: number }
   /** `redacted`: the provider withheld the thought; it keeps no text. */
   | { kind: 'thinking'; id: string; text: string; redacted?: true; t?: number }
@@ -37,6 +38,8 @@ export type ChatItem =
     looks: string[];
     /** The model calls made inside this call, in the order they ended: each its own card under this one. */
     calls: ChatCall[];
+    /** The conversations this call made (forks; the threads' ids), drawn under its card. */
+    forks?: string[];
     t0?: number;
     t1?: number;
   };
@@ -64,7 +67,9 @@ export type ChatCall = { id: string; name: string; label: string; raw: string; l
 
 /** One recorded conversation: an agent node's, named by its node; a run of one conversation has one thread. Its first
  *  user entry is the prompt the host composed from the node's input, so it is not an item. */
-export type ChatThread = { id: string; label: string; items: ChatItem[]; t0?: number; t1?: number };
+export type ChatThread = { id: string; label: string; items: ChatItem[]; t0?: number; t1?: number;
+  /** The item it is drawn under: the call that made it, else the item of the entry it was forked at. */
+  under?: string };
 
 /** A span on the session timeline, from the events: a workflow node, an LLM call, a tool call, or a model call made
  *  inside a tool (a vision look, a Jev decision, speech to text). A span with no t1 is a point: the event that
