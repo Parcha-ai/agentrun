@@ -56,7 +56,7 @@ const USAGE = `usage:
                         [--user U] [--group G] [--app MODULE] [--run-arg ARG ...] [--lease-expiry 90s] [--stonith-timeout 30s]
                         [--start-grace 90s] [--start-backoff-max 10m] [--stop-timeout 30s] [--token-ttl 24h] [--token-prefix P] [--demand] [--create] [--env K=V ...] [--log-dir DIR]
                         [--archil BIN] [--control-timeout 10s] [--sweep-tokens] [--token-grace 15m]
-                        [--park-threshold 60s] [--api-key-env NAME]
+                        [--park-threshold 60s] [--no-restart] [--api-key-env NAME]
                         with --host docker: --image IMAGE [--app-root DIR] [--fleet F] [--name-prefix P] [--run-as USER]
                         [--docker-arg ARG ...] [--apparmor auto|PROFILE|none] [--docker BIN]
   pi-durable-disk supervise --check --disk D --region R [--mount-root DIR] [--user U] [--group G] [--check-id-prefix P]
