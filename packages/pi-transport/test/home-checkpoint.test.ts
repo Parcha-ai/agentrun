@@ -29,6 +29,9 @@ import { linkPair } from "../src/home/link.ts";
 import { MoveError, type Place, recoverHome, type StartRunner } from "../src/home/move.ts";
 import { leaseIn } from "../src/home/ownership.ts";
 import type { CheckpointTaken } from "../src/home/run.ts";
+import { checkpointStore, sealStore } from "../src/home/store.ts";
+import { tapStorage } from "./commit-tap.ts";
+import { walk } from "./home-support.ts";
 
 /** A seal of a restore's replayed copy that fails, while a test sets it: every other seal is the real one. */
 const seals = vi.hoisted(() => ({ failReplayed: false }));
@@ -42,9 +45,6 @@ vi.mock("../src/home/store.ts", async (real) => {
 				: store.sealStore(path, context),
 	};
 });
-import { checkpointStore, sealStore } from "../src/home/store.ts";
-import { tapStorage } from "./commit-tap.ts";
-import { walk } from "./home-support.ts";
 
 const context = BACKGROUND_CONTEXT;
 const root = mkdtempSync(join(tmpdir(), "pi-transport-ckpt-"));
@@ -887,8 +887,15 @@ describe("recovering a session whose box is gone", () => {
 			const checkpoint = getOrThrow(await r.vault.latest("s", context));
 			const head = checkpoint?.seal.head ?? 0;
 			const shipped = await moreCommits(r.fx.place.store, 3);
-			const broken = (at: number) => shipped.map((entry, i) => (i === at ? { ...entry, writes: "not writes" as never } : entry));
-			getOrThrow(await r.vault.appendLog("s", fail === "first" ? broken(0) : fail === "later" ? broken(1) : shipped, context));
+			const broken = (at: number) =>
+				shipped.map((entry, i) => (i === at ? { ...entry, writes: "not writes" as never } : entry));
+			getOrThrow(
+				await r.vault.appendLog(
+					"s",
+					fail === "first" ? broken(0) : fail === "later" ? broken(1) : shipped,
+					context,
+				),
+			);
 			getOrThrow(await r.fx.place.box.destroy(context));
 			const vault =
 				fail === "read"
@@ -902,7 +909,15 @@ describe("recovering a session whose box is gone", () => {
 			seals.failReplayed = fail === "seal";
 			try {
 				const recovered = await recoverHome(
-					{ session: "s", ownership: r.lease, places: { a: r.fx.place }, start: r.start, notice: "unused", vault, replace: r.replace },
+					{
+						session: "s",
+						ownership: r.lease,
+						places: { a: r.fx.place },
+						start: r.start,
+						notice: "unused",
+						vault,
+						replace: r.replace,
+					},
 					context,
 				);
 				expect(recovered.ok).toBe(false);
@@ -925,7 +940,15 @@ describe("recovering a session whose box is gone", () => {
 		getOrThrow(await r.fx.place.box.destroy(context));
 		const recovered = getOrThrow(
 			await recoverHome(
-				{ session: "s", ownership: r.lease, places: { a: r.fx.place }, start: r.start, notice: "unused", vault: r.vault, replace: r.replace },
+				{
+					session: "s",
+					ownership: r.lease,
+					places: { a: r.fx.place },
+					start: r.start,
+					notice: "unused",
+					vault: r.vault,
+					replace: r.replace,
+				},
 				context,
 			),
 		);
