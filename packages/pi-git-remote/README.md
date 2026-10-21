@@ -192,8 +192,12 @@ The model gets no tool and never touches git: on start the extension checks a re
 it, and on shutdown it commits the paths an allowlist names to the session's own branch and pushes that commit by sha.
 
 To try it you need pi on your `PATH` (`npm install -g --ignore-scripts @earendil-works/pi-coding-agent`, or pi's own
-installer) and a model pi can call: run `/login` once inside `pi`, or set a provider's API key in the environment (pi's
-`docs/providers.md` lists them). Without one, pi stops at `No API key found for the selected model`.
+installer), and pi needs a model before anything here works. Give it one of three ways:
+- run `pi`, then `/login` once, for a subscription or an API key;
+- set a provider's API key in the environment (pi's `docs/providers.md` names each variable);
+- add a provider of your own to `~/.pi/agent/models.json` (pi's `docs/models.md`).
+
+Without one, pi stops at `No API key found for the selected model`.
 
 ```sh
 npm ci --ignore-scripts && npm run build -w @parcha/pi-git-remote    # in a checkout of this repository
