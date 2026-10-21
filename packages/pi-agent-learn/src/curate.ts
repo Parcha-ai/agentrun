@@ -497,6 +497,19 @@ function archiveToCap(entries: Map<string, Learning>, fresh: ReadonlySet<string>
   return archived;
 }
 
+/** The workflow records a run wrote under `inbox/<run id>/workflows/<name>/`, by name and file name. */
+function runWorkflowRecords(runFiles: Readonly<Record<string, string | null>>, runId: string): Map<string, Record<string, string>> {
+  const prefix = `${LAYOUT.inbox}/${runId}/workflows/`;
+  const records = new Map<string, Record<string, string>>();
+  for (const [path, text] of Object.entries(runFiles)) {
+    if (!path.startsWith(prefix) || text === null) continue;
+    const [name, file, ...rest] = path.slice(prefix.length).split("/");
+    if (!name || !file || rest.length || !WORKFLOW_NAME.test(name) || !RECORD_FILE.test(file)) continue;
+    (records.get(name) ?? records.set(name, {}).get(name)!)[file] = text;
+  }
+  return records;
+}
+
 /** What curating one run would write, judged against main at `main`; undefined when the branch adds nothing to main. */
 async function planRun(input: PlanInput): Promise<Plan | undefined> {
   const { options, runId, main, budget } = input;
@@ -661,15 +674,8 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     }
   }
 
-  // Workflows: the run's records under inbox/<run id>/workflows/<name>/. A note with no records has nothing to admit.
-  const prefix = `${LAYOUT.inbox}/${runId}/workflows/`;
-  const records = new Map<string, Record<string, string>>();
-  for (const [path, text] of Object.entries(runFiles)) {
-    if (!path.startsWith(prefix) || text === null) continue;
-    const [name, file, ...rest] = path.slice(prefix.length).split("/");
-    if (!name || !file || rest.length || !WORKFLOW_NAME.test(name) || !RECORD_FILE.test(file)) continue;
-    (records.get(name) ?? records.set(name, {}).get(name)!)[file] = text;
-  }
+  // A note with no records has nothing to admit.
+  const records = runWorkflowRecords(runFiles, runId);
   const reader: RepoRead = { main, read: (path, sha) => repo.read(path, sha), list: (p, sha) => repo.list(p, sha) };
   const workflowFiles: Record<string, string | null> = {};
   const workflowNames = new Set<string>();
