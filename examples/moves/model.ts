@@ -5,9 +5,9 @@
 import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy';
 import { createModels, createProvider, type Provider } from '@earendil-works/pi-ai/models';
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { LiveParts } from '@parcha/agentrun-harness';
-import { ledgerPath, modalProvider } from './boxes.ts';
+import { fakeModalBoxes, ledgerPath, modalProvider } from './boxes.ts';
 import { MODEL } from './config.ts';
 import { movesExtensions } from './tools.ts';
 
@@ -50,11 +50,15 @@ export function live({ env }: { env: NodeJS.ProcessEnv }): LiveParts {
   if (!entry) throw new Error(`anthropic has no model ${MODEL.modelId} in this build of pi-ai`);
   const catalog = createModels({ authContext: { env: async (name: string) => (name === KEY_ENV ? key : undefined), fileExists: async () => false } });
   catalog.setProvider(createProvider({ id: anthropic.id, name: anthropic.name, baseUrl: anthropic.baseUrl, auth: anthropic.auth, models: [{ ...entry, maxTokens: MAX_OUTPUT_TOKENS }], api: boundedApi(anthropicMessagesApi()) } as never) as never);
-  // The threads' sandboxes are Modal's, made with this process's own token; a process that holds no token (this machine's) cannot make one, and the threads node is only ever run on the VM.
+  // The threads' sandboxes are Modal's, made with this process's own token. A process that holds none (`npm run demo:moves -- --live --handoff` on a machine of your own) gets the stand-ins the
+  // fakes use, unless its runner says it must have Modal's (`MOVES_REQUIRE_MODAL`, which the live runner sets for the VM): then a missing token is an error, never a quiet stand-in.
+  const requireModal = take(env, 'MOVES_REQUIRE_MODAL') === '1';
   const { session, thread } = movesExtensions({
     provider: async (workspace) => {
-      if (!modal.id || !modal.secret) throw new Error('this process holds no Modal token, so it cannot make the threads\' sandboxes');
-      return modalProvider(APP, modal.id, modal.secret, ledgerPath(dirname(workspace)));
+      if (modal.id && modal.secret) return modalProvider(APP, modal.id, modal.secret, ledgerPath(dirname(workspace)));
+      if (requireModal) throw new Error('this process was told to make the threads\' sandboxes on Modal and holds no Modal token');
+      const at = join(dirname(workspace), 'boxes');
+      return fakeModalBoxes(at, ledgerPath(at));
     },
     labels: { run: runLabel },
   });

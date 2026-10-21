@@ -38,7 +38,7 @@ const text = (value: unknown): string => {
 
 /** `METRIC=<number> SETTINGS=<json> GPU=<name>` as a thread answered it. */
 export function parseReply(reply: string): { metric: number | null; settings: string | null; gpu: string | null } {
-  const metric = /METRIC=(-?\d+(?:\.\d+)?(?:e-?\d+)?)/i.exec(reply)?.[1];
+  const metric = /METRIC=(-?\d+(?:\.\d+)?(?:e[+-]?\d+)?)(?=\s|$)/i.exec(reply)?.[1];
   const settings = /SETTINGS=(\{.*?\})(?:\s|$)/.exec(reply)?.[1];
   const gpu = /GPU=([^(]+?)\s*(?:\(|$)/.exec(reply)?.[1];
   return { metric: metric === undefined ? null : Number(metric), settings: settings ?? null, gpu: gpu ?? null };

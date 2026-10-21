@@ -8,7 +8,7 @@ import { localBoxes } from "@parcha/pi-transport/box/local";
 import type { Box, BoxProvider } from "@parcha/pi-transport";
 
 /** What a box was asked to be and what became of it, one JSON line each. */
-export type BoxEvent = { ev: "create" | "destroy"; id?: string; spec?: Record<string, unknown>; at?: string };
+export type BoxEvent = { ev: "create" | "destroy" | "destroy-failed"; id?: string; spec?: Record<string, unknown>; at?: string };
 
 /** The part of a box spec the ledger keeps. */
 const asked = (spec: Record<string, unknown>) => ({ image: spec.image, gpu: spec.gpu, isolation: spec.isolation, labels: spec.labels, maxLifetimeMs: spec.maxLifetimeMs });
@@ -19,7 +19,8 @@ function watched(box: Box, spec: Record<string, unknown>, ledger: string): Box {
   note({ ev: "create", id: box.id, spec: asked(spec) });
   return new Proxy(box, {
     get(target, prop) {
-      if (prop === "destroy") return async (context: never) => (note({ ev: "destroy", id: box.id }), box.destroy(context));
+      // The ledger says a box ended only when its destruction succeeded; a failed attempt is its own line.
+      if (prop === "destroy") return async (context: never) => { const ended = await box.destroy(context); note({ ev: ended.ok ? "destroy" : "destroy-failed", id: box.id }); return ended; };
       const value = Reflect.get(target, prop);
       return typeof value === "function" ? value.bind(target) : value;
     },

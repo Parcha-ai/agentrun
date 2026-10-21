@@ -11,6 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { rotatingHost } from './moves/rotate.ts';
 import { NEVER_SAYS, SAYS } from './moves/config.ts';
 import { parseReply } from './moves/tools.ts';
+import { sandboxProblems, threadProblems } from './moves/checks.ts';
+import { ledgered } from './moves/boxes.ts';
 
 const RUN = fileURLToPath(new URL('./moves/run.ts', import.meta.url));
 const REPO = fileURLToPath(new URL('..', import.meta.url));
@@ -159,4 +161,33 @@ test('the rotating host starts the host the order names, whatever the attempt nu
   await rotating.start({}, 'token', { attempt: 2, env: { MOVES_HOST: 'local' } });
   await rotating.start({}, 'token', { attempt: 2 });
   assert.deepEqual(log, ['start modal', 'start local', 'start modal']);
+});
+
+test('the live runner\'s checks accept what the fakes left: threads.json is {threads: [...]} with 8 rows, the ledger shows 8 distinct sandboxes, each ended', () => {
+  assert.deepEqual(threadProblems(join(base, 'run', 'work', 'threads.json'), /^none$/), []);
+  const boxes = sandboxProblems(join(boxDir(), 'boxes.jsonl'), 'H100!');
+  assert.deepEqual(boxes.problems, []);
+  assert.equal(typeof boxes.gpuSeconds, 'number');
+  assert.notDeepEqual(threadProblems(join(base, 'run', 'work', 'threads.json'), /H100/i), [], 'a stand-in is not an H100');
+});
+
+test('a metric in scientific notation keeps its exponent, whichever sign it has', () => {
+  assert.equal(parseReply('METRIC=1e+3 SETTINGS={"a":1} GPU=x').metric, 1000);
+  assert.equal(parseReply('METRIC=2.5E-2 SETTINGS={"a":1} GPU=x').metric, 0.025);
+  assert.equal(parseReply('METRIC=7 SETTINGS={"a":1} GPU=x').metric, 7);
+  assert.equal(parseReply('METRIC=3abc').metric, null, 'a number that runs into letters is not a metric');
+});
+
+test('the sandbox ledger says a box ended only when its destruction succeeded', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'moves-ledger-'));
+  try {
+    const box = (ok) => ({ id: ok ? 'a' : 'b', destroy: async () => (ok ? { ok: true, value: undefined } : { ok: false, error: new Error('refused') }) });
+    const inner = (which) => ({ name: 'modal', create: async () => ({ ok: true, value: box(which) }) });
+    for (const which of [true, false]) {
+      const made = await ledgered(inner(which), join(dir, 'ledger.jsonl')).create({ gpu: 'H100!' }, {});
+      await made.value.destroy({});
+    }
+    const events = readFileSync(join(dir, 'ledger.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.deepEqual(events.map((e) => [e.ev, e.id]), [['create', 'a'], ['destroy', 'a'], ['create', 'b'], ['destroy-failed', 'b']]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
