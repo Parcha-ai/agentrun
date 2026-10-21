@@ -83,7 +83,7 @@ Without a key, `createJevRunner()` throws `JevError` (code `configuration`: "Cou
 
 `System One` is TypeSafe's typed-question interface, exposed by the SDK as `systemOne`. A Noul answer is a truth probability from 0 to 1; the DSL converts probabilities of at least 0.5 to `true` and retains the probability beside that value. Choice and Score confidence comes from the response. Jev does not return a separate confidence for Noul; the DSL derives its own gate-strength value from the distance from 0.5, scaled to the range 0 to 1. These numbers are useful gate inputs, not calibrated guarantees.
 
-The public adapter API includes `createJevRunner`, `jevProviderFromEnv`, `JevError`, `isJevResponseReason`, and the types `JevOptions`, `JevClient`, `JevErrorCode`, `JevResponseReason`, and `JevResponseDiagnostic`. The shared question, answer and distribution helpers live in `@parcha/agentrun-dsl`.
+The public adapter API is `createJevRunner`, `jevProviderFromEnv`, `JevError`, `isJevResponseReason`, and the types `JevOptions`, `JevClient`, `JevProvider`, `JevErrorCode`, `JevResponseReason`, `JevResponseDiagnostic`, `JevRequestDiagnostic`, `JevImage`, `JevJudge`, `JevJudgeParams` and `JevJudgeResult`. The shared question, answer and distribution helpers live in `@parcha/agentrun-dsl`.
 
 ## Configuration
 
@@ -115,13 +115,13 @@ Cost: when the response reports `usage.cost` (USD) it is `cost_usd`; otherwise a
 
 The official `@typesafe-ai/sdk` resolves `TYPESAFE_API_KEY` and `TYPESAFE_BASE_URL`. Explicit `apiKey` and `baseURL` options take precedence. An API root ends before `/v1/systemone`. Set `fetch` for a custom transport, or supply a `client` with a `systemOne(request, options)` method. A custom client must honor the request signal and disable its own retries; it owns its credentials and cannot be combined with transport options.
 
-The adapter retries transient HTTP 408, 429, 5xx responses and connection failures with bounded exponential delays. SDK retries are disabled. Validation failures and other HTTP errors do not retry. The deadline and either the runner or per-call signal interrupt both requests and backoff. Cancellation bounds when the adapter returns; an uncooperative custom client can still continue its own work.
+The adapter retries transient HTTP 408, 429, 5xx responses and connection failures with bounded exponential delays. On a 429 or 503 with a `Retry-After` (seconds or an HTTP date), it waits the larger of that and its own delay, and gives up at once, with attempts left, when that wait would not end before the timeout. When the attempts end on a 429 after an earlier 408, 5xx or lost connection, the error reports the first of those failures (its HTTP `status`, or code `connection`), since that attempt may have been billed; an `http` error with status 429 means every attempt was refused. SDK retries are disabled. Validation failures and other HTTP errors do not retry. The deadline and either the runner or per-call signal interrupt both requests and backoff. Cancellation bounds when the adapter returns; an uncooperative custom client can still continue its own work.
 
 Request state has no local byte cap by default. Set `maxStateBytes` to a positive safe integer to reject serialized UTF-8 JSON state exceeding that host-owned limit before transport; omission or `null` disables this guard. This is a byte guard, not a token estimate. [Provider model context limits](https://docs.typesafe.ai/models.md) still apply. The adapter never truncates or splits state or questions.
 
 The core allows up to 240 options per choice and 2–10 levels per score rubric. Adapter timeouts are positive integer milliseconds up to 2,147,483,647; retry delays may also be zero. `maxAttempts` is 1–10, with a default of 3.
 
-`JevError` provides a stable `code`, `attempts`, and optional HTTP `status`. Errors deliberately omit raw service bodies, headers, input state, and causes. SDK logging is disabled. Custom clients and transports own their own logging. Do not expose credentials in browser code.
+`JevError` provides a stable `code`, `attempts`, and optional HTTP `status`. A request the runner refuses before sending it has code `invalid_request`, `attempts` 0 and a `requestDiagnostic` (`JevRequestDiagnostic`): a `reason` (`invalid_state`, `state_too_large`, `invalid_questions`, `invalid_assets`, `unsupported_model` or `unsupported_provider`), the call's `label` (at most 200 characters) when it has one, and for a state over `maxStateBytes` its `stateBytes` and `maxStateBytes`. Errors deliberately omit raw service bodies, headers, input state, and causes. SDK logging is disabled. Custom clients and transports own their own logging. Do not expose credentials in browser code.
 
 Optional `responseDiagnostic.reason` identifies a fixed response invariant, such
 as `answer_keys`, `probability_mass`, or `token_usage`. An explicitly structured
@@ -129,7 +129,7 @@ capacity rejection can report `max_tokens_exceeded`; arbitrary provider messages
 are never parsed for a reason. These details do not change validation, retry
 policy, or the submitted evidence. Unknown causes remain unspecified.
 
-Successful results retain `answers`, reported `model`, reported token `usage`, and a SHA-256 of the submitted request. `cost_usd` is `null` unless both usage and explicit `pricing: { inputUsdPerMillionTokens, outputUsdPerMillionTokens }` are available. Configured prices produce an estimate for the successful response; costs from unsuccessful or interrupted attempts are unknown.
+Successful results retain `answers`, reported `model`, reported token `usage`, and a SHA-256 of the submitted request. `cost_usd` is the response's reported `usage.cost` when it has one, else an estimate from the counted tokens and an explicit `pricing: { inputUsdPerMillionTokens, outputUsdPerMillionTokens }`, else `null`. Configured prices produce an estimate for the successful response; costs from unsuccessful or interrupted attempts are unknown.
 
 ## Images and Box questions
 
