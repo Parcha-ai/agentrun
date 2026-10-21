@@ -43,15 +43,16 @@ description: How to do the six-part job by hand from the company's annual report
 Each step above is a part: a call of the tool it uses, a decision over what the call returned, and an escalate when the
 call found nothing. Read describe's tool list for each tool's arguments and result fields; do not invent them.
 
-The decision node follows what the decision needs. A choice decidable from evidence already in the state is a Jev pick,
-judge or route. A choice that needs knowledge the state does not hold, such as what a company does, is one narrow agent
-step on the host's node model. The 4-digit SIC code is such a choice: a pick sees only the words it is handed and
-matches a product phrase, losing the company's role. Give that step the company's name from the job's input, and its
-main business, its reportable segments with their shares and its largest revenue line as the report states them, with
-sic2_groups and sic_codes as its tools; it reads the groups, then the codes of the group that fits, and returns one code
-from sic_codes, the one whose SEC title names the company's role and product (step 6), read beside the largest SEC
-filers each code names. Keep Jev on what the state can show: a judge that the revenue line the code rests on is quoted
-from the report the run read, escalating when it is not.
+The decision node follows what the decision needs. A choice that needs knowledge the state does not hold (for example,
+what a company does) is one narrow agent step on the host's node model; a choice decidable from evidence already in the
+state is a Jev pick, judge or route. Decide per workflow. For example, the 4-digit SIC code: a pick sees only the words
+it is handed and matches a product phrase, losing the company's role, so an agent step can choose it better. Give that
+step the company's name from the job's input, and its main business, its reportable segments with their shares and its
+largest revenue line as the report states them, with sic2_groups and sic_codes as its tools; it reads the groups, then
+the codes of the group that fits, and returns one code from sic_codes, the one whose SEC title names the company's role
+and product (step 6), read beside the largest SEC filers each code names. After such an agent choice, keep Jev on what
+the state can show: a judge that the revenue line the code rests on is quoted from the report the run read, escalating
+when it is not.
 
 A dry run fills every tool result with placeholder values: text is filled in and every yes-or-no field is false. So an
 escalate on a false field always fires in a dry run, and the dry run cannot pass; check the text instead.
