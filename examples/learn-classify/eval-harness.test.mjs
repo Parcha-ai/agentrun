@@ -2,11 +2,13 @@
 // commit of the stream's repository with nothing learned, N jobs at once, and the test split closed unless opened.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { chmod, cp, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { diskProbe, durableCommits } from './disk.mjs';
 import { agentHomeFor, prepareRun } from './host.mjs';
 import { listQueue, liveParts, openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { FIXTURES_V4 } from './scripted.mjs';
@@ -214,6 +216,63 @@ test('edgarArchive: every tool of a live pass, and its browser check, opens the 
   assert.equal(on.archivedSec, true);
   assert.equal(off.archivedSec, false);
 });
+
+test('edgarCache: each run of a live pass reads the pinned Wayback captures from the cache, a capture added mid-pass reaches the next run, and a cache with no manifest stops the pass before its first job', async (t) => {
+  const env = { LEARN_CLASSIFY_GATEWAY: 'http://127.0.0.1:9/' };
+  const dir = await scratch(t);
+  const cache = join(dir, 'cache');
+  mkdirSync(join(cache, 'bodies'), { recursive: true });
+  const capture = (cik, sic) => {
+    const body = `<html><head><title>EDGAR ${cik}</title></head><body>ACME ${cik} SIC: ${sic}</body></html>`;
+    writeFileSync(join(cache, 'bodies', `${cik}.html`), body);
+    const snapshot = `https://web.archive.org/web/20260224213732id_/https://www.sec.gov/Archives/edgar/data/${cik}/x-index.htm`;
+    return { line: `${JSON.stringify({ cik, chosen: { snapshot, body: `bodies/${cik}.html`, sha256: createHash('sha256').update(body).digest('hex') } })}\n`, snapshot };
+  };
+  const first = capture('1', '5961');
+  writeFileSync(join(cache, 'manifest.jsonl'), first.line);
+  await assert.rejects(liveParts({ set: SETS.v4, data: FIXTURES_V4, env, archivedSec: true, edgarCache: join(dir, 'empty') }), /has no manifest\.jsonl/);
+  await assert.rejects(liveParts({ set: SETS.v4, data: FIXTURES_V4, env, edgarCache: cache }), /edgarCache needs archivedSec/);
+  const parts = await liveParts({ set: SETS.v4, data: FIXTURES_V4, env, archivedSec: true, edgarCache: cache, lookup: async () => [{ address: '93.184.216.34', family: 4 }] });
+  const fetchPage = async (run) => (await parts.toolsFor({ name: 'X' }, { dir: join(dir, run) })).find((tool) => tool.name === 'fetch_page');
+  assert.match((await (await fetchPage('run-1')).run({ url: first.snapshot })).text, /SIC: 5961/);
+  const second = capture('2', '3674');
+  writeFileSync(join(cache, 'manifest.jsonl'), first.line + second.line);
+  assert.match((await (await fetchPage('run-2')).run({ url: second.snapshot })).text, /SIC: 3674/);
+});
+
+test('diskProbe and durableCommits: what a run cost the disk, for the switch rule', async (t) => {
+  const dir = await scratch(t);
+  const probe = diskProbe(dir, { commits: 5 });
+  assert.ok(probe.fsyncMs >= 0 && probe.commits === 5, JSON.stringify(probe));
+  assert.deepEqual(readdirSync(dir), []);
+  const { data, companies } = await standIn(dir, { train: 1, dev: 0, test: 0 });
+  const out = join(dir, 'train');
+  await runLoop({ out, parts: parts(data), list: streamOf(companies, { split: 'train', epochs: 1, seed: 1 }), split: 'train', record: false });
+  const store = join(out, 'home', 'runs', 'run-001', 'store');
+  const file = readdirSync(store).find((f) => f.endsWith('.sqlite'));
+  assert.ok(durableCommits(join(store, file)) > 0);
+}, { timeout: 300_000 });
+
+test('the CLI: --schedule and --checkpoints are checked before the pass and handed to the learning pass', async (t) => {
+  const dir = await scratch(t);
+  const { data } = await standIn(dir, { train: 1, dev: 1, test: 0 });
+  const runner = join(import.meta.dirname, 'runner.mjs');
+  const run = (...args) => spawnSync(process.execPath, [runner, '--set', 'v4', '--scripted', '--data', data, '--no-record', ...args], { encoding: 'utf8' });
+  for (const [args, message] of [
+    [['--schedule', 'fast'], /--schedule is rolling or batch/],
+    [['--checkpoints', '300,100'], /--checkpoints is ascending whole numbers from 1/],
+    [['--checkpoints', '0'], /--checkpoints is ascending whole numbers from 1/],
+    [['--sealed', '--at', 'seed', '--checkpoints', '100'], /--checkpoints takes a learning pass/],
+    [['--sealed', '--at', 'seed', '--schedule', 'batch'], /--schedule takes a learning pass/],
+    [['--edgar-cache', join(dir, 'c')], /--edgar-cache needs --edgar-archive/],
+  ]) {
+    const bad = run(...args, '--out', join(dir, `bad-${args.join('')}`.replace(/\W/g, '')));
+    assert.equal(bad.status, 2, `${args}: ${bad.stderr}`);
+    assert.match(bad.stderr, message);
+  }
+  const ok = run('--split', 'train', '--jobs', '1', '--schedule', 'batch', '--checkpoints', '1,2', '--out', join(dir, 'ok'));
+  assert.equal(ok.status, 0, ok.stderr);
+}, { timeout: 300_000 });
 
 test('the CLI: --split, --from, --concurrency and --shard are checked; the test split needs --open-test', async (t) => {
   const dir = await scratch(t);
