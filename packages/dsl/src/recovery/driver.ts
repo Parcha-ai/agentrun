@@ -1043,14 +1043,14 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         // A tool effect is admitted with the external call it makes, keyed as a continuation keys its own calls
         // (`gatewayIntentOf`: a fetch wrapper's call is the gateway tool it names and its arguments), so a continuation
         // that inherits it unknown refuses the same call.
-        const external = params.node.via === "tool" ? gatewayIntentOf(String((params.node as any).tool), params.input ?? {}) : undefined;
+        const external = params.node.via === "tool" ? gatewayIntentOf(String(params.node.tool), params.input ?? {}) : undefined;
         // From its admission the effect is in flight: a pause waits for it to complete and commit, so the admission is
         // never left without its dispatch.
         inFlight += 1;
         try {
           // The driver's state and the admission are one transaction.
           const admission = writeOf(id);
-          const admitted = await persist(() => journal.admit(id, String((params.node as any).label), argsHash, admission.state, driver, external, params.input ?? null, admission.parts, admission.owner));
+          const admitted = await persist(() => journal.admit(id, String(params.node.label), argsHash, admission.state, driver, external, params.input ?? null, admission.parts, admission.owner));
           if (admitted !== "new") throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id} before dispatch`);
           // What landed while the admission was being committed still counts: after a cancel, the caller's own
           // cancellation or the effect's deadline, the effect stays admitted and unknown and the adapter is never called.
@@ -1080,7 +1080,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           // A tool effect's receipt names the external call it paid for (the tool and its arguments),
           // so a continuation that inherits the receipt can answer the same call from it. Any other
           // effect keeps its arguments beside its result.
-          const intent = params.node.via === "tool" ? { tool: String((params.node as any).tool), args: params.input } : undefined;
+          const intent = params.node.via === "tool" ? { tool: String(params.node.tool), args: params.input } : undefined;
           keepFiles(files, at);
           const completion = writeOf();
           await persist(() => journal.complete(id, { value, files, ...(intent ? { intent } : { args: params.input ?? null }) }, completion.state, completion.parts));

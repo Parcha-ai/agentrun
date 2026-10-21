@@ -224,7 +224,7 @@ export const transportPanel: Panel<TransportState> = {
     }
   },
   view(state, context) {
-    return view(state, context.t, context.now ?? context.t, context.providers);
+    return view(state, context.now ?? context.t, context.providers);
   },
 };
 
@@ -288,7 +288,7 @@ function killNode(state: TransportState, kill: Kill): Node {
   return h('li', { class: `kill ${kill.kind}` }, h('b', {}, kill.kind === 'box' ? '✗ the whole box' : '✗ a process'), ` — ${kill.label}`, kill.box ? ` (${label(state, kill.box)}, process ${kill.gen})` : ` (process ${kill.gen})`, h('div', { class: 'back' }, back));
 }
 
-function view(state: TransportState, t: number, now: number, providers?: 'real' | 'scripted'): Node {
+function view(state: TransportState, now: number, providers?: 'real' | 'scripted'): Node {
   if (state.boxes.length === 0 && state.runners.length === 0 && state.flights.length === 0 && state.durableLines === 0) return h('div', { class: 'transport' }, h('p', { class: 'empty' }, 'The session has not started a box yet.'));
   const end = Math.max(state.lastT, now, 1);
   return h('div', { class: 'transport' },

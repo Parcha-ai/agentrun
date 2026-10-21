@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.0-beta.21 (2026-10-21)
+
+- `supervise --no-restart` is in the usage text and the reference: it turns off the local driver's restart on failure (`localHost({ restart: false })`), so an instance that exits stays down until the supervisor's next pass.
+
 ## 0.1.0-beta.20 (2026-10-20)
 
 - A start mark keeper whose rewrite fails because the run's directory moved after its check now warns that the directory is no longer the one it started on, and stops. Before, the `PDA_START_MARK` warning said the rewrite failed (ENOENT or ENOTDIR). Nothing is written in either case; only the stated reason changes.

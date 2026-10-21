@@ -24,9 +24,10 @@ import { DELIVERY_ATTEMPTS, lintRecordRoot, submitFooter, type Disagreement, typ
 import { workspaceRecordFile } from "./record-file.js";
 import { RecordDoc, recordNudge, recordTool, spendNudge, submitDefinition, type RecordToolOptions } from "./record-tool.js";
 
-/** A node's configuration: what its conversation's prompt and `submit` tool are drawn from. */
+/** A node's configuration: what its conversation's prompt and `submit` tool are drawn from. A fork of the conversation
+ *  starts without it, as with the record: the runner never attaches a fork, so a fork is no node and waits for nothing. */
 export const NodeDoc = defineDoc<{ system: string; label: string; schema: JsonValue | null; fileKey: string | null }>({
-  kind: "agentrun.node", version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ system: "", label: "", schema: null, fileKey: null }),
+  kind: "agentrun.node", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ system: "", label: "", schema: null, fileKey: null }),
 });
 
 /** A node as the host is asked about it: the interpreter's request, and the attempt it runs as, with the sessions of
