@@ -386,7 +386,6 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     if (!record?.parent || record.at === undefined) return undefined;
     return entryItems.filter((each) => each.conversation === record.parent && Number(each.entry) <= Number(record.at)).at(-1)?.item;
   };
-  const nested = new Set<string>();
   const drawnAt = new Map<string, number>();
   for (const conversation of [...threads.keys()].sort((a, b) => Number(a) - Number(b) || a.localeCompare(b))) {
     const call = madeBy(conversation);
@@ -406,7 +405,6 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     }
     thread.under = at;
     thread.label = own && own !== above ? own : `${above ?? call?.tool ?? 'conversation'} · ${place}`;
-    nested.add(conversation);
   }
   const ordered = [...threads.values()].sort((a, b) => (a.t0 ?? 0) - (b.t0 ?? 0));
 
@@ -711,8 +709,10 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   const resultLine = lines.findLast((line) => line.kind === 'result');
   // The agent the header names (the Muse view only): the name the host labelled the run with, else the recording's title;
   // done when the run delivered (the manifest names a result or an artifact, or a result line was recorded), waiting when a hold is
-  // still open at the run's end, else working.
-  const labelled = chatStr(chatObj(chatObj(lines.findLast((line) => line.channel === 'durable' && line.kind === 'reference.label' && !nested.has(chatId(line.conv) ?? ''))?.data)?.value)?.label)?.trim();
+  // still open at the run's end, else working. A fork's label is never the agent's: a fork is known by its record (a parent or an
+  // owner), whether or not it has a message yet.
+  const forked = (conversation: string | undefined) => { const record = conversation === undefined ? undefined : records.get(conversation); return record?.parent !== undefined || record?.owner !== undefined; };
+  const labelled = chatStr(chatObj(chatObj(lines.findLast((line) => line.channel === 'durable' && line.kind === 'reference.label' && !forked(chatId(line.conv)))?.data)?.value)?.label)?.trim();
   const agentName = options.muse ? labelled || chatStr(manifest.title)?.trim() || undefined : undefined;
   const endsHeld = [...toolItems.values()].some((item) => item.browser?.holds.some((hold) => hold.t1 === undefined));
   const agent: ChatModel['agent'] = agentName ? { name: agentName, status: manifest.result?.blob || resultLine || (manifest as { artifact?: Json }).artifact ? 'done' : endsHeld ? 'waiting' : 'working' } : undefined;

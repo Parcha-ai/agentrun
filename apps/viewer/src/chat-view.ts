@@ -734,11 +734,13 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     }
   });
 
-  /** Opens every fold that hides a node: its conversation's, and each folded group it sits in. */
+  /** Opens every fold that hides a node: each conversation's it sits in (a fork's, and every conversation's around it), and
+   *  each folded group. */
   const reveal = (node: HTMLElement) => {
-    const fold = node.closest<HTMLDetailsElement>('details.fold');
-    if (fold) fold.open = true;
-    for (let at: HTMLElement | null = node; at; at = at.parentElement) if (at.hidden) openers.get(at)?.();
+    for (let at: HTMLElement | null = node; at; at = at.parentElement) {
+      if (at instanceof HTMLDetailsElement && at.classList.contains('fold')) at.open = true;
+      if (at.hidden) openers.get(at)?.();
+    }
   };
   let shown: SourceShown | undefined;
   const mark = () => {
