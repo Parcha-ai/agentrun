@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { CURATE_CUTS_V01 } from './curate-cuts.mjs';
 import { writeCurve } from './curve.mjs';
 import {
   agentHomeFor, curateJob, finishJob, groupsOf, meteredJudge, prepareRun, readAgentAt, runJob, textsRead, toolResultsOf, toolStats, usageOfStore,
@@ -240,7 +241,10 @@ async function oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, l
   }
   if (p.phase === 'proposed') {
     const curateJudge = meteredJudge(judge);
-    const curated = await curateJob({ repo, judge: curateJudge, ...(parts.thresholds ? { thresholds: parts.thresholds } : {}) });
+    const curated = await curateJob({
+      repo, judge: curateJudge, ...(parts.thresholds ? { thresholds: parts.thresholds } : {}),
+      judgeCuts: parts.judgeCuts, sticky: { file: join(out, 'curate-sticky.json'), cutsId: parts.cutsId ?? 'v0.1' },
+    });
     save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main });
   }
   if (!p.lineage) {
@@ -367,7 +371,7 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--sealed --at seed|main|<sha>]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--curate-cuts v0.1|default] [--sealed --at seed|main|<sha>]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -378,6 +382,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'cap-usd': { type: 'string' }, 'run-cap-usd': { type: 'string' }, 'no-record': { type: 'boolean' }, sealed: { type: 'boolean' }, at: { type: 'string' },
         'no-dispatch': { type: 'boolean' },
         model: { type: 'string' }, thinking: { type: 'string' }, set: { type: 'string' }, list: { type: 'string' }, 'promote-after': { type: 'string' },
+        'curate-cuts': { type: 'string' },
       },
     }));
   } catch (error) {
@@ -409,6 +414,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       ? await liveParts({ set, ...(values.data ? { data: resolve(values.data) } : {}), ...(values.model ? { model: values.model } : {}), ...(values.thinking ? { thinking: values.thinking } : {}) })
       : scriptedParts({ set, ...(values.data ? { data: resolve(values.data) } : {}) });
     if (values['no-dispatch']) parts.dispatch = false;
+    if (values['curate-cuts'] !== undefined) {
+      if (values['curate-cuts'] !== 'v0.1' && values['curate-cuts'] !== 'default') { console.error(`--curate-cuts is v0.1 or default\n${USAGE}`); process.exit(2); }
+      parts.judgeCuts = values['curate-cuts'] === 'v0.1' ? CURATE_CUTS_V01 : null;
+      parts.cutsId = values['curate-cuts'];
+      console.log(`learn-classify: curation judged by the ${values['curate-cuts'] === 'v0.1' ? 'pre-registered v0.1 cuts' : "package's default cuts"}`);
+    }
     if (promoteAfter !== undefined) {
       parts.thresholds = { promoteAfter };
       console.log(`learn-classify: promotion after ${promoteAfter} clean uses`);
