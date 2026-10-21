@@ -206,7 +206,6 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
   const snapshotGen = new Map<number, number>();
   {
     let first = -1;
-    restoresOf(lines);
     let inSnapshot = false;
     let opened = false;
     lines.forEach((line, index) => {
