@@ -474,7 +474,7 @@ describe("modalGpuBoxes: one box per thread, found again by key", () => {
     const boxes = modalGpuBoxes(m.sdk, { appName: "pda-robot", image: "im-trainer", create: { cpu: 8 }, root: ws, piRunPath: piRun });
     const a = await boxes.ensure("teach-1:walk", { run: "r1" });
     assert.equal(m.created.length, 1);
-    assert.partialDeepStrictEqual(m.created[0], { gpu: "H100", cpu: 8, timeoutMs: 7_200_000 });
+    assert.partialDeepStrictEqual(m.created[0], { gpu: "H100!", cpu: 8, timeoutMs: 7_200_000 });
     assert.deepEqual(m.boxes[0]!.tags, { run: "r1", "pi-box": createHash("sha256").update("teach-1:walk").digest("hex").slice(0, 40), "pi-box-key": "teach-1:walk" });
     assert.ok(existsSync(ws) && existsSync(piRun), "the workspace is made and pi-run installed");
     const again = await boxes.ensure("teach-1:walk");

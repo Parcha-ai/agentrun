@@ -351,14 +351,14 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   const client: DaytonaClient = modalSandboxes(sdk, { appName, image, runtime, cpu: options.cpu ?? 2, memoryMiB: options.memoryMiB ?? 4096, ...(options.regions ? { regions: options.regions } : {}), encryptedPorts: ports });
   // The robot's extra and a generic one (appExtra) merged into what the bundle and the app's environment get; a bad extra fails here, when the cloud is made.
   const extraPlan = appExtraPlan({ ...options, transport });
-  const gpuType = options.gpu?.type ?? "H100";
+  const gpuType = options.gpu?.type ?? "H100!";
   const gpuEnv = options.gpu ? modalGpuEnvironment(gpuType) : undefined;
   const gpuClient: DaytonaClient | undefined = options.gpu
     ? modalSandboxes(sdk, { appName, image: options.gpu.image, runtime: "gvisor", gpu: gpuType, cpu: options.gpu.cpu ?? 4, memoryMiB: options.gpu.memoryMiB ?? 16384, ...(options.regions ? { regions: options.regions } : {}), encryptedPorts: [BOX_SERVE_PORT], ...(options.gpu.volumes ? { volumes: { ...options.gpu.volumes } } : {}) })
     : undefined;
   // ---- the robot cluster: a pool of GPU boxes lent to the session's threads ------------------------------------------------------
   const clusterClient: DaytonaClient | undefined = options.cluster
-    ? modalSandboxes(sdk, { appName, image: options.cluster.image, runtime: "gvisor", gpu: options.cluster.type ?? "H100", cpu: options.cluster.cpu ?? 8, memoryMiB: options.cluster.memoryMiB ?? 65536, ...(options.regions ? { regions: options.regions } : {}) })
+    ? modalSandboxes(sdk, { appName, image: options.cluster.image, runtime: "gvisor", gpu: options.cluster.type ?? "H100!", cpu: options.cluster.cpu ?? 8, memoryMiB: options.cluster.memoryMiB ?? 65536, ...(options.regions ? { regions: options.regions } : {}) })
     : undefined;
   const pool: GpuPool | undefined =
     options.cluster && clusterClient

@@ -915,7 +915,7 @@ export function modalGpuBoxes(sdk: ModalGpuSdk, o: ModalGpuBoxesOptions) {
           return box;
         }
         const name = `pi-box-${tagOf(key).slice(0, 12)}-${Date.now().toString(36)}`;
-        const mine = await sdk.sandboxes.create(a, await theImage(), { ...o.create, name, gpu: o.gpu ?? "H100", timeoutMs: o.timeoutMs ?? 2 * 3_600_000 });
+        const mine = await sdk.sandboxes.create(a, await theImage(), { ...o.create, name, gpu: o.gpu ?? "H100!", timeoutMs: o.timeoutMs ?? 2 * 3_600_000 });
         try {
           await mine.setTags({ ...tags, "pi-box": tagOf(key), "pi-box-key": key.slice(0, 63) });
           // another creator (another process) may have raced this one: every creator settles on the same box
