@@ -1,16 +1,15 @@
 // The app `pi-durable-disk run --app` loads for each run serve starts: the definition and skills from the agent home,
-// the model this host binds (model.ts), and the tools the definition names: the workspace's file tools and
-// `ask_person`, which ends the agent's turn until the person answers.
+// the model this host binds (model.ts), and the tools the definition names, from the harness (`agentApp` on the host the
+// environment gives, `hostFromEnv`), with serve's own `ask_person`, which ends the agent's turn until the person answers.
 import { join, resolve } from "node:path";
 import type { TSchema } from "@earendil-works/pi-ai";
-import { createRegistry, defineExtension, defineTool, type Extension, type ToolRegistration } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, type Registry, type ToolRegistration } from "@earendil-works/pi-durable";
+import { agentApp, hostFromEnv } from "@parcha/agentrun-harness";
 import { openAgentHome, readAgentHome, type AgentHomeState } from "@parcha/pi-durable-agent";
-import { ArchilCodingTools, type AppContext, type AppOptions } from "@parcha/pi-durable-disk";
+import type { AppContext, AppOptions } from "@parcha/pi-durable-disk";
 import { runModels, thinkingOf } from "./model.js";
 
 export const ASK_TOOL = "ask_person";
-/** The tool names a definition may name here. `bash` is not bound: a local run gets no shell on this machine. */
-export const BOUND_TOOLS = ["read", "write", "edit", ASK_TOOL] as const;
 
 /** What the result of `ask_person` says; the person's page shows the question as a waiting row. */
 export const asked = (question: string) => `Asked the person: ${question.slice(0, 500)}. Waiting for their answer.`;
@@ -31,7 +30,10 @@ export const askPerson = defineTool({
   },
 });
 
-/** The definition's instructions, then each skill it names (`<name>/SKILL.md` in the home), in order. */
+/**
+ * The definition's instructions, then each skill it names (`<name>/SKILL.md` in the home), in order. The one place a
+ * run's instructions are made.
+ */
 export function promptOf(state: Pick<AgentHomeState, "definition" | "skills">): string {
   const skills = state.definition.skills.map((name) => {
     const file = state.skills[`${name}/SKILL.md`];
@@ -41,27 +43,25 @@ export function promptOf(state: Pick<AgentHomeState, "definition" | "skills">): 
   return [state.definition.instructions.trim(), ...(skills.length ? ["Your skills follow. Use the one that fits the step you are on.", ...skills] : [])].join("\n\n");
 }
 
-// pi-durable-disk's types name the pi-durable it resolves, which a build at another pi version (the pi-floor legs) can
-// hold apart from this package's own: the options cross that boundary as values, typed on this side.
-const CodingTools = ArchilCodingTools as unknown as Extension;
+// The harness's and pi-durable-disk's types name the pi-durable they resolve, which a build at another pi version (the
+// pi-floor legs) can hold apart from this package's own: the options cross that boundary as values, typed on this side.
+type RunApp = { registry: Registry; root: { agent: { tools: ToolRegistration[] } } };
 
 export default async function app(where: AppContext): Promise<AppOptions> {
   const state = await readAgentHome(await openAgentHome(resolve(join(where.root, "..", ".."))));
   const { models, model } = await runModels(process.env);
-  const registry = createRegistry();
-  registry.install(CodingTools);
-  registry.install(defineExtension({ name: "person", tools: [askPerson] }));
-  const bound = new Map<string, ToolRegistration>([...(CodingTools.tools ?? []).map((tool) => [tool.name, tool] as const), [ASK_TOOL, askPerson as ToolRegistration]]);
-  const tools: ToolRegistration[] = [];
-  for (const name of state.definition.tools) {
-    const tool = (BOUND_TOOLS as readonly string[]).includes(name) ? bound.get(name) : undefined;
-    if (!tool) throw new Error(`the definition names the tool ${name}, which agentrun-serve does not bind (it binds ${BOUND_TOOLS.join(", ")})`);
-    tools.push(tool);
+  const place = { id: where.ref.id, root: where.root, work: where.work, store: where.store };
+  // The same host toolOffer reads: a local Chrome only (tools.ts).
+  const host = await hostFromEnv(place, { models, lead: model, env: process.env, browserbase: false });
+  // No browser option: the host has a browser only when the environment gives it one, and a browser tool on a host
+  // without one is refused with what would give it one.
+  const { tools } = state.definition;
+  const options = await agentApp(place, host, { instructions: promptOf(state), tools: tools.filter((name) => name !== ASK_TOOL), thinking: thinkingOf(process.env) });
+  const run = options as unknown as RunApp;
+  if (tools.includes(ASK_TOOL)) {
+    run.registry.install(defineExtension({ name: "person", tools: [askPerson] }));
+    const offered = run.root.agent.tools;
+    run.root.agent.tools = tools.map((name) => (name === ASK_TOOL ? (askPerson as ToolRegistration) : offered.find((tool) => tool.name === name)!));
   }
-  const options = {
-    models,
-    registry,
-    root: { agent: { model, thinkingLevel: thinkingOf(process.env), instructions: promptOf(state), tools } },
-  };
   return options as unknown as AppOptions;
 }

@@ -8,6 +8,8 @@ const slow = (faux, ms, text) =>
     faux.signal?.addEventListener("abort", () => (clearTimeout(timer), resolve(faux.message("", { stopReason: "aborted" }))), { once: true });
   });
 
+const SHELL = "Run in the shell: ";
+
 const untilExists = async (file) => {
   const { access } = await import("node:fs/promises");
   while (!(await access(file).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));
@@ -26,6 +28,11 @@ export default function reply(context, faux) {
   if (first.includes("Write the report")) {
     if (answered) return faux.message("I wrote report.md.");
     return faux.message(faux.toolCall("write", { path: "report.md", content: "# Report\n\nThe answer is 42.\n" }), { stopReason: "toolUse" });
+  }
+  // "Run in the shell: <command>": one bash call with the command, then an answer.
+  if (first.startsWith(SHELL)) {
+    if (answered) return faux.message("Ran it.");
+    return faux.message(faux.toolCall("bash", { command: first.slice(SHELL.length) }), { stopReason: "toolUse" });
   }
   if (first.includes("Take your time") && users.length === 1) return slow(faux, 60_000, "Done slowly.");
   if (first.includes("Answer soon") && users.length === 1) return slow(faux, 1_500, "Soon.");

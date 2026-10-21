@@ -1,0 +1,62 @@
+{
+  "package": "@parcha/agentrun-serve",
+  "install": [
+    "dsl",
+    "jev",
+    "pi",
+    "pi-durable-disk",
+    "pi-browser",
+    "pi-vision",
+    "pi-durable-agent",
+    "harness",
+    "serve"
+  ],
+  "companions": [
+    "@parcha/agentrun-dsl",
+    "@parcha/agentrun-jev",
+    "@parcha/agentrun-pi",
+    "@parcha/pi-durable-disk",
+    "@parcha/pi-browser",
+    "@parcha/pi-vision",
+    "@parcha/pi-durable-agent",
+    "@parcha/agentrun-harness"
+  ],
+  "peers": [
+    "@earendil-works/chord",
+    "@earendil-works/pi-durable",
+    "@earendil-works/pi-ai",
+    "@earendil-works/pi-codemode"
+  ],
+  "files": [
+    {
+      "name": "faux.mjs",
+      "readme": "packages/serve/README.md",
+      "heading": "Quick start (no key, no network)",
+      "fence": "js",
+      "index": 0
+    },
+    {
+      "name": "walk.mjs",
+      "readme": "packages/serve/README.md",
+      "heading": "Quick start (no key, no network)",
+      "fence": "js",
+      "index": 1
+    },
+    {
+      "name": "walk.sh",
+      "readme": "packages/serve/README.md",
+      "heading": "Quick start (no key, no network)",
+      "fence": "sh",
+      "index": 0
+    }
+  ],
+  "command": [
+    "sh",
+    "walk.sh"
+  ],
+  "expect": {
+    "exitCode": 0,
+    "pattern": "^completed: I wrote hello into hi\\.txt\\. hi\\.txt: hello$"
+  },
+  "timeoutMs": 180000
+}
