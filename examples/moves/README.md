@@ -55,3 +55,11 @@ gets them from two named Modal Secrets (`MOVES_SECRET_ANTHROPIC`, `MOVES_SECRET_
 `MOVES_LIVE_MAX_USD` is the model's spend cap (`--max-usd`). Modal's VM and GPU sandboxes carry no price in the recording's meter, so they are outside it. Each thread sandbox is ended by Modal 15 minutes after it
 was made, which bounds the GPU time; the last line reports that time and an estimate of its cost as a field of its own. The run ends with `ok: one run moved from this machine to a Modal VM and back; ...` and exit 0, or
 lists what went wrong and exits 1.
+
+## The environment probe
+
+`env-probe.ts` answers one question without a model: can a command run as the agent's user find the take's secrets? Deleting a variable from `process.env` does not clear `/proc/<pid>/environ`, so a session that
+started with a key in its environment still shows it to a sibling process of the same user. The probe gets one SHA-256 and one length per secret, never the value, hashes every window of that length in its own
+environment and in every readable `/proc/*/environ` and `/proc/*/cmdline`, and reports counts, plus any key-like variable name it sees. `moves-env-probe.test.mjs` runs it offline: a fake instance that kept its key in its
+original environment is red, one handed the key on a file descriptor is green. It is meant to run in the VM and in a thread's sandbox once the take's real path exists, and to give way to pi-transport's planted-marker
+conformance check when that exists.
