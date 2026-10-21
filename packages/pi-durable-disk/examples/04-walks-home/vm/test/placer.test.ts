@@ -161,6 +161,24 @@ test("the model check says why no model exists when a program stopped on purpose
   assert.match(nothing.reason, /no model manifest/);
 });
 
+test("the home check says which skills are home and how many as data, whatever the reason says", async () => {
+  const { checkHomeSkills } = await import("../placer.ts");
+  const skills = (names: string[]) => bytes(JSON.stringify({ skills: names }));
+  const ok = await checkHomeSkills(files({ "home/skills.json": skills(["walk", "spin"]), "home/skills/walk.json": bytes("{}"), "home/skills/spin.json": bytes("{}") }), 2);
+  assert.deepEqual([ok.ok, ok.home, ok.count], [true, ["walk", "spin"], 2]);
+  // Short of what was asked: the ones that did come home are still named.
+  const short = await checkHomeSkills(files({ "home/skills.json": skills(["walk"]), "home/skills/walk.json": bytes("{}") }), 8);
+  assert.deepEqual([short.ok, short.home, short.count], [false, ["walk"], 1]);
+  // Listed but not written, or not a JSON object: not home.
+  const partial = await checkHomeSkills(files({ "home/skills.json": skills(["walk", "sit", "spin"]), "home/skills/walk.json": bytes("{}"), "home/skills/spin.json": bytes("[]") }));
+  assert.deepEqual([partial.ok, partial.home, partial.count], [false, ["walk"], 1]);
+  // Nothing came home.
+  for (const read of [files({}), files({ "home/skills.json": bytes("nope") }), files({ "home/skills.json": bytes('{"skills":[]}') })]) {
+    const none = await checkHomeSkills(read);
+    assert.deepEqual([none.ok, none.home, none.count], [false, [], 0]);
+  }
+});
+
 test("robot episode: the placer asks with the robot's own criteria, takes the judge's choice as it comes, and the home check reads the skills", async () => {
   const { checkHomeSkills, CRITERIA_ROBOT } = await import("../placer.ts");
   const asked: { criteria: Record<string, string | null>; task: unknown }[] = [];

@@ -1,7 +1,7 @@
 // `serve.ts --placer-module 04-walks-home/vm/placer.ts`: where a run should be, asked of TypeSafe Jev on the server (the key never
 // reaches a page). Each environment has one line of what it can do; the question is a typed choice over them. Jev is the only judge: there is
 // no keyword stand-in, and a server without TYPESAFE_API_KEY does not start (tests inject a fake runner into `buildPlacer`).
-import { judgePlacer, type JudgeRunner, type Placer } from "../../03-tab-to-cloud/placement.ts";
+import { judgePlacer, type HomeCheckResult, type JudgeRunner, type Placer } from "../../03-tab-to-cloud/placement.ts";
 import { Policy } from "../tab/src/policy.ts";
 import { FLAG_SKILLS, readScene } from "../../03-tab-to-cloud/flag-goal.ts";
 
@@ -43,22 +43,22 @@ async function roundSkills(read: (path: string) => Promise<Uint8Array | undefine
  * Robot episode: are the skills home? Checked in code on the run's disk: `home/skills.json` (the assembled index, written last) names the
  * skills and each one has its `home/skills/<name>.json`. `expected` is how many the teach step was for (0: any, at least one).
  */
-export async function checkHomeSkills(read: (path: string) => Promise<Uint8Array | undefined>, expected = 0): Promise<{ ok: boolean; reason: string }> {
+export async function checkHomeSkills(read: (path: string) => Promise<Uint8Array | undefined>, expected = 0): Promise<HomeCheckResult> {
   const bytes = await read("home/skills.json");
-  if (!bytes || bytes.length === 0) return { ok: false, reason: "no skills came home (home/skills.json was not written)" };
+  if (!bytes || bytes.length === 0) return { ok: false, reason: "no skills came home (home/skills.json was not written)", home: [], count: 0 };
   let index: unknown;
   try {
     index = JSON.parse(new TextDecoder().decode(bytes));
   } catch {
-    return { ok: false, reason: "the skills index is not valid JSON" };
+    return { ok: false, reason: "the skills index is not valid JSON", home: [], count: 0 };
   }
   const listed = (index as { skills?: unknown } | null)?.skills ?? index;
   const names = Array.isArray(listed) ? listed.map((s) => (typeof s === "string" ? s : String((s as { name?: unknown; id?: unknown })?.name ?? (s as { id?: unknown })?.id ?? ""))).filter(Boolean) : listed && typeof listed === "object" ? Object.keys(listed) : [];
-  if (names.length === 0) return { ok: false, reason: "the skills index lists no skill" };
+  if (names.length === 0) return { ok: false, reason: "the skills index lists no skill", home: [], count: 0 };
   const odd = names.filter((n) => !/^[a-z0-9][a-z0-9_-]{0,40}$/.test(n));
-  if (odd.length > 0) return { ok: false, reason: `the skills index has a name that is not a plain skill name: ${odd.map((n) => JSON.stringify(n.slice(0, 40))).join(", ")}` };
+  if (odd.length > 0) return { ok: false, reason: `the skills index has a name that is not a plain skill name: ${odd.map((n) => JSON.stringify(n.slice(0, 40))).join(", ")}`, home: [], count: 0 };
   const distinct = [...new Set(names)];
-  if (distinct.length !== names.length) return { ok: false, reason: `the skills index names a skill more than once: ${names.filter((n, i) => names.indexOf(n) !== i).join(", ")}` };
+  if (distinct.length !== names.length) return { ok: false, reason: `the skills index names a skill more than once: ${names.filter((n, i) => names.indexOf(n) !== i).join(", ")}`, home: [], count: 0 };
   const missing: string[] = [];
   const broken: string[] = [];
   for (const name of distinct) {
@@ -74,15 +74,18 @@ export async function checkHomeSkills(read: (path: string) => Promise<Uint8Array
       broken.push(name);
     }
   }
-  if (missing.length > 0) return { ok: false, reason: `skills listed but not written: ${missing.join(", ")}` };
-  if (broken.length > 0) return { ok: false, reason: `skill files that are not valid JSON objects: ${broken.map((n) => `home/skills/${n}.json`).join(", ")}` };
+  // The skills in place: listed, written and a JSON object. The data says which, whatever the reason's sentence says.
+  const inPlace = distinct.filter((n) => !missing.includes(n) && !broken.includes(n));
+  const found = { home: inPlace, count: inPlace.length };
+  if (missing.length > 0) return { ok: false, reason: `skills listed but not written: ${missing.join(", ")}`, ...found };
+  if (broken.length > 0) return { ok: false, reason: `skill files that are not valid JSON objects: ${broken.map((n) => `home/skills/${n}.json`).join(", ")}`, ...found };
   // What the round trained, from the assembler's own summary (work/skills/round.json): a request for one skill ("teach it to walk") trains one, and one is what must come home. Without a summary, the count the teach step was for.
   const trained = await roundSkills(read);
   if (trained.length > 0) {
     const absent = trained.filter((n) => !distinct.includes(n));
-    if (absent.length > 0) return { ok: false, reason: `${trained.length - absent.length} of the ${trained.length} skills trained this round came home (not home: ${absent.join(", ")})` };
-  } else if (expected > 0 && distinct.length < expected) return { ok: false, reason: `${distinct.length} of the ${expected} skills came home` };
-  return { ok: true, reason: `${distinct.length} ${distinct.length === 1 ? "skill is" : "skills are"} home and installed: ${distinct.join(", ")}.${await flagTry(read, distinct)}` };
+    if (absent.length > 0) return { ok: false, reason: `${trained.length - absent.length} of the ${trained.length} skills trained this round came home (not home: ${absent.join(", ")})`, ...found };
+  } else if (expected > 0 && distinct.length < expected) return { ok: false, reason: `${distinct.length} of the ${expected} skills came home`, ...found };
+  return { ok: true, reason: `${distinct.length} ${distinct.length === 1 ? "skill is" : "skills are"} home and installed: ${distinct.join(", ")}.${await flagTry(read, distinct)}`, ...found };
 }
 
 /** With a flag on the floor (the page's creature/scene.json) nothing plays by itself: the robot waits at the start for the ask, so the thing to try is the run to the flag. */
