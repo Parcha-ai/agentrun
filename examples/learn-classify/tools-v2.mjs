@@ -3,10 +3,12 @@
 // reaches this machine or its network: loopback, private, CGNAT and link-local addresses and single-label names are
 // refused too. A tool answers with a typed result, never a throw, and every result carries `costUsd`: what the call cost,
 // 0 when nothing billable happened, null when a request may have been billed at an unknown price.
+import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { lookup as dnsLookup } from 'node:dns/promises';
-import { mkdir, readFile, realpath, rmdir, stat, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { mkdir, mkdtemp, open, readFile, realpath, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { promisify } from 'node:util';
 import { LIST_PRICES } from '@parcha/pi-browser';
 import { pdfDocument, pdfPage } from '@parcha/pi-vision';
 import { refusedHost, refusedUrl, urlPolicy } from './tools.mjs';
@@ -23,6 +25,8 @@ export const MAX_RESULTS = 10;
 export const MAX_ACTIONS = 6;
 export const MAX_LOOKS = 4;
 export const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024;
+/** A PDF over MAX_DOCUMENT_BYTES and up to this is streamed to a file kept for the run (`largeRoot`), never held in memory. */
+export const MAX_LARGE_DOCUMENT_BYTES = 256 * 1024 * 1024;
 export const DOCUMENT_TIMEOUT_MS = 30_000;
 export const BROWSE_TIMEOUT_MS = 60_000;
 const DOCUMENT_HOPS = 3;
@@ -562,9 +566,10 @@ const DOCUMENT_RESULT_SCHEMA = {
 
 const PNG = [0x89, 0x50, 0x4e, 0x47];
 const WALL_STATUS = new Set([401, 403, 406, 429, 503]);
+const PDF_KIND = Object.freeze({ kind: 'pdf', mimeType: 'application/pdf', ext: 'pdf' });
 function kindOf(bytes) {
   const b = bytes;
-  if (b.length >= 5 && Buffer.from(b.subarray(0, 5)).toString('latin1') === '%PDF-') return { kind: 'pdf', mimeType: 'application/pdf', ext: 'pdf' };
+  if (b.length >= 5 && Buffer.from(b.subarray(0, 5)).toString('latin1') === '%PDF-') return PDF_KIND;
   if (PNG.every((x, i) => b[i] === x)) return { kind: 'image', mimeType: 'image/png', ext: 'png' };
   if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return { kind: 'image', mimeType: 'image/jpeg', ext: 'jpg' };
   if (Buffer.from(b.subarray(0, 4)).toString('latin1') === 'GIF8') return { kind: 'image', mimeType: 'image/gif', ext: 'gif' };
@@ -639,8 +644,9 @@ export function htmlPages(html) {
 }
 
 /** A download within the policy: every hop checked before it is sent, at most DOCUMENT_HOPS redirects, `maxBytes` refused
- *  (a cut PDF is unreadable), no cookies or credentials. */
-async function download(url, { policy, fetchImpl, maxBytes, timeoutMs, signal }) {
+ *  (a cut PDF is unreadable), no cookies or credentials. With `large`, a body past `maxBytes` goes on into a file
+ *  (`large.open()`) up to `large.maxBytes`, hashed as it is written, and the result names the file instead of the bytes. */
+async function download(url, { policy, fetchImpl, maxBytes, timeoutMs, signal, large }) {
   const deadline = AbortSignal.timeout(timeoutMs);
   const abort = signal ? AbortSignal.any([signal, deadline]) : deadline;
   let at = url;
@@ -665,18 +671,37 @@ async function download(url, { policy, fetchImpl, maxBytes, timeoutMs, signal })
         return { error: `HTTP ${res.status}`, status: res.status, url: at };
       }
       const declared = Number(res.headers.get('content-length'));
-      if (declared > maxBytes) {
+      const cap = large ? large.maxBytes : maxBytes;
+      if (declared > cap) {
         await res.body?.cancel();
-        return { error: `the file is ${size(declared)}, over the ${size(maxBytes)} cap` };
+        return { error: `the file is ${size(declared)}, over the ${size(cap)} cap` };
       }
+      const type = res.headers.get('content-type') ?? '';
       const chunks = [];
       let got = 0;
-      for await (const chunk of res.body ?? []) {
-        got += chunk.length;
-        if (got > maxBytes) return { error: `the file is over the ${size(maxBytes)} cap` };
-        chunks.push(chunk);
+      let file;
+      try {
+        for await (const chunk of res.body ?? []) {
+          got += chunk.length;
+          if (got > cap) {
+            await file?.discard();
+            return { error: `the file is over the ${size(cap)} cap` };
+          }
+          if (!file && got > maxBytes) {
+            if (!large) return { error: `the file is over the ${size(maxBytes)} cap` };
+            file = await large.open();
+            for (const held of chunks) await file.write(held);
+            chunks.length = 0;
+          }
+          if (file) await file.write(chunk);
+          else chunks.push(chunk);
+        }
+      } catch (error) {
+        await file?.discard();
+        throw error;
       }
-      return { bytes: Buffer.concat(chunks), url: at, type: res.headers.get('content-type') ?? '' };
+      if (file) return { ...(await file.close()), url: at, type };
+      return { bytes: Buffer.concat(chunks), url: at, type };
     }
   } catch (error) {
     return { error: deadline.aborted ? `timed out after ${timeoutMs / 1000} s` : signal?.aborted ? 'cancelled' : `the download failed: ${firstLine(error)}` };
@@ -691,6 +716,33 @@ async function within(root, path) {
   if (!target) return null;
   const rel = relative(base, target);
   return rel && !rel.startsWith('..') && !isAbsolute(rel) && !rel.split(sep).includes('..') ? target : null;
+}
+
+/**
+ * pdffonts' listing as rows: each font's encoding and whether it carries a ToUnicode map (`uni`). A font is `decodable`
+ * when its text extracts as what it shows: it has the map, or its encoding names characters. A CID font on Identity-H or
+ * Identity-V with no map names glyphs only, so its text comes out as other characters.
+ */
+export function fontRowsOf(listing) {
+  const lines = String(listing ?? '').split('\n');
+  const rule = lines.findIndex((line) => /^-+(\s+-+)+\s*$/.test(line));
+  if (rule < 0) return [];
+  return lines.slice(rule + 1).map((line) => line.trim().split(/\s+/)).filter((cells) => cells.length >= 7).map((cells) => {
+    const [encoding, , , uni] = cells.slice(-6);
+    return { name: cells[0], encoding, uni: uni === 'yes', decodable: uni === 'yes' || !/^Identity-[HV]$/.test(encoding) };
+  });
+}
+
+const execFileAsync = promisify(execFile);
+/** The fonts of a PDF, or of one of its pages, from poppler's pdffonts (the host runs it on a file it kept, with fixed
+ *  arguments; no agent input reaches it). None when pdffonts is missing or fails: the text is then served as before. */
+async function pdffonts(file, page) {
+  try {
+    const { stdout } = await execFileAsync('pdffonts', [...(page ? ['-f', String(page), '-l', String(page)] : []), file], { timeout: 20_000, maxBuffer: 4 << 20 });
+    return fontRowsOf(stdout);
+  } catch {
+    return [];
+  }
 }
 
 /** A document's text by page as read_document gives it: `pages` when asked for, else every page from the first that holds
@@ -727,11 +779,70 @@ const pagesProblem = (pages) => (pages === undefined ? null
  * The looks go through pi-vision's `vision.see` on `vision` (createVisionExtension) with `eyes` (`gatewayEyes`, through
  * the model gateway, or scripted ones), and each is filed as a receipt under `root`/evidence.
  */
-export function readDocumentTool({ root, vision, browser, driver, guard: openGuard = cdpRequestGuard, allowPrivate = false, lookup = dnsLookup, fetch: fetchImpl = globalThis.fetch, maxBytes = MAX_DOCUMENT_BYTES, timeoutMs = DOCUMENT_TIMEOUT_MS }) {
+export function readDocumentTool({ root, vision, browser, driver, guard: openGuard = cdpRequestGuard, allowPrivate = false, lookup = dnsLookup, fetch: fetchImpl = globalThis.fetch, maxBytes = MAX_DOCUMENT_BYTES, timeoutMs = DOCUMENT_TIMEOUT_MS, largeRoot, largeBytes = MAX_LARGE_DOCUMENT_BYTES, fonts = pdffonts }) {
   if (!root) throw new TypeError('readDocumentTool needs root, where documents are kept');
   if (!vision?.see) throw new TypeError('readDocumentTool needs vision: createVisionExtension(...) from @parcha/pi-vision/durable');
   const policy = urlPolicy({ allowPrivate, lookup });
   let calls = 0;
+
+  // A PDF over maxBytes is kept in a directory of this tool's own under largeRoot, outside the run's evidence (which a
+  // recording reads), made at the first such file and removed by dispose(), when the run ends. It is read as `large/<name>`.
+  let largeDir;
+  const largeShas = new Map();
+  const large = largeRoot ? {
+    maxBytes: largeBytes,
+    async open() {
+      largeDir ??= await mkdtemp(join(largeRoot, 'learn-classify-large-'));
+      const part = join(largeDir, `${randomUUID()}.part`);
+      const handle = await open(part, 'wx');
+      const hash = createHash('sha256');
+      let bytes = 0;
+      return {
+        write: async (chunk) => { hash.update(chunk); bytes += chunk.length; await handle.write(chunk); },
+        discard: async () => { await handle.close().catch(() => {}); await rm(part, { force: true }); },
+        close: async () => {
+          await handle.close();
+          const sha256 = hash.digest('hex');
+          const head = Buffer.alloc(8);
+          const reading = await open(part, 'r');
+          await reading.read(head, 0, 8, 0).finally(() => reading.close());
+          if (kindOf(head) !== PDF_KIND) {
+            await rm(part, { force: true });
+            return { error: `the file is over the ${size(maxBytes)} cap and not a PDF` };
+          }
+          const name = `${sha256.slice(0, 16)}.pdf`;
+          await rename(part, join(largeDir, name));
+          largeShas.set(name, sha256);
+          return { file: join(largeDir, name), size: bytes, sha256 };
+        },
+      };
+    },
+    async find(given) {
+      const name = given.slice('large/'.length);
+      if (!largeDir || !/^[0-9a-f]{16}\.pdf$/.test(name) || !largeShas.has(name)) return null;
+      const file = join(largeDir, name);
+      const info = await stat(file).catch(() => null);
+      return info?.isFile() ? { file, size: info.size, sha256: largeShas.get(name) } : null;
+    },
+  } : undefined;
+
+  // The pages whose text does not decode: every font on the page is one with no Unicode map for its glyphs. Asked of the
+  // whole file once, and page by page only when the file has such a font.
+  const fontsOf = new Map();
+  async function undecodable(file, sha256, pages) {
+    if (!fontsOf.has(sha256)) fontsOf.set(sha256, { whole: (await fonts(file)).some((f) => !f.decodable), pages: new Map() });
+    const known = fontsOf.get(sha256);
+    const bad = new Set();
+    if (!known.whole) return bad;
+    for (const page of pages) {
+      if (!known.pages.has(page)) {
+        const rows = await fonts(file, page);
+        known.pages.set(page, rows.length > 0 && rows.every((f) => !f.decodable));
+      }
+      if (known.pages.get(page)) bad.add(page);
+    }
+    return bad;
+  }
 
   async function looks(items, question, signal) {
     const done = [];
@@ -794,8 +905,9 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
     let kept;
     let from;
     let page = false;
+    let largeRead;
     if (url) {
-      let got = await download(url, { policy, fetchImpl, maxBytes, timeoutMs, signal });
+      let got = await download(url, { policy, fetchImpl, maxBytes, timeoutMs, signal, large });
       // An HTML answer: a filing published as a page, or a bot wall where a file was asked for.
       page = Boolean(got.bytes && !kindOf(got.bytes) && (/html/.test(got.type) || isHtml(got.bytes)));
       // A host that turns away a plain request (a bot wall: 401, 403, 406, 429, 503, or a page where a file was asked
@@ -810,8 +922,14 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
         if (!viaBrowser.error) { got = viaBrowser; page = false; }
       }
       if (got.refused || got.error) return empty(got.refused ? { refused: got.refused } : { error: got.error });
-      bytes = got.bytes;
+      if (got.file) kept = got.file;
+      else bytes = got.bytes;
       from = got.url;
+      largeRead = got.file ? got : undefined;
+    } else if (given.startsWith('large/')) {
+      largeRead = await large?.find(given);
+      if (!largeRead) return empty({ error: `${given} is not a file this run kept (a path from read_document or browse)` });
+      kept = largeRead.file;
     } else {
       const at = await within(root, given);
       if (!at) return empty({ error: `${given} is not a file this run kept (a path from read_document or browse)` });
@@ -822,19 +940,20 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
       kept = at;
       page = !kindOf(bytes) && isHtml(bytes);
     }
-    const kind = kindOf(bytes) ?? (page ? HTML_KIND : null);
+    const kind = largeRead ? PDF_KIND : kindOf(bytes) ?? (page ? HTML_KIND : null);
     if (!kind) return empty({ error: 'not a PDF or an image' });
     const htmlTexts = kind === HTML_KIND ? htmlPages(new TextDecoder().decode(bytes)) : undefined;
+    const byteCount = largeRead ? largeRead.size : bytes.length;
     if (htmlTexts && !htmlTexts.length) return empty({ error: 'a page, not a file, and it shows no text' });
-    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const sha256 = largeRead ? largeRead.sha256 : createHash('sha256').update(bytes).digest('hex');
     if (!kept) {
       kept = join(root, 'documents', `${sha256.slice(0, 16)}.${kind.ext}`);
       await mkdir(dirname(kept), { recursive: true });
       await writeFile(kept, bytes);
     }
-    const path = relative(root, kept).split(sep).join('/');
+    const path = largeRead ? `large/${basename(kept)}` : relative(root, kept).split(sep).join('/');
     const name = url ? new URL(url).pathname.split('/').pop() || path : path;
-    const base = { ok: true, source, ...(from ? { url: from } : {}), path, kind: kind.kind, sha256, bytes: bytes.length };
+    const base = { ok: true, source, ...(from ? { url: from } : {}), path, kind: kind.kind, sha256, bytes: byteCount };
 
     if (kind.kind === 'image') {
       const ask = question || 'Write out all the text this image shows, tables row by row, then say in one sentence what the image is.';
@@ -853,11 +972,27 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
 
     const { nodeVisionEnv } = await import('@parcha/pi-vision/node');
     const { packageProviders } = await import('@parcha/pi-vision/durable');
-    const ctx = { env: nodeVisionEnv({ cwd: root }), providers: packageProviders(), deriveDir: join(root, 'documents', 'derived'), signal };
-    const pdf = { path: kept, kind: 'pdf', bytes: bytes.length, sha256 };
+    // What pi-vision derives from a large file (its text, its page images) stays beside it, outside the run's evidence.
+    const ctx = { env: nodeVisionEnv({ cwd: root }), providers: packageProviders(), deriveDir: largeRead ? join(dirname(kept), 'derived') : join(root, 'documents', 'derived'), signal };
+    const pdf = { path: kept, kind: 'pdf', bytes: byteCount, sha256 };
     const read = await pdfDocument(pdf, ctx);
     if (!read.ok) return { ...base, ok: false, text: '', looks: [], costUsd: 0, error: `${read.miss.code}: ${read.miss.detail}` };
-    const texts = read.value.pages;
+    // A page whose text does not decode is served like a scan: no text, so a question looks at it. Only the pages this
+    // call would show or find are asked about, until none of them changes.
+    const raw = read.value.pages;
+    let texts = raw;
+    const bad = new Set();
+    const asked = new Set();
+    for (let round = 0; round < 3; round++) {
+      const probe = byPage(texts, args?.pages, find);
+      const pages = [...new Set([...(probe.found ?? []), ...probe.pagesShown])].filter((p) => !asked.has(p));
+      if (!pages.length) break;
+      pages.forEach((p) => asked.add(p));
+      const now = await undecodable(kept, sha256, pages);
+      if (!now.size) break;
+      now.forEach((p) => bad.add(p));
+      texts = raw.map((t, i) => (bad.has(i + 1) ? '' : t));
+    }
     const scanPages = texts.flatMap((t, i) => (t.trim() ? [] : [i + 1]));
     const { wanted, pageCount, found, pagesShown, text } = byPage(texts, args?.pages, find);
     let seen = { looks: [], costUsd: 0 };
@@ -881,7 +1016,7 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
   return {
     name: 'read_document',
     label: 'Read document',
-    description: `Read a PDF or an image (an annual report, an investor presentation, a screenshot from browse), or an annual report or exhibit published as an HTML page, from a url (at most ${size(maxBytes)}) or a path this run kept. A PDF comes back as its text, page by page (at most ${MAX_DOCUMENT_TEXT} characters a call), and an HTML document as the text it shows (its inline-XBRL header and hidden parts left out) in pages of about ${HTML_PAGE} characters: find names words to look for (the pages that hold them are listed and the text starts there), pages picks the pages to read. question has a vision model look at the pages of a PDF you name (a segment table, a chart, a scan) and answer about each, at most ${MAX_LOOKS} pages a call; an image is always looked at. Each look costs money: name the pages first with find. SEC/EDGAR, SIC listing sites and web archives are refused.`,
+    description: `Read a PDF or an image (an annual report, an investor presentation, a screenshot from browse), or an annual report or exhibit published as an HTML page, from a url (at most ${size(maxBytes)}${large ? `; a PDF up to ${size(largeBytes)} is read from a copy kept for the run` : ''}) or a path this run kept. A PDF comes back as its text, page by page (at most ${MAX_DOCUMENT_TEXT} characters a call), and an HTML document as the text it shows (its inline-XBRL header and hidden parts left out) in pages of about ${HTML_PAGE} characters: find names words to look for (the pages that hold them are listed and the text starts there), pages picks the pages to read. question has a vision model look at the pages of a PDF you name (a segment table, a chart, a scan) and answer about each, at most ${MAX_LOOKS} pages a call; an image is always looked at. Each look costs money: name the pages first with find. SEC/EDGAR, SIC listing sites and web archives are refused.`,
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -894,6 +1029,12 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
     },
     resultSchema: DOCUMENT_RESULT_SCHEMA,
     run,
+    /** Removes the files this tool kept outside the run's evidence; the host calls it when the run ends. */
+    async dispose() {
+      if (largeDir) await rm(largeDir, { recursive: true, force: true });
+      largeDir = undefined;
+      largeShas.clear();
+    },
   };
 }
 
@@ -952,12 +1093,12 @@ export async function gatewayEyes(gateway, { model = 'gemini-3.8-flash', thinkin
  * (`gatewayEyes`, or scripted ones). `root` is where the run's documents and screenshots go. `search`, `browser`,
  * `driver`, `guard`, `lookup` and `fetch` replace the live parts in tests.
  */
-export async function hardJobTools({ root, profileRoot, search, eyes, env = process.env, browser, driver, guard, lookup, fetch, allowPrivate } = {}) {
+export async function hardJobTools({ root, profileRoot, search, eyes, env = process.env, browser, driver, guard, lookup, fetch, allowPrivate, largeRoot } = {}) {
   await mkdir(root, { recursive: true });
   const shared = { ...(allowPrivate ? { allowPrivate } : {}), ...(lookup ? { lookup } : {}) };
   const tools = [searchWebTool({ provider: search ?? browserbaseSearchProvider({ env }), ...(allowPrivate ? { allowPrivate } : {}) })];
   tools.push(browseTool({ browser: browser ?? browserFromEnv({ env, profileRoot }), root, ...(driver ? { driver } : {}), ...(guard ? { guard } : {}), ...shared }));
-  tools.push(readDocumentTool({ root, vision: await visionFor({ root, eyes }), browser: browser ?? browserFromEnv({ env, profileRoot }), ...(driver ? { driver } : {}), ...(guard ? { guard } : {}), ...(fetch ? { fetch } : {}), ...shared }));
+  tools.push(readDocumentTool({ root, vision: await visionFor({ root, eyes }), browser: browser ?? browserFromEnv({ env, profileRoot }), ...(driver ? { driver } : {}), ...(guard ? { guard } : {}), ...(fetch ? { fetch } : {}), ...(largeRoot ? { largeRoot } : {}), ...shared }));
   return tools;
 }
 

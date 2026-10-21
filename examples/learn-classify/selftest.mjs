@@ -74,6 +74,7 @@ export async function passSelfTest({ out, repo, parts, log = () => {} }) {
     node: () => ({ submit: { ok: 'ok' } }),
   });
   const measure = await runJob({ run, job, model, judge: meteredJudge(scriptedJev()), effects, answer: parts.set.answer(parts.data), text: parts.set.text });
+  await Promise.all(effects.map((effect) => effect.dispose?.()));
 
   const sorted = (names) => [...new Set(names)].sort();
   const tools = {

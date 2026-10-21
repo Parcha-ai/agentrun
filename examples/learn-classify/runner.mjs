@@ -11,6 +11,7 @@ import { AGENT_STORE_FILE, carryBack, createAgentHome, openAgentHome, runPaths }
 import { execFileSync } from 'node:child_process';
 import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { mkdir, readdir, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -126,7 +127,9 @@ export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, e
     judge: () => jev,
     toolsFor: async (job, run) => [
       fetchPageTool({ allowDomain: allowedDomain(job, set) }),
-      ...(hard ? await hard.hardJobTools({ root: join(run.dir, 'evidence'), profileRoot: join(run.dir, 'chrome'), eyes: await hard.gatewayEyes(gateway), env }) : []),
+      // A PDF over read_document's in-memory cap is kept under the system's temporary directory, outside the pass's out
+      // dir, so it never reaches a recording, the agent's repository or a page; the run disposes of it when it ends.
+      ...(hard ? await hard.hardJobTools({ root: join(run.dir, 'evidence'), profileRoot: join(run.dir, 'chrome'), eyes: await hard.gatewayEyes(gateway), env, largeRoot: tmpdir() }) : []),
     ],
     modelFor: () => models,
     // The browser's guard on the browser the pass will use, checked by the pass's self-test.
@@ -144,10 +147,15 @@ async function selfTest({ out, repo, parts, log }) {
 async function runSet({ parts, repo, run, job, judge, limitUsd }) {
   const { set, data } = parts;
   const effects = [...(await parts.toolsFor(job, run)), ...set.labelTools(data)];
-  const answer = set.answer(data);
-  // A promoted workflow that answers the whole job runs first, by the host (dispatch.mjs), unless the pass says not to.
-  const dispatch = parts.dispatch === false ? null : await promotedFor({ repo, run, answer, input: set.input(job) });
-  return runJob({ run, job, model: await parts.modelFor(job, run), judge, effects, answer, text: set.text, limitUsd, dispatch });
+  try {
+    const answer = set.answer(data);
+    // A promoted workflow that answers the whole job runs first, by the host (dispatch.mjs), unless the pass says not to.
+    const dispatch = parts.dispatch === false ? null : await promotedFor({ repo, run, answer, input: set.input(job) });
+    return await runJob({ run, job, model: await parts.modelFor(job, run), judge, effects, answer, text: set.text, limitUsd, dispatch });
+  } finally {
+    // What a tool kept for this run alone (read_document's large files) goes when the run ends.
+    await Promise.all(effects.map((effect) => effect.dispose?.()));
+  }
 }
 
 /** A v2 run's score and tool facts, read from its closed store; the scoring's own Jev is metered apart from the run. */
