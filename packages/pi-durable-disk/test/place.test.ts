@@ -678,6 +678,16 @@ describe("archilPlace labelBox", () => {
     await assert.rejects(place.labelBox!({ provider: "modal", key: "0" }), (e: unknown) => e instanceof PlaceError && e.code === "LABEL_UNREADABLE" && /the labels of runs\/place-run cannot be read over the control: 503 Service Unavailable/.test(e.message));
   });
 
+  it("no read outlasts the bound: label files whose reads hang still answer undefined within labelWaitMs", async () => {
+    const { control, place, claim } = labelling({ labelWaitMs: 200 });
+    await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
+    for (let n = 1; n <= 40; n++) claim(n, { provider: "modal", owner: "tools", id: `sb-${n}`, receipt: "open" });
+    control.hangUnder = LABELS;
+    const t0 = Date.now();
+    assert.equal(await place.labelBox!({ provider: "modal", key: "0" }), undefined);
+    assert.ok(Date.now() - t0 < 1_000, `bounded: ${Date.now() - t0} ms against a 200 ms wait`);
+  });
+
   it("status() lists every box this life started, in start order, ended ones included, so a box's position is its start index; a box the driver gives no receipt for fails the read rather than shift the rest", async () => {
     const { place, asked, noReceipt } = labelling();
     const first = await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
@@ -702,9 +712,10 @@ describe("archilPlace labelBox", () => {
     assert.equal(plain.starts[0]!.attempt!.env!.HOST_BOX, undefined);
     assert.equal(control.objects.has(LABELS), false);
 
-    const { place, starts } = labelling();
+    const { control: c2, place, starts } = labelling();
     await place.start({ gen: 1, env: {}, stdin: await place.token!(1) });
     assert.equal(starts[0]!.attempt!.env!.HOST_BOX, undefined, "an order with no life asks for no label");
+    assert.equal(c2.objects.has(LABELS), false, "and gets no box-ids.internal/");
     await assert.rejects(place.labelBox!({ provider: "modal", key: "0" }), (e: unknown) => e instanceof PlaceError && e.code === "LABEL_REFUSED");
   });
 });

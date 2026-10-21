@@ -814,10 +814,10 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
      * makes them itself finds them made. Without an owner nothing is made: a directory the run user does not own would
      * refuse the runner's files.
      */
-    const makeDirs = async (gen: number): Promise<void> => {
+    const makeDirs = async (gen: number, labelled: boolean): Promise<void> => {
       if (!owner) return;
       const run = `${runPath(ref.id)}/`;
-      const dirs = [`${run}${REQUESTS}/`, ...(recording ? [`${run}${RECORDS}/`, `${run}${RECORDS}/${gen}/`, `${run}${RECORDS}/${gen}/.spool/`, `${run}${RECORDS}/${gen}/blobs/`] : []), ...(labelling ? [`${run}${BOX_IDS}/`] : [])];
+      const dirs = [`${run}${REQUESTS}/`, ...(recording ? [`${run}${RECORDS}/`, `${run}${RECORDS}/${gen}/`, `${run}${RECORDS}/${gen}/.spool/`, `${run}${RECORDS}/${gen}/blobs/`] : []), ...(labelled ? [`${run}${BOX_IDS}/`] : [])];
       for (const dir of dirs) {
         try {
           if (!(await control.headObject(dir))) await control.putObject(dir, "", { uid: owner.uid, gid: owner.gid, mode: owner.mode ?? 0o755 });
@@ -883,11 +883,12 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       const driver: HostDriver = {
         // Inside ensureRunning, after its revoke and start mark: no delegation holds the run, so S3 takes the writes.
         start: async (r, token, attempt) => {
-          await makeDirs(order.gen);
           // The box this start makes is the next in `started`; its runner claims that key's label, for this life.
           const life = order.env.RUN_LABEL;
+          const labelled = labelling && typeof life === "string" && life !== "";
+          await makeDirs(order.gen, labelled);
           let env = order.env;
-          if (labelling && typeof life === "string" && life !== "") {
+          if (labelled) {
             const key = String(started.length);
             hostBoxes.set(key, { provider: provider!, run: life });
             env = { ...order.env, [HOST_BOX]: JSON.stringify({ provider, key, run: life }) };
@@ -973,42 +974,55 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       const known = labels.get(box.key);
       if (known) return known;
       const prefix = `${runPath(ref.id)}/${BOX_IDS}/`;
-      // The last look's failure, if it failed: a label not landed yet is undefined, labels that cannot be read say why.
-      let last: unknown;
-      for (const deadline = Date.now() + labelWaitMs; ; await sleep(labelPollMs)) {
+      type LabelEntry = { owner?: unknown; provider?: unknown; key?: unknown; run?: unknown };
+      /** What a label file says, cached; one whose content has not landed over S3 yet (not JSON so far) is read again later. */
+      const read = async (name: string, key: string): Promise<void> => {
+        let parsed: unknown;
         try {
-          last = undefined;
-          const { objects } = await (control as SupervisorControl & RecordControl).listObjects(prefix);
-          for (const { key } of objects) {
-            const name = key.slice(prefix.length);
-            if (!BOX_LABEL.test(name) || labelFiles.has(name)) continue;
-            type LabelEntry = { owner?: unknown; provider?: unknown; key?: unknown; run?: unknown };
-            let entry: LabelEntry | null = null;
-            try {
-              const parsed: unknown = JSON.parse(new TextDecoder().decode(await control.getObject(key)));
-              entry = parsed !== null && typeof parsed === "object" ? (parsed as LabelEntry) : null;
-            } catch (error) {
-              // A label file whose content has not landed over S3 yet (not JSON so far) is read again on the next look.
-              if (error instanceof SyntaxError) continue;
-              throw error;
-            }
-            // A tool's label may still be rewritten (its receipt): not ours, and never read again.
-            labelFiles.set(name, entry?.owner === "place" ? entry : null);
-          }
-          for (const [name, entry] of labelFiles) {
-            if (entry && entry.key === box.key && entry.run === mine.run && entry.provider === mine.provider) {
-              const label = name.slice(0, -".json".length);
-              labels.set(box.key, label);
-              return label;
-            }
+          parsed = JSON.parse(new TextDecoder().decode(await control.getObject(key)));
+        } catch (error) {
+          if (error instanceof SyntaxError) return;
+          throw error;
+        }
+        const entry = parsed !== null && typeof parsed === "object" ? (parsed as LabelEntry) : null;
+        // A tool's label may still be rewritten (its receipt): not ours, and never read again.
+        labelFiles.set(name, entry?.owner === "place" ? entry : null);
+      };
+      const deadline = Date.now() + labelWaitMs;
+      /** `p`, or "late" once the bound has passed: no request outlasts the wait (one cut off still lands in the cache). */
+      const inTime = <T,>(p: Promise<T>): Promise<T | "late"> => {
+        p.catch(() => {});
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const late = new Promise<"late">((r) => (timer = setTimeout(() => r("late"), Math.max(0, deadline - Date.now()))));
+        return Promise.race([p, late]).finally(() => clearTimeout(timer));
+      };
+      // The last look's failure, if it failed: a label not landed yet (or a look cut off by the bound) is undefined, labels
+      // that cannot be read say why.
+      let last: unknown;
+      for (;;) {
+        last = undefined;
+        try {
+          const listed = await inTime((control as SupervisorControl & RecordControl).listObjects(prefix));
+          if (listed !== "late") {
+            const fresh = listed.objects.map(({ key }) => ({ key, name: key.slice(prefix.length) })).filter(({ name }) => BOX_LABEL.test(name) && !labelFiles.has(name));
+            await inTime(Promise.all(fresh.map(({ key, name }) => read(name, key))));
           }
         } catch (error) {
           last = error;
         }
-        if (Date.now() >= deadline) {
+        for (const [name, entry] of labelFiles) {
+          if (entry && entry.key === box.key && entry.run === mine.run && entry.provider === mine.provider) {
+            const label = name.slice(0, -".json".length);
+            labels.set(box.key, label);
+            return label;
+          }
+        }
+        const left = deadline - Date.now();
+        if (left <= 0) {
           if (last === undefined) return undefined;
           throw new PlaceError("LABEL_UNREADABLE", said(`the labels of ${runPath(ref.id)} cannot be read over the control: ${(last as Error)?.message ?? last}`), { cause: last });
         }
+        await sleep(Math.min(labelPollMs, left));
       }
     };
 
