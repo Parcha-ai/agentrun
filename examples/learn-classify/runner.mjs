@@ -9,7 +9,7 @@
 import { local, openRepo } from '@parcha/pi-git-remote';
 import { AGENT_STORE_FILE, carryBack, createAgentHome, openAgentHome, runPaths } from '@parcha/pi-durable-agent';
 import { execFileSync } from 'node:child_process';
-import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -61,6 +61,9 @@ export function splitOf(companies, split, { openTest = false } = {}) {
 }
 const byOrder = (a, b) => (a.order ?? 0) - (b.order ?? 0) || a.cik.localeCompare(b.cik);
 const withEpoch = (row, job) => (job.epoch === undefined ? row : { ...row, epoch: job.epoch });
+/** What a run keeps once its row is made, with dropEvidence: its store (what rescoring and the recording read), not the
+ *  documents its tools fetched nor the browser's profile, which are most of a run's disk. */
+const dropRunFiles = (dir) => { for (const part of ['evidence', 'chrome']) rmSync(join(dir, part), { recursive: true, force: true }); };
 
 /** A sealed pass on another pass's repository (`from`: its agent.git, or a bundle of it): main is fetched once into
  *  this pass's own repository, the seed is that history's first commit, and the other repository is only read. */
@@ -283,7 +286,7 @@ async function startJob({ out, repo, home, parts, judge, job, runCapUsd, log, lo
 }
 
 /** A job's second half, after startJob: a finished run is proposed and curated (both are idempotent) and gets its row. */
-async function endJob({ out, repo, home, parts, judge, job, record }) {
+async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence = false }) {
   const { state, save: write, idOf } = progressOf(out, job);
   let p = state.p;
   const save = (next) => { p = next; write(next); };
@@ -309,8 +312,10 @@ async function endJob({ out, repo, home, parts, judge, job, record }) {
     ? await writeRecording({ into: join(out, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started: p.started, ended: p.ended, spend, modelUsd: p.measure.unpricedAnswers ? null : p.measure.usage.costUsd })
     : null;
   const v1 = { run: job.order, runId, job, seedSha: p.seedSha, afterSha: p.afterSha, offered: p.offered, measure: p.measure, finished: p.finished, curated: p.curated, curateJudge: p.curateJudge, recording, convention: parts.conventions?.[job.cik] };
-  if (!isHard(parts.set)) return rowOf(v1);
-  return (parts.set === SETS.v4 ? rowOfV4 : rowOfV2)({ ...v1, score: p.score, stats: p.stats, scoringJudge: p.scoringJudge, lineage: p.lineage, jobRecord: hostRecord(jobRecordOf(recordingLines(run.storePath).lines), p.measure.dispatch) });
+  const row = !isHard(parts.set) ? rowOf(v1)
+    : (parts.set === SETS.v4 ? rowOfV4 : rowOfV2)({ ...v1, score: p.score, stats: p.stats, scoringJudge: p.scoringJudge, lineage: p.lineage, jobRecord: hostRecord(jobRecordOf(recordingLines(run.storePath).lines), p.measure.dispatch) });
+  if (dropEvidence) dropRunFiles(run.dir);
+  return row;
 }
 
 /**
@@ -341,7 +346,7 @@ export function listQueue(companies, list, split = 'run', { openTest = false } =
  *  until the spend reaches `capUsd`. With `concurrency` B above 1 the queue goes in batches of B by place: a batch's runs
  *  all start from one main and go side by side, then each is proposed and curated in queue order, so learning lands
  *  between batches. */
-export async function runLoop({ out, parts, jobs, list, split = 'run', openTest = false, concurrency = 1, capUsd, runCapUsd, record = true, log = () => {} }) {
+export async function runLoop({ out, parts, jobs, list, split = 'run', openTest = false, concurrency = 1, capUsd, runCapUsd, record = true, dropEvidence = false, log = () => {} }) {
   out = resolve(out);
   const { repo, meta } = await openOut(out, { mode: parts.mode, set: parts.set });
   const home = await agentHomeFor({ dir: join(out, 'home'), repo });
@@ -360,7 +365,7 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
     const batch = queue.slice(at, at + concurrency).filter((job) => !done.has(job.order));
     if (!batch.length) continue;
     if (capUsd !== undefined && spentNow() >= capUsd) { stoppedBy = `spent ${usd(spentNow())}, at or over the cap of ${usd(capUsd)}`; break; }
-    const args = (job) => ({ out, repo, home, parts, judge, job, runCapUsd, record, log, lock });
+    const args = (job) => ({ out, repo, home, parts, judge, job, runCapUsd, record, dropEvidence, log, lock });
     await Promise.all(batch.map((job) => startJob(args(job))));
     for (const job of batch) {
       const row = withEpoch(await endJob(args(job)), job);
@@ -386,7 +391,7 @@ async function homeAt(dir, repo, sha) {
  *  <out>/sealed-<sha12>.jsonl, each numbered by the company's place in the split. `from` takes the commit from another
  *  pass's repository (adoptFrom); `concurrency` runs that many jobs side by side; `shard` { index, count } takes every
  *  count-th company from the index-th, for a pass spread over several takes. */
-export async function runSealed({ out, parts, at = 'main', from, split = 'sealed', openTest = false, concurrency = 1, shard, capUsd, runCapUsd, record = false, log = () => {} }) {
+export async function runSealed({ out, parts, at = 'main', from, split = 'sealed', openTest = false, concurrency = 1, shard, capUsd, runCapUsd, record = false, dropEvidence = false, log = () => {} }) {
   out = resolve(out);
   if (from !== undefined) adoptFrom(out, from, { mode: parts.mode, set: parts.set });
   const { repo, meta } = await openOut(out, { mode: parts.mode, set: parts.set });
@@ -433,6 +438,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
     const row = scored ? (parts.set === SETS.v4 ? rowOfV4 : rowOfV2)({ ...v1, score: scored.score, stats: scored.stats, scoringJudge: scored.scoringJudge, phase, jobRecord: hostRecord(jobRecordOf(recordingLines(run.storePath).lines), measure.dispatch) }) : { ...rowOf(v1), phase };
     spent += spendOf(measure, undefined, tools).knownUsd + (scored?.scoringJudge.costUsd ?? 0);
     appendFileSync(rowsPath, `${JSON.stringify(row)}\n`);
+    if (dropEvidence) dropRunFiles(run.dir);
     rows.push(row);
     log(lineOf(row));
   };
@@ -450,7 +456,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -461,7 +467,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'cap-usd': { type: 'string' }, 'run-cap-usd': { type: 'string' }, 'no-record': { type: 'boolean' }, sealed: { type: 'boolean' }, at: { type: 'string' },
         'no-dispatch': { type: 'boolean' },
         model: { type: 'string' }, thinking: { type: 'string' }, set: { type: 'string' }, list: { type: 'string' }, 'promote-after': { type: 'string' },
-        split: { type: 'string' }, 'open-test': { type: 'boolean' }, from: { type: 'string' }, concurrency: { type: 'string' }, shard: { type: 'string' },
+        split: { type: 'string' }, 'open-test': { type: 'boolean' }, from: { type: 'string' }, concurrency: { type: 'string' }, shard: { type: 'string' }, 'drop-evidence': { type: 'boolean' },
       },
     }));
   } catch (error) {
@@ -515,7 +521,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       process.exit(2);
     }
     const common = {
-      out, parts, capUsd: number('cap-usd'), runCapUsd: number('run-cap-usd'), concurrency, openTest: Boolean(values['open-test']), log: (line) => console.log(line),
+      out, parts, capUsd: number('cap-usd'), runCapUsd: number('run-cap-usd'), concurrency, openTest: Boolean(values['open-test']), dropEvidence: Boolean(values['drop-evidence']), log: (line) => console.log(line),
       ...(values.split ? { split: values.split } : {}),
     };
     const result = values.sealed
