@@ -2419,6 +2419,7 @@
    },
    "subsidiaries": {
     "from": "another capture",
+    "note": "the exhibit names two subsidiaries and a row \"Other subsidiaries* / Various\"; the row is kept as the reader parses it",
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/1828108/000182810826000016/0001828108-26-000016-index.htm",
      "copy": "https://web.archive.org/web/20260916033516id_/https://www.sec.gov/Archives/edgar/data/1828108/000182810826000016/0001828108-26-000016-index.htm"
@@ -4338,6 +4339,7 @@
    },
    "subsidiaries": {
     "why": "exhibit211.htm lists nothing this reader can read",
+    "note": "the exhibit is a scanned image (exhibit211001.jpg) whose hidden text layer runs every name and jurisdiction together with no table, line or cell between them; unscored",
     "index": {
      "url": "https://www.sec.gov/Archives/edgar/data/932696/000093269626000007/0000932696-26-000007-index.htm",
      "copy": "https://web.archive.org/web/20260907235148id_/https://www.sec.gov/Archives/edgar/data/932696/000093269626000007/0000932696-26-000007-index.htm"

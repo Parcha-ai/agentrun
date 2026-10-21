@@ -256,6 +256,12 @@ const SEGMENT_FLAGS = Object.freeze({
   '0001837429': 'the filing tags 4 reportable segments; the list holds 3',
   '0000031462': 'the filing tags 4 reportable segments; the list holds 3',
 });
+// Exhibits kept as the reader reads them, each with why: no rule decides which rows are placeholders (the TL's ruling for
+// AUR, 2026-10-21), and no reader splits a name from its jurisdiction where the exhibit gives no structure (NSIT).
+const SUBSIDIARY_NOTES = Object.freeze({
+  '0001828108': 'the exhibit names two subsidiaries and a row "Other subsidiaries* / Various"; the row is kept as the reader parses it',
+  '0000932696': 'the exhibit is a scanned image (exhibit211001.jpg) whose hidden text layer runs every name and jurisdiction together with no table, line or cell between them; unscored',
+});
 
 // Cover city tags the TL reviewed and ruled wrong, one by one (2026-10-20): the city the row uses instead, and why.
 export const HQ_OVERRIDES = Object.freeze({
@@ -439,6 +445,7 @@ async function main() {
       notes.subsidiaries = {
         ...(subs.truth ? {} : { why: subs.why }),
         ...(subs.from ? { from: subs.from } : {}),
+        ...(SUBSIDIARY_NOTES[c.cik] ? { note: SUBSIDIARY_NOTES[c.cik] } : {}),
         ...(subs.index ? { index: { url: subs.index.url, copy: subs.index.copy } } : {}),
         ...(subs.copy ? { exhibit: { url: subs.copy.url, copy: subs.copy.copy } } : {}),
       };
