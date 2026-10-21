@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
 import { admitRevision, currentRevision, foldUses, periodUses, promotionDecision, readTrial, renderSkill, renderTrial, skillPath, trialPath, TRIAL_LIMITS } from '@parcha/pi-agent-learn';
 import { bankOf, openOut, runLoop, scriptedParts } from './runner.mjs';
-import { GATE, gatedSettler, pairedDifference, replayGate, undoPromotion, verdictOf, wilson } from './promotion-gate.mjs';
+import { GATE, gatedSettler, pairedDifference, replayGate, undoPromotion, valuesOf, verdictOf, wilson } from './promotion-gate.mjs';
 import { CLASSIFY_WORKFLOW_V4, WORKFLOW } from './scripted.mjs';
 import { SETS } from './sets.mjs';
 
@@ -21,27 +21,44 @@ async function scratch(t) {
   return dir;
 }
 
+// A company's values per part: +1 right, -1 wrong, 0 no answer, null no truth.
 const cells = (sic4, segments = null, hq = null) => ({ sic4, segments, hq });
 const bankOfN = (n) => Array.from({ length: n }, (_, i) => ({ cik: `c${i}` }));
 const byCik = (bank, of) => new Map(bank.map((c, i) => [c.cik, of(i)]));
 
 test('the paired verdict: worse and equal are held, better is promoted, and it rebuilds the same', () => {
   const bank = bankOfN(40);
-  const serving = byCik(bank, (i) => cells(i < 20 ? 1 : 0, 1, 1));
-  const worse = verdictOf({ bank, candidate: byCik(bank, (i) => cells(i < 14 ? 1 : 0, 1, 1)), serving });
+  const serving = byCik(bank, (i) => cells(i < 20 ? 1 : -1, 1, 1));
+  const worse = verdictOf({ bank, candidate: byCik(bank, (i) => cells(i < 14 ? 1 : -1, 1, 1)), serving });
   assert.equal(worse.promote, false);
   assert.ok(worse.diff < 0 && worse.lo < 0, JSON.stringify(worse));
   const equal = verdictOf({ bank, candidate: serving, serving });
   assert.deepEqual([equal.promote, equal.diff, equal.lo, equal.hi], [false, 0, 0, 0], 'a candidate no better than serving stays a trial');
-  // Six more SIC codes right and none lost: 6 of 120 parts.
-  const better = byCik(bank, (i) => cells(i < 26 ? 1 : 0, 1, 1));
+  // Six more SIC codes right and none lost: +2 on 6 of 120 parts.
+  const better = byCik(bank, (i) => cells(i < 26 ? 1 : -1, 1, 1));
   const won = verdictOf({ bank, candidate: better, serving });
   assert.equal(won.promote, true, JSON.stringify(won));
-  assert.deepEqual([won.companies, won.cells, won.diff], [40, 120, 0.05]);
+  assert.deepEqual([won.companies, won.cells, won.diff], [40, 120, 0.1]);
   assert.deepEqual(verdictOf({ bank, candidate: better, serving }), won, 'seeded: the same cells give the same verdict');
   // Two gained and one lost is no evidence.
-  const mixed = verdictOf({ bank, candidate: byCik(bank, (i) => cells(i < 22 && i !== 0 ? 1 : 0, 1, 1)), serving });
+  const mixed = verdictOf({ bank, candidate: byCik(bank, (i) => cells(i < 22 && i !== 0 ? 1 : -1, 1, 1)), serving });
   assert.equal(mixed.promote, false, JSON.stringify(mixed));
+});
+
+test('the ±1 utility: a wrong answer where serving escalated counts against the candidate, an escalation where serving was wrong for it', () => {
+  assert.deepEqual([true, false].map((answered) => valuesOf({ answered, parts: { sic4: 0, segments: null, hq: 1 } })), [{ sic4: -1, segments: null, hq: 1 }, { sic4: 0, segments: null, hq: 0 }]);
+  const run = (answered, right) => valuesOf({ answered, parts: { sic4: right, segments: null, hq: right } });
+  const bank = bankOfN(30);
+  // Serving escalates on the first 10 and is right on the rest; the candidate answers all, wrong on 6 of those 10.
+  const serving = byCik(bank, (i) => (i < 10 ? run(false, 0) : run(true, 1)));
+  const bold = verdictOf({ bank, candidate: byCik(bank, (i) => (i < 6 ? run(true, 0) : run(true, 1))), serving });
+  // Counted as accuracy it gains 4 companies; counted as utility the 6 wrong answers cost more than that.
+  assert.ok(bold.diff < 0 && !bold.promote, `4 right and 6 silent wrong answers in place of 10 escalations is worse: ${bold.reason}`);
+  // Serving is wrong on the first 10; the candidate escalates there instead.
+  const wrong = byCik(bank, (i) => (i < 10 ? run(true, 0) : run(true, 1)));
+  const careful = verdictOf({ bank, candidate: byCik(bank, (i) => (i < 10 ? run(false, 0) : run(true, 1))), serving: wrong });
+  assert.ok(careful.promote, careful.reason);
+  assert.match(careful.reason, /^±1 utility, candidate minus serving 0\.333 over 60 parts of 30 bank companies, 95% CI \[/);
 });
 
 test('a part without truth is left out of the pair, never counted as right', () => {
@@ -107,7 +124,7 @@ test('a bank run that throws is not kept and holds the gate; the next gate runs 
   asked.length = 0;
   const second = await gate({ name: WORKFLOW, candidate: { sha256: B, workflow: {} }, serving: { sha256: A, workflow: {} }, main: 'm2' });
   assert.deepEqual(asked, ['b:c1']);
-  assert.deepEqual([second.promote, second.ran, second.kept, second.diff], [true, 1, 5, 1]);
+  assert.deepEqual([second.promote, second.ran, second.kept, second.diff], [true, 1, 5, 2]);
   assert.equal(Number(second.costUsd.toFixed(4)), 0.01);
 });
 
@@ -225,7 +242,7 @@ test('the gate: a trial worse than the serving revision on the bank stays a tria
   const progress = JSON.parse(await readFile(join(out, 'progress', 'run-004.json'), 'utf8'));
   const settled = progress.curated.report.runs.flatMap((r) => r.settled ?? []);
   assert.deepEqual(settled.map((s) => s.workflow), [WORKFLOW]);
-  assert.equal(settled[0].reason, 'hold: promotion gate: candidate minus serving -1.000 over 9 parts of 3 bank companies, 95% CI [-1.000, -1.000]: lower bound not above 0');
+  assert.equal(settled[0].reason, 'hold: promotion gate: ±1 utility, candidate minus serving -1.000 over 9 parts of 3 bank companies, 95% CI [-1.000, -1.000]: lower bound not above 0');
 });
 
 test('the gate: a first promotion that escalates on one bank company in three is under the floor and stays a trial', async (t) => {
