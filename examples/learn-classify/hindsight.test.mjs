@@ -8,7 +8,7 @@ import { chmod, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { HINDSIGHT_SPLITS, reflectOnRun, wrongFields } from './hindsight.mjs';
+import { HINDSIGHT_SPLITS, MAX_REFLECTION_USD, reflect, reflectOnRun, wrongFields } from './hindsight.mjs';
 import { readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { FIXTURES_V4, readJson, scriptedModel } from './scripted.mjs';
 import { SETS } from './sets.mjs';
@@ -116,4 +116,24 @@ test('no reflection on a right field, a field not asked for, or a pass that is n
   assert.deepEqual(wrongFields(score).map((w) => w.field), ['sic4', 'hq', 'subsidiaries']);
   assert.deepEqual(wrongFields({ ...score, segmentsF1: 0.5, subsidiariesTruthCount: null }).map((w) => w.field), ['sic4', 'hq', 'segments']);
   assert.deepEqual(wrongFields(score, ['sic4'], { codes: { 3561: 'PUMPS & PUMPING EQUIPMENT' } }), [{ field: 'sic4', answer: '3562', truth: '3561', truthTitle: 'PUMPS & PUMPING EQUIPMENT' }]);
+});
+
+test('a reflection stops at its spend limit ($1 by default) and its tools at 6 calls', async (t) => {
+  const dir = await scratch(t);
+  const asked = [];
+  const parts = hindsightParts(asked);
+  const prompt = 'review';
+  assert.equal(MAX_REFLECTION_USD, 1);
+  const full = await reflect({ model: parts.model(), effects: await parts.tools(), storePath: join(dir, 'a.sqlite'), prompt });
+  assert.deepEqual([full.hypotheses.length, full.stopped], [2, null]);
+  // A limit already passed stops it at its first step: no answer, and it says why.
+  const capped = await reflect({ model: parts.model(), effects: await parts.tools(), storePath: join(dir, 'b.sqlite'), prompt, limitUsd: -1 });
+  assert.deepEqual(capped.hypotheses, []);
+  assert.match(capped.stopped, /passed its limit of \$-1/);
+  // A seventh tool call is refused.
+  const many = scriptedModel({ root: [...Array.from({ length: 7 }, () => ({ call: 'fetch_page', args: { url: INDEX } })), { call: 'answer', args: { hypotheses: HYPOTHESES } }] });
+  const busy = await reflect({ model: many, effects: await parts.tools(), storePath: join(dir, 'c.sqlite'), prompt });
+  const results = many.requests.at(-1).messages.filter((m) => m.role === 'toolResult' && m.toolName === 'fetch_page').map((m) => JSON.parse(m.content[0].text));
+  assert.deepEqual(results.map((r) => Boolean(r.refused)), [false, false, false, false, false, false, true]);
+  assert.equal(busy.hypotheses.length, 2);
 });
