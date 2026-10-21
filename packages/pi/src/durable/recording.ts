@@ -114,14 +114,23 @@ function numbered(placed: Placed[], genAt: (commit: number) => number | undefine
   return lines;
 }
 
+/** A document's revisions in commit order, each with the document's whole value after it: a base replaces the value,
+ *  a delta is applied to a copy of it. */
+function* replayed<Revision extends { kind: string; content: string }>(revisions: readonly Revision[]): Generator<[Revision, Json]> {
+  let value: Json;
+  for (const rev of revisions) {
+    value = rev.kind === "base" ? JSON.parse(rev.content) : apply(structuredClone(value), JSON.parse(rev.content));
+    yield [rev, value];
+  }
+}
+
 /** Each node attempt's conversation and path, from every `agentrun.nodes` document's latest value. */
 function nodeConversations(db: Database): Map<number, string> {
   const out = new Map<number, string>();
   for (const doc of db.prepare("SELECT id, key_value FROM documents WHERE kind = ? AND family = 1").all(JSON.stringify("agentrun.nodes")) as Array<{ id: number; key_value: string }>) {
+    // Only the latest value is kept: a document rewritten whole at each commit has as many values as revisions.
     let value: Json;
-    for (const rev of db.prepare("SELECT kind, content FROM document_revisions WHERE document_id = ? ORDER BY seq").all(doc.id) as Array<{ kind: string; content: string }>) {
-      value = rev.kind === "base" ? JSON.parse(rev.content) : apply(structuredClone(value), JSON.parse(rev.content));
-    }
+    for (const [, next] of replayed(db.prepare("SELECT kind, content FROM document_revisions WHERE document_id = ? ORDER BY seq").all(doc.id) as Array<{ kind: string; content: string }>)) value = next;
     const found = nodeConversation(JSON.parse(doc.key_value) as string, value);
     if (found) out.set(found[0], found[1]);
   }
@@ -132,9 +141,7 @@ function nodeConversations(db: Database): Map<number, string> {
 function driverGenerations(db: Database): Array<[number, number]> {
   const out: Array<[number, number]> = [];
   for (const { id } of db.prepare("SELECT id FROM documents WHERE kind = ?").all(JSON.stringify("agentrun.driver")) as Array<{ id: number }>) {
-    let value: Json;
-    for (const rev of db.prepare("SELECT seq, kind, content FROM document_revisions WHERE document_id = ? ORDER BY seq").all(id) as Array<{ seq: number; kind: string; content: string }>) {
-      value = rev.kind === "base" ? JSON.parse(rev.content) : apply(structuredClone(value), JSON.parse(rev.content));
+    for (const [rev, value] of replayed(db.prepare("SELECT seq, kind, content FROM document_revisions WHERE document_id = ? ORDER BY seq").all(id) as Array<{ seq: number; kind: string; content: string }>)) {
       if (typeof value?.generation === "number") out.push([rev.seq, value.generation]);
     }
   }
@@ -172,9 +179,7 @@ export function recordingLines(file: string, options: { after?: number } = {}): 
       const kind = JSON.parse(doc.kind) as string;
       const key = doc.family === 1 ? JSON.parse(doc.key_value) as string : undefined;
       const conv = doc.scope_kind === "conversation" ? doc.owner_id : doc.scope_kind === "task" ? taskConversation.get(doc.owner_id) : undefined;
-      let value: Json;
-      for (const rev of db.prepare("SELECT seq, kind, version, content FROM document_revisions WHERE document_id = ? ORDER BY seq").all(doc.id) as Array<{ seq: number; kind: string; version: number; content: string }>) {
-        value = rev.kind === "base" ? JSON.parse(rev.content) : apply(structuredClone(value), JSON.parse(rev.content));
+      for (const [rev, value] of replayed(db.prepare("SELECT seq, kind, version, content FROM document_revisions WHERE document_id = ? ORDER BY seq").all(doc.id) as Array<{ seq: number; kind: string; version: number; content: string }>)) {
         if (rev.seq > after) placed.push(documentLine(doc.id, kind, key, structuredClone(value), rev.version, conv, rev.seq));
       }
     }

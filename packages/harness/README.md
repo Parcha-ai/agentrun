@@ -18,7 +18,7 @@ npm install @parcha/agentrun-harness@beta
 ```
 
 npm installs the pi peers it needs (`@earendil-works/pi-ai`, `pi-durable`, `chord`, `pi-codemode` and `typebox`).
-`@parcha/pi-transport` is optional: only a demo that declares `boxes` needs it, and it is not on npm yet, so such a demo runs from a checkout of [the repository](https://github.com/Parcha-ai/agentrun) (from an install it says so in one line).
+`@parcha/pi-transport` is optional: only a demo that declares `boxes` needs it (`npm install @parcha/pi-transport@beta`).
 
 Save this as `demo.mjs`:
 
@@ -65,6 +65,7 @@ first-demo: complete
 
 The fakes make no priced call, so there is no cost line. Node 22 also prints its SQLite `ExperimentalWarning` on stderr.
 The run's record, `{"id":"x","score":42}`, is in the whole result that `--json` prints.
+`node demo.mjs --record ./rec` keeps the run as an `agentrun.recording/1` folder. Open it in the hosted run viewer, https://parcha-ai.github.io/agentrun/: choose or drop the folder, and it plays in your browser, with nothing uploaded.
 
 `pi-durable-disk run --app` takes this package's child app as a file: `import.meta.resolve('@parcha/agentrun-harness/child-app')`.
 

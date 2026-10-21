@@ -11,8 +11,8 @@ import { entryOf, imagesOf, textOf, textPartsOf, toolCallsOf } from './durable.t
 /** A region in percent of the element that holds it: left, top, width, height. */
 export type Box = { x: number; y: number; w: number; h: number };
 /** An element's props. `cite`: a click selects that citation in every panel (`ViewContext.cite`). `box`: the element is
- *  placed over its parent at that region. */
-/** `vars` are numbers a stylesheet reads as custom properties (`--name`): a view's way to say where something is without a style string. */
+ *  placed over its parent at that region.
+ *  `vars` are numbers a stylesheet reads as custom properties (`--name`): a view's way to say where something is without a style string. */
 export type Props = { class?: string; path?: string; title?: string; cite?: string; box?: Box; vars?: Record<string, number> };
 
 /** A node a view returns. `frame` asks the shell to draw a browser session's picture at the stop (frames.ts). `pdf-page`
