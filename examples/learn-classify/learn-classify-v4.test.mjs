@@ -358,6 +358,14 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   for (const words of [/its 4-digit SIC code, from sic_codes: sic2_groups for the group/, /chosen by where most revenue comes from/, /A code you remember from EDGAR or elsewhere is a guess, never evidence/, /the revenue reading wins, and the code's cite is the revenue table it rests on/])
     assert.match(flat(text(v4, 'AGENTS.md')), words);
   assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), /When the reportable segments are regions, read the revenue split by product or service line \(the revenue disaggregation note\)/);
+  // The code follows the company's role as well as its product, and a REIT is filed as one.
+  for (const words of [/The code's SEC title names the same role/, /A real estate investment trust is filed under 6798/]) assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), words);
+  // A decision node follows what the decision needs: evidence in the state is Jev's; knowledge the state does not hold
+  // (what a company does, its SIC code) is one narrow agent step, given the company's name from the job's input; and Jev
+  // keeps the check the state can decide, that the revenue line the code rests on is quoted from the report.
+  for (const words of [/A choice decidable from evidence already in the state is a Jev pick/, /A choice that needs knowledge the state does not hold, such as what a company does, is one narrow agent step on the host's node model/,
+    /the company's name from the job's input/, /a judge that the revenue line the code rests on is quoted from the report/]) assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), words);
+  assert.match(flat(v4Rules), /A choice among listed options that needs knowledge the state does not hold .* is an agent node on the host's node model/);
   // Looking at the pages is a rule of the job, not only the skill's advice.
   assert.match(flat(text(v4, 'AGENTS.md')), /look at the annual report's cover page and the page of its segment table with read_document/i);
   // classify-company takes the job's input as given, a website or none.
