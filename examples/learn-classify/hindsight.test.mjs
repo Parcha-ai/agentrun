@@ -104,8 +104,8 @@ test('no reflection on a right field, a field not asked for, or a pass that is n
   const pass = await runSealed({ out: join(dir, 'hq'), parts: sealed, at: 'seed' });
   assert.ok(pass.rows.every((r) => r.hindsight === undefined));
   assert.deepEqual(asked, []);
-  // TRAIN and the older sets' run split only.
-  assert.deepEqual(HINDSIGHT_SPLITS, ['train', 'run']);
+  // TRAIN only: the 1k set's train and train-legacy, and the older sets' run split.
+  assert.deepEqual(HINDSIGHT_SPLITS, ['train', 'train-legacy', 'run']);
   const never = () => { throw new Error('no reflection here'); };
   for (const split of ['dev', 'test', 'sealed']) {
     const none = await reflectOnRun({ job: { split, name: 'x' }, run: {}, score: { sicCorrect4: false, sic4Answer: '1', sic4Truth: '2' }, answer: {}, model: never, effects: [] });
