@@ -552,6 +552,18 @@ test('read_document refuses a refused or private URL and a redirect to one, caps
   assert.equal(MAX_DOCUMENT_BYTES, 20 * 1024 * 1024);
 });
 
+test('read_document\'s failed request carries its HTTP status, so a rate limit is counted from the result', async (t) => {
+  const root = await scratch(t);
+  const busy = (status) => (res) => { res.writeHead(status, { 'content-type': 'text/plain' }); res.end('slow down'); };
+  const web = await localWeb(t, { 'ir.acme.example/busy.pdf': busy(429), 'ir.acme.example/gone.pdf': busy(404) });
+  const tool = readDocumentTool({ root, vision: await visionFor({ root, eyes: fakeEyes() }), fetch: web.fetch, lookup: publicLookup });
+  const limited = conforms(tool, await tool.run({ url: 'https://ir.acme.example/busy.pdf' }));
+  assert.deepEqual([limited.ok, limited.error, limited.status], [false, 'HTTP 429', 429]);
+  assert.equal(conforms(tool, await tool.run({ url: 'https://ir.acme.example/gone.pdf' })).status, 404);
+  // A refusal sent nothing, so it has no status.
+  assert.equal('status' in conforms(tool, await tool.run({ url: 'https://www.sec.gov/x.pdf' })), false);
+});
+
 test('read_document without eyes, or with eyes that fail: the text still comes back, each look says why, a failed request has no known price', async (t) => {
   const root = await scratch(t);
   const web = await localWeb(t, { 'ir.acme.example/ar.pdf': send('application/pdf', Buffer.from(REPORT)), 'ir.acme.example/logo.png': send('image/png', Buffer.from(pngBytes(40, 20))) });

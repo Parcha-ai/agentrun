@@ -2,13 +2,14 @@
 
 ## The job
 
-- The input is a company's name, and its ticker and website when they are known. The answer is six parts, as the SEC
-  files them, for the company and its latest annual report (a 10-K, or a 20-F or 40-F for a foreign filer):
-  - its 4-digit SIC code, the one the SEC assigns it, a code in sic_codes;
-  - every reportable operating segment, named as the company reports it, with its share of total revenue from 0 to 1;
-    a company that reports one segment says so;
-  - its headquarters, the principal executive offices the registrant states for itself: the city, the state or
-    province when there is one, and the country;
+- The input is a company's name, and its ticker and website when they are known. Answer in six parts, the way the SEC
+  files them, each from a source read in this run; the latest annual report (a 10-K, or a 20-F or 40-F for a foreign
+  filer) is the source for the segments, the subsidiaries and the report:
+  - its 4-digit SIC code as the SEC files it;
+  - every reportable operating segment, named as the company reports it, with its share of total revenue from 0 to 1,
+    from the report's segment table; a company that reports one segment says so;
+  - its headquarters, the principal executive offices the registrant states for itself (its cover, else the report
+    before its exhibits): the city, the state or province when there is one, and the country;
   - its operating subsidiaries as the company lists them (a 10-K's Exhibit 21, a 20-F's Exhibit 8), at most 15, or none
     (`{ "none": true, "note" }`) when the report, read, has no subsidiary exhibit or list, the note saying so in at most
     300 characters;
@@ -18,7 +19,16 @@
   headquarters, a subsidiary or the report), the page or document it comes from as you read it in this run, where on it
   (a section, or "pdf p. N" for a page of a PDF), and the words it says, at most 300 characters. Cite the annual report
   by its pages.
-- How to do the job by hand is the classify skill.
+- The code is chosen or read, not remembered. A code you remember is a guess, never evidence: the code's cite is the
+  page, read in this run, that it rests on.
+- Look at the annual report's cover page and the page of its segment table with read_document `{ pages: [N], question }`
+  (a vision model looks at the page), and cite the segments, the headquarters and the fiscal year from those looks ("pdf
+  p. N"). A table read only as text loses its layout. The cover is the filing's own cover page, the earliest of its
+  first pages that carries the form's header and the registrant's name and address.
+- Sources: any public page, the company's own site and reports, and SEC EDGAR pages as the Wayback Machine archived
+  them (https://web.archive.org/web/<time>/<sec.gov URL>). sec.gov itself, its mirrors and SIC listing sites are
+  refused by every tool. Search with search_web, read pages with fetch_page or browse (browse runs a page's
+  scripts), and read annual reports and other PDFs with read_document.
 
 ## Every run leaves the job cheaper
 

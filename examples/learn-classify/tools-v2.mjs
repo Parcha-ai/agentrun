@@ -563,10 +563,12 @@ const DOCUMENT_RESULT_SCHEMA = {
     costUsd: { type: ['number', 'null'] },
     refused: { type: 'string' },
     error: { type: 'string' },
+    status: { type: 'integer', description: 'the HTTP status of a request that failed on one' },
   },
 };
 
 const PNG = [0x89, 0x50, 0x4e, 0x47];
+const statusOf = (got) => (Number.isInteger(got.status) ? { status: got.status } : {});
 const WALL_STATUS = new Set([401, 403, 406, 429, 503]);
 const PDF_KIND = Object.freeze({ kind: 'pdf', mimeType: 'application/pdf', ext: 'pdf' });
 function kindOf(bytes) {
@@ -920,10 +922,10 @@ export function readDocumentTool({ root, vision, browser, driver, guard: openGua
         const viaBrowser = await throughBrowser(url, signal);
         if (viaBrowser.spent.browser) used.browser = viaBrowser.spent;
         if (viaBrowser.refused) return empty({ refused: viaBrowser.refused });
-        if (viaBrowser.error && !page) return empty({ error: `${got.error ?? 'a page, not a file'}; ${viaBrowser.error}` });
+        if (viaBrowser.error && !page) return empty({ error: `${got.error ?? 'a page, not a file'}; ${viaBrowser.error}`, ...statusOf(got) });
         if (!viaBrowser.error) { got = viaBrowser; page = false; }
       }
-      if (got.refused || got.error) return empty(got.refused ? { refused: got.refused } : { error: got.error });
+      if (got.refused || got.error) return empty(got.refused ? { refused: got.refused } : { error: got.error, ...statusOf(got) });
       if (got.file) kept = got.file;
       else bytes = got.bytes;
       from = got.url;
