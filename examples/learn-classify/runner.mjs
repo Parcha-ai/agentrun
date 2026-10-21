@@ -155,7 +155,7 @@ export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 ? FIXTURES
 /** The paid parts: the model and Jev through the gateway (models.mjs), fetch_page, and in v2 lane C3's tools
  *  (tools-v2.mjs: search and the browser on Browserbase with the key read at each call, else a local Chrome; the eyes
  *  through the gateway), their evidence and the browser's profile under the run's own directory. */
-export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, env = process.env, archivedSec = false } = {}) {
+export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, env = process.env, archivedSec = false, edgarCache, lookup } = {}) {
   const { gatewayJev, gatewayModels, gatewayOf, ROOT } = await import('./models.mjs');
   const gateway = gatewayOf(env);
   // The root agent on Opus at high thinking unless --model / --thinking name another; the nodes on the host's NODE.
@@ -166,17 +166,28 @@ export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, e
   if (isHard(set)) {
     try { hard = await import('./tools-v2.mjs'); } catch (error) { throw new Error(`--set ${set.name} --live needs lane C3's tools-v2.mjs: ${error.message}`); }
   }
+  if (edgarCache !== undefined) {
+    if (!archivedSec) throw new Error('edgarCache needs archivedSec: the cache serves only the Wayback copies of SEC pages');
+    if (!hard) throw new Error(`edgarCache needs a hard set, not ${set.name}`);
+    // Made once here so a cache with no manifest stops the pass before its first job.
+    hard.snapshotFetch({ dir: edgarCache });
+  }
   return {
     mode: 'live', providers: 'real', modelName: `gateway/${models.agent.model.modelId}`, set, data: d, labels: d.labels, companies: d.companies, conventions: conventionsOf(d.report),
     // With archivedSec every tool also opens the Wayback Machine's copy of an SEC page (tools.mjs), and nothing else there.
     archivedSec,
     judge: () => jev,
-    toolsFor: async (job, run) => [
-      fetchPageTool({ allowDomain: allowedDomain(job, set), archivedSec }),
-      // A PDF over read_document's in-memory cap is kept under the system's temporary directory, outside the pass's out
-      // dir, so it never reaches a recording, the agent's repository or a page; the run disposes of it when it ends.
-      ...(hard ? await hard.hardJobTools({ root: join(run.dir, 'evidence'), profileRoot: join(run.dir, 'chrome'), eyes: await hard.gatewayEyes(gateway), env, largeRoot: tmpdir(), archivedSec }) : []),
-    ],
+    toolsFor: async (job, run) => {
+      // One snapshot cache per run: it reads C1's manifest when made, so captures added mid-pass reach later runs.
+      const fetch = edgarCache !== undefined ? hard.snapshotFetch({ dir: edgarCache }) : undefined;
+      const seams = { ...(fetch ? { fetch } : {}), ...(lookup ? { lookup } : {}) };
+      return [
+        fetchPageTool({ allowDomain: allowedDomain(job, set), archivedSec, ...seams }),
+        // A PDF over read_document's in-memory cap is kept under the system's temporary directory, outside the pass's out
+        // dir, so it never reaches a recording, the agent's repository or a page; the run disposes of it when it ends.
+        ...(hard ? await hard.hardJobTools({ root: join(run.dir, 'evidence'), profileRoot: join(run.dir, 'chrome'), eyes: await hard.gatewayEyes(gateway), env, largeRoot: tmpdir(), archivedSec, ...seams }) : []),
+      ];
+    },
     modelFor: () => models,
     // The browser's guard on the browser the pass will use, checked by the pass's self-test.
     ...(hard ? { browserCheck: (dir) => hard.guardSelfTest({ root: dir, profileRoot: join(dir, 'chrome'), env, archivedSec }) } : {}),
@@ -603,7 +614,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -615,7 +626,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'no-dispatch': { type: 'boolean' },
         model: { type: 'string' }, thinking: { type: 'string' }, set: { type: 'string' }, list: { type: 'string' }, 'promote-after': { type: 'string' },
         split: { type: 'string' }, 'open-test': { type: 'boolean' }, from: { type: 'string' }, concurrency: { type: 'string' }, shard: { type: 'string' }, 'drop-evidence': { type: 'boolean' },
-        'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' },
+        'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' }, 'edgar-cache': { type: 'string' }, schedule: { type: 'string' }, checkpoints: { type: 'string' },
       },
     }));
   } catch (error) {
@@ -645,6 +656,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     if (values[name] !== undefined && !values.sealed) { console.error(`--${name} takes a sealed pass\n${USAGE}`); process.exit(2); }
   }
   if (values.split === 'test' && !values['open-test']) { console.error('the test split is opened once per finalist: pass --open-test'); process.exit(2); }
+  for (const name of ['schedule', 'checkpoints']) {
+    if (values[name] !== undefined && values.sealed) { console.error(`--${name} takes a learning pass\n${USAGE}`); process.exit(2); }
+  }
+  if (values.schedule !== undefined && !['rolling', 'batch'].includes(values.schedule)) { console.error(`--schedule is rolling or batch\n${USAGE}`); process.exit(2); }
+  const checkpoints = values.checkpoints === undefined ? undefined : values.checkpoints.split(',').map(Number);
+  if (checkpoints && !checkpoints.every((n, i) => Number.isInteger(n) && n >= 1 && (i === 0 || n > checkpoints[i - 1]))) { console.error(`--checkpoints is ascending whole numbers from 1\n${USAGE}`); process.exit(2); }
+  if (values['edgar-cache'] !== undefined && !values['edgar-archive']) { console.error(`--edgar-cache needs --edgar-archive: the cache serves only the Wayback copies of SEC pages\n${USAGE}`); process.exit(2); }
   let list;
   if (values.list !== undefined) {
     try { list = JSON.parse(readFileSync(resolve(values.list), 'utf8')); } catch (error) { console.error(`--list ${values.list}: ${error.message}`); process.exit(2); }
@@ -653,7 +671,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const set = SETS[values.set ?? 'v1'];
     if (!set) { console.error(`--set is v1, v2 or v4\n${USAGE}`); process.exit(2); }
     const parts = values.live
-      ? await liveParts({ set, ...(values.data ? { data: resolve(values.data) } : {}), ...(values.model ? { model: values.model } : {}), ...(values.thinking ? { thinking: values.thinking } : {}), archivedSec: Boolean(values['edgar-archive']) })
+      ? await liveParts({ set, ...(values.data ? { data: resolve(values.data) } : {}), ...(values.model ? { model: values.model } : {}), ...(values.thinking ? { thinking: values.thinking } : {}), archivedSec: Boolean(values['edgar-archive']), ...(values['edgar-cache'] ? { edgarCache: resolve(values['edgar-cache']) } : {}) })
       : scriptedParts({ set, ...(values.data ? { data: resolve(values.data) } : {}) });
     if (values['no-dispatch']) parts.dispatch = false;
     if (values['agent-dir'] !== undefined) {
@@ -679,7 +697,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     };
     const result = values.sealed
       ? await runSealed({ ...common, at: values.at, record: !values['no-record'], ...(values.from ? { from: values.from } : {}), ...(shard ? { shard } : {}) })
-      : await runLoop({ ...common, jobs: number('jobs'), list, record: !values['no-record'] });
+      : await runLoop({ ...common, jobs: number('jobs'), list, record: !values['no-record'], ...(values.schedule ? { schedule: values.schedule } : {}), ...(checkpoints ? { checkpoints } : {}) });
     if (result.stoppedBy) process.exitCode = 3;
   } catch (error) {
     console.error(`learn-classify failed: ${error.stack ?? error}`);

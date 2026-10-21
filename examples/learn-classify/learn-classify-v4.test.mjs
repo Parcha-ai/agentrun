@@ -411,25 +411,57 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   for (const c of fixtures) for (const word of [c.name.split(' ')[0], c.ticker]) assert.doesNotMatch(job, new RegExp(`\\b${word}\\b`), word);
 });
 
-test('the EDGAR home is the v4 home with only the lookup lifted: the same definition and skills, and the job text differs in the code, its evidence and its sources', () => {
-  const v4 = join(import.meta.dirname, 'agent-v4');
-  const edgar = join(import.meta.dirname, 'agent-v4-edgar');
-  const text = (dir, ...file) => readFileSync(join(dir, ...file), 'utf8');
-  const files = (dir) => execFileSync('find', ['.', '-type', 'f'], { cwd: dir, encoding: 'utf8' }).split('\n').filter(Boolean).sort();
-  assert.deepEqual(files(edgar), files(v4));
-  for (const file of files(v4).filter((f) => f !== './AGENTS.md')) assert.equal(text(edgar, file), text(v4, file), file);
-  // The job text, item by item: every rule but three is the same.
-  const items = (dir) => text(dir, 'AGENTS.md').split(/\n(?=\s*- |#)/).map((item) => item.replace(/\s+/g, ' ').trim());
-  const [before, after] = [items(v4), items(edgar)];
+const HOMES = {
+  v4: join(import.meta.dirname, 'agent-v4'),
+  targets: join(import.meta.dirname, 'agent-v4-targets'),
+  edgar: join(import.meta.dirname, 'agent-v4-edgar'),
+};
+const homeText = (dir, ...file) => readFileSync(join(dir, ...file), 'utf8');
+const homeFiles = (dir) => execFileSync('find', ['.', '-type', 'f'], { cwd: dir, encoding: 'utf8' }).split('\n').filter(Boolean).sort();
+const flatText = (body) => body.replace(/\s+/g, ' ').trim();
+const jobSection = (dir) => { const body = homeText(dir, 'AGENTS.md'); return body.slice(body.indexOf('## The job'), body.indexOf('## Every run')); };
+// The method lines the v4 job text held, each moved whole into the classify skill's "Sources and evidence".
+const MOVED = [/sec\.gov and EDGAR are refused by every tool, and so are their mirrors and SIC listing sites: do not try them\./,
+  /Look at the annual report's cover page and the page of its segment table with read_document/, /The code is chosen, not remembered\./];
+
+test('the targets home states only what the answer is: every method line of the v4 job text is in its classify skill, and nothing else changed', () => {
+  const { v4, targets } = HOMES;
+  assert.deepEqual(homeFiles(targets), homeFiles(v4));
+  for (const file of ['./agent.json', './skills/workflows/SKILL.md']) assert.equal(homeText(targets, file), homeText(v4, file), file);
+  const rest = (dir) => homeText(dir, 'AGENTS.md').slice(homeText(dir, 'AGENTS.md').indexOf('## Every run'));
+  assert.equal(rest(targets), rest(v4), 'the learning rules are the same');
+  const job = flatText(jobSection(targets));
+  for (const words of [/its 4-digit SIC code, the one the SEC assigns it, a code in sic_codes;/, /every reportable operating segment, named as the company reports it, with its share of total revenue from 0 to 1;/,
+    /its headquarters, the principal executive offices the registrant states for itself: the city/, /Finish by calling answer once, with 1 to 12 cites\./, /How to do the job by hand is the classify skill\./]) assert.match(job, words);
+  // No method: no tool, no way to choose, no source to read or refuse.
+  assert.doesNotMatch(job, /sic2_groups|revenue comes from|revenue reading|segment table|its cover|read_document|search_web|fetch_page|browse|refused|remember/);
+  // Each moved line is in the skill word for word, and the skill is v4's with that one block added.
+  const v4Job = flatText(jobSection(v4));
+  const skill = homeText(targets, 'skills', 'classify', 'SKILL.md');
+  for (const words of MOVED) {
+    assert.match(v4Job, words);
+    assert.match(flatText(skill), words);
+  }
+  const block = skill.slice(skill.indexOf('Sources and evidence, for every part:'), skill.indexOf('1. The official site'));
+  assert.equal(skill.replace(block, ''), homeText(v4, 'skills', 'classify', 'SKILL.md'));
+  for (const sentence of flatText(block).split(/(?<=\.) (?:- )?(?=[A-Z])/).slice(1)) assert.ok(v4Job.includes(sentence), sentence);
+});
+
+test('the EDGAR home is the targets home with only the lookup lifted: two lines of the skill, the sources and the code\'s evidence', () => {
+  const { targets, edgar } = HOMES;
+  assert.deepEqual(homeFiles(edgar), homeFiles(targets));
+  for (const file of homeFiles(targets).filter((f) => f !== './skills/classify/SKILL.md')) assert.equal(homeText(edgar, file), homeText(targets, file), file);
+  const items = (dir) => homeText(dir, 'skills', 'classify', 'SKILL.md').split(/\n(?=- |\d+\. |#)/).map(flatText);
+  const [before, after] = [items(targets), items(edgar)];
   assert.equal(after.length, before.length);
   const changed = before.flatMap((item, i) => (item === after[i] ? [] : [i]));
-  assert.deepEqual(changed.map((i) => before[i].slice(0, 40)), ['- its 4-digit SIC code, from sic_codes: ', '- The code is chosen, not remembered. A ', '- sec.gov and EDGAR are refused by every']);
+  assert.deepEqual(changed.map((i) => before[i].slice(0, 40)), ['- sec.gov and EDGAR are refused by every', '- The code is chosen, not remembered. A ']);
   const lifted = changed.map((i) => after[i]).join(' ');
-  for (const words of [/its 4-digit SIC code as the SEC files it, from sic_codes: sic2_groups for the group/, /A code you choose yourself goes by where most revenue comes from/,
-    /A code you remember is a guess, never evidence: the code's cite is the page, read in this run, that it rests on/,
-    /SEC EDGAR pages as the Wayback Machine archived them \(https:\/\/web\.archive\.org\/web\/<time>\/<sec\.gov URL>\)/, /sec\.gov itself, its mirrors and SIC listing sites are refused by every tool/]) assert.match(lifted, words);
-  // A source, never a step: the job text names no EDGAR page, field or key that holds the code.
-  assert.doesNotMatch(lifted, /index|header|SIC:|CIK|browse-edgar|submissions|do not try|revenue reading wins/i);
+  for (const words of [/Sources: any public page, the company's own site and reports, and SEC EDGAR pages as the Wayback Machine archived them \(https:\/\/web\.archive\.org\/web\/<time>\/<sec\.gov URL>\)/,
+    /sec\.gov itself, its mirrors and SIC listing sites are refused by every tool/, /A code you remember is a guess, never evidence: when a remembered code and the revenue reading disagree, the revenue reading wins/,
+    /The code's cite is the page, read in this run, that it rests on/]) assert.match(lifted, words);
+  // A source, never a step: no EDGAR page, field or key that holds the code is named, and nothing says a code read loses.
+  assert.doesNotMatch(lifted, /index|header|SIC:|CIK|browse-edgar|submissions|do not try|from EDGAR or elsewhere/i);
 });
 
 // ---- scripted passes -----------------------------------------------------------------------------------------------------

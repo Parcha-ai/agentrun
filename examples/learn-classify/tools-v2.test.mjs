@@ -3,8 +3,9 @@
 // gateway, the three tools inside a learn-classify run (root agent, workflow call nodes, agent nodes), and, where Chrome is
 // installed, browse on a real headless Chrome against the local server, refusals proved by what the server never saw.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { chmod, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,8 +25,9 @@ import { SETS } from './sets.mjs';
 import { FIXTURES, fixtureFetch, readJson, scriptedJev, scriptedModel } from './scripted.mjs';
 import {
   blockedAddress, browserbaseSearchProvider, browserFromEnv, browseTool, fontRowsOf, gatewayEyes, guardSelfTest, hardJobTools, hostsOf, MAX_DOCUMENT_BYTES,
-  MAX_LARGE_DOCUMENT_BYTES, readDocumentTool, refusedUrl, searchFromEnv, searchWebTool, SELF_TEST_URL, urlPolicy, visionFor, writeHosts,
+  MAX_LARGE_DOCUMENT_BYTES, readDocumentTool, refusedUrl, searchFromEnv, searchWebTool, SELF_TEST_URL, snapshotFetch, urlPolicy, visionFor, writeHosts,
 } from './tools-v2.mjs';
+import { ANY_HOST, fetchPageTool } from './tools.mjs';
 
 const ajv = new Ajv({ strict: false, allErrors: true });
 const conforms = (tool, result) => {
@@ -249,6 +251,85 @@ const ACME = {
 
 const browseOf = (scripted, root, extra = {}) => browseTool({ browser: scripted.browser, driver: scripted.driver, guard: scripted.guard, root, lookup: publicLookup, ...extra });
 const ledgerOps = (backend) => backend.ledger.map((row) => row.op).filter((op) => ['create', 'attach', 'release'].includes(op));
+
+const INDEX_HTML = '<html><head><title>EDGAR Filing Documents for 0000000001-26-000001</title></head><body><div class="companyInfo">ACME CORP (Filer) CIK: 0000000001 SIC: 5961 Business Address: 1 MAIN ST SPRINGFIELD IL</div></body></html>';
+const PINNED = 'https://web.archive.org/web/20260224213732id_/https://www.sec.gov/Archives/edgar/data/1/000000000126000001/0000000001-26-000001-index.htm';
+const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+
+/** A snapshot cache dir as C1 writes it: manifest.jsonl, one line per company, and the bodies. */
+async function snapshotDir(t, lines) {
+  const dir = await scratch(t);
+  await mkdir(join(dir, 'bodies'));
+  await writeFile(join(dir, 'bodies', '1-index.html'), INDEX_HTML);
+  const rows = lines ?? [{ cik: '0000000001', chosen: { form: 'index', snapshot: PINNED, body: 'bodies/1-index.html', sha256: sha256(Buffer.from(INDEX_HTML)) } }];
+  await writeFile(join(dir, 'manifest.jsonl'), `${rows.map((r) => (typeof r === 'string' ? r : JSON.stringify(r))).join('\n')}\n`);
+  return dir;
+}
+
+/** A live web that answers every request with `answer(href, n)` and logs what it was asked. */
+function liveWeb(answer) {
+  const asked = [];
+  return { asked, fetch: async (href, init) => { asked.push(href); return answer(href, asked.length, init); } };
+}
+const refusedConnection = () => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
+
+test('the snapshot cache: a pinned SEC capture comes back as the same bytes, the same result through fetch_page, and no request goes out', async (t) => {
+  const dir = await snapshotDir(t);
+  const live = liveWeb(() => new Response(INDEX_HTML, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } }));
+  const cached = snapshotFetch({ dir, fetch: live.fetch });
+  const res = await cached(PINNED, {});
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type'), /^text\/html/);
+  assert.equal(Buffer.from(await res.arrayBuffer()).toString('utf8'), INDEX_HTML);
+  assert.deepEqual(live.asked, []);
+  // Invisible to the agent: fetch_page gives the same result from the cache as from the live archive with the same bytes.
+  const page = (fetch) => fetchPageTool({ allowDomain: ANY_HOST, archivedSec: true, fetch, lookup: publicLookup });
+  const fromCache = await page(cached).run({ url: PINNED });
+  const fromLive = await page(live.fetch).run({ url: PINNED });
+  assert.deepEqual(fromCache, fromLive);
+  assert.match(fromCache.text, /SIC: 5961/);
+  assert.equal(live.asked.length, 1, 'only the live tool asked the archive');
+  // Another time, or no flag: a redirect to the pinned capture, as the archive resolves a time; fetch_page follows it.
+  const other = await cached('https://web.archive.org/web/2026/https://www.sec.gov/Archives/edgar/data/1/000000000126000001/0000000001-26-000001-index.htm', {});
+  assert.deepEqual([other.status, other.headers.get('location')], [302, 'https://web.archive.org/web/20260224213732/https://www.sec.gov/Archives/edgar/data/1/000000000126000001/0000000001-26-000001-index.htm']);
+  const followed = await page(cached).run({ url: 'https://web.archive.org/web/2026/http://sec.gov/Archives/edgar/data/1/000000000126000001/0000000001-26-000001-index.htm' });
+  assert.deepEqual([followed.ok, followed.url, followed.text], [true, 'https://web.archive.org/web/20260224213732/http://sec.gov/Archives/edgar/data/1/000000000126000001/0000000001-26-000001-index.htm', fromLive.text]);
+  assert.equal(live.asked.length, 1);
+});
+
+test('the snapshot cache: an uncached URL goes live, an archive that turns the connection away is asked again with back-off, and a damaged body is never served', async (t) => {
+  const dir = await snapshotDir(t);
+  const slept = [];
+  const sleep = async (ms) => { slept.push(ms); };
+  const other = 'https://web.archive.org/web/2026id_/https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000000001';
+  const live = liveWeb((href, n) => { if (n <= 2) throw refusedConnection(); return new Response('<p>SIC: 5961</p>', { status: 200, headers: { 'content-type': 'text/html' } }); });
+  const res = await snapshotFetch({ dir, fetch: live.fetch, sleep })(other, {});
+  assert.equal(res.status, 200);
+  assert.deepEqual(live.asked, [other, other, other]);
+  assert.deepEqual(slept, [1000, 2000]);
+  // A 429 is asked again too; after the last try, what came back is returned.
+  const busy = liveWeb(() => new Response('slow down', { status: 429 }));
+  slept.length = 0;
+  assert.equal((await snapshotFetch({ dir, fetch: busy.fetch, sleep, retries: 2 })(other, {})).status, 429);
+  assert.deepEqual([busy.asked.length, slept], [3, [1000, 2000]]);
+  const down = liveWeb(() => { throw refusedConnection(); });
+  await assert.rejects(snapshotFetch({ dir, fetch: down.fetch, sleep, retries: 1 })(other, {}), /fetch failed/);
+  assert.equal(down.asked.length, 2);
+  // Anything not on the archive goes out once, as it is.
+  const site = liveWeb(() => { throw refusedConnection(); });
+  await assert.rejects(snapshotFetch({ dir, fetch: site.fetch, sleep })('https://www.acme.example/', {}), /fetch failed/);
+  assert.equal(site.asked.length, 1);
+  // A body that no longer matches its sha256 is not served: the request goes live.
+  await writeFile(join(dir, 'bodies', '1-index.html'), INDEX_HTML.replace('5961', '1311'));
+  const fresh = liveWeb(() => new Response(INDEX_HTML, { status: 200, headers: { 'content-type': 'text/html' } }));
+  assert.equal((await snapshotFetch({ dir, fetch: fresh.fetch, sleep })(PINNED, {})).status, 200);
+  assert.deepEqual(fresh.asked, [PINNED]);
+  // A line without its body, or a body outside the directory, is a miss; a directory without a manifest is refused.
+  const loose = await snapshotDir(t, [{ cik: '1', chosen: { snapshot: PINNED, body: '../escape.html', sha256: 'x' } }, { cik: '2', chosen: null }, 'not json']);
+  const missed = liveWeb(() => new Response('', { status: 404 }));
+  assert.equal((await snapshotFetch({ dir: loose, fetch: missed.fetch, sleep })(PINNED, {})).status, 404);
+  assert.throws(() => snapshotFetch({ dir: join(dir, 'nowhere') }), /no manifest\.jsonl/);
+});
 
 test('with archivedSec, all three hard-job tools take the Wayback Machine\'s copy of an SEC page, and still refuse sec.gov and every other archived site', async (t) => {
   const copy = 'https://web.archive.org/web/20260911112117id_/https://www.sec.gov/Archives/edgar/data/1/0000000001-26-000001-index.htm';
