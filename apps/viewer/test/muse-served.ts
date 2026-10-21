@@ -86,3 +86,21 @@ export async function served(t: { after(fn: () => unknown, options?: { timeout?:
   const until = (expression: string, what: string) => page.once(expression, 'true', 25_000, what);
   return { value, until };
 }
+
+/** The chat-browser fixture made into a run that moved between hosts: a `run.json` for each generation (its holder: `host`, `driver`, and a pid and boot id the card must never show), a
+ *  `process.started` for the next generation, and a host `handoff` line per move at the times given (its `why` is prose the card must never show). `gens[i]` is generation i+1's holder;
+ *  `moves[i]` is the handoff that ends generation i+1: `{ t, point, n }`, `from` being that generation's host label unless given. A `failed` move is a `handoff.failed` line, not a handoff. */
+export function movedRun(dir: string, { gens, moves, failed = [] }: { gens: { host: string; driver: string }[]; moves: { t: number; point: string; n: number; from?: string }[]; failed?: number[] }) {
+  const lines = readEvents(dir);
+  const holder = (gen: number) => ({ driver: gens[gen - 1]!.driver, pid: 4_000_000 + gen, since: '2026-10-20T23:20:00.371Z', host: gens[gen - 1]!.host, bootId: `boot-${gen}a9f3c2e1b7` });
+  const host = (t: number, kind: string, data: Record<string, unknown>) => ({ channel: 'live', source: 'host', kind, t, data });
+  gens.forEach((_, i) => {
+    const gen = i + 1;
+    const start = gen === 1 ? 50 : moves[i - 1]!.t + 100;
+    if (gen > 1) lines.push(host(start, 'process.started', { gen, pid: 4_000_000 + gen }));
+    lines.push(host(start + 10, 'run.json', { gen, run: 'run-moved', status: 'running', generation: gen, holder: holder(gen) }));
+  });
+  moves.forEach((move, i) => lines.push(host(move.t, 'handoff', { gen: i + 1, point: move.point, n: move.n, why: 'the brief is written; the run is released to the disk and a VM opens it', from: move.from ?? gens[i]!.host })));
+  for (const t of failed) lines.push(host(t, 'handoff.failed', { gen: 1, why: 'the disk refused the claim' }));
+  writeEvents(dir, lines.sort((a, b) => a.t - b.t));
+}
