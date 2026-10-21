@@ -286,22 +286,30 @@ test('a kill request written in short pieces is whole when it is renamed into pl
   for (let waited = 0; !existsSync(file) && waited < 20_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { point: 'judge.asked verdict', n: 1, pid: child.pid, nonce: 'a-nonce' }, 'the whole request, though each write took 5 bytes');
 });
-test('the slow status tick does not queue a read behind one still running: a place whose reads take seconds is read a bounded number of times', { timeout: 120_000 }, async (t) => {
+test('the slow status tick does not queue a read behind one still running: ticks that fall while a read is running ask for nothing, so releasing it starts only the boundary reads', { timeout: 120_000 }, async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-slow-status-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'spec.json');
   writeFileSync(file, JSON.stringify({ name: 'reference' }));
-  Object.assign(process.env, { DEMO_SPEC: file, DEMO_LINGER_MS: '7000' });
+  Object.assign(process.env, { DEMO_SPEC: file, DEMO_LINGER_MS: '12000' });
   t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
-  let reads = 0;
-  const started = Date.now();
+  // The first read is held for 15 s, past the supervisor's two-second ticks while the child lives (about five), then released; the others answer at once. A tick that fell while the read ran asked for nothing; one that queued a read behind it would run the moment the held read returns, in a burst. The ticks are the supervisor's own timer, so a slow runner only fires fewer of them: the count of the burst does not depend on the runner's speed.
+  const HOLD_MS = 15_000;
+  const starts = [];
   await demo({ ...options, argv: ['--json', '--record', join(tmp, 'recording')], place: ({ paths, self, destroyBoxes, requestFile }) => ({
     ...localPlace({ self, paths, destroyBoxes, requestFile }),
-    status: async () => { reads += 1; await new Promise((resolve) => setTimeout(resolve, 2500)); return { record: null }; },
+    status: async () => {
+      starts.push(Date.now());
+      if (starts.length === 1) await new Promise((resolve) => setTimeout(resolve, HOLD_MS));
+      return { record: null };
+    },
   }) });
-  // Boundary reads (start, exit, result) plus the ticks that found no read running; a tick queued behind every slow read would make six or more.
-  assert.ok(reads <= 5, `the status was read ${reads} times in ${Date.now() - started} ms`);
+  assert.ok(starts.length > 1, 'the run went on after the held read');
+  const released = starts[0] + HOLD_MS;
+  // Right after the release: the run's exit read and its end read, and at most one tick. A queued read for each tick of the hold would be three or more on top.
+  const burst = starts.slice(1).filter((at) => at >= released && at < released + 1000).length;
+  assert.ok(burst <= 3, `${burst} reads started within a second of the held read's release: a tick queued a read behind the running one`);
 });
 test('an operator kill carries to the next attempt only the tool kills that did not land, and a control that cannot be removed is a failed kill, not a crash', { timeout: 300_000 }, async (t) => {
   const { notLanded } = await import('../packages/harness/dist/demo.js');
