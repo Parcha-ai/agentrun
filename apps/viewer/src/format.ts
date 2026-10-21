@@ -42,6 +42,8 @@ export type Manifest = {
   cost: { usd: number | null; parts: Record<string, number | null> };
   source: { run: string; store_sha256: string };
   result?: { blob: string; title: string };
+  /** The agent's report page (draft 41, RECORDING.md 7.1): its title, its entry, and each path under report/ to its blob's SHA-256. */
+  artifact?: { title: string; entry: string; files: Record<string, string> };
   /** The job that ran (`{ workflow, input, files }`), as a JSON blob (draft 24). */
   job?: { blob: string; sha256: string };
   /** The run's store at its end, a SQLite blob, and the commit of the generation it was taken at (draft 24). */
