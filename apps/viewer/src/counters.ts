@@ -73,8 +73,8 @@ export type CounterState = {
   lostCharges: number | null;
   /** Per conversation, the `pi.live` generation last seen and the ask open there: its position (the non-aborted
    *  assistant entries committed before it), the process that asked it, the latest partial it committed (as stable JSON,
-   *  kept once seen even when a later snapshot shows the marker bare), and whether it has been counted as a cut ask. */
-  live: Record<string, { open?: { at: number; process: number; partial?: string; counted?: boolean }; generation?: { attempt?: Json; message?: Json } }>;
+   *  kept once seen even when a later snapshot shows the marker bare). */
+  live: Record<string, { open?: { at: number; process: number; partial?: string }; generation?: { attempt?: Json; message?: Json } }>;
   /** Per position (`<conv> <position>`), the cut asks counted: each ask a process died under, once, proven when it had
    *  committed a partial and possible when only its start marker. Re-asks at a position are its asks minus one. */
   reasks: Record<string, { proven: number; possible: number }>;
@@ -295,7 +295,7 @@ export const counterFold: Fold<CounterState> = {
           const tally = next.reasks[key] ?? { proven: 0, possible: 0 };
           next.reasks = { ...next.reasks, [key]: ask.partial !== undefined ? { ...tally, proven: tally.proven + 1 } : { ...tally, possible: tally.possible + 1 } };
         };
-        const cutBy = open !== undefined && open.at === at && open.process < next.processes && !open.counted ? open : undefined;
+        const cutBy = open !== undefined && open.at === at && open.process < next.processes ? open : undefined;
         if (line.snapshot === true) {
           if (generation === undefined) open = undefined;
           else if (open?.at === at) open = { ...open, ...(partial !== undefined ? { partial } : {}) };
@@ -375,7 +375,7 @@ export const counterFold: Fold<CounterState> = {
             // An ask a process died under, answered by a later process: that process's ask shows as this entry. Counted once.
             const held = next.live[conv];
             const at = next.committedTurns[conv] ?? 0;
-            if (held?.open && held.open.at === at && held.open.process < next.processes && !held.open.counted) {
+            if (held?.open && held.open.at === at && held.open.process < next.processes) {
               const key = `${conv} ${at}`;
               const tally = next.reasks[key] ?? { proven: 0, possible: 0 };
               next.reasks = { ...next.reasks, [key]: held.open.partial !== undefined ? { ...tally, proven: tally.proven + 1 } : { ...tally, possible: tally.possible + 1 } };

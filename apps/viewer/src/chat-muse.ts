@@ -244,22 +244,21 @@ export function drawMuse(root: HTMLElement, model: ChatModel, recording: Recordi
   // quiet disclosure ("Thought · 3 steps"), opened to read.
   let browsing: ToolItem[] = [];
   let thoughts: string[] = [];
-  let hidden = false;
   let quiet: ToolItem[] = [];
   const flushBrowser = () => { if (browsing.length) column.append(browserCard(recording, browsing)); browsing = []; };
   const flushQuiet = () => {
-    if (!hidden && quiet.length === 0 && thoughts.length === 0) return;
-    const named = thoughts.length > 0 || hidden ? 'Thought' : 'Worked';
+    if (quiet.length === 0 && thoughts.length === 0) return;
+    const named = thoughts.length > 0 ? 'Thought' : 'Worked';
     const summary = quiet.length > 0 ? `${named} · ${quiet.length} ${quiet.length === 1 ? 'step' : 'steps'}` : named;
     column.append(reportEl('details', { class: 'mu-quiet-group' }, reportEl('summary', { text: summary }),
       ...thoughts.filter((text) => text.trim() !== '').map((text) => reportEl('div', { class: 'mu-thought-body' }, ...reportParagraphs(museShorten(text)))),
       quiet.length > 0 && reportEl('ul', { class: 'mu-steps-list' }, ...quiet.map((step) => reportEl('li', { text: museShorten(step.title).slice(0, 140) })))));
-    thoughts = []; quiet = []; hidden = false;
+    thoughts = []; quiet = [];
   };
   for (const entry of entries) {
     if (entry.kind === 'browser') { if (browsing.length === 0) flushQuiet(); browsing.push(entry.item as ToolItem); continue; }
     if (entry.kind === 'quiet') { quiet.push(entry.item as ToolItem); continue; }
-    if (entry.kind === 'thought') { const item = entry.item as Extract<ChatItem, { kind: 'thinking' }>; thoughts.push(item.text); if (item.redacted) hidden = true; continue; }
+    if (entry.kind === 'thought') { const item = entry.item as Extract<ChatItem, { kind: 'thinking' }>; thoughts.push(item.text); continue; }
     flushBrowser(); flushQuiet();
     if (entry.kind === 'wait') column.append(signInCard(entry.wait!));
     else if (entry.kind === 'user') {
