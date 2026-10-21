@@ -26,7 +26,7 @@ A workflow is a JSON document of typed nodes: each node that asks a model names 
 1. **Draft.** In Pi, `/agentrun <task>` has the agent draft the workflow with the packaged author skill (see [the Pi extension](../pi/README.md)). In your own host, `authorWorkflow` gives your agent the same author contract and keeps the candidate and its feedback without running it.
 2. **Check.** `validateWorkflow(workflow)` checks the structure, the schemas, the state paths between nodes and the predicates, with no model call. A refused workflow lists its `issues`: each names the node or schema at fault with a JSON Pointer `path`, and the rule it breaks with a `code`, so the agent repairs that node and checks again. `inspectWorkflow` shows the tree and the tools and adapters it needs, without running any code.
 3. **Dry-run, for free.** `dryRunWorkflow(workflow)` runs the whole workflow on synthetic values made from its schemas, with no model, Jev or tool call. Its `status` is `passed` when every check ran, `failed` with the `problems`, or `not_run` when a check could not run, with the reasons in `skipped`. A `not_run` dry run proves nothing.
-4. **Run.** `runWorkflow(workflow, input, deps)` runs it with your agent, judgment and effect functions, and returns an output that matches the output schema, or an escalation. `deps` is the object of adapters your application supplies (`runNode`, `runJudge`, `runEffect`); [Integrate with your application](../../docs/host-integration.md) says what each one owes the engine.
+4. **Run.** `runWorkflow(workflow, input, deps)` runs it with your agent, judgment and effect functions, and returns an output that matches the output schema, or an escalation. `deps` is the object of adapters your application supplies (`runNode`, `runJudge`, `runEffect`); [Integrate with your application](https://github.com/Parcha-ai/agentrun/blob/main/docs/host-integration.md) says what each one owes the engine.
 5. **Watch every node.** `workflowGraph(workflow)` from `@parcha/agentrun-dsl/graph` lists every node and edge from the JSON alone, and `nodeStatus` marks each node `done`, `working`, `failed` or `not-run` from what a durable run kept. Pi's `/agentrun` view draws the same graph, with each node's state as the run goes.
 
 The same checks from a shell, in the project where you installed the package, on one of the author skill's examples that ships with it (an agent extracts the change in each release note, then summarizes the migration):
@@ -68,7 +68,7 @@ const result = await runWorkflow(workflow, input, deps);
 console.log(result.status, result.output);
 ```
 
-It prints `complete` and a report with the two changes. Each answer is checked against the node's schema: a `runNode` that returns `{}` makes the run throw `submission does not satisfy schema "Change"`. A node whose adapter you did not supply fails with a message that names it (`extract node "extract-change" requires runNode`). The adapters are listed in `WorkflowDeps`; the `params` each one receives (`kind`, `label`, `system`, `user`, `schema`, `tools`, `signal`) are what a real host forwards to its agent.
+It prints `complete` and a report with the two changes. Each answer is checked against the node's schema: a `runNode` that returns `{}` makes the run throw `submission does not satisfy schema "Change"`. A node whose adapter you did not supply fails with a message that names the node and the adapter (`extract node "extract-change" requires runNode`). The three adapters take different parameters, listed in `WorkflowDeps`: `runNode` (agent, decide, extract and report nodes) receives `kind`, `label`, `system`, `user`, `schema`, `tools` and `signal`, which a real host forwards to its agent; `runJudge` (judge, pick, sift, route and ask) receives `label`, `kind`, `state` and `questions`, and returns an object with the `answers`; `runEffect` (call nodes) receives `node`, `input`, `attempt`, `idempotencyKey` and `signal`, and returns the tool's result.
 
 The `run` command of the CLI supplies no adapters, so it runs only a workflow that needs none, such as one made of `code` nodes. Save this as `total.json`:
 
@@ -98,7 +98,7 @@ Then run it:
 npx @parcha/agentrun-dsl@beta run total.json total.input.json --trusted
 ```
 
-It prints `"status": "complete"` and an output with `"total": 6`. The shipped examples need a model, a tool or a judge, so `run` stops on them with `requires runNode`; run those with `runWorkflow` as above.
+It prints `"status": "complete"` and an output with `"total": 6`. The shipped examples each need an adapter, so `run` stops on them naming it: `review-release-notes.json` needs `runNode`, `evidence-gate.json` needs `runJudge`, and `read-file.json` and `read-source-decision.json` need `runEffect` (the latter also `runJudge`). Run those with `runWorkflow` and your own adapters.
 
 The `agentrun` CLI provides `demo`, `example`, `inspect`, `validate`, `dry-run`, and deterministic `run`. `inspect workflow.json [--json]` displays structure without executing code. Validation/run require `--trusted` because workflow JavaScript can execute, including during validation. This package is not an isolation boundary.
 
