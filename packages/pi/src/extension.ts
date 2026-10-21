@@ -92,7 +92,8 @@ export function createAgentRunExtension(options: AgentRunExtensionOptions = {}):
   if (options.onToolAttempt !== undefined && typeof options.onToolAttempt !== 'function') throw new Error('onToolAttempt must be a host callback');
   if (options.onWorkflowEvent !== undefined && typeof options.onWorkflowEvent !== 'function') throw new Error('onWorkflowEvent must be a host callback');
   if (options.sop !== undefined && (typeof options.sop !== 'string' || !options.sop.trim())) throw new Error('sop must be nonempty text');
-  const limits = { ...nativeLimits, ...options.runtimeLimits } as AgentRunRuntimeLimits;
+  // A field given as undefined is an omitted one: it keeps its default.
+  const limits = { ...nativeLimits, ...Object.fromEntries(Object.entries(options.runtimeLimits ?? {}).filter(([, value]) => value !== undefined)) } as AgentRunRuntimeLimits;
   for (const [key, value] of Object.entries(limits)) {
     if (!(key in nativeLimits) || value !== null && (!Number.isSafeInteger(value) || value < 1 || value > nativeLimits[key as keyof typeof nativeLimits])) {
       throw new Error('runtimeLimits must use known fields with positive bounded integers or explicit null');

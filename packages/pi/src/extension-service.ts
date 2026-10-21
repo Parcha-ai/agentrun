@@ -258,7 +258,8 @@ export class WorkflowExtensionService {
     this.allowedTools = new Set(tools);
     this.rubricSections = freeze(snapshot(options.rubricSections ?? {}));
     if (Object.entries(this.rubricSections).some(([name, text]) => !name.trim() || typeof text !== 'string' || !text.trim())) throw new ExtensionServiceError('configuration', 'Rubric sections require nonempty names and text.');
-    this.limits = { ...defaults, ...options.limits };
+    // A field given as undefined is an omitted one: it keeps its default.
+    this.limits = { ...defaults, ...Object.fromEntries(Object.entries(options.limits ?? {}).filter(([, value]) => value !== undefined)) };
     for (const key of Object.keys(ceilings) as (keyof ExtensionServiceLimits)[]) {
       const value = this.limits[key];
       if (value === null && ['deadlineMs', 'maxAgentCalls', 'maxJudgeCalls', 'maxToolCalls'].includes(key)) continue;
