@@ -257,7 +257,7 @@ test('a move: the target\'s record anchors on its snapshot at open (3.2)', async
   // A move keeps one store: a snapshot below a commit already seen is a restore's drop, not a move.
   const dropped = await run([durable(1, 0), durable(3, 0, { t: 12 }), snap(2, 0, 20, 2), moveAt(3, 3, 0, 22)]);
   assert.ok(dropped.some(problem => /first snapshot is at commit 2, below the 3 already seen/.test(problem.message)));
-  assert.ok(dropped.some(problem => /highest commit seen before it is 3; a move keeps one store/.test(problem.message)) || dropped.some(problem => /restore record/.test(problem.message)));
+  assert.ok(dropped.some(problem => /highest commit seen before it is 3; a move keeps one store/.test(problem.message)));
 });
 
 test('draft 37: a restore whose pi committed once at open, snapshot at head 9: the record at commit 10 passes, at 11 fails', async t => {
