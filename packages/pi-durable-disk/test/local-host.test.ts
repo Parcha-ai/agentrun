@@ -329,6 +329,26 @@ test("as root, the driver refuses to run instances (and so the agent's tools) as
   }
 });
 
+test("start refuses to run the instance (and so the agent's tools) as root: a user that is uid 0 or empty, or child mode in a root process", async () => {
+  const w = world();
+  const { calls, exec } = recorder();
+  const refused = (e: unknown) => e instanceof LocalHostError && e.code === "INVALID_ARGUMENT" && /root/.test(e.message);
+  // An empty user reaches systemd as `User=`, which runs the unit as root.
+  for (const user of ["root", "0", 0, "", " "]) {
+    const host = localHost({ exec, hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot, user, group: "1000" });
+    await assert.rejects(host.start(REF, TOKEN), refused, `user ${JSON.stringify(user)}`);
+  }
+  const getuid = process.getuid;
+  process.getuid = () => 0;
+  try {
+    const child = localHost({ exec, hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot, mode: "child", command: ["/bin/true"] });
+    await assert.rejects(child.start(REF, TOKEN), refused, "child mode as root");
+  } finally {
+    process.getuid = getuid;
+  }
+  assert.equal(calls.length, 0, "nothing ran");
+});
+
 test("child mode: token on stdin, holder in the environment, no API key; stop ends it; its detached command outlives it", async () => {
   const dir = scratch("pda-child-");
   const out = join(dir, "out.json");
