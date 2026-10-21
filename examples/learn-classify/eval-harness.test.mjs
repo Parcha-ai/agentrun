@@ -142,7 +142,7 @@ test('a TRAIN stream in batches: the batch starts from one main, then each job i
   const dir = await scratch(t);
   const { data, companies } = await standIn(dir, { train: 4, dev: 0, test: 0 });
   const list = streamOf(companies, { split: 'train', epochs: 1, seed: 5 });
-  const result = await runLoop({ out: join(dir, 'train'), parts: parts(data), list, split: 'train', concurrency: 2, record: false });
+  const result = await runLoop({ out: join(dir, 'train'), parts: parts(data), list, split: 'train', concurrency: 2, schedule: 'batch', record: false });
   const rows = result.rows;
   assert.deepEqual(rows.map((r) => r.cik), list.map((e) => e.cik));
   assert.equal(rows[0].seedSha, rows[1].seedSha);
