@@ -28,16 +28,30 @@ description: How to do the six-part job by hand from the company's annual report
 6. The SIC code: sic2_groups for the group of the company's main business, then sic_codes with that group for the
    4-digit code. The code follows where most revenue comes from, as the SEC files it, which can differ from how the
    company describes itself: the segment table shows where that is. When the reportable segments are regions, read the
-   revenue split by product or service line (the revenue disaggregation note) for where most revenue comes from. Each
-   group and code names the largest SEC filers under it: they show how the SEC uses the code, so between two codes
-   that both fit, the one whose filers do the same business is the SEC's. Cite that revenue table for the code.
+   revenue split by product or service line (the revenue disaggregation note) for where most revenue comes from. Name
+   the company's role in that business as well as its product: it makes it, resells or distributes it, sells it at
+   retail, provides it as a service, transports it, or owns or operates the property. The code's SEC title names the
+   same role: a title that names only a product is its maker's, RETAIL- a retailer's, WHOLESALE- a distributor's,
+   SERVICES- a service provider's. A real estate investment trust is filed under 6798 REAL ESTATE INVESTMENT TRUSTS,
+   whatever property it owns. Each group and code names the largest SEC filers under it: they show how the SEC uses the
+   code, so between two codes that both fit, the one whose filers do the same business is the SEC's. Cite that revenue
+   table for the code.
 7. Cite the words that show each part, with the page or document and where on it.
 
 # Parts that make workflows
 
-Each step above is a part: a call of the tool it uses, a decision (pick, judge or route) over what the call returned, and
-an escalate when the call found nothing. A pick holds at most 240 options, so pick the group first, then the code from
-sic_codes with that group. Read describe's tool list for each tool's arguments and result fields; do not invent them.
+Each step above is a part: a call of the tool it uses, a decision over what the call returned, and an escalate when the
+call found nothing. Read describe's tool list for each tool's arguments and result fields; do not invent them.
+
+The decision node follows what the decision needs. A choice decidable from evidence already in the state is a Jev pick,
+judge or route. A choice that needs knowledge the state does not hold, such as what a company does, is one narrow agent
+step on the host's node model. The 4-digit SIC code is such a choice: a pick sees only the words it is handed and
+matches a product phrase, losing the company's role. Give that step the company's name from the job's input, and its
+main business, its reportable segments with their shares and its largest revenue line as the report states them, with
+sic2_groups and sic_codes as its tools; it reads the groups, then the codes of the group that fits, and returns one code
+from sic_codes, the one whose SEC title names the company's role and product (step 6), read beside the largest SEC
+filers each code names. Keep Jev on what the state can show: a judge that the revenue line the code rests on is quoted
+from the report the run read, escalating when it is not.
 
 A dry run fills every tool result with placeholder values: text is filled in and every yes-or-no field is false. So an
 escalate on a false field always fires in a dry run, and the dry run cannot pass; check the text instead.

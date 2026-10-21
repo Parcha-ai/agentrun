@@ -73,6 +73,9 @@
   clean runs are what earn it trust. Fix it (a new revision) only after it escalates or fails, not before trying it.
 - A workflow works for any company. Never put a company's name, domain, answer or a page's words in one. It reads with
   the tools above, decides with pick, judge or route, and hands anything unsure back with escalate.
+- A choice among listed options that needs knowledge the state does not hold (what a company does, for its 4-digit SIC
+  code) is an agent node on the host's node model, given what it needs from the job's input and earlier steps. A choice
+  decidable from evidence already in the state stays a Jev pick, and Jev checks what the state can show.
 
 ## Notes
 
