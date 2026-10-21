@@ -123,6 +123,14 @@ export function currentBootId(): string {
   return boot;
 }
 
+/** The uid a user number or name stands for (a name through /etc/passwd), or undefined when nothing names it. */
+async function uidOf(user: string): Promise<number | undefined> {
+  if (/^\d+$/.test(user)) return Number(user);
+  const rows = await readFile("/etc/passwd", "utf8").then((text) => text.split("\n").map((line) => line.split(":")), () => []);
+  const row = rows.find((fields) => fields.length >= 3 && fields[0] === user);
+  return row ? Number(row[2]) : undefined;
+}
+
 const firstLine = (r: Ran) => (r.stderr.trim().split("\n").at(-1) ?? "").slice(0, 300);
 const okRan = (r: Ran) => r.code === 0 && !r.timedOut;
 
@@ -379,6 +387,14 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
     kills: "process",
     async start(ref, token, attempt?: StartAttempt) {
       runPath(ref.id);
+      // Never as root: the instance and the agent's tools would share a uid with the archil daemon that holds the mount
+      // token, and own run.json and the store outright.
+      if (mode === "systemd" && (await uidOf(user)) === 0) {
+        throw new LocalHostError("INVALID_ARGUMENT", `user ${user} is root: name the unprivileged user the instance runs as (user)`);
+      }
+      if (mode === "child" && process.getuid?.() === 0) {
+        throw new LocalHostError("INVALID_ARGUMENT", "child mode runs the instance as this process's user, which is root: use systemd mode with a user");
+      }
       const extra = attemptEnv(attempt, (m) => new LocalHostError("INVALID_ARGUMENT", m));
       return mode === "systemd" ? startUnit(ref, token, extra) : startChild(ref, token, extra);
     },
