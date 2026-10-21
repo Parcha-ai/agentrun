@@ -423,7 +423,7 @@ test('the EDGAR home is the v4 home with only the lookup lifted: the same defini
   const [before, after] = [items(v4), items(edgar)];
   assert.equal(after.length, before.length);
   const changed = before.flatMap((item, i) => (item === after[i] ? [] : [i]));
-  assert.deepEqual(changed.map((i) => before[i].slice(0, 40)), ['- its 4-digit SIC code, from sic_codes: s', '- The code is chosen, not remembered. A c', '- sec.gov and EDGAR are refused by every ']);
+  assert.deepEqual(changed.map((i) => before[i].slice(0, 40)), ['- its 4-digit SIC code, from sic_codes: ', '- The code is chosen, not remembered. A ', '- sec.gov and EDGAR are refused by every']);
   const lifted = changed.map((i) => after[i]).join(' ');
   for (const words of [/its 4-digit SIC code as the SEC files it, from sic_codes: sic2_groups for the group/, /A code you choose yourself goes by where most revenue comes from/,
     /A code you remember is a guess, never evidence: the code's cite is the page, read in this run, that it rests on/,
