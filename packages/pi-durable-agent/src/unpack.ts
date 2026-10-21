@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { EXPORTABLE_KINDS } from "./export.js";
 import { AGENT_STORE_FILE, type AgentHome, type AgentHomeState, checkDefinition, checkSha, ID_PATTERN, isSkillPath, openAgentHome, readState, sha256 } from "./home.js";
-import { DefinitionDoc, FORMAT_VERSION, IdentityDoc, put, RunsDoc, SkillsDoc, SourceDoc } from "./kinds.js";
+import { DefinitionDoc, FORMAT_VERSION, IdentityDoc, PromptsDoc, put, RunsDoc, SkillsDoc, SourceDoc } from "./kinds.js";
 import {
   byName, canonical, documentKinds, type HomeManifest, invalid, isObject, isRunId, iso, MANIFEST_LIMIT, MAX_MEMBERS, memberProblem, PACK_FORMAT, SIDE_FILES,
   secretIn, SQLITE_MAGIC,
@@ -268,11 +268,11 @@ const endedHere = (run: AgentHomeState["runs"][string], now: number) => (run.end
  * A `dir` that is already a home needs `replace`, must hold the same agent, and must have no live run, and its
  * `ifRevision`, when given, must be its `homeRevision` (`stale`). It is changed in place, under its own owner lock, and
  * the lock, `agent.sqlite`, `chrome/`, `repo/`, its sign-ins, aliases and bindings, and its runs the pack does not have
- * stay where they are. One store commit replaces the definition, the skills, the source and the pack's runs, so
- * `homeRevision` only goes up. The pack's run directories move into place before it, each old one set aside first, in
- * the order of a journal in the home: a failure puts every one back, and a crash is settled by the next lock taker, which
- * keeps the new home when the commit landed and the old one when it did not. A run that was live at the source arrives
- * as an ended entry (outcome `not_carried_back`).
+ * stay where they are. One store commit replaces the definition, the skills, the prompts, the source and the pack's
+ * runs, so `homeRevision` only goes up. The pack's run directories move into place before it, each old one set aside
+ * first, in the order of a journal in the home: a failure puts every one back, and a crash is settled by the next lock
+ * taker, which keeps the new home when the commit landed and the old one when it did not. A run that was live at the
+ * source arrives as an ended entry (outcome `not_carried_back`).
  */
 export async function importPack(file: string, dir: string, options: ImportOptions = {}): Promise<{ home: AgentHome; report: ImportReport }> {
   if (options.ifRevision !== undefined && !(Number.isSafeInteger(options.ifRevision) && options.ifRevision >= 0)) throw invalid(`ifRevision ${JSON.stringify(options.ifRevision)} is not a home revision (a non-negative integer)`);
@@ -376,6 +376,8 @@ export async function importPack(file: string, dir: string, options: ImportOptio
               else if (current.source) await tx.retireDoc(SourceDoc);
               for (const key of Object.keys(current.skills)) if (!Object.hasOwn(state.skills, key)) await tx.retireDoc(SkillsDoc, key);
               for (const [key, skill] of Object.entries(state.skills)) put(await tx.doc(SkillsDoc, key, null), skill);
+              for (const key of Object.keys(current.prompts)) if (!Object.hasOwn(state.prompts, key)) await tx.retireDoc(PromptsDoc, key);
+              for (const [key, prompt] of Object.entries(state.prompts)) put(await tx.doc(PromptsDoc, key, null), prompt);
               for (const [id, run] of Object.entries(state.runs)) put(await tx.doc(RunsDoc, id, null), endedHere(run, now));
             }, BACKGROUND_CONTEXT);
           } finally {

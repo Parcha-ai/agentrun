@@ -233,7 +233,10 @@ answers the question about `{ input }`, with the overlays' options and `other` a
 option's probability is at least its threshold is chosen, the highest such probability winning. When none is and
 `lookup` is given, the lookup runs once on the input's words, and the judge answers again about `{ input, lookup }`
 (its text cut to `LOOKUP_TEXT_MAX`, 3,000 characters) by the same rule. Otherwise the run gets the generic. A judge or
-lookup failure never throws: the run gets the generic, and `reason` says why.
+lookup failure never throws: the run gets the generic, and `reason` says why. An answer whose choice is not one of the
+options, that gives a probability for another option, or whose probability or confidence is not a number from 0 to 1
+is a judge failure; the probabilities' sum is Jev's to check. An error's message is cut to 500 characters, so `reason`
+stays within the 2,000 `startRun` takes.
 
 ```js
 await setPrompts(home, [
@@ -348,8 +351,9 @@ have no live run (`check`, with `live_runs` failed); `ifRevision` must still be 
 
 A home is changed in place, under its own owner lock: the lock, `agent.sqlite`, `chrome/`, `repo/`, the home's
 sign-ins, aliases and bindings, and its runs the pack does not have stay where they are. One store commit replaces the
-definition, the skills, the source and the pack's runs, so `homeRevision` only goes up (an import that changes nothing
-leaves it as it is). A run id in both takes the pack's entry and directory. A run that was live at the source arrives
+definition, the skills, the prompts, the source and the pack's runs, so `homeRevision` only goes up (an import that
+changes nothing leaves it as it is). A prompt variant the pack does not have is removed, and so is the whole set when
+the pack carries none. A run id in both takes the pack's entry and directory. A run that was live at the source arrives
 as an ended entry with outcome `not_carried_back`.
 
 The pack's run directories move into place before the commit, each old one set aside first in the staging directory

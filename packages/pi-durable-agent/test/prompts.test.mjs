@@ -276,3 +276,54 @@ test("choosePrompt: the lookup's text is cut to LOOKUP_TEXT_MAX for the second p
   assert.deepEqual([plain.variant, plain.instructions, plain.passes, plain.reason], ["generic", instructionsFor("generic"), [], "no overlay has a rule, so the generic prompt"]);
   assert.deepEqual(calls.asked, []);
 });
+
+test("choosePrompt: an answer whose choice is not offered, or whose probability is not a number from 0 to 1, is a failed answer: the generic, and the reason says why", async () => {
+  const given = (kind) => async () => ({ answers: { kind } });
+  const reviewers = await choosePrompt(PROMPTS, "x", { judge: given({ choice: "", probabilities: { public_company: 2 }, confidence: 1 }) });
+  assert.deepEqual([reviewers.variant, reviewers.passes], ["generic", []]);
+  assert.equal(reviewers.reason, 'Jev failed (the judge chose "" for kind, which is not one of its options), so the generic prompt');
+
+  const unoffered = await choosePrompt(PROMPTS, "x", { judge: given({ choice: "seller", probabilities: { public_company: 0.95, other: 0.05 }, confidence: 0.9 }) });
+  assert.equal(unoffered.reason, 'Jev failed (the judge chose "seller" for kind, which is not one of its options), so the generic prompt');
+  const ruleless = await choosePrompt({ ...PROMPTS, private: (({ when, ...rest }) => rest)(PROMPTS.private) }, "x", { judge: given({ choice: "private_company", probabilities: { private_company: 0.99, other: 0.01 }, confidence: 0.9 }) });
+  assert.match(ruleless.reason, /chose "private_company" for kind, which is not one of its options/, "an overlay with no rule offers no option");
+
+  for (const [p, shown] of [[2, " 2"], [-0.1, " -0.1"], [Number.NaN, " NaN"], [Number.POSITIVE_INFINITY, " Infinity"], ["0.95", ""], [null, ""]]) {
+    const bad = await choosePrompt(PROMPTS, "x", { judge: given({ choice: "public_company", probabilities: { public_company: p, other: 0.05 }, confidence: 0.9 }) });
+    assert.equal(bad.variant, "generic", `a probability of ${String(p)}`);
+    assert.equal(bad.reason, `Jev failed (public_company's probability${shown} is not a number from 0 to 1), so the generic prompt`);
+  }
+  const stray = await choosePrompt(PROMPTS, "x", { judge: given({ choice: "public_company", probabilities: { public_company: 0.95, seller: 0.05 }, confidence: 0.9 }) });
+  assert.equal(stray.reason, 'Jev failed (the judge gave a probability for "seller", which is not one of kind\'s options), so the generic prompt');
+  const sure = await choosePrompt(PROMPTS, "x", { judge: given({ choice: "public_company", probabilities: { public_company: 0.95, other: 0.05 }, confidence: 1.5 }) });
+  assert.equal(sure.reason, "Jev failed (the judge's confidence for kind is not a number from 0 to 1), so the generic prompt");
+
+  const after = await choosePrompt(PROMPTS, "x", { judge: judgeOf(answer("nonprofit", 0.5), { choice: "nonprofit", probabilities: { nonprofit: 9 }, confidence: 0.9 }).judge, lookup: lookupOf("x").lookup });
+  assert.deepEqual([after.variant, after.passes.length], ["generic", 1]);
+  assert.match(after.reason, /; Jev failed after the lookup \(nonprofit's probability 9 is not a number from 0 to 1\), so the generic prompt$/);
+
+  const rounded = await choosePrompt(PROMPTS, "x", { judge: given({ choice: "public_company", probabilities: { public_company: 0.33, nonprofit: 0.33, other: 0.33 }, confidence: 0.5 }) });
+  assert.match(rounded.reason, /^Jev: public_company at 33%, under 90%/, "a mass off 1 by Jev's two-place rounding is an answer");
+});
+
+test("choosePrompt: an error's message is cut, so a reason with a 10,000-character judge or lookup failure is one startRun takes, and still says why the generic", async () => {
+  const long = "e".repeat(10_000);
+  const option = "o".repeat(200);
+  const set = [SET[0], { ...SET[1], criteria: {} }, { ...overlay("wide", option), label: "Widest option" }, SET[6]];
+  const h = await home();
+  await setPrompts(h, set);
+  const prompts = stored(set);
+  const wide = { type: "choice", choice: option, probabilities: { [option]: 0.5, other: 0.5 }, confidence: 0.5 };
+  const cases = [
+    ["judge", { judge: judgeOf(new Error(long)).judge }, /^Jev failed \(e+…\), so the generic prompt$/],
+    ["lookup", { judge: judgeOf(wide).judge, lookup: lookupOf(new Error(long)).lookup }, /; the lookup failed \(e+…\); so the generic prompt$/],
+    ["second", { judge: judgeOf(wide, new Error(long)).judge, lookup: lookupOf("x").lookup }, /; Jev failed after the lookup \(e+…\), so the generic prompt$/],
+  ];
+  for (const [runId, options, says] of cases) {
+    const choice = await choosePrompt(prompts, "x", options);
+    assert.equal(choice.variant, "generic", runId);
+    assert.match(choice.reason, says, runId);
+    await startRun(h, { runId, host: "laptop", prompt: { id: choice.variant, reason: choice.reason } });
+    assert.deepEqual((await readAgentHome(h)).runs[runId].prompt, { id: "generic", reason: choice.reason });
+  }
+});

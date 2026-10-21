@@ -5,7 +5,8 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import {
-  AgentHomeError, carryBack, createAgentHome, EXPORTABLE_KINDS, homeRevision, importPack, openAgentHome, packHome, readAgentHome, readPack, refreshAgentHome, setAlias, setBindings, startRun,
+  AgentHomeError, carryBack, createAgentHome, EXPORTABLE_KINDS, homeRevision, importPack, openAgentHome, packHome, readAgentHome, readPack, refreshAgentHome, setAlias, setBindings, setPrompts,
+  startRun,
 } from "../dist/index.js";
 import { buildSignedInHome, checkExportClean, SIGN_IN_MARKER, signedInHomeSkip } from "./fixtures/signed-in-home.mjs";
 import { tarSize } from "../dist/tar.js";
@@ -314,6 +315,38 @@ test("a replace keeps the target's own runs the pack does not have, and the pack
   assert.equal(after.runs["signed-in"].host, undefined, "the pack's entry wins for a run in both");
   assert.equal(existsSync(f.runStore), false, "and so does its directory");
   assert.deepEqual(readdirSync(path.dirname(f.home.dir)).filter((entry) => entry.startsWith(".")), []);
+});
+
+const PACKED = [
+  { id: "base", role: "base", label: "Company research", text: "Research the company in the input." },
+  { id: "kind", role: "question", label: "Kind", text: "What kind of organization is this?", criteria: { public_company: "Its shares trade." } },
+  { id: "public", role: "overlay", label: "Public", text: "Start from its annual report.", when: { question: "kind", option: "public_company", threshold: 0.9 } },
+  { id: "generic", role: "generic", label: "Not sure", text: "Say what kind it seems to be." },
+];
+const TARGETS = [
+  { ...PACKED[0], text: "The target's own base." },
+  PACKED[1],
+  { ...PACKED[2], when: { ...PACKED[2].when, threshold: 0.5 } },
+  { id: "nonprofit", role: "overlay", label: "Nonprofit", text: "Read its filings.", when: { question: "kind", option: "nonprofit", threshold: 0.8 } },
+  PACKED[3],
+];
+const byId = (variants) => Object.fromEntries(variants.map(({ id, ...variant }) => [id, variant]));
+
+test("a replace takes the pack's prompt set: a different set on the target is replaced, and a pack with none removes the target's", async () => {
+  const dir = await scratch();
+  const plain = (name) => createAgentHome(path.join(dir, name), { definition: { version: 1, name: "Plain", instructions: "x", skills: [], tools: [] } });
+  const home = await plain("prompted");
+  await setPrompts(home, PACKED);
+  await packHome(home, { out: path.join(dir, "prompted.tar") });
+  await setPrompts(home, TARGETS);
+  const { home: replaced } = await importPack(path.join(dir, "prompted.tar"), home.dir, { replace: true, ifRevision: await homeRevision(home) });
+  assert.deepEqual((await readAgentHome(replaced)).prompts, byId(PACKED), "the pack's texts and rules, and no variant only the target had");
+
+  const bare = await plain("bare");
+  await packHome(bare, { out: path.join(dir, "bare.tar") });
+  await setPrompts(bare, TARGETS);
+  const { home: emptied } = await importPack(path.join(dir, "bare.tar"), bare.dir, { replace: true, ifRevision: await homeRevision(bare) });
+  assert.deepEqual((await readAgentHome(emptied)).prompts, {});
 });
 
 test("a home with no sign-in has an ok sign_ins check; ifRevision is a non-negative integer", async () => {
