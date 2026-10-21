@@ -745,8 +745,9 @@ test("GET /agent: the saved sign-ins, their sites and when they last worked, nev
   t.after(() => waiting.close());
   const dir = await mkdtemp(join(tmpdir(), "web-signins-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  process.env.FAKE_DOOR = waiting.url;
-  const { home, root, get, post, json } = await app(t, { start: [process.execPath, fakeInstance(dir)] });
+  const instance = fakeInstance(dir);
+  instance.next({ door: waiting.url });
+  const { home, root, get, post, json } = await app(t, { start: instance.start });
   const first = await startRun(home, { runId: "first", host: "test" });
   await signInRun(first.storePath, {
     [PROFILE]: { ref: "ctx-secret-ref", allowedOrigins: ["https://the-internet.herokuapp.com", "not an origin", "https://x.example/path"], startUrl: "https://the-internet.herokuapp.com/login", verifiedAt: "2026-10-16T05:58:00.000Z" },
