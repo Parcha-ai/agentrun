@@ -263,11 +263,11 @@ test("no secret value reaches a log, an error's message or its stack, on any pat
   for (const name of ["session", "persistent", "storage", "context"]) assert.ok(!text.includes(marker(name)), `${name} is not in any log or error`);
 });
 
-test("a session key is 1 to 128 of letters, digits, _, ., : or -, as pi-browser's vault side takes one; anything else is refused before the home is touched", async () => {
+test("a session key is 1 to 128 of letters, digits, _, ., : or -, starting with a letter or digit, as pi-browser's vault side takes one; anything else is refused before the home is touched", async () => {
   const h = await home();
   const vault = sessionVault(h, { hostKey: KEY, now: NOW });
   for (const sessionKey of ["local-chrome", "acme.example", "profile:1", "a_b", "x".repeat(128)]) await vault.capture({ sessionKey, origins: [A], state: chromeState() });
-  for (const sessionKey of ["", "x".repeat(129), "has space", "a/b", "ü", "tab\there", "new\nline", 7, undefined]) {
+  for (const sessionKey of ["", "x".repeat(129), "-lead", "_lead", ".lead", ":lead", "has space", "a/b", "ü", "tab\there", "new\nline", 7, undefined]) {
     await assert.rejects(vault.capture({ sessionKey, origins: [A], state: chromeState() }), refused("invalid", /the session key is not 1 to 128 of letters, digits/), JSON.stringify(sessionKey));
     await assert.rejects(vault.restore({ sessionKey, origins: [A] }), refused("invalid"), JSON.stringify(sessionKey));
     await assert.rejects(vault.forget(sessionKey), refused("invalid"), JSON.stringify(sessionKey));

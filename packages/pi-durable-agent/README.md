@@ -190,7 +190,7 @@ fields are the stored format.
 | `agent.bindings` | agent | host | `{ [tool]: target }`: where each tool runs in that host |
 | `agent.runs` | agent | run id | `{ path, host, startedAt, sha?, endedAt?, outcome?, finalAnswer?, cost? }`; `path` is relative to the home; `sha` is the home's `agent.source` when the run started |
 | `agent.leases` | agent | profile key | `{ runId, expiresAt }` |
-| `agent.vault` | agent | session key (1 to 128 of letters, digits, `_`, `.`, `:` and `-`, as pi-browser takes it) | `{ kind, origins, capturedAt, provider?, keyId, iv, ciphertext, alg, v }`: a saved browser session as AES-256-GCM ciphertext; `keyId` names its item key in `vault.keys`, beside the store ([the vault](#saved-browser-sessions-the-vault)) |
+| `agent.vault` | agent | session key (1 to 128 of letters, digits, `_`, `.`, `:` and `-`, starting with a letter or digit, as pi-browser takes it) | `{ kind, origins, capturedAt, provider?, keyId, iv, ciphertext, alg, v }`: a saved browser session as AES-256-GCM ciphertext; `keyId` names its item key in `vault.keys`, beside the store ([the vault](#saved-browser-sessions-the-vault)) |
 | `browser.profiles` | agent and run | profile key | `{ provider, ref, state, startUrl?, allowedOrigins?, verifiedAt?, heldBy? }`; `ref` is the provider's saved sign-in, `state` is `ready` once it names one, or `held` in a run store whose run has no lease on it (`ref` empty, `heldBy` the run that has) |
 
 A profile's `ref` opens a signed-in session, so it is as secret as the password behind it: it reaches a run only
