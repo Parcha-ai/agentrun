@@ -88,6 +88,7 @@ export type Repo = {
   readonly dir: string;
   readonly remote: Remote;
   readonly limits: Limits;
+  /** Fetches the remote, and the push URL when it has one. The methods that read a branch fetch first themselves. */
   fetch(): Promise<void>;
   /** The commit a branch or sha names: a local commit not yet pushed wins over the remote, unless the remote moved past
    *  or away from it. Undefined when there is none. */
@@ -115,7 +116,7 @@ export type Repo = {
   /** A commit on `on` that undoes `sha`, which must be on `on`. A conflict changes nothing; reverting twice changes
    *  nothing the second time. Local only; `push` it after. */
   revert(sha: string, on: string, options?: { readonly trailers?: Trailers }): Promise<RevertResult>;
-  /** Commits newest first, with their trailers. */
+  /** Commits newest first, with their trailers; an empty list when the ref names no commit. */
   log(options?: LogOptions): Promise<LogEntry[]>;
 };
 
