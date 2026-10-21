@@ -63,7 +63,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   applyExtraInstructions(extra.instructions);
   // Where this host is, as the server named its environment for the host driver (the notice's label): the agent's model line says it runs here.
   const place = process.env.DEMO_ENV_LABEL;
-  const agent = () => rootAgent(modelId, { registry, ...(place ? { place } : {}) });
+  const agent = () => rootAgent(modelId, { registry, ...(place ? { place } : {}), ...(extra.rootWithoutTools?.length ? { rootWithoutTools: extra.rootWithoutTools } : {}) });
   return {
     registry,
     ...(extra.wrapEnv ? { wrapEnv: extra.wrapEnv } : {}),

@@ -330,3 +330,28 @@ test("the thread deadline is the host's value in seconds, or the 20-minute defau
   assert.equal(planOptions("/tmp/x", 300_000).threadDeadlineMs, 300_000);
   assert.equal(planOptions("/tmp/x").threadDeadlineMs, DEFAULT_THREAD_DEADLINE_MS);
 });
+
+test("the root conversation on the VM has no bash (it would run as the instance's user and read its environment), and a thread's tools still have it", async () => {
+  const work = mkdtempSync(join(tmpdir(), "robot-extra-"));
+  try {
+    const { default: robotExtra, planOptions } = await import("../robot-extra.ts");
+    const { agentRegistry, rootAgent } = await import("../../../03-tab-to-cloud/agent.ts");
+    const registry = agentRegistry(async () => undefined, {});
+    const extra = robotExtra({ link: fakeLink().link as never, work, log: () => undefined });
+    extra.install?.(registry);
+    assert.deepEqual(extra.rootWithoutTools, ["bash"]);
+    const agent = rootAgent("claude-opus-5.5", { registry, ...(extra.rootWithoutTools ? { rootWithoutTools: extra.rootWithoutTools } : {}) });
+    const removed = (agent.tools && "remove" in agent.tools ? agent.tools.remove ?? [] : []).map((t) => t.name);
+    assert.ok(removed.includes("bash"), "the root's tool list drops bash");
+    for (const kept of ["read", "write", "edit"]) assert.ok(!removed.includes(kept), `${kept} stays: it is confined to the workspace`);
+    // The coding extension stays installed: the threads' hands are the same extension, and a fork's own tool list is not filtered.
+    assert.ok(registry.snapshot().tools().some((t) => t.tool.name === "bash"), "bash is still installed on the host");
+    const threadTools = planOptions(work).threadExtensions.flatMap((e) => e.tools ?? []).map((t) => t.name);
+    assert.ok(threadTools.includes("bash"), "a thread has bash, run on its own H100 through its environment");
+    // The default for a host with no such extra is unchanged: nothing extra is removed.
+    const plain = rootAgent("claude-opus-5.5", { registry });
+    assert.ok(!(plain.tools && "remove" in plain.tools ? plain.tools.remove ?? [] : []).some((t) => t.name === "bash"));
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});

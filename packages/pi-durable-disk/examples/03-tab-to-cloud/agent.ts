@@ -232,6 +232,8 @@ export interface AgentOptions {
   robotCode?: boolean;
   /** A registry that has the preset tools: with it, code mode removes them from the conversation's tools from the first request; without it the agent is offered every tool until its first robot call, which takes them out. */
   registry?: RegistryReader;
+  /** Names of tools this host's ROOT conversation does not get (the VM's root has no `bash`: it would run as the instance's user, which can read the instance's environment and the link's token). A fork resets its own tool list, so a thread keeps the tools it was given. */
+  rootWithoutTools?: readonly string[];
   /** What the host told the page about its agent (see AppPolicy). */
   app?: AppPolicy;
   /** Where this host is, as the server names its environment ("your user's browser tab", "a Modal VM"): the model line says the agent runs there. */
@@ -250,7 +252,14 @@ export const CLOUD_THINKING = "high" as const;
 export function rootAgent(modelId: string, options: AgentOptions = {}): AgentChange {
   const without = options.app?.withoutExtensions;
   const base: AgentChange = { model: { provider: PROVIDER, modelId }, thinkingLevel: CLOUD_THINKING, instructions: instructions(modelId, options.app, options.place), ...(without?.length ? { extensions: { remove: extensionsNamed(options.registry, without) } } : {}) };
-  return options.robotCode !== false && options.registry ? { ...base, tools: { remove: presetTools(options.registry) } } : base;
+  const code = options.robotCode !== false && options.registry !== undefined;
+  const named = options.registry && options.rootWithoutTools?.length ? toolsNamed(options.registry, options.rootWithoutTools) : [];
+  return code || named.length ? { ...base, tools: { remove: [...(code ? presetTools(options.registry!) : []), ...named] } } : base;
+}
+
+/** The tools this registry has under these names. */
+function toolsNamed(registry: RegistryReader, names: readonly string[]): ToolRegistration[] {
+  return registry.snapshot().tools().map((t) => t.tool).filter((t) => names.includes(t.name));
 }
 
 /** The root conversation's agent as it is when it comes back to the cloud model from another (a check-in): the same as `rootAgent`, and the whole tool list again (`tools: null` clears the filter an earlier model was configured with; in code mode the list without the preset tools). */

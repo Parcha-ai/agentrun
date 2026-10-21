@@ -262,6 +262,9 @@ export default function robotExtra({ link, work, log }: AppExtraContext): AppExt
     },
     // `teach` is the session's own; `thread` is only for the forks (train_skill), which select it themselves.
     settings: { extensions: [teach] },
+    // The root conversation runs on the VM as the instance's user: a `bash` there could read the instance's environment (the link's token) and the staged token file. The root plans and teaches; only a thread has hands,
+    // and a thread's tools (the coding tools, selected for its fork with `tools: null`) run on its own GPU box. The coding extension stays installed: the threads share it.
+    rootWithoutTools: ["bash"],
     // The link relays each teaching thread's own conversation to viewers (the pipe carries only the root's): the cluster's typed listing, as it is.
     threadsOf: (harness, context) => threadsOf(harness, context),
     wrapEnv: (env) =>

@@ -34,6 +34,8 @@ export interface AppExtra {
    * resumes on a host that must still have its definition, so a page drops tools only where the run does not leave while they are in use.
    */
   withoutExtensions?: readonly string[];
+  /** Names of tools the ROOT conversation does not get on this host (`rootAgent`'s `rootWithoutTools`): the robot's VM drops `bash` from the root, so nothing the root's model asks can run as the instance's user. */
+  rootWithoutTools?: readonly string[];
   /** The host's own listing of its teaching threads (the cluster's typed one): with it the link relays each thread's conversation to viewers. */
   threadsOf?: ThreadsOf;
 }
