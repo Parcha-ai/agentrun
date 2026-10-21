@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { coverAddress, HQ_OVERRIDES, readSubsidiaries, SEGMENT_OVERRIDES } from './build-truth-v4.mjs';
+import { coverAddress, HQ_OVERRIDES, readSubsidiaries, SEGMENT_OVERRIDES, submissionSection } from './build-truth-v4.mjs';
 
 const read = (name) => JSON.parse(readFileSync(new URL(`./data/${name}`, import.meta.url), 'utf8'));
 const v2 = read('companies-v2.json');
@@ -85,17 +85,22 @@ test('every field has the v4 shape, and the coverage the report states is the se
       assert.ok(sum >= 0.85 && sum <= 1.2001, `${c.cik} sums to ${sum}`);
     } else if (c.segments) assert.deepEqual(c.segments, { oneSegment: true }, c.cik);
     else assert.equal(c.segments, null, c.cik);
-    if (c.subsidiaries) {
+    if (c.subsidiaries?.items) {
       assert.ok(c.subsidiaries.count === c.subsidiaries.items.length && c.subsidiaries.count > 0, c.cik);
       assert.match(c.subsidiaries.exhibit, /^EX-(21|8)(\.\d+)?$/, c.cik);
       assert.match(c.subsidiaries.url, /^https:\/\/www\.sec\.gov\/Archives\/edgar\/data\//, c.cik);
       for (const s of c.subsidiaries.items) assert.ok(s.name.length >= 3, c.cik);
-    }
+      // A list read from another capture than the build's default says which.
+      if (c.subsidiaries.copy) assert.match(c.subsidiaries.copy, /^https:\/\/web\.archive\.org\/web\/\d{14}id_\/https:\/\/www\.sec\.gov\//, c.cik);
+    } else assert.deepEqual(Object.keys(c.subsidiaries ?? {}), ['noExhibit'], c.cik);
   }
   const { coverage } = report;
   assert.equal(coverage.total, 130);
   assert.equal(coverage.latestAnnual.truth, v4.filter((c) => c.latestAnnual).length);
-  assert.equal(coverage.subsidiaries.truth, v4.filter((c) => c.subsidiaries).length);
+  assert.equal(coverage.subsidiaries.truth, v4.filter((c) => c.subsidiaries?.items).length);
+  assert.equal(coverage.subsidiaries.noExhibit, v4.filter((c) => c.subsidiaries?.noExhibit === true).length);
+  assert.equal(coverage.subsidiaries.unscored, v4.filter((c) => c.subsidiaries?.noExhibit === false).length);
+  assert.equal(coverage.subsidiaries.truth + coverage.subsidiaries.noExhibit + coverage.subsidiaries.unscored, 130);
   assert.equal(coverage.segments.truth + coverage.segments.oneSegment + coverage.segments.null, 130);
   for (const k of ['latestAnnual', 'hqCity', 'hqState', 'hqCountry', 'subsidiaries']) assert.equal(coverage[k].truth + coverage[k].null, 130, k);
   // Every head office names its source; a cover one is the report's cover address.
@@ -109,7 +114,31 @@ test('every field has the v4 shape, and the coverage the report states is the se
   assert.equal(coverage.hqSource.cover + coverage.hqSource['cover+override'] + coverage.hqSource['sub.txt'], v4.filter((c) => c.hq).length);
   // A null segment truth always has its reason; oneSegment only from a one-segment report.
   for (const c of v4) if (!c.segments && c.latestAnnual) assert.ok(report.companies.find((r) => r.cik === c.cik).segments, c.cik);
-  for (const c of report.companies) if (!v4.find((x) => x.cik === c.cik).subsidiaries) assert.ok(c.subsidiaries?.why || c.latestAnnual, c.cik);
+  for (const c of report.companies) if (!v4.find((x) => x.cik === c.cik).subsidiaries?.items) assert.ok(c.subsidiaries?.why || c.latestAnnual, c.cik);
+});
+
+test('no exhibit is only a filing that has none: a 40-F, or an index that lists no EX-21 / EX-8; an exhibit not read is unscored', () => {
+  for (const r of report.companies) {
+    const c = v4.find((x) => x.cik === r.cik);
+    if (c.subsidiaries?.items) continue;
+    const why = r.latestAnnual ?? r.subsidiaries?.why ?? '';
+    const none = /files no subsidiaries exhibit|^the filing index lists no/.test(why);
+    assert.equal(c.subsidiaries.noExhibit, none, `${c.ticker}: ${why}`);
+  }
+  // The four exhibits the default capture lacked, read from another capture or the filing's complete submission file.
+  for (const ticker of ['BRC', 'IQV', 'AUR', 'SBH']) {
+    const c = v4.find((x) => x.ticker === ticker);
+    assert.ok(c.subsidiaries?.items?.length, ticker);
+    assert.ok(c.subsidiaries.copy, ticker);
+  }
+});
+
+test('a complete submission file yields the exhibit document by its type', () => {
+  const doc = (type, text) => `<DOCUMENT>\n<TYPE>${type}\n<SEQUENCE>2\n<FILENAME>x.htm\n<TEXT>\n${text}\n</TEXT>\n</DOCUMENT>\n`;
+  const file = `<SEC-DOCUMENT>\n${doc('10-K', '<p>annual</p>')}${doc('EX-21.1', '<table><tr><td>Acme Ltd</td><td>Delaware</td></tr></table>')}${doc('EX-23', '<p>consent</p>')}</SEC-DOCUMENT>`;
+  assert.match(submissionSection(file, /^EX-21(\.\d+)?$/), /Acme Ltd/);
+  assert.equal(submissionSection(file, /^EX-8(\.\d+)?$/), null);
+  assert.equal(submissionSection(doc('EX-21', '<p>a</p>').replace('<TEXT>', ''), /^EX-21(\.\d+)?$/), null);
 });
 
 test('the reviewed cover tags are overridden, each with its reason, and nothing else is', () => {
