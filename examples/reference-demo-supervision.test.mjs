@@ -349,3 +349,20 @@ test('--operator-kill is refused by a place that cannot make a process kill, bef
   } }), /box-only place cannot lose its process: --operator-kill/);
   assert.deepEqual(calls, ['release'], 'nothing was started');
 });
+test('every path that supervises a child says so with HOST_LINES=supervisor when it owns the box ids directory, and the one that does not (a custom place without --box-ids) leaves the child its own receipts, with a recording that still validates', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  const seen = [];
+  const watching = (label) => ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, start: async (order) => { seen.push([label, order.env.HOST_LINES, typeof order.env.RECORD_GEN]); return inner.start(order); } };
+  };
+  // The default place: the supervisor owns <run dir>/box-ids.internal.
+  await demo({ ...options, argv: ['--json', '--record', join(tmp, 'default')] });
+  // A custom place with --box-ids: the supervisor owns the directory it was named.
+  const ids = join(tmp, 'ids');
+  await demo({ ...options, argv: ['--json', '--record', join(tmp, 'named'), '--box-ids', ids], place: watching('place + --box-ids') });
+  // A custom place and no --box-ids: the ids directory is the place's own, which the supervisor cannot read: it does not own it.
+  await demo({ ...options, argv: ['--json', '--record', join(tmp, 'custom')], place: watching('place, no --box-ids') });
+  assert.deepEqual(seen, [['place + --box-ids', 'supervisor', 'string'], ['place, no --box-ids', undefined, 'string']], 'every supervised child has RECORD_GEN; HOST_LINES is set exactly when the supervisor owns the ids directory');
+  assert.deepEqual(validateRecording(join(tmp, 'custom')), [], 'a child that keeps its own receipts leaves a recording that validates');
+});
