@@ -20,7 +20,8 @@ import { createAgent } from './app.ts';
 import { ensureAgentHome } from './home.mjs';
 import { writeReplay } from '../replay.mjs';
 import { finishRunRecording } from './record.ts';
-import { REDACTED, sessionLabel } from './redact.ts';
+import { browserIds, idsRedaction, REDACTED, sessionLabel } from './redact.ts';
+import { urlCredentialIn } from '../../../packages/harness/src/scan.ts';
 
 const SECURE = 'https://the-internet.herokuapp.com/secure';
 const MODEL = { AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9/v1', AGENT_MODEL: 'test-model' };
@@ -169,7 +170,7 @@ test('a recorded run on Browserbase: the context id, the key and the project id 
   const planted = sessions.at(-1).data.value.sessions.find((row) => 'liveView' in row);
   assert.deepEqual([planted?.resourceId, planted?.liveView], [sessionLabel(values.plantedSession), null], 'the planted row is recorded, its id a label and its live view null');
   assert.ok(liveViews(lines).every((view) => view === null));
-  assert.ok(lines.some((line) => line.kind === 'pi.assistant' && JSON.stringify(line).includes(`token=${REDACTED}`)), 'the answer\'s token is redacted where it stood');
+  assert.ok(lines.some((line) => line.kind === 'pi.assistant' && JSON.stringify(line).includes(`inspector?${REDACTED}`)), 'the answer\'s token parameter is redacted where it stood, its name with its value');
   const config = lines.filter((line) => line.kind === 'browser.config').at(-1);
   assert.equal(config.data.value.policy.contextId, REDACTED);
   assert.deepEqual(lines.filter((line) => line.kind === 'browser.profiles').at(-1).data.value, { provider: 'browserbase', ref: REDACTED, state: 'ready' });
@@ -184,7 +185,26 @@ test('a replay of a run takes out what the recording does: no session id, token 
   assertAbsent(out, { 'the email address': EMAIL, ...Object.fromEntries([...values.sessions, values.plantedSession].map((id, n) => [`session ${n + 1}`, id])), 'the planted live view': values.planted, 'the planted token': values.planted.split('token=')[1], 'the live view': values.liveView, 'its token': values.liveToken });
   const timeline = readFileSync(join(out, 'runs', 'run-1', 'timeline.json'), 'utf8');
   assert.ok(timeline.includes(sessionLabel(values.sessions[0])), 'browser_release\'s session id is its label');
-  assert.ok(timeline.includes(`token=${REDACTED}`), 'the answer\'s token is redacted where it stood');
+  assert.ok(timeline.includes(`inspector?${REDACTED}`), 'the answer\'s token parameter is redacted where it stood');
   assert.deepEqual(liveViews(JSON.parse(readFileSync(join(out, 'runs', 'given', 'timeline.json'), 'utf8'))), [null], 'a row\'s live view is null');
-  assert.equal(JSON.parse(readFileSync(join(out, 'runs', 'given', 'files', 'view.json'), 'utf8')).url, `https://live.example.test/inspector?token=${REDACTED}`);
+  assert.equal(JSON.parse(readFileSync(join(out, 'runs', 'given', 'files', 'view.json'), 'utf8')).url, `https://live.example.test/inspector?${REDACTED}`);
+});
+
+test('a URL parameter that carries a credential goes whole, name and value, so the recording\'s own scan passes what the redaction wrote', () => {
+  const redact = idsRedaction(browserIds());
+  const urls = [
+    'https://maps.example.test/embed?q=bookshop&key=AIzaFAKE0123456789',
+    'https://cdn.example.test/file.pdf?X-Amz-Signature=abc123&X-Amz-Date=20261021',
+    'https://api.example.test/v1?apiKey=fake-123&page=2',
+    'https://example.test/a?access_token=t0k3n#sig=deadbeef',
+    'https://live.example.test/inspector?token=6f1c',
+  ];
+  for (const url of urls) {
+    assert.ok(urlCredentialIn(url), `the scan refuses ${url} as written`);
+    const out = redact(`see ${url} here`);
+    assert.equal(urlCredentialIn(out), undefined, `the scan passes ${out}`);
+    assert.ok(out.includes(REDACTED));
+  }
+  assert.equal(redact('https://example.test/a?q=1&key=x&page=2'), `https://example.test/a?q=1&${REDACTED}&page=2`, 'the other parameters stay');
+  assert.equal(redact('a keyboard?keys=3'), 'a keyboard?keys=3', 'a name that only starts like one is left');
 });

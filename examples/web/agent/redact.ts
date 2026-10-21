@@ -1,14 +1,17 @@
 // What a recording (record.ts) and a replay (../replay.mjs) take out of a run's lines and rows, one set of rules for
 // both: the browser profile's id (a context id, or a Chrome profile's path) becomes `[redacted]`; a browser session's
-// id a label of its hash, so a session's lines, frames and rows still go together; any `token=` value `[redacted]`; any
-// email address `[email]` (a page the agent read names people, and the recording is not where their addresses go); and
-// every `liveView` null (a live view is a token for the browser). The ids are the ones a run's browser documents hold.
-// It loads node's own modules only: a replay is written where pi's packages are not installed.
+// id a label of its hash, so a session's lines, frames and rows still go together; any URL parameter that carries a
+// credential (`token=`, `key=`, a signature) `[redacted]`, its name with its value; any email address `[email]` (a page
+// the agent read names people, and the recording is not where their addresses go); and every `liveView` null (a live
+// view is a token for the browser). The ids are the ones a run's browser documents hold. It loads node's own modules
+// only: a replay is written where pi's packages are not installed.
 import { createHash } from "node:crypto";
 
 export const REDACTED = "[redacted]";
-/** Any `token=` value, a live view's or a debugger's, whatever site wrote it. */
-const TOKEN = /([?&;]token=)[^&#\s"'\\]+/gi;
+/** A URL parameter that carries a credential, in a query or a fragment: the names the recording's scan refuses with any
+ *  value (`token`, `access_token`, `apiKey`, `api_key`, `key`, `signature`, `sig`, `X-Amz-Signature`,
+ *  `X-Goog-Signature`), whatever site wrote it. The whole parameter goes, its name with its value. */
+const TOKEN = /([?&;#])(?:token|access_token|api_?key|key|signature|sig|x-amz-signature|x-goog-signature)=[^&#\s"'\\]*/gi;
 /** An email address, as a page or a filing prints one. */
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 export const EMAIL_REDACTED = "[email]";
