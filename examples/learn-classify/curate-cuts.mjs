@@ -29,13 +29,16 @@ export const textKey = (text) => sha256(text.normalize('NFKC').toLowerCase().rep
  * dropped, and a text judged under the old cuts must clear the new ones by `RECUT_MARGIN`.
  */
 export function stickyJudge(judge, { file, cutsId }) {
-  const loaded = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { version: 1, cutsId, worst: {} };
-  const store = { version: 1, cutsId, worst: loaded.cutsId === cutsId ? { ...loaded.worst } : {} };
-  const prior = new Set(loaded.cutsId === cutsId ? [] : Object.keys(loaded.worst));
+  const loaded = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { version: 1, cutsId, worst: {}, prior: [] };
+  const same = loaded.cutsId === cutsId;
+  const prior = new Set(same ? loaded.prior ?? [] : [...Object.keys(loaded.worst), ...(loaded.prior ?? [])]);
+  const store = { version: 1, cutsId, worst: same ? { ...loaded.worst } : {}, prior: [] };
   const save = () => {
+    store.prior = [...prior];
     writeFileSync(`${file}.pending`, `${JSON.stringify(store, null, 1)}\n`);
     renameSync(`${file}.pending`, file);
   };
+  if (!existsSync(file) || !same) save();
   return async (params) => {
     const result = await judge(params);
     const questions = Object.keys(params?.questions ?? {});

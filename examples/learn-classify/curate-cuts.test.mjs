@@ -10,7 +10,9 @@ import { test } from 'node:test';
 import { local, openRepo } from '@parcha/pi-git-remote';
 import { inboxPath, proposeFiles, renderInbox } from '@parcha/pi-agent-learn';
 import { CURATE_CUTS_V01, stickyJudge, textKey } from './curate-cuts.mjs';
+import { existsSync } from 'node:fs';
 import { curateJob, meteredJudge } from './host.mjs';
+import { runLoop, scriptedParts } from './runner.mjs';
 
 async function scratch(t) {
   const dir = await mkdtemp(join(tmpdir(), 'lc-cuts-'));
@@ -86,14 +88,14 @@ test('curateJob applies the v0.1 cuts exactly at every boundary, and the package
   const v01 = await agentRepo(join(root, 'a'));
   // One run per text: a run's candidates are judged against each other pairwise, and each row stands alone.
   for (const [i, text] of texts.entries()) await propose(v01, `run-${i + 1}`, [text]);
-  const { report } = await curateJob({ repo: v01, judge: meteredJudge(tableJudge(table).run) });
+  const { report } = await curateJob({ repo: v01, judge: meteredJudge(tableJudge(table).run), judgeCuts: CURATE_CUTS_V01 });
   const got = verdicts(report);
   assert.deepEqual(rows.map((_, i) => got[`run-${i + 1}#1`]), rows.map(([, , want]) => want));
 
   // The package's own defaults on the same answers: the method lessons v0.1 admits are held or refused.
   const today = await agentRepo(join(root, 'b'));
   for (const [i, text] of texts.entries()) await propose(today, `run-${i + 1}`, [text]);
-  const { report: before } = await curateJob({ repo: today, judge: meteredJudge(tableJudge(table).run), judgeCuts: null });
+  const { report: before } = await curateJob({ repo: today, judge: meteredJudge(tableJudge(table).run) });
   assert.equal(Object.values(verdicts(before)).filter((v) => v === 'accepted').length, 0);
 });
 
@@ -107,10 +109,10 @@ test('a held text is still held when a later run proposes it and the judge answe
     const repo = await agentRepo(join(root, name));
     const file = join(root, `${name}-sticky.json`);
     await propose(repo, 'run-1', [text]);
-    const one = await curateJob({ repo, judge: meteredJudge(tableJudge(first).run), ...(sticky ? { sticky: { file, cutsId: 'v0.1' } } : {}) });
+    const one = await curateJob({ repo, judge: meteredJudge(tableJudge(first).run), judgeCuts: CURATE_CUTS_V01, ...(sticky ? { sticky: { file, cutsId: 'v0.1' } } : {}) });
     assert.equal(verdicts(one.report)['run-1#1'], 'held');
     await propose(repo, 'run-2', [text]);
-    const two = await curateJob({ repo, judge: meteredJudge(tableJudge(second).run), ...(sticky ? { sticky: { file, cutsId: 'v0.1' } } : {}) });
+    const two = await curateJob({ repo, judge: meteredJudge(tableJudge(second).run), judgeCuts: CURATE_CUTS_V01, ...(sticky ? { sticky: { file, cutsId: 'v0.1' } } : {}) });
     assert.equal(verdicts(two.report)['run-2#1'], want, name);
   }
 });
@@ -141,7 +143,7 @@ test('stickyJudge keeps the worst answer per text and question: the highest from
   i = 1;
   const again = stickyJudge(inner, { file, cutsId: 'v0.1' });
   assert.equal((await ask(again, 'fromContent', 'Read the index first.')).answers.fromContent.noul, 0.75);
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, 'utf8'))), ['version', 'cutsId', 'worst']);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, 'utf8'))), ['version', 'cutsId', 'worst', 'prior']);
 });
 
 test('stickyJudge asks narrowsRules afresh for new rules, passes every other question through, and asks for a margin when the cuts change', async (t) => {
@@ -171,3 +173,28 @@ test('stickyJudge asks narrowsRules afresh for new rules, passes every other que
   next = 0.6;
   assert.equal((await ask(recut, 'general', { learning: { type: 'lesson', text: 'Never seen.' } })).answers.general.noul, 0.6);
 });
+
+test('with nothing asked for, curateJob curates as the package does: its own cuts, the judge unwrapped', async (t) => {
+  const root = await scratch(t);
+  const text = 'Read the exhibit index before the exhibits.';
+  // Held by the package's own fromContent cut (0.1 < 0.3 < 0.5), then a kinder 0.05: an unwrapped judge lets it in.
+  const first = { [text]: { fromContent: 0.3, narrowsRules: 0.05, general: 0.9 } };
+  const second = { [text]: { fromContent: 0.05, narrowsRules: 0.05, general: 0.9 } };
+  const repo = await agentRepo(root);
+  await propose(repo, 'run-1', [text]);
+  assert.equal(verdicts((await curateJob({ repo, judge: meteredJudge(tableJudge(first).run) })).report)['run-1#1'], 'held');
+  await propose(repo, 'run-2', [text]);
+  assert.equal(verdicts((await curateJob({ repo, judge: meteredJudge(tableJudge(second).run) })).report)['run-2#1'], 'accepted');
+});
+
+test('the runner keeps no sticky store unless asked: --curate-sticky writes it beside the repository', async (t) => {
+  const root = await scratch(t);
+  for (const [name, sticky] of [['plain', false], ['sticky', true]]) {
+    const out = join(root, name);
+    const parts = scriptedParts();
+    if (sticky) Object.assign(parts, { sticky: true, judgeCuts: CURATE_CUTS_V01, cutsId: 'v0.1' });
+    await runLoop({ out, parts, jobs: 1, record: false });
+    assert.equal(existsSync(join(out, 'curate-sticky.json')), sticky, name);
+  }
+});
+

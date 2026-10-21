@@ -243,7 +243,8 @@ async function oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, l
     const curateJudge = meteredJudge(judge);
     const curated = await curateJob({
       repo, judge: curateJudge, ...(parts.thresholds ? { thresholds: parts.thresholds } : {}),
-      judgeCuts: parts.judgeCuts, sticky: { file: join(out, 'curate-sticky.json'), cutsId: parts.cutsId ?? 'v0.1' },
+      ...(parts.judgeCuts ? { judgeCuts: parts.judgeCuts } : {}),
+      ...(parts.sticky ? { sticky: { file: join(out, 'curate-sticky.json'), cutsId: parts.cutsId ?? 'default' } } : {}),
     });
     save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main });
   }
@@ -371,7 +372,7 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--curate-cuts v0.1|default] [--sealed --at seed|main|<sha>]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--curate-cuts v0.1|default] [--curate-sticky] [--sealed --at seed|main|<sha>]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -382,7 +383,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'cap-usd': { type: 'string' }, 'run-cap-usd': { type: 'string' }, 'no-record': { type: 'boolean' }, sealed: { type: 'boolean' }, at: { type: 'string' },
         'no-dispatch': { type: 'boolean' },
         model: { type: 'string' }, thinking: { type: 'string' }, set: { type: 'string' }, list: { type: 'string' }, 'promote-after': { type: 'string' },
-        'curate-cuts': { type: 'string' },
+        'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' },
       },
     }));
   } catch (error) {
@@ -419,6 +420,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       parts.judgeCuts = values['curate-cuts'] === 'v0.1' ? CURATE_CUTS_V01 : null;
       parts.cutsId = values['curate-cuts'];
       console.log(`learn-classify: curation judged by the ${values['curate-cuts'] === 'v0.1' ? 'pre-registered v0.1 cuts' : "package's default cuts"}`);
+    }
+    if (values['curate-sticky']) {
+      parts.sticky = true;
+      console.log('learn-classify: curation judges each learning by the worst answer its text has had (<out>/curate-sticky.json)');
     }
     if (promoteAfter !== undefined) {
       parts.thresholds = { promoteAfter };
