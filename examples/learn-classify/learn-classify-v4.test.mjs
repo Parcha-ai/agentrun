@@ -740,19 +740,25 @@ test('promotion after 2 clean uses, as the host sets it: the whole job is promot
   assert.deepEqual(rows.map((r) => [r.byWorkflow, r.dispatched]), [[false, false], [true, false], [true, false], [true, true], [true, true]]);
 }, { timeout: 300_000 });
 
-test('subsidiaries none: right when the filing has no subsidiary exhibit, recall 0 when it has one; never part of correct', async () => {
+test('subsidiaries none: right only when the filing has no subsidiary exhibit (noExhibit), recall 0 when it has a list, unscored when an exhibit was not read; never part of correct', async () => {
   const none = { subsidiaries: { none: true, note: 'no subsidiary list in the annual report' } };
+  const unscored = { subsidiariesRecall: null, subsidiariesPrecision: null };
   const j = judge();
-  // KOSS-shaped: the filing has no EX-21 or EX-8, and the answer says none, with its reason.
-  assert.deepEqual(await scoreSubsidiaries({ answer: none, truth: null, judge: j.run }), { subsidiariesRecall: 1, subsidiariesPrecision: 1 });
+  // KOSS-shaped: the filing has no EX-21 or EX-8 (noExhibit), and the answer says none, with its reason.
+  assert.deepEqual(await scoreSubsidiaries({ answer: none, truth: { noExhibit: true }, judge: j.run }), { subsidiariesRecall: 1, subsidiariesPrecision: 1 });
+  // The filing has an exhibit the truth could not read (noExhibit false): nothing is scored, none or a list.
+  assert.deepEqual(await scoreSubsidiaries({ answer: none, truth: { noExhibit: false }, judge: j.run }), unscored);
+  assert.deepEqual(await scoreSubsidiaries({ answer: { subsidiaries: [{ name: 'Unit 1 LLC' }] }, truth: { noExhibit: false }, judge: j.run }), unscored);
+  // No subsidiaries truth at all says nothing about an exhibit: none is not right there.
+  assert.deepEqual(await scoreSubsidiaries({ answer: none, truth: null, judge: j.run }), unscored);
   // LLY-shaped: the filing's exhibit lists 40, and the report the job read has none of them: recall 0, as for an empty answer.
   const listed = { exhibit: 'EX-21', url: 'https://x.example/ex21.htm', count: 40, items: Array.from({ length: 40 }, (_, i) => ({ name: `Unit ${i} LLC` })) };
   assert.deepEqual(await scoreSubsidiaries({ answer: none, truth: listed, judge: j.run }), { subsidiariesRecall: 0, subsidiariesPrecision: null });
   assert.equal(j.asked.length, 0, 'none asks Jev nothing');
   // A list where the filing has none stays unscored, as before.
-  assert.deepEqual(await scoreSubsidiaries({ answer: { subsidiaries: [{ name: 'Unit 1 LLC' }] }, truth: null, judge: j.run }), { subsidiariesRecall: null, subsidiariesPrecision: null });
+  assert.deepEqual(await scoreSubsidiaries({ answer: { subsidiaries: [{ name: 'Unit 1 LLC' }] }, truth: { noExhibit: true }, judge: j.run }), unscored);
   // Outside correct either way, and the cite claim says none.
-  const company = { sic: '3651', segments: { oneSegment: true }, hq: { city: 'MILWAUKEE', country: 'US' }, latestAnnual: { form: '10-K', fy: 2025 }, subsidiaries: null };
+  const company = { sic: '3651', segments: { oneSegment: true }, hq: { city: 'MILWAUKEE', country: 'US' }, latestAnnual: { form: '10-K', fy: 2025 }, subsidiaries: { noExhibit: true } };
   const report = 'https://koss.example/annual-report-2025.pdf';
   const cite = { claim: 'subsidiary', url: report, locator: 'pdf p. 40', quote: 'Exhibit index: no subsidiaries exhibit.' };
   const k = judge({ cites: { [report]: 0.9 } });
