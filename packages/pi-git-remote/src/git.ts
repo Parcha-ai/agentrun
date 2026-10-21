@@ -79,7 +79,8 @@ function credentialDescriptor(tmp: string, credential: GitCredential): number {
   return fd;
 }
 
-function scrub(text: string, credential: GitCredential | undefined): string {
+/** `text` with every occurrence of the credential's password replaced by [credential]. */
+export function scrub(text: string, credential: GitCredential | undefined): string {
   return credential ? text.split(credential.password).join("[credential]") : text;
 }
 
