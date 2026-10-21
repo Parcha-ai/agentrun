@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -14,11 +14,13 @@ import { test } from 'node:test';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { demo } from '@parcha/agentrun-harness';
 import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node';
-import { jevPlacer } from '@parcha/pi-transport';
+import { err, ok } from '@earendil-works/pi-durable/env';
+import { BoxError, jevPlacer } from '@parcha/pi-transport';
 import { localBoxes } from '@parcha/pi-transport/box/local';
 import { HEAVY_ITERATIONS, scriptedModels } from './placed-frames/fakes.ts';
 import { jevBaseUrl, jevModels, leadCatalog, liveParts } from './placed-frames/live.ts';
 import { options } from './placed-frames/run.ts';
+import { result } from './placed-frames/result.ts';
 import { ENVIRONMENTS, factsOf, placedFrames, placedLine, REST, stepOf } from './placed-frames/tools.ts';
 import { iterationsOf } from './placed-frames/programs/params.mjs';
 
@@ -190,6 +192,85 @@ test('the placed line is composed from the record\'s fields, whatever the placer
   assert.equal(placedLine({ target: 'modal', moved: true, answers: answers(0.91), reason }, 'daytona', 'Jev'), 'placed on modal: Jev judged the frame needs what daytona cannot do (0.91)');
   assert.equal(placedLine({ target: 'daytona', moved: false, answers: answers(0.09), reason }, 'daytona', 'Jev'), 'placed on daytona: Jev judged daytona can do the frame (0.09)');
   assert.doesNotMatch(placedLine({ target: 'modal', moved: true, answers: answers(0.91), reason }, 'daytona', 'Jev'), /Moved to|Stays in|Back to|the step/);
+});
+
+test('the judgment line follows the need, apart from where the frame went', () => {
+  const answers = (need) => ({ need: { type: 'bool', probability: need } });
+  const high = placedLine({ target: 'daytona', moved: false, answers: answers(0.9) }, 'daytona', 'Jev');
+  assert.equal(high, 'placed on daytona: Jev judged the frame needs what daytona cannot do (0.90), and chose daytona as the place');
+  assert.doesNotMatch(high, /can do the frame/, 'a high need never reads as "can do"');
+  assert.equal(placedLine({ target: 'modal', moved: true, answers: answers(0.5) }, 'daytona', 'Jev'), 'placed on modal: Jev judged the frame needs what daytona cannot do (0.50)', 'at the threshold it is a need');
+  assert.equal(placedLine({ target: 'daytona', moved: false, answers: answers(0.49) }, 'daytona', 'Jev'), 'placed on daytona: Jev judged daytona can do the frame (0.49)');
+});
+
+/** A provider whose boxes fail the upload (the tile program never arrives), and whose first destroys fail `destroyFailures` times. */
+function failingSetup(provider, { destroyFailures = 0 } = {}) {
+  const counts = { created: 0, destroyed: 0, attempts: 0 };
+  let failures = destroyFailures;
+  return {
+    counts,
+    provider: {
+      name: provider.name, list: (...args) => provider.list(...args), attach: (...args) => provider.attach(...args),
+      async create(...args) {
+        const made = await provider.create(...args);
+        if (!made.ok) return made;
+        counts.created += 1;
+        const target = made.value;
+        return ok(new Proxy(target, { get(self, key) {
+          if (key === 'upload') return async () => err(new BoxError('unknown', 'the upload failed'));
+          if (key === 'destroy') return async (context) => { counts.attempts += 1; if (failures > 0) { failures -= 1; return err(new BoxError('unknown', 'the box would not end')); } counts.destroyed += 1; return self.destroy(context); };
+          const value = Reflect.get(self, key);
+          return typeof value === 'function' ? value.bind(self) : value;
+        } }));
+      },
+    },
+  };
+}
+
+test('a sandbox whose setup fails is ended, one that cannot be ended is kept for release to end, and nothing is left', async (t) => {
+  const tmp = await scratch(t);
+  const run = async ({ destroyFailures }) => {
+    const work = join(tmp, `work-${destroyFailures}`);
+    mkdirSync(work, { recursive: true });
+    const flaky = failingSetup(localBoxes({ root: join(tmp, `boxes-${destroyFailures}`), path: `${process.execPath.replace(/\/[^/]+$/, '')}:/usr/bin:/bin` }), { destroyFailures });
+    const extension = placedFrames({ providers: () => Object.fromEntries(ENVIRONMENTS.map((environment) => [environment.id, flaky.provider])), models: scriptedModels(), placer: 'scripted' });
+    const tool = (name) => extension.tools.find((each) => each.name === name);
+    const api = { env: new NodeExecutionEnv({ cwd: work }) };
+    await assert.rejects(tool('frame').execute({ f: 0, frames: FRAMES }, api, BACKGROUND_CONTEXT), /the upload failed/);
+    return { flaky, tool, api };
+  };
+  const clean = await run({ destroyFailures: 0 });
+  assert.deepEqual([clean.flaky.counts.created, clean.flaky.counts.destroyed], [1, 1], 'a failed setup ends the sandbox it made');
+  const released = await clean.tool('release').execute({}, clean.api, BACKGROUND_CONTEXT);
+  assert.deepEqual(JSON.parse(released.content[0].text), { boxes: [] }, 'nothing is left for release');
+  const stuck = await run({ destroyFailures: 1 });
+  assert.deepEqual([stuck.flaky.counts.created, stuck.flaky.counts.destroyed, stuck.flaky.counts.attempts], [1, 0, 1], 'the first attempt to end it failed');
+  await stuck.tool('release').execute({}, stuck.api, BACKGROUND_CONTEXT);
+  assert.deepEqual([stuck.flaky.counts.destroyed, stuck.flaky.counts.attempts], [1, 2], 'release tried again, and it ended');
+  const hopeless = await run({ destroyFailures: 5 });
+  await assert.rejects(hopeless.tool('release').execute({}, hopeless.api, BACKGROUND_CONTEXT), /would not end/, 'a sandbox that will not end fails the release, so the run is not taken for finished');
+});
+
+test('a run that stopped short is not published as finished: an omitted frame and an omitted release are refused', async (t) => {
+  const tmp = await scratch(t);
+  const drawn = (frames, omit, withRelease) => {
+    const dir = join(tmp, `run-${frames}-${omit.join('')}-${withRelease}`);
+    const framesDir = join(dir, 'work', 'frames');
+    mkdirSync(framesDir, { recursive: true });
+    for (let f = 0; f < frames; f += 1) {
+      if (omit.includes(f)) continue;
+      const environment = f < 2 ? 'daytona' : 'modal';
+      writeFileSync(join(framesDir, `f${f}.idx`), Buffer.alloc(192 * 108));
+      writeFileSync(join(framesDir, `f${f}.call.json`), JSON.stringify({ tool: 'frame', args: { f, frames }, answer: { f, environment, provider: 'local', box: environment === 'daytona' ? 'box-1' : 'box-2', placed: { by: 'scripted', need: 0.1, line: 'x' } } }));
+    }
+    if (withRelease) writeFileSync(join(framesDir, 'release.call.json'), JSON.stringify({ tool: 'release', args: {}, answer: { boxes: [{ box: 'box-1', environment: 'daytona', provider: 'local' }, { box: 'box-2', environment: 'modal', provider: 'local' }] } }));
+    return dir;
+  };
+  const keep = () => 'a'.repeat(64);
+  assert.ok(result({ answer: 'done' }, { dir: drawn(4, [], true), keep }).json, 'a whole run is published');
+  assert.throws(() => result({ answer: 'done' }, { dir: drawn(4, [2], true), keep }), /the run is incomplete: frame 3 not drawn/);
+  assert.throws(() => result({ answer: 'done' }, { dir: drawn(4, [1, 3], true), keep }), /frames 2, 4 not drawn/);
+  assert.throws(() => result({ answer: 'done' }, { dir: drawn(4, [], false), keep }), /the release call was never answered/);
 });
 
 test('rates are an option: with them each box ends with its receipt; without them there is none', async (t) => {
