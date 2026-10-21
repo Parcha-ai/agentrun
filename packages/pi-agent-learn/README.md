@@ -226,7 +226,7 @@ const result = await proposeLearning({ repo, runId, target: harness, secrets: va
 ```
 
 `proposeLearning` is the host step at a run's terminal. It collects the run's candidates, renders `inbox/<run id>.md`
-(and `uses/<run id>.json` from the optional `uses` hook, which a later part supplies), adds the workflow records the
+(and `uses/<run id>.json` from the optional `uses` hook, which `usesSource` supplies), adds the workflow records the
 host collected from the run's DSL store (`workflows`: per name, `{ files: { "<sha256>.json": text, latest: text } }`,
 committed byte for byte under `inbox/<run id>/workflows/<name>/`; a name or file name of any other shape refuses the
 proposal), guards the whole proposal as the
