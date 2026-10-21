@@ -194,6 +194,7 @@ try {
             "--cloud-arg", `cluster-spares=${clusterSpares}`,
             ...(clusterIdle > 0 ? ["--cloud-arg", `cluster-idle-minutes=${clusterIdle}`] : []),
             "--cloud-arg", `cluster-image=${clusterImage}`,
+            "--cloud-arg", `cluster-run=${runId}`, // the boxes' pda-run label: a sweep or a check lists exactly this run's boxes
             "--cloud-arg", `cluster-ttl-minutes=${arg("ttl", 45)}`,
             "--cloud-arg", "cluster-cpu=8",
             "--cloud-arg", "cluster-memory-mib=65536",

@@ -11,7 +11,7 @@ import { basename, join } from "node:path";
 import type { CloudModuleOptions } from "../../03-tab-to-cloud/pipe/server.ts";
 import { modalCloud, type ModalCloudOptions } from "./modal-cloud.ts";
 
-const KNOWN = new Set(["extra-module", "extra-secrets", "robot-code", "robot-plan", "robot-prewarm", "robot-thread-deadline-s", "image", "transport", "desktop", "regions", "app", "prefix", "warm", "rewarm", "gpu-image", "gpu-type", "gpu-note", "gpu-ttl-minutes", "gpu-cpu", "gpu-memory-mib", "gpu-volume", "gpu-start-file", "gpu-start-env", "gpu-ready", "gpu-ready-timeout-s", "vm", "warm-commands-file", "warm-env", "warm-delay-ms", "cpu", "memory-mib", "cluster-size", "cluster-image", "cluster-type", "cluster-cpu", "cluster-memory-mib", "cluster-ttl-minutes", "cluster-ready", "cluster-ready-timeout-s", "cluster-placement-s", "cluster-start", "cluster-skills", "cluster-spares", "cluster-idle-minutes", "robot"]);
+const KNOWN = new Set(["extra-module", "extra-secrets", "robot-code", "robot-plan", "robot-prewarm", "robot-thread-deadline-s", "image", "transport", "desktop", "regions", "app", "prefix", "warm", "rewarm", "gpu-image", "gpu-type", "gpu-note", "gpu-ttl-minutes", "gpu-cpu", "gpu-memory-mib", "gpu-volume", "gpu-start-file", "gpu-start-env", "gpu-ready", "gpu-ready-timeout-s", "vm", "warm-commands-file", "warm-env", "warm-delay-ms", "cpu", "memory-mib", "cluster-size", "cluster-image", "cluster-type", "cluster-cpu", "cluster-memory-mib", "cluster-ttl-minutes", "cluster-ready", "cluster-ready-timeout-s", "cluster-placement-s", "cluster-start", "cluster-skills", "cluster-spares", "cluster-idle-minutes", "robot", "cluster-run"]);
 const flag = (v: string | undefined) => (v === undefined ? undefined : v === "true" || v === "1" || v === "");
 
 /** The module's `--cloud-arg` pairs as `modalCloud` options; an unknown key or value is an error, not a silent default. */
@@ -104,6 +104,7 @@ export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pi
             size: number("cluster-size")!,
             image: args["cluster-image"],
             ...(args["cluster-type"] ? { type: args["cluster-type"] } : {}),
+            ...(args["cluster-run"] ? { run: args["cluster-run"] } : {}),
             ...(number("cluster-cpu") ? { cpu: number("cluster-cpu")! } : {}),
             ...(number("cluster-memory-mib") ? { memoryMiB: number("cluster-memory-mib")! } : {}),
             ...(number("cluster-ttl-minutes") ? { ttlMinutes: number("cluster-ttl-minutes")! } : {}),

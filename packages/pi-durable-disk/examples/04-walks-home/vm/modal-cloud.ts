@@ -19,6 +19,11 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 import { ensureRunning, LABEL_FLEET, LABEL_RUN, modalHost, modalSandboxes, removeMountToken, sandboxName } from "@parcha/pi-durable-disk";
+import { BACKGROUND_CONTEXT as boxContext } from "@earendil-works/chord/context";
+import type { Context } from "@earendil-works/chord";
+import type { Box, BoxProvider } from "@parcha/pi-transport";
+import { modalBoxes } from "@parcha/pi-transport/box/modal";
+import { boxLabels, clusterSpec, gpuProcess, runToEnd, unwrap } from "./transport-boxes.ts";
 import type { DaytonaClient, HostDriver, HostHandle, ModalSandbox, ModalSdk, RunRef, SandboxInfo } from "@parcha/pi-durable-disk";
 import { warmTrain, type WarmTrain } from "../universes/warm-train.ts";
 import { creatureWarmer, type CreatureWarmer } from "./warm-creature.ts";
@@ -149,6 +154,8 @@ export interface ModalCloudOptions {
     /** Extra boxes created alongside the `size` needed, so a slow one cannot hold up the start (they cost like any other box). */
     readonly spares?: number;
     readonly image: string;
+    /** The run this cluster's boxes belong to, as their `pda-run` label (so a sweep or a check lists exactly this run's boxes). Default `cluster`. */
+    readonly run?: string;
     readonly type?: string;
     readonly cpu?: number;
     readonly memoryMiB?: number;
@@ -330,13 +337,19 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   const image = options.image ?? (() => (base.images.fromRegistry("ubuntu:24.04") as unknown as { dockerfileCommands(c: string[]): unknown }).dockerfileCommands(vmImageCommands(uid, gid, { desktop: options.desktop })));
   /** The names of creates Modal has not answered yet: queued, with no sandbox to remove. A stop that exits while one is queued leaves it to place later and run until its TTL, so close() asks for each by name. */
   const queued = new Set<string>();
+  /** The name each cluster slot's latest sandbox was given (for the log lines, which name a box). */
+  const namesBySlot = new Map<number, string>();
   // Every sandbox is in the ledger by its name before the create call returns, and by its id after.
   const sdk: FullSdk = {
     apps: base.apps,
     images: base.images,
     ...(base.volumes ? { volumes: base.volumes } : {}),
     sandboxes: {
-      create: async (app, img, params) => {
+      create: async (app, img, given) => {
+        // pi-transport's modalBoxes names no sandbox (BoxSpec has no name): a cluster box is named here, from its slot label, so the ledger and the sweep can key a create Modal has queued on a name.
+        const slot = (given as { tags?: Record<string, string> }).tags?.["pda-slot"];
+        const params = given.name === undefined && slot !== undefined ? { ...given, name: sandboxName(`${prefix}gpu${slot}-`, "cluster", Date.now()) } : given;
+        if (slot !== undefined) namesBySlot.set(Number(slot), params.name);
         options.ledger?.open("modal-sandbox", params.name, "create");
         queued.add(params.name);
         try {
@@ -364,11 +377,12 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     ? modalSandboxes(sdk, { appName, image: options.gpu.image, runtime: "gvisor", gpu: gpuType, cpu: options.gpu.cpu ?? 4, memoryMiB: options.gpu.memoryMiB ?? 16384, ...(options.regions ? { regions: options.regions } : {}), encryptedPorts: [BOX_SERVE_PORT], ...(options.gpu.volumes ? { volumes: { ...options.gpu.volumes } } : {}) })
     : undefined;
   // ---- the robot cluster: a pool of GPU boxes lent to the session's threads ------------------------------------------------------
-  const clusterClient: DaytonaClient | undefined = options.cluster
-    ? modalSandboxes(sdk, { appName, image: options.cluster.image, runtime: "gvisor", gpu: options.cluster.type ?? "H100!", cpu: options.cluster.cpu ?? 8, memoryMiB: options.cluster.memoryMiB ?? 65536, ...(options.regions ? { regions: options.regions } : {}) })
-    : undefined;
+  // The cluster's boxes are made, run in and ended through pi-transport's modalBoxes, with this cloud's own Modal client (the key stays here); a box is a handle the pool and the rpc hold by its id.
+  const clusterProvider: BoxProvider | undefined = options.cluster ? modalBoxes(sdk as never, { appName, image: options.cluster.image }) : undefined;
+  const clusterBoxes = new Map<string, Box>();
+  const clusterRun = options.cluster?.run ?? "cluster";
   const pool: GpuPool | undefined =
-    options.cluster && clusterClient
+    options.cluster && clusterProvider
       ? new GpuPool({
           size: options.cluster.size,
           ...(options.cluster.spares ? { spares: options.cluster.spares } : {}),
@@ -379,22 +393,24 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
           create: async (index, signal) => {
             const cluster = options.cluster!;
             const t0 = Date.now();
-            const name = sandboxName(`${prefix}gpu${index}-`, "cluster", t0);
-            const body = { name, snapshot: "image", labels: { [LABEL_FLEET]: fleet, [LABEL_RUN]: "cluster" }, autoStopInterval: 0, autoDeleteInterval: 0, ttlMinutes: cluster.ttlMinutes ?? DEFAULT_GPU_TTL_MINUTES };
+            const spec = clusterSpec({ ...cluster, ttlMinutes: cluster.ttlMinutes ?? DEFAULT_GPU_TTL_MINUTES }, boxLabels(clusterRun, fleet, index));
             const slowAfterMs = cluster.placementTimeoutMs ?? DEFAULT_PLACEMENT_SLOW_MS;
-            const creating = clusterClient.create(body);
+            // A create abandoned through the context is ended by modalBoxes when it lands (its own rule); Modal cannot cancel a queued create.
+            const creating = clusterProvider.create(spec, { abortSignal: signal } as Context);
             // Modal queues a create it has no capacity for and places it when capacity comes; cancelling and asking again only joins the same queue. So a slow one is reported, and the same request is waited for.
-            const outcome = await awaitPlacement(creating, { slowAfterMs, signal, onSlow: (waitedMs) => options.log("pool.box-still-placing", { index, name, waitedS: Math.round(waitedMs / 1000) }) });
+            const outcome = await awaitPlacement(creating, { slowAfterMs, signal, onSlow: (waitedMs) => options.log("pool.box-still-placing", { index, name: namesBySlot.get(index), waitedS: Math.round(waitedMs / 1000) }) });
             if ("abandoned" in outcome) {
-              // The pool closed while Modal was still queuing it: it is terminated if it lands, and its own TTL bounds it if this process is gone.
-              // close() waits for this create (its own bound), so a box that lands within that wait is gone before close returns.
-              await reclaimLate(name, creating);
+              // The pool closed while Modal was still queuing it: it is ended if it lands, and close() waits (bounded) for that, so a box that lands within the wait is gone before close returns.
+              await Promise.race([creating.catch(() => undefined), new Promise<void>((r) => setTimeout(r, options.closeWaitMs ?? 60_000))]);
               throw new Error(`GPU box ${index}: the pool closed while it was still placing`);
             }
-            const box: SandboxInfo = outcome.value;
+            const box: Box = unwrap(outcome.value);
+            const name = namesBySlot.get(index) ?? box.id;
             const placeMs = Date.now() - t0;
             // Tracked from the moment it exists: whatever happens next, a box that would not go stays in `live` and close() tries again.
             live.add(box.id);
+            clusterBoxes.set(box.id, box);
+            options.log("box.created", { index, box: name, via: "pi-transport", provider: "modal", run: clusterRun, labels: spec.labels, spec: { gpu: spec.gpu, isolation: spec.isolation, cpus: spec.cpus, memoryMb: spec.memoryMb, image: spec.image, maxLifetimeMs: spec.maxLifetimeMs }, ms: placeMs });
             const poolBox = { id: box.id, name, index };
             let lastReady = "";
             try {
@@ -408,7 +424,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
                 const skill = (cluster.skills ?? ["walk"])[index % (cluster.skills ?? ["walk"]).length]!;
                 const ready = cluster.readyCommand?.replaceAll("{skill}", skill).replaceAll("{index}", String(index));
                 // One attempt gets all the time that is left: a host that has to compile pays once, not a kill at 180 s and a retry.
-                const r = await clusterClient.exec(box, `mkdir -p /workspace && ${ready ? `bash -c ${q(ready)}` : "true"}`, leftS).catch((e: Error) => ({ exitCode: 1, result: e.message }));
+                const r = await runToEnd(box, ["sh", "-c", `mkdir -p /workspace && ${ready ? `bash -c ${q(ready)}` : "true"}`], leftS * 1000, boxContext).catch((e: Error) => ({ exitCode: 1, result: e.message }));
                 if (Date.now() > deadline) throw new Error(`GPU box ${index} was not ready in ${Math.round(readyMs / 1000)} s${r.exitCode === 0 ? " (it answered too late)" : `: ${r.result.trim().slice(-200)}`}`);
                 if (r.exitCode === 0) {
                   lastReady = r.result.trim().split("\n").filter(Boolean).at(-1) ?? "";
@@ -420,7 +436,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
                 });
               }
             } catch (error) {
-              await drop(box);
+              await drop({ id: box.id, name });
               throw error;
             }
             const total = Date.now() - t0;
@@ -432,7 +448,12 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
           },
           remove: async (box) => drop({ id: box.id, name: box.name }),
           // A box whose sandbox has ended (its TTL, a preemption, a crash) is dead: never handed to another thread as ready.
-          alive: async (box) => (await (await sdk.sandboxes.fromId(box.id)).poll()) === null,
+          alive: async (box) => {
+            const held = clusterBoxes.get(box.id);
+            if (!held) return false;
+            const status = await held.status(boxContext);
+            return status.ok && status.value.state === "running";
+          },
           ...(options.cluster.watchMs !== undefined ? { watchMs: options.cluster.watchMs } : {}),
         })
       : undefined;
@@ -459,28 +480,19 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       exec: async (box, argv, o) => {
         if (!mine(box)) throw new Error("no thread of this run holds that box");
         pool.touch();
-        const sb = await sdk.sandboxes.fromId(box);
-        // Its own session, with its group's id on the box in a file: when the link that asked for the command is gone, the group is killed (a trainer nobody reads is only a cost).
-        const pidFile = `/tmp/.pda-rpc/${randomBytes(6).toString("hex")}`;
-        const wrapped = ["sh", "-c", 'mkdir -p /tmp/.pda-rpc && exec setsid -w sh -c \'echo $$ > "$0"; "$@"; c=$?; rm -f "$0"; exit $c\' "$0" "$@"', pidFile, ...argv];
-        const proc = await sb.exec(wrapped, { mode: "binary", ...(o.timeoutMs === undefined ? {} : { timeoutMs: o.timeoutMs }) });
-        return {
-          stdin: proc.stdin,
-          stdout: asIterable(proc.stdout),
-          stderr: asIterable(proc.stderr),
-          wait: () => proc.wait(),
-          kill: async () => {
-            const k = await sb.exec(["sh", "-c", 'p=$(cat "$0" 2>/dev/null); [ -n "$p" ] || exit 0; kill -TERM -- -$p 2>/dev/null; sleep 2; kill -KILL -- -$p 2>/dev/null; rm -f "$0"', pidFile], { mode: "binary", timeoutMs: 30_000 });
-            await Promise.allSettled([asIterable(k.stdout)[Symbol.asyncIterator]().next(), k.wait()]);
-          },
-        } satisfies GpuProcess;
+        const held = clusterBoxes.get(box);
+        if (!held) throw new Error("the box is gone");
+        return gpuProcess(held, argv, o, boxContext);
       },
       poll: async (box) => {
         if (!mine(box)) throw new Error("no thread of this run holds that box");
-        const sb = await sdk.sandboxes.fromId(box);
-        const code = await sb.poll();
+        const held = clusterBoxes.get(box);
+        if (!held) throw new Error("the box is gone");
+        const status = unwrap(await held.status(boxContext));
+        if (status.state === "running") return null;
         // It ended: the pool never hands it out again, and a thread waiting for a box is told if none is left.
-        if (code !== null) pool.markDead(box, `exit ${code}`);
+        const code = status.exitCode ?? -1;
+        pool.markDead(box, `exit ${code}`);
         return code;
       },
     };
@@ -520,18 +532,43 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
    * Remove a sandbox. A removal that fails leaves it in `live` (and its token), so a later try, such as close()'s, still finds it:
    * a sandbox forgotten while it runs costs by the minute. True when it is gone.
    */
-  async function drop(box: { id: string; name: string }): Promise<boolean> {
-    const removed = await client.remove(box.id).then(
-      () => {
-        options.ledger?.close("modal-sandbox", box.id, "deleted");
-        return true;
-      },
-      (error: Error) => {
-        options.log("modal.delete-failed", { box: box.name, error: error.message });
-        return false;
-      },
-    );
+  const dropping = new Map<string, Promise<boolean>>();
+  /** One removal of a sandbox at a time: the pool's and close()'s sweep can ask for the same box together, and it is ended, and logged as ended, once. */
+  function drop(box: { id: string; name: string }): Promise<boolean> {
+    const pending = dropping.get(box.id);
+    if (pending) return pending;
+    const removing = dropOnce(box).finally(() => dropping.delete(box.id));
+    dropping.set(box.id, removing);
+    return removing;
+  }
+  async function dropOnce(box: { id: string; name: string }): Promise<boolean> {
+    // A cluster box is ended through pi-transport (destroy: Modal's terminate with wait; true on a box that already ended); any other sandbox through this cloud's own client.
+    const held = clusterBoxes.get(box.id);
+    const removed = held
+      ? await held.destroy(boxContext).then(
+          (r) => {
+            if (r.ok) return true;
+            options.log("modal.delete-failed", { box: box.name, error: r.error.message });
+            return false;
+          },
+          (error: Error) => {
+            options.log("modal.delete-failed", { box: box.name, error: error.message });
+            return false;
+          },
+        )
+      : await client.remove(box.id).then(
+          () => true,
+          (error: Error) => {
+            options.log("modal.delete-failed", { box: box.name, error: error.message });
+            return false;
+          },
+        );
     if (removed) {
+      options.ledger?.close("modal-sandbox", box.id, "deleted");
+      if (held) {
+        clusterBoxes.delete(box.id);
+        options.log("box.ended", { index: Number(box.name.match(/gpu(\d+)-/)?.[1] ?? -1), box: box.name, via: "pi-transport", ok: true });
+      }
       live.delete(box.id);
       serveTokens.delete(box.id);
     }

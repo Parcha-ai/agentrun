@@ -129,3 +129,9 @@ test("cluster-start reaches the cluster (now: the boxes place when the server st
   assert.equal("start" in (modalOptionsFromArgs(base).cluster ?? {}), false);
   assert.throws(() => modalOptionsFromArgs({ ...base, "cluster-start": "soon" }), /attach or now/);
 });
+
+test("cluster-run reaches the cluster as the run its boxes are labelled with, and its absence leaves the default", () => {
+  const base = { "cluster-size": "8", "cluster-image": "im-3" };
+  assert.equal(modalOptionsFromArgs({ ...base, "cluster-run": "walks-home" }).cluster?.run, "walks-home");
+  assert.equal("run" in (modalOptionsFromArgs(base).cluster ?? {}), false);
+});

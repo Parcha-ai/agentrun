@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@parcha/pi-transport": "0.1.0-beta.20",
     "modal": "0.11.0",
     "ws": "8.21.3"
   },

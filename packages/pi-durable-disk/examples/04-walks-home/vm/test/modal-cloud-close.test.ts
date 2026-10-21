@@ -16,6 +16,8 @@ class FakeSandbox {
   static execGate: Promise<void> | undefined;
   /** Set by a test: the exit code every command returns, how long it takes, and every argv it was given. */
   static execExit = 0;
+  /** Set by a test: which commands fail (by their argv), while the rest answer `execExit`: pi-transport's own mkdir of the workspace must still succeed. */
+  static execFails: ((argv: string[] | undefined) => boolean) | undefined;
   static execDelayMs = 0;
   static execs: string[][] = [];
   static timeouts: (number | undefined)[] = [];
@@ -29,8 +31,10 @@ class FakeSandbox {
     if (argv) FakeSandbox.execs.push(argv);
     FakeSandbox.timeouts.push(params?.timeoutMs);
     if (FakeSandbox.execDelayMs) await new Promise((r) => setTimeout(r, FakeSandbox.execDelayMs));
-    const exit = FakeSandbox.execExit;
-    return { stdin: { writeBytes: async () => undefined, close: async () => undefined }, stdout: { readBytes: async () => empty }, stderr: { readBytes: async () => empty }, wait: async () => exit };
+    const exit = FakeSandbox.execFails ? (FakeSandbox.execFails(argv) ? 1 : 0) : FakeSandbox.execExit;
+    // The SDK's streams: read in one piece (the VM client's way) or iterated (pi-transport's way).
+    const stream = () => ({ readBytes: async () => empty, async *[Symbol.asyncIterator]() { /* nothing printed */ } });
+    return { stdin: { writeBytes: async () => undefined, close: async () => undefined }, stdout: stream(), stderr: stream(), wait: async () => exit };
   }
   async poll() {
     return this.exit;
@@ -49,6 +53,7 @@ class FakeSandbox {
 
 async function world(failTerminate: (id: string, attempt: number) => boolean, gate?: Promise<void>, extra: Record<string, unknown> = {}) {
   const boxes: FakeSandbox[] = [];
+  const created: Record<string, unknown>[] = [];
   const attempts: string[] = [];
   const logs: { event: string; data: Record<string, unknown> }[] = [];
   const sdk = {
@@ -56,6 +61,7 @@ async function world(failTerminate: (id: string, attempt: number) => boolean, ga
     images: { fromRegistry: (tag: string) => ({ registry: tag, dockerfileCommands: () => ({}) }), fromId: async (id: string) => ({ id }) },
     sandboxes: {
       async create(_app: unknown, _image: unknown, params: { name: string }) {
+        created.push(params as never);
         await gate;
         const box = new FakeSandbox(params.name, boxes.length + 1, async (id) => {
           attempts.push(id);
@@ -90,7 +96,7 @@ async function world(failTerminate: (id: string, attempt: number) => boolean, ga
       if (Date.now() - t0 > 20_000) throw new Error(`the sandboxes did not come up: ${logs.map((l) => `${l.event} ${JSON.stringify(l.data).slice(0, 200)}`).join(" | ")}`);
     }
   };
-  return { cloud, boxes, attempts, logs, ref, up };
+  return { cloud, boxes, created, attempts, logs, ref, up };
 }
 
 test("close removes the second sandbox although terminating the first keeps failing, and says what is left", async () => {
@@ -206,6 +212,7 @@ test("the cluster starts when the first page takes the run (prewarm), not before
 
 const reset = () => {
   FakeSandbox.execExit = 0;
+  FakeSandbox.execFails = undefined;
   FakeSandbox.execDelayMs = 0;
   FakeSandbox.execs = [];
   FakeSandbox.timeouts = [];
@@ -251,7 +258,7 @@ test("the cluster: a command runs in its own session with its group recorded, an
 
 test("the cluster: a box that never gets ready is removed, and if Modal would not take it the first time it stays tracked and close tries again", async () => {
   reset();
-  FakeSandbox.execExit = 1; // the readiness command keeps failing
+  FakeSandbox.execFails = (argv) => (argv ?? []).join(" ").includes("bash -c 'false'"); // the readiness command keeps failing
   const w = await world((_id, attempt) => attempt === 1, undefined, { cluster: { size: 1, image: "im-cluster", readyCommand: "false", readyTimeoutMs: 1_200, start: "now" } });
   await w.cloud.cluster!.start();
   assert.equal(w.cloud.cluster!.status().boxes[0]!.state, "failed");
@@ -356,4 +363,27 @@ test("a create that never places leaves close with its name in the failures, not
   assert.ok(summary, "close reports it");
   assert.match(JSON.stringify(summary!.data), /still queued/);
   assert.match(JSON.stringify(summary!.data), /no running sandbox by that name/);
+});
+
+test("the cluster's boxes reach Modal through pi-transport: the exact type on gVisor with its sizes, a name, its labels in tags; box.created and box.ended say so, and close ends each through it", async () => {
+  const w = await world(() => false, undefined, { cluster: { size: 2, image: "im-cluster", cpu: 8, memoryMiB: 65536, ttlMinutes: 40, run: "walks-home", start: "now" } });
+  await w.cloud.cluster!.start();
+  const gpu = w.created.filter((p) => p.gpu !== undefined);
+  assert.equal(gpu.length, 2);
+  for (const [i, p] of gpu.entries()) {
+    const tags = p.tags as Record<string, string>;
+    assert.equal(p.gpu, "H100!");
+    assert.equal(p.runtime, "gvisor");
+    assert.equal(p.cpu, 8);
+    assert.equal(p.memoryMiB, 65536);
+    assert.equal(p.timeoutMs, 40 * 60_000);
+    assert.match(String(p.name), new RegExp(`^pda-demo-gpu${i}-`), "named from its slot, so the ledger can key a queued create");
+    assert.deepEqual({ run: tags["pda-run"], role: tags["pda-role"], slot: tags["pda-slot"], via: tags["pi-transport.box"] }, { run: "walks-home", role: "gpu", slot: String(i), via: "1" });
+  }
+  const madeEvents = w.logs.filter((l) => l.event === "box.created");
+  assert.equal(madeEvents.length, 2);
+  assert.deepEqual({ via: madeEvents[0]!.data.via, run: madeEvents[0]!.data.run, gpu: (madeEvents[0]!.data.spec as { gpu: string }).gpu }, { via: "pi-transport", run: "walks-home", gpu: "H100!" });
+  await w.cloud.close!();
+  assert.equal(w.logs.filter((l) => l.event === "box.ended" && l.data.ok === true).length, 2, "each cluster box ended through pi-transport");
+  assert.deepEqual(w.boxes.map((b) => b.exit), [137, 137]);
 });
