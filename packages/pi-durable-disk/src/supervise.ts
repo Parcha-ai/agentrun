@@ -84,6 +84,11 @@ export interface HostDriver {
   readonly kills?: "process" | "box";
   /** Optional, for a driver whose instances get machines of their own: the box `handle`'s instance runs in, as a receipt. */
   box?(handle: HostHandle): HostBox | null;
+  /**
+   * Optional, with `box`: the provider of the boxes this driver makes (`box()`'s `provider`), known before a box exists.
+   * A place labels its host boxes by it (`Place.labelBox`).
+   */
+  readonly provider?: string;
 }
 
 /** The control-plane calls the supervisor uses; an archil `Disk` satisfies it. */

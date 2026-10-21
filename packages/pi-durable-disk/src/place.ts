@@ -127,9 +127,19 @@ export interface Place {
   release(): Promise<void>;
   /** A place whose runners record where the supervisor cannot read says where, and brings the recording home. */
   readonly recordHome?: PlaceRecordHome;
+  /**
+   * The run-wide label (`box-N`) of the host box this place started at `key` (its start index, as a string), on
+   * `provider`. The runner's process claims it, first on opening the run, in the run's `box-ids.internal/` beside the
+   * labels of the boxes the run's tools make, so no two boxes of a run share a label; the place only reads it. A key
+   * this place did not start in this supervisor's life is refused (`LABEL_REFUSED`): a supervisor restarted mid-run
+   * would renumber its host boxes. A label that has not landed within the place's bound is `undefined`, never a guess
+   * (the supervisor asks again, and its final read refuses a box that never got one); reads of the labels that fail
+   * until the bound are `LABEL_UNREADABLE`.
+   */
+  labelBox?(box: { provider: string; key: string }): Promise<string | undefined>;
 }
 
-export type PlaceErrorCode = "INVALID_ARGUMENT" | "HELD" | "START_TIMED_OUT" | "STATUS_FAILED" | "KILL_UNSUPPORTED" | "RELEASE_FAILED" | "BOX_GONE" | "CARRY_FAILED" | "BLOB_MISMATCH" | "DIRS_REFUSED";
+export type PlaceErrorCode = "INVALID_ARGUMENT" | "HELD" | "START_TIMED_OUT" | "STATUS_FAILED" | "KILL_UNSUPPORTED" | "RELEASE_FAILED" | "BOX_GONE" | "CARRY_FAILED" | "BLOB_MISMATCH" | "DIRS_REFUSED" | "LABEL_REFUSED" | "LABEL_UNREADABLE";
 
 export class PlaceError extends PdaError {
   constructor(code: PlaceErrorCode, message: string, options: { cause?: unknown } = {}) {
@@ -478,12 +488,23 @@ export interface ArchilPlaceOptions {
    * `signals-failed` and ends. Default 60 s.
    */
   signalFailMs?: number;
+  /** How long `labelBox` reads for a host box's label before it answers `undefined`, and how often. Default 2 s, every 250 ms. */
+  labelWaitMs?: number;
+  labelPollMs?: number;
 }
 
 type Minted = { token: string; identifier: string; nickname: string; removed: boolean };
 
 /** Where in the run's directory an Archil place's runners write their kill requests. */
 const REQUESTS = "signals";
+/**
+ * Where in the run's directory the run's box labels are claimed (format v1, shared with the harness's ledger): one file
+ * `box-N.json` per label, each claimed with link(2) by the process that holds the run.
+ */
+const BOX_IDS = "box-ids.internal";
+const BOX_LABEL = /^box-([1-9][0-9]*)\.json$/;
+/** The runner order's variable naming the host box its process claims a label for, first on opening the run. */
+const HOST_BOX = "HOST_BOX";
 
 // ---- bringing a recording home ------------------------------------------------------------------------------------------
 
@@ -756,6 +777,8 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
   const startTimeoutMs = options.startTimeoutMs ?? 60_000;
   const signalPollMs = options.signalPollMs ?? 500;
   const signalFailMs = options.signalFailMs ?? SIGNAL_FAIL_MS;
+  const labelWaitMs = options.labelWaitMs ?? 2_000;
+  const labelPollMs = options.labelPollMs ?? 250;
   return (ctx) => {
     const ref: RunRef = { disk: options.disk, region: options.region, id: options.id ?? ctx.paths.id };
     runPath(ref.id);
@@ -772,6 +795,15 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
     const records = `${runPath(ref.id)}/${RECORDS}/`;
     const recording = typeof options.control.listObjects === "function";
     const owner = options.ensure?.create;
+    // Host boxes are labelled where the driver names its provider, the control can list, and the order names the
+    // supervisor's life (RUN_LABEL): the runner's process claims each one's label, and the place reads it.
+    const provider = typeof host.provider === "string" && host.box ? host.provider : undefined;
+    const labelling = provider !== undefined && recording;
+    /** The host box of each start this place made in this life, by key (its start index): what its runner was asked to claim. */
+    const hostBoxes = new Map<string, { provider: string; run: string }>();
+    const labels = new Map<string, string>();
+    /** What each label file under box-ids.internal/ was, once read: a place label is never rewritten, a tool's is not ours. */
+    const labelFiles = new Map<string, { owner?: unknown; provider?: unknown; key?: unknown; run?: unknown } | null>();
     /**
      * Before attempt `gen`'s runner starts: the EMPTY directories it writes into, `signals/` and, with `recordHome`,
      * `record/<gen>/.spool/` and `record/<gen>/blobs/`, made over the control (PutObject with the owner, as createRunDir
@@ -782,10 +814,10 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
      * makes them itself finds them made. Without an owner nothing is made: a directory the run user does not own would
      * refuse the runner's files.
      */
-    const makeDirs = async (gen: number): Promise<void> => {
+    const makeDirs = async (gen: number, labelled: boolean): Promise<void> => {
       if (!owner) return;
       const run = `${runPath(ref.id)}/`;
-      const dirs = [`${run}${REQUESTS}/`, ...(recording ? [`${run}${RECORDS}/`, `${run}${RECORDS}/${gen}/`, `${run}${RECORDS}/${gen}/.spool/`, `${run}${RECORDS}/${gen}/blobs/`] : [])];
+      const dirs = [`${run}${REQUESTS}/`, ...(recording ? [`${run}${RECORDS}/`, `${run}${RECORDS}/${gen}/`, `${run}${RECORDS}/${gen}/.spool/`, `${run}${RECORDS}/${gen}/blobs/`] : []), ...(labelled ? [`${run}${BOX_IDS}/`] : [])];
       for (const dir of dirs) {
         try {
           if (!(await control.headObject(dir))) await control.putObject(dir, "", { uid: owner.uid, gid: owner.gid, mode: owner.mode ?? 0o755 });
@@ -851,8 +883,17 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       const driver: HostDriver = {
         // Inside ensureRunning, after its revoke and start mark: no delegation holds the run, so S3 takes the writes.
         start: async (r, token, attempt) => {
-          await makeDirs(order.gen);
-          return host.start(r, token, { attempt: attempt?.attempt ?? order.gen, env: order.env });
+          // The box this start makes is the next in `started`; its runner claims that key's label, for this life.
+          const life = order.env.RUN_LABEL;
+          const labelled = labelling && typeof life === "string" && life !== "";
+          await makeDirs(order.gen, labelled);
+          let env = order.env;
+          if (labelled) {
+            const key = String(started.length);
+            hostBoxes.set(key, { provider: provider!, run: life });
+            env = { ...order.env, [HOST_BOX]: JSON.stringify({ provider, key, run: life }) };
+          }
+          return host.start(r, token, { attempt: attempt?.attempt ?? order.gen, env });
         },
         status: (h) => host.status(h),
         stop: (h) => host.stop(h),
@@ -925,9 +966,70 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       await runner.exited;
     };
 
+    /** The label of host box `key`, as its runner claimed it: read over the control, bounded, never guessed. */
+    const labelBox = async (box: { provider: string; key: string }): Promise<string | undefined> => {
+      const mine = hostBoxes.get(box.key);
+      if (!mine) throw new PlaceError("LABEL_REFUSED", `host box ${box.key} was not started by this place in this supervisor's life: a supervisor restarted mid-run would renumber its host boxes; refused`);
+      if (mine.provider !== box.provider) throw new PlaceError("LABEL_REFUSED", `host box ${box.key} is on ${mine.provider}, not ${box.provider}`);
+      const known = labels.get(box.key);
+      if (known) return known;
+      const prefix = `${runPath(ref.id)}/${BOX_IDS}/`;
+      type LabelEntry = { owner?: unknown; provider?: unknown; key?: unknown; run?: unknown };
+      /** What a label file says, cached; one whose content has not landed over S3 yet (not JSON so far) is read again later. */
+      const read = async (name: string, key: string): Promise<void> => {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(new TextDecoder().decode(await control.getObject(key)));
+        } catch (error) {
+          if (error instanceof SyntaxError) return;
+          throw error;
+        }
+        const entry = parsed !== null && typeof parsed === "object" ? (parsed as LabelEntry) : null;
+        // A tool's label may still be rewritten (its receipt): not ours, and never read again.
+        labelFiles.set(name, entry?.owner === "place" ? entry : null);
+      };
+      const deadline = Date.now() + labelWaitMs;
+      /** `p`, or "late" once the bound has passed: no request outlasts the wait (one cut off still lands in the cache). */
+      const inTime = <T,>(p: Promise<T>): Promise<T | "late"> => {
+        p.catch(() => {});
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const late = new Promise<"late">((r) => (timer = setTimeout(() => r("late"), Math.max(0, deadline - Date.now()))));
+        return Promise.race([p, late]).finally(() => clearTimeout(timer));
+      };
+      // The last look's failure, if it failed: a label not landed yet (or a look cut off by the bound) is undefined, labels
+      // that cannot be read say why.
+      let last: unknown;
+      for (;;) {
+        last = undefined;
+        try {
+          const listed = await inTime((control as SupervisorControl & RecordControl).listObjects(prefix));
+          if (listed !== "late") {
+            const fresh = listed.objects.map(({ key }) => ({ key, name: key.slice(prefix.length) })).filter(({ name }) => BOX_LABEL.test(name) && !labelFiles.has(name));
+            await inTime(Promise.all(fresh.map(({ key, name }) => read(name, key))));
+          }
+        } catch (error) {
+          last = error;
+        }
+        for (const [name, entry] of labelFiles) {
+          if (entry && entry.key === box.key && entry.run === mine.run && entry.provider === mine.provider) {
+            const label = name.slice(0, -".json".length);
+            labels.set(box.key, label);
+            return label;
+          }
+        }
+        const left = deadline - Date.now();
+        if (left <= 0) {
+          if (last === undefined) return undefined;
+          throw new PlaceError("LABEL_UNREADABLE", said(`the labels of ${runPath(ref.id)} cannot be read over the control: ${(last as Error)?.message ?? last}`), { cause: last });
+        }
+        await sleep(Math.min(labelPollMs, left));
+      }
+    };
+
     return {
       name: "archil",
       paths,
+      ...(labelling ? { labelBox } : {}),
       kills: host.kill && host.kills ? [host.kills] : [],
       token: async (attempt) => (await mint(attempt)).token,
       ...(recording
@@ -981,7 +1083,12 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
             throw error;
           }),
         ]);
-        const boxes = host.box ? started.map((h) => host.box!(h)).filter((b): b is HostBox => b !== null) : undefined;
+        // Every box this place started in this life, in start order, ended ones included: with labels, a box's position
+        // is its start index, the key the supervisor asks labelBox with, so a box never drops out of the list.
+        const receipts = host.box ? started.map((h) => host.box!(h)) : undefined;
+        const missing = receipts ? receipts.indexOf(null) : -1;
+        if (labelling && missing >= 0) throw new PlaceError("STATUS_FAILED", `the driver gave no receipt for host box ${missing}, which this place started: every later box's position would shift`);
+        const boxes = receipts?.filter((b): b is HostBox => b !== null);
         return { record, delegations: delegations.map(({ clientId, inodeId, path, isOrphaned, isPending }) => ({ clientId, inodeId, path, isOrphaned, isPending })), ...(boxes ? { boxes } : {}) };
       },
       recover: async (last, kind, order) => {

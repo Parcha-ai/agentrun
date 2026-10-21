@@ -261,6 +261,7 @@ test("box and kill: a receipt that says modal, with no price (the driver prices 
   const made = w.host.box!(h)!;
   assert.deepEqual({ ...made, from: typeof made.from }, { provider: "modal", kind: "sandbox", from: "string", to: null });
   assert.equal(w.host.kills, "box");
+  assert.equal(w.host.provider, "modal", "the provider, known before a box exists (a place labels its boxes by it)");
   await w.host.kill(h);
   assert.equal(w.all.get("sb-1")!.exit, 137, "killed: the sandbox is terminated, the instance and its mount with it");
   assert.ok(w.host.box!(h)!.to !== null, "the receipt ends when the driver terminated it");
