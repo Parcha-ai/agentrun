@@ -147,8 +147,7 @@ demotion after 2).
   status the provider's error starts with, else `other`), `site` or `wayback` (a 429 answered to fetch_page, browse or
   read_document, and each pushback such a tool got past on its own, from its result's `retried`, with its status, 0 for a
   refused connection; `wayback` when the host was web.archive.org).
-- `durableCommits`: the highest commit number in the run's store, so how many durable commits it made. `fsyncProbeMs`:
-  the median time of ten one-row commits in a scratch database beside the run (disk.mjs), for the volume's speed.
+- `durableCommits`: the highest commit number in the run's store, so how many durable commits it made.
 
 ## v2: the hard job
 

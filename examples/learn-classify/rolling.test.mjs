@@ -179,14 +179,14 @@ test('DEV refuses a run its home seeded from another commit than the frozen one:
   assert.equal(readRows(join(devOut, `sealed-${seed.slice(0, 12)}.jsonl`)).length, 0);
 }, { timeout: 300_000 });
 
-test('what a run cost the disk, on every TRAIN and DEV row: its durable commits and the commit time of its own volume', async (t) => {
+test('what a run cost the disk, on every TRAIN and DEV row: its durable commits', async (t) => {
   const dir = await scratch(t);
   const { data, companies } = await standIn(dir, { train: 2, dev: 2 });
   const train = await runLoop({ out: join(dir, 'train'), parts: parts(data), list: streamOf(companies, { split: 'train', epochs: 1, seed: 3 }), split: 'train', concurrency: 2, record: false });
   const dev = await runSealed({ out: join(dir, 'dev'), parts: parts(data), at: 'seed', split: 'dev', concurrency: 2 });
   for (const row of [...train.rows, ...dev.rows]) {
     assert.ok(Number.isInteger(row.durableCommits) && row.durableCommits > 0, `${row.cik}: ${row.durableCommits}`);
-    assert.ok(typeof row.fsyncProbeMs === 'number' && row.fsyncProbeMs >= 0, `${row.cik}: ${row.fsyncProbeMs}`);
+    assert.equal(row.fsyncProbeMs, undefined);
   }
 }, { timeout: 300_000 });
 
