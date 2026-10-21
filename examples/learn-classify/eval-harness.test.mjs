@@ -2,7 +2,7 @@
 // commit of the stream's repository with nothing learned, N jobs at once, and the test split closed unless opened.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { chmod, cp, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -155,6 +155,35 @@ test('a stop between a run\'s start and its progress file: the run that exists i
   const progress = JSON.parse(readFileSync(join(out, 'progress', 'run-002.json'), 'utf8'));
   assert.equal(progress.attempt, 2);
   assert.deepEqual(progress.abandoned.map((a) => a.runId), ['run-002']);
+}, { timeout: 300_000 });
+
+test('dropEvidence: once a job\'s row is written its run keeps its store and loses its evidence and browser profile, in TRAIN and in DEV', async (t) => {
+  const dir = await scratch(t);
+  const { data, companies } = await standIn(dir, { train: 2, dev: 2, test: 0 });
+  const kept = (base) => {
+    const p = parts(data);
+    const toolsFor = p.toolsFor;
+    return { ...p, ...base, toolsFor: async (job, run) => {
+      mkdirSync(join(run.dir, 'evidence', 'documents'), { recursive: true });
+      writeFileSync(join(run.dir, 'evidence', 'documents', 'report.pdf'), 'x'.repeat(1024));
+      mkdirSync(join(run.dir, 'chrome'), { recursive: true });
+      return toolsFor(job, run);
+    } };
+  };
+  const out = join(dir, 'train');
+  const train = await runLoop({ out, parts: kept(), list: streamOf(companies, { split: 'train', epochs: 1, seed: 1 }), split: 'train', record: false, dropEvidence: true });
+  for (const run of ['run-001', 'run-002']) {
+    assert.equal(existsSync(join(out, 'home', 'runs', run, 'evidence')), false, run);
+    assert.equal(existsSync(join(out, 'home', 'runs', run, 'chrome')), false, run);
+    assert.equal(existsSync(join(out, 'home', 'runs', run, 'store')), true, run);
+  }
+  assert.equal(train.rows.length, 2);
+  const dev = await runSealed({ out: join(dir, 'dev'), parts: kept(), at: 'seed', split: 'dev', concurrency: 2, dropEvidence: true });
+  const label = dev.sha.slice(0, 12);
+  for (const row of dev.rows) assert.equal(existsSync(join(dir, 'dev', 'sealed', label, 'home', 'runs', row.runId ?? `sealed-${row.cik}`, 'evidence')), false);
+  const keep = await runLoop({ out: join(dir, 'keep'), parts: kept(), list: streamOf(companies, { split: 'train', epochs: 1, seed: 1 }), split: 'train', jobs: 1, record: false });
+  assert.equal(keep.rows.length, 1);
+  assert.equal(existsSync(join(dir, 'keep', 'home', 'runs', 'run-001', 'evidence', 'documents', 'report.pdf')), true);
 }, { timeout: 300_000 });
 
 test('the CLI: --split, --from, --concurrency and --shard are checked; the test split needs --open-test', async (t) => {
