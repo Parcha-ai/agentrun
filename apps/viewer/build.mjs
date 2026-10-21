@@ -80,8 +80,11 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
   // The lock (recordings.lock.json) may name a run's title and the view its link opens: carried into the entry, so the list shows them. An id it does not name is as recorded.
   const named = new Map();
   if (lock && existsSync(lock)) for (const each of JSON.parse(readFileSync(lock, 'utf8')).ids ?? []) if (typeof each === 'object' && each !== null && (each.title !== undefined || each.view !== undefined)) named.set(each.id, { ...(each.title !== undefined ? { title: each.title } : {}), ...(each.view !== undefined ? { view: each.view } : {}) });
+  // The gallery lists in the lock's order when it has one (ids the lock does not name come after, by name): the order of a story told in parts is the lock's to set.
+  const order = lock && existsSync(lock) ? (JSON.parse(readFileSync(lock, 'utf8')).ids ?? []).map((each) => (typeof each === 'string' ? each : each?.id)) : [];
+  const rank = (id) => (order.includes(id) ? order.indexOf(id) : order.length);
   const gallery = [];
-  for (const id of existsSync(recordingsDir) ? readdirSync(recordingsDir).sort() : []) {
+  for (const id of (existsSync(recordingsDir) ? readdirSync(recordingsDir).sort() : []).sort((a, b) => rank(a) - rank(b))) {
     const dir = join(recordingsDir, id);
     if (!existsSync(join(dir, 'manifest.json'))) continue;
     const blobs = {};
