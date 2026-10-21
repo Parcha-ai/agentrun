@@ -3,7 +3,7 @@ import path from "node:path";
 import { GitRemoteError, refused } from "./errors.js";
 import { createGitRunner, EMPTY_TREE, gitVersion, type GitCall, type GitIdentity, scrub } from "./git.js";
 import {
-  caseCollisions, checkCommitFiles, checkPath, DEFAULT_LIMITS, type FileContent, type Limits, modeRefusal, pathPrefixes, pathRefusal, within,
+  caseCollisions, checkCommitFiles, checkLimits, checkPath, type FileContent, type Limits, modeRefusal, pathPrefixes, pathRefusal, within,
 } from "./limits.js";
 import { checkRemote, type GitCredential, type Remote } from "./remotes.js";
 
@@ -182,14 +182,6 @@ async function dirState(dir: string): Promise<"new" | "repo"> {
   if (entries.includes("HEAD")) return "repo";
   if (entries.every((entry) => entry === SCRATCH)) return "new";
   throw refused(`${dir} is neither empty nor a bare repository`);
-}
-
-function checkLimits(input: Partial<Limits> | undefined): Limits {
-  const limits = { ...DEFAULT_LIMITS, ...input };
-  for (const key of ["maxFileBytes", "maxFiles", "maxTreeEntries"] as const) {
-    if (!Number.isSafeInteger(limits[key]) || limits[key] < 1) throw refused(`limits.${key} must be a positive integer`);
-  }
-  return Object.freeze(limits);
 }
 
 export async function openRepo(options: RepoOptions): Promise<Repo> {
@@ -622,9 +614,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
   }
 
   async function log(options: LogOptions = {}): Promise<LogEntry[]> {
-    if (options.path !== undefined) {
-      checkPath(options.path);
-    }
+    if (options.path !== undefined) checkPath(options.path);
     if (options.trailer !== undefined && (typeof options.trailer.key !== "string" || !TRAILER_KEY.test(options.trailer.key))) throw refused("log's trailer needs a valid key");
     await fetchAll();
     const tip = await resolveCommit(options.ref ?? MAIN);

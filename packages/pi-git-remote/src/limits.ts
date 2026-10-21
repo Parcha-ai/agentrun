@@ -90,6 +90,15 @@ export function caseCollisions(all: Iterable<string>, touched?: Iterable<string>
   return groups;
 }
 
+/** The limits a repository runs with: the defaults, overridden by `input`, each a positive integer. */
+export function checkLimits(input: Partial<Limits> | undefined): Limits {
+  const limits = { ...DEFAULT_LIMITS, ...input };
+  for (const key of ["maxFileBytes", "maxFiles", "maxTreeEntries"] as const) {
+    if (!Number.isSafeInteger(limits[key]) || limits[key] < 1) throw refused(`limits.${key} must be a positive integer`);
+  }
+  return Object.freeze(limits);
+}
+
 /** Throws `refused` for a path pathRefusal rejects, naming it as the caller spelled it (`shown`). */
 export function checkPath(file: string, what = "path", shown = file): void {
   const reason = pathRefusal(file);

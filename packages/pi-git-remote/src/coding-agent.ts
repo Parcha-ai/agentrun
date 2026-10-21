@@ -13,7 +13,15 @@ export { DEFAULT_BRANCH, type EndOutcome, SESSION_ID_TRAILER } from "./session.j
 
 /** The settings key (`~/.pi/agent/settings.json`) and the flags that configure the extension. */
 export const SETTINGS_KEY = "gitRemote";
-const FLAGS = ["git-remote", "git-ref", "git-allow", "git-branch", "git-checkout-dir"] as const;
+const FLAGS = {
+  "git-remote": "A local bare repository or an https URL the session's repository lives in",
+  "git-ref": "The branch or commit the session starts from (default: main)",
+  "git-allow": "Comma-separated globs of repository paths the session may commit, such as notes/**,skills/**",
+  "git-branch": `The session's branch, with ${SESSION_PLACEHOLDER} in it (default: ${DEFAULT_BRANCH})`,
+  "git-checkout-dir": `Where to check the repository out, outside the working directory (${SESSION_PLACEHOLDER} is replaced)`,
+} as const;
+
+type EndReport = { readonly ok: true; readonly outcome: EndOutcome } | { readonly ok: false; readonly sessionId: string; readonly error: unknown };
 
 export type GitRemoteOptions = {
   /** A local bare repository (`local(path)`), an https remote with the credential callback the host wires, or a string:
@@ -35,7 +43,7 @@ export type GitRemoteOptions = {
   identity?: GitIdentity;
   timeoutMs?: number;
   /** Told how each session's end went. An error is also thrown to pi, which reports it. */
-  onEnd?: (report: { readonly ok: true; readonly outcome: EndOutcome } | { readonly ok: false; readonly sessionId: string; readonly error: unknown }) => void;
+  onEnd?: (report: EndReport) => void;
 };
 
 type Config = {
@@ -69,7 +77,7 @@ function text(value: unknown, what: string): string | undefined {
 
 /** Options first, then the flags, then the `gitRemote` settings key. No remote anywhere means the extension is idle. */
 function configFor(pi: ExtensionAPI, options: GitRemoteOptions, cwd: string): Config | undefined {
-  const flag = (name: (typeof FLAGS)[number]) => {
+  const flag = (name: keyof typeof FLAGS) => {
     const value = pi.getFlag(name);
     return typeof value === "string" && value !== "" ? value : undefined;
   };
@@ -127,18 +135,10 @@ function tell(ctx: ExtensionContext, message: string): void {
  */
 export function createGitRemoteExtension(options: GitRemoteOptions = {}): (pi: ExtensionAPI) => void {
   return function piGitRemote(pi: ExtensionAPI): void {
-    for (const name of FLAGS) {
-      pi.registerFlag(name, { type: "string", description: {
-        "git-remote": "A local bare repository or an https URL the session's repository lives in",
-        "git-ref": "The branch or commit the session starts from (default: main)",
-        "git-allow": "Comma-separated globs of repository paths the session may commit, such as notes/**,skills/**",
-        "git-branch": `The session's branch, with ${SESSION_PLACEHOLDER} in it (default: ${DEFAULT_BRANCH})`,
-        "git-checkout-dir": `Where to check the repository out, outside the working directory (${SESSION_PLACEHOLDER} is replaced)`,
-      }[name] });
-    }
+    for (const [name, description] of Object.entries(FLAGS)) pi.registerFlag(name, { type: "string", description });
     let active: Active | undefined;
     // A host's callback never changes how an end went.
-    const heard = (report: Parameters<NonNullable<GitRemoteOptions["onEnd"]>>[0]) => {
+    const heard = (report: EndReport) => {
       try {
         options.onEnd?.(report);
       } catch {
