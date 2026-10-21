@@ -3,6 +3,8 @@
 // part 1 states the receipt, so the agent can cite it; `details.lines` is `{ from, to, part: 0 }` and `details.receipt` is the same receipt, unique in the run. The window is capped by a line count and a byte budget well under pi-durable's output limit (2000 lines, 50 KB), so a stored
 // result is never cut, and a longer file is read in windows (`from`). The file is read through the run's environment, so the disk's confinement decides what is reachable: this tool adds no path of its own.
 import { createHash } from 'node:crypto';
+import { closeSync, fsyncSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { defineExtension, defineTool } from '@earendil-works/pi-durable';
 import { Type } from 'typebox';
 
@@ -64,8 +66,54 @@ export const readLines = defineTool({
 /** The extension the review installs: the one tool. */
 export const DiskReview = defineExtension({ name: 'disk-review', tools: [readLines] });
 
+/** Where the run keeps the labels it gave its holders' hosts: in the run's directory, outside work/, so neither the agent's tools nor the recording see a machine's name. */
+export const HOST_LABELS = 'hosts.internal.json';
+
+/**
+ * Where this process runs, in the words the supervisor's recording uses: the run's generation, and its holder's host as a label (`host-1`, `host-2`, given by first
+ * appearance, as the supervisor labels holders) with the holder's driver. Read from the run's own run.json; the labels already given are kept in HOST_LABELS, so a later
+ * generation on a host seen before gets that host's label, and one on a new host the next. Undefined when the run's directory has no readable run.json (a tool called
+ * outside a run).
+ */
+export function whereThisRuns(root: string): { generation: number; host: string; driver: string } | undefined {
+  let record: { generation?: unknown; holder?: { host?: unknown; driver?: unknown } };
+  try {
+    record = JSON.parse(readFileSync(join(root, 'run.json'), 'utf8'));
+  } catch {
+    return undefined;
+  }
+  const machine = record.holder?.host;
+  if (typeof machine !== 'string' || typeof record.generation !== 'number') return undefined;
+  const file = join(root, HOST_LABELS);
+  let labels: Record<string, string> = {};
+  try {
+    labels = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    labels = {};
+  }
+  let label = labels[machine];
+  if (!label) {
+    label = `host-${Object.keys(labels).length + 1}`;
+    labels[machine] = label;
+    const fd = openSync(file, 'w', 0o600);
+    try {
+      writeFileSync(fd, JSON.stringify(labels));
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  }
+  return { generation: record.generation, host: label, driver: typeof record.holder?.driver === 'string' ? record.holder.driver : 'unknown' };
+}
+
 /**
  * The paid tool `charge`, simulated: no money moves. It answers with a receipt that names the invoice, so a charge made twice would show as the same receipt twice, and the host's ledger counts each call
- * it receives. The same function on fakes and live: the agent is real on --live, the money never is.
+ * it receives; the receipt also says where the payment ran (`whereThisRuns`), so a report can name the host each payment was made on. The same function on fakes and live: the agent is real on --live,
+ * the money never is.
  */
-export const charge = (args: Record<string, unknown>) => ({ invoice: String(args.invoice), receipt: `rcpt-${String(args.invoice)}`, cents: Number(args.cents) });
+export const charge = (args: Record<string, unknown>, context?: { place?: { root: string } }) => ({
+  invoice: String(args.invoice),
+  receipt: `rcpt-${String(args.invoice)}`,
+  cents: Number(args.cents),
+  ...((context?.place ? whereThisRuns(context.place.root) : undefined) ?? {}),
+});

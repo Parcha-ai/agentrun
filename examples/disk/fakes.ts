@@ -9,7 +9,7 @@ const textOf = (message: Message) => (typeof message.content === 'string' ? mess
 const call = (name: string, args: Parameters<typeof fauxToolCall>[1]) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' });
 
 type Cite = { path: string; from: number; to: number; receipt: string };
-type Entry = { review: { invoice: string; decision: string; cents: number; reason: string; cites: Cite[] }; receipt: { receipt: string } | null };
+type Entry = { review: { invoice: string; decision: string; cents: number; reason: string; cites: Cite[] }; receipt: { receipt: string; host?: string; driver?: string } | null };
 
 /** The reads a node has made so far, from the tool results it holds: the lines each returned and the receipt each stated. */
 function reads(messages: readonly Message[]) {
@@ -34,7 +34,8 @@ function review(messages: readonly Message[], path: string) {
     { path, from: noPo ? 2 : 4, to: noPo ? 3 : 5, receipt: invoice.receipt },
     { path: 'policy.md', from: noPo ? 2 : 3, to: noPo ? 3 : 4, receipt: policy.receipt },
   ];
-  if (!hold) cites.push({ path, from: 4, to: 5, receipt: invoice.receipt });
+  // An approved invoice rests on both its PO line and its amount line, and on both rules.
+  if (!hold) cites.push({ path, from: 2, to: 3, receipt: invoice.receipt }, { path: 'policy.md', from: 2, to: 3, receipt: policy.receipt });
   const reason = noPo ? 'It names no purchase order, which rule 1 requires.' : over ? 'Its amount is over $50.00, which rule 2 forbids.' : 'It names a purchase order and its amount is within $50.00, so rules 1 and 2 pass.';
   return call('submit', { invoice: field('Invoice'), decision: hold ? 'hold' : 'approve', cents, reason, cites });
 }
@@ -48,7 +49,8 @@ function report(messages: readonly Message[]) {
   // The node's state is the first line of its message; anything the host adds comes after it.
   const entries = (JSON.parse(text.split('\n').find((line) => line.startsWith('{')) ?? '{}') as { entries: Entry[] }).entries;
   if (!messages.some((message) => message.role === 'toolResult')) {
-    const rows = entries.map(({ review: r }) => `<tr><td>${r.invoice}</td><td>${r.decision === 'approve' ? 'paid' : 'held'}</td><td>${r.reason} ${r.cites.map(link).join(' ')}</td></tr>`).join('\n');
+    const where = (receipt: Entry['receipt']) => (receipt?.host ? `${receipt.host} (${receipt.driver})` : 'not paid');
+    const rows = entries.map(({ review: r, receipt }) => `<tr><td>${r.invoice}</td><td>${r.decision === 'approve' ? 'paid' : 'held'}</td><td>${where(receipt)}</td><td>${r.reason} ${r.cites.map(link).join(' ')}</td></tr>`).join('\n');
     const html = `<!doctype html><meta charset="utf-8"><title>Invoice review</title><style>body{font:16px system-ui;margin:2rem}td{padding:.25rem .75rem}</style><h1>Invoice review</h1><table>\n${rows}\n</table>\n`;
     return call('write', { path: 'report/index.html', content: html });
   }

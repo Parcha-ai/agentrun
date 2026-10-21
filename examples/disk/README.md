@@ -72,7 +72,7 @@ On fakes: `node` 22.19 or later, and nothing else. `SETUP-PROMPT.md` does the re
 - `job.ts`: the job as data, a workflow: a `map` over the invoices, one at a time, of a review `agent`, a `route` on its decision to the paid tool (a `call` node) or a hold, then the report `agent`.
   No host code. `files.ts`: the policy, the ten invoices and the key, by hand.
 - `tools.ts`: `read_lines`, the confined read whose result states its window and a receipt, so a report can cite lines.
-- `fakes.ts`: the scripted lead, the paid tool's fake and the judge, for the no-key run. `model.ts`: the live agent, claude-sonnet-5-5 with its bounds.
+- `fakes.ts`: the scripted lead, the paid tool's fake and the judge, for the no-key run. `model.ts`: the live agent, claude-sonnet-5-5 with its bounds; both agent nodes ask for high thinking.
 - `run.ts`: about ten lines on `@parcha/agentrun-harness`, the entry that reads the standard flags (`--handoff`, `--live`, `--record`) and supervises the run. The place is where the run lives and how
   each process of it starts and ends: `@parcha/pi-durable-disk`'s `localPlace` here, `archilPlace` in `live.ts`.
 - `@parcha/pi-durable-disk`: the run's claim, the store the kept answers and the receipts commit to, the seal at a release, and the next process's open.

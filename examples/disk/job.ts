@@ -11,7 +11,7 @@ import { INVOICE_FILES, NUMBERS, pathOf, POLICY } from './files.ts';
 const text = (value: string) => new TextEncoder().encode(value);
 
 export const REVIEW = 'Review one invoice against the payment policy. The invoice is the file in `path` and the policy is `policy.md`, both in your workspace. Read each with read_lines, once per file; it returns the lines and a receipt. Decide from what the files say and nothing else: approve an invoice the policy lets us pay, hold any other. Submit invoice (its number), decision (approve or hold), cents (the invoice amount in cents), reason (one sentence that names the rule), and cites: one entry for each fact you relied on, with path, from, to (the lines it was on, numbered from 0, to not included, as read_lines states them) and receipt (the receipt read_lines showed for that read). Cite the line that holds the evidence.';
-export const REPORT = 'Write the review report for the finance team as `report/index.html` with the write tool: one page, inline CSS, no script and no address outside the page. A heading, then one row for each invoice in entries: its number, the decision, the reason, and for each cite a link written exactly `<a href="PATH#line=FROM,TO" data-receipt="RECEIPT">line N</a>` (PATH, FROM, TO and RECEIPT from the cite; N is FROM + 1). The policy and the invoices are already copied beside the page, under `report/`, so the PATH of a cite links as it is. Say only what the entries say. Then submit answer (two sentences that point to the report: how many invoices were paid and which were held and why, each fact cited the same way) and report (`report/index.html`).';
+export const REPORT = 'Write the review report for the finance team as `report/index.html` with the write tool: one page, inline CSS, no script and no address outside the page. A heading, then one row for each invoice in entries: its number, the decision, the reason, where it was paid (an approved invoice\'s receipt names its host and driver: write them exactly as `HOST (DRIVER)`, for example `host-1 (daytona)`; a held invoice was not paid), and for each cite a link written exactly `<a href="PATH#line=FROM,TO" data-receipt="RECEIPT">line N</a>` (PATH, FROM, TO and RECEIPT from the cite; N is FROM + 1). The policy and the invoices are already copied beside the page, under `report/`, so the PATH of a cite links as it is. Say only what the entries say. Then submit answer (two sentences that point to the report: how many invoices were paid and which were held and why, each fact cited the same way) and report (`report/index.html`).';
 
 export const workflow = {
   v: 2,
@@ -52,7 +52,7 @@ export const workflow = {
       // One at a time: the invoices are reviewed and paid in the order of the batch, and a handoff between two of them leaves one finished and the next not begun.
       node: 'map', label: 'invoices', itemsPath: 'invoices', as: 'entries', resultPath: 'entry', maxConcurrency: 1,
       body: { node: 'chain', steps: [
-        { node: 'agent', label: 'review', state: { path: '{item.path}' }, out: 'Review', as: 'review', tools: ['read_lines'], thinking: 'medium', instructions: REVIEW },
+        { node: 'agent', label: 'review', state: { path: '{item.path}' }, out: 'Review', as: 'review', tools: ['read_lines'], thinking: 'high', instructions: REVIEW },
         {
           node: 'route', label: 'settle', valuePath: 'review.decision', as: 'settle', branches: {
             approve: { body: { node: 'call', label: 'charge', via: 'tool', tool: 'charge', args: { invoice: '{review.invoice}', cents: '{review.cents}' }, out: 'Charge', as: 'charge', deadline_s: 30 } },
@@ -62,7 +62,7 @@ export const workflow = {
         { node: 'code', label: 'entry', code: '(s) => ({ entry: { review: s.review, receipt: s.charge ?? null } })' },
       ] },
     },
-    { node: 'agent', label: 'report', state: { batch: '{batch}', entries: '{entries}' }, out: 'Answer', as: 'answer', tools: ['write'], thinking: 'medium', instructions: REPORT },
+    { node: 'agent', label: 'report', state: { batch: '{batch}', entries: '{entries}' }, out: 'Answer', as: 'answer', tools: ['write'], thinking: 'high', instructions: REPORT },
     { node: 'code', label: 'finish', code: '(s) => ({ result: { batch: s.batch, entries: s.entries, answer: s.answer.answer, report: s.answer.report } })' },
   ] },
 } as const satisfies Workflow;

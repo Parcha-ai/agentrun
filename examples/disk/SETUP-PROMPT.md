@@ -12,7 +12,7 @@ Check: `node --version` prints v22.19.0 or later.
 
 ## A real agent on this machine: `npm run demo:disk -- --live --handoff`
 
-The agent is Anthropic's claude-sonnet-5-5. The run still lives in a directory of this machine.
+The agent is Anthropic's claude-sonnet-5-5, at high thinking. The run still lives in a directory of this machine.
 
 | Env name | What | Where to create it |
 |---|---|---|

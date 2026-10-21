@@ -8,6 +8,24 @@ import { readEvents } from '../scripts/recording/fold.mjs';
 /** What the policy says of the batch (examples/disk/files.ts's KEY, by hand): the invoices paid in order with their cents, and those held with the rule each breaks. */
 export const PAID = [['INV-001', 1250], ['INV-002', 1425], ['INV-003', 1600], ['INV-005', 1950], ['INV-006', 2125], ['INV-008', 2475], ['INV-009', 2650], ['INV-010', 2825]];
 export const HELD = ['INV-004', 'INV-007'];
+/**
+ * The lines that hold each decision's evidence (examples/disk/files.ts's KEY and files, by hand; lines from 0): an approved invoice's PO line (2) and amount line
+ * (4); INV-004, over the limit, its amount line and the policy's rule 2 (line 3); INV-007, with no purchase order, its PO line and the policy's rule 1 (line 2). A
+ * decision's cites must cover each of its lines. Taken from the key, never from the words of a reason.
+ */
+export const EVIDENCE = Object.fromEntries([
+  ...PAID.map(([invoice]) => [invoice, [[`invoices/${invoice}.txt`, 2], [`invoices/${invoice}.txt`, 4]]]),
+  ['INV-004', [['invoices/INV-004.txt', 4], ['policy.md', 3]]],
+  ['INV-007', [['invoices/INV-007.txt', 2], ['policy.md', 2]]],
+]);
+/** The thinking level job.ts asks every agent node for, which a live run's every model answer must have been made at (pi-ai stamps each with `providerThinkingLevel`). */
+export const THINKING = 'high';
+/** The most lines a cite may span and still name the line it rests on: a fact with its neighbour, never a window of the whole file. */
+export const CITE_LINES = 2;
+/** The evidence lines of `invoice` that `cites` miss: each [path, line] that no cite of that path names, covering it (from <= line < to) in at most CITE_LINES lines. */
+export function missingEvidence(invoice, cites) {
+  return (EVIDENCE[invoice] ?? []).filter(([path, line]) => !cites.some((cite) => cite.path === path && cite.from <= line && line < cite.to && cite.to - cite.from <= CITE_LINES));
+}
 
 const ATTRIBUTE = /([A-Za-z_:][-\w:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
 /**
@@ -115,10 +133,41 @@ export function reviewProblems({ recording, dir, record, live = false }) {
     const text = JSON.stringify(line.data?.model ?? '');
     if (outside.test(text.replaceAll('\\n', ' ').replaceAll('\\"', '"'))) { problems.push(`a ${line.kind} line names a path outside the workspace`); break; }
   }
-  // 6. A live agent's readable thinking: a thinking block with text in the agent's own messages.
+  // 6. A live agent's readable thinking: a thinking block with text in the agent's own messages; and every answer made at the level the job asks for.
   if (live) {
+    const levels = lines.filter((line) => line.kind === 'pi.assistant').flatMap((line) => line.data?.model ?? []).map((message) => message.providerThinkingLevel ?? 'none');
+    const off = levels.filter((level) => level !== THINKING);
+    if (!levels.length) problems.push('the recording holds no model answer');
+    else if (off.length) problems.push(`${off.length} of ${levels.length} model answers were made at thinking ${[...new Set(off)].join(', ')}, not ${THINKING}`);
     const thinking = lines.filter((line) => line.kind === 'pi.assistant').flatMap((line) => line.data?.model?.[0]?.content ?? []).filter((block) => block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim());
     if (!thinking.length) problems.push('no readable thinking block in the recording');
+  }
+  // 7. The evidence: each decision's cites, in the run's record and in the report's row for the invoice, cover the lines that hold its evidence (EVIDENCE).
+  for (const entry of entries) {
+    for (const [path, line] of missingEvidence(entry.review.invoice, entry.review.cites ?? [])) problems.push(`${entry.review.invoice}'s decision cites no window of at most ${CITE_LINES} lines holding ${path} line ${line + 1}, where its evidence is`);
+  }
+  const html = existsSync(reportFile) ? readFileSync(reportFile, 'utf8') : '';
+  const rowOf = new Map();
+  for (const row of reportRows(html)) for (const invoice of Object.keys(EVIDENCE)) if (row.includes(invoice) && !rowOf.has(invoice)) rowOf.set(invoice, row);
+  for (const [invoice, row] of rowOf) {
+    for (const [path, line] of missingEvidence(invoice, citesOf(row).cites)) problems.push(`the report's row for ${invoice} cites no window of at most ${CITE_LINES} lines holding ${path} line ${line + 1}, where its evidence is`);
+  }
+  // 8. Where each payment ran: each paid invoice's kept answer names its generation and its holder's host label and driver, which must be what the supervisor recorded
+  // as run.json's holder for that generation; and the report's row for the invoice says it in those words (`host-1 (daytona)`).
+  const holders = new Map();
+  for (const line of lines) {
+    const data = line.data;
+    if (line.source === 'host' && line.kind === 'run.json' && Number.isInteger(data?.generation) && typeof data?.holder?.host === 'string') holders.set(data.generation, `${data.holder.host} (${data.holder.driver})`);
+  }
+  for (const answer of kept) {
+    const invoice = String(answer.args?.invoice);
+    const value = answer.value ?? {};
+    if (!Number.isInteger(value.generation) || typeof value.host !== 'string') { problems.push(`the kept answer for ${invoice} names no generation or host`); continue; }
+    const said = `${value.host} (${value.driver})`;
+    const recorded = holders.get(value.generation);
+    if (recorded !== said) problems.push(`the kept answer for ${invoice} says it was paid on ${said} in generation ${value.generation}; the recording's run.json says ${recorded ?? 'no holder'} for that generation`);
+    const row = rowOf.get(invoice);
+    if (row !== undefined && !row.includes(said)) problems.push(`the report's row for ${invoice} does not say it was paid on ${said}`);
   }
   return problems;
 }

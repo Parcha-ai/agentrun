@@ -14,7 +14,7 @@
   "keys": [
     {
       "env": "ANTHROPIC_API_KEY",
-      "why": "the review and report agents (anthropic/claude-sonnet-5-5 at medium thinking); in a Daytona sandbox, the placeholder of a Daytona secret that holds the key, so the box never holds it",
+      "why": "the review and report agents (anthropic/claude-sonnet-5-5 at high thinking); in a Daytona sandbox, the placeholder of a Daytona secret that holds the key, so the box never holds it",
       "where": "console.anthropic.com, API keys; for the sandbox, a Daytona secret (Daytona dashboard: Secrets) allowed for api.anthropic.com only",
       "required": true,
       "for": "live"

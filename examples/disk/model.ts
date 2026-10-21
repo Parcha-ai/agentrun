@@ -1,4 +1,4 @@
-// What `--live` swaps for the scripted lead: the review and report agents run on Anthropic's claude-sonnet-5-5, at the thinking each node asks for (medium in job.ts), with the key in ANTHROPIC_API_KEY. The
+// What `--live` swaps for the scripted lead: the review and report agents run on Anthropic's claude-sonnet-5-5, at the thinking each node asks for (high in job.ts), with the key in ANTHROPIC_API_KEY. The
 // model is called from the process that runs the job, which on the disk's live runner is in a Daytona sandbox: there the variable holds the placeholder of a Daytona secret, and Daytona's egress proxy puts
 // the key into the request's `x-api-key` header for api.anthropic.com only, so the box never holds the key (live.ts). The spend is bounded inside each process, whatever the model does: at most MAX_CALLS
 // model calls and MAX_OUTPUT_TOKENS tokens per answer (its thinking included); past the calls, a call ends at once with an error and nothing is sent. The entry's `--max-usd` is the cap over the whole run.

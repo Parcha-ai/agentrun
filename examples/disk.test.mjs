@@ -4,7 +4,7 @@
 // from a run. The scripted lead is the test fixture; a live run is checked by the same checks (examples/disk-review-checks.mjs).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -279,4 +279,42 @@ test('the by-code checks read only the report rows that hold data: a header row 
   assert.equal(rows.length, 2, 'the header row is skipped, both data rows are read');
   assert.match(rows[0], /INV-001/);
   assert.match(rows[1], /INV-004/);
+});
+
+test('the evidence each decision must cite is on the lines the key names, and a whole-file or wrong-rule cite does not cover it', async () => {
+  const { EVIDENCE, missingEvidence, THINKING, CITE_LINES } = await import('./disk-review-checks.mjs');
+  const { INVOICE_FILES, POLICY } = await import('./disk/files.ts');
+  const { workflow } = await import('./disk/job.ts');
+  const lineOf = (path, n) => (path === 'policy.md' ? POLICY : INVOICE_FILES[path.slice('invoices/'.length, -'.txt'.length)]).split('\n')[n];
+  // Each evidence line holds what the key says it holds: an invoice's PO or amount, the policy's rule 1 or 2.
+  for (const [invoice, lines] of Object.entries(EVIDENCE)) {
+    for (const [path, n] of lines) assert.match(lineOf(path, n), path === 'policy.md' ? (n === 2 ? /^1\. .*purchase order/ : /^2\. .*\$50\.00/) : (n === 2 ? /^PO: / : /^Amount: /), `${invoice} ${path}:${n}`);
+  }
+  const cite = (path, from, to) => ({ path, from, to, receipt: 'r' });
+  assert.deepEqual(missingEvidence('INV-005', [cite('invoices/INV-005.txt', 0, 5), cite('policy.md', 0, 6)]), [['invoices/INV-005.txt', 2], ['invoices/INV-005.txt', 4]], 'a window of the whole file names no line');
+  assert.deepEqual(missingEvidence('INV-005', [cite('invoices/INV-005.txt', 2, 3), cite('invoices/INV-005.txt', 4, 5)]), []);
+  assert.deepEqual(missingEvidence('INV-005', [cite('invoices/INV-005.txt', 2, 4), cite('invoices/INV-005.txt', 3, 5)]), [], `a fact with its neighbour (at most ${CITE_LINES} lines) still names it`);
+  assert.deepEqual(missingEvidence('INV-004', [cite('invoices/INV-004.txt', 4, 5), cite('policy.md', 2, 3)]), [['policy.md', 3]], 'INV-004 rests on rule 2, not rule 1');
+  // Every agent node of the job asks for the level the checks hold a live run to.
+  const levels = JSON.stringify(workflow).match(/"thinking":"[a-z]+"/g);
+  assert.deepEqual([...new Set(levels)], [`"thinking":"${THINKING}"`]);
+});
+
+test('the simulated charge says where it ran: the generation and the holder as a host label given by first appearance, never the machine', async () => {
+  const { whereThisRuns, HOST_LABELS, charge } = await import('./disk/tools.ts');
+  const root = mkdtempSync(join(tmpdir(), 'disk-where-'));
+  try {
+    const at = (generation, host, driver = 'daytona') => writeFileSync(join(root, 'run.json'), JSON.stringify({ generation, holder: { host, driver } }));
+    assert.equal(whereThisRuns(root), undefined, 'no run.json, no answer');
+    at(1, 'sandbox-aaaa');
+    assert.deepEqual(whereThisRuns(root), { generation: 1, host: 'host-1', driver: 'daytona' });
+    at(2, 'sandbox-bbbb');
+    assert.deepEqual(charge({ invoice: 'INV-006', cents: 2125 }, { place: { root } }), { invoice: 'INV-006', receipt: 'rcpt-INV-006', cents: 2125, generation: 2, host: 'host-2', driver: 'daytona' });
+    at(3, 'sandbox-aaaa');
+    assert.deepEqual(whereThisRuns(root), { generation: 3, host: 'host-1', driver: 'daytona' }, 'a host seen before keeps its label');
+    assert.ok(!JSON.stringify(charge({ invoice: 'INV-007', cents: 1 }, { place: { root } })).includes('sandbox-'), 'the receipt never names the machine');
+    assert.deepEqual(JSON.parse(readFileSync(join(root, HOST_LABELS), 'utf8')), { 'sandbox-aaaa': 'host-1', 'sandbox-bbbb': 'host-2' });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
