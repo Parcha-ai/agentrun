@@ -125,6 +125,15 @@ export const result: NonNullable<DemoOptions['result']> = (_record, { dir, keep 
   const frameCalls = calls.filter((call) => call.tool === 'frame');
   const release = calls.find((call) => call.tool === 'release');
   const count = frameCalls.length;
+  // A run that stopped short is not published as finished: every frame the calls ask for is drawn, and the release answered, naming each sandbox the frames ran in.
+  const asked = Math.max(0, ...frameCalls.map((call) => Number(call.args.frames)));
+  const missing = [...Array(asked).keys()].filter((f) => !frameCalls.some((call) => call.answer.f === f));
+  const problems = [
+    ...(count === 0 ? ['no frame was drawn'] : []),
+    ...(missing.length > 0 ? [`${missing.length === 1 ? 'frame' : 'frames'} ${missing.map((f) => f + 1).join(', ')} not drawn`] : []),
+    ...(release === undefined ? ['the release call was never answered, so its sandboxes may still be running'] : [...new Set(frameCalls.map((call) => call.answer.environment))].filter((environment) => !(release.answer.boxes ?? []).some((box) => box.environment === environment)).map((environment) => `the ${environment} sandbox is not in the release`)),
+  ];
+  if (problems.length > 0) throw new Error(`the run is incomplete: ${problems.join('; ')}`);
   // Each frame as the run kept it; a missing frame fails the result.
   const frames = frameCalls.map((call) => readFileSync(join(dir, 'work', 'frames', `f${call.answer.f}.idx`)));
   const sheetPng = sheet(frames);

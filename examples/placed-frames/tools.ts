@@ -20,6 +20,8 @@ import { HEIGHT, TILES_X, TILES_Y, TILE_H, TILE_W, WIDTH, iterationsOf, window_ 
 export type Environment = { id: string; provider: string; purpose: string; cpus?: number; image?: string };
 export const ENVIRONMENTS = spec.placement.environments as readonly Environment[];
 export const REST = spec.placement.rest;
+/** How sure Jev must be that a frame needs another sandbox for it to move: the placer's own default, named here so the placer and the line agree. */
+export const THRESHOLD = 0.5;
 
 const PROGRAMS = join(dirname(fileURLToPath(import.meta.url)), 'programs');
 /** Where the tile program goes in a box, relative to its workspace. */
@@ -61,10 +63,18 @@ export function stepOf(f: number, frames: number): string {
 export function placedLine(record: Pick<PlacementRecord, 'target' | 'moved' | 'error' | 'answers'>, rest: string, who: 'Jev' | 'the script'): string {
   if (record.error) return `placed on ${record.target}: ${who} gave no answer (${record.error.code}), so the frame stays on ${record.target}`;
   const need = record.answers?.need;
-  const score = need?.type === 'bool' ? ` (${need.probability.toFixed(2)})` : '';
-  return record.moved || record.target !== rest
-    ? `placed on ${record.target}: ${who} judged the frame needs what ${rest} cannot do${score}`
-    : `placed on ${record.target}: ${who} judged ${rest} can do the frame${score}`;
+  const probability = need?.type === 'bool' ? need.probability : undefined;
+  const score = probability === undefined ? '' : ` (${probability.toFixed(2)})`;
+  const stays = record.target === rest;
+  // The judgment comes from the need alone, apart from where the frame went: a high need can still end on the resting place, when that is the place Jev chose.
+  if (probability !== undefined && probability >= THRESHOLD) {
+    return stays
+      ? `placed on ${record.target}: ${who} judged the frame needs what ${rest} cannot do${score}, and chose ${record.target} as the place`
+      : `placed on ${record.target}: ${who} judged the frame needs what ${rest} cannot do${score}`;
+  }
+  return stays
+    ? `placed on ${record.target}: ${who} judged ${rest} can do the frame${score}`
+    : `placed on ${record.target}: ${who} placed the frame on ${record.target}${score ? `, with a need score${score}` : ''}`;
 }
 
 /** A command in a box, with its output. */
@@ -79,7 +89,7 @@ async function sh(env: ExecutionEnv, command: string, timeoutS: number): Promise
 type Made = { box: Box; env: ExecutionEnv; label: string; provider: string };
 /** What the run's boxes did, by the box's label: when it was made, each command's start and end (what it was, its exit code), and when it ended. No id, address or path. */
 type BoxLog = { box: string; provider: string; created: string; ended?: string; execs: Array<{ what: string; start: string; end: string; exitCode: number }> };
-type State = { log: Map<string, BoxLog>; providers: Record<string, BoxProvider>; placer: Placer; boxes: Map<string, Promise<Made>>; /** Labels for a box the host did not label (a tool run on its own): `box-N` by first appearance. */ unlabelled: number };
+type State = { /** Sandboxes a failed setup could not end: `release` tries them again. */ orphans: Array<{ box: Box; label: string }>; log: Map<string, BoxLog>; providers: Record<string, BoxProvider>; placer: Placer; boxes: Map<string, Promise<Made>>; /** Labels for a box the host did not label (a tool run on its own): `box-N` by first appearance. */ unlabelled: number };
 
 /** A tool's answer as pi keeps it: the JSON text in both the result's `content` and its `output`, so a reader of either sees it. */
 function answered(value: unknown): ToolExecutionResult {
@@ -100,9 +110,9 @@ export function placedFrames(hosting: Hosting): Extension {
           if (!provider) throw new Error(`no provider for the environment ${environment.id}`);
           return [environment.id, provider];
         }));
-        const placer = await jevPlacer(hosting.models, JEV, { rest: REST, timeoutMs: 30_000 });
+        const placer = await jevPlacer(hosting.models, JEV, { rest: REST, timeoutMs: 30_000, threshold: THRESHOLD });
         if (!placer.ok) throw placer.error;
-        return { log: new Map(), providers, placer: placer.value, boxes: new Map(), unlabelled: 0 } satisfies State;
+        return { orphans: [], log: new Map(), providers, placer: placer.value, boxes: new Map(), unlabelled: 0 } satisfies State;
       })();
       runs.set(place.work, state);
     }
@@ -130,13 +140,22 @@ export function placedFrames(hosting: Hosting): Extension {
       // The host's tap labels each box it hands out; a box from a provider it did not tap gets the next `box-N` here.
       const made = { box, env, label: (box as { label?: string }).label ?? `box-${(s.unlabelled += 1)}`, provider: provider.name };
       s.log.set(made.label, { box: made.label, provider: made.provider, created: new Date().toISOString(), execs: [] });
-      const node = await logged(s, made, 'check node', () => sh(env, 'node -v', 60));
+      // Every failure after the box exists ends it: a setup that stops half way must not leave a sandbox running (a paid one, up to its lifetime). One that cannot be ended is kept for `release` to try again.
+      const abandon = async (why: unknown): Promise<never> => {
+        const done = await box.destroy(ctx).catch((cause: unknown) => ({ ok: false as const, error: cause }));
+        if (!done.ok) s.orphans.push({ box, label: made.label });
+        else { const entry = s.log.get(made.label); if (entry) entry.ended = new Date().toISOString(); }
+        throw why;
+      };
+      let node: { exitCode: number };
+      try { node = await logged(s, made, 'check node', () => sh(env, 'node -v', 60)); } catch (cause) { return abandon(cause); }
       if (node.exitCode !== 0) {
-        await box.destroy(ctx);
-        throw new Error(`the ${environment.id} sandbox (${provider.name}) has no node: ${environment.provider === 'daytona' ? 'set DAYTONA_SNAPSHOT to a snapshot with node 22 or newer' : 'name an image with node 22 or newer'}`);
+        return abandon(new Error(`the ${environment.id} sandbox (${provider.name}) has no node: ${environment.provider === 'daytona' ? 'set DAYTONA_SNAPSHOT to a snapshot with node 22 or newer' : 'name an image with node 22 or newer'}`));
       }
-      const uploaded = await box.upload(['tile.mjs', 'params.mjs'].map((name) => ({ path: `${IN_BOX}/${name}`, bytes: new Uint8Array(readFileSync(join(PROGRAMS, name))) })), ctx);
-      if (!uploaded.ok) throw uploaded.error;
+      try {
+        const uploaded = await box.upload(['tile.mjs', 'params.mjs'].map((name) => ({ path: `${IN_BOX}/${name}`, bytes: new Uint8Array(readFileSync(join(PROGRAMS, name))) })), ctx);
+        if (!uploaded.ok) throw uploaded.error;
+      } catch (cause) { return abandon(cause); }
       return made;
     })();
     s.boxes.set(environment.id, making);
@@ -205,6 +224,13 @@ export function placedFrames(hosting: Hosting): Extension {
       const place = await placeOf(env);
       const s = await open(place);
       const ended: Array<{ box: string; environment: string; provider: string }> = [];
+      // A sandbox a failed setup could not end is tried again here; one that still will not end fails the release, so the run is not taken for finished with a sandbox left.
+      for (const orphan of s.orphans.splice(0)) {
+        const done = await orphan.box.destroy(ctx);
+        if (!done.ok) { s.orphans.push(orphan); throw done.error; }
+        const entry = s.log.get(orphan.label);
+        if (entry) entry.ended = new Date().toISOString();
+      }
       for (const [environment, making] of s.boxes) {
         const made = await making.catch(() => undefined);
         if (!made) continue;
