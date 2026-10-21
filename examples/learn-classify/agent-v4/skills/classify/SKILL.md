@@ -53,7 +53,8 @@ largest revenue line as the report states them, with sic2_groups and sic_codes a
 the codes of the group that fits, and returns one code from sic_codes, the one whose SEC title names the company's role
 and product (step 6), read beside the largest SEC filers each code names. After such an agent choice, keep Jev on what
 the state can show: a judge that the revenue line the code rests on is quoted from the report the run read, escalating
-when it is not.
+when it is not. Do not ask a Jev judge whether a code fits a business; that needs knowledge the state does not hold. A
+Jev check after an agent choice tests evidence only (the cited line is quoted from the report).
 
 A dry run fills every tool result with placeholder values: text is filled in and every yes-or-no field is false. So an
 escalate on a false field always fires in a dry run, and the dry run cannot pass; check the text instead.
