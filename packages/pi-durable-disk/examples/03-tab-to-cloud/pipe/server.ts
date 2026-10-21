@@ -19,7 +19,7 @@ import type { JudgeRunner } from "../brain-router.ts";
 import { CHECKIN_RECEIPT, CHECKOUT_MARKER, CheckinRefused, CheckoutRefused, manifestDigest, RunPipe, type CheckinReceipt, type CheckoutMarker, type PipeSocket } from "./run-pipe.ts";
 import { cleanReason } from "../switch-tool.ts";
 import { compareEntries, readBack, type ReadbackSource } from "./readback.ts";
-import { SERVER_TURN, type HomeTrip, type Placer, type PlacementDecision } from "../placement.ts";
+import { SERVER_TURN, type HomeCheckResult, type HomeTrip, type Placer, type PlacementDecision } from "../placement.ts";
 import { CHUNK_BYTES, lazyPath, toBase64, untag, type Environment, type FileChange, type Move, type PipeFrame, type Placement, type TabFrame } from "../wire.ts";
 
 /** The tab as an environment; the cloud host lists its own. */
@@ -313,6 +313,9 @@ const CHECKIN_MAX = 192 * 1024 * 1024;
 
 /** The largest body `PUT /api/runs/<id>/work/<path>` takes. */
 const WORK_PUT_MAX = 48 * 1024 * 1024;
+
+/** What a home check found as data for its log line: the names and the count, when the check gave them, so a reader never has to parse the reason's sentence. */
+const homeData = (result: HomeCheckResult): { home?: readonly string[]; count?: number } => ({ ...(result.home ? { home: result.home } : {}), ...(result.count !== undefined ? { count: result.count } : result.home ? { count: result.home.length } : {}) });
 
 const sameSecret = (a: string, b: string) => timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
 
@@ -779,7 +782,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       if (check && trip.teaching > 0) {
         void (async () => {
           const result = await check(async (path) => (state.pipe && !state.pipe.lost ? state.pipe.readWork(path) : undefined), trip).catch((error: Error) => ({ ok: false, reason: `the check itself failed: ${error.message}` }));
-          log("placement.home-check", { run: state.ref.id, silent: true, ...(result === null ? { applicable: false } : { ok: result.ok, reason: result.reason }), teaching: trip.teaching });
+          log("placement.home-check", { run: state.ref.id, silent: true, ...(result === null ? { applicable: false } : { ok: result.ok, reason: result.reason, ...homeData(result) }), teaching: trip.teaching });
           if (result === null || result.ok) return;
           await deliverSubmit(state, `${SERVER_TURN}${home}\n\nChecked by the server just now: NO. ${result.reason}`, `server-${switchId}`);
         })().catch((error) => log("submit.failed", { run: state.ref.id, error: (error as Error).message }));
@@ -802,7 +805,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
           const result = await check(async (path) => (state.pipe && !state.pipe.lost ? state.pipe.readWork(path) : undefined), trip).catch((error: Error) => ({ ok: false, reason: `the check itself failed: ${error.message}` }));
           if (result === null) log("placement.home-check", { run: state.ref.id, applicable: false, teaching });
           else {
-            log("placement.home-check", { run: state.ref.id, ok: result.ok, reason: result.reason, teaching });
+            log("placement.home-check", { run: state.ref.id, ok: result.ok, reason: result.reason, ...homeData(result), teaching });
             checked = `\n\nChecked by the server just now: ${result.ok ? `yes. ${result.reason}` : `NO. ${result.reason}`}`;
           }
         }

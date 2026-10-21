@@ -53,6 +53,17 @@ export interface PlacementQuery {
 /** What the server's own turns begin with, so a stage can tell them from the user's words (the agent's reply to them is its own). */
 export const SERVER_TURN = "[from the server] ";
 
+/**
+ * What a home check found. `reason` is the sentence the agent is told; `home` and `count` are the same fact as data, for the log and for anything that reads it: the names the check found in place (those it could verify) and their number. A
+ * check that has no list to give leaves both out.
+ */
+export interface HomeCheckResult {
+  readonly ok: boolean;
+  readonly reason: string;
+  readonly home?: readonly string[];
+  readonly count?: number;
+}
+
 export interface Placer {
   decide(query: PlacementQuery): Promise<PlacementDecision>;
   /** When the run is placed back in the browser, the server wakes the agent there with this (after `SERVER_TURN`), so it says one short line at home. Absent: the agent stays silent. */
@@ -68,7 +79,7 @@ export interface Placer {
    * `trip` is what the server saw of the stay it ends: `teaching` is the number of teaching threads the host reported for the first time during it. Return null when the check does not apply to this trip
    * (the agent was not sent to work the check is about): the server logs that and tells the agent nothing.
    */
-  homeCheck?(read: (path: string) => Promise<Uint8Array | undefined>, trip: HomeTrip): Promise<{ ok: boolean; reason: string } | null>;
+  homeCheck?(read: (path: string) => Promise<Uint8Array | undefined>, trip: HomeTrip): Promise<HomeCheckResult | null>;
   /** The one line why the placer prefers an environment, for the agent's notice. */
   describe(env: string): string;
 }

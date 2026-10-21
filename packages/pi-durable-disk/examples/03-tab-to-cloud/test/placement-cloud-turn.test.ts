@@ -435,7 +435,7 @@ describe("the home check is told what the trip was", () => {
     homePrompt: "Say one short sentence: you are home.",
     async homeCheck(_read, trip) {
       trips.push(trip.teaching);
-      return trip.teaching === 0 ? null : skillsHome ? { ok: true, reason: "the skills are home." } : { ok: false, reason: "no skills came home" };
+      return trip.teaching === 0 ? null : skillsHome ? { ok: true, reason: "the skills are home.", home: ["walk", "spin"], count: 2 } : { ok: false, reason: "no skills came home", home: [], count: 0 };
     },
     describe: (env) => `criterion of ${env}`,
     async decide(query) {
@@ -596,7 +596,10 @@ describe("the home check is told what the trip was", () => {
     try {
       const received = await userHome("user-home-yes", [42]);
       assert.deepEqual(received, ["come back to my browser"]);
-      assert.ok(logs.some((l) => l.event === "placement.home-check" && l.data.silent === true && l.data.ok === true), "the check ran, silently, and passed");
+      const said = logs.find((l) => l.event === "placement.home-check" && l.data.silent === true && l.data.ok === true);
+      assert.ok(said, "the check ran, silently, and passed");
+      assert.deepEqual(said.data.home, ["walk", "spin"], "the log line carries the skills that are home as data");
+      assert.equal(said.data.count, 2);
     } finally {
       skillsHome = false;
     }
