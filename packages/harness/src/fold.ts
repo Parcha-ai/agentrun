@@ -59,6 +59,9 @@ export function cost(lines: readonly Line[]): Cost {
       const before = latest.get(key);
       latest.set(key, before === undefined || before === null || usd === null ? usd : Math.max(before, usd));
     };
+    // The keyed form: one document per row, the document's value the row, written once. A document is one decision's row, so its identity (doc, key) is the part's key: a snapshot that lists it again counts it
+    // once, and a second row with the same decision id (asked and paid again) is a second decision.
+    if (data.doc === 'agentrun.decisions' && typeof data.key === 'string' && !Array.isArray(data.value.receipts)) keep(`decision\u0001${id}\u0001row`, number(data.value.cost_usd));
     if (data.doc === 'agentrun.decisions' && Array.isArray(data.value.receipts)) {
       data.value.receipts.forEach((row: unknown, index: number) => keep(`decision\u0001${id}\u0001${isObject(row) && typeof row.decision_id === 'string' ? `${row.run_key ?? ''} ${row.decision_id}` : index}`, isObject(row) ? number(row.cost_usd) : null));
     }

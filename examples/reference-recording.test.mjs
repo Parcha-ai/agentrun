@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { apply } from '@earendil-works/chord/delta';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { durableDoc, readJournal, recordingLines, snapshotLines } from '@parcha/agentrun-pi/durable';
+import { durableDecisions, durableDoc, readJournal, recordingLines, snapshotLines } from '@parcha/agentrun-pi/durable';
 import { placeAt, RUN_KEY } from '@parcha/agentrun-harness';
 import { killAnywhere } from './reference/kill-anywhere.ts';
 
@@ -64,7 +64,8 @@ function fold(lines) {
   for (const line of lines) if (line.data?.doc !== undefined) latest.set(docId(line.data.doc, line.data.key, line.conv), line);
   const values = (kind) => [...latest.values()].filter((line) => line.kind === kind).map((line) => line.data.value);
   const effects = values('agentrun.effects');
-  const rows = values('agentrun.decisions').flatMap((value) => value.receipts ?? []);
+  // Either form: the single document's list, or the keyed documents (each value one row). A recording holds one.
+  const rows = values('agentrun.decisions').flatMap((value) => (Array.isArray(value.receipts) ? value.receipts : [value]));
   const answered = rows.filter((row) => row.rule !== null && row.error === undefined);
   const perDecision = new Map();
   for (const row of answered) perDecision.set(JSON.stringify([row.decision_id ?? null, row.run_key ?? null]), (perDecision.get(JSON.stringify([row.decision_id ?? null, row.run_key ?? null])) ?? 0) + 1);
@@ -152,7 +153,8 @@ test('the ten-kill ledger\'s store as recording lines: invariants, values, every
   const db = new DatabaseSync(file, { readOnly: true });
   const entries = db.prepare('SELECT record FROM entries ORDER BY id').all().map((row) => JSON.parse(row.record));
   db.close();
-  const decisions = durableDoc(file, 'agentrun.decisions').receipts;
+  const decisions = durableDecisions(file);
+  assert.ok(decisions.length > 0, 'the store holds decision rows (a reader of the wrong form would find none)');
   const answeredRows = decisions.filter((row) => row.rule !== null && !row.error);
   const perDecision = answeredRows.reduce((m, row) => m.set(JSON.stringify([row.decision_id ?? null, row.run_key ?? null]), (m.get(JSON.stringify([row.decision_id ?? null, row.run_key ?? null])) ?? 0) + 1), new Map());
   const identities = [

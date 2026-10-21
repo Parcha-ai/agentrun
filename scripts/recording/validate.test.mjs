@@ -335,3 +335,16 @@ test('a snapshot restating an earlier process\'s move is not a move of this proc
   const own = [durable(1, 0), durable(2, 0, { t: 12, source: 'transport', kind: 'transport.moves', data: bad })];
   assert.match(first(await recording(t, { lines: own, started: 2, manifestOver: { generations: 2 } })).message, /a restore record has no integer head/);
 });
+
+test('agentrun.decisions in both forms is refused: the single document or the keyed documents, never both in one recording', async t => {
+  const single = (commit) => durable(commit, 0, { kind: 'agentrun.decisions', data: { doc: 'agentrun.decisions', value: { receipts: [{ v: 1, decision_id: 'a', run_key: 'r', cost_usd: 0 }] }, version: 1 } });
+  const keyed = (commit, key) => durable(commit, 0, { kind: 'agentrun.decisions', data: { doc: 'agentrun.decisions', key, value: { v: 1, decision_id: key, run_key: 'r', cost_usd: 0 }, version: 1 } });
+  const only = async lines => validateRecording(await recording(t, { lines, manifestOver: { generations: 1 } })).filter(problem => /both forms/.test(problem.message));
+  assert.deepEqual(await only([single(1), single(2)]), [], 'the single document alone');
+  assert.deepEqual(await only([keyed(1, '00000000'), keyed(2, '00000001')]), [], 'keyed documents alone');
+  const both = await only([single(1), keyed(2, '00000000')]);
+  assert.equal(both.length, 1);
+  assert.equal(both[0].line, 2);
+  assert.match(both[0].message, /single document from line 1, keyed documents from line 2/);
+  assert.equal((await only([keyed(1, '00000000'), single(2)])).length, 1, 'in either order');
+});

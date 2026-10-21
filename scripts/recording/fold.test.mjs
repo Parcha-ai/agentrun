@@ -106,3 +106,29 @@ test('a box.receipt is the place\'s box: its cost_usd is a part once per box lab
   if (fold(both).cost === priced) { t.diagnostic('the viewer\'s fold does not count box.receipt yet: the equality half is skipped'); return; }
   for (const lines of [both, [...both, receipt('box-1', 0.25, 2)], [...both, receipt('box-2', null, 2)], [...both, receipt('box-2', 0.5, 2)]]) assert.equal(fold(lines).cost, cost(lines).usd);
 });
+
+test('the keyed decisions form (one document per row): both folds count each row once, as the single document does, so a cap reads the same spend in either form', () => {
+  const base = clone(recordings['midstream-kill']);
+  const priced = fold(base).cost;
+  const row = (id, usd, run = 'r') => ({ v: 1, node: 'pick', kind: 'judge', decision_id: id, run_key: run, rule: { kind: 'judge' }, cost_usd: usd });
+  const keyed = (key, value, over = {}) => ({ channel: 'durable', source: 'workflow', kind: 'agentrun.decisions', gen: 1, commit: 9100 + Number(key), order: 0, t: 9100, data: { doc: 'agentrun.decisions', key: String(key).padStart(8, '0'), value, version: 1 }, ...over });
+  const rows = [row('a', 0.5), row('b', 0.25), row('c', 0.125)];
+  const single = [...base, doc('agentrun.decisions', { receipts: rows }, { commit: 9100, t: 9100 })];
+  const asKeyed = [...base, ...rows.map((value, index) => keyed(index, value))];
+  const agree = (lines, expected) => { assert.equal(fold(lines).cost, expected); assert.equal(cost(lines).usd, expected); };
+  agree(single, priced + 0.875);
+  agree(asKeyed, priced + 0.875);
+  // The spend a cap reads (the priced parts summed) is the judge's, in the keyed form too: a store whose Jev spend crosses the cap crosses it here.
+  assert.equal(cost(asKeyed).parts.decision, 0.875);
+  assert.ok(Object.values(cost(asKeyed).parts).reduce((sum, part) => sum + (part ?? 0), 0) >= 0.875);
+  // A process's open lists every row again as a snapshot: none is counted twice.
+  agree([...asKeyed, ...rows.map((value, index) => keyed(index, value, { snapshot: true, commit: 9200, gen: 2 }))], priced + 0.875);
+  // A decision asked and paid again (one run key and decision id, a later row, a document of its own) is a second decision.
+  agree([...asKeyed, keyed(3, row('a', 0.5))], priced + 1.375);
+  // A row with no cost makes the cost unknown, never 0.
+  agree([...asKeyed, keyed(3, row('d', null))], null);
+  // Another run's row with the same decision id is its own decision.
+  agree([...asKeyed, keyed(3, row('a', 0.5, 'other'))], priced + 1.375);
+  // A keyed row restored away (a snapshot below a commit already seen) is still what was spent: the lost branch's decision is not taken back.
+  agree([...asKeyed, { ...keyed(0, rows[0], { commit: 9005, gen: 2 }), snapshot: true }], priced + 0.875);
+});
