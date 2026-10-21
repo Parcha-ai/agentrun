@@ -1,4 +1,4 @@
-// What the film of the agent's chat page must not show: a rounded corner (Miguel's rule of 2026-10-20: none on any surface we make; only a true circle, a status dot).
+// Invariant: no rounded corner on any surface of the agent's chat page, which is filmed; only a true circle, such as a status dot.
 // The page's own sheet and the shared theme it links are read as text, so a corner added later fails here before it is filmed.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

@@ -1,4 +1,4 @@
-// What the film of the stage must not show: a rounded corner (Miguel's rule of 2026-10-20: none on any surface we make; only a true circle, a status dot), a hint over a card, "1 GPUs", "the Your browser tab".
+// Invariants of the filmed stage: no rounded corner on any surface (only a true circle, such as a status dot), no hint over a card, no "1 GPUs", no "the Your browser tab".
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

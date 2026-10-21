@@ -1,4 +1,4 @@
-// What the film of the creature page must not show: a rounded corner (Miguel's rule of 2026-10-20: none on any surface we make; only a true circle, a status dot).
+// Invariant: no rounded corner on any surface of the creature page, which is filmed; only a true circle, such as a status dot.
 // The page's sheet is read as text, so a corner added later fails here before it is filmed. A drawn circle (a foot, a handle on the sketch) is a shape, not a corner.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
