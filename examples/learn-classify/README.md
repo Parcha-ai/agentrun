@@ -146,6 +146,8 @@ demotion after 2).
   `YYYY-MM-DDTHH` in UTC; `source` is `model` (a model call that ended in an error, each retry one, `status` the HTTP
   status the provider's error starts with, else `other`), `site` or `wayback` (a 429 answered to fetch_page, browse or
   read_document; `wayback` when the host was web.archive.org).
+- `durableCommits`: the highest commit number in the run's store, so how many durable commits it made. `fsyncProbeMs`:
+  the median time of ten one-row commits in a scratch database beside the run (disk.mjs), for the volume's speed.
 
 ## v2: the hard job
 
