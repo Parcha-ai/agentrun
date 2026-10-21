@@ -3,7 +3,7 @@
 // reported and stay in the corpus with expect "refused".
 import { after, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { access, chmod, mkdtemp, rm } from "node:fs/promises";
+import { access, chmod, mkdtemp, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { cases, envFor, REMOTE_HOOKS, run } from "./corpus.mjs";
@@ -16,6 +16,17 @@ const exists = (p) => access(p).then(() => true, () => false);
 const attempt = (promise) => promise.then(() => ({ ok: true }), (e) => ({ ok: false, error: e.message.split("\n")[0].slice(0, 240) }));
 const FORCED = ["-c", "protocol.ext.allow=always", "-c", "protocol.file.allow=always"];
 
+// Plain `add` skips the clean filter for a stat-clean file, so both filter cases add with --renormalize, which always
+// runs it. They run from the stat-clean state a slow clone leaves (the index newer than the file), so a trigger that
+// depends on timing fails every time.
+const FILTER_CASES = new Set(["attr-filter-operator-driver", "limit-git-config-filter"]);
+const addThroughCleanFilter = (env, w) => run(env, ["add", "--renormalize", "--", "notes.txt"], { cwd: w });
+async function statClean(workdir) {
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const now = new Date();
+  await utimes(path.join(workdir, ".git", "index"), now, now);
+}
+
 /** The plain git operation a runner would also perform, run in the case's workdir. Each one is expected to fire the hostile part. */
 const TRIGGER = {
   "host-hook-post-checkout": (env, w) => run(env, ["checkout", "-q", "-b", "after-hook"], { cwd: w }),
@@ -24,11 +35,11 @@ const TRIGGER = {
   "host-hook-reference-transaction": (env, w) => run(env, ["update-ref", "refs/heads/probe", "HEAD"], { cwd: w }),
   "host-hook-pre-push": (env, w) => run(env, ["push", "-q", "origin", "HEAD:refs/heads/probe"], { cwd: w }),
   "host-hook-pre-commit": (env, w) => run(env, ["commit", "-q", "--allow-empty", "-m", "probe"], { cwd: w }),
-  "attr-filter-operator-driver": (env, w) => run(env, ["add", "--", "notes.txt"], { cwd: w }),
+  "attr-filter-operator-driver": addThroughCleanFilter,
   "attr-merge-operator-driver": (env, w) => run(env, ["merge", "-q", "--no-edit", "side"], { cwd: w }),
   "path-leading-dash": (env, w) => run(env, ["diff", "HEAD", "--output=marker-dash"], { cwd: w }),
   "limit-git-config-merge-driver": (env, w) => run(env, ["merge", "-q", "--no-edit", "side"], { cwd: w }),
-  "limit-git-config-filter": (env, w) => run(env, ["add", "--", "notes.txt"], { cwd: w }),
+  "limit-git-config-filter": addThroughCleanFilter,
 };
 for (const name of REMOTE_HOOKS) {
   TRIGGER[`remote-hook-${name}`] = (env, w) => run(env, ["push", "-q", "origin", `HEAD:refs/heads/probe-${name}`], { cwd: w });
@@ -45,6 +56,7 @@ async function probe(c, built, dir) {
     return { plainRefuses: !plain.ok, plainError: plain.error, plainMarker, forcedMarker: await exists(built.marker), forcedError: forced.error };
   }
   if (TRIGGER[c.id]) {
+    if (FILTER_CASES.has(c.id)) await statClean(built.workdir);
     const r = await attempt(TRIGGER[c.id](env, built.workdir));
     return { marker: await exists(built.marker), triggerError: r.ok ? undefined : r.error };
   }

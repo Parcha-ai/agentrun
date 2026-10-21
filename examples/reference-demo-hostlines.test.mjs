@@ -11,8 +11,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { effectiveBoxes } from '../packages/reference/dist/demo-spec.js';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-reference';
+import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
+import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, tapBox, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 // ---- run.json host lines from place.status() --------------------------------------------------------------------------------------------------
@@ -112,7 +112,7 @@ test('a place\'s signals may end with signals-failed or throw: a signals.failed 
   t.after(() => process.off('unhandledRejection', onUnhandled));
   const hostLines = (recording, kind) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === kind);
   // A message: a path outside the run\'s directory becomes <path>, the run\'s own stays, and it is capped at 240 characters.
-  const { messageOf } = await import('../packages/reference/dist/demo.js');
+  const { messageOf } = await import('../packages/harness/dist/demo.js');
   assert.equal(messageOf(new Error('cannot reach /srv/elsewhere/x and /run/root/store/run.sqlite at http://host/a/b'), '/run/root'), 'cannot reach <path> and /run/root/store/run.sqlite at http://host/a/b');
   assert.equal(messageOf('/run/root and /run/rootless', '/run/root'), '/run/root and <path>');
   assert.equal(messageOf('x'.repeat(500), '/run/root').length, 240);
@@ -272,7 +272,7 @@ test('recording.carry.failed: a tick that fails is retried, a final failure refu
   assert.deepEqual(validateRecording(lost), []);
 });
 test('the box child\'s own recorder redacts the box\'s host name and boot id even where no sign-in file is handed down (no AGENTRUN_HOME): a box-side line holding them is clean', async () => {
-  const { trackSecrets } = await import('../packages/reference/dist/secrets.js');
+  const { trackSecrets } = await import('../packages/harness/dist/secrets.js');
   const { hostname } = await import('node:os');
   const boot = existsSync('/proc/sys/kernel/random/boot_id') ? readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() : undefined;
   const { redact } = trackSecrets({}, { name: 'x' }, join(tmpdir(), 'no-such-sign-in', 'auth.json'));
@@ -283,7 +283,7 @@ test('the box child\'s own recorder redacts the box\'s host name and boot id eve
   assert.ok(cleaned.includes('says hello'));
 });
 test('RECORD_STARTED gives a fresh recording directory its clock (an existing one is left alone), and a spool rolls into segments past segmentBytes that a second process still counts as one', async (t) => {
-  const { openRecorder, startedAt } = await import('../packages/reference/dist/record.js');
+  const { openRecorder, startedAt } = await import('../packages/harness/dist/record.js');
   const tmp = await mkdtemp(join(tmpdir(), 'reference-segments-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const clock = '2026-10-16T09:00:00.000Z';
@@ -385,16 +385,35 @@ test('the slow tick does not queue a carry behind one still running: a place who
 test('a box charge that first appears in the last status read counts against the cap: the run is over budget', { timeout: 300_000 }, async (t) => {
   const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05 });
   const recording = join(tmp, 'recording');
-  let reads = 0;
+  let exited = false;
   const result = await demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
     const inner = localPlace({ self, paths, destroyBoxes, requestFile });
     const box = { provider: 'prov', kind: 'sandbox', from: '2026-10-16T10:00:00.000Z', usdPerSecond: 1, source: 'list', priced: true };
-    // The box's end is first reported by the third read, the last one the supervisor makes (start, exit, end): $60 against a cap of $0.10.
-    return { ...inner, status: async () => { reads += 1; return { record: null, boxes: [reads >= 3 ? { ...box, to: '2026-10-16T10:01:00.000Z' } : box] }; } };
+    // The box's end is first reported by a read made after the runner has exited (the supervisor's last), never by how many reads came before: the slow tick reads too, so a count can land mid-run. $60 against a cap of $0.10.
+    return { ...inner,
+      start: async (order) => { const runner = await inner.start(order); runner.exited.then(() => { exited = true; }, () => { exited = true; }); return runner; },
+      status: async () => ({ record: null, boxes: [exited ? { ...box, to: '2026-10-16T10:01:00.000Z' } : box] }) };
   } });
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
   assert.equal(result.overBudget, true, 'the charge that arrived with the last read is over the cap');
 });
+test('a box charge that first appears in the very last status read the supervisor makes (the second after the runner exits) counts against the cap: the run is over budget, which only the final budget check can see', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05 });
+  const recording = join(tmp, 'recording');
+  let exited = false;
+  let afterExit = 0;
+  const result = await demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    const box = { provider: 'prov', kind: 'sandbox', from: '2026-10-16T10:00:00.000Z', usdPerSecond: 1, source: 'list', priced: true };
+    // The box's end is first reported by the second read after the runner has exited: the first is the exit read, the second the last one the supervisor makes, before its final budget check. A charge that arrived at the exit read could be counted by the meter before that check; the slow tick reads too, so a count can land mid-run. $60 against a cap of $0.10.
+    return { ...inner,
+      start: async (order) => { const runner = await inner.start(order); runner.exited.then(() => { exited = true; }, () => { exited = true; }); return runner; },
+      status: async () => { if (exited) afterExit += 1; return { record: null, boxes: [afterExit >= 2 ? { ...box, to: '2026-10-16T10:01:00.000Z' } : box] }; } };
+  } });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.equal(result.overBudget, true, 'the charge that arrived with the last read is over the cap');
+});
+
 test('a delegation without a path (the package finds it by its inode) is kept: a delegation line and a revoke entry are written without one', { timeout: 300_000 }, async (t) => {
   const { tmp, options } = await specWith(t, { name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] });
   const recording = join(tmp, 'recording');

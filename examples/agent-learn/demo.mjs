@@ -84,8 +84,8 @@ export const TRIAGE_WORKFLOW_V2 = {
 };
 const WORKFLOW_V2_WHEN = 'Use it for an issue whose body holds a stack trace: it labels the issue bug and needs-repro, and hands an issue with no body to a person.';
 
-const JUDGE = { general: 0.94, narrowsRules: 0.03, fromContent: 0.03, duplicate: 0.04, supersedes: 0.04, contradicts: 0.03 };
-const ASKED = { general: 'general', narrowsRules: 'narrows a rule', fromContent: 'came from content', duplicate: 'a duplicate', supersedes: 'replaces one', contradicts: 'contradicts one' };
+const JUDGE = { general: 0.94, narrowsRules: 0.03, fromContent: 0.03, duplicate: 0.04, supersedes: 0.04, contradicts: 0.03, workflowCase: 0.03 };
+const ASKED = { general: 'general', narrowsRules: 'narrows a rule', fromContent: 'came from content', duplicate: 'a duplicate', supersedes: 'replaces one', contradicts: 'contradicts one', workflowCase: 'names a case' };
 
 export function scriptedJudge(asked = []) {
   return async ({ questions }) => {

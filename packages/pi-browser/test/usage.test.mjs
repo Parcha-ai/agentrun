@@ -1,7 +1,7 @@
 // Pricing is money and has no integration path until a host composes the extension: the arithmetic is pinned here.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchUsage, LIST_PRICES, resolvePrices, searchUsage, sessionCharge, sessionPrice, startSpent } from "../dist/index.js";
+import { fetchUsage, LIST_PRICES, resolvePrices, searchUsage, sessionCharge, sessionPrice, startSpent, withEstimate } from "../dist/index.js";
 
 const at = (s) => new Date(Date.UTC(2026, 9, 6, 12, 0, s)).toISOString();
 /** The meter bills to the picodollar, so sums are compared at that resolution. */
@@ -100,4 +100,26 @@ test("the bill never depends on how many calls it was charged in: rounding is ca
     assert.equal(end.spent.usd, 0.002);
     assert.equal(pico(charged + end.usage.usage.cost.total), 0.002, "the calls' charges add up to the bill");
   }
+});
+
+test("list-priced dollars are tracked as the charges accumulate: a record that resumes under a different price source keeps each charge's own label", () => {
+  const list = resolvePrices({});
+  const own = resolvePrices({ sessionUsdPerHour: 36 });
+  const charge = (spent, secs, prices) => sessionCharge(spent, at(secs), prices).spent;
+  // 30 s under the list ($0.12 an hour = $0.001), then the host starts naming its own price ($36 an hour = $0.30 for the next 30 s).
+  let spent = startSpent(at(0));
+  const first = charge(spent, 30, list);
+  spent = withEstimate(spent, first, true);
+  assert.deepEqual([spent.usd, spent.estimatedUsd], [0.001, 0.001], "the list's dollars are the estimate");
+  const second = charge(spent, 60, own);
+  spent = withEstimate(spent, second, false);
+  assert.deepEqual([spent.usd, spent.estimatedUsd], [0.301, 0.001], "the host's dollars after the resume are not relabelled, and the earlier estimate is not lost");
+  // The reverse: 30 s at the host's price, then the list: only the later dollars are the estimate.
+  let other = withEstimate(startSpent(at(0)), charge(startSpent(at(0)), 30, own), false);
+  assert.equal(other.estimatedUsd, undefined, "host-priced dollars carry no estimate");
+  const later = charge(other, 60, list);
+  other = withEstimate(other, later, true);
+  assert.deepEqual([pico(other.usd), other.estimatedUsd], [0.301, 0.001]);
+  // Nothing new billed (the release already closed the record): the estimate it held stays, and nothing is added.
+  assert.deepEqual(withEstimate(other, other, true).estimatedUsd, 0.001);
 });

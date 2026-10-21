@@ -74,6 +74,8 @@ export const JEV_REQUEST_BYTES = 24 * MiB;
 export const JEV_MODEL = "jev-1.14.0";
 /** Source bytes read into this process; a larger file needs a provider that works on it in its environment: pdf.js held 455 MB for a 200 page file (measured 2026-10-09). */
 export const SOURCE_BYTES_IN_PROCESS = 64 * MiB;
+/** What a program this package starts may leave in a file for this process to read back (its output, its error stream, an image it drew). A program that wrote more is refused before it is read, so a document that makes it expand to hundreds of megabytes cannot fill this process's memory; the same bound as a source (2026-10-19). */
+export const PROGRAM_OUTPUT_BYTES = 64 * MiB;
 
 /** pi-durable's image limits: what an `ImageProcessor` fits to. */
 export type ImageLimits = { readonly maxWidth: number; readonly maxHeight: number; readonly maxBytes: number };

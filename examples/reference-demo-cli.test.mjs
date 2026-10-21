@@ -11,8 +11,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { effectiveBoxes } from '../packages/reference/dist/demo-spec.js';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-reference';
+import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
+import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, tapBox, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 test('the spec\'s kills are a list: a named crossing and a storm, in order, each ending one process, and the run finishes with nothing paid twice', { timeout: 300_000 }, async (t) => {
@@ -179,7 +179,7 @@ test('a kill spec checks hold and waitMs, and the plan carries them (waitMs defa
 test('ToolContext.live: false on a no-key run, true when the host is live, so one set of tools reads live or replays a capture', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-live-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
-  const { localHost, placeAt } = await import('@parcha/agentrun-reference');
+  const { localHost, placeAt } = await import('@parcha/agentrun-harness');
   const seen = [];
   for (const live of [false, true]) {
     const place = await placeAt(join(tmp, String(live)));
@@ -200,7 +200,7 @@ test('boxes on fakes are local, and Docker is used only with --live: a no-key ru
 test('fakes.extensions are for a no-key run: a live host does not install them', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-live-ext-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
-  const { localHost, placeAt } = await import('@parcha/agentrun-reference');
+  const { localHost, placeAt } = await import('@parcha/agentrun-harness');
   const scripted = { name: 'scripted', tools: [] };
   const fakes = { model: () => { throw new Error('unused'); }, tools: {}, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank', extensions: [scripted] };
   assert.deepEqual(localHost(await placeAt(join(tmp, 'a')), fakes, { live: false }).host.tools.extensions, [scripted]);
@@ -259,7 +259,7 @@ test('a kill\'s where: only a crossing whose info has those values counts, and n
 });
 test('a run is keyed by a fresh id that starts with its demo\'s name (the place\'s paths.id), so two demos never share a run', { timeout: 300_000 }, async (t) => {
   const { readJournal } = await import('@parcha/agentrun-pi/durable');
-  const { RUN_KEY } = await import('@parcha/agentrun-reference');
+  const { RUN_KEY } = await import('@parcha/agentrun-harness');
   const parent = await mkdtemp(join(tmpdir(), 'reference-keyed-'));
   t.after(() => rm(parent, { recursive: true, force: true }));
   for (const name of ['alpha-demo', 'beta-demo']) {
@@ -297,7 +297,7 @@ test('one fresh run id per invocation, shared by its processes: a second run of 
   const shared = await mkdtemp(join(tmpdir(), 'reference-shared-disk-'));
   t.after(() => rm(shared, { recursive: true, force: true }));
   const { options } = await killSpec(t);
-  const { localPlace } = await import('@parcha/agentrun-reference');
+  const { localPlace } = await import('@parcha/agentrun-harness');
   const seen = [];
   const released = [];
   const invoke = async (name) => {
@@ -346,4 +346,16 @@ test('browser:false creates no browser, live or on fakes: --live needs no Browse
   const fakes = await run(t, { browser: false }, ['--json'], { DEMO_LIVE_PROBE: '' });
   assert.ok(said(fakes.recording));
   assert.ok(!said((await run(t, {}, ['--json'], { DEMO_LIVE_PROBE: '' })).recording), 'the default still has its fake browser');
+});
+test('a required program the demo declares and this machine lacks refuses the run before anything starts, naming it and what it is for', { timeout: 300_000 }, async (t) => {
+  const missing = [{ cmd: 'agentrun-no-such-program', why: 'the test asks for it', required: true }];
+  await assert.rejects(() => run(t, { programs: missing }, ['--json']), /needs these programs on PATH, so nothing started:\n {2}agentrun-no-such-program: the test asks for it \(install agentrun-no-such-program; it is not on PATH\)/);
+  // A program on PATH, an optional one that is missing and one needed only for --live: the run on fakes goes on.
+  const fine = [{ cmd: 'node', why: 'the runtime', required: true }, { cmd: 'agentrun-no-such-program', why: 'optional', required: false }, { cmd: 'agentrun-no-such-program', why: 'live only', required: true, for: 'live' }];
+  const { result } = await run(t, { programs: fine }, ['--json']);
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  // An entry without a command (an environment name the fixture declares) is not a program to look for.
+  const { checkPrograms } = await import('../packages/harness/dist/demo-spec.js');
+  assert.doesNotThrow(() => checkPrograms({ name: 'x', programs: [{ name: 'fixture spec', env: 'DEMO_SPEC' }] }, false, { PATH: '' }));
+  assert.throws(() => checkPrograms({ name: 'x', programs: [{ oneOf: [{ cmd: 'agentrun-no-such-a', why: 'a', required: true }, { cmd: 'agentrun-no-such-b', why: 'b', required: true }], why: 'one of two' }] }, false, { PATH: '' }), /x needs these programs on PATH/);
 });

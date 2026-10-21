@@ -1,0 +1,44 @@
+{
+  "package": "@parcha/agentrun-harness",
+  "install": [
+    "dsl",
+    "jev",
+    "pi",
+    "pi-durable-disk",
+    "pi-browser",
+    "pi-vision",
+    "harness"
+  ],
+  "companions": [
+    "@parcha/agentrun-dsl",
+    "@parcha/agentrun-jev",
+    "@parcha/agentrun-pi",
+    "@parcha/pi-durable-disk",
+    "@parcha/pi-browser",
+    "@parcha/pi-vision"
+  ],
+  "peers": [
+    "@earendil-works/chord",
+    "@earendil-works/pi-durable",
+    "@earendil-works/pi-ai",
+    "@earendil-works/pi-codemode"
+  ],
+  "files": [
+    {
+      "name": "demo.mjs",
+      "readme": "packages/harness/README.md",
+      "heading": "Run a demo from an install, with no key",
+      "fence": "js",
+      "index": 0
+    }
+  ],
+  "command": [
+    "node",
+    "demo.mjs"
+  ],
+  "expect": {
+    "exitCode": 0,
+    "pattern": "^first-demo: complete$"
+  },
+  "timeoutMs": 180000
+}
