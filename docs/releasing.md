@@ -53,7 +53,7 @@ The preflight checks tag identity, clean source, package versions, licenses and 
 
 ## Publish and verify
 
-Dispatch **Publish verified beta** with the workflow ref and `tag` input set to the same reviewed tag. The workflow requires a public repository, publishes the verified archives with the `beta` tag, and verifies registry integrity and a fresh installed consumer.
+Dispatch **Publish verified beta** with the workflow ref and `tag` input set to the same reviewed tag. The workflow requires a public repository, publishes the verified archives with the `latest` tag, and verifies registry integrity and a fresh installed consumer. A version is published as `latest` because npm's package page shows the README of the publish that carried the `latest` tag; moving `latest` later with `npm dist-tag` leaves the page without one. After the run, a maintainer moves the `beta` dist-tag to the same version of each package (`npm dist-tag add <name>@<version> beta`), since the install commands name `@beta`.
 
 An npm publish success can mean the package is still processing. The verifier waits up to 20 minutes in each of three phases: for a version's registry document to appear, for its tarball to download, and for npm to list every release version in both the full and the abbreviated (install) metadata. It polls every 5 seconds at first and backs off to every 30. npm took about 5 minutes to show beta.10 and 16 for beta.11's first package; the job's own limit is 45 minutes, so several slow packages in a row can still end the run, and a rerun on the same tag resumes. Only then does it run its one clean installation. It still fails immediately on authentication errors or mismatched integrity. Do not treat npm's acceptance message as a completed release.
 
