@@ -1,5 +1,5 @@
 import { pathRefusal as gitPathRefusal } from "@parcha/pi-git-remote";
-import { CAPS, inboxPath, inboxWorkflowDir, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
+import { CAPS, inboxPath, inboxWorkflowDir, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RECORD_FILE, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { parseInbox, renderInbox } from "./inbox.js";
 import { type Guard, type GuardInput, LEARN_TYPES, type Refusal, type RefusalReason } from "./types.js";
 
@@ -125,7 +125,6 @@ const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 // A call id is the provider's, not the model's: printable ASCII, no spaces, and no content scan, since an id made of hex
 // digits holds a short case value by chance.
 const CALL_ID = /^[\x21-\x7e]{1,256}$/;
-const DIGEST_RECORD = /^(?:[0-9a-f]{64}\.json|latest)$/;
 
 type Hit = { readonly reason: RefusalReason; readonly detail: string };
 
@@ -167,7 +166,7 @@ function allowance(role: "run" | "curate", file: string, runId: string | undefin
     if (file === usesPath(runId)) return { cap: caps.file };
     const [, , , name = "", record = ""] = file.split("/");
     // The DSL's saved records, copied as they are: <sha256>.json and latest, one folder per workflow.
-    if (WORKFLOW_NAME.test(name) && DIGEST_RECORD.test(record) && file === `${inboxWorkflowDir(runId, name)}${record}`) return { cap: caps.file };
+    if (WORKFLOW_NAME.test(name) && RECORD_FILE.test(record) && file === `${inboxWorkflowDir(runId, name)}${record}`) return { cap: caps.file };
     return refuse("a run writes only its own inbox, uses and workflow records");
   }
   const within = (dir: string) => (file.startsWith(`${dir}/`) ? file.slice(dir.length + 1).split("/") : undefined);
@@ -178,7 +177,7 @@ function allowance(role: "run" | "curate", file: string, runId: string | undefin
   const skill = within(LAYOUT.skills);
   if (skill?.length === 2 && SKILL_NAME.test(skill[0]!) && (skill[1] === "SKILL.md" || skill[1] === "trial.json")) return { cap: caps.file };
   const record = within(LAYOUT.workflows);
-  if (record?.length === 2 && WORKFLOW_NAME.test(record[0]!) && DIGEST_RECORD.test(record[1]!)) return { cap: caps.file };
+  if (record?.length === 2 && WORKFLOW_NAME.test(record[0]!) && RECORD_FILE.test(record[1]!)) return { cap: caps.file };
   return refuse("the path is outside what a curator writes: learnings/<id>.md, SKILL.md and trial.json in a skill folder, and the workflow store");
 }
 

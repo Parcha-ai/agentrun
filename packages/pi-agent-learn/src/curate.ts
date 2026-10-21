@@ -5,7 +5,7 @@ import { type Learning, learningId, parseLearning, renderLearning } from "./entr
 import { LearnError } from "./errors.js";
 import { createGuard, guard } from "./guard.js";
 import { InboxFormatError, type InboxCandidate, parseInbox } from "./inbox.js";
-import { assertNotRulesLocked, CAPS, COMMIT_SHA, inboxPath, isRulesLocked, LAYOUT, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
+import { assertNotRulesLocked, CAPS, COMMIT_SHA, inboxPath, isRulesLocked, LAYOUT, learningPath, RECORD_FILE, RUN_ID, SHA256, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { byUse, indexLine, renderSection } from "./section.js";
 import { learningsAt } from "./seed.js";
 import type { AdmitWorkflow, Refusal, RepoRead, SettleUses, WorkflowCandidate, WorkflowUse } from "./types.js";
@@ -136,7 +136,6 @@ const WORKFLOW_TRAILER = "Workflow";
 const RUN_ID_TRAILER = "Run-Id";
 const RUNS = "runs/";
 const ENTRY_TYPES_COMPARED = ["lesson", "fact", "correction"] as const;
-const RECORD = /^(?:[0-9a-f]{64}\.json|latest)$/;
 const CONTENT_REASONS: readonly Refusal["reason"][] = ["secret_value", "secret_shape", "invisible_unicode", "case_data"];
 /** A learning lists at most this many proposing runs, so a popular one stays under the file cap; its uses keep counting. */
 const MAX_PROVENANCE_RUNS = 16;
@@ -633,7 +632,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   for (const [path, text] of Object.entries(runFiles)) {
     if (!path.startsWith(prefix) || text === null) continue;
     const [name, file, ...rest] = path.slice(prefix.length).split("/");
-    if (!name || !file || rest.length || !WORKFLOW_NAME.test(name) || !RECORD.test(file)) continue;
+    if (!name || !file || rest.length || !WORKFLOW_NAME.test(name) || !RECORD_FILE.test(file)) continue;
     (records.get(name) ?? records.set(name, {}).get(name)!)[file] = text;
   }
   const reader: RepoRead = { main, read: (path, sha) => repo.read(path, sha), list: (p, sha) => repo.list(p, sha) };
@@ -706,7 +705,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
         Object.assign(workflowFiles, files);
         for (const d of decisions!) {
           if (!d || typeof d.name !== "string" || !names.includes(d.name) || !["promote", "demote", "hold"].includes(d.action)) continue;
-          const back = typeof d.rollbackTo === "string" && /^[0-9a-f]{64}$/.test(d.rollbackTo) ? `, back to ${d.rollbackTo.slice(0, 12)}` : "";
+          const back = typeof d.rollbackTo === "string" && SHA256.test(d.rollbackTo) ? `, back to ${d.rollbackTo.slice(0, 12)}` : "";
           lists.settled.push({ workflow: d.name, reason: `${d.action}${back}: ${safeReason(d.reason, input.secrets)}` });
           if (Object.keys(files!).length) workflowNames.add(d.name);
         }
@@ -779,7 +778,7 @@ function parseUses(text: string, runId: string): WorkflowUse[] | undefined {
   for (const raw of file.uses as unknown[]) {
     const u = raw as Record<string, unknown> | null;
     if (!u || typeof u !== "object" || Object.keys(u).some((k) => !["name", "sha256", "outcome", "at"].includes(k))) return undefined;
-    if (typeof u.name !== "string" || !WORKFLOW_NAME.test(u.name) || typeof u.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(u.sha256)) return undefined;
+    if (typeof u.name !== "string" || !WORKFLOW_NAME.test(u.name) || typeof u.sha256 !== "string" || !SHA256.test(u.sha256)) return undefined;
     if (typeof u.outcome !== "string" || !OUTCOMES.includes(u.outcome) || typeof u.at !== "string" || Number.isNaN(Date.parse(u.at)) || new Date(u.at).toISOString() !== u.at) return undefined;
     out.push({ name: u.name, sha256: u.sha256, outcome: u.outcome as WorkflowUse["outcome"], at: u.at });
   }

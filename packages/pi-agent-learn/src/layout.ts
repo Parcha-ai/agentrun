@@ -53,6 +53,10 @@ export const WORKFLOW_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export const LEARNING_ID = /^L-[0-9a-f]{12}$/;
 /** A commit id: SHA-1 or SHA-256. */
 export const COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+/** A saved workflow revision's digest: SHA-256 in lowercase hex. */
+export const SHA256 = /^[0-9a-f]{64}$/;
+/** A file of a workflow's records: a revision (`<sha256>.json`) or the `latest` pointer. */
+export const RECORD_FILE = /^(?:[0-9a-f]{64}\.json|latest)$/;
 
 export type Tier = "rules" | "learned" | "run" | "other";
 

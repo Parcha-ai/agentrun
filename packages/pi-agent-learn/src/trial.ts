@@ -3,12 +3,11 @@ import type { Repo } from "@parcha/pi-git-remote";
 import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { LearnError } from "./errors.js";
-import { CAPS, LAYOUT, RUN_ID } from "./layout.js";
+import { CAPS, LAYOUT, RUN_ID, SHA256 } from "./layout.js";
 
 /** A workflow name the DSL's store accepts and pi accepts as a skill name: the skill folder carries the same name. */
 export const WORKFLOW_SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const MAX_NAME = 64;
-const SHA256 = /^[0-9a-f]{64}$/;
 const STAMP = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
 const POINTER = /^(?:\/(?:[^~/]|~[01])*)*$/;
 
