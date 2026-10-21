@@ -192,8 +192,10 @@ test('one comparison runs at a time; a newer candidate for a name replaces the o
   const ask = (sha256) => gate.ask({ name: WORKFLOW, candidate: { sha256, workflow: {} }, serving: null, main: 'm' }).status;
   assert.deepEqual([ask(B), ask(B), ask(C), ask(D)], ['running', 'running', 'queued', 'queued']);
   assert.ok(lines.some((line) => line.endsWith(`${D.slice(0, 8)} replaces the queued ${C.slice(0, 8)}`)), lines.join('\n'));
+  assert.deepEqual(gate.pending(), [{ name: WORKFLOW, candidate: B, serving: null, state: 'running' }, { name: WORKFLOW, candidate: D, serving: null, state: 'queued' }]);
   open();
   await gate.idle();
+  assert.deepEqual(gate.pending().map((g) => [g.candidate[0], g.state, g.promote]), [['b', 'landed', false], ['d', 'landed', false]], 'landed, and no curate has applied them');
   assert.deepEqual(ran, ['b', 'b', 'd', 'd']);
   assert.deepEqual([ask(B), ask(D)], ['landed', 'landed']);
   assert.equal(ask(C), 'running', 'the replaced candidate was never compared: asking again starts it');
@@ -297,7 +299,7 @@ test('the gate runs beside the stream: jobs go on while it runs, the trial stays
   };
   const lines = [];
   const gate = asyncGate({ bank, runOne, dir: join(out, 'gate') });
-  const first = await runLoop({ out, parts, list: list6, jobs: 5, record: false, gate, log: (line) => { lines.push(line); if (line.startsWith('run 5 ')) open(); } });
+  const first = await runLoop({ out, parts, list: list6, jobs: 5, checkpoints: [3, 4, 5], record: false, gate, log: (line) => { lines.push(line); if (line.startsWith('run 5 ')) open(); } });
   assert.deepEqual(first.rows.map((r) => r.curate.promoted), [[], [], [], [], []]);
   assert.deepEqual([await settledOf(out, 4), await settledOf(out, 5)], [[ON_THE_BANK], [ON_THE_BANK]], 'asked at the third clean use and again at the fourth, while it ran');
   const waiting = currentRevision(await mainTrial(repo));
@@ -307,12 +309,19 @@ test('the gate runs beside the stream: jobs go on while it runs, the trial stays
   assert.ok(Date.parse(verdict.at) > Date.parse(JSON.parse(await readFile(join(out, 'progress', 'run-005.json'), 'utf8')).curatedAt), 'the verdict landed after the fifth curate');
 
   // The next pass's first curate applies it, before it folds that run's uses.
-  const second = await runLoop({ out, parts: { ...parts, bank: bank.map((c) => ({ cik: c.cik })) }, list: list6, jobs: 6, record: false });
+  // Each freeze names what no curate had applied: the comparison running at 4 and 5, nothing before it asked.
+  const frozen = JSON.parse(await readFile(join(out, 'checkpoints.json'), 'utf8'));
+  const running = [{ name: WORKFLOW, candidate: b, serving: a, state: 'running' }];
+  assert.deepEqual([frozen['0'].gates, frozen['3'].gates, frozen['4'].gates, frozen['5'].gates], [[], [], running, running]);
+
+  const second = await runLoop({ out, parts: { ...parts, bank: bank.map((c) => ({ cik: c.cik })) }, list: list6, jobs: 6, checkpoints: [3, 4, 5, 6], record: false });
   const row6 = second.rows.find((r) => r.run === 6);
   assert.deepEqual(row6.gated, [{ name: WORKFLOW, candidate: b, serving: a, promote: true, applied: 'promoted', reason: verdict.reason }]);
   const trial = await mainTrial(repo);
   assert.deepEqual(trial.revisions.map((r) => [r.sha256, r.status]), [[a, 'superseded'], [b, 'active']]);
   assert.equal(verdictsOf(out).length, 1, 'no comparison ran again');
+  const after = JSON.parse(await readFile(join(out, 'checkpoints.json'), 'utf8'));
+  assert.deepEqual([after['5'].gates, after['6'].gates], [running, []], 'a label once frozen keeps what it named; at 6 the verdict was applied');
 });
 
 test('the gate: a trial worse than the serving revision on the bank stays a trial; the held verdict answers the next ask with no bank run', async (t) => {

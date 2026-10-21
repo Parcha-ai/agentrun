@@ -194,7 +194,14 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, log = () => {
       .then((line) => { if (!line.failed) writeJson(verdictFile(dir, job.key), { ...line, key: job.key }); },
         (error) => log(`  promotion gate on ${name}: ${String(error?.message ?? error).slice(0, 200)}; no verdict`))
       .finally(() => { running = null; pump(); });
-    running = { key: job.key, done };
+    running = { key: job.key, job, done };
+  };
+  const brief = (job, state) => ({ name: job.name, candidate: job.candidate.sha256, serving: job.serving?.sha256 ?? null, state });
+  const landedUnapplied = () => {
+    const root = join(dir, 'verdicts');
+    if (!existsSync(root)) return [];
+    return readdirSync(root).flatMap((name) => readdirSync(join(root, name)).filter((f) => f.endsWith('.json')).map((f) => readJson(join(root, name, f))))
+      .filter((v) => v && !v.applied).sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
   };
   return {
     ask({ name, candidate, serving, main }) {
@@ -212,6 +219,15 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, log = () => {
     async idle() {
       while (running) await running.done;
     },
+    /** What no curate has applied yet: the comparison running, those queued, and each landed verdict not applied
+     *  (`promote` says which way it went), as `{ name, candidate, serving, state, promote? }`. */
+    pending() {
+      return [
+        ...(running ? [brief(running.job, 'running')] : []),
+        ...[...queued.values()].map((job) => brief(job, 'queued')),
+        ...landedUnapplied().map((v) => ({ name: v.name, candidate: v.candidate, serving: v.serving, state: 'landed', promote: v.promote })),
+      ];
+    },
     /**
      * The landed verdicts not yet applied, each reported once as `{ name, candidate, serving, promote, applied, reason }`:
      * `promoted` (committed to main now, or promoted already at an ask), `held`, or `stale` when main's trial has moved on
@@ -219,12 +235,8 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, log = () => {
      * a later ask for the same pair. `thresholds` are the pass's promotion rule.
      */
     async apply({ repo, thresholds }) {
-      const root = join(dir, 'verdicts');
-      if (!existsSync(root)) return [];
-      const landed = readdirSync(root).flatMap((name) => readdirSync(join(root, name)).filter((f) => f.endsWith('.json')).map((f) => readJson(join(root, name, f))))
-        .filter((v) => v && !v.applied).sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
       const reported = [];
-      for (const v of landed) {
+      for (const v of landedUnapplied()) {
         try {
           await repo.fetch();
           const main = await repo.resolve('main');
