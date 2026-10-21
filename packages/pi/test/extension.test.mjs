@@ -1071,6 +1071,19 @@ test('a runtime limit given as undefined keeps its default, as an omitted one do
   } finally { await omitted.shutdown(); await unset.shutdown(); }
 });
 
+test('an error that only reads like an operator message is not shown: what reaches the operator is decided by its type', async () => {
+  // A host callback's own error, whose text happens to start as the extension's operator messages do. It answers the
+  // session's setup and fails once the command is under way.
+  let calls = 0;
+  const app = await harness({ withModel: false, extensionOptions: { hostTools: () => { if (calls++ === 0) return []; throw new Error('Workflow host detail PRIVATE_HOST_DETAIL'); } } });
+  try {
+    await app.command('demo');
+    const shown = app.messages.map(message => message.content).join('\n');
+    assert.doesNotMatch(shown, /PRIVATE_HOST_DETAIL/, 'the host error text is not shown');
+    assert.match(shown, /AgentRun could not complete this operation/);
+  } finally { await app.shutdown(); }
+});
+
 // A dry run: the inspected draft on synthetic values (or the given input), with no model, Jev or tool call.
 const flags = { type: 'object', additionalProperties: false, required: ['supported'], properties: { supported: { type: 'boolean', description: 'Does the fictional note support its claim?' } } };
 
