@@ -419,7 +419,7 @@ const OPEN_DOCUMENT_TYPE = "application/vnd.oasis.opendocument.";
 const FORMATS = "docx, pptx, xlsx, odt, odp, ods and rtf";
 const ARCHIVE_FORMATS = "docx, pptx, xlsx, odt, odp or ods";
 
-type Source = { readonly format: Format; readonly archive?: Archive; readonly rtf?: string };
+type Source = { readonly format: "rtf"; readonly rtf: string } | { readonly format: Exclude<Format, "rtf">; readonly archive: Archive };
 async function openSource(source: ProviderSource, call: ProviderCall, limits: OfficeLimits): Promise<Source> {
   const data = await readSource(source, call);
   if (Buffer.from(data.subarray(0, 5)).toString("latin1") === "{\\rtf") {
@@ -472,21 +472,21 @@ export function officeJsProvider(options: OfficeJsOptions = {}): Provider {
       }
     },
     text: (source, request, call) => guarded(call, async () => {
-      const { format, archive, rtf } = await openSource(source, call, limits);
+      const opened = await openSource(source, call, limits);
       const wanted: Wanted = (index) => within(index + 1, request.pages);
       const sheetPages = (sheets: Sheet[]) => sheets.map((s) => ({ page: s.index + 1, text: sheetText(s.name, s.cells, s.hidden) }));
-      const pages = format === "rtf" ? [{ page: 1, text: rtf! }]
-        : format === "docx" ? await docx(archive!, limits)
-        : format === "pptx" ? await pptx(archive!, request.pages)
-        : format === "xlsx" ? sheetPages(await xlsx(archive!, limits, wanted))
-        : format === "ods" ? sheetPages(await ods(archive!, limits, wanted))
-        : await odf(archive!, format, limits);
+      const pages = opened.format === "rtf" ? [{ page: 1, text: opened.rtf }]
+        : opened.format === "docx" ? await docx(opened.archive, limits)
+        : opened.format === "pptx" ? await pptx(opened.archive, request.pages)
+        : opened.format === "xlsx" ? sheetPages(await xlsx(opened.archive, limits, wanted))
+        : opened.format === "ods" ? sheetPages(await ods(opened.archive, limits, wanted))
+        : await odf(opened.archive, opened.format, limits);
       return { madeBy, pages: pages.filter((p) => within(p.page, request.pages)) };
     }),
     cells: (source, request, call) => guarded(call, async () => {
-      const { format, archive } = await openSource(source, call, limits);
-      if (format !== "xlsx" && format !== "ods") throw new OfficeMissError("unsupported", `cells are read from a spreadsheet, and this is ${format === "rtf" ? "an rtf" : `a ${format}`} file`);
-      const sheets = await (format === "xlsx" ? xlsx : ods)(archive!, limits, (_, name) => request.sheet === undefined || request.sheet === name);
+      const opened = await openSource(source, call, limits);
+      if (opened.format !== "xlsx" && opened.format !== "ods") throw new OfficeMissError("unsupported", `cells are read from a spreadsheet, and this is ${opened.format === "rtf" ? "an rtf" : `a ${opened.format}`} file`);
+      const sheets = await (opened.format === "xlsx" ? xlsx : ods)(opened.archive, limits, (_, name) => request.sheet === undefined || request.sheet === name);
       if (request.sheet !== undefined && !sheets.length) throw new OfficeMissError("unsupported", `the workbook has no sheet named ${request.sheet}`);
       return { madeBy, sheets: sheets.map(({ name, cells }) => ({ name, cells })) };
     }),
