@@ -76,6 +76,23 @@ test('the card holds no kill, restart or process, no pid, boot id or id-shaped s
   assert.equal(FORBIDDEN.find(([name]) => name === 'machine path')![1].test(text), false, 'no machine path');
 });
 
+test('the card goes in the conversation that was ACTIVE last at the handoff, not the one that started last', async (t) => {
+  // A second conversation starts at 1 s and then goes quiet; the first goes on until 12 s. A handoff at 10 s belongs to the first, which the run was still in.
+  const { cards, items } = await moved(t, { ...D2, secondConversation: 1_000 });
+  assert.equal(cards.length, 1);
+  const dir = mkdtempSync(join(tmpdir(), 'viewer-move-home-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(join(here, 'fixtures', 'chat-browser'), dir, { recursive: true });
+  movedRun(dir, { ...D2, secondConversation: 1_000 });
+  const files = Object.fromEntries(readdirSync(join(dir, 'blobs')).map((name) => [name.split('.')[0]!, name]));
+  const recording: Recording = { id: 'run', manifest: JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')), lines: parseLines(readFileSync(join(dir, 'events.jsonl'), 'utf8')), blobUrl: (sha) => (files[sha] ? `blobs/${files[sha]}` : undefined), blobType: () => undefined };
+  const model = await extractChat(recording, async () => undefined);
+  const home = model.threads.find((thread) => thread.items.some((item) => item.kind === 'move'))!;
+  assert.ok(home.items.some((item) => item.kind === 'user' && /Check my account/.test(item.text)), 'in the conversation the run was in (the one that goes on to 12 s)');
+  assert.ok(!home.items.some((item) => item.kind === 'assistant' && /second part/.test(item.text)), 'not the quiet one');
+  void items;
+});
+
 test('in Chrome: the chat view draws one card per handoff line, in words of a move, and none without one; the Muse layout draws none', IN_CHROME, async (t) => {
   const two = await served(t, { query: '', height: 900, edit: (dir) => movedRun(dir, D3) });
   await two.until(`!!d()?.querySelector('main#chat-root .thread')`, 'the chat view drawn');
