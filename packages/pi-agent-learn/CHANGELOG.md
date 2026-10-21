@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.22 (2026-10-21)
+
 - New held package `@parcha/pi-agent-learn`: an agent that learns in its own git repository, on top of
   `@parcha/pi-git-remote`. `agentLearn()` is a pi-durable extension with one tool, `learn({ type, text, evidence?, id? })`
   (a lesson, a fact, a correction, a `used` mark on a learning that helped, or a `workflow` note on when to use a workflow
@@ -86,3 +88,14 @@
   - `proposeLearning({ read })` takes the untrusted text the run read (the pages its tools fetched). A saved workflow 40 or more characters of whose strings (case and whitespace folded) appear in one is withheld from the proposal and named in the result's `withheld`; the rest is proposed. `copiesRead` and `COPIED_TEXT` are the check.
   - `narrowsRules` is not asked of a workflow: a workflow is by design a slice of the job, so measured against rules written for the agent it looks narrower (Jev answered 0.26 to 0.84 on ten workflows an agent wrote for its job), and it cannot change the rules that bind the agent that runs it. `workflowCase`, the copy check, the receipts that promote it and the host's own gates cover it instead.
   - The other questions and every threshold are unchanged; lessons, facts and corrections are judged as before.
+- **The host serves a proven workflow itself, before the agent, and a trial is promoted after 2 clean runs by default**
+  - `planServing({ repo, sha, workDir, workflows, takes })` picks what to serve for a run: the live revision when it is active; while it is on trial, the revision it superseded, the last one proven (a canary), read from the repository and checked against its digest, so the trial still earns its place through the agent; nothing for a first revision on trial. A superseded revision whose record does not read is passed over for the one before it.
+  - `serve({ harness, workflows, context, plan, input, tools, check })` runs the plan as a durable workflow task under `host:<name>:<sha256>:<input hash>` (`hostKey`, `hostRunName`), after the checks the `agentrun` tool makes (a refusal writes no task). A complete run whose output the host's `check` accepts is the answer; one it refuses is escalated with the problems. `takes` and `check` are the host's: nothing about a job is in the package.
+  - `readUses`, `collectUses`, `usesSource` and `proposeLearning` take `served`: each served run is a use of its own revision under its name with the host's verdict, though the run's own store need not hold that revision. A canary's uses never count toward the trial.
+  - `servingRevision(trial, { unrunnable })` and `readRevision(repo, name, sha256, ref)` are the two pieces `planServing` stands on, for a host that serves on its own terms. `trialFirstText({ name, served, trial })` is what the agent is told when a canary does not finish: the trial is named and asked to run first, the job done by hand only if it escalates too.
+  - The `<learned>` section's workflows line, when one of them is on trial, adds that a workflow on trial earns trust only from its own clean runs: run it before doing the job by hand, and change it only after it escalates or fails.
+  - A trial is promoted after 2 clean runs in a row by default, not 3 (`PROMOTION_DEFAULTS.promoteAfter`); demotion stays after 2. A host that wants more sets `usesSettler({ thresholds: { promoteAfter } })`, as `examples/agent-learn` does with 3.
+- Curation now reports two things it used to lose or stop on.
+  - A run's `uses/<run id>.json` is read by the same rules the uses settler folds by. A file the settler could not fold (a name pi cannot load as a skill, or more uses than a run writes) is now refused in the report as `uses: the uses file does not parse`. Before, it passed curation's own looser check, the settler held it under a name that is not a workflow, and the run's uses disappeared from the report.
+  - A `trial.json` on main that does not parse now holds that workflow (`its trial.json on main does not parse (format), so the workflow was held`) instead of throwing out of `curate()` and stopping every later run's curation.
+- The README reads right outside this repository: its links to `@parcha/pi-git-remote` and `@parcha/pi-durable-agent` are full URLs, so they work on npm; the layout lists `inbox/<run id>/workflows/<name>/` once; it says the host-step blocks are a host's lines (with what `repo`, `harness`, `run` and `vault` stand for), that `createJevRunner` is a separate install that reads its key from the environment, and where `uses/<run id>.json` comes from (the `uses` option, or the run's store with `workDir`), in place of "a later part supplies".
