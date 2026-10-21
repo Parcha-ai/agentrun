@@ -128,7 +128,9 @@ function* replayed<Revision extends { kind: string; content: string }>(revisions
 function nodeConversations(db: Database): Map<number, string> {
   const out = new Map<number, string>();
   for (const doc of db.prepare("SELECT id, key_value FROM documents WHERE kind = ? AND family = 1").all(JSON.stringify("agentrun.nodes")) as Array<{ id: number; key_value: string }>) {
-    const value = [...replayed(db.prepare("SELECT kind, content FROM document_revisions WHERE document_id = ? ORDER BY seq").all(doc.id) as Array<{ kind: string; content: string }>)].at(-1)?.[1];
+    // Only the latest value is kept: a document rewritten whole at each commit has as many values as revisions.
+    let value: Json;
+    for (const [, next] of replayed(db.prepare("SELECT kind, content FROM document_revisions WHERE document_id = ? ORDER BY seq").all(doc.id) as Array<{ kind: string; content: string }>)) value = next;
     const found = nodeConversation(JSON.parse(doc.key_value) as string, value);
     if (found) out.set(found[0], found[1]);
   }
