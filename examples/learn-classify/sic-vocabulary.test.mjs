@@ -32,6 +32,14 @@ test('the vocabulary counts each filer once, at its latest code, leaves out the 
   assert.equal(JSON.stringify(v).includes('STUDY CO'), false);
 });
 
+test('an unnamed company still counts under its code, so the code stays offered, but is never named', () => {
+  const sub = [{ cik: '12', sic: '5812' }, { cik: '13', sic: '5812' }, { cik: '99', sic: '2911' }];
+  const tickers = [{ cik_str: 99, title: 'SCORED CO' }, { cik_str: 12, title: 'BIG EATS' }, { cik_str: 13, title: 'SMALL EATS' }];
+  const v = sicVocabulary({ sub, tickers, codes, unnamed: ['0000000099', '12'] });
+  assert.deepEqual(v.codes, { 2911: { filers: 1, examples: [] }, 5812: { filers: 2, examples: ['SMALL EATS'] } });
+  assert.equal(JSON.stringify(v).includes('SCORED CO'), false);
+});
+
 const vocabulary = {
   codes: { 1311: { filers: 40, examples: ['WELL OIL'] }, 5812: { filers: 50, examples: ['BIG EATS', 'DINER INC'] }, 6798: { filers: 266, examples: [] } },
   groups: { 13: { examples: ['WELL OIL'] }, 58: { examples: ['BIG EATS', 'DINER INC'] }, 67: { examples: [] } },

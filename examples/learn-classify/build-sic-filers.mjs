@@ -19,9 +19,12 @@ const plainCik = (cik) => String(cik).replace(/^0+/, '');
  * `{ codes: { [code]: { filers, examples } }, groups: { [group]: { examples } } }` over the codes of `codes`: `sub` is
  * sub.txt's rows oldest first (a filer counts once, at its last code), `tickers` the SEC's tickers file in its order
  * (largest first), `exclude` the CIKs to leave out. A code no filer has is absent, and so is a group with no such code.
+ * `unnamed` CIKs still count under their code but are never named: a set scored on companies that the code list must
+ * still reach (the 1k set: leaving them out would drop 21 of its true codes from the tool).
  */
-export function sicVocabulary({ sub, tickers, codes, exclude = [], perCode = 3, perGroup = 4 }) {
+export function sicVocabulary({ sub, tickers, codes, exclude = [], unnamed = [], perCode = 3, perGroup = 4 }) {
   const left = new Set([...exclude].map(plainCik));
+  const quiet = new Set([...unnamed].map(plainCik));
   const codeOf = new Map();
   for (const row of sub) {
     const sic = String(row.sic ?? '').trim().padStart(4, '0');
@@ -36,7 +39,7 @@ export function sicVocabulary({ sub, tickers, codes, exclude = [], perCode = 3, 
   const named = new Set();
   for (const { cik_str: cik, title } of tickers) {
     const sic = codeOf.get(plainCik(cik));
-    if (!sic || named.has(plainCik(cik))) continue;
+    if (!sic || named.has(plainCik(cik)) || quiet.has(plainCik(cik))) continue;
     named.add(plainCik(cik));
     if (out.codes[sic].examples.length < perCode) out.codes[sic].examples.push(title);
     if (out.groups[sic.slice(0, 2)].examples.length < perGroup) out.groups[sic.slice(0, 2)].examples.push(title);
@@ -46,17 +49,21 @@ export function sicVocabulary({ sub, tickers, codes, exclude = [], perCode = 3, 
 
 async function main() {
   const readJson = (name) => JSON.parse(readFileSync(join(DATA, name), 'utf8'));
-  const exclude = ['companies.json', 'companies-v2.json', 'companies-v4.json'].flatMap((name) => readJson(name).map((c) => c.cik));
+  // --unnamed=a.json,b.json: companies (rows with a cik) that count but are never named; --out names the file written.
+  const unnamedFiles = (process.argv.find((a) => a.startsWith('--unnamed='))?.slice('--unnamed='.length) ?? '').split(',').filter(Boolean);
+  const outFile = process.argv.find((a) => a.startsWith('--out='))?.slice('--out='.length) ?? join(DATA, 'sic-filers.json');
+  const unnamed = unnamedFiles.flatMap((file) => JSON.parse(readFileSync(file, 'utf8')).map((c) => c.cik));
+  const exclude = unnamed.length ? [] : ['companies.json', 'companies-v2.json', 'companies-v4.json'].flatMap((name) => readJson(name).map((c) => c.cik));
   const sub = [];
   for (const name of QUARTERS) {
     const rows = readTsv(unzipEntry(await secFile(name), 'sub.txt').toString('utf8'));
     sub.push(...rows.sort((a, b) => a.filed.localeCompare(b.filed)));
   }
   const tickers = Object.values(JSON.parse((await secFile('tickers')).toString('utf8')));
-  const vocabulary = sicVocabulary({ sub, tickers, codes: readJson('sic-codes.json'), exclude });
-  await writeFile(join(DATA, 'sic-filers.json'), `${JSON.stringify(vocabulary, null, 1)}\n`);
+  const vocabulary = sicVocabulary({ sub, tickers, codes: readJson('sic-codes.json'), exclude, unnamed });
+  await writeFile(outFile, `${JSON.stringify(vocabulary, null, 1)}\n`);
   const sources = Object.fromEntries([...QUARTERS, 'tickers'].map((name) => [name, provenance.secFiles[name]]));
-  console.log(JSON.stringify({ via, codes: Object.keys(vocabulary.codes).length, groups: Object.keys(vocabulary.groups).length, excluded: new Set(exclude).size, sources }));
+  console.log(JSON.stringify({ via, codes: Object.keys(vocabulary.codes).length, groups: Object.keys(vocabulary.groups).length, excluded: new Set(exclude).size, unnamed: new Set(unnamed).size, sources }));
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await main();
