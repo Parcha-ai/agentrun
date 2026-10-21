@@ -4,7 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { GitRemoteError, local, openRepo } from "@parcha/pi-git-remote";
 import {
-  curate, deriveSeed, inboxPath, renderSection, retireLearning, LEARN_TYPES, learningId, learningPath, parseLearning, proposeFiles, QUESTIONS, renderInbox, renderLearning,
+  curate, deriveSeed, inboxPath, renderSection, retireLearning, learningId, learningPath, parseLearning, proposeFiles, QUESTIONS, renderInbox, renderLearning,
 } from "../dist/index.js";
 import { git } from "./git-support.mjs";
 import { AGENT_FILES, agentRepo, learning, learningFiles, scratch } from "./support.mjs";
@@ -503,9 +503,7 @@ test("a run's saved workflow records go to the admitter; its files land, a rules
   assert.deepEqual((await curate({ repo: bare.curator, judge, admitWorkflow: null })).runs[0].held, [{ workflow: "kyb", reason: "no workflow admitter is installed" }]);
 });
 
-const workflowType = LEARN_TYPES.includes("workflow");
-
-test("a learn call of type workflow is asked nothing, and its text reaches neither the admitter nor main", { skip: workflowType ? false : "waits for the learn type workflow" }, async () => {
+test("a learn call of type workflow is asked nothing, and its text reaches neither the admitter nor main", async () => {
   const w = await world();
   const when = (id, text) => ({ callId: `call-${id}`, type: "workflow", id, text, evidence: [] });
   await propose(w, "run-1", [when("kyb", "A US company to check against its state registry.")], recordsOf("run-1", "kyb"));

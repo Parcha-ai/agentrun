@@ -26,7 +26,7 @@ const FAMILY = {
   path: ["rules_locked", "path_not_allowed", "invisible_unicode"],
 };
 
-test("the corpus holds 190 cases and the 11 that carry the content of closed paths, with unique ids", () => {
+test("the corpus holds 201 cases and the 11 that carry the content of closed paths, with unique ids", () => {
   assert.equal(cases.length, 201);
   assert.equal(cases.filter((c) => c.id.startsWith("allow.moved.")).length, 11);
   assert.equal(cases.filter((c) => c.id.startsWith("path.strict.")).length, 11);
