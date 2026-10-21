@@ -358,9 +358,14 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   assert.equal(answerV4({}).parameters.properties.subsidiaries.anyOf.find((s) => s.properties?.none).properties.note.maxLength, 300);
   assert.match(flat(text(v4, 'AGENTS.md')), /the note saying so in at most 300 characters/);
   assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), /the note a short reason of at most 300 characters/);
-  // The cover is found by its words, not by its page; a document without them is not the filing.
-  for (const words of [/Find the cover by its words, not its page: `find: "principal executive offices"`/, /When no page holds those words, the document is not the filing/])
+  // The cover is located by what it is, not by a phrase: the filing's own cover page among its first pages (the form's header
+  // and the registrant's name and address), the earliest such page; a Jev judge checks the page, and a workflow escalates
+  // when no first page is the cover. Words are only a hint.
+  for (const words of [/The cover is the filing's own cover page, among its first pages: the page with the form's header \(Form 10-K, 20-F or 40-F, or the annual report's title page\) and the registrant's name and address block/,
+    /Read the first pages \(`pages: \[1, 2, 3, 4, 5\]`\), take the earliest page that is the cover/, /words are only a hint \(for example "principal executive office" or the form's name\)/,
+    /a Jev judge checks the page: is this page the registrant's cover/, /escalates "no cover found"/])
     assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), words);
+  assert.match(flat(text(v4, 'AGENTS.md')), /The cover is the filing's own cover page, the earliest of its first pages that carries the form's header and the registrant's name and address/);
   // The headquarters are the registrant's own statement of its principal or head office (its cover, else the body before the
   // exhibits), never an exhibit's, a letter's or a subsidiary's address; Jev checks the quote states this registrant's
   // office, and with no quote that passes the workflow escalates rather than passing an empty or a wrong headquarters on.

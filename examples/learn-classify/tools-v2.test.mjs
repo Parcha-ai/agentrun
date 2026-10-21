@@ -587,6 +587,36 @@ test('the classify skill\'s headquarters hint on an IQV-shaped report: the cover
   assert.match(doc.text, /^\[page 1\]\nFORM 10-K[\s\S]*Durham, North Carolina 27703\n\(Address of principal executive office and Zip Code\)/);
 });
 
+test('the classify skill\'s cover read on three report shapes: it reads the first pages, and each shape\'s cover is among them, never a late exhibit', async (t) => {
+  const skill = readFileSync(join(import.meta.dirname, 'agent-v4', 'skills', 'classify', 'SKILL.md'), 'utf8');
+  const step = skill.slice(skill.indexOf('2. The annual report'), skill.indexOf('\n3. ')).replace(/\s+/g, ' ');
+  const first = /Read the first pages \(`pages: (\[[\d, ]+\])`\)/.exec(step)?.[1];
+  assert.ok(first, 'the skill says which first pages the cover is read from');
+  const pages = JSON.parse(first);
+  const cover = (office) => ({ lines: ['UNITED STATES SECURITIES AND EXCHANGE COMMISSION', 'FORM 10-K', 'For the fiscal year ended December 31, 2025', 'Harbor Valve Holdings Inc.', '12 Dock Road, Durham, North Carolina 27703', `(Address of principal executive ${office} and Zip Code)`] });
+  const body = (n) => ({ lines: [`Item ${n}. Business`, 'We make industrial valves and pumps.'] });
+  // Made up, each shaped like a report a pass met: IQV's cover on p. 1 in the singular and a bylaws exhibit in the plural
+  // far on; ACFN's site wrapper before the cover on p. 4; RILY's site chrome before the cover on p. 5.
+  const shapes = {
+    iqv: { cover: 1, pdf: [cover('office'), ...[2, 3, 4, 5, 6, 7].map(body), { lines: ['Exhibit 3.2 Bylaws', 'The principal executive offices of the Corporation shall be where the Board determines.'] }] },
+    acfn: { cover: 4, pdf: [{ lines: ['site.example > Stocks > Harbor Valve Holdings', 'Annual Report 2026', 'Brought to you by site.example'] }, { lines: ['Contents of this copy'] }, { lines: ['Download the full filing'] }, cover('offices'), body(1)] },
+    rily: { cover: 5, pdf: [{ lines: ['Home | Markets | News | Filings'] }, { lines: ['Harbor Valve Holdings filings'] }, { lines: ['Related companies'] }, { lines: ['Sign in to follow'] }, cover('offices'), body(1)] },
+  };
+  const root = await scratch(t);
+  const web = await localWeb(t, Object.fromEntries(Object.entries(shapes).map(([k, v]) => [`ir.harbor.example/${k}.pdf`, send('application/pdf', Buffer.from(pdfBytes(v.pdf)))])));
+  const tool = readDocumentTool({ root, vision: await visionFor({ root, eyes: fakeEyes() }), fetch: web.fetch, lookup: publicLookup });
+  for (const [k, shape] of Object.entries(shapes)) {
+    const doc = conforms(tool, await tool.run({ url: `https://ir.harbor.example/${k}.pdf`, pages }));
+    assert.ok(doc.pagesShown.includes(shape.cover), `${k}: the cover, p. ${shape.cover}, is among the first pages read`);
+    const block = doc.text.split(/\n(?=\[page \d+\])/).find((b) => b.startsWith(`[page ${shape.cover}]`));
+    assert.match(block, /FORM 10-K[\s\S]*Harbor Valve Holdings Inc\.[\s\S]*12 Dock Road, Durham/, k);
+    assert.equal(doc.pagesShown.some((p) => p > 6), false, `${k}: no late page is read for the cover`);
+  }
+  // The plural phrase lands on IQV's bylaws exhibit, not its cover: why the cover is located by what it is.
+  const byPhrase = conforms(tool, await tool.run({ url: 'https://ir.harbor.example/iqv.pdf', find: 'principal executive offices' }));
+  assert.deepEqual(byPhrase.found, [8]);
+});
+
 test('the eyes reach the model gateway: Google\'s model over its OpenAI-compatible chat completions at <gateway>/v1, with the gateway\'s key and thinking on', async (t) => {
   const requests = [];
   const server = createServer((req, res) => {
