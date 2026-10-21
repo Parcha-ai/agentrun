@@ -43,7 +43,7 @@ export type RecordingLine = {
 };
 
 /** A line before it is numbered inside its commit: a document, then an entry, then a task, each by id. */
-type Placed = { commit: number; rank: 0 | 1 | 2; id: number; line: Omit<RecordingLine, "order" | "gen"> };
+type Placed = { commit: number; rank: -1 | 0 | 1 | 2; id: number; line: Omit<RecordingLine, "order" | "gen"> };
 
 const PREFIXES: Array<[string, RecordingSource]> = [["agentrun.", "workflow"], ["browser.", "browser"], ["vision.", "vision"], ["transport.", "transport"], ["pi.", "pi"]];
 const sourceOf = (kind: string): RecordingSource => PREFIXES.find(([prefix]) => kind.startsWith(prefix))?.[1] ?? "host";
@@ -92,6 +92,13 @@ function documentLine(id: number, kind: string, key: string | undefined, value: 
     data: { doc: kind, ...(key !== undefined ? { key } : {}), value, version },
   } };
 }
+/** A conversation's record (draft 54): its id, the fork source it inherits history from and the creator that owns it, as pi records them, and nothing else (no title, no message). It precedes its entries inside its commit. */
+type ConversationFields = { readonly id: unknown; readonly parent?: { readonly conversationId: unknown; readonly at: unknown }; readonly owner?: { readonly conversationId: unknown; readonly taskId: unknown } };
+const conversationLine = (record: ConversationFields, commit: number): Placed => ({ commit, rank: -1, id: Number(record.id), line: { channel: "durable", source: "pi", kind: "pi.conversation", commit, conv: Number(record.id), data: {
+  id: Number(record.id),
+  ...(record.parent ? { parent: { conversationId: Number(record.parent.conversationId), at: Number(record.parent.at) } } : {}),
+  ...(record.owner ? { owner: { conversationId: Number(record.owner.conversationId), taskId: Number(record.owner.taskId) } } : {}),
+} } });
 const entryLine = (entry: Json, commit: number): Placed => ({ commit, rank: 1, id: Number(entry.id), line: {
   channel: "durable", source: "pi", kind: String(entry?.kind ?? "pi.entry"), commit, conv: Number(entry.conversationId), data: entry,
 } });
@@ -178,6 +185,12 @@ export function recordingLines(file: string, options: { after?: number } = {}): 
         if (rev.seq > after) placed.push(documentLine(doc.id, kind, key, structuredClone(value), rev.version, conv, rev.seq));
       }
     }
+    // A conversation's row carries no commit of its own: it is read at the first commit that wrote anything of it (an entry, or a revision of one of its documents, which pi writes in the commit that creates it), and one with neither yet at the store's last commit, the latest it can have been made.
+    const last = (db.prepare("SELECT next_seq FROM durable_metadata WHERE singleton = 1").get() as { next_seq: number }).next_seq - 1;
+    const seen = "SELECT conversation_id AS cid, commit_seq AS seq FROM entries UNION ALL SELECT d.owner_id AS cid, r.seq AS seq FROM documents d JOIN document_revisions r ON r.document_id = d.id WHERE d.scope_kind = 'conversation'";
+    for (const row of db.prepare(`SELECT c.record AS record, COALESCE(MIN(x.seq), ?) AS commit_seq FROM conversations c LEFT JOIN (${seen}) x ON x.cid = c.id GROUP BY c.id HAVING COALESCE(MIN(x.seq), ?) > ?`).all(last, last, after) as Array<{ record: string; commit_seq: number }>) {
+      placed.push(conversationLine(JSON.parse(row.record), row.commit_seq));
+    }
     for (const entry of db.prepare("SELECT commit_seq, record FROM entries WHERE commit_seq > ?").all(after) as Array<{ commit_seq: number; record: string }>) {
       placed.push(entryLine(JSON.parse(entry.record), entry.commit_seq));
     }
@@ -215,7 +228,8 @@ function publicationLines(publication: CommitPublication, state: RecorderState):
       if (node) state.conversations.set(node[0], node[1]);
     } else if (change.type === "entry") placed.push(entryLine(structuredClone(change.value), commit));
     else if (change.type === "task") placed.push(taskLine(structuredClone(change.value), commit));
-    // A conversation's or a submission's record, and a document copy (it carries no value), make no line.
+    else if (change.type === "conversation") placed.push(conversationLine(change.value as ConversationFields, commit));
+    // A submission's record, and a document copy (it carries no value), make no line.
   }
   if (written !== undefined) state.gen = written;
   stampPaths(placed, state.conversations);
@@ -297,7 +311,7 @@ export async function snapshotLines(storage: Pick<Storage, "scanConversations" |
     ...conversations.map((conversation) => ({ scope: { kind: "conversation" as const, conversationId: conversation.id }, conv: Number(conversation.id) })),
     ...tasks.map((task) => ({ scope: { kind: "task" as const, taskId: task.id }, conv: Number(task.conversationId) })),
   ];
-  const placed: Placed[] = [];
+  const placed: Placed[] = conversations.map((conversation) => conversationLine(conversation as ConversationFields, at));
   let driverGen: number | undefined;
   for (const { scope, conv } of scopes) {
     for (const record of await scanAll((cursor) => storage.scanDocuments({ scope, at: "current" }, page, cursor as never, context))) {
