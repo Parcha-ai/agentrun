@@ -237,6 +237,14 @@ are `agent-v4/AGENTS.md` (v2's learning rules, word for word) and its skills `cl
 node examples/learn-classify/runner.mjs --set v4 --scripted --out /tmp/lc-v4-dry --jobs 4
 ```
 
+v4's code tools read the SEC's own vocabulary, `data/sic-filers.json`: `sic_codes` offers only the codes the SEC files
+companies under, each under its SEC title and its largest SEC filers ("PETROLEUM REFINING (SEC filers here include …)"),
+and `sic2_groups` only the groups that have such a code, with their largest filers. A saved workflow's picks read
+`{item.code} {item.name}`, so a promoted workflow reads the new names with no new revision. `build-sic-filers.mjs` builds
+the file from the pinned data sets truth set v4 reads (each filer at the code of its latest submission) and the SEC's
+tickers file (largest first), with every company of a truth set here, run and sealed, left out; a data directory without
+it offers every code, as v2 does.
+
 The answer is the typed `answer` tool: `sic4` (as v2), `segments` (every reportable operating segment, `[{ name, share }]`,
 or `{ oneSegment: true }`), `hq` (`{ city, state?, country }`), `subsidiaries` (1 to 15 `{ name, country? }`, as the
 company lists them in a 10-K's Exhibit 21 or a 20-F's Exhibit 8, or `{ none: true, note }` when the report has no such
@@ -338,6 +346,7 @@ never counts toward the trial's promotion. Once the trial is promoted the host r
 | `agent-v4/`, `fixtures-v4/` | the v4 agent, and v4's made-up companies, pages, annual reports, answers and scorer answers for the scripted pass |
 | `fixtures/` | five made-up companies, their pages and ten groups, for the scripted pass and the tests |
 | `tools.mjs`, `data/` | `fetch_page` and the truth set (lane C1) |
+| `build-sic-filers.mjs` | `data/sic-filers.json`: the codes and groups the SEC files companies under, and its largest filers under each |
 | `tools-v2.mjs` | v2's `search_web`, `browse` (pi-browser) and `read_document` (pi-vision), and the vision model's route (lane C3) |
 | `selftest.mjs` | the check every live pass makes before its first job |
 | `demo.json`, `SETUP-PROMPT.md` | the live pass's keys, registered as secret values for its recordings, and how to set them up |

@@ -5,7 +5,8 @@
 - The input is a company's name, and its ticker and website when they are known. Find the company's latest annual
   report (a 10-K, or a 20-F or 40-F for a foreign filer), read it, and answer in six parts the way the SEC files them:
   - its 4-digit SIC code, from sic_codes: sic2_groups for the group, then sic_codes with that group, the code chosen
-    by where most revenue comes from;
+    by where most revenue comes from; each group and code names the largest SEC filers under it, which show how the
+    SEC uses it;
   - every reportable operating segment, named as the company reports it, with its share of total revenue from 0 to 1,
     from the report's segment table; a company that reports one segment says so;
   - its headquarters, the principal executive offices the report gives: the city, the state or province when there is

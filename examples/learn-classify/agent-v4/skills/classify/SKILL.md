@@ -28,8 +28,9 @@ description: How to do the six-part job by hand from the company's annual report
 6. The SIC code: sic2_groups for the group of the company's main business, then sic_codes with that group for the
    4-digit code. The code follows where most revenue comes from, as the SEC files it, which can differ from how the
    company describes itself: the segment table shows where that is. When the reportable segments are regions, read the
-   revenue split by product or service line (the revenue disaggregation note) for where most revenue comes from. Cite
-   that revenue table for the code.
+   revenue split by product or service line (the revenue disaggregation note) for where most revenue comes from. Each
+   group and code names the largest SEC filers under it: they show how the SEC uses the code, so between two codes
+   that both fit, the one whose filers do the same business is the SEC's. Cite that revenue table for the code.
 7. Cite the words that show each part, with the page or document and where on it.
 
 # Parts that make workflows
