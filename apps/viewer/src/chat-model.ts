@@ -115,6 +115,8 @@ export type ChatModel = {
   input?: ChatInput;
   /** In the order they began; the first is open, the rest are folded threads. */
   threads: ChatThread[];
+  /** Move cards with no conversation to stand in (a run that moved before it recorded any chat): drawn in the run's own timeline after the conversations. */
+  moves?: Extract<ChatItem, { kind: 'move' }>[];
   /** With `inOrder`, the recording has no times: each span sits at its line's position in the file. */
   spans: ChatSpan[];
   inOrder?: true;

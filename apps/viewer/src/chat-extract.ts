@@ -360,6 +360,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     }
     return at;
   };
+  const bare: Extract<ChatItem, { kind: 'move' }>[] = [];
   live('handoff').forEach((line, index) => {
     const d = chatObj(line.data);
     if (typeof d?.gen !== 'number') return;
@@ -380,7 +381,8 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
       const latest = Math.max(-1, ...top(thread) === thread ? ordered.filter((each) => top(each) === thread).flatMap((each) => each.items.map(atOf).filter((at) => at <= line.t)) : []);
       return top(thread) === thread && latest >= 0 && (!best || latest > best.at) ? { thread, at: latest } : best;
     }, undefined)?.thread ?? ordered.find((thread) => top(thread) === thread);
-    if (!home) return;
+    // A run that moved before it recorded any conversation has no thread to hold the card: it is kept at the run's own level.
+    if (!home) { bare.push(card as Extract<ChatItem, { kind: 'move' }>); return; }
     const at = home.items.reduce((found, item, i) => (atOf(item) <= line.t ? i : found), -1);
     home.items.splice(at + 1, 0, card);
   });
@@ -696,6 +698,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     title: chatTitle(manifest, inputValue),
     ...(input ? { input } : {}),
     threads: ordered,
+    ...(bare.length > 0 ? { moves: bare } : {}),
     spans: times.length ? spans : [],
     ...(clocked ? {} : { inOrder: true as const }),
     sources,

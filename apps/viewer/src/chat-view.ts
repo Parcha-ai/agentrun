@@ -708,6 +708,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     for (const item of each.items) if (item.kind === 'move') thread.append(moveNode(item));
   });
   if (model.threads.length === 0) thread.append(reportEl('p', { class: 'none', text: 'This run recorded no conversation.' }));
+  for (const item of model.moves ?? []) thread.append(moveNode(item));
   // The card that opens the report closes the chat, after every conversation.
   const doccard = reportTitle === undefined ? undefined : reportEl('button', { class: 'doccard', type: 'button' }, reportEl('span', { class: 'ic' }, threadIcon('doc')),
     reportEl('span', {}, reportEl('b', { text: reportTitle }), reportEl('small', { text: model.artifact ? 'The page the agent wrote, with the sources it rests on.'
