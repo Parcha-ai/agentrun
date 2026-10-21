@@ -162,6 +162,42 @@ the restored generation's snapshot.
   one of its identities in a later generation counts in repeated. A restore can show repeated above 0; the viewer
   shows it, never hides it.
 
+### 3.3 The flagship's documents (draft 55 and its amendments 1 and 2)
+
+A run that trains and shows a robot writes nine documents through its tools, through the session's own store, at a
+commit like every document (never a host-written line). There is no new line kind: a reader that does not know them
+skips them. A document's revisions in commit order are its series.
+
+| Document, key | Value |
+|---|---|
+| `train.progress`, a conversation id | `{ step (int >= 0), steps_total?, reward (finite), unit?, skill (<= 60 chars), checkpoint?, basis }` |
+| `train.render`, a conversation id | `{ blob (png, jpg, jpeg, webp, gif or webm), w, h, step?, checkpoint?, basis }` |
+| `train.checkpoints`, a checkpoint id (<= 64) | `{ thread (a conversation id), step, place, bytes?, basis }` |
+| `train.sweeps`, a sweep id (<= 64) | `{ checkpoint, rollouts (> 0), score (finite), unit?, place, placer? ("jev"), basis }`, no cost |
+| `body.design`, a body id (<= 64) | `{ blob (json, txt or md), label (<= 60 chars), language?, basis }` |
+| `learn.curve`, a curve id (<= 64) | `{ x: { label, unit? }, y: { label, unit? }, points: [[x, y or null], ...] (2 to 2,000; x finite and non-decreasing), target?: { y, label }, marks?: [{ x, label }], basis }` |
+| `body.run`, a body id | `{ kind (build, stand or skill), outcome, seconds, fits, pieces?, motors?, mass?, height?, error?, place, basis }`; its revisions are build, then stand, then skill, and `error` is the simulator's own line, never parsed |
+| `body.render`, a body id | `{ blob (png, webp or webm, at most 600 KB), w, h, basis }`, the simulator's picture of the body |
+
+- **Optional fields a panel may draw** (amendment 1): `train.progress` may carry `metric: { name, value (a number, or null when the test did not measure it), unit?, target?: { op (>=, <=, > or <), value } }` (no `target` when the test's target is not a number), `passes`, `t_s`, `status` (`running`, `compiled`, `done`, `failed` or `refused`), `passed_at: { checkpoint, step, t_s }`, `diagnosis: { kind, text }` (`kind` one of `never-moved`, `plateaued`, `never-settles`, `never-measured`, `still-changing`, `test-raised`, `no-checkpoint` or `too-few-checkpoints`; `text` the trainer's sentence, shown and never parsed) and `body` (a label). `train.checkpoints` may carry `passes`, `metric`, `body` and `copy_ms` (an integer of milliseconds, the measured copy time), and any path it holds is relative to the run's work directory (or a checkpoint label), never absolute; and `train.render` `body`. `train.sweeps` may carry `passes_share` (0 to 1), `min`, `max` and `course`. `passes` is one-way: `passes: true` needs `value op target.value`, and `passes: false` may be on target (a skill's test has more conditions than its metric). With no numeric target or a null value the check does not run, and a panel draws such a pass as unchecked. An absent field is absent: until a trainer reports its reward, `train.progress` has no `reward`, and the document's basis stands for the numbers it has.
+- **A body id** is `b-` and the first 8 hex digits of the built body's SHA-256, so a changed body is a new id.
+- **A placement** (amendment 2), `placement` keyed by a placement id: `{ work, ref?, current, phase? (message or turn_end), rest?, need?: { p, threshold }, where?: { choice, options: [{ environment, purpose?, p }], confidence? }, chosen, rule?, placer (jev or config), request?, classifier?: { provider, model }, at?, error?, basis }`. The answers are a classifier's, as returned. `rest` is required for `placer: config` and under the rule `transport.need-threshold/1`. A named rule decides, `placer: config` included. Under `transport.need-threshold/1`, first an `error` or an absent `need` means `chosen` is `current`; else `chosen` is `where.choice` when `need.p >= need.threshold` and the choice is not `current`; else, at `phase: turn_end` with `need.p` below the threshold and `current` not `rest`, `chosen` is `rest`; else `current`. An unknown rule is shown unchecked. With no rule named, `placer: config` means `chosen` is `rest`, and a plain Jev placement takes `where.choice`. `chosen` is never required to be the most likely option. A `request` hash belongs to a Jev runner's placement only. The documents a placer placed (`train.checkpoints`, `train.sweeps`, `body.run`) carry `placement` beside `placer`, and the classifier's cost stays in its own receipt.
+
+- **Place** is `{ environment?, kind?, host?, box? }`: `environment` the placement config's own id (never drawn),
+  `kind` one of `local`, `daytona`, `modal`, `archil` or `tab`, `host` a recorded `host-N` and `box` a recorded `box-N`.
+  Never a provider's id, a path or a machine name. A tool writes `box` from the label of a box it made; it does not write
+  `host`, which a panel takes from the document's generation (its line's `gen`) and that generation's `run.json` holder.
+- **Basis** is one tag per document, for every number in it: `measured`, `scripted`, `unmeasured`, `agent`, `simulated`
+  or `reported`. A missing tag reads as `unmeasured`. A number's basis is its provenance relative to this run: a value
+  this run's own code or checkpoint computed is `measured`, even inside a simulation. A render's basis says whether the
+  picture is a real capture (`measured`) or a simulation's render (`simulated`).
+- **Units.** A `measured` reward, `metric.value`, sweep score or curve `y` carries its unit; elsewhere a unit is optional.
+- **A null point** `[x, null]` is a gap, read as unmeasured, never 0 and never dropped.
+- **Keys** name what the recording holds: a conversation id is a `conv` of its lines (draft 54), and `checkpoint` a
+  `train.checkpoints` key. Work that runs as a workflow is referenced by its run key, never copied.
+- **Blobs** stay inside section 7's allowlist and count against the stills budget and the recording cap.
+- **Cost** is not in these documents: it stays in box receipts.
+
 ## 4. The rules every panel keeps
 
 1. **Counts come from durable lines, or from host lines written outside the run's processes.** Anything the viewer
@@ -186,6 +222,9 @@ the restored generation's snapshot.
 6. **Time is for drawing.** `t` places a line on the timeline. It never orders durable facts; `commit` does.
 7. **Unknown kinds are skipped.** A panel ignores kinds it does not know; the format adds kinds without a version bump.
    A change to a field's meaning is `agentrun.recording/2`.
+10. **A number shows its basis (draft 55).** A panel prints each flagship document's `basis` beside its numbers; a
+   number with no recorded basis is shown as `unmeasured`, never hidden and never as measured. A replay shows recorded
+   renders only: a recording carries no wasm or js, so nothing is simulated again.
 
 ## 5. Kinds, by source and channel
 
@@ -223,6 +262,14 @@ snapshots included. A lost branch (3.2) is events, not state: the per-generation
 - No secret, ever. Packages already keep credentials out of their documents and results; the recorder also passes
   every live line through the host's redactor before writing it.
 - A published recording uses public sources only, chosen and checked before it is recorded.
+- Each flagship document (draft 55 and its amendment 1, section 3.3) has its shape and a `basis` of the enum. A
+  `measured` reward, `metric.value`, score or curve `y` has its unit, a curve's `y` is a finite number or `null`, and
+  a `passes: true` is on its metric's target. A placement's `chosen` is what its named rule gives from its own inputs
+  (or, with no rule, its config's rest or its one choice), its probabilities are in [0, 1] and its options' sum to 1
+  within 0.02, and what it and the documents it placed name is in the recording. A `blob` is a file in `blobs/` of an
+  extension its document allows. A conversation id, a `thread` and a `checkpoint` name what the recording holds. A
+  `place` holds only `environment`, `kind`, `host` and `box`, and its `host` and `box` are labels the recording gave (a
+  `run.json` holder's `host`, a box line's `box-N`). The validator refuses anything else, never dropping it silently.
 - Blobs are kept whole. A recording too large for a static host replaces its `frame` lines with `frame.track` lines
   (a WebM per session), and only then drops frames; it never drops durable lines.
 

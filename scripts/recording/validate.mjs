@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { BLOB_EXTENSIONS, PAGE_EXTENSIONS, SHEET_EXTENSIONS, TEXT_FILE, credentialIn, credentialInFile, credentialInValue } from '../../packages/harness/src/scan.ts';
 import { artifactProblems, readFile, readsAs } from '../../packages/harness/src/artifact.ts';
+import { flagshipChecker } from './flagship.mjs';
 
 export const FORMAT = 'agentrun.recording/1';
 export const SOURCES = ['workflow', 'pi', 'browser', 'vision', 'transport', 'host'];
@@ -238,6 +239,8 @@ export function validateRecording(dir) {
   let last = { commit: -Infinity, order: -Infinity };
   let lastT = -Infinity;
   const lastSeq = new Map();
+  // The flagship's documents (draft 55), checked once every line is seen.
+  const flagship = flagshipChecker();
   // The process a line belongs to is the latest one the supervisor started before it (3.2): a snapshot's `gen` is an earlier process's, so
   // a restore is matched by process, never by generation value.
   let processIndex = 0;
@@ -312,6 +315,7 @@ export function validateRecording(dir) {
     for (const key of lookKeysOf(event.data)) lookKeys.add(key);
     for (const [key, named] of lookSourcesOf(event.data)) lookSources.set(key, [...(lookSources.get(key) ?? []), ...named]);
     for (const hash of event.blobs ?? []) checkBlob(hash, 'events.jsonl', line);
+    flagship.see(event, line);
   });
   if (isObject(manifest?.artifact) && artifactProblems(manifest.artifact).length === 0) artifactFileProblems(manifest.artifact, dir, lookKeys, lookSources, add);
   // A restore or a move names the head of the store its target generation opened, anchored on that generation's snapshot at open
@@ -334,6 +338,8 @@ export function validateRecording(dir) {
     else if (record.kind === 'move' && Number.isFinite(snapshot.before) && snapshot.commit !== snapshot.before) add('events.jsonl', `a move's snapshot is at commit ${snapshot.commit}, but the highest commit seen before it is ${snapshot.before}; a move keeps one store, so they are equal`, snapshot.line);
     else if (firstCommit.has(record.process) && firstCommit.get(record.process) !== record.head + (atOpen ? 1 : 0)) add('events.jsonl', `a ${record.kind}'s head is ${record.head}, but the process's first commit is ${firstCommit.get(record.process)}${atOpen ? `; with its snapshot at the head (pi's commit at open), the first commit is ${record.head + 1}` : ''}`, record.line);
   }
+  flagship.check(add, (hash) => (blobs.get(hash) ?? []).map((file) => file.split('/').at(-1).split('.')[1]).filter(Boolean),
+    (hash) => Math.max(0, ...(blobs.get(hash) ?? []).map((file) => statSync(file).size)));
   // Every file in blobs/ is a blob of the allowlist (draft 50), named by its own SHA-256, and read as text when it is not media, whether or not a line names it.
   const artifactNames = artifactBlobNames(manifest);
   for (const entry of existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs'), { withFileTypes: true }) : []) {
