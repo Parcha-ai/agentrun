@@ -192,7 +192,6 @@ function chatRaw(body: Json | undefined): string {
   return raw;
 }
 
-/** The chat + report view's model of a recording. `readJson` reads a blob's JSON (the run's cited result). */
 /** Each conversation an agent node of the workflow ran, and that node's path. */
 function chatNodeConversations(lines: readonly Line[]): Map<string, string> {
   const pathOfConversation = new Map<string, string>();
@@ -225,6 +224,7 @@ export function chatTitle(manifest: Manifest, inputValue?: Json): string {
   return chatStr(artifact?.title) ?? (question?.trim() ? chatClip(chatFirstLine(question), 140) : manifest.title);
 }
 
+/** The chat + report view's model of a recording. `readJson` reads a blob's JSON (the run's cited result). */
 export async function extractChat(recording: Recording, readJson: (sha: string) => Promise<Json | undefined>, options: { muse?: boolean } = {}): Promise<ChatModel> {
   const { manifest } = recording;
   // A recording with no times keeps its file's order: each line placed at its position, the axis read as an order.
