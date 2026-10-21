@@ -145,7 +145,8 @@ demotion after 2).
 - `limits`: the rate limits the job's runs met (every attempt's), as `{ hour, source, status, n }`: `hour` is
   `YYYY-MM-DDTHH` in UTC; `source` is `model` (a model call that ended in an error, each retry one, `status` the HTTP
   status the provider's error starts with, else `other`), `site` or `wayback` (a 429 answered to fetch_page, browse or
-  read_document; `wayback` when the host was web.archive.org).
+  read_document, and each pushback such a tool got past on its own, from its result's `retried`, with its status, 0 for a
+  refused connection; `wayback` when the host was web.archive.org).
 - `durableCommits`: the highest commit number in the run's store, so how many durable commits it made. `fsyncProbeMs`:
   the median time of ten one-row commits in a scratch database beside the run (disk.mjs), for the volume's speed.
 
