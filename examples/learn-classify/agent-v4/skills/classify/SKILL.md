@@ -23,7 +23,9 @@ description: How to do the six-part job by hand from the company's annual report
    eliminations and corporate lines. One reportable segment means the company reports one.
    A page that comes back with no text (a scan or a chart) is not skipped: look at it with a question the same way.
 4. The headquarters: the city, the state or province, and the country of the principal executive offices. A foreign
-   filer's are often abroad even when it lists in the US.
+   filer's are often abroad even when it lists in the US. Take them from the cover's address line, else from the address
+   the report gives for the company's head office, principal office or registered office, in that order (`find` those
+   words), and quote the line you took them from.
 5. The subsidiaries: the exhibit that lists them, Exhibit 21 of a 10-K or Exhibit 8 of a 20-F. It may be part of the
    report's PDF, near its end, or its own document linked from the report or the investor relations page. Give up to 15
    of the operating ones, named as listed. When the report, read through its exhibit index and its notes, has no such
@@ -46,7 +48,10 @@ description: How to do the six-part job by hand from the company's annual report
 
 Each step above is a part: a call of the tool it uses, a decision over what the call returned, and an escalate when the
 call found nothing. Read describe's tool list for each tool's arguments and result fields; do not invent them. Narrow
-before a pick: a pick takes at most 240 candidates (for example, the major group before its 4-digit codes).
+before a pick: a pick takes at most 240 candidates (for example, the major group before its 4-digit codes). The part
+that reads the headquarters returns the address with its quote, from the cover or else from the head, principal or
+registered office line, and never passes an empty headquarters on, which the answer refuses; it escalates "no HQ found"
+only when the report gives neither.
 
 The decision node follows what the decision needs. A choice that needs knowledge the state does not hold (for example,
 what a company does) is one narrow agent step on the host's node model; a choice decidable from evidence already in the
