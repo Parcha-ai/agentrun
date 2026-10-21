@@ -61,14 +61,20 @@ const reportCells = (line: string) => line.trim().replace(/^\|/, '').replace(/(?
 const reportHeader = (line: string, next: string | undefined) => next !== undefined && REPORT_PIPE.test(line) && REPORT_PIPE.test(next)
   && reportCells(next).every((cell) => /^:?-+:?$/.test(cell)) && reportCells(next).length === reportCells(line).length;
 
-/** One paragraph's text: a pipe table in it (its header, its separator, then each line with a pipe) as a table, the
- *  words around it as paragraphs, each with its inline markdown. */
+/** A row of the table `header` heads: a line with a pipe and as many cells as the header, starting with a pipe when the
+ *  header does. Any other line (more cells than the header, prose with a pipe in it) ends the table and stays words, so
+ *  nothing the agent wrote is dropped or split into cells. */
+const reportRow = (line: string, header: string) => REPORT_PIPE.test(line) && reportCells(line).length === reportCells(header).length
+  && (!header.trim().startsWith('|') || line.trim().startsWith('|'));
+
+/** One paragraph's text: a pipe table in it (its header, its separator, then its rows) as a table, the words around it
+ *  as paragraphs, each with its inline markdown. */
 function reportBlock(text: string): HTMLElement[] {
   const lines = text.split('\n');
   const at = lines.findIndex((line, n) => reportHeader(line, lines[n + 1]));
   if (at < 0) return [reportEl('p', {}, ...reportInline(text))];
   let end = at + 2;
-  while (end < lines.length && REPORT_PIPE.test(lines[end]!)) end += 1;
+  while (end < lines.length && reportRow(lines[end]!, lines[at]!)) end += 1;
   const before = lines.slice(0, at).join('\n').trim();
   const after = lines.slice(end).join('\n').trim();
   return [...(before ? [reportEl('p', {}, ...reportInline(before))] : []), reportTable(reportCells(lines[at]!), lines.slice(at + 2, end).map(reportCells), reportInline), ...(after ? reportBlock(after) : [])];
