@@ -133,3 +133,18 @@ test('the keyed decisions form (one document per row): both folds count each row
   // row the lost branch wrote after them: the lost branch's decision is not taken back.
   agree([...asKeyed, { ...keyed(0, rows[0], { commit: 9101, gen: 2, order: 0 }), snapshot: true }, { ...keyed(1, rows[1], { commit: 9101, gen: 2, order: 1 }), snapshot: true }], priced + 0.875);
 });
+
+test('a keyed decision written again at the same place after a restore is a second decision: the lost branch\'s row and its redo are both spent, in both folds', () => {
+  const base = clone(recordings['midstream-kill']);
+  const priced = fold(base).cost;
+  const row = (id, usd, at) => ({ v: 1, node: 'pick', kind: 'judge', decision_id: id, run_key: 'r', rule: { kind: 'judge' }, at, cost_usd: usd });
+  const keyed = (key, value, over = {}) => ({ channel: 'durable', source: 'workflow', kind: 'agentrun.decisions', gen: 1, commit: 9100 + Number(key), order: 0, t: 9100, data: { doc: 'agentrun.decisions', key: String(key).padStart(8, '0'), value, version: 1 }, ...over });
+  const a = row('a', 0.5, '2026-10-21T00:00:01.000Z'), b = row('b', 0.25, '2026-10-21T00:00:02.000Z'), c = row('c', 0.125, '2026-10-21T00:00:03.000Z');
+  // The store is restored to before c; the count rolls back with it, so the redo is written under c's key.
+  const redo = row('c', 0.2, '2026-10-21T00:00:09.000Z');
+  const lines = [...base, keyed(0, a), keyed(1, b), keyed(2, c),
+    { ...keyed(0, a, { commit: 9101, gen: 2, order: 0 }), snapshot: true }, { ...keyed(1, b, { commit: 9101, gen: 2, order: 1 }), snapshot: true }, keyed(2, redo, { commit: 9102, gen: 2 })];
+  const expected = priced + 0.5 + 0.25 + 0.125 + 0.2;
+  assert.equal(fold(lines).cost, expected, 'the viewer counts the lost row and its redo');
+  assert.equal(cost(lines).usd, expected, 'and so does the example: the position alone is not a row\'s identity');
+});
