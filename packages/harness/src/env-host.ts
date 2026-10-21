@@ -1,5 +1,5 @@
 // A host for a run outside `demo()`, from the environment: the models the caller gives, Jev only with a key, a browser only with a Chrome or both Browserbase keys, and evidence, status and the record as
-// `localHost` writes them under the run's directory. It reads the environment once, when it is built. A plane it has no key for refuses every use and is named in `lacks` with what would give it one.
+// `localHost` writes them under the run's directory, except evidence, which is under its `work/`: a tool's result points the agent at it, and the agent's `read` reaches `work/` only. It reads the environment once, when it is built. A plane it has no key for refuses every use and is named in `lacks` with what would give it one.
 import { join } from 'node:path';
 import type { Models } from '@earendil-works/pi-ai/models';
 import type { ModelRef } from '@earendil-works/pi-durable';
@@ -22,11 +22,11 @@ const UNSCRIPTED: Fakes = { model: () => refuse('this host has no scripted model
 export type EnvHostOptions = { /** pi-ai's models, with the lead's provider set. */ models: Models; lead: ModelRef; /** Default: this process's environment. */ env?: NodeJS.ProcessEnv };
 
 /** A host for one run at `place`: `models` and `lead` as given; Jev (`TYPESAFE_API_KEY`, `TYPESAFE_BASE_URL` when set) priced at its list price; a Browserbase browser with both of its keys, else a local Chrome at
- *  `CHROME_PATH`; evidence, status and the record under the run's directory. Its `runEffect` refuses: an agent run has no workflow `call` node. */
+ *  `CHROME_PATH`; evidence under the run's `work/` (the path a tool returns is one the agent's `read` reaches), status and the record under the run's directory. Its `runEffect` refuses: an agent run has no workflow `call` node. */
 export async function hostFromEnv(place: RunPlace, { models, lead, env = process.env }: EnvHostOptions): Promise<Host> {
   const browser = await browserFrom(place, env);
   const key = env.TYPESAFE_API_KEY?.trim();
-  const local = localHost(place, UNSCRIPTED, { browser: browser ?? { provider: () => refuse(`this host has no browser: ${NO_BROWSER}`), driver: async () => refuse(`this host has no browser: ${NO_BROWSER}`) } });
+  const local = localHost(place, UNSCRIPTED, { evidenceRoot: place.work, browser: browser ?? { provider: () => refuse(`this host has no browser: ${NO_BROWSER}`), driver: async () => refuse(`this host has no browser: ${NO_BROWSER}`) } });
   const judge = key ? priceJudge(createJevRunner({ apiKey: key, pricing: { inputUsdPerMillionTokens: JEV_LIST_PRICE.inputUsdPerMillionTokens, outputUsdPerMillionTokens: JEV_LIST_PRICE.outputUsdPerMillionTokens }, ...(env.TYPESAFE_BASE_URL ? { baseURL: env.TYPESAFE_BASE_URL } : {}) }) as unknown as RunJudge) : undefined;
   const lacks = { ...(browser ? {} : { browser: NO_BROWSER }), ...(judge ? {} : { judge: NO_JUDGE }) };
   const secrets = [env.TYPESAFE_API_KEY, env.BROWSERBASE_API_KEY, env.BB_API_KEY].map((value) => value?.trim()).filter((value): value is string => Boolean(value));

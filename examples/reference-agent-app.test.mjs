@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,6 +33,14 @@ async function envHost(t, env = {}) {
   models.setProvider(faux.provider);
   return { place, host: await hostFromEnv(place, { models, lead: { provider: faux.provider.id, modelId: faux.getModel().id }, env }) };
 }
+
+test('a host from the environment files evidence under the run\'s work/, so the path a tool returns is one the agent\'s read reaches', async (t) => {
+  const { place, host } = await envHost(t);
+  const { path } = await host.evidence.file('run', { tool: 'browser_read', args: {}, status: 'ok', body: 'x'.repeat(9000) });
+  assert.match(path, /^evidence\/run\/browser_read-[0-9a-f]{12}\.json$/);
+  assert.ok(existsSync(join(place.work, path)), 'under work/, relative to where the agent reads');
+  assert.ok(!existsSync(join(place.root, path)), 'and not beside the run\'s store');
+});
 
 const offered = (app) => app.root.agent.tools.map((tool) => tool.name);
 const installed = (app) => app.registry.snapshot().tools().map(({ tool }) => tool.name).sort();
