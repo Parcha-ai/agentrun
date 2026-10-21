@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.20 (2026-10-20)
+
 ### Added
 
 - A box the hands environment found lost answers `exec` with the provider's `BoxError` (code `gone`) as the `ExecutionError`'s `cause`; the code stays `unknown`, as pi has no `gone` code.
@@ -126,3 +128,5 @@
   the lease at the next epoch. A job that never rests takes no checkpoint, so before this its whole-box loss was `no_checkpoint`. It needs
   a log whole from commit 1, is off by default, and the model is told that no checkpoint existed and no file came back.
   `restoreNotice(undefined, ...)` makes that text.
+- `@parcha/pi-transport` is published: its manifest no longer says `"private": true`, so a release publishes it after `@parcha/pi-vision` and before the reference host. The package is unchanged; the box interface, the `local` and `docker` providers, the home movers and the conformance suite are what they were in the repository.
+- The README's first screen says what the example shows: a pi agent's tool calls go to Daytona and Modal sandboxes, and Jev places each one on the sandbox that fits it. The API (`boxEnv`, `transport()`) and the providers table follow it, and the transport config section moves under the tools in a box, where it belongs. The root README, `AGENTS.md` and a new short section of `docs/guide.md` ("Run an agent's tools where each step needs them", with a keyless example on local boxes) say the same, with all four providers.

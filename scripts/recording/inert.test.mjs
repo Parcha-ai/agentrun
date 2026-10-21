@@ -9,6 +9,8 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { credentialIn } from '../../packages/harness/src/scan.ts';
 import { moveImages } from '../../packages/harness/src/record.ts';
+import { readdirSync as readdirSyncOf } from 'node:fs';
+import { build } from '../../apps/viewer/build.mjs';
 import { gateProblems } from './gate.mjs';
 import { validateRecording } from './validate.mjs';
 
@@ -28,16 +30,14 @@ const recording = (t, blobs, manifestOver = {}) => {
 };
 const named = (text, extension) => `${sha(text)}.${extension}`;
 const problems = (dir) => validateRecording(dir).map((each) => `${each.where}: ${each.message}`);
-/** The gate over a one-recording gallery built from `dir` (the index form). */
+/** The gate over a one-recording gallery from `dir`, published as the Pages job builds it (`build.mjs --files`). */
 const gated = (t, dir) => {
-  const dist = scratch(t, 'inert-gate-');
-  cpSync(dir, join(dist, 'recordings', 'one'), { recursive: true });
-  writeFileSync(join(dist, 'gallery.js'), "window.AGENTRUN_GALLERY_INDEX = 'recordings/index.json';\n");
-  const held = Object.fromEntries(readdirSyncOf(join(dir, 'blobs')).map((name) => [name.split('.')[0], `blobs/${name}`]));
-  writeFileSync(join(dist, 'recordings', 'index.json'), JSON.stringify([{ id: 'one', manifest: JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')), blobs: held }]));
+  const recordings = scratch(t, 'inert-recordings-');
+  cpSync(dir, join(recordings, 'one'), { recursive: true });
+  const dist = join(scratch(t, 'inert-gate-'), 'dist');
+  build(dist, recordings, { files: true });
   return gateProblems(dist).map((each) => `${each.path}: ${each.message}`);
 };
-import { readdirSync as readdirSyncOf } from 'node:fs';
 
 test('a blob that is html, svg, xml, js or of an unknown extension is refused by the validator and the gate, with its script in it', (t) => {
   for (const [extension, text] of [['html', SCRIPT], ['htm', SCRIPT], ['svg', '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'], ['xml', '<x/>'], ['xhtml', SCRIPT], ['js', 'alert(1)'], ['css', 'p{}'], ['bin', 'x']]) {
@@ -104,6 +104,51 @@ test('the machine-path scan takes /home/<user> with no slash, a Windows profile,
   const dir = (...parts) => ['', ...parts].join('/');
   for (const text of [`at ${dir('home', 'someone')}`, `cwd=${dir('Users', 'someone')}`, `C:${'\\'}Users${'\\'}someone`, `${dir('root')}/.ssh/id`, dir('var', 'folders', 'zz', 'T')]) assert.equal(credentialIn(text), 'machine path', text);
   for (const text of ['https://example.org/home/page', 'see /root/steps/0 and /root/items', 'the /rooted idea', 'a home/other relative', `${dir('home', 'web_user')}`]) assert.equal(credentialIn(text), undefined, text);
+  // A child workflow at the root and a loop at the root: the pointers a run records, as text and inside a JSON line.
+  for (const text of ['/root/workflow/root/steps/0', '/root/iterations/3/body', '/root/iterations/0', JSON.stringify({ executionPath: '/root/iterations/0/body/workflow/root', path: '/root/body' })]) assert.equal(credentialIn(text), undefined, text);
+  // A workflow name is taken whole, a child as workflow/root and a loop's pass as iterations/<n>: any other folder in root's home is root's home.
+  for (const text of [dir('root', 'myproject', 'x'), dir('root', '.ssh', 'id_rsa'), dir('root', 'workflow-notes'), dir('root', 'steps.bak'), dir('root', 'iterations_old', 'x'), dir('root', 'workflow', 'notes.txt'), dir('root', 'workflow', 'rootkit'), dir('root', 'iterations', 'x'), dir('root', 'iterations', '3x')]) assert.equal(credentialIn(text), 'machine path', text);
+  // A root child workflow's own fields, as the DSL's validation names them (one schema id is one segment, ~0 and ~1 escaped).
+  for (const path of ['/root/workflow', '/root/workflow/name', '/root/workflow/schemas', '/root/workflow/schemas/Answer', '/root/workflow/schemas/a~1b~0c', '/root/workflow/input', '/root/workflow/input/schemaId', '/root/workflow/output', '/root/workflow/output/schemaId', '/root/workflow/output/path']) {
+    for (const text of [path, `at ${path}: must be an object`, JSON.stringify({ path })]) assert.equal(credentialIn(text), undefined, text);
+  }
+  for (const text of [dir('root', 'workflowx'), dir('root', 'workflow', 'schemasx'), dir('root', 'workflow', 'schemas', 'ab', 'secret'), dir('root', 'workflow', 'schemas', 'x', 'y'), `${dir('root', 'workflow', 'schemas')}/`, dir('root', 'workflow', 'input', 'x'), dir('root', 'workflow', 'outputs'), dir('root', 'workflow', 'name.txt')]) assert.equal(credentialIn(text), 'machine path', text);
+});
+
+test('every pointer the DSL\'s validation names in a root child workflow passes the machine-path scan, as text and in a JSON line', async () => {
+  const { validateWorkflow } = await import('@parcha/agentrun-dsl');
+  const child = { v: 2, name: 'child', schemas: { In: { type: 'object' }, Out: { type: 'object' } }, input: { schemaId: 'In' }, output: { schemaId: 'Out' }, root: { node: 'agent', label: 'work', prompt: 'p', out: 'Out', as: 'r' } };
+  const broken = [{}, { schemas: 5 }, { schemas: { ...child.schemas, 'a/b~c': 7 } }, { schemas: { ...child.schemas, Bad: { $ref: '#/definitions/Nope' } } }, { input: { schemaId: 'Missing' } }, { input: 3 }, { input: { schemaId: 5 } },
+    { output: 'x' }, { output: { schemaId: 4 } }, { output: { schemaId: 'Out', path: 9 } }, { name: 1 }, { v: 3 }, { root: undefined }];
+  const paths = new Set();
+  for (const change of broken) {
+    const result = validateWorkflow({ v: 2, name: 'p', schemas: { In: { type: 'object' }, Out: { type: 'object' } }, input: { schemaId: 'In' }, output: { schemaId: 'Out' }, root: { node: 'workflow', label: 'kid', workflow: { ...child, ...change }, input: {}, out: 'Out', as: 'k' } });
+    if (!result.ok) for (const issue of result.issues) paths.add(issue.path);
+  }
+  for (const path of ['/root/workflow', '/root/workflow/schemas', '/root/workflow/schemas/a~1b~0c', '/root/workflow/schemas/Bad', '/root/workflow/input/schemaId', '/root/workflow/output', '/root/workflow/name']) assert.ok(paths.has(path), `the DSL names ${path}`);
+  for (const path of paths) for (const text of [path, JSON.stringify({ issues: [{ path }] })]) assert.equal(credentialIn(text), undefined, text);
+});
+
+test('a read the DSL refuses inside a route branch, past a route or past a parallel of a root child workflow names a pointer the scan passes', async () => {
+  const { validateWorkflow } = await import('@parcha/agentrun-dsl');
+  const fetch = (label) => ({ node: 'call', label, via: 'tool', tool: 'fetch', args: { url: '{url}' }, out: 'Any', as: label, deadline_s: 5 });
+  const agent = (label) => ({ node: 'agent', label, instructions: 'Do it.', out: 'Any', as: label });
+  const route = (a, b) => ({ node: 'route', label: 'r', valuePath: 'topic', otherwise: 'a', branches: { a: { body: a }, b: { body: b } } });
+  const chain = (...steps) => ({ node: 'chain', steps });
+  const schemas = { Any: { type: 'object' }, In: { type: 'object', properties: { topic: { type: 'string' } } } };
+  const cases = {
+    // Each case's root, and the pointer of the read the DSL refuses (STATE_PATH_UNPRODUCED at that node).
+    'inside a route branch': [chain(route(fetch('read'), agent('other'))), '/root/workflow/root/steps/0/branches/a/body'],
+    'past a route': [chain(route(agent('one'), agent('two')), fetch('read')), '/root/workflow/root/steps/1'],
+    'past a parallel': [chain({ node: 'parallel', label: 'p', branches: [agent('one'), agent('two')] }, fetch('read')), '/root/workflow/root/steps/1'],
+  };
+  for (const [where, [root, read]] of Object.entries(cases)) {
+    const child = { v: 2, name: 'child', schemas, input: { schemaId: 'In' }, output: { schemaId: 'Any' }, root };
+    const result = validateWorkflow({ v: 2, name: 'p', schemas, input: { schemaId: 'In' }, output: { schemaId: 'Any' }, root: { node: 'workflow', label: 'kid', workflow: child, input: { topic: 'a' }, out: 'Any', as: 'k' } });
+    const unread = result.ok ? [] : result.issues.filter((issue) => issue.code === 'STATE_PATH_UNPRODUCED' && issue.path === read);
+    assert.ok(unread.length > 0, `${where}: the DSL refuses the read`);
+    for (const { path } of result.issues) for (const text of [path, JSON.stringify({ issues: [{ path }] })]) assert.equal(credentialIn(text), undefined, `${where}: ${text}`);
+  }
 });
 
 test('the recorder records an svg tool output as text, never as .svg, and any other extension it is handed as txt', async (t) => {

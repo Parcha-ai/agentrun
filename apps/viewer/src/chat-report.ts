@@ -1,6 +1,6 @@
 // The right side of the chat page: the agent's own page (manifest.artifact) in a frame that runs nothing and loads only
 // the recording's blobs, else the run's cited answer drawn here. A citation in either calls `open` with its address.
-import type { ChatArtifact, ChatModel } from './chat-model.ts';
+import type { ChatArtifact, ChatModel, ChatRow } from './chat-model.ts';
 import type { Recording } from './format.ts';
 import { opensInPage } from './blobs.ts';
 
@@ -109,25 +109,72 @@ export function reportFileOf(files: Record<string, string>, from: string, ref: s
   return files[path] === undefined ? undefined : { path, fragment };
 }
 
-const REPORT_CSS_REF = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^)"']*?))\s*\)|@import\s+(?:"([^"]*)"|'([^']*)')/gi;
+const REPORT_CSS_REF = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^)"']*?))\s*\)|@import\s+(?:url\(\s*(?:"([^"]*)"|'([^']*)'|([^)"']*?))\s*\)|"([^"]*)"|'([^']*)')/gi;
 
-/** A style sheet with every url() and @import through the artifact's files: a local `#id` stays, anything else is dropped. */
-async function reportCss(css: string, from: string, resolve: (from: string, ref: string) => Promise<string | undefined>): Promise<string> {
-  const found = [...css.matchAll(REPORT_CSS_REF)].map((match) => match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5] ?? '');
-  const urls = await Promise.all(found.map((ref) => (ref.trim().startsWith('#') ? Promise.resolve(undefined) : resolve(from, ref))));
-  let at = 0;
-  return css.replace(REPORT_CSS_REF, (whole) => {
-    const ref = found[at]!;
-    const url = urls[at];
-    at += 1;
-    if (ref.trim().startsWith('#')) return whole;
-    if (whole.startsWith('@')) return url ? `@import url("${url}")` : '@import url("about:invalid")';
-    return url ? `url("${url}")` : 'none';
-  });
+/** A reference in the artifact, relative to the file `from`, as a URL the agent's page may load; undefined for none. */
+export type ReportResolve = (from: string, ref: string) => Promise<string | undefined>;
+
+/** The agent's style sheets through its files: `rewrite(css, from)` is the sheet at `from` with every url() through
+ *  `resolve` and every @import through a sheet of its own (a local `#id` stays, anything else is dropped). An imported
+ *  sheet is read (`read`, by its hash), rewritten the same way from its own path and served (`serve`), once; an import of
+ *  a sheet that imports it, directly or not, is dropped, so a loop of imports ends. */
+export function reportStyles(files: Record<string, string>, resolve: ReportResolve, read: (sha: string) => Promise<string | undefined>, serve: (css: string) => string) {
+  const served = new Map<string, string | undefined>();
+  const local = (ref: string) => ref.trim().startsWith('#');
+  const rewrite = async (css: string, from: string, chain: readonly string[] = [from]): Promise<string> => {
+    const found = [...css.matchAll(REPORT_CSS_REF)].map((match) => ({ ref: match.slice(1).find((part) => part !== undefined) ?? '', sheet: match[0].startsWith('@') }));
+    const urls = await Promise.all(found.map(({ ref, sheet }) => (sheet || local(ref) ? undefined : resolve(from, ref))));
+    // One import at a time, so a sheet still being read is one of `chain`, and any other is read once.
+    for (const [at, { ref, sheet }] of found.entries()) if (sheet && !local(ref)) urls[at] = await imported(from, ref, chain);
+    let at = 0;
+    return css.replace(REPORT_CSS_REF, (whole) => {
+      const { ref, sheet } = found[at]!;
+      const url = urls[at];
+      at += 1;
+      if (local(ref)) return whole;
+      if (sheet) return url ? `@import url("${url}")` : '@import url("about:invalid")';
+      return url ? `url("${url}")` : 'none';
+    });
+  };
+  const imported = async (from: string, ref: string, chain: readonly string[]): Promise<string | undefined> => {
+    const file = reportFileOf(files, from, ref);
+    if (!file || chain.includes(file.path)) return undefined;
+    if (served.has(file.path)) return served.get(file.path);
+    const css = await read(files[file.path]!);
+    const url = css === undefined ? undefined : serve(await rewrite(css, file.path, [...chain, file.path]));
+    served.set(file.path, url);
+    return url;
+  };
+  // Sheets are rewritten one at a time, however many start together, so an imported sheet is read and served once.
+  let queue: Promise<unknown> = Promise.resolve();
+  return (css: string, from: string): Promise<string> => {
+    const next = queue.then(() => rewrite(css, from));
+    queue = next.catch(() => undefined);
+    return next;
+  };
+}
+
+/** A blob's text: as the recording holds it, else read from its URL. */
+function reportText(recording: Recording, sha: string): Promise<string | undefined> {
+  const held = recording.heldText?.(sha);
+  if (held !== undefined) return Promise.resolve(held);
+  const url = recording.blobUrl(sha);
+  return url ? fetch(url).then((response) => (response.ok ? response.text() : undefined)).catch(() => undefined) : Promise.resolve(undefined);
 }
 
 const REPORT_DROPPED = 'script, base, meta[http-equiv], iframe, frame, frameset, object, embed, applet, portal';
 const REPORT_FLASH = '[data-chat-flash]{outline:2px solid #ff8700;outline-offset:4px;animation:chat-flash 1.6s ease-out}@keyframes chat-flash{0%{background-color:#ff870040}100%{background-color:transparent}}';
+/** The site's look over the agent's page, for presentation only (the recording is not changed): square corners, the
+ *  site's dark palette in the report skill's own colour names, its type. A left border wider than the right one is
+ *  drawn as the right one by reportSquare once the page has loaded. */
+const REPORT_BASE = [
+  '*,*::before,*::after{border-radius:0!important}',
+  ':root{color-scheme:dark!important;--bg:#080809!important;--fg:#f2f2f2!important;--mute:#a4a4ad!important;--card:#111113!important;--line:#2c2c30!important;--accent:#ff8700!important;--box:#b4a0ff!important}',
+  'html,body{background:#080809!important;color:#f2f2f2!important}',
+  'body{font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif!important}',
+  'h1,h2,h3{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace!important;font-weight:500!important}',
+  'code,pre,kbd,samp{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace!important}',
+].join('');
 
 /** The artifact's entry as a document that runs nothing and loads only its own files from the recording: every
  *  reference rewritten through `files`, every script and handler removed, a policy naming only the blobs' origins. */
@@ -136,9 +183,7 @@ export async function reportPage(artifact: ChatArtifact, recording: Recording, p
   const entry = artifact.entry.replace(/^\.\//, '');
   const entrySha = files[entry];
   if (!entrySha) return undefined;
-  const held = recording.heldText?.(entrySha);
-  const entryUrl = recording.blobUrl(entrySha);
-  const text = held ?? (entryUrl ? await fetch(entryUrl).then((response) => (response.ok ? response.text() : undefined)).catch(() => undefined) : undefined);
+  const text = await reportText(recording, entrySha);
   if (text === undefined) return undefined;
   const origins = new Set<string>(['blob:']);
   const resolve = async (from: string, ref: string) => {
@@ -149,6 +194,7 @@ export async function reportPage(artifact: ChatArtifact, recording: Recording, p
     origins.add(parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.origin : parsed.protocol);
     return url + file.fragment;
   };
+  const styles = reportStyles(files, resolve, (sha) => reportText(recording, sha), (css) => URL.createObjectURL(new Blob([css], { type: 'text/css' })));
 
   const doc = parser.parseFromString(text, 'text/html');
   for (const node of doc.querySelectorAll(REPORT_DROPPED)) node.remove();
@@ -175,17 +221,16 @@ export async function reportPage(artifact: ChatArtifact, recording: Recording, p
       if (ref !== null && !ref.trim().startsWith('#')) through(node, name);
     }
   }
-  for (const node of doc.querySelectorAll('[style]')) jobs.push(reportCss(node.getAttribute('style')!, entry, resolve).then((css) => node.setAttribute('style', css)));
-  for (const node of doc.querySelectorAll('style')) jobs.push(reportCss(node.textContent ?? '', entry, resolve).then((css) => { node.textContent = css; }));
+  for (const node of doc.querySelectorAll('[style]')) jobs.push(styles(node.getAttribute('style')!, entry).then((css) => node.setAttribute('style', css)));
+  for (const node of doc.querySelectorAll('style')) jobs.push(styles(node.textContent ?? '', entry).then((css) => { node.textContent = css; }));
   for (const link of doc.querySelectorAll('link')) {
     if (!/(^|\s)stylesheet(\s|$)/i.test(link.getAttribute('rel') ?? '')) { link.remove(); continue; }
     const file = reportFileOf(files, entry, link.getAttribute('href') ?? '');
-    const url = file && recording.blobUrl(files[file.path]!);
     // A sheet is read and inlined, its own references resolved from its own path.
-    jobs.push((url ? fetch(url).then((response) => (response.ok ? response.text() : undefined)).catch(() => undefined) : Promise.resolve(undefined)).then(async (css) => {
+    jobs.push((file ? reportText(recording, files[file.path]!) : Promise.resolve(undefined)).then(async (css) => {
       if (css === undefined || !file) { link.remove(); return; }
       const style = doc.createElement('style');
-      style.textContent = await reportCss(css, file.path, resolve);
+      style.textContent = await styles(css, file.path);
       link.replaceWith(style);
     }));
   }
@@ -197,10 +242,24 @@ export async function reportPage(artifact: ChatArtifact, recording: Recording, p
   policy.setAttribute('content', `default-src 'none'; img-src ${sources}; media-src ${sources}; style-src 'unsafe-inline' ${sources}; font-src ${sources}`);
   const flash = doc.createElement('style');
   flash.textContent = REPORT_FLASH;
+  const base = doc.createElement('style');
+  base.textContent = REPORT_BASE;
   doc.head.prepend(policy);
-  doc.head.append(flash);
+  doc.head.append(flash, base);
   const looks = new Set([...doc.querySelectorAll('[data-look]')].map((node) => node.getAttribute('data-look')!).filter(Boolean));
   return { html: `<!doctype html>\n${doc.documentElement.outerHTML}`, looks };
+}
+
+/** Every element of a loaded page whose left border is wider than its right one (an accent bar) draws its left side as
+ *  its right side. */
+export function reportSquare(doc: Document): void {
+  const view = doc.defaultView;
+  if (!view) return;
+  for (const node of doc.querySelectorAll<HTMLElement>('body *')) {
+    const style = view.getComputedStyle(node);
+    if (style.borderLeftStyle === 'none' || !(parseFloat(style.borderLeftWidth) > parseFloat(style.borderRightWidth))) continue;
+    node.style.setProperty('border-left', `${style.borderRightWidth} ${style.borderRightStyle} ${style.borderRightColor}`, 'important');
+  }
 }
 
 /** Where a click on a link in the artifact goes: a citation (a relative address, with or without a fragment) opens its
@@ -233,6 +292,13 @@ const REPORT_TITLE = 90;
 /** A cite that points somewhere: an address, a look of the run, or a picture the recording holds. */
 const reportCites = (cite: { href: string; look?: string; blob?: string }) => cite.href !== '' || cite.look !== undefined || cite.blob !== undefined;
 
+/** The rows of the run's answer to draw under its title: a row that only says the title again keeps its cites and its
+ *  note, not its text, and is left out when it has neither. */
+export function reportRowsShown(answer: NonNullable<ChatModel['answer']>): ChatRow[] {
+  const title = answer.title.trim();
+  return answer.rows.flatMap((row) => (row.text.trim() !== title ? [row] : row.note || row.cites.some(reportCites) ? [{ ...row, text: '' }] : []));
+}
+
 /** The run's answer, drawn here (cited, its submitted record, or its final message): each row with its chips, each chip
  *  opening the source it cites. */
 function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording, open: ReportOpen, none = 'This run has no report.') {
@@ -245,7 +311,7 @@ function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording,
     return { scroller, cited: new Set<string>() };
   }
   const cited = new Set<string>();
-  const rows = answer.rows.map((row) => reportEl('li', { class: row.label === '' ? 'arow wide' : 'arow' },
+  const rows = reportRowsShown(answer).map((row) => reportEl('li', { class: row.label === '' ? 'arow wide' : 'arow' },
     row.label !== '' && reportEl('span', { class: 'alabel', text: row.label }),
     reportEl('div', {}, ...reportParagraphs(row.text), row.note && reportEl('p', { class: 'anote', text: row.note }), row.cites.some(reportCites) && reportEl('div', { class: 'cites' }, ...row.cites.filter(reportCites).map((cite) => {
       if (cite.look) cited.add(cite.look);
@@ -307,6 +373,7 @@ export function drawReport(pane: HTMLElement, model: ChatModel, recording: Recor
   frame.addEventListener('load', () => {
     const doc = frame.contentDocument;
     if (!doc || doc.URL !== 'about:srcdoc') return;
+    reportSquare(doc);
     ready = doc;
     doc.addEventListener('click', (event) => {
       const link = (event.target as Element | null)?.closest?.('a[href]');

@@ -505,18 +505,19 @@ test("a run's saved workflow records go to the admitter; its files land, a rules
 
 const workflowType = LEARN_TYPES.includes("workflow");
 
-test("a learn call of type workflow gives the admitter its \"when\", judged first like any candidate", { skip: workflowType ? false : "waits for the learn type workflow" }, async () => {
+test("a learn call of type workflow is asked nothing, and its text reaches neither the admitter nor main", { skip: workflowType ? false : "waits for the learn type workflow" }, async () => {
   const w = await world();
   const when = (id, text) => ({ callId: `call-${id}`, type: "workflow", id, text, evidence: [] });
   await propose(w, "run-1", [when("kyb", "A US company to check against its state registry.")], recordsOf("run-1", "kyb"));
   await propose(w, "run-2", [when("acme", "Only for the Acme Widgets file from this morning.")], recordsOf("run-2", "acme"));
   const seen = [];
-  const { judge, asked } = fakeJudge([{ q: "general", text: "Acme Widgets", p: 0.05 }]);
-  const report = await curate({ repo: w.curator, judge, admitWorkflow: async (input) => (seen.push(input.workflow), admitted(input.workflow.name, input.workflow.description)) });
-  assert.deepEqual(seen.map((s) => [s.name, s.description]), [["kyb", "A US company to check against its state registry."]]);
-  assert.deepEqual(report.runs.map((r) => [r.accepted.map((a) => a.workflow), r.refused.map((a) => a.reason)]), [[["kyb"], []], [[], ["about this case, not general (0.05)"]]]);
-  assert.deepEqual(asked("general")[0].state, { learning: { type: "workflow", workflow: "kyb", text: "A US company to check against its state registry." } });
-  assert.equal(await w.curator.read(".agents/skills/acme/SKILL.md", "main"), undefined);
+  const { judge, calls } = fakeJudge([{ q: "general", text: "Acme Widgets", p: 0.05 }]);
+  const report = await curate({ repo: w.curator, judge, admitWorkflow: async (input) => (seen.push(input.workflow), admitted(input.workflow.name)) });
+  assert.deepEqual(seen.map((s) => [s.name, s.description]), [["kyb", undefined], ["acme", undefined]]);
+  assert.deepEqual(report.runs.map((r) => [r.accepted.map((a) => a.workflow), r.refused]), [[["kyb"], []], [["acme"], []]]);
+  // These records are not the DSL store's, so the document question is the admitter's to skip, and no note was judged.
+  assert.deepEqual(calls, []);
+  for (const name of ["kyb", "acme"]) assert.doesNotMatch(await w.curator.read(`.agents/skills/${name}/SKILL.md`, "main"), /registry|Widgets/);
 });
 
 const usesFile = (runId, uses) => ({ [`uses/${runId}.json`]: `${JSON.stringify({ version: 1, run: runId, uses })}\n` });
@@ -659,7 +660,7 @@ test("a reason from a hook is checked whole before it is shortened, and a second
   const admitWorkflow = async () => ({ status: "held", reason: `${"x".repeat(195)} ${secret}` });
   const [run] = (await curate({ repo: w.curator, judge: fakeJudge().judge, admitWorkflow, secrets: [secret] })).runs;
   assert.deepEqual(run.held.map((h) => [h.candidate, h.reason]), [[1, "a reason was withheld (secret_value)"]]);
-  assert.deepEqual(run.refused.map((r) => [r.candidate, r.reason]), [[2, "a second description of the same workflow in this run (#1 is the one judged)"]]);
+  assert.deepEqual(run.refused.map((r) => [r.candidate, r.reason]), [[2, "a second description of the same workflow in this run (#1 is the one kept)"]]);
   const messages = git(w.bare, ["log", "--format=%B", "main"]).toString();
   for (const cut of [secret, secret.slice(0, 4)]) assert.ok(!messages.includes(`x ${cut}`), cut);
 });
