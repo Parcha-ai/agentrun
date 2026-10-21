@@ -256,6 +256,8 @@ export function validateRecording(dir) {
   const lookKeys = new Set();
   const lookSources = new Map();
   const liveGenerations = new Set();
+  // `agentrun.decisions` has two forms: the single document (a `receipts` list in one document) and the keyed documents (one row each, with a `key`). A recording holds one.
+  const decisionForms = { single: undefined, keyed: undefined };
   // Draft 54: the conversations, entries and task records (by kind) the recording holds, and its pi.conversation lines.
   const conversations = new Set();
   const entries = new Set();
@@ -271,6 +273,10 @@ export function validateRecording(dir) {
     const own = lineProblems(event);
     for (const message of own) add('events.jsonl', message, line);
     if (own.length) return;
+    if (event.channel === 'durable' && event.kind === 'agentrun.decisions' && isObject(event.data)) {
+      if (event.data.key !== undefined) decisionForms.keyed ??= line;
+      else if (isObject(event.data.value) && Array.isArray(event.data.value.receipts)) decisionForms.single ??= line;
+    }
     if (event.source === 'host' && event.kind === 'process.started') processes += 1;
     if (event.channel === 'durable' && (event.kind === 'transport.moves' || event.data?.doc === 'transport.moves')) {
       // A snapshot restates the records an earlier process wrote: only a process's own lines are its moves.
@@ -392,6 +398,7 @@ export function validateRecording(dir) {
     const beyond = [...liveGenerations].filter(gen => gen > processes);
     if (beyond.length) add('events.jsonl', `a live line carries gen ${Math.max(...beyond)}, beyond the ${processes} processes that started`);
   }
+  if (decisionForms.single !== undefined && decisionForms.keyed !== undefined) add('events.jsonl', `holds agentrun.decisions in both forms (the single document from line ${decisionForms.single}, keyed documents from line ${decisionForms.keyed}): a recording holds one`, Math.max(decisionForms.single, decisionForms.keyed));
   return problems;
 }
 
