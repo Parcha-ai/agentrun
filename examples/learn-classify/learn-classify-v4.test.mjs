@@ -361,6 +361,11 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   // The cover is found by its words, not by its page; a document without them is not the filing.
   for (const words of [/Find the cover by its words, not its page: `find: "principal executive offices"`/, /When no page holds those words, the document is not the filing/])
     assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), words);
+  // The headquarters come from the cover's address line, else from the report's head, principal or registered office; a
+  // workflow never passes an empty headquarters on (the answer refuses one) and escalates only when the report gives none.
+  for (const words of [/else from the address the report gives for the company's head office, principal office or registered office, in that order/,
+    /never passes an empty headquarters on/, /escalates "no HQ found" only when the report gives neither/])
+    assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), words);
   // The code is chosen from sic_codes by where most revenue comes from, never remembered.
   for (const words of [/its 4-digit SIC code, from sic_codes: sic2_groups for the group/, /chosen by where most revenue comes from/, /A code you remember from EDGAR or elsewhere is a guess, never evidence/, /the revenue reading wins, and the code's cite is the revenue table it rests on/])
     assert.match(flat(text(v4, 'AGENTS.md')), words);
