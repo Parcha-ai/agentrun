@@ -250,6 +250,36 @@ const ACME = {
 const browseOf = (scripted, root, extra = {}) => browseTool({ browser: scripted.browser, driver: scripted.driver, guard: scripted.guard, root, lookup: publicLookup, ...extra });
 const ledgerOps = (backend) => backend.ledger.map((row) => row.op).filter((op) => ['create', 'attach', 'release'].includes(op));
 
+test('with archivedSec, all three hard-job tools take the Wayback Machine\'s copy of an SEC page, and still refuse sec.gov and every other archived site', async (t) => {
+  const copy = 'https://web.archive.org/web/20260911112117id_/https://www.sec.gov/Archives/edgar/data/1/0000000001-26-000001-index.htm';
+  assert.equal(refusedUrl(copy, { archivedSec: true }), null);
+  assert.match(refusedUrl(copy), /refused list \(archive\.org/);
+  for (const url of ['https://www.sec.gov/', 'https://data.sec.gov/submissions/CIK0000000001.json', 'https://web.archive.org/web/2026/https://www.siccode.com/x',
+    'https://web.archive.org/cdx/search/cdx?url=sec.gov', 'https://archive.org/details/edgar']) assert.match(refusedUrl(url, { archivedSec: true }), /refused list/, url);
+  const policy = urlPolicy({ lookup: publicLookup, archivedSec: true });
+  assert.deepEqual([await policy.check(copy), policy.lexical(copy)], [null, null]);
+
+  const root = await scratch(t);
+  const search = fakeSearchProvider({ results: () => [{ url: copy, title: 'Filing index', snippet: 'SIC: 5961' }, { url: 'https://www.sec.gov/x', title: 'EDGAR', snippet: '' }] });
+  const scripted = scriptedBrowser({ pages: { [copy]: { title: 'Filing index', text: 'SIC: 5961', html: '<p>SIC: 5961</p>' } } });
+  const web = await localWeb(t, { [`web.archive.org${new URL(copy).pathname}`]: send('text/html', '<html><p>SIC: 5961</p></html>') });
+  const parts = { root, search, eyes: fakeEyes(), browser: scripted.browser, driver: scripted.driver, guard: scripted.guard, fetch: web.fetch, lookup: publicLookup };
+  const [found, browse, read] = await hardJobTools({ ...parts, archivedSec: true });
+  assert.deepEqual((await found.run({ query: 'acme filing index' })).results.map((r) => r.url), [copy]);
+  const page = conforms(browse, await browse.run({ url: copy }));
+  assert.deepEqual([page.ok, page.text], [true, 'SIC: 5961']);
+  assert.match(conforms(read, await read.run({ url: copy })).text, /SIC: 5961/);
+  assert.match((await browse.run({ url: 'https://www.sec.gov/' })).refused, /refused list \(sec\.gov/);
+  assert.match((await read.run({ url: 'https://web.archive.org/web/2026/https://www.siccode.com/x' })).refused, /refused list \(archive\.org/);
+  for (const tool of [found, browse, read]) assert.match(tool.description, /The Wayback Machine's copy of an SEC page \(https:\/\/web\.archive\.org\/web\/<time>\/<sec\.gov URL>\) is the one exception/, tool.name);
+  // Off by default: the same copy is dropped from results and refused.
+  const [offFound, offBrowse, offRead] = await hardJobTools(parts);
+  assert.deepEqual((await offFound.run({ query: 'acme filing index' })).results, []);
+  assert.match((await offBrowse.run({ url: copy })).refused, /refused list \(archive\.org/);
+  assert.match((await offRead.run({ url: copy })).refused, /refused list \(archive\.org/);
+  for (const tool of [offFound, offBrowse, offRead]) assert.doesNotMatch(tool.description, /Wayback/, tool.name);
+});
+
 test('browse reads the page its scripts built: tidy text, same-site links, documents on any allowed host, refused links dropped, released after', async (t) => {
   const root = await scratch(t);
   const scripted = scriptedBrowser({ pages: ACME });
