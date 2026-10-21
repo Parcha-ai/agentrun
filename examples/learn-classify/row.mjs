@@ -31,8 +31,10 @@ export function byWorkflowOf(measure, key = 'sic2') {
 /**
  * The run's spend: `judgeCostUsd` is its Jev part (the run's own decisions and curate's), `costUsd` the whole (every model
  * call of the run, the workflow's nodes included, that Jev part, and in v2 what its tools cost: `tools`, the browser's,
- * search's and the document reader's). Either is null when any of its parts is unknown: a Jev request that threw or came
- * back without a price, a model answer that ended in an error or an abort, a tool that did not know its price.
+ * search's and the document reader's, in that order). Either is null when any of its parts is unknown: a Jev request that
+ * threw or came back without a price, a model answer that ended in an error or an abort, a tool that did not know its
+ * price. `knownUsd` is every part that has a price, and `unpriced` counts what has none: the model answers, the Jev
+ * requests, the browser and search totals (0 to 2) and the document reader's total (0 or 1).
  */
 export function spendOf(measure, curateJudge = { costUsd: 0, unknown: 0 }, tools = []) {
   const judgeKnown = measure.judge.costUsd + curateJudge.costUsd;
@@ -40,7 +42,13 @@ export function spendOf(measure, curateJudge = { costUsd: 0, unknown: 0 }, tools
   const toolsKnown = tools.reduce((sum, usd) => sum + (typeof usd === 'number' ? usd : 0), 0);
   const unknownTool = tools.some((usd) => typeof usd !== 'number');
   const costUsd = judgeCostUsd === null || measure.unpricedAnswers || unknownTool ? null : measure.usage.costUsd + judgeKnown + toolsKnown;
-  return { costUsd, judgeCostUsd, knownUsd: measure.usage.costUsd + judgeKnown + toolsKnown };
+  const unpriced = {
+    modelAnswers: measure.unpricedAnswers ?? 0,
+    judge: (measure.judge.unknown ?? 0) + (curateJudge.unknown ?? 0),
+    tools: tools.slice(0, 2).filter((usd) => typeof usd !== 'number').length,
+    document: tools.length > 2 && typeof tools[2] !== 'number' ? 1 : 0,
+  };
+  return { costUsd, judgeCostUsd, knownUsd: measure.usage.costUsd + judgeKnown + toolsKnown, unpriced };
 }
 
 /** `run` is the job's place in the order (1 to 100; for a sealed pass, its place in that pass); `runId` the attempt's id.
@@ -50,7 +58,7 @@ export function spendOf(measure, curateJudge = { costUsd: 0, unknown: 0 }, tools
 export function rowOf({ run, runId, job, seedSha, afterSha, offered, measure, finished, curated, curateJudge, recording, convention, key = 'sic2', tools = [] }) {
   const answer = measure.answer?.[key] ?? null;
   const candidates = finished?.candidates ?? [];
-  const { costUsd, judgeCostUsd } = spendOf(measure, curateJudge, tools);
+  const { costUsd, judgeCostUsd, knownUsd, unpriced } = spendOf(measure, curateJudge, tools);
   return {
     run,
     cik: job.cik,
@@ -61,6 +69,9 @@ export function rowOf({ run, runId, job, seedSha, afterSha, offered, measure, fi
     truth: key === 'sic4' ? job.sic : job.sic2,
     correct: answer !== null && answer === job[key === 'sic4' ? 'sic' : 'sic2'],
     costUsd,
+    // What is known when costUsd is null for a part without a price: every priced part, and what was not priced.
+    costKnownUsd: knownUsd,
+    costUnpriced: unpriced,
     tokensIn: measure.usage.tokensIn,
     tokensOut: measure.usage.tokensOut,
     durationMs: measure.durationMs,
