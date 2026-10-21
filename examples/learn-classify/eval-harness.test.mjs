@@ -7,7 +7,8 @@ import { chmod, cp, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { listQueue, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
+import { agentHomeFor, prepareRun } from './host.mjs';
+import { listQueue, openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { FIXTURES_V4 } from './scripted.mjs';
 import { SETS } from './sets.mjs';
 import { streamOf } from './stream.mjs';
@@ -137,6 +138,23 @@ test('a TRAIN stream in batches: the batch starts from one main, then each job i
   assert.equal(rows[0].seedSha, rows[1].seedSha);
   assert.equal(rows[2].seedSha, rows[3].seedSha);
   assert.equal(rows[2].seedSha, rows[1].afterSha);
+}, { timeout: 300_000 });
+
+test('a stop between a run\'s start and its progress file: the run that exists is abandoned and the job starts again as the next attempt', async (t) => {
+  const dir = await scratch(t);
+  const { data, companies } = await standIn(dir, { train: 2, dev: 0, test: 0 });
+  const list = streamOf(companies, { split: 'train', epochs: 1, seed: 2 });
+  const out = join(dir, 'train');
+  await runLoop({ out, parts: parts(data), list, split: 'train', jobs: 1, record: false });
+  // What a kill inside prepareRun leaves: run-002 started in the home, its progress file still "new".
+  const { repo } = await openOut(out, { mode: 'scripted', set: SETS.v4 });
+  const home = await agentHomeFor({ dir: join(out, 'home'), repo });
+  await prepareRun({ home, repo, host: 'learn-classify', runId: 'run-002', input: { name: companies[0].name } });
+  const resumed = await runLoop({ out, parts: parts(data), list, split: 'train', record: false });
+  assert.deepEqual(resumed.rows.map((r) => r.run), [1, 2]);
+  const progress = JSON.parse(readFileSync(join(out, 'progress', 'run-002.json'), 'utf8'));
+  assert.equal(progress.attempt, 2);
+  assert.deepEqual(progress.abandoned.map((a) => a.runId), ['run-002']);
 }, { timeout: 300_000 });
 
 test('the CLI: --split, --from, --concurrency and --shard are checked; the test split needs --open-test', async (t) => {
