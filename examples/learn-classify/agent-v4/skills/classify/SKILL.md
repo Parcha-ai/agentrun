@@ -9,9 +9,12 @@ description: How to do the six-part job by hand from the company's annual report
    page. A holding company's site may only point to its operating businesses: follow them. When fetch_page returns
    little text, the page needs JavaScript: browse it.
 2. The annual report: the latest 10-K, or 20-F or 40-F for a foreign filer, linked from the investor relations page (a
-   PDF, or an HTML page). Read it with read_document: `find` names words to look for and lists the pages that hold
-   them, `pages` reads those pages. What it returns is marked by page, and those pages are what you cite ("pdf p. N").
-   The cover page gives the fiscal year and the address of the principal executive offices.
+   PDF, or an HTML page). Read it with read_document: `find` names words to look for and lists the pages that hold them,
+   `pages` reads those pages. What it returns is marked by page, and those pages are what you cite ("pdf p. N"). The
+   cover page gives the fiscal year and the address of the principal executive offices. Find the cover by its words, not
+   its page: `find: "principal executive offices"` lists the page of the cover's address line, since page 1 of a
+   designed annual report or of a site's copy of the filing is not the cover. When no page holds those words, the
+   document is not the filing: find the filing itself.
 3. The segments: the segment note of the financial statements (often "segment information"), revenue by reportable
    segment. Once `find` has located it, look at that page: read_document with `pages: [N]` and `question: "the segment
    revenue table as laid out"`, and take the segments from that look (cite it as "pdf p. N"). Tables lose their layout
