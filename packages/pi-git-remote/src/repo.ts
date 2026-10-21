@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { GitRemoteError, refused } from "./errors.js";
-import { createGitRunner, EMPTY_TREE, gitVersion, type GitCall, type GitIdentity } from "./git.js";
+import { createGitRunner, EMPTY_TREE, gitVersion, type GitCall, type GitIdentity, scrub } from "./git.js";
 import {
   caseCollisions, checkCommitFiles, checkPath, DEFAULT_LIMITS, type FileContent, type Limits, modeRefusal, pathPrefixes, pathRefusal, within,
 } from "./limits.js";
@@ -559,9 +559,8 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
       const line = result.stdout.toString("utf8").split("\n").find((l) => l.startsWith("!\t")) ?? "";
       if (line.includes("[rejected]")) throw new GitRemoteError("conflict", `the remote's ${branch} moved: ${sha} is not a fast-forward of it`);
       if (line.includes("[remote rejected]")) {
-        // The reason is the server's text, so the credential is scrubbed from it as the runner does from stderr.
-        const reason = line.split("\t").at(-1)!;
-        throw refused(`the remote refused ${branch}: ${credential ? reason.split(credential.password).join("[credential]") : reason}`);
+        // The reason is the server's text on stdout, which the runner leaves as it is: scrub it as stderr is.
+        throw refused(`the remote refused ${branch}: ${scrub(line.split("\t").at(-1)!, credential)}`);
       }
       throw new GitRemoteError("git", `git push failed (${result.code}): ${result.stderr.trim()}`);
     }
