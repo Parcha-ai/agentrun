@@ -909,10 +909,12 @@ const LISTED: { ref: string; summary?: string; kind: string; urgent: boolean; re
   urgent: n % 3 === 0, reviewed: n % 2 === 0, tags: ['parser', `v${n + 1}`, 'needs-triage'],
 })), { ref: 'A-7', kind: 'defect', urgent: false, reviewed: false, tags: [], owner: 'nobody yet' }];
 /** The agent's words: a lead-in, then a pipe table, a line after it, a rule, a table whose separator is short a column,
- *  and a table with an escaped pipe in its header. */
+ *  a table with a line of more cells than its header, and a table with an escaped pipe in its header, then a line of
+ *  prose with a pipe in it. */
 const WORDS = ['Here is what I sorted:', '| ref | what | kind | urgent | reviewed | tags |', '| :--- | :--- | --- | ---: | :---: | --- |',
   ...LISTED.slice(0, 6).map((each) => `| **${each.ref}** | ${each.summary} | \`${each.kind}\` | ${each.urgent} | ${each.reviewed} | ${each.tags.join(', ')} |`),
-  'That is the list.', '', '---', '', '| a | b |\n| --- |\n| 1 | 2 |', '', '| one \\| two | three |', '|---|---|', '| x | y |'].join('\n');
+  'That is the list.', '', '---', '', '| a | b |\n| --- |\n| 1 | 2 |', '', '| p | q |', '|---|---|', '| 1 | 2 |', '| 3 | 4 | EXTRA-CELL-WORDS |',
+  '', '| one \\| two | three |', '|---|---|', '| x | y |', 'Then prose with a pipe: use a | b here.'].join('\n');
 const SORTING = '**Sorting the list**\n\n| kind | count |\n|---|---|\n| defect | 4 |\n| feature | 3 |';
 
 /** A run that answers with LISTED and writes pipe tables in its thinking and its words. */
@@ -979,11 +981,17 @@ test('in Chrome: an answer that is a list of flat records and a pipe table in th
     assert.deepEqual(await value(`tables('wide', '.report')`), [{ head: columns, rows: cells }]);
     assert.deepEqual(await value(`[...doc('wide').querySelectorAll('.report td *')].map((n) => n.tagName)`), [], 'a cell of the answer is plain text: its backticks and stars as typed');
     assert.deepEqual(await value(`[...doc('wide').querySelectorAll('.report .arow')].map((n) => n.textContent.includes('[{'))`), [false, false], 'the list is not drawn as JSON too');
+    // A table ends at its first line that is no row of it: a line of more cells than its header, or prose with a pipe in it,
+    // is drawn as words after the table, never lost or split into cells.
+    assert.deepEqual(await value(`(() => { const said = doc('wide').querySelector('.said-text'); const outside = said.cloneNode(true); for (const box of outside.querySelectorAll('.table-box')) box.remove();
+      return { extra: outside.textContent.includes('EXTRA-CELL-WORDS'), prose: [...said.querySelectorAll(':scope > p')].some((p) => p.textContent === 'Then prose with a pipe: use a | b here.'),
+        split: [...said.querySelectorAll('td')].some((td) => td.textContent.includes('b here.')) }; })()`), { extra: true, prose: true, split: false });
     // The agent's words: the lead-in, the table, the line after it, and what is no table as it was written.
     assert.deepEqual(await value(`[...doc('wide').querySelector('.said-text').children].map((n) => n.querySelector('table') ? 'table' : n.textContent)`),
-      ['Here is what I sorted:', 'table', 'That is the list.', '---', '| a | b |\n| --- |\n| 1 | 2 |', 'table']);
+      ['Here is what I sorted:', 'table', 'That is the list.', '---', '| a | b |\n| --- |\n| 1 | 2 |', 'table', '| 3 | 4 | EXTRA-CELL-WORDS |', 'table', 'Then prose with a pipe: use a | b here.']);
     assert.deepEqual(await value(`tables('wide', '.said-text')`), [
       { head: ['ref', 'what', 'kind', 'urgent', 'reviewed', 'tags'], rows: LISTED.slice(0, 6).map((each) => [each.ref, each.summary!.replaceAll('`', '').replaceAll('**', ''), each.kind, String(each.urgent), String(each.reviewed), each.tags.join(', ')]) },
+      { head: ['p', 'q'], rows: [['1', '2']] },
       { head: ['one | two', 'three'], rows: [['x', 'y']] },
     ]);
     assert.deepEqual(await value(`[[...doc('wide').querySelectorAll('.said-text td:first-child strong')].map((n) => n.textContent), [...doc('wide').querySelectorAll('.said-text td code')].length]`),
