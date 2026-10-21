@@ -68,10 +68,10 @@ const reportRow = (line: string, header: string) => REPORT_PIPE.test(line) && re
   && (!header.trim().startsWith('|') || line.trim().startsWith('|'));
 
 /** One paragraph's text: a pipe table in it (its header, its separator, then its rows) as a table, the words around it
- *  as paragraphs, each with its inline markdown. */
+ *  as paragraphs, each with its inline markdown. A header with no row under it heads no table: it stays words. */
 function reportBlock(text: string): HTMLElement[] {
   const lines = text.split('\n');
-  const at = lines.findIndex((line, n) => reportHeader(line, lines[n + 1]));
+  const at = lines.findIndex((line, n) => reportHeader(line, lines[n + 1]) && lines[n + 2] !== undefined && reportRow(lines[n + 2]!, line));
   if (at < 0) return [reportEl('p', {}, ...reportInline(text))];
   let end = at + 2;
   while (end < lines.length && reportRow(lines[end]!, lines[at]!)) end += 1;
