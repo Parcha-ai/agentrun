@@ -45,12 +45,13 @@ npm install --no-save modal@0.11.0          # the Modal SDK is not a dependency 
 MOVES_LIVE=1 MOVES_LIVE_MAX_USD=8 node examples/moves/live.ts <record-dir>
 ```
 
-Its environment holds `ARCHIL_API_KEY`, `PDA_LIVE_DISK`, `PDA_LIVE_REGION`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and `ANTHROPIC_API_KEY`; the runner takes the last three out of it before anything starts. How the VM gets
-those three is `MOVES_LIVE_SECRETS`:
+Its environment holds `ARCHIL_API_KEY`, `PDA_LIVE_DISK`, `PDA_LIVE_REGION`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and `ANTHROPIC_API_KEY`; the runner takes the last three out of it before anything starts. The VM
+gets them from two named Modal Secrets (`MOVES_SECRET_ANTHROPIC`, `MOVES_SECRET_MODAL`; default `moves-take-anthropic` and `moves-take-modal`):
 
-- `named` (the default): two Modal Secrets you made, one holding `ANTHROPIC_API_KEY` and one holding `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, referenced by name only (`MOVES_SECRET_ANTHROPIC`,
-  `MOVES_SECRET_MODAL`; default `moves-take-anthropic` and `moves-take-modal`). No value passes through the runner on the way. Deleting the Secrets is yours.
-- `inline`: the Modal SDK has no call that creates a named Secret, so the runner builds one lazy Secret object from the values it holds. Nothing is created on Modal, so nothing outlives the run.
+- By default the runner makes them (`secrets.ts`: the Modal Python client, so `pip install modal` for the `python3` on the PATH, with the values on its standard input, never on an argument or in a file) and its sweep
+  deletes them and asks for each by name until Modal says not found; the last line reports both. It refuses a name that already exists and never deletes a Secret it did not make.
+- With `MOVES_LIVE_SECRETS=existing` it makes nothing: the Secrets are yours, referenced by name only, and yours to delete.
 
-`MOVES_LIVE_MAX_USD` is the model's spend cap (`--max-usd`). Modal's VM and GPU sandboxes carry no price in the recording's meter, so they are outside it: the last line reports the sandboxes' GPU time and an
-estimate of its cost as a field of its own. The run ends with `ok: one run moved from this machine to a Modal VM and back; ...` and exit 0, or lists what went wrong and exits 1.
+`MOVES_LIVE_MAX_USD` is the model's spend cap (`--max-usd`). Modal's VM and GPU sandboxes carry no price in the recording's meter, so they are outside it. Each thread sandbox is ended by Modal 15 minutes after it
+was made, which bounds the GPU time; the last line reports that time and an estimate of its cost as a field of its own. The run ends with `ok: one run moved from this machine to a Modal VM and back; ...` and exit 0, or
+lists what went wrong and exits 1.
