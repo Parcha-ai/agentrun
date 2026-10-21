@@ -11,6 +11,7 @@ import { visionContext, type VisionBinaryReader, type VisionEnv, type VisionFile
 import { fileLook, fileTold, keptAnswer, lookKey, type Filing, type LookRecord } from "./evidence.js";
 import { formatFragment } from "./fragments.js";
 import { DESCRIBE_ASK, type ImageSize, type MediaDetails } from "./guard.js";
+import { filingOf, NO_RECEIPT } from "./filing.js";
 import type { CallContext, CallSetup, ImageContent, ReadArgs, TextContent, ToolResult } from "./host.js";
 import type { ImageProcessor } from "./image.js";
 import type { Kind } from "./kinds.js";
@@ -70,10 +71,8 @@ const HASH_CHUNK_BYTES = 1024 * 1024;
 const PAGE_LINES = 2000;
 const PAGE_BYTES = 50 * 1024;
 
-/** What a read says of a source that was not one version while it was read, and the sink that files nothing for it: no
- *  hash names what was read. */
+/** What a read says of a source that was not one version while it was read: no hash names what was read. */
 const CHANGED = "the file changed while it was read, so what was read is not one version of it; read it again";
-const NO_RECEIPT = { file: async () => null };
 
 const num = (value: unknown): number | undefined => (value === undefined || value === null || value === "" ? undefined : Number(value));
 const asked = (args: ReadArgs) => (typeof args.ask === "string" && args.ask.trim() ? args.ask.trim() : undefined);
@@ -270,7 +269,7 @@ async function readRecording(scheme: string, id: string, handle: string, raw: Re
  *  null when the path reads as plain text (or is not a file), for the host's own read. */
 export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext, setup: CallSetup, kinds: ReadKinds = PACKAGE_KINDS): Promise<ToolResult | null> {
   const name = String(raw.path ?? ".");
-  const filing: Filing = { conversationId: call.conversationId, label: setup.scope.label, evidence: setup.evidence, onLook: setup.onLook, onMiss: setup.onMiss };
+  const filing = filingOf(call, setup);
   const handle = handleOf(name, setup.sources);
   if (handle) return readRecording(handle.scheme, handle.id, name.trim(), raw, call, setup, filing);
   const ctx = visionContext(call.signal);
