@@ -28,6 +28,8 @@ export type Variant = {
   removeEntry?: boolean;
   /** The height of the phone-wide frame the page sits in. */
   height?: number;
+  /** The page's query after the id (default `&muse`). */
+  query?: string;
   /** Hold every answer for a blob this long (a files build), so a card still reads "Reading…". */
   delayBlobMs?: number;
 };
@@ -79,7 +81,7 @@ export async function served(t: { after(fn: () => unknown, options?: { timeout?:
   held.server = server;
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   // The page sits in a phone-wide frame of the height asked, so a short one has the end of the conversation below its fold.
-  writeFileSync(join(out, 'dist', 'harness.html'), `<!doctype html><body style="margin:0"><iframe id="f" style="width:390px;height:${variant.height ?? 844}px;border:0" src="chat.html?r=chat-browser&muse"></iframe><script>const d = () => document.getElementById('f').contentDocument;</script></body>`);
+  writeFileSync(join(out, 'dist', 'harness.html'), `<!doctype html><body style="margin:0"><iframe id="f" style="width:390px;height:${variant.height ?? 844}px;border:0" src="chat.html?r=chat-browser${variant.query ?? '&muse'}"></iframe><script>const d = () => document.getElementById('f').contentDocument;</script></body>`);
   const page = await drivenPage(`${origin}/harness.html`, join(out, 'profile'), { signal: t.signal });
   held.page = page;
   const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
@@ -90,8 +92,13 @@ export async function served(t: { after(fn: () => unknown, options?: { timeout?:
 /** The chat-browser fixture made into a run that moved between hosts: a `run.json` for each generation (its holder: `host`, `driver`, and a pid and boot id the card must never show), a
  *  `process.started` for the next generation, and a host `handoff` line per move at the times given (its `why` is prose the card must never show). `gens[i]` is generation i+1's holder;
  *  `moves[i]` is the handoff that ends generation i+1: `{ t, point, n }`, `from` being that generation's host label unless given. A `failed` move is a `handoff.failed` line, not a handoff. */
-export function movedRun(dir: string, { gens, moves, failed = [] }: { gens: { host: string; driver: string }[]; moves: { t: number; point: string; n: number; from?: string }[]; failed?: number[] }) {
+export function movedRun(dir: string, { gens, moves, failed = [], secondConversation }: { gens: { host: string; driver: string }[]; moves: { t: number; point: string; n: number; from?: string }[]; failed?: number[]; secondConversation?: number }) {
   const lines = readEvents(dir);
+  // A second conversation (a workflow node's), which the chat view folds, begins at `secondConversation`.
+  if (secondConversation !== undefined) {
+    lines.push({ channel: 'durable', source: 'pi', kind: 'pi.user', conv: 8, t: secondConversation, data: { model: [{ role: 'user', content: 'Now the second part.' }], conversationId: 8, id: 20 } });
+    lines.push({ channel: 'durable', source: 'pi', kind: 'pi.assistant', conv: 8, t: secondConversation + 100, data: { model: [{ role: 'assistant', content: [{ type: 'text', text: 'The second part is done.' }] }], conversationId: 8, id: 21 } });
+  }
   const holder = (gen: number) => ({ driver: gens[gen - 1]!.driver, pid: 4_000_000 + gen, since: '2026-10-20T23:20:00.371Z', host: gens[gen - 1]!.host, bootId: `boot-${gen}a9f3c2e1b7` });
   const host = (t: number, kind: string, data: Record<string, unknown>) => ({ channel: 'live', source: 'host', kind, t, data });
   gens.forEach((_, i) => {

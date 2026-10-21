@@ -339,6 +339,34 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   }
   const ordered = [...threads.values()].sort((a, b) => (a.t0 ?? 0) - (b.t0 ?? 0));
 
+  // A planned move between hosts leaves a card in the timeline at the host's `handoff` line, between the last line of generation N and the first of N+1. Only fields are read: the
+  // handoff's gen, point, n and `from`, and the holder (its host label and its driver kind) of each side's `run.json`. Never the handoff's prose, never a pid or a boot id; a host is
+  // named only by a recorded `host-N` label, a driver only by a kind (local, daytona, modal). `handoff.failed` is another kind of line and draws nothing.
+  const hostLabel = (value: Json | undefined) => { const text = chatStr(value); return text && /^host-\d{1,3}$/.test(text) ? text : undefined; };
+  const driverKind = (value: Json | undefined) => { const text = chatStr(value); return text && ['local', 'daytona', 'modal'].includes(text) ? text : undefined; };
+  const side = (label: string | undefined, kind: string | undefined) => (label ? `${label}${kind ? ` (${kind})` : ''}` : undefined);
+  const ordinalOf = (n: number) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? 'th' : (['th', 'st', 'nd', 'rd'][n % 10] ?? 'th')}`;
+  const holders = live('run.json').flatMap((line) => { const d = chatObj(line.data); const holder = chatObj(d?.holder); return typeof d?.gen === 'number' ? [{ gen: d.gen, t: line.t, label: hostLabel(holder?.host), kind: driverKind(holder?.driver) }] : []; });
+  live('handoff').forEach((line, index) => {
+    const d = chatObj(line.data);
+    if (typeof d?.gen !== 'number') return;
+    const left = holders.filter((each) => each.gen === d.gen && each.t <= line.t).at(-1);
+    const arrived = holders.find((each) => each.gen === (d.gen as number) + 1 && each.t >= line.t);
+    const from = hostLabel(d.from) ?? left?.label;
+    const [, effect] = /^effect\.kept ([A-Za-z0-9_.-]{1,40})$/.exec(chatStr(d.point) ?? '') ?? [];
+    const after = effect && typeof d.n === 'number' && Number.isInteger(d.n) && d.n >= 1 ? `after the ${ordinalOf(d.n)} ${effect.replace(/_/g, ' ')}` : undefined;
+    const lead = `${after ? `${after} on` : 'On'} ${side(from, left?.kind) ?? 'its host'}`;
+    const to = side(arrived?.label, arrived?.kind);
+    const text = arrived?.label && arrived.label === from ? `Reopened on ${to} from the same disk; the conversation goes on` : `Moved to ${to ?? 'another host'} from the same disk; the conversation goes on`;
+    const card: ChatItem = { kind: 'move', id: `move-${index + 1}`, t: line.t, lead, text };
+    // In the thread that was last active: after the last of its lines at or before the handoff.
+    const atOf = (item: ChatItem) => (item.kind === 'tool' ? (item.t0 ?? item.t1) : item.t) ?? Infinity;
+    const home = [...ordered].reverse().find((thread) => thread.items.some((item) => atOf(item) <= line.t)) ?? ordered[0];
+    if (!home) return;
+    const at = home.items.reduce((found, item, i) => (atOf(item) <= line.t ? i : found), -1);
+    home.items.splice(at + 1, 0, card);
+  });
+
   // The session's spans. Workflow nodes: start to end, each scrolling to its conversation.
   const spans: ChatSpan[] = [];
   for (const [path, node] of nodeAt) {

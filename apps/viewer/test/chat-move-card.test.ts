@@ -39,7 +39,8 @@ test('a move between hosts is one card at the handoff, in words from fields: aft
   assert.deepEqual(cards.map((card) => [card.lead, card.text]), [['after the 5th charge on host-1 (daytona)', 'Moved to host-2 (daytona) from the same disk; the conversation goes on']]);
   // Between the last line of generation 1 and the first of generation 2: after what was recorded at or before the handoff, before what came next.
   const at = items.findIndex((item) => item.kind === 'move');
-  assert.ok(items.slice(0, at).every((item) => (item.t ?? 0) <= 10_000) && items.slice(at + 1).every((item) => (item.t ?? 0) > 10_000), 'in time order, at its handoff line');
+  const atOf = (item: ChatItem) => (item.kind === 'tool' ? (item.t0 ?? item.t1) : item.t) ?? 0;
+  assert.ok(items.slice(0, at).every((item) => atOf(item) <= 10_000) && items.slice(at + 1).every((item) => atOf(item) > 10_000), 'in time order, at its handoff line');
 });
 
 test('where the holder\'s label is the one it left, the card says it reopened, never that it moved; the labels are the recorded ones, and an ordinal follows its number', async (t) => {
@@ -88,4 +89,12 @@ test('in Chrome: the chat view draws one card per handoff line, in words of a mo
   const muse = await served(t, { query: '&muse', height: 900, edit: (dir) => movedRun(dir, D2) });
   await muse.until(`!!d()?.querySelector('.muse .mu-chat')`, 'the Muse layout drawn');
   assert.equal(await muse.value<number>(`d().querySelectorAll('.move-card').length`), 0, 'the Muse layout has no move card');
+});
+
+test('in Chrome: a move that happened while a folded conversation was the active one is drawn after that fold, in the run\'s own timeline, where a closed fold cannot hide it', IN_CHROME, async (t) => {
+  // The second conversation begins at 11 s and is folded; the handoff is at 11.05 s, so it falls in that conversation's span.
+  const { value, until } = await served(t, { query: '', height: 900, edit: (dir) => movedRun(dir, { ...D2, moves: [{ t: 11_050, point: 'effect.kept charge', n: 5 }], secondConversation: 11_000 }) });
+  await until(`!!d()?.querySelector('main#chat-root .thread details.fold')`, 'the chat view drawn with a folded conversation');
+  assert.deepEqual(await value(`(() => { const card = d().querySelector('.move-card'); return [card.parentElement.className, card.previousElementSibling?.className ?? null, card.offsetParent !== null]; })()`), ['thread', 'think fold', true], 'a sibling of the fold, right after it, shown');
+  assert.equal(await value<number>(`d().querySelectorAll('.fold-body .move-card').length`), 0, 'none inside a fold');
 });

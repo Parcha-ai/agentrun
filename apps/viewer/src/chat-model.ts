@@ -7,6 +7,10 @@ export type ChatItem =
   /** A message the workflow's runner added to a conversation one of its nodes holds. */
   | { kind: 'host'; id: string; text: string; t?: number }
   | { kind: 'assistant'; id: string; text: string; t?: number }
+  /** A planned move of the run between hosts, at the host's `handoff` line: read from fields only (never the handoff's prose, never a process id). `lead`: after what, on
+   *  which host it left ("after the 5th charge on host-1 (daytona)"); `text`: where it went, or that it reopened where it was ("Moved to host-2 (daytona) from the same disk;
+   *  the conversation goes on"). */
+  | { kind: 'move'; id: string; t: number; lead: string; text: string }
   /** `redacted`: the provider withheld the thought; it keeps no text. */
   | { kind: 'thinking'; id: string; text: string; redacted?: true; t?: number }
   | {

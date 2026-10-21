@@ -598,6 +598,8 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     for (const node of run.extras) node.hidden = !open;
     run.more.textContent = open ? 'Show less' : `+ ${run.extras.length} more`;
   };
+  // A planned move between hosts: one card, a move and not a failure (the process lane stays behind ?debug=durability).
+  const moveNode = (item: Extract<ChatItem, { kind: 'move' }>) => reportEl('div', { class: 'move-card', 'data-item': item.id }, reportEl('div', { class: 'move-lead', text: item.lead }), reportEl('div', { class: 'move-text', text: item.text }));
   const agentMessage = (className = 'msg') => reportEl('div', { class: className }, reportEl('div', { class: 'who' }, threadIcon('brand'), 'Agent'));
   const drawThread = (thread: ChatThread): HTMLElement[] => {
     const out: HTMLElement[] = [];
@@ -636,6 +638,13 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
         const node = threadYou(reportEl('div', { class: 'bubble', text: item.text }), threadLong(item.text), item.id);
         nodes.set(item.id, node);
         out.push(node);
+        continue;
+      }
+      if (item.kind === 'move') {
+        endPlumbing();
+        agent = undefined;
+        steps = undefined;
+        out.push(moveNode(item));
         continue;
       }
       if (item.kind === 'host') {
@@ -692,9 +701,11 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     const preview = first?.kind === 'user' ? first.text : first?.kind === 'tool' ? first.title : '';
     const fold = reportEl('details', { class: 'think fold', 'data-item': each.id },
       reportEl('summary', {}, reportEl('span', { class: 'lab', text: each.label }), reportEl('em', { text: preview.split('\n')[0] ?? '' })),
-      reportEl('div', { class: 'fold-body' }, ...drawThread(each)));
+      reportEl('div', { class: 'fold-body' }, ...drawThread({ ...each, items: each.items.filter((item) => item.kind !== 'move') })));
     nodes.set(each.id, fold);
     thread.append(fold);
+    // A move that happened while a folded conversation was the active one is drawn after it, in the run's own timeline, where a closed fold cannot hide it.
+    for (const item of each.items) if (item.kind === 'move') thread.append(moveNode(item));
   });
   if (model.threads.length === 0) thread.append(reportEl('p', { class: 'none', text: 'This run recorded no conversation.' }));
   // The card that opens the report closes the chat, after every conversation.
