@@ -563,7 +563,7 @@ function bankRunner({ out, bare, parts, runCapUsd, dropEvidence }) {
  *  curated as it lands. `batch` takes the queue in batches of K by place: a batch's runs all start from one main and go
  *  side by side, then each is curated in queue order, so learning lands between batches. Rows go to runs.jsonl as jobs
  *  land; `checkpoints` freezes main after those curates (curateTally). */
-export async function runLoop({ out, parts, jobs, list, split = 'run', openTest = false, concurrency = 1, schedule = 'rolling', checkpoints = [], capUsd, runCapUsd, record = true, dropEvidence = false, gate: given, log = () => {} }) {
+export async function runLoop({ out, parts, jobs, list, split = 'run', openTest = false, concurrency = 1, schedule = 'rolling', checkpoints = [], capUsd, runCapUsd, record = true, dropEvidence = false, gate: given, gateWaitAtEnd = false, log = () => {} }) {
   if (!['rolling', 'batch'].includes(schedule)) throw new Error(`the schedule is rolling or batch, not ${schedule}`);
   out = resolve(out);
   const { repo, bare, meta } = await openOut(out, { mode: parts.mode, set: parts.set, agentDir: parts.agentDir });
@@ -618,11 +618,14 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
     };
     await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, pending.length)) }, worker));
   }
-  // A comparison still on the bank finishes, so its verdict lands for the next curate (a resumed pass) to apply.
-  if (gate) await gate.idle();
+  // The pass ends at once: its last checkpoint names what the gate had not applied, and a verdict that lands later is
+  // never in that sha. With gateWaitAtEnd a comparison still on the bank is waited for, so its verdict is on disk for the
+  // next curate (a resumed pass) to apply.
+  if (gate && gateWaitAtEnd) await gate.idle();
+  const pendingGates = gate ? gate.pending() : [];
   await writeCurve(out);
   if (stoppedBy) log(`stopped: ${stoppedBy}`);
-  return { rows, stoppedBy, spentUsd: spentNow(), seedSha: meta.seedSha };
+  return { rows, stoppedBy, spentUsd: spentNow(), seedSha: meta.seedSha, pendingGates };
 }
 
 async function homeAt(dir, repo, sha) {
@@ -727,7 +730,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>]] [--hindsight all|<field,...>] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--hindsight all|<field,...>] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -740,7 +743,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         model: { type: 'string' }, thinking: { type: 'string' }, set: { type: 'string' }, list: { type: 'string' }, 'promote-after': { type: 'string' },
         split: { type: 'string' }, 'open-test': { type: 'boolean' }, from: { type: 'string' }, concurrency: { type: 'string' }, shard: { type: 'string' }, 'drop-evidence': { type: 'boolean' },
         'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' }, 'edgar-cache': { type: 'string' }, schedule: { type: 'string' }, checkpoints: { type: 'string' },
-        'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, hindsight: { type: 'string' },
+        'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, 'gate-wait-at-end': { type: 'boolean' }, hindsight: { type: 'string' },
       },
     }));
   } catch (error) {
@@ -815,9 +818,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       if (!(Number.isInteger(inFlight) && inFlight >= 1)) { console.error(`--promotion-bank-concurrency is a whole number from 1\n${USAGE}`); process.exit(2); }
       parts.bankConcurrency = inFlight;
       console.log(`learn-classify: a promotion stands only when it passes the replay gate on ${Array.isArray(parts.bank) ? parts.bank.length : 0} bank companies, ${inFlight} at once (<out>/gate)`);
-    } else if (values['promotion-bank-concurrency'] !== undefined) {
-      console.error(`--promotion-bank-concurrency takes --promotion-bank\n${USAGE}`);
-      process.exit(2);
+    } else {
+      for (const name of ['promotion-bank-concurrency', 'gate-wait-at-end']) {
+        if (values[name] !== undefined) { console.error(`--${name} takes --promotion-bank\n${USAGE}`); process.exit(2); }
+      }
     }
     if (promoteAfter !== undefined) {
       parts.thresholds = { promoteAfter };
@@ -837,8 +841,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     };
     const result = values.sealed
       ? await runSealed({ ...common, at: values.at, record: !values['no-record'], ...(values.from ? { from: values.from } : {}), ...(shard ? { shard } : {}) })
-      : await runLoop({ ...common, jobs: number('jobs'), list, record: !values['no-record'], ...(values.schedule ? { schedule: values.schedule } : {}), ...(checkpoints ? { checkpoints } : {}) });
+      : await runLoop({ ...common, jobs: number('jobs'), list, record: !values['no-record'], ...(values.schedule ? { schedule: values.schedule } : {}), ...(checkpoints ? { checkpoints } : {}), gateWaitAtEnd: Boolean(values['gate-wait-at-end']) });
     if (result.stoppedBy) process.exitCode = 3;
+    // A comparison still on the bank does not hold the pass's end: the process ends now, and the bank runs it finished are
+    // kept, so the next ask (a resumed pass) runs only the rest.
+    const unfinished = (result.pendingGates ?? []).filter((g) => g.state !== 'landed');
+    if (unfinished.length) {
+      console.log(`learn-classify: the promotion gate had ${unfinished.length} comparison(s) unfinished; the pass ends without them (their finished bank runs are kept)`);
+      process.exit(process.exitCode ?? 0);
+    }
   } catch (error) {
     console.error(`learn-classify failed: ${error.stack ?? error}`);
     process.exit(1);
