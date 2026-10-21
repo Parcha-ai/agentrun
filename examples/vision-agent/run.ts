@@ -5,7 +5,7 @@
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { demo, type DemoOptions } from '@parcha/agentrun-harness';
-import { exampleAt, inputOf, job, jobOf, positionalAt, thinkingOf, thinkingRefusal } from './agent.ts';
+import { exampleAt, filesRefusal, inputOf, job, jobOf, positionalAt, thinkingOf, thinkingRefusal } from './agent.ts';
 import spec from './demo.json' with { type: 'json' };
 import { fakes } from './fakes.ts';
 import { liveParts, preflight } from './live.ts';
@@ -62,12 +62,12 @@ const inlineObject = (text: string | undefined): Record<string, unknown> | undef
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   let argv: string[] = [];
   let refused: string | undefined;
-  // A folder that cannot be placed, a thinking level that is not low, medium or high, or a live run that lacks a key, is refused here,
-  // before the recorder starts: nothing is written, and no cost is printed. The child process reads its level from the input, which the
-  // supervisor gave it.
+  // A folder that cannot be placed, a thinking level that is not low, medium or high, a file the input names that the run does not have, or
+  // a live run that lacks a key, is refused here, before the recorder starts: nothing is written, and no cost is printed. The child process
+  // reads its level from the input, which the supervisor gave it.
   try {
     argv = argvFor(process.argv.slice(2));
-    refused = thinkingRefusal(argv) ?? preflight(argv);
+    refused = thinkingRefusal(argv) ?? filesRefusal(argv) ?? preflight(argv);
   } catch (error) {
     refused = (error as Error).message;
   }

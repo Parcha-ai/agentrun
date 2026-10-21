@@ -136,6 +136,20 @@ export function thinkingOf(argv: readonly string[], env: NodeJS.ProcessEnv = pro
   return (THINKING as readonly unknown[]).includes(named) ? (named as Thinking) : undefined;
 }
 
+/** The command line's refusal of an input that names a file the run has no way to get, said before anything starts: a file is a bare
+ *  name, the example folder's own or, on fakes, one in DEMO_FILES_DIR; a run's child is the supervisor's, and the supervisor has checked. */
+export function filesRefusal(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (argv.includes('--child')) return undefined;
+  const input = runInput(argv, env);
+  const named = Array.isArray(input?.files) ? input.files.filter((file): file is string => typeof file === 'string') : [];
+  const example = typeof input?.example === 'string' ? (() => { try { return exampleAt(input.example as string); } catch { return undefined; } })() : undefined;
+  const live = argv.includes('--live');
+  const extra = !live && env.DEMO_FILES_DIR && existsSync(env.DEMO_FILES_DIR) ? readdirSync(env.DEMO_FILES_DIR) : [];
+  const have = new Set([...(example?.items.map(fileName) ?? []), ...extra]);
+  const missing = named.filter((file) => !have.has(file));
+  return missing.length ? `the input names ${missing.join(', ')}, which the run does not have: files are bare names, read from the example folder${live ? '' : ' or, on fakes, from DEMO_FILES_DIR'}.` : undefined;
+}
+
 /** The command line's refusal of a thinking level that is not low, medium or high, or that has no inline input to go in (the flag
  *  `argvFor` could not place is still in the arguments), said before anything starts. */
 export function thinkingRefusal(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): string | undefined {
