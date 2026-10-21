@@ -97,4 +97,9 @@ export function jevOptionsOf(env: NodeJS.ProcessEnv) {
   };
 }
 
-export const judgeOf = (env: NodeJS.ProcessEnv): JevJudge => createJevRunner(jevOptionsOf(env));
+/** Jev for the host, its runner made on the first question: a server whose home keeps no prompt variants starts and runs
+ *  with no key for Jev, and a question asked with none fails as Jev's own configuration error. */
+export const judgeOf = (env: NodeJS.ProcessEnv): JevJudge => {
+  let runner: JevJudge | undefined;
+  return async (params) => (runner ??= createJevRunner(jevOptionsOf(env)))(params);
+};
