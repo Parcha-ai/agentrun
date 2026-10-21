@@ -76,7 +76,7 @@ async function durationOf(env: VisionEnv, path: string, signal: AbortSignal | un
     const read = await env.readBinaryFile(out, ctx);
     const seconds = read.ok ? Number(Buffer.from(read.value).toString("utf8").trim()) : NaN;
     return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
-  } finally { await env.remove(dir.value, { recursive: true, force: true }, ctx); }
+  } finally { await env.remove(dir.value, { recursive: true, force: true }, visionContext()); }
 }
 
 /** One `vision.transcribe` call: the file read through the call's environment, asked once, filed and told. */
