@@ -204,14 +204,12 @@ test("an end whose push failed is retried by the next end, which pushes the same
   const { agent, checkout, bare, main } = await started(t);
   await writeFile(path.join(checkout, "notes/b.md"), "beta\n");
   const emit = () => agent.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-  // The remote can be read but not written: the commit is made, the push fails.
-  await chmod(path.join(bare, "objects"), 0o555);
-  for (const entry of await readdir(path.join(bare, "objects"))) await chmod(path.join(bare, "objects", entry), 0o555);
+  // The remote can be read but refuses any pack, for root too: the commit is made, the push fails.
+  await rawGit(["config", "receive.maxInputSize", "1"], { gitDir: bare });
   await emit();
   assert.equal(agent.reports[0].ok, false);
   assert.deepEqual(await branchesOf(bare), ["main"]);
-  await chmod(path.join(bare, "objects"), 0o755);
-  for (const entry of await readdir(path.join(bare, "objects"))) await chmod(path.join(bare, "objects", entry), 0o755);
+  await rawGit(["config", "--unset", "receive.maxInputSize"], { gitDir: bare });
   await emit();
   assert.equal(agent.reports[1].ok, true);
   assert.equal(agent.reports[1].outcome.created, false, "the commit was made by the first end");
