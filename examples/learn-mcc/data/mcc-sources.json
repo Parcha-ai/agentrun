@@ -1,0 +1,58 @@
+{
+  "retrieved": "2026-10-22",
+  "ranges": {
+    "title": "Merchant Category Codes",
+    "publisher": "Citi Treasury and Trade Solutions (commercial cards)",
+    "url": "https://citi.com/tts/solutions/commercial-cards/assets/docs/govt/Merchant-Category-Codes.pdf",
+    "pdfCreated": "2015-07-30",
+    "sha256": "e1ec80c0acd02ffd69916b6a8142dd9f4ae0dd1a5e429359e619b73e1b997e4d",
+    "used": "the 13 range headings (MCCs 0001–1499 (Agricultural Services) ... MCCs 3500–3999 (Lodging)) and each table's codes with their payment brands"
+  },
+  "codes": {
+    "title": "Visa Merchant Data Standards Manual",
+    "publisher": "Visa (VISA PUBLIC)",
+    "edition": "October 2026",
+    "url": "https://usa.visa.com/dam/VCOM/download/merchants/visa-merchant-data-standards-manual.pdf",
+    "sha256": "62839c2c559ccb59914241315765860015ac6ffc446274b3b03d57399638fa5a",
+    "used": "Section 2: Merchant Category Code Listing (codes, titles, the T&E block each merchant-specific code is listed under); Section 1, Determining Merchant Category Codes, General Requirements e (the generic T&E codes)"
+  },
+  "built": "pdftotext -layout on each PDF, then node build-mcc-groups.mjs citi.txt visa.txt data/mcc-sources.json",
+  "fixes": {
+    "5912": "5921"
+  },
+  "fixesWhy": {
+    "5912": "Visa's October 2026 listing prints 'Package Stores – Beer, Wine, and Liquor' under 5912 a second time and has no 5921 entry; Citi lists that title as 5921 (V, M)."
+  },
+  "sample": [
+    "0742",
+    "1520",
+    "1740",
+    "3000",
+    "3301",
+    "3351",
+    "3501",
+    "4111",
+    "4511",
+    "4829",
+    "4900",
+    "5262",
+    "5411",
+    "5651",
+    "5691",
+    "5812",
+    "5912",
+    "5921",
+    "5967",
+    "5969",
+    "5999",
+    "6051",
+    "7011",
+    "7273",
+    "7311",
+    "7512",
+    "7995",
+    "8011",
+    "8099",
+    "9311"
+  ]
+}
