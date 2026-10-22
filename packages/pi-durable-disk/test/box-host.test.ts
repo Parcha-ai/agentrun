@@ -424,6 +424,17 @@ describe("boxHost: a box found again by attach whose facts fail what the start n
     }
   });
 
+  it("an end that fails makes nothing: STOP_FAILED, no replacement, and the box is still there", async () => {
+    const provider = fake(modalLike({ facts: fd }));
+    runs(provider);
+    const hA = await host(provider).start(REF, TOKEN, { attempt: 1 });
+    provider.script.on({ op: "destroy" }, { fail: "unknown" });
+    const creates = provider.calls.filter((c) => c.op === "create").length;
+    await assert.rejects(boxHost({ provider: misread(provider, { fuse: false }), spec: SPEC, app: "/opt/app/app.js", startTimeoutMs: 5_000, callTimeoutMs: 5_000 }).start(REF, TOKEN, { attempt: 1 }), code("STOP_FAILED"));
+    assert.equal(provider.calls.filter((c) => c.op === "create").length, creates, "no replacement while the first may still serve");
+    assert.deepEqual(running(provider).map((b) => b.id), [hA.box]);
+  });
+
   it("a box found again that never launched, with a needed fact present and wrong: ended and replaced, and no refusal is remembered for the spec", async () => {
     const provider = fake(modalLike({ facts: fd }));
     runs(provider);
