@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
-import { main, runUser, toolsUserCheck } from "../src/cli.ts";
+import { appWritableReason, main, runUser, toolsUserCheck } from "../src/cli.ts";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { archilEnv, EnvError } from "../src/env.ts";
@@ -187,6 +187,49 @@ test("the launcher's secrets descriptor (PI_TRANSPORT_SECRETS_FD) never reaches 
   assert.equal(closed.status, 0, closed.stderr);
   assert.ok(!fds(closed.stdout).includes(3), `closed: ${closed.stdout}`);
   assert.match(closed.stdout, /SECRETS_FD=unset/, "and the variable is gone from the commands' environment");
+});
+
+test("under --run-as the root instance refuses an --app the agent's commands could change: not root's, writable by group or others anywhere on its path, or inside the run's root", () => {
+  type Node = { uid: number; mode: number; link?: string };
+  const tree = (nodes: Record<string, Node>) => ({
+    realpathSync: (p: string) => {
+      let out = p;
+      for (let i = 0; i < 8 && nodes[out]?.link; i++) out = nodes[out]!.link!;
+      return out;
+    },
+    lstatSync: (p: string) => {
+      const n = nodes[p];
+      if (!n) throw Object.assign(new Error(`ENOENT ${p}`), { code: "ENOENT" });
+      return { uid: n.uid, mode: n.mode };
+    },
+  });
+  const dir = (uid = 0, mode = 0o40755) => ({ uid, mode });
+  const file = (uid = 0, mode = 0o100644) => ({ uid, mode });
+  const base = { "/": dir(), "/opt": dir(), "/opt/app": dir(), "/opt/app/app.mjs": file(), "/mnt": dir(), "/mnt/archil": dir(), "/mnt/archil/runs": dir(), "/mnt/archil/runs/r1": dir(1500), "/mnt/archil/runs/r1/work": dir(1500), "/mnt/archil/runs/r1/work/app.mjs": file(1500) };
+  assert.equal(appWritableReason("/opt/app/app.mjs", "/mnt/archil/runs/r1", tree(base)), null, "root's, 0755/0644 all the way up");
+  const refused: [string, Record<string, Node>, string, RegExp][] = [
+    ["a module pda owns", { ...base, "/opt/app/app.mjs": file(1500) }, "/opt/app/app.mjs", /uid 1500/],
+    ["a group-writable module", { ...base, "/opt/app/app.mjs": file(0, 0o100664) }, "/opt/app/app.mjs", /writable/],
+    ["a world-writable directory on the way", { ...base, "/opt": dir(0, 0o40777) }, "/opt/app/app.mjs", /\/opt\b.*writable/],
+    ["a sticky world-writable directory, as /tmp", { ...base, "/opt/app": dir(0, 0o41777) }, "/opt/app/app.mjs", /writable/],
+    ["a directory pda owns", { ...base, "/opt/app": dir(1500) }, "/opt/app/app.mjs", /uid 1500/],
+    ["a module inside the run's root", base, "/mnt/archil/runs/r1/work/app.mjs", /inside the run/],
+    ["a link to a module pda owns", { ...base, "/opt/app/link.mjs": { uid: 0, mode: 0o120777, link: "/opt/app/real.mjs" }, "/opt/app/real.mjs": file(1500) }, "/opt/app/link.mjs", /uid 1500/],
+    ["a module that is not there", base, "/opt/app/missing.mjs", /cannot be read|ENOENT/],
+  ];
+  for (const [why, nodes, app, re] of refused) {
+    const reason = appWritableReason(app, "/mnt/archil/runs/r1", tree(nodes));
+    assert.ok(reason !== null && re.test(reason), `${why}: ${reason}`);
+  }
+  // On this machine's own files: a root-owned binary passes; a file this user owns does not.
+  assert.equal(appWritableReason("/usr/bin/true", "/mnt/archil/runs/r1"), null);
+  const mine = mkdtempSync(join(tmpdir(), "pda-app-"));
+  try {
+    writeFileSync(join(mine, "app.mjs"), "export default {};\n");
+    assert.match(appWritableReason(join(mine, "app.mjs"), "/mnt/archil/runs/r1") ?? "", /uid|writable/);
+  } finally {
+    rmSync(mine, { recursive: true, force: true });
+  }
 });
 
 test("run --run-as needs an instance running as root", { skip: process.getuid?.() === 0 && "running as root" }, async () => {
