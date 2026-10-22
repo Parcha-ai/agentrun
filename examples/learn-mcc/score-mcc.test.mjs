@@ -133,4 +133,7 @@ test('the summary counts each field over the rows that score it, per vertical, w
   assert.ok(Math.abs(s.overall.costPerJobUsd - 0.4) < 1e-12);
   assert.equal(s.overall.costUnknown, 1);
   assert.deepEqual(s.teacherGroupShare, { 'retail-outlet-services': 0.5, airlines: 0.25, 'transportation-services': 0.25 });
+  const seed = { ...scoreMcc({ answer: { mcc: '5999' }, merchant: merchant({ mcc: '5999', riskTier: null, flags: null }, null), groups }), vertical: null, stratum: 'seed' };
+  assert.deepEqual(Object.keys(summarizeMcc([seed]).byVertical), ['seed'], 'a seed merchant is counted under its stratum, not as unknown');
+  assert.equal(seed.flagsJaccard, null, 'the swarm gives its flags as prose, so there is no list to compare');
 });

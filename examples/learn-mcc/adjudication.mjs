@@ -14,9 +14,10 @@ const sha256 = (...parts) => createHash('sha256').update(parts.join('\u0000')).d
 export const commitmentOf = (salt, merchantId) => sha256(salt, 'adjudication', merchantId);
 
 /**
- * n merchants of `dev`, each vertical in proportion to its share of DEV (largest remainder; a vertical DEV has never
- * goes empty when n allows), the merchants inside a vertical picked in an order the salt fixes. Returns the sample in
- * that order and the sorted commitments to publish.
+ * n merchants of `dev`, each stratum in proportion to its share of DEV (largest remainder; a stratum DEV has never goes
+ * empty when n allows), the merchants inside a stratum picked in an order the salt fixes. A merchant's stratum is the
+ * split's `stratum` (its vertical, or "seed" for a seed merchant, which has none), else its vertical. Returns the sample
+ * in that order and the sorted commitments to publish.
  */
 export function drawSample({ dev, n = 120, salt }) {
   if (typeof salt !== 'string' || salt.length < 32) throw new Error('the sample needs a salt of at least 32 characters');
@@ -28,7 +29,7 @@ export function drawSample({ dev, n = 120, salt }) {
   }
   const strata = new Map();
   for (const m of dev) {
-    const key = m.vertical ?? 'unknown';
+    const key = m.stratum ?? m.vertical ?? 'unknown';
     if (!strata.has(key)) strata.set(key, []);
     strata.get(key).push(m);
   }
@@ -113,7 +114,7 @@ export function unblind({ items, verdicts, salt }) {
       const mccAdjRight = v.mcc.verdict === 'both' || v.mcc.verdict === on;
       const riskAdjRight = tier === null ? null : allowed.includes(RISK_TIERS.indexOf(tier));
       out.push({
-        merchantId: id, vertical: merchant.vertical ?? null, side: who,
+        merchantId: id, vertical: merchant.stratum ?? merchant.vertical ?? null, side: who,
         mccAdjRight, mccOwnExact: genericOf(mccOf(sides[who].mcc)) === genericOf(own),
         riskAdjRight, riskAdjDistance: tier === null ? null : Math.min(...allowed.map((a) => Math.abs(a - RISK_TIERS.indexOf(tier)))),
         adjRight: riskAdjRight === null ? null : mccAdjRight && riskAdjRight,

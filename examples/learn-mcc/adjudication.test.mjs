@@ -26,6 +26,8 @@ test('the sample keeps each vertical\'s share of DEV, gives a one-merchant verti
   assert.notDeepEqual(ids(drawSample({ dev: DEV, n: 120, salt: `${SALT}-other` }).sample), ids(sample));
   const small = [...merchants('a', 10), ...merchants('b', 1), ...merchants('c', 1)];
   assert.deepEqual(drawSample({ dev: small, n: 3, salt: SALT }).quota, { a: 1, b: 1, c: 1 }, 'a vertical the shares leave empty takes one from the largest');
+  const seeded = [...merchants('a', 4), ...merchants('s', 4).map((m) => ({ ...m, vertical: null, stratum: 'seed' }))];
+  assert.deepEqual(drawSample({ dev: seeded, n: 4, salt: SALT }).quota, { a: 2, seed: 2 }, 'a seed merchant has no vertical and is drawn in its own stratum');
 });
 
 test('the sample refuses a short salt, a sample larger than DEV, and repeated merchant ids', () => {

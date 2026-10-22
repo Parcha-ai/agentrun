@@ -122,8 +122,8 @@ function tally(rows) {
 }
 
 /**
- * Teacher agreement over scored rows (each a scoreMcc result with the merchant's `vertical`, and `costUsd` when the run
- * knows it): per field the count right, the scored count and the rate, overall and per vertical, and `brandMapped`, the
+ * Teacher agreement over scored rows (each a scoreMcc result with the merchant's `stratum` or `vertical`, and `costUsd`
+ * when the run knows it; the split's stratum is the vertical or "seed", a seed merchant having no vertical): per field the count right, the scored count and the rate, overall and per vertical, and `brandMapped`, the
  * rows whose exact code was judged on a T&E brand's generic code (printed under the table). Intervals come from
  * lanes/C1/ci.py (`wilson K N`, and `paired` for arm against arm), not from here. `teacherGroupShare` is the share of
  * teacher codes in each ISO group: 5700-7299 spans restaurants, pharmacies, direct marketing, crypto, lodging and
@@ -131,7 +131,7 @@ function tally(rows) {
  */
 export function summarizeMcc(rows) {
   const byVertical = {};
-  for (const row of rows) (byVertical[row.vertical ?? 'unknown'] ??= []).push(row);
+  for (const row of rows) (byVertical[row.stratum ?? row.vertical ?? 'unknown'] ??= []).push(row);
   const groups = {};
   for (const row of rows) if (row.mccGroupTeacher) groups[row.mccGroupTeacher] = (groups[row.mccGroupTeacher] ?? 0) + 1;
   const withGroup = Object.values(groups).reduce((a, b) => a + b, 0);

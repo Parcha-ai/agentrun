@@ -18,8 +18,10 @@ new adjudication.
 
 ## 1. The sample (`adjudication.mjs`, `drawSample`)
 
-- n = 120 from DEV. Each vertical gets its share of DEV (largest remainder). A vertical DEV has, but the shares leave
-  empty, takes one merchant from the largest. TEST is never touched.
+- n = 120 from DEV, stratified by the split's `stratum`: the vertical, or "seed" for the seed merchants, which have
+  none. Each stratum gets its share of DEV (largest remainder). A stratum DEV has, but the shares leave empty, takes
+  one merchant from the largest. TEST is never touched. DEV must hold at least 120 merchants before the sample is
+  drawn.
 - A salt of at least 32 random characters, made once and kept sealed (mode 0600, beside the cell's other seals).
   Inside a vertical, merchants are picked in sha256(salt, "sample", merchantId) order, so DEV's row order does not move
   the sample.
