@@ -49,7 +49,7 @@ export const hasWorkflowReceipt = (dir, sha256) => runsIn(dir).some((r) => r.rec
 const digestOf = (records) => (typeof records?.latest === 'string' ? records.latest.trim() : null);
 
 /** The `admitWorkflow` port with --receipt-holds-trial: a newcomer that has no workflow receipt is held while its name's
- *  live trial has one; anything else goes to `admit` as before. */
+ *  live revision, a trial or the champion, has one; anything else goes to `admit` as before. */
 export function receiptHoldsTrial(admit, dir) {
   return async (input) => {
     const { name, records } = input.workflow;
@@ -57,8 +57,8 @@ export function receiptHoldsTrial(admit, dir) {
       const text = await input.read(trialPath(name), input.main);
       const live = text === undefined ? undefined : currentRevision(parseTrial(text, name));
       const incoming = digestOf(records);
-      if (live?.status === 'trial' && incoming && incoming !== live.sha256 && hasWorkflowReceipt(dir, live.sha256) && !hasWorkflowReceipt(dir, incoming)) {
-        return { status: 'held', reason: `the live trial ${live.sha256.slice(0, 12)} has a workflow receipt and this revision has none, so it does not replace it` };
+      if (live && incoming && incoming !== live.sha256 && hasWorkflowReceipt(dir, live.sha256) && !hasWorkflowReceipt(dir, incoming)) {
+        return { status: 'held', reason: `the live ${live.status === 'active' ? 'champion' : 'trial'} ${live.sha256.slice(0, 12)} has a workflow receipt and this revision has none, so it does not replace it` };
       }
     } catch {
       // A trial that does not parse is the admitter's to judge.
