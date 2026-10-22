@@ -374,7 +374,7 @@ async function child(options: DemoOptions) {
     const line = JSON.stringify({ outcome: outcomeOf(result, storeShaOf(prepared.place), made, prepared.models) });
     console.log(prepared.redact ? prepared.redact(line) : line);
   } catch (error) {
-    console.log(JSON.stringify({ outcome: { status: 'error', generation: null, code: (error as { code?: string }).code ?? null, message: processText(String((error as Error).message), prepared?.redact).slice(0, 400) } }));
+    console.log(errorOutcome(error, prepared?.redact));
   } finally {
     await prepared?.done();
   }
@@ -857,37 +857,66 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
 export function processText(text: string, redact?: (text: string) => string): string {
   return (redact ? redact(text) : text).split('\n').map((line) => { const kind = credentialIn(line); return kind && kind !== 'machine path' ? '[a line withheld: it held a credential]' : line; }).join('\n');
 }
-/** Every string of a plain value (a result, a ledger) through `processText`, at the sink that returns or prints it. */
+/** Every string of a plain value (a result, a ledger) through `processText`, at the sink that returns or prints it; a value seen before (a cycle) is
+ *  cut to undefined. A value that is neither plain nor a string (the harness's own results hold none) is passed as it is. */
 export function handedOut<T>(value: T, redact?: (text: string) => string): T {
-  if (typeof value === 'string') return processText(value, redact) as T;
-  if (Array.isArray(value)) return value.map((item) => handedOut(item, redact)) as T;
-  if (value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, handedOut(item, redact)])) as T;
-  return value;
+  return walk(value, redact, new Set(), '', undefined) as T;
 }
 
-/** K4: an error handed out to a caller, as a NEW error of the same class (its prototype: `instanceof`, `name` and `code` hold), whose message and stack,
- *  every error in its CAUSE chain (a library's original error can hold anything) and every own string property pass `processText`: what Node prints
- *  for an uncaught error (util.inspect shows the cause chain and the properties) and what a caller logs carry no secret. A plain value is handed out
- *  whole (`handedOut`); any other is dropped, its name kept in `withheldProperties`. */
-export function handedOutError(error: unknown, redact?: (text: string) => string, seen: Set<unknown> = new Set()): unknown {
-  if (!(error instanceof Error)) return typeof error === 'string' ? processText(error, redact) : handedOut(error, redact);
+/** The one walker for text handed out: a string through processText; null, undefined, a number, a boolean or a bigint as it is; an error through
+ *  handedOutError; an array or a plain object recursed (a value met again on its own path, a cycle, becomes undefined; one shared by two branches is walked in each). Anything else: kept as it is
+ *  when `withheld` is undefined (a result), else WITHHELD, its path named in `withheld` (inside an error, where a library's value can hold anything). */
+function walk(value: unknown, redact: ((text: string) => string) | undefined, seen: Set<unknown>, path: string, withheld: string[] | undefined): unknown {
+  if (typeof value === 'string') return processText(value, redact);
+  if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return value;
+  if (value instanceof Error) return handedOutError(value, redact, seen);
+  const plain = Array.isArray(value) || (typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype);
+  if (!plain) { if (!withheld) return value; withheld.push(path); return undefined; }
+  // `seen` holds the values on the path from the root to here: a value met again on its own path is a cycle, cut to undefined; one shared by two
+  // branches (no cycle) is walked in each.
+  if (seen.has(value)) return undefined;
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) return value.map((item, index) => walk(item, redact, seen, `${path}[${index}]`, withheld));
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, walk(item, redact, seen, path ? `${path}.${key}` : key, withheld)]));
+  } finally { seen.delete(value); }
+}
+
+/** K4: an error handed out to a caller, as a NEW error of the same class (its prototype: `instanceof` holds), whose message and stack, its name and
+ *  code (read through the ORIGINAL, whose getters may be branded, as a DOMException's are, and kept as own properties), every value in its cause
+ *  chain, an AggregateError's `errors` and every own property pass the one walker: what Node prints for an uncaught error (util.inspect shows the
+ *  cause chain and the properties) and what a caller logs carry no secret. A value the walker withholds is named in `withheldProperties`. The copy
+ *  is not the original: its identity, non-enumerable and symbol properties are not carried. */
+export function handedOutError(error: Error, redact?: (text: string) => string, seen: Set<unknown> = new Set()): Error | undefined {
+  // A cycle (the error met again on its own path, its cause chain looping) is cut to undefined.
   if (seen.has(error)) return undefined;
   seen.add(error);
+  try { return copyOf(error, redact, seen); } finally { seen.delete(error); }
+}
+
+function copyOf(error: Error, redact: ((text: string) => string) | undefined, seen: Set<unknown>): Error {
+  // Own data properties, defined (never assigned): an inherited accessor with no setter (a DOMException's code) would refuse an assignment.
+  const own = (target: object, key: string, value: unknown, enumerable = false) => Object.defineProperty(target, key, { value, writable: true, configurable: true, enumerable });
   const out = Object.create(Object.getPrototypeOf(error) as object) as Error & Record<string, unknown>;
-  Object.defineProperty(out, 'message', { value: processText(error.message, redact), writable: true, configurable: true });
-  if (error.stack !== undefined) Object.defineProperty(out, 'stack', { value: processText(error.stack, redact), writable: true, configurable: true });
-  if ('cause' in error) Object.defineProperty(out, 'cause', { value: handedOutError(error.cause, redact, seen), writable: true, configurable: true });
   const withheld: string[] = [];
+  own(out, 'message', processText(String(error.message), redact));
+  if (error.stack !== undefined) own(out, 'stack', processText(String(error.stack), redact));
+  own(out, 'name', processText(String(error.name), redact));
+  if ('code' in error) own(out, 'code', walk((error as { code?: unknown }).code, redact, seen, 'code', withheld), true);
+  if ('cause' in error) own(out, 'cause', walk(error.cause, redact, seen, 'cause', withheld));
+  if (error instanceof AggregateError) own(out, 'errors', walk(error.errors, redact, seen, 'errors', withheld));
   for (const [key, value] of Object.entries(error)) {
-    if (key === 'message' || key === 'stack' || key === 'cause') continue;
-    if (value === null || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'undefined') out[key] = value;
-    else if (typeof value === 'string') out[key] = processText(value, redact);
-    else if (Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype) out[key] = handedOut(value, redact);
-    else if (value instanceof Error) out[key] = handedOutError(value, redact, seen);
-    else withheld.push(key);
+    if (key === 'message' || key === 'stack' || key === 'cause' || key === 'name' || key === 'code' || key === 'errors') continue;
+    own(out, key, walk(value, redact, seen, key, withheld), true);
   }
-  if (withheld.length) out.withheldProperties = withheld;
+  if (withheld.length) own(out, 'withheldProperties', withheld, true);
   return out;
+}
+
+/** The SOURCE: a run process's error outcome line, as it prints it for its supervisor. Its message passes the process's OWN redaction (it has seen
+ *  sign-in tokens the supervisor may not hold) and the credential pass. */
+export function errorOutcome(error: unknown, redact?: (text: string) => string): string {
+  return JSON.stringify({ outcome: { status: 'error', generation: null, code: (error as { code?: string }).code ?? null, message: processText(String((error as Error).message), redact).slice(0, 400) } });
 }
 
 export function messageOf(error: unknown, root: string): string {

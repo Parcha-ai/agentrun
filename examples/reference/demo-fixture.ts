@@ -225,6 +225,23 @@ const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: s
     const { BoxError } = await import('@parcha/pi-transport');
     return { ...inner, start: async () => { throw new BoxError('unknown', 'the box could not start', new Error(process.env.DEMO_START_FAILS_TEXT ?? 'the library failed')); } };
   }
+  // Error shapes a library hands over, each thrown from start with DEMO_START_FAILS_TEXT inside: an error in a nested array (`nested`), a Map as the
+  // cause (`map-cause`), a DOMException (`timeout`, as AbortSignal.timeout throws), a cyclic plain object (`cyclic`) and a cause cycle (`cause-cycle`).
+  const text = process.env.DEMO_START_FAILS_TEXT ?? '';
+  const shapes: Record<string, () => unknown> = {
+    'start-fails-nested': () => Object.assign(new Error('the place could not start the process'), { code: 'START_FAILED', errors: [new Error(text)] }),
+    'start-fails-map-cause': () => new Error('the place could not start the process', { cause: new Map([['stderr', text]]) }),
+    'start-fails-timeout': () => new DOMException(text, 'TimeoutError'),
+    'start-fails-cyclic': () => { const details: Record<string, unknown> = { text }; details.self = details; return Object.assign(new Error('the place could not start the process'), { code: 'START_FAILED', details }); },
+    'start-fails-cause-cycle': () => { const a = new Error(`first ${text}`); const b = new Error(`second ${text}`, { cause: a }); Object.defineProperty(a, 'cause', { value: b, configurable: true }); return a; },
+  };
+  if (mode && shapes[mode]) return { ...inner, start: async () => { throw shapes[mode]!(); } };
+  // `capture-exit` is the local place, handing the run's process a token only it holds (DEMO_CHILD_ONLY_TOKEN, from DEMO_CHILD_ONLY: the supervisor
+  // never tracks it) and keeping each process's exit as the place read it, before any sink, in DEMO_CAPTURE_FILE.
+  if (mode === 'capture-exit') return { ...inner, start: async (order: Parameters<typeof inner.start>[0]) => {
+    const runner = await inner.start({ ...order, env: { ...order.env, ...(process.env.DEMO_CHILD_ONLY ? { DEMO_CHILD_ONLY_TOKEN: process.env.DEMO_CHILD_ONLY } : {}) } });
+    return { ...runner, exited: runner.exited.then((exit) => { if (process.env.DEMO_CAPTURE_FILE) writeFileSync(process.env.DEMO_CAPTURE_FILE, JSON.stringify(exit)); return exit; }) };
+  } };
   if (mode === 'start-fails-property') return { ...inner, start: async () => { throw Object.assign(new Error('the place could not start the process'), { code: 'START_FAILED', stderr: process.env.DEMO_START_FAILS_TEXT ?? '' }); } };
   // `handing` hands its home box over but has no reads: its supervisor numbers the box itself, so the process must refuse to claim it (two labellers).
   if (mode === 'handing') return { ...inner, status, start: (order: Parameters<typeof inner.start>[0]) => inner.start({ ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ provider: 'home', key: '0', run: order.env.RUN_LABEL }) } }) };

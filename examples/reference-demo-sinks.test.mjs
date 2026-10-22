@@ -4,7 +4,7 @@
 // Out of scope by design: a key split across lines, or encoded.
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { inspect } from 'node:util';
 import { join } from 'node:path';
@@ -12,6 +12,7 @@ import { test } from 'node:test';
 import { FIXTURE, run } from './reference-demo-helpers.mjs';
 import { ledgerOut, render, uncutRefusal } from './reference/kill-anywhere.ts';
 import { referenceOutput } from './reference/run.ts';
+import { BoxError } from '@parcha/pi-transport';
 
 const KEPT = 'and a plain line after it';
 const KEY = `sk-${'q'.repeat(8)}${'7'.repeat(26)}`;
@@ -80,9 +81,22 @@ for (const plant of PLANTS) {
     never(shown, 'K4, util.inspect of the error');
     assert.ok(shown.includes(KEPT), 'the rest of the cause is kept');
     assert.equal(out.error.name, 'BoxError');
+    assert.ok(out.error instanceof BoxError && out.error instanceof Error, 'a library caller\'s instanceof holds');
     assert.equal(out.error.code, 'unknown');
     assert.ok(out.error.cause instanceof Error, 'the cause chain is kept, redacted');
   });
+  for (const [shape, about] of [['start-fails-nested', 'an error inside an array property'], ['start-fails-map-cause', 'a Map as the cause'], ['start-fails-timeout', 'a DOMException (a TimeoutError)'], ['start-fails-cyclic', 'a cyclic plain-object property'], ['start-fails-cause-cycle', 'a cause cycle']]) {
+    test(`K4: ${plant.name} in ${about} a place's start threw never reaches the thrown error as Node prints it; its name stays readable, and no RangeError replaces it`, { timeout: 300_000 }, async (t) => {
+      const out = await sinkRun(t, { record: plant.record, spec: plant.spec, env: { ...plant.env, DEMO_WITH_PLACE: shape, DEMO_START_FAILS_TEXT: `token ${plant.secret}` }, argv: ['--json'] });
+      assert.ok(out.error, 'the run fails');
+      assert.equal(out.error instanceof RangeError, false, 'not a stack overflow');
+      const shown = inspect(out.error, { depth: 10 });
+      never(shown, 'K4, util.inspect of the error');
+      assert.equal(typeof out.error.name, 'string', 'its name is readable');
+      assert.doesNotThrow(() => String(out.error));
+      if (shape === 'start-fails-timeout') { assert.equal(out.error.name, 'TimeoutError'); assert.ok(out.error instanceof DOMException, 'a DOMException still'); }
+    });
+  }
   test(`K4: ${plant.name} in a string PROPERTY of the error a place's start threw never reaches the thrown error as Node prints it; the property's name and the rest are kept`, { timeout: 300_000 }, async (t) => {
     const out = await sinkRun(t, { record: plant.record, spec: plant.spec, env: { ...plant.env, DEMO_WITH_PLACE: 'start-fails-property', DEMO_START_FAILS_TEXT: `the runner printed token ${plant.secret}\n${KEPT}` }, argv: ['--json'] });
     assert.ok(out.error, 'the run fails');
@@ -130,5 +144,49 @@ test('K7: the reference run\'s printed output (text and JSON) never carries a ke
   assert.ok(text.includes(KEPT));
   const json = referenceOutput(view, result, '/run', true).join('\n');
   assert.equal(json.includes(KEY), false, 'the JSON print');
+});
+
+const { errorOutcome, handedOut, handedOutError } = await import('../packages/harness/dist/demo.js');
+
+test('the SOURCE: a run process\'s error outcome line passes the process\'s OWN redaction (a value only it tracks, with no credential shape) and the credential pass', () => {
+  const own = `signinonly${'z'.repeat(14)}`;
+  const line = errorOutcome(new Error(`the sign-in printed ${own}\ntoken ${KEY}\n${KEPT}`), (text) => text.replaceAll(own, '[REDACTED:signin]'));
+  assert.equal(line.includes(own), false, 'the process\'s own tracked value');
+  assert.equal(line.includes(KEY), false, 'a credential-shaped key');
+  assert.ok(line.includes(KEPT));
+  assert.equal(JSON.parse(line).outcome.status, 'error');
+});
+
+test('the SOURCE as the run process WRITES it (its own outcome line, as the place read it, before any sink): a token only the process tracks never reaches that line, and the rest of the message does', { timeout: 300_000 }, async (t) => {
+  const own = `childonly${'w'.repeat(14)}`;
+  const dir = await mkdtemp(join(tmpdir(), 'reference-demo-source-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const capture = join(dir, 'exit.json');
+  const spec = { keys: [{ env: 'DEMO_CHILD_ONLY_TOKEN', why: 'a sign-in value only the run process holds', where: 'the test', required: false, for: 'live' }] };
+  await sinkRun(t, { record: true, spec, env: { DEMO_WITH_PLACE: 'capture-exit', DEMO_CHILD_ONLY: own, DEMO_CAPTURE_FILE: capture, DEMO_RESULT_THROWS: '1', DEMO_RESULT_THROWS_TEXT: `the sign-in printed ${own}\n${KEPT}` }, argv: ['--json'] });
+  const exit = JSON.parse(readFileSync(capture, 'utf8'));
+  assert.equal(exit.outcome?.status, 'error', 'the process wrote its error outcome line');
+  assert.equal(JSON.stringify(exit.outcome).includes(own), false, 'the token only the process tracks is not in its own line');
+  assert.ok(JSON.stringify(exit.outcome).includes(KEPT), 'the rest of its message is');
+});
+
+test('an AggregateError\'s errors are carried through the walker: none of them reaches util.inspect with a key, and they are kept', () => {
+  const out = handedOutError(new AggregateError([new Error(`token ${KEY}\n${KEPT}`), 'plain'], 'several things failed'));
+  assert.equal(inspect(out, { depth: 10 }).includes(KEY), false);
+  assert.equal(out.errors.length, 2);
+  assert.ok(out.errors[0].message.includes(KEPT));
+});
+
+test('a value SHARED by two branches (no cycle) survives in both, in a result and inside an error; only a cycle is cut', () => {
+  const shared = { grids: [1, 2], note: `token ${KEY}` };
+  const result = handedOut({ beat: shared, again: shared });
+  assert.deepEqual(result.beat.grids, [1, 2]);
+  assert.deepEqual(result.again.grids, [1, 2], 'the second reference is kept, not cut');
+  assert.equal(JSON.stringify(result).includes(KEY), false);
+  const error = handedOutError(Object.assign(new Error('failed'), { first: shared, second: shared }));
+  assert.deepEqual([error.first?.grids, error.second?.grids], [[1, 2], [1, 2]]);
+  const cyclic = { x: 1 };
+  cyclic.self = cyclic;
+  assert.equal(handedOut(cyclic).self, undefined, 'a cycle is cut');
 });
 
