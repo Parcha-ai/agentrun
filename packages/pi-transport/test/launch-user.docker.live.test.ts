@@ -10,6 +10,7 @@ import type { Box } from "../src/box/box.ts";
 import { dockerBoxes } from "../src/box/docker.ts";
 import { finish } from "../src/box/files.ts";
 import { launch, launchState, launchStop } from "../src/launch/index.ts";
+import { LAUNCHER_SCRIPT } from "../src/launch/launcher-script.ts";
 import { until } from "./home-launch-support.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -108,6 +109,40 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 				expect(refused.ok ? undefined : refused.error.code).toBe("unsupported");
 			} finally {
 				await alpine.destroy(context);
+			}
+		});
+
+		it("checks a root program's tools user BEFORE it reads the frame: a failed check refuses (8), never a frame error (7)", async () => {
+			const box = getOrThrow(await provider.create({ maxLifetimeMs: 10 * 60_000, labels }, context));
+			try {
+				const dir = "/tmp/order-check";
+				getOrThrow(
+					await box.upload(
+						[
+							{ path: `${dir}/launcher.sh`, bytes: new TextEncoder().encode(LAUNCHER_SCRIPT), mode: 0o700 },
+							{
+								path: `${dir}/spec.sh`,
+								bytes: new TextEncoder().encode(
+									"GEN='g1'\nFRAMED=1\nTOOLS='nosuchuser'\nISOLATION='none'\nrun_program() {\n  exec true\n}\n",
+								),
+								mode: 0o600,
+							},
+						],
+						context,
+					),
+				);
+				// A malformed frame: a launcher that read it first would answer 7.
+				const started = getOrThrow(
+					await box.exec(["sh", `${dir}/launcher.sh`, "start", dir], { timeoutMs: 60_000 }, context),
+				);
+				const done = getOrThrow(await finish(started, new TextEncoder().encode("not a frame\n")));
+				expect(done.exitCode).toBe(8);
+				expect(new TextDecoder().decode(done.stdout)).toMatch(
+					/^INVALID there is no tools user nosuchuser in this box/m,
+				);
+				expect(await fileIn(box, `${dir}/launcher.pid`)).toBeUndefined();
+			} finally {
+				await box.destroy(context);
 			}
 		});
 

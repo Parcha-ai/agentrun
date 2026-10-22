@@ -206,6 +206,16 @@ describe("a launch's user", () => {
 			const other = await launch(box, "other", { argv: ["sleep", "300"], user: "root" }, context);
 			expect(other.ok ? undefined : other.error.code).toBe("unsupported");
 		}
+		// A framed launch as uid 0 spelled with extra zeros is refused before any box call (the launcher refuses, in the box, a name
+		// that RESOLVES to uid 0: launch-stop-ptrace.test.ts).
+		const asRoot = await launch(
+			box,
+			"asroot",
+			{ argv: ["sleep", "300"], user: "000", stdin: new Uint8Array([1]) },
+			context,
+		);
+		expect(asRoot.ok ? undefined : asRoot.error.code).toBe("invalid");
+		expect(asRoot.ok ? "" : asRoot.error.message).toMatch(/runs its program as root \(uid 0\) only with a toolsUser/);
 		const unknown = await launch(box, "unknown", { argv: ["sleep", "300"], user: "no-such-user-here" }, context);
 		expect(unknown.ok ? undefined : unknown.error.code).toBe("invalid");
 		await box.destroy(context);
