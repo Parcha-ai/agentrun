@@ -9,8 +9,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { settleWithin } from './host.mjs';
 import { runLoop, scriptedParts } from './runner.mjs';
-import { FIXTURES_MCC } from './scripted-mcc.mjs';
-import { teacherLabelsOf } from './mcc.mjs';
+import { FIXTURES_V4, readJson } from './scripted.mjs';
 import { SETS } from './sets.mjs';
 
 async function scratch(t) {
@@ -20,18 +19,21 @@ async function scratch(t) {
   return dir;
 }
 
-/** The scripted MCC parts, with fetch_page never settling for `hang` (a URL), as a stalled body read does. */
+/** The scripted v4 parts, with every tool that reads the web never settling for the company `hang` (a CIK), as a stalled
+ *  body read does. */
+const READERS = new Set(['fetch_page', 'search_web', 'browse', 'read_document']);
 function partsHanging(hang) {
-  const parts = scriptedParts({ set: SETS.mcc });
-  const labels = teacherLabelsOf(join(FIXTURES_MCC, 'teacher.json'));
-  for (const m of parts.companies) Object.assign(m, labels.get(m.cik) ?? { teacher: null, stratum: null });
+  const parts = scriptedParts({ set: SETS.v4 });
   const toolsFor = parts.toolsFor;
-  parts.toolsFor = async (job, run) => (await toolsFor(job, run)).map((tool) => (tool.name !== 'fetch_page' ? tool : {
+  parts.toolsFor = async (job, run) => (await toolsFor(job, run)).map((tool) => (job.cik !== hang || !READERS.has(tool.name) ? tool : {
     ...tool,
-    run: (args, options) => (args?.url === hang ? new Promise(() => {}) : tool.run(args, options)),
+    run: () => new Promise(() => {}),
   }));
   return parts;
 }
+const truth = readJson(join(FIXTURES_V4, 'answers.json'));
+const HARBOR = '0000900101';
+const SUMMIT = '0000900103';
 
 test('settleWithin: a promise that never settles is rejected at the deadline; one that settles passes through', async () => {
   await assert.rejects(settleWithin(new Promise(() => {}), 50, 'never answered'), /never answered/);
@@ -41,21 +43,22 @@ test('settleWithin: a promise that never settles is rejected at the deadline; on
 
 test('a tool call that never settles is abandoned at the per-call deadline, and the run answers and lands', async (t) => {
   const out = join(await scratch(t), 'out');
-  const parts = partsHanging('https://lumencandle.example/');
+  const parts = partsHanging(HARBOR);
   parts.callDeadlineMs = 300;
-  const { rows } = await runLoop({ out, parts, split: 'train', list: [{ id: 'm-001' }, { id: 'm-003' }], record: false });
-  assert.deepEqual(rows.map((r) => [r.merchantId, r.answer, r.infraFailed]), [['m-001', '5999', false], ['m-003', '5993', false]]);
+  const { rows } = await runLoop({ out, parts, split: 'run', list: [{ cik: HARBOR }, { cik: SUMMIT }], record: false });
+  const sic4 = (cik) => truth[parts.companies.find((c) => c.cik === cik).name].sic4;
+  assert.deepEqual(rows.map((r) => [r.cik, r.answer, r.infraFailed]), [[HARBOR, sic4(HARBOR), false], [SUMMIT, sic4(SUMMIT), false]]);
 });
 
 test('a run past its wall-clock deadline ends unanswered, is run again once as an infrastructure failure, and the stream goes on', async (t) => {
   const out = join(await scratch(t), 'out');
-  const parts = partsHanging('https://lumencandle.example/');
+  const parts = partsHanging(HARBOR);
   parts.callDeadlineMs = Infinity;
   parts.runDeadlineMs = 400;
-  const { rows } = await runLoop({ out, parts, split: 'train', list: [{ id: 'm-001' }, { id: 'm-003' }], record: false });
+  const { rows } = await runLoop({ out, parts, split: 'run', list: [{ cik: HARBOR }, { cik: SUMMIT }], record: false });
   const [first, second] = rows;
-  assert.deepEqual([first.merchantId, first.answer, first.infraFailed, first.rerunOf], ['m-001', null, true, 'run-001']);
+  assert.deepEqual([first.cik, first.answer, first.infraFailed, first.rerunOf], [HARBOR, null, true, 'run-001']);
   const progress = JSON.parse(readFileSync(join(out, 'progress', 'run-001.json'), 'utf8'));
   assert.deepEqual(progress.infraFailed.map((f) => f.reason), ['deadline']);
-  assert.equal(second.merchantId, 'm-003');
+  assert.equal(second.cik, SUMMIT);
 });
