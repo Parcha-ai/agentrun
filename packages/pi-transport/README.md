@@ -861,10 +861,14 @@ provider.script.on({ op: "create" }, { fail: "unknown", leakBox: true }); // fai
   scripted `exit`, a box that goes `gone` in the middle of an exec, a `refuse`. A match names the op, a box, the nth call, a command
   or any predicate over the call. `fakeClock()` moves time only when a test says (`advance`): delays, `timeoutMs` and a box's
   `maxLifetimeMs` all run on it.
-- `box.launch`, `box.launchState` and `box.launchStop` are a launcher's calls with a scriptable per-launch state (`state`, `code`,
-  `incarnation`, `restarts`), restarts under a policy, the stdin replayed to every incarnation, and a stop that drains, runs a
-  before-stop program, then kills. Each start is an `incarnation` call, never an `exec`. These types are placeholders until the
-  launcher contract lands in the package.
+- Each fake box fills `Box.launcher`, so the launcher's own `launch`, `launchState` and `launchStop` (`@parcha/pi-transport/launch`)
+  run over it with no exec of a launcher program. A launch has a scriptable state (`phase`, `incarnation`, `restarts`, `lastExit`),
+  restarts under the spec's policy (`restart`, `restartDelayMs`, `restartLimit`, `terminalExits`), the stdin replayed to every
+  incarnation, `secrets` on the program's secrets channel, and a stop that drains, runs the `beforeStop` program, then kills. The
+  stdin and secrets are recorded on the `launch` call only, so `leaks(token)` finds them there and nowhere else; each start is an
+  `incarnation` call, never an `exec`. Errors are the launcher's `LaunchError`. A rule can fail a restart
+  (`{ op: "incarnation", when: (c) => c.incarnation === 2 }`), make the state unreadable (`{ op: "launchState" }` with a `fail`), or
+  end the program with a chosen code (`{ op: "launch" }` with an `exit`); `fake.launches[i].exit(code)` does it later.
 - `modalLike()` (a VM with FUSE and a ptrace scope a launcher can raise) and `daytonaLike()` (a container with no FUSE and a scope that
   cannot be raised) are presets; `fuse`, `startedAt` and `ptraceScope` are extra facts until the box contract carries them.
 

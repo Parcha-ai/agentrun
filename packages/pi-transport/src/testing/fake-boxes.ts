@@ -7,6 +7,7 @@ import {
 	type BoxExecOptions,
 	type BoxFacts,
 	type BoxFile,
+	type BoxLauncher,
 	type BoxProcess,
 	type BoxProvider,
 	type BoxRef,
@@ -14,6 +15,7 @@ import {
 	type BoxStatus,
 	isReservedLabel,
 } from "../box/box.ts";
+import { type Launch, LaunchError, type LaunchErrorCode, type LaunchSpec, type LaunchState } from "../launch/index.ts";
 
 /**
  * A box provider for tests: it does what a test scripts and writes down everything it was asked. It runs no real program:
@@ -122,12 +124,11 @@ export type FakeCall = {
 	stdinClosed?: boolean;
 	/** For `upload` and `download`: paths, sizes and modes. Content is read through `box.files`. */
 	readonly files?: readonly { readonly path: string; readonly bytes?: number; readonly mode?: number }[];
-	/** For `launch`, `launchState`, `launchStop` and `incarnation`: the launch's id; for an `incarnation`, which one (1 is the first start). */
+	/** For `launch`, `launchState`, `launchStop` and `incarnation`: the launch's name; for an `incarnation`, which one (1 is the first start). */
 	launch?: string;
 	incarnation?: number;
-	/** For `launch`: who the program runs as, and the restart policy, as asked. */
+	/** For `launch`: who the program runs as, as asked. */
 	user?: string;
-	restart?: { readonly onFailure: boolean; readonly preventExit?: readonly number[] };
 	/** For `create`: the spec as asked. */
 	readonly spec?: BoxSpec;
 	/** For `attach` and `list`: what was asked. */
@@ -142,7 +143,7 @@ export type FakeCall = {
 export type FakeLeak = {
 	readonly seq: number;
 	readonly op: FakeOp;
-	readonly where: "argv" | "env" | "stdin" | "upload" | "path" | "label" | "spec";
+	readonly where: "argv" | "env" | "stdin" | "secret" | "upload" | "path" | "label" | "spec";
 };
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -162,7 +163,7 @@ export type CallMatch = {
 
 export type Outcome =
 	/** `leakBox` (on a `create`): the call fails, but the box was made and `list` and `attach` find it: a create whose call failed after the machine existed. */
-	| { readonly fail: BoxErrorCode; readonly message?: string; readonly leakBox?: boolean }
+	| { readonly fail: BoxErrorCode | LaunchErrorCode; readonly message?: string; readonly leakBox?: boolean }
 	| { readonly delayMs: number; readonly next?: Outcome }
 	| { readonly hang: true }
 	| { readonly lose: "stdin-eof" | "stdout" | "stderr" }
@@ -196,6 +197,8 @@ export type ProgramContext = {
 	readonly stdin: { read(): Promise<Uint8Array | null>; readAll(): Promise<Uint8Array> };
 	readonly stdout: { write(bytes: Uint8Array | string): void };
 	readonly stderr: { write(bytes: Uint8Array | string): void };
+	/** The secrets a launch put on the program's secrets channel (`PI_TRANSPORT_SECRETS_FD`); empty for an exec. */
+	readonly secrets: Readonly<Record<string, string>>;
 	readonly files: FakeFiles;
 	/** Aborts when the box ends or the program is killed or timed out. */
 	readonly signal: AbortSignal;
@@ -301,8 +304,6 @@ export type FakeBoxesOptions = {
 	readonly facts?: FakeFacts;
 	/** `true`: each box reports `startedAt` (ISO, from the clock) in its facts. A placeholder until the box contract carries it. */
 	readonly startedAt?: boolean;
-	/** The most restarts a launcher makes of a program that keeps failing. Default 10. */
-	readonly maxRestarts?: number;
 	readonly clock?: FakeClock;
 	/** Live boxes at once; the next `create` is `capacity`. Default unlimited. */
 	readonly capacity?: number;
@@ -331,52 +332,24 @@ export interface FakeProvider extends BoxProvider {
 	leaks(marker: string | Uint8Array): FakeLeak[];
 }
 
-/**
- * The launcher's types as the K2 signature assumes them (T3's launch / launchState / launchStop), PLACEHOLDERS until T3 lands on main:
- * the names and shapes follow that signature and are replaced by T3's own.
- */
-export type FakeLaunchSpec = {
-	readonly argv: readonly string[];
-	readonly user: string;
-	readonly env?: Readonly<Record<string, string>>;
-	readonly inheritEnv?: boolean;
-	/** Replayed to every incarnation. */
-	readonly stdin?: Uint8Array;
-	readonly restart?: { readonly onFailure: boolean; readonly preventExit?: readonly number[] };
-	/** Run on a planned stop, after the drain and before the kill. */
-	readonly beforeStop?: readonly string[];
-};
-/** What `launch` returns: Json-able, kept by the host. */
-export type FakeLaunchHandle = { readonly id: string };
-export type FakeLaunchState = {
-	readonly state: "starting" | "running" | "exited";
-	readonly code: number | null;
-	readonly incarnation: number;
-	readonly restarts: number;
-};
-/** One launch, for a test to read and to drive. */
+/** One launch, for a test to read and to drive: the fake's own handle, beside the `Launch` a host keeps. */
 export interface FakeLaunch {
-	readonly id: string;
-	readonly spec: FakeLaunchSpec;
-	/** What the launcher reports now. */
-	readonly status: FakeLaunchState;
+	readonly name: string;
+	readonly spec: LaunchSpec;
+	/** What the launcher reports now (the launcher's own `LaunchState`). */
+	readonly status: LaunchState;
 	/** In order: what a planned stop did (`drain`, `beforeStop`, `kill`). */
 	readonly events: readonly string[];
-	/** The instance exits now with this code; the launcher restarts it or settles as its policy says. */
+	/** The program exits now with this code; the launcher restarts it or settles as the spec's policy says. */
 	exit(code: number): void;
-	/** Force what the launcher reports (for example `starting` for a while), without touching the program. */
-	setState(state: Partial<FakeLaunchState>): void;
+	/** Force what the launcher reports, without touching the program. */
+	setState(state: Partial<LaunchState>): void;
 }
 
 export interface FakeBox extends Box {
+	/** The launcher's three calls, done natively: `launch`, `launchState` and `launchStop` (`@parcha/pi-transport/launch`) use it. */
+	readonly launcher: BoxLauncher;
 	readonly launches: readonly FakeLaunch[];
-	launch(spec: FakeLaunchSpec, context: Context): Promise<Result<FakeLaunchHandle, BoxError>>;
-	launchState(launch: FakeLaunchHandle, context: Context): Promise<Result<FakeLaunchState, BoxError>>;
-	launchStop(
-		launch: FakeLaunchHandle,
-		options: { readonly graceMs: number },
-		context: Context,
-	): Promise<Result<void, BoxError>>;
 	readonly spec: BoxSpec;
 	readonly state: "running" | "ended";
 	readonly files: FakeFiles;
@@ -487,6 +460,28 @@ const BUILT_INS: [ProgramMatch, Program][] = [
 	],
 ];
 
+const LAUNCH_CODES: ReadonlySet<string> = new Set(["invalid", "box", "timeout", "failed", "unsupported", "refused"]);
+
+/** A launcher call's failure, as the launcher defines it: a `LaunchError` carried inside a scripted result, or a box error by its code. */
+function launchError(error: BoxError): LaunchError {
+	if (error.cause instanceof LaunchError) return error.cause;
+	if (LAUNCH_CODES.has(error.code)) return new LaunchError(error.code as LaunchErrorCode, error.message, error);
+	return new LaunchError("box", error.message, error);
+}
+
+const viaBox = <T>(result: Result<T, BoxError>): Result<T, LaunchError> =>
+	result.ok ? result : err(launchError(result.error));
+
+/** A launch spec as it was when the call arrived: a later change to the caller's objects must not rewrite it. */
+const copyLaunchSpec = (spec: LaunchSpec): LaunchSpec => ({
+	...spec,
+	argv: [...spec.argv],
+	...(spec.env === undefined ? {} : { env: { ...spec.env } }),
+	...(spec.stdin === undefined ? {} : { stdin: new Uint8Array(spec.stdin) }),
+	...(spec.secrets === undefined ? {} : { secrets: { ...spec.secrets } }),
+	...(spec.beforeStop === undefined ? {} : { beforeStop: { ...spec.beforeStop, argv: [...spec.beforeStop.argv] } }),
+});
+
 /** A spec as it was when the call arrived: a later change to the caller's objects must not rewrite what was recorded. */
 const copySpec = (spec: BoxSpec): BoxSpec => ({
 	...spec,
@@ -593,7 +588,10 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 			if ("fail" in outcome)
 				return finish(
 					call,
-					err(new BoxError(outcome.fail, outcome.message ?? `scripted ${outcome.fail}`)) as Result<T, BoxError>,
+					err(new BoxError(outcome.fail as BoxErrorCode, outcome.message ?? `scripted ${outcome.fail}`)) as Result<
+						T,
+						BoxError
+					>,
 				);
 			if ("refuse" in outcome)
 				return finish(call, err(new BoxError("unsupported", "scripted refusal")) as Result<T, BoxError>);
@@ -743,55 +741,70 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 			});
 		}
 
-		async launch(spec: FakeLaunchSpec, context: Context): Promise<Result<FakeLaunchHandle, BoxError>> {
-			const { call, rule: asked } = record("launch", {
-				box: this.id,
-				argv: [...spec.argv],
-				user: spec.user,
-				envKeys: Object.keys(spec.env ?? {}),
-				...(spec.restart === undefined ? {} : { restart: { ...spec.restart } }),
-			});
-			const rule = await settled(asked, context);
-			if (rule === null) return finish(call, aborted<FakeLaunchHandle>());
-			return scripted(
-				call,
-				rule === undefined || !("exit" in rule.outcome) ? rule : undefined,
-				context,
-				this,
-				() => {
-					const handle = new LaunchImpl(`launch-${this.launches.length + 1}`, spec, this);
-					this.launches.push(handle);
-					call.launch = handle.id;
-					if (spec.stdin !== undefined) call.stdin = new Uint8Array(spec.stdin);
-					call.stdinClosed = true;
-					handle.begin(rule !== undefined && "exit" in rule.outcome ? rule.outcome.exit : undefined);
-					return ok({ id: handle.id });
-				},
-			);
-		}
+		/** The launcher's calls, done natively. A call is recorded and scripted like any other; its errors are `LaunchError`s. */
+		readonly launcher: BoxLauncher = {
+			launch: async (name, spec, context) => {
+				const { call, rule: asked } = record("launch", {
+					box: this.id,
+					launch: name,
+					argv: [...spec.argv],
+					...(spec.user === undefined ? {} : { user: spec.user }),
+					envKeys: Object.keys(spec.env ?? {}),
+					// What the launch carries is recorded under the launch call, and only there.
+					...(spec.stdin === undefined ? {} : { stdin: new Uint8Array(spec.stdin), stdinClosed: true }),
+				});
+				if (spec.secrets !== undefined)
+					(call as { secrets?: Record<string, string> }).secrets = { ...spec.secrets };
+				const rule = await settled(asked, context);
+				if (rule === null) return viaBox(finish(call, aborted<LaunchState>()));
+				return viaBox(
+					await scripted<LaunchState>(
+						call,
+						rule === undefined || !("exit" in rule.outcome) ? rule : undefined,
+						context,
+						this,
+						() => {
+							const existing = this.#latest(name);
+							if (existing?.status.launcherAlive) return ok(existing.snapshot());
+							const made = new LaunchImpl(name, copyLaunchSpec(spec), this);
+							this.launches.push(made);
+							made.begin(rule !== undefined && "exit" in rule.outcome ? rule.outcome.exit : undefined);
+							return ok(made.snapshot());
+						},
+					),
+				);
+			},
+			state: async (launch: Launch, context) => {
+				const { call, rule } = record("launchState", { box: this.id, launch: launch.name });
+				return viaBox(
+					await scripted<LaunchState | undefined>(call, rule, context, this, () =>
+						ok(this.#latest(launch.name)?.snapshot()),
+					),
+				);
+			},
+			stop: async (launch: Launch, stopOptions, context) => {
+				const { call, rule } = record("launchStop", { box: this.id, launch: launch.name });
+				return viaBox(
+					await scripted<LaunchState>(call, rule, context, this, async () => {
+						const found = this.#latest(launch.name);
+						if (found === undefined) {
+							return err(
+								new BoxError(
+									"unknown",
+									`no launch named ${launch.name}`,
+									new LaunchError("invalid", `no launch named ${launch.name} in box ${this.id}`),
+								),
+							);
+						}
+						await found.stop(stopOptions?.graceMs ?? 5_000);
+						return ok(found.snapshot());
+					}),
+				);
+			},
+		};
 
-		launchState(launch: FakeLaunchHandle, context: Context): Promise<Result<FakeLaunchState, BoxError>> {
-			const { call, rule } = record("launchState", { box: this.id, launch: launch.id });
-			return scripted(call, rule, context, this, () => {
-				const found = this.launches.find((l) => l.id === launch.id);
-				return found === undefined
-					? err(new BoxError("not_found", `no launch ${launch.id}`))
-					: ok({ ...found.status });
-			});
-		}
-
-		launchStop(
-			launch: FakeLaunchHandle,
-			stopOptions: { readonly graceMs: number },
-			context: Context,
-		): Promise<Result<void, BoxError>> {
-			const { call, rule } = record("launchStop", { box: this.id, launch: launch.id });
-			return scripted(call, rule, context, this, async () => {
-				const found = this.launches.find((l) => l.id === launch.id);
-				if (found === undefined) return err(new BoxError("not_found", `no launch ${launch.id}`));
-				await found.stop(stopOptions.graceMs);
-				return ok(undefined);
-			});
+		#latest(name: string): LaunchImpl | undefined {
+			return this.launches.filter((l) => l.name === name).at(-1);
 		}
 
 		async exec(
@@ -829,6 +842,11 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 			execOptions: BoxExecOptions | undefined,
 			outcome: Outcome | undefined,
 			callerSignal?: AbortSignal,
+			extra?: {
+				readonly env?: Record<string, string>;
+				readonly secrets?: Record<string, string>;
+				readonly recordInput?: boolean;
+			},
 		): BoxProcess {
 			const run: FakeProgramRun = { argv: [...command], state: "running", killed: false, stdout: "", stderr: "" };
 			const first = this.programs.length === 0;
@@ -950,13 +968,14 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 					ended(ok(127));
 				});
 			} else {
-				const env = { ...(this.spec.env ?? {}) };
+				const env = { ...(extra?.env ?? this.spec.env ?? {}) };
 				const context: ProgramContext = {
 					argv: command,
 					env,
 					stdin: stdinReader,
 					stdout: { write: write("stdout") },
 					stderr: { write: write("stderr") },
+					secrets: extra?.secrets ?? {},
 					files: this.files,
 					signal: abort.signal,
 					box: this,
@@ -978,14 +997,14 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 				stdin: {
 					write: async (bytes) => {
 						if (this.state === "ended" && !finished) throw new BoxError("gone", `the box ${this.id} ended`);
-						call.stdin = concat(call.stdin, bytes);
+						if (extra?.recordInput !== false) call.stdin = concat(call.stdin, bytes);
 						written += bytes.length;
 						stdinQueue.push(new Uint8Array(bytes));
 						wake();
 						if (goneAfter !== undefined && written >= goneAfter) this.end(null);
 					},
 					close: async () => {
-						call.stdinClosed = true;
+						if (extra?.recordInput !== false) call.stdinClosed = true;
 						if (lose === "stdin-eof" && call.stdin === undefined) {
 							// The end of an input nothing was written to is never delivered; close() returns once the program is gone.
 							await result;
@@ -1009,18 +1028,45 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 
 	class LaunchImpl implements FakeLaunch {
 		readonly events: string[] = [];
-		status: FakeLaunchState = { state: "starting", code: null, incarnation: 0, restarts: 0 };
+		readonly name: string;
+		readonly spec: LaunchSpec;
+		readonly box: FakeBoxImpl;
+		status: LaunchState;
+		#incarnation = 0;
+		#starts = 0;
+		#lastExit: number | undefined;
 		#proc: BoxProcess | undefined;
 		#stopped = false;
+		#restartTimes: number[] = [];
+		#cancelDelay: (() => void) | undefined;
 
-		readonly id: string;
-		readonly spec: FakeLaunchSpec;
-		readonly box: FakeBoxImpl;
-
-		constructor(id: string, spec: FakeLaunchSpec, box: FakeBoxImpl) {
-			this.id = id;
+		constructor(name: string, spec: LaunchSpec, box: FakeBoxImpl) {
+			this.name = name;
 			this.spec = spec;
 			this.box = box;
+			this.status = this.#state("starting");
+		}
+
+		#state(phase: LaunchState["phase"]): LaunchState {
+			return {
+				launch: { v: 1, name: this.name },
+				phase,
+				incarnation: this.#incarnation,
+				restarts: Math.max(0, this.#incarnation - 1),
+				...(this.spec.user === undefined
+					? {}
+					: { user: { name: this.spec.user, uid: Number(this.spec.user) || 1000 } }),
+				...(phase === "running" ? { pid: 4000 + this.#incarnation } : {}),
+				starts: this.#starts,
+				...(this.#lastExit === undefined ? {} : { lastExit: this.#lastExit }),
+				since: Math.floor(clock.now() / 1000) * 1000,
+				launcherAlive: !["exited", "gave_up", "stopped", "lost"].includes(phase),
+				directory: `.pi-transport-launch/${this.name}`,
+			};
+		}
+
+		snapshot(): LaunchState {
+			return { ...this.status };
 		}
 
 		begin(exitNow?: number): void {
@@ -1028,26 +1074,50 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 		}
 
 		#incarnate(exitNow?: number): void {
-			const n = this.status.incarnation + 1;
+			const n = this.#incarnation + 1;
+			// A start is the fake's own event, never an exec; what the launch carries was recorded on the launch call, not here.
 			const { call, rule } = record("incarnation", {
 				box: this.box.id,
-				launch: this.id,
+				launch: this.name,
 				incarnation: n,
 				argv: [...this.spec.argv],
 			});
 			if (rule !== undefined && "fail" in rule.outcome) {
-				finish(call, err(new BoxError(rule.outcome.fail, rule.outcome.message ?? `scripted ${rule.outcome.fail}`)));
-				this.status = { ...this.status, state: "exited" };
+				finish(
+					call,
+					err(
+						new BoxError(
+							rule.outcome.fail as BoxErrorCode,
+							rule.outcome.message ?? `scripted ${rule.outcome.fail}`,
+						),
+					),
+				);
+				this.status = this.#state("exited");
 				return;
 			}
-			this.status = { ...this.status, state: "running", incarnation: n };
+			this.#incarnation = n;
+			this.#starts += 1;
+			this.status = this.#state("running");
+			const env: Record<string, string> = {
+				LANG: "C.UTF-8",
+				PI_TRANSPORT_INCARNATION: String(n),
+				...(this.spec.env ?? {}),
+				...(this.spec.secrets === undefined ? {} : { PI_TRANSPORT_SECRETS_FD: "3" }),
+			};
 			const proc = this.box.startProgram(
 				call,
 				this.spec.argv,
 				undefined,
 				exitNow === undefined ? undefined : { exit: exitNow },
+				undefined,
+				{
+					env,
+					...(this.spec.secrets === undefined ? {} : { secrets: { ...this.spec.secrets } }),
+					recordInput: false,
+				},
 			);
 			this.#proc = proc;
+			// The stdin is replayed to every incarnation, then closed.
 			void (async () => {
 				if (this.spec.stdin !== undefined && this.spec.stdin.length > 0) await proc.stdin.write(this.spec.stdin);
 				await proc.stdin.close();
@@ -1059,23 +1129,31 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 		}
 
 		#exited(result: Result<number, BoxError>): void {
-			if (this.#stopped || !result.ok) {
-				this.status = { ...this.status, state: "exited", code: result.ok ? result.value : null };
+			if (this.#stopped) return;
+			if (!result.ok) {
+				// The box ended under it: the launcher is gone with it.
+				this.status = this.#state("lost");
 				return;
 			}
 			const code = result.value;
-			const policy = this.spec.restart;
-			const again =
-				policy?.onFailure === true &&
-				code !== 0 &&
-				!(policy.preventExit ?? []).includes(code) &&
-				this.status.restarts < (options.maxRestarts ?? 10);
-			if (!again) {
-				this.status = { ...this.status, state: "exited", code };
+			this.#lastExit = code;
+			const terminal = code === 0 || this.spec.restart === false || (this.spec.terminalExits ?? []).includes(code);
+			if (terminal) {
+				this.status = this.#state("exited");
 				return;
 			}
-			this.status = { ...this.status, state: "starting", code, restarts: this.status.restarts + 1 };
-			this.#incarnate();
+			const limit = this.spec.restartLimit ?? { burst: 5, intervalMs: 60_000 };
+			const now = clock.now();
+			this.#restartTimes = this.#restartTimes.filter((t) => now - t < limit.intervalMs);
+			if (this.#restartTimes.length >= limit.burst) {
+				this.status = this.#state("gave_up");
+				return;
+			}
+			this.#restartTimes.push(now);
+			this.status = this.#state("restarting");
+			const delay = this.spec.restartDelayMs ?? 0;
+			if (delay > 0) this.#cancelDelay = clock.after(delay, () => this.#incarnate());
+			else this.#incarnate();
 		}
 
 		exit(code: number): void {
@@ -1083,25 +1161,35 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 			if (proc !== undefined) exits.get(proc)?.(code);
 		}
 
-		setState(state: Partial<FakeLaunchState>): void {
+		setState(state: Partial<LaunchState>): void {
 			this.status = { ...this.status, ...state };
 		}
 
 		async stop(_graceMs: number): Promise<void> {
+			// A launch that ended keeps its terminal phase.
+			if (!this.status.launcherAlive) return;
 			// A planned stop: from here a program that exits is not restarted, even while the hook runs.
 			this.#stopped = true;
+			this.#cancelDelay?.();
 			this.events.push("drain");
+			this.status = this.#state("stopping");
 			const before = this.spec.beforeStop;
 			if (before !== undefined) {
 				this.events.push("beforeStop");
 				const silent: FakeCall = { seq: 0, at: clock.now(), op: "launchStop", result: "pending" };
-				const hook = this.box.startProgram(silent, before, undefined, undefined);
+				const hook = this.box.startProgram(
+					silent,
+					before.argv,
+					before.timeoutMs === undefined ? undefined : { timeoutMs: before.timeoutMs },
+					undefined,
+				);
 				await hook.stdin.close();
 				await hook.wait();
 			}
 			this.events.push("kill");
 			this.exit(143);
-			this.status = { ...this.status, state: "exited", code: 143 };
+			this.#lastExit = 143;
+			this.status = this.#state("stopped");
 		}
 	}
 
@@ -1162,6 +1250,8 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 				const hit = (where: FakeLeak["where"]) => found.push({ seq: call.seq, op: call.op, where });
 				if (call.argv?.some((a) => a.includes(text))) hit("argv");
 				if (call.stdin !== undefined && contains(call.stdin, needle)) hit("stdin");
+				const secrets = (call as { secrets?: Record<string, string> }).secrets;
+				if (secrets !== undefined && Object.values(secrets).some((v) => v.includes(text))) hit("secret");
 				if (call.files?.some((f) => f.path.includes(text))) hit("path");
 				const uploads = (call as { uploads?: readonly BoxFile[] }).uploads;
 				if (uploads?.some((f) => contains(f.bytes, needle))) hit("upload");

@@ -528,7 +528,7 @@ describe("fakeBoxes: T3's own launcher over a fake box (Box.launcher)", () => {
 		expect(getOrThrow(await launchState(box, started.launch, context))).toMatchObject({
 			phase: "exited",
 			incarnation: 1,
-			restarts: 1,
+			restarts: 0,
 			lastExit: 2,
 		});
 		expect(provider.callsOf("incarnation").map((c) => [c.incarnation, c.scripted ?? null])).toEqual([
