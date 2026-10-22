@@ -8,8 +8,8 @@
 //   fork       copy a released, sealed run into a new run; its first open is generation 1
 // The API key is read from the environment variable named by `--api-key-env` (default ARCHIL_API_KEY) and only by the
 // supervisor commands; `run` never needs it and a host driver never passes it on.
-import { closeSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { closeSync, lstatSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { ARCHIL_SCOPED, DEFAULT_MOUNT_ROOT, NO_TOKEN, runPath, TOKEN_PREFIX, unmountClaim, type Claim, type RunRef } from "./claim.ts";
@@ -201,6 +201,38 @@ export function runUser(spec: string, passwd = "/etc/passwd"): { uid: number; gi
  * commands would run as this root process), is a usage error. Without the declaration, `--run-as` is as before.
  */
 /**
+ * Why the root instance must not load `app` under `--run-as`, or null: the module, after links, or any directory on its
+ * path up to `/`, is not root's or is writable by its group or by others (a sticky bit is no exception), or it lies inside
+ * the run's root (`runRoot`, whose work/ the agent's commands own). Root would execute code they could change. What the
+ * module imports (its node_modules) is the image's to keep root's.
+ */
+export function appWritableReason(
+  app: string,
+  runRoot: string,
+  fs: { realpathSync(p: string): string; lstatSync(p: string): { uid: number; mode: number } } = { realpathSync, lstatSync },
+): string | null {
+  let real: string;
+  try {
+    real = fs.realpathSync(resolve(app));
+  } catch (error) {
+    return `${app} cannot be read (${(error as NodeJS.ErrnoException).code ?? error})`;
+  }
+  const root = resolve(runRoot);
+  if (real === root || real.startsWith(`${root}/`)) return `${real} is inside the run's root ${root}, which the agent's commands can write`;
+  for (let p = real; ; p = dirname(p)) {
+    let st: { uid: number; mode: number };
+    try {
+      st = fs.lstatSync(p);
+    } catch (error) {
+      return `${p} cannot be read (${(error as NodeJS.ErrnoException).code ?? error})`;
+    }
+    if (st.uid !== 0) return `${p} is owned by uid ${st.uid}, not root`;
+    if ((st.mode & 0o022) !== 0) return `${p} is writable by its group or by others`;
+    if (p === "/") return null;
+  }
+}
+
+/**
  * Transport's launcher hands a program its secrets on one descriptor, named by `PI_TRANSPORT_SECRETS_FD`, which is not
  * close-on-exec: every command the instance spawns would inherit it. Closed here, with its variable dropped, before
  * anything runs (the instance takes no secrets that way yet; one that does reads it first).
@@ -302,6 +334,10 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   if (servePort !== undefined && tokenFile === undefined && !isLoopback(serveHost)) throw new UsageError(`--serve-host ${serveHost} is not loopback: name a --serve-token-file`);
   const serveToken = tokenFile === undefined ? undefined : readServeToken(tokenFile);
   const mountRoot = str(values["mount-root"], DEFAULT_MOUNT_ROOT)!;
+  if (runAs) {
+    const why = appWritableReason(str(values.app)!, dir ?? mountRoot);
+    if (why) throw new UsageError(`--run-as: this instance runs as root and loads --app, which the agent's commands could change: ${why}`);
+  }
   // On a disk the id names the run's directory: an unsafe one stops the instance here (INVALID_ARGUMENT), before it serves.
   if (dir === undefined) runPath(ref.id);
   const log = (event: string, extra: Record<string, unknown> = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event, run: ref.id, ...extra })}\n`);
