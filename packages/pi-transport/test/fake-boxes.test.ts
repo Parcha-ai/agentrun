@@ -101,7 +101,7 @@ describe("fakeBoxes: the recording", () => {
 			await stdin.readAll();
 			return 0;
 		});
-		const box = getOrThrow(await provider.create({ ...SPEC, env: { MODE: "secret-value" } }, context));
+		const box = getOrThrow(await provider.create({ ...SPEC, env: { FAKE_SETTING: "secret-value" } }, context));
 		await provider.create(SPEC, context);
 		provider.script.on({ op: "exec", argv: (a) => a[0] === "p" }, { fail: "spawn" }, { label: "no-spawn" });
 		await box.exec(["p", "1"], undefined, context);
@@ -115,7 +115,7 @@ describe("fakeBoxes: the recording", () => {
 		expect(spawned).toMatchObject({ argv: ["p", "1"], scripted: "no-spawn", result: { error: "spawn" } });
 		expect(started).toMatchObject({
 			argv: ["p", "2"],
-			envKeys: ["MODE"],
+			envKeys: ["FAKE_SETTING"],
 			stdinClosed: true,
 			result: "ok",
 			options: { timeoutMs: 5 },
