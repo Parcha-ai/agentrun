@@ -28,7 +28,7 @@ const initInProgress = (error: unknown): boolean => {
 /** The batch deadline comes from `DriverOptions`; a caller that passes none gets the facade's 60 s. */
 export function stagehandDriver(): DriverFactory<PageDriver> {
   return async (target, signal, options) => {
-    const { localBrowser, Stagehand }: any = await import("@browserbasehq/stagehand");
+    const { localBrowser, Stagehand } = await import("@browserbasehq/stagehand");
     // An id the provider supplies names a held extension too, so its worker is reset as well.
     // A failed open names where it went: Stagehand reports it as "[object Object]" and the socket's error has no
     // address.
@@ -36,7 +36,7 @@ export function stagehandDriver(): DriverFactory<PageDriver> {
     const named = <T>(step: Promise<T>) => step.catch((error) => { throw new Error(`attaching to the browser at ${host} failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error }); });
     const extensionId = await named(installedExtension(target.sdkCdpUrl, signal, target.extensionId));
     const browser = await named(localBrowser.connect({ cdpUrl: target.sdkCdpUrl, ...(extensionId ? { extensionId } : {}) }));
-    let stagehand: any;
+    let stagehand: Awaited<ReturnType<typeof Stagehand.create>>;
     try {
       stagehand = await Stagehand.create({ browser, ...SEALED_STAGEHAND });
     } catch (error) {

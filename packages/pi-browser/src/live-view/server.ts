@@ -38,8 +38,8 @@ export type LiveViewHost = {
   handle(req: IncomingMessage, res: ServerResponse): boolean;
   /** Takes a WebSocket upgrade for a viewer; true when the request was this host's. A bad Origin or an unknown path id is refused here. */
   upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): boolean;
-  /** The viewer's URL for one session, with its token in the fragment. Idempotent per tag: the same URL until `release`. Only the host's `onSession`
-   *  ever receives it. Nothing starts until a viewer authenticates. */
+  /** The viewer's URL for one session, with its token in the fragment. Idempotent per tag: the same URL until `release`. Only the host receives it (its
+   *  `onSession`, and a handoff's `request`), never the model. Nothing starts until a viewer authenticates. */
   open(tag: string, cdpUrl: string): Promise<LiveView>;
   /** The view `open` gave for a tag, or null: for a caller that must not start anything (`liveViewProvider` asks before it attaches). */
   known(tag: string): LiveView | null;
@@ -59,11 +59,11 @@ const SLOW_VIEWER_BYTES = 512 * 1024;
 /** Input messages are tiny: a whole message, fragments included, over this ends the connection (1009). */
 const MAX_MESSAGE_BYTES = 64 * 1024;
 
-/** A viewer whose messages the protocol does not know: one is dropped with a notice, and past this many within the window the connection is closed. */
 /** While a person's command runs, their driving turn is renewed this often (the gate's window is 3 s by default). */
 const KEEP_DRIVING_MS = 1_000;
 /** Messages a viewer may have waiting behind the browser command that is running; the rest are dropped with `held busy`, and a viewer that keeps doing it is closed. */
 const MAX_QUEUED_INPUT = 32;
+/** A viewer whose messages the protocol does not know: one is dropped with a notice, and past this many within the window the connection is closed. */
 const MAX_BAD_MESSAGES = 20;
 const BAD_WINDOW_MS = 10_000;
 
@@ -87,7 +87,6 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
    *  nothing is kept for a tag that has no open in flight. */
   const opening = new Map<string, Set<{ cancelled: boolean }>>();
 
-  const need = <T>(value: T | undefined, what: string): T => { if (value === undefined) throw new Error(`the live view has no ${what}`); return value; };
   const send = (conn: WsConn, message: ServerMessage): void => { conn.send(JSON.stringify(message)); };
   const refuse = (conn: WsConn, reason: "unauthorized" | "viewer_in_use" | "released" | "bad_message"): void => { send(conn, { type: "refused", reason }); conn.close(CLOSE_CODES[reason], reason); };
 

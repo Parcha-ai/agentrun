@@ -27,7 +27,7 @@ A workflow is a JSON document of typed nodes: each node that asks a model names 
 2. **Check.** `validateWorkflow(workflow)` checks the structure, the schemas, the state paths between nodes and the predicates, with no model call. A refused workflow lists its `issues`: each names the node or schema at fault with a JSON Pointer `path`, and the rule it breaks with a `code`, so the agent repairs that node and checks again. `inspectWorkflow` shows the tree and the tools and adapters it needs, without running any code.
 3. **Dry-run, for free.** `dryRunWorkflow(workflow)` runs the whole workflow on synthetic values made from its schemas, with no model, Jev or tool call. Its `status` is `passed` when every check ran, `failed` with the `problems`, or `not_run` when a check could not run, with the reasons in `skipped`. A `not_run` dry run proves nothing.
 4. **Run.** `runWorkflow(workflow, input, deps)` runs it with your agent, judgment and effect functions, and returns an output that matches the output schema, or an escalation. `deps` is the object of adapters your application supplies (`runNode`, `runJudge`, `runEffect`); [Integrate with your application](https://github.com/Parcha-ai/agentrun/blob/main/docs/host-integration.md) says what each one owes the engine.
-5. **Watch every node.** `workflowGraph(workflow)` from `@parcha/agentrun-dsl/graph` lists every node and edge from the JSON alone, and `nodeStatus` marks each node `done`, `working`, `failed` or `not-run` from what a durable run kept. Pi's `/agentrun` view draws the same graph, with each node's state as the run goes.
+5. **Watch every node.** `workflowGraph(workflow)` from `@parcha/agentrun-dsl/graph` lists every node and edge from the JSON alone, and `nodeStatus` marks each node `done`, `working`, `failed` or `not-run` from what a durable run kept, and `escalated` where the run's terminal result says it stopped. Pi's `/agentrun` view draws the same graph, with each node's state as the run goes.
 
 The same checks from a shell, in the project where you installed the package, on one of the author skill's examples that ships with it (an agent extracts the change in each release note, then summarizes the migration):
 
@@ -102,9 +102,64 @@ It prints `"status": "complete"` and an output with `"total": 6`. The shipped ex
 
 The `agentrun` CLI provides `demo`, `example`, `inspect`, `validate`, `dry-run`, and deterministic `run`. `inspect workflow.json [--json]` displays structure without executing code. Validation/run require `--trusted` because workflow JavaScript can execute, including during validation. This package is not an isolation boundary.
 
-`runWorkflow(workflow, input, deps)` returns a complete schema-validated output or an escalation; its TypeScript output type is `unknown`. `defineWorkflow` binds Standard JSON Schema contracts, including supported Zod schemas, to a frozen v2 document; `runTypedWorkflow` infers those input/output types and delegates to the same interpreter. Intermediate state paths remain runtime-validated. Execution and verification failures throw. Hosts own tools, durable storage, file delivery, idempotency, recovery, and activation. A durable run's store keeps each effect's arguments as given, so redact secrets before they reach an effect.
+`runWorkflow(workflow, input, deps)` returns a complete schema-validated output or an escalation; its TypeScript output type is `unknown`. `defineWorkflow` binds Standard JSON Schema contracts, including supported Zod schemas, to a frozen v2 document; `runTypedWorkflow` infers those input/output types and delegates to the same interpreter. Intermediate state paths remain runtime-validated. Execution and verification failures throw. Hosts own tools, file delivery, idempotency and activation, and choose where a run's journal lives; the package ships the recovery driver (see Durable runs below). A durable run's store keeps each effect's arguments as given, so redact secrets before they reach an effect.
 
 Raw JSON schemas retain `unknown` boundary types. Zod transforms, refinements, defaults and coercion are rejected rather than silently dropped. The core does not depend on Zod at runtime. Other Standard JSON Schema providers must faithfully represent their contracts. Typed execution accepts the original `defineWorkflow` result; copied or deserialized documents use `runWorkflow`.
+
+### A judge on any model
+
+`runJudge` is a plain function: it receives the node's `questions` and returns `answers`, so any model can stand behind it. This one answers every question with a fixed probability, so it runs with no key; replace its body with a call to your model that returns a probability for each question. Save this as `judge.mjs` next to `node_modules` and run `node judge.mjs`:
+
+```js
+import { readFileSync } from 'node:fs';
+import { runWorkflow } from '@parcha/agentrun-dsl';
+
+const dir = 'node_modules/@parcha/agentrun-dsl/skills/author/examples/';
+const workflow = JSON.parse(readFileSync(dir + 'evidence-gate.json', 'utf8'));
+const input = JSON.parse(readFileSync(dir + 'evidence-gate.input.json', 'utf8'));
+
+// A yes-probability for every question, as a noul answer.
+const runJudge = async ({ questions }) => ({
+  answers: Object.fromEntries(Object.keys(questions).map(id => [id, { type: 'noul', noul: 0.95 }])),
+});
+
+const result = await runWorkflow(workflow, input, { runJudge });
+console.log(result.status, result.output?.accepted);
+```
+
+It prints `complete true`: the workflow's own code gate accepts a yes-probability of 0.90 or more. Set `noul` to `0.5` and it prints `escalated undefined` instead. The Jev adapter, `@parcha/agentrun-jev`, is this same function backed by TypeSafe's judgment service.
+
+### Durable runs
+
+`@parcha/agentrun-dsl/recovery` journals a run so a process that dies can continue it. `openRecovery(store, workflow, { key })` opens the run's journal (`fileStore(directory)` keeps it in a directory, `memoryStore()` in memory) and `withRecovery(driver, deps)` wraps your adapters. A run opened again with the same key answers each committed step from the journal and runs only the rest; a tool call that was in flight when the process died has an unknown outcome and is refused, not repeated, unless your `reconcile` option settles it. The same journal opened for a completed run runs nothing. Save this as `durable.mjs` and run it three times: `CRASH=1 node durable.mjs` (the process exits before the last step commits), then `node durable.mjs` (it runs one model step, the one that did not commit), then `node durable.mjs` again (zero steps):
+
+```js
+import { readFileSync } from 'node:fs';
+import { runWorkflow } from '@parcha/agentrun-dsl';
+import { openRecovery, withRecovery, fileStore } from '@parcha/agentrun-dsl/recovery';
+
+const dir = 'node_modules/@parcha/agentrun-dsl/skills/author/examples/';
+const workflow = JSON.parse(readFileSync(dir + 'review-release-notes.json', 'utf8'));
+const input = JSON.parse(readFileSync(dir + 'review-release-notes.input.json', 'utf8'));
+
+let calls = 0;
+const runNode = async ({ label, user }) => {
+  calls += 1;
+  if (process.env.CRASH && label === 'summarize-migration') process.exit(1); // dies before the last step commits
+  const state = JSON.parse(user);
+  return label === 'extract-change'
+    ? { breakingChange: state.text, migrationAction: 'Follow the release note.' }
+    : { summary: `${state.changes.length} breaking changes.`, changes: state.changes };
+};
+
+const driver = await openRecovery(fileStore('./run-journal'), workflow, { key: 'release-review' });
+try {
+  const result = await runWorkflow(workflow, input, withRecovery(driver, { runNode }));
+  console.log(result.status, `model steps run this time: ${calls}`);
+} finally { await driver.close(); }
+```
+
+The first run exits with code 1 and leaves `run-journal/`; the second prints `complete model steps run this time: 1`; the third prints `complete model steps run this time: 0`. Delete `run-journal/` to start over. The key names the run, so use one per run; the journal is bound to the workflow and input it was opened with, and a change to either is refused. Hosts keep the store, the key and the decision to resume: see [Integrate with your application](https://github.com/Parcha-ai/agentrun/blob/main/docs/host-integration.md#recovery-and-versions).
 
 ## Public API
 
@@ -128,7 +183,7 @@ A `code` node runs in the host process through the package's own executor, which
 
 The schema helpers resolve the owning workflow's schema catalog; `stageSchemaForNode` and `submissionSchemaForNode` name the same submission contract. `mergeStageDelta` stores declared submission fields under the node's output key; callers must validate the submission first. Internal traversal, compilation, CSV, reference-file and input-normalization helpers are not package-root APIs.
 
-`@parcha/agentrun-dsl/graph` imports nothing, so a static viewer bundles it and a reader with no Node runs it. `workflowGraph(workflow)` returns `{ nodes, edges }` for a workflow document, computed from its JSON alone: a node is `{ path, kind, label, via? }` with `path` a JSON Pointer into the document as written (`/root/steps/1`, `/root/branches/<name>/body`, `/root/body` for a map's or a loop's body, `/root/workflow/root` for a child; the pointers `inspectWorkflow` and a validation issue use), and an edge is `{ from, to, kind }` with `kind` one of `next` (a chain's steps in order, a loop into its body), `branch` (a parallel node's branches), `route` (a route's branches), `item` (a map into its body) and `child` (a workflow node into its child's root). `nodeStatus(graph, source)` says, for each node, `done`, `working`, `failed` or `not-run`, read from what the recovery driver kept: its frame (the `pin` of the frozen snapshot), the map items' records (`agentrun.items`, keyed layout), or both as `{ pin, items }`. A run's map item or loop iteration has no node of its own: its instances count toward the body's node, and a node inside a map's or loop's body is done only once the map or loop is. To read one item's record on its own, pass `{ item: "<map path>/items/<index>" }` as a third argument: that item is then the instance, and its body is done when the item is. `graphNodeOf(graph, executionPath)` names the node an execution path (an event's or a record's) ran at: `{ path, at }`, where `path` is the node's pointer and `at` lists the map items (`{ kind: "item", index }`) and loop iterations (`{ kind: "iteration", index }`) it ran in, outermost first. An execution path is the node's pointer with `items/<i>` before a map's `body` and `iterations/<i>` before a loop's; the path is read by walking the graph by node kind, so a route branch named `items` stays a branch, and a path the graph does not have is `undefined`. `graphDiff(prev, next)` says what changed between two graphs of a workflow, such as two saved revisions of one: `{ added, removed, changed, moved, edges: { added, removed } }`. A node is the same in both when its `(kind, label)` is unique in each graph, so a step inserted before others is one `added` node (its path in `next`) and the steps after it `moved` (`{ prev, next }` paths), never a run of changes; a node whose `(kind, label)` repeats, or is in one graph only, is matched by its path, and the same path with a new kind or label is `changed` (`{ prev, next, was, now }`, `was` and `now` each `{ kind, label }`). `removed` holds nodes of `prev` only, at their paths there; `rewritten` holds matched nodes whose kind and label stayed but whose own fields changed (new instructions, a new budget: `{ prev, next, kind, label }`); `edges.added` and `edges.removed` hold the edges of one graph only, each in its own graph's paths. Each graph node carries a `changeCheck` for this: 8 hex digits, the FNV-1a hash of the node's own fields as canonical JSON, its children left out as the walk leaves them out. It detects a change; it is not an identity, and not a saved revision's sha256. The pi session's text view draws the same graph.
+`@parcha/agentrun-dsl/graph` imports nothing, so a static viewer bundles it and a reader with no Node runs it. `workflowGraph(workflow)` returns `{ nodes, edges }` for a workflow document, computed from its JSON alone: a node is `{ path, kind, label, via? }` with `path` a JSON Pointer into the document as written (`/root/steps/1`, `/root/branches/<name>/body`, `/root/body` for a map's or a loop's body, `/root/workflow/root` for a child; the pointers `inspectWorkflow` and a validation issue use), and an edge is `{ from, to, kind }` with `kind` one of `next` (a chain's steps in order, a loop into its body), `branch` (a parallel node's branches), `route` (a route's branches), `item` (a map into its body) and `child` (a workflow node into its child's root). `nodeStatus(graph, source)` says, for each node, `done`, `working`, `failed` or `not-run`, read from what the recovery driver kept: its frame (the `pin` of the frozen snapshot), the map items' records (`agentrun.items`, keyed layout), or both as `{ pin, items }`. A run's map item or loop iteration has no node of its own: its instances count toward the body's node, and a node inside a map's or loop's body is done only once the map or loop is. Once the run has ended, pass its terminal result as `{ pin, items, result }`: an escalation (`result.status` `escalated`, with `result.escalation.executionPath` as `runWorkflow` returns it) marks the escalate node that fired and every container on its path `escalated`, since the frame holds no mark for that node, and a map or loop on that path has ended, so what finished inside it is done. Without a result the status is what it was. To read one item's record on its own, pass `{ item: "<map path>/items/<index>" }` as a third argument: that item is then the instance, and its body is done when the item is. `graphNodeOf(graph, executionPath)` names the node an execution path (an event's or a record's) ran at: `{ path, at }`, where `path` is the node's pointer and `at` lists the map items (`{ kind: "item", index }`) and loop iterations (`{ kind: "iteration", index }`) it ran in, outermost first. An execution path is the node's pointer with `items/<i>` before a map's `body` and `iterations/<i>` before a loop's; the path is read by walking the graph by node kind, so a route branch named `items` stays a branch, and a path the graph does not have is `undefined`. `graphDiff(prev, next)` says what changed between two graphs of a workflow, such as two saved revisions of one: `{ added, removed, changed, moved, edges: { added, removed } }`. A node is the same in both when its `(kind, label)` is unique in each graph, so a step inserted before others is one `added` node (its path in `next`) and the steps after it `moved` (`{ prev, next }` paths), never a run of changes; a node whose `(kind, label)` repeats, or is in one graph only, is matched by its path, and the same path with a new kind or label is `changed` (`{ prev, next, was, now }`, `was` and `now` each `{ kind, label }`). `removed` holds nodes of `prev` only, at their paths there; `rewritten` holds matched nodes whose kind and label stayed but whose own fields changed (new instructions, a new budget: `{ prev, next, kind, label }`); `edges.added` and `edges.removed` hold the edges of one graph only, each in its own graph's paths. Each graph node carries a `changeCheck` for this: 8 hex digits, the FNV-1a hash of the node's own fields as canonical JSON, its children left out as the walk leaves them out. It detects a change; it is not an identity, and not a saved revision's sha256. The pi session's text view draws the same graph.
 
 The separate `@parcha/agentrun-dsl/demo` entrypoint provides the support-triage example. `@parcha/agentrun-dsl/schema` provides the generated workflow JSON Schema, a JSON file: import it with `import schema from '@parcha/agentrun-dsl/schema' with { type: 'json' };` (a plain `import` throws `ERR_IMPORT_ATTRIBUTE_MISSING`), or load it with `require('@parcha/agentrun-dsl/schema')` in CommonJS.
 

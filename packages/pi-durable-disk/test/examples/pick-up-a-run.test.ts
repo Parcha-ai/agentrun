@@ -19,5 +19,5 @@ it("the README's Try it carries the example file verbatim, and its first shell b
   assert.ok(at >= 0, 'the README has "Try it: no disk, no key"');
   const section = readme.slice(at, readme.indexOf("\n## ", at + 1));
   assert.equal(/```ts\n([\s\S]*?)```/.exec(section)?.[1], readFileSync(new URL("../../examples/pick-up-a-run/main.ts", import.meta.url), "utf8"));
-  assert.match(/```sh\n([\s\S]*?)```/.exec(section)?.[1] ?? "", /^npm install @parcha\/pi-durable-disk@beta @earendil-works\/pi-durable @earendil-works\/pi-ai @earendil-works\/chord\n$/);
+  assert.match(/```sh\n([\s\S]*?)```/.exec(section)?.[1] ?? "", /^npm install @parcha\/pi-durable-disk@beta @earendil-works\/pi-durable@1\.3\.0 @earendil-works\/pi-ai@1\.3\.0 @earendil-works\/chord@1\.3\.0\n$/);
 });

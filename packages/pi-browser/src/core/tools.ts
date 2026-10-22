@@ -179,9 +179,12 @@ async function markdown(html: string, fallback: string): Promise<Read> {
   return { body: fallback, extractor: "inner-text", ext: "txt" };
 }
 
-/** `guards` holds each conversation's repeat guard; a host that owns the conversation's lifecycle passes it to evict one. */
-/** `reconnect`: the reconnect timings, for tests; hosts keep the defaults. */
-export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: timings = RECONNECT }: { guards?: Map<number, RepeatGuard>; reconnect?: ReconnectTimings } = {}): Pick<BrowserToolImpls<PageDriver>, "snapshot" | "run" | "screenshot" | "browser_read" | "browser_upload" | "browser_downloads"> {
+export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: timings = RECONNECT }: {
+  /** Each conversation's repeat guard; a host that owns the conversation's lifecycle passes it to evict one. */
+  guards?: Map<number, RepeatGuard>;
+  /** The reconnect timings, for tests; hosts keep the defaults. */
+  reconnect?: ReconnectTimings;
+} = {}): Pick<BrowserToolImpls<PageDriver>, "snapshot" | "run" | "screenshot" | "browser_read" | "browser_upload" | "browser_downloads"> {
   const guardOf = (conversationId: number, redact: Redact) => guards.get(conversationId) ?? guards.set(conversationId, createRepeatGuard(redact)).get(conversationId)!;
 
   async function failureOf(error: unknown, effectful: boolean, port: CustodyPort<PageDriver>, call: ToolCall, action?: string): Promise<BrowserFailure> {
