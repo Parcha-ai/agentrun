@@ -4,10 +4,10 @@
 // chown allows.
 import { describe, it, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { appWritableReason, main, runUser, toolsUserCheck } from "../src/cli.ts";
@@ -189,24 +189,50 @@ test("the launcher's secrets descriptor (PI_TRANSPORT_SECRETS_FD) never reaches 
   assert.match(closed.stdout, /SECRETS_FD=unset/, "and the variable is gone from the commands' environment");
 });
 
-test("under --run-as the root instance refuses an --app the agent's commands could change: not root's, writable by group or others anywhere on its path, or inside the run's root", () => {
+test("under --run-as the root instance refuses an --app the agent's commands could change: not root's, writable by group or others anywhere on its path, a link they could replace, or inside the run's root", () => {
   type Node = { uid: number; mode: number; link?: string };
-  const tree = (nodes: Record<string, Node>) => ({
-    realpathSync: (p: string) => {
-      let out = p;
-      for (let i = 0; i < 8 && nodes[out]?.link; i++) out = nodes[out]!.link!;
-      return out;
-    },
-    lstatSync: (p: string) => {
+  const tree = (nodes: Record<string, Node>) => {
+    const lstatSync = (p: string) => {
       const n = nodes[p];
       if (!n) throw Object.assign(new Error(`ENOENT ${p}`), { code: "ENOENT" });
       return { uid: n.uid, mode: n.mode };
-    },
-  });
+    };
+    const readlinkSync = (p: string) => {
+      const n = nodes[p];
+      if (!n?.link) throw Object.assign(new Error(`EINVAL ${p}`), { code: "EINVAL" });
+      return n.link;
+    };
+    // As the kernel resolves: element by element, a link's target spliced in where the link was.
+    const realpathSync = (p: string) => {
+      const rest = p.split("/").filter(Boolean);
+      let at = "/";
+      for (let hops = 0; rest.length > 0; ) {
+        const next = rest.shift()!;
+        const q = next === "." ? at : next === ".." ? dirname(at) : at === "/" ? `/${next}` : `${at}/${next}`;
+        const n = nodes[q];
+        if (!n) throw Object.assign(new Error(`ENOENT ${q}`), { code: "ENOENT" });
+        if (n.link === undefined) {
+          at = q;
+          continue;
+        }
+        if (++hops > 40) throw Object.assign(new Error(`ELOOP ${p}`), { code: "ELOOP" });
+        rest.unshift(...n.link.split("/").filter(Boolean));
+        if (n.link.startsWith("/")) at = "/";
+      }
+      return at;
+    };
+    return { lstatSync, readlinkSync, realpathSync };
+  };
   const dir = (uid = 0, mode = 0o40755) => ({ uid, mode });
   const file = (uid = 0, mode = 0o100644) => ({ uid, mode });
   const base = { "/": dir(), "/opt": dir(), "/opt/app": dir(), "/opt/app/app.mjs": file(), "/mnt": dir(), "/mnt/archil": dir(), "/mnt/archil/runs": dir(), "/mnt/archil/runs/r1": dir(1500), "/mnt/archil/runs/r1/work": dir(1500), "/mnt/archil/runs/r1/work/app.mjs": file(1500) };
+  const link = (to: string, uid = 0) => ({ uid, mode: 0o120777, link: to });
+  const home = { ...base, "/home": dir(), "/home/pda": dir(1500) };
   assert.equal(appWritableReason("/opt/app/app.mjs", "/mnt/archil/runs/r1", tree(base)), null, "root's, 0755/0644 all the way up");
+  const rootLinks = { ...base, "/opt/lib": dir(), "/opt/lib/app.mjs": file(), "/opt/app/abs.mjs": link("/opt/lib/app.mjs"), "/opt/app/rel.mjs": link("../lib/app.mjs"), "/srv": link("opt") };
+  for (const app of ["/opt/app/abs.mjs", "/opt/app/rel.mjs", "/srv/app/rel.mjs"]) {
+    assert.equal(appWritableReason(app, "/mnt/archil/runs/r1", tree(rootLinks)), null, `root's links in root's directories: ${app}`);
+  }
   const refused: [string, Record<string, Node>, string, RegExp][] = [
     ["a module pda owns", { ...base, "/opt/app/app.mjs": file(1500) }, "/opt/app/app.mjs", /uid 1500/],
     ["a group-writable module", { ...base, "/opt/app/app.mjs": file(0, 0o100664) }, "/opt/app/app.mjs", /writable/],
@@ -214,19 +240,34 @@ test("under --run-as the root instance refuses an --app the agent's commands cou
     ["a sticky world-writable directory, as /tmp", { ...base, "/opt/app": dir(0, 0o41777) }, "/opt/app/app.mjs", /writable/],
     ["a directory pda owns", { ...base, "/opt/app": dir(1500) }, "/opt/app/app.mjs", /uid 1500/],
     ["a module inside the run's root", base, "/mnt/archil/runs/r1/work/app.mjs", /inside the run/],
-    ["a link to a module pda owns", { ...base, "/opt/app/link.mjs": { uid: 0, mode: 0o120777, link: "/opt/app/real.mjs" }, "/opt/app/real.mjs": file(1500) }, "/opt/app/link.mjs", /uid 1500/],
+    ["a link to a module pda owns", { ...base, "/opt/app/link.mjs": link("/opt/app/real.mjs"), "/opt/app/real.mjs": file(1500) }, "/opt/app/link.mjs", /uid 1500/],
     ["a module that is not there", base, "/opt/app/missing.mjs", /cannot be read|ENOENT/],
+    // The loader opens the path as given, so the kernel follows each link again at load: one the tools could replace
+    // would swap the module after this check, even when it points at root's.
+    ["root's module through a link in a directory pda owns", { ...home, "/home/pda/app.mjs": link("/opt/app/app.mjs", 1500) }, "/home/pda/app.mjs", /\/home\/pda is owned by uid 1500/],
+    ["root's directory through a link in a directory pda owns", { ...home, "/home/pda/app": link("/opt/app", 1500) }, "/home/pda/app/app.mjs", /\/home\/pda is owned by uid 1500/],
+    ["a relative link in a directory pda owns", { ...home, "/home/pda/app.mjs": link("../../opt/app/app.mjs", 1500) }, "/home/pda/app.mjs", /\/home\/pda is owned by uid 1500/],
+    ["a link pda owns, in root's directory", { ...base, "/opt/app/link.mjs": link("/opt/app/app.mjs", 1500) }, "/opt/app/link.mjs", /\/opt\/app\/link\.mjs is owned by uid 1500/],
+    ["root's relative link into a directory pda owns", { ...base, "/opt/pda": dir(1500), "/opt/pda/app.mjs": file(), "/opt/app/link.mjs": link("../pda/app.mjs") }, "/opt/app/link.mjs", /\/opt\/pda is owned by uid 1500/],
+    ["root's link into the run's root", { ...base, "/opt/app/link.mjs": link("/mnt/archil/runs/r1/work/app.mjs") }, "/opt/app/link.mjs", /inside the run/],
+    ["links in a loop", { ...base, "/opt/app/a.mjs": link("/opt/app/b.mjs"), "/opt/app/b.mjs": link("a.mjs") }, "/opt/app/a.mjs", /ELOOP|too many links/],
   ];
   for (const [why, nodes, app, re] of refused) {
     const reason = appWritableReason(app, "/mnt/archil/runs/r1", tree(nodes));
     assert.ok(reason !== null && re.test(reason), `${why}: ${reason}`);
   }
-  // On this machine's own files: a root-owned binary passes; a file this user owns does not.
+  // On this machine's own files: a root-owned binary passes, through root's own link too (/bin on a merged /usr); a file
+  // this user owns does not, nor root's binary through a link in a directory this user can write.
   assert.equal(appWritableReason("/usr/bin/true", "/mnt/archil/runs/r1"), null);
+  if (lstatSync("/bin").isSymbolicLink()) assert.equal(appWritableReason("/bin/true", "/mnt/archil/runs/r1"), null);
   const mine = mkdtempSync(join(tmpdir(), "pda-app-"));
   try {
     writeFileSync(join(mine, "app.mjs"), "export default {};\n");
     assert.match(appWritableReason(join(mine, "app.mjs"), "/mnt/archil/runs/r1") ?? "", /uid|writable/);
+    symlinkSync("/usr/bin/true", join(mine, "true"));
+    symlinkSync("/usr/bin", join(mine, "bin"));
+    assert.match(appWritableReason(join(mine, "true"), "/mnt/archil/runs/r1") ?? "", /uid|writable/, "a link here to root's binary");
+    assert.match(appWritableReason(join(mine, "bin", "true"), "/mnt/archil/runs/r1") ?? "", /uid|writable/, "a link here to root's directory");
   } finally {
     rmSync(mine, { recursive: true, force: true });
   }
