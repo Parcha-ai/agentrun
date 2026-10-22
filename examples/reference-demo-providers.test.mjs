@@ -411,6 +411,36 @@ test('a NEW ids directory is durable in its parent before the first label: when 
   assert.deepEqual(events, ['mkdir box-ids.internal', 'fsync the run\'s parent', 'fsync run', 'link box-1.json', 'fsync box-ids.internal', 'use box-1']);
 });
 
+test('a NEW ids directory whose parent could not be fsynced stays pending: the first claim is refused by name, and the retry (its mkdir finds the levels made) fsyncs each made level\'s parent BEFORE its first link', async (t) => {
+  const fs = (await import('node:fs')).default;
+  const { syncBuiltinESMExports } = await import('node:module');
+  const tmp = await mkdtemp(join(tmpdir(), 'box-ids-durable-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'run', 'box-ids.internal');
+  const events = [];
+  const opened = new Map();
+  let failParentOnce = true;
+  const real = { openSync: fs.openSync, fsyncSync: fs.fsyncSync, linkSync: fs.linkSync };
+  const named = (path) => (path === tmp ? 'the run\'s parent' : path === join(tmp, 'run') ? 'run' : path === dir ? 'box-ids.internal' : undefined);
+  fs.openSync = (path, ...rest) => { const fd = real.openSync(path, ...rest); opened.set(fd, String(path)); return fd; };
+  fs.fsyncSync = (fd) => {
+    const name = named(opened.get(fd));
+    if (name === 'the run\'s parent' && failParentOnce) { failParentOnce = false; throw Object.assign(new Error('EIO: i/o error, fsync'), { code: 'EIO' }); }
+    if (name) events.push(`fsync ${name}`);
+    return real.fsyncSync(fd);
+  };
+  fs.linkSync = (from, to) => { real.linkSync(from, to); if (!String(to).includes('.probe-')) events.push(`link ${String(to).slice(dir.length + 1)}`); };
+  syncBuiltinESMExports();
+  t.after(() => { Object.assign(fs, real); syncBuiltinESMExports(); });
+  const ledger = hostLedger({ dir });
+  assert.throws(() => ledger.label('alpha', 'alpha-1'), /cannot be made durable \(EIO/, 'the first claim is refused: run/ is not yet durable in its parent');
+  assert.equal(existsSync(join(dir, 'box-1.json')), false, 'nothing was linked');
+  events.length = 0;
+  events.push(`use ${ledger.label('alpha', 'alpha-1')}`);
+  // The retry's mkdir found both levels made; both are still pending, so both parents are fsynced before the link.
+  assert.deepEqual(events, ['fsync the run\'s parent', 'fsync run', 'link box-1.json', 'fsync box-ids.internal', 'use box-1']);
+});
+
 /** The ids directory's fsyncs, spied on: `fail(n)` says whether the nth fsync OF THE DIRECTORY (from 1, counted since the last `reset`) fails. */
 async function spyDirectoryFsync(t, dir) {
   const fs = (await import('node:fs')).default;
