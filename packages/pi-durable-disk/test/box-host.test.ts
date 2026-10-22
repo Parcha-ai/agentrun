@@ -212,6 +212,10 @@ describe("boxHost: the launch, a start found again, status, stop and receipts", 
     const adopted = await driver.start(REF, TOKEN, { attempt: 1 });
     assert.equal(adopted.adopted, true);
     assert.ok(driver.instanceOf(first) !== undefined && driver.instanceOf(first) === driver.instanceOf(adopted));
+    provider.boxes[0]!.launches[0]!.setState({ phase: "lost", launcherAlive: false });
+    const replaced = await driver.start(REF, TOKEN, { attempt: 1 });
+    assert.notEqual(replaced.box, first.box, "the lost launch's box was replaced");
+    assert.notEqual(driver.instanceOf(replaced), driver.instanceOf(first), "a new box for the same attempt is another instance");
     const other = await driver.start(REF, TOKEN, { attempt: 2 });
     assert.notEqual(driver.instanceOf(other), driver.instanceOf(first), "another attempt's box");
     assert.equal(driver.instanceOf({ driver: "daytona", sandboxId: "sb-1" }), undefined);
