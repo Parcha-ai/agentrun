@@ -188,7 +188,7 @@ const AGENT = {
     { id: "public", role: "overlay", label: `Public ${HOSTILE}`, text: "Start at the filings.", when: { question: "kind", option: "public", threshold: 0.8 } },
     { id: "generic", role: "generic", label: "Not sure", text: "Start at its own site." },
   ],
-  counts: { runs: 2, skills: 1 },
+  counts: { skills: 1, prompts: 3, questions: 1, runs: 2, live: 0 },
 };
 const RUN = { id: 'r1"><script>x</script>', startedAt: "2026-10-22T20:01:00.000Z", endedAt: "2026-10-22T20:03:30.000Z", outcome: "completed", cost: 0.44, prompt: { id: "public", reason: `Jev: public at 100% ${HOSTILE}`, confidence: 0.93 }, live: false };
 const FAILED = { id: "r0", startedAt: "2026-10-22T19:00:00.000Z", endedAt: "2026-10-22T19:09:00.000Z", outcome: "failed", cost: 0.25, live: false };
@@ -244,6 +244,8 @@ test("the agent, its prompt decision and its runs: markup in any field is text, 
   assert.deepEqual(bars.map((b) => b.styles["--p"]), ["0.8", "0.93"], "the threshold and the confidence");
   assert.deepEqual(page.fetched, ["api/agent", "api/runs"]);
   assert.equal(page.timers.size, 0, "nothing is live, so nothing polls");
+  const stats = all(page.app).filter((el) => el.getAttribute("class") === "stat").map((el) => el.textContent);
+  assert.deepEqual(stats, ["1skill", "3prompts", "1question", "2runs", "0live"], "each count, named in the singular for one");
   const pills = all(page.app).filter((el) => el.getAttribute("class")?.startsWith("pill "));
   assert.deepEqual(pills.map((el) => [el.getAttribute("class"), el.textContent]), [["pill ok", "completed"], ["pill error", "failed"]], "newest first; a failed run is an error");
 });

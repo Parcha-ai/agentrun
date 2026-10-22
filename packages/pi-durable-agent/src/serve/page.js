@@ -234,7 +234,8 @@
     if (source && source.refreshedAt) facts.push(el("span", null, "refreshed " + when(source.refreshedAt)));
     var counts = agent.counts && typeof agent.counts === "object" ? agent.counts : {};
     var stats = Object.keys(counts).filter(function (k) { return typeof counts[k] === "number"; }).map(function (k) {
-      return el("div", { class: "stat" }, el("b", null, String(counts[k])), el("span", null, k.replace(/_/g, " ")));
+      var name = k.replace(/_/g, " ");
+      return el("div", { class: "stat" }, el("b", null, String(counts[k])), el("span", null, counts[k] === 1 && /s$/.test(name) ? name.slice(0, -1) : name));
     });
     var tools = Array.isArray(definition.tools) ? definition.tools : [];
     var skills = Array.isArray(agent.skills) ? agent.skills : [];
