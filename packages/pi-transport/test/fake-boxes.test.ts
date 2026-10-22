@@ -589,6 +589,23 @@ describe("fakeBoxes: T3's own launcher over a fake box (Box.launcher)", () => {
 		});
 	});
 
+	it("reads exited, incarnation 1, restarts 0 and the code when no restart is attempted: a clean exit", async () => {
+		const provider = fakeBoxes();
+		provider.program("inst", () => 0);
+		const box = getOrThrow(await provider.create(SPEC, context));
+		const started = getOrThrow(await launch(box, "inst", { argv: ["inst"] }, context));
+		await tick();
+		expect(getOrThrow(await launchState(box, started.launch, context))).toMatchObject({
+			phase: "exited",
+			incarnation: 1,
+			restarts: 0,
+			starts: 1,
+			lastExit: 0,
+			launcherAlive: false,
+		});
+		expect(provider.callsOf("incarnation")).toHaveLength(1);
+	});
+
 	it("shows restarting while a restart waits its delay, on the clock", async () => {
 		const clock = fakeClock();
 		const provider = fakeBoxes({ clock });
