@@ -42,10 +42,12 @@ at the tag of the version you installed, for example
 
 ```sh
 npm init -y && npm pkg set type=module
-npm install @parcha/pi-durable-disk@0.1.0-beta.14 @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
+npm install @parcha/pi-durable-disk@0.1.0-beta.14 @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 # put main.ts, app.ts, box.ts and pause.ts in this directory, beside node_modules, from the tag of that version
 node main.ts
 ```
+
+pi 1.4 is not supported yet; a later release widens the range.
 
 The box installs the same package version and peers that this directory has, so the two hosts run the same code.
 

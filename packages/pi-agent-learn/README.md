@@ -13,13 +13,28 @@ This release has the contract the model sees, the host step that seeds a run, th
 host step that proposes a run's notes, the curator that merges them to `main`, and saved workflows that are tried and
 promoted on receipts.
 
+> **What this first version is**
+>
+> - A pi-durable SDK extension that a host program installs in its `Harness`, not a `pi install` package.
+> - Installing it also installs `@parcha/pi-git-remote`, `@parcha/agentrun-dsl` and `@parcha/agentrun-pi`, and, through
+>   `@parcha/agentrun-pi`, `@parcha/agentrun-jev`.
+> - The notes loop is the core: `learn`, seeding, proposing and curating. Workflow trials, serving and promotion are
+>   experimental.
+> - Curating needs a judge: Jev (`createJevRunner` from `@parcha/agentrun-jev`) with a TypeSafe key in
+>   `TYPESAFE_API_KEY`, or your own function on any model ([A judge on any model](#a-judge-on-any-model)).
+> - The whole loop, host included, is
+>   [`examples/agent-learn`](https://github.com/Parcha-ai/agentrun/tree/main/examples/agent-learn): run
+>   `npm run demo:learn` in a clone of this repository, with no key and no network.
+
 ## Quickstart (no key, no network)
 
 Node 22.19 or later and git 2.40 or later. In an empty directory:
 
 ```sh
-npm install @parcha/pi-agent-learn@beta @parcha/pi-git-remote@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
+npm install @parcha/pi-agent-learn@beta @parcha/pi-git-remote@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
+
+pi 1.4 is not supported yet; a later release widens the range.
 
 Save this as `quickstart.mjs` and run `node quickstart.mjs`. The model is pi-ai's scripted faux provider.
 
@@ -147,8 +162,8 @@ new. It makes no model call. A `used` mark names the learning that helped by its
 was given (listed in its section, or over the cap), or the mark is refused at the call. A `workflow` note names a workflow
 the run saved (its name, by the DSL's rule: 1 to 64 lowercase letters, digits, dashes or underscores) and says in its
 text when to use it; curation judges the workflow itself and writes the note's text nowhere (below). A lesson, fact or correction keeps an id only when it names a learning this run was given; any other
-id, a blank one included, is dropped and the note kept without it. Text is at most 1,000 bytes and
-evidence 1,000 bytes in all; a run makes at most 8 notes of every type but `used`, and 32 `used` marks. Evidence stays with the run and is
+id, a blank one included, is dropped and the note kept without it. Text is at most 1,000 bytes, and
+evidence at most 8 items and 1,000 bytes in all; a run makes at most 8 notes of every type but `used`, and 32 `used` marks. Evidence stays with the run and is
 never part of a learning. `agentLearn({ guard, secrets, caseValues })` checks every call with the host's guard first,
 with the host's secrets and this run's input values; a refused call stores nothing and its result names the reason,
 never the value, so the model can restate it as a general rule at once. The result carries its text under both `content` and
@@ -278,8 +293,9 @@ it reaches the judge. Then it judges each candidate, writes the result, and make
 that commit's message, so a run that only held still gets its commit and is curated once.
 
 The judge is the DSL's System One port, `WorkflowDeps["runJudge"]` from `@parcha/agentrun-dsl`: `createJevRunner` from
-`@parcha/agentrun-jev` is one (a separate install, `npm install @parcha/agentrun-jev@beta`, that reads its key from
-the environment as its README says), and a test passes a scripted function. Each question is asked on its own, as a yes-or-no
+`@parcha/agentrun-jev` is one (it comes with this package through `@parcha/agentrun-pi`; add it to your own dependencies
+to import it, and it reads its key, `TYPESAFE_API_KEY`, from the environment as its README says), and a test passes a
+scripted function. Each question is asked on its own, as a yes-or-no
 probability, over the candidate's own text, never a paraphrase (`QUESTIONS` holds the wording):
 
 | Question | Asked of | Yes at or above, no at or below | A yes |
@@ -292,10 +308,33 @@ probability, over the candidate's own text, never a paraphrase (`QUESTIONS` hold
 | `contradicts` | the same pairs | 0.5, 0.2 | it is held |
 | `workflowCase` | each saved workflow a run proposes, its document as the DSL's store reads it, with `rules` | 0.5, 0.2 | refuses it |
 
+### A judge on any model
+
 A judge on a general model rather than Jev does best asking it for `{ answer: "yes" | "no", confidence }`, with
 `confidence` from 0.5 to 1, and deriving the yes-probability itself: `{ type: "noul", noul }`, where `noul` is the
 confidence for a yes and 1 minus it for a no. Asked for a bare probability, a model reads it as how sure it is of its
-answer, so a sure no comes back as a likely yes.
+answer, so a sure no comes back as a likely yes. With pi-ai, where `models` is your `createModels()` registry with a
+provider set and `model` one of its chat models:
+
+```js
+const judge = async ({ state, questions }) => {
+  const answers = {};
+  for (const [name, { instructions }] of Object.entries(questions)) {
+    const reply = await models.completeSimple(model, {
+      systemPrompt: `${instructions}\nReply with JSON only: {"answer": "yes" or "no", "confidence": 0.5 to 1}.`,
+      messages: [{ role: "user", content: JSON.stringify(state), timestamp: Date.now() }],
+    });
+    if (reply.stopReason === "error") throw new Error(reply.errorMessage);
+    const { answer, confidence } = JSON.parse(reply.content.find((part) => part.type === "text").text);
+    if (!["yes", "no"].includes(answer) || !Number.isFinite(confidence) || confidence < 0.5 || confidence > 1) {
+      throw new Error(`the model answered out of shape: ${JSON.stringify({ answer, confidence })}`);
+    }
+    answers[name] = { type: "noul", noul: answer === "yes" ? confidence : 1 - confidence };
+  }
+  return { answers };
+};
+const report = await curate({ repo, judge });
+```
 
 An answer between the two cuts holds the candidate; nothing uncertain is accepted. `thresholds` overrides any cut,
 `DEFAULT_THRESHOLDS` are the defaults above. A `used` mark counts one use per run for an active learning and needs no
