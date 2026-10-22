@@ -24,9 +24,13 @@ function removeAtEnd(path: string): void {
   made.add(path);
   if (sweeping) return;
   sweeping = true;
-  const sweep = () => { for (const dir of made) rmSync(dir, { recursive: true, force: true }); made.clear(); };
+  const sweep = () => {
+    for (const dir of [...made]) {
+      try { rmSync(dir, { recursive: true, force: true }); made.delete(dir); } catch { /* one that will not go never stops the rest, or the signal */ }
+    }
+  };
   process.on("exit", sweep);
-  for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { sweep(); process.kill(process.pid, signal); });
+  for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { try { sweep(); } finally { process.kill(process.pid, signal); } });
 }
 
 /** A new directory under the temp root (`TMPDIR` when set), removed by `remove()` or, failing that, when the process ends. */
@@ -42,7 +46,7 @@ export async function fixtureDir(prefix = "pi-vision-"): Promise<FixtureDir> {
       await writeFile(target, content);
       return target;
     },
-    remove: async () => { made.delete(path); await rm(path, { recursive: true, force: true }); },
+    remove: async () => { await rm(path, { recursive: true, force: true }); made.delete(path); },
   };
 }
 

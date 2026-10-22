@@ -3,7 +3,7 @@
 // a removal too), and a test directory goes with the process that made it, whether that process ends, throws or is terminated.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { transcribe, resolveLimits } from "@parcha/pi-vision";
@@ -39,19 +39,26 @@ test("a transcription cancelled while ffprobe measures the file leaves no scratc
   assert.deepEqual(await readdir(scratch), [], "the scratch directory of the length probe is removed though the call was cancelled");
 });
 
-/** Runs `tail` in a process that has made a fixture directory under its own temp root, and gives what the process left there. */
-async function leftBy(t, tail, { terminate = false } = {}) {
+/** Runs `body` in a process whose temp root is a directory of its own (it prints READY when `body` is set up), and gives how the
+ *  process ended and what it left in that root. */
+async function inChild(t, body, { terminate = false } = {}) {
   const root = await fixtureDir("pi-vision-temp-dirs-root-");
-  t.after(() => root.remove());
+  t.after(async () => {
+    // A directory a test left unremovable on purpose is made removable again before the root goes.
+    for (const name of await readdir(root.path)) await chmod(join(root.path, name, "locked"), 0o755).catch(() => undefined);
+    await root.remove();
+  });
   const url = import.meta.resolve("@parcha/pi-vision/testing");
-  const script = `import { fixtureDir } from ${JSON.stringify(url)}; const d = await fixtureDir("pi-vision-leak-probe-"); await d.file("a.txt", "x"); console.log("READY"); ${tail}`;
+  const script = `import { chmod } from "node:fs/promises"; import { fixtureDir } from ${JSON.stringify(url)}; ${body}`;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, TMPDIR: root.path }, stdio: ["ignore", "pipe", "ignore"] });
   const ready = new Promise((resolve) => child.stdout.on("data", (chunk) => String(chunk).includes("READY") && resolve()));
   const exit = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
   if (terminate) { await Promise.race([ready, exit]); child.kill("SIGTERM"); }
-  const ended = await exit;
-  return { ended, left: await readdir(root.path) };
+  return { ended: await exit, left: await readdir(root.path) };
 }
+
+/** A process that has made a fixture directory of its own and then runs `tail`. */
+const leftBy = (t, tail, options) => inChild(t, `const d = await fixtureDir("pi-vision-leak-probe-"); await d.file("a.txt", "x"); console.log("READY"); ${tail}`, options);
 
 test("a test's directory is gone when its process exits without removing it", async (t) => {
   const { ended, left } = await leftBy(t, "process.exit(0);");
@@ -69,4 +76,31 @@ test("a test's directory is gone when its process is terminated, and it still di
   const { ended, left } = await leftBy(t, "setInterval(() => {}, 1000);", { terminate: true });
   assert.equal(ended.signal, "SIGTERM", "the signal still ends the process");
   assert.deepEqual(left, []);
+});
+
+const root = process.getuid?.() === 0;
+
+test("a directory whose removal failed is still removed when the process ends", { skip: root && "root ignores file modes" }, async (t) => {
+  // The first removal fails (its parent cannot be written to), so the directory has not been removed and must stay tracked.
+  const { ended, left } = await inChild(t, [
+    'const d = await fixtureDir("pi-vision-leak-probe-"); await d.file("a.txt", "x");',
+    "await chmod(d.path, 0o555); await d.remove().catch(() => undefined); await chmod(d.path, 0o755);",
+    'console.log("READY"); process.exit(0);',
+  ].join(" "));
+  assert.equal(ended.code, 0);
+  assert.deepEqual(left, [], "a failed remove() does not make the process forget the directory");
+});
+
+test("a directory that will not go does not stop the sweep, or the signal, or the exit", { skip: root && "root ignores file modes" }, async (t) => {
+  const body = (tail) => [
+    'const a = await fixtureDir("pi-vision-leak-probe-a-"); const b = await fixtureDir("pi-vision-leak-probe-b-");',
+    'await a.file("locked/f.txt", "x"); await b.file("g.txt", "y"); await chmod(a.path + "/locked", 0o555);',
+    `console.log("READY"); ${tail}`,
+  ].join(" ");
+  const exited = await inChild(t, body("process.exit(0);"));
+  assert.deepEqual([exited.ended.code, exited.ended.signal], [0, null], "the exit is the process's own");
+  assert.deepEqual(exited.left.map((name) => name.replace(/-[A-Za-z0-9]{6}$/, "")), ["pi-vision-leak-probe-a"], "the other directory is gone");
+  const stopped = await inChild(t, body("setInterval(() => {}, 1000);"), { terminate: true });
+  assert.equal(stopped.ended.signal, "SIGTERM", "the signal still ends the process");
+  assert.deepEqual(stopped.left.map((name) => name.replace(/-[A-Za-z0-9]{6}$/, "")), ["pi-vision-leak-probe-a"], "the other directory is gone");
 });
