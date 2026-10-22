@@ -18,6 +18,7 @@ import { refusedHostsJudge } from './refused-hosts.mjs';
 import { gatedSettler } from './promotion-gate.mjs';
 import { HOST_WORKFLOW, handoffText, hostRunName, hostUses, runPromoted } from './dispatch.mjs';
 import { gatedAdmitter } from './gates.mjs';
+import { PICK_NODE_INSTRUCTIONS, pickLabelsOf, READ_TOOLS } from './pick-node.mjs';
 
 export { agentHomeFor, prepareRun, readAgentAt } from '../agent-learn/host.mjs';
 
@@ -361,8 +362,11 @@ export function settleWithin(promise, ms, message) {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null, hostOnly = false, callDeadlineMs = CALL_DEADLINE_MS, runDeadlineMs = RUN_DEADLINE_MS }) {
+export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null, hostOnly = false, pickNode = null, callDeadlineMs = CALL_DEADLINE_MS, runDeadlineMs = RUN_DEADLINE_MS }) {
   if (hostOnly && !dispatch) throw new Error('a host-only run needs a workflow to dispatch');
+  // ARM H (pick-node.mjs): with `pickNode` ({ key }), each whole-job workflow's pick step runs on the root's model and
+  // thinking with its own tools and the run's read tools; a workflow that has no pick step refuses the run here.
+  const pickLabels = pickNode ? await pickLabelsOf({ run, dispatch, key: pickNode.key }) : new Set();
   const started = Date.now();
   const caseValues = caseValuesOf(job);
   const learn = learnExtension({ caseValues });
@@ -384,8 +388,14 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
   // instructions, the host's tools extension only, and of it only the tools the node may use. Its model and thinking are
   // the host's (`model.node`), whatever the workflow asks for.
   const nodeAgent = model.node ?? { ...model.agent, thinkingLevel: nodeThinking };
+  const readTools = READ_TOOLS.filter((name) => tools.workflowTools.some((t) => t.name === name));
   const nodes = nodeRunner({
-    agent: (node) => ({
+    agent: (node) => (pickLabels.has(node.label) && node.kind !== 'decide' ? {
+      ...model.agent,
+      instructions: `${NODE_INSTRUCTIONS}\n\n${PICK_NODE_INSTRUCTIONS}`,
+      extensions: [tools.extension],
+      tools: tools.nodeTools(node.tools === undefined ? undefined : [...new Set([...node.tools, ...readTools])]),
+    } : {
       ...model.agent,
       ...nodeAgent,
       instructions: NODE_INSTRUCTIONS,
@@ -449,7 +459,7 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
     const hostRan = dispatch ? await beforeDeadline(runPromoted({ harness, workflows: workflowTool.workflow, dispatch, toolNames: tools.workflowTools.map((t) => t.name), answer, context: ctx })) : null;
     if (hostRan === 'deadline') throw new RunDeadline();
     const hostRun = hostRan;
-    const dispatched = hostRun ? { dispatch: { name: hostRun.name, revision: hostRun.revision, key: hostRun.key, outcome: hostRun.outcome, ...(dispatch.canary ? { canary: true } : {}), ...(hostRun.invalid ? { invalid: hostRun.invalid } : {}), ...(typeof hostRun.detail === 'string' ? { detail: hostRun.detail } : {}) } } : {};
+    const dispatched = hostRun ? { dispatch: { name: hostRun.name, revision: hostRun.revision, key: hostRun.key, outcome: hostRun.outcome, ...(dispatch.canary ? { canary: true } : {}), ...(hostRun.invalid ? { invalid: hostRun.invalid } : {}), ...(typeof hostRun.detail === 'string' ? { detail: hostRun.detail } : {}), ...(pickLabels.size ? { pickNode: [...pickLabels] } : {}) } } : {};
     if (hostRun?.outcome === 'complete' || hostOnly) {
       const answered = hostRun.outcome === 'complete';
       measured = { answer: answered ? hostRun.output : null, answers: answered ? 1 : 0, toolCalls: {}, status: HOST_WORKFLOW, usage: usageTotals(await harness.usage(ctx)), finalText: '', calls: [], results: new Map(), ...dispatched };
