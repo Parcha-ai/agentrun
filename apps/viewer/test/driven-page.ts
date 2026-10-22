@@ -126,8 +126,12 @@ async function startedPage(url: string, profile: string, { launchMs = LAUNCH_MS,
     opened.addEventListener('error', () => failAll('the DevTools socket failed'));
     void exited.then(() => failAll('Chrome exited'));
     opened.addEventListener('message', (event) => {
-      const message = JSON.parse(String(event.data)) as { id?: number; result?: { result?: { value?: unknown } } };
-      if (message.id !== undefined) waiting.get(message.id)?.resolve(message.result?.result?.value);
+      const message = JSON.parse(String(event.data)) as { id?: number; result?: { result?: { value?: unknown }; exceptionDetails?: { text?: string; exception?: { description?: string } } } };
+      if (message.id === undefined) return;
+      // An expression that threw in the page is an error here, never a value of undefined that a reader mistakes for an answer.
+      const thrown = message.result?.exceptionDetails;
+      if (thrown) waiting.get(message.id)?.reject(new Error(`the page threw: ${thrown.exception?.description ?? thrown.text ?? 'an exception'}`));
+      else waiting.get(message.id)?.resolve(message.result?.result?.value);
     });
     let id = 0;
     const evaluate = (expression: string) => {
@@ -139,18 +143,28 @@ async function startedPage(url: string, profile: string, { launchMs = LAUNCH_MS,
         opened.send(JSON.stringify({ id: mine, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }));
       })).finally(() => waiting.delete(mine));
     };
-    /** Until `expression` is true on the page, polled, within `ms`; then the value of `read`. */
+    /** Until `expression` is true on the page, polled, within `ms` (one that throws is not true yet); then the value of `read`. */
     const once = async (expression: string, read: string, ms: number, what: string) => {
       for (const until = Date.now() + ms; Date.now() < until && !aborted?.aborted;) {
-        if (await evaluate(expression)) return evaluate(read);
+        if (await evaluate(expression).catch(() => false)) return evaluate(read);
         await sleep(100);
       }
       throw new Error(`${what}: not so after ${ms / 1000} s`);
     };
+    /** The first value `read` gives that is not empty (undefined, null, '' or false), polled within `ms`: a read that is its
+     *  own readiness check, so nothing on the page can change between the check and the read. One that throws is not ready yet. */
+    const until = async (read: string, ms: number, what: string) => {
+      for (const deadline = Date.now() + ms; Date.now() < deadline && !aborted?.aborted;) {
+        const value = await evaluate(read).catch(() => undefined);
+        if (value !== undefined && value !== null && value !== '' && value !== false) return value;
+        await sleep(100);
+      }
+      throw new Error(`${what}: no value after ${ms / 1000} s`);
+    };
     // A browser starts on a blank page and then opens the URL: the page is handed over once its own document has loaded.
     await once(`document.readyState === 'complete' && location.href !== 'about:blank'`, 'true', 30_000, `the page at ${url} loading`);
     handlers = crashHandlersOf(pid);
-    return { evaluate, once, sleep, close };
+    return { evaluate, once, until, sleep, close };
   } catch (error) {
     await close().catch(() => undefined);
     throw error;
