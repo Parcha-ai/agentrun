@@ -4,7 +4,8 @@
  * own directory, except a framed launch's stdin and secrets, which live only in its processes' memory. It uses no parameter expansion with braces, so
  * that this file can hold it as a raw string.
  */
-const SCRIPT_TEMPLATE = String.raw`MODE=$1
+const SCRIPT_TEMPLATE = String.raw`@@UNSET@@
+MODE=$1
 D=$2
 SELF=$0
 TICK=1
@@ -456,11 +457,94 @@ const GROUP_LIVE = [
 	"}",
 ].join("\n");
 
+/**
+ * Every name the launcher's shell assigns: the script's own, the spec's (spec.sh) and the program's wrapper's (run_program),
+ * temporaries included. The program's settings (`env`) and `inheritEnv` refuse each of them, so a program can never assign one;
+ * and the script's FIRST statement unsets each, so a name the box runtime exported keeps no export flag, and what the launcher
+ * puts in it (the frame's stdin and secrets among them) never reaches a child's environment. A test fails on any name the script
+ * or a generated spec assigns that is not here. (The private prefix that replaces this list is a follow-up.)
+ */
+export const LAUNCHER_SHELL_NAMES: readonly string[] = [
+	"MODE",
+	"D",
+	"SELF",
+	"TICK",
+	"STEP",
+	"STEPS",
+	"SETSID",
+	"GEN",
+	"MYGEN",
+	"RESTART",
+	"DELAY",
+	"BURST",
+	"INTERVAL",
+	"TERMINALS",
+	"LOGMAX",
+	"FRAMED",
+	"RUNAS",
+	"ISOLATION",
+	"HOOK",
+	"HOOK_TENTHS",
+	"PTRACE_FILE",
+	"PROC",
+	"FSEC",
+	"FIN",
+	"a",
+	"before",
+	"began",
+	"c",
+	"code",
+	"cut",
+	"done_for",
+	"e",
+	"extra",
+	"f",
+	"g",
+	"gid",
+	"hcode",
+	"home",
+	"how",
+	"hp",
+	"i",
+	"l",
+	"limit",
+	"line",
+	"m",
+	"magic",
+	"me",
+	"n",
+	"name",
+	"other",
+	"p",
+	"phase",
+	"pid",
+	"r",
+	"s",
+	"size",
+	"st",
+	"t",
+	"t0",
+	"tenths",
+	"u",
+	"u1",
+	"u2",
+	"u3",
+	"u4",
+	"uid",
+	"up",
+	"v",
+	"u_name",
+	"u_id",
+	"u_gid",
+	"u_how",
+	"u_home",
+	"_",
+];
+
 /** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */
 export const PTRACE_FILE_LINE = "PTRACE_FILE=/proc/sys/kernel/yama/ptrace_scope";
 
 /** The supervisor the host uploads to a box: POSIX `sh`, with the programs named in the file's header. */
-export const LAUNCHER_SCRIPT = SCRIPT_TEMPLATE.replace("@@GROUP_LIVE@@", () => GROUP_LIVE).replace(
-	"@@PTRACE_FILE@@",
-	() => PTRACE_FILE_LINE,
-);
+export const LAUNCHER_SCRIPT = SCRIPT_TEMPLATE.replace("@@GROUP_LIVE@@", () => GROUP_LIVE)
+	.replace("@@PTRACE_FILE@@", () => PTRACE_FILE_LINE)
+	.replace("@@UNSET@@", () => `unset ${LAUNCHER_SHELL_NAMES.join(" ")}`);

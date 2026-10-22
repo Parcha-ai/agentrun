@@ -3,7 +3,7 @@
 // program's stdin, the secrets part to the fd PI_TRANSPORT_SECRETS_FD names. Neither rests in a file, an environ, an
 // argv or the launcher's state; a box that cannot carry them refuses before anything runs.
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -34,24 +34,14 @@ async function fileIn(box: Box, path: string): Promise<string | undefined> {
 
 const sha = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 
-/** Every file under `dir` whose bytes hold `marker`. */
+/** Every file under `dir` whose bytes hold `marker`, read strictly: an entry that cannot be listed or read fails the walk. The
+ *  walk is of a private, quiescent tree (the test's own TMPDIR after its launch stopped), so nothing in it is another's or vanishing. */
 function filesHolding(dir: string, marker: string): string[] {
 	const found: string[] = [];
 	const walk = (at: string) => {
-		let names: string[];
-		try {
-			names = readdirSync(at);
-		} catch {
-			return;
-		}
-		for (const name of names) {
+		for (const name of readdirSync(at)) {
 			const path = join(at, name);
-			let info: ReturnType<typeof statSync>;
-			try {
-				info = statSync(path);
-			} catch {
-				continue;
-			}
+			const info = lstatSync(path);
 			if (info.isDirectory()) walk(path);
 			else if (info.isFile() && readFileSync(path).includes(marker)) found.push(path);
 		}
@@ -78,35 +68,73 @@ function processesHolding(marker: string): number[] {
 
 describe("a launch's stdin and secrets", () => {
 	it("reach EVERY incarnation (stdin on its stdin, secrets on PI_TRANSPORT_SECRETS_FD), and rest nowhere: no file of the box, no environ, no argv", async () => {
+		// The test's own TMPDIR is private for this test: the box's root, the launcher's TMPDIR (the box's) and every place the
+		// launch writes by default are under it, and only it is walked (whole, strictly), once the launch has stopped.
+		const shared = process.env.TMPDIR;
+		const privateTmp = mkdtempSync(join(tmpdir(), "pi-transport-frame-private-"));
+		roots.push(privateTmp);
+		process.env.TMPDIR = privateTmp;
+		try {
+			const { box, root } = await aBox();
+			expect(root.startsWith(`${privateTmp}/`)).toBe(true);
+			const token = `tok-${randomBytes(12).toString("hex")}`;
+			const secret = `sec-${randomBytes(12).toString("hex")}`;
+			// Each incarnation keeps only HASHES of what it read; the first exits 3 (restarted), the second runs on.
+			const program = [
+				"sh",
+				"-c",
+				'n=$PI_TRANSPORT_INCARNATION; sha256sum | cut -c1-64 > in.$n; cat <&"$PI_TRANSPORT_SECRETS_FD" | sha256sum | cut -c1-64 > sec.$n; echo "$PI_TRANSPORT_SECRETS_FD" > fd.$n; [ "$n" -ge 2 ] && exec sleep 300; exit 3',
+			];
+			const stdin = new TextEncoder().encode(`${token}\n`);
+			const secrets = { MODAL_TOKEN_ID: secret };
+			const launched = getOrThrow(await launch(box, "framed", { argv: program, stdin, secrets }, context));
+			// The launcher writes in the box's own TMPDIR, under its root: the root is walked whole.
+			expect(launched.directory.startsWith(`${root}/`)).toBe(true);
+			await until("the second incarnation", async () => {
+				const read = getOrThrow(await launchState(box, { v: 1, name: "framed" }, context));
+				return read?.phase === "running" && read.incarnation === 2 && (await fileIn(box, "sec.2"))
+					? read
+					: undefined;
+			});
+			for (const n of [1, 2]) {
+				expect((await fileIn(box, `in.${n}`))?.trim()).toBe(sha(stdin));
+				expect((await fileIn(box, `sec.${n}`))?.trim()).toBe(sha(JSON.stringify(secrets)));
+				expect((await fileIn(box, `fd.${n}`))?.trim()).toBe("3");
+			}
+			// The raw values and the frame's own base64 of them: neither is in a file, an environ or an argv.
+			const encoded = [
+				Buffer.from(stdin).toString("base64"),
+				Buffer.from(JSON.stringify(secrets)).toString("base64"),
+			];
+			// While the processes live: no environ or argv holds them.
+			for (const marker of [token, secret, ...encoded]) expect(processesHolding(marker)).toEqual([]);
+			// Then QUIESCENT: the launch stopped, every process the box ran closed (its pids/ empty), so nothing vanishes under the walk.
+			getOrThrow(await launchStop(box, { v: 1, name: "framed" }, { graceMs: 1_000 }, context));
+			const pids = readdirSync(root, { recursive: true, withFileTypes: true })
+				.filter((entry) => entry.isDirectory() && entry.name === "pids")
+				.map((entry) => join(entry.parentPath, entry.name));
+			expect(pids.length).toBe(1);
+			await until("a quiescent box", async () => (readdirSync(pids[0]!).length === 0 ? true : undefined));
+			for (const marker of [token, secret, ...encoded]) expect(filesHolding(privateTmp, marker)).toEqual([]);
+			await box.destroy(context);
+		} finally {
+			// Unset stays unset: a process.env assignment of undefined would store the string "undefined".
+			if (shared === undefined) delete process.env.TMPDIR;
+			else process.env.TMPDIR = shared;
+		}
+	});
+
+	it("writes to no literal /tmp: the launcher's only /tmp is the fallback of an exec with no TMPDIR, which a local box never is", async () => {
+		const sources = ["../src/launch/launch.ts", "../src/launch/launcher-script.ts"].map((path) =>
+			readFileSync(new URL(path, import.meta.url), "utf8"),
+		);
+		const uses = sources.flatMap((text) => text.split("\n").filter((line) => line.includes("/tmp")));
+		expect(uses.map((line) => line.trim())).toEqual([
+			"'t=$TMPDIR; [ -n \"$t\" ] || t=/tmp',",
+			"'t=$TMPDIR; [ -n \"$t\" ] || t=/tmp',",
+		]);
 		const { box, root } = await aBox();
-		const token = `tok-${randomBytes(12).toString("hex")}`;
-		const secret = `sec-${randomBytes(12).toString("hex")}`;
-		// Each incarnation keeps only HASHES of what it read; the first exits 3 (restarted), the second runs on.
-		const program = [
-			"sh",
-			"-c",
-			'n=$PI_TRANSPORT_INCARNATION; sha256sum | cut -c1-64 > in.$n; cat <&"$PI_TRANSPORT_SECRETS_FD" | sha256sum | cut -c1-64 > sec.$n; echo "$PI_TRANSPORT_SECRETS_FD" > fd.$n; [ "$n" -ge 2 ] && exec sleep 300; exit 3',
-		];
-		const stdin = new TextEncoder().encode(`${token}\n`);
-		const secrets = { MODAL_TOKEN_ID: secret };
-		getOrThrow(await launch(box, "framed", { argv: program, stdin, secrets }, context));
-		await until("the second incarnation", async () => {
-			const read = getOrThrow(await launchState(box, { v: 1, name: "framed" }, context));
-			return read?.phase === "running" && read.incarnation === 2 && (await fileIn(box, "sec.2")) ? read : undefined;
-		});
-		for (const n of [1, 2]) {
-			expect((await fileIn(box, `in.${n}`))?.trim()).toBe(sha(stdin));
-			expect((await fileIn(box, `sec.${n}`))?.trim()).toBe(sha(JSON.stringify(secrets)));
-			expect((await fileIn(box, `fd.${n}`))?.trim()).toBe("3");
-		}
-		// The raw values and the frame's own base64 of them: neither is in a file, an environ or an argv.
-		const encoded = [Buffer.from(stdin).toString("base64"), Buffer.from(JSON.stringify(secrets)).toString("base64")];
-		for (const marker of [token, secret, ...encoded]) {
-			expect(filesHolding(root, marker)).toEqual([]);
-			expect(filesHolding(tmpdir(), marker)).toEqual([]);
-			expect(processesHolding(marker)).toEqual([]);
-		}
-		getOrThrow(await launchStop(box, { v: 1, name: "framed" }, { graceMs: 1_000 }, context));
+		expect((await sh(box, 'printf %s "$TMPDIR"')).text.startsWith(`${root}/`)).toBe(true);
 		await box.destroy(context);
 	});
 
