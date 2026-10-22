@@ -23,6 +23,8 @@ there is no second format. This package opens its own at `synchronous = FULL`.
   home. A pack and an export leave the saved sign-ins behind, so a new machine asks once.
 - **Reads a run as a timeline.** `@parcha/pi-durable-agent/timeline` turns a run's entries or live events into plain rows
   that a page can draw.
+- **Shows a home.** `npx @parcha/pi-durable-agent serve <dir>` opens a local page over a home's files, read-only
+  ([Looking at a home](#looking-at-a-home)).
 
 It does not run the agent. The host keeps what a run needs from outside: the model, the thinking level, the tools, and
 where each tool runs. The definition names tools; the host binds them. It does not drive a browser either:
@@ -456,10 +458,45 @@ by `tool_use_id`, never by time. A row is built from pi entries and events only:
 browser context id or a cookie, and every summary, preview and text (a person's own message excepted) keeps a URL's
 origin, path and query keys but drops its query values, fragment and userinfo. `registerLabel(tool, label)` adds the label of a host's own tool.
 
+## Looking at a home
+
+`pi-durable-agent serve <dir>` serves a page about the agent home in `<dir>` and prints its address. It opens nothing
+itself, and it writes nothing to the home.
+
+```sh
+npx @parcha/pi-durable-agent serve ./agent-home
+# http://127.0.0.1:41297/
+```
+
+`--port <n>` takes a port (the default is a free one). From code, `serveHome(home, { port?, signal? })` from
+`@parcha/pi-durable-agent/serve` does the same and returns `{ url, close() }`.
+
+The page shows the agent (its identity, definition, the repo commit it came from, its skills' names and sizes, and its
+prompt variants), its runs (newest first, with the variant each loaded, why, and how sure the choice was), and each
+run's timeline. A live run is polled. The files are read directly, with no lock, so a home can be watched while a run
+writes it; a store with no `-wal` or `-shm` beside it is opened with SQLite's `immutable` mode, which creates nothing in
+the home, and one with a writer behind it is opened read-only and read through its log. A store from a newer pi-durable
+than this package reads (a schema version other than 1) is refused, not guessed at.
+
+It reads only the kinds an exporter may copy (`EXPORTABLE_KINDS`: identity, definition, source, skills, prompts and the
+runs index without each run's `host`), and the kind is in the query, so a saved sign-in, saved session, lease, binding or
+alias is never selected. It sends no skill's text and no run's final answer. It listens on `127.0.0.1` only, and there is
+no option to change that; it answers `421` to a request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>`, and
+`405` to anything but `GET` and `HEAD`; it sends no CORS header, and the page's content security policy allows only its
+own files. The data is JSON:
+
+| Request | Answer |
+|---|---|
+| `GET /api/agent` | `{ identity, definition, source, skills: [{ path, sha256, size }], prompts, counts: { skills, prompts, runs, live } }`; `prompts` are the variants with their `id`, `role`, `label`, `text`, `when` and `criteria` |
+| `GET /api/runs` | `[{ id, startedAt, endedAt?, outcome?, cost?, prompt?: { id, reason, confidence? }, live }]`, newest first; `live` is a run with no `endedAt` |
+| `GET /api/runs/:id` | `{ run, rows }`: the run as above, and its entries as the [timeline](#the-timeline)'s rows (`settled` for a finished run, so a call with no result reads as interrupted, and open for a live one). `400` for an id that is not letters, digits, `.`, `_` or `-`, `404` for a run the index does not list |
+
+An unreadable store is a `500` with `{ error }` that says what is wrong with it and not where it is.
+
 ## Library
 
-Three entry points: `@parcha/pi-durable-agent` (everything below but the timeline), `@parcha/pi-durable-agent/export`
-and `@parcha/pi-durable-agent/timeline`. A function that opens a home can also fail with the home's own errors:
+Four entry points: `@parcha/pi-durable-agent` (everything below but the timeline), `@parcha/pi-durable-agent/export`
+`@parcha/pi-durable-agent/timeline` and `@parcha/pi-durable-agent/serve`. A function that opens a home can also fail with the home's own errors:
 `missing` (the directory is not a home), `format` (a store this version does not read) and `busy` (another writer held
 the home for more than 5 seconds). `busy` applies to everything that writes the home, and to `openAgentHome` and
 `readAgentHome`, which take the writer lock to read. The Throws column does not repeat these except where a function
@@ -542,6 +579,15 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `TimelineKind`, `TimelineOptions`,
 `EntryLike` (a pi conversation entry as stored), `AgentEventLike` (a pi event), `Call`, `Fold`, `Group`, `LabelFn`,
 `FoldSpec` and `ToolResultView`.
+
+### `@parcha/pi-durable-agent/serve`
+
+| Export | Does | Throws |
+|---|---|---|
+| `serveHome(home, { port?, signal? })` | Serves `home.dir` ([Looking at a home](#looking-at-a-home)) on `127.0.0.1` and resolves to `{ url, close() }` once it is listening; `close()` stops it, and so does aborting `signal`. It takes no lock and opens the home's stores read-only. `home` is anything with a `dir`, an `AgentHome` included | `missing`: the directory is not a home. `invalid`: a `port` that is not an integer from 0 to 65535 |
+
+Its types: `ServeOptions` and `ServeHandle`. The package's bin, `pi-durable-agent serve <dir> [--port <n>]`, calls it and
+prints `url`; it exits 1 for a directory that is not a home and 2 for a command or port it does not know.
 
 ### Errors
 

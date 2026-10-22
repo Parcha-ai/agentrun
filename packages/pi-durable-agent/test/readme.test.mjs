@@ -134,6 +134,7 @@ test("every name each entry point exports is documented in that entry point's Li
     { title: "`@parcha/pi-durable-agent`", declaration: "index.d.ts" },
     { title: "`@parcha/pi-durable-agent/export`", declaration: "export.d.ts" },
     { title: "`@parcha/pi-durable-agent/timeline`", declaration: "timeline/index.d.ts" },
+    { title: "`@parcha/pi-durable-agent/serve`", declaration: "serve/index.d.ts" },
   ];
   const missing = [];
   for (const { title, declaration } of entries) {
