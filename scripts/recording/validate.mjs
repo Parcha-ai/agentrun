@@ -167,16 +167,18 @@ const blobFiles = dir => {
   return out;
 };
 
-/** What the report's files do (draft 41): each blob is `blobs/<hash>.<the path's extension>`, present and hashing to its name (two paths with one content and two extensions are two blobs); every page is read with the parser: no script, no on* attribute, no data: URL, no iframe, object, embed, form, base or meta refresh, every load inside `files`, and each `data-look` names a look the run filed. A relative link to a file the report does not hold is a document link: it is allowed only when it carries a `data-look` and names the file that look read. */
+/** What the report's files do (draft 41): each blob is `blobs/<hash>.<the path's extension>`, present and hashing to its name (two paths with one content and two extensions are two blobs); every page is read with the parser: no script, no on* attribute, no data: URL, no iframe, object, embed, form, base or meta refresh, every load inside `files`, and each `data-look` names a look the run filed. A relative link to a file the report does not hold is a document link: it is allowed only when it carries a `data-look` and names the file that look read. Returns the names of the blob files it read. */
 function artifactFileProblems(artifact, dir, lookKeys, lookSources, add) {
   const where = 'manifest.json';
   const base = path => path.slice(path.lastIndexOf('/') + 1);
+  const read = new Set();
   for (const [path, hash] of Object.entries(artifact.files)) {
     const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
     // A published copy (apps/viewer/build.mjs) holds a page or a script as `<hash>.<extension>.txt`, plain text when opened.
     const file = [`${hash}.${extension}`, `${hash}.${extension}.txt`].map((name) => join(dir, 'blobs', name)).find((each) => existsSync(each));
     if (!file) { add(where, `artifact file ${path} needs blob ${hash}.${extension}, which is not in blobs/`); continue; }
     const bytes = readFileSync(file);
+    read.add(base(file));
     if (createHash('sha256').update(bytes).digest('hex') !== hash) { add(where, `blob ${hash}.${extension} of artifact file ${path} does not hash to its name`); continue; }
     if (TEXT_FILE.test(file)) {
       const found = credentialInFile(file, bytes.toString('utf8'));
@@ -195,6 +197,7 @@ function artifactFileProblems(artifact, dir, lookKeys, lookSources, add) {
       if (!sources?.some(source => base(source) === base(document.target))) add(where, `artifact page ${path} links to ${document.target.slice(0, 80)}, which is not in files and is not the file of a look it cites (data-look)`);
     }
   }
+  return read;
 }
 
 /** The entry kinds a `pi.conversation` record's `parent.at` may point at (draft 54). Any other kind is refused, so a new entry kind
@@ -361,7 +364,7 @@ export function validateRecording(dir) {
       else if (!tasks.has(`${owner.conversationId}\u0000${owner.taskId}`)) add('events.jsonl', `${name}: its owner names task ${owner.taskId}, which is no task record of conversation ${owner.conversationId}`, line);
     }
   }
-  if (isObject(manifest?.artifact) && artifactProblems(manifest.artifact).length === 0) artifactFileProblems(manifest.artifact, dir, lookKeys, lookSources, add);
+  const artifactRead = isObject(manifest?.artifact) && artifactProblems(manifest.artifact).length === 0 ? artifactFileProblems(manifest.artifact, dir, lookKeys, lookSources, add) : new Set();
   // A restore or a move names the head of the store its target generation opened, anchored on that generation's snapshot at open
   // (the store's latest commit then). A generation with no snapshot (a bare export) skips the continuity check. A restore's
   // snapshot may be at its head itself when pi committed once at open (draft 37): its first new commit is then head + 1.
@@ -384,16 +387,16 @@ export function validateRecording(dir) {
   }
   // Every file in blobs/ is a blob of the allowlist (draft 50), named by its own SHA-256 and hashing to it, and read as text when it is not media,
   // whether or not a line names it: this is the one check of a recording's blobs (the gallery's gate adds only what publishing needs). A blob a
-  // line, the result or the artifact names was checked where it is named, so it is reported once.
+  // line or the result names was checked where it is named, every file of its hash; an artifact's file was checked as that one file, so a
+  // file beside it under the same hash and another extension is checked here. Each is reported once.
   const artifactNames = artifactBlobNames(manifest);
-  const artifactHashes = new Set(isObject(manifest?.artifact) && isObject(manifest.artifact.files) ? Object.values(manifest.artifact.files) : []);
   for (const entry of existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs'), { withFileTypes: true }) : []) {
     const name = entry.name;
     if (!entry.isFile()) { add('blobs', `${name} is not a file`); continue; }
     const problem = blobNameProblem(name, artifactNames);
     if (problem) { add('blobs', `${name} ${problem}`); continue; }
     const hash = name.split('.')[0];
-    if (checked.has(hash) || artifactHashes.has(hash)) continue;
+    if (checked.has(hash) || artifactRead.has(name)) continue;
     const bytes = readFileSync(join(dir, 'blobs', name));
     if (createHash('sha256').update(bytes).digest('hex') !== hash) { add('blobs', `${name} does not hash to its name`); continue; }
     if (TEXT_FILE.test(name)) {
