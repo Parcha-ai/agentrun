@@ -317,7 +317,7 @@ test("boxHost on Modal's VM: root instance with toolsUser pda, conditions 4 and 
   assert.equal(probe.tool.noNewPrivs, "1");
   for (const holder of ["instance", "launcher", "archil"]) {
     const r = probe.asPda[holder];
-    assert.ok(r.environ !== "", `pda opening ${holder}'s environ is refused: ${JSON.stringify(r)}`);
+    assert.ok(r.environ === "Permission denied" || r.environ === "Operation not permitted", `pda opening ${holder}'s environ is refused: ${JSON.stringify(r)}`);
     assert.ok(r.mem === "Permission denied" || r.mem === "Operation not permitted", `pda opening ${holder}'s mem is refused: ${JSON.stringify(r)}`);
     assert.equal(r.ptrace, "Operation not permitted", `pda attaching to ${holder} is EPERM: ${JSON.stringify(r)}`);
   }

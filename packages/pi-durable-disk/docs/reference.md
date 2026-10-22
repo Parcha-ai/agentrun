@@ -371,6 +371,10 @@ peer this entry needs and the package's root does not.
     under no_new_privs.
   - So the mount token's holders (the launcher, the instance and the FUSE daemon) are all root, and no command can
     ptrace one, whether or not the kernel has Yama. The tools' user needs no sudo rule.
+  - The residual: the token sits in the archil daemon's environment (archil 0.8.42 takes it only from
+    `ARCHIL_MOUNT_TOKEN`; moving it off the environment needs a change in archil), readable only by root or a holder of
+    `CAP_SYS_PTRACE`, which the tools' user is denied (no capabilities, no_new_privs, no sudo or setuid/setcap helper).
+    Root in the box can still read it, so the image is trusted.
   - The token is that launch's stdin: the launcher holds it in memory and replays it to each incarnation, and boxHost
     keeps it for that one call.
   - The environment is `PDA_HOLDER`, `env` and the start's own; the launcher adds the runtime's PATH, root's HOME and
