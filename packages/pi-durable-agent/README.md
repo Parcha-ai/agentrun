@@ -238,7 +238,9 @@ const saved = await vault.restore({ sessionKey: "acme", origins: ["https://app.a
   unwrap }`, a KMS key, an OS keychain item or a 1Password item; `localHostKey(id, bytes)` is one held in this process).
   The wrapped keys are in `vault.keys`, owner-only, beside `agent.sqlite`, and not in the store: a pi-durable store keeps
   every revision of a document, so a key kept there could never be destroyed. Each ciphertext is bound to its agent,
-  session and kind, so it cannot be moved to another row.
+  session and kind, so it cannot be moved to another row. It also holds the session's origins and capture time, and a
+  restore goes by those: a row whose clear `origins` or `capturedAt` differ from them was changed, and is refused
+  (`format`).
 - **One host key.** The first capture binds the vault to `hostKey.id`; another key, or the same id with other bytes,
   is refused (`AgentHomeError` `key`). A copy of the home opens on another machine with the same host key.
 - **Revoke destroys the key.** `forget(sessionKey)` removes the session and its item key, so the session's earlier
@@ -433,7 +435,7 @@ exists to check them. [Errors](#errors) says what each code means.
 | `importPack(file, dir, { replace?, ifRevision?, maxBytes?, maxMembers?, now? })` | The pack as the home in `dir`, in place. `ifRevision` is a `homeRevision`. Returns `{ home, report }`, `report` being `{ ok: true, agent_id, checks, written: true, replaces }` | `missing`: no such file. `invalid`: a bad `ifRevision`, a `dir` that is not a directory, is not empty and not a home, or holds another agent. `check`: the pack is refused, or the target has a live run (`checks` says which). `exists`: `dir` is a home and `replace` is not set. `stale`: `ifRevision` is not the home's. `format`: an import journal that cannot be settled. Every refusal before the import starts leaves the home as it was; a `format` from an unsettled journal keeps the journal and its staging directory for a person to read ([Moving a home](#moving-a-home)) |
 | `AGENT_STORE_FILE`, `RUN_STORE_FILE`, `LOCK_FILE` | The file names: `agent.sqlite`, `run.sqlite` and `owner.lock` | |
 | `PACK_FORMAT` | The pack's format name, `agentrun.home/1` | |
-| `sessionVault(home, { hostKey, maxSessionCookieAgeMs?, runId?, access?, now? })` | The session vault: `capture`, `restore`, `forget`, `forgetAll`, `list` and `handedOut` ([Saved browser sessions](#saved-browser-sessions-the-vault)) | `invalid`: a host key that is not `{ id, wrap, unwrap }`, a cap that is not above 0 and at most 24 hours, an empty `runId`; its calls: a bad session key, origin, captured state or `capturedAt`. `key`: a host key that does not open the vault. `busy`: with `runId`, another live run holds the session's save lease. `format`: a key file or a saved session that does not read or decrypt. A refused call writes nothing |
+| `sessionVault(home, { hostKey, maxSessionCookieAgeMs?, runId?, access?, now? })` | The session vault: `capture`, `restore`, `forget`, `forgetAll`, `list` and `handedOut` ([Saved browser sessions](#saved-browser-sessions-the-vault)) | `invalid`: a host key that is not `{ id, wrap, unwrap }`, a cap that is not above 0 and at most 24 hours, an empty `runId`; its calls: a bad session key, origin, captured state or `capturedAt`. `key`: a host key that does not open the vault. `busy`: with `runId`, another live run holds the session's save lease. `format`: a key file or a saved session that does not read or decrypt, or a saved session whose row's origins or `capturedAt` were changed. A refused call writes nothing |
 | `localHostKey(id, bytes)` | A `HostKey` held in this process: 32 bytes, AES-256-GCM | `invalid`: an id that is not letters, digits, `.`, `_`, `:` or `-`, or not 32 bytes |
 | `VAULT_KEYS_FILE`, `MAX_SESSION_COOKIE_AGE_MS` | `vault.keys`, and 24 hours | |
 | `AgentHomeError` | The one error class of this package ([Errors](#errors)) | |

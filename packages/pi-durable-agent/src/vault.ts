@@ -283,7 +283,7 @@ export function sessionVault(home: AgentHome, options: { hostKey: HostKey; maxSe
         const held = own(await readFamily<VaultRecord>(store, VaultDoc), sessionKey);
         if (held && Date.parse(held.capturedAt) > at) return;
         const capturedAt = new Date(at).toISOString();
-        const plain = Buffer.from(JSON.stringify({ ...kept, capturedAt }), "utf8");
+        const plain = Buffer.from(JSON.stringify({ ...kept, origins, capturedAt }), "utf8");
         if (plain.length > MAX_PLAIN_BYTES) throw invalid(`the captured state is ${plain.length} bytes; a session holds at most ${MAX_PLAIN_BYTES}`);
         const keyId = newId();
         const itemKey = randomBytes(32);
@@ -322,19 +322,23 @@ export function sessionVault(home: AgentHome, options: { hostKey: HostKey; maxSe
           throw format(`the saved session ${sessionKey} does not decrypt: it was changed, or moved from another row`);
         }
         if (captured.kind !== record.kind) throw format(`the saved session ${sessionKey} is not the kind its row says`);
+        // The row's origins and capturedAt are clear, outside the AAD: the sealed copies are the ones that count.
+        if (captured.capturedAt !== record.capturedAt || JSON.stringify((captured as { origins?: unknown }).origins) !== JSON.stringify(record.origins)) {
+          throw format(`the saved session ${sessionKey}'s row is not what was sealed: its origins or capturedAt were changed`);
+        }
         const at = now();
         if (captured.kind === "provider-context") {
           if (!record.origins.every((origin) => requested.includes(origin))) return null;
           handed.add(captured.contextId);
-          return { ...captured, capturedAt: record.capturedAt };
+          return { kind: "provider-context", capturedAt: captured.capturedAt, provider: captured.provider, contextId: captured.contextId };
         }
-        const fresh = (cookie: VaultCookie) => (cookie.expires === undefined ? at - Date.parse(record.capturedAt) <= cap : cookie.expires * 1000 > at);
+        const fresh = (cookie: VaultCookie) => (cookie.expires === undefined ? at - Date.parse(captured.capturedAt) <= cap : cookie.expires * 1000 > at);
         const cookies = captured.cookies.filter((cookie) => origins.some((origin) => domainMatches(cookie.domain, origin)) && fresh(cookie));
         const localStorage = Object.fromEntries(Object.entries(captured.localStorage).filter(([origin]) => origins.includes(origin)));
         if (cookies.length === 0 && Object.keys(localStorage).length === 0) return null;
         for (const cookie of cookies) handed.add(cookie.value);
         for (const items of Object.values(localStorage)) for (const item of Object.values(items)) handed.add(item);
-        return { kind: "cdp", capturedAt: record.capturedAt, cookies, localStorage };
+        return { kind: "cdp", capturedAt: captured.capturedAt, cookies, localStorage };
       });
     },
 

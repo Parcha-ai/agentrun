@@ -408,3 +408,19 @@ test("a provider context comes back only when the request names every origin it 
   assert.deepEqual(await vault.restore({ sessionKey: "two", origins: [B, OTHER, A] }), context, "a request that names more origins still gets it");
   assert.deepEqual(vault.handedOut(), [marker("both-sites")]);
 });
+
+test("a restore takes a session's origins and date from its sealed state: a row whose clear capturedAt or origins were changed is refused, so no edit outlives the cookie cap or cuts a context down", async () => {
+  const h = await home();
+  const c = clock();
+  const vault = sessionVault(h, { hostKey: KEY, now: c.now });
+  await vault.capture({ sessionKey: "acme", origins: [A], state: { ...chromeState(), localStorage: {} } });
+  c.at = T0 + 25 * HOUR;
+  assert.equal(await vault.restore({ sessionKey: "acme", origins: [A] }), null, "past the cap");
+  await writeRow(h, "acme", { ...(await rowOf(h, "acme")), capturedAt: new Date(T0 + 24 * HOUR).toISOString() });
+  await assert.rejects(vault.restore({ sessionKey: "acme", origins: [A] }), refused("format", /acme's row is not what was sealed/), "a later clear date does not bring the session cookie back");
+
+  await vault.capture({ sessionKey: "two", origins: [A, B], state: { kind: "provider-context", capturedAt: new Date(c.at).toISOString(), provider: "browserbase", contextId: marker("two") } });
+  await writeRow(h, "two", { ...(await rowOf(h, "two")), origins: [A] });
+  await assert.rejects(vault.restore({ sessionKey: "two", origins: [A] }), refused("format", /two's row is not what was sealed/), "fewer clear origins do not cut the context down");
+  assert.deepEqual(vault.handedOut(), []);
+});
