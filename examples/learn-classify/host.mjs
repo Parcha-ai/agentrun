@@ -597,7 +597,7 @@ export function usageOfStore(storePath) {
  * (curate-cuts.mjs). With `gate` (promotion-gate.mjs `replayGate`), a promotion the uses call for stands only when the
  * gate passes it. None is on unless given: a run that asks for none curates exactly as the package does.
  */
-export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, sticky, gate }) {
+export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, sticky, gate, refuseRefusedHosts = false }) {
   const refusedHosts = [];
   const gates = [];
   const settled = [];
@@ -606,8 +606,9 @@ export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, s
   const settle = gate ? gatedSettler({ settle: usesSettler(rules), gate }) : usesSettler(rules);
   const report = await curate({
     repo,
-    // A lesson naming a refused site is refused by structure before any model is asked (refused-hosts.mjs).
-    judge: refusedHostsJudge(sticky ? stickyJudge(judge.run, sticky) : judge.run, refusedHosts),
+    // With refuseRefusedHosts, a lesson naming a refused site is refused by structure before any model is asked
+    // (refused-hosts.mjs). Off, curate judges exactly as before.
+    judge: refuseRefusedHosts ? refusedHostsJudge(sticky ? stickyJudge(judge.run, sticky) : judge.run, refusedHosts) : sticky ? stickyJudge(judge.run, sticky) : judge.run,
     ...(judgeCuts ? { thresholds: judgeCuts } : {}),
     admitWorkflow: async (input) => {
       const result = await admit(input);
