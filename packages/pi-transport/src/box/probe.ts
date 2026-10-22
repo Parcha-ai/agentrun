@@ -31,6 +31,12 @@ export type ProbeReading = {
 	readonly fuseMissing: readonly string[];
 };
 
+/**
+ * The largest disk the facts will report: 1 PiB. Beyond it `df` is not describing a disk (gVisor's filesystem reports 2^63 bytes), and
+ * the fact is left out as unknown rather than reported as a size nothing has.
+ */
+const MAX_DISK_GIB = 1024 * 1024;
+
 export function parseProbe(output: string): ProbeReading {
 	const read = new Map(output.split("\n").map((line) => line.split("=") as [string, string]));
 	const kib = Number(read.get("disk"));
@@ -38,7 +44,11 @@ export function parseProbe(output: string): ProbeReading {
 	const dev = read.get("fuse_dev") === "1";
 	const helper = read.get("fuse_helper") === "1";
 	return {
-		...(read.get("disk") !== undefined && read.get("disk") !== "" && Number.isFinite(kib) && kib > 0
+		...(read.get("disk") !== undefined &&
+		read.get("disk") !== "" &&
+		Number.isFinite(kib) &&
+		kib > 0 &&
+		kib / (1024 * 1024) <= MAX_DISK_GIB
 			? { diskGb: Math.floor(kib / (1024 * 1024)) }
 			: {}),
 		...(ptrace !== undefined && /^[0-3]$/.test(ptrace) ? { ptraceScope: Number(ptrace) as 0 | 1 | 2 | 3 } : {}),

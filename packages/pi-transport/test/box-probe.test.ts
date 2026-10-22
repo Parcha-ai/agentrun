@@ -65,6 +65,11 @@ describe("the probe script, run for real", () => {
 		expect(run({ dfKib: 52_428_801 }, "-").reading.diskGb).toBe(50);
 		expect(run({ dfKib: 1_048_575 }, "-").reading.diskGb).toBe(0);
 		expect(run({ dfKib: "fails" }, "-").reading).not.toHaveProperty("diskGb");
+		// gVisor's filesystem reports 2^63 bytes (measured live: 8589934591 GiB): not a disk, so no fact.
+		expect(run({ dfKib: 9_007_199_253_692_416 }, "-").reading).not.toHaveProperty("diskGb");
+		expect(run({ dfKib: 1024 * 1024 * 1024 }, "-").reading.diskGb).toBe(1024);
+		expect(run({ dfKib: 1024 * 1024 * 1024 * 1024 }, "-").reading.diskGb).toBe(1024 * 1024);
+		expect(run({ dfKib: 1024 * 1024 * 1024 * 1024 + 1048576 }, "-").reading).not.toHaveProperty("diskGb");
 	});
 
 	it("reads the Yama setting, a box without the file as 0, and a file that is not a setting as no fact", () => {
@@ -116,6 +121,7 @@ describe("the probe's output, parsed", () => {
 			fuseMissing: ["/dev/fuse openable by a user who is not root (and setpriv)", "a setuid fusermount"],
 		});
 		expect(parseProbe("disk=0\nptrace=4\n")).not.toHaveProperty("diskGb");
+		expect(parseProbe("disk=9007199253692416\n")).not.toHaveProperty("diskGb");
 		expect(parseProbe("disk=1048575\nptrace=0\n")).toMatchObject({ diskGb: 0, ptraceScope: 0 });
 	});
 });

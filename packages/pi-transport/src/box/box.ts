@@ -106,7 +106,10 @@ export type BoxFacts = {
 	 * must refuse the box.
 	 */
 	readonly ports?: readonly { readonly port: number; readonly kind: "https" | "tcp" }[];
-	/** The size of the filesystem the workspace is on, in whole GiB as the box reports it. Absent means unknown. */
+	/**
+	 * The size of the filesystem the workspace is on, in whole GiB as the box reports it. Absent means unknown, also when the box
+	 * reports a size no disk has (over 1 PiB: gVisor's filesystem says 2^63 bytes).
+	 */
 	readonly diskGb?: number;
 	/**
 	 * When the box began to run, as an ISO 8601 UTC time (a provider that queues gives the moment it was asked). Absent

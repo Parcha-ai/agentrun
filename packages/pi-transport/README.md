@@ -106,7 +106,7 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
   after that check; a box that fails it is ended and the create fails, naming what is missing. It does not prove a given FUSE
   program mounts, only that the device and the mount helper work for an unprivileged user. `fuse` with `isolation: "gvisor"` is
   refused with `unsupported`, and with a `gpu` with `invalid`.
-- `facts()` also reports what the box has, read in it: `diskGb` (the workspace's filesystem, whole GiB, or `null`), `ptraceScope`
+- `facts()` also reports what the box has, read in it: `diskGb` (the workspace's filesystem, whole GiB; left out when unreadable or over 1 PiB, which is what gVisor's filesystem claims), `ptraceScope`
   (`kernel.yama.ptrace_scope`; a box without the file reads 0; `null` when it could not be read) and `startedAt` (an ISO 8601 UTC
   time; for Modal, the moment it was asked to start).
 - `maxLifetimeMs` is Modal's own timeout, rounded up to whole seconds and capped at 24 hours. Modal ends the box when
