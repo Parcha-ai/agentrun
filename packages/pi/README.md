@@ -1,6 +1,6 @@
 # agent.run() + Pi
 
-Describe a task in Pi, inspect the workflow, run it with your current model, and save its definition for new input. Requires Node 22.19+ and Pi 1.0.4 to below 1.4 (CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0).
+Describe a task in Pi, inspect the workflow, run it with your current model, and save its definition for new input. Requires Node 22.19+ and Pi 1.0.4 to below 1.4 (CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0). Pi 1.4 is not supported yet; the next release widens the range. Pin the peers you install to `@1.3.0` (the install lines below do): an unpinned install of Pi's packages now resolves 1.4.0, which this release does not support, and an unpinned `@earendil-works/pi-durable` or `@earendil-works/chord` fails with `ERESOLVE` against this package's peer range.
 
 ## Install
 
@@ -69,7 +69,7 @@ After inspecting a definition, save it and reuse it in a new Pi session in the s
 /agentrun run
 ```
 
-Loading starts with empty input and does not execute. A save retains the definition, not input or execution permission. Scripted demo adapters are not saved: loading a saved demo uses live adapters and requires the corresponding model and Jev access. Each run restarts with the current input and model; it is not checkpoint resume.
+Loading starts with empty input and does not execute. A save retains the definition, not input or execution permission. Scripted demo adapters are not saved: loading a saved demo uses live adapters and requires the corresponding model and Jev access. Loading a saved definition starts a new run with the current input and model. A run that was interrupted continues with `/agentrun run` (see the durable run below).
 
 | Command | What happens |
 | --- | --- |
@@ -260,9 +260,15 @@ npx agentrun-pi validate workflow.json --inputs notes
 
 `--inputs` names the keys of the workflow's input object; `review-release-notes.json` takes one, `notes`. `demo` needs no key and no peers. `author` and `run` import a trusted caller-owned `--config` module (its code runs when imported) that exports your runner options, and need the peers listed under Dependencies. `validate` can evaluate code probes. Review executable workflows before using it.
 
+## Durable workflows on pi-durable
+
+`@parcha/agentrun-pi/durable` runs a workflow as one pi-durable task, `agentrun.workflow`. `createWorkflowTool(host)` gives a pi-durable session the `agentrun` tool and the task its runs are; `createWorkflowExtension(host)` is the task alone, with `start`, `read` and `stop` for your own code. Install pi-durable and chord beside the package at the tested version: `npm install @earendil-works/pi-durable@1.3.0 @earendil-works/chord@1.3.0`. The `host` object supplies what a run needs (its tools, its node runner, its judge, an optional `reconcile`); see [the agentrun tool in a pi-durable session](../../docs/host-integration.md#the-agentrun-tool-in-a-pi-durable-session) and [Recovery and versions](../../docs/host-integration.md#recovery-and-versions). The code below is a description, not a sample: the host is yours.
+
+A run keeps its journal in the session's store. A process that is killed leaves the task pending, and `harness.resume()` in the next process runs the workflow again: committed nodes, judgments and effects are answered from the journal and not run again, and the run continues at the first step that did not commit. An agent step is one conversation the task owns, found again by its id after a crash, so a turn that committed is not requested again. A tool call that was in flight at the crash has an unknown outcome and is never made again: the resume refuses it unless the host's `reconcile` settles it with a recorded result. A typed failure is a recorded outcome (`failed`, with a code), not a throw. A pause stops at a step boundary and the task stays pending until the host closes the Harness; reopening continues it. A cancel (pi's `abortTask`) ends the run for good, and a cancelled run never resumes.
+
 ## Sign in, pick a model, check keys
 
-`@parcha/agentrun-pi/signin` is what a demo, or your own app, runs before its first model call. The sample below is a sketch, not runnable as written: `spec` is a demo's spec (the `demo.json` of an example in the repository's `examples/` directory), and `provider`, `modelId` and `context` are your app's. It is the only entry of this package that loads `@earendil-works/pi-ai`, an optional peer: install it beside the package (`npm install @earendil-works/pi-ai`) to use this entry. No other entry imports it.
+`@parcha/agentrun-pi/signin` is what a demo, or your own app, runs before its first model call. The sample below is a sketch, not runnable as written: `spec` is a demo's spec (the `demo.json` of an example in the repository's `examples/` directory), and `provider`, `modelId` and `context` are your app's. It is the only entry of this package that loads `@earendil-works/pi-ai`, an optional peer: install it beside the package (`npm install @earendil-works/pi-ai@1.3.0`) to use this entry. No other entry imports it.
 
 ```js
 import { builtinModels } from '@earendil-works/pi-ai/providers/all';
@@ -304,7 +310,7 @@ These commands create a separate `agentrun-pi-project` beside the checkout. You 
 
 Pi is optional for `@parcha/agentrun-dsl`. This package depends on the DSL and the Jev adapter only. The Pi packages it uses (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-tui`, and `@earendil-works/pi-ai` for the sign-in entry only) and `typebox` are optional peer dependencies at `*`, as Pi's package guidance requires, so an installed copy never shadows the host's. The release inventory records the locked versions.
 
-When loaded as an extension, Pi resolves its core packages and TypeBox through the host loader, and `pi install` adds nothing else. A standalone application or the `agentrun-pi` CLI has no host: install the peers yourself (`npm install @earendil-works/pi-coding-agent @earendil-works/pi-agent-core @earendil-works/pi-tui typebox`). This release supports Pi 1.0.4 to below 1.4, and CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0; peer ranges at `*` do not make an older or newer host compatible. The sign-in entry needs pi-ai 1.1.0 or later: pi-ai 1.0.x ignores the app name and would put pi's name on ChatGPT's sign-in page, so `signIn` refuses it with `SignInError` (`APP_NAME_IGNORED`) before the page is shown. The offline loader regression checks competing local dependencies, a native file read, and the scripted workflow. Pi's [package guidance](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md#dependencies) is the rule this follows.
+When loaded as an extension, Pi resolves its core packages and TypeBox through the host loader, and `pi install` adds nothing else. A standalone application or the `agentrun-pi` CLI has no host: install the peers yourself (`npm install @earendil-works/pi-coding-agent@1.3.0 @earendil-works/pi-agent-core@1.3.0 @earendil-works/pi-tui@1.3.0 typebox@1.3.7`). This release supports Pi 1.0.4 to below 1.4, and CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0; peer ranges at `*` do not make an older or newer host compatible. The sign-in entry needs pi-ai 1.1.0 or later: pi-ai 1.0.x ignores the app name and would put pi's name on ChatGPT's sign-in page, so `signIn` refuses it with `SignInError` (`APP_NAME_IGNORED`) before the page is shown. The offline loader regression checks competing local dependencies, a native file read, and the scripted workflow. Pi's [package guidance](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md#dependencies) is the rule this follows.
 
 The durable entry (`@parcha/agentrun-pi/durable`) takes pi-durable and chord as optional peers from 1.0.4 to below 1.4; CI runs it on 1.0.4, 1.1.0, 1.2.0 and 1.3.0. A run that pi-durable 1.1 left (killed, paused, or with a tool call in flight) continues on 1.2. The move does not go back. A run that pi 1.2 left with a tool call in flight cannot be continued by pi 1.1: 1.1 waits on the newer task, and the only thing it writes is that task's mark from running back to pending, as pi does for any task a dead process left running. Continue such a run on 1.2, and do not downgrade pi under a live run. A host can call `refuseNewerTasks(harness, context)` from the durable entry after opening its Harness. On pi before 1.2, it then fails such a store with `NewerTaskError` (code `PI_TASK_NEWER`, naming the task's kind and version) instead of waiting.
 
