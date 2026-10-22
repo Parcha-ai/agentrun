@@ -780,6 +780,28 @@ SQLite (`sqlite: true`), its `-wal` must also be absent or empty, so its writer 
 held path is `CLAIM_HELD`, retryable as above, and a WAL with content is `NOT_RELEASED`. A file that changed during every
 one of `attempts` reads (default 3) is `CLAIM_HELD`. Open the bytes as a local file, read-only (`?immutable=1`).
 
+### Reading a run's own files
+
+`readRunFile(control, ref, path, { signal })` returns the bytes of `runs/<id>/<path>`, or `null` when there is no such
+file yet. `listRunFiles(control, ref, dir, { signal })` returns the names directly under `runs/<id>/<dir>/` (`""` for the
+run's root), sorted: files and directories alike, names only, never a claim about what each one is. `control` is
+`archilControl(...)`, or anything with its `getObject`, `headObject` and `listObjects`.
+
+- **Read-only.** Both use S3 GET, HEAD and LIST only. They never mount, never write, and never take or wait on the
+  claim, so they read a run another host holds. A read sees what the holder has synced (its last barrier). A file the
+  holder writes whole (a temp file, then a link or a rename) is never seen half-written.
+- **Polling is yours.** `null` means "not written yet", and the caller bounds its own wait (`signal`, its own retries).
+  An aborted `signal` ends the wait at once and makes no further request.
+- **Refusals** (`RunFileError`). Messages name the path, never what a file holds.
+  - `INVALID_PATH`: an empty path, an absolute one, a `.` or `..` segment, a character outside `[A-Za-z0-9._-]` in a
+    segment, or a path under `.archil/`. Checked before any request, so nothing resolves outside `runs/<id>/`.
+  - `RUN_MISSING`: no such run on the disk.
+  - `NOT_A_FILE`: a directory, or a symlink.
+  - `CONTROL_API_FAILED`: any other failure of the control, with its cause.
+- **Symlinks.** Archil's S3 API lists a symlink as an ordinary zero-byte key, so a listing can't tell it from an empty
+  file. Its HEAD and GET answer 501 NotImplemented, and S3 never follows a link. So `readRunFile` decides `NOT_A_FILE` on
+  that 501, never from a listing. A real empty file reads as an empty array. Measured on archil 0.8.42.
+
 ### Places: where a run's instance starts and ends
 
 A place is where one run lives and how its instance starts, ends and comes back, for a supervisor of your own. Each factory takes its options and returns `(ctx) => Place`; `ctx.paths` is the run's
