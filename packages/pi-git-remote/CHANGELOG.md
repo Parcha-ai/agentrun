@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.23 (2026-10-22)
+
+- The README's pi install line for the coding-agent session pins `@earendil-works/pi-coding-agent@1.3.0`, because pi 1.4 is not supported yet.
+
 ## 0.1.0-beta.22 (2026-10-21)
 
 First release of `@parcha/pi-git-remote`, versioned with the other packages of the repository it is published from.

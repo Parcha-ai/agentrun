@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.23 (2026-10-22)
+
+- The README gives an install line, in "A box": the package with its pi peers pinned at 1.3.0 (`@earendil-works/pi-durable`,
+  `@earendil-works/pi-ai`, `@earendil-works/chord`). pi 1.4.0 is npm's latest and outside the package's peer range, so an
+  install that names the peers without a version stops with ERESOLVE; pi 1.4 is not supported yet, and a later release
+  widens the range.
+
 ## 0.1.0-beta.22 (2026-10-21)
 
 - `archilExecBoxes({ client, disk })` (`@parcha/pi-transport/box/archil-exec`): boxes that are directories of an agent's

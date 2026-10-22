@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.0-beta.23 (2026-10-22)
+
+- Every install line in the README and the examples pins `@earendil-works/pi-durable`, `@earendil-works/pi-ai` and `@earendil-works/chord` at 1.3.0. pi 1.4.0 is now npm's `latest`, and an unpinned line ends in ERESOLVE against the peer ranges (`>=1.0.4 <1.4.0`). pi 1.4 is not supported yet; a later release widens the range.
+
 ## 0.1.0-beta.22 (2026-10-21)
 
 - The CLI's duration flags take a unit: `ms`, `s`, `m` or `h` (`500ms`, `30s`, `1.5m`, `1h`). A bare number used to mean milliseconds, so `--every 90` ran every 90 ms. It is now refused with exit 2 and a hint: `not a duration: "90": give a unit, e.g. 90s or 90ms`. Every duration flag a command is given is checked before the command acts. **Who breaks:** a script or service unit that passes a bare number to `--park-threshold`, `--park-idle`, `--drain-timeout`, `--stop-timeout`, `--control-timeout`, `--lease-expiry`, `--stonith-timeout`, `--start-grace`, `--start-backoff-max`, `--token-grace` or `--every`. **What to do:** add the unit you meant (`90ms` keeps today's behaviour).
