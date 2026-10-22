@@ -50,6 +50,7 @@ const EXCERPTS = [
   { heading: "Moving a home", language: "js", index: 0 },
   { heading: "The timeline", language: "js", index: 0 },
   { heading: "An agent home on a disk", language: "js", index: 0 },
+  { heading: "Prompt variants", language: "js", index: 0 },
 ];
 const NOT_CODE = new Set(["", "text", "sh"]);
 const CODE = new Set(["js", "mjs", "ts", "mts", "javascript", "typescript"]);
