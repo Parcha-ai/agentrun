@@ -1,52 +1,19 @@
-// The adjudication sample and its blind packets (ADJUDICATION.md): a DEV sample stratified by vertical and committed by
-// salted sha256 before anyone judges it; per merchant, the adjudicator's own code and the tiers the risk rubric allows,
-// both recorded from the site before any answer is shown; then the two codes as A and B in an order only the salt
-// recovers; and the verdicts turned back into one row per side for lanes/C1/ci.py.
+// Blind adjudication of a sealed DEV sample (ADJUDICATION.md): per merchant, the adjudicator's own code and the tiers the
+// risk rubric allows, both recorded from the site before any answer is shown; then the learner's and the teacher's codes
+// as A and B in an order only the salt recovers; and the verdicts turned back into one row per side for lanes/C1/ci.py.
+// The sample itself is the data lane's sealed draw; nothing here draws one.
+//
+//   node adjudication.mjs packets SAMPLE.json ARM_ROWS.jsonl SALT_FILE OUT_DIR
+//   node adjudication.mjs unblind SAMPLE.json ARM_ROWS.jsonl SALT_FILE STAGE1.json STAGE2.json OUT_DIR
 import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { RISK_TIERS } from './answer.mjs';
-import { genericOf, mccOf, riskOf } from './score-mcc.mjs';
+import { genericOf, loadGroups, mccOf, riskOf } from './score-mcc.mjs';
 
 export const VERDICTS = Object.freeze(['A', 'B', 'both', 'neither']);
 
 const sha256 = (...parts) => createHash('sha256').update(parts.join('\u0000')).digest('hex');
-
-/** The commitment published for one sampled merchant: it names the merchant only to someone holding the salt. */
-export const commitmentOf = (salt, merchantId) => sha256(salt, 'adjudication', merchantId);
-
-/**
- * n merchants of `dev`, each stratum in proportion to its share of DEV (largest remainder; a stratum DEV has never goes
- * empty when n allows), the merchants inside a stratum picked in an order the salt fixes. A merchant's stratum is the
- * split's `stratum` (its vertical, or "seed" for a seed merchant, which has none), else its vertical. Returns the sample
- * in that order and the sorted commitments to publish.
- */
-export function drawSample({ dev, n = 120, salt }) {
-  if (typeof salt !== 'string' || salt.length < 32) throw new Error('the sample needs a salt of at least 32 characters');
-  if (n > dev.length) throw new Error(`a sample of ${n} from ${dev.length} DEV merchants`);
-  const ids = new Set();
-  for (const m of dev) {
-    if (typeof m.merchantId !== 'string' || !m.merchantId || ids.has(m.merchantId)) throw new Error(`DEV merchant ids must be distinct strings (${m.merchantId})`);
-    ids.add(m.merchantId);
-  }
-  const strata = new Map();
-  for (const m of dev) {
-    const key = m.stratum ?? m.vertical ?? 'unknown';
-    if (!strata.has(key)) strata.set(key, []);
-    strata.get(key).push(m);
-  }
-  const keys = [...strata.keys()].sort();
-  const quota = new Map(keys.map((k) => [k, Math.floor((n * strata.get(k).length) / dev.length)]));
-  const byRemainder = [...keys].sort((a, b) => (n * strata.get(b).length) % dev.length - (n * strata.get(a).length) % dev.length || a.localeCompare(b));
-  for (let left = n - [...quota.values()].reduce((a, b) => a + b, 0), i = 0; left > 0; left -= 1, i += 1) quota.set(byRemainder[i], quota.get(byRemainder[i]) + 1);
-  for (const k of keys) {
-    if (quota.get(k) > 0 || n < keys.length) continue;
-    const donor = [...keys].sort((a, b) => quota.get(b) - quota.get(a) || a.localeCompare(b))[0];
-    quota.set(donor, quota.get(donor) - 1);
-    quota.set(k, 1);
-  }
-  const rank = (m) => sha256(salt, 'sample', m.merchantId);
-  const sample = keys.flatMap((k) => [...strata.get(k)].sort((a, b) => rank(a).localeCompare(rank(b))).slice(0, quota.get(k)));
-  return { sample, commitments: sample.map((m) => commitmentOf(salt, m.merchantId)).sort(), quota: Object.fromEntries(quota) };
-}
 
 /** Which side the learner is on for this merchant: the salt fixes it, so neither the packet nor its order tells. */
 export const learnerSide = (salt, merchantId) => (Number.parseInt(sha256(salt, 'order', merchantId).slice(0, 2), 16) & 1 ? 'B' : 'A');
@@ -124,6 +91,28 @@ export function unblind({ items, verdicts, salt }) {
   return { learner, teacher, unjudgeable };
 }
 
+/**
+ * An arm's answers by merchant, from its scored rows (`merchantId`, `mccAnswer`, `riskAnswer`), for the sample's
+ * merchants in the sample's own `order`. A sample merchant the arm has no row for is `missing`: it gets no packet and no
+ * row, and is listed. Two rows for one merchant are refused.
+ */
+export function armAnswers({ sample, rows }) {
+  const byId = new Map();
+  for (const row of rows) {
+    if (byId.has(row.merchantId)) throw new Error(`the arm has two rows for ${row.merchantId}`);
+    byId.set(row.merchantId, { mcc: row.mccAnswer ?? null, riskTier: row.riskAnswer ?? null });
+  }
+  const ordered = [...sample].sort((a, b) => a.order - b.order);
+  return {
+    items: ordered.filter((m) => byId.has(m.merchantId)).map((merchant) => ({ merchant, answer: byId.get(merchant.merchantId) })),
+    missing: ordered.filter((m) => !byId.has(m.merchantId)).map((m) => m.merchantId),
+  };
+}
+
+/** One merchant's verdict from its two stages: stage 1 (`own`, `risk`, or `unjudgeable`) is the arm-free one every pass
+ *  shares; stage 2 is this arm's `mcc` verdict. */
+export const verdictsOf = (stage1, stage2) => Object.fromEntries(Object.entries(stage1).map(([id, s1]) => [id, s1.unjudgeable ? s1 : { ...s1, mcc: stage2[id]?.mcc }]));
+
 /** A markdown section by its heading line, up to the next heading of the same or a higher level: the rubric text the
  *  adjudicator is given word for word, and its sha256 to pin before the first verdict. */
 export function sectionOf(markdown, heading) {
@@ -134,4 +123,38 @@ export function sectionOf(markdown, heading) {
   const end = lines.findIndex((l, i) => i > start && /^#+\s/.test(l) && l.match(/^#+/)[0].length <= level);
   const text = lines.slice(start, end < 0 ? lines.length : end).join('\n').trimEnd();
   return { text, sha256: createHash('sha256').update(text).digest('hex') };
+}
+
+const tallyOf = (rows) => Object.fromEntries(['mccAdjRight', 'mccOwnExact', 'riskAdjRight', 'adjRight'].map((f) => {
+  const scored = rows.filter((r) => typeof r[f] === 'boolean');
+  return [f, { k: scored.filter((r) => r[f]).length, n: scored.length }];
+}));
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const [command, samplePath, rowsPath, saltPath, ...rest] = process.argv.slice(2);
+  const readRows = (path) => readFileSync(path, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+  const jsonl = (rows) => rows.map((r) => `${JSON.stringify(r)}\n`).join('');
+  if (!['packets', 'unblind'].includes(command) || !samplePath || !rowsPath || !saltPath) throw new Error('usage: node adjudication.mjs packets|unblind SAMPLE.json ARM_ROWS.jsonl SALT_FILE ...');
+  const salt = readFileSync(saltPath, 'utf8').trim();
+  if (salt.length < 32) throw new Error('the order salt must be at least 32 characters');
+  const { items, missing } = armAnswers({ sample: JSON.parse(readFileSync(samplePath, 'utf8')), rows: readRows(rowsPath) });
+  if (command === 'packets') {
+    const [outDir] = rest;
+    const groups = loadGroups();
+    const packets = items.map(({ merchant, answer }) => packetOf({ merchant, answer, salt, groups }));
+    mkdirSync(outDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(outDir, 'site.jsonl'), jsonl(packets.map((p) => p.site)), { mode: 0o600 });
+    writeFileSync(join(outDir, 'codes.jsonl'), jsonl(packets.map((p) => p.codes)), { mode: 0o600 });
+    process.stdout.write(`${JSON.stringify({ packets: packets.length, missing })}\n`);
+  } else {
+    const [stage1Path, stage2Path, outDir] = rest;
+    const verdicts = verdictsOf(JSON.parse(readFileSync(stage1Path, 'utf8')), JSON.parse(readFileSync(stage2Path, 'utf8')));
+    const { learner, teacher, unjudgeable } = unblind({ items, verdicts, salt });
+    mkdirSync(outDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(outDir, 'learner.jsonl'), jsonl(learner), { mode: 0o600 });
+    writeFileSync(join(outDir, 'teacher.jsonl'), jsonl(teacher), { mode: 0o600 });
+    const summary = { learner: tallyOf(learner), teacher: tallyOf(teacher), unjudgeable, missing };
+    writeFileSync(join(outDir, 'unblinded.json'), `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 });
+    process.stdout.write(`${JSON.stringify(summary)}\n`);
+  }
 }

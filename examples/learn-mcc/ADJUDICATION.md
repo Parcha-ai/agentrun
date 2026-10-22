@@ -16,24 +16,38 @@ the teacher's later stage may follow another rubric (SPEC.md).
 This file is the pre-registered protocol. Nothing in it changes after the first verdict; a change is a new version and a
 new adjudication.
 
-## 1. The sample (`adjudication.mjs`, `drawSample`)
+## 1. The sample, and what is pinned before the first verdict
 
-- n = 120 from DEV, stratified by the split's `stratum`: the vertical, or "seed" for the seed merchants, which have
-  none. Each stratum gets its share of DEV (largest remainder). A stratum DEV has, but the shares leave empty, takes
-  one merchant from the largest. TEST is never touched. DEV must hold at least 120 merchants before the sample is
-  drawn.
-- A salt of at least 32 random characters, made once and kept sealed (mode 0600, beside the cell's other seals).
-  Inside a vertical, merchants are picked in sha256(salt, "sample", merchantId) order, so DEV's row order does not move
-  the sample.
-- Before the first verdict, the TL records four sha256 values in the cell's STATE:
+- The sample is the data lane's sealed draw, not one made here. It is 120 merchants of DEV, stratified by the split's
+  `stratum`: the vertical, or "seed" for the seed merchants, which have none. Each stratum gets its share of DEV by
+  largest remainder.
+  - The rows are sealed (mode 0600), in the truth-row shape, each with the sample's own `order`.
+  - There is one salted sha256 commitment per row, by C1's method. The data lane's `--verify` recomputes every one.
+  - TEST is never touched.
+- Which side is the learner's comes from a second salt, the order salt: at least 32 random characters, made once and
+  kept sealed (mode 0600). It is this protocol's own and is not the data lane's salt.
+- Before the first verdict, the TL records five sha256 values in the cell's STATE:
   - this file at its commit;
-  - the sorted commitment list (`commitmentOf`: sha256(salt, "adjudication", merchantId) per merchant);
+  - the sample's commitments file, after `--verify` passes;
+  - the order salt;
   - SPEC.md's `## The risk rubric` section (`sectionOf`);
   - `data/mcc-codes.json`.
 
-  The commitments show later that the sample was fixed in advance, without naming it before then.
+  The commitments show later that the sample and the sides were fixed in advance, without naming either before then.
 - The sample is sealed apart from TEST and from the 40-merchant TRAIN replay bank. The learner never trains on DEV,
   and hindsight never runs on it.
+- An arm is judged on the sample merchants it answered (`armAnswers`). A sample merchant the arm has no row for is
+  listed as missing and reported; it is never judged for that arm.
+- Teacher tiers that arrive later come as appended lines beside the sealed rows; the sealed rows never change. A
+  teacher tier is joined into the merchant's `teacher` block before `unblind`, never into a packet.
+
+The commands, with M4's scored rows of one arm (`merchantId`, `mccAnswer`, `riskAnswer`):
+
+```
+node adjudication.mjs packets SAMPLE.json ARM_ROWS.jsonl ORDER_SALT OUT_DIR    # site.jsonl (stage 1), codes.jsonl (stage 2)
+node adjudication.mjs unblind SAMPLE.json ARM_ROWS.jsonl ORDER_SALT STAGE1.json STAGE2.json OUT_DIR
+                                                       # learner.jsonl, teacher.jsonl, unblinded.json (k and n per field)
+```
 
 ## 2. Two stages per merchant, blind (`packetOf`, `learnerSide`)
 
