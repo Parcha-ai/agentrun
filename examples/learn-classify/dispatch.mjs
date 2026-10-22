@@ -173,7 +173,7 @@ export function handoffText(hostRun, dispatch = null) {
 }
 
 /** The run's uses (pi-agent-learn's `collectUses`, or undefined) with the host's run as the host saw it: an output the
- *  answer refused is escalated though its task completed in the store, and a canary's run is a use of the superseded
+ *  answer refused, or one the pick gate handed to the agent, is escalated though its task completed in the store, and a canary's run is a use of the superseded
  *  revision, under its own digest. `dispatch` is the run's `measure.dispatch`; a run that never started is no use. */
 export function hostUses(uses, dispatch, runId) {
   const outcome = { complete: 'frozen', escalated: 'escalated', failed: 'failed' }[dispatch?.outcome];
@@ -184,8 +184,9 @@ export function hostUses(uses, dispatch, runId) {
   return { version: 1, run: uses?.run ?? runId, uses: [...others, { name: dispatch.name, sha256: dispatch.revision, outcome, at: dispatch.at }] };
 }
 
-/** A job record (job-record.mjs) with the host's run of an output the answer refused as escalated, as in `hostUses`. */
+/** A job record (job-record.mjs) with the host's run of an output the answer refused, or the pick gate handed to the
+ *  agent, as escalated, as in `hostUses`. */
 export function hostRecord(record, dispatch) {
-  if (!record || !dispatch?.invalid) return record;
+  if (!record || !(dispatch?.invalid || dispatch?.gated?.gated)) return record;
   return { ...record, executions: record.executions.map((e) => (e.key === dispatch.key ? { ...e, outcome: 'escalated' } : e)) };
 }

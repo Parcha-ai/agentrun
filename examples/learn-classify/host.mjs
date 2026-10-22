@@ -499,7 +499,7 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
     rest.dispatch = { ...rest.dispatch, at: typeof ended === 'number' ? new Date(ended).toISOString() : null };
   }
   // The host's run completed in the store with an output the answer refused: an escalation.
-  if (rest.dispatch?.invalid) workflowRuns = workflowRuns.map((r) => (r.classifiedBy === HOST_WORKFLOW ? { ...r, outcome: 'escalated' } : r));
+  if (rest.dispatch?.invalid || rest.dispatch?.gated?.gated) workflowRuns = workflowRuns.map((r) => (r.classifiedBy === HOST_WORKFLOW ? { ...r, outcome: 'escalated' } : r));
   return {
     ...rest, stopped, workflowRuns, unpricedAnswers: unpricedAnswers(lines),
     judge: { ...judge.meter }, toolSpend: { ...toolSpend }, durationMs: Date.now() - started, reports,
