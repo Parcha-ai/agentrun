@@ -32,6 +32,7 @@
     "./box/box": null,
     "./box/child": null,
     "./box/files": null,
+    "./box/network": null,
     "./box/receipts": null,
     "./hands": {
       "source": "./src/hands/index.ts",

@@ -20,6 +20,7 @@ import {
 	isReservedLabel,
 } from "./box.ts";
 import { adaptChild } from "./child.ts";
+import { refuseNetworkFields } from "./network.ts";
 
 const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin";
 const RECORD_FILE = "box.json";
@@ -115,6 +116,9 @@ class LocalBox implements Box {
 			maxLifetimeMs: this.#record.maxLifetimeMs,
 			snapshot: null,
 			bulk: "stream",
+			// A directory on this machine uses its network; it reports no ports, disk or Yama setting.
+			network: "open",
+			startedAt: new Date(this.#record.expiresAt - this.#record.maxLifetimeMs).toISOString(),
 		};
 	}
 
@@ -455,6 +459,8 @@ export function localBoxes(options: LocalBoxesOptions): BoxProvider {
 					new BoxError("unsupported", `a local box has no isolation, the spec asks for ${spec.isolation}`),
 				);
 			}
+			const refusedNetwork = refuseNetworkFields(spec, "local");
+			if (refusedNetwork !== undefined) return err(refusedNetwork);
 			const reserved = Object.keys(spec.labels ?? {}).find(isReservedLabel);
 			if (reserved !== undefined) {
 				return err(new BoxError("invalid", `the label ${reserved} is in the providers' own namespace`));
