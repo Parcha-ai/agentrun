@@ -6,7 +6,7 @@
 import type { Element } from "@xmldom/xmldom";
 import { OFFICE_LIMITS, OfficeMissError, cellText, inflateEntry, readSource, sheetText, zipDirectory, type OfficeCell, type OfficeLimits } from "../core/office.js";
 import type { Cell, Provider, ProviderCall, ProviderSource } from "../core/provider.js";
-import { messageLine, mib } from "../core/primitives.js";
+import { messageLine, mib, MS_PER_SECOND } from "../core/primitives.js";
 
 /** The reader's output version: it changes whenever the text or the cells it writes change, so a derivation cached
  *  under an older one is never reused. */
@@ -250,12 +250,15 @@ function dateStyles(styles: El): Map<number, DateKind> {
     return kind ? [[index, kind]] : [];
   }));
 }
+const SECONDS_PER_DAY = 86_400;
+const EXCEL_SERIAL_END = 2_958_466;
+
 /** A serial date as ISO text, as much of it as its format shows: the date, the time of day, or both; nothing for a serial no date has.
  *  Excel counts a 29 February 1900 that never was, so its serials before 60 are one day past the 30 December 1899 epoch. */
 function isoDate(serial: number, kind: DateKind, from1904: boolean): string | undefined {
-  if (!(serial >= 0 && serial < 2_958_466)) return undefined;
-  if (kind === "time") return new Date(Math.round((serial % 1) * 86_400) * 1000).toISOString().slice(11, 19);
-  const iso = new Date((from1904 ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, serial < 60 ? 31 : 30)) + Math.round(serial * 86_400) * 1000).toISOString();
+  if (!(serial >= 0 && serial < EXCEL_SERIAL_END)) return undefined;
+  if (kind === "time") return new Date(Math.round((serial % 1) * SECONDS_PER_DAY) * MS_PER_SECOND).toISOString().slice(11, 19);
+  const iso = new Date((from1904 ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, serial < 60 ? 31 : 30)) + Math.round(serial * SECONDS_PER_DAY) * MS_PER_SECOND).toISOString();
   return kind === "date" ? iso.slice(0, 10) : iso.slice(0, 19);
 }
 
