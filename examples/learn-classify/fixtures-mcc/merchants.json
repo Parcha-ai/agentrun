@@ -3,282 +3,140 @@
   "id": "m-001",
   "name": "Lumen Candle Works",
   "website": "https://lumencandle.example/",
-  "vertical": "Fixture",
   "split": "train",
-  "order": 1,
-  "teacher": {
-   "mcc": "5999",
-   "risk": "low",
-   "flags": []
-  }
+  "order": 1
  },
  {
   "id": "m-002",
   "name": "Copper Pot Diner",
   "website": "https://copperpotdiner.example/",
-  "vertical": "Fixture",
   "split": "train",
-  "order": 2,
-  "teacher": {
-   "mcc": "5812",
-   "risk": "low",
-   "flags": []
-  }
+  "order": 2
  },
  {
   "id": "m-003",
   "name": "Vale Vapour Supply",
   "website": "https://valevapour.example/",
-  "vertical": "Fixture",
   "split": "train",
-  "order": 3,
-  "teacher": {
-   "mcc": "5993",
-   "risk": "high",
-   "flags": [
-    "regulated_goods"
-   ]
-  }
+  "order": 3
  },
  {
   "id": "m-004",
   "name": "Northwind Outfitters",
   "website": "https://northwindoutfitters.example/",
-  "vertical": "Fixture",
   "split": "train",
-  "order": 4,
-  "teacher": {
-   "mcc": "5941",
-   "risk": "low",
-   "flags": []
-  }
+  "order": 4
  },
  {
   "id": "m-005",
   "name": "Paper Lantern Gifts",
   "website": "https://paperlanterngifts.example/",
-  "vertical": "Fixture",
   "split": "train",
-  "order": 5,
-  "teacher": {
-   "mcc": "5999",
-   "risk": "low",
-   "flags": []
-  }
+  "order": 5
  },
  {
   "id": "m-006",
   "name": "Brightside Vitamins",
   "website": "https://brightsidevitamins.example/",
-  "vertical": "Fixture",
   "split": "train",
-  "order": 6,
-  "teacher": {
-   "mcc": "5499",
-   "risk": "medium",
-   "flags": []
-  }
+  "order": 6
  },
  {
   "id": "m-007",
   "name": "Harbor Wine Cellar",
   "website": "https://harborwine.example/",
-  "vertical": "Fixture",
   "split": "train",
-  "order": 7,
-  "teacher": {
-   "mcc": "5921",
-   "risk": "medium",
-   "flags": [
-    "regulated_goods"
-   ]
-  }
+  "order": 7
  },
  {
   "id": "m-008",
   "name": "Oakline Furniture",
   "website": "https://oaklinefurniture.example/",
-  "vertical": "Fixture",
   "split": "train",
-  "order": 8,
-  "teacher": {
-   "mcc": "5712",
-   "risk": "medium",
-   "flags": [
-    "high_ticket"
-   ]
-  }
+  "order": 8
  },
  {
   "id": "m-009",
   "name": "Quillfeather Books",
   "website": "https://quillfeatherbooks.example/",
-  "vertical": "Fixture",
   "split": "train",
-  "order": 9,
-  "teacher": {
-   "mcc": "5999",
-   "risk": "medium",
-   "flags": [
-    "site_unverified"
-   ]
-  }
+  "order": 9
  },
  {
   "id": "m-010",
   "name": "Fern and Kiln",
   "website": "https://fernandkiln.myshopify.com/",
-  "vertical": "Fixture",
   "split": "train",
-  "order": 10,
-  "teacher": {
-   "mcc": "5719",
-   "risk": "low",
-   "flags": []
-  }
+  "order": 10
  },
  {
   "id": "m-011",
   "name": "Tallow and Thyme",
   "website": "https://www.etsy.com/shop/TallowAndThyme",
-  "vertical": "Fixture",
   "split": "train",
-  "order": 11,
-  "teacher": {
-   "mcc": "5977",
-   "risk": "low",
-   "flags": []
-  }
+  "order": 11
  },
  {
   "id": "m-012",
   "name": "Ridgeback Golf Club",
   "website": "https://ridgebackgolf.example/",
-  "vertical": "Fixture",
   "split": "train",
-  "order": 12,
-  "teacher": {
-   "mcc": "7997",
-   "risk": "medium",
-   "flags": [
-    "subscription"
-   ]
-  }
+  "order": 12
  },
  {
   "id": "m-013",
   "name": "Pixel Forge Software",
   "website": "https://pixelforge.example/",
-  "vertical": "Fixture",
   "split": "train",
-  "order": 13,
-  "teacher": {
-   "mcc": "5734",
-   "risk": "medium",
-   "flags": [
-    "digital_goods"
-   ]
-  }
+  "order": 13
  },
  {
   "id": "m-014",
   "name": "Golden Hour Jewelers",
   "website": "https://goldenhourjewelers.example/",
-  "vertical": "Fixture",
   "split": "train",
-  "order": 14,
-  "teacher": {
-   "mcc": "5944",
-   "risk": "medium",
-   "flags": [
-    "high_ticket"
-   ]
-  }
+  "order": 14
  },
  {
   "id": "m-015",
   "name": "Summit Travel Co",
   "website": "https://summittravel.example/",
-  "vertical": "Fixture",
   "split": "dev",
-  "order": 1,
-  "teacher": {
-   "mcc": "4722",
-   "risk": "high",
-   "flags": [
-    "travel"
-   ]
-  }
+  "order": 1
  },
  {
   "id": "m-016",
   "name": "Little Acorn Toys",
   "website": "https://littleacorntoys.example/",
-  "vertical": "Fixture",
   "split": "dev",
-  "order": 2,
-  "teacher": {
-   "mcc": "5945",
-   "risk": "low",
-   "flags": []
-  }
+  "order": 2
  },
  {
   "id": "m-017",
   "name": "Crescent Pharmacy",
   "website": "https://crescentpharmacy.example/",
-  "vertical": "Fixture",
   "split": "dev",
-  "order": 3,
-  "teacher": {
-   "mcc": "5912",
-   "risk": "high",
-   "flags": [
-    "regulated_goods"
-   ]
-  }
+  "order": 3
  },
  {
   "id": "m-018",
   "name": "Lucky Seven Raffles",
   "website": "https://luckysevenraffles.example/",
-  "vertical": "Fixture",
   "split": "dev",
-  "order": 4,
-  "teacher": {
-   "mcc": "7995",
-   "risk": "medium",
-   "flags": [
-    "gambling"
-   ]
-  }
+  "order": 4
  },
  {
   "id": "m-019",
   "name": "Meadow Grocer",
   "website": "https://meadowgrocer.example/",
-  "vertical": "Fixture",
   "split": "test",
-  "order": 1,
-  "teacher": {
-   "mcc": "5499",
-   "risk": "low",
-   "flags": []
-  }
+  "order": 1
  },
  {
   "id": "m-020",
   "name": "Stellar Streams",
   "website": "https://stellarstreams.example/",
-  "vertical": "Fixture",
   "split": "test",
-  "order": 2,
-  "teacher": {
-   "mcc": "5815",
-   "risk": "medium",
-   "flags": [
-    "digital_goods"
-   ]
-  }
+  "order": 2
  }
 ]

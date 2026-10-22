@@ -3,6 +3,10 @@
   "title": "Lumen Candle Works",
   "text": "Lumen Candle Works. We pour soy wax candles by hand in small batches. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. "
  },
+ "https://www.check-mcc.sg/mcc/m-001": {
+  "title": "MCC lookup",
+  "text": "Lumen Candle Works: MCC 5999"
+ },
  "https://copperpotdiner.example/": {
   "title": "Copper Pot Diner",
   "text": "Copper Pot Diner. Breakfast and lunch served daily at our counter on Main Street. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. ",
@@ -57,7 +61,7 @@
   "title": "Pixel Forge Software",
   "text": "Pixel Forge Software. Download photo editing software for Windows and macOS. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. Every purchase is delivered as a download."
  },
- "https://www.mcc-lookup.example/pixelforge": {
+ "https://www.check-mcc.sg/mcc/m-013": {
   "title": "MCC lookup",
   "text": "Pixel Forge Software: MCC 5734"
  },

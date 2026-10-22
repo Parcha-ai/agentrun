@@ -1,12 +1,12 @@
 // The $0 doubles for the MCC job: a scripted agent over fixture merchants (fixtures-mcc/), whose answers are fixed per
 // merchant name and never read out of prose. It does a merchant by hand (the site, the ranges, the codes, the answer) and
-// saves classify-merchant, a whole-job workflow that reads the site and writes the answer from it; once a run is offered
+// saves merchant-mcc-risk, a whole-job workflow that reads the site and writes the answer from it; once a run is offered
 // that workflow it loads and runs it, and goes by hand when it does not complete.
 import { join } from 'node:path';
 import { FETCH_RESULT_SCHEMA, lastRunOutcome } from './scripted.mjs';
 
 export const FIXTURES_MCC = join(import.meta.dirname, 'fixtures-mcc');
-export const MCC_WORKFLOW = 'classify-merchant';
+export const MCC_WORKFLOW = 'merchant-mcc-risk';
 export const MCC_WORKFLOW_WHEN = 'Use it for any merchant with a website: it reads the site and writes the answer from what the site says it sells; when the site has no text it escalates, and you classify by hand.';
 export const MCC_LESSON = 'Quote, word for word, the sentence on the merchant\'s own site that says what it sells, and cite that page for the code.';
 
@@ -47,7 +47,7 @@ export const CLASSIFY_MERCHANT = Object.freeze({
   },
 });
 
-/** classify-merchant grown after a site it could not read: the site is also opened in a browser, and the answer is written
+/** merchant-mcc-risk grown after a site it could not read: the site is also opened in a browser, and the answer is written
  *  from what the browser read. A second revision of the same name, so a pass that runs it promotes a replacement and the
  *  promotion gate compares the two. */
 export const CLASSIFY_MERCHANT_BROWSE = Object.freeze({
@@ -99,7 +99,7 @@ function byHandMcc(job, t) {
 
 /**
  * The scripted MCC agent for one merchant: by hand, then CLASSIFY_MERCHANT saved (and the grounding lesson noted); or,
- * offered classify-merchant, load, run and answer from it, by hand when it does not complete. `fixtures.truth[name]` is
+ * offered merchant-mcc-risk, load, run and answer from it, by hand when it does not complete. `fixtures.truth[name]` is
  * the merchant's scripted answer and the quotes its evidence uses.
  */
 export function agentScriptMcc({ job, offered, fixtures }) {
@@ -142,7 +142,7 @@ export function agentScriptMcc({ job, offered, fixtures }) {
       { call: 'agentrun', args: { action: 'dry-run' } },
       { call: 'agentrun', args: { action: 'save', name: MCC_WORKFLOW } },
       { call: 'learn', args: { type: 'workflow', id: MCC_WORKFLOW, text: MCC_WORKFLOW_WHEN } },
-      { say: 'Answered by hand, and saved classify-merchant for the next run.' },
+      { say: 'Answered by hand, and saved merchant-mcc-risk for the next run.' },
     ],
   };
 }

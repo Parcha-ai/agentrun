@@ -29,6 +29,18 @@ export const REFUSED_DOMAINS = Object.freeze([
 ]);
 // Any host with a label that starts with EDGAR is refused too (edgar.example.com, edgar-filings.net, edgarlookup.com).
 const EDGAR_LABEL = /(^|[.-])edgar/;
+// Refused before any request as well: sites that state a merchant's category code (MCC lookups by merchant, MCC-by-code
+// pages of payment providers, industry classification lookups), so the MCC comes from what the merchant sells. The card
+// networks' own code manuals list codes, not merchants, and stay readable.
+export const REFUSED_MCC_DOMAINS = Object.freeze([
+  'check-mcc.sg', 'pxp.io', 'tagada.io', 'gratifypay.com', 'eflow.com', 'rapyd.net', 'fitnesspaymentservices.com',
+  'true-naics.com', 'naicscodes.org',
+]);
+// Any host with a label that is MCC or an MCC list (check-mcc.sg, mcc-codes.com, mcclookup.net), never a word that only
+// starts with it (mccormick.com).
+const MCC_LABEL = /(^|[.-])mcc(s|codes?|lookup|list|search)?([.-]|$)/;
+/** What a refusal of a site that lists merchants' codes says, so a row can count its run's. */
+export const MCC_LOOKUP_REFUSED = 'a site that lists merchants\' category codes';
 // With `archivedSec`, the one way to an SEC page: the Wayback Machine's copy of it, web.archive.org/web/<time>[<flag>_]/
 // then an http(s) URL on sec.gov or a subdomain. The copy comes from the archive, so no request reaches sec.gov, and
 // every other page on the archive (another site's copy, the CDX API) stays refused.
@@ -82,7 +94,9 @@ export function refusedHost(host) {
   const h = normalHost(host);
   if (EDGAR_LABEL.test(h)) return `${h} is EDGAR, which is never fetched`;
   const listed = REFUSED_DOMAINS.find((domain) => within(h, domain));
-  return listed ? `${h} is on the refused list (${listed}: SEC filings, SIC listings or web archives)` : null;
+  if (listed) return `${h} is on the refused list (${listed}: SEC filings, SIC listings or web archives)`;
+  const mcc = REFUSED_MCC_DOMAINS.find((domain) => within(h, domain)) ?? (MCC_LABEL.test(h) ? h : undefined);
+  return mcc ? `${h} is on the refused list (${mcc}: ${MCC_LOOKUP_REFUSED})` : null;
 }
 
 // Addresses on this machine or a network it sits on: unspecified, loopback, private, CGNAT (the tailnet), link-local,

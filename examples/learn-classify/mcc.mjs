@@ -2,10 +2,13 @@
 // and flags, each claim cited with a URL and a verbatim quote. There is no registry that states a merchant's MCC, so a
 // run's receipt is structural grounding: the answer's MCC quote is on a page of the merchant's own site, and the answer
 // cites that page. The labels a run is scored against are the swarm agent's (the teacher's), never truth.
-// The answer's fields are learn-mcc's (examples/learn-mcc/SPEC.md and answer.mjs).
-import { answerMcc, answerProblems, JOB_INPUT } from '../learn-mcc/answer.mjs';
+// The answer's fields are learn-mcc's (examples/learn-mcc/SPEC.md and answer.mjs), and its tables learn-mcc's data.
+import { readFileSync } from 'node:fs';
+import { answerMcc, answerProblems, JOB_INPUT, servedCodes, servedGroups } from '../learn-mcc/answer.mjs';
+import { groupOf } from '../learn-mcc/score-mcc.mjs';
 import { readerResults } from './eval-lookup.mjs';
 import { sameUrl } from './score-v2.mjs';
+import { MCC_LOOKUP_REFUSED } from './tools.mjs';
 
 /** A quote shorter than this many words grounds nothing: a word or two is on every shop's pages. */
 export const MIN_QUOTE_WORDS = 3;
@@ -150,101 +153,73 @@ export function merchantTouchOf(lines, merchant) {
   return { touched: read.length > 0, byWorkflow: read.some((r) => r.byWorkflow) };
 }
 
+/** How many of the run's reads a tool refused because the site lists merchants' category codes (tools.mjs). */
+export const mccLookupRefusalsOf = (lines) => readerResults(lines).results.filter(({ value }) => typeof value?.refused === 'string' && value.refused.includes(MCC_LOOKUP_REFUSED)).length;
+
 // ---- the job as the agent sees it ---------------------------------------------------------------------------------------
 
 /** The run's input (learn-mcc's JOB_INPUT): the merchant's name and website, nothing the teacher said. */
 export const jobInputMcc = (job) => Object.fromEntries(Object.keys(JOB_INPUT.properties).filter((k) => typeof job[k] === 'string' && job[k]).map((k) => [k, job[k]]));
 
+/** The job text, in learn-classify's form: AGENTS.md runs workflows on "this merchant's input". */
 export const jobTextMcc = (job) => [
-  'Classify this merchant as an acquirer would set its card acceptance.',
+  'Classify this merchant.',
   `Merchant: ${job.name}`,
   `Website: ${job.website ?? 'not given'}`,
   `A workflow for the whole job takes this input: ${JSON.stringify(jobInputMcc(job))}`,
 ].join('\n');
-
-/** The MCC table as the answer and mcc_codes take it, code to title, from `{ code: title }` or `[{ code, title|name }]`. */
-export function codeTableOf(codes) {
-  if (Array.isArray(codes)) return Object.fromEntries(codes.map((c) => [String(c.code), String(c.title ?? c.name ?? '')]));
-  return Object.fromEntries(Object.entries(codes ?? {}).map(([code, title]) => [String(code), String(typeof title === 'object' ? title?.title ?? title?.name ?? '' : title)]));
-}
-
-/** The ISO 18245 ranges as mcc_groups gives them, `[{ code: 'NNNN-NNNN', name }]`, from `[{ from, to, name|group }]` or
- *  `[{ code: 'NNNN-NNNN', name }]`, in code order. */
-export function groupTableOf(groups) {
-  return (Array.isArray(groups) ? groups : []).map((g) => ({
-    code: g.code ?? `${String(g.from).padStart(4, '0')}-${String(g.to).padStart(4, '0')}`,
-    name: String(g.name ?? g.group ?? g.title ?? ''),
-  })).sort((a, b) => a.code.localeCompare(b.code));
-}
-
-const inRange = (code, range) => {
-  const [from, to] = range.split('-');
-  return code >= from && code <= to;
-};
 
 const LIST = (key) => ({
   type: 'object', additionalProperties: false, required: [key],
   properties: { [key]: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['code', 'name'], properties: { code: { type: 'string' }, name: { type: 'string' } } } } },
 });
 
-/** mcc_groups (SPEC.md's tools): the ISO 18245 ranges. */
-export function mccGroupsTool(groups) {
-  const all = groupTableOf(groups);
+/** mcc_groups (SPEC.md's tools): the ranges that hold a code the run is offered (learn-mcc's servedGroups), in code order.
+ *  `table` is learn-mcc's group table (score-mcc's loadGroups). */
+export function mccGroupsTool(table) {
+  const groups = servedGroups(table.groups).sort((a, b) => a.code.localeCompare(b.code));
   return {
     name: 'mcc_groups',
     description: 'The ISO 18245 merchant category ranges, each as "NNNN-NNNN" with its name, in code order.',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     resultSchema: LIST('groups'),
-    run: async () => ({ groups: all }),
+    run: async () => ({ groups }),
   };
 }
 
-/** mcc_codes (SPEC.md's tools): the 4-digit codes under their titles, all of them or one range's (`group`). */
-export function mccCodesTool(codes) {
-  const all = Object.entries(codeTableOf(codes)).map(([code, name]) => ({ code, name })).sort((a, b) => a.code.localeCompare(b.code));
+/** mcc_codes (SPEC.md's tools): the codes the run is offered (learn-mcc's servedCodes) under their titles, all of them or
+ *  those of one range from mcc_groups (`group`), a code's range being the scorer's groupOf. */
+export function mccCodesTool(table) {
+  const all = Object.entries(servedCodes(table.codes)).map(([code, name]) => ({ code, name })).sort((a, b) => a.code.localeCompare(b.code));
+  const idOf = (range) => table.groups.find((g) => g.code === range)?.id;
   return {
     name: 'mcc_codes',
-    description: 'The 4-digit Merchant Category Codes (ISO 18245), code and title: all of them, or only those of one range from mcc_groups (`group`, such as "5900-5999").',
+    description: 'The 4-digit Merchant Category Codes (ISO 18245) a merchant can be given, code and title: all of them, or only those of one range from mcc_groups (`group`, such as "5000-5599").',
     parameters: { type: 'object', additionalProperties: false, properties: { group: { type: 'string', pattern: '^[0-9]{4}-[0-9]{4}$', description: 'A range from mcc_groups.' } } },
     resultSchema: LIST('codes'),
-    run: async ({ group } = {}) => ({ codes: group ? all.filter((c) => inRange(c.code, group)) : all }),
+    run: async ({ group } = {}) => {
+      if (!group) return { codes: all };
+      const id = idOf(group);
+      return { codes: id ? all.filter((c) => groupOf(c.code, table) === id) : [] };
+    },
   };
 }
 
-/** The answer tool: learn-mcc's answerMcc, refusing an answer answerProblems finds fault with (named, so the agent can
- *  fix it before it records). */
-export function answerToolMcc(codes) {
-  const table = codeTableOf(codes);
-  return { ...answerMcc(table), problems: (args) => answerProblems(args, table) };
+/** The answer tool: learn-mcc's answerMcc over the code table, refusing an answer answerProblems finds fault with (named,
+ *  so the agent can fix it before it records). */
+export function answerToolMcc(table) {
+  return { ...answerMcc(table.codes), problems: (args) => answerProblems(args, table.codes) };
 }
 
-/** Sites that list merchants' codes, refused by every reader before a request: `domains` from the data (refused-hosts.json).
- *  A host matches when it is the domain or under it. search_web drops results on them. */
-export function refusingHosts(effects, domains) {
-  const list = (domains ?? []).map((d) => String(d).toLowerCase().replace(/^\.+|\.+$/g, '')).filter(Boolean);
-  if (!list.length) return effects;
-  const refused = (href) => {
-    try {
-      const host = new URL(href).hostname.toLowerCase().replace(/\.$/, '');
-      return list.some((d) => host === d || host.endsWith(`.${d}`));
-    } catch { return false; }
-  };
-  const note = 'refused: this site lists merchants\' codes';
-  return effects.map((effect) => {
-    if (effect.name === 'search_web') {
-      return {
-        ...effect,
-        run: async (args, options) => {
-          const result = await effect.run(args, options);
-          if (!Array.isArray(result?.results)) return result;
-          const kept = result.results.filter((r) => !refused(r.url));
-          return { ...result, results: kept, filtered: (result.filtered ?? 0) + (result.results.length - kept.length) };
-        },
-      };
-    }
-    if (!['fetch_page', 'browse', 'read_document'].includes(effect.name)) return effect;
-    return { ...effect, run: async (args, options) => (refused(args?.url) ? { ok: false, url: args.url, refused: note } : effect.run(args, options)) };
-  });
+/**
+ * The teacher's labels joined to the merchants by id, from a file the host gives the pass (never the data the learner's
+ * tools could reach): `[{ id | merchantId, teacher: { mcc, riskTier, flags } }]`, or `{ <id>: { mcc, riskTier, flags } }`.
+ * Only the labels are kept. A merchant the file does not name has no teacher, so nothing of it is scored.
+ */
+export function teacherLabelsOf(file) {
+  const raw = JSON.parse(readFileSync(file, 'utf8'));
+  const entries = Array.isArray(raw) ? raw.map((r) => [String(r.id ?? r.merchantId), r.teacher]) : Object.entries(raw);
+  return new Map(entries.map(([id, t]) => [id, t ? { mcc: t.mcc ?? null, riskTier: t.riskTier ?? null, flags: Array.isArray(t.flags) ? t.flags : null } : null]));
 }
 
 // ---- scoring parts, hindsight and the row ---------------------------------------------------------------------------
@@ -263,7 +238,7 @@ export const MCC_HINDSIGHT_FIELDS = Object.freeze(['mcc', 'risk']);
  *  label. The label is the teacher's, not truth: `label: 'teacher'` says so wherever it is shown or kept. */
 export function wrongFieldsMcc(score, fields = MCC_HINDSIGHT_FIELDS, { codes } = {}) {
   if (!score) return [];
-  const title = (code) => codeTableOf(codes)[code];
+  const title = (code) => codes?.[code];
   const out = [];
   if (score.mccCorrect === false) out.push({ field: 'mcc', answer: score.mccAnswer, truth: score.mccTeacher, truthTitle: title(score.mccTeacher) ?? null, label: 'teacher' });
   if (score.riskCorrect === false) out.push({ field: 'risk', answer: score.riskAnswer, truth: score.riskTeacher, label: 'teacher' });
@@ -310,5 +285,11 @@ export function rowOfMcc(base, score) {
     riskTeacher: score?.riskTeacher ?? null,
     riskCorrect: score?.riskCorrect ?? null,
     riskDistance: score?.riskDistance ?? null,
+    brandMapped: score?.brandMapped ?? null,
+    flagsAnswer: score?.flagsAnswer ?? null,
+    flagsTeacher: score?.flagsTeacher ?? null,
+    flagsJaccard: score?.flagsJaccard ?? null,
+    siteStatus: score?.siteStatus ?? null,
+    confidence: score?.confidence ?? null,
   };
 }

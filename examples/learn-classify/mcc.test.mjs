@@ -11,10 +11,11 @@ import { runLoop, scriptedParts } from './runner.mjs';
 import { fixtureWeb, scriptedModel } from './scripted.mjs';
 import { FIXTURES_MCC } from './scripted-mcc.mjs';
 import { SETS } from './sets.mjs';
-import { ANY_HOST, fetchPageTool } from './tools.mjs';
+import { ANY_HOST, fetchPageTool, REFUSED_MCC_DOMAINS, refusedHost } from './tools.mjs';
+import { loadGroups } from '../learn-mcc/score-mcc.mjs';
 import {
-  answerToolMcc, folded, jobInputMcc, merchantPage, merchantPagesOnly, merchantScope, merchantTouchOf, mccCodesTool, mccGroupsTool, partsOfMcc, quoteOnPage, receiptOfMcc, refusingHosts,
-  registrableDomain, rowOfMcc, wrongFieldsMcc,
+  answerToolMcc, folded, jobInputMcc, jobTextMcc, merchantPage, merchantPagesOnly, merchantScope, merchantTouchOf, mccCodesTool, mccGroupsTool, partsOfMcc, quoteOnPage, receiptOfMcc,
+  registrableDomain, rowOfMcc, teacherLabelsOf, wrongFieldsMcc,
 } from './mcc.mjs';
 
 const SITE = 'https://www.lumencandle.co.uk/';
@@ -115,18 +116,25 @@ test('a quote is compared with URLs out and whitespace folded, nothing else: cas
   assert.equal(quoteOnPage('We pour hand-made soy wax candle', 'We pour hand-made soy wax candles'), false);
 });
 
-test('the tools: the input is the name and website only; mcc_groups and mcc_codes; sites listing codes are refused', async () => {
+test('the tools: the input is the name and website only; the job text is learn-classify\'s; mcc_groups and mcc_codes serve learn-mcc\'s trimmed tables', async () => {
   assert.deepEqual(jobInputMcc({ ...merchant, vertical: 'Home', teacher: { mcc: '5999' } }), { name: 'Lumen Candle Co', website: SITE });
-  assert.deepEqual((await mccGroupsTool([{ from: '5900', to: '5999', name: 'Miscellaneous stores' }]).run()).groups, [{ code: '5900-5999', name: 'Miscellaneous stores' }]);
-  const codes = mccCodesTool({ 5999: 'Miscellaneous retail', 5719: 'Miscellaneous home furnishing', 4511: 'Airlines' });
-  assert.deepEqual((await codes.run({ group: '5700-5799' })).codes, [{ code: '5719', name: 'Miscellaneous home furnishing' }]);
-  const [fetchPage, search] = refusingHosts([
-    { name: 'fetch_page', run: async ({ url }) => ({ ok: true, url, text: 'read' }) },
-    { name: 'search_web', run: async () => ({ ok: true, results: [{ url: 'https://lookup.mcc-list.example/lumen' }, { url: SITE }], filtered: 0 }) },
-  ], ['mcc-list.example']);
-  assert.match((await fetchPage.run({ url: 'https://www.mcc-list.example/x' })).refused, /lists merchants' codes/);
-  assert.equal((await fetchPage.run({ url: SITE })).ok, true);
-  assert.deepEqual(await search.run({ query: 'lumen' }), { ok: true, results: [{ url: SITE }], filtered: 1 });
+  assert.equal(jobTextMcc({ ...merchant, name: 'Lumen Candle Works' }), `Classify this merchant.\nMerchant: Lumen Candle Works\nWebsite: ${SITE}\nA workflow for the whole job takes this input: {"name":"Lumen Candle Works","website":"${SITE}"}`);
+  const table = loadGroups();
+  const { groups } = await mccGroupsTool(table).run();
+  assert.ok(groups.length > 0 && groups.every((g) => /^\d{4}-\d{4}$/.test(g.code) && (g.code < '3000' || g.code > '3999')));
+  const codes = mccCodesTool(table);
+  const all = (await codes.run({})).codes;
+  assert.ok(all.some((c) => c.code === '4511') && !all.some((c) => c.code >= '3000' && c.code <= '3999'), 'the brands\' T&E codes are not offered; the generic ones are');
+  const range = groups.find((g) => g.code <= '5999-5999' && g.code.slice(5) >= '5999');
+  const inRange = (await codes.run({ group: range.code })).codes;
+  assert.ok(inRange.some((c) => c.code === '5999') && inRange.every((c) => all.some((a) => a.code === c.code)));
+  assert.deepEqual((await codes.run({ group: '0000-0001' })).codes, []);
+});
+
+test('sites that list merchants\' codes are refused by every tool, pinned: the list, any MCC-named host, never a merchant whose name starts with it', () => {
+  assert.deepEqual([...REFUSED_MCC_DOMAINS], ['check-mcc.sg', 'pxp.io', 'tagada.io', 'gratifypay.com', 'eflow.com', 'rapyd.net', 'fitnesspaymentservices.com', 'true-naics.com', 'naicscodes.org']);
+  for (const host of ['www.check-mcc.sg', 'pxp.io', 'mcc-codes.com', 'www.mcclookup.net', 'lookup.mcc.example']) assert.match(refusedHost(host) ?? '', /lists merchants' category codes/, host);
+  for (const host of ['www.mccormick.com', 'usa.visa.com', 'lumencandle.example']) assert.equal(refusedHost(host), null, host);
 });
 
 test('a hindsight review on an MCC run opens only the merchant\'s own pages', async () => {
@@ -136,14 +144,14 @@ test('a hindsight review on an MCC run opens only the merchant\'s own pages', as
 });
 
 test('the answer tool refuses what answerProblems finds; the gate parts, the teacher-labelled wrong fields and the row', () => {
-  const tool = answerToolMcc({ 5999: 'Miscellaneous retail', 5719: 'Miscellaneous home furnishing' });
+  const table = { codes: { 5999: 'Miscellaneous retail', 5719: 'Miscellaneous home furnishing', 3000: 'A brand airline' } };
+  const tool = answerToolMcc(table);
   assert.deepEqual(tool.parameters.properties.mcc.enum, ['5719', '5999']);
   assert.deepEqual(tool.problems({ ...answerCiting(SITE), mccDescription: 'Miscellaneous retail' }), []);
   assert.match(tool.problems(answerCiting(SITE)).join(';'), /mccDescription is not 5999's title/);
-  const score = { mccAnswer: '5999', mccTeacher: '5719', mccCorrect: false, mccGroupCorrect: true, riskAnswer: 'low', riskTeacher: 'low', riskCorrect: true, riskDistance: 0, correct: false, correctOver: ['mcc', 'risk'] };
-  assert.deepEqual(partsOfMcc(score), { mcc: 0, risk: 1 });
-  assert.deepEqual(partsOfMcc({ ...score, riskCorrect: null }), { mcc: 0, risk: null });
-  assert.deepEqual(wrongFieldsMcc(score, undefined, { codes: { 5719: 'Miscellaneous home furnishing' } }), [{ field: 'mcc', answer: '5999', truth: '5719', truthTitle: 'Miscellaneous home furnishing', label: 'teacher' }]);
+  const score = { mccAnswer: '5999', mccTeacher: '5719', mccCorrect: false, mccGroupCorrect: true, riskAnswer: 'low', riskTeacher: null, riskCorrect: null, riskDistance: null, correct: false };
+  assert.deepEqual(partsOfMcc(score), { mcc: 0, risk: null }, 'no teacher tier: the risk part is not scored');
+  assert.deepEqual(wrongFieldsMcc(score, undefined, { codes: table.codes }), [{ field: 'mcc', answer: '5999', truth: '5719', truthTitle: 'Miscellaneous home furnishing', label: 'teacher' }]);
   const row = rowOfMcc({ run: 3, cik: 'm-0001', sic4Answer: null, segmentsF1: null, costUsd: 0.1 }, score);
   assert.equal(row.set, 'mcc');
   assert.equal(row.label, 'teacher');
@@ -162,10 +170,17 @@ async function scratch(t) {
   return dir;
 }
 const byId = (rows) => Object.fromEntries(rows.map((r) => [r.merchantId, r]));
+/** The scripted MCC parts with the fixtures' teacher labels joined, as --teacher joins the host's. */
+function mccParts() {
+  const parts = scriptedParts({ set: SETS.mcc });
+  const labels = teacherLabelsOf(join(FIXTURES_MCC, 'teacher.json'));
+  for (const m of parts.companies) m.teacher = labels.get(m.cik) ?? null;
+  return parts;
+}
 
 test('a scripted MCC pass: rows labelled the teacher\'s; a receipt only for the quote on the merchant\'s own page; the grown revision promoted by receipt and gated on the bank', async (t) => {
   const out = join(await scratch(t), 'out');
-  const parts = scriptedParts({ set: SETS.mcc });
+  const parts = mccParts();
   Object.assign(parts, { receiptAdmission: true, receiptHoldsTrial: true, receiptPromotion: true, promoteNoFloor: true, thresholds: { promoteAfter: 2 }, bank: ['m-011', 'm-012', 'm-013', 'm-014'].map((id) => ({ id })) });
   const list = ['m-001', 'm-007', 'm-008', 'm-009', 'm-010', 'm-002', 'm-004'].map((id) => ({ id }));
   const { rows } = await runLoop({ out, parts, split: 'train', list, record: false, gateWaitAtEnd: true });
@@ -174,20 +189,24 @@ test('a scripted MCC pass: rows labelled the teacher\'s; a receipt only for the 
   assert.deepEqual(r['m-001'].receipt, { url: 'https://lumencandle.example/', kind: 'merchant', mcc: '5999', byWorkflow: false });
   for (const id of ['m-007', 'm-008', 'm-009']) assert.equal(r[id].receipt, null, `${id}: a paraphrase, an off-domain cite, a site that did not load`);
   assert.deepEqual(r['m-010'].receipt, { url: 'https://fernandkiln.myshopify.com/', kind: 'merchant', mcc: '5719', byWorkflow: true });
-  // m-002 saves classify-merchant grown by a browser read; m-004's site reads only in a browser, so the grown trial
+  // m-001's run also tried a site that lists merchants' codes: refused, and logged on its row.
+  assert.equal(r['m-001'].mccLookupRefused, 1);
+  assert.equal(r['m-010'].mccLookupRefused, 0);
+  // m-002 saves merchant-mcc-risk grown by a browser read; m-004's site reads only in a browser, so the grown trial
   // answers it, with a workflow receipt, and is promoted at once over the serving revision; the bank gate then compares
   // the two on two parts (code and tier) of four bank merchants.
   assert.equal(r['m-004'].receipt.byWorkflow, true);
-  assert.deepEqual(r['m-004'].curate.promoted, ['classify-merchant']);
+  assert.deepEqual(r['m-004'].curate.promoted, ['merchant-mcc-risk']);
   const [verdict] = readFileSync(join(out, 'gate', 'verdicts.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
-  assert.deepEqual([verdict.name, verdict.cells, verdict.companies, verdict.first], ['classify-merchant', 8, 4, false]);
+  // The teacher has no tiers yet, so each bank merchant is scored on its code alone.
+  assert.deepEqual([verdict.name, verdict.cells, verdict.companies, verdict.first], ['merchant-mcc-risk', 4, 4, false]);
   // The teacher disagrees with no answer here, so every scored row agrees on the code.
   assert.ok(rows.every((row) => row.mccCorrect === true));
 });
 
 test('hindsight on an MCC run: a teacher disagreement gets one reflection, shown as the teacher\'s label; it reads only the merchant\'s pages, so its lessons are its own work, and one naming the teacher\'s code is refused', async (t) => {
   const out = join(await scratch(t), 'out');
-  const parts = scriptedParts({ set: SETS.mcc });
+  const parts = mccParts();
   const pages = JSON.parse(readFileSync(join(FIXTURES_MCC, 'pages.json'), 'utf8'));
   const SITE_005 = 'https://paperlanterngifts.example/';
   const hypotheses = [
@@ -206,7 +225,7 @@ test('hindsight on an MCC run: a teacher disagreement gets one reflection, shown
   };
   const { rows } = await runLoop({ out, parts, split: 'train', list: [{ id: 'm-005' }], record: false });
   const [row] = rows;
-  assert.deepEqual([row.mccAnswer, row.mccTeacher, row.mccCorrect, row.riskCorrect], ['5947', '5999', false, true]);
+  assert.deepEqual([row.mccAnswer, row.mccTeacher, row.mccCorrect, row.riskCorrect], ['5947', '5999', false, null]);
   const [reflection] = row.hindsight.reflections;
   assert.deepEqual([reflection.field, reflection.label, reflection.hypotheses], ['mcc', 'teacher', 2]);
   const prompt = JSON.stringify(prompts[0][0].messages);

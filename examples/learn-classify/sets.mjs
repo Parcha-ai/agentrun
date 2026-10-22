@@ -6,7 +6,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { answerFacts, FACTS_RULES } from './facts-job.mjs';
 import { answerV1, answerV2, answerV4, jobInput, jobText, sic2GroupsTool, sicCodesTool } from './host.mjs';
-import { answerToolMcc, codeTableOf, jobInputMcc, jobTextMcc, mccCodesTool, mccGroupsTool } from './mcc.mjs';
+import { loadGroups } from '../learn-mcc/score-mcc.mjs';
+import { answerToolMcc, jobInputMcc, jobTextMcc, mccCodesTool, mccGroupsTool } from './mcc.mjs';
 
 const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'));
 const readJsonIf = (file) => { try { return readJson(file); } catch { return undefined; } };
@@ -38,9 +39,10 @@ const FACTS_AGENT = {
   skills: [], tools: ['search_web', 'browse', 'fetch_page', 'read_document', 'answer'], max_cost_usd: 1,
 };
 
-/** The MCC job's data (learn-mcc): the merchants, each keyed by its id as the runner keys a company (`cik`), and the group
- *  table (learn-mcc's build-mcc-groups.mjs: the ISO 18245 ranges and the code titles), from the data directory when it has
- *  one, else the example's. `refused` is the data's list of sites that list merchants' codes. */
+/** The MCC job's data: the merchants (learn-mcc's data layout, `{ id, name, website, split, order }`), each keyed by its
+ *  id as the runner keys a company (`cik`), and learn-mcc's own tables (score-mcc's loadGroups: the ranges, the T&E
+ *  overrides and the code titles), which the tools serve and the scorer reads. The teacher's labels are never in the data
+ *  a run's tools see: the host joins them from its own file (runner.mjs --teacher). */
 const loadMcc = (data) => {
   const merchants = readJson(join(data, 'merchants.json'));
   const ids = new Set();
@@ -49,14 +51,8 @@ const loadMcc = (data) => {
     if (ids.has(m.id)) throw new Error(`merchants.json: ${m.id} is listed twice`);
     ids.add(m.id);
   }
-  const table = readJsonIf(join(data, 'mcc-groups.json')) ?? readJson(join(import.meta.dirname, '..', 'learn-mcc', 'data', 'mcc-groups.json'));
-  return {
-    companies: merchants.map((m) => ({ ...m, cik: m.id })),
-    table,
-    codes: codeTableOf(table.codes),
-    labels: codeTableOf(table.codes),
-    refused: readJsonIf(join(data, 'refused-hosts.json')) ?? [],
-  };
+  const table = loadGroups();
+  return { companies: merchants.map((m) => ({ ...m, cik: m.id })), table, codes: table.codes, labels: table.codes };
 };
 
 const loadV4 = (data) => ({
@@ -119,8 +115,8 @@ export const SETS = Object.freeze({
     load: loadMcc,
     input: jobInputMcc,
     text: jobTextMcc,
-    labelTools: (d) => [mccGroupsTool(d.table.groups), mccCodesTool(d.codes)],
-    answer: (d) => answerToolMcc(d.codes),
+    labelTools: (d) => [mccGroupsTool(d.table), mccCodesTool(d.table)],
+    answer: (d) => answerToolMcc(d.table),
     answerKey: 'mcc',
   }),
   /** The facts pass (eval-facts.mjs): the v4 companies and tools, no code tool, and an answer with no place for a code. */
