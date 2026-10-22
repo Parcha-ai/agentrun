@@ -1,7 +1,7 @@
 // The run's documents at a stop (RECORDING.md 3.1): the latest value per `(doc, key, conv, task)`. A snapshot line
 // replaces a document's value, and a restore (3.2) resets them all to the restored generation's snapshot, so a
 // document the snapshot does not carry no longer exists. A panel that reads documents folds them with this.
-import { isSupervisor, type Json, type Line } from './format.ts';
+import { isSupervisor, type Json } from './format.ts';
 import type { Fold } from './replay.ts';
 import { docIdOf, docOf } from './durable.ts';
 

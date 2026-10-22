@@ -1,6 +1,6 @@
 // The counters strip (RECORDING.md section 6), one fold for every recording. Counts come from durable lines, and
 // processes and kills from the supervisor's host lines; a count only live lines can give is "observed".
-import type { Json, Line } from './format.ts';
+import type { Json } from './format.ts';
 import type { Fold } from './replay.ts';
 import {
   applied, browserChargesOf, callsOf, pageActionsOf, costOf, lookEventOf, lookFilingsOf, decisionRowsOf, docIdOf, docOf, effectOf, entryOf, generationOf, liveGenerationOf, receiptCountOf, stableJson, toolCallsOf,
@@ -47,6 +47,8 @@ export type CounterState = {
   inSnapshot: boolean;
   opened: boolean;
   decisions: Record<string, History<Tally>>;
+  /** The keyed decision documents counted so far (a snapshot at a process's open lists them again, and counts none twice); a restore starts over. */
+  decisionDocs: Record<string, true>;
   committedTurns: Record<string, number>;
   /** The model part of cost: unknown until an assistant entry prices it, and unknown again when one carries no price. */
   modelCost: number;
@@ -73,8 +75,8 @@ export type CounterState = {
   lostCharges: number | null;
   /** Per conversation, the `pi.live` generation last seen and the ask open there: its position (the non-aborted
    *  assistant entries committed before it), the process that asked it, the latest partial it committed (as stable JSON,
-   *  kept once seen even when a later snapshot shows the marker bare), and whether it has been counted as a cut ask. */
-  live: Record<string, { open?: { at: number; process: number; partial?: string; counted?: boolean }; generation?: { attempt?: Json; message?: Json } }>;
+   *  kept once seen even when a later snapshot shows the marker bare). */
+  live: Record<string, { open?: { at: number; process: number; partial?: string }; generation?: { attempt?: Json; message?: Json } }>;
   /** Per position (`<conv> <position>`), the cut asks counted: each ask a process died under, once, proven when it had
    *  committed a partial and possible when only its start marker. Re-asks at a position are its asks minus one. */
   reasks: Record<string, { proven: number; possible: number }>;
@@ -137,7 +139,7 @@ export const COST_PARTS: CostPart[] = ['lead', 'judge', 'eyes', 'browser', 'boxe
 
 export const counterFold: Fold<CounterState> = {
   init: () => ({ effects: {}, receipts: {}, appliedIn: {}, listed: {}, effectsSeen: {}, reported: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
-    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, looks: { seen: {}, here: {}, gens: {}, okSeen: {}, costs: [], priced: {}, native: 0, started: {}, filed: {}, ended: {} }, pages: { order: {}, gen: {}, reached: {}, seen: false, timed: false }, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined, boxes: { receipts: {}, started: {} } }),
+    highest: -1, inSnapshot: false, opened: false, decisions: {}, decisionDocs: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, looks: { seen: {}, here: {}, gens: {}, okSeen: {}, costs: [], priced: {}, native: 0, started: {}, filed: {}, ended: {} }, pages: { order: {}, gen: {}, reached: {}, seen: false, timed: false }, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined, boxes: { receipts: {}, started: {} } }),
   accepts: (line) => line.channel === 'durable' || line.source === 'host' || (line.source === 'vision' && line.kind === 'LookEvent') || (line.source === 'transport' && line.kind === 'box.created'),
   reduce(state, line) {
     const next: CounterState = { ...state };
@@ -210,6 +212,7 @@ export const counterFold: Fold<CounterState> = {
         next.effects = {};
         next.receipts = {};
         next.decisions = {};
+        next.decisionDocs = {};
         next.highest = line.commit;
       } else next.highest = Math.max(state.highest, line.commit);
     }
@@ -295,7 +298,7 @@ export const counterFold: Fold<CounterState> = {
           const tally = next.reasks[key] ?? { proven: 0, possible: 0 };
           next.reasks = { ...next.reasks, [key]: ask.partial !== undefined ? { ...tally, proven: tally.proven + 1 } : { ...tally, possible: tally.possible + 1 } };
         };
-        const cutBy = open !== undefined && open.at === at && open.process < next.processes && !open.counted ? open : undefined;
+        const cutBy = open !== undefined && open.at === at && open.process < next.processes ? open : undefined;
         if (line.snapshot === true) {
           if (generation === undefined) open = undefined;
           else if (open?.at === at) open = { ...open, ...(partial !== undefined ? { partial } : {}) };
@@ -350,7 +353,21 @@ export const counterFold: Fold<CounterState> = {
         if (doc.key !== undefined && !next.paidKeys[doc.key]) next.paidKeys = { ...next.paidKeys, [doc.key]: true };
       }
       const rows = decisionRowsOf(doc);
-      if (rows) {
+      if (rows && doc.key !== undefined) {
+        // The keyed form: this document is one row, and its run's tally gains it once (a tally is the run's rows so far, as the single document's list was).
+        const at = docIdOf(line, doc);
+        if (!next.decisionDocs[at]) {
+          const row = rows[0]!;
+          const run = row.run_key ?? '';
+          const history = next.decisions[run];
+          const before = history ? history.at(-1)![1] : ZERO;
+          const tally: Tally = { answered: [...before.answered], failed: before.failed, cost: [...before.cost, row.cost_usd ?? null] };
+          if (row.error !== undefined) tally.failed += 1;
+          else tally.answered.push(`${run} ${row.decision_id ?? ''}`);
+          next.decisionDocs = { ...next.decisionDocs, [at]: true };
+          next.decisions = { ...next.decisions, [run]: [...(history ?? (line.snapshot === true ? next.retained?.decisions[run] : undefined) ?? []), [line.commit!, tally]] };
+        }
+      } else if (rows) {
         const decisions: Record<string, Tally> = {};
         for (const row of rows) {
           const run = row.run_key ?? '';
@@ -375,7 +392,7 @@ export const counterFold: Fold<CounterState> = {
             // An ask a process died under, answered by a later process: that process's ask shows as this entry. Counted once.
             const held = next.live[conv];
             const at = next.committedTurns[conv] ?? 0;
-            if (held?.open && held.open.at === at && held.open.process < next.processes && !held.open.counted) {
+            if (held?.open && held.open.at === at && held.open.process < next.processes) {
               const key = `${conv} ${at}`;
               const tally = next.reasks[key] ?? { proven: 0, possible: 0 };
               next.reasks = { ...next.reasks, [key]: held.open.partial !== undefined ? { ...tally, proven: tally.proven + 1 } : { ...tally, possible: tally.possible + 1 } };

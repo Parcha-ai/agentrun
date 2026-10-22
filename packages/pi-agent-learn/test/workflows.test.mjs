@@ -157,7 +157,7 @@ test("what is offered: live workflows only, active before trial, then by name, a
   assert.deepEqual((await workflowsToTry({ repo, sha: noRecord.sha }, { sku: "A", amount: 1 })).map((h) => h.name), ["beta-flow"], "a workflow whose record is not there cannot run");
 });
 
-test("promotion on receipts through git: three clean uses promote, a changed revision that fails twice rolls back, the failed one is never tried again", async () => {
+test("promotion on receipts through git: two clean uses promote, a changed revision that fails twice rolls back, the failed one is never tried again", async () => {
   const root = await scratch();
   const { repo } = await agentRepo(root);
   const first = await admitted(repo, { run: "author-1", checks: schemaWhen });
@@ -165,15 +165,15 @@ test("promotion on receipts through git: three clean uses promote, a changed rev
   const status = async (sha) => (await readTrial(repo, kyb.name, sha)).status;
   let sha = first.sha;
 
-  // The writer's own use is no evidence; three other runs' clean uses promote.
+  // The writer's own use is no evidence; two other runs' clean uses promote.
   const own = await settle(repo, usesOf("author-1", [kyb.name, d1, "frozen", at(9)]));
   assert.deepEqual(own.result.ignored.map((i) => [i.name, i.reason]), [[kyb.name, "author"]]);
   assert.deepEqual(own.result.files, {}, "nothing changed, so there is nothing to commit");
-  for (const [i, run] of ["r1", "r2", "r3"].entries()) {
+  for (const [i, run] of ["r1", "r2"].entries()) {
     const step = await settle(repo, usesOf(run, [kyb.name, d1, "frozen", at(10, i)]));
     assert.deepEqual(guard({ role: "curate", files: step.result.files }), []);
     sha = step.sha;
-    assert.equal(await status(sha), i === 2 ? "active" : "trial");
+    assert.equal(await status(sha), i === 1 ? "active" : "trial");
   }
   assert.deepEqual((await workflowsToTry({ repo, sha }, { sku: "A", amount: 1 })), [{ name: kyb.name, status: "active" }]);
 
@@ -188,7 +188,7 @@ test("promotion on receipts through git: three clean uses promote, a changed rev
   assert.equal(trial.revisions[0].description, WHEN, "the superseded revision keeps its own description");
   assert.equal(await repo.read(`.agents/skills/${kyb.name}/SKILL.md`, second.sha), renderSkill(kyb.name, "Look up a company in a US or Canadian registry."), "the live revision is offered under its own");
   assert.ok(trial.when.some((c) => c.pointer === "/country" && c.op === "in"));
-  assert.deepEqual(trial.uses.length, 3);
+  assert.deepEqual(trial.uses.length, 2);
 
   // It escalates, then fails: demoted, and the first revision is active again, with its own preconditions and as `latest`.
   const bad = await settle(repo, usesOf("r4", [kyb.name, d2, "escalated", at(12)]));
@@ -228,10 +228,10 @@ test("promotion on receipts through git: three clean uses promote, a changed rev
   assert.deepEqual([trial.status, trial.revisions.map((r) => r.status)], ["demoted", ["demoted", "demoted"]]);
   assert.equal(await repo.read(`.agents/skills/${kyb.name}/SKILL.md`, last.sha), undefined);
   assert.deepEqual(await workflowsToTry({ repo, sha: last.sha }, { sku: "A", amount: 1 }), []);
-  assert.equal(trial.uses.length, 7, "the history is kept: every use but the writer's own");
+  assert.equal(trial.uses.length, 6, "the history is kept: every use but the writer's own");
 });
 
-test("through the settler, one run that ran the trial on three inputs is one use, and the report says the others were left out", async () => {
+test("through the settler, one run that ran the trial on three inputs is one use, the second distinct run promotes, and the report says the others were left out", async () => {
   const root = await scratch();
   const { repo } = await agentRepo(root);
   const first = await admitted(repo);
@@ -241,10 +241,9 @@ test("through the settler, one run that ran the trial on three inputs is one use
   assert.deepEqual(one.result.ignored.map((i) => i.reason), ["same_run", "same_run"]);
   assert.match(one.result.held[0].reason, /left out \(same_run\)/);
   const out = await usesSettler()({ ...(await readOf(repo)), run: "r2", uses: [0, 1, 2].map((i) => ({ name: kyb.name, sha256: first.digest, outcome: "frozen", at: at(11, i) })) });
-  assert.deepEqual(out.decisions.map((d) => d.action), ["hold"], "a second run is a second use, not a promotion");
+  assert.deepEqual(out.decisions.map((d) => d.action), ["promote"], "a second distinct run is the second use, whatever it ran, and promotes");
   const second = await curateStep(repo, (dir) => settleWorkflowUses({ dir, uses: usesOf("r2", ...[0, 1, 2].map((i) => [kyb.name, first.digest, "frozen", at(11, i)])) }));
-  const third = await settle(repo, usesOf("r3", [kyb.name, first.digest, "frozen", at(12, 0)], [kyb.name, first.digest, "frozen", at(12, 1)], [kyb.name, first.digest, "frozen", at(12, 2)]));
-  assert.deepEqual([(await readTrial(repo, kyb.name, second.sha)).status, (await readTrial(repo, kyb.name, third.sha)).status], ["trial", "active"], "the third distinct run promotes");
+  assert.deepEqual([(await readTrial(repo, kyb.name, one.sha)).status, (await readTrial(repo, kyb.name, second.sha)).status], ["trial", "active"], "the second distinct run promotes");
 });
 
 test("a use of a workflow with no trial, or of a revision the trial does not hold, is left out and named", async () => {
@@ -437,8 +436,7 @@ test("the ports a curator calls: admitting, settling, and what each says", async
     return out;
   };
   assert.deepEqual((await settleRun("r1", ["frozen", at(10)])).decisions.map((d) => [d.name, d.action, /1 use/.test(d.reason)]), [[kyb.name, "hold", true]]);
-  await settleRun("r2", ["frozen", at(11)]);
-  const promoted = await settleRun("r3", ["frozen", at(12)]);
+  const promoted = await settleRun("r2", ["frozen", at(11)]);
   assert.deepEqual(promoted.decisions.map((d) => [d.name, d.action]), [[kyb.name, "promote"]]);
   assert.equal((await readTrial(repo, kyb.name, main)).status, "active");
   const author = await settleRun("author", ["frozen", at(13)]);
@@ -657,7 +655,7 @@ test("a uses file that is not exactly what collectUses writes is refused", () =>
   refuses({ ...ok, uses: Array.from({ length: 33 }, () => ok.uses[0]) });
 });
 
-test("end to end with no model: a run saves a workflow, curate admits it, three later runs use it from their own stores, and it is promoted", async () => {
+test("end to end with no model: a run saves a workflow, curate admits it, three later runs use it from their own stores, and the second promotes it", async () => {
   const root = await scratch();
   const { bare, repo } = await agentRepo(root);
   const doc = workflowDoc();
@@ -692,6 +690,6 @@ test("end to end with no model: a run saves a workflow, curate admits it, three 
     main = step.sha;
     trials.push((await readTrial(curator, kyb.name, main)).status);
   }
-  assert.deepEqual(trials, ["trial", "trial", "active"]);
+  assert.deepEqual(trials, ["trial", "active", "active"]);
   assert.deepEqual(await workflowsToTry({ repo: curator, sha: main }, input), [{ name: kyb.name, status: "active" }]);
 }, { timeout: 60_000 });

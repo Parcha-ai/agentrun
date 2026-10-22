@@ -9,7 +9,7 @@ import {
   type AgentHome, checkSha, homeDir, type HomeAccess, ID_PATTERN, inClaimedHome, isSkillPath, localAccess, readState, RUN_STORE_FILE,
   runStoreIn, sha256, uuidv7,
 } from "./home.js";
-import { type BrowserProfile, canonical, LeasesDoc, type ProfileLease, ProfilesDoc, put, type RunRecord, RunsDoc } from "./kinds.js";
+import { type BrowserProfile, canonical, LeasesDoc, MAX_REASON, type ProfileLease, ProfilesDoc, put, type RunRecord, RunsDoc } from "./kinds.js";
 import { AgentHomeError, openStore, readFamily, type Store } from "./store.js";
 
 export { RUN_STORE_FILE };
@@ -80,7 +80,6 @@ const isFree = (lease: ProfileLease | undefined, runs: Record<string, RunRecord>
 
 /** The variant the host chose for a run, and why: recorded on the run, never chosen here. */
 export type RunPrompt = { id: string; reason: string };
-const MAX_REASON = 2_000;
 
 /** A start's host, lease, sha and prompt, checked before the home is touched. */
 function checkStart(options: { host: string; sha?: string; leaseMs?: number; prompt?: RunPrompt }): { leaseMs: number; wanted: string | undefined; prompt: RunPrompt | undefined } {

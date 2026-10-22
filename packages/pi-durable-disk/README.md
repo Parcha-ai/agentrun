@@ -1,10 +1,12 @@
 # @parcha/pi-durable-disk
 
-Run a [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) agent from a directory or a network disk, so any process or host can open the run and carry on where the last one released it.
+The agent is the workspace: its conversation and its files live together in one directory on a disk. Mount the disk on any Linux host or container, release it, and mount it somewhere else: the agent carries on where the last host released it.
 
-An agent's home and its runs live on the disk, not on a machine: the conversation, the agent's files and what it was waiting
-for are all in the run's directory, so a process is somewhere a run visits, not where it lives. This is a beta
-(`0.1.0-beta.N`): a change that breaks a caller is listed in [CHANGELOG.md](CHANGELOG.md) when it ships.
+On an [Archil](https://archil.com) disk, opening a run mounts its directory (`runs/<id>` of the disk) and takes an exclusive claim on it, and `release()` seals the
+run, gives up the claim and unmounts. On a plain directory of this machine (`localRun`) there is no mount: one machine, no disk,
+no key. It runs [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) agents, on Linux (macOS is for development;
+Windows is not supported). This is a beta (`0.1.0-beta.N`): a change that breaks a caller is listed in [CHANGELOG.md](CHANGELOG.md)
+when it ships.
 
 ## What it is
 

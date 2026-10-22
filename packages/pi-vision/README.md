@@ -6,11 +6,12 @@ and its price, and a look that cannot be made says why.
 
 ## Try it
 
-Free, on scripted models: no key, no network. From a checkout of this repository, with Node 22.19 or later, and with
-`ffmpeg`, `ffprobe`, `pdftoppm` and `pdftotext` on your path (`brew install ffmpeg poppler`, or
-`sudo apt-get install ffmpeg poppler-utils`):
+Free, on scripted models: no key, no network. The demos are in this repository, not in the npm package: clone it, with
+Node 22.19 or later, and with `ffmpeg`, `ffprobe`, `pdftoppm` and `pdftotext` on your path (`brew install ffmpeg poppler`,
+or `sudo apt-get install ffmpeg poppler-utils`). Installing and building the whole workspace takes a few minutes:
 
 ```sh
+git clone https://github.com/Parcha-ai/agentrun.git && cd agentrun
 npm ci --ignore-scripts && npm run build
 npm run demo:vision -- examples/document-check
 ```
@@ -18,7 +19,8 @@ npm run demo:vision -- examples/document-check
 [`examples/vision-agent`](https://github.com/Parcha-ai/agentrun/tree/main/examples/vision-agent) is one agent that answers questions about a set of files. `document-check`
 asks it which of six marks a certified copy carries and where. On scripted models (the free run's stand-ins for every
 model) the agent takes one look at the first file and says its answer is scripted; the run still shows the whole path and
-writes the report. `document-check` commits its two PDFs and `lake-mead` its thirteen images, so they run as above. The
+writes the report, and prints the report's path: open that file in a browser. `document-check` commits its two PDFs and
+`lake-mead` its thirteen images, a map key and an elevation record, so they run as above. The
 six other examples fetch their files first: add `--fetch-sources` (`video-chapters` and `hear-and-find` 120 MB each,
 `apollo-descent` 211 MB, `boulder-chapters` 218 MB, `market-street` 227 MB, `fair-robot` 342 MB), as in
 `npm run demo:vision -- examples/fair-robot --fetch-sources`.
@@ -51,8 +53,8 @@ pi-vision is a library, not a command line: an extension for a pi-durable host, 
 and [pi-ai](https://www.npmjs.com/package/@earendil-works/pi-ai) and installs this package's extension.
 [`examples/reference`](https://github.com/Parcha-ai/agentrun/tree/main/examples/reference) is such a host, and
 [what a host supplies](https://github.com/Parcha-ai/agentrun/blob/main/docs/reference-host.md) says what each package asks
-of one. There is no pi coding-agent extension: a plain `pi install npm:@parcha/pi-vision` loads only
-the skills, and the `vision.see` they call is not defined there.
+of one. There is no pi coding-agent extension: `pi install npm:@parcha/pi-vision@beta` adds
+the five skills (`find`, `look`, `report`, `transcribe`, `verify`) and no tool, and the `vision.see` they call is not defined there.
 
 ## What it does
 
@@ -80,12 +82,14 @@ evidence for every finding (the document page with the mark boxed and a close cr
 short clip of its window, the photo), and cites every claim to the file's own page, second or region (`file.pdf#page=3`,
 `film.mp4#t=18,26`, `#xywh=percent:x,y,w,h`) with the look it rests on.
 
-The six examples are questions and files for that one agent, and each has its own keys, download and cost:
+The eight examples are questions and files for that one agent, and each has its own keys, download and cost:
 [`document-check`](https://github.com/Parcha-ai/agentrun/tree/main/examples/document-check) (which marks a certified copy carries, and where),
 [`video-chapters`](https://github.com/Parcha-ai/agentrun/tree/main/examples/video-chapters) (a film cut into chapters), [`hear-and-find`](https://github.com/Parcha-ai/agentrun/tree/main/examples/hear-and-find) (when a line is
 said and when a thing is first seen), [`apollo-descent`](https://github.com/Parcha-ai/agentrun/tree/main/examples/apollo-descent) (the landing minute by minute, from the
-transcript, the photographs and the film), [`boulder-chapters`](https://github.com/Parcha-ai/agentrun/tree/main/examples/boulder-chapters) (a 1930s dam film in chapters) and
-[`fair-robot`](https://github.com/Parcha-ai/agentrun/tree/main/examples/fair-robot) (when a robot is first seen in a 1939 film, and where in the frame).
+transcript, the photographs and the film), [`boulder-chapters`](https://github.com/Parcha-ai/agentrun/tree/main/examples/boulder-chapters) (a 1930s dam film in chapters),
+[`fair-robot`](https://github.com/Parcha-ai/agentrun/tree/main/examples/fair-robot) (when a robot is first seen in a 1939 film, and where in the frame),
+[`lake-mead`](https://github.com/Parcha-ai/agentrun/tree/main/examples/lake-mead) (when the water of Lake Mead fell the most, and where, from thirteen Landsat images and the lake's elevation record) and
+[`market-street`](https://github.com/Parcha-ai/agentrun/tree/main/examples/market-street) (every vehicle that crosses in front of a 1906 cable-car film, boxed and counted by kind).
 
 ## What it needs
 
@@ -223,7 +227,8 @@ code stays with the host's install. This package's own tarball carries none of t
 
 ## For a host: `vision.see` in code mode
 
-`handle.see(env, call)` is `vision.see` bound to one call, in the shape pi-codemode's `globals` take. Build it per call,
+`handle.see(env, call)` is `vision.see` bound to one call, in the shape pi-codemode's `globals` take (the excerpt below imports
+it: `npm install @earendil-works/pi-codemode`, beside the adapter's peers named under Providers). Build it per call,
 so it reads paths through that call's environment and keeps its answers in that call's memos. This is a host's whole
 code-mode tool, a pi-durable extension next to `vision.extension`. `tools` is the host's own: the `look` skill's recipes
 render pages and cut frames with `tools.bash`, so a sandbox with no shell cannot run them:

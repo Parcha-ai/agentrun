@@ -233,7 +233,10 @@ answers the question about `{ input }`, with the overlays' options and `other` a
 option's probability is at least its threshold is chosen, the highest such probability winning. When none is and
 `lookup` is given, the lookup runs once on the input's words, and the judge answers again about `{ input, lookup }`
 (its text cut to `LOOKUP_TEXT_MAX`, 3,000 characters) by the same rule. Otherwise the run gets the generic. A judge or
-lookup failure never throws: the run gets the generic, and `reason` says why.
+lookup failure never throws: the run gets the generic, and `reason` says why. An answer whose choice is not one of the
+options, that gives a probability for another option, or whose probability or confidence is not a number from 0 to 1
+is a judge failure; the probabilities' sum is Jev's to check. An error's message is cut to 500 characters, so `reason`
+stays within the 2,000 `startRun` takes.
 
 ```js
 await setPrompts(home, [
@@ -333,11 +336,12 @@ to a `.part` file, read back with `readPack`, and renamed into place only when i
 `readPack` returns `{ ok, manifest, checks }`. The checks use the contract's names for what the package can judge:
 `format` (the manifest first, `agentrun.home/N` with N at most this version's, every member on the allowlist and none
 inside a file, no `..`, no absolute path, no link or device, no store with a sign-in kind, at most `maxMembers`, no global
-pax header, at most one pax header of at most 64 fields before a member, nothing after the end), `definition` (the definition
-is valid and is the one in `agent.sqlite`, the agent id is the same everywhere, each skill matches its `sha256` and
-size), `sign_ins` (`warn` when the source had sign-ins: they are to redo at the target), `size` (the pack is the size its
-manifest says, and within `maxBytes`) and `live_runs` (`warn` when runs travel as index entries only). Tools, vault and
-quote are the host's to judge. It writes only temporary files.
+pax header, at most one pax header of at most 64 fields before a member, nothing after the end, and prompts that are none
+or a set `setPrompts` takes, so an import never leaves a home whose `choosePrompt` refuses its set), `definition` (the
+definition is valid and is the one in `agent.sqlite`, the agent id is the same everywhere, each skill matches its
+`sha256` and size), `sign_ins` (`warn` when the source had sign-ins: they are to redo at the target), `size` (the pack is
+the size its manifest says, and within `maxBytes`) and `live_runs` (`warn` when runs travel as index entries only).
+Tools, vault and quote are the host's to judge. It writes only temporary files.
 
 `importPack` judges the pack and extracts it to a directory beside `dir`. A pack whose file is over `maxBytes` is refused
 on its size, before a byte of it is parsed; one whose manifest says it is over is refused before anything is extracted. A
@@ -348,8 +352,9 @@ have no live run (`check`, with `live_runs` failed); `ifRevision` must still be 
 
 A home is changed in place, under its own owner lock: the lock, `agent.sqlite`, `chrome/`, `repo/`, the home's
 sign-ins, aliases and bindings, and its runs the pack does not have stay where they are. One store commit replaces the
-definition, the skills, the source and the pack's runs, so `homeRevision` only goes up (an import that changes nothing
-leaves it as it is). A run id in both takes the pack's entry and directory. A run that was live at the source arrives
+definition, the skills, the prompts, the source and the pack's runs, so `homeRevision` only goes up (an import that
+changes nothing leaves it as it is). A prompt variant the pack does not have is removed, and so is the whole set when
+the pack carries none. A run id in both takes the pack's entry and directory. A run that was live at the source arrives
 as an ended entry with outcome `not_carried_back`.
 
 The pack's run directories move into place before the commit, each old one set aside first in the staging directory

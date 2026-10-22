@@ -8,6 +8,7 @@ import { Type } from "typebox";
 import { inspectWorkflow, WORKFLOW_NODE_KINDS, type AuthorHostAddendum, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import { canonicalHash } from "@parcha/agentrun-dsl/recovery";
 import { extensionStructuralLimits, WorkflowExtensionService } from "../extension-service.js";
+import { checkHostTools } from "../host-tools.js";
 import { modelJson } from "../presentation.js";
 import { WorkflowStore } from "../workflow-store.js";
 import { progressLines, WorkflowObservation } from "../workflow-view.js";
@@ -63,6 +64,8 @@ const answer = (value: unknown) => toolResult([{ type: "text", text: modelJson(v
 /** The tool, and the workflow task its runs are: install `extension` (it carries both) and list the tool's name in the
  *  agent definition. `workflow` reads and stops runs from the host's side. */
 export function createWorkflowTool(host: WorkflowToolHost): { extension: Extension; workflow: ReturnType<typeof createWorkflowExtension> } {
+  // The host's tools pass the check the coding-agent extension's do; the tool's own name and the node runner's submit are reserved.
+  checkHostTools(host.tools ?? [], { reserved: [host.name ?? "agentrun", "submit"], executable: false });
   const names = (host.tools ?? []).map((tool) => tool.name);
   const checker = () => new WorkflowExtensionService({ allowedTools: names });
   /** Inspect's checks, after naming any tool the workflow uses (a call's, or an agent node's) that the host did not
