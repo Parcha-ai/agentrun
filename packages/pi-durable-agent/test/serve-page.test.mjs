@@ -216,8 +216,8 @@ const ROWS = [
 
 test("the three files: HTML with no inline script or style that links page.css and page.js; CSS and JS that reach nothing outside; no HTML sink in the script", () => {
   const scripts = [...PAGE_HTML.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
-  assert.deepEqual(scripts.map(([, attrs, body]) => [/\bsrc="page\.js"/.test(attrs), body.trim()]), [[true, ""]], "one script, page.js, empty");
-  assert.match(PAGE_HTML, /<link rel="stylesheet" href="page\.css">/);
+  assert.deepEqual(scripts.map(([, attrs, body]) => [attrs, body]), [[' src="/page.js"', ""]], "one script, page.js, empty, after the elements it fills");
+  assert.match(PAGE_HTML, /<link rel="stylesheet" href="\/page\.css">[\s\S]*<main id="app">[\s\S]*<script src="\/page\.js"><\/script>\n<\/body>/);
   assert.doesNotMatch(PAGE_HTML, /<style|\sstyle=|\son[a-z]+=|https?:|\/\//i, "no inline style, no event attribute, nothing from the network");
   assert.doesNotMatch(PAGE_CSS, /@import|url\(|https?:/i, "the CSS loads nothing");
   assert.match(PAGE_CSS, /\*,\*::before,\*::after\{box-sizing:border-box;border-radius:0!important\}/, "square corners everywhere");
