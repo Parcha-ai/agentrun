@@ -29,37 +29,31 @@ where each tool runs. The definition names tools; the host binds them. It does n
 [pi-browser](https://github.com/Parcha-ai/agentrun/blob/main/packages/pi-browser/README.md) does, through the
 `ProfileStore` this package gives it.
 
-This package is held: it is built and tested in this repository and not published yet.
-
 ## Install
 
 ```sh
-npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/pi-ai@~1.2.0 @earendil-works/chord@~1.2.0
+npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
 
 The package needs Node 22.19 or later, and `@earendil-works/pi-durable` and `@earendil-works/chord` as peers
 ([Requirements](#requirements)); `@earendil-works/pi-ai` gives the host's Harness its models. The pi packages are pinned
-to 1.2, the line `@parcha/pi-durable-disk`'s install pins, so the two install side by side. It does not need a browser,
-a key or a network.
+to 1.3.0, the newest its peer range takes. pi 1.4 is not supported yet; a later release widens the range. It does not
+need a browser, a key or a network.
 
-Until it is published, pack it from a checkout and install the tarball it writes
-(`parcha-pi-durable-agent-<version>.tgz`) in place of `@parcha/pi-durable-agent@beta`:
-
-```sh
-git clone https://github.com/Parcha-ai/agentrun.git && cd agentrun && npm ci --ignore-scripts && npm run build
-npm pack -w @parcha/pi-durable-agent
-```
+To try a version that is not on npm yet, `npm pack -w @parcha/pi-durable-agent` in a built checkout writes
+`parcha-pi-durable-agent-<version>.tgz`: install that file's path in place of `@parcha/pi-durable-agent@beta`.
 
 ## Quickstart (no key, no network)
 
 Two runs of one agent on this machine. The first signs in, using a stand-in for the provider, and the second finds that
 sign-in already saved. The reference it prints, `ctx_1`, is a stand-in; a real one is secret.
 
-In an empty directory, install the package and the pi packages it runs with, save this as `quickstart.mjs`, and run
-`node quickstart.mjs`:
+In an empty directory, install the package and the pi packages it runs with (pinned to 1.3.0: pi 1.4 is not supported yet;
+a later release widens the range), save this as `quickstart.mjs`, and run
+`node --no-warnings=ExperimentalWarning quickstart.mjs` (Node's SQLite is marked experimental and says so):
 
 ```sh
-npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/pi-ai@~1.2.0 @earendil-works/chord@~1.2.0
+npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
 
 ```js
@@ -107,17 +101,17 @@ run-2: carried back acme.example
 }
 ```
 
-Run 1 signs in once. Run 2 finds the sign-in ready and never makes one.
+Run 1 signs in once. It starts with no save lease, because the agent has no sign-in to lease yet; a new sign-in goes to
+the first run that carries it back. Run 2 starts with the lease, finds the sign-in ready and never makes one.
 
 ## A runnable example
 
 [`examples/web`](https://github.com/Parcha-ai/agentrun/tree/main/examples/web) is a small web server over an agent home:
 a job history, each run's timeline, its files and its live browser. Its agent asks the person to sign in to a site
-through the live view, and its next run starts signed in. The browser is Browserbase by default, and a run needs a
-Browserbase key and a model endpoint. A local Chrome (`AGENT_BROWSER=chrome`) is there too, and waits for pi-browser's
-live view, which the person needs to sign in. With no key, the quickstart above is the keyless path. Run it from a
-checkout: `npm ci --ignore-scripts && npm run build`, then
-`node --no-warnings=ExperimentalWarning examples/web/server.mjs`.
+through the live view, and its next run starts signed in. A run needs a browser and a model endpoint. With neither,
+the quickstart above is the keyless path.
+[Its README](https://github.com/Parcha-ai/agentrun/tree/main/examples/web#run-it) says which browsers it takes and how
+to run it from a checkout.
 
 ## A saved sign-in
 
@@ -138,8 +132,9 @@ it like a password, because whoever holds it can open the signed-in session.
 - **A copy of the directory takes it along.** Copy the home as a directory only to a place you would trust with its
   sign-ins. A pack is the way to move a home without them.
 
-A vault, which would keep credentials as ciphertext that only the host decrypts, is not built yet
-([Not yet](#not-yet)).
+A signed-in browser session can also be kept in the session vault, as ciphertext that only the host's key opens, and it
+never travels with a home ([Saved browser sessions](#saved-browser-sessions-the-vault)). Saved credentials, such as
+passwords, are not built yet ([Not yet](#not-yet)).
 
 ## The agent home
 
@@ -264,6 +259,50 @@ from 0 to 1, and rules that name the set's question and an option no other overl
 `ifRevision` makes it a compare-and-swap on `homeRevision` (`stale`). `choosePrompt` refuses the same sets. Prompts are
 exported and packed with the agent; they are not secrets.
 
+## Saved browser sessions: the vault
+
+A browser session the person signed in to can be kept for the agent's next run, as ciphertext only.
+`sessionVault(home, { hostKey })` is the session vault a browser host uses (`SessionVaultPort`): `capture` at release,
+`restore` at the next create, before the driver attaches, and `forget`. A session is a local Chrome's cookies and
+localStorage (`kind: "cdp"`), or a provider's context id (`kind: "provider-context"`, Browserbase or Kernel, which keep
+the state on their side).
+
+```js
+const vault = sessionVault(home, { hostKey: localHostKey("laptop-1", keyBytes) });
+await vault.capture({ sessionKey: "acme", origins: ["https://app.acme.example"], state }); // at release
+const saved = await vault.restore({ sessionKey: "acme", origins: ["https://app.acme.example"] }); // at create, or null
+```
+
+- **Ciphertext, under keys the home never holds in clear.** Each session is AES-256-GCM in `agent.vault` under its own
+  item key. The item keys are wrapped by the home's vault key, and that key by the host's key (`HostKey`: `{ id, wrap,
+  unwrap }`, a KMS key, an OS keychain item or a 1Password item; `localHostKey(id, bytes)` is one held in this process).
+  The wrapped keys are in `vault.keys`, owner-only, beside `agent.sqlite`, and not in the store: a pi-durable store keeps
+  every revision of a document, so a key kept there could never be destroyed. Each ciphertext is bound to its agent,
+  session and kind, so it cannot be moved to another row. It also holds the session's origins and capture time, and a
+  restore goes by those: a row whose clear `origins` or `capturedAt` differ from them was changed, and is refused
+  (`format`).
+- **One host key.** The first capture binds the vault to `hostKey.id`; another key, or the same id with other bytes,
+  is refused (`AgentHomeError` `key`). A copy of the home opens on another machine with the same host key.
+- **Revoke destroys the key.** `forget(sessionKey)` removes the session and its item key, so the session's earlier
+  revisions, which the store keeps, can never be read. A capture mints a new item key and destroys the one before.
+  `forgetAll()` destroys every key and the vault key itself.
+- **What comes back.** A capture keeps only the cookies and localStorage of the origins it names. A restore returns
+  what was captured for the origins asked for, never more. A cookie counts for an origin the browser would send it to:
+  a host-only cookie (no leading dot in its domain) for its own host only, a domain cookie for its host and every host
+  under it. A provider context cannot be cut down to fewer origins, so it comes back only to a restore that names every
+  origin it was captured for; a restore for some of them gets `null`. A context's own `origins`, when the browser host
+  records them, are sealed with it and given back as they came. A persistent cookie keeps its own expiry; a session cookie
+  comes back for at most 24 hours after its capture (`maxSessionCookieAgeMs` lowers it; it cannot go higher). A
+  capture is dated by its state's `capturedAt` (a time still to come counts as now), and one older than the session
+  already kept is ignored, so a late capture never replaces a newer one. With `runId`, a capture is refused (`busy`)
+  while another live run holds that session's save lease.
+- **Never anywhere else.** `agent.vault` is on `SECRET_KINDS`: never exported, packed or seeded into a run; a pack's
+  manifest names the sessions (`vault`), never a value, and `vault.keys` never travels. No value is in an error or a
+  log. `handedOut()` lists every value `restore` returned, for a redactor such as pi-browser's `redact.values`.
+
+On a disk, `access` (a `HomeAccess`) claims the directory that holds `agent.sqlite`, and `vault.keys` is read and written
+there, inside the claim.
+
 ## Stored kinds
 
 Every document is session-scoped, version 1, in the store named. Times are ISO 8601 strings in UTC. The kinds and their
@@ -280,6 +319,7 @@ fields are the stored format.
 | `agent.bindings` | agent | host | `{ [tool]: target }`: where each tool runs in that host |
 | `agent.runs` | agent | run id | `{ path, host, startedAt, sha?, prompt?, endedAt?, outcome?, finalAnswer?, cost? }`; `path` is relative to the home; `sha` is the home's `agent.source` when the run started; `prompt` is `{ id, reason }`, the variant the host chose |
 | `agent.leases` | agent | profile key | `{ runId, expiresAt }` |
+| `agent.vault` | agent | session key (1 to 128 of letters, digits, `_`, `.`, `:` and `-`, starting with a letter or digit, as pi-browser takes it) | `{ kind, origins, capturedAt, provider?, keyId, iv, ciphertext, alg, v }`: a saved browser session as AES-256-GCM ciphertext; `keyId` names its item key in `vault.keys`, beside the store ([the vault](#saved-browser-sessions-the-vault)) |
 | `browser.profiles` | agent and run | profile key | `{ provider, ref, state, startUrl?, allowedOrigins?, verifiedAt?, heldBy? }`; `ref` is the provider's saved sign-in (a Browserbase context id, or a local Chrome's profile directory), `state` is `ready` once it names one, or `held` in a run store whose run has no lease on it (`ref` empty, `heldBy` the run that has) |
 
 A profile's `ref` opens a signed-in session, so it is as secret as the password behind it: it reaches a run only
@@ -289,7 +329,7 @@ through the host, and no tool reads or returns a profile.
 
 An exporter (a copy of a home for a viewer, or for someone else to run) copies only the kinds on `EXPORTABLE_KINDS`:
 `agent.identity`, `agent.definition`, `agent.source`, `agent.skills`, `agent.prompts` and `agent.runs`. Every other kind is dropped, a kind this release
-does not know included. `SECRET_KINDS` names what never leaves the home: `browser.profiles` (saved sign-ins),
+does not know included. `SECRET_KINDS` names what never leaves the home: `browser.profiles` (saved sign-ins), `agent.vault` (saved sessions),
 `agent.leases`, and `agent.bindings` and `agent.aliases` (each host's own names for where the tools run and for the
 agent). Every kind this package defines is on exactly one of the two lists, and a test fails on a kind added to
 neither.
@@ -318,13 +358,13 @@ and nothing else, in this order, sorted, owned by 0/0, mode 0644 or 0755, stampe
 
 | Member | Holds |
 |---|---|
-| `manifest.json` | `format` `agentrun.home/1`, `agent_id`, `definition`, `source` (`sha`, `refreshed_at`, or `null`), `skills` (`path`, `sha256`, `size_bytes`), `sign_ins` (`key`, `provider`: what the source had, none travels), `vault` (`name`s, empty today), `runs` (`count`, `live`), `size_bytes` (the pack's own), `created_at` |
+| `manifest.json` | `format` `agentrun.home/1`, `agent_id`, `definition`, `source` (`sha`, `refreshed_at`, or `null`), `skills` (`path`, `sha256`, `size_bytes`), `sign_ins` (`key`, `provider`: what the source had, none travels), `vault` (`name`s: the saved sessions' keys, never a value; none travels), `runs` (`count`, `live`), `size_bytes` (the pack's own), `created_at` |
 | `agent.sqlite` | A new agent store with only `EXPORTABLE_KINDS`, each through `projectForExport`, then `VACUUM INTO` one clean file: no `-wal`, no `-shm`, no free page with an old row. Nothing is copied from the live file |
 | `runs/<id>/store/run.sqlite` | Only through `exportRunStore(storePath, outPath)`; without it no run store travels |
 | `runs/<id>/work/...` | Regular files and directories whose names do not start with `.`. Whatever the reader would refuse is left out and listed in `skipped` with its reason: a link, a hard link, a device, a dotfile, a `*.sqlite-wal` side file, a text file named `*.sqlite` |
 
 A run that was still live (no `endedAt`) travels as its `agent.runs` entry only: neither its store nor its work. The
-home's `chrome/`, `repo/`, `owner.lock`, `tmp/` and everything else are never read. The packer refuses (`check`) a
+home's `vault.keys`, `chrome/`, `repo/`, `owner.lock`, `tmp/` and everything else are never read. The packer refuses (`check`) a
 SQLite file that holds a `SECRET_KINDS` document or has a `-wal`, `-shm` or `-journal` file beside it, whatever its name:
 it looks at the bytes, so a store hiding in `work/` is found. A work directory it cannot read fails the pack, naming it,
 rather than packing less than the run has. Each work file is opened without following a link and must be the file that
@@ -374,10 +414,12 @@ the new one, never a mix, and no old directory is deleted before the commit. Eve
 directory beside it, as they were.
 
 ```js
-import { importPack, packHome, readPack } from "@parcha/pi-durable-agent";
+import { homeRevision, importPack, openAgentHome, packHome, readPack } from "@parcha/pi-durable-agent";
 
+const home = await openAgentHome("./acme"); // the quickstart's home
 const { manifest } = await packHome(home, { out: "acme.tar", maxBytes: 200 * 1024 * 1024 });
 const { ok, checks } = await readPack("acme.tar");
+console.log(manifest.format, ok, checks.map((check) => `${check.name} ${check.status}`).join(", "));
 if (ok) await importPack("acme.tar", "./acme-copy"); // a fresh directory, or { replace: true, ifRevision: await homeRevision(home) } over a home
 ```
 
@@ -390,12 +432,20 @@ built-in, so a page, a viewer and a harness can import the same code. A row has 
 and `usage`.
 
 ```js
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
+import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { groupTimeline, renderText, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 
-// A released run: the entries of its conversation, in log order.
+// A released run: the entries of its root conversation, in log order (here the quickstart's run-1).
+const harness = await Harness.open(await SqliteStorage.open(await openNodeSqliteDatabase("./acme/runs/run-1/store/run.sqlite")), { models: createModels(), registry: createRegistry() }, ctx);
+const { items: entries } = await (await harness.root(ctx)).entries({}, 1000, undefined, ctx);
 console.log(renderText(timelineOf(entries, { settled: true })));
+await harness.close(ctx);
 
-// A live run: the `snapshot` event, then each batch of `watchEvents` (what pi-durable-disk serves on GET /events).
+// A live run: `events` are the `snapshot` event, then each batch of `watchEvents` (what pi-durable-disk serves on GET /events).
 const reducer = timelineReducer();
 const { rows, drop } = reducer.apply(events); // upsert rows by id, delete the drop ids, sort by seq
 const groups = groupTimeline(reducer.rows()); // rounds, folds and nested calls for a page
@@ -442,6 +492,9 @@ exists to check them. [Errors](#errors) says what each code means.
 | `AGENT_STORE_FILE`, `RUN_STORE_FILE`, `LOCK_FILE` | The file names: `agent.sqlite`, `run.sqlite` and `owner.lock` | |
 | `PACK_FORMAT` | The pack's format name, `agentrun.home/1` | |
 | `LOOKUP_TEXT_MAX` | The most characters of a lookup's text `choosePrompt`'s second pass carries: 3,000 | |
+| `sessionVault(home, { hostKey, maxSessionCookieAgeMs?, runId?, access?, now? })` | The session vault: `capture`, `restore`, `forget`, `forgetAll`, `list` and `handedOut` ([Saved browser sessions](#saved-browser-sessions-the-vault)) | `invalid`: a host key that is not `{ id, wrap, unwrap }`, a cap that is not above 0 and at most 24 hours, an empty `runId`; its calls: a bad session key, origin, captured state or `capturedAt`. `key`: a host key that does not open the vault. `busy`: with `runId`, another live run holds the session's save lease. `format`: a key file or a saved session that does not read or decrypt, or a saved session whose row's origins or `capturedAt` were changed. A refused call writes nothing |
+| `localHostKey(id, bytes)` | A `HostKey` held in this process: 32 bytes, AES-256-GCM | `invalid`: an id that is not letters, digits, `.`, `_`, `:` or `-`, or not 32 bytes |
+| `VAULT_KEYS_FILE`, `MAX_SESSION_COOKIE_AGE_MS` | `vault.keys`, and 24 hours | |
 | `AgentHomeError` | The one error class of this package ([Errors](#errors)) | |
 | `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)). Also from `@parcha/pi-durable-agent/export` | |
 
@@ -455,6 +508,8 @@ The types the package exports:
   and `BrowserProfile`.
 - **Prompts.** `PromptVariantInput` (a variant with its `id`, as `setPrompts` takes it), `RunPrompt`, and for
   `choosePrompt`: `PromptJudge`, `PromptQuestion`, `PromptLookup`, `PromptLookupSource`, `PromptPass` and `PromptChoice`.
+- **Vault.** `HostKey`, `SessionVault` (the port plus `forgetAll`, `list` and `handedOut`), `SessionVaultPort`,
+  `CapturedState`, `VaultCookie` and `VaultEntry`.
 - **Runs.** `RunPaths`, `RunStart`, `RunSeed` (plain data, so a host can carry it to the run's side), `CarryBack`,
   `ProfileStore` and `ProfileTarget` (the host's Harness, or any Session on the run store).
 - **Packs.** `PackOptions`, `Skipped`, `HomeManifest` (the manifest's fields, in [Moving a home](#moving-a-home)),
@@ -505,6 +560,7 @@ throws an `AggregateError` holding both.
 | `stale` | The home moved since the caller read it: `ifRevision`, `from`, or a `sha` that is not the cache's |
 | `too_large` | A pack over `maxBytes` or `maxMembers`, from `packHome` |
 | `check` | A pack or an import failed a check: `checks` lists them all |
+| `key` | A host key that does not open the session vault: another key id, or the right id with other bytes |
 
 The package does not import pi-browser at run time: `ProfileStore` is declared here by shape. `npm run typecheck`
 (after the workspace build) checks that the declaration is exactly pi-browser's type, read from the return of
@@ -568,7 +624,8 @@ carried back later.
 ## Not yet
 
 - Agent SQL: read-only queries over a whitelist of this run's and the agent's tables, and tables of the agent's own.
-- A vault: credentials kept as ciphertext that only the host decrypts, used by name in tools.
+- Saved credentials in the vault (passwords, one-time-code seeds), filled by name in tools: the vault keeps browser
+  sessions today. A session's IndexedDB, and a site's own logout calling `forget`.
 - Tables whose rows commit inside pi's own commit, so a row and the turn that made it land together.
 - The binding of a disk's claim and seed itself: this package takes their shape (`HomeAccess`, `seedRun`), and the
   host or pi-durable-disk supplies them. A reader of both stores for viewers in another process.

@@ -4,7 +4,8 @@ import { lstat, mkdir, mkdtemp, open, readdir, readFile, readlink, rm, stat, sym
 import os from "node:os";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
-import { BrowserFailureError, PROFILE_NAME } from "../core/custody.js";
+import { BrowserFailureError, PROFILE_NAME, refusedError } from "../core/custody.js";
+import { browserFailure } from "../core/failures.js";
 import type { AttachTarget, BrowserProvider, ProviderCaps, RemoteFile, SavedProfile } from "../core/host.js";
 import type { LeaseRef, ResourceStatus } from "../core/lease.js";
 import { cdpCall } from "./cdp-call.js";
@@ -131,7 +132,6 @@ const profileDir = (root: string, tag: string): string => {
   return path.join(root, tag);
 };
 const savedDir = (root: string, name: string): string => path.join(root, ".profiles", name);
-const refusal = (message: string) => new BrowserFailureError({ ok: false, code: "refused", retryable: false, effect: "none", message });
 
 /** A copy of a profile another Chrome is writing: that Chrome renames, truncates and deletes its journals and temp files
  *  all the time. A file gone by the time it is reached is skipped. `fs.cp` fails the whole copy on it, and `fs.copyFile`
@@ -162,7 +162,7 @@ export async function copyProfile(from: string, to: string, signal?: AbortSignal
 /** A saved profile lives in `.profiles/<name>`, which no lease tag can name. Saving, the lease's own directory is a link to
  *  it, so release removes the link and never the profile; not saving, it is a copy that leaves the profile as it was. */
 async function prepareProfile(root: string, dir: string, profile: SavedProfile, tag: string, owner: string, signal: AbortSignal, remove: RemoveDir): Promise<void> {
-  if (!PROFILE_NAME.test(profile.name)) throw refusal("browser profile: a profile name is 1 to 64 characters of letters, digits, dot, underscore and dash, starting with a letter or digit. No session was started.");
+  if (!PROFILE_NAME.test(profile.name)) throw refusedError("browser profile: a profile name is 1 to 64 characters of letters, digits, dot, underscore and dash, starting with a letter or digit. No session was started.");
   const saved = savedDir(root, profile.name);
   await rm(dir, { recursive: true, force: true });
   if (!profile.save) {
@@ -179,7 +179,7 @@ async function prepareProfile(root: string, dir: string, profile: SavedProfile, 
   await claimWriter(`${path.resolve(root)}|${profile.name}`, profile.name, tag, owner, signal);
   try {
     const lock = await readlink(path.join(saved, "SingletonLock")).then((value) => /^(.*)-(\d+)$/.exec(value), () => null);
-    if (lock && lock[1] === os.hostname() && alive(Number(lock[2]))) throw refusal(`browser profile "${profile.name}": a Chrome process (${lock[2]}) is using this profile. No session was started.`);
+    if (lock && lock[1] === os.hostname() && alive(Number(lock[2]))) throw refusedError(`browser profile "${profile.name}": a Chrome process (${lock[2]}) is using this profile. No session was started.`);
     await mkdir(path.join(saved, "Default"), { recursive: true });
     await symlink(path.resolve(saved), dir, "dir");
   } catch (error) { freeWriter(tag); throw error; }
@@ -372,7 +372,7 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
           const tail = chromeTail(tmp);
           const message = `Chrome exited before it opened its debugging port (${signal ?? code})${tail ? `\nChrome said:\n${tail.split("\n").map((line) => `  ${line}`).join("\n")}` : ""}`;
           failed = sandbox && (signal === "SIGABRT" || /sandbox/i.test(tail))
-            ? new BrowserFailureError({ ok: false, code: "browser_unavailable", retryable: false, effect: "none", message: `${message}\n${SANDBOX_HINT}` })
+            ? new BrowserFailureError(browserFailure("browser_unavailable", `${message}\n${SANDBOX_HINT}`))
             : new Error(message);
         });
         if (child.pid === undefined) {

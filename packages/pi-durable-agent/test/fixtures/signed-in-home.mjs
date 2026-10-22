@@ -6,11 +6,13 @@ import { createRegistry, defineDocFamily } from "@earendil-works/pi-durable";
 import { localRun, openDurableRun } from "@parcha/pi-durable-disk";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { AGENT_STORE_FILE, carryBack, createAgentHome, durableProfileStore, setAlias, setBindings, setPrompts, startRun } from "../../dist/index.js";
+import { AGENT_STORE_FILE, carryBack, createAgentHome, durableProfileStore, localHostKey, sessionVault, setAlias, setBindings, setPrompts, startRun } from "../../dist/index.js";
 
 export const SIGN_IN_MARKER = "ctx-FAKE-SIGNIN-0000";
 export const PRACTICE_ORIGIN = "https://practice-site.example";
 export const FIXTURE_HOST = "fixture-host";
+/** The host key the fixture's vault is bound to. */
+export const FIXTURE_HOST_KEY = localHostKey("fixture-host-key", Buffer.alloc(32, 7));
 /** Why `buildSignedInHome` cannot run on this platform, or undefined: pi-durable-disk runs a local directory on Linux
  *  only. Pass it as a test's `skip`. */
 export const signedInHomeSkip = process.platform === "linux" ? undefined : "pi-durable-disk runs a local directory on Linux only";
@@ -18,7 +20,8 @@ export const signedInHomeSkip = process.platform === "linux" ? undefined : "pi-d
 const Profiles = defineDocFamily({ kind: "browser.profiles", version: 1, scope: "session", family: true, initial: () => ({}) });
 
 /** An agent home in `dir/home` after one run under pi-durable-disk signed in to the practice site and was carried back:
- *  the marker is the profile's `ref` in both `agent.sqlite` and the run's `store/run.sqlite`. */
+ *  the marker is the profile's `ref` in both `agent.sqlite` and the run's `store/run.sqlite`, and a saved session's
+ *  cookie and localStorage item in the vault (ciphertext). */
 export async function buildSignedInHome(dir) {
   if (signedInHomeSkip) throw new Error(signedInHomeSkip);
   const home = await createAgentHome(path.join(dir, "home"), {
@@ -27,6 +30,10 @@ export async function buildSignedInHome(dir) {
   });
   await setAlias(home, FIXTURE_HOST, "ext-fixture-1");
   await setBindings(home, FIXTURE_HOST, { browser: "local" });
+  await sessionVault(home, { hostKey: FIXTURE_HOST_KEY }).capture({
+    sessionKey: "practice", origins: [PRACTICE_ORIGIN],
+    state: { kind: "cdp", capturedAt: new Date().toISOString(), cookies: [{ name: "sid", value: SIGN_IN_MARKER, domain: "practice-site.example", path: "/", httpOnly: true, secure: true }], localStorage: { [PRACTICE_ORIGIN]: { token: SIGN_IN_MARKER } } },
+  });
   await setPrompts(home, [
     { id: "base", role: "base", label: "Base", text: "Read the practice site." },
     { id: "generic", role: "generic", label: "Generic", text: "Say what the page shows." },

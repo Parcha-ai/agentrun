@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { FakeBackend, fakeDriver } from "@parcha/pi-browser/testing";
 import { fileEvidenceSink, findChrome, httpBackup, isPrivateAddress, pinnedLookup } from "../dist/coding-agent-local.js";
+import { createWebTools } from "../dist/core/web.js";
 import { startAgent, turn } from "./coding-agent/rig.mjs";
 import { scratch } from "./fixtures/scratch.mjs";
 
@@ -159,4 +160,21 @@ test("a later session's sink never overwrites an earlier session's receipt or ca
   const [a, b] = [await fileEvidenceSink(path.join(root, "shots"), root).file("s", shot(new Uint8Array([1]))), await fileEvidenceSink(path.join(root, "shots"), root).file("s", shot(new Uint8Array([2])))];
   assert.deepEqual([a.path, b.path], ["shots/s/0001-screenshot.md", "shots/s/0002-screenshot.md"]);
   assert.deepEqual([...fs.readFileSync(path.join(root, "shots/s/0001-screenshot.png"))], [1], "a capture is reserved with its receipt");
+});
+
+test("web_fetch tells the model a backup's refusal as a refusal: a private host, a non-text page and an oversized page are refused, not a failure worth retrying", async () => {
+  const sources = {
+    "http://rebind.example/": { lookup: ["127.0.0.1"] },
+    "http://public.example/blob": { lookup: ["93.184.216.34"], reply: () => new Response("%PDF", { status: 200, headers: { "content-type": "application/pdf" } }) },
+    "http://public.example/huge": { lookup: ["93.184.216.34"], reply: () => new Response(new Uint8Array(6 * 1024 * 1024), { status: 200, headers: { "content-type": "text/plain" } }) },
+  };
+  const backup = httpBackup({ lookup: async (host) => Object.entries(sources).find(([url]) => new URL(url).hostname === host)[1].lookup, fetchImpl: async (url) => sources[url.href].reply() });
+  const web = createWebTools({ name: "none", evidence: { file: async () => null }, scope: () => ({ label: "t", proxies: false }), backups: [backup] });
+  for (const url of Object.keys(sources)) {
+    const out = await web.fetch(1, { url });
+    const failure = JSON.parse(out.text);
+    assert.equal(out.isError, true, url);
+    assert.deepEqual([failure.code, failure.retryable], ["refused", false], `${url}: ${out.text}`);
+    assert.doesNotMatch(failure.message, /Try once more/, `${url}: a refusal is not worth retrying`);
+  }
 });
