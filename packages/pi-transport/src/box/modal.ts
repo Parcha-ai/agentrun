@@ -441,10 +441,7 @@ class ModalBox implements Box {
 				},
 			);
 			const finished = await finish(this.#adapt(process, SETUP_TIMEOUT_MS, context));
-			if (!finished.ok)
-				return finished.error.code === "aborted" || wantsFuse
-					? err(finished.error)
-					: (cancelled() ?? ok(undefined));
+			if (!finished.ok) return wantsFuse ? err(finished.error) : (cancelled() ?? ok(undefined));
 			if (finished.value.exitCode !== 0)
 				return fail(`could not read what the box has: ${finished.value.stderr.trim()}`);
 			const reading = parseProbe(new TextDecoder().decode(finished.value.stdout));

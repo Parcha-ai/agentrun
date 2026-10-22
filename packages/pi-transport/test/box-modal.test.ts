@@ -506,6 +506,20 @@ describe("modal boxes", () => {
 			const attached = await provider.attach(made.id, cancelAttach.context);
 			expect(attached.ok ? "ok" : attached.error.code).toBe("aborted");
 
+			// The probe throws after the caller cancelled: still an abort, not a box that read nothing.
+			const cancelThrown = withCancel(context);
+			const sandbox = sdk.sandboxList[0] as (typeof sdk.sandboxList)[number];
+			const exec = sandbox.exec.bind(sandbox);
+			sandbox.exec = async (command, params) => {
+				if (command[0] === "sh" && command[2]?.includes("ptrace_scope")) {
+					cancelThrown.cancel();
+					throw new Error("the connection went away");
+				}
+				return exec(command, params);
+			};
+			const thrown = await provider.attach(made.id, cancelThrown.context);
+			expect(thrown.ok ? "ok" : thrown.error.code).toBe("aborted");
+
 			const cancelCreate = withCancel(context);
 			const create = sdk.sandboxes.create;
 			sdk.sandboxes.create = async (app, image, params) => {
