@@ -426,37 +426,44 @@ class ModalBox implements Box {
 	 * Read what the box has (`PROBE`) into its facts. A box that was asked for `fuse` and cannot give it is an error that
 	 * names what is missing; any other box whose read fails keeps unmeasured facts (`null`, `false`).
 	 */
-	async measure(wantsFuse: boolean, context: Context): Promise<Result<void, BoxError>> {
+	async measure(wantsFuse: boolean, wantsGpu: boolean, context: Context): Promise<Result<void, BoxError>> {
 		// A cancelled call is the caller's answer, never an optional read that did not matter.
 		const cancelled = (): Result<void, BoxError> | undefined =>
 			context.abortSignal?.aborted ? err(new BoxError("aborted", "the call was aborted")) : undefined;
+		// A box that asked for FUSE or a GPU must have it read: any failure to read is an error, not a fact left out.
+		const required = wantsFuse || wantsGpu;
 		const fail = (message: string): Result<void, BoxError> =>
-			cancelled() ?? (wantsFuse ? err(new BoxError("unknown", message)) : ok(undefined));
+			cancelled() ?? (required ? err(new BoxError("unknown", message)) : ok(undefined));
 		try {
 			const process = await this.#sandbox.exec(
-				["sh", "-c", PROBE, "sh", this.#facts.workspace, wantsFuse ? "fuse" : "-"],
+				["sh", "-c", PROBE, "sh", this.#facts.workspace, wantsFuse ? "fuse" : "-", wantsGpu ? "gpu" : "-"],
 				{
 					mode: "binary",
 					timeoutMs: SETUP_TIMEOUT_MS,
 				},
 			);
 			const finished = await finish(this.#adapt(process, SETUP_TIMEOUT_MS, context));
-			if (!finished.ok) return wantsFuse ? err(finished.error) : (cancelled() ?? ok(undefined));
+			if (!finished.ok) return required ? err(finished.error) : (cancelled() ?? ok(undefined));
 			if (finished.value.exitCode !== 0)
 				return fail(`could not read what the box has: ${finished.value.stderr.trim()}`);
 			const reading = parseProbe(new TextDecoder().decode(finished.value.stdout));
 			if (wantsFuse && !reading.fuse) {
 				return fail(`the box asked for fuse and lacks ${reading.fuseMissing.join(" and ")}`);
 			}
+			// The model served, not the one asked for: a bare `H100` may be served an H200. None is no GPU: the box must not be used as if it had one.
+			if (wantsGpu && reading.gpus.length === 0) {
+				return fail(`the box asked for the GPU ${this.#facts.gpu} and nvidia-smi names none in it`);
+			}
 			this.#facts = {
 				...this.#facts,
+				...(wantsGpu ? { gpu: reading.gpus.join(", ") } : {}),
 				...(reading.diskGb === undefined ? {} : { diskGb: reading.diskGb }),
 				...(reading.ptraceScope === undefined ? {} : { ptraceScope: reading.ptraceScope }),
 				fuse: wantsFuse && reading.fuse,
 			};
 			return ok(undefined);
 		} catch (cause) {
-			return cancelled() ?? (wantsFuse ? err(boxError("could not read what the box has", cause)) : ok(undefined));
+			return cancelled() ?? (required ? err(boxError("could not read what the box has", cause)) : ok(undefined));
 		}
 	}
 
@@ -623,7 +630,8 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 			const box = new ModalBox(sandbox, facts);
 			// A sandbox exists from here on: a call the caller gave up on, or one that cannot finish, ends it.
 			let made = context.abortSignal?.aborted ? aborted<void>() : await box.prepare(context);
-			if (made.ok && !context.abortSignal?.aborted) made = await box.measure(wantsFuse, context);
+			if (made.ok && !context.abortSignal?.aborted)
+				made = await box.measure(wantsFuse, spec.gpu !== undefined, context);
 			if (!made.ok || context.abortSignal?.aborted) {
 				await box.destroy();
 				return made.ok ? aborted() : made;
@@ -648,7 +656,7 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 			}
 			// A host that died between the create call and the workspace setup left a box with no workspace.
 			let made = await box.prepare(context);
-			if (made.ok) made = await box.measure(wantsFuse, context);
+			if (made.ok) made = await box.measure(wantsFuse, box.facts().gpu !== null, context);
 			return made.ok ? ok(box) : made;
 		},
 

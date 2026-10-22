@@ -88,13 +88,14 @@ describe("modal boxes", () => {
 	it("reports gvisor without a runtime, and caps the lifetime at 24 hours", async () => {
 		await withRoot(async (root) => {
 			const sdk = new FakeModal();
+			sdk.served = ["Tesla T4"];
 			const box = unwrap(
 				await modalBoxes(sdk, { appName: "a" }).create(
 					{ ...SPEC, gpu: "T4", workspace: root, maxLifetimeMs: 48 * 3_600_000 },
 					context,
 				),
 			);
-			expect(box.facts()).toMatchObject({ isolation: "gvisor", gpu: "T4", maxLifetimeMs: 24 * 3_600_000 });
+			expect(box.facts()).toMatchObject({ isolation: "gvisor", gpu: "Tesla T4", maxLifetimeMs: 24 * 3_600_000 });
 			expect(sdk.sandboxList[0]?.params).toMatchObject({ gpu: "T4" });
 			expect(sdk.sandboxList[0]?.params).not.toHaveProperty("runtime");
 			unwrap(await box.destroy(context));
@@ -235,7 +236,7 @@ describe("modal boxes", () => {
 				const probe = sdk.sandboxList[0]?.execs.find(
 					(e) => e.command[0] === "sh" && e.command[2]?.includes("fuse"),
 				);
-				expect(probe?.command.slice(3)).toEqual(["sh", root, "fuse"]);
+				expect(probe?.command.slice(3)).toEqual(["sh", root, "fuse", "-"]);
 				const again = unwrap(await provider(sdk).attach(box.id, context));
 				expect(again?.facts().fuse).toBe(true);
 				const plain = unwrap(await provider(sdk).create({ ...SPEC, workspace: root }, context));
@@ -254,6 +255,72 @@ describe("modal boxes", () => {
 				expect(sdk.running().map((s) => s.sandboxId)).toEqual([box.id, plain.id]);
 				unwrap(await box.destroy(context));
 				unwrap(await plain.destroy(context));
+			});
+		});
+
+		describe("the GPU served", () => {
+			it("is the model nvidia-smi names, not the request, and the request stays in the create call", async () => {
+				await withRoot(async (root) => {
+					const sdk = new FakeModal();
+					sdk.served = ["NVIDIA H200"];
+					const box = unwrap(await provider(sdk).create({ ...SPEC, gpu: "H100", workspace: root }, context));
+					expect(box.facts().gpu).toBe("NVIDIA H200");
+					expect(sdk.sandboxList[0]?.params.gpu).toBe("H100");
+					unwrap(await box.destroy(context));
+				});
+			});
+
+			it("is one name for identical cards, and every model, in the order first seen, for a mixed box", async () => {
+				await withRoot(async (root) => {
+					const sdk = new FakeModal();
+					sdk.served = Array.from({ length: 8 }, () => "NVIDIA H100 80GB HBM3");
+					const same = unwrap(await provider(sdk).create({ ...SPEC, gpu: "H100!:8", workspace: root }, context));
+					sdk.served = ["NVIDIA A100", "NVIDIA H100 80GB HBM3", "NVIDIA A100"];
+					const mixed = unwrap(await provider(sdk).create({ ...SPEC, gpu: "any:3", workspace: root }, context));
+					expect([same.facts().gpu, mixed.facts().gpu]).toEqual([
+						"NVIDIA H100 80GB HBM3",
+						"NVIDIA A100, NVIDIA H100 80GB HBM3",
+					]);
+					unwrap(await same.destroy(context));
+					unwrap(await mixed.destroy(context));
+				});
+			});
+
+			it("fails the create, and ends the sandbox, when a box that asked for a GPU reports none", async () => {
+				await withRoot(async (root) => {
+					const sdk = new FakeModal();
+					const result = await provider(sdk).create({ ...SPEC, gpu: "H100", workspace: root }, context);
+					expect(result.ok ? "ok" : result.error.code).toBe("unknown");
+					expect(!result.ok && result.error.message).toMatch(/H100/);
+					expect(sdk.running()).toEqual([]);
+				});
+			});
+
+			it("is read again on attach, which fails for a box that no longer reports one", async () => {
+				await withRoot(async (root) => {
+					const sdk = new FakeModal();
+					sdk.served = ["NVIDIA H200"];
+					const box = unwrap(await provider(sdk).create({ ...SPEC, gpu: "H100", workspace: root }, context));
+					expect(unwrap(await provider(sdk).attach(box.id, context))?.facts().gpu).toBe("NVIDIA H200");
+					const sandbox = sdk.sandboxList[0];
+					if (sandbox === undefined) throw new Error("no sandbox");
+					sandbox.served = [];
+					const lost = await provider(sdk).attach(box.id, context);
+					expect(lost.ok ? "ok" : lost.error.code).toBe("unknown");
+					unwrap(await box.destroy(context));
+				});
+			});
+
+			it("is not read for a box that asked for none, and its fact stays null", async () => {
+				await withRoot(async (root) => {
+					const sdk = new FakeModal();
+					sdk.served = ["NVIDIA H200"];
+					const box = unwrap(await provider(sdk).create({ ...SPEC, workspace: root }, context));
+					expect(box.facts().gpu).toBeNull();
+					const probe = sdk.sandboxList[0]?.execs.find((e) => e.command[2]?.includes("ptrace_scope"));
+					expect(probe?.command[6]).toBe("-");
+					unwrap(await box.destroy(context));
+				});
 			});
 		});
 
