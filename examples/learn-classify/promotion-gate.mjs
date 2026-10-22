@@ -202,7 +202,7 @@ export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, 
  * runs only what is missing. `apply` is the next curate's step, under the lock: each landed verdict is reported once, and
  * a promotion that still holds on main is committed there.
  */
-export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, parts, log = () => {} }) {
+export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, parts, gatedDemotion = false, log = () => {} }) {
   const compare = replayGate({ bank, runOne, dir, ...(concurrency ? { concurrency } : {}), ...(floor === undefined ? {} : { floor }), ...(scoreParts ? { scoreParts } : {}), ...(parts ? { parts } : {}), log });
   const queued = new Map();
   let running = null;
@@ -281,8 +281,10 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, p
             continue;
           }
           if (v.confirm) {
-            // A promotion that already stands: the verdict confirms it, or demotes it back to the revision it replaced.
-            const applied = !same || live.status !== 'active' ? 'stale' : v.promote ? 'confirmed' : await demote({ repo, trial, name: v.name, sha256: v.candidate, back: v.serving, reason: v.reason, main });
+            // A promotion that already stands: the verdict confirms it, or demotes it back to the revision it replaced. With
+            // `gatedDemotion` (ARM G) it is demoted, like any champion, only when the comparison's lower bound is below 0.
+            const keep = gatedDemotion ? !(typeof v.lo === 'number' && v.lo < 0) : v.promote;
+            const applied = !same || live.status !== 'active' ? 'stale' : keep ? 'confirmed' : await demote({ repo, trial, name: v.name, sha256: v.candidate, back: v.serving, reason: v.reason, main });
             writeJson(verdictFile(dir, v.key), { ...v, applied: { as: applied, at: new Date().toISOString(), main } });
             reported.push({ name: v.name, candidate: v.candidate, serving: v.serving, promote: v.promote, applied, reason: v.reason, confirm: true });
             log(`  promotion gate on ${v.name} ${v.candidate.slice(0, 8)}: ${applied}`);

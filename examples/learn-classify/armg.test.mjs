@@ -229,3 +229,20 @@ test('a name with 32 and more retired and demoted revisions still admits and pro
   assert.equal(admitRevision(trial, { name: WORKFLOW, sha256: digestOf(0), run: 'w', at: stamp(51, 0), when: [] }).status, 'refused', 'a demoted digest stays refused');
   renderTrial(admitted.trial);
 });
+
+test('ARM G, the receipt promotion\'s confirm path: a tie on the bank keeps the promoted champion (LB not below 0); below 0 demotes it; without the flag a tie demotes, as before', async (t) => {
+  const confirmOn = async (gatedDemotion, bRight) => {
+    const g = await champion(t);
+    const gate = asyncGate({ bank: bankOfN(6), runOne: async ({ sha256 }) => scored(sha256 === g.b ? bRight : true), dir: join(g.root, 'gate'), ...(gatedDemotion ? { gatedDemotion: true } : {}) });
+    gate.ask({ name: WORKFLOW, candidate: { sha256: g.b, workflow: {} }, serving: { sha256: g.a, workflow: {} }, main: await g.repo.resolve('main'), confirm: true });
+    await gate.idle();
+    const [v] = await gate.apply({ repo: g.repo });
+    return { applied: v.applied, live: currentRevision(await trialOf(g.repo)).sha256, g };
+  };
+  const tie = await confirmOn(true, true);
+  assert.deepEqual([tie.applied, tie.live], ['confirmed', tie.g.b], 'a tie (LB 0) keeps it under ARM G');
+  const worse = await confirmOn(true, false);
+  assert.deepEqual([worse.applied, worse.live], ['demoted', worse.g.a], 'LB below 0 demotes it under ARM G');
+  const before = await confirmOn(false, true);
+  assert.deepEqual([before.applied, before.live], ['demoted', before.g.a], 'without the flag a tie demotes, as before');
+});

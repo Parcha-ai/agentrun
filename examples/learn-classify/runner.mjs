@@ -655,7 +655,7 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
   // the pass one already made.
   // The MCC job's bank runs are scored on two parts, the code and the tier, each against the teacher.
   const gateParts = parts.set === SETS.mcc ? { scoreParts: partsOfMcc, parts: MCC_GATE_PARTS } : {};
-  const gate = given ?? (parts.bank ? asyncGate({ bank: bankOf(parts.companies, parts.bank, stream), runOne: bankRunner({ out, bare, parts, runCapUsd, dropEvidence }), dir: join(out, 'gate'), ...(parts.bankConcurrency ? { concurrency: parts.bankConcurrency } : {}), ...gateParts, log }) : undefined);
+  const gate = given ?? (parts.bank ? asyncGate({ bank: bankOf(parts.companies, parts.bank, stream), runOne: bankRunner({ out, bare, parts, runCapUsd, dropEvidence }), dir: join(out, 'gate'), ...(parts.bankConcurrency ? { concurrency: parts.bankConcurrency } : {}), ...gateParts, ...(parts.gatedDemotion ? { gatedDemotion: true } : {}), log }) : undefined);
   const judge = parts.judge();
   const spentNow = () => knownSpend(out);
   const tally = curateTally({ out, stream, seedSha: meta.seedSha, checkpoints, ...(gate ? { gates: () => gate.pending() } : {}) });
