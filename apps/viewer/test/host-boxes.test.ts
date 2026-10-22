@@ -128,11 +128,11 @@ test('an adopted host box that keeps serving: the later process\'s first command
   ];
   const guessed = reduceTo(transportPanel, late, late.length - 1);
   assert.deepEqual([guessed.runners.at(-1)?.box, guessed.token?.box, guessed.tileBox], ['box-1', 'box-1', 'box-1']);
-  assert.equal(guessed.runners.at(-1)?.guessed, true);
+  assert.equal(guessed.runners.at(-1)?.guessed, 2, 'a guess names the process that made it');
   const placed = reduceTo(transportPanel, late, late.length);
   assert.deepEqual([placed.runners.at(-1)?.box, placed.token?.box, placed.tileBox], ['box-2', 'box-2', 'box-2']);
   assert.equal(placed.runners.at(-1)?.guessed, undefined);
-  assert.equal(placed.tokens.some((segment) => segment.guessed), false, 'no guess left on the trail');
+  assert.equal(placed.tokens.some((segment) => segment.guessed !== undefined), false, 'no guess left on the trail');
 });
 
 test('case 3: the adopted box is ended and a replacement made; the later process is on the replacement, a box.ended never places it, and its box.created replaces a guess', () => {
@@ -175,4 +175,41 @@ test('a guess fills only what nothing placed: a runner whose process.started nam
   // Nor is a command on a box already ended.
   const ended = [...madeByOne, host('box.ended', 21.5, { gen: 1, box: 'box-1', provider: 'modal', killed: false }), host('box.exec', 22, { gen: 2, box: 'box-1' })];
   assert.equal(reduceTo(transportPanel, ended, ended.length).runners.at(-1)?.box, '?');
+});
+
+test('a guess that brings a waiting session back stays a guess, on the session and its trail: the process\'s own box.created corrects both', () => {
+  // Process 1's box ended and its replacement came late, after process 2 started: the session waits, and process 2's runner is at '?'.
+  const run = [
+    host('process.started', 0, { gen: 1, pid: 1 }),
+    host('box.created', 10, { gen: 1, box: 'box-1', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:00.000Z' }),
+    host('process.started', 20, { gen: 2, pid: 2 }),
+    host('box.ended', 21, { gen: 1, box: 'box-1', provider: 'modal', killed: false }),
+    host('box.created', 22, { gen: 1, box: 'box-2', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:01.000Z' }),
+    // Process 2's first command, on box-2: a guess, which brings the session back there.
+    host('box.exec', 23, { gen: 2, box: 'box-2' }),
+    host('box.created', 30, { gen: 2, box: 'box-3', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:02.000Z' }),
+  ];
+  const guessed = reduceTo(transportPanel, run, run.length - 1);
+  assert.deepEqual([guessed.runners.at(-1)?.box, guessed.token?.box, guessed.token?.guessed, guessed.tokens.at(-1)?.guessed], ['box-2', 'box-2', 2, 2]);
+  const placed = reduceTo(transportPanel, run, run.length);
+  assert.deepEqual([placed.runners.at(-1)?.box, placed.token?.box, placed.tokens.at(-1)?.box], ['box-3', 'box-3', 'box-3']);
+  assert.equal(placed.tokens.some((segment) => segment.guessed !== undefined) || placed.token?.guessed !== undefined, false, 'no guess left');
+});
+
+test('the browser tile\'s guess belongs to the process that made it: a later process\'s box.created never moves an earlier frame to its box', () => {
+  const run = [
+    host('process.started', 0, { gen: 1, pid: 1 }),
+    host('process.started', 20, { gen: 2, pid: 2 }),
+    host('box.created', 22, { gen: 1, box: 'box-1', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:00.000Z' }),
+    // Process 2 adopts box-1 (a guess), and a frame comes while the session is there.
+    host('box.exec', 23, { gen: 2, box: 'box-1' }),
+    browserFrame(24),
+    host('process.started', 30, { gen: 3, pid: 3 }),
+    host('box.ended', 31, { gen: 3, box: 'box-1', provider: 'modal', killed: false }),
+    host('box.created', 32, { gen: 3, box: 'box-2', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:03.000Z' }),
+  ];
+  assert.deepEqual([reduceTo(transportPanel, run, 5).tileBox, reduceTo(transportPanel, run, 5).tileGuessed], ['box-1', 2]);
+  const state = reduceTo(transportPanel, run, run.length);
+  assert.equal(state.token?.box, 'box-2', 'the session came back in process 3\'s box');
+  assert.equal(state.tileBox, 'box-1', 'the frame came while the session was on box-1; box-2 did not exist then');
 });
