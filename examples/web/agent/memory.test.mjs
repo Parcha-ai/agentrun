@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { prepareProfile } from './chrome.ts';
-import { EMPTY_INDEX, keepMemory, MAX_MEMORY_BYTES, MAX_MEMORY_FILE_BYTES, readMemory, seedMemory } from './memory.ts';
+import { EMPTY_INDEX, finishHandOff, handOffMemory, keepMemory, MAX_MEMORY_BYTES, MAX_MEMORY_FILE_BYTES, readMemory, seedMemory } from './memory.ts';
 import { REMEMBER_PAGE, rememberHtml, writeRememberPage } from './remember.ts';
 
 async function dirs(t) {
@@ -81,6 +81,34 @@ test('only the run that owns the sign-in writes the home\'s memory: each file wh
   await rm(join(work, 'memory'), { recursive: true });
   assert.equal(await keepMemory(home, work, OWNER), null, 'a run with no folder changes nothing');
   assert.equal(JSON.stringify(await readMemory(home)), kept);
+});
+
+test('a hand-off whose copy failed is finished by the next finishHandOff, once; a later owner\'s hand-off stands in for it; a run that owns no sign-in owes none', async (t) => {
+  const { tmp, home, work } = await dirs(t);
+  await write(join(work, 'memory'), { 'preferences.md': '- Bills as PDF\n' });
+  // The copy fails: the home holds a folder where the file goes.
+  await mkdir(join(home, 'memory', 'preferences.md'), { recursive: true });
+  await assert.rejects(handOffMemory(home, work, OWNER));
+  await rm(join(home, 'memory', 'preferences.md'), { recursive: true });
+  assert.deepEqual(await finishHandOff(home), { written: ['preferences.md'], removed: [] });
+  assert.equal(readFileSync(join(home, 'memory', 'preferences.md'), 'utf8'), '- Bills as PDF\n');
+  assert.equal(await finishHandOff(home), null, 'finished once');
+
+  // A run's hand-off fails, then a later owner's lands: the later one is the home's memory, and nothing is owed.
+  await write(join(work, 'memory'), { 'preferences.md': '- Bills as PDF\n- Newest first\n' });
+  await rm(join(home, 'memory', 'preferences.md'));
+  await mkdir(join(home, 'memory', 'preferences.md'));
+  await assert.rejects(handOffMemory(home, work, OWNER));
+  await rm(join(home, 'memory', 'preferences.md'), { recursive: true });
+  const later = join(tmp, 'later', 'work');
+  await write(join(later, 'memory'), { 'index.md': '- the later run\n' });
+  assert.deepEqual(await handOffMemory(home, later, OWNER), { written: ['index.md'], removed: [] });
+  assert.equal(await finishHandOff(home), null);
+  assert.deepEqual((await readMemory(home)).map((file) => file.name), ['index.md']);
+
+  assert.equal(await handOffMemory(home, work, { changed: true, profiles: [], released: [] }), null);
+  assert.equal(await finishHandOff(home), null, 'a run that owns no sign-in owes nothing');
+  assert.deepEqual((await readMemory(home)).map((file) => file.name), ['index.md']);
 });
 
 test('each run\'s Chrome saves downloads into that run\'s workspace without asking: the folder is set again for every run, and the profile\'s other settings stay', async (t) => {

@@ -1,4 +1,5 @@
-// Nothing here carries a secret: every value of these types may be committed, logged or shown.
+// Values of these types may be committed, logged or shown, except two that carry credentials: an AttachTarget (the CDP
+// endpoint and its dial headers) stays in memory, and a LiveView (the viewer's URLs hold its token) goes to the host only.
 import type { LeaseRef, LeaseState, ResourceStatus } from "./lease.js";
 
 export type PriceState = "priced" | "unpriced" | "invalid";

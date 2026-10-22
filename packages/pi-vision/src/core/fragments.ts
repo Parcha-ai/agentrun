@@ -19,7 +19,7 @@ const isPage = (value: number) => Number.isInteger(value) && value >= 1;
 const isSeconds = (value: number) => Number.isFinite(value) && value >= 0;
 const isPercent = (value: number) => Number.isFinite(value) && value >= 0 && value <= 100;
 
-function valid(fragment: Fragment): boolean {
+function isValidFragment(fragment: Fragment): boolean {
   const { page, t, xywh } = fragment;
   if (page && !(isPage(page.from) && isPage(page.to) && page.to >= page.from)) return false;
   if (t && !(isSeconds(t.from) && (t.to === undefined || (isSeconds(t.to) && t.to > t.from)))) return false;
@@ -35,7 +35,7 @@ export function formatFragment(fragment: Fragment): string {
   const { page, t: rawT, xywh: rawXywh } = fragment;
   const t = rawT && { from: round(rawT.from), ...(rawT.to === undefined ? {} : { to: round(rawT.to) }) };
   const xywh = rawXywh && { x: round(rawXywh.x), y: round(rawXywh.y), w: round(rawXywh.w), h: round(rawXywh.h) };
-  if (!valid({ ...(page ? { page } : {}), ...(t ? { t } : {}), ...(xywh ? { xywh } : {}) })) throw new RangeError(`not a fragment: ${JSON.stringify(fragment)}`);
+  if (!isValidFragment({ ...(page ? { page } : {}), ...(t ? { t } : {}), ...(xywh ? { xywh } : {}) })) throw new RangeError(`not a fragment: ${JSON.stringify(fragment)}`);
   const parts: string[] = [];
   if (page) parts.push(`page=${page.from === page.to ? page.from : `${page.from}-${page.to}`}`);
   if (t) parts.push(`t=${t.from}${t.to === undefined ? "" : `,${t.to}`}`);
@@ -78,7 +78,7 @@ export function parseFragment(text: string): Fragment | null {
       out.xywh = { x, y, w, h };
     } else return null;
   }
-  return valid(out) ? out : null;
+  return isValidFragment(out) ? out : null;
 }
 
 /** A citation split at its last `#` that starts a fragment, so a `#` inside a file name stays in the path. A path

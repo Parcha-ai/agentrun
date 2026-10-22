@@ -22,8 +22,8 @@ import { AGENT_STORE_FILE, carryBack, readAgentHome, startRun } from "@parcha/pi
 import { browserbaseProvider } from "@parcha/pi-browser/providers/browserbase";
 import { timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { ensureAgentHome } from "./agent/home.mjs";
-import { keepMemory, readMemory } from "./agent/memory.ts";
-import { judgeOf, lookups, promptForRun, searchLookup, wikipediaLookup } from "./agent/select.ts";
+import { finishHandOff, handOffMemory, readMemory } from "./agent/memory.ts";
+import { judgeOf, lookups, PROMPT_FILE, promptForRun, searchLookup, wikipediaLookup } from "./agent/select.ts";
 import { costOf, lastRow, RUN_ID, stateOf } from "./page/source.js";
 import { readRunEntries } from "./replay.mjs";
 
@@ -416,10 +416,11 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     if (!answer) return;
     const cost = costOf(rows);
     const back = await carryBack(home, { runId: id }, { outcome: "completed", finalAnswer: clip(answer.text ?? answer.summary ?? "", 2_000), ...(cost == null ? {} : { cost }) });
-    // The run's memory goes home with its sign-in, from the run that owns the sign-in only (memory.ts).
-    await keepMemory(home.dir, run.work, back);
     carried.add(id);
     reread();
+    // The run's memory goes home with its sign-in, from the run that owns the sign-in only; a copy that fails or a stop
+    // before it is finished by the next server (memory.ts).
+    await handOffMemory(home.dir, run.work, back);
   }
 
   /**
@@ -481,7 +482,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     const run = await startRun(home, { runId: id, host: HOST, ...(chosen ? { prompt: chosen.prompt } : {}) });
     reread();
     if (chosen) {
-      const file = join(run.dir, "prompt.json");
+      const file = join(run.dir, PROMPT_FILE);
       await writeFile(`${file}.tmp`, `${JSON.stringify(chosen.record, null, 2)}\n`, { mode: 0o600 });
       await rename(`${file}.tmp`, file);
     }
@@ -723,7 +724,9 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   await new Promise((resolve, reject) => (server.once("error", reject), server.listen(port, host, resolve)));
   const address = server.address();
   if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...allowHosts].map((h) => `${h.toLowerCase()}:${address.port}`));
-  // A run released before this server last stopped, and never carried back, is carried back now.
+  // The memory a run carried back before this server last stopped still owed the home, then each run released and never
+  // carried back.
+  await finishHandOff(home.dir).catch((error) => console.error(`memory: ${error.message}`));
   for (const [id, entry] of Object.entries((await homeState()).runs)) if (!entry.endedAt) track(id, settle(id));
 
   const url = `http://${host.includes(":") ? `[${host}]` : host}:${address.port}`;

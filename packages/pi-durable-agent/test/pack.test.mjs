@@ -5,13 +5,15 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import {
-  AgentHomeError, carryBack, createAgentHome, EXPORTABLE_KINDS, homeRevision, importPack, openAgentHome, packHome, readAgentHome, readPack, refreshAgentHome, setAlias, setBindings, startRun,
+  AgentHomeError, carryBack, createAgentHome, EXPORTABLE_KINDS, homeRevision, importPack, openAgentHome, packHome, readAgentHome, readPack, refreshAgentHome, setAlias, setBindings, setPrompts,
+  startRun,
 } from "../dist/index.js";
 import { buildSignedInHome, checkExportClean, SIGN_IN_MARKER, signedInHomeSkip } from "./fixtures/signed-in-home.mjs";
 import { tarSize } from "../dist/tar.js";
 import { headersOnly, listTar, longNames, manifestOf, paxPairs, paxWithFields, tamper, withManifest, writeTarFile } from "./pack-support.mjs";
 import { defineDoc } from "@earendil-works/pi-durable";
-import { recoveryHook } from "../dist/store.js";
+import { PromptsDoc, put } from "../dist/kinds.js";
+import { openStore, recoveryHook } from "../dist/store.js";
 import { ctx, openSession, scratch } from "./support.mjs";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -316,6 +318,84 @@ test("a replace keeps the target's own runs the pack does not have, and the pack
   assert.deepEqual(readdirSync(path.dirname(f.home.dir)).filter((entry) => entry.startsWith(".")), []);
 });
 
+const PACKED = [
+  { id: "base", role: "base", label: "Company research", text: "Research the company in the input." },
+  { id: "kind", role: "question", label: "Kind", text: "What kind of organization is this?", criteria: { public_company: "Its shares trade." } },
+  { id: "public", role: "overlay", label: "Public", text: "Start from its annual report.", when: { question: "kind", option: "public_company", threshold: 0.9 } },
+  { id: "generic", role: "generic", label: "Not sure", text: "Say what kind it seems to be." },
+];
+const TARGETS = [
+  { ...PACKED[0], text: "The target's own base." },
+  PACKED[1],
+  { ...PACKED[2], when: { ...PACKED[2].when, threshold: 0.5 } },
+  { id: "nonprofit", role: "overlay", label: "Nonprofit", text: "Read its filings.", when: { question: "kind", option: "nonprofit", threshold: 0.8 } },
+  PACKED[3],
+];
+const byId = (variants) => Object.fromEntries(variants.map(({ id, ...variant }) => [id, variant]));
+
+test("a replace takes the pack's prompt set: a different set on the target is replaced, and a pack with none removes the target's", async () => {
+  const dir = await scratch();
+  const plain = (name) => createAgentHome(path.join(dir, name), { definition: { version: 1, name: "Plain", instructions: "x", skills: [], tools: [] } });
+  const home = await plain("prompted");
+  await setPrompts(home, PACKED);
+  await packHome(home, { out: path.join(dir, "prompted.tar") });
+  await setPrompts(home, TARGETS);
+  const { home: replaced } = await importPack(path.join(dir, "prompted.tar"), home.dir, { replace: true, ifRevision: await homeRevision(home) });
+  assert.deepEqual((await readAgentHome(replaced)).prompts, byId(PACKED), "the pack's texts and rules, and no variant only the target had");
+
+  const bare = await plain("bare");
+  await packHome(bare, { out: path.join(dir, "bare.tar") });
+  await setPrompts(bare, TARGETS);
+  const { home: emptied } = await importPack(path.join(dir, "bare.tar"), bare.dir, { replace: true, ifRevision: await homeRevision(bare) });
+  assert.deepEqual((await readAgentHome(emptied)).prompts, {});
+});
+
+/** A copy of the pack at `file` whose agent.sqlite had `change(tx)` committed to it, with the manifest's size made true. */
+async function withStoreChange(file, out, change) {
+  const store = `${out}.sqlite`;
+  writeFileSync(store, listTar(file).find((member) => member.name === "agent.sqlite").data);
+  const opened = await openStore(store);
+  try { await opened.session.commit(change, ctx); } finally { await opened.close(); }
+  const swapped = (size) => (members) => withManifest(members.map((member) => (member.name === "agent.sqlite" ? { ...member, data: readFileSync(store) } : member)), (manifest) => { manifest.size_bytes = size; });
+  tamper(file, out, swapped(0));
+  tamper(file, out, swapped(statSync(out).size));
+  assert.equal(manifestOf(listTar(out)).size_bytes, statSync(out).size);
+  return out;
+}
+
+test("a pack whose prompt set setPrompts would refuse is refused by readPack and importPack, and the target keeps its prompts; a pack with no prompts still imports", async () => {
+  const dir = await scratch();
+  const plain = (name) => createAgentHome(path.join(dir, name), { definition: { version: 1, name: "Plain", instructions: "x", skills: [], tools: [] } });
+  const home = await plain("home");
+  await setPrompts(home, PACKED);
+  const pack = path.join(dir, "home.tar");
+  await packHome(home, { out: pack });
+  await setPrompts(home, TARGETS);
+  const kept = (await readAgentHome(home)).prompts;
+  for (const [name, change, says] of [
+    ["no-base", (tx) => tx.retireDoc(PromptsDoc, "base"), /0 base variants/],
+    ["dangling", (tx) => tx.retireDoc(PromptsDoc, "kind"), /question kind is not the set's question row/],
+    ["two-generics", async (tx) => put(await tx.doc(PromptsDoc, "generic2", null), { ...byId(PACKED).generic, label: "Second" }), /2 generic variants/],
+  ]) {
+    const bad = await withStoreChange(pack, path.join(dir, `${name}.tar`), change);
+    const read = await readPack(bad);
+    assert.equal(read.ok, false, name);
+    const format = read.checks.find((check) => check.name === "format");
+    assert.equal(format.status, "fail", name);
+    assert.match(format.message, /agent\.sqlite's prompts are not a set setPrompts takes/, name);
+    assert.match(format.message, says, name);
+    await unchanged(home.dir, () => rejects(importPack(bad, home.dir, { replace: true }), "check"));
+    assert.deepEqual((await readAgentHome(home)).prompts, kept, name);
+    await rejects(importPack(bad, path.join(dir, `${name}-copy`)), "check");
+    assert.equal(existsSync(path.join(dir, `${name}-copy`)), false, name);
+  }
+
+  const none = await withStoreChange(pack, path.join(dir, "none.tar"), async (tx) => { for (const id of Object.keys(byId(PACKED))) await tx.retireDoc(PromptsDoc, id); });
+  assert.equal((await readPack(none)).ok, true, "an empty set is a home without prompts");
+  const { home: emptied } = await importPack(none, home.dir, { replace: true });
+  assert.deepEqual((await readAgentHome(emptied)).prompts, {});
+});
+
 test("a home with no sign-in has an ok sign_ins check; ifRevision is a non-negative integer", async () => {
   const dir = await scratch();
   const home = await createAgentHome(path.join(dir, "plain"), { definition: { version: 1, name: "Plain", instructions: "x", skills: [], tools: [] } });
@@ -341,12 +421,17 @@ const TAMPERED = {
   "a chrome/ member": [(m) => [...m, { name: "chrome/Cookies", data: Buffer.from("x") }], "format", /chrome\/Cookies/],
   "a SQLite side file": [(m) => [...m, { name: "runs/signed-in/store/run.sqlite-wal", data: Buffer.from("x") }], "format", /side file/],
   "a run the index does not list": [(m) => [...m, { name: "runs/ghost/work/a.txt", data: Buffer.from("x") }], "format", /ghost/],
+  "a run named constructor, which the index does not list": [(m) => [...m, { name: "runs/constructor/work/a.txt", data: Buffer.from("x") }], "format", /belongs to run constructor, which the pack's index does not list/],
+  "a run named toString, which the index does not list": [(m) => [...m, { name: "runs/toString/work/a.txt", data: Buffer.from("x") }], "format", /belongs to run toString, which the pack's index does not list/],
   "a duplicate member": [(m) => [...m, m[1]], "format", /appears twice/],
   "an import journal": [(m) => [...m, { name: ".import-journal", data: Buffer.from("{}") }], "format", /\.import-journal: it is not a member a home pack holds/],
   "a member nested too deep": [(m) => [...m, { name: `runs/signed-in/work/${Array(70).fill("d").join("/")}/f`, data: Buffer.from("x") }], "format", /nested more than 64 levels deep/],
   "a member inside a file": [(m) => [...m, { name: "runs/signed-in/work/notes.txt/inner", data: Buffer.from("x") }], "format", /is inside runs\/signed-in\/work\/notes\.txt, which is a file/],
   "the manifest not first": [(m) => [...m.slice(1), m[0]], "format", /first member/],
   "a higher format": [(m) => withManifest(m, (manifest) => { manifest.format = "agentrun.home/2"; }), "format", /this version reads agentrun\.home\/1/],
+  "a manifest that is not an object": [(m) => m.map((member) => (member.name === "manifest.json" ? { ...member, data: Buffer.from("[]\n") } : member)), "format", /manifest\.json is not an object/],
+  "a format that is not agentrun.home/N": [(m) => withManifest(m, (manifest) => { manifest.format = "zip"; }), "format", /the pack's format "zip" is not agentrun\.home\/N/],
+  "a source sha that is not a commit sha": [(m) => withManifest(m, (manifest) => { manifest.source = { sha: "main", refreshed_at: manifest.source.refreshed_at }; }), "format", /source sha is not a commit sha/],
   "an unknown manifest field": [(m) => withManifest(m, (manifest) => { manifest.extra = 1; }), "format", /fields it does not keep: extra/],
   "a vault entry with a value": [(m) => withManifest(m, (manifest) => { manifest.vault = [{ name: "k", value: "v" }]; }), "format", /vault entries are not \{name\}/],
   "a source in the package's own names": [(m) => withManifest(m, (manifest) => { manifest.source = { sha: manifest.source.sha, refreshedAt: manifest.source.refreshed_at }; }), "format", /source is not null or \{sha, refreshed_at\}/],
@@ -375,6 +460,22 @@ test("tampered packs are refused by readPack and importPack, and importPack writ
   assert.deepEqual(readdirSync(f.dir).filter((entry) => entry.startsWith(".")), []);
 });
 
+
+test("readPack closes the pack when it cannot make its scratch directory", skip, async () => {
+  const f = await fixture();
+  await packHome(f.home, { out: f.out, now: NOW });
+  const open = () => readdirSync("/proc/self/fd").length;
+  const before = open();
+  const tmp = process.env.TMPDIR;
+  process.env.TMPDIR = path.join(f.dir, "no-such-directory");
+  try {
+    for (let attempt = 0; attempt < 20; attempt++) await assert.rejects(readPack(f.out), /ENOENT/);
+  } finally {
+    if (tmp === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = tmp;
+  }
+  assert.ok(open() - before < 5, `${open() - before} descriptors stayed open`);
+});
 test("a store in the pack that holds a sign-in kind is refused, in agent.sqlite or in a run store", skip, async () => {
   const f = await fixture();
   await packHome(f.home, { out: f.out, now: NOW });

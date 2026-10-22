@@ -16,14 +16,15 @@ import { Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { defineDocFamily } from '@earendil-works/pi-durable';
-import { carryBack, readAgentHome, startRun } from '@parcha/pi-durable-agent';
+import { carryBack, readAgentHome, setPrompts, startRun } from '@parcha/pi-durable-agent';
 import { archilEnv } from '@parcha/pi-durable-disk';
 import { frameRecorder } from '@parcha/pi-browser/recorder';
 import { fakeCdp, jpeg as fakeJpeg } from '../../../packages/pi-browser/test/fixtures/fake-cdp.mjs';
-import { browserOptions, createAgent, liveOf, NO_LOCAL_VIEW, PROFILE, promptOf, providerOf, signInAsked, signInSite, toolsOf } from './app.ts';
+import { browserOptions, createAgent, liveOf, LOCAL_DOWNLOADS, NO_LOCAL_VIEW, PROFILE, promptOf, providerOf, signInAsked, signInSite, toolsOf } from './app.ts';
 import { CHROME_PROFILE, chromeArgs, chromeProfileFor, listsBrowser, startChrome } from './chrome.ts';
 import { frameStore } from './frames.ts';
 import { ensureAgentHome } from './home.mjs';
+import { promptForRun } from './select.ts';
 
 const ENV = { AGENT_BROWSER: 'browserbase', BROWSERBASE_API_KEY: 'unused', AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9/v1', AGENT_MODEL: 'test-model' };
 
@@ -34,8 +35,8 @@ async function agentHome(t) {
 }
 
 /** Run `runId` started in `home`, as pi-durable-disk hands it to the app. */
-async function started(home, runId) {
-  const run = await startRun(home, { runId, host: 'test' });
+async function started(home, runId, prompt) {
+  const run = await startRun(home, { runId, host: 'test', ...(prompt ? { prompt } : {}) });
   return { run, where: { ref: { disk: 'local', region: 'local', id: runId }, root: run.dir, work: run.workspace, store: dirname(run.storePath) } };
 }
 
@@ -66,26 +67,44 @@ test('the home is made from agent.json and the skills: the definition names no m
   assert.throws(() => promptOf({ definition: { ...state.definition, skills: ['missing'] }, skills: {} }), /no missing\/SKILL\.md/);
 });
 
-test('a run the host chose a prompt for: its instructions, then the home\'s base and that variant, then the skills', () => {
-  const state = {
-    definition: { instructions: 'You are Desk.', skills: ['brief'] },
-    skills: { 'brief/SKILL.md': { content: 'Write brief.md.' } },
-    prompts: { base: { role: 'base', label: 'Base', text: 'Research it.' }, public: { role: 'overlay', label: 'Public', text: 'Start at EDGAR.', when: { question: 'kind', option: 'public', threshold: 0.8 } }, generic: { role: 'generic', label: 'Not sure', text: 'Start at its own site.' } },
-    runs: { 'run-1': { prompt: { id: 'public', reason: 'Jev: public at 100%' } }, 'run-2': {} },
-  };
-  assert.equal(promptOf(state, 'run-1'), 'You are Desk.\n\nResearch it.\n\nStart at EDGAR.\n\nYour skills follow. Use the one that fits the step you are on.\n\n<skill name="brief">\nWrite brief.md.\n</skill>');
-  assert.equal(promptOf(state, 'run-2'), promptOf({ definition: state.definition, skills: state.skills }), 'a run with no chosen prompt gets none');
-  assert.throws(() => promptOf({ ...state, runs: { 'run-1': { prompt: { id: 'gone' } } } }, 'run-1'), /no variant gone/);
+test('a run the host chose a prompt for: its instructions, then its guide, then the skills', () => {
+  const state = { definition: { instructions: 'You are Desk.', skills: ['brief'] }, skills: { 'brief/SKILL.md': { content: 'Write brief.md.' } } };
+  assert.equal(promptOf(state, 'Research it.\n\nStart at EDGAR.'), 'You are Desk.\n\nResearch it.\n\nStart at EDGAR.\n\nYour skills follow. Use the one that fits the step you are on.\n\n<skill name="brief">\nWrite brief.md.\n</skill>');
+  assert.equal(promptOf(state), 'You are Desk.\n\nYour skills follow. Use the one that fits the step you are on.\n\n<skill name="brief">\nWrite brief.md.\n</skill>', 'a run with no chosen prompt gets none');
 });
 
-test('the skills and the definition name no site: no address, domain or path of one, so no example in them reads as a step the run took', async () => {
+test('the skills, the definition and the host\'s download line name no site: no address, domain or path of one, so no example in them reads as a step the run took', async () => {
   const skills = (await readdir(join(import.meta.dirname, 'skills'))).map((name) => `skills/${name}/SKILL.md`);
-  for (const file of ['agent.json', ...skills]) {
-    const text = await readFile(join(import.meta.dirname, file), 'utf8');
+  const texts = [...(await Promise.all(['agent.json', ...skills].map(async (file) => [file, await readFile(join(import.meta.dirname, file), 'utf8')]))), ['LOCAL_DOWNLOADS', LOCAL_DOWNLOADS]];
+  for (const [file, text] of texts) {
     for (const [what, pattern] of [['an address', /[a-z]+:\/\//i], ['a domain', /\b[a-z0-9-]+\.(?:com|org|net|io|dev|app|ai|co|edu|gov)\b/i], ['a site path', /(?<![\w./])\/[a-z][\w-]*/i]]) {
       assert.doesNotMatch(text, pattern, `${file} names ${what}`);
     }
   }
+});
+
+test('a run is launched again with the guide it started with, though its variant is gone and the base edited since', async (t) => {
+  const { home } = await agentHome(t);
+  const variants = [
+    { id: 'kind', role: 'question', label: 'Kind', text: 'What kind of organisation is it?', criteria: { public: 'listed', other: 'anything else' } },
+    { id: 'base', role: 'base', label: 'Base', text: 'Research it.' },
+    { id: 'public', role: 'overlay', label: 'Public company', text: 'Start at EDGAR.', when: { question: 'kind', option: 'public', threshold: 0.8 } },
+    { id: 'generic', role: 'generic', label: 'Not sure', text: 'Start at its own site.' },
+  ];
+  await setPrompts(home, variants);
+  const judge = async () => ({ answers: { kind: { type: 'choice', choice: 'public', probabilities: { public: 1, other: 0 }, confidence: 1 } } });
+  const chosen = await promptForRun({ stored: (await readAgentHome(home)).prompts, input: 'Caterpillar Inc.', judge, lookup: async () => null });
+  // As the server starts it: the choice on the run's entry, and prompt.json beside it.
+  const one = await started(home, 'run-1', chosen.prompt);
+  await writeFile(join(one.run.dir, 'prompt.json'), JSON.stringify(chosen.record));
+  const guide = 'Research it.\n\nStart at EDGAR.';
+  assert.ok((await createAgent(one.where, ENV, { makeContext: async () => 'ctx-1' })).options.root.agent.instructions.includes(`\n\n${guide}\n\n`));
+
+  // While it sleeps, the person edits the base and the overlay and saves the overlay under another id.
+  await setPrompts(home, variants.map((v) => (v.id === 'base' ? { ...v, text: 'Research it twice.' } : v.id === 'public' ? { ...v, id: 'listed', text: 'Start at the filings twice.' } : v)));
+  const { options } = await createAgent(one.where, ENV, { makeContext: async () => 'ctx-1' });
+  assert.ok(options.root.agent.instructions.includes(`\n\n${guide}\n\n`), 'the guide it started with');
+  assert.doesNotMatch(options.root.agent.instructions, /twice/);
 });
 
 test('run 1 makes the browser profile once, the root conversation carries it, and carryBack gives it to run 2, which makes none', async (t) => {
@@ -437,6 +456,17 @@ test('on a local Chrome without a live view: live.json says so, the root has no 
   await harness.close(ctx);
   await carryBack(home, one.run, { outcome: 'completed' });
   assert.deepEqual((await readAgentHome(home)).profiles[CHROME_PROFILE], { provider: 'chrome', ref: `chrome/${CHROME_PROFILE}`, state: 'ready' });
+});
+
+test('only a run on a local Chrome is told where a download lands; a Browserbase run, whose clicks save on Browserbase\'s machine, is not', async (t) => {
+  const { home } = await agentHome(t);
+  const one = await started(home, 'run-1');
+  const local = { ...CHROME_ENV, AGENT_CHROME_PROFILE: 'shared', AGENT_LIVE_VIEW_MODULE: pathToFileURL(join(one.run.dir, 'none.mjs')).href };
+  const onChrome = (await createAgent(one.where, local, { makeContext: async () => assert.fail('no context') })).options.root.agent.instructions;
+  assert.ok(onChrome.includes(LOCAL_DOWNLOADS));
+  const onBrowserbase = (await createAgent((await started(home, 'run-2')).where, ENV, { makeContext: async () => 'ctx-1' })).options.root.agent.instructions;
+  assert.doesNotMatch(onBrowserbase, /downloads\//, 'no folder a download would land in');
+  assert.match(onBrowserbase, /download it only when your instructions say where a download lands/);
 });
 
 test('on a local Chrome with a live view: its viewer is mounted on a loopback port of the run, named in live-host.json, at /live/<run id> on the page\'s origin', async (t) => {

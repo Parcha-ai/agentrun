@@ -36,7 +36,9 @@ node examples/web/agents/company-research/edit-prompts.mjs --home ./desk-home --
 
 The files are checked before anything is saved: one base, one generic, ids used once, each overlay's rule names an option
 of the question and a threshold from 0 to 1, and the question describes no option that no overlay needs (`other` is the
-exception: every question has it). Take an overlay out of `prompts.json` and take its option out of `question.json` too.
+exception: every question has it). Then the home's own check runs on the set as it would be saved, the question's row
+included, so `--check` also refuses what the home keeps no room for (a label, an option, a criterion or a text over its
+size, too many variants). Take an overlay out of `prompts.json` and take its option out of `question.json` too.
 Saving replaces the home's set, the question's row with it, and a second save of the same files says nothing changed.
 
 ## See the configuration
@@ -48,8 +50,8 @@ node examples/web/agents/company-research/config-page.mjs --home ./desk-home --o
 One HTML file, no script and nothing loaded from the network: the question and its options as the home holds them, the base, each overlay with its rule, the generic, and a
 table of runs with the input, Jev's choice and probabilities (both passes when there was a lookup), the lookup, the prompt
 loaded, the outcome and a link to `brief.md`. A run's `prompt.json` is the host's selection plus the run's input:
-`{ version: 1, question, input, variant, passes: [{ choice, probabilities, confidence, model?, cost_usd?, latency_ms? }],
-lookup: { used, sources: [{ via, url, title }] }, reason, selected_at }`. `variant` is the id (or label) of the variant loaded, or `{ id, label, role }`; `passes` has the second
+`{ version: 1, question, input, variant, instructions, passes: [{ choice, probabilities, confidence, model?, cost_usd?, latency_ms? }],
+lookup: { used, sources: [{ via, url, title }] }, reason, selected_at }`. `variant` is the id (or label) of the variant loaded, or `{ id, label, role }`; `instructions` is the guide the run was given, the base and that variant as they were when it started; `passes` has the second
 entry only when the host looked the company up. The page also reads the first shape (`chosen`, `lookup_used`, a lookup on
 the pass that followed it). A field that is missing shows as "not recorded".
 

@@ -45,6 +45,8 @@ export type AgentSource = { sha: string; refreshedAt: string };
 /** `agent.runs`, keyed by run id. `path` is relative to the agent home; `sha` is the home's `agent.source` when the run
  *  started, so it names the skills the run's workspace got; `prompt` is the variant the host chose for it, and why. */
 export type RunRecord = { path: string; host: string; startedAt: string; sha?: string; prompt?: { id: string; reason: string }; endedAt?: string; outcome?: string; finalAnswer?: JsonValue; cost?: number };
+/** The most characters a run's prompt `reason` has. */
+export const MAX_REASON = 2_000;
 /** `agent.leases`, keyed by profile key: the one run that may save that profile back. */
 export type ProfileLease = { runId: string; expiresAt: string };
 /** `browser.profiles`, keyed by profile key, in the agent store and in each run store. `ref` is the provider's saved

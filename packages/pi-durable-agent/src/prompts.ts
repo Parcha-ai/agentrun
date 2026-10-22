@@ -1,5 +1,5 @@
 import { checkPrompts, OTHER_OPTION } from "./home.js";
-import type { PromptVariant } from "./kinds.js";
+import { MAX_REASON, type PromptVariant } from "./kinds.js";
 
 /** A choice question, as Jev's `runJudge` takes it: instructions, and each option by name with its description. */
 export type PromptQuestion = { type: "choice"; instructions: string; criteria: Record<string, string | null> };
@@ -31,9 +31,16 @@ export type PromptChoice = {
 /** The most characters of a lookup's text the second pass carries. */
 export const LOOKUP_TEXT_MAX = 3_000;
 const QUERY_MAX = 200;
+/** The most characters of an error's message a reason carries. A reason carries at most one, and its other steps name
+ *  options of at most 200 characters, so it stays within `MAX_REASON`. */
+const ERROR_TEXT_MAX = MAX_REASON / 4;
 
 const percent = (p: number) => `${Math.round(p * 100)}%`;
-const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const unit = (p: unknown): p is number => typeof p === "number" && Number.isFinite(p) && p >= 0 && p <= 1;
+const messageOf = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.length > ERROR_TEXT_MAX ? `${message.slice(0, ERROR_TEXT_MAX - 1)}…` : message;
+};
 
 /** The words of `input` to look up: the text itself, or the string values of a JSON input in order. */
 function queryOf(input: unknown): string {
@@ -47,14 +54,19 @@ function queryOf(input: unknown): string {
   return words.join(" ").replace(/\s+/g, " ").trim().slice(0, QUERY_MAX);
 }
 
-/** A judge's answer to the question, or a refusal saying what was wrong with it. */
-function answerOf(result: Awaited<ReturnType<PromptJudge>>, question: string): Pick<PromptPass, "choice" | "probabilities" | "confidence"> {
+/** A judge's answer to the question, or a refusal saying what was wrong with it: a choice that is not one of `offered`,
+ *  a probability for an option that is not, or a probability or confidence that is not a number from 0 to 1. The
+ *  probabilities' sum is left to Jev, which checks it to its two-place rounding. */
+function answerOf(result: Awaited<ReturnType<PromptJudge>>, question: string, offered: string[]): Pick<PromptPass, "choice" | "probabilities" | "confidence"> {
   const answer = result?.answers?.[question] as { choice?: unknown; probabilities?: unknown; confidence?: unknown } | undefined;
   const probabilities = answer?.probabilities;
-  if (typeof answer?.choice !== "string" || !probabilities || typeof probabilities !== "object" || typeof answer.confidence !== "number"
-    || !Object.values(probabilities).every((p) => typeof p === "number" && Number.isFinite(p))) {
-    throw new Error(`the judge gave no choice for ${question}`);
+  if (typeof answer?.choice !== "string" || !probabilities || typeof probabilities !== "object") throw new Error(`the judge gave no choice for ${question}`);
+  if (!offered.includes(answer.choice)) throw new Error(`the judge chose ${JSON.stringify(answer.choice)} for ${question}, which is not one of its options`);
+  for (const [option, p] of Object.entries(probabilities)) {
+    if (!offered.includes(option)) throw new Error(`the judge gave a probability for ${JSON.stringify(option)}, which is not one of ${question}'s options`);
+    if (!unit(p)) throw new Error(`${option}'s probability${typeof p === "number" ? ` ${p}` : ""} is not a number from 0 to 1`);
   }
+  if (!unit(answer.confidence)) throw new Error(`the judge's confidence for ${question} is not a number from 0 to 1`);
   return { choice: answer.choice, probabilities: { ...(probabilities as Record<string, number>) }, confidence: answer.confidence };
 }
 
@@ -63,8 +75,10 @@ function answerOf(result: Awaited<ReturnType<PromptJudge>>, question: string): P
  * about `{ input }`; the overlay whose option's probability is at least that overlay's threshold is chosen (the highest
  * such probability wins). When none is and `lookup` is given, it runs once on words of the input, and the judge
  * answers again about `{ input, lookup }` (the text cut to `LOOKUP_TEXT_MAX`) by the same rule. Otherwise the generic.
- * A judge or lookup failure never throws: the run gets the generic, and `reason` says why. A set `setPrompts` would
- * refuse is refused here too (`AgentHomeError` `invalid`).
+ * A judge or lookup failure never throws: the run gets the generic, and `reason` says why. An answer whose choice is not
+ * one of the options, with a probability for another option, or with a probability or confidence that is not a number
+ * from 0 to 1, is a judge failure. An error's message is cut to `MAX_REASON / 4` characters, so `reason` is one
+ * `startRun` takes. A set `setPrompts` would refuse is refused here too (`AgentHomeError` `invalid`).
  */
 export async function choosePrompt(prompts: Record<string, PromptVariant>, input: unknown, options: { judge: PromptJudge; lookup?: PromptLookup; signal?: AbortSignal }): Promise<PromptChoice> {
   const set = checkPrompts(Object.entries(prompts ?? {}).map(([id, variant]) => ({ ...variant, id })));
@@ -87,7 +101,7 @@ export async function choosePrompt(prompts: Record<string, PromptVariant>, input
   const ask = async (state: Record<string, unknown>): Promise<PromptPass> => {
     const started = Date.now();
     const result = await options.judge({ label: questionId, kind: "judge", state, questions: { [questionId]: { type: "choice", instructions, criteria: criteriaOf } }, ...(options.signal ? { signal: options.signal } : {}) });
-    return { ...answerOf(result, questionId), model: result.model ?? null, cost_usd: result.cost_usd ?? null, latency_ms: Date.now() - started };
+    return { ...answerOf(result, questionId, Object.keys(criteriaOf)), model: result.model ?? null, cost_usd: result.cost_usd ?? null, latency_ms: Date.now() - started };
   };
   /** The overlay a pass chooses, or undefined, and what the pass said. */
   const pick = (pass: PromptPass, after: string): string | undefined => {

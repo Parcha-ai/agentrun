@@ -10,7 +10,7 @@
 // `work/memory/` stays the agent's contract either way.
 import { existsSync } from 'node:fs';
 import { chmod, copyFile, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 
 export const MEMORY_DIR = 'memory';
 /** A memory file: a plain name, flat in the folder, markdown. */
@@ -24,6 +24,9 @@ export type MemoryFile = { name: string; text: string };
 /** A first run's index, so its first read finds a file: the agent replaces it once it keeps something. */
 export const EMPTY_INDEX = 'Nothing remembered yet.\n';
 export type CarriedBack = { changed: boolean; profiles: string[]; released: string[] };
+const owns = (back: CarriedBack | undefined): back is CarriedBack => Boolean(back?.changed && (back.profiles.length > 0 || back.released.length > 0));
+/** The hand-off the server still owes the home, in the home's memory folder: the run's folder and its carry back. */
+const HAND_OFF = '.hand-off.json';
 
 /** The memory files in `dir`, by name; null when there is no folder. A name that is not a memory file, a link, a
  *  folder, or a file or folder over the caps fails it (an Error), so nothing is taken from it. Dotfiles are skipped. */
@@ -70,7 +73,7 @@ export async function seedMemory(homeDir: string, workDir: string): Promise<numb
  * Returns the names written and removed, or null when it took nothing.
  */
 export async function keepMemory(homeDir: string, workDir: string, back: CarriedBack | undefined): Promise<{ written: string[]; removed: string[] } | null> {
-  if (!back?.changed || (back.profiles.length === 0 && back.released.length === 0)) return null;
+  if (!owns(back)) return null;
   const files = await filesIn(join(workDir, MEMORY_DIR)).catch(() => null);
   if (!files) return null;
   const home = join(homeDir, MEMORY_DIR);
@@ -88,4 +91,32 @@ export async function keepMemory(homeDir: string, workDir: string, back: Carried
   const removed = before.filter((name) => !files.some((file) => file.name === name));
   for (const name of removed) await rm(join(home, name), { force: true });
   return { written, removed };
+}
+
+/**
+ * `keepMemory` for a run the server has just carried back, recoverable: the hand-off is written to the home before the
+ * copy and removed after it, so a copy that fails or a server that stops in between leaves it for `finishHandOff`. A
+ * later owner's hand-off replaces one still owed, since its folder becomes the home's memory whole.
+ */
+export async function handOffMemory(homeDir: string, workDir: string, back: CarriedBack | undefined): Promise<{ written: string[]; removed: string[] } | null> {
+  if (!owns(back)) return null;
+  const home = join(homeDir, MEMORY_DIR);
+  await mkdir(home, { recursive: true, mode: 0o700 });
+  const partial = join(home, `${HAND_OFF}.${process.pid}.partial`);
+  await writeFile(partial, JSON.stringify({ work: relative(homeDir, workDir), back }), { mode: 0o600 });
+  await rename(partial, join(home, HAND_OFF));
+  const kept = await keepMemory(homeDir, workDir, back);
+  await rm(join(home, HAND_OFF), { force: true });
+  return kept;
+}
+
+/** The hand-off a server left owed, finished: the run's folder into the home's memory, then the hand-off removed. Null
+ *  when none is owed. */
+export async function finishHandOff(homeDir: string): Promise<{ written: string[]; removed: string[] } | null> {
+  const file = join(homeDir, MEMORY_DIR, HAND_OFF);
+  const owed = await readFile(file, 'utf8').then(JSON.parse, () => null);
+  if (!owed) return null;
+  const kept = await keepMemory(homeDir, resolve(homeDir, owed.work), owed.back);
+  await rm(file, { force: true });
+  return kept;
 }

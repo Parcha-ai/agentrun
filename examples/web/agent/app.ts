@@ -40,7 +40,7 @@ import { ArchilCodingTools, type AppContext, type AppOptions } from "@parcha/pi-
 import { browserOf, CHROME_PROFILE, listsBrowser, type BrowserKind } from "./chrome.ts";
 import { frameStore } from "./frames.ts";
 import { openRunRecording } from "./record.ts";
-import { composePrompt } from "./select.ts";
+import { savedGuide } from "./select.ts";
 import { writeRememberPage } from "./remember.ts";
 
 const THINKING: readonly ModelThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
@@ -53,6 +53,9 @@ export const PROFILE = "default";
 const FRAMES_PER_SECOND = 2;
 /** The endpoint of an agent that lists no browser tool: nothing ever dials it (no tool of the browser is listed). */
 const NO_CHROME = "http://127.0.0.1:9";
+/** Where a download lands, told only to a run on a local Chrome (start-run.mjs points its download folder at the run's
+ *  `work/downloads/`): a click on Browserbase saves the file on Browserbase's machine, not in the workspace. */
+export const LOCAL_DOWNLOADS = "Your browser is a Chrome on this machine: a file a page offers as a download lands in `downloads/` in your workspace, under the name the page gives it. To download one, click its link in the browser with run; never write a downloaded file yourself, and if a click saves nothing, say so. Your file tools cannot list a folder: before you answer, read each file you downloaded with `limit` 1 to confirm it is there.";
 
 /** pi-durable-agent's `browser.profiles`, by its kind: the run's copy of the agent's saved sign-ins, which `carryBack`
  *  returns to the home. Only the host writes it, and no tool reads it. */
@@ -61,17 +64,16 @@ const Profiles = defineDocFamily<JsonObject, null>({ kind: "browser.profiles", v
  *  agent's name. */
 const Label = defineDoc<{ label: string }>({ kind: "reference.label", version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ label: "" }) });
 
-/** The definition's instructions; then the run's guide, the home's base prompt and the variant the host chose for run
- *  `runId` (none when it chose none); then each skill the definition names (`<name>/SKILL.md` in the home), in order. */
-export function promptOf(state: Pick<AgentHomeState, "definition" | "skills"> & Partial<Pick<AgentHomeState, "prompts" | "runs">>, runId?: string): string {
-  const chosen = runId ? state.runs?.[runId]?.prompt?.id : undefined;
-  const guide = chosen && state.prompts ? [composePrompt(state.prompts, chosen)] : [];
+/** The definition's instructions; then the run's guide (`savedGuide`: the home's base prompt and the variant the host
+ *  chose, as they were when the run started), when it has one; then each skill the definition names
+ *  (`<name>/SKILL.md` in the home), in order. */
+export function promptOf(state: Pick<AgentHomeState, "definition" | "skills">, guide?: string): string {
   const skills = state.definition.skills.map((name) => {
     const file = state.skills[`${name}/SKILL.md`];
     if (!file) throw new Error(`the definition names the skill ${name}, and the agent home has no ${name}/SKILL.md`);
     return `<skill name="${name}">\n${file.content.trim()}\n</skill>`;
   });
-  return [state.definition.instructions.trim(), ...guide, ...(skills.length ? ["Your skills follow. Use the one that fits the step you are on.", ...skills] : [])].join("\n\n");
+  return [state.definition.instructions.trim(), ...(guide ? [guide] : []), ...(skills.length ? ["Your skills follow. Use the one that fits the step you are on.", ...skills] : [])].join("\n\n");
 }
 
 /** Each tool name is a tool or a whole extension; every name must resolve. */
@@ -291,7 +293,8 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
   const { definition } = state;
   const browsing = listsBrowser(definition);
   const chosen = browsing ? browserOptions(env) : ({ kind: "chrome", options: { endpoint: NO_CHROME } } as const);
-  const instructions = promptOf(state, where.ref.id);
+  const prompt = promptOf(state, await savedGuide(where.root, state.runs[where.ref.id]?.prompt));
+  const instructions = browsing && chosen.kind === "chrome" ? `${prompt}\n\n${LOCAL_DOWNLOADS}` : prompt;
   const { models, model, thinking } = modelsOf(env);
   // Resolved before the run serves: the root conversation's creating commit carries it.
   let contextId: string | undefined;
