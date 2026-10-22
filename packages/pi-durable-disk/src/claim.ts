@@ -466,6 +466,9 @@ export type MountTarget = { readonly disk: string; readonly region: string; read
 
 const targetOf = (ref: RunRef): MountTarget => ({ disk: ref.disk, region: ref.region, path: runPath(ref.id) });
 
+/** A mount that honours no setuid bit or device file on the disk: archil takes no mount options; the wrapper's bind remount adds them. */
+const hardened = (entry: { options: string[] }): boolean => entry.options.includes("nosuid") && entry.options.includes("nodev");
+
 function isOurs(entry: { source: string; fstype: string }, target: MountTarget): boolean {
   const base = `${target.disk}:/${target.path}`;
   return entry.fstype === "fuse.archil" && (entry.source === base || entry.source === `${base}[${target.region}]`);
@@ -596,7 +599,7 @@ async function mountTarget(host: Host, target: MountTarget, mountpoint: string, 
   const entry = await mountEntry(host, mountpoint);
   if (ok(r) && entry && isOurs(entry, target)) {
     // archil-scoped's bind remount makes it nosuid,nodev; a mount without them (an older wrapper) is never run on.
-    if (entry.options.includes("nosuid") && entry.options.includes("nodev")) return;
+    if (hardened(entry)) return;
     await unmountWith(host, mountpoint).catch(() => {});
     throw new ClaimError("MOUNT_FAILED", `archil mount ${path} left ${mountpoint} without nosuid,nodev (archil-scoped's bind remount makes them): unmounted`);
   }
@@ -826,7 +829,10 @@ export async function acquire(opts: AcquireOptions): Promise<Claim> {
   if (existing) {
     if (!isOurs(existing, targetOf(ref))) throw new ClaimError("MOUNTPOINT_BUSY", `${root} already holds ${existing.fstype} ${existing.source}`);
     if (await isDead(host, root)) await cleanDead(host, root);
-    else reused = true;
+    // An older wrapper's mount lacks nosuid,nodev: given back, then mounted again below through the wrapper, which adds
+    // them; with no token to do that, the restart is fenced as any restart without a live mount is.
+    else if (hardened(existing)) reused = true;
+    else await unmountWith(host, root);
   }
   let stray: { to: string; entries: number } | null = null;
   // No live mount to reuse and no token to mount with: a restart whose mount went with the failed incarnation. It cannot
