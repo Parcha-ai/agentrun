@@ -200,6 +200,23 @@ export function runUser(spec: string, passwd = "/etc/passwd"): { uid: number; gi
  * in this process's environment) must be the one `--run-as` names, by uid: a different one, or none (the agent's
  * commands would run as this root process), is a usage error. Without the declaration, `--run-as` is as before.
  */
+/**
+ * Transport's launcher hands a program its secrets on one descriptor, named by `PI_TRANSPORT_SECRETS_FD`, which is not
+ * close-on-exec: every command the instance spawns would inherit it. Closed here, with its variable dropped, before
+ * anything runs (the instance takes no secrets that way yet; one that does reads it first).
+ */
+export function closeSecretsFd(env: NodeJS.ProcessEnv): void {
+  const text = env.PI_TRANSPORT_SECRETS_FD;
+  if (text === undefined) return;
+  delete env.PI_TRANSPORT_SECRETS_FD;
+  if (!/^[0-9]+$/.test(text) || Number(text) < 3) throw new UsageError("PI_TRANSPORT_SECRETS_FD is not a descriptor above 2");
+  try {
+    closeSync(Number(text));
+  } catch {
+    // not open: nothing to inherit
+  }
+}
+
 export function toolsUserCheck(runAs: { uid: number; name: string } | undefined, env: NodeJS.ProcessEnv): void {
   const name = env.PI_TRANSPORT_TOOLS_USER;
   const uidText = env.PI_TRANSPORT_TOOLS_UID;
@@ -268,6 +285,7 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   else need(values, "app");
   const ref: RunRef =
     dir === undefined ? { disk: str(values.disk)!, region: str(values.region)!, id: str(values.id)! } : { disk: "local", region: "local", id: str(values.id) ?? basename(dir) };
+  closeSecretsFd(process.env);
   const runAs = typeof values["run-as"] === "string" ? runUser(values["run-as"]) : undefined;
   toolsUserCheck(runAs, process.env);
   if (runAs && process.getuid?.() !== 0) throw new UsageError("--run-as needs an instance that runs as root (inside a container); elsewhere run the instance as the run user");

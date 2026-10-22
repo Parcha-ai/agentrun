@@ -172,13 +172,17 @@ test("the tools user the launcher verified (PI_TRANSPORT_TOOLS_USER/UID) must be
   refused(pda, { PI_TRANSPORT_TOOLS_USER: "pda", PI_TRANSPORT_TOOLS_UID: "15x0" }, "a uid that is not a number", /PI_TRANSPORT_TOOLS_UID/);
 });
 
-test("the launcher's secrets descriptor (PI_TRANSPORT_SECRETS_FD) is closed before anything runs: no command the instance spawns inherits it, or its number", () => {
+test("the launcher's secrets descriptor (PI_TRANSPORT_SECRETS_FD) never reaches a command: Node marks inherited descriptors close-on-exec at its start, and the instance closes it and drops its number before anything runs", () => {
   const child = fileURLToPath(new URL("./fixtures/secrets-fd-child.ts", import.meta.url));
   const run = (close: boolean) =>
     spawnSync(process.execPath, [child], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe", "pipe"], env: { ...process.env, PI_TRANSPORT_SECRETS_FD: "3", CLOSE: close ? "1" : "0" } });
   const fds = (out: string) => out.split("\n").filter((l) => /^[0-9]+$/.test(l)).map(Number);
   const open = run(false);
-  assert.ok(fds(open.stdout).includes(3), `without the close, a command inherits fd 3 (the leak this guards): ${open.stdout} ${open.stderr}`);
+  assert.equal(open.status, 0, open.stderr);
+  // Measured: Node's start (libuv's uv_disable_stdio_inheritance) makes an inherited fd 3 close-on-exec, so even without
+  // the instance's close no command holds it. Pinned, so a runtime that changes this shows here.
+  assert.ok(!fds(open.stdout).includes(3), `Node's own guard: ${open.stdout}`);
+  assert.match(open.stdout, /SECRETS_FD=3/, "but without the instance's close, a command sees the descriptor's number");
   const closed = run(true);
   assert.equal(closed.status, 0, closed.stderr);
   assert.ok(!fds(closed.stdout).includes(3), `closed: ${closed.stdout}`);
