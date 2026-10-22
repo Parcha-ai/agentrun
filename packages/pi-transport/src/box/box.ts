@@ -93,7 +93,7 @@ export type BoxFacts = {
 	readonly memoryMb: number | null;
 	/**
 	 * The GPU the box has, `null` when it has none. Modal reads the model served from the box (`nvidia-smi`), which may differ from
-	 * the request (a bare `H100` may be served an H200): one name for identical cards, every model for a mixed box. A provider that
+	 * the request (a bare `H100` may be served an H200): one name for identical cards, every model for a mixed box (joined by ` + `, so a label that joins the provider, the GPU and the isolation with `, ` stays unambiguous). A provider that
 	 * does not read it from the box repeats the request, and its documentation says so (Docker does).
 	 */
 	readonly gpu: string | null;

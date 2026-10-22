@@ -270,7 +270,7 @@ describe("modal boxes", () => {
 				});
 			});
 
-			it("is one name for identical cards, and every model, in the order first seen, for a mixed box", async () => {
+			it("is one name for identical cards, and every model, in the order first seen and joined by ' + ' (the panel joins its label with ', '), for a mixed box", async () => {
 				await withRoot(async (root) => {
 					const sdk = new FakeModal();
 					sdk.served = Array.from({ length: 8 }, () => "NVIDIA H100 80GB HBM3");
@@ -279,7 +279,7 @@ describe("modal boxes", () => {
 					const mixed = unwrap(await provider(sdk).create({ ...SPEC, gpu: "any:3", workspace: root }, context));
 					expect([same.facts().gpu, mixed.facts().gpu]).toEqual([
 						"NVIDIA H100 80GB HBM3",
-						"NVIDIA A100, NVIDIA H100 80GB HBM3",
+						"NVIDIA A100 + NVIDIA H100 80GB HBM3",
 					]);
 					unwrap(await same.destroy(context));
 					unwrap(await mixed.destroy(context));
@@ -307,6 +307,9 @@ describe("modal boxes", () => {
 					sandbox.served = [];
 					const lost = await provider(sdk).attach(box.id, context);
 					expect(lost.ok ? "ok" : lost.error.code).toBe("unknown");
+					// A failed attach is an error and nothing more: it does not end a sandbox it did not make (the lifetime, or a caller
+					// that holds the Box, ends it).
+					expect(sdk.running().map((each) => each.sandboxId)).toContain(box.id);
 					unwrap(await box.destroy(context));
 				});
 			});

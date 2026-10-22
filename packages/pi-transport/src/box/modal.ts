@@ -456,7 +456,7 @@ class ModalBox implements Box {
 			}
 			this.#facts = {
 				...this.#facts,
-				...(wantsGpu ? { gpu: reading.gpus.join(", ") } : {}),
+				...(wantsGpu ? { gpu: reading.gpus.join(" + ") } : {}),
 				...(reading.diskGb === undefined ? {} : { diskGb: reading.diskGb }),
 				...(reading.ptraceScope === undefined ? {} : { ptraceScope: reading.ptraceScope }),
 				fuse: wantsFuse && reading.fuse,
