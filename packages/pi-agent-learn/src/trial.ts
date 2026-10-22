@@ -27,8 +27,14 @@ export type UseOutcome = (typeof USE_OUTCOMES)[number];
 export const PRECONDITION_OPS = Object.freeze(["eq", "in", "exists", "gte", "lte"] as const);
 
 export const LIMITS = Object.freeze({
-  /** Revisions kept under one name; admission stops at the cap, never forgets a demoted digest. */
+  /** Revisions kept under one name. Only those live or restorable (trial, active, superseded) count toward it: when the
+   *  trial would hold more, admission moves its retired and demoted revisions to `refused`, and stops only when the live
+   *  ones fill it. */
   revisions: 32,
+  /** Digests of revisions a trial no longer holds (retired or demoted), kept so the same digest is never admitted again. A
+   *  trial that keeps any holds only its live and restorable revisions beside them (at most `restorable` + 2), so it fits
+   *  the file cap at both limits. */
+  refused: 128,
   /** The newest uses kept, in the order they were folded; thresholds never reach further back than twice `threshold`. */
   uses: 30,
   preconditions: 16,
@@ -76,6 +82,8 @@ export type Trial = {
   readonly revisions: readonly Revision[];
   /** Oldest first. */
   readonly uses: readonly Use[];
+  /** Digests of retired or demoted revisions moved out of `revisions` to make room, oldest first: never admitted again. */
+  readonly refused?: readonly string[];
 };
 
 const Stamp = Type.String({ pattern: STAMP.source });
@@ -101,6 +109,7 @@ export const TrialSchema = Type.Object({
     when: Type.Optional(Type.Array(PreconditionSchema, { maxItems: LIMITS.preconditions })), description: Type.Optional(Type.String({ maxLength: CAPS.text })),
   }, exact), { minItems: 1, maxItems: LIMITS.revisions }),
   uses: Type.Array(Type.Object({ run: Run, sha256: Hash, outcome: Type.Union([Type.Literal("frozen"), Type.Literal("escalated"), Type.Literal("failed")]), at: Stamp }, exact), { maxItems: LIMITS.uses }),
+  refused: Type.Optional(Type.Array(Hash, { maxItems: LIMITS.refused })),
 }, exact);
 
 const checker = Compile(TrialSchema);
@@ -155,8 +164,15 @@ export function checkTrial(value: unknown): asserts value is Trial {
   }
   if (trial.status !== (live?.status ?? "demoted")) throw bad("the status is not that of the live revision");
   if (trial.revisions.filter((revision) => revision.status === "superseded").length > LIMITS.restorable) throw bad(`more than ${LIMITS.restorable} superseded revisions`);
+  const gone = new Set<string>();
+  if ((trial.refused?.length ?? 0) > 0 && trial.revisions.length > LIMITS.restorable + 2) throw bad("a trial that keeps refused digests holds only its live and restorable revisions");
+  for (const digest of trial.refused ?? []) {
+    if (seen.has(digest)) throw bad("a refused digest is a revision the trial holds");
+    if (gone.has(digest)) throw bad("a refused digest appears twice");
+    gone.add(digest);
+  }
   for (const use of trial.uses) {
-    if (!seen.has(use.sha256)) throw bad("a use names a revision the trial does not hold");
+    if (!seen.has(use.sha256) && !gone.has(use.sha256)) throw bad("a use names a revision the trial does not hold");
     if (!validStamp(use.at)) throw bad("a use's at is not a time");
   }
 }

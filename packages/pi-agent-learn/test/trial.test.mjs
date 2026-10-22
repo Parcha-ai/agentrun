@@ -78,6 +78,23 @@ test("a trial at every limit, with the longest run ids and the largest precondit
   const text = renderTrial(trial({ revisions, uses, when: biggest }));
   assert.ok(Buffer.byteLength(text) <= CAPS.file, `${Buffer.byteLength(text)} bytes`);
   assert.throws(() => checkTrial(trial({ when: [...biggest, { pointer: "/one-more", op: "in", value: Array.from({ length: 32 }, (_, j) => j % 10) }] })), (e) => e.code === "format");
+  // A trial that keeps refused digests holds only its live and restorable revisions: at both limits it fits too.
+  const compact = revisions.slice(0, TRIAL_LIMITS.restorable + 2).map((r, i) => (i > TRIAL_LIMITS.restorable ? { ...r, status: "demoted" } : r));
+  const refusals = Array.from({ length: TRIAL_LIMITS.refused }, (_, i) => `${"ab".repeat(30)}${i.toString(16).padStart(4, "0")}`);
+  const withRefusals = renderTrial(trial({ revisions: compact, uses, when: biggest, refused: refusals }));
+  assert.ok(Buffer.byteLength(withRefusals) <= CAPS.file, `${Buffer.byteLength(withRefusals)} bytes`);
+});
+
+test("a trial keeps the digests it no longer holds as refusals: each once, never one it still holds, at most the limit, and a use may name one", () => {
+  checkTrial(trial({ refused: [sha("b"), sha("c")], uses: [{ run: "run-2", sha256: sha("b"), outcome: "failed", at: at(2) }] }));
+  refused(trial({ refused: [sha("a")] }));
+  refused(trial({ refused: [sha("b"), sha("b")] }));
+  refused(trial({ refused: ["not-a-digest"] }));
+  refused(trial({ refused: Array.from({ length: TRIAL_LIMITS.refused + 1 }, (_, i) => (i + 1).toString(16).padStart(64, "e")) }));
+  refused(trial({ uses: [{ run: "run-2", sha256: sha("b"), outcome: "failed", at: at(2) }] }));
+  const many = Array.from({ length: TRIAL_LIMITS.restorable + 3 }, (_, i) => ({ sha256: (i + 1).toString(16).padStart(64, "0"), status: i === 0 ? "trial" : "retired", since: at(1), run: "run-1", after: 0 }));
+  checkTrial(trial({ revisions: many }));
+  refused(trial({ revisions: many, refused: [sha("f")] }));
 });
 
 test("the net under the limits: a trial over the cap loses its oldest uses first, never below the thresholds' reach, and the boundaries move with them", () => {

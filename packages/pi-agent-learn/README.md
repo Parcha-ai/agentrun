@@ -427,18 +427,22 @@ names (`refused`). A workflow with a code node, or a shell or executor call, is 
 offered to no run until one arrives, and the skill that described the revision before it is withheld, not offered for the
 new one (a call with no records describes an existing name).
 
-**Standing.** `trial.json` holds `{ name, status, when, revisions, uses }`. The new revision is the live trial under its
+**Standing.** `trial.json` holds `{ name, status, when, revisions, uses }`, and `refused` once it needs one (below). The new revision is the live trial under its
 name. The revision it replaces is `superseded` if it was active, keeping its preconditions and the description of its skill
 so a demotion can restore both, or `retired` if it never proved itself; only the 3 newest superseded revisions keep that. A
-demoted revision stays in the list so it is never tried again. `status` is that of the live revision, or `demoted` when there
+demoted revision stays in the list so it is never tried again. Only the live and restorable revisions count toward the
+limit of 32: when admitting a new one would take the list past it, its retired and demoted revisions leave the list and
+keep only their digests in `refused` (at most 128), which are never admitted again either; a trial that keeps refusals
+holds only its live and restorable revisions from then on. A name that churns through many revisions in a long stream so
+keeps admitting new ones. `status` is that of the live revision, or `demoted` when there
 is none. `when` is a list of typed checks on the run's input, each a JSON pointer and one of `eq`, `in`, `exists`, `gte`,
 `lte` (numbers only: a string is never coerced), never a pattern over prose. The default is none, and the model decides from
 the description; `workflowAdmitter({ when })` takes a function of the workflow document, and `schemaWhen` is one: what the
 workflow's own input schema says about the top level of its input (each required property must exist, a constant must be
 equal, an enumeration of scalars must contain the value, a number's bounds hold). `workflowsToTry` offers a name whose skill
 and `trial.json` are at the commit, whose live revision is a trial or active and whose record is there, and whose checks hold
-on the input: active first, then by name, at most 8. The file stays under the curator's cap at every limit: 32 revisions, 30
-uses, 16 checks of at most 1,536 characters printed.
+on the input: active first, then by name, at most 8. The file stays under the curator's cap at every limit: 32 revisions (or
+the live and restorable ones beside 128 refused digests), 30 uses, 16 checks of at most 1,536 characters printed.
 
 **Serving.** The host can run a saved workflow itself, before the agent says anything, so a run a proven workflow finishes
 costs no agent turn. `planServing` picks what to serve for the run: the live revision when it is active; while it is on
