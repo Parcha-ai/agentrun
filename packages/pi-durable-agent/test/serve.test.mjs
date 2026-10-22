@@ -16,7 +16,7 @@ import { serveHome } from "../dist/serve/index.js";
 import { buildSignedInHome, PRACTICE_ORIGIN, SIGN_IN_MARKER, signedInHomeSkip } from "./fixtures/signed-in-home.mjs";
 import { scratch } from "./support.mjs";
 
-const skip = { skip: signedInHomeSkip };
+const skip = { skip: signedInHomeSkip, timeout: 60_000 };
 const CLI = fileURLToPath(new URL("../dist/serve/cli.js", import.meta.url));
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'";
 const SECRET_KINDS = ["browser.profiles", "agent.vault", "agent.leases", "agent.bindings", "agent.aliases"];
@@ -52,6 +52,12 @@ const hasSideFiles = (file) => SIDE.some((suffix) => existsSync(`${file}${suffix
 async function seededHome() {
   const dir = await scratch();
   const built = await buildSignedInHome(dir);
+  await setPrompts(built.home, [
+    { id: "kind", role: "question", label: "Kind", text: "What kind of organisation is it?", criteria: { gone: "A variant that is about to be retired.", other: "Anything else." } },
+    { id: "generic", role: "generic", label: "Generic", text: "Say what the page shows." },
+    { id: "gone", role: "overlay", label: "Gone", text: "A variant that is retired by the next set.", when: { question: "kind", option: "gone", threshold: 0.8 } },
+    { id: "base", role: "base", label: "Base", text: "Read the practice site." },
+  ]);
   await setPrompts(built.home, [
     { id: "kind", role: "question", label: "Kind", text: "What kind of organisation is it?", criteria: { public: "Its shares trade publicly.", other: "Anything else." } },
     { id: "generic", role: "generic", label: "Generic", text: "Say what the page shows." },
@@ -327,12 +333,13 @@ test("a foreign Host, another port, a POST and a path out of the home are all re
   }
 });
 
-test("serveHome refuses what is not a home or a port, ignores a host option, and closes on abort", skip, async () => {
+test("serveHome refuses what is not a home or a port, ignores a host option, and closes on abort", skip, async (t) => {
   const seeded = await seededHome();
   await assert.rejects(serveHome({ dir: path.join(seeded.dir, "nowhere") }), (error) => error instanceof AgentHomeError && error.code === "missing");
   for (const port of [-1, 65_536, 1.5, "80", Number.NaN]) await assert.rejects(serveHome(seeded.home, { port }), (error) => error instanceof AgentHomeError && error.code === "invalid", String(port));
   const controller = new AbortController();
   const served = await serveHome(seeded.home, { host: "0.0.0.0", signal: controller.signal });
+  t.after(() => served.close());
   assert.match(served.url, /^http:\/\/127\.0\.0\.1:\d+\/$/);
   assert.equal((await request(served.url, { target: "/api/agent" })).status, 200);
   controller.abort();
@@ -342,6 +349,7 @@ test("serveHome refuses what is not a home or a port, ignores a host option, and
   const aborted = new AbortController();
   aborted.abort();
   const never = await serveHome(seeded.home, { signal: aborted.signal });
+  t.after(() => never.close());
   await assert.rejects(request(never.url, { target: "/" }), (error) => error.code === "ECONNREFUSED", "an aborted signal closes it at once");
 });
 
@@ -428,11 +436,13 @@ test("a store that is not a store, or one from a newer pi-durable, is a plain 50
   }
 });
 
-test("the pi-durable-agent bin prints a loopback address for a home, serves it, and stops on SIGINT", skip, async () => {
+test("the pi-durable-agent bin prints a loopback address for a home, serves it, and stops on SIGINT", skip, async (t) => {
   const seeded = await seededHome();
   const before = snapshot(seeded.home.dir);
   const run = (args) => spawn(process.execPath, ["--no-warnings", CLI, ...args], { stdio: ["ignore", "pipe", "pipe"] });
   const child = run(["serve", seeded.home.dir]);
+  const fixed = run(["serve", seeded.home.dir, "--port", "0"]);
+  t.after(() => [child, fixed].forEach((process) => process.kill()));
   let out = "";
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
@@ -447,7 +457,6 @@ test("the pi-durable-agent bin prints a loopback address for a home, serves it, 
   assert.equal(err, "");
   assert.deepEqual(snapshot(seeded.home.dir), before, "the bin changed nothing in the home");
 
-  const fixed = run(["serve", seeded.home.dir, "--port", "0"]);
   await new Promise((resolve) => fixed.stdout.once("data", resolve));
   fixed.kill("SIGTERM");
   assert.equal((await new Promise((resolve) => fixed.once("exit", (code) => resolve(code)))), 0);
@@ -474,7 +483,7 @@ test("the bin says what is wrong: a missing home is exit 1, a bad command or por
   assert.deepEqual([help.code, /usage: pi-durable-agent serve/.test(help.out)], [0, true]);
 });
 
-test("the package says it has a bin and a ./serve entry, and the bin starts with a shebang", () => {
+test("the package says it has a bin and a ./serve entry, and the bin starts with a shebang", { timeout: 60_000 }, () => {
   const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.deepEqual(manifest.bin, { "pi-durable-agent": "./dist/serve/cli.js" });
   assert.deepEqual(manifest.exports["./serve"], { types: "./dist/serve/index.d.ts", default: "./dist/serve/index.js" });
