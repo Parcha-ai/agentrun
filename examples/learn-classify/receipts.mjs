@@ -73,11 +73,12 @@ export function receiptHoldsTrial(admit, dir) {
  * - A live trial with a receipt use in this run is promoted at once when the uses did not already promote it.
  * - A promotion of a trial with a revision before it (the last proven one) asks `gate` (asyncGate), when given, to
  *   compare the two (`confirm`): its verdict confirms or demotes the promotion at a later curate (`gate.apply`).
- * Demotions and holds pass as they are.
+ * With `receipts` false, only the last: no contradiction and no receipt use counts. Demotions and holds pass as they are.
  */
-export function receiptUses({ settle, dir, gate }) {
+export function receiptUses({ settle, dir, gate, receipts = true }) {
   return async (input) => {
-    const record = runOf(dir, input.run);
+    // Without receipts (--promote-no-floor alone) the uses are the package's, and only the comparison of a replacement is asked.
+    const record = receipts ? runOf(dir, input.run) : undefined;
     const contradicted = record?.contradiction ? new Set(record.executed ?? []) : new Set();
     const uses = input.uses.map((u) => (contradicted.has(u.sha256) && u.outcome !== 'failed' ? { ...u, outcome: 'failed' } : u));
     const result = await settle({ ...input, uses });
