@@ -54,7 +54,7 @@ const FRAMES_PER_SECOND = 2;
 /** The endpoint of an agent that lists no browser tool: nothing ever dials it (no tool of the browser is listed). */
 const NO_CHROME = "http://127.0.0.1:9";
 /** Where a download lands, told only to a run on a local Chrome (start-run.mjs points its download folder at the run's
- *  `work/downloads/`): a click on Browserbase saves the file on Browserbase's machine, not in the workspace. */
+ *  `work/downloads/`): on Browserbase or Kernel a click saves the file on the provider's machine, not in the workspace. */
 export const LOCAL_DOWNLOADS = "Your browser is a Chrome on this machine: a file a page offers as a download lands in `downloads/` in your workspace, under the name the page gives it. To download one, click its link in the browser with run; never write a downloaded file yourself, and if a click saves nothing, say so. Your file tools cannot list a folder: before you answer, read each file you downloaded with `limit` 1 to confirm it is there.";
 
 /** pi-durable-agent's `browser.profiles`, by its kind: the run's copy of the agent's saved sign-ins, which `carryBack`
