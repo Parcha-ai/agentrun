@@ -69,7 +69,8 @@
     "test:live:supervise-slow": "node --test --test-concurrency=1 test/live/supervise-slow.live.test.ts",
     "test:live:with-claim": "node --test --test-concurrency=1 test/live/with-claim.live.test.ts",
     "test:live:docker": "PDA_LIVE_DOCKER=1 node --test --test-concurrency=1 test/live/docker.live.test.ts test/live/docker-park.live.test.ts",
-    "verify:tarball": "node scripts/verify-tarball.mjs"
+    "verify:tarball": "node scripts/verify-tarball.mjs",
+    "test:live:box": "PDA_LIVE_MODAL_BOX=1 node --test --test-concurrency=1 test/live/box-host.live.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/chord": ">=1.0.4 <1.4.0",
