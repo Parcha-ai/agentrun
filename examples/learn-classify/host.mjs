@@ -16,7 +16,6 @@ import { learnExtension } from '../agent-learn/host.mjs';
 import { stickyJudge } from './curate-cuts.mjs';
 import { refusedHostsJudge } from './refused-hosts.mjs';
 import { gatedSettler } from './promotion-gate.mjs';
-import { receiptJudge } from './receipts.mjs';
 import { HOST_WORKFLOW, handoffText, hostRunName, hostUses, runPromoted } from './dispatch.mjs';
 import { gatedAdmitter } from './gates.mjs';
 
@@ -479,17 +478,22 @@ async function inRunStore(run, step) {
  * it on `runs/<run id>` (not with `propose: false`, a sealed run's). Every candidate is marked untrusted: the run read the
  * web.
  */
-export async function finishJob({ home, repo, run, job, measure, propose = true, alsoRefuse = [] }) {
-  // `alsoRefuse`: more values the guard refuses in the run's notes (a receipt's code, for promotion by receipt).
+export async function finishJob({ home, repo, run, job, measure, propose = true, alsoRefuse = [], links }) {
+  // `alsoRefuse`: more values the guard refuses in the run's notes (a receipt's code, for admission by receipt).
+  // `links(candidates)`: each note's link to the run's receipt (receipts.mjs receiptLinks); a linked note is proposed as the
+  // run's own work, every other one untrusted as always.
   const caseValues = [...new Set([...caseValuesOf(job), ...alsoRefuse])];
   await carryBack(home, run, { outcome: measure.stopped ? 'stopped' : 'completed', cost: measure.usage.costUsd + measure.judge.costUsd });
   return inRunStore(run, async (target) => {
     const candidates = await collectCandidates(target);
     const uses = hostUses(await collectUses({ target, workDir: run.workspace, run: run.runId }), measure.dispatch, run.runId);
     const saved = await collectWorkflows({ repo, workDir: run.workspace, target });
+    const linked = links ? await links(candidates) : null;
+    const own = new Set((linked ?? []).filter((l) => l.link).map((l) => l.callId));
+    const untrusted = own.size ? (candidate) => !own.has(candidate.callId) : true;
     // A saved workflow that copies a page the run read is withheld here; a package without `read` proposes it.
-    const proposal = propose ? await proposeLearning({ repo, runId: run.runId, target, workDir: run.workspace, caseValues, untrusted: true, read: pagesRead(run.storePath), uses: () => uses }) : { status: 'not proposed' };
-    return { candidates, uses: uses?.uses ?? [], saved: saved.found.map((w) => ({ name: w.name, sha256: w.sha256 })), proposal };
+    const proposal = propose ? await proposeLearning({ repo, runId: run.runId, target, workDir: run.workspace, caseValues, untrusted, read: pagesRead(run.storePath), uses: () => uses }) : { status: 'not proposed' };
+    return { candidates, uses: uses?.uses ?? [], saved: saved.found.map((w) => ({ name: w.name, sha256: w.sha256 })), proposal, ...(linked ? { receiptLinks: linked } : {}) };
   });
 }
 
@@ -597,25 +601,25 @@ export function usageOfStore(storePath) {
  * `judgeCuts` are the cuts curate's questions are judged by (CURATE_CUTS_V01 is the pre-registered set); without them,
  * the package's own. With `sticky` (`{ file, cutsId }`), a learning's text is judged by the worst answer it has had
  * (curate-cuts.mjs). With `gate` (promotion-gate.mjs `asyncGate`), a promotion the uses call for stands only when the
- * gate passes it; with `gateOnly` as well, only a promotion `gateOnly` names goes to the gate (receipts.mjs). With
- * `receiptTexts`, those texts' fromContent is answered by the run's receipt (receipts.mjs `receiptJudge`). With
+ * gate passes it. `wrapAdmit` and `wrapSettle` wrap the two workflow ports (receipts.mjs, for promotion by receipt). With
  * `factsOverLessons`, a lesson that contradicts an active fact is refused; `factFloor` keeps that many facts past the index
  * cap (pi-agent-learn's curate options). None is on unless given: a run that asks for none curates exactly as the package
  * does.
  */
-export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, sticky, gate, gateOnly, receiptTexts, factsOverLessons, factFloor, refuseRefusedHosts = false }) {
+export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, sticky, gate, wrapAdmit, wrapSettle, factsOverLessons, factFloor, refuseRefusedHosts = false }) {
   const refusedHosts = [];
   const gates = [];
   const settled = [];
   const rules = { ...(tmpRoot ? { tmpRoot } : {}), ...(thresholds ? { thresholds } : {}) };
-  const admit = gatedAdmitter({ judge: judge.run, base: workflowAdmitter({ when: schemaWhen, ...rules }), ...(tmpRoot ? { tmpRoot } : {}) });
-  const settle = gate ? gatedSettler({ settle: usesSettler(rules), gate, ...(gateOnly ? { only: gateOnly } : {}) }) : usesSettler(rules);
-  const judged = sticky ? stickyJudge(judge.run, sticky) : judge.run;
+  const gated = gatedAdmitter({ judge: judge.run, base: workflowAdmitter({ when: schemaWhen, ...rules }), ...(tmpRoot ? { tmpRoot } : {}) });
+  const admit = wrapAdmit ? wrapAdmit(gated) : gated;
+  const settling = gate ? gatedSettler({ settle: usesSettler(rules), gate }) : usesSettler(rules);
+  const settle = wrapSettle ? wrapSettle(settling) : settling;
   const report = await curate({
     repo,
     // With refuseRefusedHosts, a lesson naming a refused site is refused by structure before any model is asked
-    // (refused-hosts.mjs), receipt or not. Off, curate judges exactly as before.
-    judge: (refuseRefusedHosts ? (j) => refusedHostsJudge(j, refusedHosts) : (j) => j)(receiptTexts?.size ? receiptJudge(judged, receiptTexts) : judged),
+    // (refused-hosts.mjs), outermost. Off, curate judges exactly as before.
+    judge: refuseRefusedHosts ? refusedHostsJudge(sticky ? stickyJudge(judge.run, sticky) : judge.run, refusedHosts) : sticky ? stickyJudge(judge.run, sticky) : judge.run,
     ...(factsOverLessons ? { factsOverLessons: true } : {}),
     ...(factFloor ? { factFloor } : {}),
     ...(judgeCuts ? { thresholds: judgeCuts } : {}),

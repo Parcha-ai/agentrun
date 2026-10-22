@@ -38,6 +38,9 @@ const parse = (text) => { try { return JSON.parse(text); } catch { return undefi
 const textOf = (content) => (Array.isArray(content) ? content.filter((p) => p?.type === 'text').map((p) => p.text).join('\n') : String(content ?? ''));
 /** A result's words without its URLs, so a code in an address is not a code read. */
 const wordsOf = (value) => JSON.stringify(value, (key, v) => (/url|href|source|snapshot/i.test(key) ? undefined : v)) ?? '';
+/** A result's page text as it reads (its `text`, line breaks and all), then its other words: a token at the start of a
+ *  line is a whole token here, where the escaped JSON of `wordsOf` would join it to an "n". */
+const pageWords = (value) => `${typeof value?.text === 'string' ? value.text : ''}\n${wordsOf(value)}`;
 
 /** The SEC's own record pages, which state a registrant's assigned SIC: the filing index and header, the company page and
  *  the submissions record. A filing's documents ("other") are the filer's text, not the record. */
@@ -89,8 +92,35 @@ export function receiptOf(lines, answer) {
     if (!value || value.ok === false || value.refused) continue;
     const urls = [value.url, args.url].filter((u) => typeof u === 'string' && archived(u));
     const url = urls.find((u) => RECORD_KINDS.includes(pageKind(u)));
-    if (!url || !code.test(wordsOf(value)) || !urls.some((u) => sameUrl(u) === sameUrl(cite.url))) continue;
+    if (!url || !code.test(pageWords(value)) || !urls.some((u) => sameUrl(u) === sameUrl(cite.url))) continue;
     return { url, kind: pageKind(url), sic4, byWorkflow };
+  }
+  return null;
+}
+
+/**
+ * The SIC code an SEC record page states, read from the SEC's own field on it, or null: the filing index's and the
+ * company page's "SIC: 1234", the filing header's "STANDARD INDUSTRIAL CLASSIFICATION: ... [1234]", the submissions
+ * record's "sic": "1234". These are fields of pages the SEC generates, not prose.
+ */
+export function recordSicOf(value) {
+  const words = pageWords(value);
+  const field = /STANDARD INDUSTRIAL CLASSIFICATION:[^[\]]{0,120}\[(\d{4})\]/i.exec(words) ?? /\\?"sic\\?"\s*:\s*\\?"(\d{4})\\?"/.exec(words) ?? /\bSIC\s*:?\s*(\d{4})\b/.exec(words);
+  return field ? field[1] : null;
+}
+
+/**
+ * The run's receipt contradiction, or null: a workflow's node read an archived SEC record page whose SIC field states a
+ * code, and the answer is another code. The run had the SEC's code in hand and answered something else.
+ */
+export function contradictionOf(lines, answer) {
+  const sic4 = answer?.sic4;
+  if (typeof sic4 !== 'string' || !/^\d{4}$/.test(sic4)) return null;
+  for (const { args, value, byWorkflow } of readerResults(lines).results) {
+    if (!byWorkflow || !value || value.ok === false || value.refused) continue;
+    const url = [value.url, args.url].find((u) => typeof u === 'string' && archived(u) && RECORD_KINDS.includes(pageKind(u)));
+    const shown = url ? recordSicOf(value) : null;
+    if (shown && shown !== sic4) return { url, kind: pageKind(url), shown, answered: sic4 };
   }
   return null;
 }

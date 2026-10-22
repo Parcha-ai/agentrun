@@ -11,7 +11,7 @@
 // digest, company), so a revision runs on a bank company once per pass, and a verdict once landed answers at once.
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { applyDecision, currentRevision, parseTrial, promotionDecision, readTrial, renderTrial, trialPath } from '@parcha/pi-agent-learn';
+import { applyDecision, currentRevision, parseTrial, promotionDecision, readTrial, renderSkill, renderTrial, skillPath, trialPath, workflowDir } from '@parcha/pi-agent-learn';
 import { lastProven, recordedWorkflow } from './dispatch.mjs';
 
 /** Pre-registered 2026-10-21 22:32Z (section 1 of the design, §1.6, the TL's rulings): the parts `correct` counts, valued by
@@ -191,7 +191,7 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, log = () => {
     const [name, job] = queued.entries().next().value;
     queued.delete(name);
     const done = compare(job)
-      .then((line) => { if (!line.failed) writeJson(verdictFile(dir, job.key), { ...line, key: job.key, ...(job.receipt ? { receipt: true } : {}) }); },
+      .then((line) => { if (!line.failed) writeJson(verdictFile(dir, job.key), { ...line, key: job.key, ...(job.receipt ? { receipt: true } : {}), ...(job.confirm ? { confirm: true } : {}) }); },
         (error) => log(`  promotion gate on ${name}: ${String(error?.message ?? error).slice(0, 200)}; no verdict`))
       .finally(() => { running = null; pump(); });
     running = { key: job.key, job, done };
@@ -204,15 +204,16 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, log = () => {
       .filter((v) => v && !v.applied).sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
   };
   return {
-    /** `front`: a receipt candidate's comparison goes ahead of every other queued one. `receipt` is kept on its verdict. */
-    ask({ name, candidate, serving, main, front = false, receipt = false }) {
+    /** `front`: this comparison goes ahead of every other queued one. `receipt` (asked for a receipt) and `confirm` (a
+     *  promotion that already stands, which the verdict confirms or demotes) are kept on its verdict. */
+    ask({ name, candidate, serving, main, front = false, receipt = false, confirm = false }) {
       const key = keyOf(name, candidate.sha256, serving?.sha256);
       const landed = readJson(verdictFile(dir, key));
       if (landed) return { status: 'landed', key, verdict: landed };
       if (running?.key === key) return { status: 'running', key };
       const before = queued.get(name);
       if (before && before.key !== key) log(`  promotion gate on ${name}: ${candidate.sha256.slice(0, 8)} replaces the queued ${before.candidate.sha256.slice(0, 8)}`);
-      const job = { name, candidate, serving, main, key, ...(receipt || before?.receipt ? { receipt: true } : {}) };
+      const job = { name, candidate, serving, main, key, ...(receipt || before?.receipt ? { receipt: true } : {}), ...(confirm ? { confirm: true } : {}) };
       if (front) {
         const rest = [...queued].filter(([n]) => n !== name);
         queued.clear();
@@ -250,6 +251,14 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, log = () => {
           const trial = await readTrial(repo, v.name, main).catch(() => undefined);
           const live = trial && currentRevision(trial);
           const same = live?.sha256 === v.candidate && (lastProven(trial)?.sha256 ?? null) === v.serving;
+          if (v.confirm) {
+            // A promotion that already stands: the verdict confirms it, or demotes it back to the revision it replaced.
+            const applied = !same || live.status !== 'active' ? 'stale' : v.promote ? 'confirmed' : await demote({ repo, trial, name: v.name, sha256: v.candidate, back: v.serving, reason: v.reason, main });
+            writeJson(verdictFile(dir, v.key), { ...v, applied: { as: applied, at: new Date().toISOString(), main } });
+            reported.push({ name: v.name, candidate: v.candidate, serving: v.serving, promote: v.promote, applied, reason: v.reason, confirm: true });
+            log(`  promotion gate on ${v.name} ${v.candidate.slice(0, 8)}: ${applied}`);
+            continue;
+          }
           let applied = !same ? 'stale' : live.status === 'active' ? 'promoted' : v.promote ? null : 'held';
           if (applied === null) {
             const rules = thresholds ? { thresholds } : {};
@@ -274,6 +283,21 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, log = () => {
   };
 }
 
+/** Demotes `sha256` on main back to `back`, the revision it replaced, as pi-agent-learn's settler does: the trial, the
+ *  workflow store's `latest`, and the skill's description the restored revision kept. Returns 'demoted'. */
+async function demote({ repo, trial, name, sha256, back, reason, main }) {
+  const restored = trial.revisions.find((r) => r.sha256 === back);
+  const after = applyDecision(trial, { action: 'demote', sha256, rollbackTo: back, skipped: [], reason: `promotion gate: ${reason}` }, new Date().toISOString());
+  const files = {
+    [trialPath(name)]: renderTrial(after),
+    [`${workflowDir(name)}/latest`]: `${back}\n`,
+    [skillPath(name)]: restored?.description !== undefined ? renderSkill(name, restored.description) : null,
+  };
+  const commit = await repo.commitTo('main', { files, message: `promotion gate: demote ${name} ${sha256.slice(0, 12)} back to ${back.slice(0, 12)}: ${reason}`, parent: main });
+  await repo.push(commit.sha, 'main');
+  return 'demoted';
+}
+
 const useKey = (use) => `${use.run}\n${use.sha256}`;
 
 /**
@@ -292,10 +316,9 @@ export function undoPromotion(before, after, sha256) {
  * The `settleUses` port with the gate on promotion. `settle` (pi-agent-learn's usesSettler) folds the run's uses as it
  * always does; each promotion it decides is asked of `gate` (`asyncGate`). It stands only on a landed verdict that passes
  * it; one held, still on the bank, or that cannot be asked is undone (`undoPromotion`) and becomes a hold that says why.
- * With `only({ name, revision, read, main })`, only a promotion it names is asked; any other stands as decided. Demotions
- * and holds pass as they are.
+ * Demotions and holds pass as they are.
  */
-export function gatedSettler({ settle, gate, only }) {
+export function gatedSettler({ settle, gate }) {
   return async (input) => {
     const result = await settle(input);
     if (!result.decisions.some((d) => d.action === 'promote')) return result;
@@ -305,20 +328,6 @@ export function gatedSettler({ settle, gate, only }) {
       if (decision.action !== 'promote') {
         decisions.push(decision);
         continue;
-      }
-      // With `only` (promotion by receipt), a promotion the gate is not for stands as the package decided it.
-      if (only) {
-        let gated = false;
-        try {
-          const live = currentRevision(parseTrial(await input.read(trialPath(decision.name), input.main), decision.name));
-          gated = Boolean(live) && await only({ name: decision.name, revision: live, read: input.read, main: input.main });
-        } catch {
-          gated = true;
-        }
-        if (!gated) {
-          decisions.push(decision);
-          continue;
-        }
       }
       const { name } = decision;
       const path = trialPath(name);

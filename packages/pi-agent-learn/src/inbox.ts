@@ -14,22 +14,26 @@ export class InboxFormatError extends Error {
 export type InboxOptions = {
   /** The commit the run was seeded from, so a reader can stamp a learning with what the run actually saw. */
   readonly seed?: string;
-  /** The run read untrusted content: every candidate is marked untrusted. */
-  readonly untrusted?: boolean;
+  /** The run read untrusted content: every candidate is marked untrusted. A function marks each candidate on its own (a
+   *  host that can tell which notes came from the run's own work); the heading then says when only some are. */
+  readonly untrusted?: boolean | ((candidate: Candidate) => boolean);
 };
 
 /** `inbox/<run id>.md`: front matter (the run and its seed commit, written before any model text), the candidates for a
  *  person to read, and the candidates as one JSON line, each with its untrusted mark. */
 export function renderInbox(runId: string, candidates: readonly Candidate[], options: InboxOptions = {}): string {
   if (options.seed !== undefined && !COMMIT_SHA.test(options.seed)) throw new InboxFormatError("the seed is not a commit id");
-  const untrusted = options.untrusted === true;
+  const each = typeof options.untrusted === "function" ? options.untrusted : undefined;
+  const marks = candidates.map((c) => (each ? each(c) === true : options.untrusted === true));
+  const heading = !each ? (options.untrusted === true ? " (untrusted)" : "")
+    : marks.length > 0 && marks.every(Boolean) ? " (untrusted)" : marks.some(Boolean) ? " (some untrusted)" : "";
   const front = ["---", `run: ${runId}`, ...(options.seed === undefined ? [] : [`seed: ${options.seed}`]), `candidates: ${candidates.length}`, "---"];
-  const lines = [...front, `# Run ${runId} proposes ${candidates.length} candidate(s)${untrusted ? " (untrusted)" : ""}`, ""];
+  const lines = [...front, `# Run ${runId} proposes ${candidates.length} candidate(s)${heading}`, ""];
   candidates.forEach((c, i) => {
     lines.push(`## ${i + 1}. ${c.type}${c.id === undefined ? "" : ` ${c.id}`}`, "", c.text, "");
     if (c.evidence.length) lines.push("Evidence:", ...c.evidence.map((item) => `- ${item}`), "");
   });
-  const exact = candidates.map(({ callId, type, text, evidence, id }) => ({ callId, type, text, evidence, ...(id === undefined ? {} : { id }), untrusted }));
+  const exact = candidates.map(({ callId, type, text, evidence, id }, i) => ({ callId, type, text, evidence, ...(id === undefined ? {} : { id }), untrusted: marks[i] }));
   lines.push(FENCE, JSON.stringify(exact), "~~~", "");
   return lines.join("\n");
 }

@@ -33,10 +33,9 @@ import { scoreV4 } from './score-v4.mjs';
 import { agentScript, agentScriptV2, agentScriptV4, FIXTURES, FIXTURES_V2, FIXTURES_V4, fakeHardTools, fixtureWeb, scriptedJev, scriptedModel } from './scripted.mjs';
 import { isHard, SETS } from './sets.mjs';
 import { ANY_HOST, domainOf, fetchPageTool } from './tools.mjs';
-import { answersTheJob, hostRecord, lastProven, promotedFor, recordedWorkflow } from './dispatch.mjs';
-import { lookupOfLines, receiptOf } from './eval-lookup.mjs';
-import { isReceiptCandidate, receiptTextsOf, recordRun } from './receipts.mjs';
-import { currentRevision, readTrial } from '@parcha/pi-agent-learn';
+import { answersTheJob, hostRecord, promotedFor } from './dispatch.mjs';
+import { contradictionOf, lookupOfLines, receiptOf } from './eval-lookup.mjs';
+import { LINK_QUESTION, receiptHoldsTrial, receiptLinks, receiptUses, recordRun } from './receipts.mjs';
 import { asyncGate, GATE, gateSpend } from './promotion-gate.mjs';
 import { passSelfTest } from './selftest.mjs';
 import { writeHosts } from './tools-v2.mjs';
@@ -368,18 +367,22 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
       }),
     });
   }
-  // Promotion and admission by receipt (receipts.mjs): what the run read of the SEC's record, from its closed store.
-  const receipts = parts.receiptAdmission || parts.receiptPromotion;
+  // Admission and promotion by receipt (receipts.mjs): what the run read of the SEC's record, from its closed store.
+  const receipts = parts.admitByReceipt || parts.receiptHoldsTrial || parts.receiptUses;
   if (receipts && p.phase === 'ran' && p.receipt === undefined) {
     const { lines } = recordingLines(run.storePath);
     const looked = lookupOfLines(lines, { sic4: p.measure.answer?.sic4 });
-    save({ ...p, receipt: receiptOf(lines, p.measure.answer), workflowTouch: looked.touched && looked.byWorkflow });
+    save({ ...p, receipt: receiptOf(lines, p.measure.answer), contradiction: contradictionOf(lines, p.measure.answer), workflowTouch: looked.touched && looked.byWorkflow });
   }
   await lock(async () => {
     if (p.phase === 'ran') {
-      // A receipt's code is refused in the run's notes like the company's own values.
-      const alsoRefuse = parts.receiptAdmission && p.receipt ? [p.receipt.sic4] : [];
-      save({ ...p, phase: 'proposed', finished: await finishJob({ home, repo, run, job, measure: p.measure, alsoRefuse }) });
+      // With a receipt, the code is refused in the run's notes like the company's own values, and each note linked to the
+      // receipt is proposed as the run's own work.
+      const receipted = parts.admitByReceipt && p.receipt;
+      const linkJudge = meteredJudge(judge);
+      const ask = async (state) => (await linkJudge.run({ label: 'receipt/link', kind: 'judge', state, questions: { link: { type: 'noul', instructions: LINK_QUESTION } }, decisionId: `receipt-link-${createHash('sha256').update(JSON.stringify(state)).digest('hex').slice(0, 32)}` }))?.answers?.link?.noul ?? 0;
+      const finished = await finishJob({ home, repo, run, job, measure: p.measure, ...(receipted ? { alsoRefuse: [p.receipt.sic4], links: (candidates) => receiptLinks(candidates, p.receipt, ask) } : {}) });
+      save({ ...p, phase: 'proposed', finished, ...(receipted ? { linkJudge: { ...linkJudge.meter } } : {}) });
     }
     if (p.phase === 'proposed' && p.hindsight?.reflections?.length && !p.hindsight.proposals) {
       save({ ...p, hindsight: { ...p.hindsight, proposals: await proposeHindsight({ repo, job, run, seedSha: p.seedSha, wrong: p.hindsight.wrong, reflections: p.hindsight.reflections }) } });
@@ -388,11 +391,10 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
       // The promotion gate's verdicts that landed since the last curate are applied first, so this curate starts from them.
       const gated = gate ? await gate.apply({ repo, thresholds: parts.thresholds }) : [];
       const receiptsDir = join(out, 'receipts');
-      if (parts.receiptPromotion) {
+      if (receipts) {
         const executed = [...new Set([...(p.measure.workflowRuns ?? []).map((r) => r.revision), p.measure.dispatch?.revision].filter((r) => typeof r === 'string'))];
-        recordRun(receiptsDir, { run: runId, receipt: p.receipt ?? null, executed, workflowTouch: Boolean(p.workflowTouch), saved: (p.finished?.saved ?? []).map((w) => w.sha256) });
+        recordRun(receiptsDir, { run: runId, receipt: p.receipt ?? null, contradiction: p.contradiction ?? null, executed, workflowTouch: Boolean(p.workflowTouch) });
       }
-      const receiptOnly = async ({ name, revision, read, main }) => isReceiptCandidate(receiptsDir, { sha256: revision.sha256, bornIn: revision.run, workflow: await recordedWorkflow({ read }, name, revision.sha256, main) });
       const curateJudge = meteredJudge(judge);
       const curated = await curateJob({
         repo, judge: curateJudge, ...(parts.thresholds ? { thresholds: parts.thresholds } : {}),
@@ -401,12 +403,11 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
         ...(parts.factsOverLessons ? { factsOverLessons: true } : {}),
         ...(parts.factFloor ? { factFloor: parts.factFloor } : {}),
         ...(parts.refuseRefusedHosts ? { refuseRefusedHosts: true } : {}),
-        ...(gate ? { gate } : {}),
-        ...(gate && parts.receiptPromotion ? { gateOnly: receiptOnly } : {}),
-        ...(parts.receiptAdmission && p.receipt ? { receiptTexts: receiptTextsOf(p.finished?.candidates) } : {}),
+        // With promotion by receipt the gate does not hold a promotion back: it confirms or demotes a replacement.
+        ...(gate && !parts.receiptUses ? { gate } : {}),
+        ...(parts.receiptHoldsTrial ? { wrapAdmit: (admit) => receiptHoldsTrial(admit, receiptsDir) } : {}),
+        ...(parts.receiptUses ? { wrapSettle: (settle) => receiptUses({ settle, dir: receiptsDir, gate }) } : {}),
       });
-      // A receipt candidate on trial is put to the gate at once, ahead of any other comparison, whatever its uses.
-      if (gate && parts.receiptPromotion) await askForReceipts({ repo, gate, main: curated.report.main, receiptsDir });
       save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main, ...(gated.length ? { gated } : {}), ...(tally ? { curatedIndex: ++tally.curated, curatedAt: new Date().toISOString() } : {}) });
       tally?.landed(job, p);
     }
@@ -434,7 +435,8 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
     ...(p.curatedBefore === undefined ? {} : { curatedBefore: p.curatedBefore, lag: job.order - 1 - p.curatedBefore }),
     ...(p.curatedIndex === undefined ? {} : { curatedIndex: p.curatedIndex }),
     ...(p.gated ? { gated: p.gated } : {}),
-    ...(p.receipt !== undefined ? { receipt: p.receipt } : {}),
+    ...(p.receipt !== undefined ? { receipt: p.receipt, contradiction: p.contradiction ?? null } : {}),
+    ...(p.finished?.receiptLinks ? { receiptLinks: p.finished.receiptLinks } : {}),
     rerunOf: p.infraFailed?.[0]?.runId ?? null, infraFailed: modelError(p.measure), limits,
     durableCommits: durableCommits(run.storePath),
   };
@@ -503,23 +505,6 @@ function curateTally({ out, stream, seedSha, checkpoints = [], gates }) {
   };
   pass();
   return tally;
-}
-
-/** Each workflow on trial at `main` that is a receipt candidate (receipts.mjs) is asked of the gate, at the front of its
- *  queue; one already landed or running is left as it is. */
-async function askForReceipts({ repo, gate, main, receiptsDir }) {
-  const names = [...new Set((await repo.list('.agents/skills', main)).map((e) => /^\.agents\/skills\/([^/]+)\/trial\.json$/.exec(e.path)?.[1]).filter(Boolean))];
-  for (const name of names) {
-    const trial = await readTrial(repo, name, main).catch(() => undefined);
-    const live = trial && currentRevision(trial);
-    if (live?.status !== 'trial') continue;
-    const workflow = await recordedWorkflow(repo, name, live.sha256, main);
-    if (!workflow || !isReceiptCandidate(receiptsDir, { sha256: live.sha256, bornIn: live.run, workflow })) continue;
-    const proven = lastProven(trial);
-    const served = proven && await recordedWorkflow(repo, name, proven.sha256, main);
-    if (proven && !served) continue;
-    gate.ask({ name, candidate: { sha256: live.sha256, workflow }, serving: proven ? { sha256: proven.sha256, workflow: served } : null, main, front: true, receipt: true });
-  }
 }
 
 /**
@@ -778,7 +763,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end] [--receipt-promotion]] [--receipt-admission] [--facts-over-lessons] [--fact-floor <n>] [--hindsight all|<field,...>] [--refuse-refused-hosts] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--admit-by-receipt] [--receipt-holds-trial] [--receipt-uses] [--facts-over-lessons] [--fact-floor <n>] [--hindsight all|<field,...>] [--refuse-refused-hosts] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -792,7 +777,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         split: { type: 'string' }, 'open-test': { type: 'boolean' }, from: { type: 'string' }, concurrency: { type: 'string' }, shard: { type: 'string' }, 'drop-evidence': { type: 'boolean' },
         'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' }, 'edgar-cache': { type: 'string' }, schedule: { type: 'string' }, checkpoints: { type: 'string' },
         'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, 'gate-wait-at-end': { type: 'boolean' }, hindsight: { type: 'string' },
-        'receipt-admission': { type: 'boolean' }, 'receipt-promotion': { type: 'boolean' },
+        'admit-by-receipt': { type: 'boolean' }, 'receipt-holds-trial': { type: 'boolean' }, 'receipt-uses': { type: 'boolean' },
         'facts-over-lessons': { type: 'boolean' }, 'fact-floor': { type: 'string' }, 'refuse-refused-hosts': { type: 'boolean' },
       },
     }));
@@ -871,12 +856,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       const inFlight = values['promotion-bank-concurrency'] === undefined ? GATE.concurrency : Number(values['promotion-bank-concurrency']);
       if (!(Number.isInteger(inFlight) && inFlight >= 1)) { console.error(`--promotion-bank-concurrency is a whole number from 1\n${USAGE}`); process.exit(2); }
       parts.bankConcurrency = inFlight;
-      if (values['receipt-promotion']) {
-        parts.receiptPromotion = true;
-        console.log(`learn-classify: only receipt candidates go to the replay gate on ${Array.isArray(parts.bank) ? parts.bank.length : 0} bank companies, ${inFlight} at once, ahead of the queue; every other revision promotes on its clean uses (<out>/gate, <out>/receipts)`);
-      } else console.log(`learn-classify: a promotion stands only when it passes the replay gate on ${Array.isArray(parts.bank) ? parts.bank.length : 0} bank companies, ${inFlight} at once (<out>/gate)`);
+      if (values['receipt-uses']) console.log(`learn-classify: a promotion that replaces a serving revision stands, and the replay gate on ${Array.isArray(parts.bank) ? parts.bank.length : 0} bank companies, ${inFlight} at once, confirms or demotes it (<out>/gate)`);
+      else console.log(`learn-classify: a promotion stands only when it passes the replay gate on ${Array.isArray(parts.bank) ? parts.bank.length : 0} bank companies, ${inFlight} at once (<out>/gate)`);
     } else {
-      for (const name of ['promotion-bank-concurrency', 'gate-wait-at-end', 'receipt-promotion']) {
+      for (const name of ['promotion-bank-concurrency', 'gate-wait-at-end']) {
         if (values[name] !== undefined) { console.error(`--${name} takes --promotion-bank\n${USAGE}`); process.exit(2); }
       }
     }
@@ -890,10 +873,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       parts.factFloor = floor;
       console.log(`learn-classify: facts are kept past the index cap while ${floor} or fewer are active`);
     }
-    if (values['receipt-admission']) {
-      if (set !== SETS.v4) { console.error(`--receipt-admission reads the v4 answer's SIC cite: pass --set v4\n${USAGE}`); process.exit(2); }
-      parts.receiptAdmission = true;
-      console.log('learn-classify: a run that read the SEC record of the code it answered and cited it has its notes judged with fromContent answered by that receipt');
+    for (const [flag, key, line] of [
+      ['admit-by-receipt', 'admitByReceipt', 'a note linked to its run\'s receipt (the SEC record of the code it answered, cited) is proposed as the run\'s own work, and the code is refused in the run\'s notes'],
+      ['receipt-holds-trial', 'receiptHoldsTrial', 'a revision without a workflow receipt does not replace a live trial that has one'],
+      ['receipt-uses', 'receiptUses', 'a use with a workflow receipt promotes, a receipt contradiction is a failed use (<out>/receipts)'],
+    ]) {
+      if (!values[flag]) continue;
+      if (set !== SETS.v4) { console.error(`--${flag} reads the v4 answer's SIC cite: pass --set v4\n${USAGE}`); process.exit(2); }
+      parts[key] = true;
+      console.log(`learn-classify: ${line}`);
     }
     if (promoteAfter !== undefined) {
       parts.thresholds = { promoteAfter };
