@@ -209,3 +209,26 @@ test('a value shared down a deep ladder is walked ONCE (linear, not once per pat
   }
 });
 
+test('an ERROR shared down a deep ladder (each error\'s two properties hold the same next error) is copied once, linear, and stays in both branches', () => {
+  // Depth 14 first: a walk once per path fails there in seconds instead of hanging at 30.
+  for (const depth of [14, 30]) {
+    let level = new Error(`token ${KEY}`);
+    for (let i = 0; i < depth; i += 1) level = Object.assign(new Error(`level ${i}`), { left: level, right: level });
+    const begun = Date.now();
+    const out = handedOutError(level);
+    const took = Date.now() - begun;
+    assert.ok(took < 1000, `depth ${depth} took ${took} ms`);
+    let node = out;
+    for (let i = 0; i < depth; i += 1) { assert.equal(node.left, node.right, `level ${i}: one copy in both branches`); node = node.left; }
+    assert.equal(inspect(node).includes(KEY), false);
+  }
+});
+
+test('a non-plain value NESTED in a plain object inside an error is withheld, named by its path, and not left behind; its plain siblings are kept', () => {
+  const out = handedOutError(Object.assign(new Error('failed'), { details: { map: new Map([['stderr', `token ${KEY}`]]), keep: 'plain' } }));
+  assert.equal(Object.hasOwn(out.details, 'map'), false, 'the Map key is absent from the copied details');
+  assert.equal(out.details.keep, 'plain');
+  assert.deepEqual(out.withheldProperties, ['details.map']);
+  assert.equal(inspect(out, { depth: 10 }).includes(KEY), false);
+});
+
