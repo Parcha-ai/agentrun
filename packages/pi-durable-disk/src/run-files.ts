@@ -68,11 +68,13 @@ const notImplemented = (error: unknown) => statusOf(error) === 501 || (error as 
 /** `call`, ended at once when `signal` aborts (the request itself may still finish; nothing waits on it). */
 function bounded<T>(call: () => Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   signal?.throwIfAborted();
-  if (!signal) return call();
+  // A control that throws before it returns a promise rejects like any other, so the listener below is always removed.
+  const pending = Promise.resolve().then(call);
+  if (!signal) return pending;
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(signal.reason);
     signal.addEventListener("abort", onAbort, { once: true });
-    call().then(
+    pending.then(
       (v) => (signal.removeEventListener("abort", onAbort), resolve(v)),
       (e: unknown) => (signal.removeEventListener("abort", onAbort), reject(e)),
     );

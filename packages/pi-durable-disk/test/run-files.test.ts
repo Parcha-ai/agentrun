@@ -1,6 +1,7 @@
 // readRunFile and listRunFiles over a fake control that answers as Archil's S3 API does (D2's measurements, archil
 // 0.8.42): a missing key is 404, a symlink is listed as an ordinary zero-byte key but its HEAD and GET answer 501, and a
 // directory is a marker key ending in "/". Every call is recorded, so a test can say what was asked and that nothing wrote.
+import { getEventListeners } from "node:events";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { listRunFiles, readRunFile, RunFileError, type RunFileControl } from "../src/run-files.ts";
@@ -64,8 +65,12 @@ const run = (more: Record<string, Entry> = {}) => fakeControl({ [RUN]: { kind: "
 
 test("readRunFile: a file's bytes; a missing file is null; a missing run is RUN_MISSING; nothing is ever written", async () => {
   const f = run({ [`${RUN}box-ids.internal/`]: { kind: "dir" }, [`${RUN}box-ids.internal/box-1.json`]: { kind: "file", bytes: bytes('{"owner":"place"}') } });
+  f.calls.length = 0;
   assert.deepEqual(await readRunFile(f.control, REF, "box-ids.internal/box-1.json"), bytes('{"owner":"place"}'));
+  assert.deepEqual(f.calls, [`get ${RUN}box-ids.internal/box-1.json`], "a found file costs one GET");
+  f.calls.length = 0;
   assert.equal(await readRunFile(f.control, REF, "box-ids.internal/box-2.json"), null, "not there yet: a poller waits");
+  assert.deepEqual(f.calls, [`get ${RUN}box-ids.internal/box-2.json`, `head ${RUN}box-ids.internal/box-2.json/`, `head ${RUN}`], "a missing file costs one GET, then two HEADs");
   const none = fakeControl();
   await assert.rejects(readRunFile(none.control, REF, "run.json"), (e: unknown) => e instanceof RunFileError && e.code === "RUN_MISSING");
   assert.ok(![...f.calls, ...none.calls].includes("put"), "a read never writes");
@@ -130,6 +135,24 @@ test("a control failure other than 404 or 501 is CONTROL_API_FAILED with its cau
     assert.doesNotMatch((e as Error).message, /TOP-SECRET-CONTENT/);
     return true;
   });
+});
+
+test("a control that throws before it returns a promise is CONTROL_API_FAILED, and leaves no abort listener behind on the caller's signal", async () => {
+  const ac = new AbortController();
+  const control: RunFileControl = {
+    getObject: () => {
+      throw new Error("refused at once");
+    },
+    headObject: async () => ({}),
+    listObjects: () => {
+      throw new Error("refused at once");
+    },
+  };
+  for (let i = 0; i < 20; i++) {
+    await assert.rejects(readRunFile(control, REF, "run.json", { signal: ac.signal }), (e: unknown) => e instanceof RunFileError && e.code === "CONTROL_API_FAILED");
+    await assert.rejects(listRunFiles(control, REF, "", { signal: ac.signal }), (e: unknown) => e instanceof RunFileError && e.code === "CONTROL_API_FAILED");
+  }
+  assert.equal(getEventListeners(ac.signal, "abort").length, 0, "every listener removed");
 });
 
 test("a signal: an aborted one makes no request; one aborted while a request hangs ends the wait at once", async () => {
