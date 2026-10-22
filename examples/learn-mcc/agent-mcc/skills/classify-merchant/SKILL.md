@@ -14,8 +14,8 @@ Sources and evidence, for every part:
   line, a price, a sentence of the terms), never a paraphrase. Cite the page you quoted: an evidence item's URL is the
   page its quote is copied from, as you read it in this run.
 - The code is chosen, not remembered. A code you remember, or a code a page states for this merchant, is a guess and
-  never evidence: the code follows what the merchant sells, as its own pages show it, read in this run.
-- The vertical the merchant was listed under is a hint where to look, never evidence: its own pages decide.
+  never evidence: the code follows what the merchant sells, as its own pages show it, read in this run. Sites that list
+  merchants' codes are refused by every tool: do not try them.
 
 1. The site: fetch_page the website given. When it returns little text, the page needs JavaScript: browse it. Note what
    the site is: live and this merchant's business, unreachable, parked (for sale, a placeholder, a hosting default), or
@@ -37,7 +37,7 @@ Sources and evidence, for every part:
 5. The risk tier: the rubric below, from what the pages read in this run show. The tier is the highest one any row
    reaches; the rationale names the rows that set it, in the merchant's terms.
 6. The flags: each flag below that a page read in this run shows, and no other. A flag rests on the merchant's own
-   words, never on the vertical or on what such merchants usually do.
+   words, never on what such merchants usually do.
 7. Confidence: your probability that the code is the one a card network would assign. It is high when the site plainly
    says what is sold and one title fits; lower when the site is thin or not live, the business mixes lines, or two
    titles fit.

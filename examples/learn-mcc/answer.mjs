@@ -21,10 +21,10 @@ export const MAX_QUOTE = 300;
 
 const text = (max) => ({ type: 'string', minLength: 1, maxLength: max });
 
-/** The job's input: the merchant's name and website, and the vertical it was listed under, context only. */
+/** The job's input: the merchant's name and website, and nothing else. */
 export const JOB_INPUT = Object.freeze({
   type: 'object', additionalProperties: false, required: ['name', 'website'],
-  properties: { name: text(200), website: text(600), vertical: text(200) },
+  properties: { name: text(200), website: text(600) },
 });
 
 /** The answer tool, given the MCC table (code to title, as mcc_codes gives it). */

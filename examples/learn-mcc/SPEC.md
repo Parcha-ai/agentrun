@@ -8,16 +8,16 @@ change here first.
 
 ## Input
 
-`{ "name", "website", "vertical"? }` (`JOB_INPUT` in answer.mjs).
+`{ "name", "website" }` (`JOB_INPUT` in answer.mjs).
 
 | Field | What it is |
 |---|---|
 | `name` | The merchant's name as the merchant record gives it. |
 | `website` | The merchant's website as the record gives it: a URL. |
-| `vertical` | The vertical the merchant was listed under, when the record has one. Context only: never evidence, never quoted. It is given only when it is part of the merchant record itself, never when it is a classifier's output. |
 
 Nothing else reaches the learner: no MCC, description, risk, rationale, flags, evidence or confidence from any other
-classifier, and no page text another run collected.
+classifier, no page text another run collected, and no vertical. The record's vertical is the teacher's discovery
+category and goes with the MCC, so it would carry part of the label: it is used only to stratify the split.
 
 ## Output: the `answer` tool (`answerMcc(codes)` in answer.mjs)
 
@@ -48,6 +48,8 @@ marketplace listing that names the merchant as the seller. Whitespace is folded 
 The teacher (the classifier whose labels came with the merchant records) is an agent, not truth. Two numbers, never
 pooled:
 1. Teacher agreement, on every split: exact MCC, MCC group (ISO 18245 ranges), risk tier exact and by ordinal distance.
+   The teacher's risk comes from its own later stage, on a smaller model, and may follow a different rubric than this
+   one: risk agreement is reported as agreement with the teacher, never as accuracy against this rubric.
 2. Adjudicated accuracy, the headline: a sealed sample judged by hand, blind between the learner's answer and the
    teacher's, by the rules above: the MCC a card network would assign from what the merchant actually sells, and the
    tier this rubric gives.
@@ -119,4 +121,4 @@ the code table, and `mccDescription` is held to its titles.
 
 The home (`agent-mcc/`) names no merchant from the campaign, quotes no page a classifier collected, and carries no label.
 Its examples are invented. A page that states a merchant's MCC is never evidence: the code follows what the merchant
-sells.
+sells, and the tools refuse the sites that list merchants' codes (the harness keeps that list).

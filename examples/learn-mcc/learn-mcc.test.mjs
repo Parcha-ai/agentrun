@@ -58,7 +58,7 @@ test('the answer: a code from mcc_codes and its title, a tier, flags from the li
   assert.doesNotMatch(JSON.stringify(tool.parameters), /"(contains|uniqueItems|allOf|oneOf|if|then|patternProperties)"/);
   assert.deepEqual(CLAIMS, ['mcc', 'risk', ...FLAGS]);
   assert.deepEqual([RISK_TIERS, SITE_STATUSES], [['low', 'medium', 'high'], ['live', 'unreachable', 'parked', 'other_business']]);
-  assert.deepEqual(JOB_INPUT.required, ['name', 'website']);
+  assert.deepEqual([JOB_INPUT.required, Object.keys(JOB_INPUT.properties)], [['name', 'website'], ['name', 'website']], 'the input is the name and the website, nothing else');
 });
 
 test('answerProblems: the title is its code\'s, the code and the tier have evidence, each flag has evidence and evidence names only given flags', () => {
@@ -126,7 +126,9 @@ test('one risk rubric: SPEC.md states the skill\'s rubric and flags word for wor
   for (const tier of ['- high, when', '- medium, when no high row holds', '- low, when no other row holds']) assert.ok(rubric.includes(tier), tier);
 });
 
-test('the home names no merchant: no site, no domain, its examples invented', () => {
+test('the home names no merchant and no vertical: no site, no domain, its examples invented', () => {
   const body = ['AGENTS.md', 'agent.json', 'skills/classify-merchant/SKILL.md'].map((file) => read(HOME, file)).join('\n');
   assert.doesNotMatch(body, /https?:\/\/|www\.|\b[a-z0-9-]+\.(com|net|org|io|co|shop|store|us|uk)\b/i);
+  // The vertical is the teacher's discovery category and goes with the label: the learner never hears of it.
+  assert.doesNotMatch(body, /vertical/i);
 });

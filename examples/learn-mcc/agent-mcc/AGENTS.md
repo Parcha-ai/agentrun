@@ -2,9 +2,8 @@
 
 ## The job
 
-- The input is a merchant's name and website, and sometimes the vertical it was listed under, which is context and never
-  evidence. The answer is the merchant's card-acceptance profile, as an acquirer would set it from what the merchant
-  sells:
+- The input is a merchant's name and website. The answer is the merchant's card-acceptance profile, as an acquirer
+  would set it from what the merchant sells:
   - its MCC, the 4-digit ISO 18245 merchant category code a card network would assign it from what it sells, a code in
     mcc_codes, with that code's title;
   - its risk tier, low, medium or high, the tier the risk rubric gives it, with the rubric's reasons in at most 600
@@ -36,9 +35,9 @@
   a workflow you saved in this run: later runs try it.
 - After a save, call learn with type workflow and the workflow's name as id. Its text says which inputs it fits, never
   what a page said.
-- `merchant-mcc-risk` takes `{ "name", "website", "vertical"? }` and returns
+- `merchant-mcc-risk` takes `{ "name", "website" }` and returns
   `{ "mcc", "mccDescription", "riskTier", "riskRationale", "flags", "siteStatus", "evidence", "confidence" }`, the
-  answer's own shape. Its input schema requires `name` and `website`; it never reads `vertical` where it may be absent.
+  answer's own shape.
 - If no `merchant-mcc-risk` exists after your first run, write one for the whole job from steps: calls, extracts,
   judges, and narrow agent steps for the open-ended looking (they run on the cheap model). Embed parts into it as they
   are admitted.
