@@ -408,6 +408,7 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pic
     fleet,
     mountRoot,
     kills: "box",
+    provider: "daytona",
 
     async start(ref: RunRef, mountToken: string, attempt?: StartAttempt): Promise<HostHandle> {
       runPath(ref.id);

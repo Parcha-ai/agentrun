@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## 0.1.0-beta.22 (2026-10-21)
+## 0.1.0-beta.23 (2026-10-22)
 
 First release of `@parcha/pi-git-remote`, versioned with the other packages of the repository it is published from.
 
@@ -34,3 +34,4 @@ First release of `@parcha/pi-git-remote`, versioned with the other packages of t
 - The hostile-corpus control for `attr-filter-operator-driver` triggers the operator's clean filter with `git add --renormalize`, as `limit-git-config-filter` already does: a plain `add` skips the clean filter when the clone left the file stat-clean, so the case failed a required check on a slow runner. Both filter cases now share that trigger and run from the stat-clean state (the index newer than the file), so a trigger that depends on timing fails every time instead of now and then.
 - A git that times out, or fails in any other way, while the repository asks whether a commit exists or whether one commit is an ancestor of another is now a `git` error. It is no longer read as "no". Read as "no", a `merge-base` that timed out while `commitTo` picked a branch's tip made the remote's tip win over a local commit not yet pushed. The write then built on the remote's tip and moved the branch off the local commit, so that commit was lost. Exit 1 stays the only "no". A `rev-parse` that timed out reads as a git failure too, not as a missing ref.
 - The README's coding-agent walkthrough says what it needs before it starts (pi on the `PATH`, and a model, given one of three ways: `/login`, a provider key in the environment, or `~/.pi/agent/models.json`; without one pi stops at "No API key found for the selected model"), seeds the example repository with its own commit identity, so it works where git has no identity configured and cannot guess one, and runs pi once with `-p`, so the session's commit is on its branch when the command returns; the interactive way is one sentence below it.
+- The README's pi install line for the coding-agent session pins `@earendil-works/pi-coding-agent@1.3.0`, because pi 1.4 is not supported yet.
