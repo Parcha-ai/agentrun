@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 // Whether a run looked up the SEC's own code (the learning redesign's runs-to-discovery), read structurally from the run's
 // recording with the tools' own predicate (tools.mjs archivedSecPage), never from prose.
-//   node examples/learn-classify/eval-lookup.mjs <rows.jsonl> [--history <workflow-history.json>]
+//   node examples/learn-classify/eval-lookup.mjs <rows.jsonl> [--history <workflow-history.json>] [--capture-status <statuses.json> [--resolve]]
 // A run TOUCHED the lookup when a fetch_page, browse or read_document result that came back ok was for a Wayback copy of an
 // SEC page; it USED it when the answer's 4-digit code is a whole token in such a result's text, and its SIC cite names such
 // a page (citeUse). A touch is BY A WORKFLOW when a workflow node made the call: a call node (an effect) or an agent node
 // (a conversation agentrun.nodes names), not the root agent. Each archived page's kind says which route the agent found:
 // index, headers, company (browse-edgar), submissions (data.sec.gov), other. With --history, each saved revision is also
-// read statically: a call node to one of those tools whose url template (placeholders as "x") is such a page.
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+// read statically: a call node to one of those tools whose url template (placeholders as "x") is such a page. With
+// --capture-status, a run READ the record when such a page's capture is one the archive itself reports as 2xx (its CDX
+// statuscode): a crawl-time redirect notice is touched, never read.
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -141,6 +143,81 @@ export function lookupOfLines(lines, { sic4 } = {}) {
   };
 }
 
+/** The Wayback capture an address names, as `<14-digit time> <archived URL>`, or null: a time cut short names no one
+ *  capture (the archive resolves it), and an address off the archive names none. */
+export function captureKey(href) {
+  let url;
+  try { url = new URL(href); } catch { return null; }
+  if (url.hostname.toLowerCase() !== 'web.archive.org') return null;
+  const m = /^\/web\/(\d{14})(?:[a-z]{2}_)?\/(.+)$/.exec(url.pathname);
+  return m ? `${m[1]} ${m[2].replace(/^(https?):\/+/i, '$1://')}${url.search}` : null;
+}
+
+/** A run's ok record-page results, each with the capture its text came from (the result's address, after redirects). */
+function recordResults(lines) {
+  return readerResults(lines).results.flatMap(({ args, value }) => {
+    if (!value || value.ok === false || value.refused) return [];
+    const url = typeof value.url === 'string' ? value.url : args.url;
+    if (typeof url !== 'string' || !archived(url) || !RECORD_KINDS.includes(pageKind(url))) return [];
+    return [{ url, kind: pageKind(url), key: captureKey(url) }];
+  });
+}
+
+/** The captures a run's ok record-page results came from, for `captureStatuses` to resolve. */
+export function recordCapturesOf(lines) {
+  return [...new Set(recordResults(lines).map((r) => r.key).filter(Boolean))].sort();
+}
+
+/**
+ * Whether the run READ the SEC's record: an ok record-page result whose capture the archive itself reports as 2xx
+ * (`statusOf(key)`, the CDX statuscode from `captureStatuses`). A crawl-time redirect is a 3xx capture whose notice a reader
+ * still returns as ok, so it is touched and never read. A capture with no known status is not a read; `unresolved` counts
+ * them.
+ */
+export function recordReadOf(lines, statusOf) {
+  const results = recordResults(lines);
+  const status = (r) => (r.key ? statusOf(r.key) : undefined);
+  const read = results.filter((r) => { const s = status(r); return Number.isInteger(s) && s >= 200 && s < 300; });
+  const unresolved = new Set(results.filter((r) => !Number.isInteger(status(r))).map((r) => r.key ?? r.url));
+  return { recordRead: read.length > 0, readKinds: [...new Set(read.map((r) => r.kind))].sort(), unresolved: unresolved.size };
+}
+
+export const CDX = 'https://web.archive.org/cdx/search/cdx';
+
+/**
+ * The archive's own status for each capture (`captureKey`), from its CDX index at the exact archived URL and time. `known`
+ * statuses are kept and not asked again; a capture the index does not list stays unknown (absent). A lookup that still
+ * fails after `retries` throws, so no status is ever guessed.
+ */
+export async function captureStatuses(keys, { known = {}, fetch = globalThis.fetch, retries = 3, backoffMs = 2000, concurrency = 2 } = {}) {
+  const out = { ...known };
+  const queue = [...new Set(keys)].filter((key) => typeof key === 'string' && !(key in out));
+  const one = async (key) => {
+    const time = key.slice(0, key.indexOf(' '));
+    const href = `${CDX}?${new URLSearchParams({ url: key.slice(time.length + 1), from: time, to: time, output: 'json', fl: 'timestamp,statuscode' })}`;
+    for (let attempt = 0; ; attempt++) {
+      let why;
+      try {
+        const res = await fetch(href);
+        if (res.ok) {
+          const text = await res.text();
+          const row = (text.trim() ? JSON.parse(text) : []).slice(1).find((r) => r[0] === time && /^\d{3}$/.test(r[1]));
+          if (row) out[key] = Number(row[1]);
+          return;
+        }
+        why = `HTTP ${res.status}`;
+      } catch (error) {
+        why = error?.cause?.code ?? error?.message ?? String(error);
+      }
+      if (attempt >= retries) throw new Error(`CDX lookup failed for ${key}: ${why}`);
+      await new Promise((done) => setTimeout(done, backoffMs * 2 ** attempt));
+    }
+  };
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, async () => { while (next < queue.length) await one(queue[next++]); }));
+  return out;
+}
+
 /** Whether a saved workflow, read statically, has a call node to a reader whose url template is a Wayback copy of an SEC page. */
 export function revisionCarriesLookup(workflow) {
   let found = false;
@@ -168,15 +245,31 @@ export function storeOf(rowsFile, row) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const { values, positionals } = parseArgs({ allowPositionals: true, options: { history: { type: 'string' } } });
+  const { values, positionals } = parseArgs({ allowPositionals: true, options: { history: { type: 'string' }, 'capture-status': { type: 'string' }, resolve: { type: 'boolean' } } });
   const file = positionals[0];
-  if (!file) { console.error('usage: eval-lookup.mjs <rows.jsonl> [--history <workflow-history.json>]'); process.exit(2); }
+  if (!file || (values.resolve && !values['capture-status'])) { console.error('usage: eval-lookup.mjs <rows.jsonl> [--history <workflow-history.json>] [--capture-status <statuses.json> [--resolve]]'); process.exit(2); }
   const rows = readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  // --capture-status: each record READ is judged by the archive's own capture status, kept in that file; --resolve asks the
+  // archive's CDX for the captures the file lacks and writes them back, so a later score reads the same statuses offline.
+  let statusOf;
+  if (values['capture-status']) {
+    const path = values['capture-status'];
+    let known = {};
+    try { known = JSON.parse(readFileSync(path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (values.resolve) {
+      const keys = rows.flatMap((row) => { const store = storeOf(file, row); return store ? recordCapturesOf(recordingLines(store).lines) : []; });
+      known = await captureStatuses(keys, { known });
+      writeFileSync(path, `${JSON.stringify(Object.fromEntries(Object.entries(known).sort(([a], [b]) => a.localeCompare(b))), null, 1)}\n`);
+    }
+    statusOf = (key) => known[key];
+  }
   const runs = rows.map((row) => {
     const store = storeOf(file, row);
-    return { run: row.run, cik: row.cik, ...(store ? lookupOfLines(recordingLines(store).lines, { sic4: row.sic4Answer }) : { noStore: true }) };
+    if (!store) return { run: row.run, cik: row.cik, noStore: true };
+    const { lines } = recordingLines(store);
+    return { run: row.run, cik: row.cik, ...lookupOfLines(lines, { sic4: row.sic4Answer }), ...(statusOf ? recordReadOf(lines, statusOf) : {}) };
   });
-  const out = { rows: file, runs };
+  const out = { rows: file, ...(values['capture-status'] ? { captureStatus: values['capture-status'] } : {}), runs };
   if (values.history) {
     const history = JSON.parse(readFileSync(values.history, 'utf8'));
     out.revisions = history.revisions.map((r) => ({ digest: r.digest, short: r.short, savedAtRun: r.savedAtRun, promotedAtRun: r.promotedAtRun, servedRuns: r.servedRuns, staticLookup: revisionCarriesLookup(r.workflow) }));
