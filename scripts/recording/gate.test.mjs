@@ -47,6 +47,19 @@ test('a file that is not the manifest, the lines or a named blob is refused, and
   ]);
 });
 
+test('every published file that is not media is scanned as text, whatever its extension: the page\'s own files too, not a list of extensions', (t) => {
+  const dist = built(t);
+  for (const name of ['README', 'pdfjs/notes.map', 'pdfjs/strings.properties']) writeFileSync(join(dist, name), `key ${secret()}\n`);
+  assert.deepEqual(paths(dist).sort(), ['README: contains a provider secret', 'pdfjs/notes.map: contains a provider secret', 'pdfjs/strings.properties: contains a provider secret']);
+});
+
+test('a media file anywhere in the build, not only in a recording\'s blobs, is read for a machine path on its bytes', (t) => {
+  const dist = built(t);
+  // The path is put together here, so this file holds none.
+  writeFileSync(join(dist, 'poster.png'), Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from(` made at ${['', 'home', 'someone', 'work', ''].join('/')} `)]));
+  assert.deepEqual(paths(dist), ['poster.png: contains a machine path']);
+});
+
 test('a blob not named by its SHA-256, or not hashing to its name, is refused', (t) => {
   const dist = built(t, (dir) => {
     writeFileSync(join(dir, 'reference-job', 'blobs', 'notes.json'), '{}');

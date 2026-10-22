@@ -10,13 +10,12 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { FORBIDDEN, MEDIA_FILE, PAGE_EXTENSIONS, credentialInFile } from '../../packages/harness/src/scan.ts';
+import { FORBIDDEN, MEDIA_FILE, PAGE_EXTENSIONS, TEXT_FILE, credentialInFile } from '../../packages/harness/src/scan.ts';
 import { artifactBlobNames, blobNameProblem, validateRecording } from './validate.mjs';
 
 const MACHINE_PATH = FORBIDDEN.find(([name]) => name === 'machine path')[1];
 /** A blob's name: its SHA-256 and extension, and `.txt` after an artifact page's (the gallery publishes it as text). */
 const BLOB = /^([0-9a-f]{64})\.([A-Za-z0-9]+)(\.txt)?$/;
-const TEXT = /\.(?:html|js|css|json|jsonl|txt|md|csv|svg|xml|yaml|yml|log)$/i;
 const GALLERY = 'window.AGENTRUN_GALLERY = ';
 /** gallery.js in a build that ships the recordings as files (`build.mjs --files`): it only points at the index. */
 const INDEX = "window.AGENTRUN_GALLERY_INDEX = 'recordings/index.json';\n";
@@ -60,15 +59,15 @@ export function gateProblems(dist, lock = existsSync(LOCK) ? JSON.parse(readFile
       }
     }
   }
-  // Every text file that goes out is scanned: the page, the script, the gallery and every recording's files, a blob no line
-  // names included. Raw, and decoded when it is JSON (or JSON lines), so an escape hides nothing (`\u0065yJ`).
+  // Every file that goes out is scanned, by the one rule of scan.ts: a file that is not media is text, whatever its extension
+  // (the page, the scripts, the gallery, every recording's files, a blob no line names included), raw, and decoded when it is
+  // JSON (or JSON lines), so an escape hides nothing (`\u0065yJ`); a media file (an image, a clip, a document) is not read as
+  // text, and the machine-path pattern runs on its bytes, wherever it is.
   const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? walk(join(dir, entry.name)) : [join(dir, entry.name)]));
   for (const file of existsSync(dist) ? walk(dist) : []) {
-    const inBlobs = /(?:^|[\\/])blobs[\\/]/.test(relative(dist, file));
-    const found = (inBlobs ? !MEDIA_FILE.test(file) : TEXT.test(file)) ? credentialInFile(file, readFileSync(file, 'utf8')) : undefined;
+    const found = TEXT_FILE.test(file) ? credentialInFile(file, readFileSync(file, 'utf8')) : undefined;
     if (found) add(relative(dist, file), `contains a ${found}`);
-    // A blob that is not text (an image, a clip, a document of a report) is not read as text: the machine-path pattern runs on its bytes.
-    else if (inBlobs && MEDIA_FILE.test(file) && MACHINE_PATH.test(readFileSync(file).toString('latin1'))) add(relative(dist, file), 'contains a machine path');
+    else if (MEDIA_FILE.test(file) && MACHINE_PATH.test(readFileSync(file).toString('latin1'))) add(relative(dist, file), 'contains a machine path');
   }
   // The gallery holds the recordings beside the page, and no other, each entry exactly what its files give: the page
   // plays the gallery's copy, so what it plays is what was checked. Embedded in gallery.js, an entry is the recording's
