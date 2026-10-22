@@ -11,9 +11,61 @@ import { instanceRunArgs, main, parseDuration, watchdogOwnsCgroup } from "../src
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 
-test("durations: ms, s, m, h, plain milliseconds; anything else is a usage error", () => {
-  assert.deepEqual(["500ms", "30s", "1.5s", "2m", "1h", "250"].map(parseDuration), [500, 30_000, 1_500, 120_000, 3_600_000, 250]);
-  for (const bad of ["", "30 s", "-1s", "1d", "s"]) assert.throws(() => parseDuration(bad), /not a duration/);
+test("durations: a number and its unit (ms, s, m, h); a bare number is refused with a hint, unless the flag carries its unit or 0 turns it off", () => {
+  assert.deepEqual(["500ms", "30s", "1.5s", "2m", "1h", "0s", "0ms"].map((d) => parseDuration(d)), [500, 30_000, 1_500, 120_000, 3_600_000, 0, 0]);
+  for (const bad of ["", "30 s", "-1s", "1d", "s", "1.5"]) assert.throws(() => parseDuration(bad), /not a duration/);
+  assert.throws(() => parseDuration("90"), /: not a duration: "90": give a unit, e\.g\. 90s or 90ms$/);
+  assert.throws(() => parseDuration("0"), /not a duration: "0": give a unit/, "a bare 0 is a bare number too");
+  // A flag whose name carries its unit (-ms) takes a bare number as milliseconds, and units as before.
+  assert.deepEqual(["250", "2s"].map((d) => parseDuration(d, { bareMs: true })), [250, 2_000]);
+  // A flag whose 0 turns its feature off takes a bare 0, and nothing else bare.
+  assert.equal(parseDuration("0", { zeroOff: true }), 0);
+  assert.throws(() => parseDuration("90", { zeroOff: true }), /give a unit/);
+});
+
+/** What `main` says for `argv`: its exit code and what it wrote to stderr. */
+async function said(argv: string[]): Promise<{ code: number; err: string }> {
+  const write = process.stderr.write;
+  let err = "";
+  process.stderr.write = ((chunk: string | Uint8Array) => ((err += String(chunk)), true)) as typeof process.stderr.write;
+  try {
+    return { code: await main(argv), err };
+  } finally {
+    process.stderr.write = write;
+  }
+}
+
+// Each command up to its duration flags; the run id is not a safe segment, so a run that got past its flags stops there,
+// before it opens anything.
+const RUN = ["run", "--disk", "d", "--region", "r", "--id", "../not-safe", "--app", "a.ts"];
+const SUPERVISE = ["supervise", "--disk", "d", "--region", "r", "--id", "x", "--api-key-env", "PDA_TEST_NO_SUCH_KEY"];
+const UNIT_FLAGS: [string[], string][] = [
+  ...["park-threshold", "park-idle", "drain-timeout"].map((f) => [RUN, f] as [string[], string]),
+  ...["stop-timeout", "control-timeout", "lease-expiry", "stonith-timeout", "start-grace", "start-backoff-max", "token-grace", "every", "park-threshold"].map((f) => [SUPERVISE, f] as [string[], string]),
+];
+
+test("every duration flag whose name carries no unit refuses a bare number, with the hint, before the command does anything", async () => {
+  for (const [command, flag] of UNIT_FLAGS) {
+    const r = await said([...command, `--${flag}`, "90"]);
+    assert.equal(r.code, 2, `${command[0]} --${flag} 90`);
+    assert.match(r.err, /^not a duration: "90": give a unit, e\.g\. 90s or 90ms\n/, `${command[0]} --${flag} 90`);
+    const ok = await said([...command, `--${flag}`, "90s"]);
+    assert.doesNotMatch(ok.err, /not a duration/, `${command[0]} --${flag} 90s is a duration`);
+  }
+});
+
+test("a bare 0 is accepted only where 0 turns a feature off (--park-threshold, --start-grace, --start-backoff-max); -ms flags keep bare milliseconds", async () => {
+  for (const [command, flag] of [[RUN, "park-threshold"], [SUPERVISE, "park-threshold"], [SUPERVISE, "start-grace"], [SUPERVISE, "start-backoff-max"]] as [string[], string][]) {
+    assert.doesNotMatch((await said([...command, `--${flag}`, "0"])).err, /not a duration/, `${command[0]} --${flag} 0 turns it off`);
+  }
+  for (const [command, flag] of [[RUN, "drain-timeout"], [SUPERVISE, "every"], [SUPERVISE, "lease-expiry"]] as [string[], string][]) {
+    assert.match((await said([...command, `--${flag}`, "0"])).err, /not a duration: "0": give a unit/, `${command[0]} --${flag} 0 is a bare number`);
+    assert.doesNotMatch((await said([...command, `--${flag}`, "0s"])).err, /not a duration/, `${command[0]} --${flag} 0s behaves as before`);
+  }
+  for (const flag of ["heartbeat-ms", "lease-expiry-ms", "lease-margin-ms"]) {
+    assert.doesNotMatch((await said([...RUN, `--${flag}`, "2000"])).err, /not a duration/, `--${flag} 2000 is milliseconds`);
+    assert.match((await said([...RUN, `--${flag}`, "soon"])).err, /not a duration/, `--${flag} soon`);
+  }
 });
 
 test("usage errors exit 2: no command, unknown command, unknown flag, missing required flags", async () => {
@@ -35,6 +87,20 @@ test("usage errors exit 2: no command, unknown command, unknown flag, missing re
   } finally {
     process.stderr.write = quiet;
   }
+});
+
+test("run refuses a run id that is not one safe path segment before it serves or opens anything", async () => {
+  const quiet = process.stderr.write;
+  let stderr = "";
+  process.stderr.write = (chunk: string | Uint8Array) => ((stderr += String(chunk)), true);
+  try {
+    assert.equal(await main(["run", "--disk", "d", "--region", "r", "--id", "../escape", "--app", "a.ts", "--serve", "0"]), 1);
+  } finally {
+    process.stderr.write = quiet;
+  }
+  const lines = stderr.trim().split("\n");
+  assert.equal(lines.length, 1, stderr);
+  assert.equal(JSON.parse(lines[0]!).error, "INVALID_ARGUMENT");
 });
 
 test("the executable runs through its bin path and prints usage", () => {

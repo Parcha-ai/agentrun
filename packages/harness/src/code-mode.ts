@@ -3,7 +3,7 @@
 //   tools.bash({ command })   a shell command through the call's own environment (`api.env.exec`), in the run's `work/`: the claim's confined environment, the same one the agent's own bash tool uses.
 //   vision.see(...)           the vision handle's global for this call, built from the composed handles, so a demo hands the agent `vision.see` without any wiring of its own.
 //   vision.transcribe(...)    what is said in an audio or video file, as words with times, by the host's speech-to-text model (chosen by the host's config; its key lives in the host's adapter, never in the sandbox), priced and receipted.
-//   vision.judge(...)         Jev's typed answers about images, through the host's judge seam (capped, priced, with its crossings), built the same way; the agent never holds a key.
+//   vision.judge(...)         Jev's typed answers about images, through the host's judge seam (priced, with its crossings), built the same way; the agent never holds a key.
 // The sandbox has no network, no `fetch`, no `process`, no `require`, no timers and no file access of its own: whatever reaches the outside goes through `tools.bash` and the environment's confinement. A command `tools.bash`
 // runs can do what the environment lets a shell do, so turn code mode on only where the agent's own bash is allowed. The tool is `replay: 'unsafe'` (its default): a call a crash interrupted is not rerun, because the commands
 // it ran may have had effects.

@@ -1,7 +1,7 @@
-import { Type } from 'typebox';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { Compile } from 'typebox/compile';
+import { checkHostTools } from './host-tools.js';
 import { Text } from '@earendil-works/pi-tui';
 import {
   createReadToolDefinition, createBashToolDefinition, createEditToolDefinition, createWriteToolDefinition,
@@ -13,6 +13,7 @@ import { createJevRunner } from '@parcha/agentrun-jev';
 import { createPiHostRunner, PI_MODEL_SETUP_MESSAGE } from './host-session.js';
 import { piHostLine } from './pi-host.js';
 import { workflowToolContext } from './tool-context.js';
+import { effectResultOf } from './effect-result.js';
 import type { PiHostContext, PiToolDefinition } from './types.js';
 import { WorkflowExtensionService, ExtensionServiceError, extensionStructuralLimits, type ExtensionRunReport } from './extension-service.js';
 import { demoInput, demoSearchTool, demoWorkflow, scriptedDemoDeps } from './demo.js';
@@ -69,6 +70,9 @@ type Session = {
   sessionFile: () => string | undefined;
 };
 
+/** Forgets a session's last run (its observation, report and run id), so the next run starts fresh. */
+const clearRun = (s: Session): void => { s.observation = undefined; s.report = undefined; s.runId = undefined; };
+
 export interface AgentRunExtensionOptions {
   /** Complete host-owned tool allowlist, replacing demo and built-in tools. */
   hostTools?: (ctx: ExtensionContext) => readonly PiToolDefinition[];
@@ -92,7 +96,8 @@ export function createAgentRunExtension(options: AgentRunExtensionOptions = {}):
   if (options.onToolAttempt !== undefined && typeof options.onToolAttempt !== 'function') throw new Error('onToolAttempt must be a host callback');
   if (options.onWorkflowEvent !== undefined && typeof options.onWorkflowEvent !== 'function') throw new Error('onWorkflowEvent must be a host callback');
   if (options.sop !== undefined && (typeof options.sop !== 'string' || !options.sop.trim())) throw new Error('sop must be nonempty text');
-  const limits = { ...nativeLimits, ...options.runtimeLimits } as AgentRunRuntimeLimits;
+  // A field given as undefined is an omitted one: it keeps its default.
+  const limits = { ...nativeLimits, ...Object.fromEntries(Object.entries(options.runtimeLimits ?? {}).filter(([, value]) => value !== undefined)) } as AgentRunRuntimeLimits;
   for (const [key, value] of Object.entries(limits)) {
     if (!(key in nativeLimits) || value !== null && (!Number.isSafeInteger(value) || value < 1 || value > nativeLimits[key as keyof typeof nativeLimits])) {
       throw new Error('runtimeLimits must use known fields with positive bounded integers or explicit null');
@@ -116,17 +121,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
   const toolSet = (ctx: ExtensionContext, trusted = false): PiToolDefinition[] => {
     if (configuration.hostTools) {
       const supplied = configuration.hostTools(ctx);
-      if (!Array.isArray(supplied) || supplied.length > 100) throw new Error('Host must supply at most 100 explicit tool definitions');
-      const names = new Set<string>();
-      return supplied.map(tool => {
-        if (!tool || typeof tool.name !== 'string' || !tool.name.trim() || tool.name.length > 200
-          || ['agentrun', 'submit'].includes(tool.name) || names.has(tool.name)) throw new Error('Host tools contain an invalid, reserved or duplicate name');
-        if (typeof tool.execute !== 'function' || !tool.parameters || typeof tool.parameters !== 'object') throw new Error('Host tools require an executable definition and parameter schema');
-        Compile(tool.parameters as never);
-        if (tool.resultSchema) Compile(tool.resultSchema as never);
-        names.add(tool.name);
-        return { ...tool, parameters: structuredClone(tool.parameters), ...(tool.resultSchema ? { resultSchema: structuredClone(tool.resultSchema) } : {}) };
-      });
+      checkHostTools(supplied, { reserved: ['agentrun', 'submit'], executable: true });
+      return supplied.map(tool => ({ ...tool, parameters: structuredClone(tool.parameters), ...(tool.resultSchema ? { resultSchema: structuredClone(tool.resultSchema) } : {}) }));
     }
     const active = new Set(pi.getActiveTools());
     const builtins = new Set(pi.getAllTools().filter(t => t.sourceInfo.source === 'builtin').map(t => t.name));
@@ -202,8 +198,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     const changed = !s.draft || inspectWorkflow(s.draft).sha256 !== inspection.sha256;
     const nextInput = input === undefined ? changed ? {} : s.input : structuredClone(input);
     s.draft = nextDraft;
-    if (changed) { s.demo = undefined; s.savedName = undefined; s.observation = undefined; s.report = undefined; s.runId = undefined; }
-    if (input !== undefined) { s.observation = undefined; s.report = undefined; s.runId = undefined; }
+    if (changed) { s.demo = undefined; s.savedName = undefined; clearRun(s); }
+    if (input !== undefined) clearRun(s);
     s.input = nextInput;
     if (workflow !== undefined || input !== undefined) persist(s);
     return { inspection, tree };
@@ -279,6 +275,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           if (error instanceof ToolInputValidationError) throw new ToolInputValidationError(node.label, tool.name, error.problems);
           throw error;
         }
+        // A call the receipts refused is an effect whose outcome is unknown: the DSL's signal, thrown, never a returned value.
+        result = effectResultOf(result, node.label);
         return !configuration.hostTools && ['search', 'support_demo_lookup', 'support_demo_handoff'].includes(node.tool ?? '') ? result.details : { content: result.content, ...(result.details === undefined ? {} : { details: result.details }) };
       },
     };
@@ -356,8 +354,9 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       persist(s, true);
       const ordinal = ++runOrdinal;
       let sequence = 0;
+      const runDeps = sop ? { ...deps, sop: sop.text } : deps;
       const report = await s.service.run(s.input, {
-        deps: observation.observe(driver ? withRecovery(driver, sop ? { ...deps, sop: sop.text } : deps) : sop ? { ...deps, sop: sop.text } : deps),
+        deps: observation.observe(driver ? withRecovery(driver, runDeps) : runDeps),
         signal: driver ? AbortSignal.any([signal, driver.signal]) : signal,
         ...(configuration.onWorkflowEvent ? { onTraceEvent: (event: AgentRunWorkflowEvent['event']) =>
           configuration.onWorkflowEvent!({ workflowDigest: prepared.digest, runOrdinal: ordinal, sequence: ++sequence, event }) } : {}),
@@ -453,7 +452,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       if (args.action === 'list') { const workflows = await store.list(); return textResult(modelJson(workflows), { workflows }); }
       if (args.action === 'load') {
         const saved = await store.load(args.name ?? '', args.digest);
-        const result = inspect(ctx, s, saved.workflow, args.input); s.input = structuredClone(args.input ?? {}); s.savedName = saved.name; s.demo = undefined; s.report = undefined; s.observation = undefined; s.runId = undefined; persist(s);
+        const result = inspect(ctx, s, saved.workflow, args.input); s.input = structuredClone(args.input ?? {}); s.savedName = saved.name; s.demo = undefined; clearRun(s); persist(s);
         const preview = view(ctx, s);
         return textResult(modelJson({ preview: formatWorkflowView(preview), workflow: s.draft, input: s.input }), { ...result, saved, view: preview });
       }
@@ -519,7 +518,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         } else if (/^load(?:\s|$)/.test(command)) {
           const [, name, digest] = command.split(/\s+/);
           const saved = await new WorkflowStore(ctx.cwd).load(name ?? '', digest);
-          inspect(ctx, s, saved.workflow); s.savedName = saved.name; s.input = {}; s.demo = undefined; s.report = undefined; s.observation = undefined; s.runId = undefined; persist(s);
+          inspect(ctx, s, saved.workflow); s.savedName = saved.name; s.input = {}; s.demo = undefined; clearRun(s); persist(s);
           show(s, `Loaded procedure. Supply new input with /agentrun input. Loading never executes it.\n\n${formatWorkflowView(view(ctx, s))}`);
         } else if (command === 'list') {
           const stored = await new WorkflowStore(ctx.cwd).list();

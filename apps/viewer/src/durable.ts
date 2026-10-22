@@ -62,8 +62,12 @@ export const moveOf = (doc: DocLine): Move | undefined => {
 
 /** A decision row (`agentrun.decisions`). */
 export type DecisionRow = { decision_id?: string; run_key?: string; node?: string; error?: string; cost_usd?: number | null; rule?: Json };
+/** The rows a decisions line holds: the single document's whole list (its older form), or the one row a keyed document is (its newer form, one
+ *  document per row, written once). A recording holds one form. */
 export const decisionRowsOf = (doc: DocLine): DecisionRow[] | undefined =>
-  doc.doc === 'agentrun.decisions' && isObj(doc.value) && Array.isArray(doc.value.receipts) ? (doc.value.receipts as unknown as DecisionRow[]) : undefined;
+  doc.doc !== 'agentrun.decisions' || !isObj(doc.value) ? undefined
+    : Array.isArray(doc.value.receipts) ? (doc.value.receipts as unknown as DecisionRow[])
+      : doc.key !== undefined ? [doc.value as unknown as DecisionRow] : undefined;
 
 /** An agent's paid tool calls (`agentrun.receipts`): one per tool and argsHash. A family member is one; a singleton's
  *  value counts its entries. */

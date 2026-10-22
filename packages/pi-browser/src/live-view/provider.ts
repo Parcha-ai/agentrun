@@ -1,7 +1,7 @@
 import type { BrowserProvider } from "../core/host.js";
 import type { LiveViewHost } from "./server.js";
 
-/** The provider with a live view: `liveView(ref)` reports the viewer's URL (to the host's `onSession`, the one place it goes), and a release kills the
+/** The provider with a live view: `liveView(ref)` reports the viewer's URL (to the host only: its `onSession` and a handoff's `request`), and a release kills the
  *  token before the provider's own release runs, so a session that is going away cannot be driven. Wrap the cdp provider with it, as the frame recorder
  *  wraps a provider with `watch`; the provider's own methods are untouched. */
 export function liveViewProvider(provider: BrowserProvider, host: LiveViewHost): BrowserProvider {

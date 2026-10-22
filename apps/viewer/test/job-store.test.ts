@@ -9,7 +9,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-// @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { blobsNamed } from '../src/load.ts';
 import { opensInPage, typeOfName } from '../src/blobs.ts';

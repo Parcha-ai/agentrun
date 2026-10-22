@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { apply } from '@earendil-works/chord/delta';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { durableDoc, readJournal, recordingLines, snapshotLines } from '@parcha/agentrun-pi/durable';
+import { durableDecisions, durableDoc, readJournal, recordingLines, snapshotLines } from '@parcha/agentrun-pi/durable';
 import { placeAt, RUN_KEY } from '@parcha/agentrun-harness';
 import { killAnywhere } from './reference/kill-anywhere.ts';
 
@@ -64,7 +64,8 @@ function fold(lines) {
   for (const line of lines) if (line.data?.doc !== undefined) latest.set(docId(line.data.doc, line.data.key, line.conv), line);
   const values = (kind) => [...latest.values()].filter((line) => line.kind === kind).map((line) => line.data.value);
   const effects = values('agentrun.effects');
-  const rows = values('agentrun.decisions').flatMap((value) => value.receipts ?? []);
+  // Either form: the single document's list, or the keyed documents (each value one row). A recording holds one.
+  const rows = values('agentrun.decisions').flatMap((value) => (Array.isArray(value.receipts) ? value.receipts : [value]));
   const answered = rows.filter((row) => row.rule !== null && row.error === undefined);
   const perDecision = new Map();
   for (const row of answered) perDecision.set(JSON.stringify([row.decision_id ?? null, row.run_key ?? null]), (perDecision.get(JSON.stringify([row.decision_id ?? null, row.run_key ?? null])) ?? 0) + 1);
@@ -107,8 +108,11 @@ test('the ten-kill ledger\'s store as recording lines: invariants, values, every
   assert.ok(ordered(lines), 'commit never decreases; (commit, order) strictly increases');
   assert.ok(lines.every((line, i) => line.order === (i > 0 && lines[i - 1].commit === line.commit ? lines[i - 1].order + 1 : 0)), 'order counts from 0 in each commit');
   // A conversation entry belongs to its conversation; so does a conversation's document.
-  const entryLines = lines.filter((line) => line.data?.doc === undefined && !isTask(line));
+  const entryLines = lines.filter((line) => line.data?.doc === undefined && !isTask(line) && line.kind !== 'pi.conversation');
   assert.ok(entryLines.length > 0 && entryLines.every((line) => line.source === 'pi' && line.conv === line.data.conversationId));
+  // A conversation's record (draft 54) is its own line, a pi line of its conversation, { id, parent?, owner? } and nothing else.
+  const records = lines.filter((line) => line.kind === 'pi.conversation');
+  assert.ok(records.length > 0 && records.every((line) => line.source === 'pi' && line.channel === 'durable' && line.conv === line.data.id && Object.keys(line.data).every((key) => ['id', 'parent', 'owner'].includes(key))));
   assert.ok(lines.filter((line) => line.kind.startsWith('pi.') && line.data?.doc !== undefined).every((line) => typeof line.conv === 'number'));
   // The node attempt's conversation: its entries, documents and tasks carry the node's path, so a branch's view holds
   // its agent's turns.
@@ -152,7 +156,8 @@ test('the ten-kill ledger\'s store as recording lines: invariants, values, every
   const db = new DatabaseSync(file, { readOnly: true });
   const entries = db.prepare('SELECT record FROM entries ORDER BY id').all().map((row) => JSON.parse(row.record));
   db.close();
-  const decisions = durableDoc(file, 'agentrun.decisions').receipts;
+  const decisions = durableDecisions(file);
+  assert.ok(decisions.length > 0, 'the store holds decision rows (a reader of the wrong form would find none)');
   const answeredRows = decisions.filter((row) => row.rule !== null && !row.error);
   const perDecision = answeredRows.reduce((m, row) => m.set(JSON.stringify([row.decision_id ?? null, row.run_key ?? null]), (m.get(JSON.stringify([row.decision_id ?? null, row.run_key ?? null])) ?? 0) + 1), new Map());
   const identities = [
@@ -187,8 +192,11 @@ test('the ten-kill ledger\'s store as recording lines: invariants, values, every
     const snapshot = await snapshotLines(storage, { at: last, gen: ledger.processes, context: ctx });
     assert.ok(snapshot.every((line, i) => line.snapshot === true && line.commit === last && line.order === i));
     assert.ok(snapshot.every((line) => line.gen === durableDoc(file, 'agentrun.driver', RUN_KEY).generation));
-    assert.deepEqual(new Map(snapshot.map((line) => [docId(line.data.doc, line.data.key, line.conv), line.data.value])), new Map([...lastValue].map(([id, line]) => [id, line.data.value])));
-    for (const line of snapshot) {
+    // The snapshot carries each conversation's record (draft 54) beside the documents: the same records the export has.
+    const documents = snapshot.filter((line) => line.kind !== 'pi.conversation');
+    assert.deepEqual(snapshot.filter((line) => line.kind === 'pi.conversation').map((line) => line.data), lines.filter((line) => line.kind === 'pi.conversation').map((line) => line.data));
+    assert.deepEqual(new Map(documents.map((line) => [docId(line.data.doc, line.data.key, line.conv), line.data.value])), new Map([...lastValue].map(([id, line]) => [id, line.data.value])));
+    for (const line of documents) {
       const exported = lastValue.get(docId(line.data.doc, line.data.key, line.conv));
       assert.equal(line.path, exported.path, docId(line.data.doc, line.data.key, line.conv));
     }

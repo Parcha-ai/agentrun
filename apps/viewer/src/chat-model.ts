@@ -1,12 +1,19 @@
 // The chat + report view's model of one run, made from a recording's own events by chat-extract.ts and drawn by
 // chat-view.ts and chat-report.ts. The same code for every run: nothing is typed by hand, per recording, or borrowed.
 
+import type { Manifest } from './format.ts';
+
 /** One entry of a recorded conversation: a message as recorded, the run's own thinking, or one tool call. */
 export type ChatItem =
   | { kind: 'user'; id: string; text: string; t?: number }
-  /** A message the workflow's runner added to a conversation one of its nodes holds. */
-  | { kind: 'host'; id: string; text: string; t?: number }
+  /** A message the workflow's runner added to a conversation one of its nodes holds, or one the creator of an owned conversation
+   *  wrote into it (a fork's opening, written by the tool that made it): `by` names that tool. Never a person's. */
+  | { kind: 'host'; id: string; text: string; t?: number; by?: string }
   | { kind: 'assistant'; id: string; text: string; t?: number }
+  /** A planned move of the run between hosts, at the host's `handoff` line: read from fields only (never the handoff's prose, never a process id). `lead`: after what, on
+   *  which host it left ("after the 5th charge on host-1 (daytona)"); `text`: where it went, or that it reopened where it was ("Moved to host-2 (daytona) from the same disk;
+   *  the conversation goes on"). */
+  | { kind: 'move'; id: string; t: number; lead: string; text: string }
   /** `redacted`: the provider withheld the thought; it keeps no text. */
   | { kind: 'thinking'; id: string; text: string; redacted?: true; t?: number }
   | {
@@ -35,6 +42,8 @@ export type ChatItem =
     looks: string[];
     /** The model calls made inside this call, in the order they ended: each its own card under this one. */
     calls: ChatCall[];
+    /** The conversations this call made (forks; the threads' ids), drawn under its card. */
+    forks?: string[];
     t0?: number;
     t1?: number;
   };
@@ -62,7 +71,9 @@ export type ChatCall = { id: string; name: string; label: string; raw: string; l
 
 /** One recorded conversation: an agent node's, named by its node; a run of one conversation has one thread. Its first
  *  user entry is the prompt the host composed from the node's input, so it is not an item. */
-export type ChatThread = { id: string; label: string; items: ChatItem[]; t0?: number; t1?: number };
+export type ChatThread = { id: string; label: string; items: ChatItem[]; t0?: number; t1?: number;
+  /** The item it is drawn under: the call that made it, else the item of the entry it was forked at. */
+  under?: string };
 
 /** A span on the session timeline, from the events: a workflow node, an LLM call, a tool call, or a model call made
  *  inside a tool (a vision look, a Jev decision, speech to text). A span with no t1 is a point: the event that
@@ -99,7 +110,7 @@ export type ChatSource = { href: string; /** The other addresses a look over sev
 export type ChatRow = { label: string; text: string; note?: string; cites: { href: string; look?: string; item?: string; blob?: string; label?: string }[] };
 
 /** The agent's own artifact (manifest.artifact, draft 41): its entry and every file by its SHA-256. */
-export type ChatArtifact = { title: string; entry: string; files: Record<string, string> };
+export type ChatArtifact = NonNullable<Manifest['artifact']>;
 
 /** The run's input as given: a string input as its text; a record as its `question` (the person's words), its
  *  `files`, and its other fields in plain form. */
@@ -111,6 +122,8 @@ export type ChatModel = {
   input?: ChatInput;
   /** In the order they began; the first is open, the rest are folded threads. */
   threads: ChatThread[];
+  /** Move cards with no conversation to stand in (a run that moved before it recorded any chat): drawn in the run's own timeline after the conversations. */
+  moves?: Extract<ChatItem, { kind: 'move' }>[];
   /** With `inOrder`, the recording has no times: each span sits at its line's position in the file. */
   spans: ChatSpan[];
   inOrder?: true;

@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile as writeFileText } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import * as undici from "undici";
-import { closeDirectFetch, directFetch } from "../dist/providers/browserbase-net.js";
+import { closeDirectFetch, directFetch } from "../dist/providers/http.js";
 import { applyBrowserbaseNoProxy, browserbaseGeolocation, browserbaseNoProxyHosts, browserbaseProvider, fileProfileStore, setDownloadBehavior, proxiesField, rewriteConnectUrl, SEARCH_QUERY_MAX, SEARCH_RESULTS_MAX } from "../dist/providers/browserbase.js";
 import { bindConnectDial, installWebSocketWrapper, connectDialUrl, unbindConnectDial } from "../dist/providers/browserbase-net.js";
 import { fakeBrowserbase } from "./fixtures/fake-browserbase.mjs";
