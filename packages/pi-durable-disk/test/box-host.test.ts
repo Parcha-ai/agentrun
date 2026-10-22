@@ -101,6 +101,7 @@ describe("boxHost: the instance holds the token as root, and every agent command
       assert.equal(launch.spec.user, "root", `${why}: the instance runs as root`);
       const argv = launch.spec.argv;
       assert.deepEqual(argv.slice(argv.indexOf("--run-as"), argv.indexOf("--run-as") + 2), ["--run-as", want], `${why}: the tools' user`);
+      assert.equal(launch.spec.toolsUser, want, `${why}: the launcher verifies the very user --run-as drops every command to (toolsUser), from one value`);
       assert.ok(!argv.some((a) => /sudo/.test(a)) && argv[0] !== "sudo", `${why}: nothing goes through sudo, so the tools' user needs no sudo rule`);
       assert.deepEqual(provider.leaks(TOKEN).map((l) => `${l.op}:${l.where}`), ["launch:stdin"]);
     }
