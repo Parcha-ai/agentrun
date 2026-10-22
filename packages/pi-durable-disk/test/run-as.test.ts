@@ -191,7 +191,7 @@ test("the launcher's secrets descriptor (PI_TRANSPORT_SECRETS_FD) never reaches 
 
 test("under --run-as the root instance refuses an --app the agent's commands could change: not root's, writable by group or others anywhere on its path, a link they could replace, or inside the run's root", () => {
   type Node = { uid: number; mode: number; link?: string };
-  type Mount = { point: string; ro: boolean; dev: string; root: string };
+  type Mount = { point: string; ro: boolean; dev: string; root: string; fstype?: string };
   const tree = (nodes: Record<string, Node>, mounts?: Mount[]) => {
     const lstatSync = (p: string) => {
       const n = nodes[p];
@@ -293,12 +293,28 @@ test("under --run-as the root instance refuses an --app the agent's commands cou
     const reason = appWritableReason(app, "/mnt/archil", tree(nodes, mounts));
     assert.ok(reason !== null && re.test(reason), `${why}: ${reason}`);
   }
+  // The run's data root by its real path too: a --mount-root that is a link names the same runs under its target, and a
+  // root-owned file of a run (its store, run.json) is still the disk's. And any element on an archil mount, wherever it
+  // is mounted (a second bind of a run's mount), is the runs' data plane.
+  const linkedRoot = { ...base, "/mnt/archil": link("/data/archil"), "/data": dir(), "/data/archil": dir(), "/data/archil/runs": dir(), "/data/archil/runs/r1": dir(), "/data/archil/runs/r1/store": dir(), "/data/archil/runs/r1/store/app.mjs": file(), "/opt/app/link.mjs": link("/data/archil/runs/r1/store/app.mjs") };
+  for (const app of ["/data/archil/runs/r1/store/app.mjs", "/opt/app/link.mjs"]) {
+    const reason = appWritableReason(app, "/mnt/archil", tree(linkedRoot));
+    assert.ok(reason !== null && /inside the run/.test(reason), `under a linked --mount-root's target: ${app}: ${reason}`);
+  }
+  const elsewhere = { ...base, "/srv": dir(), "/srv/disk": dir(), "/srv/disk/app.mjs": file() };
+  for (const ro of [false, true]) {
+    const mounts = [rw, { point: "/srv/disk", ro, dev: "0:90", root: "/runs/r1", fstype: "fuse.archil" }];
+    const reason = appWritableReason("/srv/disk/app.mjs", "/mnt/archil", tree(elsewhere, mounts));
+    assert.ok(reason !== null && /archil mount/.test(reason), `on an archil mount elsewhere (read-only: ${ro}): ${reason}`);
+  }
+  assert.equal(appWritableReason("/srv/disk/app.mjs", "/mnt/archil", tree(elsewhere, [rw, { point: "/srv/disk", ro: false, dev: "0:91", root: "/", fstype: "ext4" }])), null, "root's files on another file system there pass");
+
   // The mounts are the instance's own (/proc/self, read at its start, before any command of the agent's exists), never a
   // command's: another process's user or mount namespace never changes the table root's walk reads.
   // Pinned at the read itself: here pid 1 shares this namespace, so another process's table would read the same.
   const read: string[] = [];
   const row = "22 1 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n";
-  assert.deepEqual(instanceMounts((path) => (read.push(path), row)), [{ point: "/", ro: false, dev: "8:1", root: "/" }]);
+  assert.deepEqual(instanceMounts((path) => (read.push(path), row)), [{ point: "/", ro: false, dev: "8:1", root: "/", fstype: "ext4" }]);
   assert.deepEqual(read, ["/proc/self/mountinfo"], "the instance's own table, nobody else's");
   assert.deepEqual(INSTANCE_FS.mounts?.(), mountInfo(readFileSync("/proc/self/mountinfo", "utf8")), "the walk's default reads it");
   // /proc/self/mountinfo: the mount point is field 5 (octal escapes), "ro" in the mount's or the superblock's options.
@@ -310,12 +326,12 @@ test("under --run-as the root instance refuses an --app the agent's commands cou
       "",
     ].join("\n")),
     [
-      { point: "/", ro: false, dev: "8:1", root: "/" },
-      { point: "/opt/pda/app", ro: true, dev: "8:1", root: "/data/u/my app" },
-      { point: "/srv", ro: true, dev: "0:5", root: "/" },
+      { point: "/", ro: false, dev: "8:1", root: "/", fstype: "ext4" },
+      { point: "/opt/pda/app", ro: true, dev: "8:1", root: "/data/u/my app", fstype: "ext4" },
+      { point: "/srv", ro: true, dev: "0:5", root: "/", fstype: "squashfs" },
     ],
   );
-  assert.deepEqual(mountInfo("40 22 0:9 / /mnt/a\\040b rw - tmpfs t rw\n"), [{ point: "/mnt/a b", ro: false, dev: "0:9", root: "/" }]);
+  assert.deepEqual(mountInfo("40 22 0:9 / /mnt/a\\040b rw - tmpfs t rw\n"), [{ point: "/mnt/a b", ro: false, dev: "0:9", root: "/", fstype: "tmpfs" }]);
 
   // On this machine's own files: a root-owned binary passes, through root's own link too (/bin on a merged /usr); a file
   // this user owns does not, nor root's binary through a link in a directory this user can write.
