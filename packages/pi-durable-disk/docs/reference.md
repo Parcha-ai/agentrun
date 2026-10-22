@@ -342,6 +342,33 @@ power-off, a freeze of the instance and its FUSE daemon, and a network partition
 power-off through the orphaned delegation, the freeze and the partition through the lease, the partitioned box stopped by
 the driver), and the thawed instance exited 75. A driver for another compute (a Kubernetes pod, another sandbox product) is the same three calls.
 
+`boxHost({ provider, spec, app, ... })`, from `@parcha/pi-durable-disk/box`, runs each instance in a box of a
+pi-transport provider (library only, like `daytonaHost`). Modal's VM is the first; `@parcha/pi-transport` is an optional
+peer this entry needs and the package's root does not.
+- **The box.** A start finds the box its attempt made (by three labels: `pi-durable-disk.disk`, `.run`, `.attempt`) or
+  creates one from `spec`, with `capabilities: ["fuse"]` added. `spec.maxLifetimeMs` is required, and `spec.env` and
+  label keys of transport's or boxHost's own are refused.
+- **What it checks.** A box whose `facts().fuse` is not true, with no fd for the launcher's frame (`secretsVia` other
+  than `"fd"`), or that keeps no program running is destroyed before any upload or launch, and the start is
+  `UNSUPPORTED`. That refusal is remembered for the spec: later starts are refused at once, with no box made. Otherwise
+  ensureRunning, which restarts on every tick, would boot and destroy a VM each time.
+- **The launch.** Into a fresh box it uploads `files`. Transport's launcher then keeps `pi-durable-disk run ... --app
+  <app> --token-stdin` running as the run user (`user`, default `pda`), restarting it on failure but not after 0, 65,
+  70, 75 or 76. The mount token is that launch's stdin: the launcher holds it in memory and replays it to each
+  incarnation, and boxHost keeps it for that one call. The environment is `PDA_HOLDER`, `env` and the start's own; the
+  launcher adds the runtime's PATH, the user's HOME and LANG.
+- **Finding it again.** A box found with its launch running is adopted. One whose launch ended or was lost is
+  destroyed and replaced, never relaunched. A launch is lost when its launcher is gone, and boxHost keeps no token to
+  start it again, so `status` reports a lost launch `failed`: the place takes over, and a new start mints a new token.
+- **The other calls.** `stop` drains the instance (`stopGraceMs`), runs the launcher's stop hook, then destroys the box.
+  `kill` destroys it at once. `box(handle)` is facts only: the provider, the kind (`gpu`, else the isolation), `from`
+  (`facts().startedAt`, else when it was made) and `to`. There is no price.
+- **Errors** are `BoxHostError`: `INVALID_ARGUMENT`, `UNSUPPORTED`, `CREATE_FAILED`, `UPLOAD_FAILED`, `LAUNCH_FAILED`,
+  `START_TIMED_OUT` and `STOP_FAILED`, with the provider's or the launcher's error as `cause`.
+- **The image** must give the run user a home in passwd, util-linux `setpriv` or `runuser` (the launcher's user drop),
+  a setuid-root `fusermount3`, and `node` and this package's CLI on the runtime's PATH. Otherwise, pass an absolute
+  `command`.
+
 `dockerHost({ image })` (`supervise --host docker --image IMAGE`) runs each instance in a container of its own; one
 container is one incarnation.
 - **Start.** `docker create` named `pda-<run>-<disk key>-g<attempt>` (the disk key is 8 hex digits of the disk and region,
