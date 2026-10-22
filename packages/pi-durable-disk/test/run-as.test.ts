@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
-import { appWritableReason, main, runUser, toolsUserCheck } from "../src/cli.ts";
+import { appWritableReason, main, mountInfo, runUser, toolsUserCheck } from "../src/cli.ts";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { archilEnv, EnvError } from "../src/env.ts";
@@ -191,7 +191,7 @@ test("the launcher's secrets descriptor (PI_TRANSPORT_SECRETS_FD) never reaches 
 
 test("under --run-as the root instance refuses an --app the agent's commands could change: not root's, writable by group or others anywhere on its path, a link they could replace, or inside the run's root", () => {
   type Node = { uid: number; mode: number; link?: string };
-  const tree = (nodes: Record<string, Node>) => {
+  const tree = (nodes: Record<string, Node>, mounts?: { point: string; ro: boolean }[]) => {
     const lstatSync = (p: string) => {
       const n = nodes[p];
       if (!n) throw Object.assign(new Error(`ENOENT ${p}`), { code: "ENOENT" });
@@ -221,7 +221,7 @@ test("under --run-as the root instance refuses an --app the agent's commands cou
       }
       return at;
     };
-    return { lstatSync, readlinkSync, realpathSync };
+    return { lstatSync, readlinkSync, realpathSync, ...(mounts ? { mounts: () => mounts } : {}) };
   };
   const dir = (uid = 0, mode = 0o40755) => ({ uid, mode });
   const file = (uid = 0, mode = 0o100644) => ({ uid, mode });
@@ -256,6 +256,36 @@ test("under --run-as the root instance refuses an --app the agent's commands cou
     const reason = appWritableReason(app, "/mnt/archil/runs/r1", tree(nodes));
     assert.ok(reason !== null && re.test(reason), `${why}: ${reason}`);
   }
+  // A read-only mount: nothing in the box can write, chmod, rename or unlink there (EROFS), and the agent's commands cannot
+  // remount, so its owner does not matter. dockerHost bind-mounts the app's directory, the host user's, read-only.
+  const docker = { ...base, "/opt/pda": dir(), "/opt/pda/app": dir(1000, 0o40775), "/opt/pda/app/app.mjs": file(1000, 0o100664), "/opt/pda/app/link.mjs": link("app.mjs", 1000) };
+  const rw = { point: "/", ro: false };
+  const appRo = { point: "/opt/pda/app", ro: true };
+  for (const app of ["/opt/pda/app/app.mjs", "/opt/pda/app/link.mjs"]) {
+    assert.equal(appWritableReason(app, "/mnt/archil", tree(docker, [rw, appRo])), null, `the host user's app on a read-only bind mount: ${app}`);
+  }
+  const notRo: [string, { point: string; ro: boolean }[], string, Record<string, Node>, RegExp][] = [
+    ["the same files on a writable mount", [rw], "/opt/pda/app/app.mjs", docker, /\/opt\/pda\/app is owned by uid 1000/],
+    ["a read-only mount covered by a writable one at the same point", [rw, appRo, { point: "/opt/pda/app", ro: false }], "/opt/pda/app/app.mjs", docker, /uid 1000/],
+    ["a read-only mount elsewhere", [rw, { point: "/usr", ro: true }, { point: "/opt/pda/ap", ro: true }], "/opt/pda/app/app.mjs", docker, /uid 1000/],
+    ["the run's root, read-only or not", [rw, { point: "/mnt/archil/runs/r1", ro: true }], "/mnt/archil/runs/r1/work/app.mjs", base, /inside the run/],
+  ];
+  for (const [why, mounts, app, nodes, re] of notRo) {
+    const reason = appWritableReason(app, "/mnt/archil", tree(nodes, mounts));
+    assert.ok(reason !== null && re.test(reason), `${why}: ${reason}`);
+  }
+  // /proc/self/mountinfo: the mount point is field 5 (octal escapes), "ro" in the mount's or the superblock's options.
+  assert.deepEqual(
+    mountInfo([
+      "22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
+      "30 22 8:1 /home/u/my\\040app /opt/pda/app ro,nosuid,relatime - ext4 /dev/sda1 rw",
+      "31 22 0:5 / /srv rw,relatime - squashfs /dev/loop0 ro",
+      "",
+    ].join("\n")),
+    [{ point: "/", ro: false }, { point: "/opt/pda/app", ro: true }, { point: "/srv", ro: true }],
+  );
+  assert.deepEqual(mountInfo("40 22 0:9 / /mnt/a\\040b rw - tmpfs t rw\n"), [{ point: "/mnt/a b", ro: false }]);
+
   // On this machine's own files: a root-owned binary passes, through root's own link too (/bin on a merged /usr); a file
   // this user owns does not, nor root's binary through a link in a directory this user can write.
   assert.equal(appWritableReason("/usr/bin/true", "/mnt/archil/runs/r1"), null);
