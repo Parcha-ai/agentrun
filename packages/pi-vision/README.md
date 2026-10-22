@@ -179,7 +179,7 @@ Importing an entry loads none of the dependencies: each is loaded the first time
 ## Example
 
 The budgets for a route come from the model's own `inputLimits` (pi-ai's registry), with the host's cap on a request
-body over them. With `@earendil-works/pi-ai` installed (`npm install @earendil-works/pi-ai`), in `limits.mjs`:
+body over them. With `@earendil-works/pi-ai` installed (`npm install @earendil-works/pi-ai@1.3.0`; pi 1.4 is not supported yet, and a later release widens the range), in `limits.mjs`:
 
 ```js
 import { getModel } from "@earendil-works/pi-ai/compat";
@@ -220,7 +220,8 @@ are always there; programs run in the environment the agent's shell runs in, nev
 | Video: probe, frames, windows | a `needs` miss; a file under the inline budget still goes to a route that takes video | ffmpeg and ffprobe (LGPL or GPL, run as programs) |
 
 `@earendil-works/pi-durable` and `@earendil-works/chord` (1.0.4 to 1.3.x) and `@earendil-works/pi-ai` (any version: the
-host's copy) are optional peers, for the adapter and the pi-ai eyes, and Photon is one for the default image processor.
+host's copy) are optional peers, for the adapter and the pi-ai eyes, and Photon is one for the default image processor. Install the
+pi ones at one version: `npm install @earendil-works/pi-durable@1.3.0 @earendil-works/chord@1.3.0 @earendil-works/pi-ai@1.3.0`.
 sharp is never resolved by this package: a host that wants it passes its own module (`sharpImages(sharp)`), so its LGPL
 code stays with the host's install. This package's own tarball carries none of the third-party code above: `unpdf`, `@hyzyla/pdfium`,
 `fflate` and `@xmldom/xmldom` are its dependencies, each installed as a package of its own under its own license.
@@ -228,7 +229,7 @@ code stays with the host's install. This package's own tarball carries none of t
 ## For a host: `vision.see` in code mode
 
 `handle.see(env, call)` is `vision.see` bound to one call, in the shape pi-codemode's `globals` take (the excerpt below imports
-it: `npm install @earendil-works/pi-codemode`, beside the adapter's peers named under Providers). Build it per call,
+it: `npm install @earendil-works/pi-codemode@1.3.0`, beside the adapter's peers named under Providers). Build it per call,
 so it reads paths through that call's environment and keeps its answers in that call's memos. This is a host's whole
 code-mode tool, a pi-durable extension next to `vision.extension`. `tools` is the host's own: the `look` skill's recipes
 render pages and cut frames with `tools.bash`, so a sandbox with no shell cannot run them:
