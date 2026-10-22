@@ -662,6 +662,20 @@ test('the log names what curate held: a note by its id, the run\'s uses as uses,
   assert.doesNotMatch(line, /undefined/);
 });
 
+test('a v4 row\'s log line names each scored part, so a right code under a wrong headline reads as what it is', () => {
+  const row = {
+    run: 1, split: 'train-legacy', set: 'v4', answer: '3674', truth: '3674', sic4Answer: '3674', sic4Truth: '3674', sicCorrect4: true, sicCorrect2: true,
+    segmentsF1: 2 / 3, hqCorrect: true, correct: false, correctOver: ['sic4', 'segments', 'hq'], byWorkflow: false, workflowsUsed: [],
+    costUsd: 0.2558, judgeCostUsd: 0.0005, browserCostUsd: 0.01, workflowsSaved: ['classify-company'], seedSha: 'a'.repeat(40), afterSha: 'b'.repeat(40),
+    curate: { admitted: ['classify-company'], promoted: [], demoted: [], held: [], refused: [{ id: 'L-1' }] },
+  };
+  const line = lineOf(row);
+  assert.match(line, /^run 1 \(train-legacy\) 3674 vs 3674 right, segments F1 0\.67, hq right: wrong over sic4\+segments\+hq, by hand, /);
+  assert.match(line, /saved classify-company; curate admitted classify-company, refused L-1; main aaaaaaa -> bbbbbbb$/);
+  const unscored = lineOf({ ...row, sic4Answer: '3672', sicCorrect4: false, segmentsF1: null, hqCorrect: null, correct: false, correctOver: ['sic4'] });
+  assert.match(unscored, /3672 vs 3674 group right, segments not scored, hq not scored: wrong over sic4, /);
+});
+
 test('a sealed file is "before" when its rows say so, though its seed commit is another take\'s', async (t) => {
   const out = await scratch(t);
   // A sealed-before pass run in its own take: its seed commit is not this pass's (another timestamp, the same tree).
