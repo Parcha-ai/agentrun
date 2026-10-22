@@ -581,6 +581,19 @@ describe("boxHost: the host box's key, minted per box at each create (agentrun-h
     assert.equal((later.box(h) as { key?: string }).key, labelOf(provider, hA.box));
   });
 
+  it("a box a list returns WITHOUT this attempt's own labels (another run's) is left alone: neither adopted, used nor ended", async () => {
+    const provider = fake(modalLike({ facts: fd }));
+    runs(provider);
+    const other = await provider.create({ ...SPEC, capabilities: ["fuse"], labels: { "pi-durable-disk.disk": REF.disk, "pi-durable-disk.run": "another-run", "pi-durable-disk.attempt": "1" } }, BACKGROUND_CONTEXT);
+    assert.ok(other.ok);
+    // A provider whose list ignores the filter: it returns every box it has.
+    const careless: FakeProvider = { ...provider, list: async (_labels, context) => provider.list({}, context) };
+    const h = await driverOf(careless).start(REF, TOKEN, { attempt: 1, env: { HOST_BOX: hostBox("0") } });
+    assert.notEqual(h.box, other.value.id, "never adopted or used");
+    assert.equal(other.value.state, "running", "never ended");
+    assert.equal(provider.calls.filter((c) => c.op === "destroy").length, 0);
+  });
+
   it("a box found again WITHOUT the label (made before the key) is never adopted as the run's host box: ended through its handle, then replaced by a labeled one", async () => {
     const provider = fake(modalLike({ facts: fd }));
     runs(provider);
