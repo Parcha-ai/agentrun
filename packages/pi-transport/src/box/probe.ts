@@ -14,8 +14,11 @@ export const PROBE = [
 	"  if [ -c /dev/fuse ] && sh -c 'exec 3<>/dev/fuse' 2>/dev/null; then dev=1; fi",
 	'  echo "fuse_dev=$dev"',
 	"fi",
-	// One line a card, as nvidia-smi names them; a box with no such command, or one that fails, prints none.
-	'if [ "$3" = gpu ]; then nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | awk \'{print "gpu=" $0}\'; fi',
+	// One line a card, as nvidia-smi names them. The query's own exit status decides: output of a command that failed (partial
+	// results, an error message on stdout) is no answer, so nothing is printed. A box with no such command prints none.
+	`if [ "$3" = gpu ]; then g=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null) && printf '%s\\n' "$g" | awk '{print "gpu=" $0}'; fi`,
+	// Every read above is a fact or none: a failed GPU query must not make the whole probe exit non-zero and lose the others.
+	"true",
 ].join("\n");
 
 /** What the probe's output says. A fact the box did not give is left out. */

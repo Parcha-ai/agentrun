@@ -38,7 +38,7 @@ type Setup = {
 	device?: "char" | "closed" | "file" | "absent";
 	dfKib?: number | "fails";
 	/** What a shim `nvidia-smi` prints (one card per entry), `fails` for one that exits 1, absent for no such command. */
-	gpus?: string[] | "fails";
+	gpus?: string[] | "fails" | "partial";
 };
 
 function run(
@@ -66,6 +66,9 @@ function run(
 			: `echo "Filesystem 1024-blocks Used Available Capacity Mounted"\necho "box ${dfKib} 1 1 1% /"`,
 	);
 	if (setup.gpus === "fails") script("nvidia-smi", "echo 'NVIDIA-SMI has failed' >&2; exit 9");
+	// Prints to stdout, then fails: partial results, or an error message on the wrong stream.
+	else if (setup.gpus === "partial")
+		script("nvidia-smi", "echo 'NVIDIA H100'; echo 'Failed to initialize NVML'; exit 9");
 	else if (setup.gpus !== undefined)
 		script("nvidia-smi", `printf '%s\\n' ${setup.gpus.map((g) => `'${g}'`).join(" ")}`);
 	const yama = join(root, "yama");
@@ -134,6 +137,10 @@ describe("the probe script's GPU read, run for real", () => {
 	it("reads nothing from a nvidia-smi that fails and from a box with none", () => {
 		expect(run({ gpus: "fails" }, "-", "gpu").reading.gpus).toEqual([]);
 		expect(run({}, "-", "gpu").reading.gpus).toEqual([]);
+		// A query that printed to stdout and then exited non-zero is no answer, whatever it printed.
+		const partial = run({ gpus: "partial" }, "-", "gpu");
+		expect(partial.reading.gpus).toEqual([]);
+		expect(partial.output).not.toContain("gpu=");
 	});
 });
 
