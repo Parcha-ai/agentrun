@@ -9,6 +9,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { FIXTURE, run } from './reference-demo-helpers.mjs';
+import { ledgerOut, render, uncutRefusal } from './reference/kill-anywhere.ts';
+import { referenceOutput } from './reference/run.ts';
 
 const KEPT = 'and a plain line after it';
 const KEY = `sk-${'q'.repeat(8)}${'7'.repeat(26)}`;
@@ -78,3 +80,36 @@ for (const plant of PLANTS) {
     assert.ok(out.error.message.includes(KEPT), 'the rest of the error is kept');
   });
 }
+
+// The reference examples' own sinks. Those entry points track no secrets, so only the credential-shaped plant can be pinned there; the tracked plain-word
+// plant is pinned at K1 to K4 with --record above. (The reference examples could take a run's tracked list: a follow-up.)
+test('K5: kill-anywhere\'s refusal of an uncut run that did not complete never carries a key its stderr or outcome held; the rest is kept', () => {
+  const fromStderr = uncutRefusal({ stderr: `the tool printed token ${KEY}\n${KEPT}` });
+  assert.equal(fromStderr.message.includes(KEY), false);
+  assert.ok(fromStderr.message.includes(KEPT) && fromStderr.message.startsWith('the uncut job did not complete'));
+  const fromOutcome = uncutRefusal({ outcome: { status: 'refused', code: 'X', message: `token ${KEY}\n${KEPT}` } });
+  assert.equal(fromOutcome.message.includes(KEY), false);
+  assert.ok(fromOutcome.message.includes(KEPT));
+});
+
+test('K6: kill-anywhere\'s ledger, as returned and printed (JSON or rendered), never carries a key a check\'s detail or a kill\'s outcome held', () => {
+  const counted = { browser: {}, committedTurns: [], effects: {}, judge: {}, receipts: [], requests: 0, toolResults: [] };
+  const ledger = { seed: 1, ms: 1, kills: [{ process: 1, plan: { point: 'p', n: 1 }, landed: null, generation: 1, ms: 1, outcome: `refused: token ${KEY}` }], processes: 1, browserCalls: [], runInterrupted: [], counted, reference: counted, pageRuns: [], trail: [], gates: [], covered: [], final: { status: 'refused', generation: 1, record: null }, checks: [{ name: 'the last process completed the run', ok: false, detail: `token ${KEY}\n${KEPT}` }] };
+  const out = ledgerOut(ledger);
+  assert.equal(JSON.stringify(out).includes(KEY), false, 'the JSON print');
+  assert.ok(JSON.stringify(out).includes(KEPT));
+  const rendered = render(out).join('\n');
+  assert.ok(rendered.length > 0, 'the ledger renders');
+  assert.equal(rendered.includes(KEY), false, 'the rendered print');
+});
+
+test('K7: the reference run\'s printed output (text and JSON) never carries a key a refused run\'s message held; the rest is kept', () => {
+  const view = { status: 'refused', output: null, evidence: [], did: { disk: { generation: 1 }, workflow: {}, browser: {}, evidence: {}, vision: { looks: 0, misses: 0 } }, ledger: { calls: {} }, usage: {}, message: `token ${KEY}\n${KEPT}` };
+  const result = { status: 'refused', code: 'NODE_FAILED', message: `the tool printed token ${KEY}\n${KEPT}` };
+  const text = referenceOutput(view, result, '/run', false).join('\n');
+  assert.equal(text.includes(KEY), false, 'the text print');
+  assert.ok(text.includes(KEPT));
+  const json = referenceOutput(view, result, '/run', true).join('\n');
+  assert.equal(json.includes(KEY), false, 'the JSON print');
+});
+
