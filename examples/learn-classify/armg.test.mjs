@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
-import { admitRevision, applyDecision, currentRevision, periodUses, readTrial, renderSkill, renderTrial, skillPath, trialPath, usesSettler } from '@parcha/pi-agent-learn';
+import { admitRevision, applyDecision, currentRevision, foldUses, periodUses, readTrial, renderSkill, renderTrial, skillPath, trialPath, usesSettler } from '@parcha/pi-agent-learn';
 import { openOut, runLoop, scriptedParts } from './runner.mjs';
 import { teacherLabelsOf } from './mcc.mjs';
 import { FIXTURES_MCC } from './scripted-mcc.mjs';
@@ -186,4 +186,46 @@ test('a scripted MCC pass with --escalation-neutral --gated-demotion curates thr
   const { rows } = await runLoop({ out, parts, split: 'train', list, record: false, gateWaitAtEnd: true });
   assert.equal(rows.length, 3);
   assert.ok(rows.every((r) => r.curate !== undefined && r.label === 'teacher'));
+});
+
+// ---------------------------------------------------------------- the MCC H-stream (PREREG-MCC-H-stream): G against 1b's churn
+
+test('a 1b-shaped churn: nine runs of two escalations each, with clean answers between, demote the package\'s champion; under ARM G none does', async (t) => {
+  const pattern = (sha256) => Array.from({ length: 9 }, (_, round) => [['frozen', 3 * round], ['escalated', 3 * round + 1], ['escalated', 3 * round + 2]]).flat()
+    .map(([outcome, n], i) => [`run-${i}`, [{ name: WORKFLOW, sha256, outcome, at: `2026-10-22T13:${String(n).padStart(2, '0')}:00.000Z` }]]);
+  const control = await champion(t);
+  const controlled = [];
+  for (const [run, uses] of pattern(control.b)) controlled.push(...(await settleRun(control.repo, usesSettler({}), run, uses)).decisions.filter((d) => d.action === 'demote'));
+  assert.ok(controlled.length >= 1, 'the package alone demotes on two escalations in a row');
+  const g = await champion(t);
+  const asked = [];
+  const settler = demotionSettler({ settle: usesSettler({}), neutral: true, gate: { ask: (job) => { asked.push(job); return { status: 'queued' }; } } });
+  const demotions = [];
+  for (const [run, uses] of pattern(g.b)) demotions.push(...(await settleRun(g.repo, settler, run, uses)).decisions.filter((d) => d.action === 'demote'));
+  assert.deepEqual(demotions, []);
+  assert.equal(asked.length, 0, 'no demotion was even called for');
+  const trial = await trialOf(g.repo);
+  const live = currentRevision(trial);
+  assert.deepEqual([live.sha256, live.status], [g.b, 'active']);
+  assert.ok(periodUses(trial, live).every((u) => u.outcome === 'frozen'), 'only the answered uses were folded');
+});
+
+test('a name with 32 and more retired and demoted revisions still admits and promotes a new one (the pi-agent-learn limit fix, as the host resolves it)', () => {
+  const stamp = (i, k) => new Date(Date.UTC(2026, 9, 22, 14) + (i * 3 + k) * 1000).toISOString();
+  const digestOf = (i) => (i + 1).toString(16).padStart(64, '0');
+  let trial;
+  for (let i = 0; i < 40; i += 1) {
+    const admitted = admitRevision(trial, { name: WORKFLOW, sha256: digestOf(i), run: 'w', at: stamp(i, 0), when: [] });
+    assert.equal(admitted.status, 'admitted', `revision ${i}: ${admitted.detail ?? ''}`);
+    const fail = (k) => ({ run: `x${i}-${k}`, sha256: digestOf(i), outcome: 'failed', at: stamp(i, k) });
+    trial = foldUses(admitted.trial, [fail(1), fail(2)]).trial;
+  }
+  assert.ok(trial.refused.length >= 32);
+  const fresh = 'f'.repeat(64);
+  const admitted = admitRevision(trial, { name: WORKFLOW, sha256: fresh, run: 'w', at: stamp(50, 0), when: [] });
+  assert.equal(admitted.status, 'admitted');
+  const clean = (k) => ({ run: `c${k}`, sha256: fresh, outcome: 'frozen', at: stamp(50, k) });
+  assert.equal(foldUses(admitted.trial, [clean(1), clean(2), clean(3)]).trial.status, 'active');
+  assert.equal(admitRevision(trial, { name: WORKFLOW, sha256: digestOf(0), run: 'w', at: stamp(51, 0), when: [] }).status, 'refused', 'a demoted digest stays refused');
+  renderTrial(admitted.trial);
 });
