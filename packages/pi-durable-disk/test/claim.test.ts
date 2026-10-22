@@ -73,7 +73,7 @@ function rig(init: { behave?: Record<string, unknown>; sudo?: boolean; extraMoun
       mkdirSync(join(proc, pid), { recursive: true });
       writeFileSync(join(proc, pid, "cmdline"), argv.join("\0") + "\0");
     }
-    const lines = [...s.extraMounts, ...Object.entries(s.mounts).map(([mp, m]) => `${m.source} ${mp} fuse.archil rw,allow_other 0 0`)];
+    const lines = [...s.extraMounts, ...Object.entries(s.mounts).map(([mp, m]) => `${m.source} ${mp} fuse.archil ${(m as { options?: string }).options ?? "rw,nosuid,nodev,allow_other"} 0 0`)];
     replace(procMounts, lines.join("\n") + "\n");
   };
   write(state);
@@ -377,6 +377,12 @@ test("a pathless delegation that cannot be attributed is CONTROL_API_FAILED, nev
 });
 
 // ---- acquire ----------------------------------------------------------------------------------------------------------
+
+test("acquire refuses a mount that is not nosuid,nodev (archil takes no mount options; the wrapper's bind remount adds them): it unmounts it and fails MOUNT_FAILED, never a run on an unhardened mount", async () => {
+  const r = disposeAfter(rig({ behave: { unhardened: true } }));
+  await assert.rejects(acquire(r.opts), (e: unknown) => e instanceof ClaimError && e.code === "MOUNT_FAILED" && /nosuid/.test((e as Error).message));
+  assert.deepEqual(Object.keys(r.read().mounts), [], "the unhardened mount is gone");
+});
 
 test("acquire mounts exclusively with a fixed argv, the token only on the wrapper's stdin, then verifies and probes", async () => {
   const r = disposeAfter(rig());
