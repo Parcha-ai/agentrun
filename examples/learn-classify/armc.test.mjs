@@ -1,6 +1,6 @@
-// ARM C's carriers for a discovered lookup, at $0: the tools' refusal of SEC and web-archive hosts states the archived
-// carve-out (what is allowed, never what a page holds); a lesson that contradicts an active fact is refused, with the
-// sticky worst answer; and facts are kept past the index cap up to a floor.
+// ARM E's and ARM C's carriers for a discovered lookup, at $0: the tools' refusal of SEC and web-archive hosts states the
+// archived carve-out (what is allowed, never what a page holds); a lesson that contradicts an active fact is refused, with
+// the sticky worst answer (--refuse-contradicting); facts are never archived by the index cap (--keep-facts).
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -106,19 +106,28 @@ test('the sticky judge keeps the worst contradicts answer per lesson and fact: a
   assert.equal(answer.answers.contradicts.noul, 0.05);
 });
 
-test('curateJob passes factFloor to curate; the runner takes --fact-floor as a whole number and --facts-over-lessons', async (t) => {
+test('the runner\'s ARM E and ARM C flags: each combination runs a scripted pass, and the old names and a lone --receipt-promotion are refused', async (t) => {
   const runner = join(import.meta.dirname, 'runner.mjs');
-  const out = join(await scratch(t), 'out');
-  const cli = (...args) => spawnSync(process.execPath, [runner, '--scripted', '--set', 'v4', '--out', out, '--jobs', '0', ...args], { encoding: 'utf8' });
-  const bad = cli('--fact-floor', '1.5');
-  assert.deepEqual([bad.status, bad.stderr.split('\n')[0]], [2, '--fact-floor is a whole number from 0']);
-  const ok = cli('--fact-floor', '12', '--facts-over-lessons');
-  assert.equal(ok.status, 0, ok.stderr);
-  assert.match(ok.stdout, /facts are kept past the index cap while 12 or fewer are active/);
-  assert.match(ok.stdout, /a lesson that contradicts an active fact is refused/);
+  const root = await scratch(t);
+  const bank = join(root, 'bank.json');
+  execFileSync('node', ['-e', `require('fs').writeFileSync(${JSON.stringify(bank)}, JSON.stringify([{ cik: '0000900105' }]))`]);
+  const cli = (out, ...args) => spawnSync(process.execPath, [runner, '--scripted', '--set', 'v4', '--out', join(root, out), '--jobs', '2', '--no-record', ...args], { encoding: 'utf8' });
+  const E = ['--curate-cuts', 'v0.1', '--curate-sticky', '--refuse-contradicting', '--keep-facts'];
+  const e = cli('e', ...E);
+  assert.equal(e.status, 0, e.stderr);
+  assert.match(e.stdout, /a lesson that contradicts an active fact is refused/);
+  assert.match(e.stdout, /facts are never archived to keep the index under its cap/);
+  assert.match(e.stdout, /run 2 /);
+  const c = cli('c', ...E, '--receipt-admission', '--receipt-promotion', '--promotion-bank', bank, '--promote-no-floor', '--receipt-holds-trial');
+  assert.equal(c.status, 0, c.stderr);
+  assert.match(c.stdout, /a promotion stands on its uses with no floor/);
+  assert.match(c.stdout, /run 2 /);
+  for (const old of ['--facts-over-lessons', '--admit-by-receipt', '--receipt-uses']) assert.equal(cli('x', old).status, 2, `${old} is not a flag any more`);
+  const lone = cli('y', '--receipt-promotion');
+  assert.deepEqual([lone.status, lone.stderr.split('\n')[0]], [2, '--receipt-promotion takes --promote-no-floor']);
   const repo = await agentRepo(await scratch(t));
   await proposeLesson(repo, 'run-001', 'A general lesson about reading the segment note.');
-  const curated = await curateJob({ repo, judge: meteredJudge(judgeWith(0.02).run), factFloor: 12 });
+  const curated = await curateJob({ repo, judge: meteredJudge(judgeWith(0.02).run), factFloor: Number.MAX_SAFE_INTEGER });
   assert.equal(verdict(curated, 'run-001'), 'accepted');
   assert.equal(learningId('run-001', 'A general lesson about reading the segment note.'), curated.report.runs[0].accepted[0].id);
 });
