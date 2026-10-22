@@ -4,7 +4,7 @@ import { copyFile, mkdir, mkdtemp, open, rename, rm, rmdir, stat } from "node:fs
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { EXPORTABLE_KINDS, SECRET_KINDS } from "./export.js";
-import { AGENT_STORE_FILE, type AgentHome, type AgentHomeState, checkDefinition, checkSha, ID_PATTERN, isSkillPath, openAgentHome, readState, sha256 } from "./home.js";
+import { AGENT_STORE_FILE, type AgentHome, type AgentHomeState, checkDefinition, checkPrompts, checkSha, ID_PATTERN, isSkillPath, openAgentHome, readState, sha256 } from "./home.js";
 import { DefinitionDoc, FORMAT_VERSION, IdentityDoc, PromptsDoc, put, RunsDoc, SkillsDoc, SourceDoc } from "./kinds.js";
 import {
   byName, canonical, documentKinds, type HomeManifest, invalid, isObject, isRunId, iso, MANIFEST_LIMIT, MAX_MEMBERS, memberProblem, PACK_FORMAT, SIDE_FILES,
@@ -194,6 +194,14 @@ async function inspectPack(file: string, options: { maxBytes?: number; maxMember
         if (sha256(skill.content) !== skill.sha256 || (named && (named.sha256 !== skill.sha256 || named.size_bytes !== Buffer.byteLength(skill.content)))) bad("definition", `the skill ${key} does not match its sha256 or size`);
       }
       if (canonical(agent.source ? { sha: agent.source.sha, refreshed_at: agent.source.refreshedAt } : null) !== canonical(manifest.source)) bad("format", "the manifest's source is not the one in agent.sqlite");
+      const prompts = Object.entries(agent.prompts);
+      if (prompts.length) {
+        try {
+          checkPrompts(prompts.map(([id, variant]) => ({ ...variant, id })));
+        } catch (error) {
+          bad("format", `${AGENT_STORE_FILE}'s prompts are not a set setPrompts takes: ${(error as Error).message}`);
+        }
+      }
       const runs = Object.entries(agent.runs);
       for (const [id, run] of runs) if (run.endedAt === undefined) live.add(id);
       if (manifest.runs.count !== runs.length || manifest.runs.live !== live.size) bad("format", "the manifest's run counts are not the runs in agent.sqlite");
@@ -236,7 +244,8 @@ function checksOf(manifest: HomeManifest | null, problems: Problem[], bytes: num
 /**
  * Judge the pack in `file` without writing a home: the manifest first and in format, every member on the allowlist (no
  * "..", no absolute path, no link or device), every SQLite file free of sign-in kinds, the agent store's identity,
- * definition and skills as the manifest says, the size as the manifest says. Only temporary files are written, and removed.
+ * definition and skills as the manifest says, its prompts none or a set `setPrompts` takes, the size as the manifest
+ * says. Only temporary files are written, and removed.
  * The checks are the contract's names for what this package can judge: format, definition, sign_ins, size and live_runs.
  */
 export async function readPack(file: string, options: { maxBytes?: number; maxMembers?: number; /** @internal */ inject?: (step: ImportStep) => void | Promise<void> } = {}): Promise<{ ok: boolean; manifest: HomeManifest | null; checks: HomeCheck[] }> {

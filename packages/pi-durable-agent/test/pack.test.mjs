@@ -12,7 +12,8 @@ import { buildSignedInHome, checkExportClean, SIGN_IN_MARKER, signedInHomeSkip }
 import { tarSize } from "../dist/tar.js";
 import { headersOnly, listTar, longNames, manifestOf, paxPairs, paxWithFields, tamper, withManifest, writeTarFile } from "./pack-support.mjs";
 import { defineDoc } from "@earendil-works/pi-durable";
-import { recoveryHook } from "../dist/store.js";
+import { PromptsDoc, put } from "../dist/kinds.js";
+import { openStore, recoveryHook } from "../dist/store.js";
 import { ctx, openSession, scratch } from "./support.mjs";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -346,6 +347,52 @@ test("a replace takes the pack's prompt set: a different set on the target is re
   await packHome(bare, { out: path.join(dir, "bare.tar") });
   await setPrompts(bare, TARGETS);
   const { home: emptied } = await importPack(path.join(dir, "bare.tar"), bare.dir, { replace: true, ifRevision: await homeRevision(bare) });
+  assert.deepEqual((await readAgentHome(emptied)).prompts, {});
+});
+
+/** A copy of the pack at `file` whose agent.sqlite had `change(tx)` committed to it, with the manifest's size made true. */
+async function withStoreChange(file, out, change) {
+  const store = `${out}.sqlite`;
+  writeFileSync(store, listTar(file).find((member) => member.name === "agent.sqlite").data);
+  const opened = await openStore(store);
+  try { await opened.session.commit(change, ctx); } finally { await opened.close(); }
+  const swapped = (size) => (members) => withManifest(members.map((member) => (member.name === "agent.sqlite" ? { ...member, data: readFileSync(store) } : member)), (manifest) => { manifest.size_bytes = size; });
+  tamper(file, out, swapped(0));
+  tamper(file, out, swapped(statSync(out).size));
+  assert.equal(manifestOf(listTar(out)).size_bytes, statSync(out).size);
+  return out;
+}
+
+test("a pack whose prompt set setPrompts would refuse is refused by readPack and importPack, and the target keeps its prompts; a pack with no prompts still imports", async () => {
+  const dir = await scratch();
+  const plain = (name) => createAgentHome(path.join(dir, name), { definition: { version: 1, name: "Plain", instructions: "x", skills: [], tools: [] } });
+  const home = await plain("home");
+  await setPrompts(home, PACKED);
+  const pack = path.join(dir, "home.tar");
+  await packHome(home, { out: pack });
+  await setPrompts(home, TARGETS);
+  const kept = (await readAgentHome(home)).prompts;
+  for (const [name, change, says] of [
+    ["no-base", (tx) => tx.retireDoc(PromptsDoc, "base"), /0 base variants/],
+    ["dangling", (tx) => tx.retireDoc(PromptsDoc, "kind"), /question kind is not the set's question row/],
+    ["two-generics", async (tx) => put(await tx.doc(PromptsDoc, "generic2", null), { ...byId(PACKED).generic, label: "Second" }), /2 generic variants/],
+  ]) {
+    const bad = await withStoreChange(pack, path.join(dir, `${name}.tar`), change);
+    const read = await readPack(bad);
+    assert.equal(read.ok, false, name);
+    const format = read.checks.find((check) => check.name === "format");
+    assert.equal(format.status, "fail", name);
+    assert.match(format.message, /agent\.sqlite's prompts are not a set setPrompts takes/, name);
+    assert.match(format.message, says, name);
+    await unchanged(home.dir, () => rejects(importPack(bad, home.dir, { replace: true }), "check"));
+    assert.deepEqual((await readAgentHome(home)).prompts, kept, name);
+    await rejects(importPack(bad, path.join(dir, `${name}-copy`)), "check");
+    assert.equal(existsSync(path.join(dir, `${name}-copy`)), false, name);
+  }
+
+  const none = await withStoreChange(pack, path.join(dir, "none.tar"), async (tx) => { for (const id of Object.keys(byId(PACKED))) await tx.retireDoc(PromptsDoc, id); });
+  assert.equal((await readPack(none)).ok, true, "an empty set is a home without prompts");
+  const { home: emptied } = await importPack(none, home.dir, { replace: true });
   assert.deepEqual((await readAgentHome(emptied)).prompts, {});
 });
 
