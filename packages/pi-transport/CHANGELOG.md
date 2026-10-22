@@ -4,13 +4,6 @@
 
 ## 0.1.0-beta.23 (2026-10-22)
 
-- The README gives an install line, in "A box": the package with its pi peers pinned at 1.3.0 (`@earendil-works/pi-durable`,
-  `@earendil-works/pi-ai`, `@earendil-works/chord`). pi 1.4.0 is npm's latest and outside the package's peer range, so an
-  install that names the peers without a version stops with ERESOLVE; pi 1.4 is not supported yet, and a later release
-  widens the range.
-
-## 0.1.0-beta.22 (2026-10-21)
-
 - `archilExecBoxes({ client, disk })` (`@parcha/pi-transport/box/archil-exec`): boxes that are directories of an agent's
   Archil work disk, each `exec` one serverless Archil call (about 100 ms warm, measured in us-east-1). The SDK is the
   host's (`Archil` and a disk from the `disk` package), not a dependency. The limits are stated, not hidden: `BoxFacts` gains
@@ -22,6 +15,10 @@
   with one case in their place that carries the reason, and `withoutEnv: "<why>"` for a box that has no env: Archil's exec carries only the command, so a spec with an env is refused with `unsupported` (the record and every call's command carry none) and a `boxEnv` per-call env on such a box is refused. A box billed per call gets a receipt with `calls` and `usd_per_call`
   in place of `usd_per_second` (`BoxPrice` takes `usdPerCall`; RECORDING.md draft 40). The live suite
   (`PI_TRANSPORT_LIVE_ARCHIL=1`) makes its own disk in aws-us-east-1 and deletes it.
+- The README gives an install line, in "A box": the package with its pi peers pinned at 1.3.0 (`@earendil-works/pi-durable`,
+  `@earendil-works/pi-ai`, `@earendil-works/chord`). pi 1.4.0 is npm's latest and outside the package's peer range, so an
+  install that names the peers without a version stops with ERESOLVE; pi 1.4 is not supported yet, and a later release
+  widens the range.
 
 ## 0.1.0-beta.21 (2026-10-21)
 

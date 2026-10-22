@@ -4,11 +4,6 @@
 
 ## 0.1.0-beta.23 (2026-10-22)
 
-- The README opens with what this first version is: a pi-durable SDK extension, not a `pi install` package; what installing it also installs; the notes loop as the core, with workflow trials, serving and promotion experimental; the judge curating needs; and the full loop in `examples/agent-learn` (`npm run demo:learn`).
-  The quickstart's install line pins the pi peers to 1.3.0, because pi 1.4 is not supported yet. A judge on any model has a pi-ai snippet, and the evidence cap of 8 items is stated.
-
-## 0.1.0-beta.22 (2026-10-21)
-
 First release of `@parcha/pi-agent-learn`, versioned with the other packages of the repository it is published from.
 
 - New package `@parcha/pi-agent-learn`: an agent that learns in its own git repository, on top of
@@ -105,4 +100,6 @@ First release of `@parcha/pi-agent-learn`, versioned with the other packages of 
 - Curation now reports two things it used to lose or stop on.
   - A run's `uses/<run id>.json` is read by the same rules the uses settler folds by. A file the settler could not fold (a name pi cannot load as a skill, or more uses than a run writes) is now refused in the report as `uses: the uses file does not parse`. Before, it passed curation's own looser check, the settler held it under a name that is not a workflow, and the run's uses disappeared from the report.
   - A `trial.json` on main that does not parse now holds that workflow (`its trial.json on main does not parse (format), so the workflow was held`) instead of throwing out of `curate()` and stopping every later run's curation.
+- The README opens with what this first version is: a pi-durable SDK extension, not a `pi install` package; what installing it also installs; the notes loop as the core, with workflow trials, serving and promotion experimental; the judge curating needs; and the full loop in `examples/agent-learn` (`npm run demo:learn`).
+  The quickstart's install line pins the pi peers to 1.3.0, because pi 1.4 is not supported yet. A judge on any model has a pi-ai snippet, and the evidence cap of 8 items is stated.
 - The README reads right outside this repository: its links to `@parcha/pi-git-remote` and `@parcha/pi-durable-agent` are full URLs, so they work on npm; the layout lists `inbox/<run id>/workflows/<name>/` once; it says the host-step blocks are a host's lines (with what `repo`, `harness`, `run` and `vault` stand for), that `createJevRunner` is a separate install that reads its key from the environment, and where `uses/<run id>.json` comes from (the `uses` option, or the run's store with `workDir`), in place of "a later part supplies".
