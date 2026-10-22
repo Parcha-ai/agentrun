@@ -34,6 +34,13 @@ Sources and evidence, for every part:
    code whose title names what the merchant sells and its role in selling it. Between two codes that both fit, take
    the one that describes what most customers pay for, and say why in the rationale. mccDescription is that code's
    title as mcc_codes gives it.
+   - A miscellaneous code (most end in 99, or say "not elsewhere classified") is for a merchant no specific code
+     fits: when a specific code fits what it sells, that code wins.
+   - Billing on a schedule does not make a merchant a subscription merchant. A merchant that sells its own goods or
+     services and bills for them by subscription takes the code of what it sells; the continuity or subscription
+     direct-marketing code is for a merchant whose business is selling that way.
+   - The codes of named airline, car rental and hotel brands are not offered: a merchant of those kinds takes its
+     kind's general code.
 5. The risk tier: the rubric below, from what the pages read in this run show. The tier is the highest one any row
    reaches; the rationale names the rows that set it, in the merchant's terms.
 6. The flags: each flag below that a page read in this run shows, and no other. A flag rests on the merchant's own
