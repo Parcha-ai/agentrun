@@ -2,9 +2,9 @@ import { lstat, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { GitRemoteError } from "./errors.js";
+import { GitRemoteError, refused } from "./errors.js";
 import type { GitIdentity } from "./git.js";
-import type { Limits } from "./limits.js";
+import { type Limits, within } from "./limits.js";
 import { local, type Remote } from "./remotes.js";
 import { openRepo } from "./repo.js";
 import { createSessionCheckout, DEFAULT_BRANCH, type EndOutcome, privateDirectory, remoteId, type SessionCheckout, SESSION_PLACEHOLDER } from "./session.js";
@@ -13,7 +13,15 @@ export { DEFAULT_BRANCH, type EndOutcome, SESSION_ID_TRAILER } from "./session.j
 
 /** The settings key (`~/.pi/agent/settings.json`) and the flags that configure the extension. */
 export const SETTINGS_KEY = "gitRemote";
-const FLAGS = ["git-remote", "git-ref", "git-allow", "git-branch", "git-checkout-dir"] as const;
+const FLAGS = {
+  "git-remote": "A local bare repository or an https URL the session's repository lives in",
+  "git-ref": "The branch or commit the session starts from (default: main)",
+  "git-allow": "Comma-separated globs of repository paths the session may commit, such as notes/**,skills/**",
+  "git-branch": `The session's branch, with ${SESSION_PLACEHOLDER} in it (default: ${DEFAULT_BRANCH})`,
+  "git-checkout-dir": `Where to check the repository out, outside the working directory (${SESSION_PLACEHOLDER} is replaced)`,
+} as const;
+
+type EndReport = { readonly ok: true; readonly outcome: EndOutcome } | { readonly ok: false; readonly sessionId: string; readonly error: unknown };
 
 export type GitRemoteOptions = {
   /** A local bare repository (`local(path)`), an https remote with the credential callback the host wires, or a string:
@@ -35,7 +43,7 @@ export type GitRemoteOptions = {
   identity?: GitIdentity;
   timeoutMs?: number;
   /** Told how each session's end went. An error is also thrown to pi, which reports it. */
-  onEnd?: (report: { readonly ok: true; readonly outcome: EndOutcome } | { readonly ok: false; readonly sessionId: string; readonly error: unknown }) => void;
+  onEnd?: (report: EndReport) => void;
 };
 
 type Config = {
@@ -47,7 +55,6 @@ type Config = {
   stateDir: string;
 };
 
-const refused = (message: string) => new GitRemoteError("refused", message);
 
 function asRemote(value: Remote | string, cwd: string): Remote {
   if (typeof value !== "string") return value;
@@ -70,7 +77,7 @@ function text(value: unknown, what: string): string | undefined {
 
 /** Options first, then the flags, then the `gitRemote` settings key. No remote anywhere means the extension is idle. */
 function configFor(pi: ExtensionAPI, options: GitRemoteOptions, cwd: string): Config | undefined {
-  const flag = (name: (typeof FLAGS)[number]) => {
+  const flag = (name: keyof typeof FLAGS) => {
     const value = pi.getFlag(name);
     return typeof value === "string" && value !== "" ? value : undefined;
   };
@@ -107,10 +114,6 @@ async function realish(target: string): Promise<string> {
   }
 }
 
-const inside = (child: string, parent: string) => {
-  const rel = path.relative(parent, child);
-  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
-};
 
 type Active = { sessionId: string; checkout: SessionCheckout; agents: string | undefined };
 
@@ -132,18 +135,10 @@ function tell(ctx: ExtensionContext, message: string): void {
  */
 export function createGitRemoteExtension(options: GitRemoteOptions = {}): (pi: ExtensionAPI) => void {
   return function piGitRemote(pi: ExtensionAPI): void {
-    for (const name of FLAGS) {
-      pi.registerFlag(name, { type: "string", description: {
-        "git-remote": "A local bare repository or an https URL the session's repository lives in",
-        "git-ref": "The branch or commit the session starts from (default: main)",
-        "git-allow": "Comma-separated globs of repository paths the session may commit, such as notes/**,skills/**",
-        "git-branch": `The session's branch, with ${SESSION_PLACEHOLDER} in it (default: ${DEFAULT_BRANCH})`,
-        "git-checkout-dir": `Where to check the repository out, outside the working directory (${SESSION_PLACEHOLDER} is replaced)`,
-      }[name] });
-    }
+    for (const [name, description] of Object.entries(FLAGS)) pi.registerFlag(name, { type: "string", description });
     let active: Active | undefined;
     // A host's callback never changes how an end went.
-    const heard = (report: Parameters<NonNullable<GitRemoteOptions["onEnd"]>>[0]) => {
+    const heard = (report: EndReport) => {
       try {
         options.onEnd?.(report);
       } catch {
@@ -159,7 +154,7 @@ export function createGitRemoteExtension(options: GitRemoteOptions = {}): (pi: E
       await privateDirectory(config.stateDir);
       const checkoutDir = path.resolve(ctx.cwd, (config.checkoutDir ?? path.join(config.stateDir, "checkouts", SESSION_PLACEHOLDER)).replaceAll(SESSION_PLACEHOLDER, sessionId));
       const [realCheckout, realCwd] = await Promise.all([realish(checkoutDir), realish(ctx.cwd)]);
-      if (inside(realCheckout, realCwd) || inside(realCwd, realCheckout)) throw refused("the checkout directory and the session's working directory must be apart: the agent's files belong in one and the repository in the other");
+      if (within(realCheckout, realCwd) || within(realCwd, realCheckout)) throw refused("the checkout directory and the session's working directory must be apart: the agent's files belong in one and the repository in the other");
       const repo = await openRepo({
         dir: path.join(config.stateDir, "repos", remoteId(config.remote).slice(0, 16)),
         remote: config.remote,

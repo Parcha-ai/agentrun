@@ -26,6 +26,7 @@ import { PdaError } from "../src/errors.ts";
 import { RUN_JSON, RunRecordError } from "../src/status.ts";
 import { main } from "../src/cli.ts";
 import { parseTokenNickname, tokenNickname } from "../src/claim.ts";
+import { currentBootId, localHost, type Runner } from "../src/hosts/local-host.ts";
 
 const REF = { disk: "dsk-0000000000000001", region: "aws-us-east-1", id: "r1" };
 const NOW = Date.parse("2026-10-06T12:00:00.000Z");
@@ -418,6 +419,35 @@ test("held, lease expired, holder running: STONITH (status, stop), revoke, start
   assert.equal(r.stonith?.outcome, "stopped");
   assert.deepEqual(host.stops, [running().holder]);
   assert.deepEqual(control.ops(), ["getObject", "listDelegations", "getMark", "host.status", "host.stop", "revokeDelegation", "addUser", "putMark", "host.start"]);
+});
+
+test("lease expired, a holder its driver will not act on: the STONITH is logged as failed with the driver's reason, never as stopped", async () => {
+  // run.json is the run user's to write: here its holder names sshd, a real unit, on this host and boot. localHost refuses
+  // to stop it, and the decision must say so rather than report a stop that never happened.
+  const { control, opts } = rig();
+  const dir = mkdtempSync(join(tmpdir(), "pda-stonith-"));
+  try {
+    const mountRoot = join(dir, "mnt");
+    const ran: string[] = [];
+    const exec: Runner = async (argv) => {
+      ran.push(argv.join(" "));
+      const stdout = argv.includes("show") ? "LoadState=loaded\nActiveState=active\nSubState=running\n" : "";
+      return { code: 0, timedOut: false, stdout, stderr: "" };
+    };
+    const local = localHost({ exec, hostName: "host-a", mountRoot, user: "1000", group: "1000" });
+    const mountpoint = join(mountRoot, "runs", REF.id);
+    const next: HostHandle = { driver: "local", mode: "systemd", host: "host-a", bootId: currentBootId(), unit: "pda-r1-next", mountpoint };
+    const host: HostDriver = { ...local, start: async () => next };
+    const holder = { driver: "local", mode: "systemd", host: "host-a", bootId: currentBootId(), unit: "sshd", mountpoint, pid: 42, since: ago(600_000) };
+    control.runJson(running({ heartbeatAt: ago(120_000), holder }));
+    control.delegations = [deleg()];
+    const r = await ensureRunning(REF, host, opts());
+    if (r.action !== "started" || r.stonith?.outcome !== "failed") assert.fail(`a refused stop is a failed STONITH: ${JSON.stringify(r)}`);
+    assert.match(r.stonith.error, /sshd.*not one this driver starts/);
+    assert.deepEqual(ran.filter((a) => /systemctl (stop|kill)/.test(a)), [], "nothing stopped or killed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("lease expired, STONITH hangs: never waited past the timeout, then revoke and start anyway", async () => {
