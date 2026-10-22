@@ -326,6 +326,9 @@ const judge = async ({ state, questions }) => {
     });
     if (reply.stopReason === "error") throw new Error(reply.errorMessage);
     const { answer, confidence } = JSON.parse(reply.content.find((part) => part.type === "text").text);
+    if (!["yes", "no"].includes(answer) || !Number.isFinite(confidence) || confidence < 0.5 || confidence > 1) {
+      throw new Error(`the model answered out of shape: ${JSON.stringify({ answer, confidence })}`);
+    }
     answers[name] = { type: "noul", noul: answer === "yes" ? confidence : 1 - confidence };
   }
   return { answers };
