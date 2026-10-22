@@ -39,7 +39,7 @@ The collector runs the DSL, Pi and example suites with a plain `node --test`, so
 
 ### Changing recovery behavior
 
-`spec/receipts/Receipts.tla` and `spec/lean/AgentRunRecovery/Frozen.lean` model what a recovery driver does with effects across crashes and failed commits. A change to modeled behavior changes the model in the same pull request: the recovery hooks in `workflow.ts`, the `RecoveryStore` contract in `packages/dsl/src/recovery/`, or a driver over it. With Java 11+ and [`tla2tools.jar`](https://github.com/tlaplus/tlaplus/releases):
+`spec/receipts/Receipts.tla` and `spec/lean/AgentRunRecovery/Frozen.lean` model what a recovery driver does with effects across crashes, failed commits and the host's cancel. A change to modeled behavior changes the model in the same pull request: the recovery hooks in `workflow.ts`, the `RecoveryStore` contract in `packages/dsl/src/recovery/`, or a driver over it. With Java 11+ and [`tla2tools.jar`](https://github.com/tlaplus/tlaplus/releases):
 
 ```sh
 TLA2TOOLS=/path/to/tla2tools.jar scripts/spec/check-receipts.sh

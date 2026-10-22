@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { apply } from '@earendil-works/chord/delta';
 import { createModels } from '@earendil-works/pi-ai/models';
-import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durable';
+import { createRegistry, defineDoc, Harness, MemoryStorage } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { DECISION_RECEIPTS_DOC, DECISION_ROW_VERSION, appendDecision, createDecisionWriter, readDecisions } from '@parcha/agentrun-pi/durable';
 
@@ -40,6 +40,24 @@ function storedDecisions(file) {
   } finally { db.close(); }
 }
 
+/** The keyed form as the file holds it: each `agentrun.decisions` family document's latest value, in key order. */
+function storedFamily(file) {
+  const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const docs = db.prepare("SELECT id, key_value FROM documents WHERE kind = ? AND scope_kind = 'session' AND owner_id = 0 AND family = 1 AND retired_at IS NULL").all(JSON.stringify(DECISION_RECEIPTS_DOC));
+    return docs.map((doc) => ({ key: JSON.parse(doc.key_value), doc })).sort((a, b) => (a.key < b.key ? -1 : 1)).map(({ key, doc }) => {
+      const base = db.prepare("SELECT seq, content FROM document_revisions WHERE document_id = ? AND kind = 'base' ORDER BY seq DESC LIMIT 1").get(doc.id);
+      let value = JSON.parse(base.content);
+      for (const delta of db.prepare('SELECT content FROM document_revisions WHERE document_id = ? AND seq > ? ORDER BY seq').all(doc.id, base.seq)) value = apply(value, JSON.parse(delta.content));
+      return { key, value };
+    });
+  } finally { db.close(); }
+}
+// A store written before the keyed family: it holds the single document, so its run keeps that form.
+const OldDoc = defineDoc({ kind: DECISION_RECEIPTS_DOC, version: 1, scope: 'session', initial: () => ({ receipts: [] }) });
+const asOldStore = (harness) => harness.commit(async (tx) => { await tx.doc(OldDoc); }, ctx);
+
 // A Session the writer opens, counting how often it was opened and released.
 function sessionOn(harness, { failOn = new Set() } = {}) {
   const seen = { opened: 0, released: 0, commits: 0 };
@@ -49,7 +67,7 @@ function sessionOn(harness, { failOn = new Set() } = {}) {
     open: async () => {
       seen.opened += 1;
       return {
-        harness: { commit: (change, context) => { next += 1; seen.commits += 1; return failOn.has(next) ? Promise.reject(new Error(`commit ${next} refused`)) : harness.commit(change, context); } },
+        harness: { snapshot: (...args) => harness.snapshot(...args), commit: (change, context) => { next += 1; seen.commits += 1; return failOn.has(next) ? Promise.reject(new Error(`commit ${next} refused`)) : harness.commit(change, context); } },
         release: async () => { seen.released += 1; },
       };
     },
@@ -112,7 +130,7 @@ test('a row recorded while flush waits is committed before the Session is releas
     let n = 0;
     const writer = createDecisionWriter({ open: async () => {
       seen.opened += 1;
-      return { harness: { commit: async (change, context) => { n += 1; if (n === 1) await first.shut; return harness.commit(change, context); } }, release: async () => { seen.released += 1; } };
+      return { harness: { snapshot: (...args) => harness.snapshot(...args), commit: async (change, context) => { n += 1; if (n === 1) await first.shut; return harness.commit(change, context); } }, release: async () => { seen.released += 1; } };
     } });
     writer.record(row('first'));
     const flushing = writer.flush();
@@ -151,7 +169,7 @@ test('flush reports the first failed commit even when releasing the Session also
   const harness = await open(new MemoryStorage());
   try {
     const failing = (failCommit) => createDecisionWriter({ open: async () => ({
-      harness: { commit: (change, context) => failCommit ? Promise.reject(new Error('commit refused')) : harness.commit(change, context) },
+      harness: { snapshot: (...args) => harness.snapshot(...args), commit: (change, context) => failCommit ? Promise.reject(new Error('commit refused')) : harness.commit(change, context) },
       release: async () => { throw new Error('release failed'); },
     }) });
     const both = failing(true);
@@ -178,13 +196,14 @@ test('a row is stored as it was when recorded, not as the caller later changed i
   } finally { await harness.close(ctx); }
 });
 
-test("the run's file holds the rows where a reader of today's file finds them: a session document, base plus deltas", async () => {
+test("an old-shape store holds the rows where a reader of that file finds them: the single session document, base plus deltas", async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agentrun-decisions-'));
   try {
     const file = join(dir, 'run.sqlite');
     const harness = await open(await openNodeSqliteStorage(file));
     const rows = [row('first', { error: 'the request was refused' }), row('after', { driver_spend: true, action: { holds: true } }), row('later')];
     try {
+      await asOldStore(harness);
       for (const r of rows) await appendDecision(harness, r, ctx);
     } finally { await harness.close(ctx); }
 
@@ -195,7 +214,7 @@ test("the run's file holds the rows where a reader of today's file finds them: a
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('row version 1 with the receipt identity and without it: both are stored and read back as written, and a row without it is stored as before', async () => {
+test('row version 1 with the receipt identity and without it: both are stored and read back as written, and a row without it is stored as before (old-shape store)', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agentrun-decisions-'));
   try {
     const file = join(dir, 'run.sqlite');
@@ -204,6 +223,7 @@ test('row version 1 with the receipt identity and without it: both are stored an
     const before = row('before');
     const identified = row('identified', { execution_path: '/root', decision_id: 'd'.repeat(64), request: { index: 0, count: 1 }, state_sha256: 'a'.repeat(64), run_key: 'run-1' });
     try {
+      await asOldStore(harness);
       await appendDecision(harness, before, ctx);
       await appendDecision(harness, identified, ctx);
       assert.deepEqual(await readDecisions(harness, ctx), [before, identified]);
@@ -212,5 +232,26 @@ test('row version 1 with the receipt identity and without it: both are stored an
     assert.deepEqual(stored, [before, identified]);
     assert.deepEqual(Object.keys(stored[0]), ROW_FIELDS);
     assert.deepEqual(Object.keys(stored[1]), [...ROW_FIELDS, 'decision_id', 'request', 'state_sha256', 'run_key']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a fresh store holds the rows as the keyed family: one document per row, each exactly the row, keys in commit order, and the count beside them', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agentrun-decisions-'));
+  try {
+    const file = join(dir, 'run.sqlite');
+    const harness = await open(await openNodeSqliteStorage(file));
+    const before = row('before');
+    const identified = row('identified', { execution_path: '/root', decision_id: 'd'.repeat(64), request: { index: 0, count: 1 }, state_sha256: 'a'.repeat(64), run_key: 'run-1' });
+    const refused = row('first', { error: 'the request was refused' });
+    try {
+      for (const r of [before, identified, refused]) await appendDecision(harness, r, ctx);
+      assert.deepEqual(await readDecisions(harness, ctx), [before, identified, refused]);
+    } finally { await harness.close(ctx); }
+    const stored = storedFamily(file);
+    assert.deepEqual(stored.map((entry) => entry.key), ['00000000', '00000001', '00000002']);
+    assert.deepEqual(stored.map((entry) => entry.value), [before, identified, refused]);
+    assert.deepEqual(Object.keys(stored[0].value), ROW_FIELDS);
+    assert.deepEqual(Object.keys(stored[1].value), [...ROW_FIELDS, 'decision_id', 'request', 'state_sha256', 'run_key']);
+    assert.throws(() => storedDecisions(file), /one session document named agentrun.decisions/, 'no single document');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -82,7 +82,6 @@ test('a data-look that names no look the run filed is refused', (t) => {
   assert.ok(found.some((message) => /cites look "[0-9a-f]+".*did not file/.test(message)), found.join('\n'));
 });
 
-/** The gate over a one-recording gallery built from `dir`. */
 /** A one-recording gallery from `dir`, published as the Pages job builds it (`build.mjs --files`). */
 function publish(t, dir) {
   const recordings = scratch(t, 'gallery-test-');
@@ -92,6 +91,7 @@ function publish(t, dir) {
   return dist;
 }
 const gateOf = (dist) => gateProblems(dist).map((each) => `${each.path}: ${each.message}`);
+/** The gate over a one-recording gallery built from `dir`. */
 function gateProblemsOf(t, dir) {
   return gateOf(publish(t, dir));
 }

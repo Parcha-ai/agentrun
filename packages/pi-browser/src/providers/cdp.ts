@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { createReadStream, createWriteStream, readFileSync } from "node:fs";
+import { closeSync, createReadStream, createWriteStream, readFileSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, readdir, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { pipeline } from "node:stream/promises";
@@ -8,6 +8,7 @@ import { BrowserFailureError, PROFILE_NAME } from "../core/custody.js";
 import type { AttachTarget, BrowserProvider, ProviderCaps, RemoteFile, SavedProfile } from "../core/host.js";
 import type { LeaseRef, ResourceStatus } from "../core/lease.js";
 import { cdpCall } from "./cdp-call.js";
+import { chromeTail, openChromeStderr, watchChromeStderr } from "./chrome-stderr.js";
 import { claimWriter, freeWriter, noteWriter } from "./profiles.js";
 
 export type CdpOptions =
@@ -231,6 +232,8 @@ async function ownedBy(named: string, tag: string): Promise<string | null> {
   if (!named || !path.isAbsolute(named) || !TMP_NAME.test(path.basename(named))) return null;
   return (await readFile(path.join(named, TMP_OWNER), "utf8").catch(() => null)) === tag ? named : null;
 }
+const SANDBOX_HINT = "On a system that cannot start Chrome's sandbox (root, a container, restricted user namespaces), set sandbox: false or PI_BROWSER_NO_SANDBOX=1.";
+
 /** Signal 0 only asks; EPERM means the process exists under another user. */
 const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; } };
 
@@ -343,19 +346,34 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
         await rm(path.join(dir, "DevToolsActivePort"), { force: true });
         const tmp = await makePrivateTmp(spec.tag, dir, spec.profile?.save ? leaseRecord(profileRoot, spec.tag) : null, remove);
         if (tmp) privateTmps.set(spec.tag, tmp);
-        const child = spawn(executablePath, [
-          ...CHROME_FLAGS, ...(sandbox ? [] : ["--no-sandbox"]), ...(headless ? ["--headless=new"] : []), "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1", `--user-data-dir=${dir}`,
-          `--window-size=${spec.viewport.width},${spec.viewport.height}`, ...args, "about:blank",
-        ], { stdio: "ignore", detached: true, ...(tmp ? { env: { ...process.env, TMPDIR: tmp } } : {}) });
+        const stderrFd = openChromeStderr(tmp);
+        let child: ChildProcess;
+        try {
+          child = spawn(executablePath, [
+            ...CHROME_FLAGS, ...(sandbox ? [] : ["--no-sandbox"]), ...(headless ? ["--headless=new"] : []), "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1", `--user-data-dir=${dir}`,
+            `--window-size=${spec.viewport.width},${spec.viewport.height}`, ...args, "about:blank",
+          ], { stdio: ["ignore", "ignore", stderrFd ?? "ignore"], detached: true, ...(tmp ? { env: { ...process.env, TMPDIR: tmp } } : {}) });
+        } catch (error) {
+          // A spawn that throws (an argument with a null byte) starts no child, so nothing else will remove what this start made.
+          const left = await removeAll([dir, downloadsDir(profileRoot, spec.tag), ...(tmp ? [tmp] : [])], remove);
+          await forgetTmp(profileRoot, spec.tag);
+          throw left ? new ProfileNotRemovedError(left.dirs, left.error, error) : error;
+        } finally {
+          // The parent's copy is closed whether or not spawn threw.
+          if (stderrFd !== null) closeSync(stderrFd);
+        }
         // A Chrome that cannot start emits `error`, which unhandled would end the host: it rejects create instead.
         let failed: Error | null = null;
         child.once("error", (error) => { failed = error; });
         child.once("exit", (code, signal) => {
-          // A Chrome that cannot start its sandbox aborts (SIGABRT) before it opens a port: the signal is the fact, never
-          // Chrome's words.
-          failed ??= sandbox && signal === "SIGABRT"
-            ? new BrowserFailureError({ ok: false, code: "browser_unavailable", retryable: false, effect: "none", message: `Chrome exited before it opened its debugging port (SIGABRT); on a system that cannot start Chrome's sandbox (root, a container, restricted user namespaces) start it with sandbox: false or PI_BROWSER_NO_SANDBOX=1` })
-            : new Error(`Chrome exited before it opened its debugging port (${signal ?? code})`);
+          // Whatever Chrome said goes into the failure. The sandbox hint goes with it when the sandbox is on and either Chrome
+          // aborted before it opened a port (SIGABRT, how some builds fail it) or its own words name the sandbox (others exit 1).
+          if (failed) return;
+          const tail = chromeTail(tmp);
+          const message = `Chrome exited before it opened its debugging port (${signal ?? code})${tail ? `\nChrome said:\n${tail.split("\n").map((line) => `  ${line}`).join("\n")}` : ""}`;
+          failed = sandbox && (signal === "SIGABRT" || /sandbox/i.test(tail))
+            ? new BrowserFailureError({ ok: false, code: "browser_unavailable", retryable: false, effect: "none", message: `${message}\n${SANDBOX_HINT}` })
+            : new Error(message);
         });
         if (child.pid === undefined) {
           await sleep(0);
@@ -375,6 +393,7 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
             if (own && (await answeringPath(own.port)) === own.path) {
               const pid = child.pid;
               noteWriter(spec.tag, () => isOurs({ pid, port: own.port }));
+              watchChromeStderr(tmp, pid);
               return { id: `local:${pid}:${own.port}:${spec.tag}`, tag: spec.tag };
             }
             if (Date.now() > deadline) throw new Error("Chrome did not open its debugging port");
@@ -414,6 +433,8 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
       if (!own || own.port !== local.port) throw new Error("this lease's profile records a different browser than the one its id names");
       const url = await debuggerUrl(`http://127.0.0.1:${local.port}`);
       if (new URL(url).pathname !== own.path) throw new Error(`the browser on port ${local.port} is not the browser this lease's profile records`);
+      // A Chrome this host did not start outlived the host that did: its stderr file is bounded here too.
+      watchChromeStderr(privateTmps.get(local.tag) ?? await recordedTmp(options.chrome.profileRoot, local.tag) ?? await ownedTmp(profileDir(options.chrome.profileRoot, local.tag), local.tag), local.pid);
       return { sdkCdpUrl: url };
     },
 

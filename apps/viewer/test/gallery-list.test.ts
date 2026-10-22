@@ -38,10 +38,11 @@ for (const files of [false, true]) {
     held.page = page;
     await page.once(`document.querySelectorAll('ul.gallery li a').length === 3`, 'true', 25_000, 'the list drawn');
     const rows = JSON.parse(String(await page.evaluate(`JSON.stringify([...document.querySelectorAll('ul.gallery li a')].map((a) => [a.textContent, a.getAttribute('href')]))`))) as [string, string][];
+    // In the lock's order (named, plain, odd), each with the lock's words and view, or as recorded: no unknown flag on a link.
     assert.deepEqual(rows, [
-      ['Odd one', 'chat.html?r=odd&muse'],
       ['Did my last payment go through?', 'chat.html?r=named&muse'],
       ['What I remember', 'chat.html?r=plain'],
-    ].sort((a, b) => ['named', 'odd', 'plain'].indexOf(a[1]!.split('=')[1]!.split('&')[0]!) - ['named', 'odd', 'plain'].indexOf(b[1]!.split('=')[1]!.split('&')[0]!)), 'the lock\'s title and view for named ones; the recording\'s own title and the plain link for the rest; no unknown flag');
+      ['Odd one', 'chat.html?r=odd&muse'],
+    ]);
   });
 }
