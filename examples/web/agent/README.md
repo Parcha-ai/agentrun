@@ -161,8 +161,8 @@ With `AGENT_BROWSER=local`, each run's Chrome saves a file the page offers as a 
 `work/downloads/` without asking: start-run.mjs sets the profile's download folder again for every run, since the
 profile is shared across runs. The agent's file tools read a downloaded file by its name, and cannot list a folder.
 Only a run on a local Chrome is told where a download lands (`LOCAL_DOWNLOADS` in app.ts, after its skills): on
-Browserbase a click saves the file on Browserbase's machine, so the site-report skill has the agent name the file
-instead.
+Browserbase or Kernel a click saves the file on the provider's machine, so the site-report skill has the agent name
+the file instead.
 
 When the run lets go of its browser, the app writes `report/remember.html`: the sites the agent is signed in to and when
 that was last checked, each memory file with its text, and the agent's runs, never a profile's ref. It is the run's
