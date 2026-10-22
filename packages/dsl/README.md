@@ -1,6 +1,6 @@
 # @parcha/agentrun-dsl
 
-Typed workflows that your agent writes. It drafts a workflow, checks it, dry-runs it for free, then runs it, and every node shows on its graph. The core provides the v2 workflow types, validator, interpreter, events, schema, and an offline CLI. Supply agent, judgment, and effect functions only when a workflow needs them.
+Typed workflows that your agent writes. It drafts a workflow, checks it, dry-runs it for free, then runs it; `@parcha/agentrun-dsl/graph` turns the workflow into its graph. The core provides the v2 workflow types, validator, interpreter, events, schema, and an offline CLI. Supply agent, judgment, and effect functions only when a workflow needs them.
 
 Beta, on npm under the `beta` dist-tag (`npm view @parcha/agentrun-dsl dist-tags`). Requires Node 22.19+; TypeScript consumers require TypeScript 5.4+.
 
