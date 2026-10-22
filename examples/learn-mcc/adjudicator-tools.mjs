@@ -2,7 +2,9 @@
 // merchant's name and website. Two host tools and an answer. `site` records stage 1 (the adjudicator's own code and the
 // tiers the risk rubric allows, from the site alone). `codes` gives the candidate codes and refuses until stage 1 is
 // recorded. `verdict`, the answer, judges every candidate acceptable or not. Blindness is in the code: no candidate
-// reaches the run before its own judgment does, and no candidate says whose it is.
+// reaches the run before its own judgment does, and no candidate says whose it is. The runner is
+// examples/learn-classify/eval-adjudicate.mjs: it writes stage1.json, stage2.json and manifest.jsonl under
+// <out>/adjudication/<passId>/.
 import { allowedTiers } from './adjudication.mjs';
 import { MAX_QUOTE, RISK_TIERS } from './answer.mjs';
 import { mccOf } from './score-mcc.mjs';
