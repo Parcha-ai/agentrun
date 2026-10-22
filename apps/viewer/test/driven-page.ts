@@ -10,6 +10,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import type { TestContext } from 'node:test';
 
 export const chrome = process.env.CHROME_PATH ?? '/usr/bin/google-chrome';
 
@@ -52,6 +53,16 @@ type Options = { launchMs?: number; retryLaunchMs?: number; requestMs?: number; 
 
 /** A browser that did not write its DevToolsActivePort within `launchMs`. */
 class NotListening extends Error {}
+
+/** An expression that threw in the page: the one failure a poll reads as "not so yet". */
+class PageThrew extends Error {}
+
+/** A poll's reading of a failed evaluation: a throw in the page is `value` (not so yet); anything else (the socket closed,
+ *  the browser exited, a request past its bound) is not a state of the page, and fails the poll at once. */
+const notYet = <T>(value: T) => (error: unknown): T => {
+  if (error instanceof PageThrew) return value;
+  throw error;
+};
 
 /** A page in its own headless Chrome. `signal`'s abort (a test's timeout) kills the browser's group at once, before the
  *  test's cleanup removes what it uses; `path` is the browser to start (a stand-in in the bounds' own test). A browser
@@ -130,7 +141,7 @@ async function startedPage(url: string, profile: string, { launchMs = LAUNCH_MS,
       if (message.id === undefined) return;
       // An expression that threw in the page is an error here, never a value of undefined that a reader mistakes for an answer.
       const thrown = message.result?.exceptionDetails;
-      if (thrown) waiting.get(message.id)?.reject(new Error(`the page threw: ${thrown.exception?.description ?? thrown.text ?? 'an exception'}`));
+      if (thrown) waiting.get(message.id)?.reject(new PageThrew(`the page threw: ${thrown.exception?.description ?? thrown.text ?? 'an exception'}`));
       else waiting.get(message.id)?.resolve(message.result?.result?.value);
     });
     let id = 0;
@@ -143,19 +154,19 @@ async function startedPage(url: string, profile: string, { launchMs = LAUNCH_MS,
         opened.send(JSON.stringify({ id: mine, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }));
       })).finally(() => waiting.delete(mine));
     };
-    /** Until `expression` is true on the page, polled, within `ms` (one that throws is not true yet); then the value of `read`. */
+    /** Until `expression` is true on the page, polled, within `ms` (one that throws in the page is not true yet); then the value of `read`. */
     const once = async (expression: string, read: string, ms: number, what: string) => {
       for (const until = Date.now() + ms; Date.now() < until && !aborted?.aborted;) {
-        if (await evaluate(expression).catch(() => false)) return evaluate(read);
+        if (await evaluate(expression).catch(notYet(false))) return evaluate(read);
         await sleep(100);
       }
       throw new Error(`${what}: not so after ${ms / 1000} s`);
     };
     /** The first value `read` gives that is not empty (undefined, null, '' or false), polled within `ms`: a read that is its
-     *  own readiness check, so nothing on the page can change between the check and the read. One that throws is not ready yet. */
+     *  own readiness check, so nothing on the page can change between the check and the read. One that throws in the page is not ready yet. */
     const until = async (read: string, ms: number, what: string) => {
       for (const deadline = Date.now() + ms; Date.now() < deadline && !aborted?.aborted;) {
-        const value = await evaluate(read).catch(() => undefined);
+        const value = await evaluate(read).catch(notYet(undefined));
         if (value !== undefined && value !== null && value !== '' && value !== false) return value;
         await sleep(100);
       }
@@ -178,6 +189,16 @@ export async function closeAll(pages: readonly { close(): Promise<void> }[], the
   const failed: unknown[] = [];
   for (const page of pages) await page.close().catch((error: unknown) => { failed.push(error); });
   try { then(); } finally { if (failed.length) throw failed[0]; }
+}
+
+/** A page for test `t`, its cleanup registered BEFORE the browser starts: the page, once there is one, is closed and then
+ *  `then` runs (its servers closed, its directory removed), so a start that fails leaves nothing behind. The test's signal
+ *  ends the browser when the test times out. */
+export async function pageFor(t: TestContext, url: string, profile: string, then: () => void, options: Options = {}): Promise<DrivenPage> {
+  const held: { page?: DrivenPage } = {};
+  t.after(() => closeAll(held.page ? [held.page] : [], then), { timeout: 20_000 });
+  held.page = await drivenPage(url, profile, { signal: t.signal, ...options });
+  return held.page;
 }
 
 /** Ends every browser a test started and did not close, and names them: a file's `after` fails on any. */
