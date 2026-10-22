@@ -39,10 +39,10 @@ describe("boxHost: its options", () => {
       ["boxHost's own label", () => boxHost({ provider, spec: { ...SPEC, labels: { "pi-durable-disk.run": "x" } }, app: "/a.js" })],
       ["no app", () => boxHost({ provider, spec: SPEC, app: "" })],
       ["empty command", () => boxHost({ provider, spec: SPEC, app: "/a.js", command: [] })],
-      ["bad user", () => boxHost({ provider, spec: SPEC, app: "/a.js", user: "Bad User" })],
-      ["root by name", () => boxHost({ provider, spec: SPEC, app: "/a.js", user: "root" })],
-      ["root by uid", () => boxHost({ provider, spec: SPEC, app: "/a.js", user: "0" })],
-      ["root by a padded uid", () => boxHost({ provider, spec: SPEC, app: "/a.js", user: "000" })],
+      ["a bad runAs", () => boxHost({ provider, spec: SPEC, app: "/a.js", runAs: "Bad User" })],
+      ["runAs root by name", () => boxHost({ provider, spec: SPEC, app: "/a.js", runAs: "root" })],
+      ["runAs root by uid", () => boxHost({ provider, spec: SPEC, app: "/a.js", runAs: "0" })],
+      ["runAs root by a padded uid", () => boxHost({ provider, spec: SPEC, app: "/a.js", runAs: "000" })],
       ["relative mountRoot", () => boxHost({ provider, spec: SPEC, app: "/a.js", mountRoot: "mnt" })],
     ];
     for (const [why, make] of bad) assert.throws(make, code("INVALID_ARGUMENT"), why);
@@ -90,31 +90,20 @@ describe("boxHost: an environment the launcher refuses is refused before any box
   });
 });
 
-describe("boxHost with runAs: the instance holds the token as root, every agent command runs as another, unprivileged user (PENDING the reference TL's ruling on condition 2)", () => {
-  it("launches the instance as root with --run-as <runAs> (disk's own spawn drops every command to it); the token still rides only the launch's stdin", async () => {
-    const provider = fake(modalLike({ facts: fd }));
-    provider.program("pi-durable-disk", ({ signal }) => new Promise<number>((r) => signal.addEventListener("abort", () => r(0))));
-    const driver = host(provider, { runAs: "pda" } as never);
-    await driver.start(REF, TOKEN, { attempt: 1 });
-    const launch = provider.boxes[0]!.launches[0]!;
-    assert.equal(launch.spec.user, "root");
-    const argv = launch.spec.argv;
-    assert.deepEqual(argv.slice(argv.indexOf("--run-as"), argv.indexOf("--run-as") + 2), ["--run-as", "pda"]);
-    assert.equal(argv.at(-1), "--token-stdin");
-    assert.deepEqual(provider.leaks(TOKEN).map((l) => `${l.op}:${l.where}`), ["launch:stdin"]);
-  });
-
-  it("refuses at once: a runAs that is root (by name or uid), a runAs with a user that is not root (runAs needs a root instance to switch users), and root without runAs", () => {
-    const provider = fake(modalLike({ facts: fd }));
-    const make = (more: object) => () => boxHost({ provider, spec: SPEC, app: "/a.js", ...more } as never);
-    for (const [why, more] of [
-      ["runAs root", { runAs: "root" }],
-      ["runAs 0", { runAs: "0" }],
-      ["runAs with a non-root user", { runAs: "pda", user: "pdah" }],
-      ["root without runAs", { user: "root" }],
-    ] as const) assert.throws(make(more), code("INVALID_ARGUMENT"), why);
-    assert.doesNotThrow(make({ runAs: "pda", user: "root" }), "root with runAs, said explicitly");
-    assert.equal(provider.calls.length, 0);
+describe("boxHost: the instance holds the token as root, and every agent command runs as runAs (never root)", () => {
+  it("launches the instance as root with --run-as <runAs> (default pda; disk's own spawn drops every command to it, with no capabilities); the token rides only the launch's stdin; nothing goes through sudo", async () => {
+    for (const [why, runAs, want] of [["the default", undefined, "pda"], ["a named user", "agent", "agent"], ["a uid", "1500", "1500"]] as const) {
+      const provider = fake(modalLike({ facts: fd }));
+      provider.program("pi-durable-disk", ({ signal }) => new Promise<number>((r) => signal.addEventListener("abort", () => r(0))));
+      const driver = host(provider, runAs === undefined ? {} : { runAs });
+      await driver.start(REF, TOKEN, { attempt: 1 });
+      const launch = provider.boxes[0]!.launches[0]!;
+      assert.equal(launch.spec.user, "root", `${why}: the instance runs as root`);
+      const argv = launch.spec.argv;
+      assert.deepEqual(argv.slice(argv.indexOf("--run-as"), argv.indexOf("--run-as") + 2), ["--run-as", want], `${why}: the tools' user`);
+      assert.ok(!argv.some((a) => /sudo/.test(a)) && argv[0] !== "sudo", `${why}: nothing goes through sudo, so the tools' user needs no sudo rule`);
+      assert.deepEqual(provider.leaks(TOKEN).map((l) => `${l.op}:${l.where}`), ["launch:stdin"]);
+    }
   });
 });
 
@@ -223,8 +212,8 @@ describe("boxHost: the launch, a start found again, status, stop and receipts", 
     const box = provider.boxes[0]!;
     assert.deepEqual(handle, { driver: "box", provider: provider.name, box: box.id, attempt: 2, launch: { v: 1, name: "pda-r1-g2" } });
     const launch = box.launches[0]!;
-    assert.deepEqual(launch.spec.argv, ["pi-durable-disk", "run", "--disk", REF.disk, "--region", REF.region, "--id", REF.id, "--mount-root", "/mnt/archil", "--archil", "/usr/local/sbin/archil-scoped", "--app", "/opt/app/app.js", "--token-stdin"]);
-    assert.equal(launch.spec.user, "pda");
+    assert.deepEqual(launch.spec.argv, ["pi-durable-disk", "run", "--disk", REF.disk, "--region", REF.region, "--id", REF.id, "--mount-root", "/mnt/archil", "--archil", "/usr/local/sbin/archil-scoped", "--app", "/opt/app/app.js", "--run-as", "pda", "--token-stdin"]);
+    assert.equal(launch.spec.user, "root", "the instance holds the token as root; every agent command runs as pda (--run-as)");
     assert.equal(launch.spec.inheritEnv, false);
     assert.equal(launch.spec.restart, true);
     assert.deepEqual(launch.spec.terminalExits, [65, 70, 75, 76]);
