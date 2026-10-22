@@ -2,7 +2,8 @@
 // (the static viewer inlines it) and the pi session's text view draw the same graph; nothing here validates, runs or
 // reads a store. `workflowGraph` reads the workflow JSON as written; `nodeStatus` reads the driver's record of a run
 // (the `agentrun.driver` frame of the frozen snapshot, and the `agentrun.items` of a keyed-layout run) and says, for
-// each node of that graph, whether it is done, working, failed or not run; `graphNodeOf` names the node an execution path ran
+// each node of that graph, whether it is done, working, failed or not run, or, given the run's terminal result, where an
+// escalation stopped it; `graphNodeOf` names the node an execution path ran
 // at, and the map items and loop iterations around it; `graphDiff` says what changed between two graphs of a workflow.
 
 /** One node of the workflow as written. `path` is a JSON Pointer (RFC 6901) into the document: `/root` is the root,
@@ -107,15 +108,20 @@ export function workflowGraph(workflow: unknown): WorkflowGraph {
  *  only those that started, so it is `done` only once the map or loop is: until then it is `working`, and a done node never
  *  goes back. A container (chain, parallel, map, loop, route, workflow) is `working` while some of
  *  its descendants are, or some are done and it is not; a node a run never reached, a branch a route did not take among
- *  them, is `not-run`. */
-export type NodeState = "done" | "working" | "failed" | "not-run";
+ *  them, is `not-run`. `escalated` is where the run ended on an escalation: the escalate node that fired and each container
+ *  on its path. It is read from the run's terminal result, never from the frame, which holds no mark for that node. */
+export type NodeState = "done" | "working" | "failed" | "not-run" | "escalated";
 
 type Frame = { done?: unknown; steps?: unknown; inputs?: unknown; partial?: unknown };
 /** The part of an `agentrun.items` value the status reads: the map item's `status` and its frame. */
 export type ItemRecordLike = { map?: unknown; index?: unknown; status?: unknown; frame?: Frame };
+/** The part of a run's terminal result the status reads: its `status` and, for an escalation, the execution path of the
+ *  node it stopped at (`escalation.executionPath`, as `runWorkflow` returns it). */
+export type TerminalResultLike = { status?: unknown; escalation?: { executionPath?: unknown } };
 /** What `nodeStatus` reads: a driver frame (the `pin` of a frozen snapshot: `done`, `steps`, `inputs`), a frozen snapshot
- *  (its `pin`), or the map items' records, alone or together with the driver's record (`{ pin, items }`). */
-export type StatusSource = Frame | { pin: Frame; items?: readonly ItemRecordLike[] } | readonly ItemRecordLike[];
+ *  (its `pin`), or the map items' records, alone or together with the driver's record (`{ pin, items }`), and with it the
+ *  run's terminal `result` once the run has ended. */
+export type StatusSource = Frame | { pin: Frame; items?: readonly ItemRecordLike[]; result?: TerminalResultLike | null } | readonly ItemRecordLike[];
 
 /** The execution path an instance of a node ran at, as the node's path in the document: a map's item and a loop's
  *  iteration have no node of their own. */
@@ -130,7 +136,9 @@ export type StatusOptions = { item?: string };
 
 /** For every node of `graph`, the state the record shows. `source` is what the driver kept: its frame and, in the keyed
  *  layout, the records of the map items (a run's whole story is the frame and the items together). A source that is not
- *  one of those shows no node run. */
+ *  one of those shows no node run. With the run's terminal `result`, an escalation that names a node of the graph marks
+ *  that node and every container on its path `escalated`, and the maps and loops on that path have ended, so what finished
+ *  inside them is done; without one, or when it names no node of the graph, nothing else changes. */
 export function nodeStatus(graph: WorkflowGraph, source: StatusSource, options: StatusOptions = {}): Record<string, NodeState> {
   const instances = new Map<string, "working" | "done" | "failed">();
   const note = (path: unknown, state: "working" | "done" | "failed"): void => {
@@ -161,6 +169,19 @@ export function nodeStatus(graph: WorkflowGraph, source: StatusSource, options: 
   if (Array.isArray(raw)) raw.forEach(readItem);
   else if (isObject(raw) && isObject(raw.pin)) { readFrame(raw.pin); if (Array.isArray(raw.items)) raw.items.forEach(readItem); }
   else readFrame(raw);
+  // The node a run's escalation ended at, from its terminal result: by its execution path, as the node it ran as.
+  const result = isObject(raw) && isObject(raw.pin) && isObject(raw.result) ? raw.result : undefined;
+  const escalation = result?.status === "escalated" && isObject(result.escalation) ? result.escalation : undefined;
+  const escalatedExecPath = typeof escalation?.executionPath === "string" ? escalation.executionPath : undefined;
+  // When one map item or loop iteration is read on its own (`options.item`), the escalation belongs to this view only if
+  // it fired inside that same instance: another item's escalation, reduced to the shared body, must not mark this one's
+  // body escalated. The item index is in the raw execution path, which `definitionPath` then strips.
+  const itemScope = typeof options.item === "string" ? options.item.replace(/\/$/, "") : undefined;
+  const inThisItem = escalatedExecPath !== undefined
+    && (itemScope === undefined || escalatedExecPath === itemScope || escalatedExecPath.startsWith(`${itemScope}/`));
+  const stoppedAt = escalatedExecPath !== undefined && inThisItem ? definitionPath(escalatedExecPath) : undefined;
+  const ended = stoppedAt !== undefined && graph.nodes.some((node) => node.path === stoppedAt) ? stoppedAt : undefined;
+  const onPath = (path: string): boolean => ended !== undefined && (path === ended || ended.startsWith(`${path}/`));
 
   // A done mark outranks a working one at the same path (a step's record stays after its node commits); a failure outranks both.
   const byNode = new Map<string, Array<"working" | "done" | "failed">>();
@@ -196,12 +217,16 @@ export function nodeStatus(graph: WorkflowGraph, source: StatusSource, options: 
   // The map or loop an `item` belongs to is the exception, and so is every one that encloses it: that item is the instance, and
   // the source holds nothing of the items around it. A map or loop inside the item still stands for its own items.
   const owner = typeof options.item === "string" ? definitionPath(options.item.replace(/\/(?:items|iterations)\/\d+$/, "")) : undefined;
-  const containers = graph.nodes.filter((node) => (node.kind === "map" || node.kind === "loop")
+  // A map or loop on an escalation's path has ended: no other item or iteration will run, so what finished inside it is done.
+  const containers = graph.nodes.filter((node) => (node.kind === "map" || node.kind === "loop") && !onPath(node.path)
     && !(owner !== undefined && (node.path === owner || owner.startsWith(`${node.path}/body`))));
   for (const node of graph.nodes) {
     if (out[node.path] !== "done") continue;
     if (containers.some((container) => node.path.startsWith(`${container.path}/body`) && out[container.path] !== "done")) out[node.path] = "working";
   }
+  // The run ended at the escalate node that fired, and in each container on its path; a failure recorded below a container
+  // still shows.
+  for (const node of graph.nodes) if (onPath(node.path) && (node.path === ended || out[node.path] !== "failed")) out[node.path] = "escalated";
   return out;
 }
 

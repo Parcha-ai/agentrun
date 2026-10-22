@@ -4,8 +4,8 @@ import { copyFile, mkdir, mkdtemp, open, rename, rm, rmdir, stat } from "node:fs
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { EXPORTABLE_KINDS, SECRET_KINDS } from "./export.js";
-import { AGENT_STORE_FILE, type AgentHome, type AgentHomeState, checkDefinition, checkSha, ID_PATTERN, isSkillPath, openAgentHome, readState, sha256 } from "./home.js";
-import { DefinitionDoc, FORMAT_VERSION, IdentityDoc, put, RunsDoc, SkillsDoc, SourceDoc } from "./kinds.js";
+import { AGENT_STORE_FILE, type AgentHome, type AgentHomeState, checkDefinition, checkPrompts, checkSha, ID_PATTERN, isSkillPath, openAgentHome, readState, sha256 } from "./home.js";
+import { DefinitionDoc, FORMAT_VERSION, IdentityDoc, PromptsDoc, put, RunsDoc, SkillsDoc, SourceDoc } from "./kinds.js";
 import {
   byName, canonical, documentKinds, type HomeManifest, invalid, isObject, isRunId, iso, MANIFEST_LIMIT, MAX_MEMBERS, memberProblem, PACK_FORMAT, SIDE_FILES,
   secretIn, SQLITE_MAGIC,
@@ -194,6 +194,14 @@ async function inspectPack(file: string, options: { maxBytes?: number; maxMember
         if (sha256(skill.content) !== skill.sha256 || (named && (named.sha256 !== skill.sha256 || named.size_bytes !== Buffer.byteLength(skill.content)))) bad("definition", `the skill ${key} does not match its sha256 or size`);
       }
       if (canonical(agent.source ? { sha: agent.source.sha, refreshed_at: agent.source.refreshedAt } : null) !== canonical(manifest.source)) bad("format", "the manifest's source is not the one in agent.sqlite");
+      const prompts = Object.entries(agent.prompts);
+      if (prompts.length) {
+        try {
+          checkPrompts(prompts.map(([id, variant]) => ({ ...variant, id })));
+        } catch (error) {
+          bad("format", `${AGENT_STORE_FILE}'s prompts are not a set setPrompts takes: ${(error as Error).message}`);
+        }
+      }
       const runs = Object.entries(agent.runs);
       for (const [id, run] of runs) if (run.endedAt === undefined) live.add(id);
       if (manifest.runs.count !== runs.length || manifest.runs.live !== live.size) bad("format", "the manifest's run counts are not the runs in agent.sqlite");
@@ -236,7 +244,8 @@ function checksOf(manifest: HomeManifest | null, problems: Problem[], bytes: num
 /**
  * Judge the pack in `file` without writing a home: the manifest first and in format, every member on the allowlist (no
  * "..", no absolute path, no link or device), every SQLite file free of sign-in kinds, the agent store's identity,
- * definition and skills as the manifest says, the size as the manifest says. Only temporary files are written, and removed.
+ * definition and skills as the manifest says, its prompts none or a set `setPrompts` takes, the size as the manifest
+ * says. Only temporary files are written, and removed.
  * The checks are the contract's names for what this package can judge: format, definition, sign_ins, size and live_runs.
  */
 export async function readPack(file: string, options: { maxBytes?: number; maxMembers?: number; /** @internal */ inject?: (step: ImportStep) => void | Promise<void> } = {}): Promise<{ ok: boolean; manifest: HomeManifest | null; checks: HomeCheck[] }> {
@@ -276,11 +285,11 @@ const markEndedHere = (run: AgentHomeState["runs"][string], now: number) => (run
  * A `dir` that is already a home needs `replace`, must hold the same agent, and must have no live run, and its
  * `ifRevision`, when given, must be its `homeRevision` (`stale`). It is changed in place, under its own owner lock, and
  * the lock, `agent.sqlite`, `chrome/`, `repo/`, its sign-ins, aliases and bindings, and its runs the pack does not have
- * stay where they are. One store commit replaces the definition, the skills, the source and the pack's runs, so
- * `homeRevision` only goes up. The pack's run directories move into place before it, each old one set aside first, in
- * the order of a journal in the home: a failure puts every one back, and a crash is settled by the next lock taker, which
- * keeps the new home when the commit landed and the old one when it did not. A run that was live at the source arrives
- * as an ended entry (outcome `not_carried_back`).
+ * stay where they are. One store commit replaces the definition, the skills, the prompts, the source and the pack's
+ * runs, so `homeRevision` only goes up. The pack's run directories move into place before it, each old one set aside
+ * first, in the order of a journal in the home: a failure puts every one back, and a crash is settled by the next lock
+ * taker, which keeps the new home when the commit landed and the old one when it did not. A run that was live at the
+ * source arrives as an ended entry (outcome `not_carried_back`).
  */
 export async function importPack(file: string, dir: string, options: ImportOptions = {}): Promise<{ home: AgentHome; report: ImportReport }> {
   if (options.ifRevision !== undefined && !(Number.isSafeInteger(options.ifRevision) && options.ifRevision >= 0)) throw invalid(`ifRevision ${JSON.stringify(options.ifRevision)} is not a home revision (a non-negative integer)`);
@@ -384,6 +393,8 @@ export async function importPack(file: string, dir: string, options: ImportOptio
               else if (current.source) await tx.retireDoc(SourceDoc);
               for (const key of Object.keys(current.skills)) if (!Object.hasOwn(state.skills, key)) await tx.retireDoc(SkillsDoc, key);
               for (const [key, skill] of Object.entries(state.skills)) put(await tx.doc(SkillsDoc, key, null), skill);
+              for (const key of Object.keys(current.prompts)) if (!Object.hasOwn(state.prompts, key)) await tx.retireDoc(PromptsDoc, key);
+              for (const [key, prompt] of Object.entries(state.prompts)) put(await tx.doc(PromptsDoc, key, null), prompt);
               for (const [id, run] of Object.entries(state.runs)) put(await tx.doc(RunsDoc, id, null), markEndedHere(run, now));
             }, BACKGROUND_CONTEXT);
           } finally {
