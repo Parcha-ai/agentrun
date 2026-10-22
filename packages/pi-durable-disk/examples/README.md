@@ -42,8 +42,8 @@ first release that runs there, whatever its Since says.
 
 The examples on `main` are written against `main`, and what npm has is the last published beta (`npm view
 @parcha/pi-durable-disk dist-tags`). The **Since** column is the first published version that has what the example imports:
-older than that, it stops at its first import. To run one from an install, in an empty directory on Linux, or on macOS from
-0.1.0-beta.14, with Node 22.19 or later:
+older than that, it stops at its first import. To run one from an install, in an empty directory on Linux or macOS, from
+0.1.0-beta.14 (0.1.0-beta.13's peers stop below pi 1.3, the version the line pins), with Node 22.19 or later:
 
 ```sh
 npm init -y && npm pkg set type=module
