@@ -204,9 +204,11 @@ export function runUser(spec: string, passwd = "/etc/passwd"): { uid: number; gi
  * Why the root instance must not load `app` under `--run-as`, or null. The path the loader opens is walked as the kernel
  * resolves it, one element at a time from `/`, each link's target spliced in where the link was, so a link is checked
  * where it lives as well as where it points. Refused: any element (directory, link or the module) that is not root's; a
- * directory or the module writable by its group or by others (a sticky bit is no exception); and any element inside the
- * run's root (`runRoot`, whose work/ the agent's commands own). Then only root can change what the path resolves to, so
- * the module root loads is the one checked. What the module imports (its node_modules) is the image's to keep root's.
+ * directory or the module writable by its group or by others (a sticky bit is no exception); and any element inside
+ * `runRoot`, the run's data: a disk run's mount root, where every run is mounted and a file's owner is whatever its
+ * writer set (the control API writes any owner), or a local run's directory, whose work/ the agent's commands own. Then
+ * only root can change what the path resolves to, so the module root loads is the one checked. What the module imports
+ * (its node_modules) is the image's to keep root's.
  */
 export function appWritableReason(
   app: string,
@@ -217,7 +219,7 @@ export function appWritableReason(
   const rest = resolve(app).split("/").filter(Boolean);
   let at = "/";
   for (let links = 0; ; ) {
-    if (at === root || at.startsWith(`${root}/`)) return `${at} is inside the run's root ${root}, which the agent's commands can write`;
+    if (at === root || at.startsWith(`${root}/`)) return `${at} is inside the run's data root ${root}, which the agent's commands or the disk's other writers can change`;
     let st: { uid: number; mode: number };
     try {
       st = fs.lstatSync(at);
