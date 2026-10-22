@@ -19,7 +19,7 @@ import { gatedSettler } from './promotion-gate.mjs';
 import { HOST_WORKFLOW, handoffText, hostRunName, hostUses, runPromoted } from './dispatch.mjs';
 import { gatedAdmitter } from './gates.mjs';
 import { gatePick } from './pick-gate.mjs';
-import { PICK_NODE_INSTRUCTIONS, pickLabelsOf, READ_TOOLS } from './pick-node.mjs';
+import { PICK_NODE_INSTRUCTIONS, pickStepsOf, READ_TOOLS } from './pick-node.mjs';
 
 export { agentHomeFor, prepareRun, readAgentAt } from '../agent-learn/host.mjs';
 
@@ -368,9 +368,14 @@ export function settleWithin(promise, ms, message) {
 
 export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null, hostOnly = false, pickGate = null, pickNode = null, callDeadlineMs = CALL_DEADLINE_MS, runDeadlineMs = RUN_DEADLINE_MS }) {
   if (hostOnly && !dispatch) throw new Error('a host-only run needs a workflow to dispatch');
-  // ARM H (pick-node.mjs): with `pickNode` ({ key }), each whole-job workflow's pick step runs on the root's model and
-  // thinking with its own tools and the run's read tools; a workflow that has no pick step refuses the run here.
-  const pickLabels = pickNode ? await pickLabelsOf({ run, dispatch, key: pickNode.key }) : new Set();
+  // ARM H (pick-node.mjs): with `pickNode` ({ key }), each whole-job workflow's agent pick step runs on the root's model
+  // and thinking with its own tools and the run's read tools. A revision with no pick step is refused for this run: the
+  // host does not dispatch it and the agent is not offered it, so the run goes on without it.
+  const picks = pickNode ? await pickStepsOf({ run, dispatch, key: pickNode.key }) : null;
+  const pickLabels = picks?.labels ?? new Set();
+  const refusedPick = (name, sha256) => Boolean(picks?.refused.some((r) => r.name === name && r.revision === sha256));
+  const refusedDispatch = dispatch && refusedPick(dispatch.name, dispatch.sha256) ? dispatch : null;
+  const offered = picks?.refused.length ? offeredWithout(run, picks.refused) : run;
   const started = Date.now();
   const caseValues = caseValuesOf(job);
   const learn = learnExtension({ caseValues });
@@ -437,7 +442,7 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
   const deadline = new Promise((resolve) => { overdue = setTimeout(resolve, runDeadlineMs, 'deadline'); });
   const beforeDeadline = (promise) => (Number.isFinite(runDeadlineMs) ? Promise.race([promise, deadline]) : promise);
   try {
-    const root = await harness.root(ctx, { agent: { ...model.agent, extensions: [learn, tools.extension, workflowTool.extension], instructions: await promptOf(run) } });
+    const root = await harness.root(ctx, { agent: { ...model.agent, extensions: [learn, tools.extension, workflowTool.extension], instructions: await promptOf(offered) } });
     deadline.then(async () => {
       if (stopped) return;
       stopped = `the run passed its deadline of ${runDeadlineMs / 60_000} min`;
@@ -460,9 +465,10 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
     // A promoted workflow that answers the whole job runs first, by the host (dispatch.mjs): a complete run with a valid
     // answer is the run's answer and the root agent is never asked; any other ending is handed to it with the job. One the
     // host refused never ran: the root agent gets the job alone.
-    const hostRan = dispatch ? await beforeDeadline(runPromoted({ harness, workflows: workflowTool.workflow, dispatch, toolNames: tools.workflowTools.map((t) => t.name), answer, context: ctx })) : null;
+    const hostRan = dispatch && !refusedDispatch ? await beforeDeadline(runPromoted({ harness, workflows: workflowTool.workflow, dispatch, toolNames: tools.workflowTools.map((t) => t.name), answer, context: ctx })) : null;
     if (hostRan === 'deadline') throw new RunDeadline();
-    let hostRun = hostRan;
+    // A dispatch refused for its pick step never ran: the root agent gets the job alone (a bank run, no answer).
+    let hostRun = refusedDispatch ? { name: refusedDispatch.name, revision: refusedDispatch.sha256, key: null, outcome: 'refused', detail: 'pick-node: the revision has no pick step' } : hostRan;
     // With the pick gate (pick-gate.mjs), a complete host run whose code pick is not sure enough is handed to the root
     // agent like an escalation, its code left out of what the agent is shown.
     if (pickGate && !hostOnly && hostRun?.outcome === 'complete') {
@@ -516,7 +522,17 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
   return {
     ...rest, stopped, workflowRuns, unpricedAnswers: unpricedAnswers(lines),
     judge: { ...judge.meter }, toolSpend: { ...toolSpend }, durationMs: Date.now() - started, reports,
+    ...(picks && (picks.refused.length || picks.asWritten.length) ? { pickNode: { ...(picks.refused.length ? { refused: picks.refused } : {}), ...(picks.asWritten.length ? { asWritten: picks.asWritten } : {}) } } : {}),
   };
+}
+
+/** The run as its root agent is offered it, without the `refused` revisions (pick-node.mjs): neither their workflows nor
+ *  their skills are named in its prompt. */
+function offeredWithout(run, refused) {
+  const names = new Set(refused.map((r) => r.name));
+  const kept = (run.workflows?.loaded ?? []).filter((w) => !refused.some((r) => r.name === w.name && r.revision === w.sha256));
+  const gone = new Set([...names].filter((name) => !kept.some((w) => w.name === name)));
+  return { ...run, definition: { ...run.definition, skills: run.definition.skills.filter((name) => !gone.has(name)) }, workflows: { ...run.workflows, loaded: kept } };
 }
 
 class RunDeadline extends Error {}

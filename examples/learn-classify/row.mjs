@@ -79,6 +79,7 @@ export function rowOf({ run, runId, job, seedSha, afterSha, offered, measure, fi
     workflowsUsed: measure.workflowRuns.map(({ name, revision, outcome, classifiedBy }) => ({ name, revision, outcome, ...(classifiedBy ? { classifiedBy } : {}) })),
     byWorkflow: byWorkflowOf(measure, key),
     ...(measure.dispatch ? { dispatch: measure.dispatch } : {}),
+    ...(measure.pickNode ? { pickNode: measure.pickNode } : {}),
     workflowsSaved: [...new Set((finished?.saved ?? []).map((w) => w.name))],
     notes: {
       new: candidates.filter((c) => NEW_TYPES.has(c.type)).length,
