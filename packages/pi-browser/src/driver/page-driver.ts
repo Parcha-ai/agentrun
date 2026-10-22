@@ -1,4 +1,5 @@
 // The page tools over a created Stagehand: everything the driver asks of the browser once it is attached.
+import type { ExperimentalBatchCallback, Page, Stagehand } from "@browserbasehq/stagehand";
 import type { Locate, Target } from "../core/clip.js";
 import type { ScreenshotOptions } from "../core/images.js";
 import type { PageDriver } from "../core/tools.js";
@@ -30,9 +31,9 @@ return { viewport, matches, box: await element.boundingBox() };`}`;
 
 /** In a batch of its own, which the browser runs after any batch still running, so the read never lands inside a
  *  pending navigation (a page call issued then never returns). Past URL_READ_MS, Stagehand's page.url(). */
-async function documentUrl(stagehand: any, page: any): Promise<string> {
+async function documentUrl(stagehand: Stagehand, page: Page): Promise<string> {
   try {
-    const href = await stagehand.experimentalBatch(async (batch: any) => await batch.page.evaluate("location.href"), {}, { page, timeout: URL_READ_MS });
+    const href = await stagehand.experimentalBatch(async (batch) => await batch.page.evaluate("location.href"), {}, { page, timeout: URL_READ_MS });
     if (typeof href === "string" && href) return href;
   } catch {}
   return await page.url();
@@ -55,14 +56,14 @@ type Deadlines = { batchMs: number; snapshotMs: number; screenshotMs: number };
  *  Stagehand's own is a plain Error. Each active page's snapshot and screenshot are bounded on the page itself, under
  *  the facade's queue: one past its deadline fails the facade call, so the calls queued behind it run and its late
  *  answer is never the facade's. */
-function bounded(stagehand: any, deadlines: Deadlines): any {
-  const page = (target: any) => overriding(target, {
-    snapshot: (options: unknown) => withinDeadline(target.snapshot(options), deadlines.snapshotMs, "page.snapshot"),
-    screenshot: (options: unknown) => withinDeadline(target.screenshot(options), deadlines.screenshotMs, "page.screenshot"),
+function bounded(stagehand: Stagehand, deadlines: Deadlines): Stagehand {
+  const page = (target: Page) => overriding(target, {
+    snapshot: (options?: Parameters<Page["snapshot"]>[0]) => withinDeadline(target.snapshot(options), deadlines.snapshotMs, "page.snapshot"),
+    screenshot: (options?: Parameters<Page["screenshot"]>[0]) => withinDeadline(target.screenshot(options), deadlines.screenshotMs, "page.screenshot"),
   });
   const context = stagehand.browser.context;
   return overriding(stagehand, {
-    experimentalBatch: async (callback: unknown, input: unknown, options: Record<string, unknown> = {}) => {
+    experimentalBatch: async (callback: ExperimentalBatchCallback<unknown, unknown>, input: unknown, options: Record<string, unknown> = {}) => {
       const started = Date.now();
       try { return await stagehand.experimentalBatch(callback, input, { ...options, timeout: deadlines.batchMs }); }
       catch (error) {
@@ -75,7 +76,7 @@ function bounded(stagehand: any, deadlines: Deadlines): any {
 }
 
 /** `batchMs` bounds every run batch; the page calls' own deadlines are fixed but for tests. */
-export function pageDriver(stagehand: any, deadlines: { batchMs: number; snapshotMs?: number; screenshotMs?: number; uploadMs?: number }): PageDriver {
+export function pageDriver(stagehand: Stagehand, deadlines: { batchMs: number; snapshotMs?: number; screenshotMs?: number; uploadMs?: number }): PageDriver {
   const host = bounded(stagehand, { snapshotMs: SNAPSHOT_MS, screenshotMs: SCREENSHOT_MS, ...deadlines });
   const uploadMs = deadlines.uploadMs ?? UPLOAD_MS;
   const facade = new StagehandFacadeTools(host);
@@ -85,7 +86,7 @@ export function pageDriver(stagehand: any, deadlines: { batchMs: number; snapsho
     return page;
   };
   // In a batch of its own, which the browser runs once the new document is its page's.
-  const newDocument = async () => stagehand.experimentalBatch(async (batch: any, input: { ms: number }) => { await batch.page.waitForLoadState("domcontentloaded", input.ms); }, { ms: NEW_DOCUMENT_MS }, { page: await active(), timeout: NEW_DOCUMENT_MS + 1_000 });
+  const newDocument = async () => stagehand.experimentalBatch(async (batch, input: { ms: number }) => { await batch.page.waitForLoadState("domcontentloaded", input.ms); }, { ms: NEW_DOCUMENT_MS }, { page: await active(), timeout: NEW_DOCUMENT_MS + 1_000 });
   const reads = documentReads(facade, newDocument);
   return {
     snapshot: (snapshotOptions) => reads.snapshot(snapshotOptions),
