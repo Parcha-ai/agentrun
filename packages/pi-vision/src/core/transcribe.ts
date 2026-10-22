@@ -10,7 +10,7 @@ import { fileLook, fileTold, keptAnswer, lookKey, type LookRecord } from "./evid
 import type { CallContext, CallSetup } from "./host.js";
 import { filingOf } from "./filing.js";
 import { sniffKind, SNIFF_BYTES, type Kind } from "./kinds.js";
-import { once, throwMiss } from "./media.js";
+import { singleFlight, throwMiss } from "./media.js";
 import { ProviderMiss } from "./derive.js";
 import { firstLine, type Miss } from "./misses.js";
 import { argvPath } from "./paths.js";
@@ -44,7 +44,7 @@ export type TranscribeAnswer = { readonly words: readonly TranscriptWord[]; read
 export type TranscribeGlobal = CodeGlobal<typeof VISION_TRANSCRIBE, TranscribeAnswer>;
 
 /** What is kept for a file: the words and text, who answered, and the price. */
-type Heard = { readonly words: readonly TranscriptWord[]; readonly text: string; readonly provider: string; readonly model: string; readonly costUsd: number | null };
+type Transcription = { readonly words: readonly TranscriptWord[]; readonly text: string; readonly provider: string; readonly model: string; readonly costUsd: number | null };
 
 function checked(input: unknown): TranscribeRequest {
   const r = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
@@ -83,25 +83,25 @@ async function durationOf(env: VisionEnv, path: string, signal: AbortSignal | un
 /** One `vision.transcribe` call: the file read through the call's environment, asked once, filed and told. */
 export async function transcribe(input: unknown, env: VisionEnv | undefined, call: CallContext, setup: CallSetup): Promise<TranscribeAnswer> {
   const request = checked(input);
-  const heard = setup.transcriber;
+  const transcriber = setup.transcriber;
   const fragment = request.fragment ?? request.path;
-  const model = heard?.model ?? "no transcriber";
+  const model = transcriber?.model ?? "no transcriber";
   const filing = filingOf(call, setup);
   let sha256 = "", kind: Kind = "unknown";
-  const plan = [heard?.provider ?? null, request.language ?? null];
+  const plan = [transcriber?.provider ?? null, request.language ?? null];
   const record = (body: string, facts: Partial<LookRecord["facts"]> = {}): LookRecord => ({
-    tool: "transcribe", args: { path: fragment, model, native: false, ...(heard ? { via: heard.provider } : {}) }, status: "ok", body,
-    facts: { sha256, kind, fragment: "", key: lookKey({ sha256, fragment: "", ask: "transcribe", model, plan }), ...(heard ? { provider: heard.provider } : {}), ...lookTiming(call), ...facts },
+    tool: "transcribe", args: { path: fragment, model, native: false, ...(transcriber ? { via: transcriber.provider } : {}) }, status: "ok", body,
+    facts: { sha256, kind, fragment: "", key: lookKey({ sha256, fragment: "", ask: "transcribe", model, plan }), ...(transcriber ? { provider: transcriber.provider } : {}), ...lookTiming(call), ...facts },
   });
   const fail = (cause: Miss, spent: Partial<LookRecord["facts"]> = { cost_usd: 0 }): Promise<never> => throwMiss(filing, VISION_TRANSCRIBE.name, call, cause, record("", spent));
-  if (!heard) return fail({ code: "no_vision_route", reason: "this host gives vision.transcribe no speech-to-text model" });
+  if (!transcriber) return fail({ code: "no_vision_route", reason: "this host gives vision.transcribe no speech-to-text model" });
   if (!env) return fail({ code: "refused", reason: `${request.path} cannot be read: this host gives vision.transcribe no environment` });
 
   const ctx = visionContext(call.signal);
   const info = await env.fileInfo(request.path, ctx);
   if (!info.ok || info.value.kind !== "file") return fail({ code: "unreadable", reason: `${request.path} is not a file that opens${info.ok ? "" : ` (${firstLine(info.error)})`}` });
-  if (heard.maxBytes !== undefined && info.value.size > heard.maxBytes) {
-    return fail({ code: "over_budget", reason: `${request.path} is ${info.value.size} bytes, over the ${heard.limit ?? `${heard.maxBytes} bytes`} ${heard.provider} takes in one request; cut it into shorter pieces with ffmpeg and transcribe each` });
+  if (transcriber.maxBytes !== undefined && info.value.size > transcriber.maxBytes) {
+    return fail({ code: "over_budget", reason: `${request.path} is ${info.value.size} bytes, over the ${transcriber.limit ?? `${transcriber.maxBytes} bytes`} ${transcriber.provider} takes in one request; cut it into shorter pieces with ffmpeg and transcribe each` });
   }
   const read = await env.readBinaryFile(request.path, ctx);
   if (!read.ok) return fail({ code: "unreadable", reason: `${request.path} could not be read (${firstLine(read.error)})` });
@@ -116,26 +116,26 @@ export async function transcribe(input: unknown, env: VisionEnv | undefined, cal
   const at = record("");
   // When this call's request began; none when the answer is read back.
   let startedAt: number | undefined;
-  const ask = async (): Promise<Heard> => {
+  const sendRequest = async (): Promise<Transcription> => {
     // Nothing runs between a paid answer and its keeping: the length is found before the request.
-    const probed = heard.usdPerMinute === undefined ? undefined : await durationOf(env, request.path, call.signal);
+    const probed = transcriber.usdPerMinute === undefined ? undefined : await durationOf(env, request.path, call.signal);
     startedAt = Date.now();
-    const t = await heard.transcribe({ bytes: read.value, mimeType: sniffed.mimeType ?? "application/octet-stream", name: request.path.split("/").pop()! }, request.language ? { language: request.language } : {}, call.signal);
-    const seconds = t.durationS ?? probed;
-    const costUsd = heard.usdPerMinute === undefined || seconds === undefined ? null : Math.round((seconds / 60) * heard.usdPerMinute * 1e6) / 1e6;
+    const transcript = await transcriber.transcribe({ bytes: read.value, mimeType: sniffed.mimeType ?? "application/octet-stream", name: request.path.split("/").pop()! }, request.language ? { language: request.language } : {}, call.signal);
+    const seconds = transcript.durationS ?? probed;
+    const costUsd = transcriber.usdPerMinute === undefined || seconds === undefined ? null : Math.round((seconds / 60) * transcriber.usdPerMinute * 1e6) / 1e6;
     // A word is one line with no tab: the receipt's rows, and a transcript an agent writes, are split on both.
-    const words = t.words.flatMap(({ text, start, end }) => { const one = text.replace(/\s+/g, " ").trim(); return one ? [{ text: one, start, end }] : []; });
-    return { words, text: t.text, provider: heard.provider, model: t.model ?? heard.model, costUsd };
+    const words = transcript.words.flatMap(({ text, start, end }) => { const one = text.replace(/\s+/g, " ").trim(); return one ? [{ text: one, start, end }] : []; });
+    return { words, text: transcript.text, provider: transcriber.provider, model: transcript.model ?? transcriber.model, costUsd };
   };
-  const { value: { answer, readBack, receipt }, shared } = await once(call, at.facts.key, async () => {
-    let answer: Heard, readBack: boolean;
+  const { value: { answer, readBack, receipt }, shared } = await singleFlight(call, at.facts.key, async () => {
+    let answer: Transcription, readBack: boolean;
     try {
-      ({ answer, readBack } = await keptAnswer<Heard>(call.memo, at.facts.key, ask));
+      ({ answer, readBack } = await keptAnswer<Transcription>(call.memo, at.facts.key, sendRequest));
     } catch (error) {
       if (call.signal?.aborted) throw error;
       if (error instanceof ProviderMiss) return fail({ code: error.code, reason: error.message, model });
       // A request that threw may still have been billed: its price is not known, so none is filed.
-      return fail({ code: "look_failed", reason: `${heard.provider} failed: ${firstLine(error)}`, model }, lookTiming(call, startedAt));
+      return fail({ code: "look_failed", reason: `${transcriber.provider} failed: ${firstLine(error)}`, model }, lookTiming(call, startedAt));
     }
     if (answer.words.length === 0 && answer.text.trim() !== "") {
       const spent = { cost_usd: answer.costUsd, ...(readBack ? { kept: true as const } : {}), ...lookTiming(call, startedAt) };

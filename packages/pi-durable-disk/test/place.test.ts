@@ -7,11 +7,12 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
 import { archilPlace, localPlace, PlaceError, writeAll } from "../src/place.ts";
+import { RunFileError } from "../src/run-files.ts";
 import { parseTokenNickname } from "../src/claim.ts";
 import type { HostBox, HostDriver, HostHandle, HostStatus, StartAttempt, SupervisorControl } from "../src/supervise.ts";
 import { currentBootId, procStartTicks } from "../src/hosts/local-host.ts";
@@ -619,6 +620,128 @@ describe("archilPlace recordHome", () => {
     await unowned.start({ gen: 1, env: {}, stdin: await unowned.token!(1) });
     assert.deepEqual(c2.puts, []);
     await unowned.release();
+  });
+});
+
+describe("archilPlace HOST_BOX: each host box's runner is told which label to claim", () => {
+  /** A host whose boxes are a provider's, with a receipt for each box unless it is in `noReceipt`. */
+  const providing = (control: FakeControl, provider: string | undefined, noReceipt = new Set<string>()) => {
+    const fake = fakeHost(control);
+    const host: HostDriver = {
+      ...fake.host,
+      ...(provider ? { provider } : {}),
+      box: (h) => (noReceipt.has(String(h.name)) ? null : { provider: provider ?? "none", kind: `sandbox ${h.name}`, from: "2026-10-22T00:00:00.000Z", to: null }),
+    };
+    return { host, starts: fake.starts };
+  };
+
+  it("each start puts HOST_BOX { provider, key: the box's index in status().boxes, run: RUN_LABEL } in that order's env", async () => {
+    const control = new FakeControl();
+    const { host, starts } = providing(control, "modal");
+    const place = makePlace({ ...REF, control, host });
+    const first = await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
+    await place.kill(first, "box");
+    await place.recover(first, "box", { gen: 2, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(2) });
+    const asked = starts.map((s) => JSON.parse(s.attempt!.env!.HOST_BOX!) as { provider: string; key: string; run: string });
+    assert.deepEqual(asked, [{ provider: "modal", key: "0", run: "life-1" }, { provider: "modal", key: "1", run: "life-1" }]);
+    const boxes = (await place.status!()).boxes!;
+    assert.deepEqual(asked.map((a) => boxes[Number(a.key)]!.kind), ["sandbox box-1", "sandbox box-2"], "each key is that box's index in status().boxes");
+    assert.ok(asked.every((a) => boxes[Number(a.key)]!.provider === a.provider), "and names its provider");
+  });
+
+  it("no HOST_BOX without the order's RUN_LABEL or a driver that names its provider; with HOST_BOX in play, a box with no receipt fails status() instead of shifting the rest", async () => {
+    const c1 = new FakeControl();
+    const noLife = providing(c1, "modal");
+    const p1 = makePlace({ ...REF, control: c1, host: noLife.host });
+    await p1.start({ gen: 1, env: {}, stdin: await p1.token!(1) });
+    assert.equal(noLife.starts[0]!.attempt!.env!.HOST_BOX, undefined, "no life, no label to claim");
+    const c2 = new FakeControl();
+    const noProvider = providing(c2, undefined);
+    const p2 = makePlace({ ...REF, control: c2, host: noProvider.host });
+    await p2.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await p2.token!(1) });
+    assert.equal(noProvider.starts[0]!.attempt!.env!.HOST_BOX, undefined, "a driver that names no provider");
+    const c3 = new FakeControl();
+    const missing = new Set<string>();
+    const gap = providing(c3, "modal", missing);
+    const p3 = makePlace({ ...REF, control: c3, host: gap.host });
+    await p3.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await p3.token!(1) });
+    missing.add("box-1");
+    await assert.rejects(p3.status!(), (e: unknown) => e instanceof PlaceError && e.code === "STATUS_FAILED" && /no receipt for host box 0/.test(e.message));
+  });
+
+  it("no HOST_BOX from a place that cannot read its run's files (its control cannot list): no read members, no label to claim", async () => {
+    const control = new FakeControl();
+    (control as unknown as { listObjects?: unknown }).listObjects = undefined;
+    const { host, starts } = providing(control, "modal");
+    const place = makePlace({ ...REF, control, host });
+    assert.equal(place.readRunFile, undefined);
+    assert.equal(place.listRunFiles, undefined);
+    await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
+    assert.equal(starts[0]!.attempt!.env!.HOST_BOX, undefined, "a label the place could never read back is never handed over");
+  });
+});
+
+describe("a place's run files (readRunFile, listRunFiles): its own run, read only", () => {
+  const bytes = (t: string) => new TextEncoder().encode(t);
+  const code = (c: string) => (e: unknown) => e instanceof RunFileError && e.code === c;
+
+  it("archilPlace reads over its control: a file's bytes, null only for a missing file, [] for a directory not there yet; every other failure throws; nothing is written", async () => {
+    const control = new FakeControl();
+    const place = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const run = `runs/${ID}/`;
+    control.objects.set(run, "");
+    control.objects.set(`${run}box-ids.internal/`, "");
+    control.objects.set(`${run}box-ids.internal/box-2.json`, '{"owner":"place"}');
+    control.objects.set(`${run}box-ids.internal/box-10.json`, '{"owner":"tools"}');
+    control.objects.set(`${run}link.json`, "");
+    control.failUnder = { prefix: `${run}link.json`, error: Object.assign(new Error("501 NotImplemented"), { status: 501, code: "NotImplemented" }) };
+    const before = JSON.stringify([...control.objects]);
+    const puts = control.puts.length;
+    assert.deepEqual(await place.readRunFile!("box-ids.internal/box-2.json"), bytes('{"owner":"place"}'));
+    assert.equal(await place.readRunFile!("box-ids.internal/box-3.json"), null, "missing: null, read again later");
+    assert.deepEqual(await place.listRunFiles!("box-ids.internal"), ["box-10.json", "box-2.json"]);
+    assert.deepEqual(await place.listRunFiles!("not-made-yet"), [], "a directory not there yet is not an error");
+    await assert.rejects(place.readRunFile!("link.json"), code("NOT_A_FILE"), "a symlink (S3 answers 501)");
+    await assert.rejects(place.readRunFile!("../other/run.json"), code("INVALID_PATH"));
+    control.objects.delete(run);
+    control.objects.delete(`${run}box-ids.internal/`);
+    control.objects.delete(`${run}box-ids.internal/box-2.json`);
+    control.objects.delete(`${run}box-ids.internal/box-10.json`);
+    await assert.rejects(place.readRunFile!("box-ids.internal/box-2.json"), code("RUN_MISSING"));
+    await assert.rejects(place.listRunFiles!("box-ids.internal"), code("RUN_MISSING"));
+    control.objects.set(run, "");
+    control.failUnder = { prefix: `${run}box-ids.internal/box-4.json`, error: Object.assign(new Error("503"), { status: 503 }) };
+    await assert.rejects(place.readRunFile!("box-ids.internal/box-4.json"), code("CONTROL_API_FAILED"));
+    assert.equal(control.puts.length, puts, "no put");
+    assert.equal(JSON.stringify([...control.objects].filter(([k]) => k !== run)), JSON.stringify(JSON.parse(before).filter(([k]: [string]) => ![run, `${run}box-ids.internal/`, `${run}box-ids.internal/box-2.json`, `${run}box-ids.internal/box-10.json`].includes(k))), "the reads changed nothing");
+  });
+
+  it("localPlace reads its run directory: a file's bytes, null only for a missing file, sorted names, [] for a directory not there yet; a directory or a symlink is NOT_A_FILE, never followed; unsafe paths are refused", async () => {
+    const root = scratch();
+    mkdirSync(join(root, "box-ids.internal", "sub"), { recursive: true });
+    writeFileSync(join(root, "box-ids.internal", "box-2.json"), '{"owner":"place"}');
+    writeFileSync(join(root, "box-ids.internal", "box-10.json"), "");
+    const outside = join(dirname(root), "outside.json");
+    writeFileSync(outside, "SECRET-OUTSIDE");
+    symlinkSync(outside, join(root, "box-ids.internal", "link.json"));
+    symlinkSync(dirname(root), join(root, "up"));
+    const place = localPlace({ app: "app.ts" })({ paths: pathsAt(root) });
+    assert.deepEqual(await place.readRunFile!("box-ids.internal/box-2.json"), bytes('{"owner":"place"}'));
+    const empty = await place.readRunFile!("box-ids.internal/box-10.json");
+    assert.ok(empty instanceof Uint8Array && empty.length === 0, "a real empty file is an empty array");
+    assert.equal(await place.readRunFile!("box-ids.internal/box-3.json"), null);
+    assert.equal(await place.readRunFile!("not-made/box-1.json"), null, "under a directory not there yet: missing");
+    assert.deepEqual(await place.listRunFiles!("box-ids.internal"), ["box-10.json", "box-2.json", "link.json", "sub"]);
+    assert.deepEqual(await place.listRunFiles!(""), ["box-ids.internal", "up"]);
+    assert.deepEqual(await place.listRunFiles!("not-made-yet"), []);
+    await assert.rejects(place.readRunFile!("box-ids.internal/link.json"), code("NOT_A_FILE"), "a symlink is never followed");
+    await assert.rejects(place.readRunFile!("up/outside.json"), code("NOT_A_FILE"), "nor a symlinked directory on the way");
+    await assert.rejects(place.listRunFiles!("up"), code("NOT_A_FILE"));
+    await assert.rejects(place.readRunFile!("box-ids.internal/sub"), code("NOT_A_FILE"), "a directory");
+    for (const bad of ["", "/etc/passwd", "../outside.json", "a/../b", "bad name"]) await assert.rejects(place.readRunFile!(bad), code("INVALID_PATH"), JSON.stringify(bad));
+    const gone = localPlace({ app: "app.ts" })({ paths: pathsAt(join(dirname(root), "no-such-run")) });
+    await assert.rejects(gone.readRunFile!("run.json"), code("RUN_MISSING"));
+    await assert.rejects(gone.listRunFiles!(""), code("RUN_MISSING"));
   });
 });
 

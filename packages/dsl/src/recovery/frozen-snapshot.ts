@@ -58,8 +58,6 @@ export type FrozenSnapshotV4 = Omit<FrozenSnapshot, "schema" | "pin"> & {
   maps: Record<string, MapEntry>;
 };
 
-/** Two values a state holds under one key are the same value. A key an item copied from its base holds the base's own
- *  object, or one with the same JSON. */
 /** A map item's state at `path`, rebuilt as the driver rebuilds it (`./item-state.ts`, which imports nothing): the
  *  `agentrun.states` value its `base` names, with the item's `set` and `unset` for that path applied, checked against
  *  that path's `sha256`. `item` is an `agentrun.items` value; `states` holds `agentrun.states` values by SHA-256. When

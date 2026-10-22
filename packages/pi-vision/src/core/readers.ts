@@ -15,7 +15,7 @@ import { notRenderedNote } from "./office.js";
 import { pdfDocument, pdfMarkedText, pdfPage, type PdfContext } from "./pdf.js";
 import { plan, type Fit, type Part } from "./plan.js";
 import { detectOnce, type ProviderCall } from "./provider.js";
-import type { KindContext, KindReader, KindResult, ReadKinds } from "./read.js";
+import type { KindContext, KindReader, KindResult, ReadKinds } from "./kind-reader.js";
 import { describeVideo, probeVideo, unprobedVideo, videoAsIs, videoClip, videoFrames, videoWindow, type VideoProvider } from "./video.js";
 import { visionContext } from "./env.js";
 import type { ImageContent, TextContent } from "./host.js";
