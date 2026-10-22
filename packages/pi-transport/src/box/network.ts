@@ -6,7 +6,7 @@ const CIDR_V4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/;
 
 const isCidr = (entry: string): boolean => {
 	const m = CIDR_V4.exec(entry);
-	return m !== null && m.slice(1, 5).every((octet) => Number(octet) <= 255) && Number(m[5]) <= 32;
+	return m?.slice(1, 5).every((octet) => Number(octet) <= 255) === true && Number(m[5]) <= 32;
 };
 
 /** What a spec's `network` asks for, checked: `open`, `none`, or an allowlist split into its domains and CIDRs. */
