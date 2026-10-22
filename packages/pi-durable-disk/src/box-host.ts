@@ -148,9 +148,23 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
     const facts = box.facts();
     receipts.set(box.id, { kind: facts.gpu ?? facts.isolation, from: facts.startedAt ?? new Date().toISOString(), to: null, ...(key === undefined ? {} : { key }) });
   };
-  const destroy = async (box: Box, context: Context) => {
-    await box.destroy(context).catch(() => undefined);
+  /** Whether the box is gone: only then is its receipt ended. A failure is the caller's to act on. */
+  const destroy = async (box: Box, context: Context): Promise<boolean> => {
+    const r = await box.destroy(context).catch((error: unknown) => ({ ok: false as const, error }));
+    if (!r.ok) return false;
     ended(box.id);
+    return true;
+  };
+  /** Boxes a refusal could not end: every later start, refused or not, ends them first. */
+  const leftover = new Set<string>();
+  const endLeftovers = async () => {
+    for (const id of [...leftover]) {
+      const attached = await provider.attach(id, bounded(callTimeoutMs)).catch(() => undefined);
+      if (attached?.ok && attached.value === undefined) {
+        leftover.delete(id);
+        ended(id);
+      } else if (attached?.ok && attached.value && (await destroy(attached.value, bounded(callTimeoutMs)))) leftover.delete(id);
+    }
   };
   /** Starts that found the same box with a needed fact unmeasured, by box id: from ABSENT_STARTS on, a named refusal. */
   const unmeasured = new Map<string, number>();
@@ -188,7 +202,9 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
       if (!attached.ok) throw boxError(`attaching ${provider.name} box ${ref.id}`, attached.error);
       if (!attached.value) continue;
       const state = await l.launchState(attached.value, { v: 1, name }, context);
-      return { box: attached.value, state: state.ok ? state.value : undefined, key: ref.labels[HOST_KEY_LABEL] };
+      // A read that failed is not "never launched": nothing is changed, and the next start asks again.
+      if (!state.ok) throw new BoxHostError("CREATE_FAILED", `reading the launch in ${provider.name} box ${ref.id} failed (${state.error.code}): ${state.error.message}; nothing is changed, and the next start asks again`, { cause: state.error });
+      return { box: attached.value, state: state.value, key: ref.labels[HOST_KEY_LABEL] };
     }
     return undefined;
   };
@@ -201,7 +217,10 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
 
     async start(ref: RunRef, mountToken: string, attempt?: StartAttempt): Promise<HostHandle> {
       if (!mountToken) throw invalid("no mount token");
-      if (refusal) throw new BoxHostError("UNSUPPORTED", `refused before, for this spec, so no box is made again: ${refusal.message}`, { cause: refusal });
+      if (refusal) {
+        await endLeftovers();
+        throw new BoxHostError("UNSUPPORTED", `refused before, for this spec, so no box is made again: ${refusal.message}`, { cause: refusal });
+      }
       if (!attempt || !Number.isInteger(attempt.attempt) || attempt.attempt < 1) throw invalid("a start needs its attempt: boxHost finds the box an attempt made by it");
       const extra = attemptEnv(attempt, (m) => new BoxHostError("INVALID_ARGUMENT", m));
       const l = await load();
@@ -234,7 +253,7 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
       if (refused) throw new BoxHostError("INVALID_ARGUMENT", `the launcher refuses this start: ${refused.message}`, { cause: refused });
       const refuse = (box: Box | undefined, message: string, cause?: unknown) => {
         refusal = new BoxHostError("UNSUPPORTED", message, cause === undefined ? {} : { cause });
-        return box ? destroy(box, bounded(callTimeoutMs)).then(() => refusal!) : Promise.resolve(refusal);
+        return box ? destroy(box, bounded(callTimeoutMs)).then((gone) => (gone || leftover.add(box.id), refusal!)) : Promise.resolve(refusal);
       };
 
       // The box this attempt made already, found again by attach: its facts as read now decide first (the caller rule). A
@@ -270,7 +289,9 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
             return { ...handleOf(found.box, n, launchOf({ launch: { name } })), adopted: true };
           }
           if (found.state === undefined) [box, key] = [found.box, found.key];
-          else await destroy(found.box, bounded(callTimeoutMs));
+          else if (!(await destroy(found.box, bounded(callTimeoutMs)))) {
+            throw new BoxHostError("STOP_FAILED", `ending ${provider.name} box ${found.box.id}, whose launch ended, failed: nothing is made while it may still serve`);
+          }
         }
       }
       if (!box) {

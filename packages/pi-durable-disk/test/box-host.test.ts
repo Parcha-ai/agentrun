@@ -638,7 +638,11 @@ describe("boxHost: a read or an end that fails changes nothing it cannot finish"
     const launcher = await import("@parcha/pi-transport/launch");
     const l = await launcher.launch(made.value, "pda-r1-g1", { argv: ["pi-durable-disk"], user: "pda", restart: false }, BACKGROUND_CONTEXT);
     assert.ok(l.ok);
-    for (let i = 0; i < 50 && (await launcher.launchState(made.value, { v: 1, name: "pda-r1-g1" }, BACKGROUND_CONTEXT)).value?.phase !== "exited"; i++) await new Promise((r) => setTimeout(r, 5));
+    const phase = async () => {
+      const r = await launcher.launchState(made.value, { v: 1, name: "pda-r1-g1" }, BACKGROUND_CONTEXT);
+      return r.ok ? r.value?.phase : undefined;
+    };
+    for (let i = 0; i < 50 && (await phase()) !== "exited"; i++) await new Promise((r) => setTimeout(r, 5));
     provider.script.on({ op: "destroy" }, { fail: "unknown" });
     const creates = provider.calls.filter((c) => c.op === "create").length;
     await assert.rejects(driver.start(REF, TOKEN, { attempt: 1 }), code("STOP_FAILED"));
