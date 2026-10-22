@@ -15,6 +15,8 @@ class FakeSandbox implements ModalSandbox {
 	readonly execs: { command: string[]; params: ExecParams }[] = [];
 	readonly writes: number[] = [];
 	exitCode: number | null = null;
+	/** Makes every `stdin.close()` of this sandbox's programs fail, as a broken command-router call would. */
+	failClose = false;
 	/** What the box's probe of its own disk, Yama setting and FUSE prints (the real script reads this host's /proc). */
 	probeOutput = "disk=104857600\nptrace=1\nfuse_dev=1\n";
 	#children = new Set<ChildProcess>();
@@ -51,7 +53,10 @@ class FakeSandbox implements ModalSandbox {
 						this.writes.push(bytes.length);
 						child.stdin.write(bytes, (error) => (error ? reject(error) : resolve()));
 					}),
-				close: () => new Promise<void>((resolve) => child.stdin.end(resolve)),
+				close: () =>
+					this.failClose
+						? Promise.reject(new Error("the input could not be closed"))
+						: new Promise<void>((resolve) => child.stdin.end(resolve)),
 			},
 			stdout: child.stdout,
 			stderr: child.stderr,

@@ -106,6 +106,13 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
   the device for other users). `facts().fuse` is `true` only after that check; a box that fails it is ended and the create fails,
   naming what is missing. It does not prove a given FUSE program mounts, only that the device is there for root. `fuse` with
   `isolation: "gvisor"` is refused with `unsupported`, and with a `gpu` with `invalid`.
+- `facts().secretsVia` is `"fd"`: a launch's stdin and secrets (the launch frame) ride the stdin of the one exec that starts the
+  launcher. A Modal exec's stdin is a stream with an explicit end (`close()` sends the EOF, also with no byte written), written in
+  512 KiB chunks. `secretsVia: "fd"` means: no client-controlled place (argv, the `env` and `secrets` parameters, tags, facts,
+  errors, echoed output) and no place in the box but the program's pipes holds the secret. The provider is trusted with the box,
+  and whether it keeps an exec's stdin is undocumented, so no claim is made about that. A `close()` that fails on a program still
+  running is returned by `wait()` (the program would otherwise wait for an EOF that never comes); on a program that already exited it
+  is ignored.
 - `facts()` also reports what the box has, read in it: `diskGb` (the workspace's filesystem, whole GiB; left out when unreadable or over 1 PiB, which is what gVisor's filesystem claims), `ptraceScope`
   (`kernel.yama.ptrace_scope`; a box without the file reads 0; `null` when it could not be read) and `startedAt` (an ISO 8601 UTC
   time; for Modal, the moment it was asked to start).
