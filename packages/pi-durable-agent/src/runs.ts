@@ -78,8 +78,9 @@ const withoutRef = (profile: BrowserProfile, holder: string): BrowserProfile => 
 const isFree = (lease: ProfileLease | undefined, runs: Record<string, RunRecord>, now: number) =>
   !lease || Date.parse(lease.expiresAt) <= now || own(runs, lease.runId)?.endedAt !== undefined;
 
-/** The variant the host chose for a run, and why: recorded on the run, never chosen here. */
-export type RunPrompt = { id: string; reason: string };
+/** The variant the host chose for a run, and why: recorded on the run, never chosen here. `confidence` is how sure the
+ *  host's choice was, 0 to 1 (the probability the chosen option got, for `choosePrompt`'s). */
+export type RunPrompt = { id: string; reason: string; confidence?: number };
 
 /** A start's host, lease, sha and prompt, checked before the home is touched. */
 function checkStart(options: { host: string; sha?: string; leaseMs?: number; prompt?: RunPrompt }): { leaseMs: number; wanted: string | undefined; prompt: RunPrompt | undefined } {
@@ -89,11 +90,12 @@ function checkStart(options: { host: string; sha?: string; leaseMs?: number; pro
   const given: unknown = options.prompt;
   let prompt: RunPrompt | undefined;
   if (given !== undefined) {
-    if (typeof given !== "object" || given === null || Object.keys(given).some((key) => key !== "id" && key !== "reason")) throw invalid("the prompt is not { id, reason }");
-    const { id, reason } = given as Partial<RunPrompt>;
+    if (typeof given !== "object" || given === null || Object.keys(given).some((key) => key !== "id" && key !== "reason" && key !== "confidence")) throw invalid("the prompt is not { id, reason, confidence? }");
+    const { id, reason, confidence } = given as Partial<RunPrompt>;
     if (typeof id !== "string" || !ID_PATTERN.test(id)) throw invalid(`the prompt id ${JSON.stringify(id)} is not a variant id`);
     if (typeof reason !== "string" || reason.trim() === "" || reason.length > MAX_REASON) throw invalid(`the prompt's reason is not a non-empty string of at most ${MAX_REASON} characters`);
-    prompt = { id, reason };
+    if (confidence !== undefined && !(typeof confidence === "number" && confidence >= 0 && confidence <= 1)) throw invalid(`the prompt's confidence ${String(confidence)} is not a number from 0 to 1`);
+    prompt = { id, reason, ...(confidence !== undefined ? { confidence } : {}) };
   }
   return { leaseMs, wanted: options.sha === undefined ? undefined : checkSha(options.sha), prompt };
 }
