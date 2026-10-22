@@ -13,6 +13,7 @@ import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
 import { costLabel, countersOf, counterFold } from '../apps/viewer/src/counters.ts';
+import { parseLines, validate as viewerValidate } from '../apps/viewer/src/format.ts';
 import { transportPanel } from '../apps/viewer/src/transport.ts';
 import { localBoxes, run } from './reference-demo-helpers.mjs';
 
@@ -108,6 +109,50 @@ test('the recording validates, the viewer\'s transport panel lists both boxes by
   const label = costLabel(strip.cost, strip.costLowerBound, 'scripted', strip.costParts);
   assert.equal(label, 'unknown');
   assert.ok(!label.includes('$'));
+});
+
+test('a supervised run\'s tool-box receipts are the supervisor\'s (RECORDING.md 3.1): the viewer\'s own format check gives no note, and each label\'s receipt is written once, its process in data.gen, with no event-level gen', { timeout: 300_000 }, async (t) => {
+  const { recording } = await run(t, {}, ['--json'], { DEMO_PROVIDERS: '1' });
+  const lines = parseLines(readFileSync(join(recording, 'events.jsonl'), 'utf8'));
+  const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
+  const blobs = new Set((existsSync(join(recording, 'blobs')) ? readdirSync(join(recording, 'blobs')) : []).map((name) => name.split('.')[0]));
+  assert.deepEqual(viewerValidate(manifest, lines, blobs), []);
+  const kept = lines.filter((line) => line.source === 'host' && line.kind === 'box.receipt');
+  assert.deepEqual(kept.map((line) => line.data.box), ['box-1', 'box-2'], 'each label\'s receipt once');
+  for (const line of kept) {
+    assert.equal(line.gen, undefined, `${line.data.box}'s receipt has no event-level gen`);
+    assert.ok(Number.isInteger(line.data.gen) && line.data.gen >= 1, `${line.data.box}'s receipt names its process in data.gen`);
+  }
+});
+
+test('an ids directory a later run uses again (the same --box-ids) holds the earlier run\'s boxes: their receipts are never written again, only the new run\'s own', { timeout: 300_000 }, async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-again-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const shared = join(own, 'ids');
+  const first = await run(t, {}, ['--json', '--box-ids', shared], { DEMO_PROVIDERS: '1' });
+  assert.deepEqual(receipts(first.recording).map((receipt) => receipt.box), ['box-1', 'box-2']);
+  const second = await run(t, {}, ['--json', '--box-ids', shared], { DEMO_PROVIDERS: '1' });
+  assert.deepEqual(receipts(second.recording).map((receipt) => receipt.box), ['box-3', 'box-4'], 'the second run\'s own boxes only');
+});
+
+test('a box ids directory the supervisor cannot read at its final pass fails the run by name: the receipts it still owes are never dropped without a note', { timeout: 300_000 }, async (t) => {
+  const { mkdirSync, watch, writeFileSync } = await import('node:fs');
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-damaged-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const shared = join(own, 'ids');
+  mkdirSync(shared);
+  // Once the run's last box has ended (its file says so), a damaged file lands beside it: after every write the run's
+  // process makes, before the supervisor's last read.
+  let damaged = false;
+  const watcher = watch(shared, (_event, name) => {
+    if (damaged || name !== 'box-2.json') return;
+    try { if (JSON.parse(readFileSync(join(shared, name), 'utf8')).receipt !== 'ended') return; } catch { return; }
+    damaged = true;
+    writeFileSync(join(shared, 'box-9.json'), '{ not a ledger entry');
+  });
+  t.after(() => watcher.close());
+  await assert.rejects(run(t, {}, ['--json', '--box-ids', shared], { DEMO_PROVIDERS: '1' }), /box ids file .*box-9\.json cannot be read/);
+  assert.ok(damaged, 'the damage landed while the run went on');
 });
 
 test('a run whose place makes boxes and whose tools make boxes too is refused: one labeller, never two box-1s', async (t) => {

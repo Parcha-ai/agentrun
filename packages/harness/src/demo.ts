@@ -30,7 +30,7 @@ import type { BoxProvider } from '@parcha/pi-transport';
 import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { CodeModeOptions } from './code-mode.ts';
 import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
-import { boxLedger, RUN_LABEL, tapBox, type Boxes } from './boxes.ts';
+import { boxLedger, ledgerBoxes, markReceiptWritten, RUN_LABEL, supervisedChild, tapBox, type Boxes, type LedgerEntry } from './boxes.ts';
 import type { Recorder, Redact } from './record.ts';
 import { priceJudge } from './judge.ts';
 import { askToBeKilled, aroundOwnFiling, crossings, tapFakes, tapHost, tapLive, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
@@ -260,7 +260,8 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   if (at && boxSpec?.runIn) throw new Error('boxes.runIn is not supported under pi-durable-disk run --app: the app opens its tools on the claim\'s own environment, not in a box. Run the demo through its own command, or drop runIn.');
   const provider = await boxProvider(boxSpec, place);
   // One labeller for every box this process's tools make (box-N), its ids in a directory outside the recording, one file per label, that the next process numbers on from.
-  const ledger = boxLedger({ dir: env.BOX_IDS || join(place.root, 'box-ids.internal'), ...(recorder ? { recorder } : {}) });
+  // A supervised child's supervisor writes the tool boxes' receipts from the ids directory it owns: this process writes none.
+  const ledger = boxLedger({ dir: env.BOX_IDS || join(place.root, 'box-ids.internal'), ...(recorder ? { recorder } : {}), ...(supervisedChild(env) ? { supervised: env.RECORD_GEN ? { gen: Number(env.RECORD_GEN) } : {} } : {}) });
   const tapping = { cross, window, ledger, ...(env.RUN_LABEL ? { runLabel: env.RUN_LABEL } : {}), ...(recorder ? { recorder } : {}) };
   const boxes = provider ? (tapBox(provider, tapping) as BoxProvider) : undefined;
   // The demo's own providers, each tapped: a box a tool makes on one is on the recording by its label, with a receipt.
@@ -475,7 +476,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   }
   // A label no other run shares, on every box this run makes: cleanup finds these and no others.
   const runLabel = randomUUID();
-  const base: Record<string, string> = { ...(values.record ? { AGENTRUN_HOME: dirname(signInFile(process.env)) } : {}), DEMO_ENTRY: options.self, DEMO_NAME: spec.name, RUN_LABEL: runLabel, ...(boxIds !== undefined ? { BOX_IDS: boxIds } : {}), HOME: scratch, TMPDIR: scratch, DIR: dir, RECORD_DIR: recordDir, BACKEND: served.url, BROWSER: browser, ...(live ? { LIVE: '1' } : {}), ...(Object.keys(models).length ? { MODELS: JSON.stringify(models) } : {}), ...(values['fetch-sources'] ? { FETCH_SOURCES: '1' } : {}), CACHE_DIR: values.cache ?? join(tmpdir(), 'agentrun-sources'), ...(input ? { INPUT: JSON.stringify(input) } : {}) };
+  const base: Record<string, string> = { ...(values.record ? { AGENTRUN_HOME: dirname(signInFile(process.env)) } : {}), DEMO_ENTRY: options.self, DEMO_NAME: spec.name, RUN_LABEL: runLabel, ...(boxIds !== undefined ? { BOX_IDS: boxIds, HOST_LINES: 'supervisor' } : {}), HOME: scratch, TMPDIR: scratch, DIR: dir, RECORD_DIR: recordDir, BACKEND: served.url, BROWSER: browser, ...(live ? { LIVE: '1' } : {}), ...(Object.keys(models).length ? { MODELS: JSON.stringify(models) } : {}), ...(values['fetch-sources'] ? { FETCH_SOURCES: '1' } : {}), CACHE_DIR: values.cache ?? join(tmpdir(), 'agentrun-sources'), ...(input ? { INPUT: JSON.stringify(input) } : {}) };
   // A live child gets exactly the environment names the demo declares in demo.json (every key, the members of a `oneOf` group included, and the programs' env), plus the process basics above; nothing undeclared reaches it.
   // A no-key run passes the demo's own `DEMO_*` settings (no secret) so a test can steer it.
   const declared = declaredEnv(spec);
@@ -511,6 +512,28 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   let reading: Promise<void> = Promise.resolve();
   const boxLabels = new Map<string, string>();
   const boxReceipted = new Set<string>();
+  // The tool boxes' receipts (RECORDING.md 3.1: the supervisor writes every host line): the processes keep each box's end in
+  // the ids directory this supervisor owns, and it writes each receipt once from there, at every tick, after each process
+  // and at the end, with the process that made the box in its data. At the end a box no process ended is written as open.
+  // Never the provider's id: the label, the provider, the kind and the times.
+  const ledgerReceipted = new Set<string>();
+  const ledgerReceipts = (final: boolean): void => {
+    if (boxIds === undefined) return;
+    let boxes: [string, LedgerEntry][];
+    // A tick that cannot read the ledger reads it again at the next; the final pass that cannot fails the run as the
+    // follower's failure does, so the receipts it still owes never vanish without a note.
+    try { boxes = ledgerBoxes(boxIds); } catch (error) { if (final) followError ??= error; return; }
+    for (const [label, entry] of boxes) {
+      if (ledgerReceipted.has(label) || !(entry.receipt === 'ended' || (final && entry.receipt === 'open'))) continue;
+      ledgerReceipted.add(label);
+      const from = entry.from ?? null;
+      const to = entry.receipt === 'ended' ? (entry.to ?? null) : null;
+      // A line that cannot be written (the disk full) ends supervision as the follower's failure does: the runner is stopped
+      // and the error stands, never thrown out of the tick.
+      try { supervisor.host('box.receipt', { ...(entry.gen !== undefined ? { gen: entry.gen } : {}), box: label, provider: entry.provider, kind: entry.kind ?? null, from, to, seconds: to === null || from === null ? null : Math.max(0, (Date.parse(to) - Date.parse(from)) / 1000), usd_per_second: null, cost_usd: null, source: null, priced: null }); } catch (error) { followError ??= error; return; }
+      try { markReceiptWritten(boxIds, label, entry); } catch { /* at worst a later run that reuses this directory writes the receipt again */ }
+    }
+  };
   // The slow tick does not queue a read behind one still running (a place's reads can take seconds): the boundary reads, which a result waits for, then wait behind at most one.
   let inflight = false;
   // A read the supervisor waits for (after a kill, at a process's exit, at the end) is waited for a bounded time: an optional reading never holds supervision up for a place's whole timeout.
@@ -677,7 +700,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           try { rmSync(operatorKill, { force: true }); deciding = decide('operator'); } catch (error) { decided = true; failed(String((error as { code?: unknown } | null)?.code ?? 'OPERATOR_KILL_UNUSABLE'), 'the operator\'s kill control could not be removed', 'process'); }
         } else if (overBudget) deciding = decide(undefined);
       }, 20);
-      const tick = setInterval(() => { if (!inflight) void readStatus(); if (!carryBusy) void carry(gen, false, () => false); }, 2000);
+      const tick = setInterval(() => { ledgerReceipts(false); if (!inflight) void readStatus(); if (!carryBusy) void carry(gen, false, () => false); }, 2000);
       let exit: Exit | undefined;
       try { exit = await Promise.race([runner.exited, gaveUp.then(() => undefined)]); } catch (error) {
         clearInterval(watch);
@@ -689,6 +712,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       const result: Exit = exit ?? { exit: null, signal: null, stderr: 'the place could not stop this process' };
       clearInterval(watch);
       clearInterval(tick);
+      ledgerReceipts(false);
       await settled(readStatus());
       await carry(gen, true, () => killed?.kind === 'box');
       await iterator?.return?.();
@@ -727,6 +751,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const last = processes.at(-1)?.outcome;
     const delivered = last && last.status === 'complete' && 'record' in last ? { record: last.record } : null;
     // The last read can add a box's priced receipt: the cap is checked after it.
+    ledgerReceipts(true);
     await settled(readStatus(true));
     if (maxUsd !== null && meterKnown(recordDir) > maxUsd) overBudget = true;
     const processesStarted = processes.length;
