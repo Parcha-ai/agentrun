@@ -52,8 +52,10 @@ export type Flight = {
   why?: string;
 };
 export type BoxLife = { box: string; environment: string; /** The lane it is drawn in: its environment, unless it was made while the session waited for a recovery, when it is the lane of the box that was lost (a rebuilt box is the same place). */ lane: string; provider: string; isolation: string | null; gpu: string | null; cpus: number | null; from: number; to?: number; ended?: 'ended' | 'killed' };
-export type Runner = { gen: number; environment: string; box: string; from: number; to?: number };
-export type Kill = { t: number; gen: number; kind: 'box' | 'process'; label: string; box: string | null; recovered?: { gen: number; box: string; afterMs: number } };
+/** `guessed`: its box was taken from its first command on a host box already created (a box a later life adopted, which writes no
+ *  second box.created, draft 56 Amendment 2), never from a box.created of its own; one of those replaces the guess. */
+export type Runner = { gen: number; environment: string; box: string; from: number; to?: number; guessed?: true };
+export type Kill = { t: number; gen: number; kind: 'box' | 'process'; label: string; box: string | null; recovered?: { gen: number; box: string; afterMs: number; guessed?: true } };
 export type Wait = { t: number; box: string; environment: string; ms: number; what: string };
 export type CheckpointRecord = { n: number; head: number; bytes: number | null; t: number; excluded: string[] };
 
@@ -66,11 +68,13 @@ export type TransportState = {
   checkpoints: CheckpointRecord[];
   pending: Step[];
   /** Where the session lives: the box the latest lease (or, before one, the first runner) names. */
-  token: { box: string; epoch: number | null; since: number; /** Its box ended or was killed: the session waits for a recovery. */ awaiting?: number } | undefined;
-  tokens: { box: string; from: number; to?: number }[];
+  token: { box: string; epoch: number | null; since: number; /** Its box ended or was killed: the session waits for a recovery. */ awaiting?: number; guessed?: true } | undefined;
+  tokens: { box: string; from: number; to?: number; guessed?: true }[];
   tile: string | undefined;
   /** The box the session was in when the tile's latest frame came: the lane the browser runs in. */
   tileBox: string | undefined;
+  /** The tile's box is a guess (the session's was, when the frame came). */
+  tileGuessed?: true;
   result: { blob: string; title: string } | undefined;
   lastT: number;
   durableLines: number;
@@ -94,8 +98,9 @@ const excluded = (value: Json | undefined): string[] => {
 
 const known = (line: Line): boolean => {
   if (line.source === 'transport') return line.channel === 'live' ? KINDS.has(line.kind) : docOf(line)?.doc === 'transport.moves';
-  // A host box's life is the supervisor's (draft 56): its box.created and box.ended fold in beside the tool boxes', by label. box.exec is not drawn.
-  if (isSupervisor(line)) return line.kind === 'process.started' || line.kind === 'kill' || line.kind === 'result' || line.kind === 'box.created' || line.kind === 'box.ended';
+  // A host box's life is the supervisor's (draft 56): its box.created and box.ended fold in beside the tool boxes', by label. box.exec is not
+  // drawn: it only says where a process ran when nothing else does (an adopted box).
+  if (isSupervisor(line)) return line.kind === 'process.started' || line.kind === 'kill' || line.kind === 'result' || line.kind === 'box.created' || line.kind === 'box.exec' || line.kind === 'box.ended';
   if (line.source === 'browser') return line.kind === 'frame';
   return false;
 };
@@ -158,6 +163,55 @@ const boxEnded = (state: TransportState, data: Record<string, Json>, line: Line,
   return { ...state, tokens: closed, ...(holding && state.token ? { token: { ...state.token, awaiting: line.t } } : {}), boxes: state.boxes.map((each) => (each.box === box && each.to === undefined ? { ...each, to: line.t, ended: killed ? 'killed' : 'ended' } : each.box === box && killed ? { ...each, ended: 'killed' } : each)) };
 };
 
+/**
+ * Where process `gen` ran, now known: its runner (box, environment), the kills it recovered (the arrow's box) and the part of the session's
+ * trail inside its life; the session itself and the browser tile's box only for the CURRENT process (the newest runner): the supervisor's
+ * reads are bounded, so an earlier process's line can land after the next one started, and it must not take the session back to a box the
+ * run has left. What waited for that box is '?'. A `guess` (the process's first command on a host box already created) fills only a '?',
+ * marked guessed; the process's own box.created fills a '?' and replaces a guess.
+ */
+const placeRunner = (state: TransportState, gen: number, box: string, environment: string, t: number, guess: boolean): TransportState => {
+  const open = (at: { box: string; guessed?: true }) => at.box === '?' || (at.guessed === true && !guess);
+  const mark = guess ? { guessed: true as const } : {};
+  const runner = state.runners.find((each) => each.gen === gen);
+  // The part of an open stretch of the trail that lies inside this runner's life is at its box; the rest stays as it was.
+  const fill = (segment: TransportState['tokens'][number]): TransportState['tokens'] => {
+    if (!open(segment) || runner === undefined) return [segment];
+    const end = segment.to ?? Number.POSITIVE_INFINITY;
+    const from = Math.max(segment.from, runner.from);
+    const to = Math.min(end, runner.to ?? Number.POSITIVE_INFINITY);
+    if (from >= to) return [segment];
+    const { from: _from, to: _to, ...rest } = segment;
+    return [
+      ...(segment.from < from ? [{ ...rest, from: segment.from, to: from }] : []),
+      { box, from, ...(to === Number.POSITIVE_INFINITY ? {} : { to }), ...mark },
+      ...(to < end ? [{ ...rest, from: to, ...(segment.to === undefined ? {} : { to: segment.to }) }] : []),
+    ];
+  };
+  const placed: TransportState = {
+    ...state,
+    runners: state.runners.map((each) => {
+      if (each.gen !== gen) return each;
+      const { guessed: _guessed, ...known } = each;
+      return open(each) ? { ...known, box, environment: each.environment === '?' || each.guessed === true ? environment : each.environment, ...mark } : each;
+    }),
+    kills: state.kills.map((kill) => {
+      if (kill.recovered?.gen !== gen || !open(kill.recovered)) return kill;
+      const { guessed: _guessed, ...recovered } = kill.recovered;
+      return { ...kill, recovered: { ...recovered, box, ...mark } };
+    }),
+    tokens: state.tokens.flatMap(fill),
+  };
+  const token = placed.token;
+  // The session moves for the current process when nothing placed it, or when its box ended and it waits for a recovery.
+  if (placed.runners.at(-1)?.gen !== gen || token === undefined || (!open(token) && token.awaiting === undefined)) return placed;
+  const tile = placed.tileBox === '?' || (placed.tileGuessed === true && !guess) ? { tileBox: box, tileGuessed: guess ? (true as const) : undefined } : {};
+  // A session whose box ended waits for a recovery: the current process's box is where it came back.
+  if (token.awaiting !== undefined) return { ...tokenTo(placed, box, token.epoch, t), ...tile };
+  const { guessed: _guessed, ...held } = token;
+  return { ...placed, token: { ...held, box, since: t, ...mark }, ...tile };
+};
+
 export const transportPanel: Panel<TransportState> = {
   id: 'transport',
   title: 'Where the session lives',
@@ -214,35 +268,22 @@ export const transportPanel: Panel<TransportState> = {
         // not take the session back to a box the run has left.
         const gen = processOf(line);
         const box = str(data.box);
-        if (gen === undefined || box === undefined) return next;
-        const runner = next.runners.find((each) => each.gen === gen);
-        // The part of a '?' stretch of the trail that lies inside this runner's life is at its box; the rest stays where it was ('?').
-        const fill = (segment: TransportState['tokens'][number]): TransportState['tokens'] => {
-          if (segment.box !== '?' || runner === undefined) return [segment];
-          const end = segment.to ?? Number.POSITIVE_INFINITY;
-          const from = Math.max(segment.from, runner.from);
-          const to = Math.min(end, runner.to ?? Number.POSITIVE_INFINITY);
-          if (from >= to) return [segment];
-          return [
-            ...(segment.from < from ? [{ box: '?', from: segment.from, to: from }] : []),
-            { box, from, ...(to === Number.POSITIVE_INFINITY ? {} : { to }) },
-            ...(to < end ? [{ box: '?', from: to, ...(segment.to === undefined ? {} : { to: segment.to }) }] : []),
-          ];
-        };
-        const current = next.runners.at(-1)?.gen === gen && next.token?.box === '?';
-        return {
-          ...next,
-          runners: next.runners.map((each) => (each.gen === gen ? { ...each, box: each.box === '?' ? box : each.box, environment: each.environment === '?' ? environment : each.environment } : each)),
-          kills: next.kills.map((kill) => (kill.recovered?.gen === gen && kill.recovered.box === '?' ? { ...kill, recovered: { ...kill.recovered, box } } : kill)),
-          tokens: next.tokens.flatMap(fill),
-          ...(current && next.token !== undefined ? { token: { ...next.token, box, since: line.t } } : {}),
-          ...(current && next.tileBox === '?' ? { tileBox: box } : {}),
-        };
+        return gen === undefined || box === undefined ? next : placeRunner(next, gen, box, environment, line.t, false);
+      }
+      // A process's first command on a host box already created, while nothing says where that process runs: the box a later life adopted
+      // (it writes no second box.created). Never from a box.ended: an ended box is not where a process runs.
+      if (line.kind === 'box.exec') {
+        const gen = processOf(line);
+        const box = str(data.box);
+        const life = state.boxes.find((each) => each.box === box);
+        const runner = state.runners.find((each) => each.gen === gen);
+        if (gen === undefined || box === undefined || life === undefined || life.to !== undefined || runner?.box !== '?') return state;
+        return placeRunner(state, gen, box, life.environment, line.t, true);
       }
       if (line.kind === 'box.ended') return boxEnded(state, data, line, data.killed === true);
       return state;
     }
-    if (line.source === 'browser') return typeof data.session === 'string' ? { ...state, tile: data.session, tileBox: state.token?.box ?? state.tileBox } : state;
+    if (line.source === 'browser') return typeof data.session === 'string' ? { ...state, tile: data.session, tileBox: state.token?.box ?? state.tileBox, tileGuessed: state.token === undefined ? state.tileGuessed : state.token.guessed } : state;
     if (line.source !== 'transport') return state;
     switch (line.kind) {
       case 'box.created': return boxCreated(state, data, line);

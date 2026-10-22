@@ -94,3 +94,85 @@ test('in a host-only recording a process\'s host box line fills what waited for 
   assert.deepEqual(state.tokens.map((segment) => segment.box), ['box-1', 'box-2']);
   assert.deepEqual(state.runners.map((runner) => [runner.gen, runner.box, runner.environment]), [[1, 'box-1', 'host'], [2, 'box-2', 'host']]);
 });
+
+// An ADOPTED host box (draft 56 Amendment 2): a later life takes over a box an earlier life made and writes no second box.created for it,
+// so its first command there (box.exec, with the later gen) is what says where that process runs; its own box.created, when it makes one,
+// says it instead. A box.ended never does: an ended box is not where a process runs.
+const browserFrame = (t: number): Line => ({ channel: 'live', source: 'browser', kind: 'frame', t, seq: 800 + t, data: { session: 's1', provider: 'local', w: 800, h: 600, mime: 'image/jpeg' } });
+const madeByOne = [
+  host('process.started', 0, { gen: 1, pid: 1 }),
+  host('box.created', 10, { gen: 1, box: 'box-1', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:00.000Z' }),
+  host('box.exec', 11, { gen: 1, box: 'box-1' }),
+  host('process.started', 20, { gen: 2, pid: 2 }),
+  browserFrame(21),
+];
+
+test('an adopted host box that keeps serving: the later process\'s first command there places its runner; a session nothing placed yet, and the tile, follow it, and the process\'s own box.created replaces the guess', () => {
+  const run = [...madeByOne, host('box.exec', 22, { gen: 2, box: 'box-1' }), host('box.exec', 23, { gen: 2, box: 'box-1' })];
+  const before = reduceTo(transportPanel, run, madeByOne.length);
+  assert.deepEqual([before.runners.at(-1)?.box, before.token?.box, before.tileBox], ['?', 'box-1', 'box-1'], 'the session stays on box-1 across the restart; only process 2\'s runner waits');
+  const state = reduceTo(transportPanel, run, run.length);
+  assert.deepEqual(state.runners.map((runner) => [runner.gen, runner.box, runner.environment]), [[1, 'box-1', 'host'], [2, 'box-1', 'host']]);
+  assert.deepEqual([state.token?.box, state.tileBox], ['box-1', 'box-1']);
+  assert.deepEqual(state.tokens.map((segment) => segment.box), ['box-1']);
+  assert.deepEqual(state.boxes.map((box) => [box.box, box.from, box.to ?? null]), [['box-1', 10, null]], 'one box, born at its create, still open');
+  // Process 1's box.created lands late (the supervisor's reads are bounded), after process 2 started: the session waits at '?', and process
+  // 2's command on box-1 places it there, a guess; process 2's own box.created then replaces the guess, the session and the tile included.
+  const late = [
+    host('process.started', 0, { gen: 1, pid: 1 }),
+    host('process.started', 20, { gen: 2, pid: 2 }),
+    browserFrame(21),
+    host('box.created', 22, { gen: 1, box: 'box-1', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:00.000Z' }),
+    host('box.exec', 23, { gen: 2, box: 'box-1' }),
+    host('box.created', 30, { gen: 2, box: 'box-2', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:02.000Z' }),
+  ];
+  const guessed = reduceTo(transportPanel, late, late.length - 1);
+  assert.deepEqual([guessed.runners.at(-1)?.box, guessed.token?.box, guessed.tileBox], ['box-1', 'box-1', 'box-1']);
+  assert.equal(guessed.runners.at(-1)?.guessed, true);
+  const placed = reduceTo(transportPanel, late, late.length);
+  assert.deepEqual([placed.runners.at(-1)?.box, placed.token?.box, placed.tileBox], ['box-2', 'box-2', 'box-2']);
+  assert.equal(placed.runners.at(-1)?.guessed, undefined);
+  assert.equal(placed.tokens.some((segment) => segment.guessed), false, 'no guess left on the trail');
+});
+
+test('case 3: the adopted box is ended and a replacement made; the later process is on the replacement, a box.ended never places it, and its box.created replaces a guess', () => {
+  const replaced = [...madeByOne,
+    host('box.ended', 22, { gen: 2, box: 'box-1', provider: 'modal', killed: false }),
+    host('box.created', 24, { gen: 2, box: 'box-2', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:01.000Z' }),
+  ];
+  // A box.ended alone places nothing.
+  assert.deepEqual(reduceTo(transportPanel, replaced, replaced.length - 1).runners.at(-1)?.box, '?');
+  const state = reduceTo(transportPanel, replaced, replaced.length);
+  assert.deepEqual(state.runners.map((runner) => [runner.gen, runner.box]), [[1, 'box-1'], [2, 'box-2']]);
+  assert.equal(state.token?.box, 'box-2');
+  assert.equal(state.token?.awaiting, undefined, 'the session waited at box-1\'s end and came back in the replacement');
+  assert.deepEqual(state.boxes.map((box) => [box.box, box.from, box.to ?? null, box.ended ?? null]), [['box-1', 10, 22, 'ended'], ['box-2', 24, null, null]], 'two boxes: the first born at its create and ended, the replacement its own');
+  // A command on the adopted box before its end guesses it; the replacement's box.created then replaces the guess, the session included.
+  const guessedFirst = [...madeByOne,
+    host('box.exec', 21.5, { gen: 2, box: 'box-1' }),
+    host('box.ended', 22, { gen: 2, box: 'box-1', provider: 'modal', killed: false }),
+    host('box.created', 24, { gen: 2, box: 'box-2', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:01.000Z' }),
+  ];
+  assert.equal(reduceTo(transportPanel, guessedFirst, guessedFirst.length - 2).runners.at(-1)?.box, 'box-1', 'the guess');
+  const after = reduceTo(transportPanel, guessedFirst, guessedFirst.length);
+  assert.deepEqual(after.runners.map((runner) => [runner.gen, runner.box, runner.guessed ?? null]), [[1, 'box-1', null], [2, 'box-2', null]]);
+  assert.equal(after.token?.box, 'box-2');
+  assert.equal(after.token?.awaiting, undefined, 'the session came back in the replacement');
+  assert.equal(after.tileBox, 'box-1', 'the tile is where the session was when its frame came');
+});
+
+test('a guess fills only what nothing placed: a runner whose process.started names its box, or whose own box.created came, is never moved by a command line', () => {
+  const named = [
+    host('process.started', 0, { gen: 1, pid: 1, box: 'box-1', environment: 'host' }),
+    host('box.created', 10, { gen: 1, box: 'box-1', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:00.000Z' }),
+    host('box.created', 11, { gen: 1, box: 'box-2', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:00.500Z' }),
+    host('box.exec', 12, { gen: 1, box: 'box-2' }),
+  ];
+  assert.deepEqual(reduceTo(transportPanel, named, named.length).runners.map((runner) => runner.box), ['box-1']);
+  // A command on a label no box.created named is no place.
+  const unnamed = [host('process.started', 0, { gen: 1, pid: 1 }), host('box.exec', 5, { gen: 1, box: 'box-7' })];
+  assert.equal(reduceTo(transportPanel, unnamed, unnamed.length).runners[0]?.box, '?');
+  // Nor is a command on a box already ended.
+  const ended = [...madeByOne, host('box.ended', 21.5, { gen: 1, box: 'box-1', provider: 'modal', killed: false }), host('box.exec', 22, { gen: 2, box: 'box-1' })];
+  assert.equal(reduceTo(transportPanel, ended, ended.length).runners.at(-1)?.box, '?');
+});
