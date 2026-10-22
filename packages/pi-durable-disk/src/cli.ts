@@ -8,7 +8,7 @@
 //   fork       copy a released, sealed run into a new run; its first open is generation 1
 // The API key is read from the environment variable named by `--api-key-env` (default ARCHIL_API_KEY) and only by the
 // supervisor commands; `run` never needs it and a host driver never passes it on.
-import { closeSync, lstatSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
@@ -201,34 +201,47 @@ export function runUser(spec: string, passwd = "/etc/passwd"): { uid: number; gi
  * commands would run as this root process), is a usage error. Without the declaration, `--run-as` is as before.
  */
 /**
- * Why the root instance must not load `app` under `--run-as`, or null: the module, after links, or any directory on its
- * path up to `/`, is not root's or is writable by its group or by others (a sticky bit is no exception), or it lies inside
- * the run's root (`runRoot`, whose work/ the agent's commands own). Root would execute code they could change. What the
- * module imports (its node_modules) is the image's to keep root's.
+ * Why the root instance must not load `app` under `--run-as`, or null. The path the loader opens is walked as the kernel
+ * resolves it, one element at a time from `/`, each link's target spliced in where the link was, so a link is checked
+ * where it lives as well as where it points. Refused: any element (directory, link or the module) that is not root's; a
+ * directory or the module writable by its group or by others (a sticky bit is no exception); and any element inside the
+ * run's root (`runRoot`, whose work/ the agent's commands own). Then only root can change what the path resolves to, so
+ * the module root loads is the one checked. What the module imports (its node_modules) is the image's to keep root's.
  */
 export function appWritableReason(
   app: string,
   runRoot: string,
-  fs: { realpathSync(p: string): string; lstatSync(p: string): { uid: number; mode: number } } = { realpathSync, lstatSync },
+  fs: { lstatSync(p: string): { uid: number; mode: number }; readlinkSync(p: string): string } = { lstatSync, readlinkSync },
 ): string | null {
-  let real: string;
-  try {
-    real = fs.realpathSync(resolve(app));
-  } catch (error) {
-    return `${app} cannot be read (${(error as NodeJS.ErrnoException).code ?? error})`;
-  }
   const root = resolve(runRoot);
-  if (real === root || real.startsWith(`${root}/`)) return `${real} is inside the run's root ${root}, which the agent's commands can write`;
-  for (let p = real; ; p = dirname(p)) {
+  const rest = resolve(app).split("/").filter(Boolean);
+  let at = "/";
+  for (let links = 0; ; ) {
+    if (at === root || at.startsWith(`${root}/`)) return `${at} is inside the run's root ${root}, which the agent's commands can write`;
     let st: { uid: number; mode: number };
     try {
-      st = fs.lstatSync(p);
+      st = fs.lstatSync(at);
     } catch (error) {
-      return `${p} cannot be read (${(error as NodeJS.ErrnoException).code ?? error})`;
+      return `${at} cannot be read (${(error as NodeJS.ErrnoException).code ?? error})`;
     }
-    if (st.uid !== 0) return `${p} is owned by uid ${st.uid}, not root`;
-    if ((st.mode & 0o022) !== 0) return `${p} is writable by its group or by others`;
-    if (p === "/") return null;
+    if (st.uid !== 0) return `${at} is owned by uid ${st.uid}, not root`;
+    if ((st.mode & constants.S_IFMT) === constants.S_IFLNK) {
+      // Its directory, checked a step before, is root's and closed to others: only root can replace it.
+      if (++links > 40) return `${app} goes through too many links`;
+      let target: string;
+      try {
+        target = fs.readlinkSync(at);
+      } catch (error) {
+        return `${at} cannot be read (${(error as NodeJS.ErrnoException).code ?? error})`;
+      }
+      rest.unshift(...target.split("/").filter(Boolean));
+      at = target.startsWith("/") ? "/" : dirname(at);
+      continue;
+    }
+    if ((st.mode & 0o022) !== 0) return `${at} is writable by its group or by others`;
+    const next = rest.shift();
+    if (next === undefined) return null;
+    at = next === "." ? at : next === ".." ? dirname(at) : at === "/" ? `/${next}` : `${at}/${next}`;
   }
 }
 
