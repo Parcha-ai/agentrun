@@ -153,16 +153,6 @@ export type PlaceErrorCode =
   | "CONTROL_API_FAILED"
   | "UNHELD_FAILED";
 
-/**
- * Whether two handles name one instance: they share a field besides `driver`, and every field both carry is equal
- * (`adopted` aside). A driver may answer an adoption with fewer fields than its fresh start (dockerHost leaves out the
- * container's id), never with other values for the ones it keeps.
- */
-function sameHandle(a: HostHandle, b: HostHandle): boolean {
-  const shared = Object.keys(a).filter((k) => k !== "adopted" && k in b);
-  return shared.some((k) => k !== "driver") && shared.every((k) => JSON.stringify(a[k]) === JSON.stringify(b[k]));
-}
-
 export class PlaceError extends PdaError {
   constructor(code: PlaceErrorCode, message: string, options: { cause?: unknown } = {}) {
     super(code, message, options);
@@ -1060,10 +1050,12 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
           // An adopted instance mounts with an earlier start's token: this one is unused, removed as above.
           if (result.adopted) await drop(m).catch(() => {});
           // A box this place already started, adopted again (its attempt started twice), keeps the key it has: a second
-          // entry would be a key no runner claims (HOST_BOX), a box counted twice, and a box stopped twice.
-          const again = result.adopted === true && started.some((h) => sameHandle(h, result.handle));
-          if (!handles.some((h) => sameHandle(h, result.handle))) handles.push(result.handle);
-          if (!again) started.push(result.handle);
+          // entry would be a key no runner claims (HOST_BOX), a box counted twice, and a box stopped twice. Only the driver
+          // can say two handles are one instance (`instanceOf`); a box it cannot name, and every fresh one, is a new entry.
+          const name = result.adopted === true ? host.instanceOf?.(result.handle) : undefined;
+          const known = (list: HostHandle[]) => name !== undefined && list.some((h) => host.instanceOf?.(h) === name);
+          if (!known(handles)) handles.push(result.handle);
+          if (!known(started)) started.push(result.handle);
           const w = watch(result.handle);
           const mark = result.startMark ? await readStartMark(control, ref.id).catch(() => null) : null;
           const runner: PlaceRunner = { epoch: mark?.generation ?? order.gen, exited: w.exited };

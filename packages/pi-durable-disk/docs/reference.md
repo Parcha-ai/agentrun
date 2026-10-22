@@ -841,8 +841,10 @@ id and directory as the supervisor computed them.
     `RUN_LABEL`, no `HOST_BOX`. A box's position is then its key, so a box the driver gives no receipt for fails
     `status()` (`STATUS_FAILED`) instead of shifting the boxes after it. A box the place already started and its
     driver adopts again (`adopted: true`, the same attempt started twice) keeps its key: one receipt, stopped once.
-    An adopted handle is that box when every field both handles carry is equal: a driver may answer an adoption
-    with fewer fields (`dockerHost` leaves out the container's id), never with other values.
+    Only the driver can say an adopted handle is that box: `HostDriver.instanceOf(handle)` names the instance a
+    handle is for, the same for its fresh and its adopted handle (`dockerHost`: the daemon and the container's name;
+    `localHost`: the host, the boot and the unit or tag; `daytonaHost`: the sandbox id). A driver without it, a handle
+    it names no instance for, and every fresh handle are a new entry, so a box is never left untracked.
   - `unheld(run, start)`, optional: a hook in each start's window while nobody holds the run. It runs after
     ensureRunning's revoke and start mark and after the run's directories are made, before the driver starts
     anything, once per start (a takeover's included). It needs `ensure.create` and a control that lists; without
