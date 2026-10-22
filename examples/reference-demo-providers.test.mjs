@@ -317,6 +317,50 @@ test('(B) the supervisor reads only ITS life\'s label for a host box: a previous
   assert.equal(await hostLabelIn(files, 'box-ids.internal', { provider: 'home', key: '0', run: 'life-old' }), 'box-1');
 });
 
+test('a won label is durable before it is used: after the winning link(2), in claimKey() and in claim(), the ids directory is fsynced, so a crash that keeps a synced line naming box-N never loses box-N.json (a fix: the next claim would take box-N again)', async (t) => {
+  const fs = (await import('node:fs')).default;
+  const { syncBuiltinESMExports } = await import('node:module');
+  const tmp = await mkdtemp(join(tmpdir(), 'box-ids-durable-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'box-ids.internal');
+  // The ledger's own calls, in order: each link(2) into the directory, and each fsync of the directory itself (a file's fsync is not one).
+  const events = [];
+  const opened = new Map();
+  const real = { openSync: fs.openSync, fsyncSync: fs.fsyncSync, linkSync: fs.linkSync };
+  fs.openSync = (path, ...rest) => { const fd = real.openSync(path, ...rest); opened.set(fd, String(path)); return fd; };
+  fs.fsyncSync = (fd) => { if (opened.get(fd) === dir) events.push('fsync the directory'); return real.fsyncSync(fd); };
+  fs.linkSync = (from, to) => { real.linkSync(from, to); if (!String(to).includes('.probe-')) events.push(`link ${String(to).slice(dir.length + 1)}`); };
+  syncBuiltinESMExports();
+  t.after(() => { Object.assign(fs, real); syncBuiltinESMExports(); });
+  const ledger = hostLedger({ dir });
+  events.push(`use ${ledger.claimHost({ provider: 'home', key: '0', run: 'life-1' }, new Date().toISOString())}`);
+  events.push(`use ${ledger.label('alpha', 'alpha-1')}`);
+  assert.deepEqual(events, [
+    'link host-0.json', 'fsync the directory',
+    'link box-1.json', 'fsync the directory', 'use box-1',
+    'link box-2.json', 'fsync the directory', 'use box-2',
+  ]);
+});
+
+test('a label whose directory entry cannot be made durable is never used: a failed fsync of the ids directory refuses the claim, by name, in claim() and in claimKey()', async (t) => {
+  const fs = (await import('node:fs')).default;
+  const { syncBuiltinESMExports } = await import('node:module');
+  const tmp = await mkdtemp(join(tmpdir(), 'box-ids-durable-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'box-ids.internal');
+  const opened = new Map();
+  const real = { openSync: fs.openSync, fsyncSync: fs.fsyncSync };
+  fs.openSync = (path, ...rest) => { const fd = real.openSync(path, ...rest); opened.set(fd, String(path)); return fd; };
+  fs.fsyncSync = (fd) => { if (/ids\.internal$/.test(opened.get(fd) ?? '')) throw Object.assign(new Error('EIO: i/o error, fsync'), { code: 'EIO' }); return real.fsyncSync(fd); };
+  syncBuiltinESMExports();
+  t.after(() => { Object.assign(fs, real); syncBuiltinESMExports(); });
+  assert.throws(() => hostLedger({ dir }).label('alpha', 'alpha-1'), /cannot be made durable \(EIO/);
+  // A host box's key that cannot be made durable refuses before its label is even linked.
+  const hostDir = join(tmp, 'host-ids.internal');
+  assert.throws(() => hostLedger({ dir: hostDir }).claimHost({ provider: 'home', key: '0', run: 'life-1' }, new Date().toISOString()), /cannot be made durable \(EIO/);
+  assert.deepEqual(readdirSync(hostDir).filter((name) => /^box-\d+\.json$/.test(name)), [], 'no label linked after a key that cannot be made durable');
+});
+
 test('(C) HOST_BOX holds provider, key and run and nothing else: any other key (a box id, a credential) is refused by name, never carried silently, and no value is echoed', () => {
   const secret = `sk-${'s'.repeat(12)}`;
   assert.throws(() => parseHostBox(JSON.stringify({ provider: 'home', key: '0', run: 'a', id: 'sb-provider-box-id', token: secret })), (error) => {

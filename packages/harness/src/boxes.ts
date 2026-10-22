@@ -86,6 +86,13 @@ function labelStore(dir: string) {
     }
     return out;
   };
+  /** A won link(2) is an entry of the DIRECTORY, which the linked file's own fsync does not make durable: the directory is fsynced before the
+   *  claim is used, so a crash that keeps a synced line naming the label never loses its file (the next claim would take the label again). */
+  const durable = () => {
+    try { const fd = openSync(dir, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } } catch (error) {
+      throw new Error(`the box ids directory ${dir} cannot be made durable (${(error as Error).message}): a claim it might lose is never used`);
+    }
+  };
   /** The disk must give an exclusive link: a second link to one name fails with EEXIST. */
   const probe = () => {
     const from = temp({ probe: true });
@@ -126,9 +133,12 @@ function labelStore(dir: string) {
       try { from = temp(entry); } catch (error) { throw cannotTakeFiles(error) ?? new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`); }
       try {
         for (let n = Math.max(0, ...[...list().keys()].map((label) => Number(label.slice(4)))) + 1; ; n += 1) {
-          try { linkSync(from, join(dir, `box-${n}.json`)); return `box-${n}`; } catch (error) {
+          try { linkSync(from, join(dir, `box-${n}.json`)); } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`);
+            continue;
           }
+          durable();
+          return `box-${n}`;
         }
       } finally { rmSync(from, { force: true }); }
     },
@@ -142,9 +152,12 @@ function labelStore(dir: string) {
       let from: string;
       try { from = temp(value); } catch (error) { throw cannotTakeFiles(error) ?? new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`); }
       try {
-        try { linkSync(from, join(dir, name)); return { won: true }; } catch (error) {
+        let won = true;
+        try { linkSync(from, join(dir, name)); } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`);
+          won = false;
         }
+        if (won) { durable(); return { won: true }; }
         try { return { won: false, held: JSON.parse(readFileSync(join(dir, name), 'utf8')) }; } catch (error) { throw refused(`the host key file ${join(dir, name)} cannot be read`, error); }
       } finally { rmSync(from, { force: true }); }
     },
