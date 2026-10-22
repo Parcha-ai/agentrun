@@ -60,6 +60,13 @@ machine. A Cloudflare Durable Object gives it both. This package gives it both o
   `curl -s https://archil.com/install | sh`.
 - Root for the mounts: every `archil` verb needs it on client 0.8.42. The package reaches root only through
   `sudo -n` of `bin/archil-scoped` (below), so the instance and the agent's tools run unprivileged.
+- **A run's mount is `nosuid,nodev`.** archil takes no mount options, and its mounts are otherwise `rw,relatime` (setuid
+  and device files on the disk would count). So `archil-scoped mount` bind-remounts exactly the mountpoint
+  `nosuid,nodev` right after archil mounts it, and exits 9 when archil listed no mount there or the remount fails.
+  `acquire` refuses, and unmounts, a mount without them (`MOUNT_FAILED`), so a run never starts on one. An in-place
+  restart that finds an older wrapper's live mount gives it back and mounts again through the wrapper; given no token,
+  it is fenced (`CLAIM_GONE_NO_TOKEN`). The wrapper's mount line is the claim's:
+  `[--force] <source> <mountpoint> [--region <region>]`, and nothing else.
 - `/proc` that shows the instance root's processes: acquire's stale-daemon cleanup needs `/proc` visibility of root
   processes, so mount `/proc` without `hidepid`, or run the instance where it can see them. Otherwise an archil daemon
   left on a run's mountpoint fails every acquire there with `MOUNT_FAILED` (exit 1) until something else ends it.
@@ -359,6 +366,19 @@ container is one incarnation.
   image's user `pda` (uid 1500, `run --run-as`) under no_new_privs, with every capability set empty. `work/` and the files
   pi's write and edit tools create there belong to `pda`; the run's store, `run.json` and the archil daemon (which holds the
   token) stay root's, and Archil enforces their modes.
+- **`run --run-as` refuses**, before anything runs:
+  - a user in group root (gid 0, given or from passwd);
+  - an `--app` the agent's commands could change. Root loads it, so the path is walked as the kernel resolves it, links
+    included, and every element (a directory, a link or the module) must be root's, every directory and the module
+    closed to group and others (sticky or not), unless the element is on a read-only mount whose source no writable
+    mount in the instance's table overlaps (the same device, the same root or one inside the other): nothing in the box
+    can change it then, and dockerHost's app directory, bind-mounted once read-only, is one. None may be inside the
+    run's data root: a disk run's `--mount-root`, where
+    every run is mounted and a file's owner is whatever its writer set, or a local run's `--dir`. A link the tools could
+    replace would change the module between the check and the load.
+  - When transport's launcher started the instance as root with a verified tools user (`PI_TRANSPORT_TOOLS_USER` and
+    `PI_TRANSPORT_TOOLS_UID`), `--run-as` must name that uid; a different one, or none, is refused.
+  The instance closes the launcher's secrets descriptor and drops `PI_TRANSPORT_SECRETS_FD` first.
 - **Status** comes from `docker inspect`: exit 0 is stopped, any other exit (75 and 76 included) failed, and a paused
   container is running, so the lease decides. **Stop** is `docker stop` (the instance drains), then `docker rm`.
 - **Parking and the drain** are the local driver's: the instance gets `--park-threshold` (60 s, `parkThresholdMs`; null

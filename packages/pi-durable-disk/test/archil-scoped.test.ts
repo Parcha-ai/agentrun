@@ -21,14 +21,21 @@ function wrapper(cgroup: string) {
     chmodSync(p, 0o755);
     return p;
   };
+  // The mount table the wrapper reads; the stub archil lists its mount there (unless told not to), as archil's mount does.
+  const mounts = join(dir, "mounts");
+  writeFileSync(mounts, "");
+  // The stub mount records the remount it was asked for, and fails when told to.
+  const mount = stub("mount", `echo "$*" > '${out}.mount'; [ ! -e '${dir}/fail-remount' ]`);
   // The stub archil records its argv, the token it was given, its environment's names and any stdin left for it.
-  const archil = stub("archil", `{ echo "argv=$*"; echo "token=\${ARCHIL_MOUNT_TOKEN-<unset>}"; echo "env=$(env | cut -d= -f1 | sort | tr '\\n' ' ')"; IFS= read -r rest || true; echo "stdin=$rest"; } > '${out}'`);
+  const archil = stub("archil", `if [ "$1" = mount ] && [ ! -e '${dir}/no-list' ]; then a=$2 b=$3; [ "$a" = --force ] && a=$3 b=$4; printf '%s %s fuse.archil rw,relatime 0 0\\n' "$a" "$b" >> '${mounts}'; fi; { echo "argv=$*"; echo "token=\${ARCHIL_MOUNT_TOKEN-<unset>}"; echo "env=$(env | cut -d= -f1 | sort | tr '\\n' ' ')"; IFS= read -r rest || true; echo "stdin=$rest"; } > '${out}'`);
   // The stub systemd-run records its own argv, then runs the command after "--" as a real --scope would.
   const systemdRun = stub("systemd-run", `echo "scope=$*" > '${out}.scope'; while [ "$1" != -- ]; do shift; done; shift; exec "$@"`);
   const cgroupFile = join(dir, "cgroup");
   writeFileSync(cgroupFile, `${cgroup}\n`);
   const script = readFileSync(ARCHIL_SCOPED, "utf8")
     .replace("ARCHIL=/usr/bin/archil", `ARCHIL='${archil}'`)
+    .replace("MOUNT=/usr/bin/mount", `MOUNT='${mount}'`)
+    .replace("MOUNTS=/proc/self/mounts", `MOUNTS='${mounts}'`)
     .replace("/usr/bin/systemd-run", systemdRun)
     .replace("/proc/self/cgroup", cgroupFile);
   assert.notEqual(script, readFileSync(ARCHIL_SCOPED, "utf8"));
@@ -37,11 +44,15 @@ function wrapper(cgroup: string) {
     const r = spawnSync(path, args, { input, encoding: "utf8", env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" } });
     const seen = existsSync(out) ? Object.fromEntries(readFileSync(out, "utf8").trim().split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)])) : null;
     const scope = existsSync(`${out}.scope`) ? readFileSync(`${out}.scope`, "utf8").trim() : null;
+    const remount = existsSync(`${out}.mount`) ? readFileSync(`${out}.mount`, "utf8").trim() : null;
     rmSync(out, { force: true });
     rmSync(`${out}.scope`, { force: true });
-    return { status: r.status, stderr: r.stderr, seen, scope };
+    rmSync(`${out}.mount`, { force: true });
+    writeFileSync(mounts, "");
+    return { status: r.status, stderr: r.stderr, seen, scope, remount };
   };
-  return { run, archil, [Symbol.dispose]: () => rmSync(dir, { recursive: true, force: true }) };
+  const flag = (name: "fail-remount" | "no-list") => writeFileSync(join(dir, name), "");
+  return { run, archil, flag, [Symbol.dispose]: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 const OUTSIDE = "0::/user.slice/user-1000.slice/session-3.scope";
@@ -56,6 +67,42 @@ test("mount takes the token from the first line of stdin and gives it only to ar
     assert.equal(r.seen?.token, expect);
     assert.ok(!r.seen?.argv.includes(TOKEN));
     assert.equal(r.scope, null, "outside a system service there is no scope");
+  }
+});
+
+test("mount then makes the run's mount nosuid,nodev by a bind remount of exactly its mountpoint (archil takes no mount options), outside a service and inside one", () => {
+  for (const cgroup of [OUTSIDE, SERVICE]) {
+    const w = disposeAfter(wrapper(cgroup));
+    const r = w.run(["mount", "dsk-1:/runs/r1", "/mnt/archil/runs/r1", "--region", "aws-us-east-1"], `${TOKEN}\n`);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.remount, "-o remount,bind,nosuid,nodev /mnt/archil/runs/r1", cgroup);
+    assert.ok(!r.remount?.includes(TOKEN));
+  }
+  const forced = disposeAfter(wrapper(OUTSIDE));
+  const f = forced.run(["mount", "--force", "dsk-1:/runs/r1", "/mnt/archil/runs/r1", "--region", "aws-us-east-1"], `${TOKEN}\n`);
+  assert.equal(f.status, 0, f.stderr);
+  assert.equal(f.remount, "-o remount,bind,nosuid,nodev /mnt/archil/runs/r1", "with --force too: the mountpoint, never the source");
+});
+
+test("a remount that fails fails the mount (exit 9), and so does an archil mount that lists no fuse.archil mount at the mountpoint: never an unhardened mount", () => {
+  const w = disposeAfter(wrapper(OUTSIDE));
+  w.flag("fail-remount");
+  const r = w.run(["mount", "dsk-1:/runs/r1", "/mnt/archil/runs/r1"], `${TOKEN}\n`);
+  assert.equal(r.status, 9, r.stderr);
+  assert.match(r.stderr, /nosuid,nodev/);
+  const v = disposeAfter(wrapper(OUTSIDE));
+  v.flag("no-list");
+  const u = v.run(["mount", "dsk-1:/runs/r1", "/mnt/archil/runs/r1"], `${TOKEN}\n`);
+  assert.equal(u.status, 9, u.stderr);
+  assert.equal(u.remount, null, "nothing to remount");
+});
+
+test("mount refuses a mount line it cannot read: a source and a mountpoint, nothing else", () => {
+  const w = disposeAfter(wrapper(OUTSIDE));
+  for (const args of [["mount"], ["mount", "dsk-1:/runs/r1"], ["mount", "dsk-1:/runs/r1", "/mnt/archil/runs/r1", "extra"], ["mount", "--unknown", "dsk-1:/runs/r1", "/mnt/archil/runs/r1"]]) {
+    const r = w.run(args, `${TOKEN}\n`);
+    assert.equal(r.status, 2, `${args.join(" ")}: ${r.stderr}`);
+    assert.equal(r.seen, null, "archil never ran");
   }
 });
 

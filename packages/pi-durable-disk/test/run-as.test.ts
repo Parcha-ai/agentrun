@@ -4,13 +4,15 @@
 // chown allows.
 import { describe, it, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
-import { main, runUser } from "../src/cli.ts";
+import { appWritableReason, INSTANCE_FS, instanceMounts, main, mountInfo, runUser, toolsUserCheck } from "../src/cli.ts";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { archilEnv, EnvError } from "../src/env.ts";
 import { PdaError } from "../src/errors.ts";
 
@@ -139,6 +141,196 @@ test("run --run-as: a name from passwd with its group and home, or uid[:gid]; ro
     assert.throws(() => runUser("root", passwd), (e: unknown) => e instanceof PdaError && /root/.test((e as Error).message));
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("run --run-as never puts the agent's commands in group root: a gid of 0, given or from passwd, is refused", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pda-passwd-"));
+  try {
+    const passwd = join(dir, "passwd");
+    writeFileSync(passwd, "root:x:0:0:root:/root:/bin/bash\nrootgroup:x:1600:0::/home/rg:/bin/bash\n");
+    for (const spec of ["1500:0", "1500:000", "rootgroup"]) {
+      assert.throws(() => runUser(spec, passwd), (e: unknown) => e instanceof PdaError && e.exitCode === 2 && /group root|gid 0/.test((e as Error).message), spec);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the tools user the launcher verified (PI_TRANSPORT_TOOLS_USER/UID) must be --run-as: a different one, or none, is refused; without a declaration nothing changes", () => {
+  const pda = { uid: 1500, gid: 1500, home: "/home/pda", name: "pda" };
+  const verified = { PI_TRANSPORT_TOOLS_USER: "pda", PI_TRANSPORT_TOOLS_UID: "1500" };
+  assert.doesNotThrow(() => toolsUserCheck(pda, verified), "the same user");
+  assert.doesNotThrow(() => toolsUserCheck(pda, {}), "no declaration: --run-as as before");
+  assert.doesNotThrow(() => toolsUserCheck(undefined, {}), "neither");
+  const refused = (runAs: typeof pda | undefined, env: Record<string, string>, why: string, re: RegExp) =>
+    assert.throws(() => toolsUserCheck(runAs, env), (e: unknown) => e instanceof PdaError && e.exitCode === 2 && re.test((e as Error).message), why);
+  refused(undefined, verified, "a verified tools user and no --run-as: the commands would run as this (root) process", /--run-as/);
+  refused({ ...pda, uid: 1501, name: "pdb" }, verified, "another uid", /1500/);
+  assert.doesNotThrow(() => toolsUserCheck({ ...pda, name: "alias" }, verified), "the same uid under another name is the same user: the uid decides");
+  refused(pda, { PI_TRANSPORT_TOOLS_USER: "pda" }, "a name with no uid: the declaration is malformed", /PI_TRANSPORT_TOOLS_UID/);
+  refused(pda, { PI_TRANSPORT_TOOLS_USER: "pda", PI_TRANSPORT_TOOLS_UID: "15x0" }, "a uid that is not a number", /PI_TRANSPORT_TOOLS_UID/);
+});
+
+test("the launcher's secrets descriptor (PI_TRANSPORT_SECRETS_FD) never reaches a command: Node marks inherited descriptors close-on-exec at its start, and the instance closes it and drops its number before anything runs", () => {
+  const child = fileURLToPath(new URL("./fixtures/secrets-fd-child.ts", import.meta.url));
+  const run = (close: boolean) =>
+    spawnSync(process.execPath, [child], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe", "pipe"], env: { ...process.env, PI_TRANSPORT_SECRETS_FD: "3", CLOSE: close ? "1" : "0" } });
+  const fds = (out: string) => out.split("\n").filter((l) => /^[0-9]+$/.test(l)).map(Number);
+  const open = run(false);
+  assert.equal(open.status, 0, open.stderr);
+  // Measured: Node's start (libuv's uv_disable_stdio_inheritance) makes an inherited fd 3 close-on-exec, so even without
+  // the instance's close no command holds it. Pinned, so a runtime that changes this shows here.
+  assert.ok(!fds(open.stdout).includes(3), `Node's own guard: ${open.stdout}`);
+  assert.match(open.stdout, /SECRETS_FD=3/, "but without the instance's close, a command sees the descriptor's number");
+  const closed = run(true);
+  assert.equal(closed.status, 0, closed.stderr);
+  assert.ok(!fds(closed.stdout).includes(3), `closed: ${closed.stdout}`);
+  assert.match(closed.stdout, /SECRETS_FD=unset/, "and the variable is gone from the commands' environment");
+});
+
+test("under --run-as the root instance refuses an --app the agent's commands could change: not root's, writable by group or others anywhere on its path, a link they could replace, or inside the run's root", () => {
+  type Node = { uid: number; mode: number; link?: string };
+  type Mount = { point: string; ro: boolean; dev: string; root: string };
+  const tree = (nodes: Record<string, Node>, mounts?: Mount[]) => {
+    const lstatSync = (p: string) => {
+      const n = nodes[p];
+      if (!n) throw Object.assign(new Error(`ENOENT ${p}`), { code: "ENOENT" });
+      return { uid: n.uid, mode: n.mode };
+    };
+    const readlinkSync = (p: string) => {
+      const n = nodes[p];
+      if (!n?.link) throw Object.assign(new Error(`EINVAL ${p}`), { code: "EINVAL" });
+      return n.link;
+    };
+    // As the kernel resolves: element by element, a link's target spliced in where the link was.
+    const realpathSync = (p: string) => {
+      const rest = p.split("/").filter(Boolean);
+      let at = "/";
+      for (let hops = 0; rest.length > 0; ) {
+        const next = rest.shift()!;
+        const q = next === "." ? at : next === ".." ? dirname(at) : at === "/" ? `/${next}` : `${at}/${next}`;
+        const n = nodes[q];
+        if (!n) throw Object.assign(new Error(`ENOENT ${q}`), { code: "ENOENT" });
+        if (n.link === undefined) {
+          at = q;
+          continue;
+        }
+        if (++hops > 40) throw Object.assign(new Error(`ELOOP ${p}`), { code: "ELOOP" });
+        rest.unshift(...n.link.split("/").filter(Boolean));
+        if (n.link.startsWith("/")) at = "/";
+      }
+      return at;
+    };
+    return { lstatSync, readlinkSync, realpathSync, ...(mounts ? { mounts: () => mounts } : {}) };
+  };
+  const dir = (uid = 0, mode = 0o40755) => ({ uid, mode });
+  const file = (uid = 0, mode = 0o100644) => ({ uid, mode });
+  const base = { "/": dir(), "/opt": dir(), "/opt/app": dir(), "/opt/app/app.mjs": file(), "/mnt": dir(), "/mnt/archil": dir(), "/mnt/archil/runs": dir(), "/mnt/archil/runs/r1": dir(1500), "/mnt/archil/runs/r1/work": dir(1500), "/mnt/archil/runs/r1/work/app.mjs": file(1500) };
+  const link = (to: string, uid = 0) => ({ uid, mode: 0o120777, link: to });
+  const home = { ...base, "/home": dir(), "/home/pda": dir(1500) };
+  assert.equal(appWritableReason("/opt/app/app.mjs", "/mnt/archil/runs/r1", tree(base)), null, "root's, 0755/0644 all the way up");
+  const rootLinks = { ...base, "/opt/lib": dir(), "/opt/lib/app.mjs": file(), "/opt/app/abs.mjs": link("/opt/lib/app.mjs"), "/opt/app/rel.mjs": link("../lib/app.mjs"), "/srv": link("opt") };
+  for (const app of ["/opt/app/abs.mjs", "/opt/app/rel.mjs", "/srv/app/rel.mjs"]) {
+    assert.equal(appWritableReason(app, "/mnt/archil/runs/r1", tree(rootLinks)), null, `root's links in root's directories: ${app}`);
+  }
+  const refused: [string, Record<string, Node>, string, RegExp][] = [
+    ["a module pda owns", { ...base, "/opt/app/app.mjs": file(1500) }, "/opt/app/app.mjs", /uid 1500/],
+    ["a group-writable module", { ...base, "/opt/app/app.mjs": file(0, 0o100664) }, "/opt/app/app.mjs", /writable/],
+    ["a world-writable directory on the way", { ...base, "/opt": dir(0, 0o40777) }, "/opt/app/app.mjs", /\/opt\b.*writable/],
+    ["a sticky world-writable directory, as /tmp", { ...base, "/opt/app": dir(0, 0o41777) }, "/opt/app/app.mjs", /writable/],
+    ["a directory pda owns", { ...base, "/opt/app": dir(1500) }, "/opt/app/app.mjs", /uid 1500/],
+    ["a module inside the run's root", base, "/mnt/archil/runs/r1/work/app.mjs", /inside the run/],
+    ["a link to a module pda owns", { ...base, "/opt/app/link.mjs": link("/opt/app/real.mjs"), "/opt/app/real.mjs": file(1500) }, "/opt/app/link.mjs", /uid 1500/],
+    ["a module that is not there", base, "/opt/app/missing.mjs", /cannot be read|ENOENT/],
+    // The loader opens the path as given, so the kernel follows each link again at load: one the tools could replace
+    // would swap the module after this check, even when it points at root's.
+    ["root's module through a link in a directory pda owns", { ...home, "/home/pda/app.mjs": link("/opt/app/app.mjs", 1500) }, "/home/pda/app.mjs", /\/home\/pda is owned by uid 1500/],
+    ["root's directory through a link in a directory pda owns", { ...home, "/home/pda/app": link("/opt/app", 1500) }, "/home/pda/app/app.mjs", /\/home\/pda is owned by uid 1500/],
+    ["a relative link in a directory pda owns", { ...home, "/home/pda/app.mjs": link("../../opt/app/app.mjs", 1500) }, "/home/pda/app.mjs", /\/home\/pda is owned by uid 1500/],
+    ["a link pda owns, in root's directory", { ...base, "/opt/app/link.mjs": link("/opt/app/app.mjs", 1500) }, "/opt/app/link.mjs", /\/opt\/app\/link\.mjs is owned by uid 1500/],
+    ["root's relative link into a directory pda owns", { ...base, "/opt/pda": dir(1500), "/opt/pda/app.mjs": file(), "/opt/app/link.mjs": link("../pda/app.mjs") }, "/opt/app/link.mjs", /\/opt\/pda is owned by uid 1500/],
+    ["root's link into the run's root", { ...base, "/opt/app/link.mjs": link("/mnt/archil/runs/r1/work/app.mjs") }, "/opt/app/link.mjs", /inside the run/],
+    ["links in a loop", { ...base, "/opt/app/a.mjs": link("/opt/app/b.mjs"), "/opt/app/b.mjs": link("a.mjs") }, "/opt/app/a.mjs", /ELOOP|too many links/],
+  ];
+  for (const [why, nodes, app, re] of refused) {
+    const reason = appWritableReason(app, "/mnt/archil/runs/r1", tree(nodes));
+    assert.ok(reason !== null && re.test(reason), `${why}: ${reason}`);
+  }
+  // A read-only mount: nothing in the box can write, chmod, rename or unlink there (EROFS), and the agent's commands cannot
+  // remount, so its owner does not matter. dockerHost bind-mounts the app's directory, the host user's, read-only.
+  const docker = { ...base, "/opt/pda": dir(), "/opt/pda/app": dir(1000, 0o40775), "/opt/pda/app/app.mjs": file(1000, 0o100664), "/opt/pda/app/link.mjs": link("app.mjs", 1000) };
+  // The container's own root (an overlay), and the host directory bind-mounted read-only (source: the host's /home/u/app).
+  const rw: Mount = { point: "/", ro: false, dev: "0:50", root: "/" };
+  const appRo: Mount = { point: "/opt/pda/app", ro: true, dev: "8:1", root: "/home/u/app" };
+  // Bind mounts of the same host file system that do not overlap the app's source, as Docker makes for /etc/hosts.
+  const hosts: Mount = { point: "/etc/hosts", ro: false, dev: "8:1", root: "/var/lib/docker/containers/c1/hosts" };
+  const passes: [string, Mount[]][] = [
+    ["alone", [rw, appRo]],
+    ["beside a writable bind of the same file system that does not overlap its source", [rw, appRo, hosts]],
+    ["beside a writable mount of another file system with the same root", [rw, appRo, { point: "/srv", ro: false, dev: "8:2", root: "/home/u/app" }]],
+    ["beside a writable bind of a sibling whose name it prefixes", [rw, appRo, { point: "/srv", ro: false, dev: "8:1", root: "/home/u/application" }]],
+  ];
+  for (const [why, mounts] of passes) {
+    for (const app of ["/opt/pda/app/app.mjs", "/opt/pda/app/link.mjs"]) {
+      assert.equal(appWritableReason(app, "/mnt/archil", tree(docker, mounts)), null, `the host user's app on a read-only bind mount, ${why}: ${app}`);
+    }
+  }
+  const notRo: [string, Mount[], string, Record<string, Node>, RegExp][] = [
+    ["the same files on a writable mount", [rw], "/opt/pda/app/app.mjs", docker, /\/opt\/pda\/app is owned by uid 1000, not root$/],
+    ["a read-only mount covered by a writable one at the same point", [rw, appRo, { point: "/opt/pda/app", ro: false, dev: "0:60", root: "/" }], "/opt/pda/app/app.mjs", docker, /uid 1000/],
+    ["a read-only mount elsewhere", [rw, { point: "/usr", ro: true, dev: "0:51", root: "/" }, { point: "/opt/pda/ap", ro: true, dev: "8:1", root: "/home/u/app" }], "/opt/pda/app/app.mjs", docker, /uid 1000/],
+    ["the run's root, read-only or not", [rw, { point: "/mnt/archil/runs/r1", ro: true, dev: "0:70", root: "/" }], "/mnt/archil/runs/r1/work/app.mjs", base, /inside the run/],
+    // Read-only at the app's mount point does not make its source read-only: the same source mounted writable anywhere
+    // in the instance's table (the same device, an overlapping root) takes the exemption away, even where only root
+    // could reach that mount.
+    ["its source also mounted writable", [rw, appRo, { point: "/work/app", ro: false, dev: "8:1", root: "/home/u/app" }], "/opt/pda/app/app.mjs", docker, /owned by uid 1000, not root .*read-write at \/work\/app/],
+    ["a directory above its source mounted writable", [rw, appRo, { point: "/work", ro: false, dev: "8:1", root: "/home/u" }], "/opt/pda/app/app.mjs", docker, /read-write at \/work\b/],
+    ["a directory below its source mounted writable", [rw, appRo, { point: "/work/sub", ro: false, dev: "8:1", root: "/home/u/app/sub" }], "/opt/pda/app/app.mjs", docker, /read-write at \/work\/sub/],
+    ["the whole file system mounted writable", [rw, appRo, { point: "/host", ro: false, dev: "8:1", root: "/" }], "/opt/pda/app/app.mjs", docker, /read-write at \/host/],
+  ];
+  for (const [why, mounts, app, nodes, re] of notRo) {
+    const reason = appWritableReason(app, "/mnt/archil", tree(nodes, mounts));
+    assert.ok(reason !== null && re.test(reason), `${why}: ${reason}`);
+  }
+  // The mounts are the instance's own (/proc/self, read at its start, before any command of the agent's exists), never a
+  // command's: another process's user or mount namespace never changes the table root's walk reads.
+  // Pinned at the read itself: here pid 1 shares this namespace, so another process's table would read the same.
+  const read: string[] = [];
+  const row = "22 1 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n";
+  assert.deepEqual(instanceMounts((path) => (read.push(path), row)), [{ point: "/", ro: false, dev: "8:1", root: "/" }]);
+  assert.deepEqual(read, ["/proc/self/mountinfo"], "the instance's own table, nobody else's");
+  assert.deepEqual(INSTANCE_FS.mounts?.(), mountInfo(readFileSync("/proc/self/mountinfo", "utf8")), "the walk's default reads it");
+  // /proc/self/mountinfo: the mount point is field 5 (octal escapes), "ro" in the mount's or the superblock's options.
+  assert.deepEqual(
+    mountInfo([
+      "22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
+      "30 22 8:1 /home/u/my\\040app /opt/pda/app ro,nosuid,relatime - ext4 /dev/sda1 rw",
+      "31 22 0:5 / /srv rw,relatime - squashfs /dev/loop0 ro",
+      "",
+    ].join("\n")),
+    [
+      { point: "/", ro: false, dev: "8:1", root: "/" },
+      { point: "/opt/pda/app", ro: true, dev: "8:1", root: "/home/u/my app" },
+      { point: "/srv", ro: true, dev: "0:5", root: "/" },
+    ],
+  );
+  assert.deepEqual(mountInfo("40 22 0:9 / /mnt/a\\040b rw - tmpfs t rw\n"), [{ point: "/mnt/a b", ro: false, dev: "0:9", root: "/" }]);
+
+  // On this machine's own files: a root-owned binary passes, through root's own link too (/bin on a merged /usr); a file
+  // this user owns does not, nor root's binary through a link in a directory this user can write.
+  assert.equal(appWritableReason("/usr/bin/true", "/mnt/archil/runs/r1"), null);
+  if (lstatSync("/bin").isSymbolicLink()) assert.equal(appWritableReason("/bin/true", "/mnt/archil/runs/r1"), null);
+  const mine = mkdtempSync(join(tmpdir(), "pda-app-"));
+  try {
+    writeFileSync(join(mine, "app.mjs"), "export default {};\n");
+    assert.match(appWritableReason(join(mine, "app.mjs"), "/mnt/archil/runs/r1") ?? "", /uid|writable/);
+    symlinkSync("/usr/bin/true", join(mine, "true"));
+    symlinkSync("/usr/bin", join(mine, "bin"));
+    assert.match(appWritableReason(join(mine, "true"), "/mnt/archil/runs/r1") ?? "", /uid|writable/, "a link here to root's binary");
+    assert.match(appWritableReason(join(mine, "bin", "true"), "/mnt/archil/runs/r1") ?? "", /uid|writable/, "a link here to root's directory");
+  } finally {
+    rmSync(mine, { recursive: true, force: true });
   }
 });
 
