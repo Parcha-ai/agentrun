@@ -395,3 +395,16 @@ test("a host-only cookie is kept and restored for its own host only; a domain co
   assert.deepEqual((await vault.restore({ sessionKey: "both", origins: [SUB] })).cookies.map((k) => k.name), ["wide", "own"], "nor restored to one");
   assert.deepEqual((await vault.restore({ sessionKey: "both", origins: [A] })).cookies.map((k) => k.name), ["parent", "wide"], "a host-only cookie goes to its own host, and a child's does not go up");
 });
+
+test("a provider context comes back only when the request names every origin it was captured for: it cannot be cut down to fewer", async () => {
+  const h = await home();
+  const vault = sessionVault(h, { hostKey: KEY, now: NOW });
+  const context = { kind: "provider-context", capturedAt: new Date(T0).toISOString(), provider: "kernel", contextId: marker("both-sites") };
+  await vault.capture({ sessionKey: "two", origins: [A, B], state: context });
+  assert.equal(await vault.restore({ sessionKey: "two", origins: [A] }), null, "A alone would get B's sign-in too");
+  assert.equal(await vault.restore({ sessionKey: "two", origins: [B, OTHER] }), null);
+  assert.deepEqual(vault.handedOut(), [], "and nothing was handed out");
+  assert.deepEqual(await vault.restore({ sessionKey: "two", origins: [A, B] }), context);
+  assert.deepEqual(await vault.restore({ sessionKey: "two", origins: [B, OTHER, A] }), context, "a request that names more origins still gets it");
+  assert.deepEqual(vault.handedOut(), [marker("both-sites")]);
+});

@@ -247,7 +247,8 @@ const saved = await vault.restore({ sessionKey: "acme", origins: ["https://app.a
 - **What comes back.** A capture keeps only the cookies and localStorage of the origins it names. A restore returns
   what was captured for the origins asked for, never more. A cookie counts for an origin the browser would send it to:
   a host-only cookie (no leading dot in its domain) for its own host only, a domain cookie for its host and every host
-  under it. A persistent cookie keeps its own expiry; a session cookie
+  under it. A provider context cannot be cut down to fewer origins, so it comes back only to a restore that names every
+  origin it was captured for; a restore for some of them gets `null`. A persistent cookie keeps its own expiry; a session cookie
   comes back for at most 24 hours after its capture (`maxSessionCookieAgeMs` lowers it; it cannot go higher). A
   capture is dated by its state's `capturedAt` (a time still to come counts as now), and one older than the session
   already kept is ignored, so a late capture never replaces a newer one. With `runId`, a capture is refused (`busy`)

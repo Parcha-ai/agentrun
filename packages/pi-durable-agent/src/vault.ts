@@ -212,9 +212,11 @@ const recordAad = (agentId: string, sessionKey: string, keyId: string, kind: str
  * `agent.vault` (a secret kind: never exported, packed or seeded into a run) under its own item key; a capture mints a
  * new item key and destroys the one before it, `forget` destroys a session's key and `forgetAll` every key. The first
  * capture binds the home to `hostKey`; any other host key is refused (`key`). Session cookies come back for at most
- * `maxSessionCookieAgeMs` after their capture (24 hours, the most; a host may only lower it). A capture is dated by its
- * state's `capturedAt` (a time to come counts as now), and one older than the session already kept is ignored. With
- * `runId`, a capture is refused (`busy`) while another live run holds that session's save lease.
+ * `maxSessionCookieAgeMs` after their capture (24 hours, the most; a host may only lower it). A provider context, which
+ * cannot be cut down to fewer origins, comes back only to a restore that names every origin it was captured for; any
+ * other gets null. A capture is dated by its state's `capturedAt` (a time to come counts as now), and one older than
+ * the session already kept is ignored. With `runId`, a capture is refused (`busy`) while another live run holds that
+ * session's save lease.
  */
 export function sessionVault(home: AgentHome, options: { hostKey: HostKey; maxSessionCookieAgeMs?: number; runId?: string; access?: HomeAccess; now?: () => number }): SessionVault {
   const hostKey = options?.hostKey;
@@ -322,6 +324,7 @@ export function sessionVault(home: AgentHome, options: { hostKey: HostKey; maxSe
         if (captured.kind !== record.kind) throw format(`the saved session ${sessionKey} is not the kind its row says`);
         const at = now();
         if (captured.kind === "provider-context") {
+          if (!record.origins.every((origin) => requested.includes(origin))) return null;
           handed.add(captured.contextId);
           return { ...captured, capturedAt: record.capturedAt };
         }
