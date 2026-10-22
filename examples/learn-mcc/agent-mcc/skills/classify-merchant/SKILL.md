@@ -11,7 +11,8 @@ Sources and evidence, for every part:
   fetch_page or browse (browse runs a page's scripts), and read PDFs (a price list, a catalogue, terms) with
   read_document.
 - Quote verbatim: copy the page's own words, at most 300 characters, cut to the line that carries the fact (a product
-  line, a price, a sentence of the terms), never a paraphrase.
+  line, a price, a sentence of the terms), never a paraphrase. Cite the page you quoted: an evidence item's URL is the
+  page its quote is copied from, as you read it in this run.
 - The code is chosen, not remembered. A code you remember, or a code a page states for this merchant, is a guess and
   never evidence: the code follows what the merchant sells, as its own pages show it, read in this run.
 - The vertical the merchant was listed under is a hint where to look, never evidence: its own pages decide.
