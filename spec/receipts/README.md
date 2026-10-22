@@ -3,8 +3,9 @@
 `Receipts.tla` models the at-most-once rule a durable host relies on when it resumes a workflow: a recovery driver
 runs the workflow's call steps over a journal (`RecoveryJournal` in
 [`packages/dsl/src/recovery/store.ts`](../../packages/dsl/src/recovery/store.ts)), and no effect goes out twice,
-whatever crashed and whichever commit failed. TLC checks it exhaustively at small bounds, with a crash or a failed
-commit between any two actions. The same machine is proved in Lean for every number of steps and crashes
+whatever crashed and whichever commit failed. A cancel the host lets go of is on the journal, or the host heard
+that it is not, and a cancelled run never resumes. TLC checks it exhaustively at small bounds, with a crash or a
+failed commit between any two actions. The same machine is proved in Lean for every number of steps and crashes
 ([`spec/lean/AgentRunRecovery/Frozen.lean`](../lean/AgentRunRecovery/Frozen.lean)).
 
 ## What is modeled
@@ -14,12 +15,13 @@ commit between any two actions. The same machine is proved in Lean for every num
 | driver | Walks the workflow's call steps in order. Each effect is admitted to the journal before it dispatches and completed with its result after, each in one commit with the driver's state. A resume answers a completed effect from the journal and refuses one admitted and never completed. | `RecoveryJournal.admit` and `complete` (their contract in `store.ts`); `WorkflowDeps.recovery` in `packages/dsl/src/workflow.ts`, which also runs no call retry under recovery |
 | worker | May crash between any two actions, losing what only its process held (an admission not yet dispatched, the effect in flight); the host restarts it under the same identity, from a checkpoint at or before the journal's position (the first step, when it runs the workflow again from the top), so a resume passes completed effects again. | |
 | storage | Any commit may fail. A failed commit stops the run, and no later commit is made through that open. | `RecoveryJournal`: a write lands whole or not at all, and is refused once a later open has taken the journal |
+| host | May cancel the run. The driver applies the stop at once (nothing is admitted, dispatched or settled after it) and then commits it, and that commit may fail. The host lets go of the driver with `close`, which waits for every commit the driver started and throws a stop commit the store refused. A stop whose commit had not landed dies with a crash, and the run resumes; a stop the journal holds is refused at every later open. | the driver's `stop`, `flush` and `close` in [`packages/dsl/src/recovery/driver.ts`](../../packages/dsl/src/recovery/driver.ts) |
 
 ### What is not modeled
 
-- Pause and cancel. They are the host's. A pause is taken once no effect is in flight, so it adds no state between
-  an admission and its completion. A cancel can leave an effect admitted and not completed, which is the state a
-  crash leaves and the model already has.
+- Pause, apart from its commit. A pause is taken once no effect is in flight, so it adds no state between an
+  admission and its completion, and its commit takes the cancel's path. A cancel that replaces a committed pause is
+  one more stop commit on the same path.
 - The interpreter's paths inside a step (loops, maps, routes, child workflows): which execution path a commit
   belongs to. The model treats a workflow as one ordered list of call steps.
 - An agent's own tool calls inside a step, and their replay classes: the agent runtime's.
@@ -36,6 +38,9 @@ commit between any two actions. The same machine is proved in Lean for every num
 | `I7_CompletedDispatchedOnce` | a completed effect went out exactly once |
 | `I7_DoneSettledEveryCall` | a finished run completed every effect |
 | `I7_ReceiptsNeverErased` | a completed receipt is never erased or changed |
+| `I8_StopOnJournalOrHeard` | a stop the host let go of is on the journal, or the host heard that it is not |
+| `I9_NoAdmissionAfterStop` | nothing is admitted or dispatched after a stop, in the process that applied it |
+| `I10_CancelledNeverResumes` | once the journal holds the stop, no process admits anything |
 
 ## How to run
 
@@ -67,13 +72,18 @@ must catch it:
 - admitting after a failed commit;
 - dispatching an admitted effect a second time (a call retry under recovery);
 - erasing a completed receipt;
-- finishing before every step.
+- finishing before every step;
+- a close that swallows a refused stop commit;
+- a close that does not wait for the stop's commit;
+- admitting after a stop;
+- a restart that resumes a run whose journal holds its cancel.
 
 A property no mutant can fail would be vacuous; a mutant no property catches is a guard the spec does not state.
 
 ## Changing the model
 
 A change to the behavior this model states (the order of admit, dispatch and complete; what a resume does with an
-unknown or completed effect; what a failed commit stops) changes `Receipts.tla`, its mutants and `Frozen.lean` in
+unknown or completed effect; what a failed commit stops; what a stop commits and what `close` reports) changes
+`Receipts.tla`, its mutants and `Frozen.lean` in
 the same pull request. A property that breaks is fixed in code, or recorded with a test that reproduces its
 counterexample; it is never deleted to make a check pass.

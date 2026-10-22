@@ -41,8 +41,16 @@ const MUTANTS = [
     caughtBy: "I7_CompletedDispatchedOnce",
     edits: [["  /\\ Working /\\ flight = at /\\ at <= N", "  /\\ Working /\\ flight \\in {0, at} /\\ at <= N"]] },
   { name: "AdmitAfterFault", code: "a failed commit is the run's failure, and every later commit through that open is refused",
-    caughtBy: "I6_NoAdmissionAfterFault",
+    // Admitting after the guard is dropped violates both "no admission after a fault" and, when the run is also
+    // stopped, "no admission after a stop"; TLC reports whichever it reaches first, so accept either.
+    caughtBy: ["I6_NoAdmissionAfterFault", "I9_NoAdmissionAfterStop"],
     edits: [["  /\\ afterFault' = (afterFault \\/ run = \"faulted\")\n  /\\ run = \"running\"\n", "  /\\ afterFault' = (afterFault \\/ run = \"faulted\")\n"]] },
+  { name: "DispatchAfterStop", code: "the driver's guard throws a stop before an admitted effect is dispatched, not only before admission",
+    // Dispatch drops the run = running guard (Working -> up), so an admitted effect goes out in a process that has
+    // applied a stop. Dispatch still records that it ran after a stop, so "no admission after a stop" catches it.
+    caughtBy: "I9_NoAdmissionAfterStop",
+    edits: [["  /\\ Working /\\ fresh = at /\\ at <= N /\\ memo[at] = \"unknown\"\n  /\\ afterStop'",
+             "  /\\ up /\\ fresh = at /\\ at <= N /\\ memo[at] = \"unknown\"\n  /\\ afterStop'"]] },
   { name: "RetryUnderRecovery", code: "packages/dsl/src/workflow.ts runs no call retry under recovery, so an admitted effect goes out once",
     caughtBy: "I3_OneDispatchPerKey",
     edits: [["  /\\ sent' = [sent EXCEPT ![at] = @ + 1] /\\ flight' = at /\\ fresh' = 0", "  /\\ sent' = [sent EXCEPT ![at] = @ + 1] /\\ flight' = at /\\ fresh' = fresh"]] },
@@ -53,6 +61,18 @@ const MUTANTS = [
   { name: "FinishBeforeEveryStep", code: "the interpreter ends a run only after its last step committed",
     caughtBy: "I7_DoneSettledEveryCall",
     edits: [["  /\\ Working /\\ at = N + 1 /\\ run' = \"done\"", "  /\\ Working /\\ at >= 1 /\\ run' = \"done\""]] },
+  { name: "SwallowRefusedStop", code: "close throws a stop's commit the store refused, so a host never takes as stopped a run whose stop is not on the journal",
+    caughtBy: "I8_StopOnJournalOrHeard",
+    edits: [["  /\\ closed' = TRUE /\\ heard' = (stop = \"refused\")", "  /\\ closed' = TRUE /\\ heard' = FALSE"]] },
+  { name: "CloseBeforeStopCommit", code: "close waits for every commit the driver started, the stop's own included",
+    caughtBy: "I8_StopOnJournalOrHeard",
+    edits: [["  /\\ up /\\ stop \\in {\"landed\", \"refused\"} /\\ ~closed", "  /\\ up /\\ stop # \"none\" /\\ ~closed"]] },
+  { name: "AdmitAfterStop", code: "a stop blocks every admission: the driver's guard throws the stop",
+    caughtBy: "I9_NoAdmissionAfterStop",
+    edits: [["  /\\ afterFault' = (afterFault \\/ run = \"faulted\")\n  /\\ run = \"running\"\n", "  /\\ afterFault' = (afterFault \\/ run = \"faulted\")\n  /\\ run \\in {\"running\", \"stopped\"}\n"]] },
+  { name: "RestartResumesCancelled", code: "an open refuses a run whose journal holds its cancel, so a cancelled run never resumes",
+    caughtBy: "I10_CancelledNeverResumes",
+    edits: [["  /\\ run' = IF run = \"stopped\" /\\ ~stopped THEN \"running\" ELSE run", "  /\\ run' = IF run = \"stopped\" THEN \"running\" ELSE run"]] },
 ];
 
 let failed = 0;
