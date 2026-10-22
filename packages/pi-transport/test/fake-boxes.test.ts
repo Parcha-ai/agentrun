@@ -2,6 +2,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
 import { finish } from "../src/box/files.ts";
+import { LaunchError, launch, launchState, launchStop } from "../src/launch/index.ts";
 import { daytonaLike, fakeBoxes, fakeClock, modalLike } from "../src/testing/index.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -336,55 +337,184 @@ describe("fakeBoxes: presets", () => {
 	});
 });
 
-describe("fakeBoxes: the launcher (placeholder types, K2's shape)", () => {
-	const spec = (over: object = {}) => ({ argv: ["inst"], user: "run", ...over });
+describe("fakeBoxes: review findings (red first)", () => {
+	const hung = (ms: number) => new Promise<string>((resolve) => setTimeout(() => resolve("hung"), ms));
+	const codeOf = (r: string | { ok: boolean; error?: { code: string } }): string =>
+		typeof r === "string" ? r : r.ok ? "ok" : (r.error?.code ?? "error");
 
-	it("starts the program once with the replayed stdin, as a launch and an incarnation, never an exec", async () => {
+	it("settles the wait of an exec with aborted when the caller's context aborts after exec returned", async () => {
 		const provider = fakeBoxes();
-		let seen = "";
-		provider.program("inst", async ({ stdin, signal }) => {
-			seen = text(await stdin.readAll());
-			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
-			return 0;
-		});
 		const box = getOrThrow(await provider.create(SPEC, context));
-		const launch = getOrThrow(await box.launch(spec({ stdin: new TextEncoder().encode("token") }), context));
-		await new Promise((resolve) => setImmediate(resolve));
-		expect(getOrThrow(await box.launchState(launch, context))).toEqual({
-			state: "running",
-			code: null,
-			incarnation: 1,
-			restarts: 0,
-		});
-		expect(seen).toBe("token");
-		expect(provider.calls.map((c) => c.op)).toEqual(["create", "launch", "incarnation", "launchState"]);
-		expect(provider.callsOf("exec")).toEqual([]);
-		expect(provider.callsOf("launch")[0]).toMatchObject({ argv: ["inst"], user: "run", launch: "launch-1" });
-		expect(provider.leaks("token").map((l) => `${l.op}:${l.where}`)).toEqual(["launch:stdin", "incarnation:stdin"]);
+		const controller = new AbortController();
+		const proc = getOrThrow(await box.exec(["sleep", "100"], undefined, withAbortSignal(controller.signal, context)));
+		controller.abort();
+		const result = await Promise.race([proc.wait(), hung(500)]);
+		expect(codeOf(result)).toBe("aborted");
 	});
 
-	it("restarts a failing program per its policy, counts incarnations and restarts, and stops at preventExit", async () => {
+	it("ends a scripted hang at the call's timeoutMs and when the box ends", async () => {
+		const clock = fakeClock();
+		const provider = fakeBoxes({ clock });
+		const box = getOrThrow(await provider.create(SPEC, context));
+		provider.script.on({ op: "exec" }, { hang: true });
+		const timed = box.exec(["true"], { timeoutMs: 50 }, context);
+		await clock.advance(50);
+		const first = await Promise.race([timed, hung(500)]);
+		expect(codeOf(first)).toBe("timeout");
+		provider.script.on({ op: "exec" }, { hang: true });
+		const ending = box.exec(["true"], undefined, context);
+		await clock.advance(1);
+		box.end(null);
+		const second = await Promise.race([ending, hung(500)]);
+		expect(codeOf(second)).toBe("gone");
+	});
+
+	it("counts each call once for nth, whatever rules are installed, and counts calls made before a rule", async () => {
+		const provider = fakeBoxes();
+		const box = getOrThrow(await provider.create(SPEC, context));
+		provider.script.on({ op: "exec", box: box.id, nth: 2 }, { fail: "unknown" });
+		provider.script.on({ op: "exec", box: box.id, nth: 3 }, { fail: "capacity" });
+		const codes: string[] = [];
+		for (let i = 0; i < 3; i++) {
+			const r = await box.exec(["true"], undefined, context);
+			codes.push(r.ok ? "ok" : r.error.code);
+		}
+		expect(codes).toEqual(["ok", "unknown", "capacity"]);
+		const late = fakeBoxes();
+		const b = getOrThrow(await late.create(SPEC, context));
+		await b.exec(["true"], undefined, context);
+		await b.exec(["true"], undefined, context);
+		late.script.on({ op: "exec", nth: 3 }, { fail: "unknown" });
+		const third = await b.exec(["true"], undefined, context);
+		expect(third.ok ? "ok" : third.error.code).toBe("unknown");
+	});
+
+	it("keeps what a delayed outcome says: a delayed exit, and a delayed failing create that leaks its box", async () => {
+		const clock = fakeClock();
+		const provider = fakeBoxes({ clock });
+		const box = getOrThrow(await provider.create(SPEC, context));
+		provider.script.on({ op: "exec" }, { delayMs: 10, next: { exit: 9 } });
+		const pending = box.exec(["echo", "x"], undefined, context);
+		await clock.advance(10);
+		const proc = getOrThrow(await pending);
+		expect(getOrThrow(await finish(proc)).exitCode).toBe(9);
+		provider.script.on({ op: "create" }, { delayMs: 10, next: { fail: "unknown", leakBox: true } });
+		const creating = provider.create({ ...SPEC, labels: { run: "d" } }, context);
+		await clock.advance(10);
+		const failed = await creating;
+		expect(failed.ok ? "ok" : failed.error.code).toBe("unknown");
+		expect(getOrThrow(await provider.list({ run: "d" }, context))).toHaveLength(1);
+	});
+
+	it("records copies: a reused upload buffer and a mutated spec do not change what leaks finds", async () => {
+		const provider = fakeBoxes();
+		const env = { E: "m-env" };
+		const box = getOrThrow(await provider.create({ ...SPEC, env }, context));
+		env.E = "changed";
+		const bytes = new TextEncoder().encode("m-upload");
+		getOrThrow(await box.upload([{ path: "a", bytes }], context));
+		bytes.fill(0);
+		expect(provider.leaks("m-upload").map((l) => l.where)).toEqual(["upload"]);
+		expect(provider.leaks("m-env").map((l) => l.where)).toEqual(["env"]);
+	});
+
+	it("lets the spec's cpus, memory and gpu win over the provider's defaults, and keeps the defaults where the spec is silent", async () => {
+		const provider = fakeBoxes({ facts: { cpus: 8, memoryMb: 4096, gpu: "T4" } });
+		const box = getOrThrow(await provider.create({ ...SPEC, cpus: 2, memoryMb: 512, gpu: "H100" }, context));
+		expect(box.facts()).toMatchObject({ cpus: 2, memoryMb: 512, gpu: "H100" });
+		const plain = getOrThrow(await provider.create(SPEC, context));
+		expect(plain.facts()).toMatchObject({ cpus: 8, memoryMb: 4096, gpu: "T4" });
+	});
+});
+
+describe("fakeBoxes: T3's own launcher over a fake box (Box.launcher)", () => {
+	const enc = (t: string) => new TextEncoder().encode(t);
+	const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+	const hung = (ms: number) => new Promise<string>((resolve) => setTimeout(() => resolve("hung"), ms));
+	const forever = ({ signal }: { signal: AbortSignal }) =>
+		new Promise<number>((resolve) => signal.addEventListener("abort", () => resolve(0)));
+	const withSecrets = () => fakeBoxes({ facts: { secretsVia: "fd" } });
+
+	it("takes box.launcher: no exec of a launcher program, the first incarnation running, and the stdin recorded on the launch call only", async () => {
+		const provider = withSecrets();
+		let seen = "";
+		provider.program("inst", async (ctx) => {
+			seen = `${text(await ctx.stdin.readAll())}#${ctx.env.PI_TRANSPORT_INCARNATION}`;
+			return forever(ctx);
+		});
+		const box = getOrThrow(await provider.create(SPEC, context));
+		const state = getOrThrow(await launch(box, "inst", { argv: ["inst"], stdin: enc("token-1") }, context));
+		await tick();
+		expect(state).toMatchObject({
+			launch: { v: 1, name: "inst" },
+			phase: "running",
+			incarnation: 1,
+			restarts: 0,
+			starts: 1,
+			launcherAlive: true,
+		});
+		expect(provider.callsOf("exec")).toEqual([]);
+		expect(provider.calls.map((c) => c.op)).toEqual(["create", "launch", "incarnation"]);
+		expect(seen).toBe("token-1#1");
+		expect(provider.leaks("token-1").map((l) => `${l.op}:${l.where}`)).toEqual(["launch:stdin"]);
+	});
+
+	it("records a launch's secrets on the launch call only, and hands them to the program on its secrets channel", async () => {
+		const provider = withSecrets();
+		let got = "";
+		provider.program("inst", async (ctx) => {
+			got = `${ctx.secrets.API}|${ctx.env.PI_TRANSPORT_SECRETS_FD}`;
+			return forever(ctx);
+		});
+		const box = getOrThrow(await provider.create(SPEC, context));
+		getOrThrow(await launch(box, "inst", { argv: ["inst"], secrets: { API: "s3cret-value" } }, context));
+		await tick();
+		expect(got).toBe("s3cret-value|3");
+		expect(provider.leaks("s3cret-value").map((l) => `${l.op}:${l.where}`)).toEqual(["launch:secret"]);
+	});
+
+	it("refuses a stdin or secrets on a box that takes none, as T3's own check does", async () => {
+		const provider = fakeBoxes();
+		const box = getOrThrow(await provider.create(SPEC, context));
+		const refused = await launch(box, "inst", { argv: ["inst"], stdin: enc("x") }, context);
+		expect(refused.ok ? "ok" : refused.error.code).toBe("unsupported");
+		expect(provider.callsOf("launch")).toEqual([]);
+	});
+
+	it("restarts a failing program under its policy: restarts and incarnations count, the burst limit gives up, terminal exits stop", async () => {
 		const provider = fakeBoxes();
 		provider.program("inst", () => 1);
+		provider.program("done", () => 78);
 		const box = getOrThrow(await provider.create(SPEC, context));
-		const launch = getOrThrow(await box.launch(spec({ restart: { onFailure: true } }), context));
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		const state = getOrThrow(await box.launchState(launch, context));
-		expect(state).toMatchObject({ state: "exited", code: 1, restarts: 10, incarnation: 11 });
-		const held = fakeBoxes();
-		held.program("inst", () => 78);
-		const b2 = getOrThrow(await held.create(SPEC, context));
-		const l2 = getOrThrow(await b2.launch(spec({ restart: { onFailure: true, preventExit: [78] } }), context));
-		await new Promise((resolve) => setTimeout(resolve, 5));
-		expect(getOrThrow(await b2.launchState(l2, context))).toEqual({
-			state: "exited",
-			code: 78,
+		const limited = getOrThrow(
+			await launch(box, "a", { argv: ["inst"], restartLimit: { burst: 2, intervalMs: 60_000 } }, context),
+		);
+		await tick();
+		expect(getOrThrow(await launchState(box, limited.launch, context))).toMatchObject({
+			phase: "gave_up",
+			incarnation: 3,
+			restarts: 2,
+			lastExit: 1,
+			launcherAlive: false,
+		});
+		const terminal = getOrThrow(await launch(box, "b", { argv: ["done"], terminalExits: [78] }, context));
+		await tick();
+		expect(getOrThrow(await launchState(box, terminal.launch, context))).toMatchObject({
+			phase: "exited",
 			incarnation: 1,
 			restarts: 0,
+			lastExit: 78,
+		});
+		const once = getOrThrow(await launch(box, "c", { argv: ["inst"], restart: false }, context));
+		await tick();
+		expect(getOrThrow(await launchState(box, once.launch, context))).toMatchObject({
+			phase: "exited",
+			restarts: 0,
+			lastExit: 1,
 		});
 	});
 
-	it("fails a restart by a rule on incarnation 2, leaving the launch exited with the last code", async () => {
+	it("fails a restart by a rule on incarnation 2, and the launch ends with the last exit code", async () => {
 		const provider = fakeBoxes();
 		provider.program("inst", () => 2);
 		const box = getOrThrow(await provider.create(SPEC, context));
@@ -393,13 +523,13 @@ describe("fakeBoxes: the launcher (placeholder types, K2's shape)", () => {
 			{ fail: "spawn" },
 			{ label: "restart-fails" },
 		);
-		const launch = getOrThrow(await box.launch(spec({ restart: { onFailure: true } }), context));
-		await new Promise((resolve) => setTimeout(resolve, 5));
-		expect(getOrThrow(await box.launchState(launch, context))).toEqual({
-			state: "exited",
-			code: 2,
+		const started = getOrThrow(await launch(box, "inst", { argv: ["inst"] }, context));
+		await tick();
+		expect(getOrThrow(await launchState(box, started.launch, context))).toMatchObject({
+			phase: "exited",
 			incarnation: 1,
-			restarts: 1,
+			restarts: 0,
+			lastExit: 2,
 		});
 		expect(provider.callsOf("incarnation").map((c) => [c.incarnation, c.scripted ?? null])).toEqual([
 			[1, null],
@@ -407,28 +537,59 @@ describe("fakeBoxes: the launcher (placeholder types, K2's shape)", () => {
 		]);
 	});
 
-	it("makes the state unreadable by a rule, and exits with a chosen code by a rule or by the test", async () => {
+	it("answers LaunchError: an unreadable state, a failed start, an unknown launch, and a box that ended", async () => {
 		const provider = fakeBoxes();
-		provider.program(
-			"inst",
-			({ signal }) => new Promise<number>((resolve) => signal.addEventListener("abort", () => resolve(0))),
-		);
+		provider.program("inst", forever);
 		const box = getOrThrow(await provider.create(SPEC, context));
-		const launch = getOrThrow(await box.launch(spec(), context));
-		provider.script.on({ op: "launchState" }, { fail: "unknown" });
-		const unreadable = await box.launchState(launch, context);
-		expect(unreadable.ok ? "ok" : unreadable.error.code).toBe("unknown");
-		expect(getOrThrow(await box.launchState(launch, context)).state).toBe("running");
-		box.launches[0]?.exit(9);
-		await new Promise((resolve) => setImmediate(resolve));
-		expect(getOrThrow(await box.launchState(launch, context))).toMatchObject({ state: "exited", code: 9 });
-		provider.script.on({ op: "launch" }, { exit: 4 });
-		const quick = getOrThrow(await box.launch(spec(), context));
-		await new Promise((resolve) => setImmediate(resolve));
-		expect(getOrThrow(await box.launchState(quick, context))).toMatchObject({ state: "exited", code: 4 });
+		const started = getOrThrow(await launch(box, "inst", { argv: ["inst"] }, context));
+		provider.script.on({ op: "launchState" }, { fail: "box" });
+		const unreadable = await launchState(box, started.launch, context);
+		expect(unreadable.ok ? "ok" : unreadable.error).toBeInstanceOf(LaunchError);
+		expect(unreadable.ok ? "ok" : unreadable.error.code).toBe("box");
+		provider.script.on({ op: "launchState" }, { fail: "failed" });
+		const failed = await launchState(box, started.launch, context);
+		expect(failed.ok ? "ok" : failed.error.code).toBe("failed");
+		expect(getOrThrow(await launchState(box, { v: 1, name: "nobody" }, context))).toBeUndefined();
+		const unknownStop = await launchStop(box, { v: 1, name: "nobody" }, undefined, context);
+		expect(unknownStop.ok ? "ok" : unknownStop.error.code).toBe("invalid");
+		provider.script.on({ op: "launch" }, { fail: "timeout" });
+		const late = await launch(box, "second", { argv: ["inst"] }, context);
+		expect(late.ok ? "ok" : late.error.code).toBe("timeout");
+		box.end(null);
+		const gone = await launchState(box, started.launch, context);
+		expect(gone.ok ? "ok" : gone.error).toBeInstanceOf(LaunchError);
+		expect(gone.ok ? "ok" : gone.error.code).toBe("box");
 	});
 
-	it("stops in order, drain then the before-stop program then the kill, and reports exited", async () => {
+	it("exits with a chosen code by a rule at launch or by the test later", async () => {
+		const provider = fakeBoxes();
+		provider.program("inst", forever);
+		const box = getOrThrow(await provider.create(SPEC, context));
+		const first = getOrThrow(await launch(box, "a", { argv: ["inst"], restart: false }, context));
+		box.launches[0]?.exit(9);
+		await tick();
+		expect(getOrThrow(await launchState(box, first.launch, context))).toMatchObject({ phase: "exited", lastExit: 9 });
+		provider.script.on({ op: "launch" }, { exit: 4 });
+		const quick = getOrThrow(await launch(box, "b", { argv: ["inst"], restart: false }, context));
+		await tick();
+		expect(getOrThrow(await launchState(box, quick.launch, context))).toMatchObject({ phase: "exited", lastExit: 4 });
+	});
+
+	it("keeps a running launch on a second launch of its name, and starts again once it ended", async () => {
+		const provider = fakeBoxes();
+		provider.program("inst", forever);
+		const box = getOrThrow(await provider.create(SPEC, context));
+		const first = getOrThrow(await launch(box, "inst", { argv: ["inst"] }, context));
+		const again = getOrThrow(await launch(box, "inst", { argv: ["inst"] }, context));
+		expect(again).toMatchObject({ phase: "running", incarnation: 1, starts: 1 });
+		expect(provider.callsOf("incarnation")).toHaveLength(1);
+		getOrThrow(await launchStop(box, first.launch, { graceMs: 10 }, context));
+		const next = getOrThrow(await launch(box, "inst", { argv: ["inst"] }, context));
+		expect(next).toMatchObject({ phase: "running", incarnation: 1, starts: 1 });
+		expect(provider.callsOf("incarnation")).toHaveLength(2);
+	});
+
+	it("stops in order, drain then the before-stop program then the kill, and reports stopped", async () => {
 		const provider = fakeBoxes();
 		const order: string[] = [];
 		provider.program(
@@ -446,21 +607,54 @@ describe("fakeBoxes: the launcher (placeholder types, K2's shape)", () => {
 			return 0;
 		});
 		const box = getOrThrow(await provider.create(SPEC, context));
-		const launch = getOrThrow(await box.launch(spec({ beforeStop: ["reap"] }), context));
-		getOrThrow(await box.launchStop(launch, { graceMs: 100 }, context));
+		const started = getOrThrow(
+			await launch(box, "inst", { argv: ["inst"], beforeStop: { argv: ["reap"] } }, context),
+		);
+		const stopped = getOrThrow(await launchStop(box, started.launch, { graceMs: 100 }, context));
+		expect(stopped).toMatchObject({ phase: "stopped", launcherAlive: false });
 		expect(box.launches[0]?.events).toEqual(["drain", "beforeStop", "kill"]);
 		expect(order).toEqual(["reap", "instance-ended"]);
-		expect(getOrThrow(await box.launchState(launch, context))).toMatchObject({ state: "exited", code: 143 });
 	});
 
-	it("answers gone on every launcher call after the box ended", async () => {
+	it("closes the before-stop program's stdin, so a hook that reads its input does not block the stop", async () => {
 		const provider = fakeBoxes();
+		provider.program("inst", forever);
 		const box = getOrThrow(await provider.create(SPEC, context));
-		const launch = getOrThrow(await box.launch(spec(), context));
+		const started = getOrThrow(await launch(box, "inst", { argv: ["inst"], beforeStop: { argv: ["cat"] } }, context));
+		const stopped = await Promise.race([launchStop(box, started.launch, { graceMs: 10 }, context), hung(500)]);
+		expect(typeof stopped === "string" ? stopped : stopped.ok ? "ok" : stopped.error.code).toBe("ok");
+		expect(box.launches[0]?.events).toEqual(["drain", "beforeStop", "kill"]);
+	});
+
+	it("does not restart a program that fails while a planned stop is draining", async () => {
+		const provider = fakeBoxes();
+		provider.program("inst", forever);
+		provider.program("hook", async ({ box }) => {
+			box.launches[0]?.exit(1);
+			await new Promise((resolve) => setImmediate(resolve));
+			return 0;
+		});
+		const box = getOrThrow(await provider.create(SPEC, context));
+		const started = getOrThrow(
+			await launch(box, "inst", { argv: ["inst"], beforeStop: { argv: ["hook"] } }, context),
+		);
+		getOrThrow(await launchStop(box, started.launch, { graceMs: 10 }, context));
+		await tick();
+		expect(provider.callsOf("incarnation")).toHaveLength(1);
+		expect(getOrThrow(await launchState(box, started.launch, context))).toMatchObject({
+			phase: "stopped",
+			incarnation: 1,
+			restarts: 0,
+		});
+	});
+
+	it("marks a launch lost when its box ends under the running program, and its launcher is gone", async () => {
+		const provider = fakeBoxes();
+		provider.program("inst", forever);
+		const box = getOrThrow(await provider.create(SPEC, context));
+		getOrThrow(await launch(box, "inst", { argv: ["inst"] }, context));
 		box.end(null);
-		const state = await box.launchState(launch, context);
-		expect(state.ok ? "ok" : state.error.code).toBe("gone");
-		const again = await box.launch(spec(), context);
-		expect(again.ok ? "ok" : again.error.code).toBe("gone");
+		await tick();
+		expect(box.launches[0]?.status).toMatchObject({ phase: "lost", launcherAlive: false });
 	});
 });
