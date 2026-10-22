@@ -40,7 +40,7 @@ const API_KEY_SENTINEL = "api-key-that-must-not-reach-children";
 const REF = { disk: "dsk-0000000000000001", region: "aws-us-east-1", id: "r1" };
 const TARGET = `${REF.disk}:/runs/r1`;
 
-type FakeMount = { source: string; alive: boolean; fenced: boolean; delegation: string | null };
+type FakeMount = { source: string; alive: boolean; fenced: boolean; delegation: string | null; options?: string };
 type FakeState = {
   procMounts: string;
   proc: string;
@@ -120,10 +120,10 @@ function rig(init: { behave?: Record<string, unknown>; sudo?: boolean; extraMoun
 
 type Rig = ReturnType<typeof rig>;
 
-function liveMount(r: Rig, mp = r.root) {
+function liveMount(r: Rig, mp = r.root, options?: string) {
   mkdirSync(mp, { recursive: true });
   r.set((s) => {
-    s.mounts[mp] = { source: `${TARGET}[${REF.region}]`, alive: true, fenced: false, delegation: "Active" };
+    s.mounts[mp] = { source: `${TARGET}[${REF.region}]`, alive: true, fenced: false, delegation: "Active", ...(options ? { options } : {}) };
     s.holders[TARGET] = mp;
   });
 }
@@ -537,6 +537,22 @@ test("an in-place restart keeps its own live mount without a token, and still pr
   assert.equal(r.calls("archil", "mount").length, 0);
   assert.ok(r.read().calls.every((c) => c.stdin === undefined && !c.envHasToken), "no token reaches any child");
   assert.ok(existsSync(join(r.root, CLAIM_PROBE)));
+});
+
+test("an in-place restart never keeps a live mount without nosuid,nodev (an older wrapper's): it gives it back and mounts again through the wrapper, hardened; given no token, it is fenced with the mount gone", async () => {
+  const ARCHILS_OWN = "rw,relatime,user_id=0,group_id=0,allow_other";
+  const r = disposeAfter(rig());
+  liveMount(r, r.root, ARCHILS_OWN);
+  const claim = await acquire(r.opts);
+  assert.equal(claim.reused, false, "not kept");
+  assert.equal(r.calls("archil", "unmount").length, 1, "given back first");
+  assert.equal(r.calls("archil", "mount").length, 1, "then mounted through the wrapper");
+  const line = readFileSync(r.host.procMounts!, "utf8").split("\n").find((l) => l.split(" ")[1] === r.root) ?? "";
+  assert.match(line.split(" ")[3] ?? "", /\bnosuid\b.*\bnodev\b/, line);
+  await claim.release();
+  liveMount(r, r.root, ARCHILS_OWN);
+  await assert.rejects(acquire({ ...r.opts, token: "none" }), (e: unknown) => e instanceof FencedError && e.code === "CLAIM_GONE_NO_TOKEN");
+  assert.deepEqual(Object.keys(r.read().mounts), [], "the unhardened mount is gone");
 });
 
 test("an in-place restart onto a revoked mount is fenced: the client still lists Active, the write is refused", async () => {
