@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.0-beta.24 (2026-10-22)
+
+- `readRunFile(control, ref, path)` and `listRunFiles(control, ref, dir)` read a run's own files over the disk's control (S3 GET, HEAD and LIST): they never mount, write, or take or wait on the claim, so they read a run another host holds. `readRunFile` returns the bytes, or `null` for a file not written yet; `listRunFiles` returns the names directly under a directory, sorted, names only. Refusals are `RunFileError`: `INVALID_PATH` (before any request: absolute, `.`/`..`, unsafe characters, `.archil/`), `RUN_MISSING`, `NOT_A_FILE` (a directory, or a symlink, decided on Archil's 501 for it, never from a listing, where a symlink looks like an empty file), and `CONTROL_API_FAILED`. Both take a `signal`.
+  - A place offers the same reads of its own run: `Place.readRunFile(path)` and `Place.listRunFiles(dir)`, optional members that `archilPlace` implements over its control and `localPlace` over its run directory on this machine, where a symlink anywhere on the way is `NOT_A_FILE`, never followed. A missing file is `null`; a directory not there yet lists `[]`; every other failure throws.
+  - `INVALID_PATH` names what is wrong with a path (empty, absolute, a `.` or `..` segment, an unsafe character at an index, under `.archil/`), never the path itself.
+  - `archilPlace` tells each host box's runner which label to claim: when its driver makes boxes and names their provider (new optional `HostDriver.provider`; `daytonaHost` names `daytona`) and the place can read the label back (its control lists), each start puts `HOST_BOX` (`{ provider, key, run }`: the box's index in `status().boxes`, the order's `RUN_LABEL`) in that order's environment. With it, `status()` fails (`STATUS_FAILED`) on a box its driver gives no receipt for, instead of shifting the keys of the boxes after it.
+
 ## 0.1.0-beta.23 (2026-10-22)
 
 - The CLI's duration flags take a unit: `ms`, `s`, `m` or `h` (`500ms`, `30s`, `1.5m`, `1h`). A bare number used to mean milliseconds, so `--every 90` ran every 90 ms. It is now refused with exit 2 and a hint: `not a duration: "90": give a unit, e.g. 90s or 90ms`. Every duration flag a command is given is checked before the command acts. **Who breaks:** a script or service unit that passes a bare number to `--park-threshold`, `--park-idle`, `--drain-timeout`, `--stop-timeout`, `--control-timeout`, `--lease-expiry`, `--stonith-timeout`, `--start-grace`, `--start-backoff-max`, `--token-grace` or `--every`. **What to do:** add the unit you meant (`90ms` keeps today's behaviour).
