@@ -2,6 +2,7 @@
 // domain (or the marketplace listing its website names), and that page cited for the MCC claim. Anything else is no
 // receipt: an off-domain page, a paraphrase, a failed fetch, a cite on another page.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { chmod, mkdtemp, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -254,4 +255,16 @@ test('a live MCC pass\'s self-test passes: its lookups (mcc_groups, mcc_codes) a
   const report = await passSelfTest({ out, repo, parts });
   assert.equal(report.ok, true, JSON.stringify(report.problems));
   for (const where of ['root', 'callNode', 'agentNode']) assert.ok(['mcc_groups', 'mcc_codes'].every((name) => report.tools[where].includes(name)), where);
+  // A tool the list does not know still stops the pass.
+  const shell = { name: 'run_shell', description: 'Run a command.', parameters: { type: 'object', properties: {} }, resultSchema: { type: 'object' }, run: async () => ({}) };
+  const unknown = { ...parts, set: { ...parts.set, labelTools: (d) => [...parts.set.labelTools(d), shell] } };
+  const other = join(await scratch(t), 'other');
+  const { repo: otherRepo } = await openOut(other, { mode: 'live', set: SETS.mcc });
+  await assert.rejects(passSelfTest({ out: other, repo: otherRepo, parts: unknown }), /offers run_shell, not known to run neither a command nor code/);
+});
+
+test('--self-test-only takes --live: a scripted pass has no live self-test to run', () => {
+  const run = spawnSync(process.execPath, [join(import.meta.dirname, 'runner.mjs'), '--set', 'mcc', '--scripted', '--self-test-only', '--out', join(tmpdir(), 'never')], { encoding: 'utf8' });
+  assert.equal(run.status, 2, run.stderr);
+  assert.match(run.stderr, /--self-test-only checks a live pass: it takes --live/);
 });

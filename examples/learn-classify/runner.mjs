@@ -804,7 +804,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--receipt-admission] [--receipt-holds-trial] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--teacher <file> (mcc)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--receipt-admission] [--receipt-holds-trial] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--teacher <file> (mcc)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -820,6 +820,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, 'gate-wait-at-end': { type: 'boolean' }, hindsight: { type: 'string' },
         'receipt-admission': { type: 'boolean' }, 'receipt-holds-trial': { type: 'boolean' }, 'receipt-promotion': { type: 'boolean' }, 'promote-no-floor': { type: 'boolean' },
         'refuse-contradicting': { type: 'boolean' }, 'keep-facts': { type: 'boolean' }, 'refuse-refused-hosts': { type: 'boolean' }, teacher: { type: 'string' },
+        'self-test-only': { type: 'boolean' },
       },
     }));
   } catch (error) {
@@ -837,6 +838,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     process.exit(2);
   }
   if (values.thinking === 'off') { console.error('--thinking off is not allowed: every model call thinks'); process.exit(2); }
+  if (values['self-test-only'] && !values.live) { console.error(`--self-test-only checks a live pass: it takes --live\n${USAGE}`); process.exit(2); }
   // A sealed pass on a list is the MCC job's (a pilot's by-hand pass on its fixed TRAIN rows); the SEC sets keep theirs whole.
   if (values.list !== undefined && values.sealed && values.set !== 'mcc') { console.error(`--list runs a learning pass: a sealed pass takes the sealed split\n${USAGE}`); process.exit(2); }
   const promoteAfter = values['promote-after'] === undefined ? undefined : Number(values['promote-after']);
@@ -945,6 +947,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     } catch (error) {
       console.error(`--out ${out} is not writable (${error.code ?? error.message}); in a take only /run is: use --out /run/out`);
       process.exit(2);
+    }
+    if (values['self-test-only']) {
+      // The live pass's own self-test with these exact flags, and no job: what a rehearsal on scripted parts never runs.
+      const { repo } = await openOut(out, { mode: parts.mode, set: parts.set, agentDir: parts.agentDir });
+      await passSelfTest({ out, repo, parts, log: (line) => console.log(line) });
+      console.log(`learn-classify: self-test only: passed (${join(out, 'selftest.json')}); no job ran`);
+      process.exit(0);
     }
     const common = {
       out, parts, capUsd: number('cap-usd'), runCapUsd: number('run-cap-usd'), concurrency, openTest: Boolean(values['open-test']), dropEvidence: Boolean(values['drop-evidence']), log: (line) => console.log(line),
