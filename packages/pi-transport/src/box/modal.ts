@@ -274,6 +274,8 @@ function parseFacts(
 			measured: measured.fuse !== undefined,
 			facts: {
 				...rest,
+				// What an exec carries is a property of Modal, not of the box: a box made before it was reported has it too.
+				secretsVia: "fd",
 				fuse: false,
 				...measured,
 				...(NETWORKS.some((n) => n === network) ? { network } : {}),
@@ -342,6 +344,9 @@ class ModalBox implements Box {
 		const waitAsked = new Promise<void>((resolve) => {
 			asked = resolve;
 		});
+		// Whether the program has exited, and how a failed close of its input reaches the caller: through `wait()`.
+		let exited = false;
+		let failInput: (error: BoxError) => void = () => {};
 		// One deadline and one abort listener cover the whole wait: the program's exit, then the end of every stream the
 		// caller read. A program's exit is only good when those streams reached their end without a failure: a stream
 		// that broke after some bytes must not look like a complete output.
@@ -361,6 +366,11 @@ class ModalBox implements Box {
 				stop();
 				finish(err(new BoxError("aborted", "the call was aborted")));
 			};
+			failInput = (error) => {
+				// As the timeout and the abort do: the readers of the output streams are let go, so a caller that waits for them returns.
+				stop();
+				finish(err(error));
+			};
 			if (timeoutMs !== undefined) {
 				timer = setTimeout(() => {
 					stop();
@@ -369,6 +379,7 @@ class ModalBox implements Box {
 			}
 			process.wait().then(
 				async (code) => {
+					exited = true;
 					await waitAsked;
 					const read = [out, errors].filter((track) => track.started);
 					await Promise.race([
@@ -390,7 +401,10 @@ class ModalBox implements Box {
 								),
 					);
 				},
-				async (cause) => finish(err(await this.#failure("lost the program", cause))),
+				async (cause) => {
+					exited = true;
+					finish(err(await this.#failure("lost the program", cause)));
+				},
 			);
 			if (signal?.aborted) onAbort();
 			else signal?.addEventListener("abort", onAbort, { once: true });
@@ -402,8 +416,17 @@ class ModalBox implements Box {
 						await process.stdin.writeBytes(bytes.subarray(at, at + STDIN_CHUNK_BYTES));
 					}
 				},
-				// A program that already exited closed its input; its exit code reports it.
-				close: () => process.stdin.close().catch(() => {}),
+				// A program that already exited closed its input, and its exit code reports it. A close that fails on a program
+				// still running leaves it waiting for an EOF that will not come: `wait()` answers with that failure.
+				close: async () => {
+					try {
+						await process.stdin.close();
+					} catch (cause) {
+						if (!exited) {
+							failInput(new BoxError("unknown", `could not close the program's input: ${String(cause)}`, cause));
+						}
+					}
+				},
 			},
 			stdout: until(process.stdout, stopped, out),
 			stderr: until(process.stderr, stopped, errors),
@@ -686,6 +709,8 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 				workspace: spec.workspace ?? DEFAULT_WORKSPACE,
 				maxLifetimeMs: lifetimeMs,
 				snapshot: null,
+				// A Modal exec carries a real stdin (bytes in order, an explicit EOF), so T3's launch frame rides it.
+				secretsVia: "fd",
 				network: network.kind,
 				ports,
 				// The moment Modal is asked: the facts go into the create call's tags, before the sandbox exists.
