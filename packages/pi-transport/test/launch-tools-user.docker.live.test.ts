@@ -182,6 +182,20 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 			});
 		});
 
+		it("T7 (711): a 4755 root file in a directory the tools user can pass through but not list is refused, naming it: the launcher lists as root and tests each file as the tools user", async () => {
+			await withBox(
+				"mkdir -m 711 /opt/hidden && cp /bin/true /opt/hidden/s && chown root:root /opt/hidden/s && chmod 4755 /opt/hidden/s",
+				async (box) => {
+					const refused = await refusal(box, "hidden", framed("pda"));
+					expect(refused?.code).toBe("refused");
+					expect(refused?.message.startsWith("the tools user pda can run a setuid or setgid root file: ")).toBe(
+						true,
+					);
+					expect(refused?.message).toContain("/opt/hidden/s");
+				},
+			);
+		});
+
 		it("T7 (nosuid): the same 4755 root file on a nosuid mount (/dev) is accepted: only skipping nosuid mounts accepts it", async () => {
 			await withBox(
 				"cp /bin/true /dev/zz-setuid && chown root:root /dev/zz-setuid && chmod 4755 /dev/zz-setuid",
