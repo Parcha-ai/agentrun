@@ -91,6 +91,29 @@ export async function served(t: { after(fn: () => unknown, options?: { timeout?:
   return { value, until };
 }
 
+/** The chat-browser fixture made into a run that moved between hosts: a `run.json` for each generation (its holder: `host`, `driver`, and a pid and boot id the card must never show), a
+ *  `process.started` for the next generation, and a host `handoff` line per move at the times given (its `why` is prose the card must never show). `gens[i]` is generation i+1's holder;
+ *  `moves[i]` is the handoff that ends generation i+1: `{ t, point, n }`, `from` being that generation's host label unless given. A `failed` move is a `handoff.failed` line, not a handoff. */
+export function movedRun(dir: string, { gens, moves, failed = [], secondConversation }: { gens: { host: string; driver: string }[]; moves: { t: number; point: string; n: number; from?: string }[]; failed?: number[]; secondConversation?: number }) {
+  const lines = readEvents(dir);
+  // A second conversation (a workflow node's), which the chat view folds, begins at `secondConversation`.
+  if (secondConversation !== undefined) {
+    lines.push({ channel: 'durable', source: 'pi', kind: 'pi.user', conv: 8, t: secondConversation, data: { model: [{ role: 'user', content: 'Now the second part.' }], conversationId: 8, id: 20 } });
+    lines.push({ channel: 'durable', source: 'pi', kind: 'pi.assistant', conv: 8, t: secondConversation + 100, data: { model: [{ role: 'assistant', content: [{ type: 'text', text: 'The second part is done.' }] }], conversationId: 8, id: 21 } });
+  }
+  const holder = (gen: number) => ({ driver: gens[gen - 1]!.driver, pid: 4_000_000 + gen, since: '2026-10-20T23:20:00.371Z', host: gens[gen - 1]!.host, bootId: `boot-${gen}a9f3c2e1b7` });
+  const host = (t: number, kind: string, data: Record<string, unknown>) => ({ channel: 'live', source: 'host', kind, t, data });
+  gens.forEach((_, i) => {
+    const gen = i + 1;
+    const start = gen === 1 ? 50 : moves[i - 1]!.t + 100;
+    if (gen > 1) lines.push(host(start, 'process.started', { gen, pid: 4_000_000 + gen }));
+    lines.push(host(start + 10, 'run.json', { gen, run: 'run-moved', status: 'running', generation: gen, holder: holder(gen) }));
+  });
+  moves.forEach((move, i) => lines.push(host(move.t, 'handoff', { gen: i + 1, point: move.point, n: move.n, why: 'the brief is written; the run is released to the disk and a VM opens it', from: move.from ?? gens[i]!.host })));
+  for (const t of failed) lines.push(host(t, 'handoff.failed', { gen: 1, why: 'the disk refused the claim' }));
+  writeEvents(dir, lines.sort((a, b) => a.t - b.t));
+}
+
 /** A small PNG whose pixels are `pixel(x, y)` (a gradient for a page, flat for a blank frame). */
 export function png(w: number, h: number, pixel: (x: number, y: number) => [number, number, number]): Buffer {
   const raw = Buffer.alloc((w * 3 + 1) * h);

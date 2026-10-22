@@ -10,6 +10,10 @@ export type ChatItem =
    *  wrote into it (a fork's opening, written by the tool that made it): `by` names that tool. Never a person's. */
   | { kind: 'host'; id: string; text: string; t?: number; by?: string }
   | { kind: 'assistant'; id: string; text: string; t?: number }
+  /** A planned move of the run between hosts, at the host's `handoff` line: read from fields only (never the handoff's prose, never a process id). `lead`: after what, on
+   *  which host it left ("after the 5th charge on host-1 (daytona)"); `text`: where it went, or that it reopened where it was ("Moved to host-2 (daytona) from the same disk;
+   *  the conversation goes on"). */
+  | { kind: 'move'; id: string; t: number; lead: string; text: string }
   /** `redacted`: the provider withheld the thought; it keeps no text. */
   | { kind: 'thinking'; id: string; text: string; redacted?: true; t?: number }
   | {
@@ -118,6 +122,8 @@ export type ChatModel = {
   input?: ChatInput;
   /** In the order they began; the first is open, the rest are folded threads. */
   threads: ChatThread[];
+  /** Move cards with no conversation to stand in (a run that moved before it recorded any chat): drawn in the run's own timeline after the conversations. */
+  moves?: Extract<ChatItem, { kind: 'move' }>[];
   /** With `inOrder`, the recording has no times: each span sits at its line's position in the file. */
   spans: ChatSpan[];
   inOrder?: true;

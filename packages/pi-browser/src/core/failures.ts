@@ -22,10 +22,16 @@ export type BrowserFailure = {
 export const browserFailure = (code: FailureCode, message: string, options: { retryable?: boolean; effect?: BrowserFailure["effect"]; detail?: string } = {}): BrowserFailure =>
   ({ ok: false, code, retryable: options.retryable ?? false, effect: options.effect ?? "none", message, ...(options.detail === undefined ? {} : { detail: options.detail }) });
 
-/** `timedOut`: the call ran to the driver's batch deadline, which Stagehand reports as a plain Error. */
-/** `action`: what an effectful call ran, named when it threw; "Your browser code" when unset. */
-/** `redact` removes the run's registered values from the error text; it runs over the whole text before any cut below, so no fragment of a value survives a cut point. */
-export type FailureFacts = { sessionEnded?: boolean; aborted?: boolean; timedOut?: boolean; action?: string; redact?: (text: string) => string };
+export type FailureFacts = {
+  sessionEnded?: boolean;
+  aborted?: boolean;
+  /** The call ran to the driver's batch deadline, which Stagehand reports as a plain Error. */
+  timedOut?: boolean;
+  /** What an effectful call ran, named when it threw; "Your browser code" when unset. */
+  action?: string;
+  /** Removes the run's registered values from the error text; it runs over the whole text before any cut below, so no fragment of a value survives a cut point. */
+  redact?: (text: string) => string;
+};
 
 export const NO_HYDRATED_SNAPSHOT_ERROR = "No hydrated snapshot exists for the active page; call snapshot first.";
 export const NAVIGATED_SNAPSHOT_ERROR = "The active page navigated after its snapshot; call snapshot again.";

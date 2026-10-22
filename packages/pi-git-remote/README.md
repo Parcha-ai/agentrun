@@ -193,8 +193,9 @@ pushed: true
 The model gets no tool and never touches git: on start the extension checks a ref out into a directory with no `.git` in
 it, and on shutdown it commits the paths an allowlist names to the session's own branch and pushes that commit by sha.
 
-To try it you need pi on your `PATH` (`npm install -g --ignore-scripts @earendil-works/pi-coding-agent`, or pi's own
-installer), and pi needs a model before anything here works. Give it one of three ways:
+To try it you need pi 1.3 on your `PATH` (`npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.3.0`;
+`pi --version` prints `1.3.0`), and pi needs a model before anything here works. pi 1.4 is not supported yet; a later
+release widens the range. Give pi a model one of three ways:
 - run `pi`, then `/login` once, for a subscription or an API key;
 - set a provider's API key in the environment (pi's `docs/providers.md` names each variable);
 - add a provider of your own to `~/.pi/agent/models.json` (pi's `docs/models.md`).
