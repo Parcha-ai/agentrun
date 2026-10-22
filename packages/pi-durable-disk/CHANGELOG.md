@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.1.0-beta.22 (2026-10-21)
+## 0.1.0-beta.23 (2026-10-22)
 
 - The CLI's duration flags take a unit: `ms`, `s`, `m` or `h` (`500ms`, `30s`, `1.5m`, `1h`). A bare number used to mean milliseconds, so `--every 90` ran every 90 ms. It is now refused with exit 2 and a hint: `not a duration: "90": give a unit, e.g. 90s or 90ms`. Every duration flag a command is given is checked before the command acts. **Who breaks:** a script or service unit that passes a bare number to `--park-threshold`, `--park-idle`, `--drain-timeout`, `--stop-timeout`, `--control-timeout`, `--lease-expiry`, `--stonith-timeout`, `--start-grace`, `--start-backoff-max`, `--token-grace` or `--every`. **What to do:** add the unit you meant (`90ms` keeps today's behaviour).
   - Flags named -ms keep bare milliseconds (`--heartbeat-ms`, `--lease-expiry-ms`, `--lease-margin-ms`): their name carries the unit, and units are still accepted.
@@ -15,6 +15,7 @@
   - Before, each variable of the driver's `env` and of a start's own environment (`StartAttempt.env`) went to `systemd-run` as `--setenv=NAME=value`, under `sudo -n`. `sudo` logs the whole command line to the journal, and `--setenv` is stored in the unit's `Environment=` property, which any local user reads with `systemctl show`. A secret in either place was in both. The mount token and the API key were never affected: the token travels on stdin and the API key never reaches the driver.
   - Now the environment is written to a root-only (mode 0600) file beside the mount token's, through stdin, and the unit loads it with `-p EnvironmentFile=<path>`. No value is on any argument. The file lives as long as the unit may restart (a restart in place loads it again). It is removed when the unit is stopped, when a start fails, and by the unit itself (`ExecStopPost=`) when it ends for good: a park or a finish, or a terminal exit. A unit that systemd gave up restarting keeps it until `stop`. A value with a newline, a carriage return or a NUL, or a name that is not a variable name, is refused with `INVALID_ARGUMENT` before anything runs, rather than written mangled.
   - A deployment that put a secret in `localHost`'s `env` or in `StartAttempt.env` under systemd mode should treat it as exposed to anyone who could read its journal or run `systemctl show` on the unit, and rotate it. Child mode is unaffected: its environment goes in `spawn`'s `env`.
+- Every install line in the README and the examples pins `@earendil-works/pi-durable`, `@earendil-works/pi-ai` and `@earendil-works/chord` at 1.3.0. pi 1.4.0 is now npm's `latest`, and an unpinned line ends in ERESOLVE against the peer ranges (`>=1.0.4 <1.4.0`). pi 1.4 is not supported yet; a later release widens the range.
 - The README opens with the agent as the workspace, and the package description is its short form: its conversation and its files live together in
   one directory on a disk, which any Linux host or container can mount, release and mount somewhere else, and the agent carries on
   where the last host released it. The second paragraph says what opening and releasing a run do on an Archil disk (mount and
@@ -530,7 +531,6 @@ published.
   `X-Daytona-Source` header. An existing host's sudoers drop-in and wrapper copy need the new paths.
 - Unchanged, because they name the Archil disk: `bin/archil-scoped` (and the `./bin/archil-scoped` export), `ARCHIL_API_KEY`, `archilEnv`,
   `ArchilCodingTools`, the claim's internals and the `archil` client it runs.
-
 
 **A holder the control API lists without a path**
 - Archil's control API resolves a delegation's path best-effort and can list one with no path, live or orphaned, even on a

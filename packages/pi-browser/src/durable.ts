@@ -19,7 +19,7 @@ import { pageTools, type BrowserToolImpls, type PageDriver, type ToolImpl } from
 import type { BrowserConfig, BrowserProvider, ChildRunner, InventoryRow, ObserverRow, PendingEffect, PriceState, PriceTable, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionRow, SessionsState, SiteInfo, SiteRunPort, ToolUsage, HandoffPort, WorkspaceFiles } from "./core/host.js";
 import { useWebsite, useWebsiteContract } from "./core/sites.js";
 import { leaseTag, type LeaseRef } from "./core/lease.js";
-import { createRedactor, redactDeep, scrubPageUrl, type Redact } from "./core/redact.js";
+import { createRedactor, hostLiveView, redactDeep, scrubPageUrl, type Redact } from "./core/redact.js";
 import { CREATE_DEADLINE_MS, DEFAULT_BROWSER_POLICY, idleTracker, keyedSerializer, oneAtATime, providerKeyValues, type IdleTracker, type KeyedSerializer } from "./core/session-control.js";
 import { custodyStore, now } from "./store.js";
 import { withinDeadline } from "./core/unanswered.js";
@@ -233,9 +233,7 @@ async function emit<D extends PageDriver>(c: Readers<D>, cid: ConversationId, la
   try {
     const ref = record.resourceId === null ? null : { id: record.resourceId, tag: record.tag };
     const view = change !== "released" && ref && provider?.liveView ? await provider.liveView(ref) : null;
-    // The live view's own URLs go to the host as they are (it needs their token); a browsed page's URL and title are
-    // scrubbed, since its query can carry a credential.
-    const liveView = view && { ...view, pages: view.pages.map((page) => ({ ...page, url: page.url === null ? null : scrubPageUrl(page.url, c.redact), title: page.title === null ? null : c.redact(page.title) })) };
+    const liveView = view && hostLiveView(view, c.redact);
     await c.options.onSession({ conversationId: cid, label, session: record, liveView }, change);
   } catch {}
 }
@@ -661,7 +659,8 @@ function portFor<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, con
           const { tag, sessionId } = await port.hold(ask.requestId);
           const asked = await (async () => {
             const provider = await providerOf(c, scope.read, scope.cid, scope.plane, scope.context);
-            const liveView = provider.liveView ? await provider.liveView({ id: sessionId, tag }).catch(() => null) : null;
+            const view = provider.liveView ? await provider.liveView({ id: sessionId, tag }).catch(() => null) : null;
+            const liveView = view && hostLiveView(view, c.redact);
             return person.request({ requestId: ask.requestId, sessionTag: tag, sessionId, liveView, instruction: ask.instruction, completionCondition: ask.completionCondition }, scope.signal);
           })().catch(async (error) => { await port.resume(null); throw failure(error, scope, c.redact); });
           if ("refused" in asked) { await port.resume(null); return asked; }

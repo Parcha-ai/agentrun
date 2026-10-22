@@ -6,6 +6,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import type { RouteNode, Workflow, WorkflowDeps, WorkflowNode } from "../workflow.js";
 import { desugarWorkflow, isItemFailure } from "../workflow.js";
+import { setLongTimeout, type LongTimer } from "../long-timer.js";
 import { chainStep, childrenOf, completedIteration, enclosingChains, enclosingIterations, isWithin, mapItemOf, nodeAt, topLevelCompletion } from "./execution-path.js";
 import { bindingDigests, LEDGER_FORMAT } from "./binding.js";
 import { canonicalHash as hash } from "./canonical-hash.js";
@@ -821,8 +822,9 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       // The wait's clock is durable before the wait starts, so a process that dies inside it resumes the same wait.
       await flush();
       await new Promise<void>((resolve, reject) => {
-        const onAbort = () => { clearTimeout(wait); reject(controller.signal.reason); };
-        const wait = setTimeout(() => { controller.signal.removeEventListener("abort", onAbort); resolve(); }, Math.max(0, until - Date.now()));
+        const onAbort = () => { wait.clear(); reject(controller.signal.reason); };
+        // setLongTimeout: a wait past Node's 2^31-1 ms timer limit waits instead of firing at once.
+        const wait = setLongTimeout(() => { controller.signal.removeEventListener("abort", onAbort); resolve(); }, until - Date.now());
         controller.signal.addEventListener("abort", onAbort, { once: true });
       });
       guard();
@@ -1058,6 +1060,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         // From its admission the effect is in flight: a pause waits for it to complete and commit, so the admission is
         // never left without its dispatch.
         inFlight += 1;
+        let deadlineTimer: LongTimer | undefined;
         try {
           // The driver's state and the admission are one transaction.
           const admission = writeOf(id);
@@ -1069,7 +1072,15 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           guard();
           if (params.signal.aborted) throw params.signal.reason;
           if (Date.now() >= deadline) throw failure("FROZEN_EFFECT_DEADLINE", "Effect exceeded its own deadline");
-          const signal = AbortSignal.any([params.signal, controller.signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]);
+          // The deadline is the clock the driver kept, so a fraction of a millisecond, or a delay past Node's 2^31-1 ms timer
+          // limit, waits out its time; it aborts with the TimeoutError AbortSignal.timeout gives, which a host reads as a deadline.
+          const timeout = new AbortController();
+          deadlineTimer = setLongTimeout(() => timeout.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), deadline - Date.now());
+          const signal = AbortSignal.any([params.signal, controller.signal, timeout.signal]);
+          // Clear the deadline timer the moment the effect is aborted (a cancel, a pause, or the deadline itself): a
+          // `runEffect` that ignores its signal and stays pending would otherwise leave this process alive until the
+          // deadline — hours or days out — because the `finally` runs only when the dispatch settles.
+          signal.addEventListener("abort", () => deadlineTimer?.clear(), { once: true });
           // A thrown/aborted call remains UNKNOWN, including transient failures: no blind retry. Each outside call the effect
           // makes is kept on its record as it ends, on the driver's commit chain, so a process killed mid-effect keeps the
           // calls it made and a commit that fails is the run's failure, which aborts the effect at once.
@@ -1098,7 +1109,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           const completion = writeOf();
           await persist(() => journal.complete(id, { value, files, ...(intent ? { intent } : { args: params.input ?? null }) }, completion.state, completion.parts));
           return value;
-        } finally { settled(); }
+        } finally { deadlineTimer?.clear(); settled(); }
       };
     },
     /** Every commit the driver started has landed; a failed one is thrown, a pause's or a cancel's own commit included. */
