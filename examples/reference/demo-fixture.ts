@@ -219,6 +219,13 @@ const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: s
   if (mode === 'reporting') return { ...inner, status };
   // `start-fails` refuses to start a process, with DEMO_START_FAILS_TEXT as its error (a provider's error carries its command's stderr).
   if (mode === 'start-fails') return { ...inner, start: async () => { throw new Error(process.env.DEMO_START_FAILS_TEXT ?? 'the place could not start the process'); } };
+  // `start-fails-cause` throws pi-transport's own BoxError, whose CAUSE (a library's original error) holds DEMO_START_FAILS_TEXT; `start-fails-property`
+  // throws an error carrying it in a string property of its own (`stderr`).
+  if (mode === 'start-fails-cause') {
+    const { BoxError } = await import('@parcha/pi-transport');
+    return { ...inner, start: async () => { throw new BoxError('unknown', 'the box could not start', new Error(process.env.DEMO_START_FAILS_TEXT ?? 'the library failed')); } };
+  }
+  if (mode === 'start-fails-property') return { ...inner, start: async () => { throw Object.assign(new Error('the place could not start the process'), { code: 'START_FAILED', stderr: process.env.DEMO_START_FAILS_TEXT ?? '' }); } };
   // `handing` hands its home box over but has no reads: its supervisor numbers the box itself, so the process must refuse to claim it (two labellers).
   if (mode === 'handing') return { ...inner, status, start: (order: Parameters<typeof inner.start>[0]) => inner.start({ ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ provider: 'home', key: '0', run: order.env.RUN_LABEL }) } }) };
   if (mode !== 'labelled' && mode !== 'unclaimed' && mode !== 'unreadable' && mode !== 'slow') return inner;

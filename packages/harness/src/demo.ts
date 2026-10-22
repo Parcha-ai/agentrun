@@ -145,8 +145,8 @@ export async function demo(options: DemoOptions): Promise<DemoResult | undefined
   const sink: { redact?: (text: string) => string } = {};
   let raw: DemoResult;
   try { raw = await supervise(options, values, sink); } catch (error) {
-    if (error instanceof Error) { error.message = processText(error.message, sink.redact); if (error.stack) error.stack = processText(error.stack, sink.redact); throw error; }
-    throw new Error(processText(String(error), sink.redact));
+    // K4: a new error, its message, stack, cause chain and properties handed out (never the original, whose cause a caller's log would print).
+    throw error instanceof Error ? handedOutError(error, sink.redact) : new Error(processText(String(error), sink.redact));
   }
   const result = handedOut(raw, sink.redact);
   if (values.json) console.log(JSON.stringify(result));
@@ -863,6 +863,31 @@ export function handedOut<T>(value: T, redact?: (text: string) => string): T {
   if (Array.isArray(value)) return value.map((item) => handedOut(item, redact)) as T;
   if (value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, handedOut(item, redact)])) as T;
   return value;
+}
+
+/** K4: an error handed out to a caller, as a NEW error of the same class (its prototype: `instanceof`, `name` and `code` hold), whose message and stack,
+ *  every error in its CAUSE chain (a library's original error can hold anything) and every own string property pass `processText`: what Node prints
+ *  for an uncaught error (util.inspect shows the cause chain and the properties) and what a caller logs carry no secret. A plain value is handed out
+ *  whole (`handedOut`); any other is dropped, its name kept in `withheldProperties`. */
+export function handedOutError(error: unknown, redact?: (text: string) => string, seen: Set<unknown> = new Set()): unknown {
+  if (!(error instanceof Error)) return typeof error === 'string' ? processText(error, redact) : handedOut(error, redact);
+  if (seen.has(error)) return undefined;
+  seen.add(error);
+  const out = Object.create(Object.getPrototypeOf(error) as object) as Error & Record<string, unknown>;
+  Object.defineProperty(out, 'message', { value: processText(error.message, redact), writable: true, configurable: true });
+  if (error.stack !== undefined) Object.defineProperty(out, 'stack', { value: processText(error.stack, redact), writable: true, configurable: true });
+  if ('cause' in error) Object.defineProperty(out, 'cause', { value: handedOutError(error.cause, redact, seen), writable: true, configurable: true });
+  const withheld: string[] = [];
+  for (const [key, value] of Object.entries(error)) {
+    if (key === 'message' || key === 'stack' || key === 'cause') continue;
+    if (value === null || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'undefined') out[key] = value;
+    else if (typeof value === 'string') out[key] = processText(value, redact);
+    else if (Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype) out[key] = handedOut(value, redact);
+    else if (value instanceof Error) out[key] = handedOutError(value, redact, seen);
+    else withheld.push(key);
+  }
+  if (withheld.length) out.withheldProperties = withheld;
+  return out;
 }
 
 export function messageOf(error: unknown, root: string): string {

@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { inspect } from 'node:util';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { FIXTURE, run } from './reference-demo-helpers.mjs';
@@ -71,6 +72,24 @@ for (const plant of PLANTS) {
     assert.ok(out.result, String(out.error?.message));
     never(out.printed.join('\n'), 'K2, the summary');
     assert.ok(out.printed.join('\n').includes('stopped:'), 'the summary names the stop');
+  });
+  test(`K4: ${plant.name} in the CAUSE of a real pi-transport BoxError a place's start threw never reaches the thrown error as Node prints it (util.inspect: the cause chain and every property); its class, code and the rest are kept`, { timeout: 300_000 }, async (t) => {
+    const out = await sinkRun(t, { record: plant.record, spec: plant.spec, env: { ...plant.env, DEMO_WITH_PLACE: 'start-fails-cause', DEMO_START_FAILS_TEXT: `the library said token ${plant.secret}\n${KEPT}` }, argv: ['--json'] });
+    assert.ok(out.error, 'the run fails');
+    const shown = inspect(out.error, { depth: 10 });
+    never(shown, 'K4, util.inspect of the error');
+    assert.ok(shown.includes(KEPT), 'the rest of the cause is kept');
+    assert.equal(out.error.name, 'BoxError');
+    assert.equal(out.error.code, 'unknown');
+    assert.ok(out.error.cause instanceof Error, 'the cause chain is kept, redacted');
+  });
+  test(`K4: ${plant.name} in a string PROPERTY of the error a place's start threw never reaches the thrown error as Node prints it; the property's name and the rest are kept`, { timeout: 300_000 }, async (t) => {
+    const out = await sinkRun(t, { record: plant.record, spec: plant.spec, env: { ...plant.env, DEMO_WITH_PLACE: 'start-fails-property', DEMO_START_FAILS_TEXT: `the runner printed token ${plant.secret}\n${KEPT}` }, argv: ['--json'] });
+    assert.ok(out.error, 'the run fails');
+    const shown = inspect(out.error, { depth: 10 });
+    never(shown, 'K4, util.inspect of the error');
+    assert.equal(out.error.code, 'START_FAILED');
+    assert.ok(typeof out.error.stderr === 'string' && out.error.stderr.includes(KEPT), 'the property is kept, redacted');
   });
   test(`K4: ${plant.name} in a place's start error never reaches the error demo() throws (its message and its stack); the rest is kept`, { timeout: 300_000 }, async (t) => {
     const out = await sinkRun(t, { record: plant.record, spec: plant.spec, env: { ...plant.env, DEMO_WITH_PLACE: 'start-fails', DEMO_START_FAILS_TEXT: `the place printed token ${plant.secret}\n${KEPT}` }, argv: ['--json'] });
