@@ -94,7 +94,8 @@ for (const plant of PLANTS) {
       never(shown, 'K4, util.inspect of the error');
       assert.equal(typeof out.error.name, 'string', 'its name is readable');
       assert.doesNotThrow(() => String(out.error));
-      if (shape === 'start-fails-timeout') { assert.equal(out.error.name, 'TimeoutError'); assert.ok(out.error instanceof DOMException, 'a DOMException still'); }
+      if (shape === 'start-fails-timeout') { assert.equal(out.error.name, 'TimeoutError'); assert.ok(out.error instanceof DOMException, 'a DOMException still'); assert.ok(String(out.error.stack).startsWith('TimeoutError: '), 'the stack still names its class'); }
+      if (shape === 'start-fails-map-cause') { assert.deepEqual(out.error.withheldProperties, ['cause'], 'what was withheld is named'); assert.equal(Object.hasOwn(out.error, 'cause'), false, 'and not left behind as undefined'); }
     });
   }
   test(`K4: ${plant.name} in a string PROPERTY of the error a place's start threw never reaches the thrown error as Node prints it; the property's name and the rest are kept`, { timeout: 300_000 }, async (t) => {
@@ -188,5 +189,23 @@ test('a value SHARED by two branches (no cycle) survives in both, in a result an
   const cyclic = { x: 1 };
   cyclic.self = cyclic;
   assert.equal(handedOut(cyclic).self, undefined, 'a cycle is cut');
+});
+
+/** A "diamond ladder": each level's two keys hold the same next level, so a walk that follows every path does 2^depth of them. */
+const ladder = (depth) => { let level = { text: `token ${KEY}` }; for (let i = 0; i < depth; i += 1) level = { left: level, right: level }; return level; };
+test('a value shared down a deep ladder is walked ONCE (linear, not once per path), in a result and inside an error, and stays in every branch', () => {
+  for (const depth of [20, 30]) {
+    const begun = Date.now();
+    const result = handedOut({ ladder: ladder(depth) });
+    const error = handedOutError(Object.assign(new Error('failed'), { details: ladder(depth) }));
+    const took = Date.now() - begun;
+    assert.ok(took < 1000, `depth ${depth} took ${took} ms`);
+    let node = result.ladder;
+    let fromError = error.details;
+    for (let i = 0; i < depth; i += 1) { assert.equal(node.left, node.right, `level ${i}: one copy in both branches`); node = node.left; fromError = fromError.right; }
+    assert.equal(node.text.includes(KEY), false);
+    assert.ok(node.text.includes('withheld'));
+    assert.equal(fromError.text.includes(KEY), false);
+  }
 });
 

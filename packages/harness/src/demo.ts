@@ -860,25 +860,39 @@ export function processText(text: string, redact?: (text: string) => string): st
 /** Every string of a plain value (a result, a ledger) through `processText`, at the sink that returns or prints it; a value seen before (a cycle) is
  *  cut to undefined. A value that is neither plain nor a string (the harness's own results hold none) is passed as it is. */
 export function handedOut<T>(value: T, redact?: (text: string) => string): T {
-  return walk(value, redact, new Set(), '', undefined) as T;
+  return walk(value, redact, new Set(), '', undefined, new Map()) as T;
 }
 
 /** The one walker for text handed out: a string through processText; null, undefined, a number, a boolean or a bigint as it is; an error through
  *  handedOutError; an array or a plain object recursed (a value met again on its own path, a cycle, becomes undefined; one shared by two branches is walked in each). Anything else: kept as it is
  *  when `withheld` is undefined (a result), else WITHHELD, its path named in `withheld` (inside an error, where a library's value can hold anything). */
-function walk(value: unknown, redact: ((text: string) => string) | undefined, seen: Set<unknown>, path: string, withheld: string[] | undefined): unknown {
+function walk(value: unknown, redact: ((text: string) => string) | undefined, seen: Set<unknown>, path: string, withheld: string[] | undefined, done: Map<unknown, unknown>): unknown {
   if (typeof value === 'string') return processText(value, redact);
   if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return value;
-  if (value instanceof Error) return handedOutError(value, redact, seen);
+  if (value instanceof Error) return handedOutError(value, redact, seen, done);
   const plain = Array.isArray(value) || (typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype);
   if (!plain) { if (!withheld) return value; withheld.push(path); return undefined; }
-  // `seen` holds the values on the path from the root to here: a value met again on its own path is a cycle, cut to undefined; one shared by two
-  // branches (no cycle) is walked in each.
+  // `seen` holds the values on the path from the root to here: a value met again on its own path is a cycle, cut to undefined. `done` maps each value
+  // walked to its copy: a value shared by two branches (no cycle) is walked ONCE and its one copy stands in both (linear, never once per path).
   if (seen.has(value)) return undefined;
+  if (done.has(value)) return done.get(value);
   seen.add(value);
   try {
-    if (Array.isArray(value)) return value.map((item, index) => walk(item, redact, seen, `${path}[${index}]`, withheld));
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, walk(item, redact, seen, path ? `${path}.${key}` : key, withheld)]));
+    let copy: unknown;
+    if (Array.isArray(value)) copy = value.map((item, index) => walk(item, redact, seen, `${path}[${index}]`, withheld, done));
+    else {
+      const entries: [string, unknown][] = [];
+      for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+        const before = withheld?.length ?? 0;
+        const walked = walk(item, redact, seen, path ? `${path}.${key}` : key, withheld, done);
+        // A withheld value is named, not left behind as undefined.
+        if (walked === undefined && (withheld?.length ?? 0) > before) continue;
+        entries.push([key, walked]);
+      }
+      copy = Object.fromEntries(entries);
+    }
+    done.set(value, copy);
+    return copy;
   } finally { seen.delete(value); }
 }
 
@@ -887,27 +901,36 @@ function walk(value: unknown, redact: ((text: string) => string) | undefined, se
  *  chain, an AggregateError's `errors` and every own property pass the one walker: what Node prints for an uncaught error (util.inspect shows the
  *  cause chain and the properties) and what a caller logs carry no secret. A value the walker withholds is named in `withheldProperties`. The copy
  *  is not the original: its identity, non-enumerable and symbol properties are not carried. */
-export function handedOutError(error: Error, redact?: (text: string) => string, seen: Set<unknown> = new Set()): Error | undefined {
+export function handedOutError(error: Error, redact?: (text: string) => string, seen: Set<unknown> = new Set(), done: Map<unknown, unknown> = new Map()): Error | undefined {
   // A cycle (the error met again on its own path, its cause chain looping) is cut to undefined.
   if (seen.has(error)) return undefined;
+  if (done.has(error)) return done.get(error) as Error;
   seen.add(error);
-  try { return copyOf(error, redact, seen); } finally { seen.delete(error); }
+  try { const copy = copyOf(error, redact, seen, done); done.set(error, copy); return copy; } finally { seen.delete(error); }
 }
 
-function copyOf(error: Error, redact: ((text: string) => string) | undefined, seen: Set<unknown>): Error {
+function copyOf(error: Error, redact: ((text: string) => string) | undefined, seen: Set<unknown>, done: Map<unknown, unknown>): Error {
   // Own data properties, defined (never assigned): an inherited accessor with no setter (a DOMException's code) would refuse an assignment.
   const own = (target: object, key: string, value: unknown, enumerable = false) => Object.defineProperty(target, key, { value, writable: true, configurable: true, enumerable });
   const out = Object.create(Object.getPrototypeOf(error) as object) as Error & Record<string, unknown>;
   const withheld: string[] = [];
   own(out, 'message', processText(String(error.message), redact));
-  if (error.stack !== undefined) own(out, 'stack', processText(String(error.stack), redact));
-  own(out, 'name', processText(String(error.name), redact));
-  if ('code' in error) own(out, 'code', walk((error as { code?: unknown }).code, redact, seen, 'code', withheld), true);
-  if ('cause' in error) own(out, 'cause', walk(error.cause, redact, seen, 'cause', withheld));
-  if (error instanceof AggregateError) own(out, 'errors', walk(error.errors, redact, seen, 'errors', withheld));
+  const name = processText(String(error.name), redact);
+  own(out, 'name', name);
+  if (error.stack !== undefined) {
+    // A stack whose header line held a key is withheld whole: its header is rebuilt from the name and the redacted message, so the class stays visible.
+    const stack = processText(String(error.stack), redact);
+    const rest = stack.indexOf('\n') === -1 ? '' : stack.slice(stack.indexOf('\n'));
+    own(out, 'stack', stack.startsWith('[a line withheld') ? `${name}: ${processText(String(error.message), redact).split('\n')[0]}${rest}` : stack);
+  }
+  // Each value through the walker; one it withholds is named in withheldProperties and NOT left behind as undefined.
+  const carry = (key: string, value: unknown, enumerable: boolean) => { const before = withheld.length; const walked = walk(value, redact, seen, key, withheld, done); if (walked === undefined && withheld.length > before) return; own(out, key, walked, enumerable); };
+  if ('code' in error) carry('code', (error as { code?: unknown }).code, true);
+  if ('cause' in error) carry('cause', error.cause, false);
+  if (error instanceof AggregateError) carry('errors', error.errors, false);
   for (const [key, value] of Object.entries(error)) {
     if (key === 'message' || key === 'stack' || key === 'cause' || key === 'name' || key === 'code' || key === 'errors') continue;
-    own(out, key, walk(value, redact, seen, key, withheld), true);
+    carry(key, value, true);
   }
   if (withheld.length) own(out, 'withheldProperties', withheld, true);
   return out;
