@@ -61,6 +61,45 @@ test("through the real curator: a workflow is admitted from a run's branch, its 
   assert.deepEqual(await workflowsToTry({ repo: curator, sha: await curator.resolve("main") }, input), [{ name: NAME, status: "active" }]);
 }, { timeout: 120_000 });
 
+test("a run that saves a new revision still counts its clean use of the trial it ran, first: that use promotes it, and the new revision then supersedes it (restorable)", async () => {
+  const root = await scratch();
+  const { bare, repo } = await agentRepo(root);
+  const curator = await openRepo({ dir: path.join(root, "curator"), remote: local(bare) });
+  const input = { sku: "A-1", amount: 5 };
+  const propose = async (run, { workDir, uses, saved }) => {
+    const seed = await curator.resolve("main");
+    const workflows = saved ? (await collectWorkflows({ repo: curator, workDir, seedSha: seed })).records : undefined;
+    const proposed = await proposeLearning({ repo: curator, runId: run, target: { snapshot: async () => ({ order: [], byCall: {} }) }, ...(uses ? { uses } : {}), ...(workflows ? { workflows } : {}) });
+    assert.equal(proposed.status, "proposed", JSON.stringify(proposed));
+    const report = await curate({ repo: curator, judge });
+    return report.runs.find((r) => r.run === run);
+  };
+  // Run 1 saves revision one.
+  const { dir: authorDir, saved } = await workDirWith({ [NAME]: workflowDoc() });
+  const one = saved[NAME];
+  const collected = await collectWorkflows({ repo, workDir: authorDir, seedSha: await repo.resolve("main") });
+  const note = { callId: "call-1", type: "workflow", id: NAME, text: WHEN, evidence: [] };
+  assert.equal((await proposeLearning({ repo, runId: "run-1", target: { snapshot: async () => ({ order: ["call-1"], byCall: { "call-1": note } }) }, workflows: collected.records })).status, "proposed");
+  await curate({ repo: curator, judge, now: new Date("2026-01-01T00:00:00Z") });
+  /** A run seeded from main that runs the live revision cleanly and, with `next`, saves a new revision of the name too. */
+  const run = async (id, next) => {
+    const main = await curator.resolve("main");
+    const { dir: workDir } = await workDirWith();
+    await seedWorkflows({ repo: curator, sha: main, into: workDir, workflows: await workflowsToTry({ repo: curator, sha: main }, input) });
+    const store = await runStoreWith([{ key: `k-${id}`, workflow: (await new WorkflowStore(workDir).load(NAME)).workflow, input }]);
+    const digest = next ? (await new WorkflowStore(workDir).save(NAME, next)).digest : undefined;
+    return { report: await propose(id, { workDir, uses: usesSource({ store, workDir, run: id }), saved: Boolean(next) }), digest };
+  };
+  const { report: second } = await run("run-2");
+  assert.deepEqual(second.settled.map((s) => s.reason.split(":")[0]), ["hold"], "one clean use: still a trial");
+  // Run 3 runs revision one cleanly AND saves revision three: its use is settled first, and promotes revision one.
+  const { report: third, digest: three } = await run("run-3", workflowDoc({ limit: 200 }));
+  assert.deepEqual(third.settled.map((s) => [s.workflow, s.reason.split(":")[0]]), [[NAME, "promote"]], JSON.stringify(third));
+  assert.deepEqual(third.accepted.map((a) => a.workflow), [NAME]);
+  const trial = await readTrial(curator, NAME, "main");
+  assert.deepEqual(trial.revisions.map((r) => [r.sha256, r.status]), [[one, "superseded"], [three, "trial"]], "revision one stays restorable under the new trial");
+}, { timeout: 120_000 });
+
 test("a curate with the ports turned off holds the workflows and their uses, and says so", async () => {
   const root = await scratch();
   const { repo } = await agentRepo(root);
