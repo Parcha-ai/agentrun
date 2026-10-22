@@ -226,6 +226,9 @@ test('receipt-holds-trial holds a newcomer without a workflow receipt against a 
   const held = await receiptHoldsTrial(admit, dir)(input);
   assert.deepEqual([held.status, admitted], ['held', 1]);
   assert.match(held.reason, /has a workflow receipt and this revision has none/);
+  // The same against a champion (the live revision active) that has one.
+  const champion = applyDecision(firstTrial, { action: 'promote', sha256: D2, reason: 'uses' }, at(3));
+  assert.equal((await receiptHoldsTrial(admit, dir)({ ...input, read: readerOf(champion) })).status, 'held');
 });
 
 test('the gate\'s verdict on a replacement: a pass confirms it; a hold demotes it back to the revision it replaced, on main', async (t) => {
