@@ -2,8 +2,8 @@
 // says no. No network, no key, no real box: a box is the fake's, and its programs are functions.
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { daytonaLike, fakeBoxes, modalLike, type FakeProvider } from "@parcha/pi-transport/testing";
-import type { BoxSpec } from "@parcha/pi-transport";
+import { daytonaLike, fakeBoxes, fakeClock, modalLike, type FakeProvider } from "@parcha/pi-transport/testing";
+import type { Box, BoxSpec } from "@parcha/pi-transport";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { boxHost, BoxHostError } from "../src/box-host.ts";
 import type { HostHandle } from "../src/supervise.ts";
@@ -265,15 +265,56 @@ describe("boxHost: the launch, a start found again, status, stop and receipts", 
     assert.equal(await driver.status(handle), "gone");
   });
 
-  it("a launch whose first incarnation could not run (exit 126: the user switch, the env clear or the cwd failed) is a FAILED start: LAUNCH_FAILED naming the exit, the box destroyed, not remembered; never a running instance", async () => {
+  it("a launch the launcher already reports could not run (exit 126: the user switch, the env clear or the cwd) is a FAILED start: LAUNCH_FAILED naming the exit, the box destroyed, not remembered", async () => {
     const provider = modal();
-    provider.script.on({ op: "launch" }, { exit: 126 }, { times: 1 });
-    const driver = host(provider);
-    await assert.rejects(driver.start(REF, TOKEN, { attempt: 1 }), (e: unknown) => code("LAUNCH_FAILED")(e) && /126/.test((e as Error).message));
+    // As a real launcher can answer when its first incarnation failed before the state was read: ok(), restarting, exit 126.
+    const said126 = (box: Box): Box =>
+      new Proxy(box, {
+        get(target, key) {
+          if (key === "launcher") {
+            const real = target.launcher!;
+            return { ...real, launch: async (...args: Parameters<typeof real.launch>) => {
+              const r = await real.launch(...args);
+              return r.ok ? { ok: true as const, value: { ...r.value, phase: "restarting" as const, lastExit: 126 } } : r;
+            } };
+          }
+          const v = Reflect.get(target, key, target);
+          return typeof v === "function" ? v.bind(target) : v;
+        },
+      });
+    let first = true;
+    const wrapped: FakeProvider = Object.assign(Object.create(provider) as FakeProvider, {
+      create: async (spec: BoxSpec, context: Parameters<FakeProvider["create"]>[1]) => {
+        const made = await provider.create(spec, context);
+        if (!made.ok || !first) return made;
+        first = false;
+        return { ok: true as const, value: said126(made.value) as never };
+      },
+    });
+    const driver = host(wrapped);
+    await assert.rejects(driver.start(REF, TOKEN, { attempt: 1 }), (e: unknown) => code("LAUNCH_FAILED")(e) && /exit 126/.test((e as Error).message));
     assert.equal(provider.boxes[0]!.state, "ended", "the box is destroyed");
     const second = await driver.start(REF, TOKEN, { attempt: 1 });
     assert.equal(second.adopted, undefined, "not remembered: a later start launches again, in a new box");
     assert.equal(provider.callsOf("create").length, 2);
+  });
+
+  it("an instance whose every incarnation exits 126 is never reported running for long: the launcher gives up, and status says failed", async () => {
+    const clock = fakeClock(Date.now());
+    const provider = fake(modalLike({ facts: fd, clock }));
+    // Every incarnation exits 126, as each would when the launcher cannot run the program as its user.
+    provider.program("pi-durable-disk", () => 126);
+    const driver = host(provider);
+    const handle = await driver.start(REF, TOKEN, { attempt: 1 }).catch((e: unknown) => e);
+    if (handle instanceof BoxHostError) return assert.equal(handle.code, "LAUNCH_FAILED", "or refused at the start already");
+    // The launcher's restart delay and its limit (5 in 60 s) run on the fake's clock.
+    let status = await driver.status(handle as HostHandle);
+    for (let i = 0; i < 20 && status !== "failed"; i++) {
+      await clock.advance(1_100);
+      await tick();
+      status = await driver.status(handle as HostHandle);
+    }
+    assert.equal(status, "failed");
   });
 
   it("the launch's errors: refused and unsupported are UNSUPPORTED and remembered; timeout is START_TIMED_OUT; failed and box are LAUNCH_FAILED and not remembered; invalid is INVALID_ARGUMENT; the box is destroyed every time", async () => {

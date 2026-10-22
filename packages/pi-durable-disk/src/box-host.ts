@@ -231,6 +231,20 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
         if (e.code === "timeout" || context.abortSignal?.aborted) throw new BoxHostError("START_TIMED_OUT", `the instance did not start in ${provider.name} box ${box.id}: ${e.message}`, { cause: e });
         throw new BoxHostError("LAUNCH_FAILED", `launching the instance in ${provider.name} box ${box.id} failed (${e.code}): ${e.message}`, { cause: e });
       }
+      // launch() answers once the phase leaves `starting`. An instance the launcher could not run at all (exit 126: the user
+      // switch, the env clear or the cwd), or one already ended, is a failed start, never a running instance; an ordinary
+      // early crash is the launcher's to restart, and the run's own backoff applies.
+      const state = launched.value;
+      const couldNotRun = state.lastExit === 126;
+      if (couldNotRun || state.phase === "exited" || state.phase === "gave_up" || state.phase === "stopped" || state.phase === "lost") {
+        await destroy(box, bounded(callTimeoutMs));
+        throw new BoxHostError(
+          "LAUNCH_FAILED",
+          couldNotRun
+            ? `the launcher could not run the instance in ${provider.name} box ${box.id} (exit 126: as user ${user}, with its environment or in its directory)`
+            : `the instance ended at once in ${provider.name} box ${box.id} (${state.phase}${state.lastExit === undefined ? "" : `, exit ${state.lastExit}`})`,
+        );
+      }
       return handle;
     },
 
