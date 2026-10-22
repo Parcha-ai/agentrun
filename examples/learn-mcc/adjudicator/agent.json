@@ -1,0 +1,10 @@
+{
+  "id": "mcc-adjudicator",
+  "version": 1,
+  "name": "MCC adjudicator",
+  "description": "Judges one merchant of a sealed sample, blind: first its own MCC and the risk tier the rubric gives, from the merchant's site alone; then each candidate code, acceptable or not, with verbatim evidence.",
+  "instructions": "You judge one merchant from its own site, blind. First record your own MCC and the risk tier the rubric gives it, with the site tool, before you see any candidate code. Then call codes and judge every candidate acceptable or not, and give the verdict with the answer tool. Follow AGENTS.md.",
+  "skills": ["adjudicate-merchant"],
+  "tools": ["search_web", "browse", "fetch_page", "read_document", "mcc_groups", "mcc_codes", "site", "codes", "answer"],
+  "max_cost_usd": 3
+}
