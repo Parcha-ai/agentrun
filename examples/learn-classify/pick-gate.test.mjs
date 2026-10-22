@@ -5,7 +5,7 @@ import { chmod, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { handoffText } from './dispatch.mjs';
+import { HOST_WORKFLOW, handoffText, hostRecord } from './dispatch.mjs';
 import { agentHomeFor, meteredJudge, prepareRun, runJob } from './host.mjs';
 import { PRICES } from './models.mjs';
 import { gatePick, marginOf, strippedOutput } from './pick-gate.mjs';
@@ -122,9 +122,13 @@ test('host: τ above the pick\'s margin sends the code back to the root agent, s
   assert.ok(prompt.includes('its sic4 pick was not sure enough to stand alone'), prompt);
   assert.ok(!prompt.includes('"sic4"') && !prompt.includes(truth4[harbor.name].sic4), 'the agent is shown no code');
   assert.equal(gated.measure.answer.sic4, truth4[harbor.name].sic4, 'the agent answered');
+  assert.deepEqual(gated.measure.workflowRuns.filter((r) => r.classifiedBy === HOST_WORKFLOW).map((r) => r.outcome), ['escalated'], 'the host\'s run is not the answer: it counts as escalated, as an invalid output does');
+  assert.equal(hostRecord({ executions: [{ key: gated.measure.dispatch.key, outcome: 'complete' }] }, gated.measure.dispatch).executions[0].outcome, 'escalated');
 
   const kept = await served(t, 0);
   assert.deepEqual(kept.model.requests, [], 'the root agent is never asked');
   assert.deepEqual([kept.measure.dispatch.outcome, kept.measure.dispatch.gated.gated, kept.measure.dispatch.gated.m], ['complete', false, 0.8]);
   assert.equal(kept.measure.answer.sic4, truth4[harbor.name].sic4);
+  assert.deepEqual(kept.measure.workflowRuns.filter((r) => r.classifiedBy === HOST_WORKFLOW).map((r) => r.outcome), ['complete']);
+  assert.equal(hostRecord({ executions: [{ key: kept.measure.dispatch.key, outcome: 'complete' }] }, kept.measure.dispatch).executions[0].outcome, 'complete');
 });
