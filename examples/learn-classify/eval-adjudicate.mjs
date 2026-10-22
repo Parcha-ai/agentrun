@@ -109,7 +109,9 @@ export async function runAdjudication({ out, parts, passId, files, concurrency =
   const stage2 = existsSync(stage2Path) ? readJson(stage2Path) : {};
   const pending = jobsAll.filter((job) => !stage1[job.merchantId]).slice(0, jobs ?? Infinity);
   const home = await homeAt(join(out, 'adjudicate-home'), repo, meta.seedSha);
-  log(`learn-classify adjudication ${passId}: ${pending.length} of ${jobsAll.length} sample merchants to judge at the seed ${meta.seedSha.slice(0, 7)}${concurrency > 1 ? `, ${concurrency} at once` : ''}`);
+  // A run stops past the home's max_cost_usd unless the pass names its own run cap.
+  const runCap = runCapUsd ?? (await readAgentAt(repo, meta.seedSha)).definition.max_cost_usd;
+  log(`learn-classify adjudication ${passId}: ${pending.length} of ${jobsAll.length} sample merchants to judge at the seed ${meta.seedSha.slice(0, 7)}, $${runCap} a run at most${concurrency > 1 ? `, ${concurrency} at once` : ''}`);
   if (pending.length && parts.mode === 'live') {
     const [job] = pending;
     await adjudicationSelfTest({ out, repo, parts, job, adjudicator: adjudicationRun({ candidates: candidates[job.merchantId], groups: parts.data.table }), log });
@@ -139,7 +141,7 @@ export async function runAdjudication({ out, parts, passId, files, concurrency =
     const started = Date.now();
     let measure;
     try {
-      measure = await runJob({ run: prepared, job, model, judge: meteredJudge(parts.judge()), effects, answer: adjudicator.answer, text: parts.set.text, limitUsd: runCapUsd, learning: false });
+      measure = await runJob({ run: prepared, job, model, judge: meteredJudge(parts.judge()), effects, answer: adjudicator.answer, text: parts.set.text, limitUsd: runCap, learning: false });
     } finally {
       await Promise.all(effects.map((effect) => effect.dispose?.()));
     }
@@ -193,7 +195,7 @@ export async function runAdjudication({ out, parts, passId, files, concurrency =
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, pending.length)) }, worker));
   if (stoppedBy) log(`stopped: ${stoppedBy}`);
-  return { judged, failed, ungrounded, spentUsd: spent, stoppedBy, seedSha: meta.seedSha, pins };
+  return { judged, failed, ungrounded, spentUsd: spent, stoppedBy, seedSha: meta.seedSha, pins, runCapUsd: runCap };
 }
 
 const USAGE = 'usage: node examples/learn-classify/eval-adjudicate.mjs --out <dir> --pass-id <id> --sample <adjudication.json> --candidates <candidates.json> --commitments <commitments.json> --order-salt <file> (--scripted | --live --cap-usd <usd>) [--run-cap-usd <usd>] [--data <dir>] [--concurrency <n>] [--jobs <n>] [--model claude-opus-5-5] [--thinking high]';

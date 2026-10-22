@@ -157,6 +157,7 @@ test('a scripted pass: stage 1 and 2 for unblind, an ungrounded verdict judged o
   const parts = scriptedParts({ set: SETS.adjudicate, data: given.data });
   const result = await runAdjudication({ out, parts, passId: 'p1', files: given.files });
   assert.deepEqual(result.judged.sort(), ['adj-001', 'adj-002', 'adj-003', 'adj-004']);
+  assert.equal(result.runCapUsd, 3, 'a run stops past the adjudicator home\'s max_cost_usd');
   assert.deepEqual(result.failed, []);
   assert.deepEqual(result.ungrounded, [{ merchantId: 'adj-003', ungrounded: ['own', 'risk', ...JSON.parse(readFileSync(given.files.candidates, 'utf8'))['adj-003'].map((c) => c.code)] }]);
   const pass = join(out, 'adjudication', 'p1');
@@ -228,9 +229,9 @@ test('a live adjudication pass runs its self-test first: the root thinks, it is 
   }
   // Through the pass: the self-test's report is written before the first verdict, and the runs follow.
   const pass = join(await scratch(t), 'out');
-  const result = await runAdjudication({ out: pass, parts: { ...base, mode: 'live', browserCheck }, passId: 'p0', files: given.files, jobs: 1 });
+  const result = await runAdjudication({ out: pass, parts: { ...base, mode: 'live', browserCheck }, passId: 'p0', files: given.files, jobs: 1, runCapUsd: 1.5 });
   assert.equal(JSON.parse(readFileSync(join(pass, 'selftest.json'), 'utf8')).ok, true);
-  assert.deepEqual(result.judged, ['adj-001']);
+  assert.deepEqual([result.judged, result.runCapUsd], [['adj-001'], 1.5]);
 });
 
 test('the runner refuses the adjudicate set: it has its own pass', () => {
