@@ -223,6 +223,7 @@ async function runSet({ parts, repo, run, job, judge, limitUsd, lock = inline, d
     return await runJob({
       run, job, model: await parts.modelFor(job, run), judge, effects, answer, text: set.text, limitUsd, dispatch, hostOnly,
       ...(parts.callDeadlineMs !== undefined ? { callDeadlineMs: parts.callDeadlineMs } : {}), ...(parts.runDeadlineMs !== undefined ? { runDeadlineMs: parts.runDeadlineMs } : {}),
+      ...(parts.feedNodes ? { feedNodes: parts.feedNodes } : {}),
     });
   } finally {
     // What a tool kept for this run alone (read_document's large files) goes when the run ends.
@@ -767,7 +768,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--receipt-admission] [--receipt-holds-trial] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--hindsight all|<field,...>] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--receipt-admission] [--receipt-holds-trial] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--feed-nodes learned] [--hindsight all|<field,...>] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -782,7 +783,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' }, 'edgar-cache': { type: 'string' }, schedule: { type: 'string' }, checkpoints: { type: 'string' },
         'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, 'gate-wait-at-end': { type: 'boolean' }, hindsight: { type: 'string' },
         'receipt-admission': { type: 'boolean' }, 'receipt-holds-trial': { type: 'boolean' }, 'receipt-promotion': { type: 'boolean' }, 'promote-no-floor': { type: 'boolean' },
-        'refuse-contradicting': { type: 'boolean' }, 'keep-facts': { type: 'boolean' }, 'refuse-refused-hosts': { type: 'boolean' },
+        'refuse-contradicting': { type: 'boolean' }, 'keep-facts': { type: 'boolean' }, 'refuse-refused-hosts': { type: 'boolean' }, 'feed-nodes': { type: 'string' },
       },
     }));
   } catch (error) {
@@ -844,6 +845,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       parts.judgeCuts = values['curate-cuts'] === 'v0.1' ? CURATE_CUTS_V01 : null;
       parts.cutsId = values['curate-cuts'];
       console.log(`learn-classify: curation judged by the ${values['curate-cuts'] === 'v0.1' ? 'pre-registered v0.1 cuts' : "package's default cuts"}`);
+    }
+    if (values['feed-nodes'] !== undefined) {
+      if (values['feed-nodes'] !== 'learned') { console.error(`--feed-nodes is learned\n${USAGE}`); process.exit(2); }
+      parts.feedNodes = 'learned';
+      console.log('learn-classify: a served workflow\'s agent nodes read the run\'s <learned> section (never its extract, decide or report nodes)');
     }
     if (values['refuse-refused-hosts']) {
       parts.refuseRefusedHosts = true;

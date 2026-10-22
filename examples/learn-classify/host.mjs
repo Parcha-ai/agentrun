@@ -8,7 +8,7 @@ import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite
 import { inspectWorkflow } from '@parcha/agentrun-dsl';
 import { withRecovery, workspaceFiles } from '@parcha/agentrun-dsl/recovery';
 import { createWorkflowTool, decisionRecovery, nodeRunner, recordingLines, taskScope, toolResult } from '@parcha/agentrun-pi/durable';
-import { collectCandidates, collectUses, collectWorkflows, curate, proposeLearning, schemaWhen, usesSettler, workflowAdmitter } from '@parcha/pi-agent-learn';
+import { collectCandidates, collectUses, collectWorkflows, curate, proposeLearning, renderSection, schemaWhen, SeedDoc, usesSettler, workflowAdmitter } from '@parcha/pi-agent-learn';
 import { carryBack } from '@parcha/pi-durable-agent';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -361,7 +361,23 @@ export function settleWithin(promise, ms, message) {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null, hostOnly = false, callDeadlineMs = CALL_DEADLINE_MS, runDeadlineMs = RUN_DEADLINE_MS }) {
+/** The run's `<learned>` section for a workflow's agent nodes (`feedNodes: 'learned'`): the root agent's, from the same
+ *  seed record, rendered without the lines that ask for `learn`, which no node is offered. */
+export function nodeLearnedExtension() {
+  return defineExtension({
+    name: 'node-learned',
+    sections: [{
+      key: 'learned',
+      async render(input, context) {
+        const seed = await input.read.snapshot(SeedDoc, context);
+        return seed?.sha ? renderSection(seed, { canLearn: false }) : undefined;
+      },
+    }],
+  });
+}
+
+export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null, hostOnly = false, callDeadlineMs = CALL_DEADLINE_MS, runDeadlineMs = RUN_DEADLINE_MS, feedNodes = null }) {
+  if (feedNodes !== null && feedNodes !== 'learned') throw new Error(`feedNodes is 'learned' or null, not ${feedNodes}`);
   if (hostOnly && !dispatch) throw new Error('a host-only run needs a workflow to dispatch');
   const started = Date.now();
   const caseValues = caseValuesOf(job);
@@ -382,14 +398,16 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
   const tools = classifyTools({ effects: metered, answer });
   // A node's conversation would otherwise take the root agent's rules, <learned> section and tools: it gets its own short
   // instructions, the host's tools extension only, and of it only the tools the node may use. Its model and thinking are
-  // the host's (`model.node`), whatever the workflow asks for.
+  // the host's (`model.node`), whatever the workflow asks for. With `feedNodes: 'learned'` an agent node, and never an
+  // extract, decide or report node, also reads the run's <learned> section: the curated notes, not a word of the host's.
   const nodeAgent = model.node ?? { ...model.agent, thinkingLevel: nodeThinking };
+  const nodeLearned = feedNodes === 'learned' ? nodeLearnedExtension() : null;
   const nodes = nodeRunner({
     agent: (node) => ({
       ...model.agent,
       ...nodeAgent,
       instructions: NODE_INSTRUCTIONS,
-      extensions: [tools.extension],
+      extensions: nodeLearned && node.kind === 'agent' ? [tools.extension, nodeLearned] : [tools.extension],
       tools: tools.nodeTools(node.tools),
     }),
   });
@@ -411,7 +429,7 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
     },
   });
   const registry = createRegistry();
-  for (const extension of [learn, tools.extension, workflowTool.extension, nodes.extension]) registry.install(extension);
+  for (const extension of [learn, tools.extension, workflowTool.extension, nodes.extension, ...(nodeLearned ? [nodeLearned] : [])]) registry.install(extension);
   const reports = [];
   const harness = await Harness.open(await openNodeSqliteStorage(run.storePath), { models: model.models, registry, onReport: (error) => reports.push(String(error?.message ?? error)) }, ctx);
   let stopped = null;
