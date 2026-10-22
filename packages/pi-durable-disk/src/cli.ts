@@ -205,9 +205,10 @@ export function runUser(spec: string, passwd = "/etc/passwd"): { uid: number; gi
  * resolves it, one element at a time from `/`, each link's target spliced in where the link was, so a link is checked
  * where it lives as well as where it points. Refused:
  * - any element (a directory, a link or the module) that is not root's, or a directory or the module writable by its group
- *   or by others (a sticky bit is no exception), unless the element is on a read-only mount: nothing in the box can write,
- *   chmod, rename or unlink there, and the agent's commands cannot remount (dockerHost bind-mounts the app's directory,
- *   the host user's, read-only);
+ *   or by others (a sticky bit is no exception), unless the element is on a read-only mount whose source (device and
+ *   root) no writable mount in the instance's table overlaps: nothing in the box can write, chmod, rename or unlink it
+ *   then, and the agent's commands cannot remount (dockerHost bind-mounts the app's directory, the host user's, once,
+ *   read-only);
  * - any element inside `runRoot`, the run's data: a disk run's mount root, where every run is mounted and a file's owner
  *   is whatever its writer set (the control API writes any owner), or a local run's directory, whose work/ the agent's
  *   commands own.
@@ -217,16 +218,21 @@ export function runUser(spec: string, passwd = "/etc/passwd"): { uid: number; gi
 export function appWritableReason(
   app: string,
   runRoot: string,
-  fs: AppFs = { lstatSync, readlinkSync, mounts: thisMounts },
+  fs: AppFs = { lstatSync, readlinkSync, mounts: instanceMounts },
 ): string | null {
   const root = resolve(runRoot);
-  let table: readonly { point: string; ro: boolean }[] | undefined;
-  // The mount `p` is on: the last in the table whose point is `p` or above it (a later mount there covers earlier ones).
-  const readOnly = (p: string): boolean => {
+  let table: readonly MountRow[] | undefined;
+  // Null when `p` is on a read-only mount whose source no writable mount in the table overlaps, so nothing in the box can
+  // change it; otherwise what to add to the refusal. The mount `p` is on is the last in the table whose point is `p` or
+  // above it: a later mount there covers earlier ones.
+  const exempt = (p: string): string | null => {
     table ??= fs.mounts?.() ?? [];
-    let on: { point: string; ro: boolean } | undefined;
+    let on: MountRow | undefined;
     for (const m of table) if (m.point === "/" || p === m.point || p.startsWith(`${m.point}/`)) on = m;
-    return on?.ro === true;
+    if (on?.ro !== true) return "";
+    const ro = on;
+    const twin = table.find((m) => !m.ro && m.dev === ro.dev && overlaps(m.root, ro.root));
+    return twin === undefined ? null : ` (its read-only mount's source is also mounted read-write at ${twin.point})`;
   };
   const rest = resolve(app).split("/").filter(Boolean);
   let at = "/";
@@ -238,7 +244,10 @@ export function appWritableReason(
     } catch (error) {
       return `${at} cannot be read (${(error as NodeJS.ErrnoException).code ?? error})`;
     }
-    if (st.uid !== 0 && !readOnly(at)) return `${at} is owned by uid ${st.uid}, not root`;
+    if (st.uid !== 0) {
+      const why = exempt(at);
+      if (why !== null) return `${at} is owned by uid ${st.uid}, not root${why}`;
+    }
     if ((st.mode & constants.S_IFMT) === constants.S_IFLNK) {
       // Its directory, checked a step before, is root's and closed to others: only root can replace it.
       if (++links > 40) return `${app} goes through too many links`;
@@ -252,7 +261,10 @@ export function appWritableReason(
       at = target.startsWith("/") ? "/" : dirname(at);
       continue;
     }
-    if ((st.mode & 0o022) !== 0 && !readOnly(at)) return `${at} is writable by its group or by others`;
+    if ((st.mode & 0o022) !== 0) {
+      const why = exempt(at);
+      if (why !== null) return `${at} is writable by its group or by others${why}`;
+    }
     const next = rest.shift();
     if (next === undefined) return null;
     at = next === "." ? at : next === ".." ? dirname(at) : at === "/" ? `/${next}` : `${at}/${next}`;
@@ -262,24 +274,34 @@ export function appWritableReason(
 type AppFs = {
   lstatSync(p: string): { uid: number; mode: number };
   readlinkSync(p: string): string;
-  mounts?(): readonly { point: string; ro: boolean }[];
+  mounts?(): readonly MountRow[];
 };
 
-/** Each mount's point and whether it is read-only (its own options or its superblock's), in the order of a mountinfo table. */
-export function mountInfo(text: string): { point: string; ro: boolean }[] {
-  const out: { point: string; ro: boolean }[] = [];
+/** A mount: where it is, whether it is read-only (its own options or its superblock's), and its source (device, root). */
+type MountRow = { point: string; ro: boolean; dev: string; root: string };
+
+/** Each mount of a mountinfo table, in its order. */
+export function mountInfo(text: string): MountRow[] {
+  const out: MountRow[] = [];
+  const unescape = (field: string) => field.replace(/\\([0-7]{3})/g, (_, octal: string) => String.fromCharCode(parseInt(octal, 8)));
   for (const line of text.split("\n")) {
     const f = line.split(" ");
     const dash = f.indexOf("-", 6);
     if (dash < 0 || f.length < dash + 4) continue;
-    const point = f[4]!.replace(/\\([0-7]{3})/g, (_, octal: string) => String.fromCharCode(parseInt(octal, 8)));
-    out.push({ point, ro: f[5]!.split(",").includes("ro") || f[dash + 3]!.split(",").includes("ro") });
+    const ro = f[5]!.split(",").includes("ro") || f[dash + 3]!.split(",").includes("ro");
+    out.push({ point: unescape(f[4]!), ro, dev: f[2]!, root: unescape(f[3]!) });
   }
   return out;
 }
 
-/** This process's mounts; none when the table cannot be read, so nothing is taken as read-only. */
-function thisMounts(): { point: string; ro: boolean }[] {
+/** Two roots of one device share files: the same directory, or one inside the other. */
+const overlaps = (a: string, b: string): boolean => a === b || a === "/" || b === "/" || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+
+/**
+ * The instance's own mounts (`/proc/self`, read at its start, before any of the agent's commands exists), never a
+ * command's; none when the table cannot be read, so nothing is taken as read-only.
+ */
+export function instanceMounts(): MountRow[] {
   try {
     return mountInfo(readFileSync("/proc/self/mountinfo", "utf8"));
   } catch {
