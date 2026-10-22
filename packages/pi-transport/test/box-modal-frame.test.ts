@@ -62,6 +62,13 @@ describe("a Modal box and T3's launch frame", () => {
 		expect(box.facts().liveProcesses).not.toBe(false);
 		const again = getOrThrow(await modalBoxes(sdk, { appName: "a" }).attach(box.id, context));
 		expect(again?.facts().secretsVia).toBe("fd");
+		// A box made before this was reported has no such field in its tag: it is still reported.
+		const tags = sdk.sandboxList[0]?.params.tags ?? {};
+		const old = JSON.parse(tags["pi-transport.facts"] ?? "{}") as Record<string, unknown>;
+		delete old.secretsVia;
+		tags["pi-transport.facts"] = JSON.stringify(old);
+		const found = getOrThrow(await modalBoxes(sdk, { appName: "a" }).attach(box.id, context));
+		expect(found?.facts().secretsVia).toBe("fd");
 		await box.destroy(context);
 	});
 
