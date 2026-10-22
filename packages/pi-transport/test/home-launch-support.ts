@@ -11,7 +11,7 @@ import {
 	launch,
 	launchStatus,
 	stopLaunch,
-} from "../src/home/launch.ts";
+} from "../src/launch/launch.ts";
 
 const context = BACKGROUND_CONTEXT;
 /** A case makes its own box, and a GPU box can take minutes to be given: the limit bounds a hang, not a slow create. */

@@ -762,19 +762,23 @@ second: not the provider's invoice, which bills by its own rounding, minimums an
 given up on included, and `cost_usd` is `calls` times `usd_per_call` rounded to 9 decimals; `seconds` stays its lifetime,
 for display only. A call refused before it is made is not counted. A box another process or host made is its maker's to receipt.
 
-## Home: a program kept alive in a box
+## Launch: a program kept alive in a box
 
 A box has no init system, and a host's `exec` ends when the host goes away. `launch` keeps one program running in a box
 whatever happens to the host. It uploads a small `sh` supervisor and starts it in its own session, so the program
-outlives the call, the `exec` and the host process.
+outlives the call, the `exec` and the host process. The launcher is `@parcha/pi-transport/launch`; `./home` exports the
+same names.
 
 ```ts
-import { launch, launchStatus, stopLaunch } from "@parcha/pi-transport/home";
+import { launch, launchState, launchStop } from "@parcha/pi-transport/launch";
 
 const started = await launch(box, "runner", { argv: ["node", "runner.js"], env: { MODE: "home" } }, BACKGROUND_CONTEXT);
-const state = await launchStatus(box, "runner", BACKGROUND_CONTEXT); // read from a file in the box
-await stopLaunch(box, "runner", { graceMs: 5_000 }, BACKGROUND_CONTEXT);
+const handle = started.ok ? started.value.launch : undefined; // { v: 1, name: "runner" }: JSON, no secret
+const state = await launchState(box, handle!, BACKGROUND_CONTEXT); // read from a file in the box
+await launchStop(box, handle!, { graceMs: 5_000 }, BACKGROUND_CONTEXT);
 ```
+
+`launchStatus(box, name, ctx)` and `stopLaunch(box, name, options, ctx)` do the same by name.
 
 - `launch` twice with the same name starts nothing and returns the first one's state. A launch that has ended
   (`exited`, `gave_up`, `stopped`) starts again.
@@ -782,7 +786,8 @@ await stopLaunch(box, "runner", { graceMs: 5_000 }, BACKGROUND_CONTEXT);
   than `restartLimit.burst` restarts in `restartLimit.intervalMs` (default 5 in 60 s) ends in `gave_up` with the last
   exit code. Numbers must be finite and within bounds.
 - The state is read from the launcher's own state file, never guessed from whether a process lives. It is `restarting`
-  or `exited` while the launcher handles an exit, never `running`.
+  or `exited` while the launcher handles an exit, never `running`. It carries the launch's handle (`launch`), the
+  `incarnation` now or last running (from 1), and `restarts` (the incarnation less one).
 - `stopLaunch` ends the program and everything in its process group: TERM, then KILL after `graceMs`, then it reports
   `stopped`. `graceMs` is a number from 0 to 600000 and the call to the box is given that long on top of its usual time.
   The saved process id is signalled only while it still names the process the launch started; the id of a process that
@@ -791,14 +796,40 @@ await stopLaunch(box, "runner", { graceMs: 5_000 }, BACKGROUND_CONTEXT);
   filling it is taken over after a minute, and a launch that ended is replaced by one caller only.
 - The program's output goes to `out.log` in the launcher's directory, bounded to its tail (`logMaxBytes`), also after
   the program has exited. The launcher holds no pipe to the host.
-- `env` is plain settings kept in a file of the box. Never put a secret in it.
+- The program's environment is PATH, HOME, LANG (`C.UTF-8`), `PI_TRANSPORT_INCARNATION` (its incarnation) and `env`.
+  Nothing of the box runtime's own environment reaches it unless `inheritEnv` names it (default `false`): the
+  incarnation unsets every other exported name, and a name the shell cannot unset refuses the incarnation (exit 126).
+- `env` is plain settings kept in a file of the box. Never put a secret in it: a key-shaped name (a `_`-separated
+  segment KEY, TOKEN, SECRET, PASSWORD, PASSWD, CREDENTIAL or CREDENTIALS) is refused by name, as are PATH, HOME, LANG
+  and the names the launcher sets.
+- A box may launch natively (`Box.launcher`, a test's fake box): the three calls then use it, read on every call. A
+  provider leaves it undefined.
+- `stdin` (bytes, at most 64 KiB; disk's mount token) is written to EVERY incarnation's stdin and then closed. `secrets`
+  (names to values, at most 64 KiB as JSON) reach every incarnation on one inherited fd, whose NUMBER is in
+  `PI_TRANSPORT_SECRETS_FD` (3): one JSON object, then EOF. Both travel on ONE path, the launch frame below, and rest
+  nowhere: never in a file of the box, an environment, an argv, the state or `out.log`. Only a box whose facts say
+  `secretsVia: "fd"` (a real stdin path; `local` and `docker`) takes them; any other refuses `unsupported` before
+  anything runs.
+- The launch frame: the exec that starts the launcher gets, on its stdin, the line `PI-TRANSPORT-LAUNCH/1`, then the
+  secrets as JSON and the stdin, each base64 (standard alphabet, padded, unwrapped) on a line of its own (empty when
+  absent), then EOF. The launcher keeps the two parts in unexported shell variables and decodes them, for each
+  incarnation, straight into pipes; it refuses where `printf` is not a shell builtin or `base64` is missing. A malformed
+  frame is `invalid`, and nothing starts.
+- The in-box watchdog never brings back the supervisor of a launch that has `stdin` or `secrets`: only that supervisor
+  held them. The launch then reads `lost`, and only a `launch` that passes them again starts it again.
+- `user` (a name or a numeric uid) is who the program runs as, resolved in the box (`/etc/passwd`, then `getent`). A
+  root launcher finds how it drops to it by doing it once at the start: a `setpriv` that takes `--reuid` (util-linux;
+  BusyBox's does not), else `runuser`, else the launch is `unsupported` (Alpine's base image). It needs a user for a
+  launch with `stdin` or `secrets`, so the program never shares its memory; a launcher that is not root runs the program only as itself (another user is
+  `unsupported`). An unknown user is `invalid`. The state reports it (`user: { name, uid }`).
 - If both launcher processes die, the state reads `lost`: the program may still run, unsupervised. The next `launch`
   of the name adopts it and starts a supervisor again.
 - On Daytona a stopped and started sandbox keeps its disk and loses its processes. The launcher then reads `lost`, the
   program is gone, and nothing restarts by itself: the host calls `launch` again, and the old state and output are
   still there.
 
-The box needs `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `tail`, `date` and `sleep`. It is tested on Debian (dash) and
+The box needs `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `tail`, `date`, `sleep` and `id`, and for a launch with `stdin` or
+`secrets` a builtin `printf` and `base64`. It is tested on Debian (dash) and
 Alpine (BusyBox).
 
 `probeAcknowledgedWrites(box)` in `@parcha/pi-transport/testing` checks that a write a program was told was durable

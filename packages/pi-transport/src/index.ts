@@ -5,6 +5,7 @@ export {
 	type BoxExecOptions,
 	type BoxFacts,
 	type BoxFile,
+	type BoxLauncher,
 	type BoxProcess,
 	type BoxProvider,
 	type BoxRef,
