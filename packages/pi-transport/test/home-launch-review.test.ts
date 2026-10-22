@@ -7,8 +7,8 @@ import { err, getOrThrow } from "@earendil-works/pi-durable/env";
 import { afterAll, describe, expect, it } from "vitest";
 import { type Box, BoxError } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
-import { launch, launchStatus, stopLaunch } from "../src/home/launch.ts";
-import { LAUNCHER_SCRIPT } from "../src/home/launcher-script.ts";
+import { launch, launchStatus, stopLaunch } from "../src/launch/launch.ts";
+import { LAUNCHER_SCRIPT } from "../src/launch/launcher-script.ts";
 import { recording, sh, until } from "./home-launch-support.ts";
 import { assertNothingOfBox, guardLeaks } from "./leak-guard.ts";
 
