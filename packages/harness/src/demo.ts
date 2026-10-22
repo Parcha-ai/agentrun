@@ -603,7 +603,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           if (label === undefined) {
             homeBoxSeen.set(key, box.provider);
             // A label that cannot be read is no label: at the final read it refuses the recording too, never a recording without that box's receipt.
-            try { label = await hostLabelIn(labelFiles!, labelDir, { provider: box.provider, key }); } catch (error) { if (final) unlabelled ??= { key, provider: box.provider, why: `its label cannot be read (${messageOf(error, paths.root)})` }; continue; }
+            try { label = await hostLabelIn(labelFiles!, labelDir, { provider: box.provider, key, run: runLabel }); } catch (error) { if (final) unlabelled ??= { key, provider: box.provider, why: `its label cannot be read (${messageOf(error, paths.root)})` }; continue; }
             if (label === undefined) { if (final) unlabelled ??= { key, provider: box.provider, why: 'its child never claimed it' }; continue; }
             homeBoxLabels.set(key, label);
           }
@@ -789,7 +789,10 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     // The last read can add a box's priced receipt: the cap is checked after it.
     ledgerReceipts(true);
     await settled(readStatus(true));
-    if (unlabelled) throw new Error(`the recording is refused: host box ${unlabelled.key} on ${unlabelled.provider} has no label: ${unlabelled.why}`);
+    // A run whose last process never completed (it refused its host box's claim, say) says so too: the box's missing label is that failure's, not a separate one.
+    const ended = processes.at(-1);
+    const cause = ended && ended.outcome?.status !== 'complete' ? ` (the run's last process did not complete: ${messageOf(ended.outcome?.message ?? (ended.stderr || `exit ${ended.exit ?? ended.signal}`), paths.root).slice(-400)})` : '';
+    if (unlabelled) throw new Error(`the recording is refused: host box ${unlabelled.key} on ${unlabelled.provider} has no label: ${unlabelled.why}${cause}`);
     const unread = [...homeBoxSeen].find(([key]) => !homeBoxLabels.has(key));
     if (unread) throw new Error(`the recording is refused: host box ${unread[0]} on ${unread[1]} has no label: the final read did not finish reading it inside its bound`);
     if (maxUsd !== null && meterKnown(recordDir) > maxUsd) overBudget = true;

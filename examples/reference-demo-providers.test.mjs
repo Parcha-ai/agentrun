@@ -252,6 +252,69 @@ test('a host box\'s label is claimed by the run\'s process: the same again in th
   for (const bad of ['not json', '{}', '{"provider":"home","key":"x","run":"a"}', '{"provider":"","key":"0","run":"a"}', '{"provider":"home","key":"0"}']) assert.throws(() => parseHostBox(bad), /HOST_BOX/, bad);
 });
 
+test('(A) a host box key is claimed exclusively, before its label: a key another supervisor life claimed first refuses this one even before that life\'s label has landed, so two lives starting together never both label one box', async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-key-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const dir = join(own, 'ids');
+  const from = new Date().toISOString();
+  // Life b won key 0 a moment ago: its key file is there, its box-N label not yet (the window two lives starting together race in).
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'host-0.json'), JSON.stringify({ provider: 'home', key: '0', run: 'life-b' }));
+  assert.throws(() => hostLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-a' }, from), /restarted|another supervisor life/);
+  assert.deepEqual(Object.keys(readIds(dir)), [], 'life a claimed no label for that box');
+  // Life b's own process (restarted) gets its key and a label.
+  assert.equal(hostLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-b' }, from), 'box-1');
+});
+
+test('(A) a FORCED race: two processes of two supervisor lives claim host key 0 at one instant, 20 rounds: each round keeps exactly one claim, refuses the other, and leaves one key file and one place label', { timeout: 120_000 }, async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-race-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const { spawn } = await import('node:child_process');
+  const { readdirSync: list, writeFileSync } = await import('node:fs');
+  const boxes = new URL('../packages/harness/dist/boxes.js', import.meta.url).href;
+  // Each process spins at a barrier (a file that does not exist yet), then claims at once.
+  const worker = "const { boxLedger } = await import(process.argv[1]); const [dir, go, run] = process.argv.slice(2); const { existsSync } = await import('node:fs'); while (!existsSync(go)) {} try { console.log(JSON.stringify({ label: boxLedger({ dir }).claimHost({ provider: 'home', key: '0', run }, new Date().toISOString()) })); } catch (error) { console.log(JSON.stringify({ refused: String(error.message) })); }";
+  for (let round = 0; round < 20; round += 1) {
+    const dir = join(own, `ids-${round}`);
+    const go = join(own, `go-${round}`);
+    const claim = (life) => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e', worker, boxes, dir, go, life], { stdio: ['ignore', 'pipe', 'inherit'] });
+      let out = '';
+      child.stdout.on('data', (chunk) => { out += chunk; });
+      child.on('error', reject);
+      child.on('close', () => resolve(JSON.parse(out)));
+    });
+    const both = [claim('life-a'), claim('life-b')];
+    await new Promise((resolve) => { setTimeout(resolve, 200); });
+    writeFileSync(go, '');
+    const results = await Promise.all(both);
+    assert.equal(results.filter((result) => result.label).length, 1, `round ${round}: one claim kept (${JSON.stringify(results)})`);
+    assert.match(results.find((result) => result.refused)?.refused ?? '', /another supervisor life/, `round ${round}: the other refused`);
+    assert.deepEqual(list(dir).filter((name) => name.startsWith('host-')), ['host-0.json']);
+    assert.equal(Object.values(readIds(dir)).filter((entry) => entry.owner === 'place').length, 1, `round ${round}: one place label`);
+  }
+});
+
+test('(B) the supervisor reads only ITS life\'s label for a host box: a previous life\'s entry in a reused ids directory is no label, so a box this life never claimed is still refused at the final read', async () => {
+  const { hostLabelIn } = await import('../packages/harness/dist/boxes.js');
+  const entry = (run) => new TextEncoder().encode(JSON.stringify({ provider: 'home', owner: 'place', key: '0', run, kind: 'host' }));
+  const files = { listRunFiles: async () => ['box-1.json'], readRunFile: async () => entry('life-old') };
+  assert.equal(await hostLabelIn(files, 'box-ids.internal', { provider: 'home', key: '0', run: 'life-new' }), undefined, 'another life\'s label is not this box\'s');
+  assert.equal(await hostLabelIn(files, 'box-ids.internal', { provider: 'home', key: '0', run: 'life-old' }), 'box-1');
+});
+
+test('(C) HOST_BOX holds provider, key and run and nothing else: any other key (a box id, a credential) is refused by name, never carried silently, and no value is echoed', () => {
+  const secret = `sk-${'s'.repeat(12)}`;
+  assert.throws(() => parseHostBox(JSON.stringify({ provider: 'home', key: '0', run: 'a', id: 'sb-provider-box-id', token: secret })), (error) => {
+    assert.match(error.message, /HOST_BOX/);
+    assert.match(error.message, /\bid\b.*\btoken\b|\btoken\b.*\bid\b/);
+    assert.equal(error.message.includes(secret) || error.message.includes('sb-provider-box-id'), false, 'no value in the refusal');
+    return true;
+  });
+  assert.deepEqual(parseHostBox(JSON.stringify({ provider: 'home', key: '0', run: 'a' })), { provider: 'home', key: '0', run: 'a' });
+});
+
 test('FAIL CLOSED, a null: a host box the place started but no process claimed (every read answers null) refuses the recording at the final read: it is never finished without that box', { timeout: 300_000 }, async (t) => {
   await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'unclaimed' }), /host box 0 on home has no label: its child never claimed it/);
 });
