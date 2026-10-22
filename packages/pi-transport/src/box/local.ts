@@ -115,6 +115,7 @@ class LocalBox implements Box {
 			maxLifetimeMs: this.#record.maxLifetimeMs,
 			snapshot: null,
 			bulk: "stream",
+			secretsVia: "fd",
 		};
 	}
 

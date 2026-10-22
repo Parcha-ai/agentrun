@@ -804,13 +804,31 @@ await launchStop(box, handle!, { graceMs: 5_000 }, BACKGROUND_CONTEXT);
   and the names the launcher sets.
 - A box may launch natively (`Box.launcher`, a test's fake box): the three calls then use it, read on every call. A
   provider leaves it undefined.
+- `stdin` (bytes, at most 64 KiB; disk's mount token) is written to EVERY incarnation's stdin and then closed. `secrets`
+  (names to values, at most 64 KiB as JSON) reach every incarnation on one inherited fd, whose NUMBER is in
+  `PI_TRANSPORT_SECRETS_FD` (3): one JSON object, then EOF. Both travel on ONE path, the launch frame below, and rest
+  nowhere: never in a file of the box, an environment, an argv, the state or `out.log`. Only a box whose facts say
+  `secretsVia: "fd"` (a real stdin path; `local` and `docker`) takes them; any other refuses `unsupported` before
+  anything runs.
+- The launch frame: the exec that starts the launcher gets, on its stdin, the line `PI-TRANSPORT-LAUNCH/1`, then the
+  secrets as JSON and the stdin, each base64 (standard alphabet, padded, unwrapped) on a line of its own (empty when
+  absent), then EOF. The launcher keeps the two parts in unexported shell variables and decodes them, for each
+  incarnation, straight into pipes; it refuses where `printf` is not a shell builtin or `base64` is missing. A malformed
+  frame is `invalid`, and nothing starts.
+- The in-box watchdog never brings back the supervisor of a launch that has `stdin` or `secrets`: only that supervisor
+  held them. The launch then reads `lost`, and only a `launch` that passes them again starts it again.
+- `user` (a name or a numeric uid) is who the program runs as, resolved in the box (`/etc/passwd`, then `getent`). A
+  root launcher drops to it with `setpriv` (or `runuser`), and needs one for a launch with `stdin` or `secrets`, so the
+  program never shares its memory; a launcher that is not root runs the program only as itself (another user is
+  `unsupported`). An unknown user is `invalid`. The state reports it (`user: { name, uid }`).
 - If both launcher processes die, the state reads `lost`: the program may still run, unsupervised. The next `launch`
   of the name adopts it and starts a supervisor again.
 - On Daytona a stopped and started sandbox keeps its disk and loses its processes. The launcher then reads `lost`, the
   program is gone, and nothing restarts by itself: the host calls `launch` again, and the old state and output are
   still there.
 
-The box needs `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `tail`, `date` and `sleep`. It is tested on Debian (dash) and
+The box needs `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `tail`, `date`, `sleep` and `id`, and for a launch with `stdin` or
+`secrets` a builtin `printf` and `base64`. It is tested on Debian (dash) and
 Alpine (BusyBox).
 
 `probeAcknowledgedWrites(box)` in `@parcha/pi-transport/testing` checks that a write a program was told was durable

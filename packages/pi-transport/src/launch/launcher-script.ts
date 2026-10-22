@@ -1,6 +1,7 @@
 /**
- * The supervisor the host uploads to a box: POSIX `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `date`, `kill`, `sleep`. It holds
- * no pipe to the host and keeps every fact in files of its own directory. It uses no parameter expansion with braces, so
+ * The supervisor the host uploads to a box: POSIX `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `date`, `kill`, `sleep`, `id`,
+ * and for a framed launch `base64` and a builtin `printf`. It holds no pipe to the host and keeps every fact in files of its
+ * own directory, except a framed launch's stdin and secrets, which live only in its processes' memory. It uses no parameter expansion with braces, so
  * that this file can hold it as a raw string.
  */
 const SCRIPT_TEMPLATE = String.raw`MODE=$1
@@ -19,7 +20,25 @@ BURST=5
 INTERVAL=60
 TERMINALS=
 LOGMAX=1048576
+FRAMED=0
+RUNAS=
 if [ -r "$D/spec.sh" ]; then . "$D/spec.sh"; fi
+# A framed launch's stdin and secrets (base64), read from this process's stdin: in memory only, never a file, an
+# environment or an argv. The supervisor hands them to each incarnation on a pipe.
+FSEC=
+FIN=
+read_frame() {
+  IFS= read -r magic || return 1
+  IFS= read -r FSEC || return 1
+  IFS= read -r FIN || return 1
+  [ "$magic" = PI-TRANSPORT-LAUNCH/1 ] || return 1
+  extra=
+  if IFS= read -r extra; then return 1; fi
+  [ -z "$extra" ] || return 1
+  case "$FSEC$FIN" in *[!A-Za-z0-9+/=]*) return 1 ;; esac
+  return 0
+}
+send_frame() { printf '%s\n%s\n%s\n' PI-TRANSPORT-LAUNCH/1 "$FSEC" "$FIN"; }
 
 now() { date +%s; }
 rest() { sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null; }
@@ -39,6 +58,8 @@ current_gen() { sed -n "s/^GEN='\(.*\)'\$/\1/p" "$D/spec.sh" 2>/dev/null; }
 MYGEN=$GEN
 stale() { [ "$(current_gen)" != "$MYGEN" ]; }
 detach() { ( $SETSID sh "$SELF" "$@" </dev/null >/dev/null 2>&1 & ); }
+# The same, with this process's frame on the new process's stdin (a pipe from the builtin printf: no argv holds it).
+detach_framed() { ( send_frame | $SETSID sh "$SELF" "$@" >/dev/null 2>&1 & ); }
 
 # An exclusive section: mkdir is atomic. Every section is a few file operations, so a holder that has not let go after 15 s
 # died inside one, and its lock is broken. A section never exits while it holds the lock.
@@ -108,7 +129,14 @@ run() {
   wr ticks.$n "$(ticks $$)"
   write_state running $$ "$(rd lastexit)"
   unlock
-  ( run_program ) >> "$D/out.log" 2>&1 < /dev/null
+  if [ "$FRAMED" = 1 ] && [ -n "$FSEC" ]; then
+    # The secrets on fd 3 and the stdin on the program's stdin, each decoded from memory straight into a pipe.
+    printf '%s' "$FSEC" | base64 -d 2>/dev/null | { exec 3<&0; printf '%s' "$FIN" | base64 -d 2>/dev/null | ( run_program ) >> "$D/out.log" 2>&1; }
+  elif [ "$FRAMED" = 1 ]; then
+    printf '%s' "$FIN" | base64 -d 2>/dev/null | ( run_program ) >> "$D/out.log" 2>&1
+  else
+    ( run_program ) >> "$D/out.log" 2>&1 < /dev/null
+  fi
   code=$?
   if terminal "$code"; then write_state exited "" "$code"; else write_state restarting "" "$code"; fi
   wr lastexit $code
@@ -133,7 +161,7 @@ start_one() {
   wr starts $n
   wr started.at "$(now)"
   write_state starting "" "$(rd lastexit)"
-  detach run "$D" $n
+  if [ "$FRAMED" = 1 ]; then detach_framed run "$D" $n; else detach run "$D" $n; fi
   i=0
   while [ ! -e "$D/pid.$n" ] && [ "$i" -lt 50 ]; do
     sleep $TICK
@@ -218,7 +246,12 @@ watch() {
     if [ -e "$D/done" ] || [ -e "$D/stop.req" ] || stale; then watch_over; fi
     sleep 1
     if [ -e "$D/done" ] || [ -e "$D/stop.req" ] || stale; then watch_over; fi
-    if ! alive "$(rd launcher.pid)" "$(rd launcher.ticks)"; then detach supervise "$D"; fi
+    # A framed launch's supervisor held its stdin and secrets in memory: nothing here has them, so it is never brought back
+    # (the launch reads lost; a caller that holds them again launches it again).
+    if ! alive "$(rd launcher.pid)" "$(rd launcher.ticks)"; then
+      if [ "$FRAMED" = 1 ]; then watch_over; fi
+      detach supervise "$D"
+    fi
     trim_log
   done
 }
@@ -262,7 +295,41 @@ status() {
   if [ "$done_for" = 0 ] && { alive "$(rd launcher.pid)" "$(rd launcher.ticks)" || alive "$(rd watch.pid)" "$(rd watch.ticks)"; }; then a=1; fi
   printf 'ALIVE %s\n' "$a"
   printf 'GEN %s\n' "$(current_gen)"
+  if [ -r "$D/user" ]; then read -r u1 u2 u3 u4 < "$D/user"; printf 'USER %s %s\n' "$u1" "$u2"; fi
   if [ -n "$st" ]; then printf '%s\n' "$st"; else echo NOSTATE; fi
+}
+
+# Who the program runs as ($RUNAS, a name or a uid), resolved once at the start into $D/user (name uid gid home). A
+# launcher that is not root runs it only as itself; a root launcher drops to another user with setpriv or runuser, and needs
+# a user for a framed launch, so the program never shares the root launcher's memory.
+resolve_user() {
+  me=$(id -u)
+  if [ -z "$RUNAS" ]; then
+    if [ "$me" = 0 ] && [ "$FRAMED" = 1 ]; then echo "INVALID a root launcher that holds a launch's stdin or secrets needs a user to run it as"; return 8; fi
+    return 0
+  fi
+  line=$(awk -F: -v u="$RUNAS" '$1 == u || $3 == u { print $1 " " $3 " " $4 " " $6; exit }' /etc/passwd 2>/dev/null)
+  if [ -z "$line" ] && command -v getent >/dev/null 2>&1; then
+    line=$(getent passwd "$RUNAS" 2>/dev/null | awk -F: '{ print $1 " " $3 " " $4 " " $6; exit }')
+  fi
+  [ -n "$line" ] || { echo "INVALID there is no user $RUNAS in this box"; return 8; }
+  uid=$(printf '%s\n' "$line" | cut -d' ' -f2)
+  if [ "$me" != 0 ] && [ "$uid" != "$me" ]; then echo "UNSUPPORTED only a root launcher runs a program as another user"; return 9; fi
+  if [ "$me" = 0 ] && [ "$uid" != 0 ] && ! command -v setpriv >/dev/null 2>&1 && ! command -v runuser >/dev/null 2>&1; then
+    echo "UNSUPPORTED this box has neither setpriv nor runuser to run the program as $RUNAS"; return 9
+  fi
+  wr user "$line"
+}
+
+# The start of a launch: a framed one reads its frame, and both resolve the user, before the supervisor exists.
+start_launch() {
+  if [ "$FRAMED" = 1 ]; then
+    case "$(command -V printf 2>/dev/null)" in *builtin*) ;; *) echo "UNSUPPORTED printf is not a shell builtin in this box, so the launch's stdin could reach an argv"; exit 10 ;; esac
+    command -v base64 >/dev/null 2>&1 || { echo "UNSUPPORTED this box has no base64 to decode the launch's stdin"; exit 10; }
+    read_frame || { echo "INVALID the launch frame is malformed (this launch carries stdin or secrets: launch it with them)"; exit 7; }
+  fi
+  resolve_user || exit $?
+  if [ "$FRAMED" = 1 ]; then detach_framed supervise "$D"; else detach supervise "$D"; fi
 }
 
 clear_dir() {
@@ -286,10 +353,10 @@ case "$MODE" in
   trim) trim_log ;;
   centis) centis ;;
   clear) clear_dir ;;
-  run) run "$3" ;;
-  supervise) supervise ;;
+  run) if [ "$FRAMED" = 1 ]; then read_frame || exit 7; fi; run "$3" ;;
+  supervise) if [ "$FRAMED" = 1 ]; then read_frame || exit 7; fi; supervise ;;
   watch) watch ;;
-  start) detach supervise "$D" ;;
+  start) start_launch ;;
   stop) stopit "$3" ;;
   status) status ;;
   *) echo "unknown mode $MODE" >&2; exit 2 ;;

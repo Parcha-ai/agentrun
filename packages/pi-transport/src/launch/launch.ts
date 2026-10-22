@@ -9,7 +9,13 @@ const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const RESERVED_ENV_PREFIX = "PI_TRANSPORT_";
 /** The names the launcher sets for every incarnation itself. */
-const LAUNCHER_ENV = new Set(["PATH", "HOME", "LANG", "PI_TRANSPORT_INCARNATION"]);
+const LAUNCHER_ENV = new Set(["PATH", "HOME", "LANG", "PI_TRANSPORT_INCARNATION", "PI_TRANSPORT_SECRETS_FD"]);
+/** A user name or a numeric uid, as `user` names one. */
+const USER_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,31}$/;
+/** The most a launch's stdin, or its secrets as JSON, may be: each part of the frame, decoded. */
+const MAX_FRAME_PART = 64 * 1024;
+/** The first line of the launch frame (README, "The launch frame"). */
+const FRAME_MAGIC = "PI-TRANSPORT-LAUNCH/1";
 /** A name one of whose `_`-separated segments says it holds a key: refused in `env`, which rests in a file of the box. */
 const KEY_SEGMENT = /^(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|CREDENTIALS)$/i;
 const keyShaped = (name: string): boolean => name.split("_").some((segment) => KEY_SEGMENT.test(segment));
@@ -93,6 +99,8 @@ export type LaunchState = {
 	readonly incarnation: number;
 	/** How many times the program was started again: the incarnation less one, never below 0. */
 	readonly restarts: number;
+	/** The user the program runs as, when the launch named one: never a secret. */
+	readonly user?: { readonly name: string; readonly uid: number };
 	/** The process group leader of the running program's wrapper; absent unless `running`. */
 	readonly pid?: number;
 	/** How many times the program was started. */
@@ -208,11 +216,26 @@ function validate(name: string, spec: LaunchSpec | undefined): LaunchError | und
 			return new LaunchError("invalid", `${name} is both in env and in inheritEnv: name it once`);
 		}
 	}
-	// Not yet in this launcher: refused rather than ignored.
-	for (const field of ["user", "stdin", "secrets", "beforeStop"] as const) {
-		if (spec[field] !== undefined)
-			return new LaunchError("unsupported", `${field} is not supported by this launcher yet`);
+	if (spec.user !== undefined && (typeof spec.user !== "string" || !USER_PATTERN.test(spec.user)))
+		return new LaunchError("invalid", "user is a user name or a numeric uid");
+	if (spec.stdin !== undefined) {
+		if (!(spec.stdin instanceof Uint8Array)) return new LaunchError("invalid", "stdin is bytes (a Uint8Array)");
+		if (spec.stdin.byteLength > MAX_FRAME_PART) return new LaunchError("invalid", "stdin is over 64 KiB");
 	}
+	if (spec.secrets !== undefined) {
+		for (const [key, value] of Object.entries(spec.secrets)) {
+			// A secret is named, never echoed: no message carries a value.
+			if (!ENV_NAME_PATTERN.test(key))
+				return new LaunchError("invalid", `the secret name ${JSON.stringify(key)} is not a name`);
+			if (typeof value !== "string" || value.includes("\0"))
+				return new LaunchError("invalid", `the secret ${key} is not a string without a NUL byte`);
+		}
+		if (Buffer.byteLength(JSON.stringify(spec.secrets), "utf8") > MAX_FRAME_PART)
+			return new LaunchError("invalid", "the secrets are over 64 KiB as JSON");
+	}
+	// Not yet in this launcher: refused rather than ignored.
+	if (spec.beforeStop !== undefined)
+		return new LaunchError("unsupported", "beforeStop is not supported by this launcher yet");
 	if (spec.argv.some((word) => word.includes("\0"))) return new LaunchError("invalid", "argv holds a NUL byte");
 	for (const code of spec.terminalExits ?? []) {
 		if (!Number.isInteger(code) || code < 1 || code > MAX_EXIT_CODE) {
@@ -257,6 +280,9 @@ function specScript(spec: LaunchSpec): string {
 		`INTERVAL=${Math.ceil(limit.intervalMs / 1000)}`,
 		`TERMINALS=${quote((spec.terminalExits ?? []).join(" "))}`,
 		`LOGMAX=${Math.floor(spec.logMaxBytes ?? DEFAULT_LOG_MAX_BYTES)}`,
+		// A launch with stdin or secrets is FRAMED: they come on the start's stdin and live only in the launcher's memory.
+		`FRAMED=${framed(spec) ? 1 : 0}`,
+		`RUNAS=${quote(spec.user ?? "")}`,
 		"run_program() {",
 	];
 	if (spec.cwd !== undefined) lines.push(`  cd ${quote(spec.cwd)} || exit 126`);
@@ -275,8 +301,24 @@ function specScript(spec: LaunchSpec): string {
 		"  export LANG=C.UTF-8",
 		'  export PI_TRANSPORT_INCARNATION="$n"',
 	);
+	// The secrets are on fd 3, made for this incarnation from the launcher's memory: only the number is in the environment.
+	if (spec.secrets !== undefined) lines.push("  export PI_TRANSPORT_SECRETS_FD=3");
 	for (const [key, value] of Object.entries(spec.env ?? {})) lines.push(`  export ${key}=${quote(value)}`);
-	lines.push(`  exec ${spec.argv.map(quote).join(" ")}`, "}");
+	const argv = spec.argv.map(quote).join(" ");
+	// The user the launcher resolved at its start ($D/user: name, uid, gid, home). A root launcher drops to it; one that is
+	// that user already execs as it is.
+	lines.push(
+		'  if [ -r "$D/user" ]; then',
+		'    read -r u_name u_id u_gid u_home < "$D/user"',
+		'    export HOME="$u_home"',
+		'    if [ "$(id -u)" = 0 ] && [ "$u_id" != 0 ]; then',
+		`      if command -v setpriv >/dev/null 2>&1; then exec setpriv --reuid="$u_id" --regid="$u_gid" --init-groups -- ${argv}; fi`,
+		`      exec runuser -u "$u_name" -- ${argv}`,
+		"    fi",
+		"  fi",
+		`  exec ${argv}`,
+		"}",
+	);
 	return `${lines.join("\n")}\n`;
 }
 
@@ -287,12 +329,23 @@ async function runScript(
 	args: readonly string[],
 	context: Context,
 	timeoutMs: number = CALL_TIMEOUT_MS,
+	/** Bytes for the command's stdin (the launch frame), written and then closed. Never in its argv. */
+	input?: Uint8Array,
 ): Promise<Result<{ exitCode: number; text: string }, LaunchError>> {
 	const started = await box.exec(["sh", "-c", script, "sh", ...args], { timeoutMs }, context);
 	if (!started.ok)
 		return err(
 			new LaunchError("box", `could not run a command in box ${box.id}: ${started.error.message}`, started.error),
 		);
+	if (input !== undefined) {
+		// A command that ended before reading it (a claim taken over) says so by its exit code; a failed write is not the answer.
+		try {
+			await started.value.stdin.write(input);
+			await started.value.stdin.close();
+		} catch {
+			// Its own answer is read below.
+		}
+	}
 	const finished = await finish(started.value);
 	if (!finished.ok)
 		return err(
@@ -319,6 +372,7 @@ function parseState(text: string, directory: string): LaunchState | "none" | und
 			since: number;
 		};
 		const lost = !alive && !TERMINAL_PHASES.has(raw.phase) && text.includes("ALIVE ");
+		const user = /^USER (\S+) (\d+)$/m.exec(text);
 		return {
 			launch: { v: 1, name: directory.slice(directory.lastIndexOf("/") + 1) },
 			phase: lost ? "lost" : raw.phase,
@@ -329,6 +383,7 @@ function parseState(text: string, directory: string): LaunchState | "none" | und
 			...(raw.lastExit === null ? {} : { lastExit: raw.lastExit }),
 			since: raw.since,
 			launcherAlive: alive,
+			...(user ? { user: { name: user[1]!, uid: Number(user[2]) } } : {}),
 			directory,
 		};
 	} catch {
@@ -404,6 +459,32 @@ async function waitForStart(box: Box, directory: string, context: Context): Prom
 	}
 }
 
+/** Whether a launch carries stdin or secrets, which only a box with a real stdin path can take. */
+const framed = (spec: LaunchSpec): boolean => spec.stdin !== undefined || spec.secrets !== undefined;
+
+/**
+ * The launch frame, on the stdin of the one exec that starts the launcher: a magic line, then the secrets as JSON and the
+ * stdin, each base64 on a line of its own (empty when absent), then EOF. The launcher keeps the parts only in its memory.
+ */
+function frameOf(spec: LaunchSpec): Uint8Array | undefined {
+	if (!framed(spec)) return undefined;
+	const secrets =
+		spec.secrets === undefined ? "" : Buffer.from(JSON.stringify(spec.secrets), "utf8").toString("base64");
+	const stdin = spec.stdin === undefined ? "" : Buffer.from(spec.stdin).toString("base64");
+	return new TextEncoder().encode(`${FRAME_MAGIC}\n${secrets}\n${stdin}\n`);
+}
+
+/** A start the launcher refused, as it says on a line of its own: INVALID, UNSUPPORTED or REFUSED and why (never a value). */
+function refusalIn(text: string): LaunchError | undefined {
+	for (const line of text.split("\n")) {
+		const said = /^(INVALID|UNSUPPORTED|REFUSED) (.+)$/.exec(line.trim());
+		if (said === null) continue;
+		const code = said[1] === "INVALID" ? "invalid" : said[1] === "UNSUPPORTED" ? "unsupported" : "refused";
+		return new LaunchError(code, said[2]!.slice(0, 200));
+	}
+	return undefined;
+}
+
 /** A handle this package can have made: version 1 and a plain launch name. */
 function handleError(launch: Launch): LaunchError | undefined {
 	if (launch === null || typeof launch !== "object" || launch.v !== 1 || typeof launch.name !== "string")
@@ -426,8 +507,19 @@ export async function launch(
 ): Promise<Result<LaunchState, LaunchError>> {
 	const invalid = validate(name, spec);
 	if (invalid !== undefined) return err(invalid);
+	if (framed(spec)) {
+		const facts = box.facts();
+		if (facts.secretsVia !== "fd" || facts.liveProcesses === false)
+			return err(
+				new LaunchError(
+					"unsupported",
+					`box ${box.id} cannot carry a launch's stdin or secrets: it has no real stdin path for them (secretsVia "fd")`,
+				),
+			);
+	}
 	// A box that launches natively does it itself; read on every call (an attach returns a new Box).
 	if (box.launcher !== undefined) return box.launcher.launch(name, spec, context);
+	const frame = frameOf(spec);
 	// Only a caller that holds the directory (it made it, or took it over from a dead or ended launch) fills it.
 	const deadline = Date.now() + ABANDONED_CLAIM_S * 1000 + START_WAIT_MS;
 	let directory: string;
@@ -448,8 +540,17 @@ export async function launch(
 			if (existing.phase !== "lost") return ok(existing);
 			// Its launcher is gone and nothing in the box restarts it: start the supervisor again, which adopts the file.
 			// Two callers that do so make one supervisor: it takes a lock before it looks for another.
-			const revived = await runScript(box, 'sh "$1/launcher.sh" start "$1"', [directory], context);
+			const revived = await runScript(
+				box,
+				'sh "$1/launcher.sh" start "$1"',
+				[directory],
+				context,
+				CALL_TIMEOUT_MS,
+				frame,
+			);
 			if (!revived.ok) return revived;
+			const refused = refusalIn(revived.value.text);
+			if (refused !== undefined) return err(refused);
 			return waitForStart(box, directory, context);
 		}
 		const taken = await runScript(
@@ -495,11 +596,16 @@ export async function launch(
 		'[ "$(cat "$1/owner" 2>/dev/null)" = "$2" ] || { echo "the claim was taken over"; exit 5; }; mv "$1/spec.sh.part.$2" "$1/spec.sh" && mv "$1/launcher.sh.part.$2" "$1/launcher.sh" && sh "$1/launcher.sh" start "$1"',
 		[directory, token],
 		context,
+		CALL_TIMEOUT_MS,
+		frame,
 	);
 	if (!started.ok || started.value.exitCode !== 0) await release(box, directory, token, context);
 	if (!started.ok) return started;
 	if (started.value.exitCode !== 0)
-		return err(new LaunchError("failed", `the launcher did not start: ${started.value.text.trim().slice(0, 200)}`));
+		return err(
+			refusalIn(started.value.text) ??
+				new LaunchError("failed", `the launcher did not start: ${started.value.text.trim().slice(0, 200)}`),
+		);
 	return waitForStart(box, directory, context);
 }
 

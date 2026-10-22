@@ -87,6 +87,13 @@ export type BoxFacts = {
 	 * arrives after the call). Absent means true. A box that cannot keep a program running can never be a home.
 	 */
 	readonly liveProcesses?: boolean;
+	/**
+	 * How this box takes a secret for a program: `fd`, a real stdin path, so the launcher (`@parcha/pi-transport/launch`)
+	 * gets a launch's stdin and secrets on the stdin of the one exec that starts it and holds them only in its memory;
+	 * `substitution`, a provider that fills an outbound credential so the value never enters the box; `file`, the one
+	 * staging exception. Absent: it takes none, and a launch with `stdin` or `secrets` is refused `unsupported`.
+	 */
+	readonly secretsVia?: "fd" | "substitution" | "file";
 };
 
 /** Whether a box still runs. */
