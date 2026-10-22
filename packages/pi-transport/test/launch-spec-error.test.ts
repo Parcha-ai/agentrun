@@ -1,0 +1,94 @@
+// The launcher's pure spec check (`launchSpecError`, `@parcha/pi-transport/launch`): what `launch` refuses about a spec, known
+// before any box exists. A host that makes a box only to launch in it (disk's boxHost, a VM) asks it first, so a bad spec never
+// boots a machine. `launch` calls the same function first: one answer, never two checks that can drift.
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { describe, expect, it } from "vitest";
+import type { Box } from "../src/box/box.ts";
+import { type LaunchSpec, launch, launchSpecError } from "../src/launch/index.ts";
+
+const context = BACKGROUND_CONTEXT;
+const VALUE = "zz-a-value-never-echoed-zz";
+
+/** A box that records every property it is asked for: a pure check asks it nothing. */
+function recordingBox(): { box: Box; touched: string[] } {
+	const touched: string[] = [];
+	const box = new Proxy({} as Box, {
+		get(_target, key) {
+			touched.push(String(key));
+			return key === "facts" ? () => ({ secretsVia: "fd", liveProcesses: true }) : undefined;
+		},
+	});
+	return { box, touched };
+}
+
+const refused: [string, LaunchSpec][] = [
+	["a launcher name in env", { argv: ["true"], env: { FSEC: VALUE } }],
+	["a launcher temporary in env", { argv: ["true"], env: { line: VALUE } }],
+	["a loader name in env", { argv: ["true"], env: { LD_PRELOAD: VALUE } }],
+	["any LD_ name in env", { argv: ["true"], env: { LD_DEBUG: VALUE } }],
+	["a shell name in env", { argv: ["true"], env: { BASH_ENV: VALUE } }],
+	["a key-shaped name in env", { argv: ["true"], env: { MODAL_TOKEN_ID: VALUE } }],
+	["a name the launcher sets", { argv: ["true"], env: { PATH: VALUE } }],
+	["a name that is not a name", { argv: ["true"], env: { "not a name": VALUE } }],
+	["a launcher name in inheritEnv", { argv: ["true"], inheritEnv: ["FIN"] }],
+	["a loader name in inheritEnv", { argv: ["true"], inheritEnv: ["LD_AUDIT"] }],
+	["a name both in env and inheritEnv", { argv: ["true"], env: { APP: VALUE }, inheritEnv: ["APP"] }],
+	["a bad user", { argv: ["true"], user: "not a user!" }],
+	["an empty argv", { argv: [] }],
+	["a secret that is not a name", { argv: ["true"], secrets: { "not a name": VALUE } }],
+	["stdin over 64 KiB", { argv: ["true"], stdin: new Uint8Array(64 * 1024 + 1) }],
+	["a framed launch as root", { argv: ["true"], user: "root", stdin: new Uint8Array([1]) }],
+	["a framed launch as uid 0", { argv: ["true"], user: "0", secrets: { A: VALUE } }],
+];
+
+describe("launchSpecError", () => {
+	it("gives, for every refusal launch gives on a spec, the SAME code and message, touches no box, and never echoes the value", async () => {
+		for (const [what, spec] of refused) {
+			const pure = launchSpecError("named", spec);
+			expect(pure?.code, what).toBe("invalid");
+			const { box, touched } = recordingBox();
+			const launched = await launch(box, "named", spec, context);
+			expect(launched.ok, what).toBe(false);
+			if (launched.ok) continue;
+			expect(launched.error.code, what).toBe(pure!.code);
+			expect(launched.error.message, what).toBe(pure!.message);
+			expect(touched, `${what}: launch asked the box nothing`).toEqual([]);
+			expect(pure!.message, what).not.toContain(VALUE);
+		}
+		expect(launchSpecError("not a name!", { argv: ["true"] })?.code).toBe("invalid");
+	});
+
+	it("passes a good spec, as launch would", () => {
+		expect(
+			launchSpecError("named", {
+				argv: ["sleep", "300"],
+				env: { MODE_OF_APP: "home", PDA_HOLDER: "{}" },
+				user: "pda",
+				stdin: new Uint8Array([1]),
+			}),
+		).toBeUndefined();
+	});
+});
+
+describe("the README's launch example", () => {
+	it("passes the spec check: its settings use no name the launcher reserves", async () => {
+		const { readFileSync } = await import("node:fs");
+		const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+		const line = readme.split("\n").find((each) => each.includes('await launch(box, "runner"'));
+		expect(line).toBeDefined();
+		const env = Object.fromEntries([...line!.matchAll(/([A-Z_][A-Z0-9_]*): "([^"]*)"/g)].map((m) => [m[1]!, m[2]!]));
+		expect(Object.keys(env).length).toBeGreaterThan(0);
+		expect(launchSpecError("runner", { argv: ["node", "runner.js"], env })).toBeUndefined();
+	});
+});
+
+describe("a framed launch's user", () => {
+	it("is never root: a non-framed launch may name root, a framed one is refused for root or uid 0", () => {
+		expect(launchSpecError("named", { argv: ["true"], user: "root" })).toBeUndefined();
+		for (const user of ["root", "0", "00"]) {
+			expect(launchSpecError("named", { argv: ["true"], user, stdin: new Uint8Array([1]) })?.code, user).toBe(
+				"invalid",
+			);
+		}
+	});
+});
