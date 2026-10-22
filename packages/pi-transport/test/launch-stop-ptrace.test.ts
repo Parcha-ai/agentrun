@@ -134,6 +134,56 @@ describe("the launcher's ptrace check, measured in the box", () => {
 		expect(existsSync(join(dir, "launcher.pid"))).toBe(false);
 	});
 
+	describe("on a kernel with no Yama (no ptrace file) and on one whose scope is 0, as the order of the checks decides", () => {
+		// No Yama: the file's directory is missing, so a vm's raise cannot write it. Scope 0: a read-only file holding 0, so it cannot either.
+		const kernels = (): [string, string][] => {
+			const zero = scope("0\n");
+			chmodSync(zero, 0o444);
+			return [
+				["no Yama", join(root, `no-yama-${Math.random().toString(16).slice(2)}`, "ptrace_scope")],
+				["scope 0", zero],
+			];
+		};
+		const frame = `PI-TRANSPORT-LAUNCH/1\n\n${Buffer.from("tok").toString("base64")}\n`;
+		const startWith = (file: string, spec: string) => {
+			const dir = join(root, `order-${Math.random().toString(16).slice(2)}`);
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(join(dir, "spec.sh"), spec);
+			const ran = spawnSync("sh", [scriptMeasuring(file), "start", dir], {
+				input: frame,
+				env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+			});
+			return { status: ran.status, out: ran.stdout.toString(), supervised: existsSync(join(dir, "launcher.pid")) };
+		};
+
+		it("REFUSES a framed launch whose program is not root, on a vm too (case 1)", () => {
+			for (const [kernel, file] of kernels()) {
+				const ran = startWith(
+					file,
+					"GEN='g1'\nFRAMED=1\nRUNAS=''\nISOLATION='vm'\nrun_program() {\n  exec true\n}\n",
+				);
+				expect(ran.status, kernel).toBe(11);
+				expect(ran.out, kernel).toMatch(/^REFUSED kernel\.yama\.ptrace_scope is 0 /m);
+				expect(ran.supervised, kernel).toBe(false);
+			}
+		});
+
+		it("REFUSES a framed launch as root with no toolsUser, before any ptrace check (case 3)", () => {
+			if (process.getuid?.() === 0) return;
+			for (const [kernel, file] of kernels()) {
+				const ran = startWith(
+					file,
+					"GEN='g1'\nFRAMED=1\nRUNAS='root'\nISOLATION='vm'\nrun_program() {\n  exec true\n}\n",
+				);
+				expect(ran.status, kernel).toBe(8);
+				expect(ran.out, kernel).toMatch(
+					/^INVALID a launch with stdin or secrets runs its program as root \(uid 0\) only with a toolsUser/m,
+				);
+				expect(ran.supervised, kernel).toBe(false);
+			}
+		});
+	});
+
 	it("lets a framed launch proceed on a box that reports no ptrace fact when the measured scope is 1 or more", async () => {
 		const measured = readFileSync("/proc/sys/kernel/yama/ptrace_scope", "utf8").trim();
 		if (Number(measured) < 1) return;

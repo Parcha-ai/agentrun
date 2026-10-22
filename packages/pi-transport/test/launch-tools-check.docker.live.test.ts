@@ -12,7 +12,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Box } from "../src/box/box.ts";
 import { dockerBoxes } from "../src/box/docker.ts";
 import { finish } from "../src/box/files.ts";
-import { LAUNCHER_SCRIPT, TOOLS_CHECK_LINE } from "../src/launch/launcher-script.ts";
+import { LAUNCHER_SCRIPT, PTRACE_FILE_LINE, TOOLS_CHECK_LINE } from "../src/launch/launcher-script.ts";
 import { sh, until } from "./home-launch-support.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -267,6 +267,27 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 				expect(ran.exitCode).toBe(10);
 				expect(ran.out).toMatch(/^UNSUPPORTED the check found no mount to walk/m);
 				expect(await exists(box, `${ran.dir}/launcher.pid`)).toBe(false);
+			});
+		});
+
+		it("PROCEEDS as root with a valid tools user on a kernel with no Yama and on one whose scope is 0, and never touches the scope (case 2)", async () => {
+			await withBox("printf '0\\n' > /tmp/zz-scope-0", async (box) => {
+				for (const [kernel, file] of [
+					["no Yama", "/nonexistent/yama/ptrace_scope"],
+					["scope 0", "/tmp/zz-scope-0"],
+				] as const) {
+					expect(LAUNCHER_SCRIPT).toContain(PTRACE_FILE_LINE);
+					const script = LAUNCHER_SCRIPT.replace(PTRACE_FILE_LINE, `PTRACE_FILE='${file}'`);
+					// A vm: a ptrace check here would raise a writable 0 to 1, so a 0 left as it was shows no check ran.
+					const spec = "GEN='g1'\nFRAMED=1\nTOOLS='pda'\nISOLATION='vm'\nrun_program() {\n  exec sleep 300\n}\n";
+					const ran = await start(box, { script, spec });
+					expect(ran.exitCode, `${kernel}: ${ran.out}`).toBe(0);
+					await until(`the supervisor (${kernel})`, async () =>
+						(await exists(box, `${ran.dir}/launcher.pid`)) ? true : undefined,
+					);
+				}
+				expect(await exists(box, "/nonexistent/yama/ptrace_scope")).toBe(false);
+				expect((await sh(box, "cat /tmp/zz-scope-0")).text.trim()).toBe("0");
 			});
 		});
 
