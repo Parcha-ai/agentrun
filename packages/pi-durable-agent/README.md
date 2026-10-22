@@ -108,10 +108,10 @@ the first run that carries it back. Run 2 starts with the lease, finds the sign-
 
 [`examples/web`](https://github.com/Parcha-ai/agentrun/tree/main/examples/web) is a small web server over an agent home:
 a job history, each run's timeline, its files and its live browser. Its agent asks the person to sign in to a site
-through the live view, and its next run starts signed in. Its browser is a Chrome on your machine
-(`AGENT_BROWSER=local`, no key), Browserbase or Kernel, and a run needs a model endpoint. With neither, the quickstart
-above is the keyless path. To run it, follow
-[its README](https://github.com/Parcha-ai/agentrun/tree/main/examples/web#run-it) from a checkout.
+through the live view, and its next run starts signed in. A run needs a browser and a model endpoint. With neither,
+the quickstart above is the keyless path.
+[Its README](https://github.com/Parcha-ai/agentrun/tree/main/examples/web#run-it) says which browsers it takes and how
+to run it from a checkout.
 
 ## A saved sign-in
 
