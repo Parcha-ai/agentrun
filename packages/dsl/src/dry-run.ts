@@ -159,8 +159,8 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
   }
   if (opts.probeContext && !Object.prototype.hasOwnProperty.call(input, "context")) {
     input = { ...input, context: {
-      references: opts.probeContext?.references ?? {},
-      references_parsed: opts.probeContext?.references_parsed ?? {},
+      references: opts.probeContext.references ?? {},
+      references_parsed: opts.probeContext.references_parsed ?? {},
     } };
   }
   let currentLabel = "";
