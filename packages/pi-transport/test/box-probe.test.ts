@@ -86,6 +86,13 @@ describe("the probe script, run for real", () => {
 		expect(noDevice.fuse).toBe(false);
 		expect(noDevice.fuseMissing.join(" ")).toMatch(/fuse openable/);
 		expect(run({ device: "absent" }, "fuse").reading.fuse).toBe(false);
+		// A plain fusermount3 first on the PATH must not hide a working setuid fusermount after it.
+		expect(run({ device: "char", fusermount3: "plain", fusermount: "setuid" }, "fuse").reading).toMatchObject({
+			fuse: true,
+			fuseMissing: [],
+		});
+		expect(run({ device: "char", fusermount3: "setuid", fusermount: "plain" }, "fuse").reading.fuse).toBe(true);
+		expect(run({ device: "char", fusermount3: "plain", fusermount: "plain" }, "fuse").reading.fuse).toBe(false);
 		const plain = run({ device: "char", fusermount3: "plain" }, "fuse").reading;
 		expect(plain.fuse).toBe(false);
 		expect(plain.fuseMissing).toEqual(["a setuid fusermount"]);

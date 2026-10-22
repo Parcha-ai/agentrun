@@ -11,8 +11,12 @@ export const PROBE = [
 	'if [ "$2" = fuse ]; then',
 	"  dev=0",
 	"  if [ -c /dev/fuse ] && command -v setpriv >/dev/null 2>&1 && setpriv --reuid=65534 --regid=65534 --clear-groups sh -c 'exec 3<>/dev/fuse' 2>/dev/null; then dev=1; fi",
-	"  h=$(command -v fusermount3 || command -v fusermount); helper=0",
-	'  if [ -n "$h" ] && [ -u "$h" ]; then helper=1; fi',
+	"  helper=0",
+	// Each name as a program would run it (the first on the PATH): one working helper is enough, whichever the other is.
+	"  for n in fusermount3 fusermount; do",
+	'    h=$(command -v "$n" 2>/dev/null)',
+	'    if [ -n "$h" ] && [ -u "$h" ]; then helper=1; fi',
+	"  done",
 	'  echo "fuse_dev=$dev"; echo "fuse_helper=$helper"',
 	"fi",
 ].join("\n");
