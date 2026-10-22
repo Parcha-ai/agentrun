@@ -942,6 +942,60 @@ describe("archilPlace unheld: a hook in the start window, while nobody holds the
     assert.deepEqual(answers, ["created", 'exists {"attempt":1}']);
   });
 
+  it("a put the hook started and never awaited settles inside the window: the driver starts only after it is written", async () => {
+    const control = new FakeControl();
+    const fake = fakeHost(control);
+    const seenAtStart: (string | undefined)[] = [];
+    const host: HostDriver = { ...fake.host, start: async (r, token, attempt) => (seenAtStart.push(control.objects.get(`${run}box-ids.internal/pending/late.json`)), fake.host.start(r, token, attempt)) };
+    let open!: () => void;
+    const held = new Promise<void>((r) => (open = r));
+    control.onHead = (key) => (key === `${run}box-ids.internal/pending/late.json` ? held : undefined);
+    const place = makePlace({
+      ...REF, control, host, ensure: OWNER,
+      unheld: async (r: UnheldRun) => {
+        void r.put("box-ids.internal/pending/late.json", "{}").catch(() => {});
+        setTimeout(open, 50);
+      },
+    });
+    await place.start({ gen: 1, env: {}, stdin: await place.token!(1) });
+    assert.deepEqual(seenAtStart, ["{}"], "the file was there when the driver started");
+  });
+
+  it("an unawaited put the server refuses (409 OperationAborted) after the hook returned still fails the start WINDOW_CLOSED, and no box", async () => {
+    const control = new FakeControl();
+    const { host, starts } = fakeHost(control);
+    let open!: () => void;
+    const held = new Promise<void>((r) => (open = r));
+    control.onHead = (key) => (key === `${run}box-ids.internal/pending/late.json` ? held : undefined);
+    control.putFaultUnder = { prefix: `${run}box-ids.internal/`, error: closed };
+    const place = makePlace({
+      ...REF, control, host, ensure: OWNER,
+      unheld: async (r: UnheldRun) => {
+        void r.put("box-ids.internal/pending/late.json", "{}").catch(() => {});
+        setTimeout(open, 50);
+      },
+    });
+    await assert.rejects(place.start({ gen: 1, env: {}, stdin: await place.token!(1) }), startFails("WINDOW_CLOSED"));
+    assert.equal(starts.length, 0, "no box");
+  });
+
+  it("an unawaited put still in flight at the hook's bound fails the start UNHELD_FAILED, and no box", async () => {
+    const control = new FakeControl();
+    const { host, starts } = fakeHost(control);
+    control.onHead = (key) => (key === `${run}box-ids.internal/pending/stuck.json` ? new Promise<void>(() => {}) : undefined);
+    const place = makePlace({
+      ...REF, control, host, ensure: OWNER, unheldTimeoutMs: 100,
+      unheld: async (r: UnheldRun) => void r.put("box-ids.internal/pending/stuck.json", "{}").catch(() => {}),
+    });
+    const token = await place.token!(1);
+    const unbounded = new Error("the start was still waiting on a put 5 s after a 100 ms bound");
+    await assert.rejects(Promise.race([place.start({ gen: 1, env: {}, stdin: token }), sleep(5_000).then(() => { throw unbounded; })]), (e: unknown) => {
+      assert.notEqual(e, unbounded, "the bound covers the puts too");
+      return startFails("UNHELD_FAILED", /100 ms/)(e);
+    });
+    assert.equal(starts.length, 0, "no box");
+  });
+
   it("two supervisor lives in one window (a barrier holds both past the start-mark read before either writes it): put is NOT exclusive, so both puts of one name succeed; names unique to each start are both kept, neither overwritten", async () => {
     const control = new FakeControl();
     const barrier = (n: number) => {
@@ -1015,6 +1069,40 @@ describe("archilPlace: an adopted start keeps the key its box already has (a fix
     };
     return host;
   };
+
+  it("dockerHost's shapes: its adopted handle drops the container id its fresh one has, and is still the same box (one entry, stopped once)", async () => {
+    const control = new FakeControl();
+    const base = adopting(control);
+    const stopped = new Set<string>();
+    // As dockerHost answers: a fresh start's handle has `id`; an adoption's has the same fields but no `id`.
+    const host: HostDriver & { mountRoot: string } = {
+      ...base,
+      async start(r, token, attempt): Promise<HostHandle> {
+        const h = await base.start(r, token, attempt);
+        const docker = { driver: "docker", fleet: "pda", daemon: "unix:///var/run/docker.sock", name: `pda-${ID}-${String(h.name)}`, mountpoint: `/mnt/fake/runs/${ID}`, image: "pda:test" };
+        return h.adopted ? { ...docker, adopted: true } : { ...docker, id: `c0ffee${String(h.name)}` };
+      },
+      async stop(h: HostHandle) {
+        control.ops.push(`stop ${String(h.name)}`);
+        stopped.add(String(h.name));
+      },
+      status: async (h: HostHandle) => (stopped.has(String(h.name)) ? "stopped" : "running"),
+      box: (h) => ({ provider: "docker", kind: `container ${String(h.name)}`, from: "2026-10-22T00:00:00.000Z", to: null }),
+    };
+    const place = archilPlace({ ...REF, control, host, pollMs: 5 })({ paths: pathsAt("/x") });
+    let released = false;
+    try {
+      const first = await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
+      await place.kill(first, "process");
+      await place.recover(first, "process", { gen: 2, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(2) });
+      assert.equal((await place.status!()).boxes!.length, 1, "one box, one key");
+      released = true;
+      await place.release();
+      assert.equal(control.ops.filter((o) => o.startsWith("stop ")).length, 1, "stopped once");
+    } finally {
+      if (!released) await place.release().catch(() => {});
+    }
+  });
 
   it("a box the place already started, adopted again on a repeated attempt, is one entry in status().boxes, never a second key, and is stopped once at release", async () => {
     const control = new FakeControl();
