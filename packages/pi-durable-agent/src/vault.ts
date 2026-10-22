@@ -107,10 +107,13 @@ function checkOrigins(origins: unknown): string[] {
   return [...new Set(origins as string[])];
 }
 
-/** Whether a cookie for `domain` is sent to `origin`: the origin's host is the domain or under it. */
+/** Whether a cookie for `domain` is sent to `origin`. A host-only cookie (its domain with no leading dot, as CDP gives
+ *  one) goes to its own host only; a domain cookie (a leading dot) to the domain's host and every host under it. */
 function domainMatches(domain: string, origin: string): boolean {
   const host = new URL(origin).hostname;
-  const bare = domain.replace(/^\./, "").toLowerCase();
+  const lower = domain.toLowerCase();
+  if (!lower.startsWith(".")) return host === lower;
+  const bare = lower.slice(1);
   return bare !== "" && (host === bare || host.endsWith(`.${bare}`));
 }
 

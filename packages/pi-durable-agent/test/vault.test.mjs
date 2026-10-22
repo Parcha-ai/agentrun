@@ -376,3 +376,22 @@ test("on a home reached through an access (a disk), the key file lives in the cl
   assert.equal(claims, 4, "every call went through the claim");
   assert.equal(existsSync(path.join(elsewhere.dir, VAULT_KEYS_FILE)), false, "nothing is written at home.dir");
 });
+
+const SUB = "https://sub.app.acme.example";
+
+test("a host-only cookie is kept and restored for its own host only; a domain cookie (a leading dot) for its host and every host under it", async () => {
+  const h = await home();
+  const vault = sessionVault(h, { hostKey: KEY, now: NOW });
+  const state = {
+    kind: "cdp", capturedAt: new Date(T0).toISOString(),
+    cookies: [cookie("parent", marker("parent"), "app.acme.example"), cookie("wide", "w", ".app.acme.example"), cookie("own", "o", "sub.app.acme.example")],
+    localStorage: {},
+  };
+  await vault.capture({ sessionKey: "sub", origins: [SUB], state });
+  assert.deepEqual((await atRest(h, "sub", Buffer.alloc(32, 1))).cookies.map((k) => k.name), ["wide", "own"], "the parent's host-only cookie is never kept for a child origin");
+  assert.deepEqual((await vault.restore({ sessionKey: "sub", origins: [SUB] })).cookies.map((k) => k.name), ["wide", "own"]);
+
+  await vault.capture({ sessionKey: "both", origins: [A, SUB], state });
+  assert.deepEqual((await vault.restore({ sessionKey: "both", origins: [SUB] })).cookies.map((k) => k.name), ["wide", "own"], "nor restored to one");
+  assert.deepEqual((await vault.restore({ sessionKey: "both", origins: [A] })).cookies.map((k) => k.name), ["parent", "wide"], "a host-only cookie goes to its own host, and a child's does not go up");
+});
