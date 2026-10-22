@@ -157,6 +157,27 @@ describe("local boxes: what a directory cannot give", () => {
 			}
 		}));
 
+	it("refuses none, an allowlist, a port and a capability as unsupported, takes open, and reports facts that say so", () =>
+		withProvider(async (provider) => {
+			for (const fields of [
+				{ network: "none" as const },
+				{ network: { allow: ["example.com"] } },
+				{ ports: [8080] },
+				{ capabilities: ["fuse" as const] },
+			]) {
+				const refused = await provider.create({ maxLifetimeMs: 60_000, ...fields }, context);
+				expect(refused.ok ? "ok" : refused.error.code).toBe("unsupported");
+			}
+			const before = Date.now();
+			const made = await provider.create({ maxLifetimeMs: 60_000, network: "open" }, context);
+			if (!made.ok) throw made.error;
+			const facts = made.value.facts();
+			expect(facts.network).toBe("open");
+			for (const key of ["ports", "diskGb", "fuse", "ptraceScope"]) expect(facts).not.toHaveProperty(key);
+			expect(Math.abs(new Date(facts.startedAt ?? "").getTime() - before)).toBeLessThan(5000);
+			await made.value.destroy(context);
+		}));
+
 	it("refuses a label in the providers' own namespace", () =>
 		withProvider(async (provider) => {
 			const labels = { "pi-transport.facts": "x" };

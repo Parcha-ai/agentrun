@@ -101,6 +101,178 @@ describe("modal boxes", () => {
 		});
 	});
 
+	describe("network, ports and what the box reports of itself", () => {
+		const provider = (sdk: FakeModal) => modalBoxes(sdk, { appName: "a" });
+
+		it("maps none to blockNetwork, an allowlist to Modal's domain and CIDR lists, and reports it in the facts", async () => {
+			await withRoot(async (root) => {
+				const sdk = new FakeModal();
+				const none = unwrap(await provider(sdk).create({ ...SPEC, network: "none", workspace: root }, context));
+				const list = unwrap(
+					await provider(sdk).create(
+						{ ...SPEC, network: { allow: ["*.example.com", "10.0.0.0/8"] }, workspace: root },
+						context,
+					),
+				);
+				const open = unwrap(await provider(sdk).create({ ...SPEC, workspace: root }, context));
+				expect(sdk.sandboxList[0]?.params).toMatchObject({ blockNetwork: true });
+				expect(sdk.sandboxList[1]?.params).toMatchObject({
+					outboundDomainAllowlist: ["*.example.com"],
+					outboundCidrAllowlist: ["10.0.0.0/8"],
+				});
+				expect(sdk.sandboxList[1]?.params).not.toHaveProperty("blockNetwork");
+				for (const key of ["blockNetwork", "outboundDomainAllowlist", "outboundCidrAllowlist"]) {
+					expect(sdk.sandboxList[2]?.params).not.toHaveProperty(key);
+				}
+				expect([none, list, open].map((b) => b.facts().network)).toEqual(["none", "allowlist", "open"]);
+				for (const box of [none, list, open]) unwrap(await box.destroy(context));
+			});
+		});
+
+		it("refuses a bad network or port, and a port on a box with no network, before any Modal call", async () => {
+			const sdk = new FakeModal();
+			const codes = [];
+			for (const spec of [
+				{ network: { allow: [] } },
+				{ network: { allow: ["not a domain"] } },
+				{ ports: [0] },
+				{ ports: [80, 80] },
+				{ network: "none" as const, ports: [8080] },
+			]) {
+				const result = await provider(sdk).create({ ...SPEC, ...spec }, context);
+				codes.push(result.ok ? "ok" : result.error.code);
+			}
+			expect(codes).toEqual(Array(5).fill("invalid"));
+			expect(sdk.sandboxList).toEqual([]);
+		});
+
+		it("exposes ports as encrypted or plain tunnels, names each kind in the facts, and answers endpoint with the address", async () => {
+			await withRoot(async (root) => {
+				const sdk = new FakeModal();
+				const box = unwrap(
+					await provider(sdk).create(
+						{ ...SPEC, ports: [8080, { port: 5432, kind: "tcp" }], workspace: root },
+						context,
+					),
+				);
+				expect(sdk.sandboxList[0]?.params).toMatchObject({ encryptedPorts: [8080], unencryptedPorts: [5432] });
+				expect(box.facts().ports).toEqual([
+					{ port: 8080, kind: "https" },
+					{ port: 5432, kind: "tcp" },
+				]);
+				expect(unwrap(await (box.endpoint?.(8080, context) as Promise<never>))).toEqual({
+					kind: "https",
+					url: "https://fake-8080.modal.test",
+				});
+				expect(unwrap(await (box.endpoint?.(5432, context) as Promise<never>))).toEqual({
+					kind: "tcp",
+					host: "fake-5432.modal.test",
+					port: 45_432,
+				});
+				const unexposed = await box.endpoint?.(9999, context);
+				expect(unexposed?.ok ? "ok" : unexposed?.error.code).toBe("invalid");
+				expect(box.id).not.toContain("modal.test");
+				unwrap(await box.destroy(context));
+			});
+		});
+
+		it("reports the disk the box has, in whole GiB, the Yama setting, and when it started", async () => {
+			await withRoot(async (root) => {
+				const sdk = new FakeModal();
+				sdk.probeOutput = "disk=52428801\nptrace=2\n";
+				const before = Date.now();
+				const box = unwrap(await provider(sdk).create({ ...SPEC, workspace: root }, context));
+				const facts = box.facts();
+				expect(facts).toMatchObject({ diskGb: 50, ptraceScope: 2, fuse: false });
+				expect(new Date(facts.startedAt ?? "").getTime()).toBeGreaterThanOrEqual(before - 1000);
+				expect(facts.startedAt).toMatch(/^\d{4}-\d\d-\d\dT[\d:.]+Z$/);
+				const again = unwrap(await provider(sdk).attach(box.id, context));
+				expect(again?.facts()).toMatchObject({ diskGb: 50, ptraceScope: 2, startedAt: facts.startedAt });
+				unwrap(await box.destroy(context));
+			});
+		});
+
+		it("leaves a fact it cannot read out, and reads a box without the Yama file as 0", async () => {
+			await withRoot(async (root) => {
+				const sdk = new FakeModal();
+				sdk.probeOutput = "disk=\nptrace=banana\n";
+				const odd = unwrap(await provider(sdk).create({ ...SPEC, workspace: root }, context));
+				sdk.probeOutput = "disk=1048576\nptrace=0\n";
+				const none = unwrap(await provider(sdk).create({ ...SPEC, workspace: root }, context));
+				for (const key of ["diskGb", "ptraceScope"]) expect(odd.facts()).not.toHaveProperty(key);
+				expect(none.facts()).toMatchObject({ diskGb: 1, ptraceScope: 0 });
+				unwrap(await odd.destroy(context));
+				unwrap(await none.destroy(context));
+			});
+		});
+
+		it("reads a box whose tag predates the network and ports facts as unknown for both, never as open or as none", async () => {
+			await withRoot(async (root) => {
+				const sdk = new FakeModal();
+				const box = unwrap(await provider(sdk).create({ ...SPEC, workspace: root }, context));
+				const tags = sdk.sandboxList[0]?.params.tags ?? {};
+				const old = JSON.parse(tags["pi-transport.facts"] ?? "{}") as Record<string, unknown>;
+				delete old.network;
+				delete old.ports;
+				delete old.startedAt;
+				tags["pi-transport.facts"] = JSON.stringify(old);
+				const found = unwrap(await provider(sdk).attach(box.id, context));
+				for (const key of ["network", "ports", "startedAt"]) expect(found?.facts()).not.toHaveProperty(key);
+				const asked = await found?.endpoint?.(8080, context);
+				expect(asked?.ok ? "ok" : asked?.error.code).toBe("invalid");
+				unwrap(await box.destroy(context));
+			});
+		});
+
+		it("gives fuse on the vm runtime only when the box checks out, and ends a box that does not", async () => {
+			await withRoot(async (root) => {
+				const sdk = new FakeModal();
+				const box = unwrap(
+					await provider(sdk).create({ ...SPEC, capabilities: ["fuse"], workspace: root }, context),
+				);
+				expect(sdk.sandboxList[0]?.params).toMatchObject({ runtime: "vm" });
+				expect(box.facts()).toMatchObject({ isolation: "vm", fuse: true });
+				const probe = sdk.sandboxList[0]?.execs.find(
+					(e) => e.command[0] === "sh" && e.command[2]?.includes("fuse"),
+				);
+				expect(probe?.command.slice(3)).toEqual(["sh", root, "fuse"]);
+				const again = unwrap(await provider(sdk).attach(box.id, context));
+				expect(again?.facts().fuse).toBe(true);
+				const plain = unwrap(await provider(sdk).create({ ...SPEC, workspace: root }, context));
+				expect(plain.facts().fuse).toBe(false);
+				for (const [output, missing] of [
+					["disk=1\nptrace=1\nfuse_dev=0\n", /character device that root can open/],
+				] as const) {
+					sdk.probeOutput = output;
+					const lacking = await provider(sdk).create(
+						{ ...SPEC, capabilities: ["fuse"], workspace: root },
+						context,
+					);
+					expect(lacking.ok ? "ok" : lacking.error.code).toBe("unknown");
+					expect(!lacking.ok && lacking.error.message).toMatch(missing);
+				}
+				expect(sdk.running().map((s) => s.sandboxId)).toEqual([box.id, plain.id]);
+				unwrap(await box.destroy(context));
+				unwrap(await plain.destroy(context));
+			});
+		});
+
+		it("refuses fuse with gvisor (unsupported) and with a GPU (invalid), and any other capability, before any Modal call", async () => {
+			const sdk = new FakeModal();
+			const codes = [];
+			for (const spec of [
+				{ capabilities: ["fuse" as const], isolation: "gvisor" as const },
+				{ capabilities: ["fuse" as const], gpu: "T4" },
+				{ capabilities: ["ptrace" as never] },
+			]) {
+				const result = await provider(sdk).create({ ...SPEC, ...spec }, context);
+				codes.push(result.ok ? "ok" : result.error.code);
+			}
+			expect(codes).toEqual(["unsupported", "invalid", "unsupported"]);
+			expect(sdk.sandboxList).toEqual([]);
+		});
+	});
+
 	it("refuses a GPU on a vm, other isolations, a snapshot and a lifetime of zero, without calling Modal", async () => {
 		const sdk = new FakeModal();
 		const provider = modalBoxes(sdk, { appName: "a" });
@@ -313,6 +485,51 @@ describe("modal boxes", () => {
 			const ended = await aborted.wait();
 			console.log(`a stalled stream whose context ended: the wait ended after ${Date.now() - abortedAt} ms`);
 			expect(ended.ok ? "ok" : ended.error.code).toBe("aborted");
+		});
+	});
+
+	it("returns a cancellation during the box's own probe, for attach and for create, though no FUSE was asked for", async () => {
+		await withRoot(async (root) => {
+			const sdk = new FakeModal();
+			const provider = modalBoxes(sdk, { appName: "a" });
+			const made = unwrap(await provider.create({ ...SPEC, workspace: root }, context));
+			const cancelDuringProbe = (sandbox: (typeof sdk.sandboxList)[number], cancel: () => void) => {
+				const exec = sandbox.exec.bind(sandbox);
+				sandbox.exec = async (command, params) => {
+					if (command[0] === "sh" && command[2]?.includes("ptrace_scope")) cancel();
+					return exec(command, params);
+				};
+			};
+			const cancelAttach = withCancel(context);
+			cancelDuringProbe(sdk.sandboxList[0] as (typeof sdk.sandboxList)[number], () => cancelAttach.cancel());
+			const attached = await provider.attach(made.id, cancelAttach.context);
+			expect(attached.ok ? "ok" : attached.error.code).toBe("aborted");
+
+			// The probe throws after the caller cancelled: still an abort, not a box that read nothing.
+			const cancelThrown = withCancel(context);
+			const sandbox = sdk.sandboxList[0] as (typeof sdk.sandboxList)[number];
+			const exec = sandbox.exec.bind(sandbox);
+			sandbox.exec = async (command, params) => {
+				if (command[0] === "sh" && command[2]?.includes("ptrace_scope")) {
+					cancelThrown.cancel();
+					throw new Error("the connection went away");
+				}
+				return exec(command, params);
+			};
+			const thrown = await provider.attach(made.id, cancelThrown.context);
+			expect(thrown.ok ? "ok" : thrown.error.code).toBe("aborted");
+
+			const cancelCreate = withCancel(context);
+			const create = sdk.sandboxes.create;
+			sdk.sandboxes.create = async (app, image, params) => {
+				const sandbox = await create(app, image, params);
+				cancelDuringProbe(sandbox as (typeof sdk.sandboxList)[number], () => cancelCreate.cancel());
+				return sandbox;
+			};
+			const created = await provider.create({ ...SPEC, workspace: root }, cancelCreate.context);
+			expect(created.ok ? "ok" : created.error.code).toBe("aborted");
+			expect(sdk.running().map((s) => s.sandboxId)).toEqual([made.id]);
+			unwrap(await made.destroy(context));
 		});
 	});
 
