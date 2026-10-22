@@ -68,9 +68,10 @@ describe("boxHost: the box it asks for, and a box that cannot hold the mount", (
       ["secretsVia file", fakeBoxes(modalLike({ facts: { secretsVia: "file" } }))],
       ["no live processes", fakeBoxes(modalLike({ facts: { ...fd, liveProcesses: false } }))],
     ] as const) {
-      const driver = host(provider);
+      const driver = host(provider, { files: [{ path: "/opt/app/app.js", bytes: new TextEncoder().encode("export default {};\n") }] });
       await assert.rejects(driver.start(REF, TOKEN, { attempt: 1 }), code("UNSUPPORTED"), why);
       assert.ok(provider.boxes.every((b) => b.state === "ended"), `${why}: the box is destroyed, never left running`);
+      assert.deepEqual(provider.calls.filter((c) => ["upload", "exec", "launch"].includes(c.op)).map((c) => c.op), [], `${why}: refused before any upload or launch`);
       await assert.rejects(driver.start(REF, TOKEN, { attempt: 2 }), (e: unknown) => code("UNSUPPORTED")(e) && /refused before/.test((e as Error).message), `${why}: refused again`);
       assert.equal(provider.callsOf("create").length, 1, `${why}: no second box (ensureRunning has no backoff: a VM a tick would be booted and destroyed)`);
       assert.equal(provider.leaks(TOKEN).length, 0, `${why}: the token went nowhere`);
