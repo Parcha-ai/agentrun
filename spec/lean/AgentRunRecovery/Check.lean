@@ -9,9 +9,10 @@ no `sorryAx`, and no `Lean.ofReduceBool`. `#guard_msgs` fails the build if that 
 
 The end of this file lists every theorem the library declares, so the build fails when a theorem is
 added, renamed or removed without this list changing with it. Lean counts a structure's `Prop` fields as
-theorems: six of the seventeen names are the fields of `Frozen.Inv` (`at_most_once`, `behind_completed`,
-`completed_once`, `flight_sent`, `fresh_unsent`, `none_unsent`), stated by the structure and proved
-wherever an `Inv` is built (`inv_init`, `inv_step`). The other eleven are theorems proper.
+theorems: ten of the thirty names are the fields of `Frozen.Inv` (`at_most_once`, `behind_completed`,
+`completed_once`, `flight_sent`, `fresh_unsent`, `none_unsent`) and of `Frozen.StopInv` (`applied_not_running`,
+`closed_known`, `journal_not_running`, `landed_on_journal`), stated by the structures and proved wherever one is
+built (`inv_init`, `inv_step`, `stop_inv_init`, `stop_inv_step`). The other twenty are theorems proper.
 -/
 
 open AgentRunRecovery
@@ -44,6 +45,26 @@ open AgentRunRecovery
 #guard_msgs in
 #print axioms Frozen.resume_answers_completed
 
+/-- info: 'AgentRunRecovery.Frozen.stop_on_journal_or_heard' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms Frozen.stop_on_journal_or_heard
+
+/-- info: 'AgentRunRecovery.Frozen.stop_admits_nothing' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms Frozen.stop_admits_nothing
+
+/-- info: 'AgentRunRecovery.Frozen.stop_dispatches_nothing' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms Frozen.stop_dispatches_nothing
+
+/-- info: 'AgentRunRecovery.Frozen.cancelled_never_resumes' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms Frozen.cancelled_never_resumes
+
+/-- info: 'AgentRunRecovery.Frozen.stop_refused_heard' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms Frozen.stop_refused_heard
+
 section TheoremSet
 open Lean Elab Command
 
@@ -72,9 +93,10 @@ run_cmd do
     let extra := (← collectAxioms decl).toList.filter (!standardAxioms.contains ·)
     unless extra.isEmpty do logError m!"{n} depends on non-standard axioms: {extra}"
 
-/-- info: 17 theorems
+/-- info: 31 theorems
 AgentRunRecovery.Frozen.admit_before_dispatch
 AgentRunRecovery.Frozen.admitted_elsewhere_never_resent
+AgentRunRecovery.Frozen.cancelled_never_resumes
 AgentRunRecovery.Frozen.completed_dispatched_once
 AgentRunRecovery.Frozen.completed_never_redispatched
 AgentRunRecovery.Frozen.held_step
@@ -83,13 +105,26 @@ AgentRunRecovery.Frozen.inv_reach
 AgentRunRecovery.Frozen.inv_step
 AgentRunRecovery.Frozen.never_past_uncompleted
 AgentRunRecovery.Frozen.one_dispatch_per_effect
+AgentRunRecovery.Frozen.reach_steps
 AgentRunRecovery.Frozen.resume_answers_completed
+AgentRunRecovery.Frozen.stop_admits_nothing
+AgentRunRecovery.Frozen.stop_dispatches_nothing
+AgentRunRecovery.Frozen.stop_inv_init
+AgentRunRecovery.Frozen.stop_inv_reach
+AgentRunRecovery.Frozen.stop_inv_step
+AgentRunRecovery.Frozen.stop_on_journal_or_heard
+AgentRunRecovery.Frozen.stop_refused_heard
+AgentRunRecovery.Frozen.stopped_step
 AgentRunRecovery.Frozen.Inv.at_most_once
 AgentRunRecovery.Frozen.Inv.behind_completed
 AgentRunRecovery.Frozen.Inv.completed_once
 AgentRunRecovery.Frozen.Inv.flight_sent
 AgentRunRecovery.Frozen.Inv.fresh_unsent
 AgentRunRecovery.Frozen.Inv.none_unsent
+AgentRunRecovery.Frozen.StopInv.applied_not_running
+AgentRunRecovery.Frozen.StopInv.closed_known
+AgentRunRecovery.Frozen.StopInv.journal_not_running
+AgentRunRecovery.Frozen.StopInv.landed_on_journal
 -/
 #guard_msgs in
 run_cmd do

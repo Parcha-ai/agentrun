@@ -19,7 +19,7 @@ const judge = async (params) => {
   return { answers: { [question]: { type: "noul", noul: DEFAULTS[question] } }, model: "fake", usage: null, cost_usd: 0 };
 };
 
-test("through the real curator: a workflow is admitted from a run's branch, its uses are settled run by run, and the third promotes it", async () => {
+test("through the real curator: a workflow is admitted from a run's branch, its uses are settled run by run, and the second promotes it", async () => {
   const root = await scratch();
   const { bare, repo } = await agentRepo(root);
   const curator = await openRepo({ dir: path.join(root, "curator"), remote: local(bare) });
@@ -44,9 +44,9 @@ test("through the real curator: a workflow is admitted from a run's branch, its 
   assert.equal(await curator.read(`.agents/skills/${NAME}/SKILL.md`, "main"), renderSkill(NAME, schemaDescription(doc)));
   assert.deepEqual(await workflowsToTry({ repo: curator, sha: await curator.resolve("main") }, input), [{ name: NAME, status: "trial" }]);
 
-  // Runs 2 to 4 are seeded from main, run the workflow from their own stores, and propose how it went.
+  // Runs 2 and 3 are seeded from main, run the workflow from their own stores, and propose how it went.
   const statuses = [];
-  for (const run of ["run-2", "run-3", "run-4"]) {
+  for (const run of ["run-2", "run-3"]) {
     const main = await curator.resolve("main");
     const hints = await workflowsToTry({ repo: curator, sha: main }, input);
     const { dir: workDir } = await workDirWith();
@@ -57,7 +57,7 @@ test("through the real curator: a workflow is admitted from a run's branch, its 
     const settled = report.runs.find((r) => r.run === run).settled;
     statuses.push([(await readTrial(curator, NAME, "main")).status, settled.map((s) => [s.workflow, s.reason.split(":")[0]])]);
   }
-  assert.deepEqual(statuses, [["trial", [[NAME, "hold"]]], ["trial", [[NAME, "hold"]]], ["active", [[NAME, "promote"]]]]);
+  assert.deepEqual(statuses, [["trial", [[NAME, "hold"]]], ["active", [[NAME, "promote"]]]]);
   assert.deepEqual(await workflowsToTry({ repo: curator, sha: await curator.resolve("main") }, input), [{ name: NAME, status: "active" }]);
 }, { timeout: 120_000 });
 
@@ -95,4 +95,20 @@ test("a propose with only the run's working directory proposes the workflow it s
   } finally {
     await run.close();
   }
+});
+
+test("a trial.json on main that does not parse holds that workflow, and curation goes on", async () => {
+  const root = await scratch();
+  const { bare, repo } = await agentRepo(root);
+  const damaged = await repo.commitTo("main", { files: { [`.agents/skills/${NAME}/trial.json`]: "not json\n" }, message: "a damaged trial", parent: await repo.resolve("main") });
+  await repo.push(damaged.sha, "main");
+  const { dir: workDir } = await workDirWith({ [NAME]: workflowDoc() });
+  const collected = await collectWorkflows({ repo, workDir, seedSha: damaged.sha });
+  await proposeLearning({ repo, runId: "run-1", target: { snapshot: async () => ({ order: [], byCall: {} }) }, workflows: collected.records });
+  const curator = await openRepo({ dir: path.join(root, "curator"), remote: local(bare) });
+  const report = await curate({ repo: curator, judge });
+  assert.deepEqual(report.runs.map((r) => [r.run, r.held.map((h) => [h.workflow, h.reason]), r.refused]), [
+    ["run-1", [[NAME, "its trial.json on main does not parse (format), so the workflow was held"]], []],
+  ]);
+  assert.equal(await curator.read(`.agents/skills/${NAME}/trial.json`, "main"), "not json\n");
 });

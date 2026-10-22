@@ -1,4 +1,5 @@
-import { GitRemoteError } from "./errors.js";
+import path from "node:path";
+import { refused } from "./errors.js";
 
 export type Limits = {
   /** The largest file a commit may write, and checkout may copy, in bytes. */
@@ -89,27 +90,47 @@ export function caseCollisions(all: Iterable<string>, touched?: Iterable<string>
   return groups;
 }
 
+/** The limits a repository runs with: the defaults, overridden by `input`, each a positive integer. */
+export function checkLimits(input: Partial<Limits> | undefined): Limits {
+  const limits = { ...DEFAULT_LIMITS, ...input };
+  for (const key of ["maxFileBytes", "maxFiles", "maxTreeEntries"] as const) {
+    if (!Number.isSafeInteger(limits[key]) || limits[key] < 1) throw refused(`limits.${key} must be a positive integer`);
+  }
+  return Object.freeze(limits);
+}
+
+/** Throws `refused` for a path pathRefusal rejects, naming it as the caller spelled it (`shown`). */
+export function checkPath(file: string, what = "path", shown = file): void {
+  const reason = pathRefusal(file);
+  if (reason) throw refused(`the ${what} ${JSON.stringify(shown)} is refused: ${reason}`, [shown]);
+}
+
+/** Whether the directory `child` is `parent` or inside it. Both are resolved paths. */
+export function within(child: string, parent: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+
 export type FileContent = string | Uint8Array | null;
 
 /** Refuses a commit's file set before anything is written: too many paths, a refused path, content that is not text or
  *  bytes, a file over the size cap, or a path that is both a file and a directory. */
 export function checkCommitFiles(files: Readonly<Record<string, FileContent>>, limits: Limits): void {
-  if (files === null || typeof files !== "object") throw new GitRemoteError("refused", "files must be an object of path to content");
+  if (files === null || typeof files !== "object") throw refused("files must be an object of path to content");
   const paths = Object.keys(files);
-  if (paths.length > limits.maxFiles) throw new GitRemoteError("refused", `a commit may write at most ${limits.maxFiles} paths, got ${paths.length}`);
+  if (paths.length > limits.maxFiles) throw refused(`a commit may write at most ${limits.maxFiles} paths, got ${paths.length}`);
   for (const path of paths) {
-    const reason = pathRefusal(path);
-    if (reason) throw new GitRemoteError("refused", `the path ${JSON.stringify(path)} is refused: ${reason}`, [path]);
+    checkPath(path);
     const content = files[path];
     if (content === null) continue;
-    if (typeof content !== "string" && !(content instanceof Uint8Array)) throw new GitRemoteError("refused", `the content of ${JSON.stringify(path)} is not a string or bytes`, [path]);
+    if (typeof content !== "string" && !(content instanceof Uint8Array)) throw refused(`the content of ${JSON.stringify(path)} is not a string or bytes`, [path]);
     const size = typeof content === "string" ? Buffer.byteLength(content, "utf8") : content.byteLength;
-    if (size > limits.maxFileBytes) throw new GitRemoteError("refused", `${JSON.stringify(path)} is ${size} bytes, over the ${limits.maxFileBytes} byte cap`, [path]);
+    if (size > limits.maxFileBytes) throw refused(`${JSON.stringify(path)} is ${size} bytes, over the ${limits.maxFileBytes} byte cap`, [path]);
   }
   const set = new Set(paths);
   for (const path of paths) {
     const parents = pathPrefixes(path).slice(0, -1);
     const clash = parents.find((parent) => set.has(parent));
-    if (clash) throw new GitRemoteError("refused", `${JSON.stringify(clash)} cannot be both a file and a directory`, [clash, path]);
+    if (clash) throw refused(`${JSON.stringify(clash)} cannot be both a file and a directory`, [clash, path]);
   }
 }

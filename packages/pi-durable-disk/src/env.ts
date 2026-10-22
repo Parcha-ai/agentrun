@@ -692,6 +692,9 @@ export function archilEnv(claim: ArchilEnvClaim, options: ArchilEnvOptions = {})
   if (runAs && ![runAs.uid, runAs.gid].every((n) => Number.isSafeInteger(n) && n >= 0)) {
     throw new EnvError("INVALID_RUN_AS", `runAs needs a numeric uid and gid, got ${JSON.stringify(runAs)}`);
   }
+  if (runAs?.uid === 0) {
+    throw new EnvError("INVALID_RUN_AS", "runAs names root (uid 0): the agent's commands would run as the owner of run.json, the store and the archil daemon");
+  }
   const darwin = process.platform === "darwin";
   const noNewPrivs = options.noNewPrivs ?? !darwin;
   const setpriv = noNewPrivs || runAs ? requireSetpriv(options.setprivPath ?? SETPRIV) : undefined;

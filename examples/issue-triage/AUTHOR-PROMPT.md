@@ -12,5 +12,5 @@ What the user says to the agent, a pi-durable session with the AgentRun workflow
 > 1. **Describe** the workflow you will build, in a few lines, before you build it.
 > 2. Draft it, then **inspect** it and show me its shape.
 > 3. **Dry-run** it on made-up values and tell me what it would do. Do not run it for real yet.
-> 4. Then **run** it on `OWNER/REPO`. It is one durable task, and every node shows on its graph.
+> 4. Then **run** it on `OWNER/REPO`. It is one durable task.
 

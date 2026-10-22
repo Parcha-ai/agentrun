@@ -221,18 +221,16 @@ test('the child reads KILL_NONCE once and removes it before anything starts: a c
 });
 // ---- the operator's kill ------------------------------------------------------------------------------------------------------------------------
 
-test('an operator kill (a control file the supervisor watches, never the child\'s request file) kills through the place, writes a kill line with crossing null and label operator, and the run resumes with repeated 0', { timeout: 300_000 }, async (t) => {
+/** The operator's page, here a test: a spec file, the control file the supervisor watches, and a place that makes the control file once the first process has asked its first model request (where the fixture holds it until the control file is consumed, so the run cannot finish first). Each test below makes its own, so each has its own time to run under load. */
+async function operatorRun(t) {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-operator-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'spec.json');
   writeFileSync(file, JSON.stringify({ name: 'reference' }));
-  Object.assign(process.env, { DEMO_SPEC: file, DEMO_OPERATOR_HOLD: join(tmp, 'control', 'kill-now') });
-  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
-  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
   const control = join(tmp, 'control', 'kill-now');
+  Object.assign(process.env, { DEMO_SPEC: file, DEMO_OPERATOR_HOLD: control });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
   mkdirSync(join(tmp, 'control'));
-  const recording = join(tmp, 'recording');
-  // The operator\'s page, here a test: once the first process has asked its first model request (where the fixture holds it until the control file is consumed, so the run cannot finish first), it makes the control file.
   const killed = [];
   const placeOn = (trigger) => ({ paths, self, destroyBoxes, requestFile }) => {
     const inner = localPlace({ self, paths, destroyBoxes, requestFile });
@@ -243,8 +241,15 @@ test('an operator kill (a control file the supervisor watches, never the child\'
       return runner;
     } };
   };
-  const place = placeOn('model.request turn 0');
-  const result = await demo({ ...options, argv: ['--json', '--record', recording, '--operator-kill', control], place });
+  const optionsNow = async () => (await import(`${FIXTURE}?options=${Date.now()}`)).options;
+  // A run that does not end in four minutes fails with what the operator's side saw, rather than waiting for the test's timeout to say nothing: the next occurrence on a runner names where it stopped.
+  const within = (run) => Promise.race([run, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error(`the run did not end in 240 s: the operator's trigger fired for generations [${killed}], the control file ${existsSync(control) ? 'is still there (not consumed)' : 'is gone (consumed or never made)'}, the recording holds ${existsSync(join(tmp, 'recording')) ? readdirSync(join(tmp, 'recording')).join(', ') : 'nothing'}`)), 240_000); timer.unref(); })]);
+  return { tmp, file, control, killed, placeOn, optionsNow, within, recording: join(tmp, 'recording') };
+}
+
+test('an operator kill (a control file the supervisor watches, never the child\'s request file) kills through the place, writes a kill line with crossing null and label operator, and the run resumes with repeated 0', { timeout: 300_000 }, async (t) => {
+  const { control, placeOn, optionsNow, within, recording } = await operatorRun(t);
+  const result = await within(demo({ ...await optionsNow(), argv: ['--json', '--record', recording, '--operator-kill', control], place: placeOn('model.request turn 0') }));
   assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, 'complete']], JSON.stringify(result.processes));
   assert.equal(result.record.company, 'Acme Ltd');
   assert.ok(!existsSync(control), 'the supervisor consumed the control file');
@@ -255,18 +260,19 @@ test('an operator kill (a control file the supervisor watches, never the child\'
   const counted = fold(lines);
   assert.deepEqual([counted.processes, counted.kills, counted.repeated, counted.unknown], [2, 1, 0, 0]);
   assert.deepEqual(validateRecording(recording), []);
-  // The plan\'s own kill is not lost: an operator kill that ends an attempt first leaves its planned kill for the next one.
-  killed.length = 0;
+});
+test('the plan\'s own kill is not lost: an operator kill that ends an attempt first leaves its planned kill for the next one', { timeout: 300_000 }, async (t) => {
+  const { file, control, placeOn, optionsNow, within } = await operatorRun(t);
   writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'planned' }] }));
-  rmSync(join(tmp, 'control', 'kill-now.held'), { force: true });
-  const { options: planned } = await import(`${FIXTURE}?options=${Date.now()}`);
-  const both = await demo({ ...planned, argv: ['--kill', '--json', '--operator-kill', control], place: placeOn('model.request turn 0') });
+  const both = await within(demo({ ...await optionsNow(), argv: ['--kill', '--json', '--operator-kill', control], place: placeOn('model.request turn 0') }));
   assert.deepEqual(both.kills.map((kill) => [kill.gen, kill.point ?? 'operator']), [[1, 'operator'], [2, 'judge.asked verdict']]);
   assert.deepEqual(both.unlanded, []);
   assert.equal(both.processes.at(-1).outcome.status, 'complete');
-  // A stale control file would kill the first process at once: it is refused.
+});
+test('a stale control file would kill the first process at once: it is refused', { timeout: 120_000 }, async (t) => {
+  const { control, optionsNow } = await operatorRun(t);
   writeFileSync(control, '');
-  await assert.rejects(() => demo({ ...options, argv: ['--json', '--operator-kill', control] }), /already exists/);
+  await assert.rejects(async () => demo({ ...await optionsNow(), argv: ['--json', '--operator-kill', control] }), /already exists/);
 });
 test('a kill request written in short pieces is whole when it is renamed into place: the supervisor reads the complete request', { timeout: 60_000 }, async (t) => {
   const { spawn } = await import('node:child_process');
@@ -286,22 +292,33 @@ test('a kill request written in short pieces is whole when it is renamed into pl
   for (let waited = 0; !existsSync(file) && waited < 20_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { point: 'judge.asked verdict', n: 1, pid: child.pid, nonce: 'a-nonce' }, 'the whole request, though each write took 5 bytes');
 });
-test('the slow status tick does not queue a read behind one still running: a place whose reads take seconds is read a bounded number of times', { timeout: 120_000 }, async (t) => {
+test('the slow status tick does not queue a read behind one still running: ticks that fall while a read is running ask for nothing, so releasing it starts only the boundary reads', { timeout: 120_000 }, async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-slow-status-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'spec.json');
   writeFileSync(file, JSON.stringify({ name: 'reference' }));
-  Object.assign(process.env, { DEMO_SPEC: file, DEMO_LINGER_MS: '7000' });
+  Object.assign(process.env, { DEMO_SPEC: file, DEMO_LINGER_MS: '12000' });
   t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
-  let reads = 0;
-  const started = Date.now();
+  // The first read is held for 15 s, past the supervisor's two-second ticks while the child lives (about five), then released; the others answer at once. A tick that fell while the read ran asked for nothing; one that queued a read behind it would run the moment the held read returns, in a burst. The ticks are the supervisor's own timer, so a slow runner only fires fewer of them: the count of the burst does not depend on the runner's speed.
+  const HOLD_MS = 15_000;
+  const starts = [];
+  let releasedAt;
   await demo({ ...options, argv: ['--json', '--record', join(tmp, 'recording')], place: ({ paths, self, destroyBoxes, requestFile }) => ({
     ...localPlace({ self, paths, destroyBoxes, requestFile }),
-    status: async () => { reads += 1; await new Promise((resolve) => setTimeout(resolve, 2500)); return { record: null }; },
+    status: async () => {
+      starts.push(Date.now());
+      if (starts.length === 1) { await new Promise((resolve) => setTimeout(resolve, HOLD_MS)); releasedAt = Date.now(); }
+      return { record: null };
+    },
   }) });
-  // Boundary reads (start, exit, result) plus the ticks that found no read running; a tick queued behind every slow read would make six or more.
-  assert.ok(reads <= 5, `the status was read ${reads} times in ${Date.now() - started} ms`);
+  assert.ok(starts.length > 1, 'the run went on after the held read');
+  // The burst is counted from the moment the held read actually returned (a timer that fires late moves the release, not the window).
+  const released = releasedAt;
+  assert.ok(released !== undefined, 'the held read returned');
+  // Right after the release: the run's exit read and its end read, and at most one tick. A queued read for each tick of the hold would be three or more on top.
+  const burst = starts.slice(1).filter((at) => at >= released && at < released + 1000).length;
+  assert.ok(burst <= 3, `${burst} reads started within a second of the held read's release: a tick queued a read behind the running one`);
 });
 test('an operator kill carries to the next attempt only the tool kills that did not land, and a control that cannot be removed is a failed kill, not a crash', { timeout: 300_000 }, async (t) => {
   const { notLanded } = await import('../packages/harness/dist/demo.js');
@@ -348,4 +365,21 @@ test('--operator-kill is refused by a place that cannot make a process kill, bef
     return { ...inner, name: 'box-only', kills: ['box'], start: async (order) => { calls.push('start'); return inner.start(order); }, release: async () => { calls.push('release'); } };
   } }), /box-only place cannot lose its process: --operator-kill/);
   assert.deepEqual(calls, ['release'], 'nothing was started');
+});
+test('every path that supervises a child says so with HOST_LINES=supervisor when it owns the box ids directory, and the one that does not (a custom place without --box-ids) leaves the child its own receipts, with a recording that still validates', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  const seen = [];
+  const watching = (label) => ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, start: async (order) => { seen.push([label, order.env.HOST_LINES, typeof order.env.RECORD_GEN]); return inner.start(order); } };
+  };
+  // The default place: the supervisor owns <run dir>/box-ids.internal.
+  await demo({ ...options, argv: ['--json', '--record', join(tmp, 'default')] });
+  // A custom place with --box-ids: the supervisor owns the directory it was named.
+  const ids = join(tmp, 'ids');
+  await demo({ ...options, argv: ['--json', '--record', join(tmp, 'named'), '--box-ids', ids], place: watching('place + --box-ids') });
+  // A custom place and no --box-ids: the ids directory is the place's own, which the supervisor cannot read: it does not own it.
+  await demo({ ...options, argv: ['--json', '--record', join(tmp, 'custom')], place: watching('place, no --box-ids') });
+  assert.deepEqual(seen, [['place + --box-ids', 'supervisor', 'string'], ['place, no --box-ids', undefined, 'string']], 'every supervised child has RECORD_GEN; HOST_LINES is set exactly when the supervisor owns the ids directory');
+  assert.deepEqual(validateRecording(join(tmp, 'custom')), [], 'a child that keeps its own receipts leaves a recording that validates');
 });
