@@ -1,4 +1,4 @@
-// ARM H's pick node on the MCC job at $0: merchant-mcc-risk's picking step alone runs on the root's model and thinking
+// ARM H's pick node on the MCC job at $0: merchant-mcc-risk's agent picking step alone runs on the root's model and thinking
 // with its tools plus the read tools; the decide after it that copies the code through runs exactly as before.
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, rm } from 'node:fs/promises';
@@ -10,7 +10,7 @@ import { PRICES } from './models.mjs';
 import { PICK_NODE_INSTRUCTIONS } from './pick-node.mjs';
 import { openOut, scriptedParts } from './runner.mjs';
 import { readJson, scriptedModel } from './scripted.mjs';
-import { agentScriptMcc, CLASSIFY_MERCHANT, FIXTURES_MCC, MCC_WORKFLOW } from './scripted-mcc.mjs';
+import { agentScriptMcc, answerOfMcc, CLASSIFY_MERCHANT, FIXTURES_MCC, MCC_WORKFLOW } from './scripted-mcc.mjs';
 import { SETS } from './sets.mjs';
 
 // ---------------------------------------------------------------- the host: only the pick node changes
@@ -19,11 +19,12 @@ const mcc = scriptedParts({ set: SETS.mcc });
 const truth = readJson(join(FIXTURES_MCC, 'answers.json'));
 const lumen = mcc.companies.find((c) => c.name === 'Lumen Candle Works');
 const twoModels = { root: { id: 'claude-opus-5-5', thinking: 'high', cost: PRICES['claude-opus-5-5'] }, node: { id: 'gpt-6-luna', thinking: 'medium', cost: PRICES['gpt-6-luna'] } };
-// merchant-mcc-risk with a decide after its picking extract that copies the answer through: two model nodes, one the pick.
+// merchant-mcc-risk with its pick an agent node (as b46d0494's choose-mcc is; an extract pick is served as written) and a
+// decide after it that copies the answer through: two model nodes, one the pick.
 const WITH_DECIDE = {
   ...CLASSIFY_MERCHANT,
   output: { schemaId: 'Answer', path: 'final' },
-  root: { ...CLASSIFY_MERCHANT.root, steps: [...CLASSIFY_MERCHANT.root.steps, { node: 'decide', label: 'assemble', tools: [], out: 'Answer', as: 'final', instructions: 'Copy the answer.', state: { merchant: '{name}', url: '{page.url}', answer: '{answer}' } }] },
+  root: { ...CLASSIFY_MERCHANT.root, steps: [...CLASSIFY_MERCHANT.root.steps.map((s) => (s.node === 'extract' ? { ...s, node: 'agent' } : s)), { node: 'decide', label: 'assemble', tools: [], out: 'Answer', as: 'final', instructions: 'Copy the answer.', state: { merchant: '{name}', url: '{page.url}', answer: '{answer}' } }] },
 };
 const sysOf = (context) => context.messages.find((m) => m.role === 'system');
 const systemOf = (context) => sysOf(context)?.sections?.instructions ?? '';
@@ -81,7 +82,7 @@ test('host: with --pick-node agent the pick node alone runs on the root\'s model
   assert.equal(on.measure.answer.mcc, off.measure.answer.mcc);
 });
 
-test('host: a whole-job workflow with no pick step refuses the run under the flag', async (t) => {
+test('host, B1: a merchant-mcc-risk revision with no pick step is refused for the run, which goes by hand without throwing', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'lc-pick-node-refuse-'));
   await chmod(root, 0o755);
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -91,6 +92,11 @@ test('host: a whole-job workflow with no pick step refuses the run under the fla
   const input = SETS.mcc.input(lumen);
   const run = await prepareRun({ home, repo, host: 'test', runId: 'run-pick-refused', input });
   const onlyDecide = { ...CLASSIFY_MERCHANT, root: { ...CLASSIFY_MERCHANT.root, steps: CLASSIFY_MERCHANT.root.steps.map((s) => (s.node === 'extract' ? { ...s, node: 'decide' } : s)) } };
-  const model = scriptedModel({ root: [{ say: 'Done.' }], models: twoModels });
-  await assert.rejects(runJob({ run, job: lumen, model, judge: meteredJudge(mcc.judge()), effects: [...(await mcc.toolsFor(lumen, run)), ...SETS.mcc.labelTools(mcc.data)], answer: SETS.mcc.answer(mcc.data), text: SETS.mcc.text, dispatch: { name: MCC_WORKFLOW, sha256: 'f'.repeat(64), workflow: onlyDecide, input }, pickNode: { key: 'mcc' } }), /no node but a decide outputs it/);
+  const { node } = agentScriptMcc({ job: lumen, offered: [], fixtures: { truth } });
+  const byHand = answerOfMcc(truth[lumen.name], lumen.website);
+  const model = scriptedModel({ root: [{ call: 'answer', args: byHand }, { say: 'Done.' }], node, models: twoModels });
+  const measure = await runJob({ run, job: lumen, model, judge: meteredJudge(mcc.judge()), effects: [...(await mcc.toolsFor(lumen, run)), ...SETS.mcc.labelTools(mcc.data)], answer: SETS.mcc.answer(mcc.data), text: SETS.mcc.text, dispatch: { name: MCC_WORKFLOW, sha256: 'f'.repeat(64), workflow: onlyDecide, input }, pickNode: { key: 'mcc' } });
+  assert.deepEqual([measure.dispatch.outcome, measure.pickNode.refused.map((r) => r.revision)], ['refused', ['f'.repeat(64)]]);
+  assert.equal(model.nodeRequests.length, 0, 'the refused revision never ran');
+  assert.equal(measure.answer.mcc, byHand.mcc, 'the root agent answered by hand');
 });
