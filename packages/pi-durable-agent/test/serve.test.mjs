@@ -308,6 +308,7 @@ test("a foreign Host, another port, a POST and a path out of the home are all re
     assert.equal((await request(served.url, { target: "/api/runs/constructor" })).status, 404, "a name like an Object property is not a run");
     assert.equal((await request(served.url, { target: "/api/runs/toString" })).status, 404);
     assert.equal((await request(served.url, { target: "/api/runs/none" })).status, 404);
+    for (const target of ["//evil.example/api/agent", "//", "api/agent", "http://evil.example/api/agent", "*"]) assert.equal((await request(served.url, { target })).status, 400, `${target} is not a path`);
     assert.equal((await request(served.url, { target: "/../../etc/passwd" })).status, 404);
     for (const target of ["/", "/page.css", "/page.js", "/api/agent", "/api/runs", "/api/runs/none", "/missing"]) {
       const res = await request(served.url, { target });

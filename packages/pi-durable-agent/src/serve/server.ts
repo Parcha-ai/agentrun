@@ -65,8 +65,14 @@ export async function serveHome(home: { readonly dir: string }, options: ServeOp
     const host = (request.headers.host ?? "").toLowerCase();
     if (host !== `127.0.0.1:${address.port}` && host !== `localhost:${address.port}`) return json(request, response, 421, { error: "this server answers only to its own address" });
     if (request.method !== "GET" && request.method !== "HEAD") return json(request, response, 405, { error: "this server is read-only: GET and HEAD only" }, { allow: "GET, HEAD" });
-    if (!request.url?.startsWith("/")) return json(request, response, 400, { error: "the request target is not a path" });
-    const { pathname } = new URL(request.url, "http://127.0.0.1");
+    const target = request.url ?? "";
+    if (!target.startsWith("/") || target.startsWith("//")) return json(request, response, 400, { error: "the request target is not a path" });
+    let pathname: string;
+    try {
+      ({ pathname } = new URL(target, "http://127.0.0.1"));
+    } catch {
+      return json(request, response, 400, { error: "the request target is not a path" });
+    }
     const asset = assets.get(pathname);
     if (asset) return send(request, response, 200, asset.type, asset.body);
     try {
@@ -91,7 +97,14 @@ export async function serveHome(home: { readonly dir: string }, options: ServeOp
     }
   };
 
-  const server: Server = createServer((request, response) => handle(request, response, server.address() as AddressInfo));
+  const server: Server = createServer((request, response) => {
+    try {
+      handle(request, response, server.address() as AddressInfo);
+    } catch {
+      if (!response.headersSent) json(request, response, 500, { error: "the agent home could not be read" });
+      else response.destroy();
+    }
+  });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen({ host: "127.0.0.1", port }, () => {
