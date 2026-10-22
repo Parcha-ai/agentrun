@@ -128,6 +128,30 @@ test('a box the supervisor took away (a kill of kind box) ends as killed', async
   assert.deepEqual(lines.at(-1), ['box.ended', { gen: 1, box: 'box-1', provider: 'host', killed: true }]);
 });
 
+test('a held exec\'s `at` is the time it was CALLED: not its answer\'s, and earlier than its own line', async () => {
+  const lines = [];
+  const tap = hostTap({ line: (kind, data) => lines.push([kind, data, Date.now()]), runLabelKey: 'agentrun-run', runLabel: 'life-1' });
+  const { provider } = stubProvider();
+  let answeredAt;
+  // The box answers 60 ms after the call: a tap that took its time at the answer would be 60 ms late.
+  const slow = { ...provider, async create(spec) { const made = await provider.create(spec); made.value.exec = () => new Promise((resolve) => setTimeout(() => { answeredAt = Date.now(); resolve({ ok: true, value: { wait: async () => ({ ok: true, value: 0 }) } }); }, 60)); return made; } };
+  const tapped = tap.provider(slow);
+  await tap.unheld(aWindow().run, start(1));
+  const box = (await tapped.create({ maxLifetimeMs: 1 }, ctx)).value;
+  const calledFrom = Date.now();
+  const pending = box.exec(['true'], undefined, ctx);
+  const calledTo = Date.now();
+  await pending;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  tap.bound('0', 'box-1');
+  const [, data, lineAt] = lines.find(([kind]) => kind === 'box.exec');
+  const at = Date.parse(data.at);
+  // ISO times are whole milliseconds: the call's own time falls between the two clock reads around it.
+  assert.ok(at >= calledFrom && at <= calledTo, `at ${data.at} is the call's time (${calledFrom}..${calledTo})`);
+  assert.ok(at < answeredAt, `at ${at} is earlier than the answer ${answeredAt}`);
+  assert.ok(at < lineAt, `at ${at} is earlier than its line ${lineAt}`);
+});
+
 test('an exec that BEGAN before the bind keeps its time (at) though its answer comes after it', async () => {
   const { tap, lines } = aTap();
   const { provider } = stubProvider();
