@@ -37,6 +37,8 @@ const refused: [string, LaunchSpec][] = [
 	["an empty argv", { argv: [] }],
 	["a secret that is not a name", { argv: ["true"], secrets: { "not a name": VALUE } }],
 	["stdin over 64 KiB", { argv: ["true"], stdin: new Uint8Array(64 * 1024 + 1) }],
+	["a framed launch as root", { argv: ["true"], user: "root", stdin: new Uint8Array([1]) }],
+	["a framed launch as uid 0", { argv: ["true"], user: "0", secrets: { A: VALUE } }],
 ];
 
 describe("launchSpecError", () => {
@@ -65,5 +67,28 @@ describe("launchSpecError", () => {
 				stdin: new Uint8Array([1]),
 			}),
 		).toBeUndefined();
+	});
+});
+
+describe("the README's launch example", () => {
+	it("passes the spec check: its settings use no name the launcher reserves", async () => {
+		const { readFileSync } = await import("node:fs");
+		const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+		const line = readme.split("\n").find((each) => each.includes('await launch(box, "runner"'));
+		expect(line).toBeDefined();
+		const env = Object.fromEntries([...line!.matchAll(/([A-Z_][A-Z0-9_]*): "([^"]*)"/g)].map((m) => [m[1]!, m[2]!]));
+		expect(Object.keys(env).length).toBeGreaterThan(0);
+		expect(launchSpecError("runner", { argv: ["node", "runner.js"], env })).toBeUndefined();
+	});
+});
+
+describe("a framed launch's user", () => {
+	it("is never root: a non-framed launch may name root, a framed one is refused for root or uid 0", () => {
+		expect(launchSpecError("named", { argv: ["true"], user: "root" })).toBeUndefined();
+		for (const user of ["root", "0", "00"]) {
+			expect(launchSpecError("named", { argv: ["true"], user, stdin: new Uint8Array([1]) })?.code, user).toBe(
+				"invalid",
+			);
+		}
 	});
 });

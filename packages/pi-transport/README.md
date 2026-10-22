@@ -772,10 +772,11 @@ same names.
 ```ts
 import { launch, launchState, launchStop } from "@parcha/pi-transport/launch";
 
-const started = await launch(box, "runner", { argv: ["node", "runner.js"], env: { MODE: "home" } }, BACKGROUND_CONTEXT);
-const handle = started.ok ? started.value.launch : undefined; // { v: 1, name: "runner" }: JSON, no secret
-const state = await launchState(box, handle!, BACKGROUND_CONTEXT); // read from a file in the box
-await launchStop(box, handle!, { graceMs: 5_000 }, BACKGROUND_CONTEXT);
+const started = await launch(box, "runner", { argv: ["node", "runner.js"], env: { APP_MODE: "home" } }, BACKGROUND_CONTEXT);
+if (!started.ok) throw started.error; // a LaunchError: invalid, unsupported, refused, box, timeout or failed
+const handle = started.value.launch; // { v: 1, name: "runner" }: JSON, no secret
+const state = await launchState(box, handle, BACKGROUND_CONTEXT); // read from a file in the box
+await launchStop(box, handle, { graceMs: 5_000 }, BACKGROUND_CONTEXT);
 ```
 
 `launchStatus(box, name, ctx)` and `stopLaunch(box, name, options, ctx)` do the same by name. `launchSpecError(name, spec)` is
