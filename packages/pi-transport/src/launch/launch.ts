@@ -156,7 +156,7 @@ const CLAIM_SCRIPT = [
  * lives beside the directory, and only if the directory still holds what the caller saw; every other caller is told
  * BUSY, CHANGED or YOUNG and looks again. A lock older than two minutes belongs to a caller that died.
  */
-const RECLAIM_SCRIPT = [
+export const RECLAIM_SCRIPT = [
 	// The lock is beside the launch directories under a name no launch can have: a launch name starts with a letter or digit.
 	'D=$1; E=$2; A=$3; T=$4; L="${D%/*}/.lock.${D##*/}"',
 	'if ! mkdir "$L" 2>/dev/null; then',
@@ -175,6 +175,8 @@ const RECLAIM_SCRIPT = [
 	'  rm -rf "$D"; mkdir -m 700 "$D" || { rm -rf "$L"; echo FAILED; exit 0; }',
 	"else",
 	// Only an ended launch is cleared: one that has a generation and no state yet is starting.
+	// Nor one a stop is still ending: its hook may still be running.
+	'  if [ -e "$D/stop.claimed" ] && [ ! -e "$D/stop.done" ]; then rm -rf "$L"; echo STOPPING; exit 0; fi',
 	`  ph=$(sed -n 's/.*"phase":"\\([a-z_]*\\)".*/\\1/p' "$D/state" 2>/dev/null)`,
 	'  case "$ph" in exited|gave_up|stopped) ;; *) rm -rf "$L"; echo CHANGED; exit 0 ;; esac',
 	'  sh "$D/launcher.sh" clear "$D" || { rm -rf "$L"; echo FAILED; exit 0; }',
@@ -436,7 +438,8 @@ function parseState(text: string, directory: string): LaunchState | "none" | und
 			lastExit: number | null;
 			since: number;
 		};
-		const lost = !alive && !TERMINAL_PHASES.has(raw.phase) && text.includes("ALIVE ");
+		// A launch being stopped has no supervisor by design: it is stopping, not lost.
+		const lost = !alive && !TERMINAL_PHASES.has(raw.phase) && raw.phase !== "stopping" && text.includes("ALIVE ");
 		const user = /^USER (\S+) (\d+)$/m.exec(text);
 		return {
 			launch: { v: 1, name: directory.slice(directory.lastIndexOf("/") + 1) },
@@ -477,7 +480,8 @@ async function directoryOf(
 }
 
 /** What a directory holds: the state, or "none" for a claim nobody filled, and the generation of the launch (empty for none). */
-type Seen = { readonly state: LaunchState | "none"; readonly gen: string };
+/** `stop`: a stop is under way, with how long it may still take (centiseconds), or `late`: its owner is past its deadline. */
+type Seen = { readonly state: LaunchState | "none"; readonly gen: string; readonly stop?: number | "late" };
 
 async function readSeen(box: Box, directory: string, context: Context): Promise<Result<Seen, LaunchError>> {
 	const answered = await runScript(
@@ -496,7 +500,12 @@ async function readSeen(box: Box, directory: string, context: Context): Promise<
 	if (state === undefined)
 		return err(new LaunchError("failed", `the launcher's state in box ${box.id} cannot be read`));
 	const gen = answered.value.text.split("\n").find((line) => line.startsWith("GEN "));
-	return ok({ state, gen: gen === undefined ? "" : gen.slice(4).trim() });
+	const stop = /^STOP (late|\d+)$/m.exec(answered.value.text)?.[1];
+	return ok({
+		state,
+		gen: gen === undefined ? "" : gen.slice(4).trim(),
+		...(stop === undefined ? {} : { stop: stop === "late" ? ("late" as const) : Number(stop) }),
+	});
 }
 
 async function readState(
@@ -598,6 +607,14 @@ export async function launch(
 		if (claimed.value.claimed) break;
 		const seen = await readSeen(box, directory, context);
 		if (!seen.ok) return seen;
+		// A stop of this name is under way: the start waits for its end, bounded by the stop's own deadline, and never runs
+		// beside its hook. A stop past its deadline died: another stop takes it over.
+		const stopping = seen.value.stop;
+		if (stopping === "late") return err(new LaunchError("failed", `a stop of ${name} did not finish: stop it again`));
+		if (stopping !== undefined) {
+			await new Promise((resolve) => setTimeout(resolve, Math.min(Math.max(stopping * 10, POLL_MS), 500)));
+			continue;
+		}
 		const existing = seen.value.state;
 		// A filled launcher that has not written its state yet is starting, not abandoned.
 		if (existing === "none" && seen.value.gen !== "") return waitForStart(box, directory, context);

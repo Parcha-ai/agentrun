@@ -109,6 +109,15 @@ trim_log() {
   unlock trim
 }
 
+# A state write by a runner or the supervisor, unless a stop has begun: the stop owns the launch's last state. The check and
+# the write are one exclusive section, so a stop's "stopping" is never written over. Fails (1) when a stop has begun.
+write_live() {
+  lock
+  if [ -e "$D/stop.req" ]; then unlock; return 1; fi
+  write_state "$@"
+  unlock
+}
+
 write_state() {
   p=$2; [ -n "$p" ] || p=null
   e=$3; [ -n "$e" ] || e=null
@@ -143,7 +152,7 @@ run() {
     ( run_program ) >> "$D/out.log" 2>&1 < /dev/null
   fi
   code=$?
-  if terminal "$code"; then write_state exited "" "$code"; else write_state restarting "" "$code"; fi
+  if terminal "$code"; then write_live exited "" "$code"; else write_live restarting "" "$code"; fi
   wr lastexit $code
   wr exit.$n $code
 }
@@ -165,7 +174,7 @@ start_one() {
   n=$(( $1 + 1 ))
   wr starts $n
   wr started.at "$(now)"
-  write_state starting "" "$(rd lastexit)"
+  write_live starting "" "$(rd lastexit)" || exit 0
   if [ "$FRAMED" = 1 ]; then detach_framed run "$D" $n; else detach run "$D" $n; fi
   i=0
   while [ ! -e "$D/pid.$n" ] && [ "$i" -lt 50 ]; do
@@ -187,18 +196,18 @@ end_incarnation() {
   fi
   if own_group "$pid" "$(rd ticks.$n)"; then gkill KILL "$pid"; fi
   if terminal "$code"; then
-    write_state exited "" "$code"
+    write_live exited "" "$code" || exit 0
     trim_log
     : > "$D/done"
     exit 0
   fi
-  write_state restarting "" "$code"
+  write_live restarting "" "$code" || exit 0
   t=$(now)
   echo "$t" >> "$D/restarts"
   cut=$(( t - INTERVAL ))
   c=$(( $(awk -v c=$cut '$1 >= c' "$D/restarts" | wc -l) + 0 ))
   if [ "$c" -gt "$BURST" ]; then
-    write_state gave_up "" "$code"
+    write_live gave_up "" "$code" || exit 0
     trim_log
     : > "$D/done"
     exit 0
@@ -261,6 +270,9 @@ watch() {
   done
 }
 
+# ONE stop owns a launch's stop, claimed under the lock by the first: it drains, runs the hook (once per launch), kills and
+# writes the last state, then stop.done. Its deadline is its drain, the hook at its longest, and 3 s. A later or concurrent
+# stop never kills while the owner is within it (stop_wait).
 stopit() {
   tenths=$1
   lock
@@ -268,11 +280,16 @@ stopit() {
   n=$(rd starts)
   [ -n "$n" ] || n=0
   pid=$(rd pid.$n)
-  # The stop hook runs ONCE per launch: claimed here, under the lock, by the first stop; a later or concurrent stop skips it.
-  claimed=0
-  if [ ! -e "$D/hook.claimed" ]; then : > "$D/hook.claimed"; claimed=1; fi
-  unlock
   before=$(rd state | sed -n 's/.*"phase":"\([a-z_]*\)".*/\1/p')
+  claimed=0
+  if [ ! -e "$D/stop.claimed" ]; then
+    : > "$D/stop.claimed"
+    claimed=1
+    wr stop.deadline $(( $(centis) + tenths * 10 + HOOK_TENTHS * 10 + 300 ))
+    case "$before" in exited|gave_up|stopped) ;; *) write_state stopping "" "$(rd lastexit)" ;; esac
+  fi
+  unlock
+  if [ "$claimed" = 0 ]; then stop_wait "$tenths"; return; fi
   if alive "$pid" "$(rd ticks.$n)"; then
     gkill TERM "$pid"
     began=$(centis)
@@ -281,7 +298,12 @@ stopit() {
       sleep $STEP
     done
   fi
-  if [ "$claimed" = 1 ]; then run_hook; fi
+  run_hook
+  stop_end
+}
+
+# The end of a stop: what is left of the program's group killed, the launcher's processes ended, the last state, stop.done.
+stop_end() {
   if own_group "$pid" "$(rd ticks.$n)"; then gkill KILL "$pid"; fi
   for f in launcher watch; do
     p=$(rd $f.pid)
@@ -293,6 +315,34 @@ stopit() {
   esac
   trim_log
   : > "$D/done"
+  : > "$D/stop.done"
+  cat "$D/state"
+}
+
+# A stop that did not claim the launch waits for the owner's end, within its own bound ($1 tenths of drain, the hook at its
+# longest, 3 s: what the host waits for it), and reports the state as it then stands. Past the owner's deadline, the owner
+# died: this stop takes the stop over, once (it moves the deadline under the lock), and ends it.
+stop_wait() {
+  bound=$(( $(centis) + $1 * 10 + HOOK_TENTHS * 10 + 300 ))
+  while [ ! -e "$D/stop.done" ]; do
+    lock
+    dl=$(rd stop.deadline)
+    [ -n "$dl" ] || dl=0
+    if [ ! -e "$D/stop.done" ] && [ "$(centis)" -gt "$dl" ]; then
+      wr stop.deadline $(( $(centis) + 300 ))
+      unlock
+      hp=$(rd hook.pid)
+      if [ -n "$hp" ] && alive "$hp" "$(rd hook.ticks)"; then
+        if [ -n "$SETSID" ]; then gkill KILL "$hp"; else kill -s KILL "$hp" 2>/dev/null; fi
+      fi
+      before=$(rd state | sed -n 's/.*"phase":"\([a-z_]*\)".*/\1/p')
+      stop_end
+      return
+    fi
+    unlock
+    if [ "$(centis)" -gt "$bound" ]; then break; fi
+    sleep $STEP
+  done
   cat "$D/state"
 }
 
@@ -305,6 +355,12 @@ status() {
   printf 'ALIVE %s\n' "$a"
   printf 'GEN %s\n' "$(current_gen)"
   if [ -r "$D/user" ]; then read -r u1 u2 u3 u4 < "$D/user"; printf 'USER %s %s\n' "$u1" "$u2"; fi
+  if [ -e "$D/stop.claimed" ] && [ ! -e "$D/stop.done" ]; then
+    dl=$(rd stop.deadline)
+    [ -n "$dl" ] || dl=0
+    left=$(( dl - $(centis) ))
+    if [ "$left" -lt 0 ]; then echo 'STOP late'; else printf 'STOP %s\n' "$left"; fi
+  fi
   if [ -n "$st" ]; then printf '%s\n' "$st"; else echo NOSTATE; fi
 }
 
@@ -377,6 +433,8 @@ run_hook() {
   [ "$HOOK" = 1 ] || return 0
   if [ -n "$SETSID" ]; then $SETSID sh "$SELF" hook "$D" </dev/null >> "$D/out.log" 2>&1 & else sh "$SELF" hook "$D" </dev/null >> "$D/out.log" 2>&1 & fi
   hp=$!
+  wr hook.pid "$hp"
+  wr hook.ticks "$(ticks "$hp")"
   began=$(centis)
   limit=$(( HOOK_TENTHS * 10 ))
   while kill -0 "$hp" 2>/dev/null && [ "$(rest "$hp" | cut -c1)" != Z ] && [ $(( $(centis) - began )) -lt "$limit" ]; do
@@ -545,6 +603,9 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 	"u_home",
 	"_",
 	"claimed",
+	"bound",
+	"dl",
+	"left",
 ];
 
 /** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */

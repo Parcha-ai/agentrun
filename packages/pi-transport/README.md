@@ -795,6 +795,16 @@ before it makes a box to launch in.
   `stopped`. `graceMs` is a number from 0 to 600000 and the call to the box is given that long on top of its usual time.
   The saved process id is signalled only while it still names the process the launch started; the id of a process that
   ended and was given to another job is left alone.
+- `beforeStop` (`argv`, `timeoutMs` from 100 to 120000, default 30000) runs ONCE per launch, after the drain and
+  before the final kill, as the launcher's own user, in a session of its own. One past its bound is killed (137). Its
+  exit goes to `out.log`, and it never fails the stop.
+- A stop is ONE stop's. The first one claims it, and the phase is `stopping` until it has killed what was left and
+  written `stopped`; nothing else writes the state meanwhile.
+  - A second stop at the same time never kills: it waits for the first one's end and returns its state. One whose own
+    bound (its `graceMs`, the hook at its longest, and 3 s) ends first returns `stopping`.
+  - A stop whose first one died (past its deadline: that stop's grace, its hook's bound and 3 s) is taken over by the next stop.
+  - A `launch` of the name while it is stopped waits for the stop's end, then starts anew, never beside the hook. Past
+    the stop's deadline it is `failed` ("stop it again").
 - Callers that meet are safe: several `launch` calls for one name start one program, a claim whose caller died before
   filling it is taken over after a minute, and a launch that ended is replaced by one caller only.
 - The program's output goes to `out.log` in the launcher's directory, bounded to its tail (`logMaxBytes`), also after
