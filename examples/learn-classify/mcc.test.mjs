@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { openOut, runLoop, scriptedParts } from './runner.mjs';
+import { openOut, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { passSelfTest } from './selftest.mjs';
 import { fixtureWeb, scriptedModel } from './scripted.mjs';
 import { FIXTURES_MCC } from './scripted-mcc.mjs';
@@ -210,6 +210,21 @@ test('a scripted MCC pass: rows labelled the teacher\'s; a receipt only for the 
   assert.deepEqual([verdict.name, verdict.cells, verdict.companies, verdict.first], ['merchant-mcc-risk', 4, 4, false]);
   // The teacher disagrees with no answer here, so every scored row agrees on the code.
   assert.ok(rows.every((row) => row.mccCorrect === true));
+});
+
+test('a sealed pass that serves one recorded revision alone: every run is that revision, host-only, its rows kept apart; a revision the repository has no record of is refused', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const list = ['m-001', 'm-002'].map((id) => ({ id }));
+  await runLoop({ out, parts: mccParts(), split: 'train', list, record: false });
+  const git = (...args) => spawnSync('git', ['--git-dir', join(out, 'agent.git'), ...args], { encoding: 'utf8' }).stdout;
+  const [revision] = git('ls-tree', '-r', '--name-only', 'main').split('\n').map((f) => /merchant-mcc-risk\/([0-9a-f]{64})\.json$/.exec(f)?.[1]).filter(Boolean);
+  assert.ok(revision, 'the pass recorded a revision of merchant-mcc-risk');
+  const serve = { name: 'merchant-mcc-risk', sha256: revision };
+  const { rows, label } = await runSealed({ out, parts: mccParts(), at: 'main', split: 'dev', serve });
+  assert.equal(rows.length, 4);
+  for (const row of rows) assert.deepEqual([row.dispatch?.name, row.dispatch?.revision], [serve.name, revision], row.merchantId);
+  assert.equal(readFileSync(join(out, `sealed-${label}-serve-${revision.slice(0, 12)}.jsonl`), 'utf8').trim().split('\n').length, 4);
+  await assert.rejects(runSealed({ out, parts: mccParts(), at: 'main', split: 'dev', serve: { ...serve, sha256: 'f'.repeat(64) } }), /has no record of merchant-mcc-risk ffffffffffff/);
 });
 
 test('hindsight on an MCC run: a teacher disagreement gets one reflection, shown as the teacher\'s label; it reads only the merchant\'s pages, so its lessons are its own work, and one naming the teacher\'s code is refused', async (t) => {

@@ -33,7 +33,7 @@ import { scoreV4 } from './score-v4.mjs';
 import { agentScript, agentScriptV2, agentScriptV4, FIXTURES, FIXTURES_V2, FIXTURES_V4, fakeHardTools, fixtureWeb, scriptedJev, scriptedModel } from './scripted.mjs';
 import { isHard, SETS } from './sets.mjs';
 import { ANY_HOST, domainOf, fetchPageTool, refuseMccDomains } from './tools.mjs';
-import { answersTheJob, hostRecord, promotedFor } from './dispatch.mjs';
+import { answersTheJob, hostRecord, promotedFor, recordedWorkflow } from './dispatch.mjs';
 import { contradictionOf, lookupOfLines, receiptOf } from './eval-lookup.mjs';
 import { LINK_QUESTION, receiptHoldsTrial, receiptLinks, receiptUses, recordRun } from './receipts.mjs';
 import { asyncGate, GATE, gateSpend } from './promotion-gate.mjs';
@@ -710,8 +710,10 @@ async function homeAt(dir, repo, sha) {
  *  proposed or curated, and every job is seeded from that commit. Its own agent home, kept at that commit. Rows go to
  *  <out>/sealed-<sha12>.jsonl, each numbered by the company's place in the split. `from` takes the commit from another
  *  pass's repository (adoptFrom); `concurrency` runs that many jobs side by side; `shard` { index, count } takes every
- *  count-th company from the index-th, for a pass spread over several takes. */
-export async function runSealed({ out, parts, at = 'main', from, split = 'sealed', list, openTest = false, concurrency = 1, shard, capUsd, runCapUsd, record = false, dropEvidence = false, log = () => {} }) {
+ *  count-th company from the index-th, for a pass spread over several takes. `serve` { name, sha256 } measures that one
+ *  workflow revision alone: read from the agent repository at the commit, it is the whole of every run (host-only, as a
+ *  bank run), and its rows and home are kept apart from the commit's own (sealed-<sha12>-serve-<revision12>). */
+export async function runSealed({ out, parts, at = 'main', from, split = 'sealed', list, openTest = false, concurrency = 1, shard, serve, capUsd, runCapUsd, record = false, dropEvidence = false, log = () => {} }) {
   out = resolve(out);
   if (from !== undefined) adoptFrom(out, from, { mode: parts.mode, set: parts.set });
   const { repo, meta } = await openOut(out, { mode: parts.mode, set: parts.set, agentDir: parts.agentDir });
@@ -719,8 +721,11 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   const sha = at === 'seed' ? meta.seedSha : await repo.resolve(at);
   if (!sha) throw new Error(`the agent repository has no ${at}`);
   const label = sha.slice(0, 12);
-  const home = await homeAt(join(out, 'sealed', label, 'home'), repo, sha);
-  const rowsPath = join(out, `sealed-${label}.jsonl`);
+  const served = serve && await recordedWorkflow(repo, serve.name, serve.sha256, sha);
+  if (serve && !served) throw new Error(`the agent repository at ${label} has no record of ${serve.name} ${serve.sha256.slice(0, 12)}`);
+  const tag = serve ? `${label}-serve-${serve.sha256.slice(0, 12)}` : label;
+  const home = await homeAt(join(out, 'sealed', tag, 'home'), repo, sha);
+  const rowsPath = join(out, `sealed-${tag}.jsonl`);
   const rows = readRows(rowsPath);
   const done = new Set(rows.map((r) => r.cik));
   // With `list`, the listed companies of the split, in the list's order (a pilot's fixed rows), else the whole split.
@@ -731,7 +736,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   const judge = parts.judge();
   let spent = rows.reduce((sum, r) => sum + (r.costUsd ?? 0) + (r.scoreCostUsd ?? 0), 0);
   let stoppedBy = null;
-  log(`learn-classify: sealed pass at ${label}${sha === meta.seedSha ? ' (the seed: nothing learned)' : ''}, ${queue.length} companies of ${split}${list ? ' (a list)' : ''}${shard ? ` (shard ${shard.index}/${shard.count})` : ''}${concurrency > 1 ? `, ${concurrency} at once` : ''}`);
+  log(`learn-classify: sealed pass at ${label}${sha === meta.seedSha ? ' (the seed: nothing learned)' : ''}${serve ? `, serving ${serve.name} ${serve.sha256.slice(0, 12)} alone` : ''}, ${queue.length} companies of ${split}${list ? ' (a list)' : ''}${shard ? ` (shard ${shard.index}/${shard.count})` : ''}${concurrency > 1 ? `, ${concurrency} at once` : ''}`);
   if (pending.length) await selfTest({ out, repo, parts, log });
   const lock = concurrency > 1 ? serial() : inline;
   // One run of a job: an earlier attempt's directory is abandoned, then the run is prepared at `sha` and run. A home already
@@ -749,7 +754,8 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
     });
     if (prepared.sha !== sha) throw new Error(`refused: ${prepared.runId} was seeded from ${prepared.sha.slice(0, 12)}, not ${label}; its home is past the frozen commit (one home per commit)`);
     const started = Date.now();
-    const measure = await runSet({ parts, repo, run: prepared, job, judge: meteredJudge(judge), limitUsd: runCapUsd, lock });
+    const alone = serve ? { dispatch: { name: serve.name, sha256: serve.sha256, workflow: served, input: parts.set.input(job) }, hostOnly: true } : {};
+    const measure = await runSet({ parts, repo, run: prepared, job, judge: meteredJudge(judge), limitUsd: runCapUsd, lock, ...alone });
     return { prepared, started, measure };
   };
   const oneSealed = async ({ job, place }) => {
@@ -764,10 +770,10 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
     }
     const run = { runId: prepared.runId, ...runPaths(home, prepared.runId) };
     const finished = await lock(() => finishJob({ home, repo, run, job, measure, propose: false }));
-    const scored = isHard(parts.set) ? await scoreRun({ parts, run, job, measure, hostsDir: join(out, 'sealed', label, 'hosts') }) : undefined;
+    const scored = isHard(parts.set) ? await scoreRun({ parts, run, job, measure, hostsDir: join(out, 'sealed', tag, 'hosts') }) : undefined;
     const tools = scored ? [scored.stats.browserCostUsd, scored.stats.searchCostUsd, scored.stats.documentCostUsd] : [];
     const recording = record
-      ? await writeRecording({ into: join(out, 'sealed', label, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started, ended: Date.now(), spend: spendOf(measure, undefined, tools), modelUsd: measure.unpricedAnswers ? null : measure.usage.costUsd })
+      ? await writeRecording({ into: join(out, 'sealed', tag, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started, ended: Date.now(), spend: spendOf(measure, undefined, tools), modelUsd: measure.unpricedAnswers ? null : measure.usage.costUsd })
       : null;
     const v1 = { run: place, runId: prepared.runId, job, seedSha: prepared.sha, afterSha: sha, offered: prepared.workflows.loaded.map((w) => w.name), measure, finished, curated: null, recording, convention: parts.conventions?.[job.cik] };
     const phase = sha === meta.seedSha ? 'before' : 'after';
@@ -808,7 +814,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--receipt-admission] [--receipt-holds-trial] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--teacher <file> (mcc)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--receipt-admission] [--receipt-holds-trial] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--teacher <file> (mcc)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>] [--serve <workflow>@<revision sha256>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -824,7 +830,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, 'gate-wait-at-end': { type: 'boolean' }, hindsight: { type: 'string' },
         'receipt-admission': { type: 'boolean' }, 'receipt-holds-trial': { type: 'boolean' }, 'receipt-promotion': { type: 'boolean' }, 'promote-no-floor': { type: 'boolean' },
         'refuse-contradicting': { type: 'boolean' }, 'keep-facts': { type: 'boolean' }, 'refuse-refused-hosts': { type: 'boolean' }, teacher: { type: 'string' },
-        'self-test-only': { type: 'boolean' },
+        'self-test-only': { type: 'boolean' }, serve: { type: 'string' },
       },
     }));
   } catch (error) {
@@ -852,9 +858,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const shardMatch = values.shard === undefined ? null : /^(\d+)\/(\d+)$/.exec(values.shard);
   const shard = shardMatch ? { index: Number(shardMatch[1]), count: Number(shardMatch[2]) } : undefined;
   if (values.shard !== undefined && !(shard && shard.index >= 1 && shard.index <= shard.count)) { console.error(`--shard is i/N with 1 <= i <= N\n${USAGE}`); process.exit(2); }
-  for (const name of ['shard', 'from']) {
+  for (const name of ['shard', 'from', 'serve']) {
     if (values[name] !== undefined && !values.sealed) { console.error(`--${name} takes a sealed pass\n${USAGE}`); process.exit(2); }
   }
+  const serveMatch = values.serve === undefined ? null : /^([a-z0-9][a-z0-9-]*)@([0-9a-f]{64})$/.exec(values.serve);
+  if (values.serve !== undefined && !serveMatch) { console.error(`--serve is <workflow>@<revision sha256>\n${USAGE}`); process.exit(2); }
   if (values.split === 'test' && !values['open-test']) { console.error('the test split is opened once per finalist: pass --open-test'); process.exit(2); }
   for (const name of ['schedule', 'checkpoints']) {
     if (values[name] !== undefined && values.sealed) { console.error(`--${name} takes a learning pass\n${USAGE}`); process.exit(2); }
@@ -964,7 +972,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       ...(values.split ? { split: values.split } : {}),
     };
     const result = values.sealed
-      ? await runSealed({ ...common, at: values.at, record: !values['no-record'], list, ...(values.from ? { from: values.from } : {}), ...(shard ? { shard } : {}) })
+      ? await runSealed({ ...common, at: values.at, record: !values['no-record'], list, ...(values.from ? { from: values.from } : {}), ...(shard ? { shard } : {}), ...(serveMatch ? { serve: { name: serveMatch[1], sha256: serveMatch[2] } } : {}) })
       : await runLoop({ ...common, jobs: number('jobs'), list, record: !values['no-record'], ...(values.schedule ? { schedule: values.schedule } : {}), ...(checkpoints ? { checkpoints } : {}), gateWaitAtEnd: Boolean(values['gate-wait-at-end']) });
     if (result.stoppedBy) process.exitCode = 3;
     // A comparison still on the bank does not hold the pass's end: the process ends now, and the bank runs it finished are
