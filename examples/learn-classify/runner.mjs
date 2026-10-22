@@ -36,7 +36,7 @@ import { ANY_HOST, domainOf, fetchPageTool, refuseMccDomains } from './tools.mjs
 import { answersTheJob, hostRecord, promotedFor, recordedWorkflow } from './dispatch.mjs';
 import { contradictionOf, lookupOfLines, receiptOf } from './eval-lookup.mjs';
 import { LINK_QUESTION, receiptHoldsTrial, receiptLinks, receiptUses, recordRun } from './receipts.mjs';
-import { asyncGate, GATE, gateSpend } from './promotion-gate.mjs';
+import { asyncGate, demotionSettler, GATE, gateSpend } from './promotion-gate.mjs';
 import { passSelfTest } from './selftest.mjs';
 import { writeHosts } from './tools-v2.mjs';
 import { HINDSIGHT_FIELDS, LIVE_REFLECTION_USD, proposeHindsight, recordPagesOnly, reflectOnRun } from './hindsight.mjs';
@@ -427,6 +427,13 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
         recordRun(receiptsDir, { run: runId, receipt: p.receipt ?? null, contradiction: p.contradiction ?? null, executed, workflowTouch: Boolean(p.workflowTouch) });
       }
       const curateJudge = meteredJudge(judge);
+      // ARM G (demotionSettler): the revision whose answer was this run's (the host's dispatch, complete) is shown wrong when
+      // the truth (the teacher, for MCC) disagrees with the code it answered.
+      const answeredWrong = p.measure.dispatch?.outcome === 'complete' && (parts.set === SETS.mcc ? p.score?.mccCorrect === false : p.score?.sicCorrect4 === false);
+      const armG = parts.escalationNeutral || parts.gatedDemotion
+        ? (settle) => demotionSettler({ settle, neutral: Boolean(parts.escalationNeutral), shownWrong: new Set(answeredWrong ? [p.measure.dispatch.revision] : []), ...(parts.gatedDemotion ? { gate } : {}) })
+        : (settle) => settle;
+      const byReceipt = parts.promoteNoFloor ? (settle) => receiptUses({ settle, dir: receiptsDir, gate, receipts: Boolean(parts.receiptPromotion) }) : (settle) => settle;
       const curated = await curateJob({
         repo, judge: curateJudge, ...(parts.thresholds ? { thresholds: parts.thresholds } : {}),
         ...(parts.judgeCuts ? { judgeCuts: parts.judgeCuts } : {}),
@@ -437,7 +444,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
         // With promotion by receipt the gate does not hold a promotion back: it confirms or demotes a replacement.
         ...(gate && !parts.promoteNoFloor ? { gate } : {}),
         ...(parts.receiptHoldsTrial ? { wrapAdmit: (admit) => receiptHoldsTrial(admit, receiptsDir) } : {}),
-        ...(parts.promoteNoFloor ? { wrapSettle: (settle) => receiptUses({ settle, dir: receiptsDir, gate, receipts: Boolean(parts.receiptPromotion) }) } : {}),
+        ...(parts.promoteNoFloor || parts.escalationNeutral || parts.gatedDemotion ? { wrapSettle: (settle) => armG(byReceipt(settle)) } : {}),
       });
       save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main, ...(gated.length ? { gated } : {}), ...(tally ? { curatedIndex: ++tally.curated, curatedAt: new Date().toISOString() } : {}) });
       tally?.landed(job, p);
@@ -814,7 +821,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--receipt-admission] [--receipt-holds-trial] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--teacher <file> (mcc)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>] [--serve <workflow>@<revision sha256>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--escalation-neutral] [--gated-demotion (with --promotion-bank)] [--receipt-admission] [--receipt-holds-trial] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--teacher <file> (mcc)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>] [--serve <workflow>@<revision sha256>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -829,6 +836,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' }, 'edgar-cache': { type: 'string' }, schedule: { type: 'string' }, checkpoints: { type: 'string' },
         'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, 'gate-wait-at-end': { type: 'boolean' }, hindsight: { type: 'string' },
         'receipt-admission': { type: 'boolean' }, 'receipt-holds-trial': { type: 'boolean' }, 'receipt-promotion': { type: 'boolean' }, 'promote-no-floor': { type: 'boolean' },
+        'escalation-neutral': { type: 'boolean' }, 'gated-demotion': { type: 'boolean' },
         'refuse-contradicting': { type: 'boolean' }, 'keep-facts': { type: 'boolean' }, 'refuse-refused-hosts': { type: 'boolean' }, teacher: { type: 'string' },
         'self-test-only': { type: 'boolean' }, serve: { type: 'string' },
       },
@@ -937,6 +945,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       console.log('learn-classify: facts are never archived to keep the index under its cap');
     }
     if (values['promote-no-floor']) parts.promoteNoFloor = true;
+    if ((values['escalation-neutral'] || values['gated-demotion']) && values.sealed) { console.error(`--escalation-neutral and --gated-demotion settle a learning pass's uses: a sealed pass settles none\n${USAGE}`); process.exit(2); }
+    if (values['gated-demotion'] && values['promotion-bank'] === undefined) { console.error(`--gated-demotion asks the replay gate: it takes --promotion-bank\n${USAGE}`); process.exit(2); }
+    if (values['escalation-neutral']) {
+      parts.escalationNeutral = true;
+      console.log('learn-classify: an escalated use (or one whose task failed) counts neither way; a use fails only when the workflow answered and the run shows it wrong');
+    }
+    if (values['gated-demotion']) {
+      parts.gatedDemotion = true;
+      console.log('learn-classify: a demotion the uses call for queues the paired bank comparison, and demotes only on a 95% lower bound below 0 (<out>/gate)');
+    }
     if (values['receipt-promotion'] && !values['promote-no-floor']) { console.error(`--receipt-promotion takes --promote-no-floor\n${USAGE}`); process.exit(2); }
     for (const [flag, key, line] of [
       ['receipt-admission', 'receiptAdmission', set === SETS.mcc ? 'a note linked to its run\'s receipt (the MCC quote on the merchant\'s own page, cited) is proposed as the run\'s own work, and the code is refused in the run\'s notes' : 'a note linked to its run\'s receipt (the SEC record of the code it answered, cited) is proposed as the run\'s own work, and the code is refused in the run\'s notes'],
