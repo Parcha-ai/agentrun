@@ -205,15 +205,39 @@ export const transportPanel: Panel<TransportState> = {
       if (line.kind === 'result') return { ...state, result: { blob: str(data.blob) ?? '', title: str(data.title) ?? 'The result' } };
       // A host box (role host): drawn as a box of the session's host, by its run-wide label; one the supervisor took away ended as killed.
       if (line.kind === 'box.created') {
-        let next = boxCreated(state, { ...data, environment: str(data.environment) ?? 'host' }, line);
-        // The host box is where the process of its gen runs (data.gen): that runner moves to it, and the session too while it stands at no
-        // box, but only for the CURRENT process (the newest runner). The supervisor's reads are bounded, so an earlier process's line can
-        // land after the next one started; it must not take the session back to a box the run has left.
+        const environment = str(data.environment) ?? 'host';
+        const next = boxCreated(state, { ...data, environment }, line);
+        // The host box is where the process of its gen runs (data.gen). A host-only recording's process.started names no box, so its line
+        // fills what waited for that process's box ('?'): the runner (box, environment), the kills it recovered (the arrow's box), and the
+        // session's trail while that runner ran. The session itself, and the browser tile's box, move only for the CURRENT process (the
+        // newest runner): the supervisor's reads are bounded, so an earlier process's line can land after the next one started, and it must
+        // not take the session back to a box the run has left.
         const gen = processOf(line);
         const box = str(data.box);
         if (gen === undefined || box === undefined) return next;
-        next = { ...next, runners: next.runners.map((runner) => (runner.gen === gen && runner.box === '?' ? { ...runner, box } : runner)) };
-        return next.token?.box === '?' && next.runners.at(-1)?.gen === gen ? tokenTo(next, box, next.token.epoch, line.t) : next;
+        const runner = next.runners.find((each) => each.gen === gen);
+        // The part of a '?' stretch of the trail that lies inside this runner's life is at its box; the rest stays where it was ('?').
+        const fill = (segment: TransportState['tokens'][number]): TransportState['tokens'] => {
+          if (segment.box !== '?' || runner === undefined) return [segment];
+          const end = segment.to ?? Number.POSITIVE_INFINITY;
+          const from = Math.max(segment.from, runner.from);
+          const to = Math.min(end, runner.to ?? Number.POSITIVE_INFINITY);
+          if (from >= to) return [segment];
+          return [
+            ...(segment.from < from ? [{ box: '?', from: segment.from, to: from }] : []),
+            { box, from, ...(to === Number.POSITIVE_INFINITY ? {} : { to }) },
+            ...(to < end ? [{ box: '?', from: to, ...(segment.to === undefined ? {} : { to: segment.to }) }] : []),
+          ];
+        };
+        const current = next.runners.at(-1)?.gen === gen && next.token?.box === '?';
+        return {
+          ...next,
+          runners: next.runners.map((each) => (each.gen === gen ? { ...each, box: each.box === '?' ? box : each.box, environment: each.environment === '?' ? environment : each.environment } : each)),
+          kills: next.kills.map((kill) => (kill.recovered?.gen === gen && kill.recovered.box === '?' ? { ...kill, recovered: { ...kill.recovered, box } } : kill)),
+          tokens: next.tokens.flatMap(fill),
+          ...(current && next.token !== undefined ? { token: { ...next.token, box, since: line.t } } : {}),
+          ...(current && next.tileBox === '?' ? { tileBox: box } : {}),
+        };
       }
       if (line.kind === 'box.ended') return boxEnded(state, data, line, data.killed === true);
       return state;

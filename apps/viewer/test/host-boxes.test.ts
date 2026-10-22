@@ -70,3 +70,27 @@ test('a host box.created of an EARLIER process that lands after the next process
   assert.equal(state.token?.box, 'box-2');
   assert.deepEqual(state.runners.map((runner) => [runner.gen, runner.box]), [[1, 'box-1'], [2, 'box-2']]);
 });
+
+test('in a host-only recording a process\'s host box line fills what waited for its box: the kill\'s recovery, the tile\'s box and the session\'s trail; an earlier process\'s late line fills nothing of the current one', () => {
+  const browser = (t: number): Line => ({ channel: 'live', source: 'browser', kind: 'frame', t, seq: 900 + t, data: { session: 's1', provider: 'local', w: 800, h: 600, mime: 'image/jpeg' } });
+  const run = [
+    host('process.started', 0, { gen: 1, pid: 1 }),
+    host('kill', 5, { gen: 1, label: 'a planned loss', crossing: null, kind: 'box' }),
+    host('process.started', 10, { gen: 2, pid: 2 }),
+    browser(11),
+    // Process 1's host box line, late: after process 2 started.
+    host('box.created', 12, { gen: 1, box: 'box-1', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:00.000Z' }),
+    host('box.created', 14, { gen: 2, box: 'box-2', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:01.000Z' }),
+  ];
+  const late = reduceTo(transportPanel, run, 5);
+  assert.equal(late.kills[0]?.recovered?.box, '?');
+  assert.equal(late.tileBox, '?');
+  assert.equal(late.token?.box, '?');
+  assert.deepEqual(late.tokens.filter((segment) => segment.from < 10).map((segment) => segment.box), ['box-1']);
+  const state = reduceTo(transportPanel, run, run.length);
+  assert.equal(state.kills[0]?.recovered?.box, 'box-2');
+  assert.equal(state.tileBox, 'box-2');
+  assert.equal(state.token?.box, 'box-2');
+  assert.deepEqual(state.tokens.map((segment) => segment.box), ['box-1', 'box-2']);
+  assert.deepEqual(state.runners.map((runner) => [runner.gen, runner.box, runner.environment]), [[1, 'box-1', 'host'], [2, 'box-2', 'host']]);
+});
