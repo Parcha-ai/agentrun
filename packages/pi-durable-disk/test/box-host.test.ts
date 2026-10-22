@@ -265,6 +265,17 @@ describe("boxHost: the launch, a start found again, status, stop and receipts", 
     assert.equal(await driver.status(handle), "gone");
   });
 
+  it("a launch whose first incarnation could not run (exit 126: the user switch, the env clear or the cwd failed) is a FAILED start: LAUNCH_FAILED naming the exit, the box destroyed, not remembered; never a running instance", async () => {
+    const provider = modal();
+    provider.script.on({ op: "launch" }, { exit: 126 }, { times: 1 });
+    const driver = host(provider);
+    await assert.rejects(driver.start(REF, TOKEN, { attempt: 1 }), (e: unknown) => code("LAUNCH_FAILED")(e) && /126/.test((e as Error).message));
+    assert.equal(provider.boxes[0]!.state, "ended", "the box is destroyed");
+    const second = await driver.start(REF, TOKEN, { attempt: 1 });
+    assert.equal(second.adopted, undefined, "not remembered: a later start launches again, in a new box");
+    assert.equal(provider.callsOf("create").length, 2);
+  });
+
   it("the launch's errors: refused and unsupported are UNSUPPORTED and remembered; timeout is START_TIMED_OUT; failed and box are LAUNCH_FAILED and not remembered; invalid is INVALID_ARGUMENT; the box is destroyed every time", async () => {
     const cases = [
       { fail: "refused", expect: "UNSUPPORTED", remembered: true },
