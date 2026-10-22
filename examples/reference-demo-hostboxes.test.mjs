@@ -59,3 +59,17 @@ test('H3: a host box made through the tapped provider is in the recording as the
   const blobs = new Set((existsSync(join(recording, 'blobs')) ? readdirSync(join(recording, 'blobs')) : []).map((name) => name.split('.')[0]));
   assert.deepEqual(viewerValidate(manifest, parsed, blobs), []);
 });
+
+test('DETECTION: a label the run\'s process binds for a host box that already names another box in the recording (a crash\'s residue: a synced line kept, its label file lost) refuses the recording, naming the label', { timeout: 300_000 }, async (t) => {
+  await assert.rejects(
+    run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'tapped', DEMO_PLANT_BOX_LINE: '1' }),
+    /the recording is refused: the label box-1 the run's process bound for host box 0 already names another box in this recording/,
+  );
+});
+
+test('DETECTION at the end: two box.created lines under one label, from any writers (here a planted line and the run\'s own tool box box-2), refuse the recording, naming the label', { timeout: 300_000 }, async (t) => {
+  await assert.rejects(
+    run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'tapped', DEMO_PLANT_BOX_LINE: 'box-2' }),
+    /the recording is refused: the label box-2 names 2 boxes in this recording/,
+  );
+});

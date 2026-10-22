@@ -286,6 +286,11 @@ const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: s
         const ran = await created.value.exec(['true'], undefined, BACKGROUND_CONTEXT);
         if (ran.ok) await ran.value!.wait();
         const entry = made.at(-1)!;
+        // `DEMO_PLANT_BOX_LINE` (1 for box-1, or a label): the residue of a crash, a synced line naming that label for a tool box whose label file was lost, already in the recording.
+        if (process.env.DEMO_PLANT_BOX_LINE && order.env.RECORD_DIR) {
+          await mkdir(join(order.env.RECORD_DIR, '.spool'), { recursive: true });
+          writeFileSync(join(order.env.RECORD_DIR, '.spool', 'planted.jsonl'), `${JSON.stringify({ channel: 'live', source: 'transport', kind: 'box.created', gen: 1, t: 0, seq: 0, data: { box: process.env.DEMO_PLANT_BOX_LINE === '1' ? 'box-1' : process.env.DEMO_PLANT_BOX_LINE, provider: 'alpha', facts: { isolation: 'none', cpus: 1, gpu: null } } })}\n`);
+        }
         const runner = await inner.start({ ...order, env: { ...order.env, HOST_BOX: JSON.stringify(box) } });
         // The host box ends with its process, as a host driver's stop does: before the supervisor hears the process ended.
         return { ...runner, exited: runner.exited.then(async (exit) => { await entry.box.destroy(BACKGROUND_CONTEXT); entry.to = new Date().toISOString(); return exit; }) };

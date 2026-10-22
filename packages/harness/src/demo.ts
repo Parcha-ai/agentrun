@@ -45,7 +45,7 @@ import { cost } from './fold.ts';
 import { checkItems, fetchSources, missingCommitted, readSources, withSources } from './sources.ts';
 import { localHost, type BrowserPlane, type Fakes, type Host, type RunPlace } from './host.ts';
 import { takeArtifact } from './artifact.ts';
-import { codeOf, finishRecording, followRecording, keepBlob, lazyRecorder, openRecorder, openSupervisor } from './record.ts';
+import { boxesNamed, codeOf, finishRecording, followRecording, keepBlob, lazyRecorder, openRecorder, openSupervisor } from './record.ts';
 import { packageCommitRecorder } from './record-store.ts';
 import { scanPlaced, scanRecording, signInFile, trackSecrets } from './secrets.ts';
 
@@ -545,6 +545,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const homeBoxSeen = new Map<string, string>();
   // A host box the place started whose label its process never claimed: the recording is refused, never finished without it (its time would be missing from the cost).
   let unlabelled: { key: string; provider: string; why: string } | undefined;
+  // A bound label that already names another box in this recording (a label file a crash lost while a line naming it was kept): the recording is refused.
+  let twice: string | undefined;
   // The tool boxes' receipts (RECORDING.md 3.1: the supervisor writes every host line): the processes keep each box's end in
   // the ids directory this supervisor owns, and it writes each receipt once from there, at every tick, after each process
   // and at the end, with the process that made the box in its data. At the end a box no process ended is written as open.
@@ -621,7 +623,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
             try { label = await hostLabelIn(labelFiles!, labelDir, { provider: box.provider, key, run: runLabel }); } catch (error) { if (final) unlabelled ??= { key, provider: box.provider, why: `its label cannot be read (${messageOf(error, paths.root)})` }; continue; }
             if (label === undefined) { if (final) unlabelled ??= { key, provider: box.provider, why: 'its child never claimed it' }; continue; }
             homeBoxLabels.set(key, label);
-            tap.bound(key, label);
+            // DETECTION, the supervisor's own: never a second box under a label its recording already names.
+            if (boxesNamed(recordDir).has(label)) twice ??= `the label ${label} the run's process bound for host box ${key} already names another box in this recording`;
+            else tap.bound(key, label);
           }
           const at = (value: unknown) => (typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : Number.NaN);
           const from = at(box.from);
@@ -810,6 +814,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const ended = processes.at(-1);
     const cause = ended && ended.outcome?.status !== 'complete' ? ` (the run's last process did not complete: ${messageOf(processText(ended.outcome?.message ?? (ended.stderr || `exit ${ended.exit ?? ended.signal}`), redact), paths.root).slice(-400)})` : '';
     if (unlabelled) throw new Error(`the recording is refused: host box ${unlabelled.key} on ${unlabelled.provider} has no label: ${unlabelled.why}${cause}`);
+    // Every label names one box: a second `box.created` under one, from any writer, refuses the recording, naming the label.
+    const named = [...boxesNamed(recordDir)].find(([, ids]) => ids.size > 1);
+    if (twice ?? named) throw new Error(`the recording is refused: ${twice ?? `the label ${named![0]} names ${named![1].size} boxes in this recording`}, so no reader could tell them apart`);
     const unread = [...homeBoxSeen].find(([key]) => !homeBoxLabels.has(key));
     if (unread) throw new Error(`the recording is refused: host box ${unread[0]} on ${unread[1]} has no label: the final read did not finish reading it inside its bound`);
     if (maxUsd !== null && meterKnown(recordDir) > maxUsd) overBudget = true;
