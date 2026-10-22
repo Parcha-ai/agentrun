@@ -4,7 +4,6 @@
 // kept before it is filed and told, so a call run again, or a new call after a cut one, pays once. Cutting a long file
 // into pieces, the transcript file and searching it stay with the agent (the `transcribe` skill).
 
-import { createHash } from "node:crypto";
 import { VISION_TRANSCRIBE } from "./contract.js";
 import { visionContext, type VisionEnv } from "./env.js";
 import { fileLook, fileTold, keptAnswer, lookKey, type Filing, type LookRecord } from "./evidence.js";
@@ -14,6 +13,7 @@ import { once, throwMiss } from "./media.js";
 import { ProviderMiss } from "./derive.js";
 import { firstLine, type Miss } from "./misses.js";
 import { argvPath } from "./paths.js";
+import { sha256Hex } from "./primitives.js";
 import { lookTiming } from "./timing.js";
 import type { CodeGlobal } from "./see.js";
 
@@ -105,7 +105,7 @@ export async function transcribe(input: unknown, env: VisionEnv | undefined, cal
   const read = await env.readBinaryFile(request.path, ctx);
   if (!read.ok) return fail({ code: "unreadable", reason: `${request.path} could not be read (${firstLine(read.error)})` });
   const sniffed = sniffKind(read.value.subarray(0, SNIFF_BYTES), request.path);
-  sha256 = createHash("sha256").update(read.value).digest("hex");
+  sha256 = sha256Hex(read.value);
   if (!sniffed.ok) return fail(sniffed);
   kind = sniffed.kind;
   if (kind !== "audio" && kind !== "video") return fail({ code: "unsupported", reason: `${request.path} reads as ${kind}, not audio or a video` });

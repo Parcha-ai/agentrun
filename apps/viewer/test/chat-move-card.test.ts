@@ -1,0 +1,138 @@
+// The move card of the chat view: where a run moved between hosts at a host `handoff` line, the timeline holds one card there, read from fields only (the handoff's gen, point, n and
+// `from`, the next generation's `run.json` holder: its host label and its driver kind), worded as a move or, where the holder's label is the one it left, a reopening; never a kill, a restart
+// or a process; the holder's pid and boot id and the handoff's prose are never read; a `handoff.failed` draws nothing.
+import assert from 'node:assert/strict';
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, test } from 'node:test';
+import { FORBIDDEN, credentialInFile } from '../../../packages/harness/src/scan.ts';
+import { extractChat } from '../src/chat-extract.ts';
+import type { ChatItem } from '../src/chat-model.ts';
+import { parseLines, type Recording } from '../src/format.ts';
+import { chrome, closeLeftBrowsers } from './driven-page.ts';
+import { movedRun, served } from './muse-served.ts';
+
+const here = new URL('.', import.meta.url).pathname;
+const IN_CHROME = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 120_000 };
+after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
+
+const D2 = { gens: [{ host: 'host-1', driver: 'daytona' }, { host: 'host-2', driver: 'daytona' }], moves: [{ t: 10_000, point: 'effect.kept charge', n: 5 }] };
+const D3 = { gens: [{ host: 'host-1', driver: 'local' }, { host: 'host-1', driver: 'local' }, { host: 'host-1', driver: 'local' }], moves: [{ t: 4_000, point: 'effect.kept hand_over', n: 1 }, { t: 10_000, point: 'effect.kept hand_back', n: 1 }] };
+
+/** The fixture made into a moved run in a scratch directory, and what extractChat makes of it. */
+async function moved(t: { after(fn: () => unknown): void }, options: Parameters<typeof movedRun>[1] | undefined) {
+  const dir = mkdtempSync(join(tmpdir(), 'viewer-move-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(join(here, 'fixtures', 'chat-browser'), dir, { recursive: true });
+  if (options) movedRun(dir, options);
+  const files = Object.fromEntries(readdirSync(join(dir, 'blobs')).map((name) => [name.split('.')[0]!, name]));
+  const recording: Recording = { id: 'run', manifest: JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')), lines: parseLines(readFileSync(join(dir, 'events.jsonl'), 'utf8')),
+    blobUrl: (sha) => (files[sha] ? `blobs/${files[sha]}` : undefined), blobType: () => undefined };
+  const model = await extractChat(recording, async () => undefined);
+  const items = model.threads.flatMap((thread) => thread.items);
+  return { items, cards: items.filter((item): item is Extract<ChatItem, { kind: 'move' }> => item.kind === 'move') };
+}
+
+test('a move between hosts is one card at the handoff, in words from fields: after the point\'s effect and its ordinal, on the host it left, then where it went', async (t) => {
+  const { cards, items } = await moved(t, D2);
+  assert.deepEqual(cards.map((card) => [card.lead, card.text]), [['after the 5th charge on host-1 (daytona)', 'Moved to host-2 (daytona) from the same disk; the conversation goes on']]);
+  // Between the last line of generation 1 and the first of generation 2: after what was recorded at or before the handoff, before what came next.
+  const at = items.findIndex((item) => item.kind === 'move');
+  const atOf = (item: ChatItem) => (item.kind === 'tool' ? (item.t0 ?? item.t1) : item.t) ?? 0;
+  assert.ok(items.slice(0, at).every((item) => atOf(item) <= 10_000) && items.slice(at + 1).every((item) => atOf(item) > 10_000), 'in time order, at its handoff line');
+});
+
+test('where the holder\'s label is the one it left, the card says it reopened, never that it moved; the labels are the recorded ones, and an ordinal follows its number', async (t) => {
+  const { cards } = await moved(t, D3);
+  assert.deepEqual(cards.map((card) => [card.lead, card.text]), [
+    ['after the 1st hand over on host-1 (local)', 'Reopened on host-1 (local) from the same disk; the conversation goes on'],
+    ['after the 1st hand back on host-1 (local)', 'Reopened on host-1 (local) from the same disk; the conversation goes on'],
+  ]);
+  const ordinals = await moved(t, { ...D2, moves: [{ ...D2.moves[0]!, n: 2 }] });
+  assert.match(ordinals.cards[0]!.lead, /^after the 2nd charge/);
+  const third = await moved(t, { ...D2, moves: [{ ...D2.moves[0]!, n: 3 }] });
+  assert.match(third.cards[0]!.lead, /^after the 3rd charge/);
+  const eleventh = await moved(t, { ...D2, moves: [{ ...D2.moves[0]!, n: 11 }] });
+  assert.match(eleventh.cards[0]!.lead, /^after the 11th charge/);
+});
+
+test('a tab is a driver kind (draft 47, amendment 2): the card names a move from the tab, and a driver that is no kind is dropped from the card', async (t) => {
+  const { cards } = await moved(t, { ...D2, gens: [{ host: 'host-1', driver: 'tab' }, { host: 'host-2', driver: 'modal' }] });
+  assert.deepEqual(cards.map((card) => [card.lead, card.text]), [['after the 5th charge on host-1 (tab)', 'Moved to host-2 (modal) from the same disk; the conversation goes on']]);
+  const unknown = await moved(t, { ...D2, gens: [{ host: 'host-1', driver: 'a-machine-name' }, { host: 'host-2', driver: 'i-0a1b2c3d4e5f' }] });
+  assert.deepEqual(unknown.cards.map((card) => [card.lead, card.text]), [['after the 5th charge on host-1', 'Moved to host-2 from the same disk; the conversation goes on']], 'a value that is no driver kind (a name, an id) is never drawn');
+});
+
+test('a point that is not an effect kept drops the "after" clause, and nothing else is read from it', async (t) => {
+  const { cards } = await moved(t, { ...D2, moves: [{ t: 10_000, point: 'model.request', n: 3 }] });
+  assert.deepEqual(cards.map((card) => [card.lead, card.text]), [['On host-1 (daytona)', 'Moved to host-2 (daytona) from the same disk; the conversation goes on']]);
+});
+
+test('a handoff.failed line draws no card, and a run with no handoff line draws none', async (t) => {
+  assert.equal((await moved(t, { ...D2, moves: [], gens: [D2.gens[0]!], failed: [10_000] })).cards.length, 0, 'a failed handoff');
+  assert.equal((await moved(t, undefined)).cards.length, 0, 'no handoff line');
+});
+
+test('the card holds no kill, restart or process, no pid, boot id or id-shaped string, no prose of the handoff, and no value the recorder\'s scanner refuses', async (t) => {
+  const text = (await moved(t, D3)).cards.concat((await moved(t, D2)).cards).map((card) => `${card.lead}\n${card.text}`).join('\n');
+  assert.doesNotMatch(text, /kill|restart|process|crash|pid|boot|generation|gen\b/i, 'a move, not a kill');
+  assert.doesNotMatch(text, /[0-9a-f]{8,}|\d{6,}|[0-9a-f]{4,}-[0-9a-f]{4,}|boot-/i, 'no id-shaped string');
+  assert.doesNotMatch(text, /brief is written|a VM opens|disk refused/, 'the handoff\'s prose never shows');
+  assert.equal(credentialInFile('card.txt', text), undefined, 'no credential shape');
+  assert.equal(FORBIDDEN.find(([name]) => name === 'machine path')![1].test(text), false, 'no machine path');
+});
+
+test('the card goes in the conversation that was ACTIVE last at the handoff, not the one that started last', async (t) => {
+  // A second conversation starts at 1 s and then goes quiet; the first goes on until 12 s. A handoff at 10 s belongs to the first, which the run was still in.
+  const { cards, items } = await moved(t, { ...D2, secondConversation: 1_000 });
+  assert.equal(cards.length, 1);
+  const dir = mkdtempSync(join(tmpdir(), 'viewer-move-home-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(join(here, 'fixtures', 'chat-browser'), dir, { recursive: true });
+  movedRun(dir, { ...D2, secondConversation: 1_000 });
+  const files = Object.fromEntries(readdirSync(join(dir, 'blobs')).map((name) => [name.split('.')[0]!, name]));
+  const recording: Recording = { id: 'run', manifest: JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')), lines: parseLines(readFileSync(join(dir, 'events.jsonl'), 'utf8')), blobUrl: (sha) => (files[sha] ? `blobs/${files[sha]}` : undefined), blobType: () => undefined };
+  const model = await extractChat(recording, async () => undefined);
+  const home = model.threads.find((thread) => thread.items.some((item) => item.kind === 'move'))!;
+  assert.ok(home.items.some((item) => item.kind === 'user' && /Check my account/.test(item.text)), 'in the conversation the run was in (the one that goes on to 12 s)');
+  assert.ok(!home.items.some((item) => item.kind === 'assistant' && /second part/.test(item.text)), 'not the quiet one');
+  void items;
+});
+
+test('a run that moved before it recorded any chat keeps its card: one per handoff line, in the run\'s own timeline', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'viewer-move-bare-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(join(here, 'fixtures', 'chat-browser'), dir, { recursive: true });
+  movedRun(dir, D3);
+  // Only the host's lines are left: no conversation entry at all.
+  const host = readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').filter((line) => line !== '' && JSON.parse(line).source === 'host');
+  const files = Object.fromEntries(readdirSync(join(dir, 'blobs')).map((name) => [name.split('.')[0]!, name]));
+  const recording: Recording = { id: 'run', manifest: JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')), lines: parseLines(host.join('\n')), blobUrl: (sha) => (files[sha] ? `blobs/${files[sha]}` : undefined), blobType: () => undefined };
+  const model = await extractChat(recording, async () => undefined);
+  assert.equal(model.threads.length, 0, 'no conversation');
+  assert.deepEqual((model.moves ?? []).map((card) => card.text), ['Reopened on host-1 (local) from the same disk; the conversation goes on', 'Reopened on host-1 (local) from the same disk; the conversation goes on'], 'a card per handoff line, kept');
+});
+
+test('in Chrome: the chat view draws one card per handoff line, in words of a move, and none without one; the Muse layout draws none', IN_CHROME, async (t) => {
+  const two = await served(t, { query: '', height: 900, edit: (dir) => movedRun(dir, D3) });
+  await two.until(`!!d()?.querySelector('main#chat-root .thread')`, 'the chat view drawn');
+  assert.deepEqual(await two.value(`[...d().querySelectorAll('.move-card')].map((card) => card.textContent)`), [
+    'after the 1st hand over on host-1 (local)Reopened on host-1 (local) from the same disk; the conversation goes on',
+    'after the 1st hand back on host-1 (local)Reopened on host-1 (local) from the same disk; the conversation goes on',
+  ]);
+  const none = await served(t, { query: '', height: 900 });
+  await none.until(`!!d()?.querySelector('main#chat-root .thread')`, 'the chat view drawn');
+  assert.equal(await none.value<number>(`d().querySelectorAll('.move-card').length`), 0, 'nothing drawn without a handoff line');
+  const muse = await served(t, { query: '&muse', height: 900, edit: (dir) => movedRun(dir, D2) });
+  await muse.until(`!!d()?.querySelector('.muse .mu-chat')`, 'the Muse layout drawn');
+  assert.equal(await muse.value<number>(`d().querySelectorAll('.move-card').length`), 0, 'the Muse layout has no move card');
+});
+
+test('in Chrome: a move that happened while a folded conversation was the active one is drawn after that fold, in the run\'s own timeline, where a closed fold cannot hide it', IN_CHROME, async (t) => {
+  // The second conversation begins at 11 s and is folded; the handoff is at 11.05 s, so it falls in that conversation's span.
+  const { value, until } = await served(t, { query: '', height: 900, edit: (dir) => movedRun(dir, { ...D2, moves: [{ t: 11_050, point: 'effect.kept charge', n: 5 }], secondConversation: 11_000 }) });
+  await until(`!!d()?.querySelector('main#chat-root .thread details.fold')`, 'the chat view drawn with a folded conversation');
+  assert.deepEqual(await value(`(() => { const card = d().querySelector('.move-card'); return [card.parentElement.className, card.previousElementSibling?.className ?? null, card.offsetParent !== null]; })()`), ['thread', 'think fold', true], 'a sibling of the fold, right after it, shown');
+  assert.equal(await value<number>(`d().querySelectorAll('.fold-body .move-card').length`), 0, 'none inside a fold');
+});

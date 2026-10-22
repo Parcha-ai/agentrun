@@ -9,7 +9,6 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
 import { test } from 'node:test';
-// @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { closeAll, drivenPage } from './driven-page.ts';
 
@@ -92,7 +91,6 @@ test('a blob still being written (.<sha>.<ext>.tmp-<pid>) is neither listed nor 
   cpSync(join(fixtures, 'reference-job'), join(recordings, 'reference-job'), { recursive: true });
   const unfinished = `.${'a'.repeat(64)}.png.tmp-4242`;
   writeFileSync(join(recordings, 'reference-job', 'blobs', unfinished), 'half a picture');
-  // @ts-expect-error: the gate is plain JavaScript
   const { gateProblems } = await import('../../../scripts/recording/gate.mjs');
   for (const files of [true, false]) {
     const dist = join(out, files ? 'files' : 'embedded');

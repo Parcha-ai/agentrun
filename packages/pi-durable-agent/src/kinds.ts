@@ -28,6 +28,13 @@ export type AgentDefinition = {
 
 /** `agent.skills`, keyed by the skill file's path under `.agents/skills/`. */
 export type SkillFile = { content: string; sha256: string };
+/** An overlay's selection rule: the id of the `question` row it answers, the `option` this variant needs, and the least
+ *  probability (`threshold`, 0 to 1) for that option. */
+export type PromptRule = { question: string; option: string; threshold: number };
+/** `agent.prompts`, keyed by id: one `base`, one `generic`, any number of `overlay`s, and at most one `question`, the
+ *  choice the overlays' rules answer. A question's `text` is its instructions and its `criteria` describe options by name
+ *  (`other` included); only an overlay has a `when`. */
+export type PromptVariant = { role: "base" | "overlay" | "generic" | "question"; label: string; text: string; when?: PromptRule; criteria?: Record<string, string> };
 /** `agent.aliases`, keyed by host: the agent's id in that host. */
 export type AgentAlias = { externalId: string };
 /** `agent.bindings`, keyed by host: where each tool name runs there. */
@@ -36,8 +43,10 @@ export type ToolBindings = Record<string, string>;
  *  them. Absent for a home not tied to a repo. */
 export type AgentSource = { sha: string; refreshedAt: string };
 /** `agent.runs`, keyed by run id. `path` is relative to the agent home; `sha` is the home's `agent.source` when the run
- *  started, so it names the skills the run's workspace got. */
-export type RunRecord = { path: string; host: string; startedAt: string; sha?: string; endedAt?: string; outcome?: string; finalAnswer?: JsonValue; cost?: number };
+ *  started, so it names the skills the run's workspace got; `prompt` is the variant the host chose for it, and why. */
+export type RunRecord = { path: string; host: string; startedAt: string; sha?: string; prompt?: { id: string; reason: string }; endedAt?: string; outcome?: string; finalAnswer?: JsonValue; cost?: number };
+/** The most characters a run's prompt `reason` has. */
+export const MAX_REASON = 2_000;
 /** `agent.vault`, keyed by session key: one saved browser session, as ciphertext. In clear: what kind it is, the origins
  *  it was captured for, when, and the provider's name; `keyId` names its item key in `vault.keys`, `iv` and `ciphertext`
  *  (AES-256-GCM, the tag at the end) are base64. */
@@ -68,12 +77,23 @@ export const IdentityDoc = singleton("agent.identity");
 export const DefinitionDoc = singleton("agent.definition");
 export const SourceDoc = singleton("agent.source");
 export const SkillsDoc = family("agent.skills");
+export const PromptsDoc = family("agent.prompts");
 export const AliasesDoc = family("agent.aliases");
 export const BindingsDoc = family("agent.bindings");
 export const RunsDoc = family("agent.runs");
 export const LeasesDoc = family("agent.leases");
 export const ProfilesDoc = family("browser.profiles");
 export const VaultDoc = family("agent.vault");
+
+/** JSON with sorted keys: one text for one value. */
+export function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().filter((key) => record[key] !== undefined).map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
 
 /** Make `draft` equal `value` as JSON (an absent or undefined field is no field). */
 export function put(draft: Draft<JsonObject>, value: object): void {

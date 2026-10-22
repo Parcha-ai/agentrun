@@ -170,12 +170,14 @@ at a time, the host passes the claim as a `HomeAccess` and the lock is taken ins
 
 ## A run
 
-1. `startRun(home, { host, runId?, now?, leaseMs? })` creates `runs/<runId>/` (the id defaults to a UUIDv7), writes the
+1. `startRun(home, { host, runId?, prompt?, now?, leaseMs? })` creates `runs/<runId>/` (the id defaults to a UUIDv7), writes the
    skills into the workspace (each checked against its SHA-256), takes the save lease for each profile no live run
    holds, copies the agent's `browser.profiles` into the run store, and records the run in `agent.runs`. A profile
    another run holds the lease for is copied without its `ref` (`state: "held"`, `heldBy` naming that run). It returns
    `{ runId, dir, storePath, workspace, agent: { instructions, tools }, leases }`, where `leases` lists the profiles
    this run can write to. Seeding is this host step; nothing here is a tool, and the model never sees a sign-in.
+   `prompt` is the [prompt variant](#prompt-variants) the host chose for the run, `{ id, reason }`, recorded on its
+   entry; an id that is not one of the agent's variants is refused.
 2. The host opens its own Harness on `storePath`, itself or through pi-durable-disk on `dir`, and creates the root
    conversation with `agent.instructions`, its chosen model and thinking level, and its tools for the names in
    `agent.tools`.
@@ -218,6 +220,50 @@ lowercase hex digits, a SHA-1 or a SHA-256 commit).
   or at none, so a run never starts on skills older than the host asked for: refresh first.
 
 A home with no `agent.source` (every home made before this) is not tied to a repo, and its runs record no sha.
+
+## Prompt variants
+
+An agent can keep prompt variants in its home: one `base`, one `generic`, `overlay`s, and at most one `question`. Each
+overlay's `when` is the rule for picking it: the question's id, the option the overlay needs, and the least probability
+for that option. The question's `text` is a Jev choice question, and its `criteria` describe options by name; every
+question also has the option `other`, for an input no overlay fits.
+
+`choosePrompt(prompts, input, { judge, lookup?, signal? })` picks one before a run starts. `judge` is a Jev runner
+(`createJevRunner` from `@parcha/agentrun-jev`), or any function of that shape; this package imports no Jev. The judge
+answers the question about `{ input }`, with the overlays' options and `other` as the choices. The overlay whose
+option's probability is at least its threshold is chosen, the highest such probability winning. When none is and
+`lookup` is given, the lookup runs once on the input's words, and the judge answers again about `{ input, lookup }`
+(its text cut to `LOOKUP_TEXT_MAX`, 3,000 characters) by the same rule. Otherwise the run gets the generic. A judge or
+lookup failure never throws: the run gets the generic, and `reason` says why. An answer whose choice is not one of the
+options, that gives a probability for another option, or whose probability or confidence is not a number from 0 to 1
+is a judge failure; the probabilities' sum is Jev's to check. An error's message is cut to 500 characters, so `reason`
+stays within the 2,000 `startRun` takes.
+
+```js
+await setPrompts(home, [
+  { id: "base", role: "base", label: "Company research", text: "Research the company in the input. Cite every claim." },
+  { id: "kind", role: "question", label: "Kind of organization", text: "What kind of organization is this?",
+    criteria: { public_company: "Its shares trade on a public exchange." } },
+  { id: "public", role: "overlay", label: "Public company", text: "Start from its latest annual report.",
+    when: { question: "kind", option: "public_company", threshold: 0.9 } },
+  { id: "generic", role: "generic", label: "Not sure", text: "Say what kind of organization it seems to be, and why." },
+]);
+const { prompts } = await readAgentHome(home); // keyed by id
+const choice = await choosePrompt(prompts, "Caterpillar Inc.", { judge, lookup });
+// { variant: "public", instructions: base + "\n\n" + overlay, passes, lookup: { used, chars, sources }, reason }
+await startRun(home, { host: "laptop", prompt: { id: choice.variant, reason: choice.reason } });
+```
+
+`instructions` is the base's text, a blank line, and the chosen variant's text: what the host gives the run's root
+conversation. `passes` holds each answer (`choice`, `probabilities`, `confidence`, `model`, `cost_usd`, `latency_ms`).
+`lookup` says whether one ran, how many characters the judge read and the sources it named, never the text. `lookup`
+is `(query, { input, signal }) => text | { text, sources? } | null`, `query` being the input's words.
+
+`setPrompts` replaces the whole set in one commit and refuses one that is not exactly one base and one generic, with
+ids that are one URL segment and given once, a label of at most 200 characters, a text of at most 64 KiB, a threshold
+from 0 to 1, and rules that name the set's question and an option no other overlay needs, never `other` (`invalid`);
+`ifRevision` makes it a compare-and-swap on `homeRevision` (`stale`). `choosePrompt` refuses the same sets. Prompts are
+exported and packed with the agent; they are not secrets.
 
 ## Saved browser sessions: the vault
 
@@ -274,9 +320,10 @@ fields are the stored format.
 | `agent.source` | agent | | `{ sha, refreshedAt }`: the repo commit the definition and skills were read from, written in their commit; absent for a home not tied to a repo |
 | `agent.definition` | agent | | `{ id, version, name, description?, instructions, skills, tools, input_schema?, output_schema?, workflow?, max_cost_usd? }`. `skills` and `tools` are names; `workflow` is an AgentRun workflow document. No model, no thinking level |
 | `agent.skills` | agent | path under `.agents/skills/` | `{ content, sha256 }` |
+| `agent.prompts` | agent | id | `{ role, label, text, when?, criteria? }`: `role` is `base`, `overlay`, `generic` or `question`, one base, one generic and at most one question per set; `when` (an overlay's only) is `{ question, option, threshold }`, the question's id, the option the variant needs and its least probability, 0 to 1; `criteria` (a question's only) describes options by name |
 | `agent.aliases` | agent | host | `{ externalId }`: the agent's id in that host |
 | `agent.bindings` | agent | host | `{ [tool]: target }`: where each tool runs in that host |
-| `agent.runs` | agent | run id | `{ path, host, startedAt, sha?, endedAt?, outcome?, finalAnswer?, cost? }`; `path` is relative to the home; `sha` is the home's `agent.source` when the run started |
+| `agent.runs` | agent | run id | `{ path, host, startedAt, sha?, prompt?, endedAt?, outcome?, finalAnswer?, cost? }`; `path` is relative to the home; `sha` is the home's `agent.source` when the run started; `prompt` is `{ id, reason }`, the variant the host chose |
 | `agent.leases` | agent | profile key | `{ runId, expiresAt }` |
 | `agent.vault` | agent | session key (1 to 128 of letters, digits, `_`, `.`, `:` and `-`, starting with a letter or digit, as pi-browser takes it) | `{ kind, origins, capturedAt, provider?, keyId, iv, ciphertext, alg, v }`: a saved browser session as AES-256-GCM ciphertext; `keyId` names its item key in `vault.keys`, beside the store ([the vault](#saved-browser-sessions-the-vault)) |
 | `browser.profiles` | agent and run | profile key | `{ provider, ref, state, startUrl?, allowedOrigins?, verifiedAt?, heldBy? }`; `ref` is the provider's saved sign-in (a Browserbase context id, or a local Chrome's profile directory), `state` is `ready` once it names one, or `held` in a run store whose run has no lease on it (`ref` empty, `heldBy` the run that has) |
@@ -287,7 +334,7 @@ through the host, and no tool reads or returns a profile.
 ## Exporting a home
 
 An exporter (a copy of a home for a viewer, or for someone else to run) copies only the kinds on `EXPORTABLE_KINDS`:
-`agent.identity`, `agent.definition`, `agent.source`, `agent.skills` and `agent.runs`. Every other kind is dropped, a kind this release
+`agent.identity`, `agent.definition`, `agent.source`, `agent.skills`, `agent.prompts` and `agent.runs`. Every other kind is dropped, a kind this release
 does not know included. `SECRET_KINDS` names what never leaves the home: `browser.profiles` (saved sign-ins), `agent.vault` (saved sessions),
 `agent.leases`, and `agent.bindings` and `agent.aliases` (each host's own names for where the tools run and for the
 agent). Every kind this package defines is on exactly one of the two lists, and a test fails on a kind added to
@@ -335,11 +382,12 @@ to a `.part` file, read back with `readPack`, and renamed into place only when i
 `readPack` returns `{ ok, manifest, checks }`. The checks use the contract's names for what the package can judge:
 `format` (the manifest first, `agentrun.home/N` with N at most this version's, every member on the allowlist and none
 inside a file, no `..`, no absolute path, no link or device, no store with a sign-in kind, at most `maxMembers`, no global
-pax header, at most one pax header of at most 64 fields before a member, nothing after the end), `definition` (the definition
-is valid and is the one in `agent.sqlite`, the agent id is the same everywhere, each skill matches its `sha256` and
-size), `sign_ins` (`warn` when the source had sign-ins: they are to redo at the target), `size` (the pack is the size its
-manifest says, and within `maxBytes`) and `live_runs` (`warn` when runs travel as index entries only). Tools, vault and
-quote are the host's to judge. It writes only temporary files.
+pax header, at most one pax header of at most 64 fields before a member, nothing after the end, and prompts that are none
+or a set `setPrompts` takes, so an import never leaves a home whose `choosePrompt` refuses its set), `definition` (the
+definition is valid and is the one in `agent.sqlite`, the agent id is the same everywhere, each skill matches its
+`sha256` and size), `sign_ins` (`warn` when the source had sign-ins: they are to redo at the target), `size` (the pack is
+the size its manifest says, and within `maxBytes`) and `live_runs` (`warn` when runs travel as index entries only).
+Tools, vault and quote are the host's to judge. It writes only temporary files.
 
 `importPack` judges the pack and extracts it to a directory beside `dir`. A pack whose file is over `maxBytes` is refused
 on its size, before a byte of it is parsed; one whose manifest says it is over is refused before anything is extracted. A
@@ -350,8 +398,9 @@ have no live run (`check`, with `live_runs` failed); `ifRevision` must still be 
 
 A home is changed in place, under its own owner lock: the lock, `agent.sqlite`, `chrome/`, `repo/`, the home's
 sign-ins, aliases and bindings, and its runs the pack does not have stay where they are. One store commit replaces the
-definition, the skills, the source and the pack's runs, so `homeRevision` only goes up (an import that changes nothing
-leaves it as it is). A run id in both takes the pack's entry and directory. A run that was live at the source arrives
+definition, the skills, the prompts, the source and the pack's runs, so `homeRevision` only goes up (an import that
+changes nothing leaves it as it is). A prompt variant the pack does not have is removed, and so is the whole set when
+the pack carries none. A run id in both takes the pack's entry and directory. A run that was live at the source arrives
 as an ended entry with outcome `not_carried_back`.
 
 The pack's run directories move into place before the commit, each old one set aside first in the staging directory
@@ -422,9 +471,11 @@ exists to check them. [Errors](#errors) says what each code means.
 | `homeRevision(home, { access? })` | The agent store's head commit number: every write that changes the home moves it, reads do not. With the identity's id it is the home's version, an ETag. One read-only query, under no lock by default | `missing` (not a home, without `access`), `format` (no readable head commit) |
 | `setAlias(home, host, externalId)` | The agent's id in a host | `invalid`: an empty `host` or `externalId` |
 | `setBindings(home, host, bindings)` | Where each tool name runs in a host; replaces that host's bindings | `invalid`: an empty `host`, or bindings that are not tool names to non-empty targets |
+| `setPrompts(home, variants, { ifRevision?, access? })` | The agent's prompt variants replaced by `variants` (each with its `id`), in one commit; an equal set writes nothing. Returns `{ changed }` ([Prompt variants](#prompt-variants)) | `invalid`: not exactly one base and one generic, more than one question, an id that is not one URL segment or is given twice, a label, text or rule over its limits, a rule that names no question row or an option another overlay needs, or a field a row does not keep. `stale`: the home is not at `ifRevision`. Nothing is written on either |
+| `choosePrompt(prompts, input, { judge, lookup?, signal? })` | The variant a run starts with, by the set's Jev choice question and at most one lookup. Returns `{ variant, instructions, passes, lookup, reason }` ([Prompt variants](#prompt-variants)) | `invalid`: a set `setPrompts` would refuse. A judge or lookup failure never throws: the run gets the generic, and `reason` says why |
 | `refreshAgentHome(home, { sha, from?, ifRevision?, definition, skills, now? })` | The cached definition and skills replaced by the ones at `sha`. Returns `{ changed }` ([Following the agent's repo](#following-the-agents-repo)) | `invalid`: a bad `sha`, `from`, `ifRevision`, definition or skill, a definition `id` that is not the agent's. `stale`: the home is not at `ifRevision`, or its cache is not at `from`. Nothing is written on either |
-| `startRun(home, { host, runId?, sha?, now?, leaseMs? })` | A run's start on this machine, above. Returns a `RunStart`: `{ runId, dir, storePath, workspace, agent, leases, sha? }` | `invalid`: an empty `host`, a bad `leaseMs`, `sha` or run id. `exists`: the run id is taken. `stale`: `sha` is not the home's. `format`: a skill does not match its SHA-256. A start that fails part way is undone; when the undo fails too the error is an `AggregateError` with both |
-| `prepareRun(home, { host, runId?, sha?, now?, leaseMs?, access? })` | A start's home half: the lease and the record, as a `RunSeed` ([An agent home on a disk](#an-agent-home-on-a-disk)) | as `startRun`, but `exists` only for a run in the index |
+| `startRun(home, { host, runId?, sha?, prompt?, now?, leaseMs? })` | A run's start on this machine, above; `prompt` (`{ id, reason }`) is the variant the host chose, recorded on the run. Returns a `RunStart`: `{ runId, dir, storePath, workspace, agent, leases, sha? }` | `invalid`: an empty `host`, a bad `leaseMs`, `sha` or run id, or a `prompt` that is not `{ id, reason }` or names no variant of the agent. `exists`: the run id is taken. `stale`: `sha` is not the home's. `format`: a skill does not match its SHA-256. A start that fails part way is undone; when the undo fails too the error is an `AggregateError` with both |
+| `prepareRun(home, { host, runId?, sha?, prompt?, now?, leaseMs?, access? })` | A start's home half: the lease and the record, as a `RunSeed` ([An agent home on a disk](#an-agent-home-on-a-disk)) | as `startRun`, but `exists` only for a run in the index |
 | `seedRun({ storePath, workDir }, seed)` | A start's run half: the run's store and its skills. Safe to run again on a half-written directory | `invalid`: a seed that gives a run the reference of a sign-in it does not lease, or a bad skill path. Nothing is written |
 | `undoPrepare(home, seed, { access? })` | Undoes a `prepareRun` whose seed never landed. Returns `{ undone }`, which is `false` when that start is no longer the run's | |
 | `carryBack(home, run, { outcome, finalAnswer?, cost?, now?, access? })` | A run's end, above. Returns a `CarryBack`: `{ changed, profiles, released }`. A second call for the same run changes nothing | `invalid`: an empty `outcome`, a negative or non-finite `cost`. `missing`: the run is not the agent's, or its store is not there |
@@ -436,6 +487,7 @@ exists to check them. [Errors](#errors) says what each code means.
 | `importPack(file, dir, { replace?, ifRevision?, maxBytes?, maxMembers?, now? })` | The pack as the home in `dir`, in place. `ifRevision` is a `homeRevision`. Returns `{ home, report }`, `report` being `{ ok: true, agent_id, checks, written: true, replaces }` | `missing`: no such file. `invalid`: a bad `ifRevision`, a `dir` that is not a directory, is not empty and not a home, or holds another agent. `check`: the pack is refused, or the target has a live run (`checks` says which). `exists`: `dir` is a home and `replace` is not set. `stale`: `ifRevision` is not the home's. `format`: an import journal that cannot be settled. Every refusal before the import starts leaves the home as it was; a `format` from an unsettled journal keeps the journal and its staging directory for a person to read ([Moving a home](#moving-a-home)) |
 | `AGENT_STORE_FILE`, `RUN_STORE_FILE`, `LOCK_FILE` | The file names: `agent.sqlite`, `run.sqlite` and `owner.lock` | |
 | `PACK_FORMAT` | The pack's format name, `agentrun.home/1` | |
+| `LOOKUP_TEXT_MAX` | The most characters of a lookup's text `choosePrompt`'s second pass carries: 3,000 | |
 | `sessionVault(home, { hostKey, maxSessionCookieAgeMs?, runId?, access?, now? })` | The session vault: `capture`, `restore`, `forget`, `forgetAll`, `list` and `handedOut` ([Saved browser sessions](#saved-browser-sessions-the-vault)) | `invalid`: a host key that is not `{ id, wrap, unwrap }`, a cap that is not above 0 and at most 24 hours, an empty `runId`; its calls: a bad session key, origin, captured state or `capturedAt`. `key`: a host key that does not open the vault. `busy`: with `runId`, another live run holds the session's save lease. `format`: a key file or a saved session that does not read or decrypt, or a saved session whose row's origins or `capturedAt` were changed. A refused call writes nothing |
 | `localHostKey(id, bytes)` | A `HostKey` held in this process: 32 bytes, AES-256-GCM | `invalid`: an id that is not letters, digits, `.`, `_`, `:` or `-`, or not 32 bytes |
 | `VAULT_KEYS_FILE`, `MAX_SESSION_COOKIE_AGE_MS` | `vault.keys`, and 24 hours | |
@@ -445,10 +497,13 @@ exists to check them. [Errors](#errors) says what each code means.
 The types the package exports:
 
 - **Home.** `AgentHome` (`{ dir, identity }`), `AgentHomeState` (what `readAgentHome` returns: `identity`, `definition`,
-  `source?`, `skills`, `aliases`, `bindings`, `runs`, `leases`, `profiles`), `AgentDefinitionInput` (a definition whose
-  `id` is optional), and `HomeAccess`.
+  `source?`, `skills`, `prompts`, `aliases`, `bindings`, `runs`, `leases`, `profiles`), `AgentDefinitionInput` (a
+  definition whose `id` is optional), and `HomeAccess`.
 - **Stored kinds**, field for field as in [Stored kinds](#stored-kinds): `AgentIdentity`, `AgentDefinition`,
-  `AgentSource`, `SkillFile`, `AgentAlias`, `ToolBindings`, `RunRecord`, `ProfileLease` and `BrowserProfile`.
+  `AgentSource`, `SkillFile`, `PromptVariant`, `PromptRule`, `AgentAlias`, `ToolBindings`, `RunRecord`, `ProfileLease`
+  and `BrowserProfile`.
+- **Prompts.** `PromptVariantInput` (a variant with its `id`, as `setPrompts` takes it), `RunPrompt`, and for
+  `choosePrompt`: `PromptJudge`, `PromptQuestion`, `PromptLookup`, `PromptLookupSource`, `PromptPass` and `PromptChoice`.
 - **Vault.** `HostKey`, `SessionVault` (the port plus `forgetAll`, `list` and `handedOut`), `SessionVaultPort`,
   `CapturedState`, `VaultCookie` and `VaultEntry`.
 - **Runs.** `RunPaths`, `RunStart`, `RunSeed` (plain data, so a host can carry it to the run's side), `CarryBack`,

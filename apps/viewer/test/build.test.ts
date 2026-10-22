@@ -9,7 +9,6 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { Script } from 'node:vm';
-// @ts-expect-error: the build script is plain JavaScript
 import { build, checkModule } from '../build.mjs';
 import * as drill from './restore-drill.ts';
 

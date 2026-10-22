@@ -15,12 +15,14 @@
 // (a snapshot below a commit already seen), a filing the lost branch had at that place is a redo, paid again.
 
 /** One line of a recording's `events.jsonl`, as parsed. */
-export type Line = Record<string, any>;
+export type Line = Record<string, unknown>;
 /** `boxKnown`: the box receipts' priced sum, kept even when one box is unpriced (`parts.box` is then null): what the spend cap can count. */
 export type Cost = { usd: number | null; parts: Record<string, number | null>; boxKnown: number };
 
-const isObject = (value: unknown): value is Record<string, any> => typeof value === 'object' && value !== null && !Array.isArray(value);
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const number = (value: unknown): number | null => (typeof value === 'number' ? value : null);
+/** The value at a path of keys through nested objects, or undefined when any step is not an object. */
+const at = (value: unknown, ...path: string[]): unknown => path.reduce<unknown>((inner, key) => (isObject(inner) ? inner[key] : undefined), value);
 /** A document's identity: (doc, key, conv, task). */
 const idOf = (line: Line, doc: Line) => [doc.doc, doc.key ?? '', line.conv ?? '', line.task ?? ''].join('\u0001');
 
@@ -47,7 +49,7 @@ export function cost(lines: readonly Line[]): Cost {
       for (const message of data.model) {
         if (!isObject(message) || message.role !== 'assistant') continue;
         modelPriced = true;
-        const priced = number(message.usage?.cost?.total);
+        const priced = number(at(message, 'usage', 'cost', 'total'));
         model = model === null || priced === null ? null : model + priced;
       }
     }
@@ -59,18 +61,28 @@ export function cost(lines: readonly Line[]): Cost {
       const before = latest.get(key);
       latest.set(key, before === undefined || before === null || usd === null ? usd : Math.max(before, usd));
     };
+    // The keyed form: one document per row, the document's value the row, written once. A row is its document (doc, key) and what the row says it is (when it was
+    // asked, by which run, which decision): a snapshot that lists the same row again counts it once, and a row written at the same place after a restore (the count
+    // rolls back with the store) is another decision, the lost branch's spend kept beside it.
+    if (data.doc === 'agentrun.decisions' && typeof data.key === 'string' && !Array.isArray(data.value.receipts)) {
+      const row = data.value;
+      keep(`decision\u0001${id}\u0001row ${typeof row.at === 'string' ? row.at : ''} ${row.run_key ?? ''} ${row.decision_id ?? ''}`, number(row.cost_usd));
+    }
     if (data.doc === 'agentrun.decisions' && Array.isArray(data.value.receipts)) {
       data.value.receipts.forEach((row: unknown, index: number) => keep(`decision\u0001${id}\u0001${isObject(row) && typeof row.decision_id === 'string' ? `${row.run_key ?? ''} ${row.decision_id}` : index}`, isObject(row) ? number(row.cost_usd) : null));
     }
     if (data.doc === 'browser.sessions' && Array.isArray(data.value.sessions)) {
-      for (const session of data.value.sessions) if (isObject(session) && typeof session.tag === 'string') keep(`browser\u0001${id}\u0001${session.tag}`, session.spent?.state === 'priced' ? number(session.spent.usd) : null);
+      for (const session of data.value.sessions) if (isObject(session) && typeof session.tag === 'string') keep(`browser\u0001${id}\u0001${session.tag}`, at(session, 'spent', 'state') === 'priced' ? number(at(session, 'spent', 'usd')) : null);
     }
     if (data.doc.startsWith('vision.') && Array.isArray(data.value.looks)) {
       data.value.looks.forEach((look: unknown, index: number) => {
-        if (!isObject(look) || !isObject(look.record) || !isObject(look.record.facts) || typeof look.record.facts.key !== 'string') return;
+        if (!isObject(look) || !isObject(look.record) || !isObject(look.record.facts)) return;
         const record = look.record;
+        const facts = look.record.facts;
+        const key = facts.key;
+        if (typeof key !== 'string') return;
         const filing = `${id}\u0001${index}\u0001${typeof look.receipt === 'string' ? look.receipt : ''}`;
-        const usd = number(record.facts.cost_usd);
+        const usd = number(facts.cost_usd);
         // The latest revision of a filing says what it cost.
         if (line.snapshot === true ? looks.seen.has(filing) : looks.here.has(filing)) {
           looks.here.add(filing);
@@ -79,14 +91,14 @@ export function cost(lines: readonly Line[]): Cost {
         }
         looks.seen.add(filing);
         looks.here.add(filing);
-        const kept = record.facts.kept === true;
+        const kept = facts.kept === true;
         if (isObject(record.args) && record.args.native === true) return;
         if (record.status !== 'ok') {
           if (!kept) looks.priced.set(filing, looks.costs.push(usd) - 1);
           return;
         }
-        const first = !looks.ok.has(record.facts.key);
-        looks.ok.add(record.facts.key);
+        const first = !looks.ok.has(key);
+        looks.ok.add(key);
         if (!kept || first) looks.priced.set(filing, looks.costs.push(usd) - 1);
       });
     }
