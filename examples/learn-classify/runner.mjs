@@ -905,12 +905,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     }
     if (values.gate !== undefined) {
       if (values.gate !== 'jev-margin' || values['gate-tau'] === undefined) { console.error(`--gate is jev-margin, with --gate-tau <file>\n${USAGE}`); process.exit(2); }
-      if (!set.pickGroups) { console.error(`--gate needs a set whose codes have groups: pass --set v4\n${USAGE}`); process.exit(2); }
+      if (!set.pickGroups) { console.error(`--gate needs a set whose codes have groups: pass --set v4 or --set mcc\n${USAGE}`); process.exit(2); }
       const tau = JSON.parse(readFileSync(resolve(values['gate-tau']), 'utf8')).tau;
       if (!(typeof tau === 'number' && tau >= 0 && tau <= 1)) { console.error(`--gate-tau's file holds { "tau": 0..1 }\n${USAGE}`); process.exit(2); }
       const receiptOfRun = (storePath, output) => { try { return Boolean(receiptOf(recordingLines(storePath).lines, output)); } catch { return false; } };
-      parts.pickGate = { ...set.pickGroups(parts.data), tau, receiptOf: receiptOfRun };
-      console.log(`learn-classify: a served ${parts.pickGate.key} goes back to the agent when a second pick over its group gives it a margin under ${tau} (pick-gate.mjs); a receipted one stands`);
+      const groups = set.pickGroups(parts.data);
+      parts.pickGate = { ...groups, tau, receiptOf: groups.exempt === false ? () => false : receiptOfRun };
+      console.log(`learn-classify: a served ${parts.pickGate.key} goes back to the agent when a second pick over its group gives it a margin under ${tau} (pick-gate.mjs)${groups.exempt === false ? "; nothing is exempt" : "; a receipted one stands"}`);
     } else if (values['gate-tau'] !== undefined) { console.error(`--gate-tau takes --gate jev-margin\n${USAGE}`); process.exit(2); }
     if (values['curate-sticky']) {
       parts.sticky = true;

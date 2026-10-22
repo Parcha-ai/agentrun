@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { answerFacts, FACTS_RULES } from './facts-job.mjs';
 import { answerV1, answerV2, answerV4, jobInput, jobText, sic2GroupsTool, sicCodesTool } from './host.mjs';
-import { loadGroups } from '../learn-mcc/score-mcc.mjs';
+import { groupOf, loadGroups, mccOf } from '../learn-mcc/score-mcc.mjs';
 import { answerToolMcc, jobInputMcc, jobTextMcc, mccCodesTool, mccGroupsTool } from './mcc.mjs';
 
 const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'));
@@ -43,6 +43,9 @@ const FACTS_AGENT = {
  *  id as the runner keys a company (`cik`), and learn-mcc's own tables (score-mcc's loadGroups: the ranges, the T&E
  *  overrides and the code titles), which the tools serve and the scorer reads. The teacher's labels are never in the data
  *  a run's tools see: the host joins them from its own file (runner.mjs --teacher). */
+/** The MCC pick gate's one fixed question. */
+const MCC_PICK_QUESTION = "Which of these Merchant Category Codes fits this merchant? The state holds the job's input and what a workflow found on the merchant's own website; choose the code whose title says what the merchant sells or does.";
+
 const loadMcc = (data) => {
   const merchants = readJson(join(data, 'merchants.json'));
   const ids = new Set();
@@ -124,6 +127,18 @@ export const SETS = Object.freeze({
     labelTools: (d) => [mccGroupsTool(d.table), mccCodesTool(d.table)],
     answer: (d) => answerToolMcc(d.table),
     answerKey: 'mcc',
+    /** The pick gate's grouping (pick-gate.mjs): the scorer's ISO 18245 groups (learn-mcc's group table, the data's), each
+     *  group's codes as mcc_codes serves them. The output's code title and its MCC evidence are left out of the pick's
+     *  state. A merchant's page is no registry record, so no MCC answer has a receipt that exempts it. */
+    pickGroups: (d) => ({
+      key: 'mcc', claim: 'mcc', drop: ['mccDescription'], cites: 'evidence', question: MCC_PICK_QUESTION,
+      groupOf: (code) => groupOf(mccOf(code), d.table),
+      optionsOf: async (group) => {
+        const range = d.table.groups.find((g) => g.id === group)?.code;
+        return range ? (await mccCodesTool(d.table).run({ group: range })).codes : [];
+      },
+      exempt: false,
+    }),
   }),
   /** The facts pass (eval-facts.mjs): the v4 companies and tools, no code tool, and an answer with no place for a code. */
   facts: Object.freeze({
