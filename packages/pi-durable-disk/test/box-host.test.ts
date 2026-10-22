@@ -90,6 +90,34 @@ describe("boxHost: an environment the launcher refuses is refused before any box
   });
 });
 
+describe("boxHost with runAs: the instance holds the token as root, every agent command runs as another, unprivileged user (PENDING the reference TL's ruling on condition 2)", () => {
+  it("launches the instance as root with --run-as <runAs> (disk's own spawn drops every command to it); the token still rides only the launch's stdin", async () => {
+    const provider = fake(modalLike({ facts: fd }));
+    provider.program("pi-durable-disk", ({ signal }) => new Promise<number>((r) => signal.addEventListener("abort", () => r(0))));
+    const driver = host(provider, { runAs: "pda" } as never);
+    await driver.start(REF, TOKEN, { attempt: 1 });
+    const launch = provider.boxes[0]!.launches[0]!;
+    assert.equal(launch.spec.user, "root");
+    const argv = launch.spec.argv;
+    assert.deepEqual(argv.slice(argv.indexOf("--run-as"), argv.indexOf("--run-as") + 2), ["--run-as", "pda"]);
+    assert.equal(argv.at(-1), "--token-stdin");
+    assert.deepEqual(provider.leaks(TOKEN).map((l) => `${l.op}:${l.where}`), ["launch:stdin"]);
+  });
+
+  it("refuses at once: a runAs that is root (by name or uid), a runAs with a user that is not root (runAs needs a root instance to switch users), and root without runAs", () => {
+    const provider = fake(modalLike({ facts: fd }));
+    const make = (more: object) => () => boxHost({ provider, spec: SPEC, app: "/a.js", ...more } as never);
+    for (const [why, more] of [
+      ["runAs root", { runAs: "root" }],
+      ["runAs 0", { runAs: "0" }],
+      ["runAs with a non-root user", { runAs: "pda", user: "pdah" }],
+      ["root without runAs", { user: "root" }],
+    ] as const) assert.throws(make(more), code("INVALID_ARGUMENT"), why);
+    assert.doesNotThrow(make({ runAs: "pda", user: "root" }), "root with runAs, said explicitly");
+    assert.equal(provider.calls.length, 0);
+  });
+});
+
 describe("boxHost: the box it asks for, and a box that cannot hold the mount", () => {
   it("creates with the spec, capabilities fuse added, and its three labels; never an env in the spec", async () => {
     const provider = fake(daytonaLike());
