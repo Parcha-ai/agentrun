@@ -77,17 +77,21 @@ export const CLASSIFY_MERCHANT_BROWSE = Object.freeze({
 /** merchant-mcc-risk as a churn rehearsal's run saves it: its pick step an agent node, and a step that never fires (its
  *  value a hash of the merchant's id, never a case value), so each run's revision has its own digest. */
 export function savedEveryRun(job) {
+  const picked = agentPick(CLASSIFY_MERCHANT);
   return {
-    ...CLASSIFY_MERCHANT,
+    ...picked,
     root: {
-      ...CLASSIFY_MERCHANT.root,
+      ...picked.root,
       steps: [
         { node: 'escalate', label: 'never', when: { predicate: 'in', path: 'name', values: [`never-${createHash('sha256').update(String(job.cik)).digest('hex').slice(0, 12)}`] }, kind: 'review', stage: 'research', summary: 'never fires' },
-        ...CLASSIFY_MERCHANT.root.steps.map((step) => (step.node === 'extract' ? { ...step, node: 'agent' } : step)),
+        ...picked.root.steps,
       ],
     },
   };
 }
+
+/** A workflow with its answer-writing extract made an agent node, as a learned workflow's pick step usually is. */
+const agentPick = (workflow) => ({ ...workflow, root: { ...workflow.root, steps: workflow.root.steps.map((step) => (step.node === 'extract' ? { ...step, node: 'agent' } : step)) } });
 
 /** The MCC answer for a fixture merchant, its evidence on `url` (the page read) unless the fixture names another page. */
 export function answerOfMcc(t, url) {
@@ -145,7 +149,7 @@ export function agentScriptMcc({ job, offered, fixtures }) {
           { call: 'agentrun', args: { action: 'run' } },
         ].map((step) => ({ ...step, when: (context) => !notComplete(context) })) : []),
         ...(t.browserOnly ? [
-          { call: 'agentrun', args: { action: 'inspect', workflow: CLASSIFY_MERCHANT_BROWSE, input } },
+          { call: 'agentrun', args: { action: 'inspect', workflow: t.saveEvery ? agentPick(CLASSIFY_MERCHANT_BROWSE) : CLASSIFY_MERCHANT_BROWSE, input } },
           { call: 'agentrun', args: { action: 'dry-run' } },
           { call: 'agentrun', args: { action: 'save', name: MCC_WORKFLOW } },
           { call: 'agentrun', args: { action: 'load', name: MCC_WORKFLOW, input } },
