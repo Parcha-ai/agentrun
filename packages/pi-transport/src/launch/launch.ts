@@ -16,6 +16,9 @@ const USER_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,31}$/;
 const MAX_FRAME_PART = 64 * 1024;
 /** The first line of the launch frame (README, "The launch frame"). */
 const FRAME_MAGIC = "PI-TRANSPORT-LAUNCH/1";
+/** A stop hook's default bound, and the longest one may be. */
+const DEFAULT_HOOK_MS = 30_000;
+const MAX_HOOK_MS = 120_000;
 /** A name one of whose `_`-separated segments says it holds a key: refused in `env`, which rests in a file of the box. */
 const KEY_SEGMENT = /^(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|CREDENTIALS)$/i;
 const keyShaped = (name: string): boolean => name.split("_").some((segment) => KEY_SEGMENT.test(segment));
@@ -233,9 +236,16 @@ function validate(name: string, spec: LaunchSpec | undefined): LaunchError | und
 		if (Buffer.byteLength(JSON.stringify(spec.secrets), "utf8") > MAX_FRAME_PART)
 			return new LaunchError("invalid", "the secrets are over 64 KiB as JSON");
 	}
-	// Not yet in this launcher: refused rather than ignored.
-	if (spec.beforeStop !== undefined)
-		return new LaunchError("unsupported", "beforeStop is not supported by this launcher yet");
+	if (spec.beforeStop !== undefined) {
+		const hook = spec.beforeStop;
+		if (!Array.isArray(hook.argv) || hook.argv.length === 0 || hook.argv[0] === "")
+			return new LaunchError("invalid", "beforeStop.argv is empty");
+		if (hook.argv.some((word) => typeof word !== "string" || word.includes("\0")))
+			return new LaunchError("invalid", "beforeStop.argv holds a NUL byte");
+		const bound = hook.timeoutMs ?? DEFAULT_HOOK_MS;
+		if (!Number.isFinite(bound) || bound < 100 || bound > MAX_HOOK_MS)
+			return new LaunchError("invalid", `beforeStop.timeoutMs must be a number from 100 to ${MAX_HOOK_MS}`);
+	}
 	if (spec.argv.some((word) => word.includes("\0"))) return new LaunchError("invalid", "argv holds a NUL byte");
 	for (const code of spec.terminalExits ?? []) {
 		if (!Number.isInteger(code) || code < 1 || code > MAX_EXIT_CODE) {
@@ -269,7 +279,7 @@ function validate(name: string, spec: LaunchSpec | undefined): LaunchError | und
 }
 
 /** The spec as a file the launcher sources: settings, and a function that changes directory, sets the environment and execs. */
-function specScript(spec: LaunchSpec): string {
+function specScript(spec: LaunchSpec, isolation: string): string {
 	const limit = spec.restartLimit ?? { burst: DEFAULT_RESTART_BURST, intervalMs: DEFAULT_RESTART_INTERVAL_MS };
 	const lines = [
 		// One generation per launch: a process left over from an earlier launch of this name sees another and exits.
@@ -283,6 +293,10 @@ function specScript(spec: LaunchSpec): string {
 		// A launch with stdin or secrets is FRAMED: they come on the start's stdin and live only in the launcher's memory.
 		`FRAMED=${framed(spec) ? 1 : 0}`,
 		`RUNAS=${quote(spec.user ?? "")}`,
+		// The box's isolation: on a vm the launcher may raise the ptrace scope a framed launch needs.
+		`ISOLATION=${quote(isolation)}`,
+		`HOOK=${spec.beforeStop === undefined ? 0 : 1}`,
+		`HOOK_TENTHS=${Math.ceil((spec.beforeStop?.timeoutMs ?? DEFAULT_HOOK_MS) / 100)}`,
 		"run_program() {",
 	];
 	if (spec.cwd !== undefined) lines.push(`  cd ${quote(spec.cwd)} || exit 126`);
@@ -319,6 +333,8 @@ function specScript(spec: LaunchSpec): string {
 		`  exec ${argv}`,
 		"}",
 	);
+	// A stop's hook, run by the launcher as its own user after the drain (README, "beforeStop").
+	if (spec.beforeStop !== undefined) lines.push("before_stop() {", `  exec ${spec.beforeStop.argv.map(quote).join(" ")}`, "}");
 	return `${lines.join("\n")}\n`;
 }
 
@@ -581,7 +597,7 @@ export async function launch(
 				bytes: new TextEncoder().encode(LAUNCHER_SCRIPT),
 				mode: 0o700,
 			},
-			{ path: `${directory}/spec.sh.part.${token}`, bytes: new TextEncoder().encode(specScript(spec)), mode: 0o600 },
+			{ path: `${directory}/spec.sh.part.${token}`, bytes: new TextEncoder().encode(specScript(spec, box.facts().isolation)), mode: 0o600 },
 		],
 		context,
 	);
@@ -702,7 +718,8 @@ export async function launchStop(
 		'sh "$1/launcher.sh" stop "$1" "$2"',
 		[current.value.directory, String(tenths)],
 		context,
-		graceMs + CALL_TIMEOUT_MS,
+		// The grace, a stop hook at its longest, and the usual time on top.
+		graceMs + MAX_HOOK_MS + CALL_TIMEOUT_MS,
 	);
 	if (!stopped.ok) return stopped;
 	// The stop script prints the state and exits 0. Any other end means it did not finish: the program may still run.

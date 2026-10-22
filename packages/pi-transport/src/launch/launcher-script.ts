@@ -22,6 +22,10 @@ TERMINALS=
 LOGMAX=1048576
 FRAMED=0
 RUNAS=
+ISOLATION=
+HOOK=0
+HOOK_TENTHS=300
+@@PTRACE_FILE@@
 if [ -r "$D/spec.sh" ]; then . "$D/spec.sh"; fi
 # A framed launch's stdin and secrets (base64), read from this process's stdin: in memory only, never a file, an
 # environment or an argv. The supervisor hands them to each incarnation on a pipe.
@@ -273,6 +277,7 @@ stopit() {
       sleep $STEP
     done
   fi
+  run_hook
   if own_group "$pid" "$(rd ticks.$n)"; then gkill KILL "$pid"; fi
   for f in launcher watch; do
     p=$(rd $f.pid)
@@ -321,15 +326,57 @@ resolve_user() {
   wr user "$line"
 }
 
-# The start of a launch: a framed one reads its frame, and both resolve the user, before the supervisor exists.
+# The ptrace scope a launch that holds stdin or secrets needs: 1 or more, or a same-user process could read them from the
+# program's memory. Measured here, in the box ($1: the kernel's file; a missing one counts as 0); 0 on a box with its own
+# kernel ($2 = vm) is raised to 1 and read back; 0 anywhere else, or a value that does not move, refuses.
+ptrace_check() {
+  v=$(cat "$1" 2>/dev/null | tr -d ' \n')
+  case "$v" in ''|*[!0-9]*) v=0 ;; esac
+  if [ "$v" -ge 1 ]; then return 0; fi
+  if [ "$2" = vm ]; then
+    { printf '1\n' > "$1"; } 2>/dev/null || sysctl -w kernel.yama.ptrace_scope=1 >/dev/null 2>&1
+    v=$(cat "$1" 2>/dev/null | tr -d ' \n')
+    case "$v" in ''|*[!0-9]*) v=0 ;; esac
+    if [ "$v" -ge 1 ]; then return 0; fi
+  fi
+  echo "REFUSED kernel.yama.ptrace_scope is $v in this box, and a launch with stdin or secrets needs 1 or more (a process of the same user could read them from the program's memory)"
+  return 11
+}
+
+# The start of a launch: a framed one measures the ptrace scope, then reads its frame, and both resolve the user, before
+# the supervisor exists.
 start_launch() {
   if [ "$FRAMED" = 1 ]; then
+    ptrace_check "$PTRACE_FILE" "$ISOLATION" || exit 11
     case "$(command -V printf 2>/dev/null)" in *builtin*) ;; *) echo "UNSUPPORTED printf is not a shell builtin in this box, so the launch's stdin could reach an argv"; exit 10 ;; esac
     command -v base64 >/dev/null 2>&1 || { echo "UNSUPPORTED this box has no base64 to decode the launch's stdin"; exit 10; }
     read_frame || { echo "INVALID the launch frame is malformed (this launch carries stdin or secrets: launch it with them)"; exit 7; }
   fi
   resolve_user || exit $?
   if [ "$FRAMED" = 1 ]; then detach_framed supervise "$D"; else detach supervise "$D"; fi
+}
+
+# A stop's hook (beforeStop), after the drain and before the final kill: in a session of its own, bounded by HOOK_TENTHS;
+# one past its bound is killed (137). Its exit goes to out.log; it never fails the stop.
+run_hook() {
+  [ "$HOOK" = 1 ] || return 0
+  if [ -n "$SETSID" ]; then $SETSID sh "$SELF" hook "$D" </dev/null >> "$D/out.log" 2>&1 & else sh "$SELF" hook "$D" </dev/null >> "$D/out.log" 2>&1 & fi
+  hp=$!
+  began=$(centis)
+  limit=$(( HOOK_TENTHS * 10 ))
+  while kill -0 "$hp" 2>/dev/null && [ "$(rest "$hp" | cut -c1)" != Z ] && [ $(( $(centis) - began )) -lt "$limit" ]; do
+    sleep $STEP
+  done
+  if kill -0 "$hp" 2>/dev/null && [ "$(rest "$hp" | cut -c1)" != Z ]; then
+    # Its session is its own only with setsid; without it, only the hook itself is ended (never this stop's group).
+    if [ -n "$SETSID" ]; then gkill KILL "$hp"; else kill -s KILL "$hp" 2>/dev/null; fi
+    wait "$hp" 2>/dev/null
+    hcode=137
+  else
+    wait "$hp"
+    hcode=$?
+  fi
+  printf '[launcher] beforeStop exited %s\n' "$hcode" >> "$D/out.log"
 }
 
 clear_dir() {
@@ -359,6 +406,8 @@ case "$MODE" in
   start) start_launch ;;
   stop) stopit "$3" ;;
   status) status ;;
+  ptrace-check) ptrace_check "$PTRACE_FILE" "$3" ;;
+  hook) before_stop ;;
   *) echo "unknown mode $MODE" >&2; exit 2 ;;
 esac
 `;
@@ -398,5 +447,11 @@ const GROUP_LIVE = [
 	"}",
 ].join("\n");
 
+/** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */
+export const PTRACE_FILE_LINE = "PTRACE_FILE=/proc/sys/kernel/yama/ptrace_scope";
+
 /** The supervisor the host uploads to a box: POSIX `sh`, with the programs named in the file's header. */
-export const LAUNCHER_SCRIPT = SCRIPT_TEMPLATE.replace("@@GROUP_LIVE@@", () => GROUP_LIVE);
+export const LAUNCHER_SCRIPT = SCRIPT_TEMPLATE.replace("@@GROUP_LIVE@@", () => GROUP_LIVE).replace(
+	"@@PTRACE_FILE@@",
+	() => PTRACE_FILE_LINE,
+);

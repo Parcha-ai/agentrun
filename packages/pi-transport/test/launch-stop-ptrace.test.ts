@@ -1,0 +1,146 @@
+// The launcher's ptrace check and its stop hook (T3). A launch that holds stdin or secrets needs the box's ptrace scope at
+// 1 or more, MEASURED in the box by the root launcher at its start, before it reads the frame: a box that reports no such
+// fact is measured all the same, 0 on a box with its own kernel (a vm) is raised to 1 and read back, and 0 where it cannot
+// be raised refuses. A stop drains the program (SIGTERM, then the grace), then runs `beforeStop`, then kills what is left.
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { getOrThrow } from "@earendil-works/pi-durable/env";
+import { afterAll, describe, expect, it } from "vitest";
+import type { Box } from "../src/box/box.ts";
+import { localBoxes } from "../src/box/local.ts";
+import { launch, launchState, launchStop } from "../src/launch/index.ts";
+import { LAUNCHER_SCRIPT, PTRACE_FILE_LINE } from "../src/launch/launcher-script.ts";
+import { until } from "./home-launch-support.ts";
+
+const context = BACKGROUND_CONTEXT;
+const root = mkdtempSync(join(tmpdir(), "pi-transport-launch-ptrace-"));
+afterAll(() => rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
+
+/** The launcher with its ptrace file pointed at `file`: the one line a test copy changes (no environment can change it). */
+function scriptMeasuring(file: string): string {
+	expect(LAUNCHER_SCRIPT).toContain(PTRACE_FILE_LINE);
+	const path = join(root, `launcher-${Math.random().toString(16).slice(2)}.sh`);
+	writeFileSync(path, LAUNCHER_SCRIPT.replace(PTRACE_FILE_LINE, `PTRACE_FILE='${file}'`));
+	return path;
+}
+
+function check(file: string, isolation: string): { status: number | null; out: string } {
+	const dir = join(root, "check-dir");
+	mkdirSync(dir, { recursive: true });
+	const ran = spawnSync("sh", [scriptMeasuring(file), "ptrace-check", dir, isolation], {
+		env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+	});
+	return { status: ran.status, out: ran.stdout.toString() };
+}
+
+function scope(value: string | undefined): string {
+	const file = join(root, `scope-${Math.random().toString(16).slice(2)}`);
+	if (value !== undefined) writeFileSync(file, value);
+	return file;
+}
+
+describe("the launcher's ptrace check, measured in the box", () => {
+	it("passes at 1 or more, whatever the box is", () => {
+		for (const [value, isolation] of [["1\n", "container"], ["2\n", "gvisor"], ["3\n", "none"]] as const) {
+			expect(check(scope(value), isolation).status).toBe(0);
+		}
+	});
+
+	it("refuses 0, and a missing file (which counts as 0), where it cannot raise it, naming the setting and its value", () => {
+		for (const [value, isolation] of [["0\n", "container"], [undefined, "gvisor"], ["0\n", "none"]] as const) {
+			const answered = check(scope(value), isolation);
+			expect(answered.status).toBe(11);
+			expect(answered.out).toMatch(/^REFUSED kernel\.yama\.ptrace_scope is 0 /m);
+		}
+	});
+
+	it("raises 0 to 1 on a vm and reads it back; a vm whose value will not move is refused", () => {
+		const file = scope("0\n");
+		expect(check(file, "vm").status).toBe(0);
+		expect(readFileSync(file, "utf8").trim()).toBe("1");
+		const stuck = scope("0\n");
+		chmodSync(stuck, 0o444);
+		const answered = check(stuck, "vm");
+		expect(answered.status).toBe(11);
+		expect(answered.out).toMatch(/^REFUSED kernel\.yama\.ptrace_scope is 0 /m);
+	});
+
+	it("runs at a framed start BEFORE the frame is read: a refused start leaves no supervisor and reads nothing", () => {
+		const dir = join(root, "framed-start");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "spec.sh"), "GEN='g1'\nFRAMED=1\nRUNAS=''\nISOLATION='container'\nrun_program() {\n  exec true\n}\n");
+		// A frame the launcher would refuse as malformed (7, INVALID): the ptrace refusal (11) comes first, so it never reads it.
+		const frame = "not a launch frame at all\n";
+		const ran = spawnSync("sh", [scriptMeasuring(scope("0\n")), "start", dir], {
+			input: frame,
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+		});
+		expect(ran.status).toBe(11);
+		expect(ran.stdout.toString()).toMatch(/^REFUSED kernel\.yama\.ptrace_scope is 0 /m);
+		expect(existsSync(join(dir, "launcher.pid"))).toBe(false);
+		expect(existsSync(join(dir, "state"))).toBe(false);
+	});
+
+	it("lets a framed launch proceed on a box that reports no ptrace fact when the measured scope is 1 or more", async () => {
+		const measured = readFileSync("/proc/sys/kernel/yama/ptrace_scope", "utf8").trim();
+		if (Number(measured) < 1) return;
+		const box = getOrThrow(await localBoxes({ root: mkdtempSync(join(root, "box-")) }).create({ maxLifetimeMs: 600_000 }, context));
+		expect("ptraceScope" in box.facts()).toBe(false);
+		const started = getOrThrow(await launch(box, "measured", { argv: ["sleep", "300"], stdin: new Uint8Array([1]) }, context));
+		expect(started.launcherAlive).toBe(true);
+		getOrThrow(await launchStop(box, started.launch, { graceMs: 1_000 }, context));
+		await box.destroy(context);
+	});
+});
+
+describe("a stop's beforeStop hook", () => {
+	async function aBox(): Promise<Box> {
+		return getOrThrow(await localBoxes({ root: mkdtempSync(join(root, "box-")) }).create({ maxLifetimeMs: 600_000 }, context));
+	}
+	async function fileIn(box: Box, path: string): Promise<string | undefined> {
+		const read = await box.download([path], context);
+		return read.ok ? new TextDecoder().decode(read.value[0]!.bytes) : undefined;
+	}
+
+	it("runs AFTER the drain (the program had its SIGTERM) and BEFORE the kill, and the stop reports its exit in out.log", async () => {
+		const box = await aBox();
+		// The program notes its SIGTERM and keeps running (it ignores it), so only the final kill ends it.
+		const program = ["sh", "-c", "trap ': > got-term' TERM; : > ready; while :; do sleep 1; done"];
+		const hook = ["sh", "-c", "if [ -e got-term ]; then echo after-term > hook-ran; else echo before-term > hook-ran; fi"];
+		const started = getOrThrow(await launch(box, "hooked", { argv: program, beforeStop: { argv: hook } }, context));
+		await until("the program's start", () => fileIn(box, "ready"));
+		const stopped = getOrThrow(await launchStop(box, started.launch, { graceMs: 1_500 }, context));
+		expect(stopped.phase).toBe("stopped");
+		expect((await fileIn(box, "hook-ran"))?.trim()).toBe("after-term");
+		const log = await fileIn(box, `${started.directory}/out.log`);
+		expect(log).toContain("[launcher] beforeStop exited 0");
+		await box.destroy(context);
+	});
+
+	it("is bounded: a hook past its timeout is killed, the stop still ends the program, and reports 137", async () => {
+		const box = await aBox();
+		const started = getOrThrow(
+			await launch(box, "slowhook", { argv: ["sleep", "300"], beforeStop: { argv: ["sleep", "300"], timeoutMs: 1_000 } }, context),
+		);
+		const began = Date.now();
+		const stopped = getOrThrow(await launchStop(box, started.launch, { graceMs: 500 }, context));
+		expect(stopped.phase).toBe("stopped");
+		expect(Date.now() - began).toBeLessThan(15_000);
+		expect(await fileIn(box, `${started.directory}/out.log`)).toContain("[launcher] beforeStop exited 137");
+		const after = getOrThrow(await launchState(box, started.launch, context));
+		expect(after?.launcherAlive).toBe(false);
+		await box.destroy(context);
+	});
+
+	it("refuses an empty argv and a timeout out of range", async () => {
+		const box = await aBox();
+		for (const beforeStop of [{ argv: [] }, { argv: ["true"], timeoutMs: 0 }, { argv: ["true"], timeoutMs: 10 * 60_000 }]) {
+			const refused = await launch(box, "badhook", { argv: ["sleep", "300"], beforeStop }, context);
+			expect(refused.ok ? undefined : refused.error.code).toBe("invalid");
+		}
+		await box.destroy(context);
+	});
+});
