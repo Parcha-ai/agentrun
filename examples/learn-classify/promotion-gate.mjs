@@ -100,6 +100,24 @@ export function verdictOf({ bank, candidate, serving, floor = GATE.floor, resamp
   return { promote, first: false, ...paired, reason: `±1 utility, candidate minus serving ${fixed(paired.diff)} over ${paired.cells} parts of ${paired.companies} bank companies, 95% CI [${fixed(paired.lo)}, ${fixed(paired.hi)}]: lower bound ${promote ? 'above' : 'not above'} 0` };
 }
 
+/**
+ * The gated demotion's verdict (ARM G, --gated-demotion): the champion the uses would demote against `back`, the revision
+ * that would serve in its place, or none (the agent alone: 0 on every part), paired over the bank as `verdictOf` pairs. The
+ * champion is demoted only when the 95% lower bound of champion minus `back` is below 0; otherwise it keeps serving.
+ */
+export function demotionVerdictOf({ bank, champion, back, resamples, seed, parts: scored = GATE.parts }) {
+  const pairs = bank.map((c) => {
+    const a = champion.get(c.cik);
+    const b = back?.get(c.cik);
+    const parts = scored.filter((part) => a[part] !== null && (!b || b[part] !== null));
+    return { d: parts.reduce((sum, part) => sum + a[part] - (b ? b[part] : 0), 0), m: parts.length };
+  });
+  const paired = pairedDifference(pairs, { ...(resamples ? { resamples } : {}), ...(seed !== undefined ? { seed } : {}) });
+  const demote = paired.lo !== null && paired.lo < 0;
+  const against = back ? 'the revision that would serve' : 'no workflow (the agent alone)';
+  return { promote: !demote, demote, demotion: true, first: false, ...paired, reason: `gated demotion: ±1 utility, champion minus ${against} ${fixed(paired.diff)} over ${paired.cells} parts of ${paired.companies} bank companies, 95% CI [${fixed(paired.lo)}, ${fixed(paired.hi)}]: lower bound ${demote ? 'below 0, so it is demoted' : 'not below 0, so it keeps serving'}` };
+}
+
 const readJson = (file) => {
   try {
     return JSON.parse(readFileSync(file, 'utf8'));
@@ -114,7 +132,7 @@ const writeJson = (file, value) => {
 };
 const bankFile = (dir, sha256, cik) => join(dir, 'bank', sha256, `${cik}.json`);
 const verdictFile = (dir, key) => join(dir, 'verdicts', `${key}.json`);
-const keyOf = (name, candidate, serving) => `${name}/${candidate}-${serving ?? 'first'}`;
+const keyOf = (name, candidate, serving, demotion = false) => (demotion ? `${name}/demote-${candidate}-${serving ?? 'none'}` : `${name}/${candidate}-${serving ?? 'first'}`);
 
 /** What the gate's bank runs under `dir` have cost, as far as it is known. */
 export function gateSpend(dir) {
@@ -133,7 +151,7 @@ export function gateSpend(dir) {
  */
 export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, floor = GATE.floor, scoreParts = partsOf, parts = GATE.parts, log = () => {} }) {
   if (!bank.length) throw new Error('the promotion gate needs a bank of companies');
-  return async ({ name, candidate, serving, main }) => {
+  return async ({ name, candidate, serving, main, demotion = false }) => {
     const revisions = serving ? [candidate, serving] : [candidate];
     const values = new Map(revisions.map((r) => [r.sha256, new Map()]));
     const todo = [];
@@ -164,11 +182,13 @@ export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, 
     await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, todo.length)) }, worker));
     const verdict = failed.length
       ? { promote: false, reason: `${failed.length} bank run(s) failed, so nothing was compared; they run again at the next ask`, failed }
+      : demotion ? demotionVerdictOf({ bank, champion: values.get(candidate.sha256), back: serving ? values.get(serving.sha256) : null, parts })
       : verdictOf({ bank, candidate: values.get(candidate.sha256), serving: serving ? values.get(serving.sha256) : null, floor, parts });
     const line = { at: new Date().toISOString(), name, candidate: candidate.sha256, serving: serving?.sha256 ?? null, main, bank: bank.length, concurrency, ran: todo.length - failed.length, kept: bank.length * revisions.length - todo.length, costUsd, ...verdict };
     mkdirSync(dir, { recursive: true });
     appendFileSync(join(dir, 'verdicts.jsonl'), `${JSON.stringify(line)}\n`);
-    log(`  promotion gate on ${name} ${candidate.sha256.slice(0, 8)}${serving ? ` vs ${serving.sha256.slice(0, 8)}` : ''}: ${verdict.promote ? 'passes' : 'holds'}; ${verdict.reason} (${line.ran} bank runs, ${line.kept} kept)`);
+    const outcome = demotion ? (verdict.demote ? 'demotes' : 'keeps it') : verdict.promote ? 'passes' : 'holds';
+    log(`  promotion gate on ${name} ${candidate.sha256.slice(0, 8)}${serving ? ` vs ${serving.sha256.slice(0, 8)}` : ''}: ${outcome}; ${verdict.reason} (${line.ran} bank runs, ${line.kept} kept)`);
     return line;
   };
 }
@@ -205,15 +225,16 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, p
   };
   return {
     /** `front`: this comparison goes ahead of every other queued one. `receipt` (asked for a receipt) and `confirm` (a
-     *  promotion that already stands, which the verdict confirms or demotes) are kept on its verdict. */
-    ask({ name, candidate, serving, main, front = false, receipt = false, confirm = false }) {
-      const key = keyOf(name, candidate.sha256, serving?.sha256);
+     *  promotion that already stands, which the verdict confirms or demotes) are kept on its verdict. `demotion` asks the
+     *  gated demotion's comparison (`demotionVerdictOf`), its verdict kept apart from the promotion's. */
+    ask({ name, candidate, serving, main, front = false, receipt = false, confirm = false, demotion = false }) {
+      const key = keyOf(name, candidate.sha256, serving?.sha256, demotion);
       const landed = readJson(verdictFile(dir, key));
       if (landed) return { status: 'landed', key, verdict: landed };
       if (running?.key === key) return { status: 'running', key };
       const before = queued.get(name);
       if (before && before.key !== key) log(`  promotion gate on ${name}: ${candidate.sha256.slice(0, 8)} replaces the queued ${before.candidate.sha256.slice(0, 8)}`);
-      const job = { name, candidate, serving, main, key, ...(receipt || before?.receipt ? { receipt: true } : {}), ...(confirm ? { confirm: true } : {}) };
+      const job = { name, candidate, serving, main, key, ...(receipt || before?.receipt ? { receipt: true } : {}), ...(confirm ? { confirm: true } : {}), ...(demotion ? { demotion: true } : {}) };
       if (front) {
         const rest = [...queued].filter(([n]) => n !== name);
         queued.clear();
@@ -251,6 +272,14 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, p
           const trial = await readTrial(repo, v.name, main).catch(() => undefined);
           const live = trial && currentRevision(trial);
           const same = live?.sha256 === v.candidate && (lastProven(trial)?.sha256 ?? null) === v.serving;
+          if (v.demotion) {
+            // A demotion the uses called for, held for the bank: the verdict demotes the champion, or it keeps serving.
+            const applied = !same ? 'stale' : v.demote ? await demote({ repo, trial, name: v.name, sha256: v.candidate, back: v.serving, reason: v.reason, main }) : 'kept';
+            writeJson(verdictFile(dir, v.key), { ...v, applied: { as: applied, at: new Date().toISOString(), main } });
+            reported.push({ name: v.name, candidate: v.candidate, serving: v.serving, promote: v.promote, applied, reason: v.reason, demotion: true });
+            log(`  gated demotion of ${v.name} ${v.candidate.slice(0, 8)}: ${applied}`);
+            continue;
+          }
           if (v.confirm) {
             // A promotion that already stands: the verdict confirms it, or demotes it back to the revision it replaced.
             const applied = !same || live.status !== 'active' ? 'stale' : v.promote ? 'confirmed' : await demote({ repo, trial, name: v.name, sha256: v.candidate, back: v.serving, reason: v.reason, main });
@@ -283,17 +312,18 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, p
   };
 }
 
-/** Demotes `sha256` on main back to `back`, the revision it replaced, as pi-agent-learn's settler does: the trial, the
- *  workflow store's `latest`, and the skill's description the restored revision kept. Returns 'demoted'. */
+/** Demotes `sha256` on main back to `back`, the revision it replaced (or, with `back` null, leaves no revision live), as
+ *  pi-agent-learn's settler does: the trial, the workflow store's `latest`, and the skill's description the restored
+ *  revision kept. Returns 'demoted'. */
 async function demote({ repo, trial, name, sha256, back, reason, main }) {
-  const restored = trial.revisions.find((r) => r.sha256 === back);
-  const after = applyDecision(trial, { action: 'demote', sha256, rollbackTo: back, skipped: [], reason: `promotion gate: ${reason}` }, new Date().toISOString());
+  const restored = back ? trial.revisions.find((r) => r.sha256 === back) : undefined;
+  const after = applyDecision(trial, { action: 'demote', sha256, rollbackTo: back ?? null, skipped: [], reason: `promotion gate: ${reason}` }, new Date().toISOString());
   const files = {
     [trialPath(name)]: renderTrial(after),
-    [`${workflowDir(name)}/latest`]: `${back}\n`,
+    ...(back ? { [`${workflowDir(name)}/latest`]: `${back}\n` } : {}),
     [skillPath(name)]: restored?.description !== undefined ? renderSkill(name, restored.description) : null,
   };
-  const commit = await repo.commitTo('main', { files, message: `promotion gate: demote ${name} ${sha256.slice(0, 12)} back to ${back.slice(0, 12)}: ${reason}`, parent: main });
+  const commit = await repo.commitTo('main', { files, message: `promotion gate: demote ${name} ${sha256.slice(0, 12)} ${back ? `back to ${back.slice(0, 12)}` : 'with none to restore'}: ${reason}`, parent: main });
   await repo.push(commit.sha, 'main');
   return 'demoted';
 }
@@ -310,6 +340,87 @@ export function undoPromotion(before, after, sha256) {
   const prefix = new Set(before.uses.slice(0, was.after).map(useKey));
   const kept = after.uses.filter((use) => prefix.has(useKey(use))).length;
   return { ...after, status: before.status, revisions: after.revisions.map((r) => (r.sha256 === sha256 ? { ...was, after: kept } : r)) };
+}
+
+/**
+ * The folded trial `after` with a demotion of `sha256` (back to `back`, or to none) undone: the demoted revision and the one
+ * restored stand as main had them, their standings starting where they did, counted among the uses `after` kept, and the
+ * trial's own status and preconditions back. Every use stays folded.
+ */
+export function undoDemotion(before, after, sha256, back) {
+  const kept = (was) => {
+    const prefix = new Set(before.uses.slice(0, was.after).map(useKey));
+    return after.uses.filter((use) => prefix.has(useKey(use))).length;
+  };
+  const restore = new Set([sha256, ...(back ? [back] : [])]);
+  const revisions = after.revisions.map((r) => {
+    if (!restore.has(r.sha256)) return r;
+    const was = before.revisions.find((b) => b.sha256 === r.sha256);
+    return was ? { ...was, after: kept(was) } : r;
+  });
+  const { when: _when, ...rest } = after;
+  return { ...rest, status: before.status, ...(before.when !== undefined ? { when: before.when } : {}), revisions };
+}
+
+/**
+ * The `settleUses` port of ARM G, over `settle`, each part behind its own flag:
+ * - `neutral` (--escalation-neutral): a use counts only when the workflow answered. One that escalated, or whose task
+ *   failed, is left out of the fold and counts neither way; one that finished frozen is a failed use when `shownWrong`
+ *   holds its revision (the run shows the workflow's own answer wrong).
+ * - `gate` (--gated-demotion, `asyncGate`): a demotion the uses call for does not apply. It is undone (`undoDemotion`), the
+ *   champion keeps serving, and the bank compares it with the revision that would serve in its place (none: the agent
+ *   alone); a later curate applies the verdict (`apply`), which demotes only on a 95% lower bound below 0
+ *   (`demotionVerdictOf`). A verdict already landed for the pair answers at once.
+ */
+export function demotionSettler({ settle, neutral = false, shownWrong = new Set(), gate }) {
+  return async (input) => {
+    const uses = neutral ? input.uses.filter((u) => u.outcome === 'frozen').map((u) => (shownWrong.has(u.sha256) ? { ...u, outcome: 'failed' } : u)) : input.uses;
+    const result = await settle({ ...input, uses });
+    if (!gate || !result.decisions.some((d) => d.action === 'demote')) return result;
+    const files = { ...result.files };
+    const decisions = [];
+    for (const decision of result.decisions) {
+      if (decision.action !== 'demote') {
+        decisions.push(decision);
+        continue;
+      }
+      const { name } = decision;
+      const path = trialPath(name);
+      let before;
+      let after;
+      try {
+        before = parseTrial(await input.read(path, input.main), name);
+        after = parseTrial(files[path], name);
+      } catch {
+        decisions.push(decision);
+        continue;
+      }
+      const live = currentRevision(before);
+      const back = decision.rollbackTo ?? null;
+      let verdict = null;
+      let waiting;
+      try {
+        const workflow = live && await recordedWorkflow(input, name, live.sha256, input.main);
+        const served = back && await recordedWorkflow(input, name, back, input.main);
+        if (!workflow) throw new Error('the champion\'s record is not on main');
+        if (back && !served) throw new Error('the record of the revision that would serve is not on main');
+        const asked = await gate.ask({ name, candidate: { sha256: live.sha256, workflow }, serving: back ? { sha256: back, workflow: served } : null, main: input.main, demotion: true });
+        if (asked.status === 'landed') verdict = asked.verdict;
+        else waiting = asked.status === 'running' ? 'on the bank now' : 'queued for the bank';
+      } catch (error) {
+        waiting = `not asked: ${String(error?.message ?? error).slice(0, 120)}`;
+      }
+      if (verdict?.demote) {
+        decisions.push({ ...decision, reason: `${decision.reason}; ${verdict.reason}` });
+        continue;
+      }
+      files[path] = renderTrial(undoDemotion(before, after, live.sha256, back));
+      delete files[`${workflowDir(name)}/latest`];
+      delete files[skillPath(name)];
+      decisions.push({ name, action: 'hold', reason: `gated demotion: ${decision.reason}; ${verdict ? verdict.reason : `its bank comparison is ${waiting}, and it keeps serving until the verdict lands`}` });
+    }
+    return { files, decisions };
+  };
 }
 
 /**
