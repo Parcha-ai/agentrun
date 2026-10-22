@@ -33,6 +33,15 @@ const BOX_TAG = "pi-transport.box";
 /** Every box carries this tag too, so a host finds the boxes of this package by the one label every provider sets. */
 const OWNER_TAG = "pi-transport";
 const FACTS_TAG = "pi-transport.facts";
+/**
+ * What a box's create MEASURED of its hardware (the disk, whether FUSE works), kept in a tag so an attach that cannot read the box
+ * again still has it. HARDWARE facts only: a security fact (the Yama setting, the network, the ports) is never taken from here on a
+ * read error, it stays absent (unknown). A tag is provider-side metadata set through Modal's API with the host's token, which never
+ * reaches the box: nothing inside the box can write it.
+ */
+const MEASURED_TAG = "pi-transport.measured";
+const ATTACH_PROBE_TRIES = 3;
+const ATTACH_PROBE_BACKOFF_MS = 200;
 
 /** One program started in a Modal sandbox, in binary mode. The part of the SDK's `ContainerProcess` this package reads. */
 export interface ModalProcess {
@@ -51,6 +60,8 @@ export interface ModalSandbox {
 	/** Ends the sandbox and answers once it has ended, with its exit code. */
 	terminate(params: { wait: true }): Promise<number>;
 	getTags(): Promise<Record<string, string>>;
+	/** Replaces the sandbox's whole tag set. Absent in a client that cannot: a box then keeps no measured facts for a later attach. */
+	setTags?(tags: Record<string, string>): Promise<void>;
 	/** The public addresses of the ports the sandbox was created to expose, by container port. */
 	tunnels?(
 		timeoutMs?: number,
@@ -222,7 +233,10 @@ const validPorts = (value: unknown): NonNullable<BoxFacts["ports"]> =>
 		: [];
 
 /** The facts a box's tag holds, or `undefined` when the tag is not one this package wrote. */
-function parseFacts(text: string | undefined): { facts: BoxFacts; wantsFuse: boolean } | undefined {
+function parseFacts(
+	text: string | undefined,
+	measuredText?: string,
+): { facts: BoxFacts; wantsFuse: boolean } | undefined {
 	if (text === undefined) return undefined;
 	try {
 		const facts = JSON.parse(text) as Record<string, unknown> | null;
@@ -241,10 +255,25 @@ function parseFacts(text: string | undefined): { facts: BoxFacts; wantsFuse: boo
 		// The disk, FUSE and Yama facts are read again in the box when it is found. A tag from before the network and ports
 		// were facts has neither, and they stay absent (unknown), never read as open or as none.
 		const { wantsFuse, diskGb: _disk, fuse: _fuse, ptraceScope: _ptrace, network, ports, startedAt, ...rest } = facts;
+		// What the create measured: the hardware only. No tag, or one that does not parse, gives the fail-closed values (fuse false, no disk).
+		let measured: { diskGb?: number; fuse?: boolean } = {};
+		try {
+			const read = JSON.parse(measuredText ?? "null") as Record<string, unknown> | null;
+			if (read !== null && typeof read === "object") {
+				measured = {
+					...(typeof read.diskGb === "number" && read.diskGb >= 0 ? { diskGb: read.diskGb } : {}),
+					...(typeof read.fuse === "boolean" ? { fuse: read.fuse } : {}),
+				};
+			}
+		} catch {
+			// A tag that is not JSON measured nothing.
+		}
 		return {
 			wantsFuse: wantsFuse === true,
 			facts: {
 				...rest,
+				fuse: false,
+				...measured,
 				...(NETWORKS.some((n) => n === network) ? { network } : {}),
 				...(Array.isArray(ports) ? { ports: validPorts(ports) } : {}),
 				...(typeof startedAt === "string" ? { startedAt } : {}),
@@ -256,7 +285,7 @@ function parseFacts(text: string | undefined): { facts: BoxFacts; wantsFuse: boo
 }
 
 function ownLabels(tags: Readonly<Record<string, string>>): Record<string, string> {
-	const { [BOX_TAG]: _box, [FACTS_TAG]: _facts, [OWNER_TAG]: _owner, ...own } = tags;
+	const { [BOX_TAG]: _box, [FACTS_TAG]: _facts, [MEASURED_TAG]: _measured, [OWNER_TAG]: _owner, ...own } = tags;
 	return own;
 }
 
@@ -460,6 +489,75 @@ class ModalBox implements Box {
 		}
 	}
 
+	/** One run of the probe: what the box printed, or why it did not answer. A cancelled call is reported as `aborted`. */
+	async #runProbe(
+		wantsFuse: boolean,
+		context: Context,
+	): Promise<{ ok: true; reading: ReturnType<typeof parseProbe> } | { ok: false; error: BoxError }> {
+		try {
+			const process = await this.#sandbox.exec(
+				["sh", "-c", PROBE, "sh", this.#facts.workspace, wantsFuse ? "fuse" : "-"],
+				{ mode: "binary", timeoutMs: SETUP_TIMEOUT_MS },
+			);
+			const finished = await finish(this.#adapt(process, SETUP_TIMEOUT_MS, context));
+			if (!finished.ok) return { ok: false, error: finished.error };
+			if (finished.value.exitCode !== 0) {
+				return {
+					ok: false,
+					error: new BoxError("unknown", `could not read what the box has: ${finished.value.stderr.trim()}`),
+				};
+			}
+			return { ok: true, reading: parseProbe(new TextDecoder().decode(finished.value.stdout)) };
+		} catch (cause) {
+			return { ok: false, error: boxError("could not read what the box has", cause) };
+		}
+	}
+
+	/**
+	 * The read of an attach: a live sandbox is always handed back, and never ended here. A probe that errs is tried again (a few
+	 * tries, with a pause); a probe that answers, even with no FUSE, gives the facts AS MEASURED, and the caller ends the box
+	 * through its handle if it does not fit. If every try errs, the handle keeps the HARDWARE the create measured (from its tag; a
+	 * tag from before that gives the fail-closed values) and every security fact is left out (unknown): the Yama setting, the
+	 * network and the ports are never taken from a tag on a read error. A cancelled call is the one error.
+	 */
+	async measureForAttach(wantsFuse: boolean, context: Context): Promise<Result<void, BoxError>> {
+		for (let attempt = 0; attempt < ATTACH_PROBE_TRIES; attempt++) {
+			const read = await this.#runProbe(wantsFuse, context);
+			if (context.abortSignal?.aborted) return err(new BoxError("aborted", "the call was aborted"));
+			if (read.ok) {
+				const { reading } = read;
+				this.#facts = {
+					...this.#facts,
+					...(reading.diskGb === undefined ? {} : { diskGb: reading.diskGb }),
+					...(reading.ptraceScope === undefined ? {} : { ptraceScope: reading.ptraceScope }),
+					fuse: wantsFuse && reading.fuse,
+				};
+				return ok(undefined);
+			}
+			if (attempt + 1 < ATTACH_PROBE_TRIES) {
+				await new Promise((resolve) => setTimeout(resolve, ATTACH_PROBE_BACKOFF_MS * (attempt + 1)));
+			}
+		}
+		const { network: _network, ports: _ports, ptraceScope: _ptrace, ...hardware } = this.#facts;
+		this.#facts = hardware;
+		return ok(undefined);
+	}
+
+	/** Keep what this box's create measured in a tag, best effort: a client that cannot set tags, or a failure, leaves none. */
+	async recordMeasured(): Promise<void> {
+		if (this.#sandbox.setTags === undefined) return;
+		try {
+			const tags = await this.#sandbox.getTags();
+			const { diskGb, fuse } = this.#facts;
+			await this.#sandbox.setTags({
+				...tags,
+				[MEASURED_TAG]: JSON.stringify({ ...(diskGb === undefined ? {} : { diskGb }), fuse: fuse === true }),
+			});
+		} catch {
+			// The tag is a fallback for a later attach; a box without it reads fail-closed there.
+		}
+	}
+
 	async endpoint(port: number, _context: Context): Promise<Result<BoxEndpoint, BoxError>> {
 		const exposed = this.#facts.ports?.find((p) => p.port === port);
 		if (exposed === undefined) return err(new BoxError("invalid", `the box does not expose port ${port}`));
@@ -624,6 +722,7 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 			// A sandbox exists from here on: a call the caller gave up on, or one that cannot finish, ends it.
 			let made = context.abortSignal?.aborted ? aborted<void>() : await box.prepare(context);
 			if (made.ok && !context.abortSignal?.aborted) made = await box.measure(wantsFuse, context);
+			if (made.ok && !context.abortSignal?.aborted) await box.recordMeasured();
 			if (!made.ok || context.abortSignal?.aborted) {
 				await box.destroy();
 				return made.ok ? aborted() : made;
@@ -638,7 +737,7 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 				const sandbox = await sdk.sandboxes.fromId(id);
 				if ((await sandbox.poll()) !== null) return ok(undefined);
 				const tags = await sandbox.getTags();
-				const found = tags[BOX_TAG] === undefined ? undefined : parseFacts(tags[FACTS_TAG]);
+				const found = tags[BOX_TAG] === undefined ? undefined : parseFacts(tags[FACTS_TAG], tags[MEASURED_TAG]);
 				if (found === undefined) return ok(undefined);
 				box = new ModalBox(sandbox, found.facts);
 				wantsFuse = found.wantsFuse;
@@ -646,10 +745,14 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 				if (isNotFound(cause) || classify(cause) === "invalid") return ok(undefined);
 				return err(boxError(`could not look up box ${id}`, cause));
 			}
-			// A host that died between the create call and the workspace setup left a box with no workspace.
-			let made = await box.prepare(context);
-			if (made.ok) made = await box.measure(wantsFuse, context);
-			return made.ok ? ok(box) : made;
+			// A host that died between the create call and the workspace setup left a box with no workspace. A live sandbox is always
+			// handed back: its handle is how the caller ends it, so neither this setup nor the read below may fail the attach, except
+			// for the caller's own cancel.
+			const prepared = await box.prepare(context);
+			if (context.abortSignal?.aborted) return err(new BoxError("aborted", "the call was aborted"));
+			void prepared;
+			const read = await box.measureForAttach(wantsFuse, context);
+			return read.ok ? ok(box) : read;
 		},
 
 		async list(labels, _context: Context): Promise<Result<readonly BoxRef[], BoxError>> {

@@ -257,6 +257,126 @@ describe("modal boxes", () => {
 			});
 		});
 
+		describe("attach of a live sandbox always returns the handle, and never ends the box", () => {
+			const MEASURED = "pi-transport.measured";
+			const fuseBox = async (root: string, extra: Partial<BoxSpec> = {}) => {
+				const sdk = new FakeModal();
+				const box = unwrap(
+					await provider(sdk).create({ ...SPEC, capabilities: ["fuse"], workspace: root, ...extra }, context),
+				);
+				const sandbox = sdk.sandboxList[0];
+				if (sandbox === undefined) throw new Error("no sandbox");
+				return { sdk, box, sandbox };
+			};
+			const isProbe = (command: string[]) => command[0] === "sh" && command[2]?.includes("ptrace_scope") === true;
+			/** The probe throws `times` times, then works; `tries.count` is how many times it was asked. */
+			const failProbe = (
+				sandbox: { exec: (command: string[], params: never) => Promise<unknown> },
+				times: number,
+			) => {
+				const exec = sandbox.exec.bind(sandbox);
+				const tries = { count: 0 };
+				let left = times;
+				sandbox.exec = async (command: string[], params: never) => {
+					if (isProbe(command)) {
+						tries.count++;
+						if (left-- > 0) throw new Error("the connection went away");
+					}
+					return exec(command, params);
+				};
+				return tries;
+			};
+			const end = async (
+				sdk: FakeModal,
+				attached: { destroy: (c: typeof context) => Promise<unknown> } | undefined,
+			) => {
+				await (attached as NonNullable<typeof attached>).destroy(context);
+				expect(sdk.running()).toEqual([]);
+			};
+
+			it("stores what the create measured in the box's tag", async () => {
+				await withRoot(async (root) => {
+					const { box, sandbox } = await fuseBox(root);
+					const stored = JSON.parse((await sandbox.getTags())[MEASURED] ?? "null") as Record<
+						string,
+						unknown
+					> | null;
+					expect(stored).toEqual({ fuse: true, diskGb: 100 });
+					// Hardware only: no security fact (the Yama setting) is ever kept in a tag.
+					expect(stored).not.toHaveProperty("ptraceScope");
+					unwrap(await box.destroy(context));
+				});
+			});
+
+			it("returns the handle with the facts AS MEASURED when the read is definitive: no usable FUSE reads fuse false", async () => {
+				await withRoot(async (root) => {
+					const { sdk, box, sandbox } = await fuseBox(root);
+					sandbox.probeOutput = "disk=104857600\nptrace=1\nfuse_dev=0\n";
+					const attached = unwrap(await provider(sdk).attach(box.id, context));
+					expect(attached?.facts().fuse).toBe(false);
+					expect(sdk.running().map((each) => each.sandboxId)).toEqual([box.id]);
+					await end(sdk, attached);
+				});
+			});
+
+			it("retries a probe error, and a read that then works gives the fresh facts", async () => {
+				await withRoot(async (root) => {
+					const { sdk, box, sandbox } = await fuseBox(root);
+					sandbox.probeOutput = "disk=209715200\nptrace=2\nfuse_dev=1\n";
+					const tries = failProbe(sandbox, 2);
+					const attached = unwrap(await provider(sdk).attach(box.id, context));
+					expect(attached?.facts()).toMatchObject({ fuse: true, diskGb: 200, ptraceScope: 2 });
+					expect(tries.count).toBe(3);
+					await end(sdk, attached);
+				});
+			});
+
+			it("returns the handle with the HARDWARE measured at create when every try errs, every security fact unknown, and the box still running", async () => {
+				await withRoot(async (root) => {
+					const { sdk, box, sandbox } = await fuseBox(root, { network: { allow: ["10.0.0.0/8"] }, ports: [8080] });
+					expect(box.facts()).toMatchObject({
+						network: "allowlist",
+						ports: [{ port: 8080, kind: "https" }],
+						ptraceScope: 1,
+					});
+					const tries = failProbe(sandbox, 100);
+					const attached = unwrap(await provider(sdk).attach(box.id, context));
+					expect(tries.count).toBe(3);
+					expect(attached?.facts()).toMatchObject({ fuse: true, diskGb: 100 });
+					// A security fact is never taken from a tag on a read error: the Yama setting, the network and the ports are unknown.
+					for (const key of ["ptraceScope", "network", "ports"]) expect(attached?.facts()).not.toHaveProperty(key);
+					expect(sdk.running().map((each) => each.sandboxId)).toEqual([box.id]);
+					await end(sdk, attached);
+				});
+			});
+
+			it("treats a read that exits non-zero as an error: the same retry, then the create-time facts", async () => {
+				await withRoot(async (root) => {
+					const { sdk, box, sandbox } = await fuseBox(root);
+					const exec = sandbox.exec.bind(sandbox);
+					sandbox.exec = async (command, params) =>
+						isProbe(command) ? exec(["sh", "-c", "echo broken >&2; exit 3"], params) : exec(command, params);
+					const attached = unwrap(await provider(sdk).attach(box.id, context));
+					expect(attached?.facts().fuse).toBe(true);
+					await end(sdk, attached);
+				});
+			});
+
+			it("gives the fail-closed values (fuse false) for a tag from before measured facts, when the read errs", async () => {
+				await withRoot(async (root) => {
+					const { sdk, box, sandbox } = await fuseBox(root);
+					const tags = { ...(await sandbox.getTags()) };
+					delete tags[MEASURED];
+					sandbox.params.tags = tags;
+					failProbe(sandbox, 100);
+					const attached = unwrap(await provider(sdk).attach(box.id, context));
+					expect(attached?.facts().fuse).toBe(false);
+					for (const key of ["diskGb", "ptraceScope"]) expect(attached?.facts()).not.toHaveProperty(key);
+					await end(sdk, attached);
+				});
+			});
+		});
+
 		it("refuses fuse with gvisor (unsupported) and with a GPU (invalid), and any other capability, before any Modal call", async () => {
 			const sdk = new FakeModal();
 			const codes = [];
