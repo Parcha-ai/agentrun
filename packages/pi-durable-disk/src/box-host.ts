@@ -50,8 +50,12 @@ export interface BoxHostOptions {
   archil?: string;
   /** More flags for the CLI's `run`, before `--token-stdin`. */
   runArgs?: readonly string[];
-  /** The run user the launcher drops to. Default `pda`. */
-  user?: string;
+  /**
+   * The user every agent command runs as (the CLI's `--run-as`), with no capabilities under no_new_privs: never root.
+   * Default `pda`. The instance itself runs as root and holds the mount token with the launcher and the FUSE daemon, so
+   * no command can ptrace a holder, with or without Yama, and the tools' user needs no sudo rule.
+   */
+  runAs?: string;
   /** Plain settings for every start, under each start's own (attemptEnv's rules). Never a secret. */
   env?: Readonly<Record<string, string>>;
   /** From the create (or the find) until the launcher says the instance runs. Default 300 s. */
@@ -87,10 +91,10 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
   if (typeof options.app !== "string" || options.app === "") throw invalid("app is the module the instance runs, a path inside the box");
   const command = options.command ?? ["pi-durable-disk"];
   if (command.length === 0 || command.some((part) => typeof part !== "string" || part === "")) throw invalid("command is a non-empty list of non-empty strings");
-  const user = options.user ?? "pda";
-  if (!USER.test(user)) throw invalid("user is a user name or a uid");
-  // The token's launch is framed: its program never runs as root, whatever the image's passwd says of other names.
-  if (user === "root" || (/^[0-9]+$/.test(user) && Number(user) === 0)) throw invalid("user is root: the instance never runs as uid 0");
+  // The one source of the tools' user: the CLI's --run-as (and the launcher's declared tools user, once T3b lands).
+  const runAs = options.runAs ?? "pda";
+  if (!USER.test(runAs)) throw invalid("runAs is a user name or a uid");
+  if (runAs === "root" || (/^[0-9]+$/.test(runAs) && Number(runAs) === 0)) throw invalid("runAs is root: the agent's commands never run as uid 0, next to the processes that hold the mount token");
   const mountRoot = options.mountRoot ?? "/mnt/archil";
   if (!mountRoot.startsWith("/")) throw invalid("mountRoot is an absolute path");
   const archil = options.archil ?? "/usr/local/sbin/archil-scoped";
@@ -166,10 +170,11 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
       const context = bounded(startTimeoutMs);
       const timedOut = () => new BoxHostError("START_TIMED_OUT", `starting run ${ref.id} attempt ${n} in a ${provider.name} box took over ${startTimeoutMs} ms`);
       const specFor = (holder: string): LaunchSpec => ({
-        argv: [...command, "run", "--disk", ref.disk, "--region", ref.region, "--id", ref.id, "--mount-root", mountRoot, "--archil", archil, "--app", options.app, ...(options.runArgs ?? []), "--token-stdin"],
+        argv: [...command, "run", "--disk", ref.disk, "--region", ref.region, "--id", ref.id, "--mount-root", mountRoot, "--archil", archil, "--app", options.app, ...(options.runArgs ?? []), "--run-as", runAs, "--token-stdin"],
         env: { ...options.env, ...extra, PDA_HOLDER: holder },
         inheritEnv: false,
-        user,
+        // The instance runs as root: it mounts directly (no sudo) and holds the token; its commands drop to runAs.
+        user: "root",
         stdin: new TextEncoder().encode(`${mountToken}\n`),
         restart: true,
         restartDelayMs: 1_000,
@@ -246,7 +251,7 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
         throw new BoxHostError(
           "LAUNCH_FAILED",
           couldNotRun
-            ? `the launcher could not run the instance in ${provider.name} box ${box.id} (exit 126: as user ${user}, with its environment or in its directory)`
+            ? `the launcher could not run the instance in ${provider.name} box ${box.id} (exit 126: with its environment or in its directory)`
             : `the instance ended at once in ${provider.name} box ${box.id} (${state.phase}${state.lastExit === undefined ? "" : `, exit ${state.lastExit}`})`,
         );
       }

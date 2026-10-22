@@ -353,10 +353,16 @@ peer this entry needs and the package's root does not.
   `UNSUPPORTED`. That refusal is remembered for the spec: later starts are refused at once, with no box made. Otherwise
   ensureRunning, which restarts on every tick, would boot and destroy a VM each time.
 - **The launch.** Into a fresh box it uploads `files`. Transport's launcher then keeps `pi-durable-disk run ... --app
-  <app> --token-stdin` running as the run user (`user`, default `pda`), restarting it on failure but not after 0, 65,
-  70, 75 or 76. The mount token is that launch's stdin: the launcher holds it in memory and replays it to each
-  incarnation, and boxHost keeps it for that one call. The environment is `PDA_HOLDER`, `env` and the start's own; the
-  launcher adds the runtime's PATH, the user's HOME and LANG.
+  <app> --run-as <runAs> --token-stdin` running AS ROOT, restarting it on failure but not after 0, 65, 70, 75 or 76.
+  - The instance mounts the disk itself, with no sudo.
+  - Every agent command runs as `runAs` (default `pda`, never root), through disk's own spawn, with no capabilities,
+    under no_new_privs.
+  - So the mount token's holders (the launcher, the instance and the FUSE daemon) are all root, and no command can
+    ptrace one, whether or not the kernel has Yama. The tools' user needs no sudo rule.
+  - The token is that launch's stdin: the launcher holds it in memory and replays it to each incarnation, and boxHost
+    keeps it for that one call.
+  - The environment is `PDA_HOLDER`, `env` and the start's own; the launcher adds the runtime's PATH, root's HOME and
+    LANG.
 - **Finding it again.** A box found with its launch running is adopted. One whose launch ended or was lost is
   destroyed and replaced, never relaunched. A launch is lost when its launcher is gone, and boxHost keeps no token to
   start it again, so `status` reports a lost launch `failed`: the place takes over, and a new start mints a new token.
@@ -365,9 +371,11 @@ peer this entry needs and the package's root does not.
   (`facts().startedAt`, else when it was made) and `to`. There is no price.
 - **Errors** are `BoxHostError`: `INVALID_ARGUMENT`, `UNSUPPORTED`, `CREATE_FAILED`, `UPLOAD_FAILED`, `LAUNCH_FAILED`,
   `START_TIMED_OUT` and `STOP_FAILED`, with the provider's or the launcher's error as `cause`.
-- **The image** must give the run user a home in passwd, util-linux `setpriv` or `runuser` (the launcher's user drop),
-  a setuid-root `fusermount3`, and `node` and this package's CLI on the runtime's PATH. Otherwise, pass an absolute
-  `command`.
+- **The image** must carry:
+  - the `runAs` user in passwd, with NO sudo rule and no setuid or setcap helper granting it privilege;
+  - util-linux `setpriv` (disk's spawn drops each command with it);
+  - `node` and this package's CLI on the runtime's PATH; otherwise, pass an absolute `command`.
+  It needs no `fusermount3`: root mounts, and the fuse fact means the device exists and root can open it.
 
 `dockerHost({ image })` (`supervise --host docker --image IMAGE`) runs each instance in a container of its own; one
 container is one incarnation.
