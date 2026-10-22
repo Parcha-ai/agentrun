@@ -777,12 +777,16 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
     const handles: HostHandle[] = [];
     /** Every handle the place started, released or not: the boxes it reports. */
     const started: HostHandle[] = [];
-    /** Whether each host box's runner is told its label (HOST_BOX): the driver makes boxes and names their provider. */
-    const handingOver = typeof host.box === "function" && typeof host.provider === "string" && host.provider !== "";
     const killed = new Map<PlaceRunner, () => void>();
     let resolver = pathlessResolver(control);
     const records = `${runPath(ref.id)}/${RECORDS}/`;
     const recording = typeof options.control.listObjects === "function";
+    /**
+     * Whether each host box's runner is told its label (HOST_BOX): the driver makes boxes and names their provider, and this
+     * place can read the label back (its read members need a control that lists). A label it could never read is never
+     * handed over.
+     */
+    const handingOver = recording && typeof host.box === "function" && typeof host.provider === "string" && host.provider !== "";
     const owner = options.ensure?.create;
     /**
      * Before attempt `gen`'s runner starts: the EMPTY directories it writes into, `signals/` and, with `recordHome`,

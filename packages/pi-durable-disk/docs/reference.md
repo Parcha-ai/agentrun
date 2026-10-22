@@ -834,8 +834,9 @@ id and directory as the supervisor computed them.
     has the provider, the kind, `from` and `to` (null while it lives). It also has the published list price per second
     (`usdPerSecond`), the page that price was read from (`source`) and the ISO date it was read (`priced`). A box with
     no price has none of those three, never a price of 0. No field holds the provider's id of the box.
-  - When its driver makes boxes and names their provider (`HostDriver.provider`; `daytonaHost` names `daytona`), each
-    start puts `HOST_BOX` in its order's environment, JSON `{ provider, key, run }`. `key` is the box's index in
+  - When its driver makes boxes and names their provider (`HostDriver.provider`; `daytonaHost` names `daytona`), and
+    the place can read the label back (its control lists, so it has `readRunFile` and `listRunFiles`), each start puts
+    `HOST_BOX` in its order's environment, JSON `{ provider, key, run }`. `key` is the box's index in
     `status().boxes`, and `run` is the order's `RUN_LABEL`. The runner claims that box's label first; without
     `RUN_LABEL`, no `HOST_BOX`. A box's position is then its key, so a box the driver gives no receipt for fails
     `status()` (`STATUS_FAILED`) instead of shifting the boxes after it.

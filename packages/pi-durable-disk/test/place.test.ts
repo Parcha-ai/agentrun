@@ -668,6 +668,17 @@ describe("archilPlace HOST_BOX: each host box's runner is told which label to cl
     missing.add("box-1");
     await assert.rejects(p3.status!(), (e: unknown) => e instanceof PlaceError && e.code === "STATUS_FAILED" && /no receipt for host box 0/.test(e.message));
   });
+
+  it("no HOST_BOX from a place that cannot read its run's files (its control cannot list): no read members, no label to claim", async () => {
+    const control = new FakeControl();
+    (control as unknown as { listObjects?: unknown }).listObjects = undefined;
+    const { host, starts } = providing(control, "modal");
+    const place = makePlace({ ...REF, control, host });
+    assert.equal(place.readRunFile, undefined);
+    assert.equal(place.listRunFiles, undefined);
+    await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
+    assert.equal(starts[0]!.attempt!.env!.HOST_BOX, undefined, "a label the place could never read back is never handed over");
+  });
 });
 
 describe("a place's run files (readRunFile, listRunFiles): its own run, read only", () => {
