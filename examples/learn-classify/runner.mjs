@@ -250,7 +250,14 @@ export function lineOf(row, convention = row.convention) {
     ...row.curate.admitted.map((n) => `admitted ${n}`), ...row.curate.promoted.map((n) => `promoted ${n}`), ...row.curate.demoted.map((n) => `demoted ${n}`),
     ...row.curate.held.map((h) => `held ${curatedName(h)}`), ...row.curate.refused.map((h) => `refused ${curatedName(h)}`),
   ];
-  return `run ${row.run} ${row.split === 'run' ? '' : `(${row.split}) `}${row.answer ?? 'no answer'} vs ${row.truth} ${row.correct ? 'correct' : 'wrong'}${convention ? ' (a filing convention)' : ''}, ${how}, ${usd(row.costUsd)} (Jev ${usd(row.judgeCostUsd)})`
+  // A v4 row's headline is every part with truth (correctOver), so the line names each part beside it.
+  const what = row.set === 'v4'
+    ? `${row.sic4Answer ?? 'no answer'} vs ${row.sic4Truth} ${row.sicCorrect4 ? 'right' : row.sicCorrect2 ? 'group right' : 'wrong'}, `
+      + `${typeof row.segmentsF1 === 'number' ? `segments F1 ${row.segmentsF1.toFixed(2)}` : 'segments not scored'}, `
+      + `${typeof row.hqCorrect === 'boolean' ? `hq ${row.hqCorrect ? 'right' : 'wrong'}` : 'hq not scored'}: ${row.correct ? 'correct' : 'wrong'} over ${(row.correctOver ?? ['sic4']).join('+')}`
+    : `${row.answer ?? 'no answer'} vs ${row.truth} ${row.correct ? 'correct' : 'wrong'}${convention ? ' (a filing convention)' : ''}`;
+  const browser = row.set === 'v4' && row.browserCostUsd !== undefined ? `, browser ${usd(row.browserCostUsd)}` : '';
+  return `run ${row.run} ${row.split === 'run' ? '' : `(${row.split}) `}${what}, ${how}, ${usd(row.costUsd)} (Jev ${usd(row.judgeCostUsd)}${browser})`
     + `${row.workflowsSaved.length ? `, saved ${row.workflowsSaved.join(', ')}` : ''}${curated.length ? `; curate ${curated.join(', ')}` : ''}; main ${short(row.seedSha)} -> ${short(row.afterSha)}`;
 }
 
