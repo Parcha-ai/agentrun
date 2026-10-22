@@ -239,6 +239,19 @@ test('H8: one run, two labellers lifted into one: the place\'s home box and the 
   assert.deepEqual(viewerValidate(manifest, lines, blobs), []);
 });
 
+test('H8 on the disk package\'s localPlace: demo() takes tool boxes beside a disk place of its own (each process pi-durable-disk run --app on the run\'s directory, the place\'s own run-file reads, no live disk): the tools\' two boxes are box-1 and box-2, one receipt each, and the viewer\'s format check gives no note', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'disk-local' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  const ids = readIds(join(result.dir, 'box-ids.internal'));
+  assert.deepEqual(Object.entries(ids).map(([label, entry]) => [label, entry.owner, entry.provider]), [['box-1', 'tools', 'alpha'], ['box-2', 'tools', 'beta']]);
+  assert.deepEqual(answered(result.dir), { alpha: 'box-1', beta: 'box-2' });
+  assert.deepEqual(receipts(recording).map((receipt) => [receipt.box, receipt.provider]).sort(), [['box-1', 'alpha'], ['box-2', 'beta']], 'one receipt each');
+  const lines = parseLines(readFileSync(join(recording, 'events.jsonl'), 'utf8'));
+  const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
+  const blobs = new Set((existsSync(join(recording, 'blobs')) ? readdirSync(join(recording, 'blobs')) : []).map((name) => name.split('.')[0]));
+  assert.deepEqual(viewerValidate(manifest, lines, blobs), []);
+});
+
 test('a host box\'s label is claimed by the run\'s process: the same again in the same supervisor life, refused in another or on another provider, and a malformed identity is refused', async (t) => {
   const own = await mkdtemp(join(tmpdir(), 'box-ids-host-'));
   t.after(() => rm(own, { recursive: true, force: true }));

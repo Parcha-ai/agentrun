@@ -3,6 +3,7 @@ import type { Message } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { fakeEyes, fakeTranscriptionFetch } from '@parcha/pi-vision/testing';
 import { openAiTranscriber } from '@parcha/pi-vision/transcribers';
 import { demo } from '@parcha/agentrun-harness';
@@ -204,7 +205,8 @@ const withReport = (chosen: typeof job): typeof job => (process.env.DEMO_REPORT 
 // process its identity (`HOST_BOX`), which that process claims first, and lets the supervisor read the run's files (`readRunFile` and `listRunFiles`, disk's K8 shape, here over
 // its own root): the supervisor reads the label itself. `unclaimed` reports the home box and has the reads but never hands it over, so no process claims it. `unreadable` hands it
 // over but its reads fail; `slow` hands it over but its reads answer only after 40 s, past the supervisor's bound on a read. `reporting` reports the home box with no reads and no
-// handover; `handing` hands it over with no reads. Any other value is the local place, which has neither.
+// handover; `handing` hands it over with no reads. `disk-local` is the disk package's own `localPlace` (each process `pi-durable-disk run --app` with the harness's
+// child app, on the run's directory), with its own run-file reads and no host box. Any other value is the local place, which has neither.
 // And a run process that prints a credential-shaped line to its stderr and dies at once (`DEMO_STDERR_SECRET`, in the run's process only): the final-read
 // refusal, which names a failed process's own text, must never carry it.
 if (process.env.DEMO_STDERR_SECRET && process.env.DEMO_ENTRY) { process.stderr.write(`the tool printed token ${process.env.DEMO_STDERR_SECRET}\nand a plain line after it\n`); process.exit(3); }
@@ -214,6 +216,10 @@ const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: s
   const { readFile, readdir } = await import('node:fs/promises');
   const inner = localPlace({ self: context.self, paths: context.paths as never, requestFile: context.requestFile });
   const mode = process.env.DEMO_WITH_PLACE;
+  if (mode === 'disk-local') {
+    const { localPlace: diskLocalPlace } = await import('@parcha/pi-durable-disk');
+    return diskLocalPlace({ app: fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app')) })({ ...context, paths: context.paths as never });
+  }
   const from = new Date().toISOString();
   const status = async () => ({ boxes: [{ provider: 'home', kind: 'host', from, to: null }] });
   if (mode === 'reporting') return { ...inner, status };
