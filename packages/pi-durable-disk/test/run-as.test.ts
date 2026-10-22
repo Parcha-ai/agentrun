@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
-import { appWritableReason, instanceMounts, main, mountInfo, runUser, toolsUserCheck } from "../src/cli.ts";
+import { appWritableReason, INSTANCE_FS, instanceMounts, main, mountInfo, runUser, toolsUserCheck } from "../src/cli.ts";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { archilEnv, EnvError } from "../src/env.ts";
@@ -295,7 +295,12 @@ test("under --run-as the root instance refuses an --app the agent's commands cou
   }
   // The mounts are the instance's own (/proc/self, read at its start, before any command of the agent's exists), never a
   // command's: another process's user or mount namespace never changes the table root's walk reads.
-  assert.deepEqual(instanceMounts(), mountInfo(readFileSync("/proc/self/mountinfo", "utf8")));
+  // Pinned at the read itself: here pid 1 shares this namespace, so another process's table would read the same.
+  const read: string[] = [];
+  const row = "22 1 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n";
+  assert.deepEqual(instanceMounts((path) => (read.push(path), row)), [{ point: "/", ro: false, dev: "8:1", root: "/" }]);
+  assert.deepEqual(read, ["/proc/self/mountinfo"], "the instance's own table, nobody else's");
+  assert.deepEqual(INSTANCE_FS.mounts?.(), mountInfo(readFileSync("/proc/self/mountinfo", "utf8")), "the walk's default reads it");
   // /proc/self/mountinfo: the mount point is field 5 (octal escapes), "ro" in the mount's or the superblock's options.
   assert.deepEqual(
     mountInfo([
