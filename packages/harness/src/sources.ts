@@ -46,8 +46,7 @@ export function missingCommitted(items: readonly SourceItem[], files: Record<str
 
 const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
-/** Fetches each item into `work` and verifies it; returns what was fetched and what was already there. */
-/** `timeoutMs` is each download's deadline, the request and the reading of its body together (default 60 s). */
+/** Fetches each item into `work` and verifies it. Returns the names it `fetched`, the ones already in `work` (`kept`), and the ones it copied from the download `cache` by hash (`cached`). `timeoutMs` is each download's deadline, the request and the reading of its body together (default 60 s). */
 export async function fetchSources(sources: Sources, work: string, fetcher: typeof fetch = fetch, timeoutMs = 60_000, cache?: string): Promise<{ fetched: string[]; kept: string[]; cached: string[] }> {
   const fetched: string[] = [];
   const kept: string[] = [];

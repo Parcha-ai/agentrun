@@ -239,7 +239,7 @@ test("the reserved host key cannot be written by a workflow, a code node, an aft
   // An unaliased node writes under its label, so a "$host" label is the same bypass and is refused too.
   const labeled = validateWorkflow({ ...workflow([{ node: "decide", label: HOST_STATE_KEY, instructions: "Decide.", out: "Record" }]), output: { schemaId: "Record", path: HOST_STATE_KEY } });
   assert.equal(labeled.ok, false);
-  assert.match(labeled.errors.join("\n"), /label must not begin with "\$"/);
+  assert.match(labeled.errors.join("\n"), /label must not contain "\$"/);
   // A "$" label on a node that does not write under its label is only a name: an aliased decide, a code node with as.
   assert.deepEqual(validateWorkflow(workflow([decide({ label: "$named", as: "record" })])), { ok: true });
   assert.deepEqual(validateWorkflow({ ...workflow([{ node: "code", label: "$compute", as: "record", code: "() => ({ label: 'a', count: 1 })" }]) }), { ok: true });
