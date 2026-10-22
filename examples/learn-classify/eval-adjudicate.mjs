@@ -7,8 +7,8 @@
 // unblind; each attempt adds a line to manifest.jsonl, with its cost, its grounding and its recording. A verdict whose
 // evidence does not ground (SPEC.md's grounding) is judged once more, and the pass reports the ones that still do not.
 // meta.json pins, before the first verdict, the sha256 of the sample's commitments, the order salt, the candidates, the
-// sample file and the adjudicator home; a resumed pass with any of them changed is refused. A live pass first runs its
-// self-test (selftest.mjs adjudicationSelfTest) at $0.
+// sample file, the adjudicator home and the protocol (learn-mcc's ADJUDICATION.md); a resumed pass with any of them
+// changed is refused. A live pass first runs its self-test (selftest.mjs adjudicationSelfTest) at $0.
 //   node examples/learn-classify/eval-adjudicate.mjs --out <dir> --pass-id <id> --sample <adjudication.json>
 //       --candidates <candidates.json> --commitments <commitments.json> --order-salt <file>
 //       (--scripted | --live --cap-usd <usd>) [--run-cap-usd <usd>] [--data <dir>] [--concurrency <n>] [--jobs <n>]
@@ -59,6 +59,9 @@ function writeWhole(file, value) {
   renameSync(`${file}.tmp`, file);
 }
 
+/** The protocol the pass follows, pinned with its inputs. */
+export const PROTOCOL = join(import.meta.dirname, '..', 'learn-mcc', 'ADJUDICATION.md');
+
 /** What a pass pins before its first verdict: the sha256 of each input file it reads or that fixed what it reads. */
 function pinsOf({ sample, candidates, commitments, orderSalt, agentSha256 }) {
   return {
@@ -67,6 +70,7 @@ function pinsOf({ sample, candidates, commitments, orderSalt, agentSha256 }) {
     commitments: { sha256: fileSha(commitments) },
     orderSalt: { sha256: fileSha(orderSalt) },
     adjudicator: { sha256: agentSha256 },
+    protocol: { sha256: fileSha(PROTOCOL) },
   };
 }
 

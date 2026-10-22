@@ -13,7 +13,7 @@ import { test } from 'node:test';
 import { candidateTable, unblind } from '../learn-mcc/adjudication.mjs';
 import { groupOf, loadGroups } from '../learn-mcc/score-mcc.mjs';
 import { adjudicationRun, jobTextAdjudicate, sampleJobs } from './adjudicate-job.mjs';
-import { runAdjudication } from './eval-adjudicate.mjs';
+import { PROTOCOL, runAdjudication } from './eval-adjudicate.mjs';
 import { openOut, scriptedParts } from './runner.mjs';
 import { SETS } from './sets.mjs';
 import { ADJUDICATOR_TOOLS, adjudicationSelfTest } from './selftest.mjs';
@@ -187,6 +187,7 @@ test('a scripted pass: stage 1 and 2 for unblind, an ungrounded verdict judged o
   assert.equal(meta.pins.commitments.sha256, sha256(readFileSync(given.files.commitments)));
   assert.equal(meta.pins.orderSalt.sha256, sha256(readFileSync(given.files.orderSalt)));
   assert.equal(meta.pins.candidates.sha256, sha256(readFileSync(given.files.candidates)));
+  assert.equal(meta.pins.protocol.sha256, sha256(readFileSync(PROTOCOL)), 'the protocol, learn-mcc\'s ADJUDICATION.md');
   // Resumed: nothing is judged again.
   const again = await runAdjudication({ out, parts, passId: 'p1', files: given.files });
   assert.deepEqual(again.judged, []);
