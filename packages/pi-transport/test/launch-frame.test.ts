@@ -3,7 +3,16 @@
 // program's stdin, the secrets part to the fd PI_TRANSPORT_SECRETS_FD names. Neither rests in a file, an environ, an
 // argv or the launcher's state; a box that cannot carry them refuses before anything runs.
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+	chmodSync,
+	lstatSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -34,9 +43,15 @@ async function fileIn(box: Box, path: string): Promise<string | undefined> {
 
 const sha = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 
-/** Every file under `dir` whose bytes hold `marker`. */
-function filesHolding(dir: string, marker: string): string[] {
+/**
+ * Every file under `dir` whose bytes hold `marker`. `since` (a shared directory, such as this machine's TMPDIR, that other
+ * users and runs write too): only the files THIS user owns that changed at or after `since` are read. Those are every file
+ * a launch running as this user could have written during the test. A file of another user's it cannot have written, and
+ * one of ours older than the test cannot hold a marker the test made. A file that must be read and cannot be fails the test.
+ */
+function filesHolding(dir: string, marker: string, since?: number): string[] {
 	const found: string[] = [];
+	const me = process.getuid?.();
 	const walk = (at: string) => {
 		let names: string[];
 		try {
@@ -46,14 +61,16 @@ function filesHolding(dir: string, marker: string): string[] {
 		}
 		for (const name of names) {
 			const path = join(at, name);
-			let info: ReturnType<typeof statSync>;
+			let info: ReturnType<typeof lstatSync>;
 			try {
-				info = statSync(path);
+				info = lstatSync(path);
 			} catch {
 				continue;
 			}
 			if (info.isDirectory()) walk(path);
-			else if (info.isFile() && readFileSync(path).includes(marker)) found.push(path);
+			else if (!info.isFile()) continue;
+			else if (since !== undefined && (info.uid !== me || info.mtimeMs < since)) continue;
+			else if (readFileSync(path).includes(marker)) found.push(path);
 		}
 	};
 	walk(dir);
@@ -89,7 +106,15 @@ describe("a launch's stdin and secrets", () => {
 		];
 		const stdin = new TextEncoder().encode(`${token}\n`);
 		const secrets = { MODAL_TOKEN_ID: secret };
-		getOrThrow(await launch(box, "framed", { argv: program, stdin, secrets }, context));
+		// A file of this user's in the shared TMPDIR that is not the test's, unreadable and older than the test: never read.
+		const planted = join(tmpdir(), `zz-unreadable-${randomBytes(4).toString("hex")}`);
+		writeFileSync(planted, "not the launch's");
+		utimesSync(planted, new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
+		chmodSync(planted, 0o000);
+		const since = Date.now() - 1_000;
+		const launched = getOrThrow(await launch(box, "framed", { argv: program, stdin, secrets }, context));
+		// The launcher writes in the box's own TMPDIR, under its root: the root is walked whole.
+		expect(launched.directory.startsWith(`${root}/`)).toBe(true);
 		await until("the second incarnation", async () => {
 			const read = getOrThrow(await launchState(box, { v: 1, name: "framed" }, context));
 			return read?.phase === "running" && read.incarnation === 2 && (await fileIn(box, "sec.2")) ? read : undefined;
@@ -103,11 +128,13 @@ describe("a launch's stdin and secrets", () => {
 		const encoded = [Buffer.from(stdin).toString("base64"), Buffer.from(JSON.stringify(secrets)).toString("base64")];
 		for (const marker of [token, secret, ...encoded]) {
 			expect(filesHolding(root, marker)).toEqual([]);
-			expect(filesHolding(tmpdir(), marker)).toEqual([]);
+			expect(filesHolding(tmpdir(), marker, since)).toEqual([]);
 			expect(processesHolding(marker)).toEqual([]);
 		}
 		getOrThrow(await launchStop(box, { v: 1, name: "framed" }, { graceMs: 1_000 }, context));
 		await box.destroy(context);
+		chmodSync(planted, 0o600);
+		rmSync(planted, { force: true });
 	});
 
 	it("are refused, before anything runs, on a box that cannot carry them (no secretsVia: fd)", async () => {
