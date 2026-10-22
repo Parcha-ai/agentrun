@@ -1092,7 +1092,10 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 						),
 					),
 				);
-				this.status = this.#state("exited");
+				// A start the launcher attempted is an incarnation, whether or not the program could be spawned: it counts, and ends with 126.
+				this.#incarnation = n;
+				this.#starts += 1;
+				this.#exited(ok(126));
 				return;
 			}
 			this.#incarnation = n;

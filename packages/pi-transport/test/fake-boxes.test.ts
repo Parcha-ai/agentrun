@@ -101,7 +101,7 @@ describe("fakeBoxes: the recording", () => {
 			await stdin.readAll();
 			return 0;
 		});
-		const box = getOrThrow(await provider.create({ ...SPEC, env: { MODE: "secret-value" } }, context));
+		const box = getOrThrow(await provider.create({ ...SPEC, env: { FAKE_SETTING: "secret-value" } }, context));
 		await provider.create(SPEC, context);
 		provider.script.on({ op: "exec", argv: (a) => a[0] === "p" }, { fail: "spawn" }, { label: "no-spawn" });
 		await box.exec(["p", "1"], undefined, context);
@@ -115,7 +115,7 @@ describe("fakeBoxes: the recording", () => {
 		expect(spawned).toMatchObject({ argv: ["p", "1"], scripted: "no-spawn", result: { error: "spawn" } });
 		expect(started).toMatchObject({
 			argv: ["p", "2"],
-			envKeys: ["MODE"],
+			envKeys: ["FAKE_SETTING"],
 			stdinClosed: true,
 			result: "ok",
 			options: { timeoutMs: 5 },
@@ -514,9 +514,13 @@ describe("fakeBoxes: T3's own launcher over a fake box (Box.launcher)", () => {
 		});
 	});
 
-	it("fails a restart by a rule on incarnation 2, and the launch ends with the last exit code", async () => {
+	it("counts a restart that fails to start as an incarnation with exit 126, and goes on within the limit", async () => {
 		const provider = fakeBoxes();
-		provider.program("inst", () => 2);
+		let runs = 0;
+		provider.program("inst", (ctx) => {
+			runs += 1;
+			return runs === 1 ? 2 : forever(ctx);
+		});
 		const box = getOrThrow(await provider.create(SPEC, context));
 		provider.script.on(
 			{ op: "incarnation", when: (c) => c.incarnation === 2 },
@@ -526,15 +530,105 @@ describe("fakeBoxes: T3's own launcher over a fake box (Box.launcher)", () => {
 		const started = getOrThrow(await launch(box, "inst", { argv: ["inst"] }, context));
 		await tick();
 		expect(getOrThrow(await launchState(box, started.launch, context))).toMatchObject({
-			phase: "exited",
-			incarnation: 1,
-			restarts: 0,
-			lastExit: 2,
+			phase: "running",
+			incarnation: 3,
+			restarts: 2,
+			starts: 3,
+			lastExit: 126,
 		});
 		expect(provider.callsOf("incarnation").map((c) => [c.incarnation, c.scripted ?? null])).toEqual([
 			[1, null],
 			[2, "restart-fails"],
+			[3, null],
 		]);
+	});
+
+	it("gives up when every restart fails to start: incarnation counts, lastExit 126, phase gave_up", async () => {
+		const provider = fakeBoxes();
+		provider.program("inst", () => 2);
+		const box = getOrThrow(await provider.create(SPEC, context));
+		provider.script.on(
+			{ op: "incarnation", when: (c) => (c.incarnation ?? 0) >= 2 },
+			{ fail: "spawn" },
+			{ times: 20 },
+		);
+		const started = getOrThrow(
+			await launch(box, "inst", { argv: ["inst"], restartLimit: { burst: 2, intervalMs: 60_000 } }, context),
+		);
+		await tick();
+		expect(getOrThrow(await launchState(box, started.launch, context))).toMatchObject({
+			phase: "gave_up",
+			incarnation: 3,
+			restarts: 2,
+			lastExit: 126,
+			launcherAlive: false,
+		});
+	});
+
+	it("reads restarting, incarnation 2, restarts 1, lastExit 126 after a restart that failed to start, within the limit", async () => {
+		const clock = fakeClock();
+		const provider = fakeBoxes({ clock });
+		provider.program("inst", () => 3);
+		const box = getOrThrow(await provider.create(SPEC, context));
+		provider.script.on({ op: "incarnation", when: (c) => c.incarnation === 2 }, { fail: "spawn" }, { times: 5 });
+		const started = getOrThrow(await launch(box, "inst", { argv: ["inst"], restartDelayMs: 1_000 }, context));
+		await clock.advance(1);
+		expect(getOrThrow(await launchState(box, started.launch, context))).toMatchObject({
+			phase: "restarting",
+			incarnation: 1,
+			restarts: 0,
+			lastExit: 3,
+		});
+		await clock.advance(1_000);
+		expect(getOrThrow(await launchState(box, started.launch, context))).toMatchObject({
+			phase: "restarting",
+			incarnation: 2,
+			restarts: 1,
+			starts: 2,
+			lastExit: 126,
+		});
+	});
+
+	it("reads exited, incarnation 1, restarts 0 and the code when no restart is attempted: a clean exit", async () => {
+		const provider = fakeBoxes();
+		provider.program("inst", () => 0);
+		const box = getOrThrow(await provider.create(SPEC, context));
+		const started = getOrThrow(await launch(box, "inst", { argv: ["inst"] }, context));
+		await tick();
+		expect(getOrThrow(await launchState(box, started.launch, context))).toMatchObject({
+			phase: "exited",
+			incarnation: 1,
+			restarts: 0,
+			starts: 1,
+			lastExit: 0,
+			launcherAlive: false,
+		});
+		expect(provider.callsOf("incarnation")).toHaveLength(1);
+	});
+
+	it("shows restarting while a restart waits its delay, on the clock", async () => {
+		const clock = fakeClock();
+		const provider = fakeBoxes({ clock });
+		let runs = 0;
+		provider.program("inst", (ctx) => {
+			runs += 1;
+			return runs === 1 ? 1 : forever(ctx);
+		});
+		const box = getOrThrow(await provider.create(SPEC, context));
+		const started = getOrThrow(await launch(box, "inst", { argv: ["inst"], restartDelayMs: 1_000 }, context));
+		await clock.advance(1);
+		expect(getOrThrow(await launchState(box, started.launch, context))).toMatchObject({
+			phase: "restarting",
+			incarnation: 1,
+			restarts: 0,
+			lastExit: 1,
+		});
+		await clock.advance(1_000);
+		expect(getOrThrow(await launchState(box, started.launch, context))).toMatchObject({
+			phase: "running",
+			incarnation: 2,
+			restarts: 1,
+		});
 	});
 
 	it("answers LaunchError: an unreadable state, a failed start, an unknown launch, and a box that ended", async () => {
