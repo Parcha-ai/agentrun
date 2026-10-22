@@ -370,7 +370,8 @@ container is one incarnation.
   - a user in group root (gid 0, given or from passwd);
   - an `--app` the agent's commands could change. Root loads it, so the path is walked as the kernel resolves it, links
     included, and every element (a directory, a link or the module) must be root's, every directory and the module
-    closed to group and others (sticky or not), and none inside the run's data root: a disk run's `--mount-root`, where
+    closed to group and others (sticky or not), unless the element is on a read-only mount (nothing in the box can
+    change it there; dockerHost's app directory is one), and none inside the run's data root: a disk run's `--mount-root`, where
     every run is mounted and a file's owner is whatever its writer set, or a local run's `--dir`. A link the tools could
     replace would change the module between the check and the load.
   - When transport's launcher started the instance as root with a verified tools user (`PI_TRANSPORT_TOOLS_USER` and
