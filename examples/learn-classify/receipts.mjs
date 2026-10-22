@@ -49,7 +49,7 @@ export const hasWorkflowReceipt = (dir, sha256) => runsIn(dir).some((r) => r.rec
 const digestOf = (records) => (typeof records?.latest === 'string' ? records.latest.trim() : null);
 
 /** The `admitWorkflow` port with --receipt-holds-trial: a newcomer that has no workflow receipt is held while its name's
- *  live trial has one; anything else goes to `admit` as before. */
+ *  live revision, a trial or the champion, has one; anything else goes to `admit` as before. */
 export function receiptHoldsTrial(admit, dir) {
   return async (input) => {
     const { name, records } = input.workflow;
@@ -57,8 +57,8 @@ export function receiptHoldsTrial(admit, dir) {
       const text = await input.read(trialPath(name), input.main);
       const live = text === undefined ? undefined : currentRevision(parseTrial(text, name));
       const incoming = digestOf(records);
-      if (live?.status === 'trial' && incoming && incoming !== live.sha256 && hasWorkflowReceipt(dir, live.sha256) && !hasWorkflowReceipt(dir, incoming)) {
-        return { status: 'held', reason: `the live trial ${live.sha256.slice(0, 12)} has a workflow receipt and this revision has none, so it does not replace it` };
+      if (live && incoming && incoming !== live.sha256 && hasWorkflowReceipt(dir, live.sha256) && !hasWorkflowReceipt(dir, incoming)) {
+        return { status: 'held', reason: `the live ${live.status === 'active' ? 'champion' : 'trial'} ${live.sha256.slice(0, 12)} has a workflow receipt and this revision has none, so it does not replace it` };
       }
     } catch {
       // A trial that does not parse is the admitter's to judge.
@@ -73,11 +73,12 @@ export function receiptHoldsTrial(admit, dir) {
  * - A live trial with a receipt use in this run is promoted at once when the uses did not already promote it.
  * - A promotion of a trial with a revision before it (the last proven one) asks `gate` (asyncGate), when given, to
  *   compare the two (`confirm`): its verdict confirms or demotes the promotion at a later curate (`gate.apply`).
- * Demotions and holds pass as they are.
+ * With `receipts` false, only the last: no contradiction and no receipt use counts. Demotions and holds pass as they are.
  */
-export function receiptUses({ settle, dir, gate }) {
+export function receiptUses({ settle, dir, gate, receipts = true }) {
   return async (input) => {
-    const record = runOf(dir, input.run);
+    // Without receipts (--promote-no-floor alone) the uses are the package's, and only the comparison of a replacement is asked.
+    const record = receipts ? runOf(dir, input.run) : undefined;
     const contradicted = record?.contradiction ? new Set(record.executed ?? []) : new Set();
     const uses = input.uses.map((u) => (contradicted.has(u.sha256) && u.outcome !== 'failed' ? { ...u, outcome: 'failed' } : u));
     const result = await settle({ ...input, uses });

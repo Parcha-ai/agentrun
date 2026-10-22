@@ -216,6 +216,19 @@ test('a replacement serves at once, and the gate is asked to compare it with the
   assert.deepEqual(asks.map((j) => [j.candidate.sha256, j.serving.sha256, j.confirm, j.front, j.receipt]), [[D2, D1, true, true, true]]);
 });
 
+test('with no receipt promotion (--promote-no-floor alone) contradictions and receipt uses count for nothing, and a replacement is still compared', async (t) => {
+  const dir = await scratch(t);
+  recordRun(dir, { run: 'run-030', receipt: { url: INDEX, kind: 'index', sic4: '3826', byWorkflow: true }, contradiction: { url: INDEX, kind: 'index', shown: '5122', answered: '5961' }, executed: [D2], workflowTouch: true });
+  const asks = [];
+  const gate = { ask: (job) => { asks.push(job); return { status: 'queued' }; } };
+  const one = await receiptUses({ settle: packageSettle(), dir, gate, receipts: false })({ main: 'm', read: readerOf(replacing), run: 'run-030', uses: [{ name: NAME, sha256: D2, outcome: 'frozen', at: at(2) }] });
+  assert.deepEqual([one.decisions.map((d) => d.action), asks.length], [['hold'], 0], 'one clean use, read as clean: no promotion yet');
+  const twice = { ...replacing, uses: [{ run: 'run-029', sha256: D2, outcome: 'frozen', at: at(1) }] };
+  const two = await receiptUses({ settle: packageSettle(), dir, gate, receipts: false })({ main: 'm', read: readerOf(twice), run: 'run-030', uses: [{ name: NAME, sha256: D2, outcome: 'frozen', at: at(2) }] });
+  assert.deepEqual(two.decisions.map((d) => d.action), ['promote']);
+  assert.deepEqual(asks.map((j) => [j.candidate.sha256, j.serving.sha256, j.confirm, j.front]), [[D2, D1, true, false]]);
+});
+
 test('receipt-holds-trial holds a newcomer without a workflow receipt against a trial that has one, and admits it when the trial has none', async (t) => {
   const dir = await scratch(t);
   const input = { main: 'm', read: readerOf(firstTrial), workflow: { run: 'run-040', name: NAME, records: { latest: `${D1}\n` }, untrusted: true } };
@@ -226,6 +239,9 @@ test('receipt-holds-trial holds a newcomer without a workflow receipt against a 
   const held = await receiptHoldsTrial(admit, dir)(input);
   assert.deepEqual([held.status, admitted], ['held', 1]);
   assert.match(held.reason, /has a workflow receipt and this revision has none/);
+  // The same against a champion (the live revision active) that has one.
+  const champion = applyDecision(firstTrial, { action: 'promote', sha256: D2, reason: 'uses' }, at(3));
+  assert.equal((await receiptHoldsTrial(admit, dir)({ ...input, read: readerOf(champion) })).status, 'held');
 });
 
 test('the gate\'s verdict on a replacement: a pass confirms it; a hold demotes it back to the revision it replaced, on main', async (t) => {
@@ -291,7 +307,7 @@ test('with neither flag, a pass is ARM B\'s: no receipts kept, no receipt on any
 
 test('with the receipt flags, every run is recorded under <out>/receipts, and its row says whether it holds a receipt', async (t) => {
   const out = join(await scratch(t), 'out');
-  const parts = { ...scriptedParts({ set: SETS.v4 }), admitByReceipt: true, receiptHoldsTrial: true, receiptUses: true };
+  const parts = { ...scriptedParts({ set: SETS.v4 }), receiptAdmission: true, receiptHoldsTrial: true, receiptPromotion: true, promoteNoFloor: true };
   const { rows } = await runLoop({ out, parts, jobs: 3, record: false });
   assert.ok(rows.every((r) => r.receipt === null), 'the scripted fixtures read no archived SEC page');
   assert.equal(existsSync(join(out, 'receipts', 'run-001.json')), true);

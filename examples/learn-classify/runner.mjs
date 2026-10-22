@@ -368,7 +368,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
     });
   }
   // Admission and promotion by receipt (receipts.mjs): what the run read of the SEC's record, from its closed store.
-  const receipts = parts.admitByReceipt || parts.receiptHoldsTrial || parts.receiptUses;
+  const receipts = parts.receiptAdmission || parts.receiptHoldsTrial || parts.receiptPromotion;
   if (receipts && p.phase === 'ran' && p.receipt === undefined) {
     const { lines } = recordingLines(run.storePath);
     const looked = lookupOfLines(lines, { sic4: p.measure.answer?.sic4 });
@@ -378,7 +378,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
     if (p.phase === 'ran') {
       // With a receipt, the code is refused in the run's notes like the company's own values, and each note linked to the
       // receipt is proposed as the run's own work.
-      const receipted = parts.admitByReceipt && p.receipt;
+      const receipted = parts.receiptAdmission && p.receipt;
       const linkJudge = meteredJudge(judge);
       const ask = async (state) => (await linkJudge.run({ label: 'receipt/link', kind: 'judge', state, questions: { link: { type: 'noul', instructions: LINK_QUESTION } }, decisionId: `receipt-link-${createHash('sha256').update(JSON.stringify(state)).digest('hex').slice(0, 32)}` }))?.answers?.link?.noul ?? 0;
       const finished = await finishJob({ home, repo, run, job, measure: p.measure, ...(receipted ? { alsoRefuse: [p.receipt.sic4], links: (candidates) => receiptLinks(candidates, p.receipt, ask) } : {}) });
@@ -399,14 +399,14 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
       const curated = await curateJob({
         repo, judge: curateJudge, ...(parts.thresholds ? { thresholds: parts.thresholds } : {}),
         ...(parts.judgeCuts ? { judgeCuts: parts.judgeCuts } : {}),
-        ...(parts.sticky ? { sticky: { file: join(out, 'curate-sticky.json'), cutsId: parts.cutsId ?? 'default', ...(parts.factsOverLessons ? { contradicts: true } : {}) } } : {}),
-        ...(parts.factsOverLessons ? { factsOverLessons: true } : {}),
-        ...(parts.factFloor ? { factFloor: parts.factFloor } : {}),
+        ...(parts.sticky ? { sticky: { file: join(out, 'curate-sticky.json'), cutsId: parts.cutsId ?? 'default', ...(parts.refuseContradicting ? { contradicts: true } : {}) } } : {}),
+        ...(parts.refuseContradicting ? { factsOverLessons: true } : {}),
+        ...(parts.keepFacts ? { factFloor: Number.MAX_SAFE_INTEGER } : {}),
         ...(parts.refuseRefusedHosts ? { refuseRefusedHosts: true } : {}),
         // With promotion by receipt the gate does not hold a promotion back: it confirms or demotes a replacement.
-        ...(gate && !parts.receiptUses ? { gate } : {}),
+        ...(gate && !parts.promoteNoFloor ? { gate } : {}),
         ...(parts.receiptHoldsTrial ? { wrapAdmit: (admit) => receiptHoldsTrial(admit, receiptsDir) } : {}),
-        ...(parts.receiptUses ? { wrapSettle: (settle) => receiptUses({ settle, dir: receiptsDir, gate }) } : {}),
+        ...(parts.promoteNoFloor ? { wrapSettle: (settle) => receiptUses({ settle, dir: receiptsDir, gate, receipts: Boolean(parts.receiptPromotion) }) } : {}),
       });
       save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main, ...(gated.length ? { gated } : {}), ...(tally ? { curatedIndex: ++tally.curated, curatedAt: new Date().toISOString() } : {}) });
       tally?.landed(job, p);
@@ -763,7 +763,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--admit-by-receipt] [--receipt-holds-trial] [--receipt-uses] [--facts-over-lessons] [--fact-floor <n>] [--hindsight all|<field,...>] [--refuse-refused-hosts] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--receipt-admission] [--receipt-holds-trial] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--hindsight all|<field,...>] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -777,8 +777,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         split: { type: 'string' }, 'open-test': { type: 'boolean' }, from: { type: 'string' }, concurrency: { type: 'string' }, shard: { type: 'string' }, 'drop-evidence': { type: 'boolean' },
         'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' }, 'edgar-cache': { type: 'string' }, schedule: { type: 'string' }, checkpoints: { type: 'string' },
         'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, 'gate-wait-at-end': { type: 'boolean' }, hindsight: { type: 'string' },
-        'admit-by-receipt': { type: 'boolean' }, 'receipt-holds-trial': { type: 'boolean' }, 'receipt-uses': { type: 'boolean' },
-        'facts-over-lessons': { type: 'boolean' }, 'fact-floor': { type: 'string' }, 'refuse-refused-hosts': { type: 'boolean' },
+        'receipt-admission': { type: 'boolean' }, 'receipt-holds-trial': { type: 'boolean' }, 'receipt-promotion': { type: 'boolean' }, 'promote-no-floor': { type: 'boolean' },
+        'refuse-contradicting': { type: 'boolean' }, 'keep-facts': { type: 'boolean' }, 'refuse-refused-hosts': { type: 'boolean' },
       },
     }));
   } catch (error) {
@@ -856,27 +856,27 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       const inFlight = values['promotion-bank-concurrency'] === undefined ? GATE.concurrency : Number(values['promotion-bank-concurrency']);
       if (!(Number.isInteger(inFlight) && inFlight >= 1)) { console.error(`--promotion-bank-concurrency is a whole number from 1\n${USAGE}`); process.exit(2); }
       parts.bankConcurrency = inFlight;
-      if (values['receipt-uses']) console.log(`learn-classify: a promotion that replaces a serving revision stands, and the replay gate on ${Array.isArray(parts.bank) ? parts.bank.length : 0} bank companies, ${inFlight} at once, confirms or demotes it (<out>/gate)`);
+      if (values['promote-no-floor']) console.log(`learn-classify: a promotion stands on its uses with no floor; one that replaces a serving revision serves at once, and the replay gate on ${Array.isArray(parts.bank) ? parts.bank.length : 0} bank companies, ${inFlight} at once, confirms or demotes it (<out>/gate)`);
       else console.log(`learn-classify: a promotion stands only when it passes the replay gate on ${Array.isArray(parts.bank) ? parts.bank.length : 0} bank companies, ${inFlight} at once (<out>/gate)`);
     } else {
       for (const name of ['promotion-bank-concurrency', 'gate-wait-at-end']) {
         if (values[name] !== undefined) { console.error(`--${name} takes --promotion-bank\n${USAGE}`); process.exit(2); }
       }
     }
-    if (values['facts-over-lessons']) {
-      parts.factsOverLessons = true;
+    if (values['refuse-contradicting']) {
+      parts.refuseContradicting = true;
       console.log('learn-classify: a lesson that contradicts an active fact is refused (with --curate-sticky, by the worst answer it has had)');
     }
-    if (values['fact-floor'] !== undefined) {
-      const floor = Number(values['fact-floor']);
-      if (!(Number.isInteger(floor) && floor >= 0)) { console.error(`--fact-floor is a whole number from 0\n${USAGE}`); process.exit(2); }
-      parts.factFloor = floor;
-      console.log(`learn-classify: facts are kept past the index cap while ${floor} or fewer are active`);
+    if (values['keep-facts']) {
+      parts.keepFacts = true;
+      console.log('learn-classify: facts are never archived to keep the index under its cap');
     }
+    if (values['promote-no-floor']) parts.promoteNoFloor = true;
+    if (values['receipt-promotion'] && !values['promote-no-floor']) { console.error(`--receipt-promotion takes --promote-no-floor\n${USAGE}`); process.exit(2); }
     for (const [flag, key, line] of [
-      ['admit-by-receipt', 'admitByReceipt', 'a note linked to its run\'s receipt (the SEC record of the code it answered, cited) is proposed as the run\'s own work, and the code is refused in the run\'s notes'],
+      ['receipt-admission', 'receiptAdmission', 'a note linked to its run\'s receipt (the SEC record of the code it answered, cited) is proposed as the run\'s own work, and the code is refused in the run\'s notes'],
       ['receipt-holds-trial', 'receiptHoldsTrial', 'a revision without a workflow receipt does not replace a live trial that has one'],
-      ['receipt-uses', 'receiptUses', 'a use with a workflow receipt promotes, a receipt contradiction is a failed use (<out>/receipts)'],
+      ['receipt-promotion', 'receiptPromotion', 'a use with a workflow receipt promotes, a receipt contradiction is a failed use, and a receipt comparison goes first (<out>/receipts)'],
     ]) {
       if (!values[flag]) continue;
       if (set !== SETS.v4) { console.error(`--${flag} reads the v4 answer's SIC cite: pass --set v4\n${USAGE}`); process.exit(2); }
