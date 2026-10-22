@@ -751,4 +751,31 @@ describe("fakeBoxes: T3's own launcher over a fake box (Box.launcher)", () => {
 		await tick();
 		expect(box.launches[0]?.status).toMatchObject({ phase: "lost", launcherAlive: false });
 	});
+
+	it("reports a launch's tools user in its state and gives the program PI_TRANSPORT_TOOLS_USER and PI_TRANSPORT_TOOLS_UID", async () => {
+		const provider = withSecrets();
+		let seen = "";
+		provider.program("inst", (ctx) => {
+			seen = `${ctx.env.PI_TRANSPORT_TOOLS_USER}:${ctx.env.PI_TRANSPORT_TOOLS_UID}`;
+			return forever(ctx);
+		});
+		const box = getOrThrow(await provider.create(SPEC, context));
+		const state = getOrThrow(
+			await launch(box, "inst", { argv: ["inst"], stdin: enc("x"), toolsUser: "pda" }, context),
+		);
+		await tick();
+		expect(state.toolsUser).toEqual({ name: "pda", uid: 1000 });
+		expect(seen).toBe("pda:1000");
+		const numeric = getOrThrow(
+			await launch(box, "n", { argv: ["inst"], stdin: enc("x"), toolsUser: "1234" }, context),
+		);
+		expect(numeric.toolsUser).toEqual({ name: "user1234", uid: 1234 });
+		// the launcher's own pure check still runs first: a tools user that is root never reaches the box
+		const root = await launch(box, "r", { argv: ["inst"], stdin: enc("x"), toolsUser: "root" }, context);
+		expect(root.ok ? "ok" : root.error.code).toBe("invalid");
+		expect(provider.callsOf("launch").map((c) => c.launch)).toEqual(["inst", "n"]);
+		// a launch with no tools user has none in its state
+		const plain = getOrThrow(await launch(box, "p", { argv: ["inst"] }, context));
+		expect(plain.toolsUser).toBeUndefined();
+	});
 });
