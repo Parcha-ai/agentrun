@@ -116,6 +116,7 @@ class LocalBox implements Box {
 			maxLifetimeMs: this.#record.maxLifetimeMs,
 			snapshot: null,
 			bulk: "stream",
+			secretsVia: "fd",
 			// A directory on this machine uses its network; it reports no ports, disk or Yama setting.
 			network: "open",
 			startedAt: new Date(this.#record.expiresAt - this.#record.maxLifetimeMs).toISOString(),

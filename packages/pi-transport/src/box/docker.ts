@@ -192,6 +192,7 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 				maxLifetimeMs: spec.maxLifetimeMs,
 				snapshot: null,
 				bulk: "stream",
+				secretsVia: "fd",
 				network: network.kind === "none" ? "none" : "open",
 				// No port is published: the box is made without one.
 				ports: [],

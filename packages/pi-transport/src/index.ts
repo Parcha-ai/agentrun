@@ -7,6 +7,7 @@ export {
 	type BoxExecOptions,
 	type BoxFacts,
 	type BoxFile,
+	type BoxLauncher,
 	type BoxNetwork,
 	type BoxPort,
 	type BoxProcess,

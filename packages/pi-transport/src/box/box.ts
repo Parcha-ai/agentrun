@@ -1,5 +1,6 @@
 import type { Context } from "@earendil-works/chord";
 import type { Result } from "@earendil-works/pi-durable/env";
+import type { Launch, LaunchError, LaunchSpec, LaunchState } from "../launch/launch.ts";
 
 /**
  * Why a box call failed. Codes are the contract; messages are diagnostic.
@@ -137,6 +138,13 @@ export type BoxFacts = {
 	 * arrives after the call). Absent means true. A box that cannot keep a program running can never be a home.
 	 */
 	readonly liveProcesses?: boolean;
+	/**
+	 * How this box takes a secret for a program: `fd`, a real stdin path, so the launcher (`@parcha/pi-transport/launch`)
+	 * gets a launch's stdin and secrets on the stdin of the one exec that starts it and holds them only in its memory;
+	 * `substitution`, a provider that fills an outbound credential so the value never enters the box; `file`, the one
+	 * staging exception. Absent: it takes none, and a launch with `stdin` or `secrets` is refused `unsupported`.
+	 */
+	readonly secretsVia?: "fd" | "substitution" | "file";
 };
 
 /** Whether a box still runs. */
@@ -200,8 +208,25 @@ export interface Box {
 	destroy(context: Context): Promise<Result<void, BoxError>>;
 	/** Only on boxes whose `facts().snapshot` is not `null`. */
 	snapshot?(context: Context): Promise<Result<BoxSnapshot, BoxError>>;
+	/**
+	 * Optional: a box that keeps a program alive natively (a fake box in a test). `launch`, `launchState` and `launchStop`
+	 * (`@parcha/pi-transport/launch`) use it when it is there, read on every call, and otherwise run the launcher in the box
+	 * with `exec`. A provider leaves it undefined.
+	 */
+	readonly launcher?: BoxLauncher;
 	/** Where `facts().ports` reaches the box from outside. Only on boxes whose provider can expose a port. */
 	endpoint?(port: number, context: Context): Promise<Result<BoxEndpoint, BoxError>>;
+}
+
+/** The launcher's three calls, done natively by a box (`Box.launcher`), with the same answers as the launcher in a box. */
+export interface BoxLauncher {
+	launch(name: string, spec: LaunchSpec, context: Context): Promise<Result<LaunchState, LaunchError>>;
+	state(launch: Launch, context: Context): Promise<Result<LaunchState | undefined, LaunchError>>;
+	stop(
+		launch: Launch,
+		options: { readonly graceMs?: number } | undefined,
+		context: Context,
+	): Promise<Result<LaunchState, LaunchError>>;
 }
 
 /** A source of boxes: one vendor, or one kind of machine. */
