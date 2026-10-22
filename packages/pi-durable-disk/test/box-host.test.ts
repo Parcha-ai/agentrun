@@ -385,3 +385,119 @@ describe("boxHost: the launch, a start found again, status, stop and receipts", 
     }
   });
 });
+
+describe("boxHost: a box found again by attach whose facts fail what the start needs (the caller rule)", () => {
+  // The provider's attach reads the facts again; an ok attach carries only measured ones. Here the read says the box
+  // cannot serve (fuse, the fd, the GPU it asked for): the box is the real one, so ending it through the handle ends it.
+  const misread = (provider: FakeProvider, bad: Record<string, unknown>): FakeProvider => ({
+    ...provider,
+    attach: async (id, context) => {
+      const r = await provider.attach(id, context);
+      if (!r.ok || r.value === undefined) return r;
+      const real = r.value;
+      const box = new Proxy(real, {
+        get: (target, key) => {
+          if (key === "facts") return () => ({ ...target.facts(), ...bad });
+          const value = Reflect.get(target, key, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      return { ok: true, value: box } as typeof r;
+    },
+  });
+  const runs = (provider: FakeProvider) => provider.program("pi-durable-disk", ({ signal }) => new Promise<number>((r) => signal.addEventListener("abort", () => r(0))));
+  const running = (provider: FakeProvider) => provider.boxes.filter((b) => b.state === "running");
+  const seqOf = (provider: FakeProvider, op: string, box?: string, nth = 1) => provider.calls.filter((c) => c.op === op && (box === undefined || c.box === box))[nth - 1]?.seq;
+
+  it("ends a running box whose facts fail the needs through its handle BEFORE it creates the replacement, launches in the replacement, and never adopts it", async () => {
+    for (const [why, bad] of [["fuse not true", { fuse: false }], ["no fd for the frame", { secretsVia: "stdin" }], ["no live processes", { liveProcesses: false }]] as const) {
+      const provider = fake(modalLike({ facts: fd }));
+      runs(provider);
+      const hA = await host(provider).start(REF, TOKEN, { attempt: 1 });
+      const hB = await boxHost({ provider: misread(provider, bad), spec: SPEC, app: "/opt/app/app.js", startTimeoutMs: 5_000, callTimeoutMs: 5_000 }).start(REF, TOKEN, { attempt: 1 });
+      assert.notEqual(hB.adopted, true, `${why}: never adopted`);
+      assert.notEqual(hB.box, hA.box, `${why}: a replacement`);
+      const ended = seqOf(provider, "destroy", String(hA.box));
+      const replaced = seqOf(provider, "create", undefined, 2);
+      assert.ok(ended !== undefined && replaced !== undefined && ended < replaced, `${why}: ended (${ended}) before the replacement's create (${replaced})`);
+      assert.deepEqual(running(provider).map((b) => b.id), [hB.box], `${why}: exactly one box running, the replacement`);
+    }
+  });
+
+  it("a box found again that never launched, with a needed fact present and wrong: ended and replaced, and no refusal is remembered for the spec", async () => {
+    const provider = fake(modalLike({ facts: fd }));
+    runs(provider);
+    const labels = { "pi-durable-disk.disk": REF.disk, "pi-durable-disk.run": REF.id, "pi-durable-disk.attempt": "1" };
+    const made = await provider.create({ ...SPEC, capabilities: ["fuse"], labels }, BACKGROUND_CONTEXT);
+    assert.ok(made.ok);
+    const driver = boxHost({ provider: misread(provider, { fuse: false }), spec: SPEC, app: "/opt/app/app.js", startTimeoutMs: 5_000, callTimeoutMs: 5_000 });
+    const h = await driver.start(REF, TOKEN, { attempt: 1 });
+    assert.notEqual(h.box, made.value.id);
+    assert.equal(made.value.state, "ended");
+    assert.deepEqual(running(provider).map((b) => b.id), [h.box]);
+    await driver.start(REF, TOKEN, { attempt: 2 }).then((h2) => assert.ok(h2.box !== undefined, "a later start is not refused"));
+  });
+
+  it("a GPU it asked for, as create judges it: a measured none (null) is ended and replaced; a model name is never compared, so a served model is kept", async () => {
+    const gpus = () => fake({ name: "gpus", facts: { ...fd, fuse: true, liveProcesses: true } });
+    for (const [why, asked, measured, kept] of [
+      ["the measured name of the model asked for, '!' exact", "H100!", "NVIDIA H100 80GB HBM3", true],
+      ["another model for a bare request, which the provider may serve", "H100", "NVIDIA H200", true],
+      ["a measured none", "T4", null, false],
+    ] as const) {
+      const provider = gpus();
+      runs(provider);
+      const spec = { ...SPEC, gpu: asked };
+      const hA = await boxHost({ provider, spec, app: "/opt/app/app.js", startTimeoutMs: 5_000, callTimeoutMs: 5_000 }).start(REF, TOKEN, { attempt: 1 });
+      const hB = await boxHost({ provider: misread(provider, { gpu: measured }), spec, app: "/opt/app/app.js", startTimeoutMs: 5_000, callTimeoutMs: 5_000 }).start(REF, TOKEN, { attempt: 1 });
+      if (kept) {
+        assert.equal(hB.box, hA.box, `${why}: kept`);
+        assert.equal(hB.adopted, true, `${why}: adopted`);
+        assert.equal(provider.calls.filter((c) => c.op === "destroy").length, 0, `${why}: nothing ended`);
+      } else {
+        assert.notEqual(hB.box, hA.box, `${why}: replaced`);
+        assert.deepEqual(running(provider).map((b) => b.id), [hB.box], `${why}: exactly one box running`);
+      }
+    }
+  });
+
+  it("an ok attach with a needed fact ABSENT (no measurement: a tag carries no security fact) ends nothing and creates nothing: the start fails for the next tick, the box keeps running, and it is never used", async () => {
+    for (const [why, bad, spec] of [["secretsVia absent", { secretsVia: undefined }, SPEC], ["fuse absent", { fuse: undefined }, SPEC], ["the GPU asked for, absent", { gpu: undefined }, { ...SPEC, gpu: "T4" }]] as const) {
+      const provider = why.includes("GPU") ? fake({ name: "gpus", facts: { ...fd, fuse: true, liveProcesses: true } }) : fake(modalLike({ facts: fd }));
+      runs(provider);
+      const hA = await boxHost({ provider, spec, app: "/opt/app/app.js", startTimeoutMs: 5_000, callTimeoutMs: 5_000 }).start(REF, TOKEN, { attempt: 1 });
+      const creates = provider.calls.filter((c) => c.op === "create").length;
+      await assert.rejects(boxHost({ provider: misread(provider, bad), spec, app: "/opt/app/app.js", startTimeoutMs: 5_000, callTimeoutMs: 5_000 }).start(REF, TOKEN, { attempt: 1 }), code("CREATE_FAILED"), why);
+      assert.equal(provider.calls.filter((c) => c.op === "create").length, creates, `${why}: nothing created`);
+      assert.equal(provider.calls.filter((c) => c.op === "destroy").length, 0, `${why}: nothing ended`);
+      assert.deepEqual(running(provider).map((b) => b.id), [hA.box], `${why}: the box keeps running`);
+    }
+  });
+
+  it("a needed fact that stays absent: from the 5th start that finds the same box so, a named refusal (the box, the fact), still ending nothing; once the operator ends the box, the next start makes another", async () => {
+    const provider = fake(modalLike({ facts: fd }));
+    runs(provider);
+    const hA = await host(provider).start(REF, TOKEN, { attempt: 1 });
+    const driver = boxHost({ provider: misread(provider, { secretsVia: undefined }), spec: SPEC, app: "/opt/app/app.js", startTimeoutMs: 5_000, callTimeoutMs: 5_000 });
+    for (let i = 1; i <= 4; i++) await assert.rejects(driver.start(REF, TOKEN, { attempt: 1 }), code("CREATE_FAILED"), `start ${i}`);
+    await assert.rejects(driver.start(REF, TOKEN, { attempt: 1 }), (e: unknown) => code("UNSUPPORTED")(e) && (e as Error).message.includes(String(hA.box)) && /secretsVia/.test((e as Error).message));
+    await assert.rejects(driver.start(REF, TOKEN, { attempt: 1 }), code("UNSUPPORTED"), "and every start after, while the box is there");
+    assert.equal(provider.calls.filter((c) => c.op === "destroy").length, 0, "nothing ended");
+    assert.deepEqual(running(provider).map((b) => b.id), [hA.box], "nothing made");
+    provider.boxes.find((b) => b.id === hA.box)!.end(0);
+    const h = await driver.start(REF, TOKEN, { attempt: 1 });
+    assert.notEqual(h.box, hA.box, "the operator ended the box: the next start makes another");
+  });
+
+  it("an attach ERROR ends nothing and creates nothing: the start fails for the next tick's retry, and the box keeps running", async () => {
+    const provider = fake(modalLike({ facts: fd }));
+    runs(provider);
+    const hA = await host(provider).start(REF, TOKEN, { attempt: 1 });
+    provider.script.on({ op: "attach" }, { fail: "unknown" });
+    const creates = provider.calls.filter((c) => c.op === "create").length;
+    await assert.rejects(host(provider).start(REF, TOKEN, { attempt: 1 }), code("CREATE_FAILED"));
+    assert.equal(provider.calls.filter((c) => c.op === "create").length, creates, "nothing created");
+    assert.equal(provider.calls.filter((c) => c.op === "destroy").length, 0, "nothing ended");
+    assert.deepEqual(running(provider).map((b) => b.id), [hA.box]);
+  });
+});
