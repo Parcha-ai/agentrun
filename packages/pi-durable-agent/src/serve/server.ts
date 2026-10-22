@@ -1,5 +1,5 @@
 // `serveHome`: a local page over an agent home, read straight from its SQLite files. It listens on this machine's loopback
-// only, answers GET and HEAD, and reads nothing a host keeps for itself (saved sign-ins, sessions, leases, bindings).
+// only, answers GET and HEAD, and sends nothing a host keeps for itself (saved sign-ins, sessions, leases, bindings).
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -8,7 +8,7 @@ import path from "node:path";
 import { AGENT_STORE_FILE, ID_PATTERN } from "../home.js";
 import { AgentHomeError } from "../store.js";
 import { timelineOf } from "../timeline/index.js";
-import { readAgent, readRunEntries, readRuns } from "./read.js";
+import { agentReader, readRunEntries } from "./read.js";
 
 export type ServeOptions = {
   /** The loopback port; 0 (the default) takes a free one. */
@@ -46,7 +46,8 @@ function failure(error: unknown): { status: number; message: string } {
 
 /**
  * Serve the agent home at `home.dir` on 127.0.0.1: `GET /` is the page, `GET /api/agent`, `GET /api/runs` and
- * `GET /api/runs/:id` are its data. Reading takes no lock and writes nothing, so a home a run is writing to can be watched.
+ * `GET /api/runs/:id` are its data. Reading takes no lock and opens the stores read-only, so a home a run is writing to can
+ * be watched.
  * A request whose `Host` is not this server's own address is refused (a page on another origin cannot reach it through a
  * rebound name), and so is any method but GET and HEAD.
  */
@@ -61,7 +62,8 @@ export async function serveHome(home: { readonly dir: string }, options: ServeOp
     if (body) assets.set(route, { type, body });
   }
 
-  const handle = (request: IncomingMessage, response: ServerResponse, address: AddressInfo): void => {
+  const readAgent = agentReader(dir);
+  const handle = async (request: IncomingMessage, response: ServerResponse, address: AddressInfo): Promise<void> => {
     const host = (request.headers.host ?? "").toLowerCase();
     if (host !== `127.0.0.1:${address.port}` && host !== `localhost:${address.port}`) return json(request, response, 421, { error: "this server answers only to its own address" });
     if (request.method !== "GET" && request.method !== "HEAD") return json(request, response, 405, { error: "this server is read-only: GET and HEAD only" }, { allow: "GET, HEAD" });
@@ -77,16 +79,16 @@ export async function serveHome(home: { readonly dir: string }, options: ServeOp
     if (asset) return send(request, response, 200, asset.type, asset.body);
     try {
       if (pathname === "/api/agent") {
-        const view = readAgent(dir);
-        const { runs, ...rest } = view;
-        return json(request, response, 200, { ...rest, counts: { skills: view.skills.length, prompts: view.prompts.length, runs: runs.length, live: runs.filter((run) => run.live).length } });
+        const { runs, ...view } = await readAgent();
+        const questions = view.prompts.filter((prompt) => prompt.role === "question").length;
+        return json(request, response, 200, { ...view, counts: { skills: view.skills.length, prompts: view.prompts.length - questions, questions, runs: runs.length, live: runs.filter((run) => run.live).length } });
       }
-      if (pathname === "/api/runs") return json(request, response, 200, readRuns(dir));
+      if (pathname === "/api/runs") return json(request, response, 200, (await readAgent()).runs);
       const match = /^\/api\/runs\/([^/]+)$/.exec(pathname);
       if (match) {
         const id = match[1]!;
         if (!ID_PATTERN.test(id)) return json(request, response, 400, { error: "the run id is not letters, digits, \".\", \"_\" or \"-\"" });
-        const run = readRuns(dir).find((candidate) => candidate.id === id);
+        const run = (await readAgent()).runs.find((candidate) => candidate.id === id);
         if (!run) return json(request, response, 404, { error: "no such run" });
         return json(request, response, 200, { run, rows: timelineOf(readRunEntries(dir, id), { settled: !run.live }) });
       }
@@ -98,12 +100,10 @@ export async function serveHome(home: { readonly dir: string }, options: ServeOp
   };
 
   const server: Server = createServer((request, response) => {
-    try {
-      handle(request, response, server.address() as AddressInfo);
-    } catch {
+    handle(request, response, server.address() as AddressInfo).catch(() => {
       if (!response.headersSent) json(request, response, 500, { error: "the agent home could not be read" });
       else response.destroy();
-    }
+    });
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

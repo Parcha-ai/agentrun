@@ -2,7 +2,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, symlinkSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import fsp from "node:fs/promises";
+import { syncBuiltinESMExports as syncExports } from "node:module";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -11,7 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { AgentHomeError, readAgentHome, setAlias, setBindings, setPrompts, startRun } from "../dist/index.js";
-import { openReadOnly, readDocuments } from "../dist/serve/read.js";
+import { agentReader, openReadOnly, signature } from "../dist/serve/read.js";
 import { serveHome } from "../dist/serve/index.js";
 import { buildSignedInHome, PRACTICE_ORIGIN, SIGN_IN_MARKER, signedInHomeSkip } from "./fixtures/signed-in-home.mjs";
 import { scratch } from "./support.mjs";
@@ -46,6 +48,19 @@ function request(url, { method = "GET", host, target = "/" } = {}) {
 }
 
 const hasSideFiles = (file) => SIDE.some((suffix) => existsSync(`${file}${suffix}`));
+
+/** Every file under `dir` that is not one of SQLite's side files, with size, mtime and a hash: the main databases, and the home's other files. */
+const files = (dir) => snapshot(dir).filter((entry) => !entry.dir && !SIDE.some((suffix) => entry.path.endsWith(suffix)));
+
+/** Every row of the tables a store keeps its documents and entries in, from an independent read-only connection. */
+function rows(file) {
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    return Object.fromEntries(["documents", "document_revisions", "entries"].map((table) => [table, db.prepare(`SELECT * FROM ${table} ORDER BY 1, 2`).all().map((row) => ({ ...row }))]));
+  } finally {
+    db.close();
+  }
+}
 
 /** The fixture's signed-in home plus a host's alias and bindings, a second run that holds the sign-in's lease, and a run
  *  store with a few entries, so every kind a viewer must never see is present with a value that is easy to search for. */
@@ -97,19 +112,26 @@ function insertOpenCall(storePath, id) {
   }
 }
 
-test("a full serve session leaves the home's files as they were, and the handle it reads through cannot write", skip, async () => {
+test("a full serve session leaves every main database file byte-identical and no row changed, and the handle it reads through cannot write", skip, async () => {
   const seeded = await seededHome();
-  const stores = [path.join(seeded.home.dir, "agent.sqlite"), seeded.runStore];
-  for (const store of stores) assert.equal(hasSideFiles(store), false, `${path.basename(store)} is at rest before the session`);
-  const before = snapshot(seeded.home.dir);
+  const stores = [path.join(seeded.home.dir, "agent.sqlite"), seeded.runStore, seeded.holder.storePath];
+  insertEntries(seeded.holder.storePath, 3);
+  const [before, rowsBefore] = [files(seeded.home.dir), stores.map(rows)];
+  const tmp = await scratch();
+  const kept = process.env.TMPDIR;
+  process.env.TMPDIR = tmp;
   const served = await serveHome(seeded.home);
   try {
     for (const target of ["/", "/page.css", "/page.js", "/api/agent", "/api/runs", `/api/runs/${seeded.runId}`, "/api/runs/holder", "/nope"]) await request(served.url, { target });
     await request(served.url, { method: "POST", target: "/api/agent" });
   } finally {
     await served.close();
+    if (kept === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = kept;
   }
-  assert.deepEqual(snapshot(seeded.home.dir), before, "no file changed, none was added, no mtime moved");
+  assert.deepEqual(files(seeded.home.dir), before, "no file but a SQLite side file changed or was added, and no mtime moved: the main databases are byte-identical");
+  assert.deepEqual(stores.map(rows), rowsBefore, "no document, revision or entry row changed");
+  assert.deepEqual(readdirSync(tmp), [], "the snapshot's directory is gone");
   for (const store of stores) {
     const db = openReadOnly(store);
     try {
@@ -119,7 +141,7 @@ test("a full serve session leaves the home's files as they were, and the handle 
       db.close();
     }
   }
-  assert.deepEqual(snapshot(seeded.home.dir), before, "opening and failing to write changed nothing either");
+  assert.deepEqual(files(seeded.home.dir), before, "opening and failing to write changed nothing either");
 });
 
 test("a store with a writer behind it is read through its log: the handle still cannot write, and the main file and the log are not touched", skip, async () => {
@@ -183,43 +205,59 @@ async function vaultRecords(dir) {
   }
 }
 
-test("the reader only asks for the kinds an exporter may copy: a secret kind is refused before any SQL runs, and the SQL of a session names its kind", skip, async () => {
+test("the agent view holds only what an export may carry, is read from a snapshot that is removed, and is re-read only when the store's files change", skip, async () => {
   const seeded = await seededHome();
-  const db = openReadOnly(path.join(seeded.home.dir, "agent.sqlite"));
+  const tmp = await scratch();
+  const kept = process.env.TMPDIR;
+  process.env.TMPDIR = tmp;
+  const made = [];
+  const mkdtemp = fsp.mkdtemp;
+  fsp.mkdtemp = (...args) => (made.push(String(args[0])), mkdtemp(...args));
+  syncExports();
   try {
-    for (const kind of SECRET_KINDS) assert.throws(() => readDocuments(db, kind), (error) => error instanceof AgentHomeError && error.code === "invalid" && error.message.includes(kind), kind);
-    assert.throws(() => readDocuments(db, "agent.anything-else"), AgentHomeError);
-    assert.deepEqual([...readDocuments(db, "agent.identity").keys()], [""], "an exportable kind is read");
+    const read = agentReader(seeded.home.dir);
+    const view = await read();
+    assert.deepEqual(Object.keys(view).sort(), ["definition", "identity", "prompts", "runs", "skills", "source"], "no leases, profiles, bindings, aliases or vault: not even by name");
+    assert.deepEqual(made.length, 1);
+    assert.match(made[0], /pi-durable-agent-serve-$/);
+    assert.deepEqual(readdirSync(tmp), [], "the snapshot's directory is removed once it is read");
+    assert.equal(await read(), view, "the same files give the same view, without a second snapshot");
+    assert.equal(made.length, 1);
+    await setPrompts(seeded.home, [{ id: "base", role: "base", label: "Base", text: "Changed." }, { id: "generic", role: "generic", label: "Generic", text: "Also." }]);
+    const changed = await read();
+    assert.notEqual(changed, view, "a change to the store is a new snapshot");
+    assert.deepEqual(changed.prompts.map((prompt) => prompt.id), ["base", "generic"]);
+    assert.equal(made.length, 2);
+    assert.deepEqual(readdirSync(tmp), []);
+    const broken = agentReader(path.join(seeded.dir, "nowhere"));
+    await assert.rejects(broken(), (error) => error instanceof AgentHomeError && error.code === "missing");
+    await assert.rejects(broken(), AgentHomeError, "a failed read is not cached");
+    assert.equal(made.length, 4);
+    assert.deepEqual(readdirSync(tmp), [], "a failed read removes its directory too");
   } finally {
-    db.close();
+    fsp.mkdtemp = mkdtemp;
+    syncExports();
+    if (kept === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = kept;
   }
-  const seen = [];
-  const prepare = DatabaseSync.prototype.prepare;
-  DatabaseSync.prototype.prepare = function patched(sql) {
-    const statement = prepare.call(this, sql);
-    for (const name of ["all", "get", "iterate", "run"]) {
-      const method = statement[name];
-      statement[name] = function recorded(...args) {
-        seen.push({ sql, args });
-        return method.apply(this, args);
-      };
-    }
-    return statement;
-  };
-  const served = await serveHome(seeded.home);
-  try {
-    for (const target of ["/api/agent", "/api/runs", `/api/runs/${seeded.runId}`]) assert.equal((await request(served.url, { target })).status, 200);
-  } finally {
-    await served.close();
-    DatabaseSync.prototype.prepare = prepare;
-  }
-  const kinds = seen.filter(({ sql }) => /FROM documents/.test(sql));
-  assert.ok(kinds.length >= 6, "the session read documents");
-  for (const { sql, args } of kinds) {
-    assert.match(sql, /\bkind = \?/, "every document query names its kind");
-    assert.ok(args.length === 1 && !SECRET_KINDS.includes(JSON.parse(args[0])), `a query for ${args[0]}`);
-  }
-  assert.ok(seen.every(({ sql }) => !/^\s*(INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|PRAGMA\s+\w+\s*=)/i.test(sql)), "no statement writes");
+});
+
+test("what says a store changed: its size and mtime, and its log's", async () => {
+  const dir = await scratch();
+  const file = path.join(dir, "store.sqlite");
+  assert.equal(signature(file), "none|none");
+  writeFileSync(file, "a");
+  const first = signature(file);
+  writeFileSync(`${file}-wal`, "");
+  assert.equal(signature(file), first, "an empty log is nothing: opening a store read-only leaves one");
+  writeFileSync(`${file}-wal`, "w");
+  const withLog = signature(file);
+  assert.notEqual(withLog, first, "commits in the log are a change");
+  writeFileSync(`${file}-wal`, "ww");
+  assert.notEqual(signature(file), withLog, "a commit into the log is a change");
+  assert.equal(signature(file), signature(file), "and nothing changing is none");
+  writeFileSync(file, "ab");
+  assert.notEqual(signature(file), withLog.replace(/^[^|]*/, ""), "the main file counts too");
 });
 
 test("a run read while another process appends to it: every response is a whole snapshot, and the rows only grow", skip, async () => {
@@ -371,7 +409,7 @@ test("the API's shapes: the agent, the runs newest first, a run's rows, and what
     assert.deepEqual(agent.prompts[1].when, { question: "kind", option: "public", threshold: 0.8 });
     assert.deepEqual(agent.prompts[3].criteria, { public: "Its shares trade publicly.", other: "Anything else." });
     assert.equal(agent.source, null);
-    assert.deepEqual(agent.counts, { skills: 1, prompts: 4, runs: 2, live: 1 });
+    assert.deepEqual(agent.counts, { skills: 1, prompts: 3, questions: 1, runs: 2, live: 1 }, "prompts counts the variants; the question is counted on its own");
 
     const runs = JSON.parse((await request(served.url, { target: "/api/runs" })).body);
     assert.deepEqual(runs.map((run) => [run.id, run.live]), [["holder", true], ["signed-in", false]], "newest first");
@@ -439,7 +477,7 @@ test("a store that is not a store, or one from a newer pi-durable, is a plain 50
 
 test("the pi-durable-agent bin prints a loopback address for a home, serves it, and stops on SIGINT", skip, async (t) => {
   const seeded = await seededHome();
-  const before = snapshot(seeded.home.dir);
+  const before = files(seeded.home.dir);
   const run = (args) => spawn(process.execPath, ["--no-warnings", CLI, ...args], { stdio: ["ignore", "pipe", "pipe"] });
   const child = run(["serve", seeded.home.dir]);
   const fixed = run(["serve", seeded.home.dir, "--port", "0"]);
@@ -456,7 +494,7 @@ test("the pi-durable-agent bin prints a loopback address for a home, serves it, 
   child.kill("SIGINT");
   assert.deepEqual(await exited, { code: 0, signal: null });
   assert.equal(err, "");
-  assert.deepEqual(snapshot(seeded.home.dir), before, "the bin changed nothing in the home");
+  assert.deepEqual(files(seeded.home.dir), before, "the bin changed nothing in the home but SQLite's side files");
 
   await new Promise((resolve) => fixed.stdout.once("data", resolve));
   fixed.kill("SIGTERM");

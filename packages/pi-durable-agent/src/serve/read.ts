@@ -1,34 +1,28 @@
-// What `serveHome` reads of an agent home, and how: read-only, with no lock, and only the kinds an exporter may copy.
-// Nothing here writes, creates or locks a file of the home.
+// What `serveHome` reads of an agent home, and how. The home's own files are only ever opened read-only. The agent store is
+// copied once into a temporary directory by SQLite's backup (a consistent snapshot, whatever a writer is doing) and read
+// there with the package's own reader, so nothing here knows how pi-durable lays documents out; the copy is removed as
+// soon as it is read. Only what an export may carry goes into the answer.
 import type { JsonValue } from "@earendil-works/chord";
-import { apply } from "@earendil-works/chord/delta";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { pathToFileURL } from "node:url";
-import { EXPORTABLE_KINDS, projectForExport, SECRET_KINDS } from "../export.js";
-import { AGENT_STORE_FILE, ID_PATTERN, runStoreIn } from "../home.js";
+import { backup, DatabaseSync } from "node:sqlite";
+import { projectForExport } from "../export.js";
+import { AGENT_STORE_FILE, ID_PATTERN, readState, runStoreIn } from "../home.js";
 import type { AgentDefinition, AgentIdentity, AgentSource, PromptVariant, RunRecord, SkillFile } from "../kinds.js";
-import { SIDE_FILES } from "../pack-shared.js";
-import { AgentHomeError } from "../store.js";
+import { AgentHomeError, openStore } from "../store.js";
 import type { EntryLike } from "../timeline/index.js";
 
 /** The one schema version of pi-durable's SQLite store this reader knows; a newer one is refused, not guessed at. */
 const SCHEMA_VERSION = 1;
 const BUSY_MS = 5_000;
-/** pi-durable keeps the agent's documents in the session scope, owner 0. */
-const SESSION = "scope_kind = 'session' AND owner_id = 0";
 
-/**
- * A store opened for reading and nothing else. A store with no `-wal`, `-shm` or `-journal` beside it is at rest, and
- * SQLite's `immutable` open creates and locks nothing, so the home's files are not touched. A store with side files has a
- * writer (or one that stopped): it is opened read-only in the ordinary way, which reads through the write-ahead log and
- * creates nothing new. Either way a write through the handle fails.
- */
+/** A store opened read-only, with its schema version checked: SQLite may create its `-shm` and `-wal` files beside it, and
+ *  a write through the handle fails. */
 export function openReadOnly(file: string): DatabaseSync {
   if (!existsSync(file)) throw new AgentHomeError("missing", `${path.basename(file)} does not exist`);
-  const atRest = !SIDE_FILES.some((suffix) => existsSync(`${file}${suffix}`));
-  const db = atRest ? new DatabaseSync(`${pathToFileURL(file).href}?mode=ro&immutable=1`, { readOnly: true }) : new DatabaseSync(file, { readOnly: true, timeout: BUSY_MS });
+  const db = new DatabaseSync(file, { readOnly: true, timeout: BUSY_MS });
   try {
     const row = db.prepare("SELECT version FROM durable_schema WHERE singleton = 1").get() as { version?: unknown } | undefined;
     if (row?.version !== SCHEMA_VERSION) throw new AgentHomeError("format", `${path.basename(file)} is pi-durable schema ${String(row?.version)}; this version reads ${SCHEMA_VERSION}`);
@@ -39,35 +33,6 @@ export function openReadOnly(file: string): DatabaseSync {
   }
 }
 
-const parse = (text: string): JsonValue => JSON.parse(text) as JsonValue;
-
-/** The current value of every live document of `kind` in the session scope, by key (`""` for a document with none). Only
- *  an exportable kind is asked for, and the kind is in the SQL, so a row of any other kind is never selected. */
-export function readDocuments(db: DatabaseSync, kind: string): Map<string, JsonValue> {
-  if (!EXPORTABLE_KINDS.includes(kind) || SECRET_KINDS.includes(kind)) throw new AgentHomeError("invalid", `${kind} is not a kind a viewer may read`);
-  const documents = db.prepare(`SELECT id, key_value FROM documents WHERE ${SESSION} AND kind = ? AND retired_at IS NULL ORDER BY id`).all(JSON.stringify(kind)) as { id: number; key_value: string }[];
-  const base = db.prepare("SELECT seq, version, content FROM document_revisions WHERE document_id = ? AND kind = 'base' ORDER BY seq DESC LIMIT 1");
-  const tail = db.prepare("SELECT kind, version, content FROM document_revisions WHERE document_id = ? AND seq > ? ORDER BY seq");
-  const found = new Map<string, JsonValue>();
-  for (const { id, key_value: key } of documents) {
-    const first = base.get(id) as { seq: number; version: number; content: string } | undefined;
-    if (!first) throw new AgentHomeError("format", `a ${kind} document has no base revision`);
-    let value = parse(first.content);
-    for (const revision of tail.all(id, first.seq) as { kind: string; version: number; content: string }[]) {
-      if (revision.kind !== "delta" || revision.version !== first.version) throw new AgentHomeError("format", `a ${kind} document crosses a version boundary without a base`);
-      value = apply(value as never, parse(revision.content) as never) as JsonValue;
-    }
-    found.set(parse(key) as string, value);
-  }
-  return found;
-}
-
-const only = <T>(documents: Map<string, JsonValue>, what: string): T => {
-  const value = documents.get("");
-  if (value === undefined) throw new AgentHomeError("format", `the agent store has no ${what}`);
-  return value as T;
-};
-
 export type SkillSummary = { path: string; sha256: string; size: number };
 export type PromptEntry = PromptVariant & { id: string };
 /** A run as the API gives it: what the index says, without the host's name, the run's path or its final answer. */
@@ -75,9 +40,13 @@ export type RunSummary = { id: string; startedAt: string; endedAt?: string; outc
 export type AgentView = { identity: AgentIdentity; definition: AgentDefinition; source: AgentSource | null; skills: SkillSummary[]; prompts: PromptEntry[]; runs: RunSummary[] };
 
 const ROLE_ORDER = { base: 0, overlay: 1, generic: 2, question: 3 } as const;
+const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+const byNewest = (a: RunSummary, b: RunSummary) => compare(b.startedAt, a.startedAt) || compare(b.id, a.id);
+/** What an exporter may copy of one stored document, as the value's own type. */
+const exported = <T>(kind: string, value: T): T => projectForExport(kind, value as unknown as JsonValue) as unknown as T;
 
 function summarize(id: string, record: RunRecord): RunSummary {
-  const kept = projectForExport("agent.runs", record as unknown as JsonValue) as unknown as RunRecord;
+  const kept = exported("agent.runs", record);
   return {
     id, startedAt: kept.startedAt,
     ...(kept.endedAt !== undefined ? { endedAt: kept.endedAt } : {}),
@@ -88,44 +57,74 @@ function summarize(id: string, record: RunRecord): RunSummary {
   };
 }
 
-const byNewest = (a: RunSummary, b: RunSummary) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
-
-/** The runs index of the home in `dir`, newest run first. */
-export function readRuns(dir: string): RunSummary[] {
-  const db = openReadOnly(path.join(dir, AGENT_STORE_FILE));
+/** The agent store at `file`, read from a snapshot: SQLite's backup copies it from a read-only connection into a private
+ *  temporary directory, the package's `readState` reads the copy (pi-durable's own checks write to the copy only), and the
+ *  directory is removed. Only the kinds an exporter may copy go into the view. */
+async function snapshot(file: string): Promise<AgentView> {
+  const scratch = await mkdtemp(path.join(tmpdir(), "pi-durable-agent-serve-"));
   try {
-    return [...readDocuments(db, "agent.runs")].map(([id, value]) => summarize(id, value as unknown as RunRecord)).sort(byNewest);
+    const copy = path.join(scratch, AGENT_STORE_FILE);
+    const source = openReadOnly(file);
+    try {
+      await backup(source, copy);
+    } finally {
+      source.close();
+    }
+    const store = await openStore(copy);
+    try {
+      const state = await readState(store);
+      return {
+        identity: exported("agent.identity", state.identity),
+        definition: exported("agent.definition", state.definition),
+        source: state.source ? exported("agent.source", state.source) : null,
+        skills: Object.entries(state.skills).map(([key, value]) => {
+          const skill = exported("agent.skills", value) as SkillFile;
+          return { path: key, sha256: skill.sha256, size: Buffer.byteLength(skill.content) };
+        }).sort((a, b) => compare(a.path, b.path)),
+        prompts: Object.entries(state.prompts).map(([id, value]) => ({ id, ...exported("agent.prompts", value) }))
+          .sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || compare(a.id, b.id)),
+        runs: Object.entries(state.runs).map(([id, value]) => summarize(id, value)).sort(byNewest),
+      };
+    } finally {
+      await store.close();
+    }
   } finally {
-    db.close();
+    await rm(scratch, { recursive: true, force: true });
   }
 }
 
-/** The agent home in `dir` as a viewer may see it: identity, definition, source, the skills' names and sizes, the prompt
- *  variants and the runs index. Read-only; nothing a host keeps for itself is read. */
-export function readAgent(dir: string): AgentView {
-  const db = openReadOnly(path.join(dir, AGENT_STORE_FILE));
+const stamp = (file: string, emptyIsNone = false) => {
   try {
-    const skills = [...readDocuments(db, "agent.skills")].map(([key, value]) => {
-      const file = value as unknown as SkillFile;
-      return { path: key, sha256: file.sha256, size: Buffer.byteLength(file.content) };
-    }).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-    const prompts = [...readDocuments(db, "agent.prompts")].map(([id, value]) => ({ id, ...(value as unknown as PromptVariant) }))
-      .sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    const runs = [...readDocuments(db, "agent.runs")].map(([id, value]) => summarize(id, value as unknown as RunRecord)).sort(byNewest);
-    return {
-      identity: only<AgentIdentity>(readDocuments(db, "agent.identity"), "identity"),
-      definition: only<AgentDefinition>(readDocuments(db, "agent.definition"), "definition"),
-      source: (readDocuments(db, "agent.source").get("") as AgentSource | undefined) ?? null,
-      skills, prompts, runs,
-    };
-  } finally {
-    db.close();
+    const info = statSync(file);
+    return emptyIsNone && info.size === 0 ? "none" : `${info.size}:${info.mtimeMs}`;
+  } catch {
+    return "none";
   }
+};
+/** What says the store changed: its size and mtime and its log's, since a writer's commits sit in the log until a checkpoint
+ *  moves them into the main file. An empty log says nothing, and is what opening a store read-only leaves behind. */
+export const signature = (file: string): string => `${stamp(file)}|${stamp(`${file}-wal`, true)}`;
+
+/** A reader of one home's agent store: the view as of the store's last change, re-read only when its files change. */
+export function agentReader(dir: string): () => Promise<AgentView> {
+  const file = path.join(dir, AGENT_STORE_FILE);
+  let current: { signature: string; view: Promise<AgentView> } | undefined;
+  return () => {
+    const seen = signature(file);
+    if (current?.signature !== seen) {
+      const view = snapshot(file);
+      current = { signature: seen, view };
+      view.catch(() => {
+        if (current?.view === view) current = undefined;
+      });
+    }
+    return current.view;
+  };
 }
 
 /**
  * The entries of run `id`'s store, in the order pi committed them (every conversation's, so a subagent's rows nest under
- * its caller), or none when the home holds the run's index entry only. Read-only.
+ * its caller), or none when the home holds the run's index entry only. Whole records, read-only.
  */
 export function readRunEntries(dir: string, id: string): EntryLike[] {
   if (!ID_PATTERN.test(id)) throw new AgentHomeError("invalid", "the run id is not an id");

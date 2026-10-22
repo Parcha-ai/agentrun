@@ -474,20 +474,21 @@ npx @parcha/pi-durable-agent serve ./agent-home
 The page shows the agent (its identity, definition, the repo commit it came from, its skills' names and sizes, and its
 prompt variants), its runs (newest first, with the variant each loaded, why, and how sure the choice was), and each
 run's timeline. A live run is polled. The files are read directly, with no lock, so a home can be watched while a run
-writes it; a store with no `-wal` or `-shm` beside it is opened with SQLite's `immutable` mode, which creates nothing in
-the home, and one with a writer behind it is opened read-only and read through its log. A store from a newer pi-durable
-than this package reads (a schema version other than 1) is refused, not guessed at.
+writes it. Reads open the stores read-only; SQLite may create its shared-memory side files beside them. The agent store
+is copied by SQLite's backup (a consistent snapshot) into a private temporary directory, read there with the package's
+own reader, and the directory is removed; a run's store is read for its entries with one query. A store from a newer
+pi-durable than this package reads (a schema version other than 1) is refused, not guessed at.
 
-It reads only the kinds an exporter may copy (`EXPORTABLE_KINDS`: identity, definition, source, skills, prompts and the
-runs index without each run's `host`), and the kind is in the query, so a saved sign-in, saved session, lease, binding or
-alias is never selected. It sends no skill's text and no run's final answer. It listens on `127.0.0.1` only, and there is
+It sends only what an exporter may copy (`EXPORTABLE_KINDS`: identity, definition, source, skills, prompts and the runs
+index without each run's `host`), so a saved sign-in, saved session, lease, binding or alias is never in an answer. It
+sends no skill's text and no run's final answer. It listens on `127.0.0.1` only, and there is
 no option to change that; it answers `421` to a request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>`, and
 `405` to anything but `GET` and `HEAD`; it sends no CORS header, and the page's content security policy allows only its
 own files. The data is JSON:
 
 | Request | Answer |
 |---|---|
-| `GET /api/agent` | `{ identity, definition, source, skills: [{ path, sha256, size }], prompts, counts: { skills, prompts, runs, live } }`; `prompts` are the variants with their `id`, `role`, `label`, `text`, `when` and `criteria` |
+| `GET /api/agent` | `{ identity, definition, source, skills: [{ path, sha256, size }], prompts, counts: { skills, prompts, questions, runs, live } }`; `prompts` are the variants and the question row, with their `id`, `role`, `label`, `text`, `when` and `criteria`, and `counts.prompts` counts the variants only |
 | `GET /api/runs` | `[{ id, startedAt, endedAt?, outcome?, cost?, prompt?: { id, reason, confidence? }, live }]`, newest first; `live` is a run with no `endedAt` |
 | `GET /api/runs/:id` | `{ run, rows }`: the run as above, and its entries as the [timeline](#the-timeline)'s rows (`settled` for a finished run, so a call with no result reads as interrupted, and open for a live one). `400` for an id that is not letters, digits, `.`, `_` or `-`, `404` for a run the index does not list |
 
