@@ -8,6 +8,11 @@ import { LAUNCHER_SCRIPT } from "./launcher-script.ts";
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const RESERVED_ENV_PREFIX = "PI_TRANSPORT_";
+/** The names the launcher sets for every incarnation itself. */
+const LAUNCHER_ENV = new Set(["PATH", "HOME", "LANG", "PI_TRANSPORT_INCARNATION"]);
+/** A name one of whose `_`-separated segments says it holds a key: refused in `env`, which rests in a file of the box. */
+const KEY_SEGMENT = /^(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|CREDENTIALS)$/i;
+const keyShaped = (name: string): boolean => name.split("_").some((segment) => KEY_SEGMENT.test(segment));
 const DEFAULT_RESTART_BURST = 5;
 const DEFAULT_RESTART_INTERVAL_MS = 60_000;
 const DEFAULT_GRACE_MS = 5_000;
@@ -39,11 +44,32 @@ export type LaunchPhase =
 	| "stopped"
 	| "lost";
 
+/** A launch as its caller keeps it: JSON with no secret in it (a host may store it), found again in the box by its name. */
+export type Launch = { readonly v: 1; readonly name: string };
+
 /** What to keep alive in a box. The program is an argv: the launcher does not know what it is. */
 export type LaunchSpec = {
 	readonly argv: readonly string[];
-	/** Plain settings for the program. Never a secret: the launcher keeps them in a file of the box. */
+	/**
+	 * Plain settings for the program. Never a secret: the launcher keeps them in a file of the box, so a key-shaped name (a
+	 * `_`-separated segment KEY, TOKEN, SECRET, PASSWORD, PASSWD, CREDENTIAL or CREDENTIALS) is refused, as are PATH, HOME,
+	 * LANG and every name the launcher sets.
+	 */
 	readonly env?: Readonly<Record<string, string>>;
+	/**
+	 * What the program takes from the launcher's own environment (the box runtime's): nothing by default (`false`), or exactly
+	 * these names when they are set. Its environment is otherwise PATH, HOME, LANG (C.UTF-8), PI_TRANSPORT_INCARNATION (the
+	 * incarnation, from 1) and `env`.
+	 */
+	readonly inheritEnv?: false | readonly string[];
+	/** Who the program runs as: a user name or a numeric uid. */
+	readonly user?: string;
+	/** Bytes written to every incarnation's stdin, then closed, held only in the launcher's memory. */
+	readonly stdin?: Uint8Array;
+	/** Secrets for every incarnation, on the fd named by PI_TRANSPORT_SECRETS_FD, held only in the launcher's memory. */
+	readonly secrets?: Readonly<Record<string, string>>;
+	/** Run once by a stop, after the drain and before the final kill, bounded by `timeoutMs`. */
+	readonly beforeStop?: { readonly argv: readonly string[]; readonly timeoutMs?: number };
 	/** Where the program starts. A relative path resolves against the box's workspace. */
 	readonly cwd?: string;
 	/** Start it again when it exits, unless the exit code is in `terminalExits`. Default true. */
@@ -60,7 +86,13 @@ export type LaunchSpec = {
 
 /** What the launcher's own state file says, plus whether the launcher still runs. */
 export type LaunchState = {
+	/** This launch's handle, for `launchState` and `launchStop`. */
+	readonly launch: Launch;
 	readonly phase: LaunchPhase;
+	/** The incarnation now or last running, from 1; 0 before the first. */
+	readonly incarnation: number;
+	/** How many times the program was started again: the incarnation less one, never below 0. */
+	readonly restarts: number;
 	/** The process group leader of the running program's wrapper; absent unless `running`. */
 	readonly pid?: number;
 	/** How many times the program was started. */
@@ -75,8 +107,12 @@ export type LaunchState = {
 	readonly directory: string;
 };
 
-/** Why a launcher call failed. `invalid` is a bad spec or name; `box` is a failed call to the box; `timeout` is a program that did not start. */
-export type LaunchErrorCode = "invalid" | "box" | "timeout" | "failed";
+/**
+ * Why a launcher call failed. `invalid` is a bad spec or name; `box` is a failed call to the box; `timeout` is a program that
+ * did not start; `unsupported` is a spec the box cannot honour; `refused` is a box whose setting would expose what the launch
+ * holds (its ptrace scope).
+ */
+export type LaunchErrorCode = "invalid" | "box" | "timeout" | "failed" | "unsupported" | "refused";
 
 /** An expected failure of a launcher call. Returned, never thrown. */
 export class LaunchError extends Error {
@@ -148,10 +184,34 @@ function validate(name: string, spec: LaunchSpec | undefined): LaunchError | und
 	if (spec === undefined) return undefined;
 	if (spec.argv.length === 0 || spec.argv[0] === "") return new LaunchError("invalid", "argv is empty");
 	for (const [key, value] of Object.entries(spec.env ?? {})) {
-		if (!ENV_NAME_PATTERN.test(key) || key.startsWith(RESERVED_ENV_PREFIX)) {
+		if (!ENV_NAME_PATTERN.test(key) || key.startsWith(RESERVED_ENV_PREFIX) || LAUNCHER_ENV.has(key)) {
 			return new LaunchError("invalid", `the environment name ${JSON.stringify(key)} is not allowed`);
 		}
+		// The settings rest in a file of the box: a name that says it holds a key is refused by name, never echoing its value.
+		if (keyShaped(key)) {
+			return new LaunchError(
+				"invalid",
+				`the environment name ${key} looks like a key: env is kept in a file of the box and never holds a secret`,
+			);
+		}
 		if (value.includes("\0")) return new LaunchError("invalid", `the value of ${key} holds a NUL byte`);
+	}
+	const inherited = spec.inheritEnv === undefined || spec.inheritEnv === false ? [] : spec.inheritEnv;
+	if (spec.inheritEnv !== undefined && spec.inheritEnv !== false && !Array.isArray(spec.inheritEnv)) {
+		return new LaunchError("invalid", "inheritEnv is false or a list of names");
+	}
+	for (const name of inherited) {
+		if (!ENV_NAME_PATTERN.test(name) || name.startsWith(RESERVED_ENV_PREFIX) || LAUNCHER_ENV.has(name)) {
+			return new LaunchError("invalid", `inheritEnv names ${JSON.stringify(name)}, which is not a name it can pass`);
+		}
+		if (spec.env !== undefined && Object.hasOwn(spec.env, name)) {
+			return new LaunchError("invalid", `${name} is both in env and in inheritEnv: name it once`);
+		}
+	}
+	// Not yet in this launcher: refused rather than ignored.
+	for (const field of ["user", "stdin", "secrets", "beforeStop"] as const) {
+		if (spec[field] !== undefined)
+			return new LaunchError("unsupported", `${field} is not supported by this launcher yet`);
 	}
 	if (spec.argv.some((word) => word.includes("\0"))) return new LaunchError("invalid", "argv holds a NUL byte");
 	for (const code of spec.terminalExits ?? []) {
@@ -200,6 +260,21 @@ function specScript(spec: LaunchSpec): string {
 		"run_program() {",
 	];
 	if (spec.cwd !== undefined) lines.push(`  cd ${quote(spec.cwd)} || exit 126`);
+	// Nothing of the launcher's own environment (the box runtime's) reaches the program but the names it asks for: every
+	// exported name is unset, by the names awk lists, and one the shell cannot unset refuses the incarnation. Values never
+	// go through an argv.
+	const keep = [
+		"PATH",
+		"HOME",
+		...(spec.inheritEnv === undefined || spec.inheritEnv === false ? [] : spec.inheritEnv),
+	];
+	lines.push(
+		"  for v in $(awk 'BEGIN { for (k in ENVIRON) print k }'); do",
+		`    case ${quote(` ${keep.join(" ")} `)} in *" $v "*) ;; *) unset "$v" 2>/dev/null || { echo "the launcher cannot clear $v from the environment" >&2; exit 126; } ;; esac`,
+		"  done",
+		"  export LANG=C.UTF-8",
+		'  export PI_TRANSPORT_INCARNATION="$n"',
+	);
 	for (const [key, value] of Object.entries(spec.env ?? {})) lines.push(`  export ${key}=${quote(value)}`);
 	lines.push(`  exec ${spec.argv.map(quote).join(" ")}`, "}");
 	return `${lines.join("\n")}\n`;
@@ -245,7 +320,10 @@ function parseState(text: string, directory: string): LaunchState | "none" | und
 		};
 		const lost = !alive && !TERMINAL_PHASES.has(raw.phase) && text.includes("ALIVE ");
 		return {
+			launch: { v: 1, name: directory.slice(directory.lastIndexOf("/") + 1) },
 			phase: lost ? "lost" : raw.phase,
+			incarnation: raw.starts,
+			restarts: Math.max(0, raw.starts - 1),
 			...(raw.pid === null || lost ? {} : { pid: raw.pid }),
 			starts: raw.starts,
 			...(raw.lastExit === null ? {} : { lastExit: raw.lastExit }),
@@ -326,6 +404,13 @@ async function waitForStart(box: Box, directory: string, context: Context): Prom
 	}
 }
 
+/** A handle this package can have made: version 1 and a plain launch name. */
+function handleError(launch: Launch): LaunchError | undefined {
+	if (launch === null || typeof launch !== "object" || launch.v !== 1 || typeof launch.name !== "string")
+		return new LaunchError("invalid", "a launch handle is { v: 1, name }");
+	return validate(launch.name, undefined);
+}
+
 /**
  * Keep a program alive in a box, whatever happens to the host: the launcher is a `sh` supervisor in its own session that
  * restarts the program when it exits. It outlives the call and the host. A second `launch` with the same name starts
@@ -341,6 +426,8 @@ export async function launch(
 ): Promise<Result<LaunchState, LaunchError>> {
 	const invalid = validate(name, spec);
 	if (invalid !== undefined) return err(invalid);
+	// A box that launches natively does it itself; read on every call (an attach returns a new Box).
+	if (box.launcher !== undefined) return box.launcher.launch(name, spec, context);
 	// Only a caller that holds the directory (it made it, or took it over from a dead or ended launch) fills it.
 	const deadline = Date.now() + ABANDONED_CLAIM_S * 1000 + START_WAIT_MS;
 	let directory: string;
@@ -432,8 +519,19 @@ export async function launchStatus(
 	name: string,
 	context: Context,
 ): Promise<Result<LaunchState | undefined, LaunchError>> {
-	const invalid = validate(name, undefined);
+	return launchState(box, { v: 1, name }, context);
+}
+
+/** The state of the launch `launch` names, as `launchStatus` reads it: `undefined` when the box has no such launch. */
+export async function launchState(
+	box: Box,
+	launch: Launch,
+	context: Context,
+): Promise<Result<LaunchState | undefined, LaunchError>> {
+	const invalid = handleError(launch);
 	if (invalid !== undefined) return err(invalid);
+	if (box.launcher !== undefined) return box.launcher.state(launch, context);
+	const name = launch.name;
 	const located = await runScript(box, LOCATE_SCRIPT, [name], context);
 	if (!located.ok) return located;
 	if (located.value.exitCode === 4) return ok(undefined);
@@ -445,7 +543,17 @@ export async function launchStatus(
 	if (directory === undefined) return err(new LaunchError("failed", "the launch directory cannot be found"));
 	const state = await readState(box, directory, context);
 	if (!state.ok) return state;
-	if (state.value === "none") return ok({ phase: "starting", starts: 0, since: 0, launcherAlive: false, directory });
+	if (state.value === "none")
+		return ok({
+			launch: { v: 1, name },
+			phase: "starting",
+			incarnation: 0,
+			restarts: 0,
+			starts: 0,
+			since: 0,
+			launcherAlive: false,
+			directory,
+		});
 	return ok(state.value);
 }
 
@@ -460,6 +568,20 @@ export async function stopLaunch(
 	options: { readonly graceMs?: number } | undefined,
 	context: Context,
 ): Promise<Result<LaunchState, LaunchError>> {
+	return launchStop(box, { v: 1, name }, options, context);
+}
+
+/** Stops the launch `launch` names: the program's group gets SIGTERM, and after `graceMs` whatever is left gets SIGKILL. */
+export async function launchStop(
+	box: Box,
+	launch: Launch,
+	options: { readonly graceMs?: number } | undefined,
+	context: Context,
+): Promise<Result<LaunchState, LaunchError>> {
+	const invalid = handleError(launch);
+	if (invalid !== undefined) return err(invalid);
+	if (box.launcher !== undefined) return box.launcher.stop(launch, options, context);
+	const name = launch.name;
 	const current = await launchStatus(box, name, context);
 	if (!current.ok) return current;
 	if (current.value === undefined) return err(new LaunchError("invalid", `no launch named ${name} in box ${box.id}`));

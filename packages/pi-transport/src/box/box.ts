@@ -1,5 +1,6 @@
 import type { Context } from "@earendil-works/chord";
 import type { Result } from "@earendil-works/pi-durable/env";
+import type { Launch, LaunchError, LaunchSpec, LaunchState } from "../launch/launch.ts";
 
 /**
  * Why a box call failed. Codes are the contract; messages are diagnostic.
@@ -149,6 +150,23 @@ export interface Box {
 	destroy(context: Context): Promise<Result<void, BoxError>>;
 	/** Only on boxes whose `facts().snapshot` is not `null`. */
 	snapshot?(context: Context): Promise<Result<BoxSnapshot, BoxError>>;
+	/**
+	 * Optional: a box that keeps a program alive natively (a fake box in a test). `launch`, `launchState` and `launchStop`
+	 * (`@parcha/pi-transport/launch`) use it when it is there, read on every call, and otherwise run the launcher in the box
+	 * with `exec`. A provider leaves it undefined.
+	 */
+	readonly launcher?: BoxLauncher;
+}
+
+/** The launcher's three calls, done natively by a box (`Box.launcher`), with the same answers as the launcher in a box. */
+export interface BoxLauncher {
+	launch(name: string, spec: LaunchSpec, context: Context): Promise<Result<LaunchState, LaunchError>>;
+	state(launch: Launch, context: Context): Promise<Result<LaunchState | undefined, LaunchError>>;
+	stop(
+		launch: Launch,
+		options: { readonly graceMs?: number } | undefined,
+		context: Context,
+	): Promise<Result<LaunchState, LaunchError>>;
 }
 
 /** A source of boxes: one vendor, or one kind of machine. */
