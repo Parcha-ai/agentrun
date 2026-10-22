@@ -11,7 +11,10 @@
   "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
   "flagQuotes": {},
   "riskRationale": "The rubric row for this merchant: low.",
-  "extraPage": "https://www.check-mcc.sg/mcc/m-001"
+  "extraPages": [
+   "https://www.check-mcc.sg/mcc/m-001",
+   "https://cards.merchant-codes-fixture.example/m-001"
+  ]
  },
  "Copper Pot Diner": {
   "mcc": "5812",
@@ -199,7 +202,10 @@
    "digital_goods": "Every purchase is delivered as a download."
   },
   "riskRationale": "The rubric row for this merchant: medium.",
-  "extraPage": "https://www.check-mcc.sg/mcc/m-013"
+  "extraPages": [
+   "https://www.check-mcc.sg/mcc/m-013",
+   "https://cards.merchant-codes-fixture.example/m-013"
+  ]
  },
  "Golden Hour Jewelers": {
   "mcc": "5944",

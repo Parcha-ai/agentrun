@@ -212,14 +212,21 @@ export function answerToolMcc(table) {
 }
 
 /**
- * The teacher's labels joined to the merchants by id, from a file the host gives the pass (never the data the learner's
- * tools could reach): `[{ id | merchantId, teacher: { mcc, riskTier, flags } }]`, or `{ <id>: { mcc, riskTier, flags } }`.
- * Only the labels are kept. A merchant the file does not name has no teacher, so nothing of it is scored.
+ * The teacher's labels and each merchant's stratum, by id, from the host's truth file (learn-mcc's truth rows, `[{ id |
+ * merchantId, stratum?, teacher: { mcc, riskTier, flags, ... } }]`), which a take holds outside the data its tools see.
+ * Only the labels are kept of the teacher block. A merchant the file does not name has no teacher, so nothing of it is
+ * scored.
  */
 export function teacherLabelsOf(file) {
   const raw = JSON.parse(readFileSync(file, 'utf8'));
-  const entries = Array.isArray(raw) ? raw.map((r) => [String(r.id ?? r.merchantId), r.teacher]) : Object.entries(raw);
-  return new Map(entries.map(([id, t]) => [id, t ? { mcc: t.mcc ?? null, riskTier: t.riskTier ?? null, flags: Array.isArray(t.flags) ? t.flags : null } : null]));
+  const rows = Array.isArray(raw) ? raw : Object.entries(raw).map(([id, teacher]) => ({ id, teacher }));
+  return new Map(rows.map((r) => {
+    const t = r.teacher;
+    return [String(r.id ?? r.merchantId), {
+      teacher: t ? { mcc: t.mcc ?? null, riskTier: t.riskTier ?? null, flags: Array.isArray(t.flags) ? t.flags : null } : null,
+      stratum: typeof r.stratum === 'string' ? r.stratum : null,
+    }];
+  }));
 }
 
 // ---- scoring parts, hindsight and the row ---------------------------------------------------------------------------
@@ -263,12 +270,13 @@ export function merchantPagesOnly(effects, merchant) {
 /** The row of an MCC run: rowOfV2's common parts (built with the answer key `mcc`) without the SEC job's fields, and the
  *  MCC score. `answer`, `truth` and `correct` are the code, the teacher's code and scoreMcc's headline (every part the
  *  teacher labelled agrees); every label is the teacher's (`label`). */
-export function rowOfMcc(base, score) {
+export function rowOfMcc(base, score, job) {
   const keep = Object.fromEntries(Object.entries(base).filter(([key]) => !/^(sic|segment|hq|subsidiar|report|shareError|correctOver|ticker|evidenceSupported)/.test(key)));
   return {
     ...keep,
     set: 'mcc',
     merchantId: base.cik,
+    stratum: job?.stratum ?? null,
     label: 'teacher',
     answer: score?.mccAnswer ?? null,
     truth: score?.mccTeacher ?? null,

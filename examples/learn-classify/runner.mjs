@@ -32,7 +32,7 @@ import { scoreV2 } from './score-v2.mjs';
 import { scoreV4 } from './score-v4.mjs';
 import { agentScript, agentScriptV2, agentScriptV4, FIXTURES, FIXTURES_V2, FIXTURES_V4, fakeHardTools, fixtureWeb, scriptedJev, scriptedModel } from './scripted.mjs';
 import { isHard, SETS } from './sets.mjs';
-import { ANY_HOST, domainOf, fetchPageTool } from './tools.mjs';
+import { ANY_HOST, domainOf, fetchPageTool, refuseMccDomains } from './tools.mjs';
 import { answersTheJob, hostRecord, promotedFor } from './dispatch.mjs';
 import { contradictionOf, lookupOfLines, receiptOf } from './eval-lookup.mjs';
 import { LINK_QUESTION, receiptHoldsTrial, receiptLinks, receiptUses, recordRun } from './receipts.mjs';
@@ -153,6 +153,7 @@ export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 || set ===
   const fakes = hard ? fakeHardTools({ pages, documents: readJsonIf(join(data, 'documents.json')) ?? {}, search: readJsonIf(join(data, 'search.json')) ?? {} }) : undefined;
   const truth = readJsonIf(join(data, 'answers.json')) ?? {};
   const judged = hard ? readJsonIf(join(data, 'judge.json')) ?? {} : {};
+  if (mcc) refuseMccDomains(d.refused);
   return {
     mode: 'scripted', providers: 'scripted', modelName: 'faux/scripted', set, data: d, labels: d.labels, companies: d.companies, conventions: conventionsOf(d.report), fakeCalls: fakes?.calls,
     // The MCC job's fixtures may fix Jev's yes-or-no answers (judge.json `overrides`, such as the receipt's link question).
@@ -177,6 +178,7 @@ export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, e
   // The root agent on Opus at high thinking unless --model / --thinking name another; the nodes on the host's NODE.
   const models = await gatewayModels(gateway, { root: { model: model ?? ROOT.model, thinking: thinking ?? ROOT.thinking } });
   const d = set.load(data);
+  if (set === SETS.mcc) refuseMccDomains(d.refused);
   const jev = gatewayJev(gateway);
   let hard;
   if (isHard(set)) {
@@ -450,7 +452,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
   const v1 = { run: job.order, runId, job, seedSha: p.seedSha, afterSha: p.afterSha, offered: p.offered, measure: p.measure, finished: p.finished, curated: p.curated, curateJudge: p.curateJudge, recording, convention: parts.conventions?.[job.cik] };
   const hardRow = { ...v1, score: p.score, stats: p.stats, scoringJudge: p.scoringJudge, lineage: p.lineage, jobRecord: hostRecord(jobRecordOf(recordingLines(run.storePath).lines), p.measure.dispatch) };
   const row = !isHard(parts.set) ? rowOf(v1)
-    : parts.set === SETS.mcc ? rowOfMcc(rowOfV2({ ...hardRow, key: 'mcc', score: { correct: p.score?.correct ?? null } }), p.score)
+    : parts.set === SETS.mcc ? rowOfMcc(rowOfV2({ ...hardRow, key: 'mcc', score: { correct: p.score?.correct ?? null } }), p.score, job)
     : (parts.set === SETS.v4 ? rowOfV4 : rowOfV2)(hardRow);
   const attempts = [...p.abandoned, ...(p.infraFailed ?? [])].map((a) => a.runId);
   const limits = limitsOf([...attempts, runId].map((id) => runPaths(home, id).storePath), { at: p.started });
@@ -767,7 +769,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
     const phase = sha === meta.seedSha ? 'before' : 'after';
     const sealedRow = scored ? { ...v1, score: scored.score, stats: scored.stats, scoringJudge: scored.scoringJudge, phase, jobRecord: hostRecord(jobRecordOf(recordingLines(run.storePath).lines), measure.dispatch) } : null;
     const scoredRow = !scored ? { ...rowOf(v1), phase }
-      : parts.set === SETS.mcc ? rowOfMcc(rowOfV2({ ...sealedRow, key: 'mcc', score: { correct: scored.score?.correct ?? null } }), scored.score)
+      : parts.set === SETS.mcc ? rowOfMcc(rowOfV2({ ...sealedRow, key: 'mcc', score: { correct: scored.score?.correct ?? null } }), scored.score, job)
       : (parts.set === SETS.v4 ? rowOfV4 : rowOfV2)(sealedRow);
     const limits = limitsOf([...infraFailed.map((f) => f.runId), run.runId].map((id) => runPaths(home, id).storePath), { at: started });
     const row = {
@@ -876,7 +878,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       // The MCC job's teacher labels, joined by id from the host's file; never in the data a run's tools see.
       if (set !== SETS.mcc) { console.error(`--teacher joins the MCC job's teacher labels: pass --set mcc\n${USAGE}`); process.exit(2); }
       const labels = teacherLabelsOf(resolve(values.teacher));
-      for (const merchant of parts.companies) merchant.teacher = labels.get(merchant.cik) ?? null;
+      for (const merchant of parts.companies) Object.assign(merchant, labels.get(merchant.cik) ?? { teacher: null, stratum: null });
       console.log(`learn-classify: teacher labels for ${parts.companies.filter((m) => m.teacher).length} of ${parts.companies.length} merchants (${values.teacher})`);
     }
     if (values['agent-dir'] !== undefined) {

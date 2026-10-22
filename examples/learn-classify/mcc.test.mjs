@@ -174,7 +174,7 @@ const byId = (rows) => Object.fromEntries(rows.map((r) => [r.merchantId, r]));
 function mccParts() {
   const parts = scriptedParts({ set: SETS.mcc });
   const labels = teacherLabelsOf(join(FIXTURES_MCC, 'teacher.json'));
-  for (const m of parts.companies) m.teacher = labels.get(m.cik) ?? null;
+  for (const m of parts.companies) Object.assign(m, labels.get(m.cik) ?? { teacher: null, stratum: null });
   return parts;
 }
 
@@ -189,8 +189,11 @@ test('a scripted MCC pass: rows labelled the teacher\'s; a receipt only for the 
   assert.deepEqual(r['m-001'].receipt, { url: 'https://lumencandle.example/', kind: 'merchant', mcc: '5999', byWorkflow: false });
   for (const id of ['m-007', 'm-008', 'm-009']) assert.equal(r[id].receipt, null, `${id}: a paraphrase, an off-domain cite, a site that did not load`);
   assert.deepEqual(r['m-010'].receipt, { url: 'https://fernandkiln.myshopify.com/', kind: 'merchant', mcc: '5719', byWorkflow: true });
-  // m-001's run also tried a site that lists merchants' codes: refused, and logged on its row.
-  assert.equal(r['m-001'].mccLookupRefused, 1);
+  // m-001's run also tried two sites that list merchants' codes, one on tools.mjs's list and one only the data's
+  // refused-hosts.json names: both refused, and logged on its row.
+  assert.equal(r['m-001'].mccLookupRefused, 2);
+  // Every scored row whose teacher has a code is scored on it, and carries its stratum.
+  assert.ok(rows.every((row) => typeof row.mccCorrect === 'boolean' && typeof row.mccGroupCorrect === 'boolean' && typeof row.stratum === 'string'));
   assert.equal(r['m-010'].mccLookupRefused, 0);
   // m-002 saves merchant-mcc-risk grown by a browser read; m-004's site reads only in a browser, so the grown trial
   // answers it, with a workflow receipt, and is promoted at once over the serving revision; the bank gate then compares

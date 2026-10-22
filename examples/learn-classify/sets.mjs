@@ -52,7 +52,11 @@ const loadMcc = (data) => {
     ids.add(m.id);
   }
   const table = loadGroups();
-  return { companies: merchants.map((m) => ({ ...m, cik: m.id })), table, codes: table.codes, labels: table.codes };
+  // Sites that list merchants' codes, as the data names them (refused-hosts.json: `{ hosts }`, or a list), refused by
+  // every tool beside tools.mjs's own list.
+  const listed = readJsonIf(join(data, 'refused-hosts.json'));
+  const refused = Array.isArray(listed) ? listed : Array.isArray(listed?.hosts) ? listed.hosts : [];
+  return { companies: merchants.map((m) => ({ ...m, cik: m.id })), table, codes: table.codes, labels: table.codes, refused };
 };
 
 const loadV4 = (data) => ({

@@ -91,7 +91,7 @@ export function answerOfMcc(t, url) {
 function byHandMcc(job, t) {
   return [
     { call: 'fetch_page', args: { url: job.website } },
-    ...(t.extraPage ? [{ call: t.extraPageTool ?? 'fetch_page', args: { url: t.extraPage } }] : []),
+    ...(t.extraPages ?? (t.extraPage ? [t.extraPage] : [])).map((url) => ({ call: 'fetch_page', args: { url } })),
     { call: 'mcc_groups', args: {} },
     { call: 'mcc_codes', args: { group: t.group } },
   ];

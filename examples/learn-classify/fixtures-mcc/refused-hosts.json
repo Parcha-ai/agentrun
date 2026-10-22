@@ -1,0 +1,6 @@
+{
+ "hosts": [
+  "merchant-codes-fixture.example"
+ ],
+ "note": "fixture: a site that lists merchants' codes, named only by the data"
+}
