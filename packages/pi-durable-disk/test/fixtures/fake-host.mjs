@@ -43,7 +43,8 @@ const replace = (path, text) => {
 const save = () => {
   writeProc();
   const lines = [...(state.extraMounts ?? [])];
-  for (const [mp, m] of Object.entries(state.mounts)) lines.push(`${m.source} ${mp} fuse.archil rw,relatime,user_id=0,group_id=0,allow_other 0 0`);
+  // As archil-scoped leaves a run's mount (its bind remount adds nosuid,nodev); `options` is a mount that kept archil's own.
+  for (const [mp, m] of Object.entries(state.mounts)) lines.push(`${m.source} ${mp} fuse.archil ${m.options ?? "rw,nosuid,nodev,relatime,user_id=0,group_id=0,allow_other"} 0 0`);
   replace(state.procMounts, lines.join("\n") + "\n");
   replace(statePath, JSON.stringify(state, null, 2));
 };
@@ -134,7 +135,7 @@ if (cmd === "mount") {
     state.holders[target] = mp;
     // fileDelegations: delegations the client also holds on files under the mount (paths relative to it), which a
     // checkin of the mountpoint leaves; each goes with a checkin of its own path, unless fileCheckinKeeps.
-    state.mounts[mp] = { source: `${target}[${region}]`, alive: true, fenced: false, delegation: b.mount === "no-delegation" ? null : "Active", files: b.fileDelegations ?? [] };
+    state.mounts[mp] = { source: `${target}[${region}]`, alive: true, fenced: false, delegation: b.mount === "no-delegation" ? null : "Active", files: b.fileDelegations ?? [], ...(b.unhardened ? { options: "rw,relatime,user_id=0,group_id=0,allow_other" } : {}) };
     if (state.proc) {
       state.nextPid = (state.nextPid ?? 7000) + 1;
       (state.daemons ??= {})[state.nextPid] = ["/usr/bin/archil", "mount", target, mp, "--region", region];

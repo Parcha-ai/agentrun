@@ -74,7 +74,9 @@ export const setDownloadBehavior = (url: string, options: { downloadPath?: strin
 
 export type BrowserbaseProvider = BrowserProvider & { readonly name: "browserbase" };
 
-const CAPS: ProviderCaps = { timeoutModel: "wall-clock", maxLifetimeS: 21_600, survivesDisconnect: true, releaseIsAsync: true, profiles: true, extension: "uploaded-per-launch", settings: { proxies: true, verified: true, geolocation: true, region: true, context: true } };
+const CAPS: ProviderCaps = { timeoutModel: "wall-clock", maxLifetimeS: 21_600, survivesDisconnect: true, releaseIsAsync: true, profiles: true, extension: "uploaded-per-launch", settings: { proxies: true, verified: true, geolocation: true, region: true, context: true },
+  // A session is created with `allowedDomains` from the policy's allow list, which Browserbase enforces.
+  navigationAllow: true };
 const notFound = (e: unknown): boolean => (e as { status?: number } | null)?.status === 404;
 /** One signal for whichever of these there is (a store may call `make` without its limit). */
 const stopWhen = (...signals: Array<AbortSignal | undefined>): AbortSignal | undefined => { const some = signals.filter((s): s is AbortSignal => s !== undefined); return some.length > 1 ? AbortSignal.any(some) : some[0]; };

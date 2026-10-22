@@ -8,6 +8,7 @@
 # `mount` reads its token as one line on stdin and hands it to archil only in the environment of that exec. The token
 # is never an argument and never in an environment sudo sees: sudo logs every variable it preserves. An empty line or
 # no line refuses the mount.
+# Then it bind-remounts the mount point nosuid,nodev (archil takes no mount options) and fails, exit 9, when it cannot.
 #
 # `retire <root>/runs/<run> <tag>` is for a kernel that refuses every unmount of a FUSE mount it still lists (Sysbox, as
 # Daytona runs sandboxes: umount2 fails with ENOENT). It moves the run's fuse.archil mount aside to
@@ -157,9 +158,37 @@ case "${1:-}" in
     ;;
 esac
 [ "${1:-}" = mount ] || exec "$ARCHIL" "$@"
+
+# The claim's mount line, and nothing else: [--force] <source> <mountpoint> [--region <region>]. Sets src and mp.
+mount_line() {
+  shift
+  src= mp=
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --force) ;;
+      --region) [ "$#" -ge 2 ] || return 1; shift ;;
+      -*) return 1 ;;
+      *) if [ -z "$src" ]; then src=$1; elif [ -z "$mp" ]; then mp=$1; else return 1; fi ;;
+    esac
+    shift
+  done
+  [ -n "$src" ] && [ -n "$mp" ]
+}
+mount_line "$@" || { echo "archil-scoped: mount takes [--force] <source> <mountpoint> [--region <region>]" >&2; exit 2; }
+
 token=
 IFS= read -r token || true
 [ -n "$token" ] || { echo "archil-scoped: no mount token on stdin" >&2; exit 2; }
 unit=$(sed -n 's|^0::/system\.slice/\(.*/\)\{0,1\}\([A-Za-z0-9:_.-]*\)\.service$|\2|p' /proc/self/cgroup)
-[ -n "$unit" ] || ARCHIL_MOUNT_TOKEN="$token" exec "$ARCHIL" "$@"
-ARCHIL_MOUNT_TOKEN="$token" exec /usr/bin/systemd-run --scope --quiet --collect --unit="$unit-fuse-$(date +%s%N)" -- "$ARCHIL" "$@"
+if [ -n "$unit" ]; then
+  ARCHIL_MOUNT_TOKEN="$token" /usr/bin/systemd-run --scope --quiet --collect --unit="$unit-fuse-$(date +%s%N)" -- "$ARCHIL" "$@" || exit $?
+else
+  ARCHIL_MOUNT_TOKEN="$token" "$ARCHIL" "$@" || exit $?
+fi
+token=
+
+# archil takes no mount options, and its mounts as root are `rw,relatime,user_id=0,group_id=0,allow_other`: a setuid or
+# device file on the disk would count. A bind remount gives the mount point nosuid,nodev (its own flags; the superblock is
+# untouched). A mount that cannot be hardened fails here, and the claim unmounts it: a run never starts on it.
+listed "$mp" fuse.archil || { echo "archil-scoped: archil listed no fuse.archil mount at $mp" >&2; exit 9; }
+"$MOUNT" -o remount,bind,nosuid,nodev "$mp" || { echo "archil-scoped: could not make $mp nosuid,nodev" >&2; exit 9; }
