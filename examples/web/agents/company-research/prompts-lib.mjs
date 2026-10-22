@@ -55,10 +55,11 @@ export function questionOf(stored) {
 }
 
 /**
- * What is wrong with `variants`, one sentence each; an empty list when it can be saved. One base, one generic, any number
- * of overlays; each has an id (one URL segment, used once) and a label; an overlay says when it loads (the question, the
- * option, a threshold from 0 to 1) and the base and the generic never do. With `question`, each overlay's rule is about that
- * question and names one of its options, and no two overlays name the same one.
+ * What is wrong with `variants`, one sentence each; an empty list when nothing here stops a save. One base, one generic,
+ * any number of overlays; each has an id (one URL segment, used once) and a label; an overlay says when it loads (the
+ * question, the option, a threshold from 0 to 1) and the base and the generic never do. With `question`, each overlay's
+ * rule is about that question and names one of its options, and no two overlays name the same one. The sizes the home
+ * keeps are the home's to say (`homeRefusal`).
  */
 export function checkPrompts(variants, question) {
   const problems = [];
@@ -110,6 +111,23 @@ export function checkPrompts(variants, question) {
   if (count.base !== 1) problems.push(`there must be exactly one base (found ${count.base})`);
   if (count.generic !== 1) problems.push(`there must be exactly one generic (found ${count.generic})`);
   return problems;
+}
+
+/**
+ * The home's own refusal of `set`, the list `setPrompts` would be given, or null when the home would keep it. The
+ * package's `choosePrompt` refuses a set `setPrompts` would refuse before it asks its judge anything, and the judge here
+ * never answers, so this is the home's check with its own limits (how many variants, how long a label, an option, a
+ * criterion or a text) and no copy of them.
+ */
+export async function homeRefusal(choosePrompt, set) {
+  const byId = Object.fromEntries(set.map(({ id, ...variant }) => [id, variant]));
+  try {
+    await choosePrompt(byId, "", { judge: async () => { throw new Error("a check asks no judge"); } });
+    return null;
+  } catch (error) {
+    if (error?.code !== "invalid") throw error;
+    return error.message;
+  }
 }
 
 const ORDER = { base: 0, overlay: 1, generic: 2, question: 3 };

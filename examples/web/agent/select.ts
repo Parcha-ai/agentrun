@@ -1,7 +1,9 @@
 // The prompt a run starts with, picked by the host before the first model turn: @parcha/pi-durable-agent's
 // `choosePrompt`, on the home's variants (a question row, overlays, a base and a generic), with Jev as its judge and,
 // when Jev is unsure, one lookup: a Browserbase web search and Wikipedia's keyless search and summary, both at once.
-// Here: the judge, the lookups, the run's guide (the base and the chosen variant) and `prompt.json`'s record.
+// Here: the judge, the lookups and `prompt.json`, the record of the choice that holds the run's guide.
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { createJevRunner, type JevJudge } from "@parcha/agentrun-jev";
 import type { SearchRequest, SearchResult } from "@parcha/pi-browser";
 import { choosePrompt, type PromptChoice, type PromptVariant } from "@parcha/pi-durable-agent";
@@ -12,27 +14,29 @@ export type Lookup = { text: string; sources: LookupSource[] };
 /** The home's variants, as `readAgentHome(home).prompts` gives them: a record by id. */
 export type StoredPrompts = Record<string, PromptVariant>;
 
-/** The run's guide: the home's base prompt, then the chosen variant (an overlay, or the generic prompt), by id. */
-export function composePrompt(stored: StoredPrompts, variant: string): string {
-  const base = Object.values(stored).find((v) => v.role === "base");
-  const chosen = stored[variant];
-  if (!base) throw new Error("the prompts have no base");
-  if (!chosen || (chosen.role !== "overlay" && chosen.role !== "generic")) throw new Error(`the prompts have no variant ${variant}`);
-  return `${base.text.trim()}\n\n${chosen.text.trim()}`;
-}
-
-/** `prompt.json` beside a run: `choosePrompt`'s choice without the instructions (the variant's id, each Jev pass, the
- *  lookup and what it read, the reason), with the question it answered, the input and when. */
-export type PromptRecord = Omit<PromptChoice, "instructions"> & { version: 1; question: string | null; input: string; selected_at: string };
+/** The record of a run's prompt choice, beside the run. */
+export const PROMPT_FILE = "prompt.json";
+/** `prompt.json`: `choosePrompt`'s choice (the variant's id, its instructions, each Jev pass, the lookup and what it
+ *  read, the reason), with the question it answered, the input and when. */
+export type PromptRecord = PromptChoice & { version: 1; question: string | null; input: string; selected_at: string };
 
 /** The run's prompt, before it starts: what `startRun` records (`prompt: { id, reason }`) and what `prompt.json` holds.
  *  Null when the home keeps no prompts. */
 export async function promptForRun(options: { stored: StoredPrompts | undefined; input: string; judge: JevJudge; lookup: (name: string) => Promise<Lookup | null>; now?: () => Date }): Promise<{ prompt: { id: string; reason: string }; record: PromptRecord } | null> {
   const { stored } = options;
   if (!stored || !Object.keys(stored).length) return null;
-  const { instructions: _, ...choice } = await choosePrompt(stored, options.input, { judge: options.judge as never, lookup: (query) => options.lookup(query) });
+  const choice = await choosePrompt(stored, options.input, { judge: options.judge as never, lookup: (query) => options.lookup(query) });
   const question = Object.entries(stored).find(([, v]) => v.role === "question")?.[0] ?? null;
   return { prompt: { id: choice.variant, reason: choice.reason }, record: { version: 1, question, input: options.input, ...choice, selected_at: (options.now?.() ?? new Date()).toISOString() } };
+}
+
+/** The run's guide, the instructions its `prompt.json` saved when it started (the home's base, then the chosen variant):
+ *  the same on every launch, whatever the home's variants are by then. None for a run started with no prompt. */
+export async function savedGuide(runDir: string, prompt: { id: string } | undefined): Promise<string | undefined> {
+  if (!prompt) return undefined;
+  const record = await readFile(join(runDir, PROMPT_FILE), "utf8").then(JSON.parse, () => null);
+  if (record?.variant !== prompt.id || typeof record.instructions !== "string") throw new Error(`the run started with the prompt ${prompt.id}, and its ${PROMPT_FILE} does not hold that prompt's instructions`);
+  return record.instructions;
 }
 
 const WIKIPEDIA = "https://en.wikipedia.org";

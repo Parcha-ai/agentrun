@@ -479,7 +479,7 @@ setInterval(() => {}, 1000);
   ]);
   const { id } = await (await post("/runs", { content: "  Habitat " })).json();
   const record = JSON.parse(readFileSync(join(root, id, "prompt.json"), "utf8"));
-  assert.deepEqual([record.version, record.question, record.input, record.variant, record.passes.length, record.lookup.used, record.lookup.sources], [1, "kind", "Habitat", "nonprofit", 2, true, sources]);
+  assert.deepEqual([record.version, record.question, record.input, record.variant, record.instructions, record.passes.length, record.lookup.used, record.lookup.sources], [1, "kind", "Habitat", "nonprofit", "Research it.\n\nStart at the 990s.", 2, true, sources]);
   assert.deepEqual(asked, [{ input: "Habitat" }, { input: "Habitat", lookup: "A housing charity." }], "Jev was asked about the first message, then with what the lookup read");
   assert.deepEqual((await readAgentHome(home)).runs[id].prompt, { id: "nonprofit", reason: record.reason }, "startRun recorded the choice on the run's entry");
   assert.equal(statSync(join(root, id, "prompt.json")).mode & 0o777, 0o600);
@@ -604,6 +604,36 @@ test("a run that answered is released and carried back once, with the sign-in it
   await new Promise((r) => setTimeout(r, 500));
   assert.ok(server.children.has(second.id), "a run waiting for the person keeps its browser and its process");
   assert.equal((await readAgentHome(home)).runs[second.id].endedAt, undefined);
+});
+
+test("a run carried back whose memory did not reach the home has it copied by the next server", async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), "web-hand-off-"));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const home = await ensureAgentHome(join(tmp, "home"));
+  // Released before the server started: signed in, its answer in its store, a note in its memory.
+  const dir = await makeRun(home, "r1", { status: "sleeping" });
+  const store = join(dir, "store", "run.sqlite");
+  await signInRun(store, { [PROFILE]: { ref: "ctx-1" } });
+  const db = new DatabaseSync(store);
+  const insert = db.prepare("INSERT INTO entries (id, conversation_id, head, commit_seq, record) VALUES (?, ?, NULL, ?, ?)");
+  for (const entry of transcript) insert.run(entry.id, entry.conversationId, entry.id, JSON.stringify(entry));
+  db.close();
+  mkdirSync(join(dir, "work", "memory"), { recursive: true });
+  writeFileSync(join(dir, "work", "memory", "preferences.md"), "- Bills as PDF, newest first\n");
+  // The copy fails: the home holds a folder where the file goes.
+  mkdirSync(join(home.dir, "memory", "preferences.md"), { recursive: true });
+
+  const first = await startServer({ home });
+  await first.close();
+  const state = await readAgentHome(home);
+  assert.deepEqual([state.runs.r1.outcome, state.profiles[PROFILE].ref], ["completed", "ctx-1"], "carried back, its sign-in home");
+  assert.ok(statSync(join(home.dir, "memory", "preferences.md")).isDirectory(), "its memory is not");
+
+  rmSync(join(home.dir, "memory", "preferences.md"), { recursive: true });
+  const second = await startServer({ home });
+  t.after(() => second.close());
+  assert.equal(readFileSync(join(home.dir, "memory", "preferences.md"), "utf8"), "- Bills as PDF, newest first\n");
+  assert.deepEqual((await (await fetch(`${second.url}/agent`)).json()).memory, [{ name: "preferences.md", text: "- Bills as PDF, newest first\n" }]);
 });
 
 test("a message that comes while a run that answered is being carried back waits for it and is refused; the run is never started again", async (t) => {

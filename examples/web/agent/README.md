@@ -143,13 +143,19 @@ When the server
 carries a run back, the run's folder becomes the home's (`<home>/memory/`, owner-only): each changed file written whole,
 a file the run no longer has removed, nothing taken when a name is not a plain `.md` file or the folder is over its caps
 (16 KB a file, 64 KB in all, 32 files). Only the run that owns the sign-in writes it: the one that held its save lease,
-or made it. So one run writes at a time, as for sign-ins. `GET /agent` returns the memory files beside the sign-ins.
+or made it. So one run writes at a time, as for sign-ins. The server writes what it owes the home
+(`<home>/memory/.hand-off.json`) before the copy and removes it after, so a copy that fails, or a server stopped in
+between, is finished by the next server when it starts; a later owner's copy takes the place of one still owed.
+`GET /agent` returns the memory files beside the sign-ins.
 **This folder does not travel in a pack yet**: `packHome` copies the agent store and the runs only. Moving it into the
 agent store is pi-durable-agent's to do; `work/memory/` stays the agent's contract either way.
 
 With `AGENT_BROWSER=chrome`, each run's Chrome saves a file the page offers as a download into that run's
 `work/downloads/` without asking: start-run.mjs sets the profile's download folder again for every run, since the
 profile is shared across runs. The agent's file tools read a downloaded file by its name, and cannot list a folder.
+Only a run on a local Chrome is told where a download lands (`LOCAL_DOWNLOADS` in app.ts, after its skills): on
+Browserbase a click saves the file on Browserbase's machine, so the site-report skill has the agent name the file
+instead.
 
 When the run lets go of its browser, the app writes `report/remember.html`: the sites the agent is signed in to and when
 that was last checked, each memory file with its text, and the agent's runs, never a profile's ref. It is the run's

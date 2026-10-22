@@ -6,9 +6,9 @@
 // --home the configuration shown is the first home's and the runs table has every home's runs; a home whose definition or
 // prompts differ from the first's is named on the page and in a warning.
 //
-// runs/<id>/prompt.json is the host's selection plus the run's input: { version: 1, question, input, variant, passes: [{ choice,
-//   probabilities, confidence, model?, cost_usd?, latency_ms? }], lookup: { used, sources: [{ via, url, title }] }, reason,
-//   selected_at }. `variant` is the id or label of the variant loaded (or { id, label, role }). The first selection shape,
+// runs/<id>/prompt.json is the host's selection plus the run's input: { version: 1, question, input, variant, instructions,
+//   passes: [{ choice, probabilities, confidence, model?, cost_usd?, latency_ms? }], lookup: { used, sources: [{ via, url,
+//   title }] }, reason, selected_at }. `instructions` is the run's guide (the page does not show it). `variant` is the id or label of the variant loaded (or { id, label, role }). The first selection shape,
 //   { chosen: { label, role, reason }, lookup_used, passes[].lookup }, is read too. The runs index may also carry
 //   prompt: { id, reason }, which the page uses when prompt.json is not there.
 import { existsSync } from "node:fs";

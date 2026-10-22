@@ -1,9 +1,12 @@
-// The host's side of a run's prompt choice: the record prompt.json keeps and the run's guide, around
+// The host's side of a run's prompt choice: the record prompt.json keeps, the run's guide in it, around
 // @parcha/pi-durable-agent's choosePrompt (whose own tests hold the pass, threshold, lookup and generic rules), and the
 // judge's options and the lookups the host gives it. Offline: Jev, Browserbase and Wikipedia are fakes.
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
-import { composePrompt, jevOptionsOf, judgeOf, lookups, promptForRun, searchLookup, wikipediaLookup } from './select.ts';
+import { jevOptionsOf, judgeOf, lookups, PROMPT_FILE, promptForRun, savedGuide, searchLookup, wikipediaLookup } from './select.ts';
 
 /** A home's variants as readAgentHome gives them: the question row, two overlays on it, the base and the generic. */
 const stored = {
@@ -40,13 +43,13 @@ test('the run\'s prompt (choosePrompt on the home\'s variants): what startRun re
     question: 'kind',
     input: 'Habitat',
     variant: 'nonprofit',
+    instructions: 'Research it.\n\nStart at the 990s.',
     passes: [{ ...pass('nonprofit', 0.53, 0.41), model: 'jev-test', cost_usd: 0.00002 }, { ...pass('nonprofit', 0.95), model: 'jev-test', cost_usd: 0.00002 }],
     lookup: { used: true, chars: 'A housing charity.'.length, sources },
     reason: chosen.record.reason,
     selected_at: '2026-10-20T04:00:00.000Z',
   });
   assert.match(chosen.record.reason, /nonprofit at 53%.*after the lookup.*nonprofit at 95%/);
-  assert.equal('instructions' in chosen.record, false, 'the record leaves the instructions to the run');
 
   const sure = await promptForRun({ stored, input: 'Caterpillar Inc.', judge: jev(pass('public', 1)).judge, lookup: async () => assert.fail('no lookup when Jev is sure'), now });
   assert.deepEqual([sure.prompt.id, sure.record.lookup.used, sure.record.passes.length], ['public', false, 1]);
@@ -58,12 +61,17 @@ test('the run\'s prompt (choosePrompt on the home\'s variants): what startRun re
   assert.equal(await promptForRun({ stored: undefined, input: 'x', judge, lookup: async () => null }), null, 'a home whose package keeps none');
 });
 
-test('the run\'s guide is the home\'s base and then the chosen variant, by id', () => {
-  assert.equal(composePrompt(stored, 'public'), 'Research it.\n\nStart at EDGAR.');
-  assert.equal(composePrompt(stored, 'generic'), 'Research it.\n\nStart at its own site.');
-  assert.throws(() => composePrompt(stored, 'base'), /no variant base/);
-  assert.throws(() => composePrompt(stored, 'kind'), /no variant kind/, 'the question row is no prompt');
-  assert.throws(() => composePrompt(stored, 'ecommerce'), /no variant ecommerce/);
+test('the run\'s guide is the instructions its prompt.json saved, for the variant its entry names; none without a prompt', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'web-guide-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  assert.equal(await savedGuide(dir, undefined), undefined, 'a run started with no prompt');
+  await assert.rejects(savedGuide(dir, { id: 'public' }), /started with the prompt public, and its prompt\.json does not hold/, 'no prompt.json');
+  const sure = await promptForRun({ stored, input: 'Caterpillar Inc.', judge: jev(pass('public', 1)).judge, lookup: async () => null });
+  await writeFile(join(dir, PROMPT_FILE), JSON.stringify(sure.record));
+  assert.equal(await savedGuide(dir, sure.prompt), 'Research it.\n\nStart at EDGAR.');
+  await assert.rejects(savedGuide(dir, { id: 'generic' }), /started with the prompt generic/, 'a prompt.json for another variant');
+  await writeFile(join(dir, PROMPT_FILE), JSON.stringify({ ...sure.record, instructions: undefined }));
+  await assert.rejects(savedGuide(dir, sure.prompt), /does not hold that prompt's instructions/, 'one without the instructions');
 });
 
 test('the Wikipedia lookup reads the top pages and the first one\'s summary, keyless', async () => {

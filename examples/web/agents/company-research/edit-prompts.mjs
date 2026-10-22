@@ -4,13 +4,13 @@
 //   node edit-prompts.mjs --home DIR [--file prompts.json]   save the file's variants, replacing the home's
 //   node edit-prompts.mjs --home DIR --show [--json]         print what the home holds
 //   node edit-prompts.mjs --home DIR --init                  make the home from agent.json and skills/ first, when it has none
-//   node edit-prompts.mjs --check [--file prompts.json]      only check the file; no home is opened
+//   node edit-prompts.mjs --check [--file prompts.json]      only check the file, as the home would; no home is opened
 import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { checkPrompts, normalizePrompts, readPromptsFile, readQuestion, ruleText, withQuestion } from "./prompts-lib.mjs";
+import { checkPrompts, homeRefusal, normalizePrompts, readPromptsFile, readQuestion, ruleText, withQuestion } from "./prompts-lib.mjs";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const USAGE = "usage: edit-prompts.mjs --home DIR [--file prompts.json] [--init] | --home DIR --show [--json] | --check [--file prompts.json]";
@@ -66,6 +66,11 @@ export async function main(argv, { api, out = (line) => console.log(line), err =
       return 1;
     }
     const problems = checkPrompts(variants, question);
+    // The set as it is saved, and the home's own check of it.
+    const clean = problems.length ? [] : withQuestion(variants.map(({ id, role, label, text, when }) => ({ id, role, label, text, ...(when ? { when } : {}) })), question);
+    api ??= await import("@parcha/pi-durable-agent");
+    const refused = clean.length ? await homeRefusal(api.choosePrompt, clean) : null;
+    if (refused) problems.push(refused);
     if (problems.length) {
       err(`${basename(file)} is not saved: ${problems.length} problem${problems.length === 1 ? "" : "s"}`);
       for (const problem of problems) err(`  ${problem}`);
@@ -75,8 +80,6 @@ export async function main(argv, { api, out = (line) => console.log(line), err =
       out(`${basename(file)} is valid: ${variants.length} variants, and the question ${question.id}\n${listing(withQuestion(variants, question))}`);
       return 0;
     }
-    const clean = withQuestion(variants.map(({ id, role, label, text, when }) => ({ id, role, label, text, ...(when ? { when } : {}) })), question);
-    api ??= await import("@parcha/pi-durable-agent");
     if (typeof api.setPrompts !== "function") {
       err("this build of @parcha/pi-durable-agent has no setPrompts: the prompts are in its durable-agent/prompts branch");
       return 1;

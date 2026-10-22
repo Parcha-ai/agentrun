@@ -52,6 +52,8 @@ function fakeApi({ withSetPrompts = true } = {}) {
       const { definition, prompts } = homes.get(home.dir);
       return { identity: home.identity, definition, prompts, runs: {}, skills: {}, profiles: {}, leases: {}, aliases: {}, bindings: {} };
     },
+    // Pure: the real one, so a check here refuses what the home refuses.
+    choosePrompt: (...args) => real.choosePrompt(...args),
     async setPrompts(home, variants) {
       calls.push(["setPrompts", variants]);
       const next = Object.fromEntries(variants.map(({ id, ...rest }) => [id, structuredClone(rest)]));
@@ -289,6 +291,23 @@ test("edit-prompts refuses a bad file with every problem and saves nothing; --ch
   writeFileSync(notJson, "{ nope");
   assert.match((await run(edit, ["--check", "--file", notJson], api)).err, /x\.json: /);
   assert.match((await run(edit, ["--check", "--file", join(HERE, "absent.json")], api)).err, /cannot read .*absent\.json: ENOENT/);
+});
+
+test("edit-prompts --check refuses what the home would refuse when it saves: a label over the home's size, and the question row's criterion over its own", async () => {
+  const dir = await fresh("sizes");
+  writeFileSync(join(dir, "question.json"), JSON.stringify(json("question.json")));
+  writeFileSync(join(dir, "prompts.json"), JSON.stringify(PROMPTS.map((v) => (v.role === "base" ? { ...v, label: "x".repeat(201) } : v))));
+  const label = await run(edit, ["--check"], real, { dir });
+  assert.equal(label.code, 1, label.out);
+  assert.match(label.err, /^prompts\.json is not saved: 1 problem\n  the prompt base's label is not a non-empty string of at most 200 characters$/);
+  writeFileSync(join(dir, "prompts.json"), JSON.stringify(PROMPTS));
+  const question = json("question.json");
+  writeFileSync(join(dir, "question.json"), JSON.stringify({ ...question, criteria: { ...question.criteria, public: "x".repeat(2001) } }));
+  const criterion = await run(edit, ["--check"], real, { dir });
+  assert.equal(criterion.code, 1, criterion.out);
+  assert.match(criterion.err, /the prompt company_kind's criterion for public is not a non-empty string of at most 2000 characters/);
+  writeFileSync(join(dir, "question.json"), JSON.stringify(question));
+  assert.equal((await run(edit, ["--check"], real, { dir })).code, 0, "the files as shipped are taken");
 });
 
 test("edit-prompts needs a home: --init makes one from agent.json and its skill first; without it the tool says how", async () => {
