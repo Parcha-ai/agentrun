@@ -99,6 +99,7 @@ test('a teacher with no risk (the swarm\'s risk stage not run) scores the code o
 test('no answer is wrong on every field the teacher has; no teacher block scores nothing', () => {
   const none = scoreMcc({ answer: null, merchant: merchant({ mcc: '5999', riskTier: 'low' }), groups });
   assert.deepEqual([none.mccCorrect, none.mccGroupCorrect, none.riskCorrect, none.riskDistance, none.mccKnown, none.correct], [false, false, false, null, false, false]);
+  assert.throws(() => scoreMcc({ answer: { mcc: '5999', risk: 'low' }, teacher: { mcc: '5999' }, table: groups }), /takes \{ answer, merchant, groups \}/, 'the first call shape fails loudly');
   const unlabelled = scoreMcc({ answer: { mcc: '5999', riskTier: 'low' }, merchant: { merchantId: 'm2' }, groups });
   assert.deepEqual([unlabelled.mccCorrect, unlabelled.mccGroupCorrect, unlabelled.riskCorrect, unlabelled.correct], [null, null, null, null]);
 });
