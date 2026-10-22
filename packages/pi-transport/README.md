@@ -106,6 +106,13 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
   the device for other users). `facts().fuse` is `true` only after that check; a box that fails it is ended and the create fails,
   naming what is missing. It does not prove a given FUSE program mounts, only that the device is there for root. `fuse` with
   `isolation: "gvisor"` is refused with `unsupported`, and with a `gpu` with `invalid`.
+- **Attach never fails a live sandbox and never ends it.** A box found again by `attach` is always handed back, and the caller ends it
+  through the handle if its facts do not fit. The facts are read in the box again (a failed read is tried three times, with a pause).
+  A read that answers gives the facts as measured, so a box with no usable FUSE reads `fuse: false`. If every try errs, the handle
+  keeps the hardware the create measured (the disk, whether FUSE works), which is kept in a tag set through Modal's API: nothing
+  inside the box can write it. A security fact (the Yama setting, the network, the ports) is never taken from a tag on a read error: it is
+  left out, unknown. A box made before the tag existed has nothing measured to fall back on: if every try errs, the attach is an error (the box keeps running; try
+  again), never a guess given as measured. `attach` returns `undefined` for a box that does not exist or has ended.
 - `facts()` also reports what the box has, read in it: `diskGb` (the workspace's filesystem, whole GiB; left out when unreadable or over 1 PiB, which is what gVisor's filesystem claims), `ptraceScope`
   (`kernel.yama.ptrace_scope`; a box without the file reads 0; `null` when it could not be read) and `startedAt` (an ISO 8601 UTC
   time; for Modal, the moment it was asked to start).
