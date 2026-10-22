@@ -145,7 +145,7 @@ export function createBoxConformance(options: BoxConformanceOptions): BoxConform
 					);
 					assertions.ok(ports === undefined || Array.isArray(ports), "ports is a list");
 					assertions.ok(
-						diskGb === undefined || (Number.isInteger(diskGb) && diskGb > 0),
+						diskGb === undefined || (Number.isInteger(diskGb) && diskGb >= 0),
 						"diskGb is a whole number",
 					);
 					assertions.ok(

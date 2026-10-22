@@ -17,6 +17,7 @@ import {
 } from "./box.ts";
 import { downloadByExec, finish, uploadByExec } from "./files.ts";
 import { parseNetwork, parsePorts } from "./network.ts";
+import { PROBE, parseProbe } from "./probe.ts";
 
 const DEFAULT_IMAGE = "debian:bookworm-slim";
 const DEFAULT_WORKSPACE = "/workspace";
@@ -210,24 +211,6 @@ async function* until(
 }
 
 const isNullOr = (value: unknown, type: "number" | "string") => value === null || typeof value === type;
-
-/**
- * What one exec in a new box reads, so the facts are what the box has and not what was asked: the size of the workspace's
- * filesystem in KiB, the Yama setting (a box without it reads 0), and, when `fuse` was asked for, whether `/dev/fuse` opens for a
- * user who is not root and a setuid `fusermount` exists. The workspace and the request come as arguments, never in the text.
- */
-const PROBE = [
-	'echo "disk=$(df -Pk "$1" 2>/dev/null | awk \'NR==2{print $2}\')"',
-	"if [ -r /proc/sys/kernel/yama/ptrace_scope ]; then p=$(cat /proc/sys/kernel/yama/ptrace_scope); else p=0; fi",
-	'echo "ptrace=$p"',
-	'if [ "$2" = fuse ]; then',
-	"  dev=0",
-	"  if [ -c /dev/fuse ] && command -v setpriv >/dev/null 2>&1 && setpriv --reuid=65534 --regid=65534 --clear-groups sh -c 'exec 3<>/dev/fuse' 2>/dev/null; then dev=1; fi",
-	"  h=$(command -v fusermount3 || command -v fusermount); helper=0",
-	'  if [ -n "$h" ] && [ -u "$h" ]; then helper=1; fi',
-	'  echo "fuse_dev=$dev"; echo "fuse_helper=$helper"',
-	"fi",
-].join("\n");
 
 const NETWORKS = ["open", "none", "allowlist"] as const;
 const validPorts = (value: unknown): NonNullable<BoxFacts["ports"]> =>
@@ -444,8 +427,11 @@ class ModalBox implements Box {
 	 * names what is missing; any other box whose read fails keeps unmeasured facts (`null`, `false`).
 	 */
 	async measure(wantsFuse: boolean, context: Context): Promise<Result<void, BoxError>> {
+		// A cancelled call is the caller's answer, never an optional read that did not matter.
+		const cancelled = (): Result<void, BoxError> | undefined =>
+			context.abortSignal?.aborted ? err(new BoxError("aborted", "the call was aborted")) : undefined;
 		const fail = (message: string): Result<void, BoxError> =>
-			wantsFuse ? err(new BoxError("unknown", message)) : ok(undefined);
+			cancelled() ?? (wantsFuse ? err(new BoxError("unknown", message)) : ok(undefined));
 		try {
 			const process = await this.#sandbox.exec(
 				["sh", "-c", PROBE, "sh", this.#facts.workspace, wantsFuse ? "fuse" : "-"],
@@ -455,34 +441,25 @@ class ModalBox implements Box {
 				},
 			);
 			const finished = await finish(this.#adapt(process, SETUP_TIMEOUT_MS, context));
-			if (!finished.ok) return wantsFuse ? err(finished.error) : ok(undefined);
+			if (!finished.ok)
+				return finished.error.code === "aborted" || wantsFuse
+					? err(finished.error)
+					: (cancelled() ?? ok(undefined));
 			if (finished.value.exitCode !== 0)
 				return fail(`could not read what the box has: ${finished.value.stderr.trim()}`);
-			const read = new Map(
-				new TextDecoder()
-					.decode(finished.value.stdout)
-					.split("\n")
-					.map((line) => line.split("=") as [string, string]),
-			);
-			const kib = Number(read.get("disk"));
-			const ptrace = read.get("ptrace");
-			const fuse = read.get("fuse_dev") === "1" && read.get("fuse_helper") === "1";
-			if (wantsFuse && !fuse) {
-				const missing = [
-					read.get("fuse_dev") === "1" ? "" : "/dev/fuse openable by a user who is not root (and setpriv)",
-					read.get("fuse_helper") === "1" ? "" : "a setuid fusermount",
-				].filter(Boolean);
-				return fail(`the box asked for fuse and lacks ${missing.join(" and ")}`);
+			const reading = parseProbe(new TextDecoder().decode(finished.value.stdout));
+			if (wantsFuse && !reading.fuse) {
+				return fail(`the box asked for fuse and lacks ${reading.fuseMissing.join(" and ")}`);
 			}
 			this.#facts = {
 				...this.#facts,
-				...(Number.isFinite(kib) && kib > 0 ? { diskGb: Math.floor(kib / (1024 * 1024)) } : {}),
-				...(ptrace !== undefined && /^[0-3]$/.test(ptrace) ? { ptraceScope: Number(ptrace) as 0 | 1 | 2 | 3 } : {}),
-				fuse: wantsFuse && fuse,
+				...(reading.diskGb === undefined ? {} : { diskGb: reading.diskGb }),
+				...(reading.ptraceScope === undefined ? {} : { ptraceScope: reading.ptraceScope }),
+				fuse: wantsFuse && reading.fuse,
 			};
 			return ok(undefined);
 		} catch (cause) {
-			return wantsFuse ? err(boxError("could not read what the box has", cause)) : ok(undefined);
+			return cancelled() ?? (wantsFuse ? err(boxError("could not read what the box has", cause)) : ok(undefined));
 		}
 	}
 

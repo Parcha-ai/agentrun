@@ -489,6 +489,37 @@ describe("modal boxes", () => {
 		});
 	});
 
+	it("returns a cancellation during the box's own probe, for attach and for create, though no FUSE was asked for", async () => {
+		await withRoot(async (root) => {
+			const sdk = new FakeModal();
+			const provider = modalBoxes(sdk, { appName: "a" });
+			const made = unwrap(await provider.create({ ...SPEC, workspace: root }, context));
+			const cancelDuringProbe = (sandbox: (typeof sdk.sandboxList)[number], cancel: () => void) => {
+				const exec = sandbox.exec.bind(sandbox);
+				sandbox.exec = async (command, params) => {
+					if (command[0] === "sh" && command[2]?.includes("ptrace_scope")) cancel();
+					return exec(command, params);
+				};
+			};
+			const cancelAttach = withCancel(context);
+			cancelDuringProbe(sdk.sandboxList[0] as (typeof sdk.sandboxList)[number], () => cancelAttach.cancel());
+			const attached = await provider.attach(made.id, cancelAttach.context);
+			expect(attached.ok ? "ok" : attached.error.code).toBe("aborted");
+
+			const cancelCreate = withCancel(context);
+			const create = sdk.sandboxes.create;
+			sdk.sandboxes.create = async (app, image, params) => {
+				const sandbox = await create(app, image, params);
+				cancelDuringProbe(sandbox as (typeof sdk.sandboxList)[number], () => cancelCreate.cancel());
+				return sandbox;
+			};
+			const created = await provider.create({ ...SPEC, workspace: root }, cancelCreate.context);
+			expect(created.ok ? "ok" : created.error.code).toBe("aborted");
+			expect(sdk.running().map((s) => s.sandboxId)).toEqual([made.id]);
+			unwrap(await made.destroy(context));
+		});
+	});
+
 	it("ends the sandbox of a create the caller cancelled, at each step", async () => {
 		for (const step of ["app", "image", "sandbox"] as const) {
 			await withRoot(async (root) => {

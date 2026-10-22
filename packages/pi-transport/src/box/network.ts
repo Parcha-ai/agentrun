@@ -1,7 +1,7 @@
 import { BoxError, type BoxNetwork, type BoxPort, type BoxSpec } from "./box.ts";
 
 /** A domain, or a wildcard domain with one leading `*.`. */
-const DOMAIN = /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$/i;
+const DOMAIN = /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 const CIDR_V4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/;
 
 const isCidr = (entry: string): boolean => {

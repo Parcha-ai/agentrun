@@ -29,6 +29,11 @@ describe("a spec's network", () => {
 			["10.0.0.1"],
 			["::1/128"],
 			["bad domain.com"],
+			["api.example-"],
+			["a.example.c-"],
+			["-a.example.com"],
+			["example.com-"],
+			["*.example-"],
 			[""],
 			[1 as unknown as string],
 		];
