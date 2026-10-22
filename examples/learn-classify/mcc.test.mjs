@@ -7,7 +7,8 @@ import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { runLoop, scriptedParts } from './runner.mjs';
+import { openOut, runLoop, scriptedParts } from './runner.mjs';
+import { passSelfTest } from './selftest.mjs';
 import { fixtureWeb, scriptedModel } from './scripted.mjs';
 import { FIXTURES_MCC } from './scripted-mcc.mjs';
 import { SETS } from './sets.mjs';
@@ -238,4 +239,19 @@ test('hindsight on an MCC run: a teacher disagreement gets one reflection, shown
   assert.match(prompt, /The teacher's value \(another agent's label, not ground truth\): 5999/);
   assert.match(prompt, /classify the merchant Paper Lantern Gifts/);
   assert.deepEqual(row.hindsight.proposals.map((p) => [p.status, p.untrusted, p.reasons]), [['proposed', false, undefined], ['refused', false, ['case_data']]]);
+});
+
+test('a live MCC pass\'s self-test passes: its lookups (mcc_groups, mcc_codes) are known to run neither a command nor code', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const base = mccParts();
+  const parts = {
+    ...base,
+    mode: 'live',
+    modelFor: (job, run) => ({ ...base.modelFor(job, run), agent: { model: { provider: 'faux', modelId: 'claude-opus-5-5' }, thinkingLevel: 'high' }, node: { model: { provider: 'faux', modelId: 'gpt-6-luna' }, thinkingLevel: 'medium' } }),
+    browserCheck: async () => ({ browser: 'scripted', refused: [], blocked: ['sec.gov'], costUsd: 0 }),
+  };
+  const { repo } = await openOut(out, { mode: 'live', set: SETS.mcc });
+  const report = await passSelfTest({ out, repo, parts });
+  assert.equal(report.ok, true, JSON.stringify(report.problems));
+  for (const where of ['root', 'callNode', 'agentNode']) assert.ok(['mcc_groups', 'mcc_codes'].every((name) => report.tools[where].includes(name)), where);
 });
