@@ -18,8 +18,8 @@ const OPENROUTER_DEFAULT_MODEL = "~typesafe/jev-latest";
 
 /** The provider an environment's keys select: OpenRouter only when `OPENROUTER_API_KEY` is set and `TYPESAFE_API_KEY` is not. The runner itself never reads this. */
 export function jevProviderFromEnv(env: Record<string, string | undefined> = process.env): JevProvider {
-  const set = (name: string) => typeof env[name] === "string" && env[name]!.trim().length > 0;
-  return set(keyVariable.openrouter) && !set(keyVariable.typesafe) ? "openrouter" : "typesafe";
+  const isSet = (name: string) => typeof env[name] === "string" && env[name]!.trim().length > 0;
+  return isSet(keyVariable.openrouter) && !isSet(keyVariable.typesafe) ? "openrouter" : "typesafe";
 }
 
 /** A still image a request carries: PNG or JPEG file bytes and the type they are. The runner builds the SDK's image from it and sends it as a multipart file part. */
@@ -59,7 +59,7 @@ function answersBox(model: string): boolean {
 function* stringValues(value: unknown): Generator<string> {
   if (typeof value === "string") yield value;
   else if (Array.isArray(value)) for (const each of value) yield* stringValues(each);
-  else if (record(value)) for (const each of Object.values(value)) yield* stringValues(each);
+  else if (isRecord(value)) for (const each of Object.values(value)) yield* stringValues(each);
 }
 const startsWith = (bytes: Uint8Array, prefix: number[]) => prefix.every((byte, index) => bytes[index] === byte);
 const imageMagic: Record<JevImage["mime"], number[]> = { "image/png": [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], "image/jpeg": [0xff, 0xd8, 0xff] };
@@ -111,12 +111,12 @@ export class JevError extends Error {
   }
 }
 
-const configuration = (condition: boolean, message: string): void => {
+const requireConfig = (condition: boolean, message: string): void => {
   if (!condition) throw new JevError("configuration", message);
 };
-const milliseconds = (n: number, allowZero = false): boolean => Number.isSafeInteger(n) && n >= (allowZero ? 0 : 1) && n <= MAX_TIMER_MS;
-const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
-const tokens = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+const isTimerMs = (n: number, allowZero = false): boolean => Number.isSafeInteger(n) && n >= (allowZero ? 0 : 1) && n <= MAX_TIMER_MS;
+const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
+const isTokenCount = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
 
 function abortable<T>(promise: PromiseLike<T>, signal: AbortSignal, error: () => JevError): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -155,18 +155,18 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
   const retryMaxMs = options.retryMaxMs ?? 5_000;
   // A JavaScript caller's `client: null` is no client, the same as an absent one.
   const hostClient = options.client ?? undefined;
-  configuration(timeoutMs === null || milliseconds(timeoutMs), `timeoutMs must be null or a positive integer of at most ${MAX_TIMER_MS}.`);
-  configuration(maxStateBytes === null || (Number.isSafeInteger(maxStateBytes) && maxStateBytes > 0), "maxStateBytes must be null or a positive safe integer.");
-  configuration(timeoutMs !== null || hostClient !== undefined, "The TypeSafe SDK requires a finite timeout. For timeoutMs: null, supply a cancellation-only host client.");
-  configuration(Number.isInteger(maxAttempts) && maxAttempts >= 1 && maxAttempts <= 10, "maxAttempts must be an integer from 1 to 10.");
-  configuration(milliseconds(retryBaseMs, true) && milliseconds(retryMaxMs, true) && retryBaseMs <= retryMaxMs, "Retry delays must be nonnegative integers; retryBaseMs cannot exceed retryMaxMs.");
-  configuration(hostClient === undefined || (options.apiKey === undefined && options.baseURL === undefined && options.fetch === undefined && options.provider === undefined), "Supply either client or transport options, not both.");
+  requireConfig(timeoutMs === null || isTimerMs(timeoutMs), `timeoutMs must be null or a positive integer of at most ${MAX_TIMER_MS}.`);
+  requireConfig(maxStateBytes === null || (Number.isSafeInteger(maxStateBytes) && maxStateBytes > 0), "maxStateBytes must be null or a positive safe integer.");
+  requireConfig(timeoutMs !== null || hostClient !== undefined, "The TypeSafe SDK requires a finite timeout. For timeoutMs: null, supply a cancellation-only host client.");
+  requireConfig(Number.isInteger(maxAttempts) && maxAttempts >= 1 && maxAttempts <= 10, "maxAttempts must be an integer from 1 to 10.");
+  requireConfig(isTimerMs(retryBaseMs, true) && isTimerMs(retryMaxMs, true) && retryBaseMs <= retryMaxMs, "Retry delays must be nonnegative integers; retryBaseMs cannot exceed retryMaxMs.");
+  requireConfig(hostClient === undefined || (options.apiKey === undefined && options.baseURL === undefined && options.fetch === undefined && options.provider === undefined), "Supply either client or transport options, not both.");
   const provider = options.provider ?? "typesafe";
-  configuration(provider === "typesafe" || provider === "openrouter", "provider must be typesafe or openrouter.");
+  requireConfig(provider === "typesafe" || provider === "openrouter", "provider must be typesafe or openrouter.");
   const pricing = options.pricing ? { ...options.pricing } : undefined;
-  if (pricing) configuration([pricing.inputUsdPerMillionTokens, pricing.outputUsdPerMillionTokens].every(n => Number.isFinite(n) && n >= 0), "Configured token prices must be finite nonnegative numbers.");
+  if (pricing) requireConfig([pricing.inputUsdPerMillionTokens, pricing.outputUsdPerMillionTokens].every(n => Number.isFinite(n) && n >= 0), "Configured token prices must be finite nonnegative numbers.");
   const model = options.model ?? (provider === "openrouter" ? OPENROUTER_DEFAULT_MODEL : "jev-latest");
-  configuration(typeof model === "string" && model.trim().length > 0, "model must be a nonempty string.");
+  requireConfig(typeof model === "string" && model.trim().length > 0, "model must be a nonempty string.");
   let client: JevClient;
   try {
     const key = options.apiKey ?? (provider === "openrouter" ? process.env[keyVariable.openrouter] : undefined);
@@ -221,14 +221,14 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
       try {
         body = JSON.stringify({ state: JSON.parse(serializedState), model: callModel, questions: params.questions });
         request = JSON.parse(body) as SystemOneRequest;
-        if (!record(request.questions) || Object.keys(request.questions).length === 0) throw new Error();
+        if (!isRecord(request.questions) || Object.keys(request.questions).length === 0) throw new Error();
       } catch {
         throw invalid("invalid_questions", "Jev requires a nonempty JSON question map; no request was sent.");
       }
       // Images and Box questions: validated whole before any send; the header goes with exactly these requests.
-      const hasBox = Object.values(request.questions).some(question => record(question) && question.type === "box");
+      const hasBox = Object.values(request.questions).some(question => isRecord(question) && question.type === "box");
       const given = params.assets ?? {};
-      if (!record(given)) throw invalid("invalid_assets", "assets must map each reference to an image; no request was sent.");
+      if (!isRecord(given)) throw invalid("invalid_assets", "assets must map each reference to an image; no request was sent.");
       const references = Object.keys(given);
       const carriesImage = references.length > 0;
       if ((carriesImage || hasBox) && provider !== "typesafe") throw invalid("unsupported_provider", "Images and Box questions are sent to TypeSafe's own API only; the OpenRouter path is not verified for them. No request was sent.");
@@ -238,12 +238,12 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
       let assetDigests: Record<string, { sha256: string; mime: string; bytes: number }> | undefined;
       if (carriesImage) {
         // A reference is replaced where it sits inside a string value of the state, an instruction or a criterion; keys (question ids, option names) are never replaced.
-        const texts = [...stringValues(request.state), ...Object.values(request.questions).flatMap(question => record(question) ? [...stringValues(question.instructions), ...stringValues(question.criteria)] : [])];
+        const texts = [...stringValues(request.state), ...Object.values(request.questions).flatMap(question => isRecord(question) ? [...stringValues(question.instructions), ...stringValues(question.criteria)] : [])];
         assets = Object.create(null) as Record<string, Image>; assetDigests = Object.create(null) as Record<string, { sha256: string; mime: string; bytes: number }>;
         for (const reference of references) {
           const image = given[reference];
           const sound = reference.length > 0 && Buffer.byteLength(reference, "utf8") <= MAX_REFERENCE_BYTES && !/["\\\u0000-\u001f]/.test(reference)
-            && record(image) && image.bytes instanceof Uint8Array && (image.mime === "image/png" || image.mime === "image/jpeg")
+            && isRecord(image) && image.bytes instanceof Uint8Array && (image.mime === "image/png" || image.mime === "image/jpeg")
             && image.bytes.byteLength > 0 && image.bytes.byteLength <= MAX_IMAGE_BYTES && startsWith(image.bytes, imageMagic[image.mime]);
           if (!sound) throw invalid("invalid_assets", `Each image is a PNG or JPEG file of at most ${MAX_IMAGE_BYTES / 1024 / 1024} MiB, with bytes that are that type and a plain reference. No request was sent.`);
           if (!texts.some(text => text.includes(reference))) throw invalid("invalid_assets", "Every image reference must appear in the state or a question. No request was sent.");
@@ -288,7 +288,7 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
           if (status === 429 && billable) throw billable.status === undefined ? new JevError("connection", "Jev transport failed.", attempt) : new JevError("http", `Jev returned HTTP ${billable.status}.`, attempt, billable.status);
           if (status !== undefined) {
             const safeStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
-            const capacity = error instanceof APIError && record(error.body) && record(error.body.detail)
+            const capacity = error instanceof APIError && isRecord(error.body) && isRecord(error.body.detail)
               && error.body.detail.error_type === "max_tokens_exceeded";
             // Only the structured reason is named; the provider's body text never reaches the message.
             const returned = safeStatus === undefined ? "Jev returned an HTTP failure" : `Jev returned HTTP ${safeStatus}`;
@@ -299,7 +299,7 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
           if (error instanceof APIConnectionError) throw new JevError("connection", "Jev transport failed.", attempt);
           throw new JevError("invalid_request", "Jev could not process the request. Check question and transport configuration.", attempt);
         }
-        if (!record(result)) throw invalidResponse("response_shape", "Jev returned an invalid response.");
+        if (!isRecord(result)) throw invalidResponse("response_shape", "Jev returned an invalid response.");
         const answers = result.answers;
         // Checked against the questions as they were sent: a value JSON cannot carry (an undefined criterion) was never asked.
         try { validateAnswers(request.questions as typeof params.questions, answers); }
@@ -309,12 +309,12 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
         }
         const usage = result.usage;
         // Usage carries token counts, a provider-reported cost (USD), or both; a half pair of counts or a bad cost is invalid.
-        const counted = record(usage) && tokens(usage.input_tokens) && tokens(usage.output_tokens);
-        const reported = record(usage) && usage.cost !== undefined && usage.cost !== null;
+        const counted = isRecord(usage) && isTokenCount(usage.input_tokens) && isTokenCount(usage.output_tokens);
+        const reported = isRecord(usage) && usage.cost !== undefined && usage.cost !== null;
         const reportedCost = reported && typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0 ? usage.cost : undefined;
-        const noCounts = record(usage) && usage.input_tokens === undefined && usage.output_tokens === undefined;
+        const noCounts = isRecord(usage) && usage.input_tokens === undefined && usage.output_tokens === undefined;
         // Accepted: no usage; both counts; or a valid cost with both counts or with neither.
-        const usageValid = usage == null || (record(usage) && (reported ? reportedCost !== undefined && (counted || noCounts) : counted));
+        const usageValid = usage == null || (isRecord(usage) && (reported ? reportedCost !== undefined && (counted || noCounts) : counted));
         if (!usageValid) throw invalidResponse("token_usage", "Jev returned invalid token usage.");
         if (result.model != null && (typeof result.model !== "string" || !result.model.trim())) {
           throw invalidResponse("model_identifier", "Jev returned an invalid model identifier.");
