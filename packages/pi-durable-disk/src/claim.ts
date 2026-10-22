@@ -452,11 +452,11 @@ function detail(r: Ran, secret = ""): string {
 
 const unescapeMount = (s: string) => s.replace(/\\([0-7]{3})/g, (_, o: string) => String.fromCharCode(parseInt(o, 8)));
 
-async function mountEntry(host: Host, mountpoint: string): Promise<{ source: string; fstype: string } | null> {
-  let found: { source: string; fstype: string } | null = null;
+async function mountEntry(host: Host, mountpoint: string): Promise<{ source: string; fstype: string; options: string[] } | null> {
+  let found: { source: string; fstype: string; options: string[] } | null = null;
   for (const line of (await readFile(host.procMounts, "utf8")).split("\n")) {
     const f = line.split(" ");
-    if (f.length >= 3 && unescapeMount(f[1]) === mountpoint) found = { source: unescapeMount(f[0]), fstype: f[2] };
+    if (f.length >= 3 && unescapeMount(f[1]) === mountpoint) found = { source: unescapeMount(f[0]), fstype: f[2], options: (f[3] ?? "").split(",") };
   }
   return found;
 }
@@ -594,7 +594,12 @@ async function mountTarget(host: Host, target: MountTarget, mountpoint: string, 
   const args = [host.archil, "mount", ...(force ? ["--force"] : []), `${target.disk}:/${path}`, mountpoint, "--region", target.region];
   const r = await sh(asRoot(host, args), host.timeoutMs.mount, `${token}\n`);
   const entry = await mountEntry(host, mountpoint);
-  if (ok(r) && entry && isOurs(entry, target)) return;
+  if (ok(r) && entry && isOurs(entry, target)) {
+    // archil-scoped's bind remount makes it nosuid,nodev; a mount without them (an older wrapper) is never run on.
+    if (entry.options.includes("nosuid") && entry.options.includes("nodev")) return;
+    await unmountWith(host, mountpoint).catch(() => {});
+    throw new ClaimError("MOUNT_FAILED", `archil mount ${path} left ${mountpoint} without nosuid,nodev (archil-scoped's bind remount makes them): unmounted`);
+  }
   if (entry) await unmountWith(host, mountpoint).catch(() => {});
   if (ok(r)) throw new ClaimError("MOUNT_FAILED", `archil mount ${path} exited 0 but ${mountpoint} is not an archil mount of ${path}`);
   if (STALE_MARKER.test(r.stderr)) throw new ClaimError("MOUNT_FAILED", `an archil daemon of this host still runs for ${mountpoint}: ${detail(r, token)}`);
