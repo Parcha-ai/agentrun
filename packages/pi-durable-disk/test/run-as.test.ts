@@ -4,13 +4,13 @@
 // chown allows.
 import { describe, it, test } from "node:test";
 import assert from "node:assert/strict";
-import { lstatSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
-import { appWritableReason, main, mountInfo, runUser, toolsUserCheck } from "../src/cli.ts";
+import { appWritableReason, instanceMounts, main, mountInfo, runUser, toolsUserCheck } from "../src/cli.ts";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { archilEnv, EnvError } from "../src/env.ts";
@@ -191,7 +191,8 @@ test("the launcher's secrets descriptor (PI_TRANSPORT_SECRETS_FD) never reaches 
 
 test("under --run-as the root instance refuses an --app the agent's commands could change: not root's, writable by group or others anywhere on its path, a link they could replace, or inside the run's root", () => {
   type Node = { uid: number; mode: number; link?: string };
-  const tree = (nodes: Record<string, Node>, mounts?: { point: string; ro: boolean }[]) => {
+  type Mount = { point: string; ro: boolean; dev: string; root: string };
+  const tree = (nodes: Record<string, Node>, mounts?: Mount[]) => {
     const lstatSync = (p: string) => {
       const n = nodes[p];
       if (!n) throw Object.assign(new Error(`ENOENT ${p}`), { code: "ENOENT" });
@@ -259,21 +260,42 @@ test("under --run-as the root instance refuses an --app the agent's commands cou
   // A read-only mount: nothing in the box can write, chmod, rename or unlink there (EROFS), and the agent's commands cannot
   // remount, so its owner does not matter. dockerHost bind-mounts the app's directory, the host user's, read-only.
   const docker = { ...base, "/opt/pda": dir(), "/opt/pda/app": dir(1000, 0o40775), "/opt/pda/app/app.mjs": file(1000, 0o100664), "/opt/pda/app/link.mjs": link("app.mjs", 1000) };
-  const rw = { point: "/", ro: false };
-  const appRo = { point: "/opt/pda/app", ro: true };
-  for (const app of ["/opt/pda/app/app.mjs", "/opt/pda/app/link.mjs"]) {
-    assert.equal(appWritableReason(app, "/mnt/archil", tree(docker, [rw, appRo])), null, `the host user's app on a read-only bind mount: ${app}`);
+  // The container's own root (an overlay), and the host directory bind-mounted read-only (source: the host's /home/u/app).
+  const rw: Mount = { point: "/", ro: false, dev: "0:50", root: "/" };
+  const appRo: Mount = { point: "/opt/pda/app", ro: true, dev: "8:1", root: "/home/u/app" };
+  // Bind mounts of the same host file system that do not overlap the app's source, as Docker makes for /etc/hosts.
+  const hosts: Mount = { point: "/etc/hosts", ro: false, dev: "8:1", root: "/var/lib/docker/containers/c1/hosts" };
+  const passes: [string, Mount[]][] = [
+    ["alone", [rw, appRo]],
+    ["beside a writable bind of the same file system that does not overlap its source", [rw, appRo, hosts]],
+    ["beside a writable mount of another file system with the same root", [rw, appRo, { point: "/srv", ro: false, dev: "8:2", root: "/home/u/app" }]],
+    ["beside a writable bind of a sibling whose name it prefixes", [rw, appRo, { point: "/srv", ro: false, dev: "8:1", root: "/home/u/application" }]],
+  ];
+  for (const [why, mounts] of passes) {
+    for (const app of ["/opt/pda/app/app.mjs", "/opt/pda/app/link.mjs"]) {
+      assert.equal(appWritableReason(app, "/mnt/archil", tree(docker, mounts)), null, `the host user's app on a read-only bind mount, ${why}: ${app}`);
+    }
   }
-  const notRo: [string, { point: string; ro: boolean }[], string, Record<string, Node>, RegExp][] = [
-    ["the same files on a writable mount", [rw], "/opt/pda/app/app.mjs", docker, /\/opt\/pda\/app is owned by uid 1000/],
-    ["a read-only mount covered by a writable one at the same point", [rw, appRo, { point: "/opt/pda/app", ro: false }], "/opt/pda/app/app.mjs", docker, /uid 1000/],
-    ["a read-only mount elsewhere", [rw, { point: "/usr", ro: true }, { point: "/opt/pda/ap", ro: true }], "/opt/pda/app/app.mjs", docker, /uid 1000/],
-    ["the run's root, read-only or not", [rw, { point: "/mnt/archil/runs/r1", ro: true }], "/mnt/archil/runs/r1/work/app.mjs", base, /inside the run/],
+  const notRo: [string, Mount[], string, Record<string, Node>, RegExp][] = [
+    ["the same files on a writable mount", [rw], "/opt/pda/app/app.mjs", docker, /\/opt\/pda\/app is owned by uid 1000, not root$/],
+    ["a read-only mount covered by a writable one at the same point", [rw, appRo, { point: "/opt/pda/app", ro: false, dev: "0:60", root: "/" }], "/opt/pda/app/app.mjs", docker, /uid 1000/],
+    ["a read-only mount elsewhere", [rw, { point: "/usr", ro: true, dev: "0:51", root: "/" }, { point: "/opt/pda/ap", ro: true, dev: "8:1", root: "/home/u/app" }], "/opt/pda/app/app.mjs", docker, /uid 1000/],
+    ["the run's root, read-only or not", [rw, { point: "/mnt/archil/runs/r1", ro: true, dev: "0:70", root: "/" }], "/mnt/archil/runs/r1/work/app.mjs", base, /inside the run/],
+    // Read-only at the app's mount point does not make its source read-only: the same source mounted writable anywhere
+    // in the instance's table (the same device, an overlapping root) takes the exemption away, even where only root
+    // could reach that mount.
+    ["its source also mounted writable", [rw, appRo, { point: "/work/app", ro: false, dev: "8:1", root: "/home/u/app" }], "/opt/pda/app/app.mjs", docker, /owned by uid 1000, not root .*read-write at \/work\/app/],
+    ["a directory above its source mounted writable", [rw, appRo, { point: "/work", ro: false, dev: "8:1", root: "/home/u" }], "/opt/pda/app/app.mjs", docker, /read-write at \/work\b/],
+    ["a directory below its source mounted writable", [rw, appRo, { point: "/work/sub", ro: false, dev: "8:1", root: "/home/u/app/sub" }], "/opt/pda/app/app.mjs", docker, /read-write at \/work\/sub/],
+    ["the whole file system mounted writable", [rw, appRo, { point: "/host", ro: false, dev: "8:1", root: "/" }], "/opt/pda/app/app.mjs", docker, /read-write at \/host/],
   ];
   for (const [why, mounts, app, nodes, re] of notRo) {
     const reason = appWritableReason(app, "/mnt/archil", tree(nodes, mounts));
     assert.ok(reason !== null && re.test(reason), `${why}: ${reason}`);
   }
+  // The mounts are the instance's own (/proc/self, read at its start, before any command of the agent's exists), never a
+  // command's: another process's user or mount namespace never changes the table root's walk reads.
+  assert.deepEqual(instanceMounts(), mountInfo(readFileSync("/proc/self/mountinfo", "utf8")));
   // /proc/self/mountinfo: the mount point is field 5 (octal escapes), "ro" in the mount's or the superblock's options.
   assert.deepEqual(
     mountInfo([
@@ -282,9 +304,13 @@ test("under --run-as the root instance refuses an --app the agent's commands cou
       "31 22 0:5 / /srv rw,relatime - squashfs /dev/loop0 ro",
       "",
     ].join("\n")),
-    [{ point: "/", ro: false }, { point: "/opt/pda/app", ro: true }, { point: "/srv", ro: true }],
+    [
+      { point: "/", ro: false, dev: "8:1", root: "/" },
+      { point: "/opt/pda/app", ro: true, dev: "8:1", root: "/home/u/my app" },
+      { point: "/srv", ro: true, dev: "0:5", root: "/" },
+    ],
   );
-  assert.deepEqual(mountInfo("40 22 0:9 / /mnt/a\\040b rw - tmpfs t rw\n"), [{ point: "/mnt/a b", ro: false }]);
+  assert.deepEqual(mountInfo("40 22 0:9 / /mnt/a\\040b rw - tmpfs t rw\n"), [{ point: "/mnt/a b", ro: false, dev: "0:9", root: "/" }]);
 
   // On this machine's own files: a root-owned binary passes, through root's own link too (/bin on a merged /usr); a file
   // this user owns does not, nor root's binary through a link in a directory this user can write.
