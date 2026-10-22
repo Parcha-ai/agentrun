@@ -32,13 +32,14 @@ import type { CodeModeOptions } from './code-mode.ts';
 import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
 import { boxLedger, hostLabelIn, ledgerBoxes, markReceiptWritten, parseHostBox, RUN_LABEL, supervisedChild, tapBox, type Boxes, type LedgerEntry, type RunFiles } from './boxes.ts';
 import { credentialIn } from './scan.ts';
+import { hostTap } from './host-tap.ts';
 import type { Recorder, Redact } from './record.ts';
 import { priceJudge } from './judge.ts';
 import { askToBeKilled, aroundOwnFiling, crossings, tapFakes, tapHost, tapLive, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
 import { keepLooks, shownShots } from './looks.ts';
 import { transcriberFromEnv } from './transcriber.ts';
 import type { LookRecord } from '@parcha/pi-vision';
-import { localPlace, type Exit, type Place, type Runner } from './place.ts';
+import { localPlace, type Exit, type HostTap, type Place, type Runner } from './place.ts';
 import { checkModelKeys, checkPrograms, refuseJudgeCaps, inputOf, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, killsOf, maxUsdOf, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
 import { cost } from './fold.ts';
 import { checkItems, fetchSources, missingCommitted, readSources, withSources } from './sources.ts';
@@ -62,7 +63,7 @@ export type DemoOptions = {
   /** `import.meta.url` of the demo's `run.ts`: the file the supervisor starts, with `--child`, as each process of the run. */
   self: string;
   /** Where the session lives and how its process starts, stops and restarts (the place seam). Default: the local place, a child process of this machine. A package supplies another (a box that moves the session). */
-  place?: (context: { paths: RunPlace; self: string; destroyBoxes: () => void | Promise<void>; requestFile: (attempt: number) => string }) => Place | Promise<Place>;
+  place?: (context: { paths: RunPlace; self: string; destroyBoxes: () => void | Promise<void>; requestFile: (attempt: number) => string; /** The supervisor's tap of the place's host boxes (H3): its `provider` for the place's host driver and its `unheld` hook, both or neither. */ hostTap: HostTap }) => Place | Promise<Place>;
   spec: DemoSpec;
   job: Job;
   fakes: Fakes;
@@ -538,6 +539,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     ? { readRunFile: async (path) => { try { return new Uint8Array(readFileSync(join(boxIds, path.slice(path.indexOf('/') + 1)))); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; } }, listRunFiles: async () => { try { return readdirSync(boxIds).sort(); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; } } }
     : { readRunFile: (path) => place.readRunFile!(path), listRunFiles: (dir) => place.listRunFiles!(dir) };
   const labelDir = 'box-ids.internal';
+  // The place's host boxes through the supervisor's tap (H3): their lines are the supervisor's, held until each box's bound label is read.
+  const tap = hostTap({ line: (kind, data) => supervisor.host(kind, data), runLabelKey: RUN_LABEL, runLabel });
   const homeBoxLabels = new Map<string, string>();
   const homeBoxSeen = new Map<string, string>();
   // A host box the place started whose label its process never claimed: the recording is refused, never finished without it (its time would be missing from the cost).
@@ -618,6 +621,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
             try { label = await hostLabelIn(labelFiles!, labelDir, { provider: box.provider, key, run: runLabel }); } catch (error) { if (final) unlabelled ??= { key, provider: box.provider, why: `its label cannot be read (${messageOf(error, paths.root)})` }; continue; }
             if (label === undefined) { if (final) unlabelled ??= { key, provider: box.provider, why: 'its child never claimed it' }; continue; }
             homeBoxLabels.set(key, label);
+            tap.bound(key, label);
           }
           const at = (value: unknown) => (typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : Number.NaN);
           const from = at(box.from);
@@ -655,7 +659,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // Metering: the recording's lines as they stand, folded; past the cap the supervisor stops the run.
   const meterTimer = maxUsd === null ? undefined : setInterval(() => { if (meterKnown(recordDir) > maxUsd) overBudget = true; }, 250);
   try {
-    place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
+    place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile, hostTap: { provider: tap.provider, unheld: tap.unheld } }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
     // The follower's hold reads the place's clock allowance from here on (it was assigned before the place existed, so it was never seen).
     placeRef = place;
     // A place of the demo's own that cannot let the supervisor read the run's labels (no readRunFile and listRunFiles) cannot share one numbering with the tools' boxes:
@@ -720,6 +724,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           : { point: null, n: null, label: 'max-usd', why: `past --max-usd ${maxUsd}`, kind: 'process' };
         supervisor.host('kill', { gen, label: killed.label, crossing: killed.point === null ? null : { point: killed.point, n: killed.n }, side: 'child', kind: killed.kind });
         kills.push({ gen, point: killed.point, kind: killed.kind, why: killed.why, ...(typeof asked === 'object' && plan.run && !('storm' in plan.run) ? { n: asked.n, planned: plan.run.n } : {}) });
+        if (killed.kind === 'box') tap.killing(gen);
         try { await place.kill(runner!, killed.kind); } catch (error) { failed(String((error as { code?: unknown } | null)?.code ?? 'KILL_FAILED'), messageOf(error, paths.root), killed.kind); }
         await settled(readStatus());
       };

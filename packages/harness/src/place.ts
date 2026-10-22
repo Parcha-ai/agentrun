@@ -32,6 +32,27 @@ export type PlaceDelegation = { clientId: string; inodeId: string | number; path
  *  sits inside the run's directory (`runs/<id>/record/<attempt>/`), so the delegation covers it and the sweep removes it. */
 export type RecordHome = { dir(attempt: number): string; bringHome(into: string, options?: { final?: boolean }): Promise<void> };
 
+/** The run's own files during a place's unheld window (disk's K9 `UnheldRun`, the members the harness uses): K8's reads, and a
+ *  create-only `put` that answers an error with code `EXISTS` when the path is there, writing nothing. A window takes no secret. */
+export type UnheldRun = {
+  readonly signal: AbortSignal;
+  read(path: string): Promise<Uint8Array | null>;
+  list(dir: string): Promise<string[]>;
+  put(path: string, text: string): Promise<void>;
+};
+/** The start a place's unheld window is for (disk's K9 `UnheldStart`): its attempt, and `box`, exactly the `HOST_BOX` that start
+ *  makes (absent when the place hands none over). */
+export type UnheldStart = { readonly attempt: number; readonly box?: { readonly provider: string; readonly key: string; readonly run: string } };
+/** The supervisor's tap of a place's host boxes (H3), handed to a place of the demo's own: a place whose host driver makes boxes
+ *  (disk's `boxHost`) passes it `provider(...)` and its own `unheld` hook `unheld`, both or neither, so each host box's life is in the
+ *  recording by its run-wide label. `unheld` refuses a start with no host box: wire it only with the tapped provider. */
+export type HostTap = {
+  /** The provider the place's host driver makes its boxes with, tapped: the same type out as in. */
+  provider<P extends { readonly name: string }>(provider: P): P;
+  /** The place's unheld hook: it notes the start's host box (a pending entry of its own) and returns no environment. */
+  unheld(run: UnheldRun, start: UnheldStart): Promise<void>;
+};
+
 export type Place = {
   /** For the recording's lines and the README: `local`, `box:docker`, `archil`. */
   name: string;
