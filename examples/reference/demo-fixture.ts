@@ -205,6 +205,10 @@ const withReport = (chosen: typeof job): typeof job => (process.env.DEMO_REPORT 
 // its own root): the supervisor reads the label itself. `unclaimed` reports the home box and has the reads but never hands it over, so no process claims it. `unreadable` hands it
 // over but its reads fail; `slow` hands it over but its reads answer only after 40 s, past the supervisor's bound on a read. `reporting` reports the home box with no reads and no
 // handover; `handing` hands it over with no reads. Any other value is the local place, which has neither.
+// And a run process that prints a credential-shaped line to its stderr and dies at once (`DEMO_STDERR_SECRET`, in the run's process only): the final-read
+// refusal, which names a failed process's own text, must never carry it.
+if (process.env.DEMO_STDERR_SECRET && process.env.DEMO_ENTRY) { process.stderr.write(`the tool printed token ${process.env.DEMO_STDERR_SECRET}\nand a plain line after it\n`); process.exit(3); }
+
 const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: string; root: string }; self: string; requestFile: (attempt: number) => string }) => {
   const { localPlace } = await import('@parcha/agentrun-harness');
   const { readFile, readdir } = await import('node:fs/promises');

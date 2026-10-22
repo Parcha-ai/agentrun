@@ -31,6 +31,7 @@ import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { CodeModeOptions } from './code-mode.ts';
 import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
 import { boxLedger, hostLabelIn, ledgerBoxes, markReceiptWritten, parseHostBox, RUN_LABEL, supervisedChild, tapBox, type Boxes, type LedgerEntry, type RunFiles } from './boxes.ts';
+import { credentialIn } from './scan.ts';
 import type { Recorder, Redact } from './record.ts';
 import { priceJudge } from './judge.ts';
 import { askToBeKilled, aroundOwnFiling, crossings, tapFakes, tapHost, tapLive, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
@@ -791,7 +792,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     await settled(readStatus(true));
     // A run whose last process never completed (it refused its host box's claim, say) says so too: the box's missing label is that failure's, not a separate one.
     const ended = processes.at(-1);
-    const cause = ended && ended.outcome?.status !== 'complete' ? ` (the run's last process did not complete: ${messageOf(ended.outcome?.message ?? (ended.stderr || `exit ${ended.exit ?? ended.signal}`), paths.root).slice(-400)})` : '';
+    const cause = ended && ended.outcome?.status !== 'complete' ? ` (the run's last process did not complete: ${messageOf(processText(ended.outcome?.message ?? (ended.stderr || `exit ${ended.exit ?? ended.signal}`), redact), paths.root).slice(-400)})` : '';
     if (unlabelled) throw new Error(`the recording is refused: host box ${unlabelled.key} on ${unlabelled.provider} has no label: ${unlabelled.why}${cause}`);
     const unread = [...homeBoxSeen].find(([key]) => !homeBoxLabels.has(key));
     if (unread) throw new Error(`the recording is refused: host box ${unread[0]} on ${unread[1]} has no label: the final read did not finish reading it inside its bound`);
@@ -838,6 +839,13 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
 }
 
 /** A message the supervisor writes about a failure of the place: an absolute path outside the run's directory is replaced by `<path>` (the run's own paths stay), then it is capped at 240 characters. The recorder's exact-value redaction runs on the line after. */
+/** A run process's own text (its outcome's message or its stderr: anything a tool printed) as the final-read refusal names it: every tracked
+ *  secret redacted (`redact`, the recorder's, when the run records), and any line that still holds a credential's shape withheld whole, with or
+ *  without a recording. A machine path is not a credential here: `messageOf` rewrites paths. */
+export function processText(text: string, redact?: (text: string) => string): string {
+  return (redact ? redact(text) : text).split('\n').map((line) => { const kind = credentialIn(line); return kind && kind !== 'machine path' ? '[a line withheld: it held a credential]' : line; }).join('\n');
+}
+
 export function messageOf(error: unknown, root: string): string {
   const own = resolve(root);
   const text = String((error as { message?: unknown } | null)?.message ?? error);

@@ -15,7 +15,7 @@ import { validateRecording } from '../scripts/recording/validate.mjs';
 import { costLabel, countersOf, counterFold } from '../apps/viewer/src/counters.ts';
 import { parseLines, validate as viewerValidate } from '../apps/viewer/src/format.ts';
 import { transportPanel } from '../apps/viewer/src/transport.ts';
-import { localBoxes, run } from './reference-demo-helpers.mjs';
+import { FIXTURE, localBoxes, run } from './reference-demo-helpers.mjs';
 
 const transport = (recording) => readEvents(recording).filter((line) => line.source === 'transport' && line.channel === 'live');
 const receipts = (recording) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === 'box.receipt').map((line) => line.data);
@@ -326,6 +326,33 @@ test('FAIL CLOSED, a throw: a host box whose label the run-file reads cannot rea
 test('a host box whose label read outlasts the supervisor\'s bound on the final read refuses the recording: a cut-off read is no label, never a recording without that box', { timeout: 300_000 }, async (t) => {
   await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'slow' }), /host box 0 on home has no label: the final read did not finish reading it inside its bound/);
 });
+
+/** A run of the fixture with `env`, recorded (`--record`, as `run` does) or not: its result or its error. */
+async function plantedRun(t, env, record, argv) {
+  if (record) return run(t, {}, argv, env).then((done) => ({ result: done.result }), (error) => ({ error }));
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-demo-plain-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { writeFileSync } = await import('node:fs');
+  const file = join(tmp, 'demo.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference' }));
+  const before = { ...process.env };
+  Object.assign(process.env, { DEMO_SPEC: file, ...env });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in before)) delete process.env[name]; Object.assign(process.env, before); });
+  const { demo: fixtureDemo } = await import('@parcha/agentrun-harness');
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  return fixtureDemo({ ...options, argv: [...argv, '--dir', join(tmp, 'run')] }).then((result) => ({ result }), (error) => ({ error }));
+}
+
+const PLANTED_KEY = `sk-${'q'.repeat(8)}${'7'.repeat(26)}`;
+for (const record of [true, false]) {
+  test(`the final-read refusal names a failed process's own text with every credential-shaped line withheld, ${record ? 'with --record' : 'with no recording'}: a key the process printed to its stderr never reaches it, the rest of its text does`, { timeout: 300_000 }, async (t) => {
+    const refused = await plantedRun(t, { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'labelled', DEMO_STDERR_SECRET: PLANTED_KEY }, record, ['--json']);
+    assert.ok(refused.error, 'the run is refused');
+    assert.match(refused.error.message, /host box 0 on home has no label: its child never claimed it \(the run's last process did not complete/);
+    assert.equal(refused.error.message.includes(PLANTED_KEY), false, 'the key is not in the refusal');
+    assert.match(refused.error.message, /and a plain line after it/, 'the rest of the process\'s text is kept');
+  });
+}
 
 test('two supervisors on one run directory are two lives: the second, resuming the run, is refused at its host box\'s claim, never given the first one\'s label', { timeout: 300_000 }, async (t) => {
   const own = await mkdtemp(join(tmpdir(), 'box-ids-lives-'));
