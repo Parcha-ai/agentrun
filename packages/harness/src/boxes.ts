@@ -38,7 +38,8 @@ const boxError = (message: string) => Object.assign(new Error(message), { name: 
 
 /** A box's line in the run's ids directory (format v1): a tool's box by its provider id, with its receipt state. */
 export type LedgerEntry = {
-  provider: string; owner: 'tools'; id: string; kind?: string; from?: string;
+  /** `tools`: a box a tool made, by its provider id. `place`: a host box the place started, by its key (its start index) in one supervisor life (`run`). */
+  provider: string; owner: 'tools' | 'place'; id?: string; key?: string; run?: string; kind?: string; from?: string;
   /** `ended`: a supervised run's process is done with the box, and the supervisor writes its receipt from this file. */
   receipt?: 'open' | 'written' | 'ended';
   /** A supervised run's: when the box ended (null when its process left it open), and the process that made it. */
@@ -46,6 +47,12 @@ export type LedgerEntry = {
 };
 
 const LABEL_FILE = /^box-(\d+)\.json$/;
+/** A label file's entry as format v1 has it: a tool's box by its id, or a place's host box by its key and supervisor life. */
+const validEntry = (entry: unknown): entry is LedgerEntry => {
+  const e = entry as Partial<LedgerEntry> | null;
+  if (e === null || typeof e !== 'object' || typeof e.provider !== 'string') return false;
+  return e.owner === 'tools' ? typeof e.id === 'string' : e.owner === 'place' && typeof e.key === 'string' && typeof e.run === 'string';
+};
 /** A refusal of the ids directory's own: passed on as it is, never wrapped as a write failure. */
 class Refusal extends Error {}
 const refused = (what: string, error: unknown) => new Refusal(`${what} (${(error as Error).message}): refused, so no box label is given twice`);
@@ -74,7 +81,7 @@ function labelStore(dir: string) {
       if (number === undefined) continue;
       let entry: LedgerEntry;
       try { entry = JSON.parse(readFileSync(join(dir, name), 'utf8')) as LedgerEntry; } catch (error) { throw refused(`the box ids file ${join(dir, name)} cannot be read`, error); }
-      if (entry === null || typeof entry !== 'object' || typeof entry.provider !== 'string' || entry.owner !== 'tools' || typeof entry.id !== 'string') throw new Refusal(`the box ids file ${join(dir, name)} cannot be read (not a format v1 entry): refused, so no box label is given twice`);
+      if (!validEntry(entry)) throw new Refusal(`the box ids file ${join(dir, name)} cannot be read (not a format v1 entry): refused, so no box label is given twice`);
       out.set(`box-${number}`, entry);
     }
     return out;
@@ -145,8 +152,45 @@ function memoryStore() {
 /** One labeller for a run's tool boxes: `box-N` across every process of the run, each label a file of its own in `dir` (outside the recording), claimed exclusively. The
  *  directory is read at its first use, never before: a run on a disk not yet mounted has nothing to read. Without a directory the labels live only in this process. Receipts: a box `open`ed here is `end`ed or, at `finish`, written as still open; its state is kept in its file, so a process that
  *  starts after one was killed writes the receipt of each box that process left open (`recover`). */
+/** A host box's identity as a place hands it to its run's process (`HOST_BOX`, JSON): its provider, its key (the place's start index) and the
+ *  supervisor life that started it (`run`, the run's RUN_LABEL). */
+export type HostBox = { provider: string; key: string; run: string };
+
+/** A host box's identity as a place hands it over (`HOST_BOX`), checked before it is claimed: a malformed one is refused, never guessed. */
+export function parseHostBox(text: string): HostBox {
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { throw new Error('HOST_BOX is not JSON: refused'); }
+  const box = value as Partial<HostBox> | null;
+  if (!box || typeof box.provider !== 'string' || !box.provider || typeof box.key !== 'string' || !/^\d+$/.test(box.key) || typeof box.run !== 'string' || !box.run) {
+    throw new Error('HOST_BOX must be { provider, key (a start index), run (the supervisor life) }: refused');
+  }
+  return { provider: box.provider, key: box.key, run: box.run };
+}
+
+/** A run's files as a place lets its supervisor read them, in disk's K8 shape: a file's bytes (`null` when it is not there) and the names
+ *  directly under a directory (none when it is not there), both relative to the run's root. */
+export type RunFiles = { readRunFile(path: string): Promise<Uint8Array | null>; listRunFiles(dir: string): Promise<string[]> };
+
+/** The label the run's process claimed for host box `key` on `provider`, read from the run's ids directory through `files`: the supervisor
+ *  parses the label files itself, the place only reads bytes. `undefined` when it has not landed; a file it cannot parse refuses. */
+export async function hostLabelIn(files: RunFiles, dir: string, box: { provider: string; key: string }): Promise<string | undefined> {
+  for (const name of await files.listRunFiles(dir)) {
+    const number = LABEL_FILE.exec(name)?.[1];
+    if (number === undefined) continue;
+    const bytes = await files.readRunFile(`${dir}/${name}`);
+    if (bytes === null) continue;
+    let entry: unknown;
+    try { entry = JSON.parse(Buffer.from(bytes).toString('utf8')); } catch { throw new Error(`the box ids file ${name} cannot be read (not JSON)`); }
+    if (!validEntry(entry)) throw new Error(`the box ids file ${name} cannot be read (not a format v1 entry)`);
+    if (entry.owner === 'place' && entry.key === box.key && entry.provider === box.provider) return `box-${number}`;
+  }
+  return undefined;
+}
+
 export type BoxLedger = {
   label(provider: string, id: string): string;
+  /** The label of the host box the place started (`HOST_BOX`), claimed by this process before anything else: the same label again in the same supervisor life, refused in another. */
+  claimHost(box: HostBox, from: string): string;
   open(label: string, receipt: { provider: string; kind: string; from: string }): void;
   end(label: string): void;
   /** Every receipt of a box still open: written when the process is done with the run. */
@@ -197,6 +241,15 @@ export function boxLedger(options: { dir?: string; recorder?: Recorder; supervis
     try { store.rewrite(label, { ...entry, receipt: 'written' }); } catch { /* the receipt is written; only a failed save lets a later process write it again */ }
   };
   return {
+    claimHost(box, from) {
+      const had = [...store.list()].find(([, entry]) => entry.owner === 'place' && entry.key === box.key);
+      if (had) {
+        if (had[1].run !== box.run) throw new Error(`the host box ${box.key} already has ${had[0]} from another supervisor life: a supervisor restarted mid-run would renumber its host boxes; refused (re-take the run, do not resume it)`);
+        if (had[1].provider !== box.provider) throw new Error(`the host box ${box.key} already has ${had[0]} on ${had[1].provider}, not on ${box.provider}: refused, so no box label is given twice`);
+        return had[0];
+      }
+      return store.claim({ provider: box.provider, owner: 'place', key: box.key, run: box.run, kind: 'host', from });
+    },
     label(provider, id) {
       const had = [...store.list()].find(([, entry]) => entry.owner === 'tools' && entry.provider === provider && entry.id === id)?.[0];
       return had ?? store.claim({ provider, owner: 'tools', id });

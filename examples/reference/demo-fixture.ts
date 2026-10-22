@@ -204,7 +204,7 @@ const withReport = (chosen: typeof job): typeof job => (process.env.DEMO_REPORT 
 // process its identity (`HOST_BOX`), which that process claims first, and lets the supervisor read the run's files (`readRunFile` and `listRunFiles`, disk's K8 shape, here over
 // its own root): the supervisor reads the label itself. `unclaimed` reports the home box and has the reads but never hands it over, so no process claims it. `unreadable` hands it
 // over but its reads fail; `slow` hands it over but its reads answer only after 40 s, past the supervisor's bound on a read. `reporting` reports the home box with no reads and no
-// handover. Any other value is the local place, which has neither.
+// handover; `handing` hands it over with no reads. Any other value is the local place, which has neither.
 const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: string; root: string }; self: string; requestFile: (attempt: number) => string }) => {
   const { localPlace } = await import('@parcha/agentrun-harness');
   const { readFile, readdir } = await import('node:fs/promises');
@@ -213,6 +213,8 @@ const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: s
   const from = new Date().toISOString();
   const status = async () => ({ boxes: [{ provider: 'home', kind: 'host', from, to: null }] });
   if (mode === 'reporting') return { ...inner, status };
+  // `handing` hands its home box over but has no reads: its supervisor numbers the box itself, so the process must refuse to claim it (two labellers).
+  if (mode === 'handing') return { ...inner, status, start: (order: Parameters<typeof inner.start>[0]) => inner.start({ ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ provider: 'home', key: '0', run: order.env.RUN_LABEL }) } }) };
   if (mode !== 'labelled' && mode !== 'unclaimed' && mode !== 'unreadable' && mode !== 'slow') return inner;
   const handOver = (order: Parameters<typeof inner.start>[0]) => (mode !== 'unclaimed' ? { ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ provider: 'home', key: '0', run: order.env.RUN_LABEL }) } } : order);
   // K8's answers over this place's own root: a missing file is null, a missing directory lists nothing.

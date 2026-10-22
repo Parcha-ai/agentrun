@@ -48,7 +48,7 @@ export { crossings, tapFakes, tapHost } from './crossings.ts';
 export type { Cross } from './crossings.ts';
 /** The box provider the entry hands a demo, with its crossings (`transport.box.exec`: a box command in flight) and transport box lines built in. */
 export { tapBox, BOX_CROSSINGS } from './boxes.ts';
-export type { Boxes } from './boxes.ts';
+export type { Boxes, HostBox, RunFiles } from './boxes.ts';
 
 /** The judge seam: Jev's public list price for every demo, with no cap (`--max-usd` is the run's dollar stop, and TypeSafe rate-limits). */
 export { priceJudge, jevCost, JEV_LIST_PRICE } from './judge.ts';
