@@ -19,10 +19,11 @@ export type HostKey = {
  *  cookie. */
 export type VaultCookie = { name: string; value: string; domain: string; path: string; expires?: number; httpOnly: boolean; secure: boolean; sameSite?: "Strict" | "Lax" | "None" };
 /** A browser session's state: a local Chrome's cookies and localStorage (by origin), or a provider's context, an opaque
- *  id that the provider keeps the state behind. */
+ *  id that the provider keeps the state behind. A context's `origins`, when the browser host records them, are kept and
+ *  given back as they came. */
 export type CapturedState =
   | { kind: "cdp"; capturedAt: string; cookies: VaultCookie[]; localStorage: Record<string, Record<string, string>> }
-  | { kind: "provider-context"; capturedAt: string; provider: "browserbase" | "kernel"; contextId: string };
+  | { kind: "provider-context"; capturedAt: string; provider: "browserbase" | "kernel"; contextId: string; origins?: string[] };
 /** What a browser host asks of a session vault: keep a session at release, give it back at create, forget it. */
 export type SessionVaultPort = {
   capture(input: { sessionKey: string; origins: string[]; state: CapturedState }): Promise<void>;
@@ -153,7 +154,13 @@ function keptOf(state: unknown, origins: string[]): Kept {
   if (state.kind === "provider-context") {
     if (state.provider !== "browserbase" && state.provider !== "kernel") throw invalid("the provider is not browserbase or kernel");
     if (typeof state.contextId !== "string" || state.contextId === "" || state.contextId.length > 512) throw invalid("the context id is not 1 to 512 characters");
-    return { kind: "provider-context", provider: state.provider, contextId: state.contextId };
+    if (state.origins === undefined) return { kind: "provider-context", provider: state.provider, contextId: state.contextId };
+    try {
+      checkOrigins(state.origins);
+    } catch (error) {
+      throw invalid(`the provider context's origins: ${(error as Error).message}`);
+    }
+    return { kind: "provider-context", provider: state.provider, contextId: state.contextId, origins: [...(state.origins as string[])] };
   }
   throw invalid("the captured state's kind is not cdp or provider-context");
 }
@@ -283,7 +290,7 @@ export function sessionVault(home: AgentHome, options: { hostKey: HostKey; maxSe
         const held = own(await readFamily<VaultRecord>(store, VaultDoc), sessionKey);
         if (held && Date.parse(held.capturedAt) > at) return;
         const capturedAt = new Date(at).toISOString();
-        const plain = Buffer.from(JSON.stringify({ ...kept, origins, capturedAt }), "utf8");
+        const plain = Buffer.from(JSON.stringify({ ...kept, capturedAt, capturedFor: origins }), "utf8");
         if (plain.length > MAX_PLAIN_BYTES) throw invalid(`the captured state is ${plain.length} bytes; a session holds at most ${MAX_PLAIN_BYTES}`);
         const keyId = newId();
         const itemKey = randomBytes(32);
@@ -323,14 +330,14 @@ export function sessionVault(home: AgentHome, options: { hostKey: HostKey; maxSe
         }
         if (captured.kind !== record.kind) throw format(`the saved session ${sessionKey} is not the kind its row says`);
         // The row's origins and capturedAt are clear, outside the AAD: the sealed copies are the ones that count.
-        if (captured.capturedAt !== record.capturedAt || JSON.stringify((captured as { origins?: unknown }).origins) !== JSON.stringify(record.origins)) {
+        if (captured.capturedAt !== record.capturedAt || JSON.stringify((captured as { capturedFor?: unknown }).capturedFor) !== JSON.stringify(record.origins)) {
           throw format(`the saved session ${sessionKey}'s row is not what was sealed: its origins or capturedAt were changed`);
         }
         const at = now();
         if (captured.kind === "provider-context") {
           if (!record.origins.every((origin) => requested.includes(origin))) return null;
           handed.add(captured.contextId);
-          return { kind: "provider-context", capturedAt: captured.capturedAt, provider: captured.provider, contextId: captured.contextId };
+          return { kind: "provider-context", capturedAt: captured.capturedAt, provider: captured.provider, contextId: captured.contextId, ...(captured.origins ? { origins: captured.origins } : {}) };
         }
         const fresh = (cookie: VaultCookie) => (cookie.expires === undefined ? at - Date.parse(captured.capturedAt) <= cap : cookie.expires * 1000 > at);
         const cookies = captured.cookies.filter((cookie) => origins.some((origin) => domainMatches(cookie.domain, origin)) && fresh(cookie));

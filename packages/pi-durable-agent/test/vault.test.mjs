@@ -424,3 +424,17 @@ test("a restore takes a session's origins and date from its sealed state: a row 
   await assert.rejects(vault.restore({ sessionKey: "two", origins: [A] }), refused("format", /two's row is not what was sealed/), "fewer clear origins do not cut the context down");
   assert.deepEqual(vault.handedOut(), []);
 });
+
+test("a provider context that records its own origins keeps them: sealed with it, given back as they came, and a list that is not origins is refused", async () => {
+  const h = await home();
+  const vault = sessionVault(h, { hostKey: KEY, now: NOW });
+  const context = { kind: "provider-context", capturedAt: new Date(T0).toISOString(), provider: "kernel", contextId: marker("recorded"), origins: [B, A] };
+  await vault.capture({ sessionKey: "recorded", origins: [A, B], state: context });
+  assert.deepEqual((await atRest(h, "recorded", Buffer.alloc(32, 1))).origins, [B, A], "inside the ciphertext, as given");
+  assert.deepEqual(await vault.restore({ sessionKey: "recorded", origins: [A, B] }), context);
+  assert.equal(await vault.restore({ sessionKey: "recorded", origins: [A] }), null, "the row's captured origins still rule the restore");
+  for (const origins of [[], ["https://app.acme.example/path"], [42], "https://app.acme.example", Array.from({ length: 65 }, (_, i) => `https://h${i}.example`)]) {
+    await assert.rejects(vault.capture({ sessionKey: "bad", origins: [A], state: { ...context, origins } }), refused("invalid", /the provider context's origins/), JSON.stringify(origins).slice(0, 60));
+  }
+  assert.equal((await vault.list()).some((entry) => entry.sessionKey === "bad"), false);
+});
