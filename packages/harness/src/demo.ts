@@ -139,7 +139,16 @@ export async function demo(options: DemoOptions): Promise<DemoResult | undefined
   if ((globalThis as Record<symbol, unknown>)[IMPORTING_DEMO]) return undefined;
   const { values } = parseArgs({ args: options.argv ?? process.argv.slice(2), options: FLAGS });
   if (values.child) { await child(options); return undefined; }
-  const result = await supervise(options, values);
+  // The harness's SINKS: whatever leaves demo() (K4, an error thrown to the caller, a place's start included; K3, the result it returns; K1, the
+  // JSON the CLI prints; K2, the summary) passes processText first: the run's tracked redaction when it records, the credential pass always. A
+  // run process's stderr, a tool's output and a provider's error (pi-transport's carry their commands' stderr) reach a caller only through here.
+  const sink: { redact?: (text: string) => string } = {};
+  let raw: DemoResult;
+  try { raw = await supervise(options, values, sink); } catch (error) {
+    if (error instanceof Error) { error.message = processText(error.message, sink.redact); if (error.stack) error.stack = processText(error.stack, sink.redact); throw error; }
+    throw new Error(processText(String(error), sink.redact));
+  }
+  const result = handedOut(raw, sink.redact);
   if (values.json) console.log(JSON.stringify(result));
   else summarize(options, result, Boolean(values.kill || values.debug));
   // A command line ends with a failing code when the run did not complete or went past its cap; a caller that passed its own arguments reads the result.
@@ -236,7 +245,7 @@ export type Prepared = { models: Record<string, string> | undefined; /** Writes 
 
 /** The outcome line a process reports on its way out: how the run ended, the record it delivered, what the demo's result hook made of it, and the hash of its store. */
 export function outcomeOf(result: Awaited<ReturnType<typeof run>>, storeSha256: string | undefined, made?: { json: unknown; title: string }, models?: Record<string, string>) {
-  return { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}), ...(result.status === 'complete' ? { record: result.output } : {}), ...(made ? { result: made } : {}), ...(models ? { models } : {}), ...(storeSha256 ? { storeSha256 } : {}) };
+  return { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: processText(result.message).slice(0, 240) } : {}), ...(result.status === 'complete' ? { record: result.output } : {}), ...(made ? { result: made } : {}), ...(models ? { models } : {}), ...(storeSha256 ? { storeSha256 } : {}) };
 }
 
 export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv, at?: RunPlace, killNonce?: string): Promise<Prepared> {
@@ -365,7 +374,7 @@ async function child(options: DemoOptions) {
     const line = JSON.stringify({ outcome: outcomeOf(result, storeShaOf(prepared.place), made, prepared.models) });
     console.log(prepared.redact ? prepared.redact(line) : line);
   } catch (error) {
-    console.log(JSON.stringify({ outcome: { status: 'error', generation: null, code: (error as { code?: string }).code ?? null, message: String((error as Error).message).slice(0, 400) } }));
+    console.log(JSON.stringify({ outcome: { status: 'error', generation: null, code: (error as { code?: string }).code ?? null, message: processText(String((error as Error).message), prepared?.redact).slice(0, 400) } }));
   } finally {
     await prepared?.done();
   }
@@ -408,7 +417,7 @@ export async function destroyBoxes(spec: DemoSpec, runLabel: string, root: strin
   if (failed.length) throw new Error(`the run's boxes could not be destroyed: ${failed.join(', ')}`);
 }
 
-async function supervise(options: DemoOptions, values: ReturnType<typeof parseArgs<{ options: typeof FLAGS }>>['values']): Promise<DemoResult> {
+async function supervise(options: DemoOptions, values: ReturnType<typeof parseArgs<{ options: typeof FLAGS }>>['values'], sink: { redact?: (text: string) => string } = {}): Promise<DemoResult> {
   const { spec, job } = options;
   const live = values.live === true;
   if (options.providerExtensions && !options.providers) throw new Error(`${spec.name} passes providerExtensions with no providers: the hook would have nothing to hand its tools`);
@@ -428,6 +437,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // What a recording must not hold, read before anything starts: a sign-in file that cannot be read fails the record here, not after a paid run.
   const tracked = values.record ? trackSecrets(process.env, spec) : undefined;
   const redact = tracked?.redact;
+  // demo()'s sinks redact with it too.
+  sink.redact = redact;
   const models: LiveModels = { ...(values.provider ? { provider: values.provider } : {}), ...(values.model ? { model: values.model } : {}), ...(values['eyes-model'] ? { eyesModel: values['eyes-model'] } : {}) };
   if (!live && Object.keys(models).length) throw new Error('--provider, --model and --eyes-model choose real models: they need --live');
   if (models.provider && !models.model) throw new Error('--provider needs --model (the model to use on that provider)');
@@ -839,11 +850,19 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
 }
 
 /** A message the supervisor writes about a failure of the place: an absolute path outside the run's directory is replaced by `<path>` (the run's own paths stay), then it is capped at 240 characters. The recorder's exact-value redaction runs on the line after. */
-/** A run process's own text (its outcome's message or its stderr: anything a tool printed) as the final-read refusal names it: every tracked
- *  secret redacted (`redact`, the recorder's, when the run records), and any line that still holds a credential's shape withheld whole, with or
- *  without a recording. A machine path is not a credential here: `messageOf` rewrites paths. */
+/** Text the harness hands out at a SINK (an error's message, a returned result, the CLI's output), whatever produced it (a run process's
+ *  stderr or outcome, a tool's output, a provider's error): every tracked secret redacted (`redact`, the recorder's, when the run records), and
+ *  any line that still holds a credential's shape (the scanner's own `credentialIn`) withheld whole, with or without a recording. A machine path
+ *  is not a credential here: `messageOf` rewrites paths. Per line and per known shape: a key split across lines, or encoded, is not caught. */
 export function processText(text: string, redact?: (text: string) => string): string {
   return (redact ? redact(text) : text).split('\n').map((line) => { const kind = credentialIn(line); return kind && kind !== 'machine path' ? '[a line withheld: it held a credential]' : line; }).join('\n');
+}
+/** Every string of a plain value (a result, a ledger) through `processText`, at the sink that returns or prints it. */
+export function handedOut<T>(value: T, redact?: (text: string) => string): T {
+  if (typeof value === 'string') return processText(value, redact) as T;
+  if (Array.isArray(value)) return value.map((item) => handedOut(item, redact)) as T;
+  if (value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, handedOut(item, redact)])) as T;
+  return value;
 }
 
 export function messageOf(error: unknown, root: string): string {

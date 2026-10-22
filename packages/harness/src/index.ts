@@ -36,7 +36,7 @@ export type { RunPlace, Host, LocalHost, Fakes, StatusEvent, BrowserPlane, Rerun
 export type { Recorder, Supervisor, Header } from './record.ts';
 
 /** The reference entry as a demo's platform: a demo's `run.ts` is its spec, its job, its fakes and this call. It reads the standard flags (`--live`, `--kill`, `--record`, `--input`, `--max-usd`, `--local-chrome`, `--dir`, `--json`) and runs the spec's kills through a supervisor. */
-export { demo } from './demo.ts';
+export { demo, handedOut, processText } from './demo.ts';
 /** What the entry acts on in a demo's `demo.json`: its `kills`, `expectedCost`, `input` and `boxes`. */
 export type { DemoSpec, KillSpec, CrossingKill, StormKill, BoxSpec } from './demo-spec.ts';
 export type { ToolContext } from './host.ts';
