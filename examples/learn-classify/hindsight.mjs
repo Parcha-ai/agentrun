@@ -12,6 +12,7 @@ import { CAPS, inboxPath, LAYOUT, proposeFiles, renderInbox } from '@parcha/pi-a
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { caseValuesOf, classifyTools, groupsOf, toolResultsOf, usageTotals } from './host.mjs';
+import { pageKind } from './eval-lookup.mjs';
 import { archivedSecPage } from './tools.mjs';
 
 /** The splits a learning pass may reflect on with the truth: TRAIN (the 1k set's train and train-legacy) and the older
@@ -22,9 +23,10 @@ export const HINDSIGHT_FIELDS = Object.freeze(['sic4', 'hq', 'segments', 'subsid
 export const MAX_REFLECTION_CALLS = 6;
 export const MAX_REFLECTION_USD = 1;
 
-export const HINDSIGHT_RULES = `You review one finished run of a research job, together with the true value of one field the run got wrong. Find why
-the run missed it and where the true value could have been read. You may check a source with fetch_page or
-read_document, at most ${MAX_REFLECTION_CALLS} calls. Then call answer once, with one or two hypotheses. Each has:
+const RULES_HEAD = `You review one finished run of a research job, together with the true value of one field the run got wrong. Find why
+the run missed it and where the true value could have been read.`;
+const RULES_TOOLS = `You may check a source with fetch_page or read_document, at most ${MAX_REFLECTION_CALLS} calls.`;
+const RULES_ANSWER = `Then call answer once, with one or two hypotheses. Each has:
 - lesson: the general rule a later run should follow, in one or two sentences. It must hold for other companies:
   never the company's name, ticker or website, and never the true value itself.
 - why: why this run missed.
@@ -32,6 +34,9 @@ read_document, at most ${MAX_REFLECTION_CALLS} calls. Then call answer once, wit
 - scope: which companies the lesson holds for.
 - mechanism: how a later run should carry it: a lesson it reads, a workflow node, or a skill line.
 - test: how the host can check the lesson on past runs.`;
+/** The reflection's rules; without tools they name none, so it is never told of a tool it lacks. */
+export const hindsightRules = ({ tools = true } = {}) => [RULES_HEAD, ...(tools ? [RULES_TOOLS] : []), RULES_ANSWER].join(' ');
+export const HINDSIGHT_RULES = hindsightRules();
 
 const text = (max) => ({ type: 'string', minLength: 1, maxLength: max });
 
@@ -83,15 +88,39 @@ export function truthValues(wrong) {
   return out;
 }
 
-const urlOf = (r) => r.value?.url ?? r.args?.url ?? r.args?.path ?? r.args?.query ?? '';
-const outcomeOf = (value) => (!value ? 'failed' : value.refused ? 'refused' : value.ok === false ? `error${value.error ? `: ${value.error}` : ''}` : 'ok');
+const urlOf = (r) => r.args?.url ?? r.args?.path ?? r.args?.query ?? r.value?.url ?? '';
+const outcomeOf = (value, labelOnly) => (!value ? 'failed' : value.refused ? 'refused' : value.ok === false ? (labelOnly ? 'error' : `error${value.error ? `: ${value.error}` : ''}`) : 'ok');
 
-/** What the run did, in order, as the reflection reads it: each tool call (tool, URL or query, outcome, title), then the
- *  answer with its cites. */
-export function digestOf(results, answer, { maxCalls = 60, maxAnswer = 4000 } = {}) {
-  const calls = results.slice(0, maxCalls).map((r, i) => `${i + 1}. ${r.tool} ${urlOf(r)} → ${outcomeOf(r.value)}${r.value?.title ? ` "${String(r.value.title).slice(0, 80)}"` : ''}`);
+/** An answer without the words its pages gave it: no cite quotes, no reason for a none. Its values stay. */
+const labelAnswer = (answer) => {
+  if (!answer || typeof answer !== 'object') return answer ?? null;
+  const out = { ...answer };
+  if (Array.isArray(out.cites)) out.cites = out.cites.map(({ claim, url, locator }) => ({ claim, url, locator }));
+  if (out.subsidiaries && !Array.isArray(out.subsidiaries)) out.subsidiaries = { none: out.subsidiaries.none === true };
+  return out;
+};
+
+/** What the run did, in order, as the reflection reads it: each tool call (tool, the URL or query it asked for, outcome),
+ *  then the answer. LABEL-ONLY by default (01-loop 1.16): the run's own actions and values, and no text a page gave it
+ *  (no titles, no tool's error words, no cite quotes, no reason for a none). `labelOnly: false` adds those back. */
+export function digestOf(results, answer, { maxCalls = 60, maxAnswer = 4000, labelOnly = true } = {}) {
+  const calls = results.slice(0, maxCalls).map((r, i) => `${i + 1}. ${r.tool} ${urlOf(r)} → ${outcomeOf(r.value, labelOnly)}${!labelOnly && r.value?.title ? ` "${String(r.value.title).slice(0, 80)}"` : ''}`);
   if (results.length > maxCalls) calls.push(`... ${results.length - maxCalls} more calls`);
-  return `${calls.join('\n') || '(no tool calls)'}\n\nThe answer:\n${JSON.stringify(answer ?? null).slice(0, maxAnswer)}`;
+  return `${calls.join('\n') || '(no tool calls)'}\n\nThe answer:\n${JSON.stringify(labelOnly ? labelAnswer(answer) : answer ?? null).slice(0, maxAnswer)}`;
+}
+
+/** The SEC's own record pages as the Wayback Machine archived them (01-loop 1.16), by the archived URL's path alone. */
+const RECORD_KINDS = new Set(['index', 'headers', 'company', 'submissions']);
+export function recordPage(url) {
+  try { return archivedSecPage(new URL(url)) && RECORD_KINDS.has(pageKind(url)); } catch { return false; }
+}
+
+/** Tools that open only record pages: any other URL is refused before a request. */
+export function recordPagesOnly(effects) {
+  return effects.map((effect) => ({
+    ...effect,
+    run: async (args, options) => (recordPage(args?.url) ? effect.run(args, options) : { ok: false, refused: 'this review opens only the SEC\'s own record pages as archived' }),
+  }));
 }
 
 /** The lessons a run was seeded with, as text (its working directory's seeded learnings), at most `max`. */
@@ -125,7 +154,7 @@ function budgeted(effects, max) {
 
 /** One reflection: an agent call on `model` (`{ models, agent }`), offered `effects` and the answer, in its own store. It is
  *  stopped where it is once its spend passes `limitUsd`; `stopped` then says so, and an answer it had not given is none. */
-export async function reflect({ model, effects, storePath, prompt, maxCalls = MAX_REFLECTION_CALLS, limitUsd = MAX_REFLECTION_USD }) {
+export async function reflect({ model, effects, storePath, prompt, maxCalls = MAX_REFLECTION_CALLS, limitUsd = MAX_REFLECTION_USD, rules = hindsightRules({ tools: effects.length > 0 }) }) {
   const tools = classifyTools({ effects: budgeted(effects, maxCalls), answer: answerHindsight() });
   const registry = createRegistry();
   registry.install(tools.extension);
@@ -133,7 +162,7 @@ export async function reflect({ model, effects, storePath, prompt, maxCalls = MA
   let stopped = null;
   let unsubscribe = () => {};
   try {
-    const root = await harness.root(ctx, { agent: { ...model.agent, extensions: [tools.extension], instructions: HINDSIGHT_RULES } });
+    const root = await harness.root(ctx, { agent: { ...model.agent, extensions: [tools.extension], instructions: rules } });
     let checking = false;
     unsubscribe = harness.subscribeCommits(() => {
       if (checking || stopped) return;
@@ -157,14 +186,18 @@ export async function reflect({ model, effects, storePath, prompt, maxCalls = MA
   }
 }
 
-/** What a reflection read, structurally: an archived SEC page it opened, and whether one showed the true code. */
+/** What a reflection read, structurally: its successful reads by kind (the SEC's record pages as archived, and every
+ *  other page), an archived SEC page among them, and whether one showed the true code. */
 export function verifiedBy(storePath, wrong) {
   const calls = toolResultsOf(storePath).filter((r) => r.tool !== 'answer');
-  const read = calls.filter((r) => r.value && r.value.ok !== false && !r.value.refused);
-  const archived = read.filter((r) => { try { return archivedSecPage(new URL(r.value.url ?? r.args?.url)); } catch { return false; } });
+  const read = calls.filter((r) => r.value && r.value.ok !== false && !r.value.refused && !r.value.error);
+  const urlRead = (r) => r.value.url ?? r.args?.url;
+  const archived = read.filter((r) => { try { return archivedSecPage(new URL(urlRead(r))); } catch { return false; } });
+  const record = read.filter((r) => recordPage(urlRead(r))).length;
   const code = wrong.field === 'sic4' ? String(wrong.truth) : null;
   return {
     calls: calls.length,
+    reads: { record, other: read.length - record },
     archivedSecRead: archived.length > 0,
     truthOnArchivedPage: code !== null && archived.some((r) => new RegExp(`\\b${code}\\b`).test(`${r.value.text ?? ''}`)),
   };
@@ -177,11 +210,11 @@ export function verifiedBy(storePath, wrong) {
  * fetch_page and read_document) are asked for only then, each as a value or a function that makes it; the tools are
  * disposed of after.
  */
-export async function reflectOnRun({ job, run, score, answer, model, effects, fields = HINDSIGHT_FIELDS, codes, storeDir }) {
+export async function reflectOnRun({ job, run, score, answer, model, effects, fields = HINDSIGHT_FIELDS, codes, storeDir, labelOnly = true }) {
   if (!HINDSIGHT_SPLITS.includes(job.split)) return { wrong: [], reflections: [] };
   const wrong = wrongFields(score, fields, { codes });
   if (!wrong.length) return { wrong, reflections: [] };
-  const digest = digestOf(toolResultsOf(run.storePath), answer);
+  const digest = digestOf(toolResultsOf(run.storePath), answer, { labelOnly });
   const lessons = seededLessons(run.workspace);
   const on = typeof model === 'function' ? model() : model;
   const tools = typeof effects === 'function' ? await effects() : effects;
@@ -190,7 +223,7 @@ export async function reflectOnRun({ job, run, score, answer, model, effects, fi
     for (const w of wrong) {
       const storePath = join(storeDir, `${run.runId}-${w.field}.sqlite`);
       const { hypotheses, usage, stopped } = await reflect({ model: on, effects: tools, storePath, prompt: reflectionPrompt({ job, wrong: w, digest, lessons }) });
-      reflections.push({ field: w.field, hypotheses, costUsd: usage.costUsd, ...(stopped ? { stopped } : {}), ...verifiedBy(storePath, w) });
+      reflections.push({ field: w.field, hypotheses, costUsd: usage.costUsd, labelOnly, ...(stopped ? { stopped } : {}), ...verifiedBy(storePath, w) });
     }
   } finally {
     for (const tool of tools) await tool.dispose?.();
@@ -200,19 +233,26 @@ export async function reflectOnRun({ job, run, score, answer, model, effects, fi
 
 const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** A hypothesis's evidence, kept with its proposal and never in the learning: the case's and the truth's values replaced,
- *  each item cut so that all of it fits the guard's cap. */
-function evidenceOf(field, h, values) {
+/** Whether a reflection's lessons are its own work (01-loop 1.16): no page read but the SEC's record pages, and no page
+ *  text in its input. Otherwise they are untrusted, and curate asks whether they came from content. */
+export const ownWork = (r) => r.labelOnly === true && (r.reads?.other ?? 1) === 0;
+
+/** A hypothesis's evidence, kept with its proposal and never in the learning: its provenance first, then its reasons with
+ *  the case's and the truth's values replaced, each reason cut so that all of it fits the guard's cap. */
+function evidenceOf(r, h, values) {
   const clean = (t) => values.filter((v) => v.length >= 4).reduce((out, v) => out.replace(new RegExp(escape(v), 'gi'), '[the case]'), t);
-  const items = [`field: ${field}`, `why: ${h.why}`, `where: ${h.whereReadable}`, `scope: ${h.scope}`, `mechanism: ${h.mechanism}`, `test: ${h.test}`].map(clean);
-  const share = Math.floor((CAPS.evidence - 16) / items.length);
-  return items.map((item) => (Buffer.byteLength(item) > share ? `${Buffer.from(item).subarray(0, share - 3).toString('utf8').replace(/�+$/, '')}...` : item));
+  const reads = r.reads ?? { record: 0, other: 0 };
+  const fixed = [`field: ${r.field}`, 'provenance: hindsight', `reflection reads: ${reads.record + reads.other} (record ${reads.record}, other ${reads.other})`, `input: ${r.labelOnly ? 'label-only digest' : 'digest with page text'}`];
+  const reasons = [`why: ${h.why}`, `where: ${h.whereReadable}`, `scope: ${h.scope}`, `mechanism: ${h.mechanism}`, `test: ${h.test}`].map(clean);
+  const share = Math.floor((CAPS.evidence - fixed.reduce((n, f) => n + Buffer.byteLength(f), 0) - 16) / reasons.length);
+  return [...fixed, ...reasons.map((item) => (Buffer.byteLength(item) > share ? `${Buffer.from(item).subarray(0, share - 3).toString('utf8').replace(/\uFFFD+$/, '')}...` : item))];
 }
 
 /**
- * Each hypothesis proposed as a lesson on its own branch, `runs/<run id>-h<n>`, with the run's seed and marked untrusted,
- * so the guard refusing one (a lesson that names the company or the true value) leaves the others. The guard's case
- * values are the job's and the wrong fields' true values. Returns each proposal's status.
+ * Each hypothesis proposed as a lesson on its own branch, `runs/<run id>-h<n>`, with the run's seed, so the guard refusing
+ * one (a lesson that names the company or the true value) leaves the others. It is untrusted unless its reflection's work
+ * was its own (`ownWork`). The guard's case values are the job's and the wrong fields' true values. Returns each
+ * proposal's status and provenance.
  */
 export async function proposeHindsight({ repo, job, run, seedSha, wrong, reflections }) {
   const values = [...caseValuesOf(job), ...truthValues(wrong)];
@@ -221,13 +261,14 @@ export async function proposeHindsight({ repo, job, run, seedSha, wrong, reflect
   for (const r of reflections) {
     for (const h of r.hypotheses) {
       const runId = `${run.runId}-h${++n}`;
-      const candidates = [{ callId: `hindsight-${r.field}`, type: 'lesson', text: h.lesson, evidence: evidenceOf(r.field, h, values) }];
+      const untrusted = !ownWork(r);
+      const candidates = [{ callId: `hindsight-${r.field}`, type: 'lesson', text: h.lesson, evidence: evidenceOf(r, h, values) }];
       const proposal = await proposeFiles({
         repo, runId, candidates,
-        files: { [inboxPath(runId)]: renderInbox(runId, candidates, { ...(seedSha ? { seed: seedSha } : {}), untrusted: true }) },
+        files: { [inboxPath(runId)]: renderInbox(runId, candidates, { ...(seedSha ? { seed: seedSha } : {}), untrusted }) },
         caseValues: values,
       });
-      out.push({ runId, field: r.field, status: proposal.status, ...(proposal.status === 'refused' ? { reasons: [...new Set(proposal.refusals.map((x) => x.reason))] } : {}) });
+      out.push({ runId, field: r.field, status: proposal.status, untrusted, ...(proposal.status === 'refused' ? { reasons: [...new Set(proposal.refusals.map((x) => x.reason))] } : {}) });
     }
   }
   return out;
