@@ -512,3 +512,87 @@ describe("boxHost: a box found again by attach whose facts fail what the start n
     assert.deepEqual(running(provider).map((b) => b.id), [hA.box]);
   });
 });
+
+describe("boxHost: the host box's key, minted per box at each create (agentrun-host-key), handed to that box's runner", () => {
+  const KEY = "agentrun-host-key";
+  const hostBox = (key: string, run = "L1") => JSON.stringify({ provider: "modal-like", key, run });
+  const runs = (provider: FakeProvider) => provider.program("pi-durable-disk", ({ signal }) => new Promise<number>((r) => signal.addEventListener("abort", () => r(0))));
+  const labelOf = (provider: FakeProvider, id: unknown) => provider.boxes.find((b) => b.id === id)?.spec.labels?.[KEY];
+  const runnerKeyOf = (provider: FakeProvider, id: unknown) => {
+    const launch = provider.boxes.find((b) => b.id === id)?.launches.at(-1);
+    return (JSON.parse(String(launch?.spec.env?.HOST_BOX)) as { key: string }).key;
+  };
+  const misread = (provider: FakeProvider, bad: Record<string, unknown>): FakeProvider => ({
+    ...provider,
+    attach: async (id, context) => {
+      const r = await provider.attach(id, context);
+      if (!r.ok || r.value === undefined) return r;
+      const real = r.value;
+      const box = new Proxy(real, { get: (t, k) => (k === "facts" ? () => ({ ...t.facts(), ...bad }) : typeof Reflect.get(t, k, t) === "function" ? Reflect.get(t, k, t).bind(t) : Reflect.get(t, k, t)) });
+      return { ok: true, value: box } as typeof r;
+    },
+  });
+  const driverOf = (provider: FakeProvider) => boxHost({ provider, spec: SPEC, app: "/opt/app/app.js", startTimeoutMs: 5_000, callTimeoutMs: 5_000 });
+
+  it("mints <run>/<index>/<16 hex> at the create, labels the box with it as the only writer, hands THAT key to the box's runner, and reports it in the receipt", async () => {
+    const provider = fake(modalLike({ facts: fd }));
+    runs(provider);
+    const driver = driverOf(provider);
+    const h = await driver.start(REF, TOKEN, { attempt: 1, env: { HOST_BOX: hostBox("0") } });
+    const label = labelOf(provider, h.box);
+    assert.match(String(label), /^L1\/0\/[0-9a-f]{16}$/);
+    assert.equal(runnerKeyOf(provider, h.box), label, "the runner binds host-<key> for its own box");
+    assert.equal((driver.box(h) as { key?: string }).key, label, "the receipt, which the place's status entry carries");
+    assert.throws(() => boxHost({ provider, spec: { ...SPEC, labels: { [KEY]: "x" } }, app: "/a.js" }), code("INVALID_ARGUMENT"), "one writer: never the spec's");
+  });
+
+  it("a replacement within ONE attempt gets a new key, a new label, and its runner gets the replacement's key", async () => {
+    const provider = fake(modalLike({ facts: fd }));
+    runs(provider);
+    const hA = await driverOf(provider).start(REF, TOKEN, { attempt: 1, env: { HOST_BOX: hostBox("0") } });
+    const hB = await driverOf(misread(provider, { fuse: false })).start(REF, TOKEN, { attempt: 1, env: { HOST_BOX: hostBox("0") } });
+    assert.notEqual(hB.box, hA.box);
+    assert.notEqual(labelOf(provider, hB.box), labelOf(provider, hA.box));
+    assert.equal(runnerKeyOf(provider, hB.box), labelOf(provider, hB.box));
+  });
+
+  it("an index that restarts in a new supervisor life: the later life's box gets a new key, not the first box's", async () => {
+    const provider = fake(modalLike({ facts: fd }));
+    runs(provider);
+    const life1 = driverOf(provider);
+    const hA = await life1.start(REF, TOKEN, { attempt: 1, env: { HOST_BOX: hostBox("0") } });
+    await life1.kill!(hA);
+    const hB = await driverOf(provider).start(REF, TOKEN, { attempt: 2, env: { HOST_BOX: hostBox("0") } });
+    assert.notEqual(labelOf(provider, hB.box), labelOf(provider, hA.box));
+    assert.equal(runnerKeyOf(provider, hB.box), labelOf(provider, hB.box));
+  });
+
+  it("an adopted box keeps its first key, read back from its label; nothing new is minted", async () => {
+    const provider = fake(modalLike({ facts: fd }));
+    runs(provider);
+    const hA = await driverOf(provider).start(REF, TOKEN, { attempt: 1, env: { HOST_BOX: hostBox("0") } });
+    const later = driverOf(provider);
+    const h = await later.start(REF, TOKEN, { attempt: 1, env: { HOST_BOX: hostBox("0", "L2") } });
+    assert.equal(h.adopted, true);
+    assert.match(String(labelOf(provider, hA.box)), /^L1\/0\/[0-9a-f]{16}$/, "the first life's key");
+    assert.equal((later.box(h) as { key?: string }).key, labelOf(provider, hA.box));
+  });
+
+  it("a box found again WITHOUT the label (made before the key) is never adopted as the run's host box: ended through its handle, then replaced by a labeled one", async () => {
+    const provider = fake(modalLike({ facts: fd }));
+    runs(provider);
+    const hA = await driverOf(provider).start(REF, TOKEN, { attempt: 1, env: { HOST_BOX: hostBox("0") } });
+    const unlabeled: FakeProvider = {
+      ...provider,
+      list: async (labels, context) => {
+        const r = await provider.list(labels, context);
+        return r.ok ? ({ ok: true, value: r.value.map((ref) => ({ ...ref, labels: Object.fromEntries(Object.entries(ref.labels).filter(([k]) => k !== KEY)) })) } as typeof r) : r;
+      },
+    };
+    const h = await driverOf(unlabeled).start(REF, TOKEN, { attempt: 1, env: { HOST_BOX: hostBox("0") } });
+    assert.notEqual(h.adopted, true, "never adopted");
+    assert.notEqual(h.box, hA.box);
+    assert.deepEqual(provider.boxes.filter((b) => b.state === "running").map((b) => b.id), [h.box], "exactly one box, the labeled replacement");
+    assert.match(String(labelOf(provider, h.box)), /^L1\/0\/[0-9a-f]{16}$/);
+  });
+});
