@@ -54,7 +54,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs dist",
+    "build": "rm -rf dist && (test -f ../pi-transport/dist/index.d.ts || npm --prefix ../pi-transport run build) && tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs dist",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit && tsc --noEmit -p examples",
     "test": "node --test --test-timeout=240000 'test/*.test.ts' 'test/examples/*.test.ts'",
