@@ -13,6 +13,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { recordingLines } from '@parcha/agentrun-pi/durable';
+import { sameUrl } from './score-v2.mjs';
 import { archivedSecPage } from './tools.mjs';
 
 const READERS = new Set(['fetch_page', 'browse', 'read_document']);
@@ -38,8 +39,13 @@ const textOf = (content) => (Array.isArray(content) ? content.filter((p) => p?.t
 /** A result's words without its URLs, so a code in an address is not a code read. */
 const wordsOf = (value) => JSON.stringify(value, (key, v) => (/url|href|source|snapshot/i.test(key) ? undefined : v)) ?? '';
 
-/** A run's lookup facts from its recording lines and its answer's code. */
-export function lookupOfLines(lines, { sic4 } = {}) {
+/** The SEC's own record pages, which state a registrant's assigned SIC: the filing index and header, the company page and
+ *  the submissions record. A filing's documents ("other") are the filer's text, not the record. */
+export const RECORD_KINDS = Object.freeze(['index', 'headers', 'company', 'submissions']);
+
+/** Every result of a reader tool that did not error, from the root agent, the workflows' agent nodes and their effects, each
+ *  `{ tool, args, value, byWorkflow }`, and the run's last answer call's arguments. */
+function readerResults(lines) {
   const calls = new Map();
   const nodeConvs = new Set();
   let answer;
@@ -65,6 +71,33 @@ export function lookupOfLines(lines, { sic4 } = {}) {
   for (const effect of effects.values()) {
     if (effect.status === 'completed') results.push({ tool: effect.intent.tool, args: effect.args ?? {}, value: effect.result?.value, byWorkflow: true });
   }
+  return { results, answer };
+}
+
+/**
+ * The run's SIC receipt, or null: an ok reader result for an archived SEC record page (`archivedSecPage`, `pageKind` in
+ * RECORD_KINDS) whose words, URLs left out, hold the answered 4-digit code as a whole token, and the answer's SIC cite
+ * names that same page. `answer` is the run's answer (the host's run of a workflow answers without an answer call). The
+ * receipt keeps the page's address, kind and the code, never its text.
+ */
+export function receiptOf(lines, answer) {
+  const sic4 = answer?.sic4;
+  const cite = (answer?.cites ?? []).find((c) => c?.claim === 'sic');
+  if (typeof sic4 !== 'string' || !/^\d{4}$/.test(sic4) || typeof cite?.url !== 'string') return null;
+  const code = new RegExp(`\\b${sic4}\\b`);
+  for (const { args, value, byWorkflow } of readerResults(lines).results) {
+    if (!value || value.ok === false || value.refused) continue;
+    const urls = [value.url, args.url].filter((u) => typeof u === 'string' && archived(u));
+    const url = urls.find((u) => RECORD_KINDS.includes(pageKind(u)));
+    if (!url || !code.test(wordsOf(value)) || !urls.some((u) => sameUrl(u) === sameUrl(cite.url))) continue;
+    return { url, kind: pageKind(url), sic4, byWorkflow };
+  }
+  return null;
+}
+
+/** A run's lookup facts from its recording lines and its answer's code. */
+export function lookupOfLines(lines, { sic4 } = {}) {
+  const { results, answer } = readerResults(lines);
   const touched = results.filter(({ args, value }) => value && value.ok !== false && [value.url, args.url].some((u) => typeof u === 'string' && archived(u)));
   const code = typeof sic4 === 'string' && /^\d{4}$/.test(sic4) ? new RegExp(`\\b${sic4}\\b`) : null;
   const used = code ? touched.some(({ value }) => code.test(wordsOf(value))) : false;

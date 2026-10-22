@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { learnExtension } from '../agent-learn/host.mjs';
 import { stickyJudge } from './curate-cuts.mjs';
 import { gatedSettler } from './promotion-gate.mjs';
+import { receiptJudge } from './receipts.mjs';
 import { HOST_WORKFLOW, handoffText, hostRunName, hostUses, runPromoted } from './dispatch.mjs';
 import { gatedAdmitter } from './gates.mjs';
 
@@ -477,8 +478,9 @@ async function inRunStore(run, step) {
  * it on `runs/<run id>` (not with `propose: false`, a sealed run's). Every candidate is marked untrusted: the run read the
  * web.
  */
-export async function finishJob({ home, repo, run, job, measure, propose = true }) {
-  const caseValues = caseValuesOf(job);
+export async function finishJob({ home, repo, run, job, measure, propose = true, alsoRefuse = [] }) {
+  // `alsoRefuse`: more values the guard refuses in the run's notes (a receipt's code, for promotion by receipt).
+  const caseValues = [...new Set([...caseValuesOf(job), ...alsoRefuse])];
   await carryBack(home, run, { outcome: measure.stopped ? 'stopped' : 'completed', cost: measure.usage.costUsd + measure.judge.costUsd });
   return inRunStore(run, async (target) => {
     const candidates = await collectCandidates(target);
@@ -593,18 +595,21 @@ export function usageOfStore(storePath) {
  * `thresholds` is the host's promotion rule over pi-agent-learn's defaults (`{ promoteAfter, demoteAfter }`).
  * `judgeCuts` are the cuts curate's questions are judged by (CURATE_CUTS_V01 is the pre-registered set); without them,
  * the package's own. With `sticky` (`{ file, cutsId }`), a learning's text is judged by the worst answer it has had
- * (curate-cuts.mjs). With `gate` (promotion-gate.mjs `replayGate`), a promotion the uses call for stands only when the
- * gate passes it. None is on unless given: a run that asks for none curates exactly as the package does.
+ * (curate-cuts.mjs). With `gate` (promotion-gate.mjs `asyncGate`), a promotion the uses call for stands only when the
+ * gate passes it; with `gateOnly` as well, only a promotion `gateOnly` names goes to the gate (receipts.mjs). With
+ * `receiptTexts`, those texts' fromContent is answered by the run's receipt (receipts.mjs `receiptJudge`). None is on
+ * unless given: a run that asks for none curates exactly as the package does.
  */
-export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, sticky, gate }) {
+export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, sticky, gate, gateOnly, receiptTexts }) {
   const gates = [];
   const settled = [];
   const rules = { ...(tmpRoot ? { tmpRoot } : {}), ...(thresholds ? { thresholds } : {}) };
   const admit = gatedAdmitter({ judge: judge.run, base: workflowAdmitter({ when: schemaWhen, ...rules }), ...(tmpRoot ? { tmpRoot } : {}) });
-  const settle = gate ? gatedSettler({ settle: usesSettler(rules), gate }) : usesSettler(rules);
+  const settle = gate ? gatedSettler({ settle: usesSettler(rules), gate, ...(gateOnly ? { only: gateOnly } : {}) }) : usesSettler(rules);
+  const judged = sticky ? stickyJudge(judge.run, sticky) : judge.run;
   const report = await curate({
     repo,
-    judge: sticky ? stickyJudge(judge.run, sticky) : judge.run,
+    judge: receiptTexts?.size ? receiptJudge(judged, receiptTexts) : judged,
     ...(judgeCuts ? { thresholds: judgeCuts } : {}),
     admitWorkflow: async (input) => {
       const result = await admit(input);
