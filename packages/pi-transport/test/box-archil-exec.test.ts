@@ -1,0 +1,910 @@
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
+import type { ShellExecOptions } from "@earendil-works/pi-durable/env";
+import { describe, expect, it } from "vitest";
+import { archilExecBoxes } from "../src/box/archil-exec.ts";
+import type { Box, BoxSpec } from "../src/box/box.ts";
+import { finish, readStream } from "../src/box/files.ts";
+import { boxEnv } from "../src/hands/box-env.ts";
+import { localVault } from "../src/home/checkpoint.ts";
+import { dirStore } from "../src/home/dir-store.ts";
+import { leaseIn } from "../src/home/ownership.ts";
+import { boxPlace } from "../src/place/box-place.ts";
+import { registerBoxConformance } from "../src/testing/index.ts";
+import { FakeArchil, FakeArchilError } from "./archil-fake.ts";
+
+const CANARY = "PI_TRANSPORT_HOST_CANARY";
+process.env[CANARY] = "the host's environment reached a box";
+const context = BACKGROUND_CONTEXT;
+const SPEC: BoxSpec = { maxLifetimeMs: 60_000, labels: { run: "a" } };
+const WHY = "an exec is one request that answers when the command ends";
+const WHY_ENV = "Archil's exec carries only the command: a value could only ride in the command or on the disk";
+const decoder = new TextDecoder();
+/** A value no test or program writes by itself: found in a file of the disk or a request, it was put there by an env. */
+const MARKER = "PLANTED-MARKER-4f9c1e2a7b";
+
+/** Every file under a directory. */
+function onDisk(root: string): string[] {
+	return readdirSync(root, { recursive: true, withFileTypes: true })
+		.filter((entry) => entry.isFile())
+		.map((entry) => join(entry.parentPath, entry.name));
+}
+
+function unwrap<T>(result: { ok: true; value: T } | { ok: false; error: Error }): T {
+	if (!result.ok) throw result.error;
+	return result.value;
+}
+
+/** A fake disk and the provider over it; `close` kills what a test abandoned. */
+function rig(options: { queueMs?: number; destroyWaitMs?: number } = {}) {
+	const fake = new FakeArchil();
+	const provider = archilExecBoxes({ client: fake.client, disk: fake.disk, ...options });
+	return { fake, provider, close: () => fake.close() };
+}
+
+async function run(box: Box, argv: readonly string[], timeoutMs?: number) {
+	const started = unwrap(await box.exec(argv, timeoutMs === undefined ? undefined : { timeoutMs }, context));
+	const done = unwrap(await finish(started));
+	return { exitCode: done.exitCode, stdout: decoder.decode(done.stdout), stderr: done.stderr };
+}
+
+registerBoxConformance(
+	{ describe, expect, it },
+	"archil exec boxes over a fake SDK",
+	async (use) => {
+		const { provider, close } = rig();
+		try {
+			await use(provider);
+		} finally {
+			close();
+		}
+	},
+	{ absentEnv: [CANARY], withoutLiveProcesses: WHY, withoutEnv: WHY_ENV },
+);
+
+describe("archil exec boxes", () => {
+	it("reports facts: a vm, one request per exec, no live program, a 300 s limit, a directory of the work disk", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			expect(box.facts()).toMatchObject({
+				provider: "archil-exec",
+				isolation: "vm",
+				liveProcesses: false,
+				maxExecMs: 300_000,
+				snapshot: null,
+				bulk: "files",
+				maxLifetimeMs: 60_000,
+			});
+			expect(box.facts().workspace).toBe(`/mnt/archil/work/boxes/${box.id}`);
+			expect(existsSync(join(fake.root, "boxes", box.id))).toBe(true);
+		} finally {
+			close();
+		}
+	});
+
+	it("never touches anything outside boxes/ and boxes.records/ on the disk, and never under runs/", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			await run(box, ["sh", "-c", "echo hi > a.txt"]);
+			unwrap(await box.upload([{ path: "deep/b.txt", bytes: new Uint8Array([1]) }], context));
+			unwrap(await box.destroy(context));
+			expect(readdirSync(fake.root).sort()).toEqual(["boxes", "boxes.records"]);
+		} finally {
+			close();
+		}
+	});
+
+	it("runs every exec with the box directory checked out and a queue, so a second process waits and loses nothing", async () => {
+		const { fake, provider, close } = rig({ queueMs: 20_000 });
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			await run(box, ["true"]);
+			const call = fake.calls.at(-1);
+			expect(call?.mount).toBe("work");
+			expect(call?.spec).toMatchObject({
+				disk: fake.disk.id,
+				checkoutPaths: [`boxes/${box.id}`],
+				queueMs: 20_000,
+			});
+			// A second host that attached the same box, running at the same time.
+			const other = archilExecBoxes({ client: fake.client, disk: fake.disk, queueMs: 20_000 });
+			const attached = unwrap(await other.attach(box.id, context));
+			const both = await Promise.all([
+				run(box, ["sh", "-c", "sleep 0.4; echo one >> shared.txt"]),
+				run(attached as Box, ["sh", "-c", "echo two >> shared.txt"]),
+			]);
+			expect(both.map((result) => result.exitCode)).toEqual([0, 0]);
+			const lines = readFileSync(join(fake.root, "boxes", box.id, "shared.txt"), "utf8")
+				.trim()
+				.split("\n");
+			expect(lines.sort()).toEqual(["one", "two"]);
+			expect(fake.maxOverlap).toBe(1);
+		} finally {
+			close();
+		}
+	});
+
+	it("runs the execs of one box one at a time, in the order they were asked, and a second box in parallel", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const one = unwrap(await provider.create(SPEC, context));
+			const two = unwrap(await provider.create(SPEC, context));
+			const started = [0, 1, 2, 3, 4].map((n) => run(one, ["sh", "-c", `sleep 0.1; echo ${n} >> order.txt`]));
+			await Promise.all(started);
+			expect(fake.maxOverlap).toBe(1);
+			expect(
+				readFileSync(join(fake.root, "boxes", one.id, "order.txt"), "utf8")
+					.trim()
+					.split("\n"),
+			).toEqual(["0", "1", "2", "3", "4"]);
+			const parallel = await Promise.all([
+				run(one, ["sleep", "0.5"]),
+				run(two, ["sleep", "0.5"]),
+				run(unwrap(await provider.create(SPEC, context)), ["sleep", "0.5"]),
+			]);
+			expect(parallel.map((result) => result.exitCode)).toEqual([0, 0, 0]);
+			expect(fake.maxOverlap).toBeGreaterThan(1);
+		} finally {
+			close();
+		}
+	});
+
+	it("puts the argv in single quotes, with no variable in front, and a deadline of the command's own in the container", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const result = await run(box, ["sh", "-c", 'printf "%s|%s" "$GREETING" "$1"', "sh", "a'b"], 5_000);
+			expect(result).toMatchObject({ exitCode: 0, stdout: "|a'b" });
+			const command = fake.calls.at(-1)?.command ?? "";
+			expect(command).toContain("timeout");
+			expect(command).toContain("'a'\\''b'");
+			expect(command).not.toContain("a'b'");
+			expect(command).toMatch(/env -- 'sh'/);
+		} finally {
+			close();
+		}
+	});
+
+	it("keeps no value of a box's env anywhere: a planted marker in spec.env is refused, and is on no file of the disk and in no request", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			for (const env of [{ SECRET_NAME: MARKER }, { EMPTY: "" }] as Record<string, string>[]) {
+				const refused = await provider.create({ ...SPEC, env }, context);
+				expect(refused.ok).toBe(false);
+				if (!refused.ok) {
+					expect(refused.error.code).toBe("unsupported");
+					expect(refused.error.message).toMatch(/carries only the command/);
+					expect(refused.error.message).not.toContain(MARKER);
+				}
+			}
+			// A box with no env, or an empty one, is made, and its record keeps no env at all.
+			const box = unwrap(await provider.create({ ...SPEC, env: {} }, context));
+			expect((await run(box, ["echo", MARKER])).stdout.trim()).toBe(MARKER);
+			const record = JSON.parse(readFileSync(join(fake.root, "boxes.records", `${box.id}.json`), "utf8")) as Record<
+				string,
+				unknown
+			>;
+			expect(Object.keys(record)).not.toContain("env");
+			expect(fake.calls.every((call) => !JSON.stringify(call).includes("SECRET_NAME"))).toBe(true);
+			// The marker was never given to a box's env: only a program's own argument carried it, in the one request that ran that program.
+			const holding = fake.calls.filter((call) => JSON.stringify(call).includes(MARKER));
+			expect(holding.length).toBe(1);
+			expect(holding[0]?.command).toContain("'echo'");
+			expect(onDisk(fake.root).filter((path) => readFileSync(path, "latin1").includes(MARKER))).toEqual([]);
+		} finally {
+			close();
+		}
+	});
+
+	it("refuses a per-call env of an environment on such a box (a value could only ride in the command), whatever the name", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box);
+			const before = fake.calls.length;
+			const attempts: ShellExecOptions[] = [
+				{ env: { SECRET_NAME: MARKER } },
+				{ env: { PATH: `/usr/bin:/bin:${MARKER}` } },
+				{ env: { A: "1" }, inheritEnv: false },
+			];
+			for (const options of attempts) {
+				const refused = await env.exec("echo hi", options, context);
+				expect(refused.ok).toBe(false);
+				if (!refused.ok) {
+					expect(refused.error.code).toBe("spawn_error");
+					expect(refused.error.message).toMatch(/carries only the command/);
+					expect(refused.error.message).not.toContain(MARKER);
+				}
+			}
+			expect(fake.calls.length).toBe(before);
+			expect(fake.calls.every((call) => !JSON.stringify(call).includes(MARKER))).toBe(true);
+			expect(onDisk(fake.root).filter((path) => readFileSync(path, "latin1").includes(MARKER))).toEqual([]);
+			// With no env of its own, a command runs.
+			let printed = "";
+			const ran = await env.exec(
+				"echo hi",
+				{
+					onOutput: (text) => {
+						printed += text;
+					},
+				},
+				context,
+			);
+			expect(ran.ok && ran.value.exitCode).toBe(0);
+			expect(printed).toBe("hi\n");
+		} finally {
+			close();
+		}
+	});
+
+	it("refuses a timeout over 300 s before any call, and ends every command at the platform's limit by itself", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const before = fake.calls.length;
+			const refused = await box.exec(["true"], { timeoutMs: 300_001 }, context);
+			expect(refused.ok).toBe(false);
+			if (!refused.ok) expect(refused.error.code).toBe("invalid");
+			expect(fake.calls.length).toBe(before);
+			await run(box, ["true"]);
+			// No timeout asked: the command still carries a deadline under the 300 s the platform cuts a call at.
+			expect(fake.calls.at(-1)?.command).toMatch(/timeout[^;&]* 29\d(\.\d+)?s?\b/);
+		} finally {
+			close();
+		}
+	});
+
+	it("orders its own execs itself when the service ignores the checkout", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			fake.enforceCheckout = false;
+			const box = unwrap(await provider.create(SPEC, context));
+			await Promise.all([0, 1, 2, 3].map((n) => run(box, ["sh", "-c", `sleep 0.1; echo ${n} >> order.txt`])));
+			expect(fake.maxOverlap).toBe(1);
+			expect(
+				readFileSync(join(fake.root, "boxes", box.id, "order.txt"), "utf8")
+					.trim()
+					.split("\n"),
+			).toEqual(["0", "1", "2", "3"]);
+		} finally {
+			close();
+		}
+	});
+
+	it("is gone for a process whose box another process destroyed", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const other = archilExecBoxes({ client: fake.client, disk: fake.disk });
+			const there = unwrap(await other.attach(box.id, context)) as Box;
+			unwrap(await there.destroy(context));
+			const started = unwrap(await box.exec(["true"], undefined, context));
+			void readStream(started.stdout).catch(() => {});
+			void readStream(started.stderr).catch(() => {});
+			const exit = await started.wait();
+			expect(exit.ok).toBe(false);
+			if (!exit.ok) expect(exit.error.code).toBe("gone");
+			expect(unwrap(await box.status(context)).state).toBe("ended");
+		} finally {
+			close();
+		}
+	});
+
+	it("removes a directory through its parent: a directory cannot be removed while it is itself checked out", async () => {
+		const { fake, provider, close } = rig({ destroyWaitMs: 1_234 });
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			unwrap(await box.destroy(context));
+			const call = fake.calls.at(-1);
+			expect(call?.command).toContain("rm -rf");
+			expect(call?.spec).toMatchObject({ checkoutPaths: ["boxes"], queueMs: 1_234 });
+			expect(existsSync(join(fake.root, "boxes", box.id))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
+	it("ends a box at once even while a command holds its directory, and the next list removes what was left", async () => {
+		const { fake, provider, close } = rig({ destroyWaitMs: 100 });
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const held = run(box, ["sleep", "1"]);
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			unwrap(await box.destroy(context));
+			expect(unwrap(await provider.attach(box.id, context))).toBeUndefined();
+			expect(unwrap(await provider.list({}, context))).toEqual([]);
+			await held;
+			expect(existsSync(join(fake.root, "boxes", box.id))).toBe(true);
+			expect(unwrap(await provider.list({}, context))).toEqual([]);
+			expect(existsSync(join(fake.root, "boxes", box.id))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
+	it("is gone for a second process that runs after the box was ended, though a command kept its directory", async () => {
+		const { fake, provider, close } = rig({ destroyWaitMs: 50 });
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const other = archilExecBoxes({ client: fake.client, disk: fake.disk, destroyWaitMs: 50 });
+			const there = unwrap(await other.attach(box.id, context)) as Box;
+			const held = run(box, ["sleep", "0.6"]);
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			unwrap(await box.destroy(context));
+			expect(existsSync(join(fake.root, "boxes", box.id))).toBe(true);
+			const started = unwrap(await there.exec(["sh", "-c", "echo ran > ran.txt"], undefined, context));
+			void readStream(started.stdout).catch(() => {});
+			void readStream(started.stderr).catch(() => {});
+			const exit = await started.wait();
+			expect(exit.ok).toBe(false);
+			if (!exit.ok) expect(exit.error.code).toBe("gone");
+			await held;
+			expect(existsSync(join(fake.root, "boxes", box.id, "ran.txt"))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
+	it("never reads a program name that starts with a dash as an option, and reads exit 124 as the command's deadline", async () => {
+		const { provider, close } = rig();
+		try {
+			const plain = unwrap(await provider.create(SPEC, context));
+			const empty = unwrap(await provider.create({ ...SPEC, env: {} }, context));
+			for (const box of [plain, empty]) {
+				const result = await run(box, ["--help"]);
+				expect(result.exitCode, result.stdout).toBe(127);
+			}
+			const started = unwrap(await plain.exec(["sh", "-c", "exit 124"], undefined, context));
+			void readStream(started.stdout).catch(() => {});
+			void readStream(started.stderr).catch(() => {});
+			const exit = await started.wait();
+			expect(exit.ok).toBe(false);
+			if (!exit.ok) expect(exit.error.code).toBe("timeout");
+		} finally {
+			close();
+		}
+	});
+
+	it("does not start a command whose caller gave up while it waited behind another, and does not bill it", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const first = run(box, ["sleep", "1"]);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const before = fake.calls.length;
+			const queued = await box.exec(["sh", "-c", "echo late > late.txt"], { timeoutMs: 150 }, context);
+			expect(queued.ok).toBe(false);
+			if (!queued.ok) expect(queued.error.code).toBe("timeout");
+			const cancel = withCancel(context);
+			setTimeout(() => cancel.cancel(), 100);
+			const aborted = await box.exec(["sh", "-c", "echo late2 > late2.txt"], undefined, cancel.context);
+			expect(aborted.ok).toBe(false);
+			if (!aborted.ok) expect(aborted.error.code).toBe("aborted");
+			await first;
+			await run(box, ["true"]);
+			expect(fake.calls.length - before).toBe(1);
+			expect(existsSync(join(fake.root, "boxes", box.id, "late.txt"))).toBe(false);
+			expect(existsSync(join(fake.root, "boxes", box.id, "late2.txt"))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
+	it("does not send a command that was queued when its box was destroyed, so no billed call is left unreceipted", async () => {
+		const { fake, provider, close } = rig({ destroyWaitMs: 50 });
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const first = run(box, ["sleep", "1"]);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const before = fake.calls.length;
+			const queued = box.exec(["sh", "-c", "echo late > late.txt"], undefined, context);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			expect((await box.destroy(context)).ok).toBe(true);
+			const result = await queued;
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.error.code).toBe("gone");
+			await first;
+			expect(fake.calls.slice(before).filter((call) => call.command.includes("late.txt"))).toEqual([]);
+		} finally {
+			close();
+		}
+	});
+
+	it("serves the file tools of an environment through upload and download, so a write keeps its bytes and a binary read is exact", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box);
+			const binary = new Uint8Array([0, 255, 254, 128, 10, 200]);
+			expect((await env.writeFile("data.bin", binary, context)).ok).toBe(true);
+			expect(new Uint8Array(readFileSync(join(fake.root, "boxes", box.id, "data.bin")))).toEqual(binary);
+			const read = await env.readBinaryFile("data.bin", context);
+			expect(read.ok && new Uint8Array(read.value)).toEqual(binary);
+			expect((await env.writeFile("note.txt", "one\n", context)).ok).toBe(true);
+			expect((await env.appendFile("note.txt", "two\n", context)).ok).toBe(true);
+			expect((await env.appendFile("fresh.txt", "x", context)).ok).toBe(true);
+			const text = await env.readTextFile("note.txt", context);
+			expect(text.ok && text.value).toBe("one\ntwo\n");
+			const fresh = await env.readTextFile("fresh.txt", context);
+			expect(fresh.ok && fresh.value).toBe("x");
+			const missing = await env.readBinaryFile("nope.bin", context);
+			expect(!missing.ok && missing.error.code).toBe("not_found");
+		} finally {
+			close();
+		}
+	});
+
+	it("refuses a command's stdin as unsupported instead of running it without its input", async () => {
+		const { provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const started = unwrap(await box.exec(["cat"], undefined, context));
+			const done = await finish(started, new Uint8Array([1, 2, 3]));
+			expect(done.ok).toBe(false);
+			if (!done.ok) expect(done.error.code).toBe("unsupported");
+		} finally {
+			close();
+		}
+	});
+
+	it("starts a command whose timeout the box supports, though the environment adds its backstop", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box);
+			const before = fake.calls.length;
+			const ran = await env.exec("echo ok", { timeout: 280 }, context);
+			expect(ran.ok).toBe(true);
+			if (ran.ok) expect(ran.value.exitCode).toBe(0);
+			expect(fake.calls.length - before).toBeGreaterThan(0);
+		} finally {
+			close();
+		}
+	});
+
+	it("ends a timed-out command at the caller's own deadline and does not stall on a kill it cannot make", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box);
+			const started = Date.now();
+			const ran = await env.exec("sleep 6; echo late > late.txt", { timeout: 1 }, context);
+			expect(Date.now() - started).toBeLessThan(4_000);
+			expect(ran.ok).toBe(false);
+			if (!ran.ok) expect((ran.error as { killUnconfirmed?: boolean }).killUnconfirmed).toBeUndefined();
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			expect(existsSync(join(fake.root, "boxes", box.id, "late.txt"))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
+	it("does not run a command later that it reported as not started", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box, { opTimeoutMs: 500 });
+			const first = run(box, ["sleep", "2"]);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const second = await env.exec("echo ran > ran.txt", { timeout: 1 }, context);
+			expect(second.ok).toBe(false);
+			await first;
+			await run(box, ["true"]);
+			expect(existsSync(join(fake.root, "boxes", box.id, "ran.txt"))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
+	it("keeps every append of concurrent appends, and an append made while a command writes the same file", async () => {
+		const { provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box);
+			await Promise.all(["A\n", "B\n", "C\n"].map((piece) => env.appendFile("c.txt", piece, context)));
+			const joined = await env.readTextFile("c.txt", context);
+			expect(joined.ok && joined.value.split("\n").sort().join("")).toBe("ABC");
+			expect((await env.writeFile("log.txt", "base\n", context)).ok).toBe(true);
+			const command = env.exec("sleep 1; echo from-cmd >> log.txt", undefined, context);
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			expect((await env.appendFile("log.txt", "from-append\n", context)).ok).toBe(true);
+			expect((await command).ok).toBe(true);
+			const log = await env.readTextFile("log.txt", context);
+			expect(log.ok && log.value).toBe("base\nfrom-cmd\nfrom-append\n");
+		} finally {
+			close();
+		}
+	});
+
+	it("keeps the complete output of a command in a file inside the workspace when it spills", async () => {
+		const { provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box);
+			const ran = await env.exec("seq 1 3000", { spill: { afterBytes: 100, afterLines: 10 } }, context);
+			expect(ran.ok).toBe(true);
+			if (ran.ok) {
+				const spill = (ran.value as { spillPath?: string }).spillPath;
+				expect(spill).toBeDefined();
+				const whole = await env.readTextFile(spill as string, context);
+				expect(whole.ok && whole.value.trim().split("\n").length).toBe(3000);
+			}
+		} finally {
+			close();
+		}
+	});
+
+	it("reads exact bytes through a binary reader, refuses bytes outside the workspace, and writes nothing for an aborted call", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box);
+			const binary = new Uint8Array([0, 255, 254, 128]);
+			expect((await env.writeFile("b.bin", binary, context)).ok).toBe(true);
+			const reader = await env.openBinaryReader("b.bin", undefined, context);
+			if (!reader.ok) throw reader.error;
+			const piece = await reader.value.read(0, 10, context);
+			expect(piece.ok && new Uint8Array(piece.value)).toEqual(binary);
+			const outside = await env.readBinaryFile("/tmp/x.bin", context);
+			expect(outside.ok).toBe(false);
+			if (!outside.ok) expect(outside.error.code).not.toBe("unknown");
+			const cancel = withCancel(context);
+			cancel.cancel();
+			const aborted = await env.writeFile("never.txt", "x", cancel.context);
+			expect(aborted.ok).toBe(false);
+			expect(existsSync(join(fake.root, "boxes", box.id, "never.txt"))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
+	it("does not run a file tool later that timed out or was cancelled while queued behind a command", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box, { opTimeoutMs: 300 });
+			const first = run(box, ["sleep", "1"]);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const started = Date.now();
+			const written = await env.writeFile("late.txt", "late", context);
+			expect(written.ok).toBe(false);
+			expect(Date.now() - started).toBeLessThan(900);
+			const cancel = withCancel(context);
+			setTimeout(() => cancel.cancel(), 100);
+			const second = await env.writeFile("late2.txt", "late", cancel.context);
+			expect(second.ok).toBe(false);
+			await first;
+			await run(box, ["true"]);
+			expect(existsSync(join(fake.root, "boxes", box.id, "late.txt"))).toBe(false);
+			expect(existsSync(join(fake.root, "boxes", box.id, "late2.txt"))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
+	it("appends in one call to the box, so a command queued beside the append keeps its change", async () => {
+		const { provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			// The box's reads are slow: a command can start while an append is in the middle of its own read.
+			const slow = new Proxy(box, {
+				get(target, property) {
+					if (property === "download") {
+						return async (...args: Parameters<Box["download"]>) => {
+							const got = await target.download(...args);
+							await new Promise((resolve) => setTimeout(resolve, 300));
+							return got;
+						};
+					}
+					const value = Reflect.get(target, property, target);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const env = boxEnv(slow);
+			expect((await env.writeFile("log.txt", "base\n", context)).ok).toBe(true);
+			const appended = env.appendFile("log.txt", "from-append\n", context);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const command = env.exec("echo from-cmd >> log.txt", undefined, context);
+			expect((await appended).ok).toBe(true);
+			expect((await command).ok).toBe(true);
+			const log = await env.readTextFile("log.txt", context);
+			expect(log.ok && log.value.split("\n").filter(Boolean).sort()).toEqual(["base", "from-append", "from-cmd"]);
+			expect(
+				(await readStream(unwrap(await box.exec(["ls", "-A"], undefined, context)).stdout)).length,
+			).toBeGreaterThan(0);
+			const names = decoder.decode(
+				await readStream(unwrap(await box.exec(["ls", "-A"], undefined, context)).stdout),
+			);
+			expect(names).not.toMatch(/pi-transport-append/);
+		} finally {
+			close();
+		}
+	});
+
+	it("refuses a file over the reader limit before moving it, and the reader reports the file's own time", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			let downloads = 0;
+			const spy = new Proxy(box, {
+				get(target, property) {
+					if (property === "download") {
+						return (...args: Parameters<Box["download"]>) => {
+							downloads += 1;
+							return target.download(...args);
+						};
+					}
+					const value = Reflect.get(target, property, target);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const env = boxEnv(spy, { maxReaderBytes: 10 });
+			expect((await env.writeFile("big.bin", new Uint8Array(100), context)).ok).toBe(true);
+			const refused = await env.openBinaryReader("big.bin", undefined, context);
+			expect(!refused.ok && refused.error.code).toBe("not_supported");
+			expect(downloads).toBe(0);
+			expect((await env.writeFile("small.bin", new Uint8Array([1, 2, 3]), context)).ok).toBe(true);
+			const reader = await env.openBinaryReader("small.bin", undefined, context);
+			if (!reader.ok) throw reader.error;
+			const info = await reader.value.info(context);
+			const stat = await env.fileInfo("small.bin", context);
+			expect(info.ok && stat.ok && info.value.mtimeMs).toBe(stat.ok ? stat.value.mtimeMs : -1);
+			expect(info.ok && info.value.mtimeMs).toBeGreaterThan(0);
+			expect(existsSync(join(fake.root, "boxes", box.id, "small.bin"))).toBe(true);
+		} finally {
+			close();
+		}
+	});
+
+	it("is gone for an upload or a download from a handle whose box another client ended, queued or not", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const other = archilExecBoxes({ client: fake.client, disk: fake.disk });
+			const there = unwrap(await other.attach(box.id, context)) as Box;
+			const held = run(box, ["sleep", "0.5"]);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const queuedUpload = box.upload([{ path: "x.txt", bytes: new Uint8Array([1]) }], context);
+			unwrap(await there.destroy(context));
+			const result = await queuedUpload;
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.error.code).toBe("gone");
+			const read = await box.download(["x.txt"], context);
+			expect(read.ok).toBe(false);
+			if (!read.ok) expect(read.error.code).toBe("gone");
+			await held;
+			expect(existsSync(join(fake.root, "boxes", box.id, "x.txt"))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
+	it("removes an expired box's record when it sweeps it, so a later list makes no call for it", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			unwrap(await provider.create({ ...SPEC, maxLifetimeMs: 100 }, context));
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			expect(unwrap(await provider.list({}, context))).toEqual([]);
+			expect(readdirSync(join(fake.root, "boxes.records"))).toEqual([]);
+			const before = fake.calls.length;
+			expect(unwrap(await provider.list({}, context))).toEqual([]);
+			expect(fake.calls.slice(before).filter((call) => call.command.includes("rm -rf"))).toEqual([]);
+		} finally {
+			close();
+		}
+	});
+
+	it("refuses stdin with an unsupported error and carries output after the call", async () => {
+		const { provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const started = unwrap(await box.exec(["sh", "-c", "echo out; echo err >&2; exit 3"], undefined, context));
+			await expect(started.stdin.write(new Uint8Array([1]))).rejects.toMatchObject({ code: "unsupported" });
+			await started.stdin.close();
+			expect(decoder.decode(await readStream(started.stdout))).toBe("out\n");
+			expect(decoder.decode(await readStream(started.stderr))).toBe("err\n");
+			expect(unwrap(await started.wait())).toBe(3);
+		} finally {
+			close();
+		}
+	});
+
+	it("ends the wait at once when the context aborts, while the command's own deadline bounds it in the container", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const cancel = withCancel(context);
+			const started = unwrap(await box.exec(["sleep", "30"], undefined, cancel.context));
+			void readStream(started.stdout).catch(() => {});
+			void readStream(started.stderr).catch(() => {});
+			const began = Date.now();
+			setTimeout(() => cancel.cancel(), 100);
+			const exit = await started.wait();
+			expect(exit.ok).toBe(false);
+			if (!exit.ok) expect(exit.error.code).toBe("aborted");
+			expect(Date.now() - began).toBeLessThan(5_000);
+			expect(fake.calls.at(-1)?.command).toContain("timeout");
+		} finally {
+			close();
+		}
+	});
+
+	it("maps what the SDK throws to typed errors", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const codeOf = async (error: Error) => {
+				fake.failNext = error;
+				const started = unwrap(await box.exec(["true"], undefined, context));
+				void readStream(started.stdout).catch(() => {});
+				void readStream(started.stderr).catch(() => {});
+				const exit = await started.wait();
+				return exit.ok ? "ok" : exit.error.code;
+			};
+			expect(await codeOf(new FakeArchilError("ArchilApiError", "Unauthorized", 401))).toBe("unauthorized");
+			expect(await codeOf(new FakeArchilError("ArchilApiError", "Forbidden", 403))).toBe("unauthorized");
+			expect(await codeOf(new FakeArchilError("ArchilApiError", "slow down", 429))).toBe("capacity");
+			expect(await codeOf(new FakeArchilError("ArchilApiError", "boom", 500))).toBe("unknown");
+			expect(
+				await codeOf(
+					new FakeArchilError(
+						"ArchilApiError",
+						"Exec failed: Delegation checkout conflicts with another client",
+						400,
+					),
+				),
+			).toBe("unknown");
+			expect(await codeOf(new TypeError("fetch failed"))).toBe("timeout");
+		} finally {
+			close();
+		}
+	});
+
+	it("keeps labels and facts on the disk, so attach and list find the box after a restart", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create({ ...SPEC, labels: { run: "r1", team: "t" } }, context));
+			const after = archilExecBoxes({ client: fake.client, disk: fake.disk });
+			const found = unwrap(await after.attach(box.id, context));
+			expect(found?.facts()).toEqual(box.facts());
+			expect((await run(found as Box, ["echo", "found"])).stdout.trim()).toBe("found");
+			expect(unwrap(await after.list({ run: "r1" }, context))).toEqual([
+				{ id: box.id, labels: { run: "r1", team: "t" } },
+			]);
+			expect(unwrap(await after.list({ run: "r2" }, context))).toEqual([]);
+			mkdirSync(join(fake.root, "boxes", "not-a-box"), { recursive: true });
+			expect(unwrap(await after.list({}, context)).map((ref) => ref.id)).toEqual([box.id]);
+		} finally {
+			close();
+		}
+	});
+
+	it("ends a box at its lifetime on the next call that touches it, and removes its directory", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create({ ...SPEC, maxLifetimeMs: 200 }, context));
+			const kept = unwrap(await provider.create(SPEC, context));
+			await new Promise((resolve) => setTimeout(resolve, 350));
+			expect(unwrap(await provider.list({}, context)).map((ref) => ref.id)).toEqual([kept.id]);
+			expect(existsSync(join(fake.root, "boxes", box.id))).toBe(false);
+			const started = await box.exec(["true"], undefined, context);
+			expect(started.ok).toBe(false);
+			if (!started.ok) expect(started.error.code).toBe("gone");
+			expect(unwrap(await box.status(context)).state).toBe("ended");
+		} finally {
+			close();
+		}
+	});
+
+	it("refuses what a work-disk directory cannot be, before a directory exists", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const refuse = async (spec: Partial<BoxSpec>, code: string) => {
+				const made = await provider.create({ ...SPEC, ...spec }, context);
+				expect(made.ok, JSON.stringify(spec)).toBe(false);
+				if (!made.ok) expect(made.error.code).toBe(code);
+			};
+			await refuse({ gpu: "T4" }, "unsupported");
+			await refuse({ snapshot: "s" }, "unsupported");
+			await refuse({ workspace: "/work" }, "unsupported");
+			await refuse({ isolation: "container" }, "unsupported");
+			await refuse({ isolation: "none" }, "unsupported");
+			await refuse({ cpus: 64 }, "unsupported");
+			await refuse({ maxLifetimeMs: 0 }, "invalid");
+			await refuse({ labels: { "pi-transport.x": "1" } }, "invalid");
+			expect(existsSync(join(fake.root, "boxes"))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
+	it("moves files through the object API: bytes, mode, nested directories, absolute paths inside the workspace only", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const bytes = Uint8Array.from({ length: 256 }, (_, index) => index);
+			unwrap(await box.upload([{ path: "a/b/c.bin", bytes, mode: 0o640 }], context));
+			const [read] = unwrap(await box.download([`${box.facts().workspace}/a/b/c.bin`], context));
+			expect(Array.from(read?.bytes ?? [])).toEqual(Array.from(bytes));
+			expect((await run(box, ["stat", "-c", "%a", "a/b/c.bin"])).stdout.trim()).toBe("640");
+			expect(fake.calls.every((call) => !call.command.includes("c.bin") || call.command.includes("stat"))).toBe(
+				true,
+			);
+			for (const path of ["../other/x", `${box.facts().workspace}/../x`, "/etc/passwd"]) {
+				const refused = await box.download([path], context);
+				expect(refused.ok, path).toBe(false);
+				if (!refused.ok) expect(refused.error.code).toBe("invalid");
+				const wrote = await box.upload([{ path, bytes }], context);
+				expect(wrote.ok, path).toBe(false);
+			}
+			const missing = await box.download(["nope.txt"], context);
+			expect(missing.ok).toBe(false);
+			if (!missing.ok) expect(missing.error.code).toBe("not_found");
+		} finally {
+			close();
+		}
+	});
+
+	it("waits for a command that holds the directory before it writes a file there, instead of failing", async () => {
+		const { fake, provider, close } = rig({ queueMs: 5_000 });
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const other = archilExecBoxes({ client: fake.client, disk: fake.disk, queueMs: 5_000 });
+			const there = unwrap(await other.attach(box.id, context)) as Box;
+			const held = run(there, ["sleep", "0.6"]);
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			unwrap(await box.upload([{ path: "late.txt", bytes: new Uint8Array([7]) }], context));
+			await held;
+			expect(readFileSync(join(fake.root, "boxes", box.id, "late.txt"))[0]).toBe(7);
+		} finally {
+			close();
+		}
+	});
+
+	it("carries a command's text to the caller as text: bytes that are not UTF-8 are replaced, so use files for bytes", async () => {
+		const { provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const result = await run(box, ["sh", "-c", "printf '\\377abc'"]);
+			expect(result.stdout).toBe("�abc");
+		} finally {
+			close();
+		}
+	});
+});
+
+describe("an archil exec box is never a home", () => {
+	it("is refused by the box place with a typed error, and the box it made is destroyed", async () => {
+		const { fake, provider, close } = rig();
+		const root = mkdtempSync(join(tmpdir(), "pi-transport-archil-home-"));
+		try {
+			const lines: string[] = [];
+			const placed = await boxPlace(
+				{
+					session: "run-1",
+					provider,
+					spec: SPEC,
+					environment: "archil",
+					ownership: leaseIn(dirStore(join(root, "lease"))),
+					program: { argv: ["node", "-e", "0"] },
+					models: createModels(),
+					vault: localVault(join(root, "vault")),
+					lines: (kind) => lines.push(kind),
+				},
+				context,
+			);
+			expect(placed.ok).toBe(false);
+			if (!placed.ok) expect(placed.error.code).toBe("no_live_processes");
+			expect(lines).toEqual([]);
+			expect(readdirSync(join(fake.root, "boxes"))).toEqual([]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+			close();
+		}
+	});
+});

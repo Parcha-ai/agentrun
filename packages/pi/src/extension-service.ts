@@ -168,7 +168,7 @@ function localDiagnostic(error: unknown): ExtensionRunReport['error'] {
       code: 'jev_state_too_large', stage, stateBytes, maxStateBytes,
       message: `Jev state at ${stage} is ${stateBytes} UTF-8 bytes; configured host limit is ${maxStateBytes}. No request was sent. A sift splits its items across requests only when the host sets maxStateBytesPerRequest; otherwise send less of each item or use per-item judgments without losing headers or qualifiers.` };
     if (reason === 'invalid_state' || reason === 'invalid_questions') return { code: `jev_${reason}`, stage,
-      message: reason === 'invalid_state' ? 'Jev state must be JSON-serializable text, an object, an array or null. No request was sent.'
+      message: reason === 'invalid_state' ? 'Jev state must be JSON-serializable text, an object or an array. No request was sent.'
         : 'Jev needs a nonempty JSON question map. No request was sent.' };
   }
   // Trusted validation can invoke authored factories; its free-form problems may contain thrown text.
@@ -258,7 +258,8 @@ export class WorkflowExtensionService {
     this.allowedTools = new Set(tools);
     this.rubricSections = freeze(snapshot(options.rubricSections ?? {}));
     if (Object.entries(this.rubricSections).some(([name, text]) => !name.trim() || typeof text !== 'string' || !text.trim())) throw new ExtensionServiceError('configuration', 'Rubric sections require nonempty names and text.');
-    this.limits = { ...defaults, ...options.limits };
+    // A field given as undefined is an omitted one: it keeps its default.
+    this.limits = { ...defaults, ...Object.fromEntries(Object.entries(options.limits ?? {}).filter(([, value]) => value !== undefined)) };
     for (const key of Object.keys(ceilings) as (keyof ExtensionServiceLimits)[]) {
       const value = this.limits[key];
       if (value === null && ['deadlineMs', 'maxAgentCalls', 'maxJudgeCalls', 'maxToolCalls'].includes(key)) continue;

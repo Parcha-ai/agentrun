@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.22 (2026-10-21)
+
+- `archilExecBoxes({ client, disk })` (`@parcha/pi-transport/box/archil-exec`): boxes that are directories of an agent's
+  Archil work disk, each `exec` one serverless Archil call (about 100 ms warm, measured in us-east-1). The SDK is the
+  host's (`Archil` and a disk from the `disk` package), not a dependency. The limits are stated, not hidden: `BoxFacts` gains
+  optional `maxExecMs` (300 000: a longer `timeoutMs` is `invalid`) and `liveProcesses` (`false`: no stdin, output after
+  the call, no program kept between calls). A box with `liveProcesses` false is never a home: the box place refuses it with
+  `MoveError` code `no_live_processes`. Every exec checks out the box's directory with a queue, so a second process on the
+  same box waits instead of losing a write; a box's record is a file outside the directory, so `destroy` ends the box at once
+  even while a command runs. The conformance suite takes `withoutLiveProcesses: "<why>"` and leaves out the live-program and stdin cases,
+  with one case in their place that carries the reason, and `withoutEnv: "<why>"` for a box that has no env: Archil's exec carries only the command, so a spec with an env is refused with `unsupported` (the record and every call's command carry none) and a `boxEnv` per-call env on such a box is refused. A box billed per call gets a receipt with `calls` and `usd_per_call`
+  in place of `usd_per_second` (`BoxPrice` takes `usdPerCall`; RECORDING.md draft 40). The live suite
+  (`PI_TRANSPORT_LIVE_ARCHIL=1`) makes its own disk in aws-us-east-1 and deletes it.
+
+## 0.1.0-beta.21 (2026-10-21)
+
+- `@parcha/pi-transport` is on npm under the beta tag: the guide and the harness README give the install line, `npm install @parcha/pi-transport@beta`, and a demo that declares `boxes` without it installed says to run that line, no longer that the package is not on npm.
+- The package's npm description now names what it does: a pi agent's tools on this machine, in Docker, or in a Daytona or Modal sandbox, behind one `Box` interface, with Jev placing each step. It no longer says the session moves.
+
 ## 0.1.0-beta.20 (2026-10-20)
 
 ### Added

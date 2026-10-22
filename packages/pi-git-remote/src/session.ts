@@ -2,11 +2,11 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { GitRemoteError } from "./errors.js";
+import { refused } from "./errors.js";
 import { type Allowlist, compileAllowlist } from "./glob.js";
 import { pathRefusal } from "./limits.js";
 import type { Remote } from "./remotes.js";
-import type { Repo } from "./repo.js";
+import type { Repo, Skipped } from "./repo.js";
 
 /** The trailer that names the session a commit came from. */
 export const SESSION_ID_TRAILER = "Session-Id";
@@ -60,7 +60,7 @@ export type Seeded = {
   readonly sha: string;
   readonly files: readonly string[];
   /** Paths the checkout left out (symlinks, submodules, case collisions, files over the cap), with why. */
-  readonly skipped: readonly { readonly path: string; readonly reason: string }[];
+  readonly skipped: readonly Skipped[];
   /** True when the directory from an earlier start of this session was kept. */
   readonly resumed: boolean;
 };
@@ -87,7 +87,6 @@ export type SessionCheckout = {
   end(): Promise<EndOutcome>;
 };
 
-const refused = (message: string, paths: readonly string[] = []) => new GitRemoteError("refused", message, paths);
 
 /** The branch for a session: the pattern with the id in it, never a protected name and never the seed's own branch. */
 export function sessionBranch(pattern: string, sessionId: string, ref: string): string {
@@ -265,7 +264,8 @@ export function createSessionCheckout(options: SessionCheckoutOptions): SessionC
     const files: Record<string, Buffer | null> = Object.create(null);
     for (const [file, content] of contents) files[file] = content;
     // A path saved earlier that the allowlist names and the directory no longer holds is a deletion; one the checkout never copied was never there.
-    for (const file of saved.keys()) if (allow.matches(file) && !hashes.has(file)) files[file] = null;
+    const deleted = [...saved.keys()].filter((file) => allow.matches(file) && !hashes.has(file));
+    for (const file of deleted) files[file] = null;
     const changed = Object.keys(files).sort();
 
     const tip = await repo.resolve(branch);
@@ -284,7 +284,7 @@ export function createSessionCheckout(options: SessionCheckoutOptions): SessionC
     // Saved at the commit, not at the push: the saved state is what the local branch holds. A push that fails leaves the
     // commit to be pushed by the next end, which also sees any change made since as a change on top of it.
     const next = new Map(saved);
-    for (const file of saved.keys()) if (allow.matches(file) && !hashes.has(file)) next.delete(file);
+    for (const file of deleted) next.delete(file);
     for (const [file, hash] of hashes) next.set(file, hash);
     record = { ...seededAt, saved: Object.fromEntries(next) };
     await writeRecord(options.seedFile, record);
