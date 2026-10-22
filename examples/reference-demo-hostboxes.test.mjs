@@ -31,6 +31,10 @@ test('H3: a host box made through the tapped provider is in the recording as the
   const life = ids['box-1'].run;
   assert.equal(pending[0], `${life}-1.json`);
   assert.deepEqual(JSON.parse(readFileSync(join(idsDir, 'pending', pending[0]), 'utf8')), { provider: 'local', key: '0', run: life });
+  // The box's key is the one its host driver minted at the create (Amendment 2): its runner claimed the label by it (HOST_BOX), the
+  // supervisor read the label by the place's status key, and the tap bound the box's lines by the key on its create's label. The lines
+  // below are there only because all three are the one key.
+  assert.match(ids['box-1'].key, new RegExp(`^${life.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/0/[0-9a-f]{16}$`), 'the minted key, never the window\'s index');
 
   const lines = hostBoxLines(recording);
   assert.deepEqual(lines.map((line) => [line.kind, line.data.box, line.data.gen]), [['box.created', 'box-1', 1], ['box.exec', 'box-1', 1], ['box.ended', 'box-1', 1]]);
@@ -65,7 +69,7 @@ test('H3: a host box made through the tapped provider is in the recording as the
 test('DETECTION: a label the run\'s process binds for a host box that already names another box in the recording (a crash\'s residue: a synced line kept, its label file lost) refuses the recording, naming the label', { timeout: 300_000 }, async (t) => {
   await assert.rejects(
     run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'tapped', DEMO_PLANT_BOX_LINE: '1' }),
-    /the recording is refused: the label box-1 the run's process bound for host box 0 already names another box in this recording/,
+    /the recording is refused: the label box-1 the run's process bound for host box \S+\/0\/[0-9a-f]{16} already names another box in this recording/,
   );
 });
 

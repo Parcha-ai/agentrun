@@ -170,6 +170,12 @@ function memoryStore() {
  *  supervisor life that started it (`run`, the run's RUN_LABEL). */
 export type HostBox = { provider: string; key: string; run: string };
 
+/** A host box's key: a start index (a place that mints none), or the key its host driver minted for it at its create (Amendment 2:
+ *  `<run>/<index>/<nonce>`), plain names joined by `/`. */
+const HOST_KEY = /^[A-Za-z0-9._-]{1,100}(\/[A-Za-z0-9._-]{1,100}){0,4}$/;
+/** The file a host key is claimed by: `/` (never in a plain name) is written `~`, so a key is one file name, and each key its own. */
+const hostKeyFile = (key: string) => `host-${key.replaceAll('/', '~')}.json`;
+
 /** A host box's identity as a place hands it over (`HOST_BOX`), checked before it is claimed: a malformed one is refused, never guessed. */
 export function parseHostBox(text: string): HostBox {
   let value: unknown;
@@ -178,8 +184,8 @@ export function parseHostBox(text: string): HostBox {
   // Nothing but its three fields: a box id or a credential a place put there would sit in the process's environment, where its tools can read it.
   const extra = box !== null && typeof box === 'object' && !Array.isArray(box) ? Object.keys(box).filter((name) => name !== 'provider' && name !== 'key' && name !== 'run') : [];
   if (extra.length) throw new Error(`HOST_BOX holds ${extra.map((name) => (/^[A-Za-z0-9._-]{1,40}$/.test(name) ? name : 'an unnamed key')).join(', ')} beyond provider, key and run: refused, so no box id or credential reaches the process's environment`);
-  if (!box || typeof box.provider !== 'string' || !box.provider || typeof box.key !== 'string' || !/^\d+$/.test(box.key) || typeof box.run !== 'string' || !box.run) {
-    throw new Error('HOST_BOX must be { provider, key (a start index), run (the supervisor life) }: refused');
+  if (!box || typeof box.provider !== 'string' || !box.provider || typeof box.key !== 'string' || !HOST_KEY.test(box.key) || box.key.length > 200 || typeof box.run !== 'string' || !box.run) {
+    throw new Error('HOST_BOX must be { provider, key (a start index, or the key the host driver minted for the box: plain names joined by /), run (the supervisor life) }: refused');
   }
   return { provider: box.provider, key: box.key, run: box.run };
 }
@@ -192,6 +198,8 @@ export type RunFiles = { readRunFile(path: string): Promise<Uint8Array | null>; 
  *  through `files`: the supervisor parses the label files itself, the place only reads bytes. `undefined` when it has not landed (or only
  *  another life's is there); a file it cannot parse refuses. */
 export async function hostLabelIn(files: RunFiles, dir: string, box: { provider: string; key: string; run: string }): Promise<string | undefined> {
+  // One box, one label: the same key bound under a second label (one box with two names) refuses, naming both (Amendment 2).
+  const found: string[] = [];
   for (const name of await files.listRunFiles(dir)) {
     const number = LABEL_FILE.exec(name)?.[1];
     if (number === undefined) continue;
@@ -201,9 +209,10 @@ export async function hostLabelIn(files: RunFiles, dir: string, box: { provider:
     try { entry = JSON.parse(Buffer.from(bytes).toString('utf8')); } catch { throw new Error(`the box ids file ${name} cannot be read (not JSON)`); }
     if (!validEntry(entry)) throw new Error(`the box ids file ${name} cannot be read (not a format v1 entry)`);
     // Only this supervisor life's: another life's entry (a reused directory) is no label for this box.
-    if (entry.owner === 'place' && entry.key === box.key && entry.provider === box.provider && entry.run === box.run) return `box-${number}`;
+    if (entry.owner === 'place' && entry.key === box.key && entry.provider === box.provider && entry.run === box.run) found.push(`box-${number}`);
   }
-  return undefined;
+  if (found.length > 1) throw new Error(`the host box key of box ${box.key} is bound under ${found.length} labels (${found.join(', ')}): one box with two names`);
+  return found[0];
 }
 
 export type BoxLedger = {
@@ -262,7 +271,7 @@ export function boxLedger(options: { dir?: string; recorder?: Recorder; supervis
   return {
     claimHost(box, from) {
       // The box's KEY is claimed exclusively first (one file per key, by link(2), as a label is), so two lives starting together never both label it.
-      const key = store.claimKey(`host-${box.key}.json`, { provider: box.provider, key: box.key, run: box.run });
+      const key = store.claimKey(hostKeyFile(box.key), { provider: box.provider, key: box.key, run: box.run });
       const mine = (run: string) => [...store.list()].find(([, entry]) => entry.owner === 'place' && entry.key === box.key && entry.run === run)?.[0];
       if (!key.won) {
         const held = key.held as Partial<HostBox> | null;

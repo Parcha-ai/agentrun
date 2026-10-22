@@ -1,6 +1,7 @@
 // A demo's `run.ts` as the reference entry's own test uses it: the reference job and its fakes, the spec from `DEMO_SPEC` (a JSON file), the standard flags.
 import type { Message } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
+import { randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -261,7 +262,7 @@ const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: s
     const { dirname } = await import('node:path');
     const tap = (context as unknown as { hostTap: { provider<P>(provider: P): P; unheld(run: unknown, start: unknown): Promise<void> } }).hostTap;
     const hostProvider = tap.provider(boxesHere({ root: join(context.paths.root, '..', 'host-boxes') }));
-    const made: { box: { id: string; facts(): { gpu: string | null; isolation: string }; destroy(ctx: unknown): Promise<unknown>; exec(command: string[], options: unknown, ctx: unknown): Promise<{ ok: boolean; value?: { wait(): Promise<unknown> } }> }; from: string; to: string | null }[] = [];
+    const made: { box: { id: string; facts(): { gpu: string | null; isolation: string }; destroy(ctx: unknown): Promise<unknown>; exec(command: string[], options: unknown, ctx: unknown): Promise<{ ok: boolean; value?: { wait(): Promise<unknown> } }> }; from: string; to: string | null; key: string }[] = [];
     const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
     const window = {
       signal: new AbortController().signal,
@@ -280,11 +281,14 @@ const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: s
       ...inner,
       start: async (order: Parameters<typeof inner.start>[0]) => {
         recordDir ??= order.env.RECORD_DIR;
+        // The window holds the start's provisional box ({ run, index }); the host driver MINTS the box's key at its create (Amendment 2):
+        // <run>/<index>/<random nonce>, written as the box's one agentrun-host-key label, handed to its runner, and reported in the status.
         const box = { provider: 'local', key: String(made.length), run: order.env.RUN_LABEL! };
         await tap.unheld(window, { attempt: order.gen, box });
-        const created = await (hostProvider as unknown as { create(spec: unknown, ctx: unknown): Promise<{ ok: boolean; value: (typeof made)[number]['box']; error?: unknown }> }).create({ maxLifetimeMs: 600_000 }, BACKGROUND_CONTEXT);
+        const key = `${box.run}/${box.key}/${randomBytes(8).toString('hex')}`;
+        const created = await (hostProvider as unknown as { create(spec: unknown, ctx: unknown): Promise<{ ok: boolean; value: (typeof made)[number]['box']; error?: unknown }> }).create({ maxLifetimeMs: 600_000, labels: { 'agentrun-host-key': key } }, BACKGROUND_CONTEXT);
         if (!created.ok) throw Object.assign(new Error('the host box could not be made'), { cause: created.error });
-        made.push({ box: created.value, from: new Date().toISOString(), to: null });
+        made.push({ box: created.value, from: new Date().toISOString(), to: null, key });
         const ran = await created.value.exec(['true'], undefined, BACKGROUND_CONTEXT);
         if (ran.ok) await ran.value!.wait();
         const entry = made.at(-1)!;
@@ -293,13 +297,13 @@ const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: s
           await mkdir(join(order.env.RECORD_DIR, '.spool'), { recursive: true });
           writeFileSync(join(order.env.RECORD_DIR, '.spool', 'planted.jsonl'), `${JSON.stringify({ channel: 'live', source: 'transport', kind: 'box.created', gen: 1, t: 0, seq: 0, data: { box: process.env.DEMO_PLANT_BOX_LINE === '1' ? 'box-1' : process.env.DEMO_PLANT_BOX_LINE, provider: 'alpha', facts: { isolation: 'none', cpus: 1, gpu: null } } })}\n`);
         }
-        const runner = await inner.start({ ...order, env: { ...order.env, HOST_BOX: JSON.stringify(box) } });
+        const runner = await inner.start({ ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ ...box, key }) } });
         // `DEMO_HOST_BOX_UNTIL_RELEASE`: the place keeps its host box until it lets the run go (a host driver whose stop is at release).
         if (process.env.DEMO_HOST_BOX_UNTIL_RELEASE) return runner;
         // The host box ends with its process, as a host driver's stop does: before the supervisor hears the process ended.
         return { ...runner, exited: runner.exited.then(async (exit) => { await entry.box.destroy(BACKGROUND_CONTEXT); entry.to = new Date().toISOString(); return exit; }) };
       },
-      status: async () => ({ boxes: made.map(({ box, from, to }) => ({ provider: 'local', kind: box.facts().gpu ?? box.facts().isolation, from, to })) }),
+      status: async () => ({ boxes: made.map(({ box, from, to, key }) => ({ provider: 'local', kind: box.facts().gpu ?? box.facts().isolation, from, to, key })) }),
       readRunFile: window.read,
       listRunFiles: window.list,
       release: async () => {

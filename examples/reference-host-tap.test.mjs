@@ -167,3 +167,124 @@ test('an exec that BEGAN before the bind keeps its time (at) though its answer c
   const exec = lines.find(([kind]) => kind === 'box.exec');
   assert.ok(exec && typeof exec[1].at === 'string', `the exec keeps its own time: ${JSON.stringify(exec)}`);
 });
+
+/** A provider whose boxes keep their labels, with a list() that answers by them (and counts its calls): a keyed host driver's. */
+function keyedProvider(name = 'host') {
+  const made = [];
+  const calls = { list: 0 };
+  const boxOf = (id, labels) => ({ id, labels, destroyed: false, facts: () => ({ provider: name, isolation: 'vm', cpus: 2, gpu: null }), async exec() { return { ok: true, value: { wait: async () => ({ ok: true, value: 0 }) } }; }, async status() { return { ok: true, value: { state: 'running' } }; }, async destroy() { this.destroyed = true; return { ok: true, value: undefined }; } });
+  return {
+    made,
+    calls,
+    /** A box this life did not make (an earlier process's, or a leftover), with these labels. */
+    plant(id, labels) { const box = boxOf(id, labels); made.push(box); return box; },
+    provider: {
+      name,
+      async create(spec) { const box = boxOf(`${name}-${made.length + 1}`, { ...spec.labels }); made.push(box); return { ok: true, value: box }; },
+      async attach(id) { return { ok: true, value: made.find((box) => box.id === id && !box.destroyed) }; },
+      async list(labels) { calls.list += 1; return { ok: true, value: made.filter((box) => !box.destroyed && Object.entries(labels).every(([k, v]) => box.labels[k] === v)).map((box) => ({ id: box.id, labels: box.labels })) }; },
+    },
+  };
+}
+const KEY = 'agentrun-host-key';
+const keyed = (key) => ({ maxLifetimeMs: 1, labels: { [KEY]: key } });
+function aGenTap() {
+  const lines = [];
+  const now = { gen: 1 };
+  const tap = hostTap({ line: (kind, data) => lines.push([kind, data]), runLabelKey: 'agentrun-run', runLabel: 'life-1', gen: () => now.gen });
+  return { tap, lines, now };
+}
+
+test('the box\'s key is the one its host driver minted for its create (its agentrun-host-key label): the label binds by THAT key, never the window\'s index', async () => {
+  const { tap, lines } = aGenTap();
+  const { provider, made } = keyedProvider();
+  const tapped = tap.provider(provider);
+  await tap.unheld(aWindow().run, start(1));
+  await tapped.create(keyed('life-1/0/0123456789abcdef'), ctx);
+  assert.equal(made[0].labels[KEY], 'life-1/0/0123456789abcdef', 'the tap writes no key of its own: the driver\'s label is on the box');
+  tap.bound('0', 'box-1');
+  assert.deepEqual(lines, [], 'the window\'s provisional index binds nothing');
+  tap.bound('life-1/0/0123456789abcdef', 'box-1');
+  assert.deepEqual(lines.map(([kind, data]) => [kind, data.box, data.gen]), [['box.created', 'box-1', 1]]);
+});
+
+test('a later process that takes over this life\'s box writes NO second box.created; its commands and the box\'s end carry ITS gen (Amendment 2)', async () => {
+  const { tap, lines, now } = aGenTap();
+  const { provider } = keyedProvider();
+  const tapped = tap.provider(provider);
+  await tap.unheld(aWindow().run, start(1));
+  const made = (await tapped.create(keyed('life-1/0/aa'), ctx)).value;
+  tap.bound('life-1/0/aa', 'box-1');
+  now.gen = 2;
+  const adopted = (await tapped.attach(made.id, ctx)).value;
+  await adopted.exec(['true'], undefined, ctx);
+  await adopted.destroy(ctx);
+  assert.deepEqual(lines.map(([kind, data]) => [kind, data.box, data.gen]), [['box.created', 'box-1', 1], ['box.exec', 'box-1', 2], ['box.ended', 'box-1', 2]]);
+});
+
+test('a keyed host box of this run that this life did not make is ADOPTED by its key: matched from a tapped list() (no further list) or from one list(); no box.created; its lines carry the adopting gen', async () => {
+  for (const listedFirst of [true, false]) {
+    const { tap, lines, now } = aGenTap();
+    const host = keyedProvider();
+    const tapped = tap.provider(host.provider);
+    host.plant('earlier-1', { 'agentrun-run': 'life-1', [KEY]: 'life-1/0/bb' });
+    now.gen = 3;
+    if (listedFirst) await tapped.list({ 'agentrun-run': 'life-1' }, ctx);
+    const before = host.calls.list;
+    const adopted = (await tapped.attach('earlier-1', ctx)).value;
+    assert.equal(host.calls.list - before, listedFirst ? 0 : 1, listedFirst ? 'the tapped list taught the key' : 'one list() found the key');
+    tap.bound('life-1/0/bb', 'box-1');
+    await adopted.exec(['true'], undefined, ctx);
+    await adopted.destroy(ctx);
+    assert.deepEqual(lines.map(([kind, data]) => [kind, data.box, data.gen]), [['box.exec', 'box-1', 3], ['box.ended', 'box-1', 3]], `adopted (${listedFirst ? 'listed' : 'not listed'} first): no box.created`);
+  }
+});
+
+test('a box WITHOUT the key label, or keyed for another run, is never taken as this run\'s host box: it passes through, unrecorded', async () => {
+  const { tap, lines } = aGenTap();
+  const host = keyedProvider();
+  const tapped = tap.provider(host.provider);
+  const bare = host.plant('bare-1', { 'agentrun-run': 'life-1' });
+  const other = host.plant('other-1', { 'agentrun-run': 'life-9', [KEY]: 'life-9/0/cc' });
+  for (const box of [bare, other]) {
+    const found = (await tapped.attach(box.id, ctx)).value;
+    assert.equal(found, box, `${box.id}: the provider's own box, not a tapped one`);
+    await found.destroy(ctx);
+  }
+  tap.bound('life-9/0/cc', 'box-1');
+  assert.deepEqual(lines, []);
+});
+
+test('end(id) ends a keyed host box THROUGH the tap, its box.ended written, one this life holds or one it adopts by its key; a box with no key is not the tap\'s to end', async () => {
+  const { tap, lines, now } = aGenTap();
+  const host = keyedProvider();
+  const tapped = tap.provider(host.provider);
+  await tap.unheld(aWindow().run, start(1));
+  await tapped.create(keyed('life-1/0/dd'), ctx);
+  tap.bound('life-1/0/dd', 'box-1');
+  host.plant('earlier-2', { 'agentrun-run': 'life-1', [KEY]: 'life-1/1/ee' });
+  const tool = host.plant('tool-1', { 'agentrun-run': 'life-1' });
+  now.gen = 2;
+  tap.killing(2);
+  assert.deepEqual(await tap.end('host-1', ctx), { ok: true, host: true });
+  assert.deepEqual(await tap.end('earlier-2', ctx), { ok: true, host: true });
+  tap.bound('life-1/1/ee', 'box-2');
+  assert.deepEqual(await tap.end('tool-1', ctx), { ok: true, host: false });
+  assert.equal(tool.destroyed, false, 'the tool box is the caller\'s to end');
+  assert.deepEqual(lines.filter(([kind]) => kind === 'box.ended').map(([, data]) => data), [
+    { gen: 2, box: 'box-1', provider: 'host', killed: true },
+    { gen: 2, box: 'box-2', provider: 'host', killed: true },
+  ]);
+});
+
+test('one box, one label: a host key bound under two labels refuses the read, naming both; one key under one label reads, and a key with no label reads none', async () => {
+  const { hostLabelIn } = await import('../packages/harness/dist/boxes.js');
+  const entry = (key) => JSON.stringify({ owner: 'place', provider: 'host', key, run: 'life-1' });
+  const files = (named) => ({ listRunFiles: async () => Object.keys(named).sort(), readRunFile: async (path) => { const name = path.split('/').pop(); return name in named ? new TextEncoder().encode(named[name]) : null; } });
+  const box = (key) => ({ provider: 'host', key, run: 'life-1' });
+  const one = files({ 'box-1.json': entry('life-1/0/aa'), 'box-2.json': entry('life-1/1/bb') });
+  assert.equal(await hostLabelIn(one, 'ids', box('life-1/1/bb')), 'box-2');
+  assert.equal(await hostLabelIn(one, 'ids', box('life-1/2/cc')), undefined);
+  const twice = files({ 'box-1.json': entry('life-1/0/aa'), 'box-3.json': entry('life-1/0/aa') });
+  await assert.rejects(() => hostLabelIn(twice, 'ids', box('life-1/0/aa')), /bound under 2 labels \(box-1, box-3\): one box with two names/);
+});

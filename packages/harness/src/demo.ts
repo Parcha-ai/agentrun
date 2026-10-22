@@ -540,7 +540,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     : { readRunFile: (path) => place.readRunFile!(path), listRunFiles: (dir) => place.listRunFiles!(dir) };
   const labelDir = 'box-ids.internal';
   // The place's host boxes through the supervisor's tap (H3): their lines are the supervisor's, held until each box's bound label is read.
-  const tap = hostTap({ line: (kind, data) => supervisor.host(kind, data), runLabelKey: RUN_LABEL, runLabel });
+  const tap = hostTap({ line: (kind, data) => supervisor.host(kind, data), runLabelKey: RUN_LABEL, runLabel, gen: () => currentGen });
   const homeBoxLabels = new Map<string, string>();
   const homeBoxSeen = new Map<string, string>();
   // A host box the place started whose label its process never claimed: the recording is refused, never finished without it (its time would be missing from the cost).
@@ -613,7 +613,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         for (const [index, entry] of (Array.isArray(status?.boxes) ? status!.boxes as unknown[] : []).entries()) {
           const box = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : undefined;
           if (!box || typeof box.provider !== 'string' || typeof box.kind !== 'string') continue;
-          const key = String(index);
+          // The box's key: the one its place reports per box (minted at its create by the place's host driver, Amendment 2), never a list index.
+          // A place that reports none (its host driver mints no key, and so adopts nothing) is keyed by its list's order, as before.
+          const key = typeof box.key === 'string' && box.key !== '' ? box.key : String(index);
           const labelFiles = labelFilesOf();
           // A place with no run-file reads (and so no tool boxes beside it: that run is refused before it starts) is the run's only labeller: its boxes are numbered here.
           let label = labelFiles ? homeBoxLabels.get(key) : labelOf(boxLabels, 'box', key);
