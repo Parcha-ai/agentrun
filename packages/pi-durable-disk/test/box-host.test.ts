@@ -60,6 +60,33 @@ describe("boxHost: its options", () => {
   });
 });
 
+describe("boxHost: an environment the launcher refuses is refused before any box", () => {
+  it("a launcher-internal, loader or LD_ name (in options.env or the start's env) is INVALID_ARGUMENT before any call to the provider, naming the variable, never its value; never run as root; not remembered", async () => {
+    const VALUE = `v-${"q".repeat(14)}`;
+    for (const [why, opts, env] of [
+      ["a launcher-internal name in options.env", { env: { D: VALUE } }, {}],
+      ["a loader name in options.env", { env: { BASH_ENV: VALUE } }, {}],
+      ["an LD_ name in options.env", { env: { LD_PRELOAD: VALUE } }, {}],
+      ["an LD_ name in the start's env", {}, { LD_LIBRARY_PATH: VALUE }],
+      ["a launcher-internal name in the start's env", {}, { RUNAS: VALUE }],
+    ] as const) {
+      const provider = fake(modalLike({ facts: fd }));
+      provider.program("pi-durable-disk", () => 0);
+      const driver = host(provider, opts as Partial<Parameters<typeof boxHost>[0]>);
+      const name = Object.keys({ ...(opts as { env?: object }).env, ...env })[0]!;
+      for (const round of [1, 2]) {
+        await assert.rejects(driver.start(REF, TOKEN, { attempt: round, env: env as Record<string, string> }), (e: unknown) => {
+          assert.ok(code("INVALID_ARGUMENT")(e), `${why}: ${String(e)}`);
+          assert.ok((e as Error).message.includes(name), `${why}: names ${name}`);
+          assert.ok(!(e as Error).message.includes(VALUE) && !String((e as { cause?: unknown }).cause).includes(VALUE), `${why}: never the value`);
+          return true;
+        });
+      }
+      assert.equal(provider.calls.length, 0, `${why}: no call to the provider, so no VM is booted, on any tick`);
+    }
+  });
+});
+
 describe("boxHost: the box it asks for, and a box that cannot hold the mount", () => {
   it("creates with the spec, capabilities fuse added, and its three labels; never an env in the spec", async () => {
     const provider = fake(daytonaLike());
