@@ -217,6 +217,7 @@ The run's process writes its TOOL boxes' lines (source `transport`), and the sup
     - The supervisor writes a host box's `box.created` when it reads the bound label, with `from`, the time the box was created.
     - It then writes the `box.exec` lines that fell before the bind, in order, each with its own time as `at`. A command begun before the bind whose answer comes after it keeps its `at` too.
     - A recording never carries a pending name. A host box whose label never binds refuses the recording at the final read.
+    - A host box the place ends only when it lets the run go is still OPEN in the recording: the recording is finished before the release (a release may delete the run tree), so the box has no `box.ended`, and its one receipt, at the final read, has `to`, `seconds` and `cost_usd` null.
   - A label names ONE box: a recording whose lines name two boxes under one label is refused.
 - **`facts`** is pi-transport's `BoxFacts`, exactly:
   - `isolation`: `none` | `container` | `gvisor` | `vm`;

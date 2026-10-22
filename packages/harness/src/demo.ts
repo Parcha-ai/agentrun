@@ -662,9 +662,6 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   };
   // Metering: the recording's lines as they stand, folded; past the cap the supervisor stops the run.
   const meterTimer = maxUsd === null ? undefined : setInterval(() => { if (meterKnown(recordDir) > maxUsd) overBudget = true; }, 250);
-  // The place is let go once: before the final read when the run gets there, else when the supervisor gives up on it.
-  let released: Promise<void> | undefined;
-  const letGo = (): Promise<void> => (released ??= Promise.resolve(place?.release()));
   try {
     place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile, hostTap: { provider: tap.provider, unheld: tap.unheld } }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
     // The follower's hold reads the place's clock allowance from here on (it was assigned before the place existed, so it was never seen).
@@ -810,9 +807,6 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     // What the run delivered and its store's hash come from the last runner's own report: nothing is read under the run's directory.
     const last = processes.at(-1)?.outcome;
     const delivered = last && last.status === 'complete' && 'record' in last ? { record: last.record } : null;
-    // The place lets the run go BEFORE the final read: a host box it ends only then (a host driver whose stop is at release) has its
-    // end, its `box.ended` and its receipt's `to`, in the recording, never after the recording is finished.
-    await letGo();
     // The last read can add a box's priced receipt: the cap is checked after it.
     ledgerReceipts(true);
     await settled(readStatus(true));
@@ -860,7 +854,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     clearInterval(following);
     if (meterTimer) clearInterval(meterTimer);
     // The backend and the scratch are closed whatever the place did: a place that failed to be made, or to be released, leaves neither open.
-    try { await letGo(); } finally {
+    try { await place?.release(); } finally {
       await served.close();
       if (!values.record && !values.dir && !options.keepRun) await rm(scratch, { recursive: true, force: true });
     }

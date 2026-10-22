@@ -275,9 +275,11 @@ const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: s
       },
     };
     const { BACKGROUND_CONTEXT } = await import('@earendil-works/chord/context');
+    let recordDir: string | undefined;
     return {
       ...inner,
       start: async (order: Parameters<typeof inner.start>[0]) => {
+        recordDir ??= order.env.RECORD_DIR;
         const box = { provider: 'local', key: String(made.length), run: order.env.RUN_LABEL! };
         await tap.unheld(window, { attempt: order.gen, box });
         const created = await (hostProvider as unknown as { create(spec: unknown, ctx: unknown): Promise<{ ok: boolean; value: (typeof made)[number]['box']; error?: unknown }> }).create({ maxLifetimeMs: 600_000 }, BACKGROUND_CONTEXT);
@@ -301,6 +303,8 @@ const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: s
       readRunFile: window.read,
       listRunFiles: window.list,
       release: async () => {
+        // `DEMO_RELEASE_MARK`: a file the release writes, saying whether the recording was already finished (its manifest written) when the place was let go.
+        if (process.env.DEMO_RELEASE_MARK) writeFileSync(process.env.DEMO_RELEASE_MARK, JSON.stringify({ manifestFirst: recordDir !== undefined && existsSync(join(recordDir, 'manifest.json')) }));
         for (const entry of made) if (entry.to === null) { await entry.box.destroy(BACKGROUND_CONTEXT); entry.to = new Date().toISOString(); }
         await inner.release();
       },
