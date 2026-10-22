@@ -2,7 +2,7 @@
 // distance, a field the teacher lacks left out of the n, the reported-only fields, and the per-vertical summary.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { groupOf, loadGroups, mccOf, riskOf, sameGroup, scoreMcc, summarizeMcc } from './score-mcc.mjs';
+import { genericOf, groupOf, loadGroups, mccOf, riskOf, sameGroup, scoreMcc, summarizeMcc } from './score-mcc.mjs';
 
 const groups = loadGroups();
 const merchant = (teacher, vertical = 'nutra') => ({ merchantId: 'm1', name: 'A Shop', website: 'https://shop.example', vertical, teacher });
@@ -65,7 +65,7 @@ test('one answer: exact code, group, tier and distance, each right or wrong; cor
   const answer = { mcc: '5999', mccDescription: 'Miscellaneous and Specialty Retail Shops', riskTier: 'medium', flags: ['subscription', 'nutraceuticals'], siteStatus: 'live', confidence: 0.7 };
   const right = scoreMcc({ answer, merchant: merchant({ mcc: '5999', riskTier: 'Medium', flags: ['nutraceuticals'] }), groups });
   assert.deepEqual(right, {
-    against: 'teacher', mccAnswer: '5999', mccTeacher: '5999', mccCorrect: true, mccKnown: true,
+    against: 'teacher', mccAnswer: '5999', mccTeacher: '5999', mccCorrect: true, brandMapped: false, mccKnown: true,
     mccGroupAnswer: 'miscellaneous-stores', mccGroupTeacher: 'miscellaneous-stores', mccGroupCorrect: true,
     riskAnswer: 'medium', riskTeacher: 'medium', riskCorrect: true, riskDistance: 0,
     flagsAnswer: ['nutraceuticals', 'subscription'], flagsTeacher: ['nutraceuticals'], flagsJaccard: 0.5,
@@ -76,6 +76,16 @@ test('one answer: exact code, group, tier and distance, each right or wrong; cor
   const offGroup = scoreMcc({ answer: { mcc: '5411', riskTier: 'high' }, merchant: merchant({ mcc: 5812, riskTier: 'medium' }), groups });
   assert.deepEqual([offGroup.mccTeacher, offGroup.mccGroupCorrect, offGroup.riskDistance], ['5812', false, 1]);
   assert.equal(scoreMcc({ answer: { mcc: '5999' }, merchant: merchant({ mcc: '5999' }) }).mccCorrect, true, 'the shipped table when none is passed');
+});
+
+test('a T&E brand code counts as its block\'s generic code in the exact match, on both sides, and the row says so', () => {
+  assert.deepEqual(['3502', '3543', '3504', '3066', '3722', '3301', '3357', '4511', '7011', '5812'].map((c) => genericOf(c, groups)), ['7011', '7011', '7011', '4511', '7011', '4511', '7512', '4511', '7011', '5812']);
+  const exact = (answer, teacher) => scoreMcc({ answer: { mcc: answer }, merchant: merchant({ mcc: teacher }), groups });
+  assert.deepEqual([exact('7011', '3504').mccCorrect, exact('7011', '3504').brandMapped], [true, true], 'the run is offered 7011, never Hilton\'s 3504');
+  assert.deepEqual([exact('4511', '3066').mccCorrect, exact('7512', '3357').mccCorrect, exact('3502', '3722').mccCorrect], [true, true, true]);
+  assert.deepEqual([exact('5812', '3502').mccCorrect, exact('5812', '3502').brandMapped], [false, true]);
+  assert.deepEqual([exact('4511', '4111').mccCorrect, exact('4511', '4111').brandMapped], [false, false], 'a generic code is not a brand code');
+  assert.deepEqual([exact('5999', '5999').brandMapped, exact(null, '3504').brandMapped], [false, true]);
 });
 
 test('a teacher with no risk (the swarm\'s risk stage not run) scores the code only: risk is null, never wrong, out of the n', () => {
@@ -110,7 +120,9 @@ test('the summary counts each field over the rows that score it, per vertical, w
   ];
   const s = summarizeMcc(rows);
   assert.equal(s.against, 'teacher');
-  assert.deepEqual(s.overall.mccCorrect, { k: 2, n: 4, rate: 0.5 });
+  assert.deepEqual(s.overall.mccCorrect, { k: 3, n: 4, rate: 0.75 }, '4511 against United\'s 3000 is exact once the brand code is mapped');
+  assert.equal(s.overall.brandMapped, 1);
+  assert.equal(s.byVertical.travel.brandMapped, 1);
   assert.deepEqual(s.overall.mccGroupCorrect, { k: 3, n: 4, rate: 0.75 }, '5912 vs 5499 is another group; 4511 vs 3000 is an airline either way');
   assert.deepEqual(s.overall.riskCorrect, { k: 2, n: 3, rate: 2 / 3 });
   assert.deepEqual(s.byVertical.nutra.mccCorrect, { k: 1, n: 2, rate: 0.5 });

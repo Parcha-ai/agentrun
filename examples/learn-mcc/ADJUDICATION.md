@@ -68,7 +68,9 @@ integrity risk rule after them.
   5977 or 5995 fits.
 - (c) Each e-commerce site is its own merchant location: judge the site given, not its parent company's other sites.
 - (e) An airline, car rental or lodging merchant with its own code uses it; one without uses the generic code (4511,
-  7512, 7011).
+  7512, 7011). The run is not offered the brands' own codes (3000-3999, M1's `servedCodes`), so a brand's generic code
+  is acceptable wherever its brand code would be, and `mccOwnExact` compares after mapping a brand code to its generic
+  code (`genericOf`), as teacher agreement does.
 - High integrity risk lines take their own code even when they are not the primary business. Online gambling "must use
   MCC 7995 for all transactions, even if gambling is not the Merchant's primary business". A site with several lines,
   one of them high integrity risk, takes that line's code for that line, and a code that gives it is acceptable.
@@ -173,7 +175,8 @@ The numbers drawn from these rows:
 - **Per vertical**: counts and rates. A vertical with fewer than 20 merchants judged is printed with its n and marked
   too small to trust.
 - **Teacher agreement**: from `summarizeMcc`, under its own name, beside these numbers. Its headline field is the
-  exact MCC; the MCC group is secondary and is always printed with the group share table. The two numbers are never
+  exact MCC, with a T&E brand code mapped to its generic code on both sides; `brandMapped`, the rows that mapping
+  touched, is printed under the table. The MCC group is secondary and is always printed with the group share table. The two numbers are never
   averaged, summed or put on one axis.
 - **MCC group agreement is weak by construction.** ISO 18245's 5700–7299 range holds restaurants, pharmacies, direct
   marketing, adult content, crypto, lodging and dating, so most of this cell's merchants share one group. To show it,

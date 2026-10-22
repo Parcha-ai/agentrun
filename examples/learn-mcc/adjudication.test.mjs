@@ -64,6 +64,9 @@ test('verdicts unblind to one row per side: the code by A/B, the tier against th
   assert.deepEqual(teacher[0], { merchantId: onA.merchantId, vertical: onA.vertical, side: 'teacher', mccAdjRight: false, mccOwnExact: false, riskAdjRight: null, riskAdjDistance: null, adjRight: null });
   assert.deepEqual([learner[1].mccAdjRight, learner[1].riskAdjRight, learner[1].riskAdjDistance, learner[1].adjRight], [true, false, 2, false]);
   assert.deepEqual([teacher[1].mccAdjRight, teacher[1].riskAdjRight, teacher[1].adjRight], [true, true, true]);
+  const hotel = { merchant: { ...onA, teacher: { mcc: '3504' } }, answer: { mcc: '7011', riskTier: 'low' } };
+  const brand = unblind({ items: [hotel], verdicts: { [onA.merchantId]: { own: { mcc: '3504', evidence: EV }, risk: { tiers: ['low'], evidence: EV }, mcc: { verdict: 'both', evidence: EV } } }, salt: SALT });
+  assert.deepEqual([brand.learner[0].mccOwnExact, brand.teacher[0].mccOwnExact], [true, true], 'the generic 7011 matches the adjudicator\'s own brand code 3504');
   assert.deepEqual(unjudgeable, []);
 });
 

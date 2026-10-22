@@ -46,6 +46,16 @@ export function sameGroup(a, b, groups = defaultGroups()) {
   return (ga !== null && ga === gb) || (blockA !== null && blockA === gb) || (blockB !== null && blockB === ga);
 }
 
+/**
+ * A T&E merchant-specific code (an airline, car rental or lodging brand's own) as its block's generic code, 4511, 7512
+ * or 7011 (Visa, General Requirements e); any other code as it is. The run is not offered brand codes, so an exact
+ * match is judged on the generic code, on both sides.
+ */
+export function genericOf(code, groups = defaultGroups()) {
+  const generic = code === null ? undefined : groups.teGeneric[groupOf(code, groups)];
+  return generic ?? code;
+}
+
 /** A risk tier as low/medium/high (any case, outer space ignored), else null. */
 export const riskOf = (value) => (typeof value === 'string' && RISK_TIERS.includes(value.trim().toLowerCase()) ? value.trim().toLowerCase() : null);
 
@@ -54,6 +64,7 @@ const flagSet = (flags) => (Array.isArray(flags) ? [...new Set(flags.filter((f) 
 /**
  * One answer against the teacher block of its merchant row (`merchant.teacher`: { mcc, riskTier, flags }). Per field the
  * answer, the teacher's, right or wrong; a field the teacher has no value for is null, never wrong, and leaves the n.
+ * The exact code is compared after genericOf on both sides; `brandMapped` says a brand code was mapped on either side.
  * `riskDistance` is the ordinal distance, 0 to 2. `correct` is the exact code. Reported, never scored: `mccKnown` (the
  * answer is in the code table), the flags and their Jaccard overlap with the teacher's, siteStatus, confidence.
  */
@@ -63,13 +74,14 @@ export function scoreMcc({ answer, merchant, groups = defaultGroups() }) {
   const mccTeacher = mccOf(teacher?.mcc);
   const riskAnswer = riskOf(answer?.riskTier);
   const riskTeacher = riskOf(teacher?.riskTier);
-  const mccCorrect = mccTeacher === null ? null : mccAnswer === mccTeacher;
+  const mccCorrect = mccTeacher === null ? null : genericOf(mccAnswer, groups) === genericOf(mccTeacher, groups);
+  const brandMapped = genericOf(mccAnswer, groups) !== mccAnswer || genericOf(mccTeacher, groups) !== mccTeacher;
   const flagsAnswer = flagSet(answer?.flags);
   const flagsTeacher = flagSet(teacher?.flags);
   const union = flagsAnswer && flagsTeacher ? new Set([...flagsAnswer, ...flagsTeacher]).size : 0;
   return {
     against: 'teacher',
-    mccAnswer, mccTeacher, mccCorrect,
+    mccAnswer, mccTeacher, mccCorrect, brandMapped,
     mccKnown: mccAnswer !== null && groups.codes[mccAnswer] !== undefined,
     mccGroupAnswer: groupOf(mccAnswer, groups), mccGroupTeacher: groupOf(mccTeacher, groups),
     mccGroupCorrect: mccTeacher === null ? null : sameGroup(mccAnswer, mccTeacher, groups),
@@ -97,6 +109,7 @@ function tally(rows) {
   const distances = rows.map((r) => r.riskDistance).filter((d) => typeof d === 'number');
   out.riskDistanceMean = mean(distances);
   out.riskOffByTwo = distances.filter((d) => d === 2).length;
+  out.brandMapped = rows.filter((r) => r.brandMapped === true).length;
   // The confidence is the chance the code is the one a network would assign; against the teacher this is agreement, not
   // calibration to truth.
   const confident = rows.filter((r) => typeof r.confidence === 'number' && typeof r.mccCorrect === 'boolean');
@@ -110,7 +123,8 @@ function tally(rows) {
 
 /**
  * Teacher agreement over scored rows (each a scoreMcc result with the merchant's `vertical`, and `costUsd` when the run
- * knows it): per field the count right, the scored count and the rate, overall and per vertical. Intervals come from
+ * knows it): per field the count right, the scored count and the rate, overall and per vertical, and `brandMapped`, the
+ * rows whose exact code was judged on a T&E brand's generic code (printed under the table). Intervals come from
  * lanes/C1/ci.py (`wilson K N`, and `paired` for arm against arm), not from here. `teacherGroupShare` is the share of
  * teacher codes in each ISO group: 5700-7299 spans restaurants, pharmacies, direct marketing, crypto, lodging and
  * dating, so a group holding most of them makes group agreement a weak signal, and the share shows it.

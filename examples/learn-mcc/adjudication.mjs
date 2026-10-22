@@ -4,7 +4,7 @@
 // recovers; and the verdicts turned back into one row per side for lanes/C1/ci.py.
 import { createHash } from 'node:crypto';
 import { RISK_TIERS } from './answer.mjs';
-import { mccOf, riskOf } from './score-mcc.mjs';
+import { genericOf, mccOf, riskOf } from './score-mcc.mjs';
 
 export const VERDICTS = Object.freeze(['A', 'B', 'both', 'neither']);
 
@@ -114,7 +114,7 @@ export function unblind({ items, verdicts, salt }) {
       const riskAdjRight = tier === null ? null : allowed.includes(RISK_TIERS.indexOf(tier));
       out.push({
         merchantId: id, vertical: merchant.vertical ?? null, side: who,
-        mccAdjRight, mccOwnExact: mccOf(sides[who].mcc) === own,
+        mccAdjRight, mccOwnExact: genericOf(mccOf(sides[who].mcc)) === genericOf(own),
         riskAdjRight, riskAdjDistance: tier === null ? null : Math.min(...allowed.map((a) => Math.abs(a - RISK_TIERS.indexOf(tier)))),
         adjRight: riskAdjRight === null ? null : mccAdjRight && riskAdjRight,
       });
