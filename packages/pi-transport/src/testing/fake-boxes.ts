@@ -487,6 +487,13 @@ const BUILT_INS: [ProgramMatch, Program][] = [
 	],
 ];
 
+/** A spec as it was when the call arrived: a later change to the caller's objects must not rewrite what was recorded. */
+const copySpec = (spec: BoxSpec): BoxSpec => ({
+	...spec,
+	...(spec.env === undefined ? {} : { env: { ...spec.env } }),
+	...(spec.labels === undefined ? {} : { labels: { ...spec.labels } }),
+});
+
 /** A provider for tests. See `FakeBoxesOptions`, `FakeProvider` and `FakeBox`. */
 export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 	const name = options.name ?? "fake";
@@ -495,25 +502,21 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 	const boxes: FakeBox[] = [];
 	const rules: FakeRule[] = [];
 	const programs: [ProgramMatch, Program][] = options.programs === false ? [] : [...BUILT_INS];
-	const counts = new Map<string, number>();
 	/** What ends a started program with a chosen exit code: a test's `launch.exit(code)` and a launcher's stop. */
 	const exits = new WeakMap<BoxProcess, (code: number) => void>();
 	let ruleSeq = 0;
 
-	const countOf = (op: FakeOp, box: string | undefined): number => {
-		const key = `${op}:${box ?? ""}`;
-		const n = (counts.get(key) ?? 0) + 1;
-		counts.set(key, n);
-		return n;
-	};
+	/** How many calls of each op the provider has seen, overall and per box: counted ONCE per call, whatever rules exist. */
+	const seenAll = new Map<FakeOp, number>();
+	const seenByBox = new Map<string, number>();
 
-	const find = (call: FakeCall, nthByBox: (box: string) => number, nthAll: number): FakeRule | undefined => {
+	const find = (call: FakeCall, nthAll: number, nthBox: number | undefined): FakeRule | undefined => {
 		for (const rule of rules) {
 			if (rule.remaining <= 0) continue;
 			const m = rule.match;
 			if (m.op !== "*" && m.op !== call.op) continue;
 			if (m.box !== undefined && m.box !== call.box) continue;
-			if (m.nth !== undefined && m.nth !== (m.box === undefined ? nthAll : nthByBox(m.box))) continue;
+			if (m.nth !== undefined && m.nth !== (m.box === undefined ? nthAll : nthBox)) continue;
 			if (m.argv !== undefined && (call.argv === undefined || !m.argv(call.argv))) continue;
 			if (m.when !== undefined && !m.when(call)) continue;
 			rule.remaining -= 1;
@@ -525,7 +528,15 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 	const record = (op: FakeOp, extra: Partial<FakeCall>): { call: FakeCall; rule: FakeRule | undefined } => {
 		const call: FakeCall = { seq: calls.length + 1, at: clock.now(), op, result: "pending", ...extra };
 		calls.push(call);
-		const rule = find(call, (box) => countOf(op, box), countOf(op, undefined));
+		const nthAll = (seenAll.get(op) ?? 0) + 1;
+		seenAll.set(op, nthAll);
+		let nthBox: number | undefined;
+		if (call.box !== undefined) {
+			const key = `${op}:${call.box}`;
+			nthBox = (seenByBox.get(key) ?? 0) + 1;
+			seenByBox.set(key, nthBox);
+		}
+		const rule = find(call, nthAll, nthBox);
 		if (rule !== undefined) call.scripted = rule.label;
 		return { call, rule };
 	};
@@ -555,6 +566,17 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 
 	const aborted = <T>(): Result<T, BoxError> => err(new BoxError("aborted", "the call was aborted"));
 
+	/** A rule with its delay chain waited out: what the call does is the final outcome. `null` when the context aborted meanwhile. */
+	const settled = async (rule: FakeRule | undefined, context: Context): Promise<FakeRule | undefined | null> => {
+		if (rule === undefined) return undefined;
+		let outcome: Outcome | undefined = rule.outcome;
+		while (outcome !== undefined && "delayMs" in outcome) {
+			if (!(await wait(outcome.delayMs, context))) return null;
+			outcome = outcome.then;
+		}
+		return outcome === undefined ? undefined : { ...rule, outcome };
+	};
+
 	/** A call that is not an exec, through the script: `normal` runs when no rule decides otherwise. */
 	async function scripted<T>(
 		call: FakeCall,
@@ -564,11 +586,9 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 		normal: () => Result<T, BoxError> | Promise<Result<T, BoxError>>,
 	): Promise<Result<T, BoxError>> {
 		if (context.abortSignal?.aborted === true) return finish(call, aborted<T>());
-		let outcome: Outcome | undefined = rule?.outcome;
-		while (outcome !== undefined && "delayMs" in outcome) {
-			if (!(await wait(outcome.delayMs, context))) return finish(call, aborted<T>());
-			outcome = outcome.then;
-		}
+		const ready = await settled(rule, context);
+		if (ready === null) return finish(call, aborted<T>());
+		const outcome: Outcome | undefined = ready?.outcome;
 		if (outcome !== undefined) {
 			if ("fail" in outcome)
 				return finish(
@@ -578,11 +598,32 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 			if ("refuse" in outcome)
 				return finish(call, err(new BoxError("unsupported", "scripted refusal")) as Result<T, BoxError>);
 			if ("hang" in outcome) {
+				// Never answers: it ends when the caller's context aborts, when the call's own timeout passes, or when the box ends.
 				const signal = context.abortSignal;
-				await new Promise<void>((resolve) => {
-					if (signal?.aborted === true) return resolve();
-					signal?.addEventListener("abort", () => resolve(), { once: true });
+				const how = await new Promise<"aborted" | "timeout" | "gone">((resolve) => {
+					const undo: (() => void)[] = [];
+					const settleWith = (value: "aborted" | "timeout" | "gone") => {
+						for (const u of undo) u();
+						resolve(value);
+					};
+					if (signal?.aborted === true) return settleWith("aborted");
+					const onAbort = () => settleWith("aborted");
+					signal?.addEventListener("abort", onAbort, { once: true });
+					undo.push(() => signal?.removeEventListener("abort", onAbort));
+					if (call.options?.timeoutMs !== undefined)
+						undo.push(clock.after(call.options.timeoutMs, () => settleWith("timeout")));
+					if (box !== undefined) undo.push(box.watchEnd(() => settleWith("gone")));
 				});
+				if (how === "timeout")
+					return finish(
+						call,
+						err(new BoxError("timeout", `the call ran past ${call.options?.timeoutMs} ms`)) as Result<
+							T,
+							BoxError
+						>,
+					);
+				if (how === "gone")
+					return finish(call, err(new BoxError("gone", `the box ${box?.id} ended`)) as Result<T, BoxError>);
 				return finish(call, aborted<T>());
 			}
 			if ("gone" in outcome) {
@@ -616,16 +657,26 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 			this.#facts = {
 				provider: name,
 				isolation: "container",
-				cpus: spec.cpus ?? null,
-				memoryMb: spec.memoryMb ?? null,
-				gpu: spec.gpu ?? null,
-				maxLifetimeMs: spec.maxLifetimeMs,
+				cpus: null,
+				memoryMb: null,
+				gpu: null,
 				snapshot: null,
 				...options.facts,
+				// What the spec asked for wins over the provider's defaults; the defaults stay where the spec is silent.
+				...(spec.cpus === undefined ? {} : { cpus: spec.cpus }),
+				...(spec.memoryMb === undefined ? {} : { memoryMb: spec.memoryMb }),
+				...(spec.gpu === undefined ? {} : { gpu: spec.gpu }),
+				maxLifetimeMs: spec.maxLifetimeMs,
 				...(options.startedAt === true ? { startedAt: new Date(clock.now()).toISOString() } : {}),
 				workspace,
 			};
 			this.#cancelLife = clock.after(spec.maxLifetimeMs, () => this.end(null));
+		}
+
+		/** Calls `fn` when the box ends; the returned function stops watching. */
+		watchEnd(fn: () => void): () => void {
+			this.#killers.add(fn);
+			return () => this.#killers.delete(fn);
 		}
 
 		facts(): BoxFacts & FakeFacts {
@@ -668,7 +719,10 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 					...(f.mode === undefined ? {} : { mode: f.mode }),
 				})),
 			});
-			(call as { uploads?: readonly BoxFile[] }).uploads = files;
+			(call as { uploads?: readonly BoxFile[] }).uploads = files.map((f) => ({
+				...f,
+				bytes: new Uint8Array(f.bytes),
+			}));
 			return scripted(call, rule, context, this, () => {
 				for (const file of files) this.files.set(file.path, file.bytes, file.mode);
 				return ok(undefined);
@@ -689,14 +743,16 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 			});
 		}
 
-		launch(spec: FakeLaunchSpec, context: Context): Promise<Result<FakeLaunchHandle, BoxError>> {
-			const { call, rule } = record("launch", {
+		async launch(spec: FakeLaunchSpec, context: Context): Promise<Result<FakeLaunchHandle, BoxError>> {
+			const { call, rule: asked } = record("launch", {
 				box: this.id,
 				argv: [...spec.argv],
 				user: spec.user,
 				envKeys: Object.keys(spec.env ?? {}),
-				...(spec.restart === undefined ? {} : { restart: spec.restart }),
+				...(spec.restart === undefined ? {} : { restart: { ...spec.restart } }),
 			});
+			const rule = await settled(asked, context);
+			if (rule === null) return finish(call, aborted<FakeLaunchHandle>());
 			return scripted(
 				call,
 				rule === undefined || !("exit" in rule.outcome) ? rule : undefined,
@@ -749,21 +805,22 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 				...(execOptions === undefined ? {} : { options: execOptions }),
 				envKeys: Object.keys(this.spec.env ?? {}),
 			});
-			let outcome: Outcome | undefined = rule?.outcome;
+			const ready = await settled(rule, context);
+			if (ready === null) return finish(call, aborted<BoxProcess>());
+			const outcome: Outcome | undefined = ready?.outcome;
 			const started = await scripted(
 				call,
 				outcome !== undefined &&
 					("lose" in outcome || "truncate" in outcome || "exit" in outcome || "gone" in outcome)
 					? undefined
-					: rule,
+					: ready,
 				context,
 				this,
 				() => ok(undefined),
 			);
 			if (!started.ok) return started;
 			call.result = "pending";
-			if (outcome !== undefined && "delayMs" in outcome) outcome = undefined;
-			return ok(this.startProgram(call, command, execOptions, outcome));
+			return ok(this.startProgram(call, command, execOptions, outcome, context.abortSignal));
 		}
 
 		startProgram(
@@ -771,6 +828,7 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 			command: readonly string[],
 			execOptions: BoxExecOptions | undefined,
 			outcome: Outcome | undefined,
+			callerSignal?: AbortSignal,
 		): BoxProcess {
 			const run: FakeProgramRun = { argv: [...command], state: "running", killed: false, stdout: "", stderr: "" };
 			const first = this.programs.length === 0;
@@ -801,6 +859,7 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 				out.end();
 				errq.end();
 				this.#killers.delete(kill);
+				callerSignal?.removeEventListener("abort", onCallerAbort);
 				if (options.endsWithProgram === true && first && value.ok) this.end(value.value);
 				cancelTimeout();
 				call.endedAt = clock.now();
@@ -813,6 +872,14 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 				ended(err(new BoxError("gone", `the box ${this.id} ended`)));
 			};
 			this.#killers.add(kill);
+			// The caller's context aborting after exec returned ends the wait with `aborted` (the program is told to stop; the contract does not promise it dies).
+			const onCallerAbort = () => {
+				run.killed = true;
+				abort.abort();
+				ended(err(new BoxError("aborted", "the call was aborted")));
+			};
+			if (callerSignal?.aborted === true) queueMicrotask(onCallerAbort);
+			else callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
 			const cancelTimeout =
 				execOptions?.timeoutMs === undefined
 					? () => {}
@@ -1021,15 +1088,18 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 		}
 
 		async stop(_graceMs: number): Promise<void> {
+			// A planned stop: from here a program that exits is not restarted, even while the hook runs.
+			this.#stopped = true;
 			this.events.push("drain");
 			const before = this.spec.beforeStop;
 			if (before !== undefined) {
 				this.events.push("beforeStop");
 				const silent: FakeCall = { seq: 0, at: clock.now(), op: "launchStop", result: "pending" };
-				await this.box.startProgram(silent, before, undefined, undefined).wait();
+				const hook = this.box.startProgram(silent, before, undefined, undefined);
+				await hook.stdin.close();
+				await hook.wait();
 			}
 			this.events.push("kill");
-			this.#stopped = true;
 			this.exit(143);
 			this.status = { ...this.status, state: "exited", code: 143 };
 		}
@@ -1106,10 +1176,13 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 			return found;
 		},
 		async create(spec, context) {
-			const { call, rule } = record("create", { spec });
+			const given = copySpec(spec);
+			const { call, rule: asked } = record("create", { spec: given });
+			const rule = await settled(asked, context);
+			if (rule === null) return finish(call, aborted<FakeBox>());
 			// leakBox: the machine exists although the call fails, as a create that failed after the sandbox was made.
-			if (rule !== undefined && "fail" in rule.outcome && rule.outcome.leakBox === true) make(spec, call);
-			return scripted(call, rule, context, undefined, () => make(spec, call));
+			if (rule !== undefined && "fail" in rule.outcome && rule.outcome.leakBox === true) make(given, call);
+			return scripted(call, rule, context, undefined, () => make(given, call));
 		},
 		async attach(id, context) {
 			const { call, rule } = record("attach", { asked: id });
