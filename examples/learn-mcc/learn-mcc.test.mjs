@@ -98,7 +98,7 @@ test('AGENTS.md states only what the answer is: every field, the evidence rule a
   for (const words of [/its MCC, the 4-digit ISO 18245 merchant category code a card network would assign it from what it sells, a code in mcc_codes, with that code's title;/,
     /its risk tier, low, medium or high, the tier the risk rubric gives it, with the rubric's reasons in at most 600 characters;/, /the flags its own pages show/,
     /live, unreachable, parked, or another business/, /from 0 to 1, that the MCC is the one a card network would assign/, /Finish by calling answer once, with 1 to 10 evidence items\./,
-    /verbatim, at most 300 characters/, /a page of the merchant's own site, or a marketplace listing that names it as the seller, that says what it sells/,
+    /verbatim, at most 300 characters/, /a page of the merchant's own site \(or of the marketplace listing its website is\) that says what it sells/,
     /How to do the job by hand, and the risk rubric, are the classify-merchant skill\./]) assert.match(job, words);
   // No method: no tool to read with, no way to choose, no page to look for, nothing about memory or refusals.
   assert.doesNotMatch(job, /mcc_groups|search_web|fetch_page|browse|read_document|footer|home page|terms|refund|remember|refused|recurring|high, when/);

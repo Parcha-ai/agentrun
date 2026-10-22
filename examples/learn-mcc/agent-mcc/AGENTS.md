@@ -14,8 +14,8 @@
   - evidence for the MCC, the tier and each flag.
 - Finish by calling answer once, with 1 to 10 evidence items. Each names what it supports (the MCC, the risk tier, or a
   flag by its name), the page as you read it in this run, and that page's words, verbatim, at most 300 characters. The
-  MCC's evidence is a page of the merchant's own site, or a marketplace listing that names it as the seller, that says
-  what it sells.
+  MCC's evidence is a page of the merchant's own site (or of the marketplace listing its website is) that says what it
+  sells.
 - How to do the job by hand, and the risk rubric, are the classify-merchant skill.
 
 ## Every run leaves the job cheaper
