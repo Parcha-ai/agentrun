@@ -73,7 +73,7 @@ const USER = /^(?:[a-z_][a-z0-9_-]{0,31}|[0-9]{1,10})$/;
  * A host driver over `options.provider`'s boxes. `kills` is `box`: a kill destroys the box at once. A box this start finds
  * with a launch that ended or was lost is destroyed and replaced; one whose launch runs is adopted (`adopted: true`).
  */
-export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<HostDriver, "kill" | "kills" | "box" | "provider">> {
+export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<HostDriver, "kill" | "kills" | "box" | "provider" | "instanceOf">> {
   const { provider, spec } = options;
   const invalid = (message: string) => new BoxHostError("INVALID_ARGUMENT", message);
   if (!provider || typeof provider.create !== "function" || typeof provider.attach !== "function" || typeof provider.list !== "function" || typeof provider.name !== "string" || provider.name === "") {
@@ -149,6 +149,8 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
   return {
     provider: provider.name,
     kills: "box",
+    // A box is named by its provider and its id, the same in a fresh handle and an adopted one.
+    instanceOf: (h: HostHandle) => (mine(h) ? `box\0${provider.name}\0${h.box}` : undefined),
 
     async start(ref: RunRef, mountToken: string, attempt?: StartAttempt): Promise<HostHandle> {
       if (!mountToken) throw invalid("no mount token");
