@@ -155,6 +155,7 @@ export function newSessionRecord(input: { plane: string; tag: string; provider: 
       proxies, verified: spec.verified && honours.verified !== false,
       geolocation: proxies && honours.geolocation !== false && typeof spec.proxies === "object" ? spec.proxies.geolocation : null,
       region: honours.region === false ? null : spec.region ?? null, contextId: honours.context === false ? null : spec.contextId ?? null, profile: spec.profile?.name ?? null,
+      ...(spec.navigation?.allow?.length ? { navigationAllow: [...spec.navigation.allow] } : {}),
     },
     navigation: [], lastUrl: null, pendingEffect: null, spent: startSpent(input.at),
   };
@@ -195,6 +196,21 @@ export function sessionSpec(config: BrowserConfig, tag: string, overrides: Overr
     ...(policy.navigation ? { navigation: policy.navigation } : {}),
     metadata: { run: config.run, label: config.label },
   };
+}
+
+/** A navigation policy is a restriction the host relies on, so a session it would not hold to is refused, never started without it.
+ *  No provider enforces a `block` list; an `allow` list only where the provider says it does (`caps.navigationAllow`). */
+/** `reused`, for a live session about to be used again: the allow list its provider applied at create. A provider fixes the list
+ *  then, so a session started with none, or with a wider one, does not hold to the list the policy sets now. */
+export function navigationRefusal(spec: Pick<SessionSpec, "navigation">, provider: Pick<BrowserProvider, "name" | "caps">, reused?: { applied?: readonly string[] }): BrowserFailure | null {
+  const allow = spec.navigation?.allow;
+  const unenforced = spec.navigation?.block?.length ? "navigation.block" : allow?.length && !provider.caps.navigationAllow ? "navigation.allow" : null;
+  if (unenforced) return browserFailure("refused", `browser navigation: this run's policy sets ${unenforced}, and the ${provider.name} browser provider cannot enforce it, so no session was started. Ask the person to remove it from the policy or to use a provider that enforces it.`);
+  const applied = reused?.applied;
+  if (reused && allow?.length && !(applied?.length && applied.every((site) => allow.includes(site)))) {
+    return browserFailure("refused", `browser navigation: this run's policy sets navigation.allow, and this browser session was started ${applied?.length ? "under a wider allow list" : "without one"}, which the ${provider.name} provider cannot change after it starts a session, so the session was not used. browser_relaunch starts one under the current policy.`);
+  }
+  return null;
 }
 
 export function profileRefusal(spec: SessionSpec, caps: ProviderCaps): BrowserFailure | null {
