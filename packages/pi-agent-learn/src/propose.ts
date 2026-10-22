@@ -71,8 +71,9 @@ export type ProposeOptions = Omit<ProposeFilesOptions, "files" | "candidates"> &
   readonly uses?: UsesSource;
   /** Committed under `inbox/<run id>/workflows/<name>/`. Whatever is not a workflow name or a record name is refused. */
   readonly workflows?: WorkflowRecords;
-  /** Set when the run read untrusted content: every candidate is marked untrusted in the inbox. */
-  readonly untrusted?: boolean;
+  /** Set when the run read untrusted content: every candidate is marked untrusted in the inbox. A function marks each
+   *  candidate on its own (`renderInbox`). */
+  readonly untrusted?: boolean | ((candidate: Candidate) => boolean);
   /**
    * The untrusted texts the run read (the pages its tools fetched, say). A saved workflow any `COPIED_TEXT` characters of
    * whose strings (case and whitespace folded) appear in one is withheld: its records stay out of the proposal and the result
@@ -125,7 +126,7 @@ export async function proposeLearning(options: ProposeOptions): Promise<ProposeR
   // The commit the run was seeded from, which a reader stamps on what it learned; a run that was not seeded has none.
   const seed = (await readSeed(target))?.sha;
   if (seed !== undefined && !COMMIT_SHA.test(seed)) return { status: "refused", refusals: [{ reason: "invalid", field: "seed", detail: "the run's seed is not a commit id" }] };
-  if (candidates.length) files[inboxPath(rest.runId)] = renderInbox(rest.runId, candidates, { ...(seed === undefined ? {} : { seed }), untrusted: untrusted === true });
+  if (candidates.length) files[inboxPath(rest.runId)] = renderInbox(rest.runId, candidates, { ...(seed === undefined ? {} : { seed }), untrusted: typeof untrusted === "function" ? untrusted : untrusted === true });
   if (uses !== undefined) {
     let json: string | undefined;
     try {

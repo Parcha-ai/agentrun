@@ -1,7 +1,7 @@
 import { pathRefusal as gitPathRefusal } from "@parcha/pi-git-remote";
 import { CAPS, inboxPath, inboxWorkflowDir, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
-import { parseInbox, renderInbox } from "./inbox.js";
-import { type Guard, type GuardInput, LEARN_TYPES, type Refusal, type RefusalReason } from "./types.js";
+import { type InboxCandidate, parseInbox, renderInbox } from "./inbox.js";
+import { type Candidate, type Guard, type GuardInput, LEARN_TYPES, type Refusal, type RefusalReason } from "./types.js";
 
 export type Caps = { -readonly [K in keyof typeof CAPS]: number };
 
@@ -145,8 +145,8 @@ function authoredName(file: string): string {
 function inboxAuthored(content: string, runId: string): string[] | undefined {
   try {
     const inbox = parseInbox(content);
-    const marked = inbox.candidates.length > 0 && inbox.candidates.every((c) => c.untrusted);
-    const options = { ...(inbox.seed === undefined ? {} : { seed: inbox.seed }), untrusted: marked };
+    // Each candidate's own mark, as the inbox carries it: a run-wide mark renders the same way.
+    const options = { ...(inbox.seed === undefined ? {} : { seed: inbox.seed }), untrusted: (c: Candidate) => (c as InboxCandidate).untrusted === true };
     if (inbox.run !== runId || renderInbox(runId, inbox.candidates, options) !== content) return undefined;
     return inbox.candidates.flatMap((c) => [c.text, ...c.evidence, ...(c.id === undefined ? [] : [c.id])]);
   } catch {
