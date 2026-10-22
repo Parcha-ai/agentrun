@@ -1,7 +1,7 @@
 // Runs-to-discovery's facts, read structurally from a run's recording lines with the tools' own archivedSecPage.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { lookupOfLines, pageKind, revisionCarriesLookup } from './eval-lookup.mjs';
+import { captureKey, captureStatuses, lookupOfLines, pageKind, recordCapturesOf, recordReadOf, revisionCarriesLookup } from './eval-lookup.mjs';
 
 const W = (inner) => `https://web.archive.org/web/20260224213732id_/${inner}`;
 const INDEX = W('https://www.sec.gov/Archives/edgar/data/1/000000000126000001/0000000001-26-000001-index.htm');
@@ -67,4 +67,61 @@ test('cache hits: an archived URL the snapshot cache pins is served from it, any
   const result = await cacheHits({ dir, urls: [INDEX, otherTime, HEADERS] });
   assert.deepEqual([result.hits, result.misses], [2, 1]);
   assert.deepEqual(result.byUrl, { [INDEX]: 'hit', [otherTime]: 'hit', [HEADERS]: 'miss' });
+});
+
+const COMPANY = (time) => `https://web.archive.org/web/${time}/https://www.sec.gov/cgi-bin/browse-edgar?CIK=0000000001&action=getcompany`;
+const NOTICE = 'Got an HTTP 301 response at crawl time Redirecting to... https://www.sec.gov/edgar/browse/?CIK=0000000001';
+
+test('a capture is named by its 14-digit time and archived URL; a time cut short names none', () => {
+  assert.equal(captureKey(COMPANY('20251028211922')), '20251028211922 https://www.sec.gov/cgi-bin/browse-edgar?CIK=0000000001&action=getcompany');
+  assert.equal(captureKey(INDEX), '20260224213732 https://www.sec.gov/Archives/edgar/data/1/000000000126000001/0000000001-26-000001-index.htm');
+  assert.equal(captureKey('https://web.archive.org/web/20170502094703/https:/www.sec.gov/x-index.htm'), '20170502094703 https://www.sec.gov/x-index.htm');
+  assert.equal(captureKey(COMPANY('2025')), null);
+  assert.equal(captureKey('https://www.sec.gov/Archives/edgar/data/1/x-index.htm'), null);
+});
+
+test('a record READ is an ok record-page result whose capture the archive reports as 2xx: a crawl-time redirect is touched, never read', () => {
+  const stub = COMPANY('20251028211922');
+  const real = COMPANY('20170502094703');
+  const doc = W('https://www.sec.gov/Archives/edgar/data/1/000000000126000001/acme-ex21.htm');
+  const lines = [
+    call(1, 'a', 'fetch_page', { url: COMPANY('2025') }), result(1, 'a', 'fetch_page', { ok: true, url: stub, status: 200, text: NOTICE }),
+    call(1, 'b', 'fetch_page', { url: doc }), result(1, 'b', 'fetch_page', { ok: true, url: doc, text: 'Subsidiaries' }),
+    call(1, 'c', 'fetch_page', { url: INDEX }), result(1, 'c', 'fetch_page', { ok: false, url: INDEX, status: 404 }),
+  ];
+  assert.deepEqual(recordCapturesOf(lines), [captureKey(stub)]);
+  const statuses = { [captureKey(stub)]: 301, [captureKey(doc)]: 200, [captureKey(INDEX)]: 200 };
+  assert.equal(lookupOfLines(lines).touched, true);
+  assert.deepEqual(recordReadOf(lines, (key) => statuses[key]), { recordRead: false, readKinds: [], unresolved: 0 });
+  const read = [...lines, call(12, 'd', 'browse', { url: real }), result(12, 'd', 'browse', { ok: true, url: real, text: 'ACME CORP SIC: 7372' })];
+  assert.deepEqual(recordCapturesOf(read), [captureKey(real), captureKey(stub)].sort());
+  assert.deepEqual(recordReadOf(read, (key) => ({ ...statuses, [captureKey(real)]: 200 })[key]), { recordRead: true, readKinds: ['company'], unresolved: 0 });
+  assert.deepEqual(recordReadOf(read, (key) => statuses[key]), { recordRead: false, readKinds: [], unresolved: 1 }, 'an unknown status is not a read');
+  const byCallNode = [effect('e1', 'fetch_page', { url: INDEX }, { ok: true, url: INDEX, text: 'SIC: 5961' })];
+  assert.deepEqual(recordReadOf(byCallNode, (key) => statuses[key]), { recordRead: true, readKinds: ['index'], unresolved: 0 });
+});
+
+test('capture statuses come from the archive\'s CDX, exact URL and exact time, once per capture; an unlisted capture stays unknown', async () => {
+  const stub = captureKey(COMPANY('20251028211922'));
+  const real = captureKey(COMPANY('20170502094703'));
+  const gone = captureKey(INDEX);
+  const asked = [];
+  const fetch = async (href) => {
+    const url = new URL(href);
+    asked.push(href);
+    assert.equal(`${url.origin}${url.pathname}`, 'https://web.archive.org/cdx/search/cdx');
+    const time = url.searchParams.get('from');
+    assert.equal(url.searchParams.get('to'), time);
+    const rows = {
+      '20251028211922': [['timestamp', 'statuscode'], ['20251028211922', '301']],
+      '20170502094703': [['timestamp', 'statuscode'], ['20170502094700', '200'], ['20170502094703', '200']],
+    }[time] ?? [];
+    if (time === '20251028211922') assert.equal(url.searchParams.get('url'), 'https://www.sec.gov/cgi-bin/browse-edgar?CIK=0000000001&action=getcompany');
+    return new Response(JSON.stringify(rows), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const known = { [real]: 200 };
+  const statuses = await captureStatuses([stub, real, gone, stub], { known, fetch });
+  assert.deepEqual(statuses, { [real]: 200, [stub]: 301 });
+  assert.equal(asked.length, 2, 'a known capture and a repeat are not asked again');
+  await assert.rejects(captureStatuses([stub], { fetch: async () => new Response('busy', { status: 503 }), retries: 1, backoffMs: 0 }), /CDX/);
 });
