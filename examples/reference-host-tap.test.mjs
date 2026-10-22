@@ -127,3 +127,19 @@ test('a box the supervisor took away (a kill of kind box) ends as killed', async
   await box.destroy(ctx);
   assert.deepEqual(lines.at(-1), ['box.ended', { gen: 1, box: 'box-1', provider: 'host', killed: true }]);
 });
+
+test('an exec that BEGAN before the bind keeps its time (at) though its answer comes after it', async () => {
+  const { tap, lines } = aTap();
+  const { provider } = stubProvider();
+  let answer;
+  const slow = { ...provider, async create(spec) { const made = await provider.create(spec); made.value.exec = () => new Promise((resolve) => { answer = resolve; }); return made; } };
+  const tapped = tap.provider(slow);
+  await tap.unheld(aWindow().run, start(1));
+  const box = (await tapped.create({ maxLifetimeMs: 1 }, ctx)).value;
+  const pending = box.exec(['true'], undefined, ctx);
+  tap.bound('0', 'box-1');
+  answer({ ok: true, value: { wait: async () => ({ ok: true, value: 0 }) } });
+  await pending;
+  const exec = lines.find(([kind]) => kind === 'box.exec');
+  assert.ok(exec && typeof exec[1].at === 'string', `the exec keeps its own time: ${JSON.stringify(exec)}`);
+});

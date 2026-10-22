@@ -46,3 +46,13 @@ test('the transport panel lists the host box and the tool boxes together by labe
   // A recording whose only boxes are a place's host boxes still shows the panel.
   assert.equal(transportPanel.featured!(lines.filter((line) => line.source === 'host')), true);
 });
+
+test('a recording of host boxes only links each runner and the session to the host box its gen started, never leaving the session at no box', () => {
+  const only = [
+    host('process.started', 0, { gen: 1, pid: 1 }),
+    host('box.created', 10, { gen: 1, box: 'box-1', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:00.000Z' }),
+  ];
+  const state = reduceTo(transportPanel, only, only.length);
+  assert.equal(state.token?.box, 'box-1');
+  assert.deepEqual(state.runners.map((runner) => [runner.gen, runner.box]), [[1, 'box-1']]);
+});

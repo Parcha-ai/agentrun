@@ -292,6 +292,8 @@ const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: s
           writeFileSync(join(order.env.RECORD_DIR, '.spool', 'planted.jsonl'), `${JSON.stringify({ channel: 'live', source: 'transport', kind: 'box.created', gen: 1, t: 0, seq: 0, data: { box: process.env.DEMO_PLANT_BOX_LINE === '1' ? 'box-1' : process.env.DEMO_PLANT_BOX_LINE, provider: 'alpha', facts: { isolation: 'none', cpus: 1, gpu: null } } })}\n`);
         }
         const runner = await inner.start({ ...order, env: { ...order.env, HOST_BOX: JSON.stringify(box) } });
+        // `DEMO_HOST_BOX_UNTIL_RELEASE`: the place keeps its host box until it lets the run go (a host driver whose stop is at release).
+        if (process.env.DEMO_HOST_BOX_UNTIL_RELEASE) return runner;
         // The host box ends with its process, as a host driver's stop does: before the supervisor hears the process ended.
         return { ...runner, exited: runner.exited.then(async (exit) => { await entry.box.destroy(BACKGROUND_CONTEXT); entry.to = new Date().toISOString(); return exit; }) };
       },

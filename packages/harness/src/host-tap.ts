@@ -57,9 +57,11 @@ export function hostTap(options: {
     if (name === 'exec') {
       return async (...args: unknown[]) => {
         const at = now();
+        // Whether the command BEGAN before the bind is decided now: one whose answer comes after the bind keeps its own time too.
+        const held = box.label === undefined;
         const started = await (member as Box['exec']).apply(target, args as Parameters<Box['exec']>);
-        // A command before the bind is held and keeps its own time (`at`); one after it is written at once, with none.
-        if (started.ok) write(box, 'box.exec', box.label === undefined ? { at } : {});
+        // A command begun before the bind keeps its own time (`at`); one begun after it is written at once, with none.
+        if (started.ok) write(box, 'box.exec', held ? { at } : {});
         return started;
       };
     }

@@ -204,7 +204,15 @@ export const transportPanel: Panel<TransportState> = {
       }
       if (line.kind === 'result') return { ...state, result: { blob: str(data.blob) ?? '', title: str(data.title) ?? 'The result' } };
       // A host box (role host): drawn as a box of the session's host, by its run-wide label; one the supervisor took away ended as killed.
-      if (line.kind === 'box.created') return boxCreated(state, { ...data, environment: str(data.environment) ?? 'host' }, line);
+      if (line.kind === 'box.created') {
+        let next = boxCreated(state, { ...data, environment: str(data.environment) ?? 'host' }, line);
+        // The host box is where the process of its gen runs (data.gen): that runner, and the session while it stands at no box, move to it.
+        const gen = processOf(line);
+        const box = str(data.box);
+        if (gen === undefined || box === undefined) return next;
+        next = { ...next, runners: next.runners.map((runner) => (runner.gen === gen && runner.box === '?' ? { ...runner, box } : runner)) };
+        return next.token?.box === '?' ? tokenTo(next, box, next.token.epoch, line.t) : next;
+      }
       if (line.kind === 'box.ended') return boxEnded(state, data, line, data.killed === true);
       return state;
     }

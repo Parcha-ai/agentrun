@@ -73,3 +73,12 @@ test('DETECTION at the end: two box.created lines under one label, from any writ
     /the recording is refused: the label box-2 names 2 boxes in this recording/,
   );
 });
+
+test('a host box the place keeps until it lets the run go still ends IN the recording: the supervisor lets the place go before its final read, so box.ended and the receipt\'s end are there', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'tapped', DEMO_HOST_BOX_UNTIL_RELEASE: '1' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  const ended = hostBoxLines(recording).filter((line) => line.kind === 'box.ended');
+  assert.deepEqual(ended.map((line) => line.data), [{ gen: 1, box: 'box-1', provider: 'local', killed: false }]);
+  const receipt = receipts(recording).find((each) => each.box === 'box-1');
+  assert.ok(receipt.to !== null && typeof receipt.seconds === 'number', `the host box's receipt has its end: ${JSON.stringify(receipt)}`);
+});
