@@ -32,14 +32,20 @@ import { scoreV2 } from './score-v2.mjs';
 import { scoreV4 } from './score-v4.mjs';
 import { agentScript, agentScriptV2, agentScriptV4, FIXTURES, FIXTURES_V2, FIXTURES_V4, fakeHardTools, fixtureWeb, scriptedJev, scriptedModel } from './scripted.mjs';
 import { isHard, SETS } from './sets.mjs';
-import { ANY_HOST, domainOf, fetchPageTool } from './tools.mjs';
-import { answersTheJob, hostRecord, promotedFor } from './dispatch.mjs';
+import { ANY_HOST, domainOf, fetchPageTool, refuseMccDomains } from './tools.mjs';
+import { answersTheJob, hostRecord, promotedFor, recordedWorkflow } from './dispatch.mjs';
 import { contradictionOf, lookupOfLines, receiptOf } from './eval-lookup.mjs';
 import { LINK_QUESTION, receiptHoldsTrial, receiptLinks, receiptUses, recordRun } from './receipts.mjs';
-import { asyncGate, GATE, gateSpend } from './promotion-gate.mjs';
+import { asyncGate, demotionSettler, GATE, gateSpend } from './promotion-gate.mjs';
 import { passSelfTest } from './selftest.mjs';
 import { writeHosts } from './tools-v2.mjs';
 import { HINDSIGHT_FIELDS, LIVE_REFLECTION_USD, proposeHindsight, recordPagesOnly, reflectOnRun } from './hindsight.mjs';
+import { scoreMcc } from '../learn-mcc/score-mcc.mjs';
+import {
+  hindsightJobMcc, MCC_GATE_PARTS, MCC_HINDSIGHT_FIELDS, mccLookupRefusalsOf, merchantPage, merchantPagesOnly, merchantScope, merchantTouchOf, partsOfMcc, receiptOfMcc, rowOfMcc, teacherLabelsOf,
+  teacherValuesMcc, wrongFieldsMcc,
+} from './mcc.mjs';
+import { agentScriptMcc, FIXTURES_MCC } from './scripted-mcc.mjs';
 
 export const DATA = join(import.meta.dirname, 'data');
 /** Where a pass writes when no --out is given, as the demo's contract names it. */
@@ -138,19 +144,24 @@ const fixtureLookup = async () => [{ address: '93.184.216.34', family: 4 }];
 
 /** The $0 parts: the scripted agent and Jev, lane C1's fetch_page reading fixture pages instead of the web, and in v2 and
  *  v4 fakes of lane C3's tools over the fixtures. A data directory without pages.json gets 404s. */
-export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 || set === SETS.facts ? FIXTURES_V4 : set === SETS.v2 ? FIXTURES_V2 : FIXTURES } = {}) {
+export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 || set === SETS.facts ? FIXTURES_V4 : set === SETS.v2 ? FIXTURES_V2 : set === SETS.mcc ? FIXTURES_MCC : FIXTURES } = {}) {
   const d = set.load(data);
   const pages = readJsonIf(join(data, 'pages.json')) ?? {};
   const hard = isHard(set);
-  const truthByName = Object.fromEntries(d.companies.map((c) => [c.name, hard ? c.sic : c.sic2]));
+  const mcc = set === SETS.mcc;
+  const truthByName = Object.fromEntries(d.companies.map((c) => [c.name, mcc ? c.teacher?.mcc : hard ? c.sic : c.sic2]));
   const fakes = hard ? fakeHardTools({ pages, documents: readJsonIf(join(data, 'documents.json')) ?? {}, search: readJsonIf(join(data, 'search.json')) ?? {} }) : undefined;
   const truth = readJsonIf(join(data, 'answers.json')) ?? {};
+  const judged = hard ? readJsonIf(join(data, 'judge.json')) ?? {} : {};
+  if (mcc) refuseMccDomains(d.refused);
   return {
     mode: 'scripted', providers: 'scripted', modelName: 'faux/scripted', set, data: d, labels: d.labels, companies: d.companies, conventions: conventionsOf(d.report), fakeCalls: fakes?.calls,
-    judge: () => scriptedJev({ truthByName, groups: groupsOf(hard ? d.codes : d.labels), segments: hard ? readJsonIf(join(data, 'judge.json')) ?? {} : {} }),
+    // The MCC job's fixtures may fix Jev's yes-or-no answers (judge.json `overrides`, such as the receipt's link question).
+    judge: () => scriptedJev({ truthByName, groups: groupsOf(hard ? d.codes : d.labels), segments: judged, ...(mcc && judged.overrides ? { overrides: judged.overrides } : {}) }),
     toolsFor: async (job) => [fetchPageTool({ allowDomain: allowedDomain(job, set), fetch: fixtureWeb(pages), lookup: fixtureLookup }), ...(fakes ? fakes.tools() : [])],
     modelFor: (job, run) => {
       const offered = run.workflows.loaded.map((w) => w.name);
+      if (mcc) return scriptedModel(agentScriptMcc({ job, offered, fixtures: { truth } }));
       if (set === SETS.v4) return scriptedModel(agentScriptV4({ job, offered, fixtures: { truth } }));
       if (set === SETS.v2) return scriptedModel(agentScriptV2({ job, offered, fixtures: { truth } }));
       return scriptedModel({ root: agentScript({ job, offered, truth: job.sic2, page: pages[job.website] }) });
@@ -167,6 +178,7 @@ export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, e
   // The root agent on Opus at high thinking unless --model / --thinking name another; the nodes on the host's NODE.
   const models = await gatewayModels(gateway, { root: { model: model ?? ROOT.model, thinking: thinking ?? ROOT.thinking } });
   const d = set.load(data);
+  if (set === SETS.mcc) refuseMccDomains(d.refused);
   const jev = gatewayJev(gateway);
   let hard;
   if (isHard(set)) {
@@ -199,7 +211,8 @@ export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, e
     modelFor: () => models,
     // Hindsight's reflections (hindsight.mjs) on the root agent's model, with fetch_page and read_document as the run has them
     // but limited to the SEC's record pages as archived (01-loop 1.16), each reflection stopped past LIVE_REFLECTION_USD.
-    ...(hindsight ? { hindsight: { fields: hindsight, model: () => models, limitUsd: LIVE_REFLECTION_USD, tools: async (job, run) => recordPagesOnly((await toolsFor(job, run)).filter((t) => t.name === 'fetch_page' || t.name === 'read_document')) } } : {}),
+    // On the MCC job the record pages are the merchant's own pages, and the label a reflection is shown is the teacher's.
+    ...(hindsight ? { hindsight: { fields: hindsight, model: () => models, limitUsd: LIVE_REFLECTION_USD, tools: async (job, run) => (set === SETS.mcc ? (effects) => merchantPagesOnly(effects, job) : recordPagesOnly)((await toolsFor(job, run)).filter((t) => t.name === 'fetch_page' || t.name === 'read_document')) } } : {}),
     // The browser's guard on the browser the pass will use, checked by the pass's self-test.
     ...(hard ? { browserCheck: (dir) => hard.guardSelfTest({ root: dir, profileRoot: join(dir, 'chrome'), env, archivedSec }) } : {}),
   };
@@ -220,7 +233,10 @@ async function runSet({ parts, repo, run, job, judge, limitUsd, lock = inline, d
     const answer = set.answer(data);
     // A promoted workflow that answers the whole job runs first, by the host (dispatch.mjs), unless the pass says not to.
     const dispatch = given ?? (parts.dispatch === false ? null : await lock(() => promotedFor({ repo, run, answer, input: set.input(job) })));
-    return await runJob({ run, job, model: await parts.modelFor(job, run), judge, effects, answer, text: set.text, limitUsd, dispatch, hostOnly });
+    return await runJob({
+      run, job, model: await parts.modelFor(job, run), judge, effects, answer, text: set.text, limitUsd, dispatch, hostOnly,
+      ...(parts.callDeadlineMs !== undefined ? { callDeadlineMs: parts.callDeadlineMs } : {}), ...(parts.runDeadlineMs !== undefined ? { runDeadlineMs: parts.runDeadlineMs } : {}),
+    });
   } finally {
     // What a tool kept for this run alone (read_document's large files) goes when the run ends.
     await Promise.all(effects.map((effect) => effect.dispose?.()));
@@ -234,11 +250,16 @@ async function scoreRun({ parts, run, job, measure, hostsDir }) {
   await writeHosts({ dir: hostsDir, runId: run.runId, results });
   const judge = meteredJudge(parts.judge());
   const report = data.report?.companies?.find((c) => c.cik === job.cik);
-  const score = parts.set === SETS.v4
+  const score = parts.set === SETS.mcc
+    ? scoreMccOf(measure.answer, job, data)
+    : parts.set === SETS.v4
     ? await scoreV4({ answer: measure.answer, company: job, read: textsRead(results), codes: data.codes, judge: judge.run })
     : await scoreV2({ answer: measure.answer, company: job, report, rules: data.report?.scoring ?? [], read: textsRead(results), codes: data.codes, judge: judge.run });
   return { score, stats: toolStats(results), scoringJudge: { ...judge.meter } };
 }
+
+/** An MCC answer's score against the merchant's teacher labels (learn-mcc's scoreMcc; none joined, nothing scored). */
+const scoreMccOf = (answer, job, data) => scoreMcc({ answer: answer ?? null, merchant: job, groups: data.table });
 
 const short = (sha) => (sha ? sha.slice(0, 7) : '-');
 const usd = (n) => (n === null ? 'unknown' : `$${n.toFixed(4)}`);
@@ -277,8 +298,9 @@ function knownSpend(out) {
     + gateSpend(join(out, 'gate'));
 }
 
-/** A run the provider's errors ended, past the harness's own retries: the first time, not the job's outcome. */
-const modelError = (measure) => measure?.status === 'unanswered' && measure.reason === 'model_error';
+/** A run the provider's errors ended, past the harness's own retries, or one stopped at its wall-clock deadline (a call or
+ *  a model that never answered): an infrastructure failure, run again once, never the job's outcome the first time. */
+const modelError = (measure) => measure?.status === 'unanswered' && (measure.reason === 'model_error' || measure.reason === 'deadline');
 const attemptUsd = (measure) => measure.usage.costUsd + measure.judge.costUsd + (measure.toolSpend?.costUsd ?? 0);
 
 /** A job's progress file, <out>/progress/<run>.json, and the run ids of its attempts. */
@@ -363,6 +385,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
         job, run, score: p.score, answer: p.measure.answer, fields: parts.hindsight.fields, codes: parts.data?.codes, storeDir: join(out, 'hindsight'),
         rules: await repo.read('AGENTS.md', p.seedSha),
         ...(parts.hindsight.limitUsd !== undefined ? { limitUsd: parts.hindsight.limitUsd } : {}),
+        ...(parts.set === SETS.mcc ? { wrongOf: wrongFieldsMcc, jobLine: hindsightJobMcc(job), isRecord: (url) => merchantPage(url, merchantScope(job.website)) } : {}),
         model: () => parts.hindsight.model(job, run), effects: () => parts.hindsight.tools(job, run),
       }),
     });
@@ -371,8 +394,15 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
   const receipts = parts.receiptAdmission || parts.receiptHoldsTrial || parts.receiptPromotion;
   if (receipts && p.phase === 'ran' && p.receipt === undefined) {
     const { lines } = recordingLines(run.storePath);
-    const looked = lookupOfLines(lines, { sic4: p.measure.answer?.sic4 });
-    save({ ...p, receipt: receiptOf(lines, p.measure.answer), contradiction: contradictionOf(lines, p.measure.answer), workflowTouch: looked.touched && looked.byWorkflow });
+    if (parts.set === SETS.mcc) {
+      // The MCC job's receipt is structural grounding on the merchant's own pages; no page states an MCC, so there is no
+      // receipt contradiction.
+      const touched = merchantTouchOf(lines, job);
+      save({ ...p, receipt: receiptOfMcc(lines, p.measure.answer, job), contradiction: null, workflowTouch: touched.touched && touched.byWorkflow });
+    } else {
+      const looked = lookupOfLines(lines, { sic4: p.measure.answer?.sic4 });
+      save({ ...p, receipt: receiptOf(lines, p.measure.answer), contradiction: contradictionOf(lines, p.measure.answer), workflowTouch: looked.touched && looked.byWorkflow });
+    }
   }
   await lock(async () => {
     if (p.phase === 'ran') {
@@ -381,11 +411,12 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
       const receipted = parts.receiptAdmission && p.receipt;
       const linkJudge = meteredJudge(judge);
       const ask = async (state) => (await linkJudge.run({ label: 'receipt/link', kind: 'judge', state, questions: { link: { type: 'noul', instructions: LINK_QUESTION } }, decisionId: `receipt-link-${createHash('sha256').update(JSON.stringify(state)).digest('hex').slice(0, 32)}` }))?.answers?.link?.noul ?? 0;
-      const finished = await finishJob({ home, repo, run, job, measure: p.measure, ...(receipted ? { alsoRefuse: [p.receipt.sic4], links: (candidates) => receiptLinks(candidates, p.receipt, ask) } : {}) });
+      const field = parts.set === SETS.mcc ? 'mcc' : 'sic4';
+      const finished = await finishJob({ home, repo, run, job, measure: p.measure, ...(receipted ? { alsoRefuse: [p.receipt[field]], links: (candidates) => receiptLinks(candidates, p.receipt, ask, { field }) } : {}) });
       save({ ...p, phase: 'proposed', finished, ...(receipted ? { linkJudge: { ...linkJudge.meter } } : {}) });
     }
     if (p.phase === 'proposed' && p.hindsight?.reflections?.length && !p.hindsight.proposals) {
-      save({ ...p, hindsight: { ...p.hindsight, proposals: await proposeHindsight({ repo, job, run, seedSha: p.seedSha, wrong: p.hindsight.wrong, reflections: p.hindsight.reflections }) } });
+      save({ ...p, hindsight: { ...p.hindsight, proposals: await proposeHindsight({ repo, job, run, seedSha: p.seedSha, wrong: p.hindsight.wrong, reflections: p.hindsight.reflections, ...(parts.set === SETS.mcc ? { truthValuesOf: teacherValuesMcc } : {}) }) } });
     }
     if (p.phase === 'proposed') {
       // The promotion gate's verdicts that landed since the last curate are applied first, so this curate starts from them.
@@ -396,6 +427,13 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
         recordRun(receiptsDir, { run: runId, receipt: p.receipt ?? null, contradiction: p.contradiction ?? null, executed, workflowTouch: Boolean(p.workflowTouch) });
       }
       const curateJudge = meteredJudge(judge);
+      // ARM G (demotionSettler): the revision whose answer was this run's (the host's dispatch, complete) is shown wrong when
+      // the truth (the teacher, for MCC) disagrees with the code it answered.
+      const answeredWrong = p.measure.dispatch?.outcome === 'complete' && (parts.set === SETS.mcc ? p.score?.mccCorrect === false : p.score?.sicCorrect4 === false);
+      const armG = parts.escalationNeutral || parts.gatedDemotion
+        ? (settle) => demotionSettler({ settle, neutral: Boolean(parts.escalationNeutral), shownWrong: new Set(answeredWrong ? [p.measure.dispatch.revision] : []), ...(parts.gatedDemotion ? { gate } : {}) })
+        : (settle) => settle;
+      const byReceipt = parts.promoteNoFloor ? (settle) => receiptUses({ settle, dir: receiptsDir, gate, receipts: Boolean(parts.receiptPromotion) }) : (settle) => settle;
       const curated = await curateJob({
         repo, judge: curateJudge, ...(parts.thresholds ? { thresholds: parts.thresholds } : {}),
         ...(parts.judgeCuts ? { judgeCuts: parts.judgeCuts } : {}),
@@ -406,7 +444,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
         // With promotion by receipt the gate does not hold a promotion back: it confirms or demotes a replacement.
         ...(gate && !parts.promoteNoFloor ? { gate } : {}),
         ...(parts.receiptHoldsTrial ? { wrapAdmit: (admit) => receiptHoldsTrial(admit, receiptsDir) } : {}),
-        ...(parts.promoteNoFloor ? { wrapSettle: (settle) => receiptUses({ settle, dir: receiptsDir, gate, receipts: Boolean(parts.receiptPromotion) }) } : {}),
+        ...(parts.promoteNoFloor || parts.escalationNeutral || parts.gatedDemotion ? { wrapSettle: (settle) => armG(byReceipt(settle)) } : {}),
       });
       save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main, ...(gated.length ? { gated } : {}), ...(tally ? { curatedIndex: ++tally.curated, curatedAt: new Date().toISOString() } : {}) });
       tally?.landed(job, p);
@@ -423,8 +461,10 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
     ? await writeRecording({ into: join(out, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started: p.started, ended: p.ended, spend, modelUsd: p.measure.unpricedAnswers ? null : p.measure.usage.costUsd })
     : null;
   const v1 = { run: job.order, runId, job, seedSha: p.seedSha, afterSha: p.afterSha, offered: p.offered, measure: p.measure, finished: p.finished, curated: p.curated, curateJudge: p.curateJudge, recording, convention: parts.conventions?.[job.cik] };
+  const hardRow = { ...v1, score: p.score, stats: p.stats, scoringJudge: p.scoringJudge, lineage: p.lineage, jobRecord: hostRecord(jobRecordOf(recordingLines(run.storePath).lines), p.measure.dispatch) };
   const row = !isHard(parts.set) ? rowOf(v1)
-    : (parts.set === SETS.v4 ? rowOfV4 : rowOfV2)({ ...v1, score: p.score, stats: p.stats, scoringJudge: p.scoringJudge, lineage: p.lineage, jobRecord: hostRecord(jobRecordOf(recordingLines(run.storePath).lines), p.measure.dispatch) });
+    : parts.set === SETS.mcc ? rowOfMcc(rowOfV2({ ...hardRow, key: 'mcc', score: { correct: p.score?.correct ?? null } }), p.score, job)
+    : (parts.set === SETS.v4 ? rowOfV4 : rowOfV2)(hardRow);
   const attempts = [...p.abandoned, ...(p.infraFailed ?? [])].map((a) => a.runId);
   const limits = limitsOf([...attempts, runId].map((id) => runPaths(home, id).storePath), { at: p.started });
   if (dropEvidence) dropRunFiles(run.dir);
@@ -436,6 +476,8 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
     ...(p.curatedIndex === undefined ? {} : { curatedIndex: p.curatedIndex }),
     ...(p.gated ? { gated: p.gated } : {}),
     ...(p.receipt !== undefined ? { receipt: p.receipt, contradiction: p.contradiction ?? null } : {}),
+    // The MCC job logs, per row, the reads its tools refused because the site lists merchants' codes.
+    ...(parts.set === SETS.mcc ? { mccLookupRefused: mccLookupRefusalsOf(recordingLines(run.storePath).lines) } : {}),
     ...(p.finished?.receiptLinks ? { receiptLinks: p.finished.receiptLinks } : {}),
     rerunOf: p.infraFailed?.[0]?.runId ?? null, infraFailed: modelError(p.measure), limits,
     durableCommits: durableCommits(run.storePath),
@@ -446,7 +488,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
 function hindsightOf({ reflections, proposals = [] }) {
   const costs = reflections.map((r) => r.costUsd);
   return {
-    reflections: reflections.map((r) => ({ field: r.field, hypotheses: r.hypotheses.length, costUsd: r.costUsd, calls: r.calls, archivedSecRead: r.archivedSecRead, truthOnArchivedPage: r.truthOnArchivedPage, ...(r.stopped ? { stopped: r.stopped } : {}) })),
+    reflections: reflections.map((r) => ({ field: r.field, ...(r.label ? { label: r.label } : {}), hypotheses: r.hypotheses.length, costUsd: r.costUsd, calls: r.calls, archivedSecRead: r.archivedSecRead, truthOnArchivedPage: r.truthOnArchivedPage, ...(r.stopped ? { stopped: r.stopped } : {}) })),
     proposals,
     costUsd: costs.every((c) => typeof c === 'number') ? costs.reduce((a, b) => a + b, 0) : null,
   };
@@ -518,7 +560,7 @@ export function listQueue(companies, list, split = 'run', { openTest = false } =
   splitOf(companies, split, { openTest });
   const seen = new Set();
   return list.map((item, i) => {
-    const cik = String(item?.cik ?? '');
+    const cik = String(item?.cik ?? item?.id ?? '');
     const company = companies.find((c) => c.cik === cik);
     if (!company) throw new Error(`--list: ${cik || `entry ${i + 1}`} is not in the ${split} split`);
     if (company.split !== split) throw new Error(`--list: ${cik} (${company.ticker}) is ${company.split}: a pass on a list takes the ${split} split only`);
@@ -538,7 +580,7 @@ export function bankOf(companies, list, queue = []) {
   const queued = new Set(queue.map((job) => job.cik));
   const seen = new Set();
   return list.map((item, i) => {
-    const cik = String(item?.cik ?? '');
+    const cik = String(item?.cik ?? item?.id ?? '');
     const company = companies.find((c) => c.cik === cik);
     if (!company) throw new Error(`--promotion-bank: ${cik || `entry ${i + 1}`} is not in the data`);
     if (company.split === 'dev' || company.split === 'test') throw new Error(`--promotion-bank: ${cik} (${company.ticker}) is ${company.split}: the bank is TRAIN companies`);
@@ -568,7 +610,8 @@ function bankRunner({ out, bare, parts, runCapUsd, dropEvidence }) {
     const input = parts.set.input(company);
     const judge = meteredJudge(parts.judge());
     if (!answersTheJob(workflow, answer.parameters, input)) {
-      return { outcome: 'not-served', score: await scoreV4({ answer: null, company, read: [], codes: parts.data.codes, judge: judge.run }), costUsd: 0 };
+      const score = parts.set === SETS.mcc ? scoreMccOf(null, company, parts.data) : await scoreV4({ answer: null, company, read: [], codes: parts.data.codes, judge: judge.run });
+      return { outcome: 'not-served', score, costUsd: 0 };
     }
     const { repo, home } = await open();
     const prepared = await lock(async () => {
@@ -609,7 +652,9 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
   // With a bank, a promotion stands only when the replay gate passes it (promotion-gate.mjs). The gate runs beside the
   // stream, never holding it: a curate that would promote queues it, and a later curate applies its verdict. `gate` gives
   // the pass one already made.
-  const gate = given ?? (parts.bank ? asyncGate({ bank: bankOf(parts.companies, parts.bank, stream), runOne: bankRunner({ out, bare, parts, runCapUsd, dropEvidence }), dir: join(out, 'gate'), ...(parts.bankConcurrency ? { concurrency: parts.bankConcurrency } : {}), log }) : undefined);
+  // The MCC job's bank runs are scored on two parts, the code and the tier, each against the teacher.
+  const gateParts = parts.set === SETS.mcc ? { scoreParts: partsOfMcc, parts: MCC_GATE_PARTS } : {};
+  const gate = given ?? (parts.bank ? asyncGate({ bank: bankOf(parts.companies, parts.bank, stream), runOne: bankRunner({ out, bare, parts, runCapUsd, dropEvidence }), dir: join(out, 'gate'), ...(parts.bankConcurrency ? { concurrency: parts.bankConcurrency } : {}), ...gateParts, log }) : undefined);
   const judge = parts.judge();
   const spentNow = () => knownSpend(out);
   const tally = curateTally({ out, stream, seedSha: meta.seedSha, checkpoints, ...(gate ? { gates: () => gate.pending() } : {}) });
@@ -672,8 +717,10 @@ async function homeAt(dir, repo, sha) {
  *  proposed or curated, and every job is seeded from that commit. Its own agent home, kept at that commit. Rows go to
  *  <out>/sealed-<sha12>.jsonl, each numbered by the company's place in the split. `from` takes the commit from another
  *  pass's repository (adoptFrom); `concurrency` runs that many jobs side by side; `shard` { index, count } takes every
- *  count-th company from the index-th, for a pass spread over several takes. */
-export async function runSealed({ out, parts, at = 'main', from, split = 'sealed', openTest = false, concurrency = 1, shard, capUsd, runCapUsd, record = false, dropEvidence = false, log = () => {} }) {
+ *  count-th company from the index-th, for a pass spread over several takes. `serve` { name, sha256 } measures that one
+ *  workflow revision alone: read from the agent repository at the commit, it is the whole of every run (host-only, as a
+ *  bank run), and its rows and home are kept apart from the commit's own (sealed-<sha12>-serve-<revision12>). */
+export async function runSealed({ out, parts, at = 'main', from, split = 'sealed', list, openTest = false, concurrency = 1, shard, serve, capUsd, runCapUsd, record = false, dropEvidence = false, log = () => {} }) {
   out = resolve(out);
   if (from !== undefined) adoptFrom(out, from, { mode: parts.mode, set: parts.set });
   const { repo, meta } = await openOut(out, { mode: parts.mode, set: parts.set, agentDir: parts.agentDir });
@@ -681,18 +728,22 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   const sha = at === 'seed' ? meta.seedSha : await repo.resolve(at);
   if (!sha) throw new Error(`the agent repository has no ${at}`);
   const label = sha.slice(0, 12);
-  const home = await homeAt(join(out, 'sealed', label, 'home'), repo, sha);
-  const rowsPath = join(out, `sealed-${label}.jsonl`);
+  const served = serve && await recordedWorkflow(repo, serve.name, serve.sha256, sha);
+  if (serve && !served) throw new Error(`the agent repository at ${label} has no record of ${serve.name} ${serve.sha256.slice(0, 12)}`);
+  const tag = serve ? `${label}-serve-${serve.sha256.slice(0, 12)}` : label;
+  const home = await homeAt(join(out, 'sealed', tag, 'home'), repo, sha);
+  const rowsPath = join(out, `sealed-${tag}.jsonl`);
   const rows = readRows(rowsPath);
   const done = new Set(rows.map((r) => r.cik));
-  const queue = splitOf(parts.companies, split, { openTest }).sort((a, b) => a.cik.localeCompare(b.cik))
+  // With `list`, the listed companies of the split, in the list's order (a pilot's fixed rows), else the whole split.
+  const queue = (list ? listQueue(parts.companies, list, split, { openTest }) : splitOf(parts.companies, split, { openTest }).sort((a, b) => a.cik.localeCompare(b.cik)))
     .map((job, i) => ({ job, place: i + 1 }))
     .filter(({ place }) => !shard || (place - 1) % shard.count === shard.index - 1);
   const pending = queue.filter(({ job }) => !done.has(job.cik));
   const judge = parts.judge();
   let spent = rows.reduce((sum, r) => sum + (r.costUsd ?? 0) + (r.scoreCostUsd ?? 0), 0);
   let stoppedBy = null;
-  log(`learn-classify: sealed pass at ${label}${sha === meta.seedSha ? ' (the seed: nothing learned)' : ''}, ${queue.length} companies of ${split}${shard ? ` (shard ${shard.index}/${shard.count})` : ''}${concurrency > 1 ? `, ${concurrency} at once` : ''}`);
+  log(`learn-classify: sealed pass at ${label}${sha === meta.seedSha ? ' (the seed: nothing learned)' : ''}${serve ? `, serving ${serve.name} ${serve.sha256.slice(0, 12)} alone` : ''}, ${queue.length} companies of ${split}${list ? ' (a list)' : ''}${shard ? ` (shard ${shard.index}/${shard.count})` : ''}${concurrency > 1 ? `, ${concurrency} at once` : ''}`);
   if (pending.length) await selfTest({ out, repo, parts, log });
   const lock = concurrency > 1 ? serial() : inline;
   // One run of a job: an earlier attempt's directory is abandoned, then the run is prepared at `sha` and run. A home already
@@ -710,7 +761,8 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
     });
     if (prepared.sha !== sha) throw new Error(`refused: ${prepared.runId} was seeded from ${prepared.sha.slice(0, 12)}, not ${label}; its home is past the frozen commit (one home per commit)`);
     const started = Date.now();
-    const measure = await runSet({ parts, repo, run: prepared, job, judge: meteredJudge(judge), limitUsd: runCapUsd, lock });
+    const alone = serve ? { dispatch: { name: serve.name, sha256: serve.sha256, workflow: served, input: parts.set.input(job) }, hostOnly: true } : {};
+    const measure = await runSet({ parts, repo, run: prepared, job, judge: meteredJudge(judge), limitUsd: runCapUsd, lock, ...alone });
     return { prepared, started, measure };
   };
   const oneSealed = async ({ job, place }) => {
@@ -725,16 +777,22 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
     }
     const run = { runId: prepared.runId, ...runPaths(home, prepared.runId) };
     const finished = await lock(() => finishJob({ home, repo, run, job, measure, propose: false }));
-    const scored = isHard(parts.set) ? await scoreRun({ parts, run, job, measure, hostsDir: join(out, 'sealed', label, 'hosts') }) : undefined;
+    const scored = isHard(parts.set) ? await scoreRun({ parts, run, job, measure, hostsDir: join(out, 'sealed', tag, 'hosts') }) : undefined;
     const tools = scored ? [scored.stats.browserCostUsd, scored.stats.searchCostUsd, scored.stats.documentCostUsd] : [];
     const recording = record
-      ? await writeRecording({ into: join(out, 'sealed', label, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started, ended: Date.now(), spend: spendOf(measure, undefined, tools), modelUsd: measure.unpricedAnswers ? null : measure.usage.costUsd })
+      ? await writeRecording({ into: join(out, 'sealed', tag, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started, ended: Date.now(), spend: spendOf(measure, undefined, tools), modelUsd: measure.unpricedAnswers ? null : measure.usage.costUsd })
       : null;
     const v1 = { run: place, runId: prepared.runId, job, seedSha: prepared.sha, afterSha: sha, offered: prepared.workflows.loaded.map((w) => w.name), measure, finished, curated: null, recording, convention: parts.conventions?.[job.cik] };
     const phase = sha === meta.seedSha ? 'before' : 'after';
-    const scoredRow = scored ? (parts.set === SETS.v4 ? rowOfV4 : rowOfV2)({ ...v1, score: scored.score, stats: scored.stats, scoringJudge: scored.scoringJudge, phase, jobRecord: hostRecord(jobRecordOf(recordingLines(run.storePath).lines), measure.dispatch) }) : { ...rowOf(v1), phase };
+    const sealedRow = scored ? { ...v1, score: scored.score, stats: scored.stats, scoringJudge: scored.scoringJudge, phase, jobRecord: hostRecord(jobRecordOf(recordingLines(run.storePath).lines), measure.dispatch) } : null;
+    const scoredRow = !scored ? { ...rowOf(v1), phase }
+      : parts.set === SETS.mcc ? rowOfMcc(rowOfV2({ ...sealedRow, key: 'mcc', score: { correct: scored.score?.correct ?? null } }), scored.score, job)
+      : (parts.set === SETS.v4 ? rowOfV4 : rowOfV2)(sealedRow);
     const limits = limitsOf([...infraFailed.map((f) => f.runId), run.runId].map((id) => runPaths(home, id).storePath), { at: started });
-    const row = { ...scoredRow, rerunOf: infraFailed[0]?.runId ?? null, infraFailed: modelError(measure), limits, durableCommits: durableCommits(run.storePath) };
+    const row = {
+      ...scoredRow, rerunOf: infraFailed[0]?.runId ?? null, infraFailed: modelError(measure), limits, durableCommits: durableCommits(run.storePath),
+      ...(parts.set === SETS.mcc ? { mccLookupRefused: mccLookupRefusalsOf(recordingLines(run.storePath).lines) } : {}),
+    };
     spent += spendOf(measure, undefined, tools).knownUsd + (scored?.scoringJudge.costUsd ?? 0);
     appendFileSync(rowsPath, `${JSON.stringify(row)}\n`);
     if (dropEvidence) dropRunFiles(run.dir);
@@ -763,7 +821,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--receipt-admission] [--receipt-holds-trial] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--hindsight all|<field,...>] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--escalation-neutral] [--gated-demotion (with --promotion-bank)] [--receipt-admission] [--receipt-holds-trial] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--teacher <file> (mcc)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>] [--serve <workflow>@<revision sha256>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -778,7 +836,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' }, 'edgar-cache': { type: 'string' }, schedule: { type: 'string' }, checkpoints: { type: 'string' },
         'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, 'gate-wait-at-end': { type: 'boolean' }, hindsight: { type: 'string' },
         'receipt-admission': { type: 'boolean' }, 'receipt-holds-trial': { type: 'boolean' }, 'receipt-promotion': { type: 'boolean' }, 'promote-no-floor': { type: 'boolean' },
-        'refuse-contradicting': { type: 'boolean' }, 'keep-facts': { type: 'boolean' }, 'refuse-refused-hosts': { type: 'boolean' },
+        'escalation-neutral': { type: 'boolean' }, 'gated-demotion': { type: 'boolean' },
+        'refuse-contradicting': { type: 'boolean' }, 'keep-facts': { type: 'boolean' }, 'refuse-refused-hosts': { type: 'boolean' }, teacher: { type: 'string' },
+        'self-test-only': { type: 'boolean' }, serve: { type: 'string' },
       },
     }));
   } catch (error) {
@@ -796,7 +856,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     process.exit(2);
   }
   if (values.thinking === 'off') { console.error('--thinking off is not allowed: every model call thinks'); process.exit(2); }
-  if (values.list !== undefined && values.sealed) { console.error(`--list runs a learning pass: a sealed pass takes the sealed split\n${USAGE}`); process.exit(2); }
+  if (values['self-test-only'] && !values.live) { console.error(`--self-test-only checks a live pass: it takes --live\n${USAGE}`); process.exit(2); }
+  // A sealed pass on a list is the MCC job's (a pilot's by-hand pass on its fixed TRAIN rows); the SEC sets keep theirs whole.
+  if (values.list !== undefined && values.sealed && values.set !== 'mcc') { console.error(`--list runs a learning pass: a sealed pass takes the sealed split\n${USAGE}`); process.exit(2); }
   const promoteAfter = values['promote-after'] === undefined ? undefined : Number(values['promote-after']);
   if (promoteAfter !== undefined && !(Number.isInteger(promoteAfter) && promoteAfter >= 1)) { console.error(`--promote-after is a whole number from 1\n${USAGE}`); process.exit(2); }
   const concurrency = values.concurrency === undefined ? 1 : Number(values.concurrency);
@@ -804,9 +866,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const shardMatch = values.shard === undefined ? null : /^(\d+)\/(\d+)$/.exec(values.shard);
   const shard = shardMatch ? { index: Number(shardMatch[1]), count: Number(shardMatch[2]) } : undefined;
   if (values.shard !== undefined && !(shard && shard.index >= 1 && shard.index <= shard.count)) { console.error(`--shard is i/N with 1 <= i <= N\n${USAGE}`); process.exit(2); }
-  for (const name of ['shard', 'from']) {
+  for (const name of ['shard', 'from', 'serve']) {
     if (values[name] !== undefined && !values.sealed) { console.error(`--${name} takes a sealed pass\n${USAGE}`); process.exit(2); }
   }
+  const serveMatch = values.serve === undefined ? null : /^([a-z0-9][a-z0-9-]*)@([0-9a-f]{64})$/.exec(values.serve);
+  if (values.serve !== undefined && !serveMatch) { console.error(`--serve is <workflow>@<revision sha256>\n${USAGE}`); process.exit(2); }
   if (values.split === 'test' && !values['open-test']) { console.error('the test split is opened once per finalist: pass --open-test'); process.exit(2); }
   for (const name of ['schedule', 'checkpoints']) {
     if (values[name] !== undefined && values.sealed) { console.error(`--${name} takes a learning pass\n${USAGE}`); process.exit(2); }
@@ -814,8 +878,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   if (values.schedule !== undefined && !['rolling', 'batch'].includes(values.schedule)) { console.error(`--schedule is rolling or batch\n${USAGE}`); process.exit(2); }
   const checkpoints = values.checkpoints === undefined ? undefined : values.checkpoints.split(',').map(Number);
   if (checkpoints && !checkpoints.every((n, i) => Number.isInteger(n) && n >= 1 && (i === 0 || n > checkpoints[i - 1]))) { console.error(`--checkpoints is ascending whole numbers from 1\n${USAGE}`); process.exit(2); }
-  const hindsight = values.hindsight === undefined ? undefined : values.hindsight === 'all' ? [...HINDSIGHT_FIELDS] : values.hindsight.split(',');
-  if (hindsight && !hindsight.every((f) => HINDSIGHT_FIELDS.includes(f))) { console.error(`--hindsight is all or fields among ${HINDSIGHT_FIELDS.join(', ')}\n${USAGE}`); process.exit(2); }
+  // The fields a reflection may take are the job's: the SEC job's four, or the MCC job's code and tier (teacher labels).
+  const hindsightFields = values.set === 'mcc' ? MCC_HINDSIGHT_FIELDS : HINDSIGHT_FIELDS;
+  const hindsight = values.hindsight === undefined ? undefined : values.hindsight === 'all' ? [...hindsightFields] : values.hindsight.split(',');
+  if (hindsight && !hindsight.every((f) => hindsightFields.includes(f))) { console.error(`--hindsight is all or fields among ${hindsightFields.join(', ')}\n${USAGE}`); process.exit(2); }
   if (hindsight && (values.sealed || !values.live)) { console.error(`--hindsight takes a live learning pass: the truth is TRAIN's alone, and a reflection is a model call\n${USAGE}`); process.exit(2); }
   if (values['edgar-cache'] !== undefined && !values['edgar-archive']) { console.error(`--edgar-cache needs --edgar-archive: the cache serves only the Wayback copies of SEC pages\n${USAGE}`); process.exit(2); }
   let list;
@@ -824,12 +890,19 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   }
   try {
     const set = SETS[values.set ?? 'v1'];
-    if (!set) { console.error(`--set is v1, v2 or v4\n${USAGE}`); process.exit(2); }
+    if (!set) { console.error(`--set is v1, v2, v4 or mcc\n${USAGE}`); process.exit(2); }
     if (set === SETS.facts) { console.error(`the facts set runs with eval-facts.mjs, not as a learning or sealed pass\n${USAGE}`); process.exit(2); }
     const parts = values.live
       ? await liveParts({ set, ...(values.data ? { data: resolve(values.data) } : {}), ...(values.model ? { model: values.model } : {}), ...(values.thinking ? { thinking: values.thinking } : {}), archivedSec: Boolean(values['edgar-archive']), ...(values['edgar-cache'] ? { edgarCache: resolve(values['edgar-cache']) } : {}), ...(hindsight ? { hindsight } : {}) })
       : scriptedParts({ set, ...(values.data ? { data: resolve(values.data) } : {}) });
     if (values['no-dispatch']) parts.dispatch = false;
+    if (values.teacher !== undefined) {
+      // The MCC job's teacher labels, joined by id from the host's file; never in the data a run's tools see.
+      if (set !== SETS.mcc) { console.error(`--teacher joins the MCC job's teacher labels: pass --set mcc\n${USAGE}`); process.exit(2); }
+      const labels = teacherLabelsOf(resolve(values.teacher));
+      for (const merchant of parts.companies) Object.assign(merchant, labels.get(merchant.cik) ?? { teacher: null, stratum: null });
+      console.log(`learn-classify: teacher labels for ${parts.companies.filter((m) => m.teacher).length} of ${parts.companies.length} merchants (${values.teacher})`);
+    }
     if (values['agent-dir'] !== undefined) {
       const agentDir = resolve(values['agent-dir']);
       if (!existsSync(join(agentDir, 'agent.json'))) { console.error(`--agent-dir ${values['agent-dir']} is not an agent home (no agent.json)\n${USAGE}`); process.exit(2); }
@@ -851,7 +924,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     }
     if (values['promotion-bank'] !== undefined) {
       if (values.sealed) { console.error(`--promotion-bank gates a learning pass's promotions: a sealed pass promotes nothing\n${USAGE}`); process.exit(2); }
-      if (set !== SETS.v4) { console.error(`--promotion-bank scores the v4 job: pass --set v4\n${USAGE}`); process.exit(2); }
+      if (set !== SETS.v4 && set !== SETS.mcc) { console.error(`--promotion-bank scores the v4 or the mcc job: pass --set v4 or --set mcc\n${USAGE}`); process.exit(2); }
       try { parts.bank = JSON.parse(readFileSync(resolve(values['promotion-bank']), 'utf8')); } catch (error) { console.error(`--promotion-bank ${values['promotion-bank']}: ${error.message}`); process.exit(2); }
       const inFlight = values['promotion-bank-concurrency'] === undefined ? GATE.concurrency : Number(values['promotion-bank-concurrency']);
       if (!(Number.isInteger(inFlight) && inFlight >= 1)) { console.error(`--promotion-bank-concurrency is a whole number from 1\n${USAGE}`); process.exit(2); }
@@ -872,14 +945,24 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       console.log('learn-classify: facts are never archived to keep the index under its cap');
     }
     if (values['promote-no-floor']) parts.promoteNoFloor = true;
+    if ((values['escalation-neutral'] || values['gated-demotion']) && values.sealed) { console.error(`--escalation-neutral and --gated-demotion settle a learning pass's uses: a sealed pass settles none\n${USAGE}`); process.exit(2); }
+    if (values['gated-demotion'] && values['promotion-bank'] === undefined) { console.error(`--gated-demotion asks the replay gate: it takes --promotion-bank\n${USAGE}`); process.exit(2); }
+    if (values['escalation-neutral']) {
+      parts.escalationNeutral = true;
+      console.log('learn-classify: an escalated use (or one whose task failed) counts neither way; a use fails only when the workflow answered and the run shows it wrong');
+    }
+    if (values['gated-demotion']) {
+      parts.gatedDemotion = true;
+      console.log('learn-classify: a demotion the uses call for queues the paired bank comparison, and demotes only on a 95% lower bound below 0 (<out>/gate)');
+    }
     if (values['receipt-promotion'] && !values['promote-no-floor']) { console.error(`--receipt-promotion takes --promote-no-floor\n${USAGE}`); process.exit(2); }
     for (const [flag, key, line] of [
-      ['receipt-admission', 'receiptAdmission', 'a note linked to its run\'s receipt (the SEC record of the code it answered, cited) is proposed as the run\'s own work, and the code is refused in the run\'s notes'],
+      ['receipt-admission', 'receiptAdmission', set === SETS.mcc ? 'a note linked to its run\'s receipt (the MCC quote on the merchant\'s own page, cited) is proposed as the run\'s own work, and the code is refused in the run\'s notes' : 'a note linked to its run\'s receipt (the SEC record of the code it answered, cited) is proposed as the run\'s own work, and the code is refused in the run\'s notes'],
       ['receipt-holds-trial', 'receiptHoldsTrial', 'a revision without a workflow receipt does not replace a live trial that has one'],
       ['receipt-promotion', 'receiptPromotion', 'a use with a workflow receipt promotes, a receipt contradiction is a failed use, and a receipt comparison goes first (<out>/receipts)'],
     ]) {
       if (!values[flag]) continue;
-      if (set !== SETS.v4) { console.error(`--${flag} reads the v4 answer's SIC cite: pass --set v4\n${USAGE}`); process.exit(2); }
+      if (set !== SETS.v4 && set !== SETS.mcc) { console.error(`--${flag} reads the answer's cited receipt: pass --set v4 or --set mcc\n${USAGE}`); process.exit(2); }
       parts[key] = true;
       console.log(`learn-classify: ${line}`);
     }
@@ -895,12 +978,19 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       console.error(`--out ${out} is not writable (${error.code ?? error.message}); in a take only /run is: use --out /run/out`);
       process.exit(2);
     }
+    if (values['self-test-only']) {
+      // The live pass's own self-test with these exact flags, and no job: what a rehearsal on scripted parts never runs.
+      const { repo } = await openOut(out, { mode: parts.mode, set: parts.set, agentDir: parts.agentDir });
+      await passSelfTest({ out, repo, parts, log: (line) => console.log(line) });
+      console.log(`learn-classify: self-test only: passed (${join(out, 'selftest.json')}); no job ran`);
+      process.exit(0);
+    }
     const common = {
       out, parts, capUsd: number('cap-usd'), runCapUsd: number('run-cap-usd'), concurrency, openTest: Boolean(values['open-test']), dropEvidence: Boolean(values['drop-evidence']), log: (line) => console.log(line),
       ...(values.split ? { split: values.split } : {}),
     };
     const result = values.sealed
-      ? await runSealed({ ...common, at: values.at, record: !values['no-record'], ...(values.from ? { from: values.from } : {}), ...(shard ? { shard } : {}) })
+      ? await runSealed({ ...common, at: values.at, record: !values['no-record'], list, ...(values.from ? { from: values.from } : {}), ...(shard ? { shard } : {}), ...(serveMatch ? { serve: { name: serveMatch[1], sha256: serveMatch[2] } } : {}) })
       : await runLoop({ ...common, jobs: number('jobs'), list, record: !values['no-record'], ...(values.schedule ? { schedule: values.schedule } : {}), ...(checkpoints ? { checkpoints } : {}), gateWaitAtEnd: Boolean(values['gate-wait-at-end']) });
     if (result.stoppedBy) process.exitCode = 3;
     // A comparison still on the bank does not hold the pass's end: the process ends now, and the bank runs it finished are

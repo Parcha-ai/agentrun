@@ -155,14 +155,17 @@ export function sourcesOf({ rules, workspace } = {}) {
   return null;
 }
 
-/** The reflection's prompt for one wrong field; `sources`, when given, is the job's Sources line. */
-export function reflectionPrompt({ job, wrong, digest, lessons, sources }) {
+/** The reflection's prompt for one wrong field; `sources`, when given, is the job's Sources line, and `jobLine` the job's
+ *  own first line when it is not the SEC job's. A field whose label is the teacher's (`wrong.label`) is shown as that
+ *  agent's label, never as the truth. */
+export function reflectionPrompt({ job, wrong, digest, lessons, sources, jobLine }) {
   const shown = (v) => (typeof v === 'string' ? v : JSON.stringify(v));
+  const label = wrong.label === 'teacher' ? 'The teacher\'s value (another agent\'s label, not ground truth)' : 'The true value';
   return [
-    `The job: classify ${job.name}${job.ticker ? ` (${job.ticker})` : ''}: its SEC SIC code, segments, headquarters, subsidiaries and latest annual report.`,
-    `The field the run got wrong: ${wrong.field}.`,
+    jobLine ?? `The job: classify ${job.name}${job.ticker ? ` (${job.ticker})` : ''}: its SEC SIC code, segments, headquarters, subsidiaries and latest annual report.`,
+    `The field the run ${wrong.label === 'teacher' ? 'and the teacher disagree on' : 'got wrong'}: ${wrong.field}.`,
     `The run answered: ${shown(wrong.answer)}`,
-    `The true value: ${shown(wrong.truth)}${wrong.truthTitle ? ` (${wrong.truthTitle})` : ''}`,
+    `${label}: ${shown(wrong.truth)}${wrong.truthTitle ? ` (${wrong.truthTitle})` : ''}`,
     `What the run did:\n${digest}`,
     `The lessons the run had:\n${lessons.length ? lessons.map((l) => `- ${l.replace(/\s+/g, ' ')}`).join('\n') : '(none)'}`,
     ...(sources ? [`The job's sources: ${sources.replace(/^- /, '')}`] : []),
@@ -214,12 +217,12 @@ export async function reflect({ model, effects, storePath, prompt, maxCalls = MA
 
 /** What a reflection read, structurally: its successful reads by kind (the SEC's record pages as archived, and every
  *  other page), an archived SEC page among them, and whether one showed the true code. */
-export function verifiedBy(storePath, wrong) {
+export function verifiedBy(storePath, wrong, isRecord = recordPage) {
   const calls = toolResultsOf(storePath).filter((r) => r.tool !== 'answer');
   const read = calls.filter((r) => r.value && r.value.ok !== false && !r.value.refused && !r.value.error);
   const urlRead = (r) => r.value.url ?? r.args?.url;
   const archived = read.filter((r) => { try { return archivedSecPage(new URL(urlRead(r))); } catch { return false; } });
-  const record = read.filter((r) => recordPage(urlRead(r))).length;
+  const record = read.filter((r) => isRecord(urlRead(r))).length;
   const code = wrong.field === 'sic4' ? String(wrong.truth) : null;
   return {
     calls: calls.length,
@@ -236,9 +239,9 @@ export function verifiedBy(storePath, wrong) {
  * fetch_page and read_document) are asked for only then, each as a value or a function that makes it; the tools are
  * disposed of after.
  */
-export async function reflectOnRun({ job, run, score, answer, model, effects, fields = HINDSIGHT_FIELDS, codes, storeDir, labelOnly = true, rules, limitUsd = MAX_REFLECTION_USD }) {
+export async function reflectOnRun({ job, run, score, answer, model, effects, fields = HINDSIGHT_FIELDS, codes, storeDir, labelOnly = true, rules, limitUsd = MAX_REFLECTION_USD, wrongOf = wrongFields, jobLine, isRecord = recordPage }) {
   if (!HINDSIGHT_SPLITS.includes(job.split)) return { wrong: [], reflections: [] };
-  const wrong = wrongFields(score, fields, { codes });
+  const wrong = wrongOf(score, fields, { codes });
   if (!wrong.length) return { wrong, reflections: [] };
   const digest = digestOf(toolResultsOf(run.storePath), answer, { labelOnly });
   const lessons = seededLessons(run.workspace);
@@ -249,8 +252,8 @@ export async function reflectOnRun({ job, run, score, answer, model, effects, fi
   try {
     for (const w of wrong) {
       const storePath = join(storeDir, `${run.runId}-${w.field}.sqlite`);
-      const { hypotheses, usage, stopped } = await reflect({ model: on, effects: tools, storePath, prompt: reflectionPrompt({ job, wrong: w, digest, lessons, sources }), limitUsd });
-      reflections.push({ field: w.field, hypotheses, costUsd: usage.costUsd, labelOnly, ...(stopped ? { stopped } : {}), ...verifiedBy(storePath, w) });
+      const { hypotheses, usage, stopped } = await reflect({ model: on, effects: tools, storePath, prompt: reflectionPrompt({ job, wrong: w, digest, lessons, sources, jobLine }), limitUsd });
+      reflections.push({ field: w.field, ...(w.label ? { label: w.label } : {}), hypotheses, costUsd: usage.costUsd, labelOnly, ...(stopped ? { stopped } : {}), ...verifiedBy(storePath, w, isRecord) });
     }
   } finally {
     for (const tool of tools) await tool.dispose?.();
@@ -281,8 +284,8 @@ function evidenceOf(r, h, values) {
  * was its own (`ownWork`). The guard's case values are the job's and the wrong fields' true values. Returns each
  * proposal's status and provenance.
  */
-export async function proposeHindsight({ repo, job, run, seedSha, wrong, reflections }) {
-  const values = [...caseValuesOf(job), ...truthValues(wrong)];
+export async function proposeHindsight({ repo, job, run, seedSha, wrong, reflections, truthValuesOf = truthValues }) {
+  const values = [...caseValuesOf(job), ...truthValuesOf(wrong)];
   const out = [];
   let n = 0;
   for (const r of reflections) {

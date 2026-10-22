@@ -1,0 +1,285 @@
+// The MCC job's structural receipt: the answer's MCC quote, word for word, on an ok page of the merchant's own registrable
+// domain (or the marketplace listing its website names), and that page cited for the MCC claim. Anything else is no
+// receipt: an off-domain page, a paraphrase, a failed fetch, a cite on another page.
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { chmod, mkdtemp, rm } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { openOut, runLoop, runSealed, scriptedParts } from './runner.mjs';
+import { passSelfTest } from './selftest.mjs';
+import { fixtureWeb, scriptedModel } from './scripted.mjs';
+import { FIXTURES_MCC } from './scripted-mcc.mjs';
+import { SETS } from './sets.mjs';
+import { ANY_HOST, fetchPageTool, REFUSED_MCC_DOMAINS, refusedHost } from './tools.mjs';
+import { loadGroups } from '../learn-mcc/score-mcc.mjs';
+import {
+  answerToolMcc, folded, jobInputMcc, jobTextMcc, merchantPage, merchantPagesOnly, merchantScope, merchantTouchOf, mccCodesTool, mccGroupsTool, partsOfMcc, quoteOnPage, receiptOfMcc,
+  registrableDomain, rowOfMcc, teacherLabelsOf, wrongFieldsMcc,
+} from './mcc.mjs';
+
+const SITE = 'https://www.lumencandle.co.uk/';
+const ABOUT = 'https://shop.lumencandle.co.uk/about';
+const REVIEW = 'https://www.candle-reviews.com/lumen';
+const QUOTE = 'We pour hand-made soy wax candles in small batches';
+const merchant = { id: 'm-0001', name: 'Lumen Candle Co', website: SITE };
+const page = (url, text, extra = {}) => ({ ok: true, url, status: 200, title: 'Lumen', text, ...extra });
+
+/** Recording lines as recordingLines gives them: the root agent's reads and results, then its answer. */
+function rootRun(reads, answer, tool = 'fetch_page') {
+  const lines = [];
+  reads.forEach(({ url, value }, i) => {
+    lines.push({ kind: 'pi.assistant', conv: 1, data: { model: [{ content: [{ type: 'toolCall', id: `c${i}`, name: tool, arguments: { url } }] }] } });
+    lines.push({ kind: 'pi.tool-result', conv: 1, data: { model: [{ toolName: tool, toolCallId: `c${i}`, isError: false, content: [{ type: 'text', text: JSON.stringify(value) }] }] } });
+  });
+  lines.push({ kind: 'pi.assistant', conv: 1, data: { model: [{ content: [{ type: 'toolCall', id: 'ans', name: 'answer', arguments: answer }] }] } });
+  return lines;
+}
+const answerCiting = (url, quote = QUOTE, mcc = '5999') => ({ mcc, mccDescription: 'Miscellaneous', riskTier: 'low', riskRationale: 'r', flags: [], siteStatus: 'live', confidence: 0.8, evidence: [{ claim: 'mcc', url, quote }, { claim: 'risk', url, quote }] });
+
+test('a receipt: the quote is word for word on the merchant\'s own page, and that page is cited for the MCC', () => {
+  const text = `Lumen Candle Co. ${QUOTE}, poured in Bristol.`;
+  const answer = answerCiting(ABOUT);
+  assert.deepEqual(receiptOfMcc(rootRun([{ url: ABOUT, value: page(ABOUT, text) }], answer), answer, merchant), { url: ABOUT, kind: 'merchant', mcc: '5999', byWorkflow: false });
+});
+
+test('no receipt: the quote is verbatim but on an off-domain page', () => {
+  const answer = answerCiting(REVIEW);
+  assert.equal(receiptOfMcc(rootRun([{ url: REVIEW, value: page(REVIEW, QUOTE) }], answer), answer, merchant), null);
+});
+
+test('no receipt: a paraphrase of the page, a quote with an elision, or one cut inside a word', () => {
+  const lines = (answer) => rootRun([{ url: ABOUT, value: page(ABOUT, `${QUOTE}, poured in Bristol.`) }], answer);
+  for (const quote of ['We make soy wax candles by hand in small batches', 'We pour hand-made ... in small batches', 'e pour hand-made soy wax candles']) {
+    const answer = answerCiting(ABOUT, quote);
+    assert.equal(receiptOfMcc(lines(answer), answer, merchant), null, quote);
+  }
+});
+
+test('no receipt: the fetch failed, was refused, or came back 404', () => {
+  for (const value of [{ ok: false, url: ABOUT, status: 0, title: '', text: QUOTE }, { ok: false, url: ABOUT, refused: 'not allowed', text: QUOTE }, page(ABOUT, QUOTE, { status: 404 })]) {
+    const answer = answerCiting(ABOUT);
+    assert.equal(receiptOfMcc(rootRun([{ url: ABOUT, value }], answer), answer, merchant), null, JSON.stringify(value));
+  }
+});
+
+test('no receipt: the quote is on the merchant\'s page but the MCC cite names another page, or there is no MCC cite', () => {
+  const reads = [{ url: ABOUT, value: page(ABOUT, QUOTE) }, { url: REVIEW, value: page(REVIEW, 'a review') }];
+  const other = answerCiting(REVIEW);
+  assert.equal(receiptOfMcc(rootRun(reads, other), other, merchant), null);
+  const riskOnly = { ...answerCiting(ABOUT), evidence: [{ claim: 'risk', url: ABOUT, quote: QUOTE }] };
+  assert.equal(receiptOfMcc(rootRun(reads, riskOnly), riskOnly, merchant), null);
+});
+
+test('no receipt: a page asked for on the merchant\'s site that redirected off it, or a quote of two words', () => {
+  const redirected = page('https://www.candle-reviews.com/lumen', QUOTE);
+  const answer = answerCiting(ABOUT);
+  assert.equal(receiptOfMcc(rootRun([{ url: ABOUT, value: redirected }], answer), answer, merchant), null);
+  const short = answerCiting(ABOUT, 'soy candles');
+  assert.equal(receiptOfMcc(rootRun([{ url: ABOUT, value: page(ABOUT, 'soy candles') }], short), short, merchant), null);
+});
+
+test('a receipt by a workflow: a call node\'s read of the merchant\'s page holds the quote', () => {
+  const lines = [{ kind: 'agentrun.effects', data: { key: 'e1', value: { intent: { tool: 'fetch_page' }, status: 'completed', args: { url: SITE }, result: { value: page(SITE, `Welcome. ${QUOTE}.`) } } } }];
+  const answer = answerCiting(SITE);
+  assert.deepEqual(receiptOfMcc(lines, answer, merchant), { url: SITE, kind: 'merchant', mcc: '5999', byWorkflow: true });
+  assert.deepEqual(merchantTouchOf(lines, merchant), { touched: true, byWorkflow: true });
+});
+
+test('a marketplace listing: only pages under the listing the website names are the merchant\'s own', () => {
+  const shop = { id: 'm-0002', name: 'Fern & Kiln', website: 'https://www.etsy.com/shop/FernAndKiln' };
+  const listed = 'https://www.etsy.com/shop/FernAndKiln?section_id=2';
+  const elsewhere = 'https://www.etsy.com/shop/SomeoneElse';
+  const quote = 'Wheel-thrown stoneware mugs and planters';
+  const ok = answerCiting(listed, quote, '5719');
+  assert.deepEqual(receiptOfMcc(rootRun([{ url: listed, value: page(listed, quote) }], ok), ok, shop), { url: listed, kind: 'marketplace', mcc: '5719', byWorkflow: false });
+  const off = answerCiting(elsewhere, quote, '5719');
+  assert.equal(receiptOfMcc(rootRun([{ url: elsewhere, value: page(elsewhere, quote) }], off), off, shop), null);
+  assert.equal(merchantScope('https://www.etsy.com/'), null, 'a marketplace home names no listing');
+});
+
+test('registrable domains: two-label suffixes keep three labels, a shop platform keeps the shop\'s subdomain', () => {
+  assert.equal(registrableDomain('shop.lumencandle.co.uk'), 'lumencandle.co.uk');
+  assert.equal(registrableDomain('www.example.com'), 'example.com');
+  assert.equal(registrableDomain('fern-kiln.myshopify.com'), 'fern-kiln.myshopify.com');
+  assert.equal(registrableDomain('myshopify.com'), null);
+  const scope = merchantScope('https://fern-kiln.myshopify.com/');
+  assert.equal(merchantPage('https://fern-kiln.myshopify.com/pages/about', scope), true);
+  assert.equal(merchantPage('https://other-shop.myshopify.com/', scope), false, 'another shop on the same platform is off-domain');
+  assert.equal(merchantPage('https://lumencandle.co.uk.evil.com/', merchantScope(SITE)), false);
+});
+
+test('a quote is compared with URLs out and whitespace folded, nothing else: case and every word count', () => {
+  assert.equal(folded('We\u2019re  OPEN\n daily https://x.y/z'), 'We\u2019re OPEN daily');
+  assert.equal(quoteOnPage('\u201CWe pour hand-made soy wax candles.\u201D', '<p>We pour  hand-made\nsoy wax candles</p>'), true);
+  assert.equal(quoteOnPage('we pour hand-made soy wax candles', 'We pour hand-made soy wax candles'), false, 'case is the page\'s');
+  assert.equal(quoteOnPage('We pour hand-made soy wax candle', 'We pour hand-made soy wax candles'), false);
+});
+
+test('the tools: the input is the name and website only; the job text is learn-classify\'s; mcc_groups and mcc_codes serve learn-mcc\'s trimmed tables', async () => {
+  assert.deepEqual(jobInputMcc({ ...merchant, vertical: 'Home', teacher: { mcc: '5999' } }), { name: 'Lumen Candle Co', website: SITE });
+  assert.equal(jobTextMcc({ ...merchant, name: 'Lumen Candle Works' }), `Classify this merchant.\nMerchant: Lumen Candle Works\nWebsite: ${SITE}\nA workflow for the whole job takes this input: {"name":"Lumen Candle Works","website":"${SITE}"}`);
+  const table = loadGroups();
+  const { groups } = await mccGroupsTool(table).run();
+  assert.ok(groups.length > 0 && groups.every((g) => /^\d{4}-\d{4}$/.test(g.code) && (g.code < '3000' || g.code > '3999')));
+  const codes = mccCodesTool(table);
+  const all = (await codes.run({})).codes;
+  assert.ok(all.some((c) => c.code === '4511') && !all.some((c) => c.code >= '3000' && c.code <= '3999'), 'the brands\' T&E codes are not offered; the generic ones are');
+  const range = groups.find((g) => g.code <= '5999-5999' && g.code.slice(5) >= '5999');
+  const inRange = (await codes.run({ group: range.code })).codes;
+  assert.ok(inRange.some((c) => c.code === '5999') && inRange.every((c) => all.some((a) => a.code === c.code)));
+  assert.deepEqual((await codes.run({ group: '0000-0001' })).codes, []);
+});
+
+test('sites that state a merchant\'s code are refused by every tool, pinned: the list, any MCC-named host; never a page that only defines codes, nor a merchant whose name starts with MCC', () => {
+  assert.deepEqual([...REFUSED_MCC_DOMAINS], ['check-mcc.sg', 'true-naics.com', 'naicscodes.org']);
+  for (const host of ['www.check-mcc.sg', 'www.true-naics.com', 'naicscodes.org', 'mcc-codes.com', 'www.mcclookup.net', 'lookup.mcc.example']) assert.match(refusedHost(host) ?? '', /lists merchants' category codes/, host);
+  // Pages that define codes and name no merchant's code stay open: the networks' manuals, payment providers' code pages.
+  for (const host of ['www.mccormick.com', 'usa.visa.com', 'www.mastercard.us', 'www.pxp.io', 'www.tagada.io', 'www.gratifypay.com', 'www.eflow.com', 'www.rapyd.net', 'fitnesspaymentservices.com', 'lumencandle.example']) {
+    assert.equal(refusedHost(host), null, host);
+  }
+});
+
+test('a hindsight review on an MCC run opens only the merchant\'s own pages', async () => {
+  const [tool] = merchantPagesOnly([{ name: 'fetch_page', run: async ({ url }) => ({ ok: true, url, text: 'read' }) }], merchant);
+  assert.equal((await tool.run({ url: ABOUT })).ok, true);
+  assert.match((await tool.run({ url: REVIEW })).refused, /merchant's own pages/);
+});
+
+test('the answer tool refuses what answerProblems finds; the gate parts, the teacher-labelled wrong fields and the row', () => {
+  const table = { codes: { 5999: 'Miscellaneous retail', 5719: 'Miscellaneous home furnishing', 3000: 'A brand airline' } };
+  const tool = answerToolMcc(table);
+  assert.deepEqual(tool.parameters.properties.mcc.enum, ['5719', '5999']);
+  assert.deepEqual(tool.problems({ ...answerCiting(SITE), mccDescription: 'Miscellaneous retail' }), []);
+  assert.match(tool.problems(answerCiting(SITE)).join(';'), /mccDescription is not 5999's title/);
+  const score = { mccAnswer: '5999', mccTeacher: '5719', mccCorrect: false, mccGroupCorrect: true, riskAnswer: 'low', riskTeacher: null, riskCorrect: null, riskDistance: null, correct: false };
+  assert.deepEqual(partsOfMcc(score), { mcc: 0, risk: null }, 'no teacher tier: the risk part is not scored');
+  assert.deepEqual(wrongFieldsMcc(score, undefined, { codes: table.codes }), [{ field: 'mcc', answer: '5999', truth: '5719', truthTitle: 'Miscellaneous home furnishing', label: 'teacher' }]);
+  const row = rowOfMcc({ run: 3, cik: 'm-0001', sic4Answer: null, segmentsF1: null, costUsd: 0.1 }, score);
+  assert.equal(row.set, 'mcc');
+  assert.equal(row.label, 'teacher');
+  assert.equal(row.merchantId, 'm-0001');
+  assert.equal(row.correct, false);
+  assert.deepEqual([row.answer, row.truth], ['5999', '5719']);
+  assert.equal('sic4Answer' in row || 'segmentsF1' in row, false);
+});
+
+// ---------------------------------------------------------------- the runner's --set mcc at $0, on fixtures-mcc
+
+async function scratch(t) {
+  const dir = await mkdtemp(join(tmpdir(), 'lc-mcc-'));
+  await chmod(dir, 0o755);
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  return dir;
+}
+const byId = (rows) => Object.fromEntries(rows.map((r) => [r.merchantId, r]));
+/** The scripted MCC parts with the fixtures' teacher labels joined, as --teacher joins the host's. */
+function mccParts() {
+  const parts = scriptedParts({ set: SETS.mcc });
+  const labels = teacherLabelsOf(join(FIXTURES_MCC, 'teacher.json'));
+  for (const m of parts.companies) Object.assign(m, labels.get(m.cik) ?? { teacher: null, stratum: null });
+  return parts;
+}
+
+test('a scripted MCC pass: rows labelled the teacher\'s; a receipt only for the quote on the merchant\'s own page; the grown revision promoted by receipt and gated on the bank', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const parts = mccParts();
+  Object.assign(parts, { receiptAdmission: true, receiptHoldsTrial: true, receiptPromotion: true, promoteNoFloor: true, thresholds: { promoteAfter: 2 }, bank: ['m-011', 'm-012', 'm-013', 'm-014'].map((id) => ({ id })) });
+  const list = ['m-001', 'm-007', 'm-008', 'm-009', 'm-010', 'm-002', 'm-004'].map((id) => ({ id }));
+  const { rows } = await runLoop({ out, parts, split: 'train', list, record: false, gateWaitAtEnd: true });
+  assert.ok(rows.every((r) => r.set === 'mcc' && r.label === 'teacher'));
+  const r = byId(rows);
+  assert.deepEqual(r['m-001'].receipt, { url: 'https://lumencandle.example/', kind: 'merchant', mcc: '5999', byWorkflow: false });
+  for (const id of ['m-007', 'm-008', 'm-009']) assert.equal(r[id].receipt, null, `${id}: a paraphrase, an off-domain cite, a site that did not load`);
+  assert.deepEqual(r['m-010'].receipt, { url: 'https://fernandkiln.myshopify.com/', kind: 'merchant', mcc: '5719', byWorkflow: true });
+  // m-001's run also tried two sites that list merchants' codes, one on tools.mjs's list and one only the data's
+  // refused-hosts.json names: both refused, and logged on its row.
+  assert.equal(r['m-001'].mccLookupRefused, 2);
+  // Every scored row whose teacher has a code is scored on it, and carries its stratum.
+  assert.ok(rows.every((row) => typeof row.mccCorrect === 'boolean' && typeof row.mccGroupCorrect === 'boolean' && typeof row.stratum === 'string'));
+  assert.equal(r['m-010'].mccLookupRefused, 0);
+  // m-002 saves merchant-mcc-risk grown by a browser read; m-004's site reads only in a browser, so the grown trial
+  // answers it, with a workflow receipt, and is promoted at once over the serving revision; the bank gate then compares
+  // the two on two parts (code and tier) of four bank merchants.
+  assert.equal(r['m-004'].receipt.byWorkflow, true);
+  assert.deepEqual(r['m-004'].curate.promoted, ['merchant-mcc-risk']);
+  const [verdict] = readFileSync(join(out, 'gate', 'verdicts.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  // The teacher has no tiers yet, so each bank merchant is scored on its code alone.
+  assert.deepEqual([verdict.name, verdict.cells, verdict.companies, verdict.first], ['merchant-mcc-risk', 4, 4, false]);
+  // The teacher disagrees with no answer here, so every scored row agrees on the code.
+  assert.ok(rows.every((row) => row.mccCorrect === true));
+});
+
+test('a sealed pass that serves one recorded revision alone: every run is that revision, host-only, its rows kept apart; a revision the repository has no record of is refused', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const list = ['m-001', 'm-002'].map((id) => ({ id }));
+  await runLoop({ out, parts: mccParts(), split: 'train', list, record: false });
+  const git = (...args) => spawnSync('git', ['--git-dir', join(out, 'agent.git'), ...args], { encoding: 'utf8' }).stdout;
+  const [revision] = git('ls-tree', '-r', '--name-only', 'main').split('\n').map((f) => /merchant-mcc-risk\/([0-9a-f]{64})\.json$/.exec(f)?.[1]).filter(Boolean);
+  assert.ok(revision, 'the pass recorded a revision of merchant-mcc-risk');
+  const serve = { name: 'merchant-mcc-risk', sha256: revision };
+  const { rows, label } = await runSealed({ out, parts: mccParts(), at: 'main', split: 'dev', serve });
+  assert.equal(rows.length, 4);
+  for (const row of rows) assert.deepEqual([row.dispatch?.name, row.dispatch?.revision], [serve.name, revision], row.merchantId);
+  assert.equal(readFileSync(join(out, `sealed-${label}-serve-${revision.slice(0, 12)}.jsonl`), 'utf8').trim().split('\n').length, 4);
+  await assert.rejects(runSealed({ out, parts: mccParts(), at: 'main', split: 'dev', serve: { ...serve, sha256: 'f'.repeat(64) } }), /has no record of merchant-mcc-risk ffffffffffff/);
+});
+
+test('hindsight on an MCC run: a teacher disagreement gets one reflection, shown as the teacher\'s label; it reads only the merchant\'s pages, so its lessons are its own work, and one naming the teacher\'s code is refused', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const parts = mccParts();
+  const pages = JSON.parse(readFileSync(join(FIXTURES_MCC, 'pages.json'), 'utf8'));
+  const SITE_005 = 'https://paperlanterngifts.example/';
+  const hypotheses = [
+    { lesson: 'A shop whose own pages sell cards and wrapping as well as gifts takes the code for the larger line by what it says it sells most.', why: 'the run picked the gift code', whereReadable: 'the shop\'s own home page', scope: 'card and gift shops', mechanism: 'lesson', test: 'replay card shops' },
+    { lesson: 'Card and gift shops are 5999.', why: 'the teacher said so', whereReadable: 'the home page', scope: 'card shops', mechanism: 'lesson', test: 'replay' },
+  ];
+  const prompts = [];
+  parts.hindsight = {
+    fields: ['mcc', 'risk'],
+    model: () => {
+      const model = scriptedModel({ root: [{ call: 'fetch_page', args: { url: SITE_005 } }, { call: 'fetch_page', args: { url: 'https://furniture-reviews.example/oakline' } }, { call: 'answer', args: { hypotheses } }] });
+      prompts.push(model.requests);
+      return model;
+    },
+    tools: async (job) => merchantPagesOnly([fetchPageTool({ allowDomain: ANY_HOST, fetch: fixtureWeb(pages), lookup: async () => [{ address: '93.184.216.34', family: 4 }] })], job),
+  };
+  const { rows } = await runLoop({ out, parts, split: 'train', list: [{ id: 'm-005' }], record: false });
+  const [row] = rows;
+  assert.deepEqual([row.mccAnswer, row.mccTeacher, row.mccCorrect, row.riskCorrect], ['5947', '5999', false, null]);
+  const [reflection] = row.hindsight.reflections;
+  assert.deepEqual([reflection.field, reflection.label, reflection.hypotheses], ['mcc', 'teacher', 2]);
+  const prompt = JSON.stringify(prompts[0][0].messages);
+  assert.match(prompt, /The teacher's value \(another agent's label, not ground truth\): 5999/);
+  assert.match(prompt, /classify the merchant Paper Lantern Gifts/);
+  assert.deepEqual(row.hindsight.proposals.map((p) => [p.status, p.untrusted, p.reasons]), [['proposed', false, undefined], ['refused', false, ['case_data']]]);
+});
+
+test('a live MCC pass\'s self-test passes: its lookups (mcc_groups, mcc_codes) are known to run neither a command nor code', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const base = mccParts();
+  const parts = {
+    ...base,
+    mode: 'live',
+    modelFor: (job, run) => ({ ...base.modelFor(job, run), agent: { model: { provider: 'faux', modelId: 'claude-opus-5-5' }, thinkingLevel: 'high' }, node: { model: { provider: 'faux', modelId: 'gpt-6-luna' }, thinkingLevel: 'medium' } }),
+    browserCheck: async () => ({ browser: 'scripted', refused: [], blocked: ['sec.gov'], costUsd: 0 }),
+  };
+  const { repo } = await openOut(out, { mode: 'live', set: SETS.mcc });
+  const report = await passSelfTest({ out, repo, parts });
+  assert.equal(report.ok, true, JSON.stringify(report.problems));
+  for (const where of ['root', 'callNode', 'agentNode']) assert.ok(['mcc_groups', 'mcc_codes'].every((name) => report.tools[where].includes(name)), where);
+  // A tool the list does not know still stops the pass.
+  const shell = { name: 'run_shell', description: 'Run a command.', parameters: { type: 'object', properties: {} }, resultSchema: { type: 'object' }, run: async () => ({}) };
+  const unknown = { ...parts, set: { ...parts.set, labelTools: (d) => [...parts.set.labelTools(d), shell] } };
+  const other = join(await scratch(t), 'other');
+  const { repo: otherRepo } = await openOut(other, { mode: 'live', set: SETS.mcc });
+  await assert.rejects(passSelfTest({ out: other, repo: otherRepo, parts: unknown }), /offers run_shell, not known to run neither a command nor code/);
+});
+
+test('--self-test-only takes --live: a scripted pass has no live self-test to run', () => {
+  const run = spawnSync(process.execPath, [join(import.meta.dirname, 'runner.mjs'), '--set', 'mcc', '--scripted', '--self-test-only', '--out', join(tmpdir(), 'never')], { encoding: 'utf8' });
+  assert.equal(run.status, 2, run.stderr);
+  assert.match(run.stderr, /--self-test-only checks a live pass: it takes --live/);
+});

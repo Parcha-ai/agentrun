@@ -6,13 +6,15 @@ description: How to do the job by hand from the merchant's own site (what it sel
 # By hand
 
 Sources and evidence, for every part:
-- Sources: the merchant's own site first, on the registrable domain of the website given; then a marketplace listing
-  that names the merchant as the seller; then any public page about it. Search with search_web, read pages with
+- Sources: the merchant's own site first, on the registrable domain of the website given (or, when the website given
+  is a marketplace listing, that listing); then any public page about it, which can inform the answer but is never the
+  code's evidence. Search with search_web, read pages with
   fetch_page or browse (browse runs a page's scripts), and read PDFs (a price list, a catalogue, terms) with
   read_document.
-- Quote verbatim: copy the page's own words, at most 300 characters, cut to the line that carries the fact (a product
-  line, a price, a sentence of the terms), never a paraphrase. Cite the page you quoted: an evidence item's URL is the
-  page its quote is copied from, as you read it in this run.
+- Quote verbatim: copy one unbroken run of the page's own words, at least three words and at most 300 characters, cut
+  to the line that carries the fact (a product line, a price, a sentence of the terms). Never a paraphrase, never an
+  ellipsis, and the words as the page cases them. Cite the page you quoted: an evidence item's URL is the page its
+  quote is copied from, as you read it in this run.
 - The code is chosen, not remembered. A code you remember, or a code a page states for this merchant, is a guess and
   never evidence: the code follows what the merchant sells, as its own pages show it, read in this run. Sites that list
   merchants' codes are refused by every tool: do not try them.
@@ -34,6 +36,13 @@ Sources and evidence, for every part:
    code whose title names what the merchant sells and its role in selling it. Between two codes that both fit, take
    the one that describes what most customers pay for, and say why in the rationale. mccDescription is that code's
    title as mcc_codes gives it.
+   - A miscellaneous code (most end in 99, or say "not elsewhere classified") is for a merchant no specific code
+     fits: when a specific code fits what it sells, that code wins.
+   - Billing on a schedule does not make a merchant a subscription merchant. A merchant that sells its own goods or
+     services and bills for them by subscription takes the code of what it sells; the continuity or subscription
+     direct-marketing code is for a merchant whose business is selling that way.
+   - The codes of named airline, car rental and hotel brands are not offered: a merchant of those kinds takes its
+     kind's general code.
 5. The risk tier: the rubric below, from what the pages read in this run show. The tier is the highest one any row
    reaches; the rationale names the rows that set it, in the merchant's terms.
 6. The flags: each flag below that a page read in this run shows, and no other. A flag rests on the merchant's own
@@ -41,9 +50,9 @@ Sources and evidence, for every part:
 7. Confidence: your probability that the code is the one a card network would assign. It is high when the site plainly
    says what is sold and one title fits; lower when the site is thin or not live, the business mixes lines, or two
    titles fit.
-8. Evidence: at least one item for the code (a page of the merchant's own site, or a marketplace listing that names it
-   as the seller, that says what it sells), one for the tier, and one for each flag, each with the page's URL as read
-   in this run and its words verbatim.
+8. Evidence: at least one item for the code (a page of the merchant's own site, or of the marketplace listing its
+   website is, that says what it sells), one for the tier, and one for each flag, each with the page's URL as read in
+   this run and its words verbatim.
 
 The risk rubric. The tier is the highest one any row reaches:
 - high, when the merchant's pages show any of these:

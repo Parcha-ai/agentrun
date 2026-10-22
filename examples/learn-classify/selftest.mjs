@@ -14,7 +14,7 @@ import { offeredTools, scriptedJev, scriptedModel } from './scripted.mjs';
 /** Every tool a learn-classify agent may be offered. None runs a command or code: a tool outside this list fails the
  *  check until it is reviewed and added. */
 export const KNOWN_TOOLS = Object.freeze([
-  'fetch_page', 'search_web', 'browse', 'read_document', 'sic2_groups', 'sic_codes', 'answer', 'learn', 'agentrun', 'submit',
+  'fetch_page', 'search_web', 'browse', 'read_document', 'sic2_groups', 'sic_codes', 'mcc_groups', 'mcc_codes', 'answer', 'learn', 'agentrun', 'submit',
 ]);
 
 const anyObject = { type: 'object' };

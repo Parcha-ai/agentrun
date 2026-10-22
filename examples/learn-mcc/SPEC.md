@@ -23,13 +23,13 @@ category and goes with the MCC, so it would carry part of the label: it is used 
 
 | Field | Type | Right means | Scored |
 |---|---|---|---|
-| `mcc` | a 4-digit code in mcc_codes (ISO 18245) | The code a card network would assign from what the merchant sells: the main thing customers pay for, and the merchant's role in selling it, as its own pages show. A sideline does not set it. | Exact, and the ISO 18245 group, against the teacher; adjudicated on the sealed sample |
+| `mcc` | a 4-digit code in mcc_codes (ISO 18245) | The code a card network would assign from what the merchant sells: the main thing customers pay for, and the merchant's role in selling it, as its own pages show. A sideline does not set it. The adjudicator applies Visa's assignment rules under this sentence (ADJUDICATION.md). | Exact, and the ISO 18245 group, against the teacher; adjudicated on the sealed sample |
 | `mccDescription` | text, at most 200 | That code's title as mcc_codes gives it, exactly. | Structural (answerProblems) |
 | `riskTier` | `low`, `medium` or `high` | The tier the rubric below gives from the pages read in the run: the highest row that holds. | Exact and ordinal distance, against the teacher; adjudicated |
 | `riskRationale` | text, at most 600 | The rubric rows that set the tier, in the merchant's terms. | Not scored |
 | `flags` | a list of the flags below, each once | Every flag a page read in the run shows, and no other. | Reported, not in the headline |
 | `siteStatus` | `live`, `unreachable`, `parked` or `other_business` | What the website given showed: live and this merchant's business; no answer or an error; parked, for sale or a placeholder; or a different business than the name. | Reported |
-| `evidence` | 1 to 10 items `{ claim, url, quote }` | `claim` is `mcc`, `risk` or a flag's name; `url` is the page as read in the run; `quote` is that page's words, verbatim, at most 300 characters. At least one `mcc` item and one `risk` item, and one item per flag given (answerProblems). An `mcc` item cites a page of the merchant's own registrable domain, or a marketplace listing that names the merchant as the seller, that says what it sells. | Grounding (below) |
+| `evidence` | 1 to 10 items `{ claim, url, quote }` | `claim` is `mcc`, `risk` or a flag's name; `url` is the page as read in the run; `quote` is that page's words, verbatim, at most 300 characters. At least one `mcc` item and one `risk` item, and one item per flag given (answerProblems). An `mcc` item cites a page of the merchant's own registrable domain, or of the marketplace listing its website is, that says what it sells. | Grounding (below) |
 | `confidence` | a number from 0 to 1 | The probability that `mcc` is the code a card network would assign. | Calibration, reported |
 
 `answerProblems(answer, codes)` returns what the schema cannot say across fields: a title that is not its code's, a
@@ -40,8 +40,11 @@ keywords every model route takes on the wire; `contains` and `uniqueItems` are l
 ### Grounding (what the harness's receipt reads)
 
 An answer is grounded when an `mcc` evidence item's quote is verbatim on a page the run read with an ok status, and that
-page is on the merchant's own registrable domain (the website given, or a domain it links as its own), or is a
-marketplace listing that names the merchant as the seller. Whitespace is folded before the match; nothing else is.
+page is that item's `url` and is on the registrable domain of the website given, or, when the website given is a
+marketplace listing, under that listing. The match: the quote's own surrounding quote marks and closing punctuation are
+trimmed; URLs are removed and whitespace is folded on both sides; then the quote must appear in the page's text, case
+for case. A quote of fewer than three words, or with an ellipsis, is not verbatim. A page on another domain the merchant
+links, or another marketplace's listing, can inform the answer but grounds nothing.
 
 ## What right means, and who says so
 
@@ -109,13 +112,15 @@ The risk rubric. The tier is the highest one any row reaches:
 | Tool | Takes | Returns |
 |---|---|---|
 | `search_web`, `browse`, `fetch_page`, `read_document` | as in learn-classify v4, with the same guards | as there |
-| `mcc_groups` | `{}` | `{ groups: [{ code, name }] }`: the ISO 18245 ranges, `code` as `"NNNN-NNNN"`, in code order |
-| `mcc_codes` | `{ group? }`, a range from mcc_groups | `{ codes: [{ code, name }] }`: the 4-digit codes, all or that range's, each under its title |
+| `mcc_groups` | `{}` | `{ groups: [{ code, name }] }`: `servedGroups` of the ISO 18245 ranges, `code` as `"NNNN-NNNN"`, in code order |
+| `mcc_codes` | `{ group? }`, a range from mcc_groups | `{ codes: [{ code, name }] }`: `servedCodes`, all or that range's (membership by the scorer's `groupOf`), each under its title |
 | `answer` | the answer above | `Recorded <mcc>.`, or the problems answerProblems found |
 | `learn`, `agentrun` | as in learn-classify v4 | as there |
 
-The MCC table (code to title) and the group table (ranges) are data with their sources cited; `answerMcc(codes)` takes
-the code table, and `mccDescription` is held to its titles.
+The MCC table (`data/mcc-codes.json`, code to title) and the group table (`data/mcc-groups.json`, ranges) are the
+scorer's lane's, with their sources cited. `answerMcc(codes)` takes the code table and offers `servedCodes` of it: every
+code but the airline, car rental and lodging codes of named brands (3000-3999), whose merchants take their kind's
+generic code (4511, 7512, 7011), the same group to the scorer. `mccDescription` is held to the table's titles.
 
 ## Leaks
 

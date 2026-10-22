@@ -27,7 +27,16 @@ export const JOB_INPUT = Object.freeze({
   properties: { name: text(200), website: text(600) },
 });
 
-/** The answer tool, given the MCC table (code to title, as mcc_codes gives it). */
+/** The codes a run is offered, from the MCC table (code to title): all but the airline, car rental and lodging codes
+ *  of named brands (3000-3999). A merchant of those kinds takes its kind's generic code (4511, 7512, 7011), which the
+ *  scorer counts in the same group. mcc_codes serves these, and the answer takes only these. */
+export const servedCodes = (codes) => Object.fromEntries(Object.entries(codes).filter(([code]) => code < '3000' || code > '3999'));
+
+/** The ranges mcc_groups serves, from the group table's `groups` ({ code, from, to, name }): the ranges that hold a
+ *  served code, as `{ code, name }`. */
+export const servedGroups = (groups) => groups.filter((g) => g.to < '3000' || g.from > '3999').map(({ code, name }) => ({ code, name }));
+
+/** The answer tool, given the MCC table (code to title, as data/mcc-codes.json holds it). */
 export function answerMcc(codes) {
   return {
     description: 'Give the final answer, once: the merchant\'s 4-digit MCC from what it sells (a code from mcc_codes) and that code\'s title, its risk tier by the rubric with the rubric\'s reasons, the flags its own pages show, what its website showed, your confidence that the code is right, and 1 to 10 evidence items quoted verbatim from pages read in this run.',
@@ -35,7 +44,7 @@ export function answerMcc(codes) {
       type: 'object', additionalProperties: false,
       required: ['mcc', 'mccDescription', 'riskTier', 'riskRationale', 'flags', 'siteStatus', 'evidence', 'confidence'],
       properties: {
-        mcc: { type: 'string', enum: Object.keys(codes).sort(), description: 'A code from mcc_codes.' },
+        mcc: { type: 'string', enum: Object.keys(servedCodes(codes)).sort(), description: 'A code from mcc_codes.' },
         mccDescription: { ...text(200), description: 'The code\'s title as mcc_codes names it.' },
         riskTier: { type: 'string', enum: [...RISK_TIERS] },
         riskRationale: { ...text(600), description: 'The rubric\'s rows that set the tier, in the merchant\'s terms.' },

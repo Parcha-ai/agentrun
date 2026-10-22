@@ -29,6 +29,25 @@ export const REFUSED_DOMAINS = Object.freeze([
 ]);
 // Any host with a label that starts with EDGAR is refused too (edgar.example.com, edgar-filings.net, edgarlookup.com).
 const EDGAR_LABEL = /(^|[.-])edgar/;
+// Refused before any request as well: sites that state a merchant's own code (MCC lookups by merchant, industry-code
+// lookups by company), so the MCC comes from what the merchant sells. Pages that define codes and name no merchant's
+// code (the card networks' manuals, payment providers' MCC-by-code pages) stay readable.
+export const REFUSED_MCC_DOMAINS = Object.freeze(['check-mcc.sg', 'true-naics.com', 'naicscodes.org']);
+// Any host with a label that is MCC or an MCC list (check-mcc.sg, mcc-codes.com, mcclookup.net), never a word that only
+// starts with it (mccormick.com).
+const MCC_LABEL = /(^|[.-])mcc(s|codes?|lookup|list|search)?([.-]|$)/;
+/** What a refusal of a site that lists merchants' codes says, so a row can count its run's. */
+export const MCC_LOOKUP_REFUSED = 'a site that lists merchants\' category codes';
+// Such sites a pass's data names as well (the MCC job's refused-hosts.json), refused the same way for the rest of the
+// process: a pass serves one job, so its data's list holds for every tool it makes.
+const MCC_DOMAINS_FROM_DATA = new Set();
+/** Refuse these domains too, as REFUSED_MCC_DOMAINS are, from now on in this process. */
+export function refuseMccDomains(domains) {
+  for (const d of domains ?? []) {
+    const domain = normalHost(String(d)).replace(/^\*?\.+/, '');
+    if (domain.includes('.')) MCC_DOMAINS_FROM_DATA.add(domain);
+  }
+}
 // With `archivedSec`, the one way to an SEC page: the Wayback Machine's copy of it, web.archive.org/web/<time>[<flag>_]/
 // then an http(s) URL on sec.gov or a subdomain. The copy comes from the archive, so no request reaches sec.gov, and
 // every other page on the archive (another site's copy, the CDX API) stays refused.
@@ -82,7 +101,9 @@ export function refusedHost(host) {
   const h = normalHost(host);
   if (EDGAR_LABEL.test(h)) return `${h} is EDGAR, which is never fetched`;
   const listed = REFUSED_DOMAINS.find((domain) => within(h, domain));
-  return listed ? `${h} is on the refused list (${listed}: SEC filings, SIC listings or web archives)` : null;
+  if (listed) return `${h} is on the refused list (${listed}: SEC filings, SIC listings or web archives)`;
+  const mcc = REFUSED_MCC_DOMAINS.find((domain) => within(h, domain)) ?? [...MCC_DOMAINS_FROM_DATA].find((domain) => within(h, domain)) ?? (MCC_LABEL.test(h) ? h : undefined);
+  return mcc ? `${h} is on the refused list (${mcc}: ${MCC_LOOKUP_REFUSED})` : null;
 }
 
 // Addresses on this machine or a network it sits on: unspecified, loopback, private, CGNAT (the tailnet), link-local,

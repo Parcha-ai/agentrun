@@ -1,0 +1,321 @@
+{
+ "Lumen Candle Works": {
+  "mcc": "5999",
+  "title": "Miscellaneous and Specialty Retail Shops",
+  "group": "5700-7299",
+  "riskTier": "low",
+  "flags": [],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "We pour soy wax candles by hand in small batches",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {},
+  "riskRationale": "The rubric row for this merchant: low.",
+  "extraPages": [
+   "https://www.check-mcc.sg/mcc/m-001",
+   "https://cards.merchant-codes-fixture.example/m-001"
+  ]
+ },
+ "Copper Pot Diner": {
+  "mcc": "5812",
+  "title": "Eating Places and Restaurants",
+  "group": "5700-7299",
+  "riskTier": "low",
+  "flags": [],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "Breakfast and lunch served daily at our counter on Main Street",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {},
+  "riskRationale": "The rubric row for this merchant: low.",
+  "browserOnly": true
+ },
+ "Vale Vapour Supply": {
+  "mcc": "5993",
+  "title": "Cigar Stores and Stands",
+  "group": "5700-7299",
+  "riskTier": "high",
+  "flags": [
+   "regulated_goods"
+  ],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "We sell e-cigarettes, vape pens and e-liquids to adults over 21",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {
+   "regulated_goods": "You must be of legal age to buy from us."
+  },
+  "riskRationale": "The rubric row for this merchant: high."
+ },
+ "Northwind Outfitters": {
+  "mcc": "5941",
+  "title": "Sporting Goods Stores",
+  "group": "5700-7299",
+  "riskTier": "low",
+  "flags": [],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "Hiking boots, tents and climbing gear for every season",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {},
+  "riskRationale": "The rubric row for this merchant: low.",
+  "browserOnly": true
+ },
+ "Paper Lantern Gifts": {
+  "mcc": "5947",
+  "title": "Gift, Card, Novelty and Souvenir Shops",
+  "group": "5700-7299",
+  "riskTier": "low",
+  "flags": [],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "Greeting cards, wrapping paper and small gifts for every occasion",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {},
+  "riskRationale": "The rubric row for this merchant: low."
+ },
+ "Brightside Vitamins": {
+  "mcc": "5499",
+  "title": "Miscellaneous Food Stores \u2013 Convenience Stores and Specialty Markets",
+  "group": "5000-5599",
+  "riskTier": "low",
+  "flags": [],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "Organic teas, honey and pantry staples from local farms",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {},
+  "riskRationale": "The rubric row for this merchant: low."
+ },
+ "Harbor Wine Cellar": {
+  "mcc": "5921",
+  "title": "Package Stores \u2013 Beer, Wine, and Liquor",
+  "group": "5700-7299",
+  "riskTier": "medium",
+  "flags": [
+   "regulated_goods"
+  ],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "Natural wines and craft beers chosen by the people who work here",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {
+   "regulated_goods": "You must be of legal age to buy from us."
+  },
+  "riskRationale": "The rubric row for this merchant: medium."
+ },
+ "Oakline Furniture": {
+  "mcc": "5712",
+  "title": "Furniture, Home Furnishings, and Equipment Stores, Except Appliances",
+  "group": "5700-7299",
+  "riskTier": "medium",
+  "flags": [
+   "high_ticket"
+  ],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "Solid oak dining tables and sideboards built to order",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {
+   "high_ticket": "Most orders cost more than two thousand dollars."
+  },
+  "riskRationale": "The rubric row for this merchant: medium.",
+  "mccUrl": "https://furniture-reviews.example/oakline",
+  "extraPage": "https://furniture-reviews.example/oakline"
+ },
+ "Quillfeather Books": {
+  "mcc": "5999",
+  "title": "Miscellaneous and Specialty Retail Shops",
+  "group": "5700-7299",
+  "riskTier": "medium",
+  "flags": [
+   "site_unverified"
+  ],
+  "siteStatus": "unreachable",
+  "confidence": 0.8,
+  "quote": "An independent bookshop listed in the town directory",
+  "riskQuote": "The listed website could not be reached",
+  "flagQuotes": {
+   "site_unverified": "The listed website could not be reached"
+  },
+  "riskRationale": "The rubric row for this merchant: medium.",
+  "mccUrl": "https://towndirectory.example/quillfeather",
+  "riskUrl": "https://towndirectory.example/quillfeather",
+  "extraPage": "https://towndirectory.example/quillfeather"
+ },
+ "Fern and Kiln": {
+  "mcc": "5719",
+  "title": "Miscellaneous Home Furnishing Specialty Stores",
+  "group": "5700-7299",
+  "riskTier": "low",
+  "flags": [],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "Wheel-thrown stoneware mugs, bowls and planters",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {},
+  "riskRationale": "The rubric row for this merchant: low."
+ },
+ "Tallow and Thyme": {
+  "mcc": "5977",
+  "title": "Cosmetic Stores",
+  "group": "5700-7299",
+  "riskTier": "low",
+  "flags": [],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "Whipped tallow balms and herbal soaps made by hand",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {},
+  "riskRationale": "The rubric row for this merchant: low."
+ },
+ "Ridgeback Golf Club": {
+  "mcc": "7997",
+  "title": "Membership Clubs (Sports, Recreation, Athletic), Country Clubs, and Private Golf Courses",
+  "group": "7300-7999",
+  "riskTier": "medium",
+  "flags": [
+   "subscription"
+  ],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "Annual memberships include unlimited rounds on our eighteen holes",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {
+   "subscription": "Memberships renew every year until cancelled."
+  },
+  "riskRationale": "The rubric row for this merchant: medium."
+ },
+ "Pixel Forge Software": {
+  "mcc": "5734",
+  "title": "Computer Software Stores",
+  "group": "5700-7299",
+  "riskTier": "medium",
+  "flags": [
+   "digital_goods"
+  ],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "Download photo editing software for Windows and macOS",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {
+   "digital_goods": "Every purchase is delivered as a download."
+  },
+  "riskRationale": "The rubric row for this merchant: medium.",
+  "extraPages": [
+   "https://www.check-mcc.sg/mcc/m-013",
+   "https://cards.merchant-codes-fixture.example/m-013"
+  ]
+ },
+ "Golden Hour Jewelers": {
+  "mcc": "5944",
+  "title": "Jewelry Stores, Watches, Clocks, and Silverware Stores",
+  "group": "5700-7299",
+  "riskTier": "medium",
+  "flags": [
+   "high_ticket"
+  ],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "Engagement rings and fine watches crafted in our workshop",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {
+   "high_ticket": "Most orders cost more than two thousand dollars."
+  },
+  "riskRationale": "The rubric row for this merchant: medium."
+ },
+ "Summit Travel Co": {
+  "mcc": "4722",
+  "title": "Travel Agencies and Tour Operators",
+  "group": "4000-4799",
+  "riskTier": "high",
+  "flags": [
+   "travel"
+  ],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "We plan guided tours and book flights for trips abroad",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {
+   "travel": "Trips are booked months before departure."
+  },
+  "riskRationale": "The rubric row for this merchant: high."
+ },
+ "Little Acorn Toys": {
+  "mcc": "5945",
+  "title": "Hobby, Toy, and Game Shops",
+  "group": "5700-7299",
+  "riskTier": "low",
+  "flags": [],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "Wooden toys, puzzles and board games for children",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {},
+  "riskRationale": "The rubric row for this merchant: low."
+ },
+ "Crescent Pharmacy": {
+  "mcc": "5912",
+  "title": "Drug Stores and Pharmacies",
+  "group": "5700-7299",
+  "riskTier": "high",
+  "flags": [
+   "regulated_goods"
+  ],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "Fill your prescriptions online and pick them up in store",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {
+   "regulated_goods": "You must be of legal age to buy from us."
+  },
+  "riskRationale": "The rubric row for this merchant: high."
+ },
+ "Lucky Seven Raffles": {
+  "mcc": "7995",
+  "title": "Betting, including Lottery Tickets, Casino Gaming Chips, Off-Track Betting, Wagers at Race Tracks and games of chance to win prizes of monetary value",
+  "group": "7300-7999",
+  "riskTier": "high",
+  "flags": [
+   "gambling"
+  ],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "Buy raffle tickets for a chance to win cash prizes every week",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {
+   "gambling": "Winners are drawn at random every Friday."
+  },
+  "riskRationale": "The rubric row for this merchant: high."
+ },
+ "Meadow Grocer": {
+  "mcc": "5499",
+  "title": "Miscellaneous Food Stores \u2013 Convenience Stores and Specialty Markets",
+  "group": "5000-5599",
+  "riskTier": "low",
+  "flags": [],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "Fresh produce, cheese and bread from regional growers",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {},
+  "riskRationale": "The rubric row for this merchant: low."
+ },
+ "Stellar Streams": {
+  "mcc": "5815",
+  "title": "Digital Goods Media \u2013 Books, Movies, Digital artwork/images, Music",
+  "group": "5700-7299",
+  "riskTier": "medium",
+  "flags": [
+   "digital_goods"
+  ],
+  "siteStatus": "live",
+  "confidence": 0.8,
+  "quote": "Download albums and films to keep on any device",
+  "riskQuote": "Returns are accepted within 30 days of delivery; see our refund policy and terms of service.",
+  "flagQuotes": {
+   "digital_goods": "Every purchase is delivered as a download."
+  },
+  "riskRationale": "The rubric row for this merchant: medium."
+ }
+}

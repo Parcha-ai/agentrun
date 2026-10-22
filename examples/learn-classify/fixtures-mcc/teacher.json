@@ -1,0 +1,182 @@
+[
+ {
+  "id": "m-001",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "5999",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-002",
+  "stratum": "Fixture food",
+  "teacher": {
+   "mcc": "5812",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-003",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "5993",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-004",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "5941",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-005",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "5999",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-006",
+  "stratum": "Fixture food",
+  "teacher": {
+   "mcc": "5499",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-007",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "5921",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-008",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "5712",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-009",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "5999",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-010",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "5719",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-011",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "5977",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-012",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "7997",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-013",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "5734",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-014",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "5944",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-015",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "4722",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-016",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "5945",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-017",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "5912",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-018",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "7995",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-019",
+  "stratum": "Fixture food",
+  "teacher": {
+   "mcc": "5499",
+   "riskTier": null,
+   "flags": null
+  }
+ },
+ {
+  "id": "m-020",
+  "stratum": "Fixture retail",
+  "teacher": {
+   "mcc": "5815",
+   "riskTier": null,
+   "flags": null
+  }
+ }
+]
