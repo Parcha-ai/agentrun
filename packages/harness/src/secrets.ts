@@ -6,6 +6,7 @@ import { homedir, hostname, userInfo } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import type { Redact } from './record.ts';
 import { declaredEnv, type DemoSpec } from './demo-spec.ts';
+import { errorCode } from './errors.ts';
 
 /** A secret value and the name it is reported by (an environment name, or `<file> credentials.<provider>.<field>`). */
 /** `whole`: a value that is also an ordinary word (a machine named `node`): it is redacted only as a whole token in text, never inside a JSON key or a word of the recording's format. */
@@ -23,8 +24,8 @@ export const signInFile = (env: NodeJS.ProcessEnv): string => join(resolve(env.A
 export function signInSecrets(file: string): Secret[] {
   let text: string;
   try { text = readFileSync(file, 'utf8'); } catch (error) {
-    if ((error as { code?: string }).code === 'ENOENT') return [];
-    throw new Error(`the sign-in file ${file} cannot be read (${(error as { code?: string }).code ?? 'unreadable'}): a recording cannot be checked against its tokens`);
+    if (errorCode(error) === 'ENOENT') return [];
+    throw new Error(`the sign-in file ${file} cannot be read (${errorCode(error) ?? 'unreadable'}): a recording cannot be checked against its tokens`);
   }
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { throw new Error(`the sign-in file ${file} is not JSON: a recording cannot be checked against its tokens`); }

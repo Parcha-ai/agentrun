@@ -47,6 +47,7 @@ import { takeArtifact } from './artifact.ts';
 import { codeOf, finishRecording, followRecording, keepBlob, lazyRecorder, openRecorder, openSupervisor } from './record.ts';
 import { packageCommitRecorder } from './record-store.ts';
 import { scanPlaced, scanRecording, signInFile, trackSecrets } from './secrets.ts';
+import { errorCode } from './errors.ts';
 
 /** What `--live` swaps for the scripted parts: host members (models, tools, decisions, the browser plane) and vision options. The demo supplies them from its
  *  own keys; a demo that supplies none refuses `--live`. */
@@ -212,7 +213,7 @@ async function transport<T>(load: () => Promise<T>): Promise<T> {
   try {
     return await load();
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND' && String((error as Error).message).includes("'@parcha/pi-transport")) {
+    if (errorCode(error) === 'ERR_MODULE_NOT_FOUND' && String((error as Error).message).includes("'@parcha/pi-transport")) {
       throw new Error('this demo declares boxes, which need @parcha/pi-transport: npm install @parcha/pi-transport@beta');
     }
     throw error;
@@ -535,7 +536,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // recording, even when the final read did not finish inside its bound.
   // Read when the status is read, after the place exists.
   const labelFilesOf = (): RunFiles | undefined => !(place?.readRunFile && place.listRunFiles) ? undefined : boxIds !== undefined
-    ? { readRunFile: async (path) => { try { return new Uint8Array(readFileSync(join(boxIds, path.slice(path.indexOf('/') + 1)))); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; } }, listRunFiles: async () => { try { return readdirSync(boxIds).sort(); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; } } }
+    ? { readRunFile: async (path) => { try { return new Uint8Array(readFileSync(join(boxIds, path.slice(path.indexOf('/') + 1)))); } catch (error) { if (errorCode(error) === 'ENOENT') return null; throw error; } }, listRunFiles: async () => { try { return readdirSync(boxIds).sort(); } catch (error) { if (errorCode(error) === 'ENOENT') return []; throw error; } } }
     : { readRunFile: (path) => place.readRunFile!(path), listRunFiles: (dir) => place.listRunFiles!(dir) };
   const labelDir = 'box-ids.internal';
   const homeBoxLabels = new Map<string, string>();
@@ -644,7 +645,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     carrying = carrying.then(async () => {
       carryBusy = true;
       try { await place.recordHome!.bringHome(recordDir, { final }); } catch (error) {
-        const code = String((error as { code?: unknown } | null)?.code ?? 'CARRY_FAILED');
+        const code = (errorCode(error) ?? 'CARRY_FAILED');
         const gone = lost() || code === 'BOX_GONE';
         supervisor.host('recording.carry.failed', { gen, code, message: plainText((error as Error | null)?.message ?? error), ...(final && gone ? { lost: true } : {}) });
         if (final && !gone) carryRefusal ??= { gen, code };
@@ -720,7 +721,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           : { point: null, n: null, label: 'max-usd', why: `past --max-usd ${maxUsd}`, kind: 'process' };
         supervisor.host('kill', { gen, label: killed.label, crossing: killed.point === null ? null : { point: killed.point, n: killed.n }, side: 'child', kind: killed.kind });
         kills.push({ gen, point: killed.point, kind: killed.kind, why: killed.why, ...(typeof asked === 'object' && plan.run && !('storm' in plan.run) ? { n: asked.n, planned: plan.run.n } : {}) });
-        try { await place.kill(runner!, killed.kind); } catch (error) { failed(String((error as { code?: unknown } | null)?.code ?? 'KILL_FAILED'), messageOf(error, paths.root), killed.kind); }
+        try { await place.kill(runner!, killed.kind); } catch (error) { failed((errorCode(error) ?? 'KILL_FAILED'), messageOf(error, paths.root), killed.kind); }
         await settled(readStatus());
       };
       const iterator = place.signals?.(gen)[Symbol.asyncIterator]();
@@ -736,16 +737,16 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           if (next.value.nonce !== nonce) { supervisor.host('kill.request.ignored', { gen, point: next.value.crossing.point, reason: next.value.nonce === undefined ? 'no nonce' : 'wrong nonce' }); continue; }
           await decide(next.value.crossing);
         }
-      })().catch((error) => signalsFailure(String((error as { code?: unknown } | null)?.code ?? 'SIGNALS_FAILED'), messageOf(error, paths.root)));
+      })().catch((error) => signalsFailure((errorCode(error) ?? 'SIGNALS_FAILED'), messageOf(error, paths.root)));
       // The operator's control, a file the supervisor watches (never the child's request file): the caller makes it, the supervisor removes it, kills through the place and resumes as usual. The budget's stop is kept:
       // the attempt does not finish (nor the place release) until the kill, with its provider cleanup, is done.
       let deciding: Promise<void> = Promise.resolve();
       const watch = setInterval(() => {
-        if (followError && !decided) { decided = true; deciding = place.kill(runner!, 'process').catch((error) => { failed(String((error as { code?: unknown } | null)?.code ?? 'KILL_FAILED'), messageOf(error, paths.root), 'process'); }); return; }
+        if (followError && !decided) { decided = true; deciding = place.kill(runner!, 'process').catch((error) => { failed((errorCode(error) ?? 'KILL_FAILED'), messageOf(error, paths.root), 'process'); }); return; }
         if (decided) return;
         if (operatorKill && existsSync(operatorKill)) {
           // A control that cannot be removed (a directory made by mistake, a parent that forbids it) is a failed kill, reported through the normal path: the supervisor does not crash with the child still running.
-          try { rmSync(operatorKill, { force: true }); deciding = decide('operator'); } catch (error) { decided = true; failed(String((error as { code?: unknown } | null)?.code ?? 'OPERATOR_KILL_UNUSABLE'), 'the operator\'s kill control could not be removed', 'process'); }
+          try { rmSync(operatorKill, { force: true }); deciding = decide('operator'); } catch (error) { decided = true; failed((errorCode(error) ?? 'OPERATOR_KILL_UNUSABLE'), 'the operator\'s kill control could not be removed', 'process'); }
         } else if (overBudget) deciding = decide(undefined);
       }, 20);
       const tick = setInterval(() => { ledgerReceipts(false); if (!inflight) void readStatus(); if (!carryBusy) void carry(gen, false, () => false); }, 2000);
@@ -942,7 +943,7 @@ function copyOf(error: Error, redact: ((text: string) => string) | undefined, se
 /** The SOURCE: a run process's error outcome line, as it prints it for its supervisor. Its message passes the process's OWN redaction (it has seen
  *  sign-in tokens the supervisor may not hold) and the credential pass. */
 export function errorOutcome(error: unknown, redact?: (text: string) => string): string {
-  return JSON.stringify({ outcome: { status: 'error', generation: null, code: (error as { code?: string }).code ?? null, message: processText(String((error as Error).message), redact).slice(0, 400) } });
+  return JSON.stringify({ outcome: { status: 'error', generation: null, code: errorCode(error) ?? null, message: processText(String((error as Error).message), redact).slice(0, 400) } });
 }
 
 export function messageOf(error: unknown, root: string): string {

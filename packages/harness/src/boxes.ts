@@ -22,6 +22,7 @@ import type { Box, BoxProvider } from '@parcha/pi-transport';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import type { Cross, EffectWindow } from './crossings.ts';
 import type { Recorder } from './record.ts';
+import { errorCode } from './errors.ts';
 
 /** The boxes a demo's tools get (`context.boxes`, `context.providers`): a pi-transport `BoxProvider` at run time. pi-transport is an optional
  *  peer, so this package's types name only what every provider has; a tool that makes boxes types them with pi-transport's own `BoxProvider`.
@@ -72,8 +73,8 @@ function labelStore(dir: string) {
   const list = (): Map<string, LedgerEntry> => {
     let names: string[];
     try { names = readdirSync(dir); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return new Map();
-      throw ((error as NodeJS.ErrnoException).code === 'ENOTDIR' && aFile()) || refused(`the box ids directory ${dir} cannot be read`, error);
+      if (errorCode(error) === 'ENOENT') return new Map();
+      throw (errorCode(error) === 'ENOTDIR' && aFile()) || refused(`the box ids directory ${dir} cannot be read`, error);
     }
     const out = new Map<string, LedgerEntry>();
     for (const name of names) {
@@ -93,13 +94,13 @@ function labelStore(dir: string) {
     try {
       linkSync(from, to);
       let twice = true;
-      try { linkSync(from, to); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; twice = false; }
+      try { linkSync(from, to); } catch (error) { if (errorCode(error) !== 'EEXIST') throw error; twice = false; }
       if (twice) throw new Refusal(`the disk under ${dir} gives no exclusive link: refused, so no box label is given twice`);
     } finally { rmSync(from, { force: true }); rmSync(to, { force: true }); }
   };
   /** ENOENT on a create in a directory that exists: on an Archil mount, a directory made by path takes no files; a disk place makes it over its control. */
   const cannotTakeFiles = (error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return undefined;
+    if (errorCode(error) !== 'ENOENT') return undefined;
     try { if (!statSync(dir).isDirectory()) return undefined; } catch { return undefined; }
     return new Refusal(`${dir}/ cannot take files: on a disk place it must be made by the place, not by path (ENOENT on a directory that exists); refused, so no box label is given twice`);
   };
@@ -109,10 +110,10 @@ function labelStore(dir: string) {
     try { mkdirSync(dir, { recursive: true }); probe(); } catch (error) {
       const unusable = cannotTakeFiles(error);
       if (unusable) throw unusable;
-      const file = (error as NodeJS.ErrnoException).code === 'EEXIST' ? aFile() : undefined;
+      const file = errorCode(error) === 'EEXIST' ? aFile() : undefined;
       if (file) throw file;
       // A read-only mount (a shared Archil mount answers EROFS) is not the run's holder: only the process that holds the run claims its labels.
-      if ((error as NodeJS.ErrnoException).code === 'EROFS') throw new Refusal(`the box ids directory ${dir} is not on the run's holder mount (EROFS, read-only): only the process that holds the run claims labels; refused, so no box label is given twice`);
+      if (errorCode(error) === 'EROFS') throw new Refusal(`the box ids directory ${dir} is not on the run's holder mount (EROFS, read-only): only the process that holds the run claims labels; refused, so no box label is given twice`);
       if (error instanceof Refusal) throw error;
       throw new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`);
     }
@@ -127,7 +128,7 @@ function labelStore(dir: string) {
       try {
         for (let n = Math.max(0, ...[...list().keys()].map((label) => Number(label.slice(4)))) + 1; ; n += 1) {
           try { linkSync(from, join(dir, `box-${n}.json`)); return `box-${n}`; } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`);
+            if (errorCode(error) !== 'EEXIST') throw new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`);
           }
         }
       } finally { rmSync(from, { force: true }); }
@@ -143,7 +144,7 @@ function labelStore(dir: string) {
       try { from = temp(value); } catch (error) { throw cannotTakeFiles(error) ?? new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`); }
       try {
         try { linkSync(from, join(dir, name)); return { won: true }; } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`);
+          if (errorCode(error) !== 'EEXIST') throw new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`);
         }
         try { return { won: false, held: JSON.parse(readFileSync(join(dir, name), 'utf8')) }; } catch (error) { throw refused(`the host key file ${join(dir, name)} cannot be read`, error); }
       } finally { rmSync(from, { force: true }); }

@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import type { AttachInput, CommitRecorder, DurableLine } from './record-store.ts';
 import { supervisedChild } from './boxes.ts';
 import { MEDIA_FILE, blobExtension, credentialInFile, scanRecording } from './scan.ts';
+import { errorCode } from './errors.ts';
 
 export const FORMAT = 'agentrun.recording/1';
 type Meta = { path?: string; conv?: number; blobs?: string[] };
@@ -280,7 +281,7 @@ export function removeSpool(dir: string, options: { remove?: (path: string) => v
   const remove = options.remove ?? ((path: string) => rmSync(path, { recursive: true, force: true }));
   for (;;) {
     try { remove(spool(dir)); return; } catch (error) {
-      const code = (error as { code?: string }).code;
+      const code = errorCode(error);
       if ((code !== 'ENOTEMPTY' && code !== 'EBUSY' && code !== 'EPERM') || Date.now() >= deadline) throw error;
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     }
