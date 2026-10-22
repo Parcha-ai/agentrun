@@ -4,6 +4,7 @@ import {
   createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, ModelRuntime,
   type CreateAgentSessionOptions, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { SUBMIT_TOOL } from "./host-tools.js";
 import { PiRunError } from "./run-error.js";
 import { nodeThinking } from "./thinking.js";
 import type { PiRunnerOptions, PiSession, PiSessionOptions, PiToolDefinition } from "./types.js";
@@ -56,7 +57,7 @@ export function createPiRunner(options: PiRunnerOptions): PiRunner {
   const timeoutMs = options.timeoutMs === null ? null : positive(options.timeoutMs ?? 120_000, "timeoutMs");
   const names = new Set<string>();
   for (const tool of options.tools ?? []) {
-    if (tool.name === "submit" || names.has(tool.name)) throw new Error(`Reserved or duplicate Pi tool: ${tool.name}`);
+    if (tool.name === SUBMIT_TOOL || names.has(tool.name)) throw new Error(`Reserved or duplicate Pi tool: ${tool.name}`);
     names.add(tool.name);
   }
   return async (request) => {
@@ -99,7 +100,7 @@ export function createPiRunner(options: PiRunnerOptions): PiRunner {
     let unsubscribe: (() => void) | undefined;
     const result = (text: string, ok: boolean) => ({ content: [{ type: "text" as const, text }], details: { accepted: ok } });
     const submit: ToolDefinition = {
-      name: "submit", label: "Submit result", description: "Deliver a result matching the required JSON Schema. Rejection feedback must be corrected in this session.",
+      name: SUBMIT_TOOL, label: "Submit result", description: "Deliver a result matching the required JSON Schema. Rejection feedback must be corrected in this session.",
 
       parameters,
       executionMode: "sequential",
@@ -154,7 +155,7 @@ export function createPiRunner(options: PiRunnerOptions): PiRunner {
         cwd, model: options.model, modelRuntime: options.modelRuntime,
         thinkingLevel: nodeThinking(request.thinking, options.thinkingLevel), maxTurns: maxTurns ?? undefined, resourceLoader, settingsManager,
         sessionManager,
-        tools: [...requested, "submit"],
+        tools: [...requested, SUBMIT_TOOL],
         customTools: [...(options.tools ?? []).filter(tool => requested.includes(tool.name)).map(tool => ({
           ...tool,
           executionMode: "sequential" as const,
@@ -182,14 +183,14 @@ export function createPiRunner(options: PiRunnerOptions): PiRunner {
       unsubscribe = session.subscribe(event => {
         // Native events carry correlation IDs, including SDK-rejected calls. Custom
         // sessions without IDs use execute's counter so one attempt is not counted twice.
-        if (event.type === "tool_execution_start" && event.toolName === "submit" && event.toolCallId !== undefined && !accepted && !stopped && !fatal) {
+        if (event.type === "tool_execution_start" && event.toolName === SUBMIT_TOOL && event.toolCallId !== undefined && !accepted && !stopped && !fatal) {
           submissions++;
           pendingSubmissions.set(event.toolCallId, {
             ...(Object.hasOwn(event, "args") ? { args: structuredClone(event.args) } : {}), executed: false,
           });
           if (maxSubmissions !== null && submissions > maxSubmissions) stop("submission_limit");
         }
-        if (event.type === "tool_execution_end" && event.toolName === "submit") {
+        if (event.type === "tool_execution_end" && event.toolName === SUBMIT_TOOL) {
           if (event.toolCallId !== undefined) pendingSubmissions.delete(event.toolCallId);
           if (!accepted && !stopped && !fatal && maxSubmissions !== null && submissions >= maxSubmissions) stop("submission_limit");
         }
@@ -209,7 +210,8 @@ export function createPiRunner(options: PiRunnerOptions): PiRunner {
       if (fatal) throw fatal;
       if (stopped) throw new PiRunError(stopped, turns, submissions);
       if (accepted) return submission;
-      throw new PiRunError(maxTurns !== null && turns >= maxTurns ? "turn_limit" : "no_submission", turns, submissions);
+      // The loop ends only on one of the three above or at the turn cap, so what is left is the cap.
+      throw new PiRunError("turn_limit", turns, submissions);
     } catch (error) {
       if (fatal) throw fatal;
       if (stopped) throw new PiRunError(stopped, turns, submissions);
