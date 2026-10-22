@@ -163,7 +163,7 @@ export type CallMatch = {
 export type Outcome =
 	/** `leakBox` (on a `create`): the call fails, but the box was made and `list` and `attach` find it: a create whose call failed after the machine existed. */
 	| { readonly fail: BoxErrorCode; readonly message?: string; readonly leakBox?: boolean }
-	| { readonly delayMs: number; readonly then?: Outcome }
+	| { readonly delayMs: number; readonly next?: Outcome }
 	| { readonly hang: true }
 	| { readonly lose: "stdin-eof" | "stdout" | "stderr" }
 	| { readonly truncate: { readonly stream: "stdout" | "stderr"; readonly afterBytes: number } }
@@ -572,7 +572,7 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 		let outcome: Outcome | undefined = rule.outcome;
 		while (outcome !== undefined && "delayMs" in outcome) {
 			if (!(await wait(outcome.delayMs, context))) return null;
-			outcome = outcome.then;
+			outcome = outcome.next;
 		}
 		return outcome === undefined ? undefined : { ...rule, outcome };
 	};

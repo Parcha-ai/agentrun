@@ -521,12 +521,12 @@ describe("fakeBoxes: review findings (red first)", () => {
 		const clock = fakeClock();
 		const provider = fakeBoxes({ clock });
 		const box = getOrThrow(await provider.create(SPEC, context));
-		provider.script.on({ op: "exec" }, { delayMs: 10, then: { exit: 9 } });
+		provider.script.on({ op: "exec" }, { delayMs: 10, next: { exit: 9 } });
 		const pending = box.exec(["echo", "x"], undefined, context);
 		await clock.advance(10);
 		const proc = getOrThrow(await pending);
 		expect(getOrThrow(await finish(proc)).exitCode).toBe(9);
-		provider.script.on({ op: "create" }, { delayMs: 10, then: { fail: "unknown", leakBox: true } });
+		provider.script.on({ op: "create" }, { delayMs: 10, next: { fail: "unknown", leakBox: true } });
 		const creating = provider.create({ ...SPEC, labels: { run: "d" } }, context);
 		await clock.advance(10);
 		const failed = await creating;
