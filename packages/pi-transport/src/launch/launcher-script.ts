@@ -28,6 +28,7 @@ ISOLATION=
 HOOK=0
 HOOK_TENTHS=300
 @@PTRACE_FILE@@
+@@TOOLS_CHECK@@
 if [ -r "$D/spec.sh" ]; then . "$D/spec.sh"; fi
 # A framed launch's stdin and secrets (base64), read from this process's stdin: in memory only, never a file, an
 # environment or an argv. The supervisor hands them to each incarnation on a pipe.
@@ -441,15 +442,17 @@ verify_tools() {
   if [ -n "$SETSID" ]; then $SETSID sh "$SELF" tools-check "$D" </dev/null > "$D/tools.check" 2>/dev/null & else sh "$SELF" tools-check "$D" </dev/null > "$D/tools.check" 2>/dev/null & fi
   cp=$!
   began=$(centis)
-  while alive "$cp" && [ $(( $(centis) - began )) -lt 6000 ]; do sleep $STEP; done
+  while alive "$cp" && [ $(( $(centis) - began )) -lt "$TOOLS_CHECK_CENTIS" ]; do sleep $STEP; done
   if alive "$cp"; then
     if [ -n "$SETSID" ]; then gkill KILL "$cp"; else kill -s KILL "$cp" 2>/dev/null; fi
     wait "$cp" 2>/dev/null
-    rm -f "$D/tools"
-    echo "UNSUPPORTED the check of the tools user $t_name did not finish in 60 s"
+    rm -f "$D/tools" "$D/tools.probe" "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.err"
+    echo "UNSUPPORTED the check of the tools user $t_name did not finish in $(( TOOLS_CHECK_CENTIS / 100 )) s"
     return 10
   fi
   wait "$cp" 2>/dev/null
+  # A check that died (killed, crashed) left its probe and its scratch files: they go, whatever it answered.
+  rm -f "$D/tools.probe" "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.err"
   said=$(grep -E '^(REFUSED|UNSUPPORTED) ' "$D/tools.check" 2>/dev/null | head -1)
   if [ -z "$said" ] && ! grep -qx CHECKED "$D/tools.check" 2>/dev/null; then said="UNSUPPORTED the check of the tools user $t_name ended without an answer"; fi
   rm -f "$D/tools.check"
@@ -480,27 +483,51 @@ tools_check() {
   fi
   # V4. Every mount that honours setuid bits and file capabilities (no nosuid) is LISTED as root, so a directory the tools user can
   # pass through but not list hides nothing; each file found is then TESTED as the tools user (access(2), through setpriv with no
-  # groups, as disk's spawn runs it; runuser, with its groups, only where there is no such setpriv).
+  # groups, as disk's spawn runs it; runuser, with its groups, only where there is no such setpriv). The check fails CLOSED: it
+  # answers only when its tools answer, and an empty answer is never a clean box.
   gc=$(command -v getcap 2>/dev/null)
   [ -n "$gc" ] || { echo "UNSUPPORTED this box has no getcap to measure file capabilities"; return; }
   [ -r /proc/self/mountinfo ] || { echo "UNSUPPORTED this box has no /proc/self/mountinfo to list its mounts"; return; }
+  # The controls: find and getcap must each report a probe planted to be found, or a silent one (an error, a missing feature, a
+  # broken binary) would read as a box with nothing in it. The probe is INERT: an empty file, root's, mode 4700 (only root may
+  # run it, and empty it runs nothing), with cap_net_raw (which grants nothing on an empty file), in this launch's directory,
+  # root's alone (0700), never within the tools user's reach. Its x bit is there because the capability walk lists only files
+  # with one (-perm /111) and the control goes through the walk's own predicates. It is planted afresh (a leftover from a check
+  # that crashed is removed first) and removed BEFORE anything runs as the tools user and before the walk: the walk never sees
+  # it, so it ignores no file by its name or its directory. A trap removes it on every way out, and the launcher removes it
+  # again after any check, one it had to kill included. No control writes a sudo rule.
+  probe="$D/tools.probe"
+  trap 'rm -f "$D/tools.probe"' EXIT
+  rm -f "$probe"
+  { : > "$probe" && chmod 4700 "$probe"; } 2>/dev/null || { echo "UNSUPPORTED the check cannot plant its probe in $D"; return; }
+  [ "$(find "$probe" -xdev \( -perm -4000 -user 0 -o -perm -2000 -group 0 \) -type f -print 2>/dev/null)" = "$probe" ] || { echo "UNSUPPORTED this box's find does not find a planted setuid root file"; return; }
+  if ! command -v setcap >/dev/null 2>&1 || ! setcap cap_net_raw+ep "$probe" >/dev/null 2>&1; then echo "UNSUPPORTED this box cannot plant a file capability to check its getcap (setcap)"; return; fi
+  case "$(find "$probe" -xdev -type f -perm /111 -exec "$gc" {} + 2>/dev/null)" in "$probe "*) ;; *) echo "UNSUPPORTED this box's getcap does not report a planted file capability"; return ;; esac
+  rm -f "$probe"
+  [ ! -e "$probe" ] || { echo "UNSUPPORTED the check cannot remove its probe"; return; }
+  # Only now does anything run as the tools user.
   if setpriv --reuid="$t_uid" --regid="$t_gid" --clear-groups -- true >/dev/null 2>&1; then as="setpriv --reuid=$t_uid --regid=$t_gid --clear-groups --"
   elif runuser -u "$t_name" -- true >/dev/null 2>&1; then as="runuser -u $t_name --"
   else echo "UNSUPPORTED this box cannot test files as the tools user $t_name: it has no setpriv that takes --reuid and no runuser"; return
   fi
+  # The tools user's test must answer for a file that user can run (its shell): a switch that never runs the test would read every
+  # file as one it cannot run.
+  $as sh -c 'test -x "$1"' sh "$(command -v sh)" 2>/dev/null || { echo "UNSUPPORTED this box cannot test a file as the tools user $t_name"; return; }
   awk '$6 !~ /(^|,)nosuid(,|$)/ { print $5 }' /proc/self/mountinfo | sort -u > "$D/tools.mounts"
+  [ -s "$D/tools.mounts" ] || { echo "UNSUPPORTED the check found no mount to walk"; return; }
   : > "$D/tools.s"
   : > "$D/tools.c"
+  # Every listed mount is walked, whole. A walk that fails on one (a mount root cannot read, a find that cannot) has not seen it.
   while IFS= read -r m; do
     m=$(printf '%b' "$m")
     [ -e "$m" ] || { echo "UNSUPPORTED a mount point the check cannot open: $m"; return; }
-    find "$m" -xdev \( -perm -4000 -user 0 -o -perm -2000 -group 0 \) -type f -print 2>/dev/null >> "$D/tools.s"
-    find "$m" -xdev -type f -perm /111 -exec "$gc" {} + 2>/dev/null >> "$D/tools.c"
+    find "$m" -xdev \( -perm -4000 -user 0 -o -perm -2000 -group 0 \) -type f -print 2> "$D/tools.err" >> "$D/tools.s" || { echo "UNSUPPORTED the check could not walk $m: $(head -1 "$D/tools.err" | cut -c1-160)"; return; }
+    find "$m" -xdev -type f -perm /111 -exec "$gc" {} + 2> "$D/tools.err" >> "$D/tools.c" || { echo "UNSUPPORTED the check could not walk $m: $(head -1 "$D/tools.err" | cut -c1-160)"; return; }
   done < "$D/tools.mounts"
   found_s=$(sort -u "$D/tools.s" | while IFS= read -r f; do if $as sh -c 'test -x "$1"' sh "$f" 2>/dev/null; then printf '%s\n' "$f"; fi; done | head -5 | tr '\n' ' ')
   # getcap prints "path caps" (or "path = caps"): the path is all but the last field.
   found_c=$(sort -u "$D/tools.c" | while IFS= read -r f; do p=$(printf '%s\n' "$f" | sed 's/ [^ ]*$//; s/ =$//'); if $as sh -c 'test -x "$1"' sh "$p" 2>/dev/null; then printf '%s; ' "$f"; fi; done | cut -d';' -f1-5)
-  rm -f "$D/tools.mounts" "$D/tools.s" "$D/tools.c"
+  rm -f "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.err"
   if [ -n "$found_s" ]; then echo "REFUSED the tools user $t_name can run a setuid or setgid root file: $found_s"; return; fi
   if [ -n "$found_c" ]; then echo "REFUSED the tools user $t_name can run a file with capabilities: $found_c"; return; fi
   echo CHECKED
@@ -704,6 +731,8 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 	"_",
 	"claimed",
 	"TOOLS",
+	"TOOLS_CHECK_CENTIS",
+	"probe",
 	"t_name",
 	"t_uid",
 	"t_gid",
@@ -723,7 +752,11 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 /** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */
 export const PTRACE_FILE_LINE = "PTRACE_FILE=/proc/sys/kernel/yama/ptrace_scope";
 
+/** The bound of the tools user's check, in centiseconds (60 s): a script-level constant like PTRACE_FILE_LINE, which no environment can change. */
+export const TOOLS_CHECK_LINE = "TOOLS_CHECK_CENTIS=6000";
+
 /** The supervisor the host uploads to a box: POSIX `sh`, with the programs named in the file's header. */
 export const LAUNCHER_SCRIPT = SCRIPT_TEMPLATE.replace("@@GROUP_LIVE@@", () => GROUP_LIVE)
 	.replace("@@PTRACE_FILE@@", () => PTRACE_FILE_LINE)
+	.replace("@@TOOLS_CHECK@@", () => TOOLS_CHECK_LINE)
 	.replace("@@UNSET@@", () => `unset ${LAUNCHER_SHELL_NAMES.join(" ")}`);
