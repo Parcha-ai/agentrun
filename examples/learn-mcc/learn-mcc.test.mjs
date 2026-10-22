@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import Ajv from 'ajv';
-import { answerMcc, answerProblems, CLAIMS, FLAGS, JOB_INPUT, MAX_EVIDENCE, RISK_TIERS, SITE_STATUSES } from './answer.mjs';
+import { answerMcc, answerProblems, CLAIMS, FLAGS, JOB_INPUT, MAX_EVIDENCE, RISK_TIERS, servedCodes, servedGroups, SITE_STATUSES } from './answer.mjs';
 
 const HOME = join(import.meta.dirname, 'agent-mcc');
 const SEC_HOME = join(import.meta.dirname, '..', 'learn-classify', 'agent-v4-edgar');
@@ -16,7 +16,8 @@ const flat = (body) => body.replace(/\s+/g, ' ').trim();
 const between = (body, from, to) => body.slice(body.indexOf(from), to === undefined ? undefined : body.indexOf(to, body.indexOf(from) + from.length));
 
 // A few codes in the table's shape (code to title), for the schema alone.
-const CODES = { 5411: 'Grocery Stores, Supermarkets', 5499: 'Miscellaneous Food Stores', 5968: 'Direct Marketing - Continuity/Subscription Merchant', 7997: 'Clubs - Country Clubs, Membership' };
+const CODES = { 3012: 'An airline brand', 3501: 'A hotel brand', 4511: 'Airlines and Air Carriers', 5411: 'Grocery Stores, Supermarkets', 5499: 'Miscellaneous Food Stores',
+  5968: 'Direct Marketing - Continuity/Subscription Merchant', 7011: 'Lodging - Hotels, Motels, Resorts', 7997: 'Clubs - Country Clubs, Membership' };
 
 const ANSWER = {
   mcc: '5499', mccDescription: CODES[5499], riskTier: 'medium',
@@ -54,6 +55,13 @@ test('the answer: a code from mcc_codes and its title, a tier, flags from the li
     ['a part it does not take', { ...ANSWER, vertical: 'food' }],
   ]) assert.notEqual(ok(wrong), true, why);
   assert.equal(tool.recorded(ANSWER), '5499');
+  // Named brands' airline, car rental and lodging codes are not offered: their merchants take the generic code.
+  assert.deepEqual(tool.parameters.properties.mcc.enum, ['4511', '5411', '5499', '5968', '7011', '7997']);
+  assert.notEqual(ok({ ...ANSWER, mcc: '3501', mccDescription: CODES[3501] }), true, 'a brand code');
+  assert.deepEqual(Object.keys(servedCodes(CODES)), tool.parameters.properties.mcc.enum);
+  const ranges = [['0001', '1499', 'Agricultural Services'], ['3000', '3299', 'Airlines'], ['3500', '3999', 'Lodging'], ['4000', '4799', 'Transportation Services']]
+    .map(([from, to, name]) => ({ id: name.toLowerCase(), code: `${from}-${to}`, from, to, name }));
+  assert.deepEqual(servedGroups(ranges), [{ code: '0001-1499', name: 'Agricultural Services' }, { code: '4000-4799', name: 'Transportation Services' }]);
   // Keywords some model routes refuse on the wire are not in the schema: answerProblems holds what they would.
   assert.doesNotMatch(JSON.stringify(tool.parameters), /"(contains|uniqueItems|allOf|oneOf|if|then|patternProperties)"/);
   assert.deepEqual(CLAIMS, ['mcc', 'risk', ...FLAGS]);
