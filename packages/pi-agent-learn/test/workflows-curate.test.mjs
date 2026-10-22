@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { WorkflowStore } from "@parcha/agentrun-pi/workflows";
 import { local, openRepo } from "@parcha/pi-git-remote";
-import { collectWorkflows, curate, proposeLearning, readTrial, renderSkill, schemaDescription, seedWorkflows, usesSource, workflowsToTry } from "../dist/index.js";
+import { collectWorkflows, curate, PROMOTION_DEFAULTS, proposeLearning, readTrial, renderSkill, schemaDescription, seedWorkflows, usesSource, workflowsToTry } from "../dist/index.js";
 import { agentRepo, scratch } from "./support.mjs";
 import { liveRun, runStoreWith, workDirWith, workflowDoc } from "./workflow-support.mjs";
 
@@ -90,10 +90,13 @@ test("a run that saves a new revision still counts its clean use of the trial it
     const digest = next ? (await new WorkflowStore(workDir).save(NAME, next)).digest : undefined;
     return { report: await propose(id, { workDir, uses: usesSource({ store, workDir, run: id }), saved: Boolean(next) }), digest };
   };
-  const { report: second } = await run("run-2");
-  assert.deepEqual(second.settled.map((s) => s.reason.split(":")[0]), ["hold"], "one clean use: still a trial");
-  // Run 3 runs revision one cleanly AND saves revision three: its use is settled first, and promotes revision one.
-  const { report: third, digest: three } = await run("run-3", workflowDoc({ limit: 200 }));
+  // All but the last clean use the package's promotion needs, from runs that save nothing: still a trial.
+  for (let i = 2; i <= PROMOTION_DEFAULTS.promoteAfter; i += 1) {
+    const { report } = await run(`run-${i}`);
+    assert.deepEqual(report.settled.map((s) => s.reason.split(":")[0]), ["hold"], `run-${i}: still a trial`);
+  }
+  // The next run runs revision one cleanly AND saves revision three: its use is settled first, and promotes revision one.
+  const { report: third, digest: three } = await run(`run-${PROMOTION_DEFAULTS.promoteAfter + 1}`, workflowDoc({ limit: 200 }));
   assert.deepEqual(third.settled.map((s) => [s.workflow, s.reason.split(":")[0]]), [[NAME, "promote"]], JSON.stringify(third));
   assert.deepEqual(third.accepted.map((a) => a.workflow), [NAME]);
   const trial = await readTrial(curator, NAME, "main");
