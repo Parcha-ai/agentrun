@@ -9,7 +9,6 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
 import { after, test } from 'node:test';
-// @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { DEFAULT_VIEW, withoutMuseRules } from './default-view.ts';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
@@ -17,8 +16,8 @@ import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.t
 const here = new URL('.', import.meta.url).pathname;
 const IN_CHROME = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 120_000 };
 const GOLDEN = join(here, 'fixtures', 'default-view.golden.html');
-// SHA-256 of chat.html before the Muse layout, and of the page now without the Muse rules.
-const PAGE_SHA = 'bee488d02461abd2221b754166d0dbdbc4ee7c7e22e99a5cdd24450750e70fc7';
+// SHA-256 of the page's own rules and markup, the Muse layout's rules left out (updated, with a reason, when the default view itself deliberately changes: the fork folds' and the move card's CSS).
+const PAGE_SHA = '61cb91059a2c61b4586670361465fcd79eb03a73604b815541b24d1534c4b4a1';
 after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 
 test('the page without the Muse layout\'s rules is byte for byte the page it was before: the default view\'s styles and markup are untouched', { timeout: 5_000 }, () => {

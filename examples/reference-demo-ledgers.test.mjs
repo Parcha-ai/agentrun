@@ -25,7 +25,8 @@ test('the boxes capability: a tool\'s box is destroyed once at "a box command in
   const lines = readEvents(recording);
   assert.equal(lines.filter((line) => line.source === 'host' && line.kind === 'kill').length, 0, 'no kill line: the run\'s process lived');
   const box = lines.filter((line) => line.source === 'transport').map((line) => [line.kind, line.data.killed ?? line.data.crossing ?? null]);
-  assert.deepEqual(box, [['box.created', null], ['box.killed', 'transport.box.exec'], ['box.ended', true], ['box.created', null], ['box.ended', false]], 'the first install box was lost and the second ran to its end');
+  // Each command a box took is a `box.exec` line, written before its crossing: the lost box's command, then the second box's.
+  assert.deepEqual(box, [['box.created', null], ['box.exec', null], ['box.killed', 'transport.box.exec'], ['box.ended', true], ['box.created', null], ['box.exec', null], ['box.ended', false]], 'the first install box was lost and the second ran to its end');
   assert.equal(fold(lines).kills, 0);
 });
 test('a run kill at "a box command in flight" is not a kill point inside a tool call (it would leave the call unknown): the crossing is logged and never cut', { timeout: 300_000 }, async (t) => {

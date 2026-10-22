@@ -213,3 +213,13 @@ test('a native video block (mp4, webm) is kept with its own extension, and a tex
   writeFileSync(join(dir, 'events.jsonl'), [JSON.stringify(first), ...lines.slice(1)].join('\n') + '\n');
   assert.ok(problems(dir).some((each) => /contains a google api key/.test(each)), problems(dir).join(' | '));
 });
+
+test('a live host line with an event-level gen is refused: the supervisor\'s lines have none and name their process in data.gen (RECORDING.md 3.1)', (t) => {
+  const dir = recording(t, {});
+  assert.deepEqual(problems(dir), [], 'the fixture is valid');
+  const lines = readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  const last = Math.max(...lines.filter((line) => line.channel === 'live' && line.source === 'host').map((line) => line.seq));
+  const end = Math.max(...lines.map((line) => line.t));
+  writeFileSync(join(dir, 'events.jsonl'), readFileSync(join(dir, 'events.jsonl'), 'utf8') + JSON.stringify({ channel: 'live', source: 'host', kind: 'box.receipt', gen: 1, t: end + 1, seq: last + 1, data: { gen: 1, box: 'box-1' } }) + '\n');
+  assert.ok(problems(dir).some((each) => /a supervisor line \(box\.receipt\) has no event-level gen/.test(each)), problems(dir).join(' | '));
+});
