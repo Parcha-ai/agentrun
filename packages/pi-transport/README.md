@@ -35,6 +35,15 @@ The reference below takes each part in turn: [a box](#a-box), [tools in a box](#
 A `Box` is one running machine: a directory on this machine, a container, a sandbox, a VM. A `BoxProvider` creates
 boxes, finds them again by id and lists them by label.
 
+Install the package with its pi peers, pinned. pi 1.4 is not supported yet; a later release widens the range.
+
+```sh
+npm install @parcha/pi-transport@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+```
+
+The example below needs Docker; `localBoxes({ root: "./boxes" })` from `@parcha/pi-transport/box/local` runs it with
+no Docker, in a directory on this machine.
+
 ```ts
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { finish } from "@parcha/pi-transport";

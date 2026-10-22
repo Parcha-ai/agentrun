@@ -598,6 +598,8 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     for (const node of run.extras) node.hidden = !open;
     run.more.textContent = open ? 'Show less' : `+ ${run.extras.length} more`;
   };
+  // A planned move between hosts: one card, a move and not a failure (the process lane stays behind ?debug=durability).
+  const moveNode = (item: Extract<ChatItem, { kind: 'move' }>) => reportEl('div', { class: 'move-card', 'data-item': item.id }, reportEl('div', { class: 'move-lead', text: item.lead }), reportEl('div', { class: 'move-text', text: item.text }));
   const agentMessage = (className = 'msg') => reportEl('div', { class: className }, reportEl('div', { class: 'who' }, threadIcon('brand'), 'Agent'));
   // The conversations drawn at an item: forked there, or made by that call.
   const nestedAt = new Map<string, ChatThread[]>();
@@ -650,6 +652,13 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
         const node = threadYou(reportEl('div', { class: 'bubble', text: item.text }), threadLong(item.text), item.id);
         nodes.set(item.id, node);
         out.push(node, ...[forksAt(item.id)].filter((each): each is HTMLElement => !!each));
+        continue;
+      }
+      if (item.kind === 'move') {
+        endPlumbing();
+        agent = undefined;
+        steps = undefined;
+        out.push(moveNode(item));
         continue;
       }
       if (item.kind === 'host') {
@@ -708,9 +717,12 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
       thread.append(...drawn);
       return;
     }
-    thread.append(fold(each));
+    // A folded conversation's moves are drawn after its fold, in the run's own timeline, where a closed fold cannot hide them.
+    thread.append(fold({ ...each, items: each.items.filter((item) => item.kind !== 'move') }));
+    for (const item of each.items) if (item.kind === 'move') thread.append(moveNode(item));
   });
   if (model.threads.length === 0) thread.append(reportEl('p', { class: 'none', text: 'This run recorded no conversation.' }));
+  for (const item of model.moves ?? []) thread.append(moveNode(item));
   // The card that opens the report closes the chat, after every conversation.
   const doccard = reportTitle === undefined ? undefined : reportEl('button', { class: 'doccard', type: 'button' }, reportEl('span', { class: 'ic' }, threadIcon('doc')),
     reportEl('span', {}, reportEl('b', { text: reportTitle }), reportEl('small', { text: model.artifact ? 'The page the agent wrote, with the sources it rests on.'

@@ -323,3 +323,36 @@ test('one scanner: the validator and the gallery\'s gate use the recorder\'s own
   const gate = readFileSync(new URL('../scripts/recording/gate.mjs', import.meta.url), 'utf8');
   assert.match(gate, /^import \{[^}]*\bcredentialInFile\b[^}]*\} from '\.\.\/\.\.\/packages\/harness\/src\/scan\.ts';$/m);
 });
+
+test('a host line from a recorder with no supervisor is the supervisor\'s kind of line in an unsupervised run (no event-level gen, the process in data.gen, one seq space once finished), and a supervised child (HOST_LINES=supervisor) writes none', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-record-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const receipt = (box) => ({ box, provider: 'modal', kind: 'sandbox', from: null, to: null, seconds: null, usd_per_second: null, cost_usd: null });
+  const later = () => new Promise((resolve) => setTimeout(resolve, 8));
+  // Unsupervised: two recorders in turn (a run resumed in a second process, each counting seq from 0) write host lines in one space.
+  const alone = join(tmp, 'alone');
+  openRecorder({ dir: alone }).host('process.started', { pid: 11 });
+  await later();
+  openRecorder({ dir: alone }).host('box.receipt', receipt('box-1'));
+  await later();
+  const next = openRecorder({ dir: alone });
+  next.host('process.started', { pid: 12 });
+  await later();
+  next.host('box.receipt', receipt('box-2'));
+  finishRecording(alone, { title: 't', task: 't', model: 'faux/faux-1', generations: 2, kills: 0, code: codeOf(join(import.meta.dirname, '..')), cost: { usd: null, parts: {} }, source: { run: 'x', store_sha256: '0'.repeat(64) } });
+  const host = lines(alone).filter((line) => line.channel === 'live' && line.source === 'host');
+  assert.deepEqual(host.map((line) => [line.kind, line.gen, typeof line.data.gen]), [['process.started', undefined, 'number'], ['box.receipt', undefined, 'number'], ['process.started', undefined, 'number'], ['box.receipt', undefined, 'number']], 'no event-level gen, the process in data');
+  assert.deepEqual(host.map((line) => line.seq), [0, 1, 2, 3], 'one seq space once finished');
+  // A supervised child (the supervisor says so, HOST_LINES=supervisor) writes no host line: the supervisor writes the receipt from the ids directory it owns.
+  const dir = join(tmp, 'supervised');
+  const supervisor = openSupervisor({ dir });
+  supervisor.host('process.started', { gen: 1, pid: 21 });
+  await later();
+  const marked = process.env.HOST_LINES;
+  process.env.HOST_LINES = 'supervisor';
+  try { openRecorder({ dir, gen: 1 }).host('box.receipt', receipt('box-3')); } finally { if (marked === undefined) delete process.env.HOST_LINES; else process.env.HOST_LINES = marked; }
+  supervisor.host('result', { gen: 1, blob: 'a'.repeat(64), title: 'The record' }, { blobs: [] });
+  finishRecording(dir, { title: 't', task: 't', model: 'faux/faux-1', generations: 1, kills: 0, code: codeOf(join(import.meta.dirname, '..')), cost: { usd: null, parts: {} }, source: { run: 'x', store_sha256: '0'.repeat(64) } });
+  assert.deepEqual(lines(dir).filter((line) => line.source === 'host').map((line) => [line.kind, line.gen, line.seq]), [['process.started', undefined, 0], ['result', undefined, 1]], 'the supervised child wrote no host line');
+  assert.deepEqual(validateRecording(dir), []);
+});

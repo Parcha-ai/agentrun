@@ -1,7 +1,5 @@
 import { browserbaseHoldings } from "./shared.js";
 
-export { directFetch, closeDirectFetch } from "./http.js";
-
 /** Rewrite a Browserbase connect URL onto the credential proxy: only `*.browserbase.com` hosts, the signing query kept. */
 export function rewriteConnectUrl(connectUrl: string, connectBaseUrl: string | undefined | null): string {
   if (!connectUrl || !connectBaseUrl) return connectUrl;

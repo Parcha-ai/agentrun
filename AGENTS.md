@@ -73,7 +73,7 @@ CI runs Lean separately from `npm run check`. Documentation-only changes don't n
 
 ## Models of recovery
 
-`spec/receipts/Receipts.tla` (TLA+, checked by TLC with guard mutants) and `spec/lean/AgentRunRecovery/Frozen.lean` (Lean) state what a recovery driver does with effects across crashes and failed commits: admit before dispatch, one dispatch per effect, a resume that answers a completed effect and refuses an unknown one, nothing admitted after a failed commit.
+`spec/receipts/Receipts.tla` (TLA+, checked by TLC with guard mutants) and `spec/lean/AgentRunRecovery/Frozen.lean` (Lean) state what a recovery driver does with effects across crashes, failed commits and the host's cancel: admit before dispatch, one dispatch per effect, a resume that answers a completed effect and refuses an unknown one, nothing admitted after a failed commit or a stop, a stop the host lets go of on the journal or reported as refused, and a cancelled run that never resumes.
 
 **A change to modeled behavior changes the model in the same pull request.** When a change touches what either model states (the recovery hooks in `workflow.ts`, the `RecoveryStore` contract, or a driver over it), update `Receipts.tla`, its mutants and `Frozen.lean` together, run `scripts/spec/check-receipts.sh`, `node scripts/spec/receipts-mutants.mjs` and `lake build`, or say in the pull request why the model does not move. A property that breaks is fixed in code or recorded with a test that reproduces its counterexample, never deleted.
 

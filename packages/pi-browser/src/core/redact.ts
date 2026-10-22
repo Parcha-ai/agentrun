@@ -1,3 +1,4 @@
+import type { LiveView } from "./host.js";
 import { fetchedSpellings } from "./uri.js";
 
 export type Redact = (text: string) => string;
@@ -36,6 +37,12 @@ export function scrubPageUrl(raw: string, redact: Redact): string {
   if (url.protocol !== "http:" && url.protocol !== "https:") return redact(raw);
   const names = [...new Set(url.searchParams.keys())];
   return redact(`${url.origin}${url.pathname}${names.length ? `?${names.map((n) => `${encodeURIComponent(n)}=${REDACTED}`).join("&")}` : ""}`);
+}
+
+/** A live view as the host receives it, on every channel (`onSession`, a handoff's `request`): the viewer's own URLs stay
+ *  whole, since the host needs their token; a browsed page's URL and title are scrubbed, since its query can carry a credential. */
+export function hostLiveView(view: LiveView, redact: Redact): LiveView {
+  return { ...view, pages: view.pages.map((page) => ({ ...page, url: page.url === null ? null : scrubPageUrl(page.url, redact), title: page.title === null ? null : redact(page.title) })) };
 }
 
 /** A fetch's final URL for the model: a query value or fragment stays only where the requested URL has it; userinfo never does. */

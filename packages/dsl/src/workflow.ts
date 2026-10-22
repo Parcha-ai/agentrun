@@ -942,12 +942,12 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       const allowed = KIND_KEYS[(node as any).node];
       const extraneous = Object.keys(node).filter((key) => !allowed.has(key));
       if (extraneous.length) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${(node as any).label || (node as any).node}): unknown key(s) for a ${(node as any).node} node: ${extraneous.join(", ")}`);
-      // `$`-prefixed state keys are engine-owned (`$host`, `<as>$verify`): no node may write one. A label
-      // is the state key whenever `as` is omitted, so labels are held to the same rule.
-      if (typeof (node as any).as === "string" && (node as any).as.startsWith("$")) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${(node as any).label || (node as any).node}): "as" must not name an engine-owned "$" state key ("${(node as any).as}")`);
+      // State keys that hold a `$` are engine-owned (`$host`, and a typed question's `<as>$answers` and `<as>$verify`): no node
+      // may write one, wherever the `$` is. A label is the state key whenever `as` is omitted, so labels are held to the same rule.
+      if (typeof (node as any).as === "string" && holdsDollar((node as any).as)) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${(node as any).label || (node as any).node}): "as" must not name an engine-owned "$" state key ("${(node as any).as}")`);
       // Only an unaliased generative or code node writes under its label; every other label is a name, not a key.
       const labelIsKey = ((node as any).node === "agent" || (node as any).node === "decide" || (node as any).node === "extract" || (node as any).node === "code") && (node as any).as === undefined;
-      if (labelIsKey && typeof (node as any).label === "string" && (node as any).label.startsWith("$")) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${(node as any).label}): label must not begin with "$" — an unaliased ${(node as any).node} node writes under its label, and "$" keys are engine-owned`);
+      if (labelIsKey && typeof (node as any).label === "string" && holdsDollar((node as any).label)) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${(node as any).label}): label must not contain "$" — an unaliased ${(node as any).node} node writes under its label, and "$" keys are engine-owned`);
     }
     switch (node.node) {
       case "chain":
@@ -1018,7 +1018,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         if (node.onItemFailure !== undefined && node.onItemFailure !== "stop" && node.onItemFailure !== "collect") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): onItemFailure must be "stop" or "collect"`);
         if (node.onItemFailure === "collect") {
           if (typeof node.failedAs !== "string" || !node.failedAs.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): onItemFailure "collect" needs failedAs, the state key the map writes its failed items under`);
-          else if (node.failedAs.startsWith("$")) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${node.label}): failedAs must not name an engine-owned "$" state key ("${node.failedAs}")`);
+          else if (holdsDollar(node.failedAs)) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${node.label}): failedAs must not name an engine-owned "$" state key ("${node.failedAs}")`);
           else if (node.failedAs === node.as) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): failedAs must differ from as: the map writes its results and its failed items under two keys`);
         } else if (node.failedAs !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${node.label}): failedAs is written only with onItemFailure "collect"`);
         if (containsReportNode(node.body)) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${node.label}): a report node cannot live inside a map body — the report is the workflow's ONE terminal rendering (a mapped copy lands in the item results, never at state.report_markdown)`);
@@ -2126,6 +2126,8 @@ const MAP_ITEM = Symbol("workflow.mapItem");
 type LocatedDeps = WorkflowDeps & { [EXECUTION_PATH]?: string; [SCOPED_EFFECTS]?: boolean; [MAP_ITEM]?: MapItem };
 /** The reserved state key host policy writes under. Engine-owned like every `$`-prefixed key: no node may name it. */
 export const HOST_STATE_KEY = "$host";
+/** Whether a state key is engine-owned: it holds a `$` (`$host`, `<as>$answers`, `<as>$verify`). No node may declare a write to one. */
+const holdsDollar = (key: string): boolean => key.includes("$");
 const hostStateOf = (state: Record<string, unknown>): Record<string, unknown> => {
   const host = state[HOST_STATE_KEY];
   return host && typeof host === "object" && !Array.isArray(host) ? host as Record<string, unknown> : {};
