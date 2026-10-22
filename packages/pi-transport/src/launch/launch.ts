@@ -194,6 +194,16 @@ function quote(word: string): string {
 	return `'${word.replaceAll("'", "'\\''")}'`;
 }
 
+/**
+ * What `launch` refuses about a launch name and spec, known before any box exists: the same `invalid` error `launch` would
+ * give, naming what is wrong and never a value, or undefined for a spec it accepts. Pure: it calls no box and does no I/O. A host
+ * that makes a box only to launch in it asks this first, so a bad spec never boots a machine. `launch` asks it first too.
+ * (What depends on the box, such as whether it can carry stdin or secrets, is `launch`'s own.)
+ */
+export function launchSpecError(name: string, spec: LaunchSpec): LaunchError | undefined {
+	return validate(name, spec);
+}
+
 function validate(name: string, spec: LaunchSpec | undefined): LaunchError | undefined {
 	if (!NAME_PATTERN.test(name))
 		return new LaunchError("invalid", `the launch name ${JSON.stringify(name)} is not a plain name`);
@@ -553,7 +563,8 @@ export async function launch(
 	spec: LaunchSpec,
 	context: Context,
 ): Promise<Result<LaunchState, LaunchError>> {
-	const invalid = validate(name, spec);
+	// The spec's own check, first: the same answer launchSpecError gives, with no call to the box.
+	const invalid = launchSpecError(name, spec);
 	if (invalid !== undefined) return err(invalid);
 	if (framed(spec)) {
 		const facts = box.facts();
