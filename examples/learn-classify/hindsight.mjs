@@ -242,7 +242,7 @@ export const ownWork = (r) => r.labelOnly === true && (r.reads?.other ?? 1) === 
 function evidenceOf(r, h, values) {
   const clean = (t) => values.filter((v) => v.length >= 4).reduce((out, v) => out.replace(new RegExp(escape(v), 'gi'), '[the case]'), t);
   const reads = r.reads ?? { record: 0, other: 0 };
-  const fixed = [`field: ${r.field}`, 'provenance: hindsight', `reflection reads: ${reads.record + reads.other} (record ${reads.record}, other ${reads.other})`, `input: ${r.labelOnly ? 'label-only digest' : 'digest with page text'}`];
+  const fixed = [`provenance: hindsight (field ${r.field})`, `reflection reads: ${reads.record + reads.other} (record ${reads.record}, other ${reads.other})`, `input: ${r.labelOnly ? 'label-only digest' : 'digest with page text'}`];
   const reasons = [`why: ${h.why}`, `where: ${h.whereReadable}`, `scope: ${h.scope}`, `mechanism: ${h.mechanism}`, `test: ${h.test}`].map(clean);
   const share = Math.floor((CAPS.evidence - fixed.reduce((n, f) => n + Buffer.byteLength(f), 0) - 16) / reasons.length);
   return [...fixed, ...reasons.map((item) => (Buffer.byteLength(item) > share ? `${Buffer.from(item).subarray(0, share - 3).toString('utf8').replace(/\uFFFD+$/, '')}...` : item))];

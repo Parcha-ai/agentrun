@@ -170,7 +170,7 @@ test('without tools the rules name none; record pages are known by the archived 
   const quiet = scriptedModel({ root: [{ call: 'answer', args: { hypotheses: HYPOTHESES } }] });
   const none = await reflect({ model: quiet, effects: [], storePath: join(dir, 'none.sqlite'), prompt: 'review' });
   assert.equal(none.hypotheses.length, 2);
-  assert.doesNotMatch(quiet.requests[0].systemPrompt, /fetch_page|read_document/);
+  assert.doesNotMatch(JSON.stringify(quiet.requests[0]), /fetch_page|read_document/, 'neither its rules nor its tools name them');
   for (const url of [INDEX, 'https://web.archive.org/web/2019/https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000000001',
     'https://web.archive.org/web/2023id_/https://data.sec.gov/submissions/CIK0000000001.json', 'https://web.archive.org/web/2026/https://www.sec.gov/Archives/edgar/data/1/0000000001-26-000001-index-headers.html']) assert.ok(recordPage(url), url);
   for (const url of ['https://web.archive.org/web/2026/https://www.sec.gov/Archives/edgar/data/1/000000000126000001/acme-10k.htm', 'https://www.sec.gov/Archives/edgar/data/1/0000000001-26-000001-index.htm',
