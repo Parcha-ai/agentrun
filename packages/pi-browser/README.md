@@ -10,8 +10,8 @@ Your agent gets its own browser, and you can take over and hand it back.
 
 If the process dies, a pi-durable host recovers the session and does not repeat an action. See [For hosts](#for-hosts).
 
-Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=22.19.0`, pi 1.1 and 1.2 (the
-coding-agent entry also runs on pi 1.0.4). ESM only: the
+Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=22.19.0`, pi 1.1 to 1.3 (the range of its
+pi-durable and chord peers; the coding-agent entry also runs on pi 1.0.4). ESM only: the
 package has `import` entries and no `require` entry.
 
 ## Install
@@ -19,9 +19,10 @@ package has `import` entries and no `require` entry.
 ```sh
 pi install npm:@parcha/pi-browser@beta    # the pi coding agent's extension
 npm install @parcha/pi-browser@beta       # the library: providers, driver, durable adapter
+npm install @parcha/pi-browser@beta @earendil-works/pi-durable@1.3.0 @earendil-works/chord@1.3.0 @earendil-works/pi-ai@1.3.0   # a pi-durable host: its peers, pinned to 1.3.0 (unpinned, npm takes 1.4.0 and stops with ERESOLVE)
 ```
 
-`pi install` loads the extension. A Chrome starts on the model's first browser call, and not before.
+`pi install` loads the extension. A Chrome starts on the model's first browser call, and not before. pi 1.4 is not supported yet; a later release widens the range.
 
 ## Quick start
 
