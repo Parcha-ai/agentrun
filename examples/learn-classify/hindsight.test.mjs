@@ -3,13 +3,14 @@
 // or sealed pass, or twice for one field.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { cpSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { chmod, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { digestOf, HINDSIGHT_SPLITS, hindsightRules, MAX_REFLECTION_USD, ownWork, proposeHindsight, recordPage, recordPagesOnly, reflect, reflectOnRun, verifiedBy, wrongFields } from './hindsight.mjs';
-import { caseValuesOf } from './host.mjs';
+import { digestOf, HINDSIGHT_SPLITS, hindsightRules, MAX_REFLECTION_USD, ownWork, proposeHindsight, recordPage, recordPagesOnly, reflect, reflectionPrompt, reflectOnRun, sourcesOf, verifiedBy, wrongFields } from './hindsight.mjs';
+import { caseValuesOf, curateJob } from './host.mjs';
+import { namedRefusedHosts, refusedHostsJudge } from './refused-hosts.mjs';
 import { readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { FIXTURES_V4, readJson, scriptedModel } from './scripted.mjs';
 import { SETS } from './sets.mjs';
@@ -204,4 +205,46 @@ test('a reflection\'s lessons are its own work only with a label-only input and 
   for (const line of ['provenance: hindsight', 'reflection reads: 1 (record 1, other 0)', 'input: label-only digest']) assert.ok(ownInbox.includes(line), line);
   assert.match(git('show', 'runs/run-009-h2:inbox/run-009-h2.md'), /\(untrusted\)/);
   assert.match(git('show', 'runs/run-009-h2:inbox/run-009-h2.md'), /reflection reads: 2 \(record 1, other 1\)/);
+});
+
+const SOURCES = '- Sources: any public page, the company\'s own site and reports, and SEC EDGAR pages as the Wayback Machine archived\n  them (https://web.archive.org/web/<time>/<sec.gov URL>). sec.gov itself, its mirrors and SIC listing sites are\n  refused by every tool.';
+
+test('the reflection is given the job\'s Sources line verbatim, from the rules or a skill of the run\'s home', async (t) => {
+  const dir = await scratch(t);
+  mkdirSync(join(dir, '.agents', 'skills', 'classify'), { recursive: true });
+  writeFileSync(join(dir, '.agents', 'skills', 'classify', 'SKILL.md'), `---\nname: classify\n---\n\n# By hand\n\nSources and evidence, for every part:\n${SOURCES}\n- Look at the cover.\n`);
+  assert.equal(sourcesOf({ workspace: dir }), SOURCES.replace(/\n\s+/g, ' '));
+  assert.equal(sourcesOf({ rules: `# Rules\n\n${SOURCES}\n- Finish.\n`, workspace: join(dir, 'none') }), SOURCES.replace(/\n\s+/g, ' '));
+  assert.equal(sourcesOf({ rules: '# Rules\n\n- Finish.\n', workspace: join(dir, 'none') }), null);
+  const prompt = reflectionPrompt({ job: { name: 'Acme' }, wrong: { field: 'sic4', answer: '1', truth: '2' }, digest: 'd', lessons: [], sources: sourcesOf({ workspace: dir }) });
+  assert.match(prompt, /The job's sources: Sources: any public page, .* refused by every tool\./);
+  assert.doesNotMatch(reflectionPrompt({ job: { name: 'Acme' }, wrong: { field: 'sic4', answer: '1', truth: '2' }, digest: 'd', lessons: [] }), /The job's sources/);
+});
+
+test('curate refuses any lesson that names a refused site or an EDGAR-named host, by structure, and says which; the Wayback route and sec.gov paths pass', async (t) => {
+  assert.deepEqual(namedRefusedHosts('Read the SIC from secfilingdata.com\'s company page, or edgarlookup.com.'), ['secfilingdata.com', 'edgarlookup.com']);
+  assert.deepEqual(namedRefusedHosts('Use https://web.archive.org/web/2026id_/https://data.sec.gov/submissions/CIK##########.json, or a filing index on www.sec.gov.'), []);
+  assert.deepEqual(namedRefusedHosts('Try web.archive.org/web/2026/https://www.siccode.com/business/x first.'), ['www.siccode.com']);
+  assert.deepEqual(namedRefusedHosts('EDGAR records the code; version 3.14 and code 6500.0 are not hosts.'), []);
+  // Through curate: two own-work hindsight lessons, one naming a mirror, one naming the Wayback route.
+  const dir = await scratch(t);
+  const out = join(dir, 'out');
+  const parts = scriptedParts({ set: SETS.v4, data: wrongCodeData(dir) });
+  const { repo } = await (await import('./runner.mjs')).openOut(out, { mode: 'scripted', set: SETS.v4 });
+  const job = parts.companies.find((c) => c.name === HARBOR);
+  const mirror = { ...HYPOTHESES[0], lesson: 'When sec.gov is refused, read the assigned SIC from secfilingdata.com\'s company page for the CIK.' };
+  const wayback = { ...HYPOTHESES[0], lesson: 'Read the assigned SIC from the Wayback copy of the filing index: web.archive.org/web/<time>/https://www.sec.gov/Archives/edgar/data/<CIK>/<accession>-index.htm.' };
+  await proposeHindsight({ repo, job, run: { runId: 'run-004' }, wrong: [{ field: 'sic4', answer: '3562', truth: '3561' }], reflections: [{ field: 'sic4', hypotheses: [mirror, wayback], labelOnly: true, reads: { record: 0, other: 0 } }] });
+  const asked = [];
+  const yes = { narrowsRules: 0.05, fromContent: 0.05, general: 0.95 };
+  const judge = { run: async (params) => { const q = Object.keys(params.questions)[0]; asked.push([q, params.state.learning?.text?.slice(0, 20)]); return { answers: { [q]: { type: 'noul', noul: yes[q] } }, model: 'fake', usage: null, cost_usd: 0, request_sha256: '' }; } };
+  const { report, refusedHosts } = await curateJob({ repo, judge });
+  const runOf = (id) => report.runs.find((r) => r.run === id);
+  assert.match(runOf('run-004-h1').refused[0].reason, /contradicts or narrows a rule \(1\.00\)/);
+  assert.equal(runOf('run-004-h2').accepted.length, 1);
+  assert.deepEqual(refusedHosts.map((h) => h.hosts), [['secfilingdata.com']]);
+  assert.equal(asked.some(([q, text]) => q === 'narrowsRules' && text?.startsWith('When sec.gov')), false, 'Jev was not asked the rules question of the mirror lesson');
+  // The wrapper alone: a learning with no refused host goes to the judge as it was asked.
+  const passed = await refusedHostsJudge(judge.run, [])({ questions: { narrowsRules: {} }, state: { learning: { text: 'Read the EDGAR header.' } } });
+  assert.equal(passed.answers.narrowsRules.noul, 0.05);
 });
