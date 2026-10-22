@@ -873,6 +873,10 @@ before it makes a box to launch in.
   - on every mount without `nosuid`, it can run no setuid or setgid root file and no file with capabilities. Each file is
     found as root and tested as the tools user, so a directory it can pass through but not list hides nothing. Else the
     launch is `refused`, naming up to five; a box without `getcap` is `unsupported`.
+  - the check fails closed: `find` and `getcap` must each report a probe it plants (empty, root's, in the launch's own
+    root-only directory, removed before anything runs as the tools user), the tools user's test must pass on its own
+    shell, and a walk that fails on a mount, or finds no mount to walk, is `unsupported`. The image needs `getcap` and
+    `setcap` (Debian's `libcap2-bin`).
   The program gets `PI_TRANSPORT_TOOLS_USER` and `PI_TRANSPORT_TOOLS_UID`; the state reports `toolsUser: { name, uid }`.
 - What `toolsUser` means is the HOST'S guarantee: the program runs everything it does not trust as that user, with no
   capabilities, no supplementary groups and none of its own descriptors (fd 3 and its stdin included), as disk's own
