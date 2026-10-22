@@ -279,15 +279,66 @@ test("only the newest uses are kept, and a long run of them never reaches the fi
   assert.deepEqual(parseTrial(renderTrial(trial), "audit"), trial);
 });
 
-test("a name holds a bounded number of revisions, and admission stops at the bound instead of forgetting a demoted one", () => {
-  let trial = admit(undefined, "a", 1);
-  for (let i = 1; i < TRIAL_LIMITS.revisions; i += 1) {
-    const digest = i.toString(16).padStart(64, "0");
-    const admitted = admitRevision(trial, { name: "audit", sha256: digest, run: "w", at: at(1, i % 60), when: WHEN });
-    assert.equal(admitted.status, "admitted");
-    trial = admitted.trial;
+const digestOf = (i) => (i + 1).toString(16).padStart(64, "0");
+const stamp = (i, k) => at(1 + Math.floor(i / 20), (i % 20) * 3 + k);
+/** A stream that tries `n` revisions in turn, each admitted and then demoted by two failed uses from other runs. */
+function churned(n) {
+  let trial;
+  for (let i = 0; i < n; i += 1) {
+    const admitted = admitRevision(trial, { name: "audit", sha256: digestOf(i), run: "w", at: stamp(i, 0), when: WHEN });
+    assert.equal(admitted.status, "admitted", `revision ${i}: ${admitted.detail ?? ""}`);
+    const fail = (k) => ({ run: `x${i}-${k}`, sha256: digestOf(i), outcome: "failed", at: stamp(i, k) });
+    trial = foldUses(admitted.trial, [fail(1), fail(2)]).trial;
+    assert.equal(trial.revisions.find((r) => r.sha256 === digestOf(i)).status, "demoted");
   }
-  const over = admitRevision(trial, { name: "audit", sha256: "f".repeat(64), run: "w", at: at(23), when: WHEN });
+  return trial;
+}
+
+test("a stream that demotes as many revisions as a name holds can still admit a new one and promote it: retired and demoted revisions are no slots", () => {
+  const trial = churned(TRIAL_LIMITS.revisions);
+  assert.deepEqual([trial.status, trial.revisions.length], ["demoted", TRIAL_LIMITS.revisions]);
+  const fresh = "f".repeat(64);
+  const admitted = admitRevision(trial, { name: "audit", sha256: fresh, run: "w", at: at(9), when: WHEN });
+  assert.equal(admitted.status, "admitted", admitted.detail);
+  assert.ok(admitted.trial.revisions.length <= TRIAL_LIMITS.revisions);
+  assert.ok((admitted.trial.refused ?? []).includes(digestOf(0)), "the oldest demoted digest is kept as a refusal");
+  assert.deepEqual(parseTrial(renderTrial(admitted.trial), "audit"), admitted.trial, "the trial still renders and reads back");
+  const clean = Array.from({ length: PROMOTION_DEFAULTS.promoteAfter }, (_, k) => ({ run: `c${k}`, sha256: fresh, outcome: "frozen", at: at(9, k + 1) }));
+  const promoted = foldUses(admitted.trial, clean).trial;
+  assert.deepEqual([promoted.status, promoted.revisions.find((r) => r.sha256 === fresh).status], ["active", "active"]);
+});
+
+test("a demoted digest saved again is refused, whether the trial still holds it or keeps it only as a refusal", () => {
+  const fresh = "f".repeat(64);
+  const admitted = admitRevision(churned(TRIAL_LIMITS.revisions), { name: "audit", sha256: fresh, run: "w", at: at(9), when: WHEN }).trial;
+  assert.deepEqual(admitted.revisions.map((r) => r.sha256), [fresh], "every demoted revision left for the refusals");
+  assert.equal(admitted.refused.length, TRIAL_LIMITS.revisions);
+  const fail = (k) => ({ run: `z${k}`, sha256: fresh, outcome: "failed", at: at(10, k) });
+  const demoted = foldUses(admitted, [fail(1), fail(2)]).trial;
+  assert.equal(demoted.revisions[0].status, "demoted");
+  for (const digest of [digestOf(0), digestOf(TRIAL_LIMITS.revisions - 1), fresh]) {
+    const again = admitRevision(demoted, { name: "audit", sha256: digest, run: "w", at: at(11), when: WHEN });
+    assert.deepEqual([again.status, again.reason], ["refused", "demoted"], digest);
+  }
+  // The next new revision moves the newly demoted one to the refusals too, and stays compact.
+  const next = admitRevision(demoted, { name: "audit", sha256: "e".repeat(64), run: "w", at: at(12), when: WHEN });
+  assert.equal(next.status, "admitted");
+  assert.deepEqual([next.trial.revisions.map((r) => r.sha256), next.trial.refused.at(-1)], [["e".repeat(64)], fresh]);
+  assert.deepEqual(parseTrial(renderTrial(next.trial), "audit"), next.trial);
+});
+
+test("a short stream's trial is exactly as before: no refusals until the name would hold more than the limit", () => {
+  const trial = churned(TRIAL_LIMITS.revisions - 1);
+  const admitted = admitRevision(trial, { name: "audit", sha256: "f".repeat(64), run: "w", at: at(9), when: WHEN }).trial;
+  assert.equal(admitted.revisions.length, TRIAL_LIMITS.revisions);
+  assert.equal("refused" in admitted, false);
+});
+
+test("the limit still binds on the revisions a name keeps live or restorable", () => {
+  // Not a trial pi-agent-learn writes (it keeps at most a few superseded): one built to the bound, to show it holds.
+  const revisions = Array.from({ length: TRIAL_LIMITS.revisions }, (_, i) => ({ sha256: digestOf(i), status: i === TRIAL_LIMITS.revisions - 1 ? "active" : "superseded", since: stamp(i, 0), run: "w", after: 0 }));
+  const full = { name: "audit", status: "active", when: WHEN, revisions, uses: [] };
+  const over = admitRevision(full, { name: "audit", sha256: "f".repeat(64), run: "w", at: at(9), when: WHEN });
   assert.deepEqual([over.status, over.reason], ["refused", "limit"]);
 });
 
