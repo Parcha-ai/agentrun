@@ -860,8 +860,13 @@ describe("archilPlace unheld: a hook in the start window, while nobody holds the
     const h2 = fakeHost(c2);
     let kept: UnheldRun | undefined;
     const p2 = makePlace({ ...REF, control: c2, host: h2.host, ensure: OWNER, unheldTimeoutMs: 50, unheld: (r: UnheldRun) => { kept = r; return new Promise<void>(() => {}); } });
+    const token = await p2.token!(1);
+    const unbounded = new Error("the start was still waiting on its hook 5 s after a 50 ms bound");
     const t0 = Date.now();
-    await assert.rejects(p2.start({ gen: 1, env: {}, stdin: await p2.token!(1) }), startFails("UNHELD_FAILED", /50 ms/));
+    await assert.rejects(Promise.race([p2.start({ gen: 1, env: {}, stdin: token }), sleep(5_000).then(() => { throw unbounded; })]), (e: unknown) => {
+      assert.notEqual(e, unbounded, "the bound ends the wait");
+      return startFails("UNHELD_FAILED", /50 ms/)(e);
+    });
     assert.ok(Date.now() - t0 < 5_000, "the bound ends the wait");
     assert.ok(kept!.signal.aborted, "the hook's signal aborts at its bound");
     const before = c2.allPuts.length;
