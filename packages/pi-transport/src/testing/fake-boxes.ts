@@ -472,6 +472,14 @@ function launchError(error: BoxError): LaunchError {
 const viaBox = <T>(result: Result<T, BoxError>): Result<T, LaunchError> =>
 	result.ok ? result : err(launchError(result.error));
 
+/** The tools user a launch names, as the launcher reports it: a numeric uid keeps its number, a name gets uid 1000 in the fake. */
+const toolsUserOf = (toolsUser: string | undefined): { readonly name: string; readonly uid: number } | undefined =>
+	toolsUser === undefined
+		? undefined
+		: /^[0-9]+$/.test(toolsUser)
+			? { name: `user${toolsUser}`, uid: Number(toolsUser) }
+			: { name: toolsUser, uid: 1000 };
+
 /** A launch spec as it was when the call arrived: a later change to the caller's objects must not rewrite it. */
 const copyLaunchSpec = (spec: LaunchSpec): LaunchSpec => ({
 	...spec,
@@ -1048,6 +1056,7 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 		}
 
 		#state(phase: LaunchState["phase"]): LaunchState {
+			const tools = toolsUserOf(this.spec.toolsUser);
 			return {
 				launch: { v: 1, name: this.name },
 				phase,
@@ -1056,6 +1065,7 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 				...(this.spec.user === undefined
 					? {}
 					: { user: { name: this.spec.user, uid: Number(this.spec.user) || 1000 } }),
+				...(tools === undefined ? {} : { toolsUser: tools }),
 				...(phase === "running" ? { pid: 4000 + this.#incarnation } : {}),
 				starts: this.#starts,
 				...(this.#lastExit === undefined ? {} : { lastExit: this.#lastExit }),
@@ -1104,6 +1114,12 @@ export function fakeBoxes(options: FakeBoxesOptions = {}): FakeProvider {
 			const env: Record<string, string> = {
 				LANG: "C.UTF-8",
 				PI_TRANSPORT_INCARNATION: String(n),
+				...(toolsUserOf(this.spec.toolsUser) === undefined
+					? {}
+					: {
+							PI_TRANSPORT_TOOLS_USER: toolsUserOf(this.spec.toolsUser)?.name ?? "",
+							PI_TRANSPORT_TOOLS_UID: String(toolsUserOf(this.spec.toolsUser)?.uid ?? ""),
+						}),
 				...(this.spec.env ?? {}),
 				...(this.spec.secrets === undefined ? {} : { PI_TRANSPORT_SECRETS_FD: "3" }),
 			};
