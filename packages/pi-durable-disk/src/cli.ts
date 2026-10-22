@@ -218,7 +218,7 @@ export function runUser(spec: string, passwd = "/etc/passwd"): { uid: number; gi
 export function appWritableReason(
   app: string,
   runRoot: string,
-  fs: AppFs = { lstatSync, readlinkSync, mounts: instanceMounts },
+  fs: AppFs = INSTANCE_FS,
 ): string | null {
   const root = resolve(runRoot);
   let table: readonly MountRow[] | undefined;
@@ -271,14 +271,14 @@ export function appWritableReason(
   }
 }
 
-type AppFs = {
+export type AppFs = {
   lstatSync(p: string): { uid: number; mode: number };
   readlinkSync(p: string): string;
   mounts?(): readonly MountRow[];
 };
 
 /** A mount: where it is, whether it is read-only (its own options or its superblock's), and its source (device, root). */
-type MountRow = { point: string; ro: boolean; dev: string; root: string };
+export type MountRow = { point: string; ro: boolean; dev: string; root: string };
 
 /** Each mount of a mountinfo table, in its order. */
 export function mountInfo(text: string): MountRow[] {
@@ -301,13 +301,16 @@ const overlaps = (a: string, b: string): boolean => a === b || a === "/" || b ==
  * The instance's own mounts (`/proc/self`, read at its start, before any of the agent's commands exists), never a
  * command's; none when the table cannot be read, so nothing is taken as read-only.
  */
-export function instanceMounts(): MountRow[] {
+export function instanceMounts(read: (path: string) => string = (path) => readFileSync(path, "utf8")): MountRow[] {
   try {
-    return mountInfo(readFileSync("/proc/self/mountinfo", "utf8"));
+    return mountInfo(read("/proc/self/mountinfo"));
   } catch {
     return [];
   }
 }
+
+/** What the walk reads by default: this machine's files, and the instance's own mounts. */
+export const INSTANCE_FS: AppFs = { lstatSync, readlinkSync, mounts: () => instanceMounts() };
 
 /**
  * Transport's launcher hands a program its secrets on one descriptor, named by `PI_TRANSPORT_SECRETS_FD`, which is not
