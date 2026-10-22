@@ -9,7 +9,15 @@ const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const RESERVED_ENV_PREFIX = "PI_TRANSPORT_";
 /** The names the launcher sets for every incarnation itself. */
-const LAUNCHER_ENV = new Set(["PATH", "HOME", "LANG", "PI_TRANSPORT_INCARNATION", "PI_TRANSPORT_SECRETS_FD"]);
+const LAUNCHER_ENV = new Set([
+	"PATH",
+	"HOME",
+	"LANG",
+	"PI_TRANSPORT_INCARNATION",
+	"PI_TRANSPORT_SECRETS_FD",
+	"PI_TRANSPORT_TOOLS_USER",
+	"PI_TRANSPORT_TOOLS_UID",
+]);
 /** A user name or a numeric uid, as `user` names one. */
 const USER_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,31}$/;
 /** The most a launch's stdin, or its secrets as JSON, may be: each part of the frame, decoded. */
@@ -78,6 +86,14 @@ export type LaunchSpec = {
 	readonly inheritEnv?: false | readonly string[];
 	/** Who the program runs as: a user name or a numeric uid. */
 	readonly user?: string;
+	/**
+	 * The user a program run as root (no `user` on a root launcher, "root" or uid 0) runs everything it does not trust as: the user
+	 * disk's --run-as names. A launch with stdin or secrets runs its program as root only with one. The launcher verifies it in the
+	 * box before it reads the frame: it exists, is not root, has not the root group, has no sudo rule, and can run no setuid or
+	 * setgid root file and no file with capabilities; the rest is the host's guarantee (README, "toolsUser"). The program gets its
+	 * name and uid in PI_TRANSPORT_TOOLS_USER and PI_TRANSPORT_TOOLS_UID.
+	 */
+	readonly toolsUser?: string;
 	/** Bytes written to every incarnation's stdin, then closed, held only in the launcher's memory. */
 	readonly stdin?: Uint8Array;
 	/** Secrets for every incarnation, on the fd named by PI_TRANSPORT_SECRETS_FD, held only in the launcher's memory. */
@@ -109,6 +125,8 @@ export type LaunchState = {
 	readonly restarts: number;
 	/** The user the program runs as, when the launch named one: never a secret. */
 	readonly user?: { readonly name: string; readonly uid: number };
+	/** The tools user the launcher verified, when the launch named one. */
+	readonly toolsUser?: { readonly name: string; readonly uid: number };
 	/** The process group leader of the running program's wrapper; absent unless `running`. */
 	readonly pid?: number;
 	/** How many times the program was started. */
@@ -156,7 +174,7 @@ const CLAIM_SCRIPT = [
  * lives beside the directory, and only if the directory still holds what the caller saw; every other caller is told
  * BUSY, CHANGED or YOUNG and looks again. A lock older than two minutes belongs to a caller that died.
  */
-const RECLAIM_SCRIPT = [
+export const RECLAIM_SCRIPT = [
 	// The lock is beside the launch directories under a name no launch can have: a launch name starts with a letter or digit.
 	'D=$1; E=$2; A=$3; T=$4; L="${D%/*}/.lock.${D##*/}"',
 	'if ! mkdir "$L" 2>/dev/null; then',
@@ -175,6 +193,8 @@ const RECLAIM_SCRIPT = [
 	'  rm -rf "$D"; mkdir -m 700 "$D" || { rm -rf "$L"; echo FAILED; exit 0; }',
 	"else",
 	// Only an ended launch is cleared: one that has a generation and no state yet is starting.
+	// Nor one a stop is still ending: its hook may still be running.
+	'  if [ -e "$D/stop.claimed" ] && [ ! -e "$D/stop.done" ]; then rm -rf "$L"; echo STOPPING; exit 0; fi',
 	`  ph=$(sed -n 's/.*"phase":"\\([a-z_]*\\)".*/\\1/p' "$D/state" 2>/dev/null)`,
 	'  case "$ph" in exited|gave_up|stopped) ;; *) rm -rf "$L"; echo CHANGED; exit 0 ;; esac',
 	'  sh "$D/launcher.sh" clear "$D" || { rm -rf "$L"; echo FAILED; exit 0; }',
@@ -244,12 +264,24 @@ function validate(name: string, spec: LaunchSpec | undefined): LaunchError | und
 	}
 	if (spec.user !== undefined && (typeof spec.user !== "string" || !USER_PATTERN.test(spec.user)))
 		return new LaunchError("invalid", "user is a user name or a numeric uid");
-	// A launch that holds stdin or secrets must not run its program as root: it would share the root launcher's memory and files,
-	// the reason such a launch names a user at all. (A name that resolves to uid 0 in the box is refused there.)
-	if (framed(spec) && spec.user !== undefined && (spec.user === "root" || /^0+$/.test(spec.user)))
+	if (spec.toolsUser !== undefined) {
+		if (typeof spec.toolsUser !== "string" || !USER_PATTERN.test(spec.toolsUser))
+			return new LaunchError("invalid", "toolsUser is a user name or a numeric uid");
+		if (isRoot(spec.toolsUser))
+			return new LaunchError("invalid", `the tools user ${spec.toolsUser} is root (uid 0): a tools user never is`);
+		if (spec.user !== undefined && !isRoot(spec.user))
+			return new LaunchError(
+				"invalid",
+				`toolsUser goes only with a program run as root (no user, "root" or uid 0): this launch runs it as ${spec.user}`,
+			);
+	}
+	// A launch that holds stdin or secrets runs its program as root only with a tools user: as root it shares the root launcher's
+	// memory and files, so what keeps the secrets is that everything untrusted runs as another uid. (A name that resolves to uid 0
+	// in the box, and a tools user beside a program that is not root, are refused there.)
+	if (framed(spec) && spec.user !== undefined && isRoot(spec.user) && spec.toolsUser === undefined)
 		return new LaunchError(
 			"invalid",
-			"a launch with stdin or secrets never runs its program as root (uid 0): name another user",
+			"a launch with stdin or secrets runs its program as root (uid 0) only with a toolsUser: name the user its tools run as, or run it as another user",
 		);
 	if (spec.stdin !== undefined) {
 		if (!(spec.stdin instanceof Uint8Array)) return new LaunchError("invalid", "stdin is bytes (a Uint8Array)");
@@ -324,6 +356,7 @@ export function specScript(spec: LaunchSpec, isolation: string): string {
 		// A launch with stdin or secrets is FRAMED: they come on the start's stdin and live only in the launcher's memory.
 		`FRAMED=${framed(spec) ? 1 : 0}`,
 		`RUNAS=${quote(spec.user ?? "")}`,
+		`TOOLS=${quote(spec.toolsUser ?? "")}`,
 		// The box's isolation: on a vm the launcher may raise the ptrace scope a framed launch needs.
 		`ISOLATION=${quote(isolation)}`,
 		`HOOK=${spec.beforeStop === undefined ? 0 : 1}`,
@@ -340,6 +373,12 @@ export function specScript(spec: LaunchSpec, isolation: string): string {
 		'    read -r u_name u_id u_gid u_how u_home < "$D/user"',
 		"  fi",
 	);
+	// The tools user the launcher verified, from its record ($D/tools): a launch that names one whose record is gone FAILS.
+	if (spec.toolsUser !== undefined)
+		lines.push(
+			'  [ -r "$D/tools" ] || { echo "the launch names the tools user $TOOLS, and the launcher\'s record of it is gone: refused" >&2; exit 126; }',
+			'  read -r t_name t_uid t_gid < "$D/tools"',
+		);
 	// Nothing of the launcher's own environment (the box runtime's) reaches the program but the names it asks for: every
 	// exported name is unset, by the names awk lists, and one the shell cannot unset refuses the incarnation. Values never
 	// go through an argv.
@@ -357,6 +396,8 @@ export function specScript(spec: LaunchSpec, isolation: string): string {
 	);
 	// The secrets are on fd 3, made for this incarnation from the launcher's memory: only the number is in the environment.
 	if (spec.secrets !== undefined) lines.push("  export PI_TRANSPORT_SECRETS_FD=3");
+	if (spec.toolsUser !== undefined)
+		lines.push('  export PI_TRANSPORT_TOOLS_USER="$t_name"', '  export PI_TRANSPORT_TOOLS_UID="$t_uid"');
 	if (spec.user !== undefined) lines.push('  export HOME="$u_home"');
 	// The program's settings come last, and none can name a launcher variable (LAUNCHER_SHELL_NAMES, refused), so what is read
 	// below is the launcher's own.
@@ -436,8 +477,10 @@ function parseState(text: string, directory: string): LaunchState | "none" | und
 			lastExit: number | null;
 			since: number;
 		};
-		const lost = !alive && !TERMINAL_PHASES.has(raw.phase) && text.includes("ALIVE ");
+		// A launch being stopped has no supervisor by design: it is stopping, not lost.
+		const lost = !alive && !TERMINAL_PHASES.has(raw.phase) && raw.phase !== "stopping" && text.includes("ALIVE ");
 		const user = /^USER (\S+) (\d+)$/m.exec(text);
+		const tools = /^TOOLS (\S+) (\d+)$/m.exec(text);
 		return {
 			launch: { v: 1, name: directory.slice(directory.lastIndexOf("/") + 1) },
 			phase: lost ? "lost" : raw.phase,
@@ -449,6 +492,7 @@ function parseState(text: string, directory: string): LaunchState | "none" | und
 			since: raw.since,
 			launcherAlive: alive,
 			...(user ? { user: { name: user[1]!, uid: Number(user[2]) } } : {}),
+			...(tools ? { toolsUser: { name: tools[1]!, uid: Number(tools[2]) } } : {}),
 			directory,
 		};
 	} catch {
@@ -477,7 +521,8 @@ async function directoryOf(
 }
 
 /** What a directory holds: the state, or "none" for a claim nobody filled, and the generation of the launch (empty for none). */
-type Seen = { readonly state: LaunchState | "none"; readonly gen: string };
+/** `stop`: a stop is under way, with how long it may still take (centiseconds), or `late`: its owner is past its deadline. */
+type Seen = { readonly state: LaunchState | "none"; readonly gen: string; readonly stop?: number | "late" };
 
 async function readSeen(box: Box, directory: string, context: Context): Promise<Result<Seen, LaunchError>> {
 	const answered = await runScript(
@@ -496,7 +541,12 @@ async function readSeen(box: Box, directory: string, context: Context): Promise<
 	if (state === undefined)
 		return err(new LaunchError("failed", `the launcher's state in box ${box.id} cannot be read`));
 	const gen = answered.value.text.split("\n").find((line) => line.startsWith("GEN "));
-	return ok({ state, gen: gen === undefined ? "" : gen.slice(4).trim() });
+	const stop = /^STOP (late|\d+)$/m.exec(answered.value.text)?.[1];
+	return ok({
+		state,
+		gen: gen === undefined ? "" : gen.slice(4).trim(),
+		...(stop === undefined ? {} : { stop: stop === "late" ? ("late" as const) : Number(stop) }),
+	});
 }
 
 async function readState(
@@ -526,6 +576,8 @@ async function waitForStart(box: Box, directory: string, context: Context): Prom
 
 /** Whether a launch carries stdin or secrets, which only a box with a real stdin path can take. */
 const framed = (spec: LaunchSpec): boolean => spec.stdin !== undefined || spec.secrets !== undefined;
+/** A user name or uid that is root's: "root", or a uid of zeros. (Another name for uid 0 is found in the box.) */
+const isRoot = (user: string): boolean => user === "root" || /^0+$/.test(user);
 
 /**
  * The launch frame, on the stdin of the one exec that starts the launcher: a magic line, then the secrets as JSON and the
@@ -598,6 +650,14 @@ export async function launch(
 		if (claimed.value.claimed) break;
 		const seen = await readSeen(box, directory, context);
 		if (!seen.ok) return seen;
+		// A stop of this name is under way: the start waits for its end, bounded by the stop's own deadline, and never runs
+		// beside its hook. A stop past its deadline died: another stop takes it over.
+		const stopping = seen.value.stop;
+		if (stopping === "late") return err(new LaunchError("failed", `a stop of ${name} did not finish: stop it again`));
+		if (stopping !== undefined) {
+			await new Promise((resolve) => setTimeout(resolve, Math.min(Math.max(stopping * 10, POLL_MS), 500)));
+			continue;
+		}
 		const existing = seen.value.state;
 		// A filled launcher that has not written its state yet is starting, not abandoned.
 		if (existing === "none" && seen.value.gen !== "") return waitForStart(box, directory, context);

@@ -84,6 +84,10 @@ class FakeSandbox implements ModalSandbox {
 		return this.exitCode;
 	}
 
+	async setTags(tags: Record<string, string>): Promise<void> {
+		this.params.tags = { ...tags };
+	}
+
 	async getTags(): Promise<Record<string, string>> {
 		return { ...this.params.tags };
 	}
