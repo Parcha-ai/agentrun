@@ -232,8 +232,11 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
   const driver = options.key;
   const controller = new AbortController();
   let fatal: unknown;
-  /** A pause or cancel was applied: its commit still lands, and nothing after it. */
+  /** A pause or cancel was applied: its commit is still made, and no admission after it. */
   let stopping = false;
+  /** A commit the store refused after a pause or cancel was applied (the stop's own, say): the stop is not durable, the
+   *  journal still reads as it did, and the host hears it from `flush` and `close`. */
+  let refusedAfterStop: unknown;
   const journal: RecoveryJournal = await store.open(bound);
   /** Whether the store keeps parts beside the state: the keyed layout needs both reads. */
   const keyed = typeof journal.items === "function" && typeof journal.stateOf === "function";
@@ -515,11 +518,14 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
   let chain: Promise<unknown> = Promise.resolve();
   const persist = <T>(write: () => Promise<T>): Promise<T> => {
     const next = chain.then(() => { if (fatal && !stopping) throw fatal; return write(); });
-    chain = next.catch((error) => { if (!fatal) { fatal = error; controller.abort(error); } });
+    chain = next.catch((error) => {
+      if (!fatal) { fatal = error; controller.abort(error); }
+      else if (stopping && refusedAfterStop === undefined) refusedAfterStop = error;
+    });
     return next;
   };
-  /** Every commit the driver started has landed; a failed one is thrown. */
-  const flush = async () => { await chain; if (fatal && !stopping) throw fatal; };
+  /** Every commit the driver started has landed; a failed one is thrown, a pause's or a cancel's own commit included. */
+  const flush = async () => { await chain; if (refusedAfterStop !== undefined) throw refusedAfterStop; if (fatal && !stopping) throw fatal; };
   try {
     // A driver an earlier process bound, with no checkpoint, is a run killed between its binding and its first
     // checkpoint when the journal holds nothing else of it: it never started, and it starts now. One with effects and
@@ -1088,9 +1094,12 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         } finally { settled(); }
       };
     },
-    /** Every commit the driver started has landed; a failed one is thrown. */
+    /** Every commit the driver started has landed; a failed one is thrown, a pause's or a cancel's own commit included. */
     flush,
-    /** Let go of the run once every commit the driver started has landed. */
-    async close() { await chain; await journal.close(); },
+    /** Let go of the run once every commit the driver started has landed. A commit the store refused after a pause or
+     *  cancel is thrown once the journal is released: the stop is not durable, and the host must not take the run as
+     *  stopped. It is thrown even when a later stop's commit lands, since a later commit does not carry every record the
+     *  refused one held. A run's own failed commit is the run's failure and is not thrown again here. */
+    async close() { await chain; await journal.close(); if (refusedAfterStop !== undefined) throw refusedAfterStop; },
   };
 }
