@@ -95,7 +95,7 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
 - `gpu: "T4"` works on the default sandbox only; a GPU with `isolation: "vm"` is refused with `invalid`. `facts().gpu` is the model
   served, read in the box with `nvidia-smi` (a bare `H100` may be served an H200; `H100!` pins the type): one name for identical
   cards, every model, in the order first seen and joined by ` + `, for a mixed box (`NVIDIA A100 + NVIDIA H100 80GB HBM3`). The request stays what the caller passed. A box that asked for a GPU and
-  reports none fails the create and is ended; the same read runs on attach, where a failure is an error and the sandbox is left running (attach never ends a box it did not just make).
+  reports none fails the create and is ended. On attach the read runs again and the box is handed back whatever it says (see "Attach never fails a live sandbox"): a model named is the fact, none named reads `gpu: null` and the caller ends the box through the handle, and when every try errs the handle keeps the model measured at create (from the tag), or the attach is an error for a box whose tag has none.
 - A `snapshot` and any `isolation` but `gvisor` or `vm` are refused with `unsupported`; a label key that is `pi-transport` or starts
   with `pi-transport.` is refused with `invalid`; every box carries `pi-transport=1` as its own tag. No other field of the spec is ignored.
 - `network: "none"` blocks all traffic from the box. `network: { allow: ["api.example.com", "*.example.com", "10.0.0.0/8"] }`
@@ -109,6 +109,13 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
   the device for other users). `facts().fuse` is `true` only after that check; a box that fails it is ended and the create fails,
   naming what is missing. It does not prove a given FUSE program mounts, only that the device is there for root. `fuse` with
   `isolation: "gvisor"` is refused with `unsupported`, and with a `gpu` with `invalid`.
+- **Attach never fails a live sandbox and never ends it.** A box found again by `attach` is always handed back, and the caller ends it
+  through the handle if its facts do not fit. The facts are read in the box again (a failed read is tried three times, with a pause).
+  A read that answers gives the facts as measured, so a box with no usable FUSE reads `fuse: false`. If every try errs, the handle
+  keeps the hardware the create measured (the disk, whether FUSE works), which is kept in a tag set through Modal's API: nothing
+  inside the box can write it. A security fact (the Yama setting, the network, the ports) is never taken from a tag on a read error: it is
+  left out, unknown. A box made before the tag existed has nothing measured to fall back on: if every try errs, the attach is an error (the box keeps running; try
+  again), never a guess given as measured. `attach` returns `undefined` for a box that does not exist or has ended.
 - `facts()` also reports what the box has, read in it: `diskGb` (the workspace's filesystem, whole GiB; left out when unreadable or over 1 PiB, which is what gVisor's filesystem claims), `ptraceScope`
   (`kernel.yama.ptrace_scope`; a box without the file reads 0; `null` when it could not be read) and `startedAt` (an ISO 8601 UTC
   time; for Modal, the moment it was asked to start).
@@ -821,6 +828,16 @@ before it makes a box to launch in.
   `stopped`. `graceMs` is a number from 0 to 600000 and the call to the box is given that long on top of its usual time.
   The saved process id is signalled only while it still names the process the launch started; the id of a process that
   ended and was given to another job is left alone.
+- `beforeStop` (`argv`, `timeoutMs` from 100 to 120000, default 30000) runs ONCE per launch, after the drain and
+  before the final kill, as the launcher's own user, in a session of its own. One past its bound is killed (137). Its
+  exit goes to `out.log`, and it never fails the stop.
+- A stop is ONE stop's. The first one claims it, and the phase is `stopping` until it has killed what was left and
+  written `stopped`; nothing else writes the state meanwhile.
+  - A second stop at the same time never kills: it waits for the first one's end and returns its state. One whose own
+    bound (its `graceMs`, the hook at its longest, and 3 s) ends first returns `stopping`.
+  - A stop whose first one died (past its deadline: that stop's grace, its hook's bound and 3 s) is taken over by the next stop.
+  - A `launch` of the name while it is stopped waits for the stop's end, then starts anew, never beside the hook. Past
+    the stop's deadline it is `failed` ("stop it again").
 - Callers that meet are safe: several `launch` calls for one name start one program, a claim whose caller died before
   filling it is taken over after a minute, and a launch that ended is replaced by one caller only.
 - The program's output goes to `out.log` in the launcher's directory, bounded to its tail (`logMaxBytes`), also after
@@ -848,9 +865,38 @@ before it makes a box to launch in.
   held them. The launch then reads `lost`, and only a `launch` that passes them again starts it again.
 - `user` (a name or a numeric uid) is who the program runs as, resolved in the box (`/etc/passwd`, then `getent`). A
   root launcher finds how it drops to it by doing it once at the start: a `setpriv` that takes `--reuid` (util-linux;
-  BusyBox's does not), else `runuser`, else the launch is `unsupported` (Alpine's base image). It needs a user for a
-  launch with `stdin` or `secrets`, so the program never shares its memory; a launcher that is not root runs the program only as itself (another user is
-  `unsupported`). An unknown user is `invalid`. The state reports it (`user: { name, uid }`).
+  BusyBox's does not), else `runuser`, else the launch is `unsupported` (Alpine's base image). A launch with `stdin` or
+  `secrets` runs its program as root only with a `toolsUser` (below); a launcher that is not root runs the program only
+  as itself (another user is `unsupported`). An unknown user is `invalid`. The state reports it (`user: { name, uid }`).
+- A launch with `stdin` or `secrets` whose program does not run as root needs the box's ptrace scope
+  (`kernel.yama.ptrace_scope`) at 1 or more, or a process of the same user could read them from the program's memory. It
+  is measured in the box before the frame is read: a missing file counts as 0, a 0 on a box with its own kernel (`vm`)
+  is raised to 1 and read back, and any other 0 is `refused`.
+- `toolsUser` (a name or a numeric uid) goes with a program run as root (no `user` on a root launcher, `"root"` or uid
+  0). It is the user that program runs everything it does not trust as: the user disk's `--run-as` names. A launch with
+  `stdin` or `secrets` runs its program as root only with one, and then needs no ptrace scope: a process of the tools
+  user cannot attach to a root one without `CAP_SYS_PTRACE`. The launcher checks it in the box, before it reads the frame,
+  in at most 60 s:
+  - it exists, is not root and has not the root group (else `invalid`);
+  - where the box has `sudo`, `sudo -l -U`, run with no environment but PATH, answers exactly its sentence for a user who
+    may run nothing (else `refused`, with sudo's first line);
+  - on every mount without `nosuid`, it can run no setuid or setgid root file and no file with capabilities. Each file is
+    found as root and tested as the tools user, so a directory it can pass through but not list hides nothing. Else the
+    launch is `refused`, naming up to five; a box without `getcap` is `unsupported`.
+  - the check fails closed: `find` and `getcap` must each report a probe it plants (empty, root's, in the launch's own
+    root-only directory, removed before anything runs as the tools user), the tools user's test must pass on its own
+    shell, and a walk that fails on a mount, or finds no mount to walk, is `unsupported`. The image needs `getcap` and
+    `setcap` (Debian's `libcap2-bin`).
+  The program gets `PI_TRANSPORT_TOOLS_USER` and `PI_TRANSPORT_TOOLS_UID`; the state reports `toolsUser: { name, uid }`.
+- What `toolsUser` means is the HOST'S guarantee: the program runs everything it does not trust as that user, with no
+  capabilities, no supplementary groups and none of its own descriptors (fd 3 and its stdin included), as disk's own
+  spawn does. The launcher cannot see the program's children, and it does not measure, so the host and its image keep:
+  - no root-run code the tools user can write (the program's files, a PATH directory, a cron or service unit);
+  - no root service the tools user can reach on a socket;
+  - no later change by root: a sudo rule, a setuid file, a capability, or a mount without `nosuid`.
+  The residual: root in the box can still trace and read the program, so the image is trusted. A program run as root
+  shares root with every root process in the box (the launcher, any other root launch, a root daemon), so its secrets
+  are only as safe as the least trusted of them.
 - If both launcher processes die, the state reads `lost`: the program may still run, unsupervised. The next `launch`
   of the name adopts it and starts a supervisor again.
 - On Daytona a stopped and started sandbox keeps its disk and loses its processes. The launcher then reads `lost`, the
