@@ -40,6 +40,9 @@ describe("boxHost: its options", () => {
       ["no app", () => boxHost({ provider, spec: SPEC, app: "" })],
       ["empty command", () => boxHost({ provider, spec: SPEC, app: "/a.js", command: [] })],
       ["bad user", () => boxHost({ provider, spec: SPEC, app: "/a.js", user: "Bad User" })],
+      ["root by name", () => boxHost({ provider, spec: SPEC, app: "/a.js", user: "root" })],
+      ["root by uid", () => boxHost({ provider, spec: SPEC, app: "/a.js", user: "0" })],
+      ["root by a padded uid", () => boxHost({ provider, spec: SPEC, app: "/a.js", user: "000" })],
       ["relative mountRoot", () => boxHost({ provider, spec: SPEC, app: "/a.js", mountRoot: "mnt" })],
     ];
     for (const [why, make] of bad) assert.throws(make, code("INVALID_ARGUMENT"), why);
