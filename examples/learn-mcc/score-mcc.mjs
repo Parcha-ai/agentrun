@@ -3,8 +3,7 @@
 // and the two are never pooled.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-
-export const RISK_TIERS = Object.freeze(['low', 'medium', 'high']);
+import { RISK_TIERS } from './answer.mjs';
 
 const DATA = join(import.meta.dirname, 'data');
 const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'));

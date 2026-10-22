@@ -3,7 +3,8 @@
 // both recorded from the site before any answer is shown; then the two codes as A and B in an order only the salt
 // recovers; and the verdicts turned back into one row per side for lanes/C1/ci.py.
 import { createHash } from 'node:crypto';
-import { mccOf, RISK_TIERS, riskOf } from './score-mcc.mjs';
+import { RISK_TIERS } from './answer.mjs';
+import { mccOf, riskOf } from './score-mcc.mjs';
 
 export const VERDICTS = Object.freeze(['A', 'B', 'both', 'neither']);
 

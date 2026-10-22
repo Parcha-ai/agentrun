@@ -85,9 +85,36 @@ A code is **acceptable** when a network following these rules could assign it to
 both be acceptable, for example 5499 and 5912 for a vitamin shop that is also a licensed pharmacy. A code not in
 `data/mcc-codes.json` ("not in the code table") is never acceptable.
 
-**Risk tier: SPEC.md's `## The risk rubric`, word for word.** The section is pinned by sha256 (§1), and the adjudicator
-gets it verbatim via `sectionOf`. The tier is the highest one any row reaches. A change to the rubric goes through M1:
-the skill and SPEC.md change together, and a changed section means a new adjudication.
+**Risk tier: SPEC.md's `## The risk rubric`, word for word.** It is quoted below. A test fails if the quote and SPEC.md
+drift apart. The section is pinned by sha256 (§1), and the adjudicator gets it verbatim via `sectionOf`. A change to the
+rubric goes through M1: the skill and SPEC.md change together, and a changed section means a new adjudication.
+
+<!-- risk rubric: SPEC.md, word for word -->
+```text
+The risk rubric. The tier is the highest one any row reaches:
+- high, when the merchant's pages show any of these:
+  - adult content or services, or dating or escort services;
+  - gambling, betting, lotteries, sweepstakes or other games of chance played for money;
+  - crypto-assets bought, sold, exchanged or held for customers; money transfer, stored value, prepaid cards, or
+    payment services for others;
+  - lending, credit repair, debt relief or collection, or investment or trading signals sold to consumers;
+  - prescription drugs, CBD, cannabis or hemp THC, kratom, or other drugs sold without a prescription;
+  - tobacco, e-cigarettes or vapes; firearms, ammunition or weapon parts;
+  - a free or discounted trial that turns into recurring billing;
+  - travel booked to be taken later: flights, tours, cruises, timeshares, or travel agency bookings;
+- medium, when no high row holds and the pages show any of these:
+  - recurring billing or a subscription, disclosed, with no trial that turns into billing;
+  - supplements, weight-loss, anti-aging or other nutraceuticals sold outright;
+  - alcohol;
+  - goods that typically cost over 1,000 US dollars an order; goods made to order, pre-ordered, or delivered more than
+    30 days after payment; event tickets or deposits;
+  - digital goods, software licences, online courses or gift cards;
+  - a marketplace or platform where others sell to the buyer;
+  - a site that cannot be checked: unreachable, parked, or showing a different business;
+  - no terms or refund policy found on the site;
+- low, when no other row holds: goods or services delivered at or near payment, with terms and a refund policy on the
+  site.
+```
 
 ## 4. The verdict
 
@@ -103,7 +130,8 @@ Per merchant:
 - Every part carries evidence: at least one `{ url, quote }`. The quote is verbatim from a page the adjudicator opened,
   either on the merchant's own registrable domain or on a named marketplace listing of it.
 - A site that does not load, is parked, or no longer sells what its name says is judged `{ unjudgeable: reason }`. It
-  is counted, dropped from both sides, and reported.
+  is counted, dropped from both sides and both fields, and reported. The rubric's "cannot be checked" row is the
+  learner's rule for its own run; the adjudicator cannot judge a site it cannot read.
 
 `unblind` enforces all of this and refuses anything else.
 
@@ -115,7 +143,9 @@ Per merchant:
   section and its packets, stage by stage, and nothing else.
 - Sites are opened only through the cell's web tools (fetch_page, browse through Browserbase, search_web for
   marketplace listings), never through a browser on the box. The merchants include adult, gambling and crypto sites.
-- Spend is measured per session and reported with the result. The pass needs the TL's envelope before it starts.
+- Envelope: $400 for the first round, 120 merchants. One packet per merchant holds both sides, so one session judges
+  the learner and the teacher together. It runs on the DEV sample only after the pilot. Spend is measured per session
+  and reported with the result.
 - Optional consistency check: a second fresh session re-judges 20 random merchants of the sample, and the report gives
   the agreement. It never replaces a verdict.
 
@@ -138,11 +168,13 @@ The numbers drawn from these rows:
 - **Beside it**: the teacher's adjudicated accuracy on the code over the same merchants. This says how good the teacher
   signal is. The teacher's tier gets a number only once it exists.
 - **Learner against teacher on the code**, paired on merchant: `ci.py paired teacher.jsonl learner.jsonl mccAdjRight`
-  (bootstrap of the difference, McNemar exact). ci.py pairs on ticker or CIK, so it needs `merchantId` added to its key.
+  (bootstrap of the difference, McNemar exact). ci.py pairs on `merchantId` when a row has no ticker or CIK, and counts
+  a merchant only one side has as unpaired.
 - **Per vertical**: counts and rates. A vertical with fewer than 20 merchants judged is printed with its n and marked
   too small to trust.
-- **Teacher agreement**: from `summarizeMcc`, under its own name, beside these numbers. The two are never averaged,
-  summed or put on one axis.
+- **Teacher agreement**: from `summarizeMcc`, under its own name, beside these numbers. Its headline field is the
+  exact MCC; the MCC group is secondary and is always printed with the group share table. The two numbers are never
+  averaged, summed or put on one axis.
 - **MCC group agreement is weak by construction.** ISO 18245's 5700–7299 range holds restaurants, pharmacies, direct
   marketing, adult content, crypto, lodging and dating, so most of this cell's merchants share one group. To show it,
   `summarizeMcc` prints each group's share of the teacher's codes.

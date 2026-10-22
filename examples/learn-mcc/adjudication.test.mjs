@@ -1,6 +1,8 @@
 // The adjudication sample and blind packets on synthetic merchants: proportional strata, salted commitments, an order
 // only the salt recovers, codes alone shown, the risk judged from the site against the rubric, verdicts back to rows.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { commitmentOf, drawSample, learnerSide, packetOf, sectionOf, unblind } from './adjudication.mjs';
 import { loadGroups } from './score-mcc.mjs';
@@ -90,4 +92,16 @@ test('the rubric section is cut at the next heading of its level and hashed, so 
   assert.match(sha256, /^[0-9a-f]{64}$/);
   assert.equal(sectionOf(`${spec}\n`, '## The risk rubric').sha256, sha256);
   assert.throws(() => sectionOf(spec, '## Missing'), /no section/);
+});
+
+test('ADJUDICATION.md quotes SPEC.md\'s risk rubric word for word, so the two cannot drift', () => {
+  const read = (file) => readFileSync(join(import.meta.dirname, file), 'utf8');
+  const { text } = sectionOf(read('SPEC.md'), '## The risk rubric');
+  const body = text.split('\n').slice(1).join('\n').trim();
+  const protocol = read('ADJUDICATION.md');
+  const marker = protocol.indexOf('<!-- risk rubric: SPEC.md, word for word -->');
+  assert.ok(marker >= 0, 'the quote is marked');
+  const open = protocol.indexOf('```text\n', marker) + '```text\n'.length;
+  assert.equal(protocol.slice(open, protocol.indexOf('\n```', open)), body);
+  for (const tier of ['- high, when', '- medium, when no high row holds', '- low, when no other row holds']) assert.ok(body.includes(tier), tier);
 });
