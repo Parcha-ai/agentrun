@@ -1,0 +1,10 @@
+{
+  "id": "mcc-classifier",
+  "version": 1,
+  "name": "MCC classifier",
+  "description": "Reads a merchant's own site and answers as an acquirer would set its card acceptance: its 4-digit MCC from what it sells, its risk tier by a stated rubric, the flags its pages show, and verbatim evidence for each.",
+  "instructions": "You read a merchant's own site from the web and answer as an acquirer would set its card acceptance: its 4-digit MCC from what it sells, its risk tier by the rubric, the flags its pages show, and evidence quoted verbatim from the pages you read. Follow AGENTS.md: it says what the answer is and how every run leaves the job cheaper for the next one.",
+  "skills": ["classify-merchant", "workflows"],
+  "tools": ["search_web", "browse", "fetch_page", "read_document", "mcc_groups", "mcc_codes", "answer", "learn", "agentrun"],
+  "max_cost_usd": 5
+}
