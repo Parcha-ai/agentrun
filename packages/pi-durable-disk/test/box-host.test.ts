@@ -1,12 +1,23 @@
 // boxHost over transport's fake provider (T9): what it asks the provider, and how it behaves when the provider or the box
 // says no. No network, no key, no real box: a box is the fake's, and its programs are functions.
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { daytonaLike, fakeBoxes, modalLike, type FakeProvider } from "@parcha/pi-transport/testing";
 import type { BoxSpec } from "@parcha/pi-transport";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { boxHost, BoxHostError } from "../src/box-host.ts";
 import type { HostHandle } from "../src/supervise.ts";
+
+/** Every fake provider a test makes; their boxes end after the file (a live box's lifetime timer would hold the process). */
+const providers: FakeProvider[] = [];
+const fake = (options?: Parameters<typeof fakeBoxes>[0]) => {
+  const provider = fakeBoxes(options);
+  providers.push(provider);
+  return provider;
+};
+after(() => {
+  for (const provider of providers) provider.endAll();
+});
 
 const REF = { disk: "dsk-0000000000000001", region: "aws-us-east-1", id: "r1" };
 const SPEC: BoxSpec = { maxLifetimeMs: 3_600_000, image: "pda-home" };
@@ -17,7 +28,7 @@ const host = (provider: FakeProvider, more: Partial<Parameters<typeof boxHost>[0
 
 describe("boxHost: its options", () => {
   it("refuses at once, INVALID_ARGUMENT: no provider, no positive maxLifetimeMs, spec.env, a label key that is transport's or boxHost's, no app, an empty command, a bad user, a relative mountRoot", () => {
-    const provider = fakeBoxes(modalLike({ facts: fd }));
+    const provider = fake(modalLike({ facts: fd }));
     const bad: [string, () => unknown][] = [
       ["no provider", () => boxHost({ provider: undefined as never, spec: SPEC, app: "/a.js" })],
       ["no maxLifetimeMs", () => boxHost({ provider, spec: { image: "x" } as BoxSpec, app: "/a.js" })],
@@ -39,7 +50,7 @@ describe("boxHost: its options", () => {
   });
 
   it("a start with no mount token, or with no attempt, is INVALID_ARGUMENT before any call", async () => {
-    const provider = fakeBoxes(modalLike({ facts: fd }));
+    const provider = fake(modalLike({ facts: fd }));
     const driver = host(provider);
     await assert.rejects(driver.start(REF, "", { attempt: 1 }), code("INVALID_ARGUMENT"));
     await assert.rejects(driver.start(REF, TOKEN), code("INVALID_ARGUMENT"));
@@ -51,7 +62,7 @@ describe("boxHost: its options", () => {
 
 describe("boxHost: the box it asks for, and a box that cannot hold the mount", () => {
   it("creates with the spec, capabilities fuse added, and its three labels; never an env in the spec", async () => {
-    const provider = fakeBoxes(daytonaLike());
+    const provider = fake(daytonaLike());
     await assert.rejects(host(provider, { spec: { ...SPEC, capabilities: [], labels: { team: "crew" } } }).start(REF, TOKEN, { attempt: 3 }), code("UNSUPPORTED"));
     const asked = provider.callsOf("create")[0]!.spec!;
     assert.deepEqual(asked.capabilities, ["fuse"]);
@@ -62,11 +73,11 @@ describe("boxHost: the box it asks for, and a box that cannot hold the mount", (
 
   it("a box without the fuse fact, or with no fd for the launcher's frame, is destroyed and the start is UNSUPPORTED; every later start of that spec is refused at once, with no box made", async () => {
     for (const [why, provider] of [
-      ["no fuse", fakeBoxes(daytonaLike({ facts: fd }))],
-      ["fuse absent", fakeBoxes(modalLike({ facts: { ...fd, fuse: undefined } }))],
-      ["no secretsVia", fakeBoxes(modalLike())],
-      ["secretsVia file", fakeBoxes(modalLike({ facts: { secretsVia: "file" } }))],
-      ["no live processes", fakeBoxes(modalLike({ facts: { ...fd, liveProcesses: false } }))],
+      ["no fuse", fake(daytonaLike({ facts: fd }))],
+      ["fuse absent", fake(modalLike({ facts: { ...fd, fuse: undefined } }))],
+      ["no secretsVia", fake(modalLike())],
+      ["secretsVia file", fake(modalLike({ facts: { secretsVia: "file" } }))],
+      ["no live processes", fake(modalLike({ facts: { ...fd, liveProcesses: false } }))],
     ] as const) {
       const driver = host(provider, { files: [{ path: "/opt/app/app.js", bytes: new TextEncoder().encode("export default {};\n") }] });
       await assert.rejects(driver.start(REF, TOKEN, { attempt: 1 }), code("UNSUPPORTED"), why);
@@ -85,7 +96,7 @@ describe("boxHost: the box it asks for, and a box that cannot hold the mount", (
       { fail: "capacity", expect: "CREATE_FAILED", remembered: false },
     ] as const;
     for (const c of cases) {
-      const provider = fakeBoxes(daytonaLike({ facts: fd }));
+      const provider = fake(daytonaLike({ facts: fd }));
       provider.script.on({ op: "create" }, { fail: c.fail }, { times: 1 });
       const driver = host(provider);
       await assert.rejects(driver.start(REF, TOKEN, { attempt: 1 }), (e: unknown) => code(c.expect)(e) && (e as { cause?: { code?: string } }).cause?.code === c.fail, c.fail);
@@ -95,7 +106,7 @@ describe("boxHost: the box it asks for, and a box that cannot hold the mount", (
   });
 
   it("a box a failed create made anyway is found by its labels and dealt with, never leaked", async () => {
-    const provider = fakeBoxes(daytonaLike({ facts: fd }));
+    const provider = fake(daytonaLike({ facts: fd }));
     provider.script.on({ op: "create" }, { fail: "unknown", leakBox: true });
     await assert.rejects(host(provider).start(REF, TOKEN, { attempt: 1 }), code("UNSUPPORTED"), "found, then refused for its facts");
     assert.equal(provider.boxes.length, 1, "the one box the failed create made");
@@ -108,7 +119,7 @@ describe("boxHost: status, stop and kill of a handle", () => {
   const handleFor = (provider: FakeProvider, box: string): HostHandle => ({ driver: "box", provider: provider.name, box, attempt: 1, launch: { v: 1, name: "pda-r1-g1" } });
 
   it("a handle that is not its own is unknown to status and a no-op to stop and kill; a box that is gone or ended is gone", async () => {
-    const provider = fakeBoxes(modalLike({ facts: fd }));
+    const provider = fake(modalLike({ facts: fd }));
     const driver = host(provider);
     const other: HostHandle = { driver: "daytona", sandboxId: "x" };
     assert.equal(await driver.status(other), "unknown");
@@ -125,7 +136,7 @@ describe("boxHost: status, stop and kill of a handle", () => {
   });
 
   it("status is unknown when the provider cannot be asked; kill destroys the box at once", async () => {
-    const provider = fakeBoxes(modalLike({ facts: fd }));
+    const provider = fake(modalLike({ facts: fd }));
     const driver = host(provider);
     const made = await provider.create({ maxLifetimeMs: 60_000 }, BACKGROUND_CONTEXT);
     assert.ok(made.ok);
@@ -134,5 +145,126 @@ describe("boxHost: status, stop and kill of a handle", () => {
     await driver.kill!(handleFor(provider, made.value.id));
     assert.equal(made.value.state, "ended");
     assert.ok(!provider.calls.some((c) => c.op === "launchStop"), "a kill never drains: it is a crash");
+  });
+});
+
+describe("boxHost: the launch, a start found again, status, stop and receipts", () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+  const forever = ({ signal }: { signal: AbortSignal }) => new Promise<number>((resolve) => signal.addEventListener("abort", () => resolve(0)));
+  const modal = () => {
+    const provider = fake(modalLike({ facts: fd }));
+    provider.program("pi-durable-disk", forever);
+    return provider;
+  };
+  const APP_FILE = { path: "/opt/app/app.js", bytes: new TextEncoder().encode("export default {};\n") };
+
+  it("launches this package's CLI as the run user, with the mount token on that launch's stdin and NOWHERE else; the env is PDA_HOLDER, its own and the start's, never PATH, HOME or LANG", async () => {
+    const provider = modal();
+    const driver = host(provider, { env: { DEMO_MODE: "fixture" }, files: [APP_FILE] });
+    const handle = await driver.start(REF, TOKEN, { attempt: 2, env: { HOST_BOX: '{"provider":"modal-like","key":"0","run":"life-1"}', RUN_LABEL: "life-1" } });
+    const box = provider.boxes[0]!;
+    assert.deepEqual(handle, { driver: "box", provider: provider.name, box: box.id, attempt: 2, launch: { v: 1, name: "pda-r1-g2" } });
+    const launch = box.launches[0]!;
+    assert.deepEqual(launch.spec.argv, ["pi-durable-disk", "run", "--disk", REF.disk, "--region", REF.region, "--id", REF.id, "--mount-root", "/mnt/archil", "--archil", "/usr/local/sbin/archil-scoped", "--app", "/opt/app/app.js", "--token-stdin"]);
+    assert.equal(launch.spec.user, "pda");
+    assert.equal(launch.spec.inheritEnv, false);
+    assert.equal(launch.spec.restart, true);
+    assert.deepEqual(launch.spec.terminalExits, [65, 70, 75, 76]);
+    assert.deepEqual(Object.keys(launch.spec.env!).sort(), ["DEMO_MODE", "HOST_BOX", "PDA_HOLDER", "RUN_LABEL"]);
+    assert.deepEqual(JSON.parse(launch.spec.env!.PDA_HOLDER!), handle, "the holder is the handle");
+    assert.equal(new TextDecoder().decode(launch.spec.stdin), `${TOKEN}\n`);
+    const leaks = provider.leaks(TOKEN);
+    assert.deepEqual(leaks.map((l) => `${l.op}:${l.where}`), ["launch:stdin"], "the token is on the launch's stdin and nowhere else: no argv, env, label, spec, upload or exec");
+    const ops = provider.calls.map((c) => c.op);
+    assert.ok(ops.indexOf("upload") < ops.indexOf("launch"), "the app's files go up before the launch");
+    assert.ok(!ops.includes("exec"), "boxHost makes no exec of its own");
+    assert.equal(await driver.status(handle), "running");
+  });
+
+  it("a start of the same attempt finds its box: a running launch is adopted (no create, no second launch, the new token used nowhere); a launch that ended or was lost means a new box, never a relaunch", async () => {
+    const provider = modal();
+    const driver = host(provider, { files: [APP_FILE] });
+    const first = await driver.start(REF, TOKEN, { attempt: 1 });
+    const second = await driver.start(REF, "tok-second-unused", { attempt: 1 });
+    assert.deepEqual(second, { ...first, adopted: true });
+    assert.equal(provider.callsOf("create").length, 1);
+    assert.equal(provider.callsOf("launch").length, 1);
+    assert.equal(provider.callsOf("upload").length, 1, "no upload into a box found again");
+    assert.deepEqual(provider.leaks("tok-second-unused"), [], "an adopted start's token goes nowhere");
+    for (const [why, end] of [
+      ["exited 65", (l: { exit(code: number): void }) => l.exit(65)],
+      ["lost", (l: { setState(s: object): void }) => l.setState({ phase: "lost", launcherAlive: false })],
+    ] as const) {
+      const before = provider.boxes.filter((b) => b.state === "running");
+      end(before.at(-1)!.launches.at(-1)! as never);
+      await tick();
+      const again = await driver.start(REF, TOKEN, { attempt: 1 });
+      assert.notEqual(again.box, before.at(-1)!.id, `${why}: a new box`);
+      assert.equal(before.at(-1)!.state, "ended", `${why}: the old box destroyed`);
+      assert.equal(before.at(-1)!.launches.length, 1, `${why}: never relaunched in the old box`);
+    }
+  });
+
+  it("status maps the launcher's phases: running while it runs or stops, stopped on a clean end, failed on any other end, a lost launcher or none, unknown when unreadable", async () => {
+    const provider = modal();
+    const driver = host(provider);
+    const handle = await driver.start(REF, TOKEN, { attempt: 1 });
+    const launch = provider.boxes[0]!.launches[0]!;
+    const cases: [object, string][] = [
+      [{ phase: "starting" }, "running"],
+      [{ phase: "running" }, "running"],
+      [{ phase: "restarting" }, "running"],
+      [{ phase: "stopping" }, "running"],
+      [{ phase: "stopped" }, "stopped"],
+      [{ phase: "exited", lastExit: 0 }, "stopped"],
+      [{ phase: "exited", lastExit: 1 }, "failed"],
+      [{ phase: "gave_up", lastExit: 1 }, "failed"],
+      [{ phase: "lost", launcherAlive: false }, "failed"],
+    ];
+    for (const [state, want] of cases) {
+      launch.setState(state);
+      assert.equal(await driver.status(handle), want, JSON.stringify(state));
+    }
+    provider.script.on({ op: "launchState" }, { fail: "unknown" });
+    assert.equal(await driver.status(handle), "unknown", "an unreadable state");
+    assert.equal(await driver.status({ ...handle, launch: { v: 1, name: "never-launched" } }), "failed", "a live box with no such launch");
+  });
+
+  it("stop drains the instance, then destroys the box; the receipt is facts only: provider, kind, from (startedAt) and to", async () => {
+    const provider = modal();
+    const driver = host(provider, { stopGraceMs: 50 });
+    const handle = await driver.start(REF, TOKEN, { attempt: 1 });
+    const box = provider.boxes[0]!;
+    const open = driver.box(handle)!;
+    assert.deepEqual({ ...open, from: typeof open.from }, { provider: provider.name, kind: "vm", from: "string", to: null });
+    assert.equal(open.from, box.facts().startedAt, "from is the box's own startedAt");
+    assert.ok(!("usdPerSecond" in open), "no price");
+    await driver.stop(handle);
+    const ops = provider.calls.map((c) => c.op);
+    assert.ok(ops.lastIndexOf("launchStop") < ops.lastIndexOf("destroy"), "the drain before the destroy");
+    assert.equal(box.launches[0]!.events[0], "drain");
+    assert.equal(box.state, "ended");
+    assert.equal(typeof driver.box(handle)!.to, "string", "to is set once the box is gone");
+    assert.equal(await driver.status(handle), "gone");
+  });
+
+  it("the launch's errors: refused and unsupported are UNSUPPORTED and remembered; timeout is START_TIMED_OUT; failed and box are LAUNCH_FAILED and not remembered; invalid is INVALID_ARGUMENT; the box is destroyed every time", async () => {
+    const cases = [
+      { fail: "refused", expect: "UNSUPPORTED", remembered: true },
+      { fail: "unsupported", expect: "UNSUPPORTED", remembered: true },
+      { fail: "timeout", expect: "START_TIMED_OUT", remembered: false },
+      { fail: "failed", expect: "LAUNCH_FAILED", remembered: false },
+      { fail: "box", expect: "LAUNCH_FAILED", remembered: false },
+      { fail: "invalid", expect: "INVALID_ARGUMENT", remembered: false },
+    ] as const;
+    for (const c of cases) {
+      const provider = modal();
+      provider.script.on({ op: "launch" }, { fail: c.fail as never }, { times: 1 });
+      const driver = host(provider);
+      await assert.rejects(driver.start(REF, TOKEN, { attempt: 1 }), (e: unknown) => code(c.expect)(e) && (e as { cause?: { code?: string } }).cause?.code === c.fail, c.fail);
+      assert.equal(provider.boxes[0]!.state, "ended", `${c.fail}: the box is destroyed`);
+      await driver.start(REF, TOKEN, { attempt: 1 }).catch(() => undefined);
+      assert.equal(provider.callsOf("create").length, c.remembered ? 1 : 2, `${c.fail}: ${c.remembered ? "remembered" : "a later start tries again"}`);
+    }
   });
 });
