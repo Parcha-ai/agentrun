@@ -150,7 +150,7 @@ export function blobNameProblem(name, artifactNames) {
   const extension = named[2].toLowerCase();
   if (BLOB_EXTENSIONS.includes(extension)) return undefined;
   if ((PAGE_EXTENSIONS.includes(extension) || SHEET_EXTENSIONS.includes(extension)) && artifactNames.has(name)) return undefined;
-  return `has the extension .${extension}, which a recording's blob may not have (png jpg jpeg webp gif webm mp4 pdf json jsonl txt md csv vtt; html and css only as the artifact's own files)`;
+  return `has the extension .${extension}, which a recording's blob may not have (${BLOB_EXTENSIONS.join(' ')}; ${[...PAGE_EXTENSIONS, ...SHEET_EXTENSIONS].join(' ')} only as the artifact's own files)`;
 }
 
 /** The blob names `manifest.artifact.files` gives its pages and stylesheets. */

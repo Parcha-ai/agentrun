@@ -1,6 +1,6 @@
 // The page: load a recording, draw its timeline and counters, and replay it. Everything on screen at a stop is a
 // reduce of the lines before that stop; the DOM is redrawn from those reduces, never patched by events.
-import { FORMAT, parseLines, processOf, under, validate, type Json, type Line, type Manifest, type Recording } from './format.ts';
+import { FORMAT, parseLines, processOf, under, validate, VIEW_FLAGS, type Json, type Line, type Manifest, type Recording } from './format.ts';
 import { askedTwiceLabel, costLabel, counterFold, countersOf, repeatedLabel, type Counters } from './counters.ts';
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
 import { animatedPanels, featuredPanel, panelsFor, type BaselineView, type Node, type Panel, type Props, type ViewContext } from './panels.ts';
@@ -768,9 +768,6 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     status(text) { liveStatus.textContent = text; },
   };
 }
-
-/** The flags a gallery link may open its replay with (the lock's `view`): flags of the chat page. The lock's reader keeps the same list (scripts/recording/gallery.mjs). */
-const VIEW_FLAGS = ['muse'];
 
 function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly { id: string; manifest: Manifest; title?: string; view?: string[] }[], unread?: string) {
   const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {

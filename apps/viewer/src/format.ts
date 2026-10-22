@@ -3,6 +3,8 @@ import { docOf, generationOf, moveOf, type Move } from './durable.ts';
 import { counterFold, countersOf } from './counters.ts';
 
 export const FORMAT = 'agentrun.recording/1';
+/** The flags a gallery link may open its replay with (a lock entry's `view`): flags of the chat page. The lock's reader, scripts/recording/gallery.mjs, imports this list. */
+export const VIEW_FLAGS: readonly string[] = ['muse'];
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Source = 'workflow' | 'pi' | 'browser' | 'vision' | 'transport' | 'host';
