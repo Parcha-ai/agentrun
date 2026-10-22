@@ -143,18 +143,16 @@ describe("a launch's stdin and secrets", () => {
 		await box.destroy(context);
 	});
 
-	it("is never brought back by the in-box watchdog: a framed launch whose supervisor died reads lost, and only a launch that passes the stdin again revives it", async () => {
+	it("is never brought back by the in-box watchdog: a framed launch whose supervisor died (its watchdog alive) reads lost, and only a launch that passes the stdin again revives it", async () => {
 		const { box } = await aBox();
 		const token = `tok-${randomBytes(12).toString("hex")}`;
 		const program = ["sh", "-c", "sha256sum | cut -c1-64 > in.$PI_TRANSPORT_INCARNATION; exec sleep 300"];
 		const spec = { argv: program, stdin: new TextEncoder().encode(token) };
 		const first = getOrThrow(await launch(box, "revive", spec, context));
 		await until("the program's read", () => fileIn(box, "in.1"));
-		// The supervisor and its watchdog die, as in a crash; the program runs on, unsupervised.
-		await sh(
-			box,
-			`D=${first.directory}; for f in watch launcher; do kill -9 "$(cat "$D/$f.pid")" 2>/dev/null; done; true`,
-		);
+		// Only the supervisor dies, as in a crash: its watchdog lives, and would bring back a plain launch's. It has no frame, so
+		// it lets the launch go (the program runs on, unsupervised) and the launch reads lost.
+		await sh(box, `D=${first.directory}; kill -9 "$(cat "$D/launcher.pid")" 2>/dev/null; true`);
 		const lost = await until("lost", async () => {
 			const read = getOrThrow(await launchState(box, first.launch, context));
 			return read?.phase === "lost" ? read : undefined;
