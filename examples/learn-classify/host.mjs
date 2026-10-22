@@ -597,10 +597,12 @@ export function usageOfStore(storePath) {
  * the package's own. With `sticky` (`{ file, cutsId }`), a learning's text is judged by the worst answer it has had
  * (curate-cuts.mjs). With `gate` (promotion-gate.mjs `asyncGate`), a promotion the uses call for stands only when the
  * gate passes it; with `gateOnly` as well, only a promotion `gateOnly` names goes to the gate (receipts.mjs). With
- * `receiptTexts`, those texts' fromContent is answered by the run's receipt (receipts.mjs `receiptJudge`). None is on
- * unless given: a run that asks for none curates exactly as the package does.
+ * `receiptTexts`, those texts' fromContent is answered by the run's receipt (receipts.mjs `receiptJudge`). With
+ * `factsOverLessons`, a lesson that contradicts an active fact is refused; `factFloor` keeps that many facts past the index
+ * cap (pi-agent-learn's curate options). None is on unless given: a run that asks for none curates exactly as the package
+ * does.
  */
-export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, sticky, gate, gateOnly, receiptTexts }) {
+export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, sticky, gate, gateOnly, receiptTexts, factsOverLessons, factFloor }) {
   const gates = [];
   const settled = [];
   const rules = { ...(tmpRoot ? { tmpRoot } : {}), ...(thresholds ? { thresholds } : {}) };
@@ -610,6 +612,8 @@ export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, s
   const report = await curate({
     repo,
     judge: receiptTexts?.size ? receiptJudge(judged, receiptTexts) : judged,
+    ...(factsOverLessons ? { factsOverLessons: true } : {}),
+    ...(factFloor ? { factFloor } : {}),
     ...(judgeCuts ? { thresholds: judgeCuts } : {}),
     admitWorkflow: async (input) => {
       const result = await admit(input);

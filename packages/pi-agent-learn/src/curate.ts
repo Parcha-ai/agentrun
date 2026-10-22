@@ -88,6 +88,12 @@ export type CurateOptions = {
   /** Folds a run's workflow uses into their trials; called for every run with a `uses/<run id>.json`. Default:
    *  `usesSettler()`; `null` turns it off, and then the uses are held. */
   readonly settleUses?: SettleUses | null;
+  /** A lesson is also asked `contradicts` against every active fact: one that contradicts a fact is refused, and one the
+   *  judge is unsure of is held. Default: off, and a lesson is compared with lessons only. */
+  readonly factsOverLessons?: boolean;
+  /** The index cap archives an active fact only while more than this many facts are active. Default: 0, so facts go by
+   *  use like any learning. */
+  readonly factFloor?: number;
   readonly signal?: AbortSignal;
 };
 
@@ -194,6 +200,7 @@ export async function curate(options: CurateOptions): Promise<CurateReport> {
   if (options.runs !== undefined && (!options.runs || typeof options.runs.branches !== "function")) throw new LearnError("invalid", "runs is a repository to read run branches from");
   if (options.admitWorkflow !== undefined && options.admitWorkflow !== null && typeof options.admitWorkflow !== "function") throw new LearnError("invalid", "admitWorkflow is a function");
   if (options.settleUses !== undefined && options.settleUses !== null && typeof options.settleUses !== "function") throw new LearnError("invalid", "settleUses is a function");
+  if (options.factFloor !== undefined && !(Number.isSafeInteger(options.factFloor) && options.factFloor >= 0)) throw new LearnError("invalid", "factFloor is a whole number from 0");
   const thresholds = checkThresholds(options.thresholds);
   const caps = checkCaps(options.caps);
   const secrets = [...(options.secrets ?? [])];
@@ -574,6 +581,20 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
         break;
       }
     }
+    let againstFact: { of: string; reason: string } | undefined;
+    if (!outcome && options.factsOverLessons === true && type === "lesson") {
+      for (const fact of [...entries.values()].filter((e) => e.status === "active" && e.type === "fact").sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+        const con = await ask("contradicts", { candidate: learning, existing: { id: fact.id, type: fact.type, text: fact.text } });
+        if (con.verdict === "no") continue;
+        if (con.verdict === "yes") againstFact = { of: fact.id, reason: `contradicts the active fact ${fact.id} (${fixed(con.p)})` };
+        else outcome = { kind: "held", of: fact.id, reason: con.verdict === "budget" ? "the run's question budget is spent" : `unsure whether it contradicts the active fact ${fact.id} (${fixed(con.p)})` };
+        break;
+      }
+    }
+    if (againstFact) {
+      lists.refused.push({ candidate: at, id, of: againstFact.of, reason: againstFact.reason });
+      continue;
+    }
     if (outcome?.kind === "held") {
       lists.held.push({ candidate: at, id, of: outcome.of, reason: outcome.reason });
       continue;
@@ -717,9 +738,11 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     const lines = [...entries.values()].filter((l) => l.status === "active").sort(byUse).map(indexLine).filter((l): l is string => l !== undefined);
     return Buffer.byteLength(renderSection({ sha: main, index: lines, omitted: [], workflows: [], copied: true }), "utf8");
   };
+  const factFloor = options.factFloor ?? 0;
   while (indexBytes() > input.caps.index) {
+    const facts = [...entries.values()].filter((l) => l.status === "active" && l.type === "fact").length;
     const victim = [...entries.values()]
-      .filter((l) => l.status === "active")
+      .filter((l) => l.status === "active" && (l.type !== "fact" || facts > factFloor))
       .sort((a, b) => Number(fresh.has(a.id)) - Number(fresh.has(b.id)) || a.uses - b.uses || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0];
     if (!victim) break;
     entries.set(victim.id, { ...victim, status: "archived" });

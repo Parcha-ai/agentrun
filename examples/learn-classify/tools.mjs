@@ -134,6 +134,10 @@ export function refusedHostOf(host, { allowPrivate = false } = {}) {
   return null;
 }
 
+/** A refused-list reason with the archived carve-out stated after it, when the carve-out is on: what is allowed instead,
+ *  never what a page holds. */
+const withCarveOut = (reason, archivedSec) => (archivedSec && reason ? `${reason}. ${ARCHIVED_SEC_NOTE}` : reason);
+
 /** Why `raw` is never opened, judged on the URL alone, or null. */
 export function refusedUrl(raw, options = {}) {
   let url;
@@ -145,7 +149,7 @@ export function refusedUrl(raw, options = {}) {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return `only http and https URLs are opened, not ${url.protocol}`;
   if (url.username || url.password) return 'URLs with credentials are not opened';
   if (options.archivedSec && archivedSecPage(url)) return null;
-  return refusedHostOf(url.hostname, options);
+  return refusedHost(url.hostname) ? withCarveOut(refusedHost(url.hostname), options.archivedSec) : refusedHostOf(url.hostname, options);
 }
 
 /** The URL check every request of a tool goes through: the name, then what the name resolves to here (once per host per
@@ -236,7 +240,7 @@ export function fetchPageTool({ allowDomain, fetch: fetchImpl = globalThis.fetch
     }
     const host = normalHost(url.hostname);
     const refused = refusedHost(host);
-    if (refused) return { url, refused };
+    if (refused) return { url, refused: withCarveOut(refused, archivedSec) };
     if (any) {
       const local = refusedHostOf(host);
       if (local) return { url, refused: local };

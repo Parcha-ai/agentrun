@@ -28,7 +28,7 @@ export const textKey = (text) => sha256(text.normalize('NFKC').toLowerCase().rep
  * passes through. The store is a JSON file beside the agent repository. Under a new `cutsId` the old worst values are
  * dropped, and a text judged under the old cuts must clear the new ones by `RECUT_MARGIN`.
  */
-export function stickyJudge(judge, { file, cutsId }) {
+export function stickyJudge(judge, { file, cutsId, contradicts = false }) {
   const loaded = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { version: 1, cutsId, worst: {}, prior: [] };
   const same = loaded.cutsId === cutsId;
   const prior = new Set(same ? loaded.prior ?? [] : [...Object.keys(loaded.worst), ...(loaded.prior ?? [])]);
@@ -42,12 +42,14 @@ export function stickyJudge(judge, { file, cutsId }) {
   return async (params) => {
     const result = await judge(params);
     const questions = Object.keys(params?.questions ?? {});
-    const text = params?.state?.learning?.text;
     const q = questions.length === 1 ? questions[0] : undefined;
-    const worse = q ? WORSE[q] : undefined;
+    // With `contradicts`, a pairwise contradicts answer is kept too, per the candidate's text and the existing learning.
+    const pair = contradicts && q === 'contradicts' && typeof params?.state?.existing?.id === 'string';
+    const text = pair ? params?.state?.candidate?.text : params?.state?.learning?.text;
+    const worse = pair ? Math.max : q ? WORSE[q] : undefined;
     const p = q ? result?.answers?.[q]?.noul : undefined;
     if (!worse || typeof text !== 'string' || typeof p !== 'number') return result;
-    const key = `${q}:${textKey(text)}${q === 'narrowsRules' ? `:${sha256(String(params.state.rules ?? ''))}` : ''}`;
+    const key = pair ? `contradicts:${textKey(text)}:${params.state.existing.id}` : `${q}:${textKey(text)}${q === 'narrowsRules' ? `:${sha256(String(params.state.rules ?? ''))}` : ''}`;
     let held;
     if (key in store.worst) held = worse(store.worst[key], p);
     else if (prior.delete(key)) held = worse === Math.max ? Math.min(1, p + RECUT_MARGIN) : Math.max(0, p - RECUT_MARGIN);

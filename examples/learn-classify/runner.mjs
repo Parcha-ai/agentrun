@@ -394,7 +394,9 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
       const curated = await curateJob({
         repo, judge: curateJudge, ...(parts.thresholds ? { thresholds: parts.thresholds } : {}),
         ...(parts.judgeCuts ? { judgeCuts: parts.judgeCuts } : {}),
-        ...(parts.sticky ? { sticky: { file: join(out, 'curate-sticky.json'), cutsId: parts.cutsId ?? 'default' } } : {}),
+        ...(parts.sticky ? { sticky: { file: join(out, 'curate-sticky.json'), cutsId: parts.cutsId ?? 'default', ...(parts.factsOverLessons ? { contradicts: true } : {}) } } : {}),
+        ...(parts.factsOverLessons ? { factsOverLessons: true } : {}),
+        ...(parts.factFloor ? { factFloor: parts.factFloor } : {}),
         ...(gate ? { gate } : {}),
         ...(gate && parts.receiptPromotion ? { gateOnly: receiptOnly } : {}),
         ...(parts.receiptAdmission && p.receipt ? { receiptTexts: receiptTextsOf(p.finished?.candidates) } : {}),
@@ -772,7 +774,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end] [--receipt-promotion]] [--receipt-admission] [--hindsight all|<field,...>] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end] [--receipt-promotion]] [--receipt-admission] [--facts-over-lessons] [--fact-floor <n>] [--hindsight all|<field,...>] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -787,6 +789,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' }, 'edgar-cache': { type: 'string' }, schedule: { type: 'string' }, checkpoints: { type: 'string' },
         'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, 'gate-wait-at-end': { type: 'boolean' }, hindsight: { type: 'string' },
         'receipt-admission': { type: 'boolean' }, 'receipt-promotion': { type: 'boolean' },
+        'facts-over-lessons': { type: 'boolean' }, 'fact-floor': { type: 'string' },
       },
     }));
   } catch (error) {
@@ -868,6 +871,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       for (const name of ['promotion-bank-concurrency', 'gate-wait-at-end', 'receipt-promotion']) {
         if (values[name] !== undefined) { console.error(`--${name} takes --promotion-bank\n${USAGE}`); process.exit(2); }
       }
+    }
+    if (values['facts-over-lessons']) {
+      parts.factsOverLessons = true;
+      console.log('learn-classify: a lesson that contradicts an active fact is refused (with --curate-sticky, by the worst answer it has had)');
+    }
+    if (values['fact-floor'] !== undefined) {
+      const floor = Number(values['fact-floor']);
+      if (!(Number.isInteger(floor) && floor >= 0)) { console.error(`--fact-floor is a whole number from 0\n${USAGE}`); process.exit(2); }
+      parts.factFloor = floor;
+      console.log(`learn-classify: facts are kept past the index cap while ${floor} or fewer are active`);
     }
     if (values['receipt-admission']) {
       if (set !== SETS.v4) { console.error(`--receipt-admission reads the v4 answer's SIC cite: pass --set v4\n${USAGE}`); process.exit(2); }
