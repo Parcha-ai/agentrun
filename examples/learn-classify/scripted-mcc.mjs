@@ -2,6 +2,7 @@
 // merchant name and never read out of prose. It does a merchant by hand (the site, the ranges, the codes, the answer) and
 // saves merchant-mcc-risk, a whole-job workflow that reads the site and writes the answer from it; once a run is offered
 // that workflow it loads and runs it, and goes by hand when it does not complete.
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { FETCH_RESULT_SCHEMA, lastRunOutcome } from './scripted.mjs';
 
@@ -73,6 +74,21 @@ export const CLASSIFY_MERCHANT_BROWSE = Object.freeze({
   },
 });
 
+/** merchant-mcc-risk as a churn rehearsal's run saves it: its pick step an agent node, and a step that never fires (its
+ *  value a hash of the merchant's id, never a case value), so each run's revision has its own digest. */
+export function savedEveryRun(job) {
+  return {
+    ...CLASSIFY_MERCHANT,
+    root: {
+      ...CLASSIFY_MERCHANT.root,
+      steps: [
+        { node: 'escalate', label: 'never', when: { predicate: 'in', path: 'name', values: [`never-${createHash('sha256').update(String(job.cik)).digest('hex').slice(0, 12)}`] }, kind: 'review', stage: 'research', summary: 'never fires' },
+        ...CLASSIFY_MERCHANT.root.steps.map((step) => (step.node === 'extract' ? { ...step, node: 'agent' } : step)),
+      ],
+    },
+  };
+}
+
 /** The MCC answer for a fixture merchant, its evidence on `url` (the page read) unless the fixture names another page. */
 export function answerOfMcc(t, url) {
   const at = (u) => u ?? url;
@@ -118,6 +134,16 @@ export function agentScriptMcc({ job, offered, fixtures }) {
         { call: 'agentrun', args: { action: 'load', name: MCC_WORKFLOW, input } },
         { call: 'agentrun', args: { action: 'run' } },
         ...byHandMcc(job, t).map((step) => ({ ...step, when: notComplete })),
+        // A fixture merchant with `saveEvery` (a churn rehearsal): after the run completes, a new revision of the workflow is
+        // saved, loaded and run on this merchant too (its pick an agent node, a no-op step making its digest this run's own),
+        // and the answer is that run's output; so every such run both uses the live revision and saves a new one.
+        ...(t.saveEvery ? [
+          { call: 'agentrun', args: { action: 'inspect', workflow: savedEveryRun(job), input } },
+          { call: 'agentrun', args: { action: 'dry-run' } },
+          { call: 'agentrun', args: { action: 'save', name: MCC_WORKFLOW } },
+          { call: 'agentrun', args: { action: 'load', name: MCC_WORKFLOW, input } },
+          { call: 'agentrun', args: { action: 'run' } },
+        ].map((step) => ({ ...step, when: (context) => !notComplete(context) })) : []),
         ...(t.browserOnly ? [
           { call: 'agentrun', args: { action: 'inspect', workflow: CLASSIFY_MERCHANT_BROWSE, input } },
           { call: 'agentrun', args: { action: 'dry-run' } },
@@ -138,7 +164,7 @@ export function agentScriptMcc({ job, offered, fixtures }) {
       { call: 'answer', args: answerOfMcc(t, job.website) },
       { call: 'learn', args: { type: 'lesson', text: MCC_LESSON } },
       { call: 'agentrun', args: { action: 'describe' } },
-      { call: 'agentrun', args: { action: 'inspect', workflow: CLASSIFY_MERCHANT, input } },
+      { call: 'agentrun', args: { action: 'inspect', workflow: t.saveEvery ? savedEveryRun(job) : CLASSIFY_MERCHANT, input } },
       { call: 'agentrun', args: { action: 'dry-run' } },
       { call: 'agentrun', args: { action: 'save', name: MCC_WORKFLOW } },
       { call: 'learn', args: { type: 'workflow', id: MCC_WORKFLOW, text: MCC_WORKFLOW_WHEN } },
