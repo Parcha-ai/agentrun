@@ -94,7 +94,8 @@ const excluded = (value: Json | undefined): string[] => {
 
 const known = (line: Line): boolean => {
   if (line.source === 'transport') return line.channel === 'live' ? KINDS.has(line.kind) : docOf(line)?.doc === 'transport.moves';
-  if (isSupervisor(line)) return line.kind === 'process.started' || line.kind === 'kill' || line.kind === 'result';
+  // A host box's life is the supervisor's (draft 56): its box.created and box.ended fold in beside the tool boxes', by label. box.exec is not drawn.
+  if (isSupervisor(line)) return line.kind === 'process.started' || line.kind === 'kill' || line.kind === 'result' || line.kind === 'box.created' || line.kind === 'box.ended';
   if (line.source === 'browser') return line.kind === 'frame';
   return false;
 };
@@ -138,17 +139,36 @@ const tokenTo = (state: TransportState, box: string, epoch: number | null, t: nu
   return { ...state, token: { box, epoch, since: t }, tokens: [...tokens, { box, from: t }] };
 };
 
+/** A box comes into the panel: a tool box (transport) or a host box (the supervisor's, draft 56), by its run-wide label. */
+const boxCreated = (state: TransportState, data: Record<string, Json>, line: Line): TransportState => {
+  const facts = obj(data.facts);
+  const box = str(data.box);
+  if (box === undefined) return state;
+  const environment = str(data.environment) ?? '?';
+  // A box made while the session waits for a recovery is the lane's rebuilt box, not a new place.
+  const lane = state.token?.awaiting !== undefined ? (state.boxes.find((each) => each.box === state.token!.box)?.lane ?? environment) : environment;
+  return { ...state, boxes: [...state.boxes.filter((each) => each.box !== box), { box, environment, lane, provider: str(data.provider) ?? '?', isolation: str(facts?.isolation) ?? null, gpu: str(facts?.gpu) ?? null, cpus: num(facts?.cpus) ?? null, from: line.t }] };
+};
+/** A box goes: ended, or killed (a tool box's box.killed; a host box's box.ended with killed). */
+const boxEnded = (state: TransportState, data: Record<string, Json>, line: Line, killed: boolean): TransportState => {
+  const box = str(data.box);
+  // A box that ends after the result is the run's cleanup, not a loss.
+  const holding = state.token !== undefined && state.token.box === box && state.token.awaiting === undefined && state.result === undefined;
+  const closed = holding ? state.tokens.map((segment, index) => (index === state.tokens.length - 1 && segment.to === undefined ? { ...segment, to: line.t } : segment)) : state.tokens;
+  return { ...state, tokens: closed, ...(holding && state.token ? { token: { ...state.token, awaiting: line.t } } : {}), boxes: state.boxes.map((each) => (each.box === box && each.to === undefined ? { ...each, to: line.t, ended: killed ? 'killed' : 'ended' } : each.box === box && killed ? { ...each, ended: 'killed' } : each)) };
+};
+
 export const transportPanel: Panel<TransportState> = {
   id: 'transport',
   title: 'Where the session lives',
   animated: true,
   // A recording of boxes and flights is this panel's story.
-  featured: (lines) => lines.some((line) => line.source === 'transport' && line.channel === 'live' && (line.kind === 'box.created' || line.kind === 'move')),
+  featured: (lines) => lines.some((line) => (line.source === 'transport' && line.channel === 'live' && (line.kind === 'box.created' || line.kind === 'move')) || (isSupervisor(line) && line.kind === 'box.created')),
   init: initial,
   accepts: (line) => known(line) || counterFold.accepts(line),
   // It reduces the strip's lines for its own counters, but it is for a run with transport lines: a run without them has
   // no box, flight or token to draw (its processes and kills are the strip's).
-  shows: (line) => line.source === 'transport',
+  shows: (line) => line.source === 'transport' || (isSupervisor(line) && (line.kind === 'box.created' || line.kind === 'box.ended')),
   reduce(before, line) {
     let state: TransportState = { ...before, lastT: Math.max(before.lastT, line.t) };
     if (counterFold.accepts(line)) state = { ...state, counters: counterFold.reduce(state.counters, line) };
@@ -183,28 +203,17 @@ export const transportPanel: Panel<TransportState> = {
         return { ...state, kills: [...state.kills, { t: line.t, gen: processOf(line) ?? 0, kind, label: str(data.label) ?? 'killed', box: str(data.box) ?? null }] };
       }
       if (line.kind === 'result') return { ...state, result: { blob: str(data.blob) ?? '', title: str(data.title) ?? 'The result' } };
+      // A host box (role host): drawn as a box of the session's host, by its run-wide label; one the supervisor took away ended as killed.
+      if (line.kind === 'box.created') return boxCreated(state, { ...data, environment: str(data.environment) ?? 'host' }, line);
+      if (line.kind === 'box.ended') return boxEnded(state, data, line, data.killed === true);
       return state;
     }
     if (line.source === 'browser') return typeof data.session === 'string' ? { ...state, tile: data.session, tileBox: state.token?.box ?? state.tileBox } : state;
     if (line.source !== 'transport') return state;
     switch (line.kind) {
-      case 'box.created': {
-        const facts = obj(data.facts);
-        const box = str(data.box);
-        if (box === undefined) return state;
-        const environment = str(data.environment) ?? '?';
-        // A box made while the session waits for a recovery is the lane's rebuilt box, not a new place.
-        const lane = state.token?.awaiting !== undefined ? (state.boxes.find((each) => each.box === state.token!.box)?.lane ?? environment) : environment;
-        return { ...state, boxes: [...state.boxes.filter((each) => each.box !== box), { box, environment, lane, provider: str(data.provider) ?? '?', isolation: str(facts?.isolation) ?? null, gpu: str(facts?.gpu) ?? null, cpus: num(facts?.cpus) ?? null, from: line.t }] };
-      }
+      case 'box.created': return boxCreated(state, data, line);
       case 'box.ended':
-      case 'box.killed': {
-        const box = str(data.box);
-        // A box that ends after the result is the run's cleanup, not a loss.
-        const holding = state.token !== undefined && state.token.box === box && state.token.awaiting === undefined && state.result === undefined;
-        const closed = holding ? state.tokens.map((segment, index) => (index === state.tokens.length - 1 && segment.to === undefined ? { ...segment, to: line.t } : segment)) : state.tokens;
-        return { ...state, tokens: closed, ...(holding && state.token ? { token: { ...state.token, awaiting: line.t } } : {}), boxes: state.boxes.map((each) => (each.box === box && each.to === undefined ? { ...each, to: line.t, ended: line.kind === 'box.killed' ? 'killed' : 'ended' } : each.box === box && line.kind === 'box.killed' ? { ...each, ended: 'killed' } : each)) };
-      }
+      case 'box.killed': return boxEnded(state, data, line, line.kind === 'box.killed');
       case 'process.killed': return state;
       // A new attempt begins at its first step: the steps of one that never reached its `move` line are not the next flight's.
       case 'move.step': return { ...state, pending: [...(str(data.step) === 'prepare' ? [] : state.pending), { step: str(data.step) ?? '?', t: line.t }] };

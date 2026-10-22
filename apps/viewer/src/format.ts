@@ -73,6 +73,8 @@ export const isSupervisor = (line: Line) => line.channel === 'live' && line.sour
 /** The supervisor's line kinds whose fields name the process they are about (`data.gen`, RECORDING.md section 5's host
  *  row). The others name none (a `picture`, a `box.receipt`), and a kind this viewer does not know is not checked for it. */
 export const GEN_HOST_KINDS: ReadonlySet<string> = new Set(['process.started', 'kill', 'result', 'kill.failed', 'kill.request.ignored', 'signals.failed',
+  // A host box's lines (draft 56): the process whose start made the box.
+  'box.created', 'box.exec', 'box.ended',
   'recording.carry.failed', 'run.json', 'delegation', 'revoke', 'fenced']);
 /** The process a supervisor line is about, from its data (an earlier recording put it on the line). */
 export const processOf = (line: Line): number | undefined => {

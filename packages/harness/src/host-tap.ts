@@ -2,7 +2,7 @@
 // makes boxes (disk's `boxHost`) gets the provider it makes them with from here, tapped, and calls `unheld` in each start's unheld
 // window, before that start's box is made. Each host box's life then reaches the recording as the supervisor's own host lines:
 //   box.created { gen, box, provider, facts: { isolation, cpus, gpu }, role: 'host', from }
-//   box.exec    { gen, box, at }          one per command the box took: never the command, its arguments or its environment
+//   box.exec    { gen, box }, and `at` on one held before the bind: one per command the box took, never the command, its arguments or its environment
 //   box.ended   { gen, box, provider, killed }
 // `gen` is the process whose start made the box, `box` its run-wide label. The label is BOUND by the run's process once it holds
 // the run (H1's claimHost, link(2) on its mount), after the box exists, so the lines wait here until the supervisor READS the bound
@@ -58,7 +58,8 @@ export function hostTap(options: {
       return async (...args: unknown[]) => {
         const at = now();
         const started = await (member as Box['exec']).apply(target, args as Parameters<Box['exec']>);
-        if (started.ok) write(box, 'box.exec', { at });
+        // A command before the bind is held and keeps its own time (`at`); one after it is written at once, with none.
+        if (started.ok) write(box, 'box.exec', box.label === undefined ? { at } : {});
         return started;
       };
     }

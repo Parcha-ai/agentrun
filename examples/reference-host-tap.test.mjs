@@ -95,6 +95,7 @@ test('the host box\'s lines wait for its bound label, then come in order with th
   await box.exec(['true'], undefined, ctx);
   await box.destroy(ctx);
   assert.deepEqual(lines.slice(2).map(([kind]) => kind), ['box.exec', 'box.ended']);
+  assert.deepEqual(lines[2][1], { gen: 1, box: 'box-1' }, 'a command after the bind is written at once, with no at');
   assert.deepEqual(lines.at(-1)[1], { gen: 1, box: 'box-1', provider: 'host', killed: false });
 });
 
