@@ -11,7 +11,7 @@ import { blocksSha256, fileLook, fileTold, keptAnswer, lookKey, type LookRecord 
 import type { CallContext, CallSetup, EyesAnswer } from "./host.js";
 import { filingOf } from "./filing.js";
 import { fitImage } from "./image.js";
-import { aboutMedium, AS_IS, gatherMedia, namesMedia, once, requestedAbout, throwMiss, type About, type MediaMiss, type MediaRequest } from "./media.js";
+import { aboutMedium, AS_IS, gatherMedia, namesMedia, singleFlight, requestedAbout, throwMiss, type About, type MediaMiss, type MediaRequest } from "./media.js";
 import { firstLine } from "./misses.js";
 import { base64Chars, toBase64 } from "./primitives.js";
 import { lookTiming } from "./timing.js";
@@ -119,7 +119,7 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
   let costUsd: number | null = 0, kept = true, model = eyes.model;
   for (const items of requests) {
     const at = record(items, eyes.model, "");
-    const { value: { look, readBack, receipt, body }, shared } = await once(call, at.facts.key, () => askRequest(items, at));
+    const { value: { look, readBack, receipt, body }, shared } = await singleFlight(call, at.facts.key, () => askRequest(items, at));
     texts.push(requests.length > 1 ? `(${at.args.path}${receipt ? `; look filed at ${receipt}` : ""})\n${body}` : body);
     if (receipt) receipts.push(receipt);
     costUsd = costUsd === null || look.costUsd === null ? null : costUsd + look.costUsd;

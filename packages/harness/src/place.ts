@@ -54,6 +54,14 @@ export type Place = {
   kill(runner: Runner, kind: 'process' | 'box'): Promise<void>;
   /** How the session stands, read the way the place reads it (a package's status reader), never from the store or `work/`: the supervisor is control-plane only. */
   status?(): Promise<unknown>; // { record?: the run's record, delegations?: PlaceDelegation[], boxes?: HostBox[] } for a place that has them
+  /** The run's files, read through the place in disk's K8 shape (`readRunFile` / `listRunFiles` over its control), paths relative to the run's root. With both,
+   *  and the `HOST_BOX` handover to the run's process, the supervisor reads the labels that process claimed for the place's host boxes, and the place shares one
+   *  numbering with the tools' boxes; the place only reads bytes, never a label. `readRunFile` answers `null` for a file that is not there (not landed yet: read
+   *  again), `listRunFiles` `[]` for a directory that is not there; any other failure THROWS (a missing run, a path that is not a regular file, a failed control
+   *  call), and the supervisor takes a throw as an unreadable label, never as one not landed. A place without them numbers its host boxes in the supervisor, and is
+   *  refused beside tool-made boxes (`DemoOptions.providers`). */
+  readRunFile?(path: string): Promise<Uint8Array | null>;
+  listRunFiles?(dir: string): Promise<string[]>;
   /** The next runner after a kill: a process kill restarts in the same place with the store intact; a box kill replaces the machine and restores from the last checkpoint, and says what it restored and replayed. */
   recover(last: Runner, kind: 'process' | 'box', order: RunnerOrder): Promise<{ runner: Runner; restored?: { checkpoint: string; head: number }; replayed?: { from: number; to: number }; /** A takeover that revoked the old holder's delegations (an Archil place): what was revoked, and how long the whole takeover took in ms (the revoke plus the start of the next holder). Written as a `revoke` host line. */ revoked?: PlaceDelegation[]; ms?: number }>;
   /** Takes a checkpoint at rest; reports what held it when it could not. A place that cannot lose its machine has none. */

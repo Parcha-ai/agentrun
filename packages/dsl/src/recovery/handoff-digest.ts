@@ -35,7 +35,7 @@ export type InheritedJob = {
   effects: InheritedEffect[];
   /** Workspace-relative produced files with the sha256 the driver committed for them. */
   files: Record<string, string>;
-  /** The file writeFrozenEvidence wrote each effect's whole receipt to, by effect id. */
+  /** The file writeHandoffFiles wrote each effect's whole receipt to, by effect id. */
   effectFiles?: Record<string, string>;
 };
 
