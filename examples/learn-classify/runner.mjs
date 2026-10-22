@@ -220,7 +220,10 @@ async function runSet({ parts, repo, run, job, judge, limitUsd, lock = inline, d
     const answer = set.answer(data);
     // A promoted workflow that answers the whole job runs first, by the host (dispatch.mjs), unless the pass says not to.
     const dispatch = given ?? (parts.dispatch === false ? null : await lock(() => promotedFor({ repo, run, answer, input: set.input(job) })));
-    return await runJob({ run, job, model: await parts.modelFor(job, run), judge, effects, answer, text: set.text, limitUsd, dispatch, hostOnly });
+    return await runJob({
+      run, job, model: await parts.modelFor(job, run), judge, effects, answer, text: set.text, limitUsd, dispatch, hostOnly,
+      ...(parts.callDeadlineMs !== undefined ? { callDeadlineMs: parts.callDeadlineMs } : {}), ...(parts.runDeadlineMs !== undefined ? { runDeadlineMs: parts.runDeadlineMs } : {}),
+    });
   } finally {
     // What a tool kept for this run alone (read_document's large files) goes when the run ends.
     await Promise.all(effects.map((effect) => effect.dispose?.()));
@@ -277,8 +280,9 @@ function knownSpend(out) {
     + gateSpend(join(out, 'gate'));
 }
 
-/** A run the provider's errors ended, past the harness's own retries: the first time, not the job's outcome. */
-const modelError = (measure) => measure?.status === 'unanswered' && measure.reason === 'model_error';
+/** A run the provider's errors ended, past the harness's own retries, or one stopped at its wall-clock deadline (a call or
+ *  a model that never answered): an infrastructure failure, run again once, never the job's outcome the first time. */
+const modelError = (measure) => measure?.status === 'unanswered' && (measure.reason === 'model_error' || measure.reason === 'deadline');
 const attemptUsd = (measure) => measure.usage.costUsd + measure.judge.costUsd + (measure.toolSpend?.costUsd ?? 0);
 
 /** A job's progress file, <out>/progress/<run>.json, and the run ids of its attempts. */
