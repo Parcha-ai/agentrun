@@ -111,8 +111,8 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
   A read that answers gives the facts as measured, so a box with no usable FUSE reads `fuse: false`. If every try errs, the handle
   keeps the hardware the create measured (the disk, whether FUSE works), which is kept in a tag set through Modal's API: nothing
   inside the box can write it. A security fact (the Yama setting, the network, the ports) is never taken from a tag on a read error: it is
-  left out, unknown. A box made before the tag existed reads `fuse: false` and has no disk fact. `attach` returns `undefined` only
-  for a box that does not exist or has ended, and an error only for the caller's own cancel.
+  left out, unknown. A box made before the tag existed has nothing measured to fall back on: if every try errs, the attach is an error (the box keeps running; try
+  again), never a guess given as measured. `attach` returns `undefined` for a box that does not exist or has ended.
 - `facts()` also reports what the box has, read in it: `diskGb` (the workspace's filesystem, whole GiB; left out when unreadable or over 1 PiB, which is what gVisor's filesystem claims), `ptraceScope`
   (`kernel.yama.ptrace_scope`; a box without the file reads 0; `null` when it could not be read) and `startedAt` (an ISO 8601 UTC
   time; for Modal, the moment it was asked to start).

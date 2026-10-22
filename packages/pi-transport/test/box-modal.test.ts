@@ -333,7 +333,11 @@ describe("modal boxes", () => {
 
 			it("returns the handle with the HARDWARE measured at create when every try errs, every security fact unknown, and the box still running", async () => {
 				await withRoot(async (root) => {
-					const { sdk, box, sandbox } = await fuseBox(root, { network: { allow: ["10.0.0.0/8"] }, ports: [8080] });
+					const { sdk, box, sandbox } = await fuseBox(root, {
+						network: { allow: ["10.0.0.0/8"] },
+						ports: [8080],
+						cpus: 2,
+					});
 					expect(box.facts()).toMatchObject({
 						network: "allowlist",
 						ports: [{ port: 8080, kind: "https" }],
@@ -342,7 +346,7 @@ describe("modal boxes", () => {
 					const tries = failProbe(sandbox, 100);
 					const attached = unwrap(await provider(sdk).attach(box.id, context));
 					expect(tries.count).toBe(3);
-					expect(attached?.facts()).toMatchObject({ fuse: true, diskGb: 100 });
+					expect(attached?.facts()).toMatchObject({ fuse: true, diskGb: 100, cpus: 2 });
 					// A security fact is never taken from a tag on a read error: the Yama setting, the network and the ports are unknown.
 					for (const key of ["ptraceScope", "network", "ports"]) expect(attached?.facts()).not.toHaveProperty(key);
 					expect(sdk.running().map((each) => each.sandboxId)).toEqual([box.id]);
@@ -362,16 +366,32 @@ describe("modal boxes", () => {
 				});
 			});
 
-			it("gives the fail-closed values (fuse false) for a tag from before measured facts, when the read errs", async () => {
+			it("is an attach ERROR, not a fail-closed guess given as measured, for a tag from before measured facts when the read errs; the box still runs", async () => {
 				await withRoot(async (root) => {
 					const { sdk, box, sandbox } = await fuseBox(root);
 					const tags = { ...(await sandbox.getTags()) };
 					delete tags[MEASURED];
 					sandbox.params.tags = tags;
-					failProbe(sandbox, 100);
+					const tries = failProbe(sandbox, 100);
+					const attached = await provider(sdk).attach(box.id, context);
+					expect(attached.ok ? "ok" : attached.error.code).toBe("unknown");
+					expect(tries.count).toBe(3);
+					// Nothing ended, nothing created: the caller fails this start and tries again.
+					expect(sdk.running().map((each) => each.sandboxId)).toEqual([box.id]);
+					expect(sdk.sandboxList).toHaveLength(1);
+					sandbox.exec = Object.getPrototypeOf(sandbox).exec.bind(sandbox);
+					await end(sdk, unwrap(await provider(sdk).attach(box.id, context)));
+				});
+			});
+
+			it("still gives the handle, measured, for a tag from before measured facts when the read ANSWERS", async () => {
+				await withRoot(async (root) => {
+					const { sdk, box, sandbox } = await fuseBox(root);
+					const tags = { ...(await sandbox.getTags()) };
+					delete tags[MEASURED];
+					sandbox.params.tags = tags;
 					const attached = unwrap(await provider(sdk).attach(box.id, context));
-					expect(attached?.facts().fuse).toBe(false);
-					for (const key of ["diskGb", "ptraceScope"]) expect(attached?.facts()).not.toHaveProperty(key);
+					expect(attached?.facts()).toMatchObject({ fuse: true, diskGb: 100, ptraceScope: 1 });
 					await end(sdk, attached);
 				});
 			});

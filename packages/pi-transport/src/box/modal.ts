@@ -236,7 +236,7 @@ const validPorts = (value: unknown): NonNullable<BoxFacts["ports"]> =>
 function parseFacts(
 	text: string | undefined,
 	measuredText?: string,
-): { facts: BoxFacts; wantsFuse: boolean } | undefined {
+): { facts: BoxFacts; wantsFuse: boolean; measured: boolean } | undefined {
 	if (text === undefined) return undefined;
 	try {
 		const facts = JSON.parse(text) as Record<string, unknown> | null;
@@ -270,6 +270,8 @@ function parseFacts(
 		}
 		return {
 			wantsFuse: wantsFuse === true,
+			// Whether the create's measured facts are in the tag: an ok attach carries only MEASURED facts.
+			measured: measured.fuse !== undefined,
 			facts: {
 				...rest,
 				fuse: false,
@@ -517,10 +519,10 @@ class ModalBox implements Box {
 	 * The read of an attach: a live sandbox is always handed back, and never ended here. A probe that errs is tried again (a few
 	 * tries, with a pause); a probe that answers, even with no FUSE, gives the facts AS MEASURED, and the caller ends the box
 	 * through its handle if it does not fit. If every try errs, the handle keeps the HARDWARE the create measured (from its tag; a
-	 * tag from before that gives the fail-closed values) and every security fact is left out (unknown): the Yama setting, the
+	 * tag from before that has none, and the attach is an error) and every security fact is left out (unknown): the Yama setting, the
 	 * network and the ports are never taken from a tag on a read error. A cancelled call is the one error.
 	 */
-	async measureForAttach(wantsFuse: boolean, context: Context): Promise<Result<void, BoxError>> {
+	async measureForAttach(wantsFuse: boolean, tagMeasured: boolean, context: Context): Promise<Result<void, BoxError>> {
 		for (let attempt = 0; attempt < ATTACH_PROBE_TRIES; attempt++) {
 			const read = await this.#runProbe(wantsFuse, context);
 			if (context.abortSignal?.aborted) return err(new BoxError("aborted", "the call was aborted"));
@@ -537,6 +539,16 @@ class ModalBox implements Box {
 			if (attempt + 1 < ATTACH_PROBE_TRIES) {
 				await new Promise((resolve) => setTimeout(resolve, ATTACH_PROBE_BACKOFF_MS * (attempt + 1)));
 			}
+		}
+		// A tag with nothing measured has no facts to give: an `ok` attach carries only measured ones, never a fail-closed guess, so
+		// this is an error and the box keeps running (the caller tries again, and ends nothing).
+		if (!tagMeasured) {
+			return err(
+				new BoxError(
+					"unknown",
+					`could not read what the box ${this.id} has, and nothing measured at its create is kept: try again`,
+				),
+			);
 		}
 		const { network: _network, ports: _ports, ptraceScope: _ptrace, ...hardware } = this.#facts;
 		this.#facts = hardware;
@@ -733,6 +745,7 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 		async attach(id: string, context: Context): Promise<Result<Box | undefined, BoxError>> {
 			let box: ModalBox;
 			let wantsFuse = false;
+			let tagMeasured = false;
 			try {
 				const sandbox = await sdk.sandboxes.fromId(id);
 				if ((await sandbox.poll()) !== null) return ok(undefined);
@@ -741,6 +754,7 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 				if (found === undefined) return ok(undefined);
 				box = new ModalBox(sandbox, found.facts);
 				wantsFuse = found.wantsFuse;
+				tagMeasured = found.measured;
 			} catch (cause) {
 				if (isNotFound(cause) || classify(cause) === "invalid") return ok(undefined);
 				return err(boxError(`could not look up box ${id}`, cause));
@@ -751,7 +765,7 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 			const prepared = await box.prepare(context);
 			if (context.abortSignal?.aborted) return err(new BoxError("aborted", "the call was aborted"));
 			void prepared;
-			const read = await box.measureForAttach(wantsFuse, context);
+			const read = await box.measureForAttach(wantsFuse, tagMeasured, context);
 			return read.ok ? ok(box) : read;
 		},
 
