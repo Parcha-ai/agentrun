@@ -1,6 +1,6 @@
 # The issue-triage demo
 
-An agent writes the workflow. Asked to triage a public repository's newest open issues, it drafts a typed workflow, checks it, dry-runs it for free, runs it, and every node shows on its graph. For each issue a research step (an agent with read-only tools) reads the issue, the pull requests that mention it and the code it names; Jev gives it one of four types (bug, feature, docs, question) and judges whether it is a good first issue and whether it is actionable as written; the result is a table and how often Jev's type agrees with the maintainers' own type labels. The run is one durable task, so a process that stops can be run again from where it was.
+An agent writes the workflow. Asked to triage a public repository's newest open issues, it drafts a typed workflow, checks it, dry-runs it for free, and runs it. For each issue a research step (an agent with read-only tools) reads the issue, the pull requests that mention it and the code it names; Jev gives it one of four types (bug, feature, docs, question) and judges whether it is a good first issue and whether it is actionable as written; the result is a table and how often Jev's type agrees with the maintainers' own type labels. The run is one durable task, so a process that stops can be run again from where it was.
 
 ```sh
 npm ci --ignore-scripts && npm run build && npm run demo:issue-triage
@@ -50,7 +50,7 @@ The label an issue carries is what the run is scored against, so nothing the res
 
 ## A live run
 
-The agent drafts the workflow itself. `session.ts` gives a lead model the `agentrun` tool and one sentence; the model describes the language, drafts a complete document, checks it with `inspect`, dry-runs it (no model, no Jev and no tool call), and runs it, and the recording shows every node on its graph.
+The agent drafts the workflow itself. `session.ts` gives a lead model the `agentrun` tool and one sentence; the model describes the language, drafts a complete document, checks it with `inspect`, dry-runs it (no model, no Jev and no tool call), and runs it.
 
 ```sh
 export TYPESAFE_API_KEY=...      # Jev's judge

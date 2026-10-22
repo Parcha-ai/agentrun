@@ -3,13 +3,19 @@
 // reads a store. `workflowGraph` reads the workflow JSON as written; `nodeStatus` reads the driver's record of a run
 // (the `agentrun.driver` frame of the frozen snapshot, and the `agentrun.items` of a keyed-layout run) and says, for
 // each node of that graph, whether it is done, working, failed or not run; `graphNodeOf` names the node an execution path ran
-// at, and the map items and loop iterations around it.
+// at, and the map items and loop iterations around it; `graphDiff` says what changed between two graphs of a workflow.
 
 /** One node of the workflow as written. `path` is a JSON Pointer (RFC 6901) into the document: `/root` is the root,
  *  `/root/steps/1` a chain's second step, `/root/branches/<name>/body` a route's branch, `/root/body` a map's or a
  *  loop's body, `/root/workflow/root` a child workflow's root: the pointers `inspectWorkflow` and a validation issue
- *  use for the same node. `label` is the node's label, or its kind when it has none. `via` is a `call` node's transport. */
-export type GraphNode = { path: string; kind: string; label: string; via?: string };
+ *  use for the same node. `label` is the node's label, or its kind when it has none. `via` is a `call` node's transport.
+ *  `changeCheck` detects a change to the node's own fields from one graph to another: 8 hex digits, the FNV-1a hash of
+ *  the canonical JSON (keys sorted) of the node with its children left out as the walk leaves them out (a chain's steps,
+ *  a parallel's branches, a map's or a loop's body, each route branch's body, a child workflow's root). A route's branch
+ *  names are its own fields, since they decide which branch runs, so a route that gains or loses a branch is rewritten. It
+ *  is not an identity and not a saved revision's sha256: two nodes with the same check are not the same node, and a check
+ *  that stayed only means no change was seen. A graph built by hand may leave it out. */
+export type GraphNode = { path: string; kind: string; label: string; via?: string; changeCheck?: string };
 
 /** How control reaches `to` from `from`.
  *  - `next`: a chain enters its first step and each step is followed by the next; a loop enters its body, which runs again
@@ -28,6 +34,41 @@ const pointer = (part: string): string => part.replace(/~/g, "~0").replace(/\//g
 /** The nesting depth `validateWorkflow` and `inspectWorkflow` accept (128 JSON levels): a node nests at least one level deeper than its parent, so every node of such a document is within it. */
 const MAX_DEPTH = 128;
 
+/** A value as canonical JSON: object keys sorted, undefined members left out, other values as JSON writes them. Deeper
+ *  than `MAX_DEPTH` a value is written as one marker, so a value that is not JSON (a cycle) still ends. A leaf JSON
+ *  cannot encode (a bigint, a symbol) is written as a marker of its type, so changeCheck is total: `workflowGraph` never
+ *  throws on a node the validator accepts, and such a leaf still changes the check when it changes value. */
+const leaf = (value: unknown): string => {
+  try { return JSON.stringify(value) ?? "null"; }
+  catch { return JSON.stringify(`[${typeof value}:${String(value)}]`); }
+};
+const canonicalJson = (value: unknown, depth = 0): string => {
+  if (depth > MAX_DEPTH) return '"…"';
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item, depth + 1)).join(",")}]`;
+  if (isObject(value)) return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key], depth + 1)}`).join(",")}}`;
+  return leaf(value);
+};
+/** FNV-1a (32 bits) over the UTF-16 code units of `text`, as 8 hex digits. */
+const fnv1a = (text: string): string => {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
+  return (hash >>> 0).toString(16).padStart(8, "0");
+};
+const without = (value: Json, key: string): Json => Object.fromEntries(Object.entries(value).filter(([name]) => name !== key));
+/** A node's own fields: the node with the children the walk visits left out. */
+const ownFields = (node: Json): Json => {
+  switch (node.node) {
+    case "chain": return without(node, "steps");
+    case "parallel": return without(node, "branches");
+    case "map": case "loop": return without(node, "body");
+    case "route": return isObject(node.branches)
+      ? { ...node, branches: Object.fromEntries(Object.entries(node.branches).map(([name, branch]) => [name, isObject(branch) ? without(branch, "body") : branch])) }
+      : node;
+    case "workflow": return isObject(node.workflow) ? { ...node, workflow: without(node.workflow, "root") } : node;
+    default: return node;
+  }
+};
+
 /** The graph of `workflow`, computed from its JSON alone: nodes in document order (a node, then its descendants), and the
  *  edges between them. A value that is not a workflow, or a node the walk does not know, adds nothing and never throws:
  *  validation is `validateWorkflow`'s. */
@@ -37,7 +78,7 @@ export function workflowGraph(workflow: unknown): WorkflowGraph {
   const visit = (node: unknown, path: string, depth: number): void => {
     if (!isObject(node) || typeof node.node !== "string" || depth > MAX_DEPTH) return;
     nodes.push({ path, kind: node.node, label: typeof node.label === "string" ? node.label : node.node,
-      ...(node.node === "call" && typeof node.via === "string" ? { via: node.via } : {}) });
+      ...(node.node === "call" && typeof node.via === "string" ? { via: node.via } : {}), changeCheck: fnv1a(canonicalJson(ownFields(node))) });
     const child = (target: unknown, at: string, kind: GraphEdgeKind, from = path): void => {
       if (!isObject(target) || typeof target.node !== "string" || depth + 1 > MAX_DEPTH) return;
       edges.push({ from, to: at, kind });
@@ -218,4 +259,89 @@ export function graphNodeOf(graph: WorkflowGraph, executionPath: string): GraphN
     path = next;
   }
   return { path, at };
+}
+
+/** A node as `graphDiff` reports it: its path in the graph it is in, its kind and its label. */
+export type GraphDiffNode = { path: string; kind: string; label: string };
+/** What changed from one graph to the next. `added` holds nodes of `next` only (paths in `next`), `removed` nodes of `prev`
+ *  only (paths in `prev`); `changed` the same node at the same path with a new kind or label; `moved` the same node at a
+ *  new path; `rewritten` the same node, its kind and label as they were, with other own fields changed (its `changeCheck`
+ *  differs: new instructions, a new budget), at its path in each graph; `edges.added` edges of `next` only and
+ *  `edges.removed` edges of `prev` only, each in its own graph's paths. */
+export type GraphDiff = {
+  added: GraphDiffNode[];
+  removed: GraphDiffNode[];
+  changed: { prev: string; next: string; was: { kind: string; label: string }; now: { kind: string; label: string } }[];
+  moved: { prev: string; next: string }[];
+  rewritten: { prev: string; next: string; kind: string; label: string }[];
+  edges: { added: GraphEdge[]; removed: GraphEdge[] };
+};
+
+/** What changed between two graphs of a workflow, such as two saved revisions of one. A node is the same in both when its
+ *  `(kind, label)` is unique in each graph, wherever it is: a step inserted before others is one `added` node and the rest
+ *  `moved`, never a run of changes. A node whose `(kind, label)` repeats in either graph, or is in one only, is the same
+ *  as the other graph's node at its path, unless that node is already matched by its identity; with a new kind or label
+ *  it is `changed`. A matched node with its kind and label as they were and another `changeCheck` is `rewritten`; a node
+ *  without a check in either graph is never reported rewritten. An edge is the same when both its ends are the same nodes
+ *  and its kind is the same. Every list is in its graph's node or edge order. */
+export function graphDiff(prev: WorkflowGraph, next: WorkflowGraph): GraphDiff {
+  const identity = (node: GraphNode): string => JSON.stringify([node.kind, node.label]);
+  const counts = (graph: WorkflowGraph): Map<string, number> => {
+    const count = new Map<string, number>();
+    for (const node of graph.nodes) count.set(identity(node), (count.get(identity(node)) ?? 0) + 1);
+    return count;
+  };
+  const [inPrev, inNext] = [counts(prev), counts(next)];
+  const unique = (node: GraphNode): boolean => inPrev.get(identity(node)) === 1 && inNext.get(identity(node)) === 1;
+  // The matched nodes, each way: a path of `next` to its node's path in `prev`, and back.
+  const prevOf = new Map<string, string>();
+  const nextOf = new Map<string, string>();
+  const match = (from: string, to: string): void => { prevOf.set(to, from); nextOf.set(from, to); };
+  const uniqueInPrev = new Map(prev.nodes.filter(unique).map((node) => [identity(node), node.path]));
+  for (const node of next.nodes) {
+    const at = unique(node) ? uniqueInPrev.get(identity(node)) : undefined;
+    if (at !== undefined) match(at, node.path);
+  }
+  const prevAt = new Map(prev.nodes.map((node) => [node.path, node]));
+  const changed: GraphDiff["changed"] = [];
+  for (const node of next.nodes) {
+    const old = prevAt.get(node.path);
+    if (prevOf.has(node.path) || old === undefined || nextOf.has(old.path)) continue;
+    match(old.path, node.path);
+    if (old.kind !== node.kind || old.label !== node.label) {
+      changed.push({ prev: old.path, next: node.path, was: { kind: old.kind, label: old.label }, now: { kind: node.kind, label: node.label } });
+    }
+  }
+  const rewritten: GraphDiff["rewritten"] = [];
+  for (const node of next.nodes) {
+    const from = prevOf.get(node.path);
+    const old = from === undefined ? undefined : prevAt.get(from);
+    if (old === undefined || old.kind !== node.kind || old.label !== node.label) continue;
+    if (old.changeCheck !== undefined && node.changeCheck !== undefined && old.changeCheck !== node.changeCheck) {
+      rewritten.push({ prev: old.path, next: node.path, kind: node.kind, label: node.label });
+    }
+  }
+  const reported = ({ path, kind, label }: GraphNode): GraphDiffNode => ({ path, kind, label });
+  const edgeKey = (from: string, to: string, kind: GraphEdgeKind): string => JSON.stringify([from, to, kind]);
+  const prevEdges = new Set(prev.edges.map((edge) => edgeKey(edge.from, edge.to, edge.kind)));
+  const nextEdges = new Set(next.edges.map((edge) => edgeKey(edge.from, edge.to, edge.kind)));
+  // Whether the other graph has this edge: both its ends matched there, joined by an edge of the same kind.
+  const theirs = (edge: GraphEdge, map: Map<string, string>, edges: Set<string>): boolean => {
+    const [from, to] = [map.get(edge.from), map.get(edge.to)];
+    return from !== undefined && to !== undefined && edges.has(edgeKey(from, to, edge.kind));
+  };
+  return {
+    added: next.nodes.filter((node) => !prevOf.has(node.path)).map(reported),
+    removed: prev.nodes.filter((node) => !nextOf.has(node.path)).map(reported),
+    changed,
+    moved: next.nodes.flatMap((node) => {
+      const from = prevOf.get(node.path);
+      return from !== undefined && from !== node.path ? [{ prev: from, next: node.path }] : [];
+    }),
+    rewritten,
+    edges: {
+      added: next.edges.filter((edge) => !theirs(edge, prevOf, prevEdges)).map(({ from, to, kind }) => ({ from, to, kind })),
+      removed: prev.edges.filter((edge) => !theirs(edge, nextOf, nextEdges)).map(({ from, to, kind }) => ({ from, to, kind })),
+    },
+  };
 }

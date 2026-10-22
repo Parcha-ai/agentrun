@@ -4,6 +4,7 @@ import { type Caps, createGuard } from "./guard.js";
 import { renderInbox } from "./inbox.js";
 import { COMMIT_SHA, inboxPath, inboxWorkflowDir, RUN_ID, runBranch, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { readSeed } from "./seed.js";
+import type { ServedRun } from "./serving.js";
 import { collectCandidates } from "./tool.js";
 import type { Candidate, Refusal } from "./types.js";
 import { collectUses, collectWorkflows, COPIED_TEXT, copiesRead, revisionOf } from "./workflows.js";
@@ -88,12 +89,15 @@ export type ProposeOptions = Omit<ProposeFilesOptions, "files" | "candidates"> &
   readonly workDir?: string;
   /** The commit the run was seeded from, for `workDir`'s workflows. Default: the seed in `target`, else main. */
   readonly seedSha?: string;
+  /** What the host served the run (`serve`), for the collected uses: each is a use of its own revision, with the host's
+   *  verdict. */
+  readonly served?: readonly ServedRun[];
 };
 
 /** The host step at a run's terminal: collect the run's candidates (and uses), render `inbox/<run id>.md` with the run's
  *  seed commit (and `uses/<run id>.json`), add the workflow records, and propose them. */
 export async function proposeLearning(options: ProposeOptions): Promise<ProposeResult> {
-  const { target, uses: usesSource, workflows, untrusted, read, workDir, seedSha, ...rest } = options;
+  const { target, uses: usesSource, workflows, untrusted, read, workDir, seedSha, served, ...rest } = options;
   const candidates = await collectCandidates(target);
   let records = workflows;
   let uses = await usesSource?.(target);
@@ -103,7 +107,7 @@ export async function proposeLearning(options: ProposeOptions): Promise<ProposeR
       if (baseline !== undefined) records = (await collectWorkflows({ repo: rest.repo, workDir, seedSha: baseline })).records;
     }
     if (usesSource === undefined && typeof (target as { commit?: unknown }).commit === "function") {
-      uses = await collectUses({ target: target as unknown as Pick<Session, "commit">, workDir, run: rest.runId });
+      uses = await collectUses({ target: target as unknown as Pick<Session, "commit">, workDir, run: rest.runId, ...(served ? { served } : {}) });
     }
   }
   const withheld: Withheld[] = [];

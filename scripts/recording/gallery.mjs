@@ -46,7 +46,7 @@ const isObject = (value) => typeof value === 'object' && value !== null && !Arra
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 /** The lock, read: `{ asset, sha256, ids: [{ id, poster?, looks?, title?, view? }] }` (a plain id reads as `{ id }`), or its problems.
- *  `title`: the words the gallery list shows for the run, in place of the recording's own (a plain trimmed string of 1 to 120 characters, no control character).
+ *  `title`: the words the gallery list shows for the run, in place of the recording's own (a plain trimmed string of 1 to 120 characters, no control character: C0, DEL or C1).
  *  `view`: the flags its link opens with, distinct ones from VIEW_FLAGS (today `muse`: the phone chat layout).
  *  `looks`: the keys of looks the run filed on one image, which its card shows with their boxes (the gate checks the run
  *  filed them). */
@@ -65,7 +65,7 @@ export function readLock(text) {
     if (seen.has(each.id)) problems.push(`${each.id} is listed twice`);
     seen.add(each.id);
     if (Object.keys(each).some((key) => !['id', 'poster', 'looks', 'title', 'view'].includes(key))) problems.push(`${each.id} holds ${JSON.stringify(Object.keys(each))}, not id, poster, looks, title and view`);
-    if (each.title !== undefined && !(typeof each.title === 'string' && each.title !== '' && each.title === each.title.trim() && each.title.length <= TITLE_LIMIT && !/[\u0000-\u001f\u007f]/.test(each.title))) problems.push(`${each.id}'s title ${JSON.stringify(each.title)} is not a trimmed string of 1 to ${TITLE_LIMIT} characters with no control character`);
+    if (each.title !== undefined && !(typeof each.title === 'string' && each.title !== '' && each.title === each.title.trim() && each.title.length <= TITLE_LIMIT && !/[\u0000-\u001f\u007f-\u009f]/.test(each.title))) problems.push(`${each.id}'s title ${JSON.stringify(each.title)} is not a trimmed string of 1 to ${TITLE_LIMIT} characters with no control character`);
     if (each.view !== undefined && !(Array.isArray(each.view) && each.view.length > 0 && each.view.every((flag) => typeof flag === 'string' && VIEW_FLAGS.includes(flag)) && new Set(each.view).size === each.view.length)) problems.push(`${each.id}'s view ${JSON.stringify(each.view)} is not a non-empty list of distinct flags from ${JSON.stringify(VIEW_FLAGS)}`);
     if (each.looks !== undefined && !(Array.isArray(each.looks) && each.looks.length > 0 && each.looks.every((key) => typeof key === 'string' && key !== '') && new Set(each.looks).size === each.looks.length)) problems.push(`${each.id}'s looks ${JSON.stringify(each.looks)} is not a list of distinct look keys`);
     if (each.poster !== undefined && (typeof each.poster !== 'string' || !SHA256.test(each.poster))) problems.push(`${each.id}'s poster ${JSON.stringify(each.poster)} is not a SHA-256`);
