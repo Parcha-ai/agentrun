@@ -2,7 +2,7 @@
 // row's code alone on its line), Visa's listing with wrapped titles and T&E blocks, a repeat settled by a fix.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildTable, rangesOf, visaCodesOf } from './build-mcc-groups.mjs';
+import { buildTable, codesJson, rangesOf, visaCodesOf } from './build-mcc-groups.mjs';
 
 const CITI = [
   'Table of Contents',
@@ -60,13 +60,23 @@ test('Visa\'s listing: wrapped titles joined, the T&E block of a merchant-specif
   assert.equal(codes['9999'], undefined);
 });
 
-test('the table: overrides for an airline outside the airline range, the repeat moved by its fix, Mastercard-only codes, retired ones left out', () => {
-  const t = buildTable({ citi: CITI, visa: VISA, sources: { retrieved: '2026-10-22', sample: ['3301', '5969'] }, fixes: { 5912: '5921' } });
+test('the tables: overrides for an airline outside the airline range, the repeat moved by its fix, Mastercard-only codes, retired ones left out', () => {
+  const { groups: t, codes } = buildTable({ citi: CITI, visa: VISA, sources: { retrieved: '2026-10-22', sample: ['3301', '5969'] }, fixes: { 5912: '5921' } });
+  assert.deepEqual(t.groups[0], { id: 'airlines', code: '3000-3299', from: '3000', to: '3299', name: 'Airlines' });
   assert.deepEqual(t.overrides, { 3301: 'airlines' });
-  assert.equal(t.codes['5921'], 'Package Stores – Beer, Wine, and Liquor');
-  assert.deepEqual(t.mastercardOnly, { 6538: 'MoneySend Funding' }, '5961 is TSYS alone and 9700 Visa alone: neither is listed now');
+  assert.equal(codes['5921'], 'Package Stores – Beer, Wine, and Liquor');
+  assert.equal(codes['6538'], 'MoneySend Funding');
+  assert.deepEqual(t.mastercardOnly, ['6538'], '5961 is TSYS alone and 9700 Visa alone: neither is listed now');
+  assert.equal(codes['5961'], undefined);
+  assert.equal(codes['9700'], undefined);
   assert.deepEqual(t.teGeneric, { airlines: '4511', 'car-rental': '7512', lodging: '7011' });
   assert.deepEqual(t.checks.sample.map((s) => [s.code, s.group, s.citiTable]), [['3301', 'airlines', null], ['5969', 'miscellaneous-stores', 'Miscellaneous Stores']]);
   assert.equal(t.source.sample, undefined, 'the sample list is a check, not a source');
   assert.throws(() => buildTable({ citi: CITI, visa: VISA, sources: {} }), /lists 5912 twice/);
+});
+
+test('the code table is written in code order, a leading zero first', () => {
+  const text = codesJson({ 1520: 'General Contractors', '0742': 'Veterinary Services' });
+  assert.equal(text, '{\n  "0742": "Veterinary Services",\n  "1520": "General Contractors"\n}\n');
+  assert.deepEqual(JSON.parse(text), { '0742': 'Veterinary Services', 1520: 'General Contractors' });
 });

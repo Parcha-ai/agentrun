@@ -16,7 +16,7 @@
     "sha256": "62839c2c559ccb59914241315765860015ac6ffc446274b3b03d57399638fa5a",
     "used": "Section 2: Merchant Category Code Listing (codes, titles, the T&E block each merchant-specific code is listed under); Section 1, Determining Merchant Category Codes, General Requirements e (the generic T&E codes)"
   },
-  "built": "pdftotext -layout on each PDF, then node build-mcc-groups.mjs citi.txt visa.txt data/mcc-sources.json",
+  "built": "pdftotext -layout on each PDF, then node build-mcc-groups.mjs citi.txt visa.txt data/mcc-sources.json data",
   "fixes": {
     "5912": "5921"
   },

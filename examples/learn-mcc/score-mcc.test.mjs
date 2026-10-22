@@ -1,10 +1,11 @@
 // The MCC scorer on synthetic rows: exact code, ISO 18245 group with Visa's T&E folds, risk tier and its ordinal
-// distance, per-field nulls where the teacher has no value, and the per-vertical summary.
+// distance, a field the teacher lacks left out of the n, the reported-only fields, and the per-vertical summary.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { groupOf, loadGroups, mccOf, riskOf, sameGroup, scoreMcc, summarizeMcc } from './score-mcc.mjs';
+import { genericOf, groupOf, loadGroups, mccOf, riskOf, sameGroup, scoreMcc, summarizeMcc } from './score-mcc.mjs';
 
-const table = loadGroups();
+const groups = loadGroups();
+const merchant = (teacher, vertical = 'nutra') => ({ merchantId: 'm1', name: 'A Shop', website: 'https://shop.example', vertical, teacher });
 
 test('an MCC is four digits: a short code or a whole number is zero-padded, anything else is no code', () => {
   assert.equal(mccOf('5999'), '5999');
@@ -18,97 +19,121 @@ test('a risk tier is low, medium or high in any case; anything else is none', ()
   for (const bad of ['very high', 'elevated', '', null, 2]) assert.equal(riskOf(bad), null, String(bad));
 });
 
-test('the table holds the 13 ISO 18245 ranges end to end, its source cited, and the sample codes in their groups', () => {
-  assert.equal(table.groups.length, 13);
-  assert.equal(table.groups[0].from, '0001');
-  assert.equal(table.groups.at(-1).to, '9999');
-  for (const [i, g] of table.groups.entries()) if (i) assert.equal(Number(g.from), Number(table.groups[i - 1].to) + 1, `${g.id} starts where the last range ends`);
-  assert.match(table.source.ranges.url, /^https:\/\//);
-  assert.match(table.source.codes.url, /^https:\/\//);
-  assert.match(table.source.ranges.sha256, /^[0-9a-f]{64}$/);
-  assert.deepEqual(table.checks.listedOutsideTheirRange, [], 'every code the range reference lists sits inside its own table\'s range');
-  for (const s of table.checks.sample) {
-    assert.ok(s.visa, `${s.code} is in Visa's listing`);
-    if (s.citiTable) assert.equal(groupOf(s.code, table), table.groups.find((g) => g.name === s.citiTable).id, `${s.code} is in the group Citi lists it under`);
+test('the group table holds the 13 ISO 18245 ranges end to end, its sources cited, and the sample codes in their groups', () => {
+  assert.equal(groups.groups.length, 13);
+  assert.equal(groups.groups[0].code, '0001-1499');
+  assert.equal(groups.groups.at(-1).to, '9999');
+  for (const [i, g] of groups.groups.entries()) {
+    assert.equal(g.code, `${g.from}-${g.to}`);
+    if (i) assert.equal(Number(g.from), Number(groups.groups[i - 1].to) + 1, `${g.id} starts where the last range ends`);
+  }
+  for (const doc of [groups.source.ranges, groups.source.codes]) {
+    assert.match(doc.url, /^https:\/\//);
+    assert.match(doc.sha256, /^[0-9a-f]{64}$/);
+  }
+  assert.deepEqual(groups.checks.listedOutsideTheirRange, [], 'every code the range reference lists sits inside its own table\'s range');
+  for (const s of groups.checks.sample) {
+    assert.equal(groups.codes[s.code], s.visa, `${s.code} is in the code table under Visa's title`);
+    if (s.citiTable) assert.equal(groupOf(s.code, groups), groups.groups.find((g) => g.name === s.citiTable).id, `${s.code} is in the group Citi lists it under`);
   }
   const expected = { '0742': 'agricultural-services', '1520': 'contracted-services', '3000': 'airlines', '3351': 'car-rental', '3501': 'lodging', '4111': 'transportation-services', '4900': 'utility-services', '5411': 'retail-outlet-services', '5651': 'clothing-stores', '5812': 'miscellaneous-stores', '7311': 'business-services', '8011': 'professional-services-and-membership-organizations', '9311': 'government-services' };
-  for (const [code, group] of Object.entries(expected)) assert.equal(groupOf(code, table), group, code);
+  for (const [code, group] of Object.entries(expected)) assert.equal(groupOf(code, groups), group, code);
+});
+
+test('the code table: four-digit keys in code order, every code in some group, the Mastercard-only codes included', () => {
+  const codes = Object.keys(groups.codes);
+  assert.ok(codes.length > 900);
+  assert.ok(codes.every((c) => /^\d{4}$/.test(c) && typeof groups.codes[c] === 'string' && groups.codes[c].length));
+  assert.ok(codes.every((c) => groupOf(c, groups) !== null));
+  for (const c of groups.mastercardOnly) assert.ok(groups.codes[c], c);
+  assert.equal(groups.codes['5921'], 'Package Stores – Beer, Wine, and Liquor', 'the code Visa printed under 5912 a second time');
 });
 
 test('a code Visa lists as an airline above 3299 is an airline, not car rental, and a generic T&E code matches its block', () => {
-  assert.equal(groupOf('3301', table), 'airlines');
-  assert.equal(groupOf('3351', table), 'car-rental');
-  assert.ok(sameGroup('3000', '4511', table), 'United\'s own code and the generic airline code are both an airline');
-  assert.ok(sameGroup('7011', '3501', table));
-  assert.ok(sameGroup('3357', '7512', table));
-  assert.ok(sameGroup('4511', '4111', table), 'the generic airline code keeps its own range too');
-  assert.equal(sameGroup('3000', '4111', table), false, 'a merchant-specific airline code is not commuter transport');
-  assert.equal(sameGroup('3000', '7011', table), false);
-  assert.equal(sameGroup(null, '5999', table), false);
+  assert.equal(groupOf('3301', groups), 'airlines');
+  assert.equal(groupOf('3351', groups), 'car-rental');
+  assert.ok(sameGroup('3000', '4511', groups), 'United\'s own code and the generic airline code are both an airline');
+  assert.ok(sameGroup('7011', '3501', groups));
+  assert.ok(sameGroup('3357', '7512', groups));
+  assert.ok(sameGroup('4511', '4111', groups), 'the generic airline code keeps its own range too');
+  assert.equal(sameGroup('3000', '4111', groups), false, 'a merchant-specific airline code is not commuter transport');
+  assert.equal(sameGroup('3000', '7011', groups), false);
+  assert.equal(sameGroup(null, '5999', groups), false);
 });
 
-test('one answer: exact code, group, risk tier and distance, each right or wrong, and correct over the scored fields', () => {
-  const right = scoreMcc({ answer: { mcc: '5999', risk: 'medium' }, teacher: { mcc: '5999', risk: 'Medium' }, table });
+test('one answer: exact code, group, tier and distance, each right or wrong; correct is the exact code', () => {
+  const answer = { mcc: '5999', mccDescription: 'Miscellaneous and Specialty Retail Shops', riskTier: 'medium', flags: ['subscription', 'nutraceuticals'], siteStatus: 'live', confidence: 0.7 };
+  const right = scoreMcc({ answer, merchant: merchant({ mcc: '5999', riskTier: 'Medium', flags: ['nutraceuticals'] }), groups });
   assert.deepEqual(right, {
-    against: 'teacher', mccAnswer: '5999', mccTeacher: '5999', mccCorrect: true, mccKnown: true,
+    against: 'teacher', mccAnswer: '5999', mccTeacher: '5999', mccCorrect: true, brandMapped: false, mccKnown: true,
     mccGroupAnswer: 'miscellaneous-stores', mccGroupTeacher: 'miscellaneous-stores', mccGroupCorrect: true,
-    riskAnswer: 'medium', riskTeacher: 'medium', riskCorrect: true, riskDistance: 0, correct: true, correctOver: ['mcc', 'risk'],
+    riskAnswer: 'medium', riskTeacher: 'medium', riskCorrect: true, riskDistance: 0,
+    flagsAnswer: ['nutraceuticals', 'subscription'], flagsTeacher: ['nutraceuticals'], flagsJaccard: 0.5,
+    siteStatus: 'live', confidence: 0.7, correct: true,
   });
-  const groupOnly = scoreMcc({ answer: { mcc: '5969', risk: 'low' }, teacher: { mcc: '5999', risk: 'high' }, table });
-  assert.equal(groupOnly.mccCorrect, false);
-  assert.equal(groupOnly.mccGroupCorrect, true);
-  assert.equal(groupOnly.riskCorrect, false);
-  assert.equal(groupOnly.riskDistance, 2);
-  assert.equal(groupOnly.correct, false);
-  const offGroup = scoreMcc({ answer: { mcc: 5411, risk: 'high' }, teacher: { mcc: '5812', risk: 'medium' }, table });
-  assert.equal(offGroup.mccAnswer, '5411');
-  assert.equal(offGroup.mccGroupCorrect, false);
-  assert.equal(offGroup.riskDistance, 1);
+  const groupOnly = scoreMcc({ answer: { mcc: '5969', riskTier: 'low' }, merchant: merchant({ mcc: '5999', riskTier: 'high' }), groups });
+  assert.deepEqual([groupOnly.mccCorrect, groupOnly.mccGroupCorrect, groupOnly.riskCorrect, groupOnly.riskDistance, groupOnly.correct], [false, true, false, 2, false]);
+  const offGroup = scoreMcc({ answer: { mcc: '5411', riskTier: 'high' }, merchant: merchant({ mcc: 5812, riskTier: 'medium' }), groups });
+  assert.deepEqual([offGroup.mccTeacher, offGroup.mccGroupCorrect, offGroup.riskDistance], ['5812', false, 1]);
+  assert.equal(scoreMcc({ answer: { mcc: '5999' }, merchant: merchant({ mcc: '5999' }) }).mccCorrect, true, 'the shipped table when none is passed');
 });
 
-test('no answer is wrong on every field the teacher has; a field the teacher lacks is not scored', () => {
-  const none = scoreMcc({ answer: null, teacher: { mcc: '5999', risk: 'low' }, table });
-  assert.equal(none.mccCorrect, false);
-  assert.equal(none.mccGroupCorrect, false);
-  assert.equal(none.riskCorrect, false);
-  assert.equal(none.riskDistance, null);
-  assert.equal(none.mccKnown, false);
-  assert.equal(none.correct, false);
-  const noRisk = scoreMcc({ answer: { mcc: '5999', risk: 'high' }, teacher: { mcc: '5999' }, table });
-  assert.equal(noRisk.riskCorrect, null);
-  assert.equal(noRisk.riskDistance, null);
-  assert.deepEqual(noRisk.correctOver, ['mcc']);
-  assert.equal(noRisk.correct, true);
-  const nothing = scoreMcc({ answer: { mcc: '5999', risk: 'low' }, teacher: {}, table });
-  assert.deepEqual(nothing.correctOver, []);
-  assert.equal(nothing.correct, false, 'nothing scored is not correct');
+test('a T&E brand code counts as its block\'s generic code in the exact match, on both sides, and the row says so', () => {
+  assert.deepEqual(['3502', '3543', '3504', '3066', '3722', '3301', '3357', '4511', '7011', '5812'].map((c) => genericOf(c, groups)), ['7011', '7011', '7011', '4511', '7011', '4511', '7512', '4511', '7011', '5812']);
+  const exact = (answer, teacher) => scoreMcc({ answer: { mcc: answer }, merchant: merchant({ mcc: teacher }), groups });
+  assert.deepEqual([exact('7011', '3504').mccCorrect, exact('7011', '3504').brandMapped], [true, true], 'the run is offered 7011, never Hilton\'s 3504');
+  assert.deepEqual([exact('4511', '3066').mccCorrect, exact('7512', '3357').mccCorrect, exact('3502', '3722').mccCorrect], [true, true, true]);
+  assert.deepEqual([exact('5812', '3502').mccCorrect, exact('5812', '3502').brandMapped], [false, true]);
+  assert.deepEqual([exact('4511', '4111').mccCorrect, exact('4511', '4111').brandMapped], [false, false], 'a generic code is not a brand code');
+  assert.deepEqual([exact('5999', '5999').brandMapped, exact(null, '3504').brandMapped], [false, true]);
+});
+
+test('a teacher with no risk (the swarm\'s risk stage not run) scores the code only: risk is null, never wrong, out of the n', () => {
+  const r = scoreMcc({ answer: { mcc: '5999', riskTier: 'high' }, merchant: merchant({ mcc: '5999', riskTier: null }), groups });
+  assert.deepEqual([r.riskCorrect, r.riskDistance, r.riskAnswer, r.correct], [null, null, 'high', true]);
+  const s = summarizeMcc([r, scoreMcc({ answer: { mcc: '5411', riskTier: 'low' }, merchant: merchant({ mcc: '5999' }), groups })]);
+  assert.deepEqual(s.overall.riskCorrect, { k: 0, n: 0, rate: null });
+  assert.deepEqual(s.overall.mccCorrect, { k: 1, n: 2, rate: 0.5 });
+});
+
+test('no answer is wrong on every field the teacher has; no teacher block scores nothing', () => {
+  const none = scoreMcc({ answer: null, merchant: merchant({ mcc: '5999', riskTier: 'low' }), groups });
+  assert.deepEqual([none.mccCorrect, none.mccGroupCorrect, none.riskCorrect, none.riskDistance, none.mccKnown, none.correct], [false, false, false, null, false, false]);
+  const unlabelled = scoreMcc({ answer: { mcc: '5999', riskTier: 'low' }, merchant: { merchantId: 'm2' }, groups });
+  assert.deepEqual([unlabelled.mccCorrect, unlabelled.mccGroupCorrect, unlabelled.riskCorrect, unlabelled.correct], [null, null, null, null]);
 });
 
 test('an unlisted code can still agree with the teacher exactly; mccKnown only reports it', () => {
-  const r = scoreMcc({ answer: { mcc: '5961', risk: 'low' }, teacher: { mcc: '5961', risk: 'low' }, table });
+  const r = scoreMcc({ answer: { mcc: '5961' }, merchant: merchant({ mcc: '5961' }), groups });
   assert.equal(r.mccCorrect, true);
   assert.equal(r.mccKnown, false, 'Visa no longer lists 5961 and Citi gives it to TSYS alone');
-  assert.equal(scoreMcc({ answer: { mcc: '6538' }, teacher: { mcc: '6538' }, table }).mccKnown, true, 'a Mastercard-only code is known');
+  assert.equal(scoreMcc({ answer: { mcc: '6538' }, merchant: merchant({ mcc: '6538' }), groups }).mccKnown, true, 'a Mastercard-only code is known');
 });
 
-test('the summary counts each field over the rows that score it, per vertical, with the teacher group share and cost per job', () => {
-  const row = (vertical, answer, teacher, costUsd) => ({ ...scoreMcc({ answer, teacher, table }), vertical, ...(costUsd === undefined ? {} : { costUsd }) });
+test('the summary counts each field over the rows that score it, per vertical, with the teacher group share, Brier and cost', () => {
+  const row = (vertical, answer, teacher, costUsd) => ({ ...scoreMcc({ answer, merchant: merchant(teacher, vertical), groups }), vertical, ...(costUsd === undefined ? {} : { costUsd }) });
   const rows = [
-    row('nutra', { mcc: '5499', risk: 'high' }, { mcc: '5499', risk: 'high' }, 0.4),
-    row('nutra', { mcc: '5912', risk: 'medium' }, { mcc: '5499', risk: 'high' }, 0.6),
-    row('travel', { mcc: '4511', risk: 'medium' }, { mcc: '3000', risk: 'medium' }),
-    row('travel', { mcc: '4722', risk: 'low' }, { mcc: '4722' }, 0.2),
+    row('nutra', { mcc: '5499', riskTier: 'high', confidence: 0.9 }, { mcc: '5499', riskTier: 'high' }, 0.4),
+    row('nutra', { mcc: '5912', riskTier: 'medium', confidence: 0.5 }, { mcc: '5499', riskTier: 'high' }, 0.6),
+    row('travel', { mcc: '4511', riskTier: 'medium' }, { mcc: '3000', riskTier: 'medium' }),
+    row('travel', { mcc: '4722', riskTier: 'low' }, { mcc: '4722' }, 0.2),
   ];
   const s = summarizeMcc(rows);
   assert.equal(s.against, 'teacher');
-  assert.deepEqual(s.overall.mccCorrect, { k: 2, n: 4, rate: 0.5 });
+  assert.deepEqual(s.overall.mccCorrect, { k: 3, n: 4, rate: 0.75 }, '4511 against United\'s 3000 is exact once the brand code is mapped');
+  assert.equal(s.overall.brandMapped, 1);
+  assert.equal(s.byVertical.travel.brandMapped, 1);
   assert.deepEqual(s.overall.mccGroupCorrect, { k: 3, n: 4, rate: 0.75 }, '5912 vs 5499 is another group; 4511 vs 3000 is an airline either way');
   assert.deepEqual(s.overall.riskCorrect, { k: 2, n: 3, rate: 2 / 3 });
-  assert.deepEqual(s.byVertical.nutra.correct, { k: 1, n: 2, rate: 0.5 });
+  assert.deepEqual(s.byVertical.nutra.mccCorrect, { k: 1, n: 2, rate: 0.5 });
   assert.equal(s.byVertical.travel.riskCorrect.n, 1);
   assert.equal(s.overall.riskDistanceMean, 1 / 3);
   assert.equal(s.overall.riskOffByTwo, 0);
+  assert.ok(Math.abs(s.overall.brierVsTeacher - (0.01 + 0.25) / 2) < 1e-12);
   assert.ok(Math.abs(s.overall.costPerJobUsd - 0.4) < 1e-12);
   assert.equal(s.overall.costUnknown, 1);
   assert.deepEqual(s.teacherGroupShare, { 'retail-outlet-services': 0.5, airlines: 0.25, 'transportation-services': 0.25 });
+  const seed = { ...scoreMcc({ answer: { mcc: '5999' }, merchant: merchant({ mcc: '5999', riskTier: null, flags: null }, null), groups }), vertical: null, stratum: 'seed' };
+  assert.deepEqual(Object.keys(summarizeMcc([seed]).byVertical), ['seed'], 'a seed merchant is counted under its stratum, not as unknown');
+  assert.equal(seed.flagsJaccard, null, 'the swarm gives its flags as prose, so there is no list to compare');
 });

@@ -1,12 +1,13 @@
-// Builds data/mcc-groups.json, the MCC group table the scorer reads, from two public documents as `pdftotext -layout`
-// prints them: the range groups from Citi's "Merchant Category Codes" reference, and the codes and their titles from
-// Visa's Merchant Data Standards Manual (Section 2, the MCC listing). ISO 18245 itself is sold by ISO; these two print
-// what the scorer needs from it.
+// Builds the two MCC tables from two public documents as `pdftotext -layout` prints them: data/mcc-groups.json (the
+// ISO 18245 range groups, from Citi's "Merchant Category Codes" reference) and data/mcc-codes.json (code to title, from
+// Visa's Merchant Data Standards Manual, Section 2, the MCC listing). ISO 18245 itself is sold by ISO; these two print
+// what the tools and the scorer need from it. The tools serve both files and the scorer reads the same ones.
 //
-//   node build-mcc-groups.mjs CITI.txt VISA.txt SOURCES.json > data/mcc-groups.json
+//   node build-mcc-groups.mjs CITI.txt VISA.txt SOURCES.json OUT_DIR
 //
 // SOURCES.json names each document: { ranges: { url, sha256, ... }, codes: { url, sha256, ... }, retrieved }.
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const RANGE = /^MCCs (\d{4})–(\d{4}) \((.+)\)\s*$/;
 const BRANDS = /\s{2,}((?:V|M|TSYS)(?:, (?:V|M|TSYS))*)(?:\s{2,}\S.*)?\s*$/;
@@ -76,15 +77,16 @@ const slug = (name) => name.toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9
 export const TE_GENERIC = Object.freeze({ airlines: '4511', 'car-rental': '7512', lodging: '7011' });
 
 /**
- * The table: the groups with their ranges; `overrides`, the codes Visa lists under a T&E block outside that block's
- * range; the generic code of each T&E block; `codes`, Visa's listing (code to title); and `mastercardOnly`, the codes
- * Citi lists for Mastercard that Visa does not list. `fixes` settles a code Visa lists twice: `{ code: trueCode }` moves
- * the second listing to its true code.
+ * The two tables. `groups`: the ranges (`code` as "NNNN-NNNN" for the mcc_groups tool), `overrides` (the codes Visa
+ * lists under a T&E block outside that block's range), the generic code of each T&E block, the checks, and the sources.
+ * `codes`: Visa's listing, code to title, with the codes Citi lists for Mastercard that Visa does not list
+ * (`groups.mastercardOnly` names them). `fixes` settles a code Visa lists twice: `{ code: trueCode }` moves the second
+ * listing to its true code.
  */
 export function buildTable({ citi, visa, sources, fixes = {} }) {
   const { sample: _sample, ...cited } = sources;
   const ranges = rangesOf(citi);
-  const groups = ranges.map((g) => ({ id: slug(g.name), from: g.from, to: g.to, name: g.name }));
+  const groups = ranges.map((g) => ({ id: slug(g.name), code: `${g.from}-${g.to}`, from: g.from, to: g.to, name: g.name }));
   const inRange = (code) => groups.find((g) => code >= g.from && code <= g.to)?.id ?? null;
   const { codes: visaCodes, repeats } = visaCodesOf(visa);
   for (const r of repeats) {
@@ -96,21 +98,21 @@ export function buildTable({ citi, visa, sources, fixes = {} }) {
   const overrides = Object.fromEntries(Object.entries(visaCodes).filter(([code, c]) => c.block && inRange(code) !== c.block).map(([code, c]) => [code, c.block]));
   const sorted = (entries) => Object.fromEntries(entries.sort(([a], [b]) => a.localeCompare(b)));
   // A code Citi gives Visa alone that Visa's own listing no longer has is retired, so it is left out.
-  const mastercardOnly = sorted(ranges.flatMap((g) => Object.entries(g.listed)).filter(([code, l]) => !visaCodes[code] && l.brands.includes('M')).map(([code, l]) => [code, l.name]));
+  const mastercardOnly = ranges.flatMap((g) => Object.entries(g.listed)).filter(([code, l]) => !visaCodes[code] && l.brands.includes('M'));
   const groupOf = (code) => overrides[code] ?? inRange(code);
   // Each sample code as both documents print it: Visa's title, and the Citi table it is listed under.
   const sample = (sources.sample ?? []).map((code) => ({ code, visa: visaCodes[code]?.name ?? null, citiTable: ranges.find((g) => g.listed[code])?.name ?? null, group: groupOf(code) }));
   const outside = ranges.flatMap((g) => Object.keys(g.listed).filter((code) => code < g.from || code > g.to).map((code) => ({ code, listedUnder: g.name })));
-  return {
+  const codes = sorted([...Object.entries(visaCodes).map(([code, c]) => [code, c.name]), ...mastercardOnly.map(([code, l]) => [code, l.name])]);
+  const groupsTable = {
     source: {
       ...cited,
-      note: 'ISO 18245 is sold by ISO. groups are the ranges as the Citi reference heads its tables; codes is Visa\'s Section 2 listing; mastercardOnly is what Citi lists for Mastercard (brand M) that Visa does not list, under Citi\'s description; overrides are the codes Visa lists under a T&E block outside that block\'s range.',
+      note: 'ISO 18245 is sold by ISO. groups are the ranges as the Citi reference heads its tables; mcc-codes.json is Visa\'s Section 2 listing plus mastercardOnly, the codes Citi lists for Mastercard (brand M) that Visa does not list, under Citi\'s description; overrides are the codes Visa lists under a T&E block outside that block\'s range.',
     },
     groups,
     overrides,
     teGeneric: TE_GENERIC,
-    codes: sorted(Object.entries(visaCodes).map(([code, c]) => [code, c.name])),
-    mastercardOnly,
+    mastercardOnly: mastercardOnly.map(([code]) => code).sort(),
     checks: {
       listedPerGroup: Object.fromEntries(ranges.map((g) => [slug(g.name), Object.keys(g.listed).length])),
       listedOutsideTheirRange: outside,
@@ -118,12 +120,18 @@ export function buildTable({ citi, visa, sources, fixes = {} }) {
       visaRepeatsFixed: repeats.map((r) => ({ listedAs: r.code, name: r.name, movedTo: fixes[r.code] })),
     },
   };
+  return { groups: groupsTable, codes };
 }
 
+/** The code table as JSON in code order: an object puts integer-like keys ("1520") before "0742", so it is written by
+ *  hand. */
+export const codesJson = (codes) => `{\n${Object.keys(codes).sort().map((code) => `  ${JSON.stringify(code)}: ${JSON.stringify(codes[code])}`).join(',\n')}\n}\n`;
+
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const [citiPath, visaPath, sourcesPath] = process.argv.slice(2);
-  if (!citiPath || !visaPath || !sourcesPath) throw new Error('usage: node build-mcc-groups.mjs CITI.txt VISA.txt SOURCES.json');
+  const [citiPath, visaPath, sourcesPath, outDir] = process.argv.slice(2);
+  if (!citiPath || !visaPath || !sourcesPath || !outDir) throw new Error('usage: node build-mcc-groups.mjs CITI.txt VISA.txt SOURCES.json OUT_DIR');
   const sources = JSON.parse(readFileSync(sourcesPath, 'utf8'));
-  const table = buildTable({ citi: readFileSync(citiPath, 'utf8'), visa: readFileSync(visaPath, 'utf8'), sources, fixes: sources.fixes ?? {} });
-  process.stdout.write(`${JSON.stringify(table, null, 2)}\n`);
+  const { groups, codes } = buildTable({ citi: readFileSync(citiPath, 'utf8'), visa: readFileSync(visaPath, 'utf8'), sources, fixes: sources.fixes ?? {} });
+  writeFileSync(join(outDir, 'mcc-groups.json'), `${JSON.stringify(groups, null, 2)}\n`);
+  writeFileSync(join(outDir, 'mcc-codes.json'), codesJson(codes));
 }
