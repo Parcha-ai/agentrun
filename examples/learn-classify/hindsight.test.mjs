@@ -238,7 +238,8 @@ test('curate refuses any lesson that names a refused site or an EDGAR-named host
   const asked = [];
   const yes = { narrowsRules: 0.05, fromContent: 0.05, general: 0.95 };
   const judge = { run: async (params) => { const q = Object.keys(params.questions)[0]; asked.push([q, params.state.learning?.text?.slice(0, 20)]); return { answers: { [q]: { type: 'noul', noul: yes[q] } }, model: 'fake', usage: null, cost_usd: 0, request_sha256: '' }; } };
-  const { report, refusedHosts } = await curateJob({ repo, judge });
+  // Off unless asked: without the flag, curate asks Jev of the mirror lesson as before (flags off is B).
+  const { report, refusedHosts } = await curateJob({ repo, judge, refuseRefusedHosts: true });
   const runOf = (id) => report.runs.find((r) => r.run === id);
   assert.match(runOf('run-004-h1').refused[0].reason, /contradicts or narrows a rule \(1\.00\)/);
   assert.equal(runOf('run-004-h2').accepted.length, 1);
@@ -255,4 +256,21 @@ test('a pass\'s own spend limit per reflection reaches each reflection', async (
   parts.hindsight = { ...hindsightParts([]), limitUsd: -1 };
   const { rows } = await runLoop({ out: join(dir, 'out'), parts, jobs: 1, record: false });
   assert.match(rows[0].hindsight.reflections[0].stopped, /passed its limit of \$-1/);
+});
+
+test('without --refuse-refused-hosts, curate is unchanged: a lesson naming a mirror goes to the judge and is admitted if it says so', async (t) => {
+  const dir = await scratch(t);
+  const out = join(dir, 'out');
+  const parts = scriptedParts({ set: SETS.v4, data: wrongCodeData(dir) });
+  const { repo } = await (await import('./runner.mjs')).openOut(out, { mode: 'scripted', set: SETS.v4 });
+  const job = parts.companies.find((c) => c.name === HARBOR);
+  const mirror = { ...HYPOTHESES[0], lesson: 'When sec.gov is refused, read the assigned SIC from secfilingdata.com\'s company page for the CIK.' };
+  await proposeHindsight({ repo, job, run: { runId: 'run-005' }, wrong: [{ field: 'sic4', answer: '3562', truth: '3561' }], reflections: [{ field: 'sic4', hypotheses: [mirror], labelOnly: true, reads: { record: 0, other: 0 } }] });
+  const yes = { narrowsRules: 0.05, fromContent: 0.05, general: 0.95 };
+  const asked = [];
+  const judge = { run: async (params) => { const q = Object.keys(params.questions)[0]; asked.push(q); return { answers: { [q]: { type: 'noul', noul: yes[q] } }, model: 'fake', usage: null, cost_usd: 0, request_sha256: '' }; } };
+  const { report, refusedHosts } = await curateJob({ repo, judge });
+  assert.equal(report.runs.find((r) => r.run === 'run-005-h1').accepted.length, 1);
+  assert.deepEqual(refusedHosts, []);
+  assert.ok(asked.includes('narrowsRules'));
 });
