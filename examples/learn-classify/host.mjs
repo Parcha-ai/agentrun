@@ -349,7 +349,22 @@ export function usageTotals(usage) {
  * never asked: the host's run of `dispatch` is the whole run, and any ending but complete leaves no answer (the promotion
  * gate's bank runs). Returns what the host measured; the run's store is closed when it returns.
  */
-export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null, hostOnly = false }) {
+/** The longest a tool call may take before the host abandons it as failed, whatever its own timeouts do: a call whose
+ *  I/O never settles must not hold its run (and the pass) forever. */
+export const CALL_DEADLINE_MS = 600_000;
+/** The longest a run may take, wall clock, before the host stops it and its job counts as an infrastructure failure. */
+export const RUN_DEADLINE_MS = 45 * 60_000;
+
+/** `promise`, or a rejection with `message` once `ms` pass. The timer holds the process open until either settles, so a
+ *  promise no I/O will ever settle still ends. */
+export function settleWithin(promise, ms, message) {
+  if (!Number.isFinite(ms)) return promise;
+  let timer;
+  const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null, hostOnly = false, callDeadlineMs = CALL_DEADLINE_MS, runDeadlineMs = RUN_DEADLINE_MS }) {
   if (hostOnly && !dispatch) throw new Error('a host-only run needs a workflow to dispatch');
   const started = Date.now();
   const caseValues = caseValuesOf(job);
@@ -359,7 +374,7 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
   const metered = effects.map((effect) => ({
     ...effect,
     run: async (args, options) => {
-      const result = await effect.run(args, options);
+      const result = await settleWithin(effect.run(args, options), callDeadlineMs, `${effect.name} did not answer within ${callDeadlineMs / 1000} s; the call is abandoned`);
       if (result && typeof result === 'object' && 'costUsd' in result) {
         if (typeof result.costUsd === 'number' && Number.isFinite(result.costUsd)) toolSpend.costUsd += result.costUsd;
         else toolSpend.unknown += 1;
@@ -405,8 +420,18 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
   let stopped = null;
   let stop = () => {};
   let measured;
+  // The run's wall-clock deadline: past it the root is aborted and the run ends unanswered ('deadline'), even when
+  // something it awaits never settles.
+  let overdue;
+  const deadline = new Promise((resolve) => { overdue = setTimeout(resolve, runDeadlineMs, 'deadline'); });
+  const beforeDeadline = (promise) => (Number.isFinite(runDeadlineMs) ? Promise.race([promise, deadline]) : promise);
   try {
     const root = await harness.root(ctx, { agent: { ...model.agent, extensions: [learn, tools.extension, workflowTool.extension], instructions: await promptOf(run) } });
+    deadline.then(async () => {
+      if (stopped) return;
+      stopped = `the run passed its deadline of ${runDeadlineMs / 60_000} min`;
+      await root.abort(ctx).catch(() => {});
+    });
     if (limitUsd !== undefined) {
       let checking = false;
       stop = harness.subscribeCommits(() => {
@@ -424,7 +449,9 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
     // A promoted workflow that answers the whole job runs first, by the host (dispatch.mjs): a complete run with a valid
     // answer is the run's answer and the root agent is never asked; any other ending is handed to it with the job. One the
     // host refused never ran: the root agent gets the job alone.
-    const hostRun = dispatch ? await runPromoted({ harness, workflows: workflowTool.workflow, dispatch, toolNames: tools.workflowTools.map((t) => t.name), answer, context: ctx }) : null;
+    const hostRan = dispatch ? await beforeDeadline(runPromoted({ harness, workflows: workflowTool.workflow, dispatch, toolNames: tools.workflowTools.map((t) => t.name), answer, context: ctx })) : null;
+    if (hostRan === 'deadline') throw new RunDeadline();
+    const hostRun = hostRan;
     const dispatched = hostRun ? { dispatch: { name: hostRun.name, revision: hostRun.revision, key: hostRun.key, outcome: hostRun.outcome, ...(dispatch.canary ? { canary: true } : {}), ...(hostRun.invalid ? { invalid: hostRun.invalid } : {}), ...(typeof hostRun.detail === 'string' ? { detail: hostRun.detail } : {}) } } : {};
     if (hostRun?.outcome === 'complete' || hostOnly) {
       const answered = hostRun.outcome === 'complete';
@@ -432,7 +459,8 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
     } else {
       const prompt = hostRun && hostRun.outcome !== 'refused' ? `${text(job)}\n\n${handoffText(hostRun, dispatch)}` : text(job);
       const submission = await root.submit({ type: 'input', content: prompt }, ctx);
-      const settled = await submission.wait(ctx);
+      const settled = await beforeDeadline(submission.wait(ctx));
+      if (settled === 'deadline') throw new RunDeadline();
       const { messages } = await root.context(ctx);
       const calls = messages.filter((m) => m.role === 'assistant').flatMap((m) => m.content.filter((c) => c.type === 'toolCall'));
       const results = new Map(messages.filter((m) => m.role === 'toolResult').map((m) => [m.toolCallId, m]));
@@ -445,9 +473,15 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
         calls, results, ...dispatched,
       };
     }
+  } catch (error) {
+    if (!(error instanceof RunDeadline)) throw error;
+    // Past the deadline: no answer, and the reason the runner counts as an infrastructure failure (run again once).
+    measured = { answer: null, answers: 0, toolCalls: {}, status: 'unanswered', reason: 'deadline', usage: usageTotals(await harness.usage(ctx).catch(() => ({}))), finalText: '', calls: [], results: new Map() };
   } finally {
+    clearTimeout(overdue);
     stop();
-    await harness.close(ctx);
+    // A store whose tasks are still waiting on something that never settles is closed as far as it will go.
+    await settleWithin(harness.close(ctx), Math.min(30_000, runDeadlineMs), 'the run store did not close').catch(() => {});
   }
   // The task records are read once the store is closed: every task's final record, the cut-off ones included.
   const { lines } = recordingLines(run.storePath);
@@ -466,6 +500,8 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
     judge: { ...judge.meter }, toolSpend: { ...toolSpend }, durationMs: Date.now() - started, reports,
   };
 }
+
+class RunDeadline extends Error {}
 
 async function inRunStore(run, step) {
   const session = createSession(await openNodeSqliteStorage(run.storePath));
