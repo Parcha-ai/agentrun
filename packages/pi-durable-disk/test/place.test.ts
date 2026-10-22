@@ -1160,6 +1160,7 @@ describe("archilPlace: an adopted start keeps the key its box already has (a fix
       ["only an image and a region shared", { driver: "fake", image: "pda-home", region: "us-east", name: "box-1" }, { driver: "fake", image: "pda-home", region: "us-east", adopted: true }, byName],
       ["a driver that names no instance", { driver: "fake", name: "box-1" }, { driver: "fake", name: "box-1", adopted: true }, undefined],
       ["a FRESH handle under a name seen before (a dead container replaced)", { driver: "fake", name: "box-1" }, { driver: "fake", name: "box-1" }, byName],
+      ["an adopted box another life started, named as no box this life has", { driver: "fake", name: "box-1" }, { driver: "fake", name: "box-9", adopted: true }, byName],
     ] as const) {
       const control = new FakeControl();
       const host = scripted(control, [fresh as HostHandle, adopted as HostHandle], instanceOf);
