@@ -187,6 +187,11 @@ const webSearch: ToolContract = {
   effect: "read", replay: "safe", executionMode: "parallel", evidence: "urls", listedWhen: "search",
 };
 
+/** Whether a host lists a browser tool: one that is always offered, or one whose capability the host has (a workspace to copy downloads
+ *  into, files to upload from, a person to hand over to). */
+export const listedFor = (contract: ToolContract, offers: { readonly downloads: boolean; readonly upload: boolean; readonly handoff: boolean }): boolean =>
+  contract.listedWhen === "always" || (contract.listedWhen === "downloads" && offers.downloads) || (contract.listedWhen === "upload" && offers.upload) || (contract.listedWhen === "handoff" && offers.handoff);
+
 export const BROWSER_TOOLS: readonly ToolContract[] = Object.freeze([snapshot, run, screenshot, browserRead, browserRelease, browserRelaunch, browserRequestHandoff, browserDownloads, browserUpload]);
 export const WEB_TOOLS: readonly ToolContract[] = Object.freeze([webFetch, webSearch]);
 

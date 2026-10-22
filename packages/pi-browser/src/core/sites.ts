@@ -1,6 +1,6 @@
 import type { ToolContract } from "./contract.js";
 import type { ToolOutput } from "./custody.js";
-import type { BrowserFailure } from "./failures.js";
+import { browserFailure } from "./failures.js";
 import type { ChildRunner, SiteInfo, SiteRunPort } from "./host.js";
 
 export const MAX_SITE_INSTRUCTIONS = 16_000;
@@ -44,7 +44,7 @@ export function siteAnswer(raw: unknown): { run: { id: string; state: string } }
 }
 
 const siteOutput = (body: object, isError = false): ToolOutput => ({ content: [{ type: "text", text: JSON.stringify(body) }], ...(isError ? { isError: true } : {}) });
-const siteRefusal = (message: string) => siteOutput({ ok: false, code: "refused", retryable: false, effect: "none", message } satisfies BrowserFailure, true);
+const siteRefusal = (message: string) => siteOutput(browserFailure("refused", message), true);
 
 export async function useWebsite(args: { site?: unknown; request_id?: unknown; instructions?: unknown }, port: SiteRunPort, sites: readonly SiteInfo[], ctx: { signal: AbortSignal; runChild: ChildRunner }): Promise<ToolOutput> {
   const site = sites.find((known) => known.site === args.site);

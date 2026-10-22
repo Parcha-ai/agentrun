@@ -141,8 +141,7 @@ export function browserbaseProvider(options: BrowserbaseOptions = {}): Browserba
     applyBrowserbaseNoProxy(env);
     const mod: { default: BrowserbaseConstructor; Browserbase: BrowserbaseConstructor } = await import(["@browserbasehq", "sdk"].join("/"));
     const Browserbase = mod.default ?? mod.Browserbase;
-    const fetch = await directFetch();
-    return new Browserbase({ apiKey, baseURL: baseUrl, ...(fetch ? { fetch } : {}) });
+    return new Browserbase({ apiKey, baseURL: baseUrl, fetch: await directFetch() });
   })());
 
   const extension = (): Promise<string> => options.extensionId
@@ -310,7 +309,7 @@ export function browserbaseProvider(options: BrowserbaseOptions = {}): Browserba
         const rec = (await client()).sessions.recording?.downloads;
         const found = (await rec?.list(ref.id))?.downloads?.find((d) => String(d.pageId) === id && d.status === "COMPLETED" && d.downloadUrl);
         if (!found?.downloadUrl) throw new Error(`no rendered recording ${id} for session ${ref.id}`);
-        const response = await ((await directFetch()) ?? fetch)(found.downloadUrl);
+        const response = await (await directFetch())(found.downloadUrl);
         if (!response.ok || !response.body) throw new Error(`recording download answered ${response.status}`);
         return response.body as ReadableStream<Uint8Array>;
       },
