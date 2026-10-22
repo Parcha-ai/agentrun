@@ -2,7 +2,8 @@
 // to, and a close that ends the browser and every process it started, its crash handler included, before its profile is
 // removed. A browser a test leaves open would keep the test's process alive: `closeLeftBrowsers` ends and names each one.
 // Every wait is bounded and names what it waited for: the browser must be listening within `launchMs` (one that is not is
-// ended and started once more, as a loaded machine can hang one start and not the next), every request to
+// ended and started once more, as a loaded machine can hang one start and not the next), its page loads within `loadMs`
+// (a wait that gives up says what the page was doing and how long Chrome took to listen), every request to
 // it answers within `requestMs`, and an answer that can no longer come (the socket closed or failed, the browser exited)
 // fails at once. Two things once held a CI job to its limit and are not used: `spawnSync`, whose timeout sends SIGTERM and
 // then waits for the process to exit with the event loop blocked, and `--dump-dom` with `--virtual-time-budget`, which now
@@ -49,7 +50,7 @@ function crashHandlersOf(group: number): number[] {
 const open = new Map<number, () => Promise<void>>();
 
 export type DrivenPage = Awaited<ReturnType<typeof drivenPage>>;
-type Options = { launchMs?: number; retryLaunchMs?: number; requestMs?: number; path?: string; signal?: AbortSignal };
+type Options = { launchMs?: number; retryLaunchMs?: number; requestMs?: number; loadMs?: number; path?: string; signal?: AbortSignal };
 
 /** A browser that did not write its DevToolsActivePort within `launchMs`. */
 class NotListening extends Error {}
@@ -78,9 +79,10 @@ export async function drivenPage(url: string, profile: string, options: Options 
   }
 }
 
-async function startedPage(url: string, profile: string, { launchMs = LAUNCH_MS, requestMs = 10_000, path = chrome, signal: aborted }: Options) {
+async function startedPage(url: string, profile: string, { launchMs = LAUNCH_MS, requestMs = 10_000, loadMs = 30_000, path = chrome, signal: aborted }: Options) {
   // A profile used before may still hold the port file of a browser that is gone.
   rmSync(join(profile, 'DevToolsActivePort'), { force: true });
+  const startedAt = Date.now();
   // Its own process group: the browser and every helper it starts are ended together, by the group's pid.
   const browser = spawn(path, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${profile}`, '--remote-debugging-port=0', '--window-size=1280,1600', url], { stdio: 'ignore', detached: true });
   const pid = browser.pid!;
@@ -123,6 +125,7 @@ async function startedPage(url: string, profile: string, { launchMs = LAUNCH_MS,
       if (!port) await sleep(100);
     }
     if (!port) throw new NotListening(`Chrome starting (its DevToolsActivePort): nothing after ${launchMs / 1000} s`);
+    const listened = `${((Date.now() - startedAt) / 1000).toFixed(1)} s`;
     const targets = await within(requestMs, 'Chrome listing its pages', fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json())) as { type: string; url: string; webSocketDebuggerUrl: string }[];
     const target = targets.find((each) => each.type === 'page' && each.url.startsWith(url)) ?? targets.find((each) => each.type === 'page');
     if (!target) throw new Error(`Chrome has no page for ${url}`);
@@ -172,8 +175,12 @@ async function startedPage(url: string, profile: string, { launchMs = LAUNCH_MS,
       }
       throw new Error(`${what}: no value after ${ms / 1000} s`);
     };
-    // A browser starts on a blank page and then opens the URL: the page is handed over once its own document has loaded.
-    await once(`document.readyState === 'complete' && location.href !== 'about:blank'`, 'true', 30_000, `the page at ${url} loading`);
+    // A browser starts on a blank page and then opens the URL: the page is handed over once its own document has loaded. A wait
+    // that gives up says which of the three it was: Chrome slow to listen, the page still blank, or its document still loading.
+    await once(`document.readyState === 'complete' && location.href !== 'about:blank'`, 'true', loadMs, `the page at ${url} loading`).catch(async (error: unknown) => {
+      const state = await evaluate('JSON.stringify({ href: location.href, readyState: document.readyState })').catch(() => 'unreadable');
+      throw new Error(`${(error as Error).message}; the page was ${String(state)}; Chrome listened after ${listened}`);
+    });
     handlers = crashHandlersOf(pid);
     return { evaluate, once, until, sleep, close };
   } catch (error) {

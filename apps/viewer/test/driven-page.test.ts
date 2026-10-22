@@ -1,9 +1,12 @@
 // The Chrome driver the viewer's page tests share (driven-page.ts): an expression that throws in the page is an error, never a
 // value of undefined that a test reads as an answer; `once` waits through a condition that throws (not so yet); `until`
 // gives the first value of a read that is its own readiness check, so nothing on the page changes between a check and a read;
-// only a throw in the page is "not yet" to either, and a page that never starts leaves nothing behind.
+// only a throw in the page is "not yet" to either; a page that never starts leaves nothing behind; and a page that does not
+// finish loading says what it was doing.
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -52,4 +55,17 @@ test('a page whose browser never starts leaves nothing behind: its cleanup is re
   });
   assert.equal(cleaned, true, 'the test\'s cleanup ran');
   assert.equal(existsSync(kept), false, 'and removed what the test made');
+});
+
+test('in Chrome: a page that does not finish loading fails within loadMs, naming what the page was doing and how long Chrome took to listen', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 60_000 }, async (t) => {
+  // The page answers; an image on it never does, so its document stays 'interactive'.
+  const server = createServer((request, response) => {
+    if (request.url === '/slow.html') { response.writeHead(200, { 'content-type': 'text/html' }); response.end('<!doctype html><title>slow</title><img src="/never.png">'); }
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const dir = mkdtempSync(join(tmpdir(), 'driven-page-'));
+  t.after(() => { server.closeAllConnections(); server.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); });
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/slow.html`;
+  await assert.rejects(pageFor(t, url, join(dir, 'profile'), () => undefined, { loadMs: 2_000 }),
+    /loading: not so after 2 s; the page was \{"href":"http:\/\/127\.0\.0\.1:\d+\/slow\.html","readyState":"interactive"\}; Chrome listened after \d+\.\d s/);
 });
