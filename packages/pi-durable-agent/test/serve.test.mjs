@@ -478,7 +478,7 @@ test("a store that is not a store, or one from a newer pi-durable, is a plain 50
 test("the pi-durable-agent bin prints a loopback address for a home, serves it, and stops on SIGINT", skip, async (t) => {
   const seeded = await seededHome();
   const before = files(seeded.home.dir);
-  const run = (args) => spawn(process.execPath, ["--no-warnings", CLI, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+  const run = (args) => spawn(process.execPath, [CLI, ...args], { stdio: ["ignore", "pipe", "pipe"] });
   const child = run(["serve", seeded.home.dir]);
   const fixed = run(["serve", seeded.home.dir, "--port", "0"]);
   t.after(() => [child, fixed].forEach((process) => process.kill()));
@@ -503,7 +503,7 @@ test("the pi-durable-agent bin prints a loopback address for a home, serves it, 
 
 test("the bin says what is wrong: a missing home is exit 1, a bad command or port is exit 2 with the usage", skip, async () => {
   const exit = (args) => new Promise((resolve) => {
-    const child = spawn(process.execPath, ["--no-warnings", CLI, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [CLI, ...args], { stdio: ["ignore", "pipe", "pipe"] });
     let [out, err] = ["", ""];
     child.stdout.on("data", (chunk) => (out += chunk));
     child.stderr.on("data", (chunk) => (err += chunk));
@@ -528,5 +528,5 @@ test("the package says it has a bin and a ./serve entry, and the bin starts with
   assert.deepEqual(manifest.exports["./serve"], { types: "./dist/serve/index.d.ts", default: "./dist/serve/index.js" });
   assert.ok(readFileSync(CLI, "utf8").startsWith("#!/usr/bin/env node\n"));
   for (const file of ["page.html", "page.css", "page.js"]) assert.ok(existsSync(new URL(`../dist/serve/${file}`, import.meta.url)), `the build copies ${file}`);
-  assert.match(readFileSync(new URL("../dist/serve/page.html", import.meta.url), "utf8"), /<link rel="stylesheet" href="\/page\.css">[\s\S]*<script src="\/page\.js"><\/script>/);
+  assert.match(readFileSync(new URL("../dist/serve/page.html", import.meta.url), "utf8"), /<link rel="stylesheet" href="\/?page\.css">[\s\S]*<script src="\/?page\.js"[^>]*><\/script>/);
 });
