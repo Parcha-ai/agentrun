@@ -1,7 +1,7 @@
 {
   "name": "agentrun-dsl-workspace",
   "private": true,
-  "version": "0.1.0-beta.22",
+  "version": "0.1.0-beta.23",
   "type": "module",
   "workspaces": [
     "packages/*"
