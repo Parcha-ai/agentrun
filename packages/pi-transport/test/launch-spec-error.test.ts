@@ -39,6 +39,12 @@ const refused: [string, LaunchSpec][] = [
 	["stdin over 64 KiB", { argv: ["true"], stdin: new Uint8Array(64 * 1024 + 1) }],
 	["a framed launch as root", { argv: ["true"], user: "root", stdin: new Uint8Array([1]) }],
 	["a framed launch as uid 0", { argv: ["true"], user: "0", secrets: { A: VALUE } }],
+	["a tools user that is not a user name or uid", { argv: ["true"], toolsUser: "not a user!" }],
+	["root as the tools user", { argv: ["true"], toolsUser: "root", stdin: new Uint8Array([1]) }],
+	["uid 0 as the tools user", { argv: ["true"], toolsUser: "00" }],
+	["a tools user beside a program run as another user", { argv: ["true"], user: "pda", toolsUser: "pdb" }],
+	["the tools user's name in env", { argv: ["true"], env: { PI_TRANSPORT_TOOLS_USER: VALUE } }],
+	["the tools user's uid in env", { argv: ["true"], env: { PI_TRANSPORT_TOOLS_UID: VALUE } }],
 ];
 
 describe("launchSpecError", () => {
@@ -83,12 +89,29 @@ describe("the README's launch example", () => {
 });
 
 describe("a framed launch's user", () => {
-	it("is never root: a non-framed launch may name root, a framed one is refused for root or uid 0", () => {
+	const ROOT = "a launch with stdin or secrets runs its program as root (uid 0) only with a toolsUser";
+	const stdin = new Uint8Array([1]);
+
+	it("runs as root only with a toolsUser: root or uid 0 without one is refused, with one accepted; a non-framed launch may name root", () => {
 		expect(launchSpecError("named", { argv: ["true"], user: "root" })).toBeUndefined();
 		for (const user of ["root", "0", "00"]) {
-			expect(launchSpecError("named", { argv: ["true"], user, stdin: new Uint8Array([1]) })?.code, user).toBe(
-				"invalid",
-			);
+			const refusal = launchSpecError("named", { argv: ["true"], user, stdin });
+			expect(refusal?.code, user).toBe("invalid");
+			expect(refusal?.message.startsWith(ROOT), refusal?.message).toBe(true);
+			expect(launchSpecError("named", { argv: ["true"], user, stdin, toolsUser: "pda" }), user).toBeUndefined();
 		}
+		// No user: the program runs as the launcher, which must be root for a toolsUser (the launcher checks it in the box).
+		expect(launchSpecError("named", { argv: ["true"], stdin, toolsUser: "pda" })).toBeUndefined();
+		expect(launchSpecError("named", { argv: ["true"], stdin, toolsUser: "1000" })).toBeUndefined();
+	});
+
+	it("names its tools user as a user is named, never root, and only beside a program run as root", () => {
+		const said = (spec: LaunchSpec) => launchSpecError("named", spec)?.message ?? "";
+		expect(said({ argv: ["true"], toolsUser: "root" })).toMatch(/^the tools user root is root \(uid 0\)/);
+		expect(said({ argv: ["true"], toolsUser: "0" })).toMatch(/^the tools user 0 is root \(uid 0\)/);
+		expect(said({ argv: ["true"], user: "pda", toolsUser: "pdb", stdin })).toMatch(
+			/^toolsUser goes only with a program run as root/,
+		);
+		expect(said({ argv: ["true"], toolsUser: "a b" })).toMatch(/^toolsUser is a user name or a numeric uid/);
 	});
 });
