@@ -129,7 +129,16 @@ const pageTextOf = (value) => [value?.title, value?.text].filter((t) => typeof t
 export function receiptOfMcc(lines, answer, merchant) {
   const mcc = answer?.mcc;
   const cite = (answer?.evidence ?? []).find((c) => c?.claim === 'mcc');
-  if (typeof mcc !== 'string' || !/^\d{4}$/.test(mcc) || !httpUrl(cite?.url) || typeof cite.quote !== 'string') return null;
+  if (typeof mcc !== 'string' || !/^\d{4}$/.test(mcc)) return null;
+  const page = groundedPage(lines, cite, merchant);
+  return page ? { ...page, mcc } : null;
+}
+
+/** The page that grounds one evidence item `{ url, quote }` (SPEC.md's grounding), or null: an ok reader result of the run
+ *  for a page of the merchant's own (merchantScope of `merchant.website`) that is the page the item names and holds its
+ *  quote as a whole phrase, word for word. It keeps the page's address and the scope's kind, never the page's text. */
+export function groundedPage(lines, cite, merchant) {
+  if (!httpUrl(cite?.url) || typeof cite.quote !== 'string') return null;
   const scope = merchantScope(merchant?.website);
   if (!scope) return null;
   const cited = sameUrl(cite.url);
@@ -140,7 +149,7 @@ export function receiptOfMcc(lines, answer, merchant) {
     if (!url || !merchantPage(url, scope)) continue;
     if (![url, args?.url].some((u) => httpUrl(u) && sameUrl(u) === cited)) continue;
     if (!quoteOnPage(cite.quote, pageTextOf(value))) continue;
-    return { url, kind: scope.kind, mcc, byWorkflow };
+    return { url, kind: scope.kind, byWorkflow };
   }
   return null;
 }
@@ -174,10 +183,11 @@ const LIST = (key) => ({
   properties: { [key]: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['code', 'name'], properties: { code: { type: 'string' }, name: { type: 'string' } } } } },
 });
 
-/** mcc_groups (SPEC.md's tools): the ranges that hold a code the run is offered (learn-mcc's servedGroups), in code order.
- *  `table` is learn-mcc's group table (score-mcc's loadGroups). */
-export function mccGroupsTool(table) {
-  const groups = servedGroups(table.groups).sort((a, b) => a.code.localeCompare(b.code));
+/** mcc_groups (SPEC.md's tools): the ranges that hold a code the run is offered (learn-mcc's servedGroups), in code order,
+ *  or with `all` every range (the adjudicator's, whose own code may be a brand's). `table` is learn-mcc's group table
+ *  (score-mcc's loadGroups). */
+export function mccGroupsTool(table, { all = false } = {}) {
+  const groups = (all ? table.groups.map(({ code, name }) => ({ code, name })) : servedGroups(table.groups)).sort((a, b) => a.code.localeCompare(b.code));
   return {
     name: 'mcc_groups',
     description: 'The ISO 18245 merchant category ranges, each as "NNNN-NNNN" with its name, in code order.',
@@ -187,10 +197,11 @@ export function mccGroupsTool(table) {
   };
 }
 
-/** mcc_codes (SPEC.md's tools): the codes the run is offered (learn-mcc's servedCodes) under their titles, all of them or
- *  those of one range from mcc_groups (`group`), a code's range being the scorer's groupOf. */
-export function mccCodesTool(table) {
-  const all = Object.entries(servedCodes(table.codes)).map(([code, name]) => ({ code, name })).sort((a, b) => a.code.localeCompare(b.code));
+/** mcc_codes (SPEC.md's tools): the codes the run is offered (learn-mcc's servedCodes), or with `all` every code of the
+ *  table, under their titles: all of them or those of one range from mcc_groups (`group`), a code's range being the
+ *  scorer's groupOf. */
+export function mccCodesTool(table, { all: every = false } = {}) {
+  const all = Object.entries(every ? table.codes : servedCodes(table.codes)).map(([code, name]) => ({ code, name })).sort((a, b) => a.code.localeCompare(b.code));
   const idOf = (range) => table.groups.find((g) => g.code === range)?.id;
   return {
     name: 'mcc_codes',

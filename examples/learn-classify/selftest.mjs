@@ -8,7 +8,7 @@
 // written to <out>/selftest.json; a failure throws.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { agentHomeFor, meteredJudge, prepareRun, runJob } from './host.mjs';
+import { agentHomeFor, meteredJudge, prepareRun, runJob, toolResultsOf } from './host.mjs';
 import { offeredTools, scriptedJev, scriptedModel } from './scripted.mjs';
 
 /** Every tool a learn-classify agent may be offered. None runs a command or code: a tool outside this list fails the
@@ -103,27 +103,83 @@ export async function passSelfTest({ out, repo, parts, log = () => {} }) {
   if (toolsRun?.outcome !== 'complete') problems.push(`the tools workflow ended ${toolsRun?.outcome ?? 'without running'}`);
   if (codeRun?.outcome !== 'refused') problems.push(`a code node was not refused (${codeRun?.outcome ?? 'no run'}): a code executor is wired`);
 
-  let browser = null;
-  if (effects.some((e) => e.name === 'browse')) {
-    if (!parts.browserCheck) problems.push('the pass has a browser and no browser check');
-    else {
-      try {
-        const checked = await parts.browserCheck(join(dir, 'browser'));
-        browser = { ok: true, browser: checked.browser, refused: checked.refused, blocked: checked.blocked, costUsd: checked.costUsd };
-      } catch (error) {
-        browser = { ok: false, error: String(error?.message ?? error) };
-        problems.push(browser.error);
-      }
-    }
-  }
+  const browser = await browserChecked({ parts, effects, dir, problems });
   const report = {
     at: new Date().toISOString(), ok: problems.length === 0, problems, models, tools,
     codeNode: { outcome: codeRun?.outcome ?? null, revision: codeRun?.revision ?? null }, browser,
   };
+  await writeReport({ out, dir, report });
+  log(`self-test: root ${models.root.model} at ${models.root.thinking}, workflow agent nodes ${models.node.model} at ${models.node.thinking}; no tool runs a command or code (root ${tools.root.length}, call nodes ${tools.callNode.length}, agent nodes ${tools.agentNode.length}); a code node is refused${browser ? `; the browser's guard refused ${browser.blocked.join(', ')}` : ''}`);
+  return report;
+}
+
+/** The browser's request guard (tools-v2.mjs `guardSelfTest`), when the pass's tools include the browser. */
+async function browserChecked({ parts, effects, dir, problems }) {
+  if (!effects.some((e) => e.name === 'browse')) return null;
+  if (!parts.browserCheck) {
+    problems.push('the pass has a browser and no browser check');
+    return null;
+  }
+  try {
+    const checked = await parts.browserCheck(join(dir, 'browser'));
+    return { ok: true, browser: checked.browser, refused: checked.refused, blocked: checked.blocked, costUsd: checked.costUsd };
+  } catch (error) {
+    problems.push(String(error?.message ?? error));
+    return { ok: false, error: String(error?.message ?? error) };
+  }
+}
+
+async function writeReport({ out, dir, report }) {
   await mkdir(out, { recursive: true });
   await writeFile(join(out, 'selftest.json'), `${JSON.stringify(report, null, 2)}\n`);
   await writeFile(join(dir, 'selftest.json'), `${JSON.stringify(report, null, 2)}\n`);
-  if (!report.ok) throw new Error(`the pass's self-test failed, so no job ran: ${problems.join('; ')}`);
-  log(`self-test: root ${models.root.model} at ${models.root.thinking}, workflow agent nodes ${models.node.model} at ${models.node.thinking}; no tool runs a command or code (root ${tools.root.length}, call nodes ${tools.callNode.length}, agent nodes ${tools.agentNode.length}); a code node is refused${browser ? `; the browser's guard refused ${browser.blocked.join(', ')}` : ''}`);
+  if (!report.ok) throw new Error(`the pass's self-test failed, so no job ran: ${report.problems.join('; ')}`);
+}
+
+/** Every tool the adjudicator may be offered: the reads and the code table, and the adjudication's own host tools, which
+ *  record a verdict or give codes. None learns, writes or runs a workflow, or runs a command or code. */
+export const ADJUDICATOR_TOOLS = Object.freeze(['fetch_page', 'search_web', 'browse', 'read_document', 'mcc_groups', 'mcc_codes', 'site', 'codes', 'answer']);
+
+/**
+ * The adjudication pass's self-test (eval-adjudicate.mjs), before its first live run: the pass's own host on `job` with
+ * `adjudicator` (adjudicate-job.mjs adjudicationRun), on a scripted model at $0. The root's model is named and thinks and
+ * the run's requests went out on it; every tool the root is offered is one of ADJUDICATOR_TOOLS, `site`, `codes` and
+ * `answer` among them; `codes` refuses before stage 1; and the browser's guard holds, on Browserbase. Writes
+ * <out>/selftest.json; a failure throws.
+ */
+export async function adjudicationSelfTest({ out, repo, parts, job, adjudicator, log = () => {} }) {
+  const dir = join(out, 'self-test', new Date().toISOString().replace(/[:.]/g, '-'));
+  const home = await agentHomeFor({ dir: join(dir, 'home'), repo });
+  const run = await prepareRun({ home, repo, host: 'learn-classify-self-test', runId: 'self-test', input: parts.set.input(job) });
+  const effects = [...(await parts.toolsFor(job, run)), ...parts.set.labelTools(parts.data), ...adjudicator.tools];
+  const live = await parts.modelFor(job, run);
+  const root = live?.agent?.model ? { model: live.agent.model.modelId, thinking: live.agent.thinkingLevel ?? null } : null;
+  const model = scriptedModel({
+    models: { root: { id: root?.model ?? 'root', thinking: root?.thinking ?? 'low' }, node: { id: 'node', thinking: 'low' } },
+    root: [{ call: 'codes', args: {} }, { say: 'Done.' }],
+  });
+  try {
+    await runJob({ run, job, model, judge: meteredJudge(scriptedJev()), effects, answer: adjudicator.answer, text: parts.set.text, learning: false });
+  } finally {
+    await Promise.all(effects.map((effect) => effect.dispose?.()));
+  }
+  const offered = [...new Set(model.requests[0] ? offeredTools(model.requests[0]) : [])].sort();
+  const codes = toolResultsOf(run.storePath).find((r) => r.tool === 'codes')?.value;
+  const problems = [];
+  if (!root) problems.push('the pass names no root model');
+  else if (!root.thinking || root.thinking === 'off') problems.push('the root model does not think');
+  const rootRequests = [...new Set(model.seen.map((r) => `${r.model} ${r.thinking}`))].sort();
+  if (root && rootRequests.some((r) => r !== `${root.model} ${root.thinking}`)) problems.push(`a request went out on ${rootRequests.join(', ')}, not the pass's root model`);
+  const unknown = offered.filter((name) => !ADJUDICATOR_TOOLS.includes(name));
+  if (unknown.length) problems.push(`the adjudicator is offered ${unknown.join(', ')}, not an adjudicator's tool`);
+  const absent = ['site', 'codes', 'answer'].filter((name) => !offered.includes(name));
+  if (absent.length) problems.push(`the adjudicator is not offered ${absent.join(', ')}`);
+  if (!codes?.refused) problems.push('codes gave candidates before stage 1 was recorded');
+  const browser = await browserChecked({ parts, effects, dir, problems });
+  // The sample holds adult, gambling and crypto sites: the adjudicator's browser is Browserbase's, never one on this host.
+  if (browser?.ok && browser.browser !== 'browserbase') problems.push(`the adjudicator's browser is ${browser.browser}, not Browserbase: never a browser on the host`);
+  const report = { at: new Date().toISOString(), ok: problems.length === 0, problems, models: { root, rootRequests }, tools: { root: offered }, codesBeforeStage1: codes ?? null, browser };
+  await writeReport({ out, dir, report });
+  log(`self-test: root ${root.model} at ${root.thinking}; the adjudicator is offered ${offered.join(', ')} and nothing that learns or runs a command or code; codes refuses before stage 1${browser ? `; the browser's guard refused ${browser.blocked.join(', ')}` : ''}`);
   return report;
 }

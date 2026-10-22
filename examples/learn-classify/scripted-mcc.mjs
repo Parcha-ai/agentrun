@@ -146,3 +146,38 @@ export function agentScriptMcc({ job, offered, fixtures }) {
     ],
   };
 }
+
+/** The candidates the last `codes` call returned in this run, from its tool result. */
+function candidatesShown(context) {
+  const result = (context?.messages ?? []).filter((m) => m.role === 'toolResult' && m.toolName === 'codes').at(-1);
+  const text = (result?.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join('');
+  try { return JSON.parse(text).candidates ?? []; } catch { return []; }
+}
+
+/**
+ * The scripted adjudicator for one merchant (learn-mcc's adjudicator home), its verdict fixed per merchant name in
+ * `verdicts[name]`: `{ own, group?, tiers, quote, riskQuote?, accept?: [codes], unjudgeable?, codesFirst?, refusedRead? }`.
+ * It reads the site, records stage 1 with site, calls codes, and judges every candidate it was shown: acceptable when
+ * `accept` (else its own code) names it. `codesFirst` calls codes before stage 1; `refusedRead` reads that address first.
+ */
+export function agentScriptAdjudicate({ job, verdicts }) {
+  const v = verdicts[job.name];
+  if (!v) throw new Error(`no scripted verdict for ${job.name}`);
+  const cite = (quote) => [{ url: job.website, quote }];
+  const stage1 = v.unjudgeable ? { unjudgeable: v.unjudgeable } : { own: { mcc: v.own, evidence: cite(v.quote) }, risk: { tiers: v.tiers, evidence: cite(v.riskQuote ?? v.quote) } };
+  return {
+    root: [
+      ...(v.codesFirst ? [{ call: 'codes', args: {} }] : []),
+      ...(v.refusedRead ? [{ call: 'fetch_page', args: { url: v.refusedRead } }] : []),
+      { call: 'fetch_page', args: { url: job.website } },
+      ...(v.group ? [{ call: 'mcc_groups', args: {} }, { call: 'mcc_codes', args: { group: v.group } }] : []),
+      { call: 'site', args: stage1 },
+      { call: 'codes', args: {} },
+      {
+        call: 'answer',
+        args: (context) => ({ codes: v.unjudgeable ? [] : candidatesShown(context).map((c) => ({ code: c.code, acceptable: (v.accept ?? [v.own]).includes(c.code), evidence: cite(v.quote) })) }),
+      },
+      { say: 'Judged.' },
+    ],
+  };
+}

@@ -347,7 +347,9 @@ export function usageTotals(usage) {
  * (each tool result's `costUsd`) pass it. `dispatch` (dispatch.mjs `promotedFor`) is a promoted workflow the host runs
  * first, or a canary; `measure.dispatch` says how it ended and when its task did (`at`). With `hostOnly` the root agent is
  * never asked: the host's run of `dispatch` is the whole run, and any ending but complete leaves no answer (the promotion
- * gate's bank runs). Returns what the host measured; the run's store is closed when it returns.
+ * gate's bank runs). With `learning: false` the root agent gets the host's tools alone: no learn extension, no <learned>
+ * section, no agentrun tool and no workflow (an adjudicator's runs). Returns what the host measured; the run's store is
+ * closed when it returns.
  */
 /** The longest a tool call may take before the host abandons it as failed, whatever its own timeouts do: a call whose
  *  I/O never settles must not hold its run (and the pass) forever. */
@@ -364,8 +366,9 @@ export function settleWithin(promise, ms, message) {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null, hostOnly = false, callDeadlineMs = CALL_DEADLINE_MS, runDeadlineMs = RUN_DEADLINE_MS }) {
+export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null, hostOnly = false, learning = true, callDeadlineMs = CALL_DEADLINE_MS, runDeadlineMs = RUN_DEADLINE_MS }) {
   if (hostOnly && !dispatch) throw new Error('a host-only run needs a workflow to dispatch');
+  if (!learning && dispatch) throw new Error('a run that does not learn dispatches no workflow');
   const started = Date.now();
   const caseValues = caseValuesOf(job);
   const learn = learnExtension({ caseValues });
@@ -414,7 +417,8 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
     },
   });
   const registry = createRegistry();
-  for (const extension of [learn, tools.extension, workflowTool.extension, nodes.extension]) registry.install(extension);
+  const rootExtensions = learning ? [learn, tools.extension, workflowTool.extension] : [tools.extension];
+  for (const extension of learning ? [...rootExtensions, nodes.extension] : rootExtensions) registry.install(extension);
   const reports = [];
   const harness = await Harness.open(await openNodeSqliteStorage(run.storePath), { models: model.models, registry, onReport: (error) => reports.push(String(error?.message ?? error)) }, ctx);
   let stopped = null;
@@ -426,7 +430,7 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
   const deadline = new Promise((resolve) => { overdue = setTimeout(resolve, runDeadlineMs, 'deadline'); });
   const beforeDeadline = (promise) => (Number.isFinite(runDeadlineMs) ? Promise.race([promise, deadline]) : promise);
   try {
-    const root = await harness.root(ctx, { agent: { ...model.agent, extensions: [learn, tools.extension, workflowTool.extension], instructions: await promptOf(run) } });
+    const root = await harness.root(ctx, { agent: { ...model.agent, extensions: rootExtensions, instructions: await promptOf(run) } });
     deadline.then(async () => {
       if (stopped) return;
       stopped = `the run passed its deadline of ${runDeadlineMs / 60_000} min`;

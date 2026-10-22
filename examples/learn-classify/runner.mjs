@@ -31,7 +31,7 @@ import { curateOf, rowOf, rowOfV2, rowOfV4, spendOf } from './row.mjs';
 import { scoreV2 } from './score-v2.mjs';
 import { scoreV4 } from './score-v4.mjs';
 import { agentScript, agentScriptV2, agentScriptV4, FIXTURES, FIXTURES_V2, FIXTURES_V4, fakeHardTools, fixtureWeb, scriptedJev, scriptedModel } from './scripted.mjs';
-import { isHard, SETS } from './sets.mjs';
+import { isHard, isMccJob, SETS } from './sets.mjs';
 import { ANY_HOST, domainOf, fetchPageTool, refuseMccDomains } from './tools.mjs';
 import { answersTheJob, hostRecord, promotedFor, recordedWorkflow } from './dispatch.mjs';
 import { contradictionOf, lookupOfLines, receiptOf } from './eval-lookup.mjs';
@@ -45,7 +45,7 @@ import {
   hindsightJobMcc, MCC_GATE_PARTS, MCC_HINDSIGHT_FIELDS, mccLookupRefusalsOf, merchantPage, merchantPagesOnly, merchantScope, merchantTouchOf, partsOfMcc, receiptOfMcc, rowOfMcc, teacherLabelsOf,
   teacherValuesMcc, wrongFieldsMcc,
 } from './mcc.mjs';
-import { agentScriptMcc, FIXTURES_MCC } from './scripted-mcc.mjs';
+import { agentScriptAdjudicate, agentScriptMcc, FIXTURES_MCC } from './scripted-mcc.mjs';
 
 export const DATA = join(import.meta.dirname, 'data');
 /** Where a pass writes when no --out is given, as the demo's contract names it. */
@@ -144,7 +144,7 @@ const fixtureLookup = async () => [{ address: '93.184.216.34', family: 4 }];
 
 /** The $0 parts: the scripted agent and Jev, lane C1's fetch_page reading fixture pages instead of the web, and in v2 and
  *  v4 fakes of lane C3's tools over the fixtures. A data directory without pages.json gets 404s. */
-export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 || set === SETS.facts ? FIXTURES_V4 : set === SETS.v2 ? FIXTURES_V2 : set === SETS.mcc ? FIXTURES_MCC : FIXTURES } = {}) {
+export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 || set === SETS.facts ? FIXTURES_V4 : set === SETS.v2 ? FIXTURES_V2 : isMccJob(set) ? FIXTURES_MCC : FIXTURES } = {}) {
   const d = set.load(data);
   const pages = readJsonIf(join(data, 'pages.json')) ?? {};
   const hard = isHard(set);
@@ -153,7 +153,7 @@ export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 || set ===
   const fakes = hard ? fakeHardTools({ pages, documents: readJsonIf(join(data, 'documents.json')) ?? {}, search: readJsonIf(join(data, 'search.json')) ?? {} }) : undefined;
   const truth = readJsonIf(join(data, 'answers.json')) ?? {};
   const judged = hard ? readJsonIf(join(data, 'judge.json')) ?? {} : {};
-  if (mcc) refuseMccDomains(d.refused);
+  if (isMccJob(set)) refuseMccDomains(d.refused);
   return {
     mode: 'scripted', providers: 'scripted', modelName: 'faux/scripted', set, data: d, labels: d.labels, companies: d.companies, conventions: conventionsOf(d.report), fakeCalls: fakes?.calls,
     // The MCC job's fixtures may fix Jev's yes-or-no answers (judge.json `overrides`, such as the receipt's link question).
@@ -161,6 +161,8 @@ export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 || set ===
     toolsFor: async (job) => [fetchPageTool({ allowDomain: allowedDomain(job, set), fetch: fixtureWeb(pages), lookup: fixtureLookup }), ...(fakes ? fakes.tools() : [])],
     modelFor: (job, run) => {
       const offered = run.workflows.loaded.map((w) => w.name);
+      // The adjudicator's scripted verdicts, by merchant name (the data's adjudicate.json).
+      if (set === SETS.adjudicate) return scriptedModel(agentScriptAdjudicate({ job, verdicts: readJsonIf(join(data, 'adjudicate.json')) ?? {} }));
       if (mcc) return scriptedModel(agentScriptMcc({ job, offered, fixtures: { truth } }));
       if (set === SETS.v4) return scriptedModel(agentScriptV4({ job, offered, fixtures: { truth } }));
       if (set === SETS.v2) return scriptedModel(agentScriptV2({ job, offered, fixtures: { truth } }));
@@ -178,7 +180,7 @@ export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, e
   // The root agent on Opus at high thinking unless --model / --thinking name another; the nodes on the host's NODE.
   const models = await gatewayModels(gateway, { root: { model: model ?? ROOT.model, thinking: thinking ?? ROOT.thinking } });
   const d = set.load(data);
-  if (set === SETS.mcc) refuseMccDomains(d.refused);
+  if (isMccJob(set)) refuseMccDomains(d.refused);
   const jev = gatewayJev(gateway);
   let hard;
   if (isHard(set)) {
@@ -892,6 +894,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const set = SETS[values.set ?? 'v1'];
     if (!set) { console.error(`--set is v1, v2, v4 or mcc\n${USAGE}`); process.exit(2); }
     if (set === SETS.facts) { console.error(`the facts set runs with eval-facts.mjs, not as a learning or sealed pass\n${USAGE}`); process.exit(2); }
+    if (set === SETS.adjudicate) { console.error(`the adjudicate set runs with eval-adjudicate.mjs, not as a learning or sealed pass\n${USAGE}`); process.exit(2); }
     const parts = values.live
       ? await liveParts({ set, ...(values.data ? { data: resolve(values.data) } : {}), ...(values.model ? { model: values.model } : {}), ...(values.thinking ? { thinking: values.thinking } : {}), archivedSec: Boolean(values['edgar-archive']), ...(values['edgar-cache'] ? { edgarCache: resolve(values['edgar-cache']) } : {}), ...(hindsight ? { hindsight } : {}) })
       : scriptedParts({ set, ...(values.data ? { data: resolve(values.data) } : {}) });

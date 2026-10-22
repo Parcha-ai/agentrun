@@ -8,6 +8,7 @@ import { answerFacts, FACTS_RULES } from './facts-job.mjs';
 import { answerV1, answerV2, answerV4, jobInput, jobText, sic2GroupsTool, sicCodesTool } from './host.mjs';
 import { loadGroups } from '../learn-mcc/score-mcc.mjs';
 import { answerToolMcc, jobInputMcc, jobTextMcc, mccCodesTool, mccGroupsTool } from './mcc.mjs';
+import { jobInputAdjudicate, jobTextAdjudicate } from './adjudicate-job.mjs';
 
 const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'));
 const readJsonIf = (file) => { try { return readJson(file); } catch { return undefined; } };
@@ -51,12 +52,16 @@ const loadMcc = (data) => {
     if (ids.has(m.id)) throw new Error(`merchants.json: ${m.id} is listed twice`);
     ids.add(m.id);
   }
+  return { companies: merchants.map((m) => ({ ...m, cik: m.id })), ...mccTables(data) };
+};
+
+/** learn-mcc's code tables, and the sites that list merchants' codes as the data names them (refused-hosts.json:
+ *  `{ hosts }`, or a list), refused by every tool beside tools.mjs's own list. */
+const mccTables = (data) => {
   const table = loadGroups();
-  // Sites that list merchants' codes, as the data names them (refused-hosts.json: `{ hosts }`, or a list), refused by
-  // every tool beside tools.mjs's own list.
   const listed = readJsonIf(join(data, 'refused-hosts.json'));
   const refused = Array.isArray(listed) ? listed : Array.isArray(listed?.hosts) ? listed.hosts : [];
-  return { companies: merchants.map((m) => ({ ...m, cik: m.id })), table, codes: table.codes, labels: table.codes, refused };
+  return { table, codes: table.codes, labels: table.codes, refused };
 };
 
 const loadV4 = (data) => ({
@@ -123,6 +128,20 @@ export const SETS = Object.freeze({
     answer: (d) => answerToolMcc(d.table),
     answerKey: 'mcc',
   }),
+  /** The adjudication pass (eval-adjudicate.mjs, learn-mcc's ADJUDICATION.md): learn-mcc's adjudicator home, the MCC
+   *  job's web tools and guards, every code of the table (the adjudicator's own code may be a brand's), and per merchant
+   *  the host's site and codes tools and its verdict as the answer (adjudicate-job.mjs). Its merchants are the sealed
+   *  sample's, which the pass reads; the data gives only the tables and the refused sites. */
+  adjudicate: Object.freeze({
+    name: 'adjudicate',
+    agentDir: join(import.meta.dirname, '..', 'learn-mcc', 'adjudicator'),
+    load: (data) => ({ companies: [], ...mccTables(data) }),
+    input: jobInputAdjudicate,
+    text: jobTextAdjudicate,
+    labelTools: (d) => [mccGroupsTool(d.table, { all: true }), mccCodesTool(d.table, { all: true })],
+    answer: () => { throw new Error('an adjudication run answers for its own merchant: adjudicate-job.mjs adjudicationRun'); },
+    answerKey: null,
+  }),
   /** The facts pass (eval-facts.mjs): the v4 companies and tools, no code tool, and an answer with no place for a code. */
   facts: Object.freeze({
     name: 'facts',
@@ -136,6 +155,9 @@ export const SETS = Object.freeze({
   }),
 });
 
-/** The jobs with search, a browser and the document reader beside fetch_page: v2, v4 and mcc (each scored after its run)
- *  and the facts pass. */
-export const isHard = (set) => set === SETS.v2 || set === SETS.v4 || set === SETS.mcc || set === SETS.facts;
+/** The jobs with search, a browser and the document reader beside fetch_page: v2, v4 and mcc (each scored after its run),
+ *  the facts pass and the adjudication pass. */
+export const isHard = (set) => set === SETS.v2 || set === SETS.v4 || set === SETS.mcc || set === SETS.facts || set === SETS.adjudicate;
+
+/** The jobs whose tools also refuse the sites that list merchants' codes the data names. */
+export const isMccJob = (set) => set === SETS.mcc || set === SETS.adjudicate;
