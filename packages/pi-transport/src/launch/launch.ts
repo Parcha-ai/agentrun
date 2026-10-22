@@ -244,6 +244,13 @@ function validate(name: string, spec: LaunchSpec | undefined): LaunchError | und
 	}
 	if (spec.user !== undefined && (typeof spec.user !== "string" || !USER_PATTERN.test(spec.user)))
 		return new LaunchError("invalid", "user is a user name or a numeric uid");
+	// A launch that holds stdin or secrets must not run its program as root: it would share the root launcher's memory and files,
+	// the reason such a launch names a user at all. (A name that resolves to uid 0 in the box is refused there.)
+	if (framed(spec) && spec.user !== undefined && (spec.user === "root" || /^0+$/.test(spec.user)))
+		return new LaunchError(
+			"invalid",
+			"a launch with stdin or secrets never runs its program as root (uid 0): name another user",
+		);
 	if (spec.stdin !== undefined) {
 		if (!(spec.stdin instanceof Uint8Array)) return new LaunchError("invalid", "stdin is bytes (a Uint8Array)");
 		if (spec.stdin.byteLength > MAX_FRAME_PART) return new LaunchError("invalid", "stdin is over 64 KiB");

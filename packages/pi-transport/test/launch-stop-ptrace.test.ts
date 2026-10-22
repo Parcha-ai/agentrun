@@ -95,6 +95,23 @@ describe("the launcher's ptrace check, measured in the box", () => {
 		expect(existsSync(join(dir, "state"))).toBe(false);
 	});
 
+	it("refuses, IN THE BOX, a framed start whose user resolves to uid 0, whatever its name (the host's pure check sees only the name)", () => {
+		const dir = join(root, "framed-root");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "spec.sh"),
+			"GEN='g2'\nFRAMED=1\nRUNAS='root'\nISOLATION='none'\nrun_program() {\n  exec true\n}\n",
+		);
+		const frame = `PI-TRANSPORT-LAUNCH/1\n\n${Buffer.from("tok").toString("base64")}\n`;
+		const ran = spawnSync("sh", [scriptMeasuring(scope("1\n")), "start", dir], {
+			input: frame,
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+		});
+		expect(ran.status).toBe(8);
+		expect(ran.stdout.toString()).toMatch(/^INVALID a launch with stdin or secrets never runs its program as root/m);
+		expect(existsSync(join(dir, "launcher.pid"))).toBe(false);
+	});
+
 	it("lets a framed launch proceed on a box that reports no ptrace fact when the measured scope is 1 or more", async () => {
 		const measured = readFileSync("/proc/sys/kernel/yama/ptrace_scope", "utf8").trim();
 		if (Number(measured) < 1) return;
@@ -158,6 +175,31 @@ describe("a stop's beforeStop hook", () => {
 		expect(await fileIn(box, `${started.directory}/out.log`)).toContain("[launcher] beforeStop exited 137");
 		const after = getOrThrow(await launchState(box, started.launch, context));
 		expect(after?.launcherAlive).toBe(false);
+		await box.destroy(context);
+	});
+
+	it("runs ONCE per launch: a stop repeated after it, and two stops at once, run the hook exactly once (claimed under the launcher's lock)", async () => {
+		const box = await aBox();
+		const hook = ["sh", "-c", "echo hook >> hooks"];
+		const first = getOrThrow(
+			await launch(box, "once", { argv: ["sleep", "300"], beforeStop: { argv: hook } }, context),
+		);
+		getOrThrow(await launchStop(box, first.launch, { graceMs: 300 }, context));
+		getOrThrow(await launchStop(box, first.launch, { graceMs: 300 }, context));
+		expect((await fileIn(box, "hooks"))?.trim().split("\n")).toEqual(["hook"]);
+		const second = getOrThrow(
+			await launch(
+				box,
+				"twice",
+				{ argv: ["sleep", "300"], beforeStop: { argv: ["sh", "-c", "echo hook >> hooks2"] } },
+				context,
+			),
+		);
+		await Promise.all([
+			launchStop(box, second.launch, { graceMs: 300 }, context),
+			launchStop(box, second.launch, { graceMs: 300 }, context),
+		]);
+		expect((await fileIn(box, "hooks2"))?.trim().split("\n")).toEqual(["hook"]);
 		await box.destroy(context);
 	});
 

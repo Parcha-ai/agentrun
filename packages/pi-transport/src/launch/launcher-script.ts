@@ -268,6 +268,9 @@ stopit() {
   n=$(rd starts)
   [ -n "$n" ] || n=0
   pid=$(rd pid.$n)
+  # The stop hook runs ONCE per launch: claimed here, under the lock, by the first stop; a later or concurrent stop skips it.
+  claimed=0
+  if [ ! -e "$D/hook.claimed" ]; then : > "$D/hook.claimed"; claimed=1; fi
   unlock
   before=$(rd state | sed -n 's/.*"phase":"\([a-z_]*\)".*/\1/p')
   if alive "$pid" "$(rd ticks.$n)"; then
@@ -278,7 +281,7 @@ stopit() {
       sleep $STEP
     done
   fi
-  run_hook
+  if [ "$claimed" = 1 ]; then run_hook; fi
   if own_group "$pid" "$(rd ticks.$n)"; then gkill KILL "$pid"; fi
   for f in launcher watch; do
     p=$(rd $f.pid)
@@ -323,6 +326,8 @@ resolve_user() {
   uid=$(printf '%s\n' "$line" | cut -d' ' -f2)
   gid=$(printf '%s\n' "$line" | cut -d' ' -f3)
   home=$(printf '%s\n' "$line" | cut -d' ' -f4-)
+  # A framed launch never runs its program as root (it would share the launcher's memory and files), whatever its name.
+  if [ "$FRAMED" = 1 ] && [ "$uid" = 0 ]; then echo "INVALID a launch with stdin or secrets never runs its program as root (uid 0): name another user"; return 8; fi
   if [ "$me" != 0 ] && [ "$uid" != "$me" ]; then echo "UNSUPPORTED only a root launcher runs a program as another user"; return 9; fi
   # How a root launcher drops to the user, found by doing it once: a setpriv that takes --reuid (util-linux; BusyBox's does
   # not), else runuser. A box with neither refuses here, never at an incarnation.
@@ -539,6 +544,7 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 	"u_how",
 	"u_home",
 	"_",
+	"claimed",
 ];
 
 /** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */
