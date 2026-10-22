@@ -72,7 +72,7 @@ test('the published copy holds the report\'s page as plain text, <hash>.html.txt
   writeFileSync(join(blobs, `${sha(svg)}.svg`), svg);
   const refused = gateOf(dist);
   assert.ok(refused.includes(`recordings/one/blobs/${page}.html: would open as a page: an artifact page is published as ${page}.html.txt`), refused.join('\n'));
-  assert.ok(refused.some((each) => each.startsWith(`recordings/one/blobs/${sha(svg)}.svg: has the extension .svg, which a recording's blob may not have`)), refused.join('\n'));
+  assert.deepEqual(refused.filter((each) => each.includes(`${sha(svg)}.svg`)).map((each) => each.split(' (')[0]), [`recordings/one/blobs: ${sha(svg)}.svg has the extension .svg, which a recording's blob may not have`], 'the SVG, once');
 });
 
 test('a data-look that names no look the run filed is refused', (t) => {

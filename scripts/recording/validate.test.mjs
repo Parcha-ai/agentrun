@@ -103,6 +103,13 @@ test('the file is in order of t', async t => {
   assert.match(first(await recording(t, { lines: [durable(1, 0, { t: 50 }), live(1, 0, 10)], manifestOver: { generations: 1 } })).message, /before the previous line/);
 });
 
+test('a blob no line names is checked as well: one that does not hash to its name is refused, once', async t => {
+  const stray = Buffer.from('a stray file');
+  const name = `${createHash('sha256').update('something else').digest('hex')}.json`;
+  const problems = validateRecording(await recording(t, { blobs: { [`${blob}.png`]: png, [name]: stray } }));
+  assert.deepEqual(problems.filter(each => each.message.includes(name)).map(each => `${each.where}: ${each.message}`), [`blobs: ${name} does not hash to its name`]);
+});
+
 test('every blob a line or the manifest names is present and hashes to its name', async t => {
   assert.match(first(await recording(t, { blobs: {} })).message, /not in blobs/);
   assert.match(first(await recording(t, { blobs: { [`${blob}.png`]: Buffer.from('tampered') } })).message, /does not hash to its name/);

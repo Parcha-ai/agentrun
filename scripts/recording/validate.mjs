@@ -382,15 +382,22 @@ export function validateRecording(dir) {
     else if (record.kind === 'move' && Number.isFinite(snapshot.before) && snapshot.commit !== snapshot.before) add('events.jsonl', `a move's snapshot is at commit ${snapshot.commit}, but the highest commit seen before it is ${snapshot.before}; a move keeps one store, so they are equal`, snapshot.line);
     else if (firstCommit.has(record.process) && firstCommit.get(record.process) !== record.head + (atOpen ? 1 : 0)) add('events.jsonl', `a ${record.kind}'s head is ${record.head}, but the process's first commit is ${firstCommit.get(record.process)}${atOpen ? `; with its snapshot at the head (pi's commit at open), the first commit is ${record.head + 1}` : ''}`, record.line);
   }
-  // Every file in blobs/ is a blob of the allowlist (draft 50), named by its own SHA-256, and read as text when it is not media, whether or not a line names it.
+  // Every file in blobs/ is a blob of the allowlist (draft 50), named by its own SHA-256 and hashing to it, and read as text when it is not media,
+  // whether or not a line names it: this is the one check of a recording's blobs (the gallery's gate adds only what publishing needs). A blob a
+  // line, the result or the artifact names was checked where it is named, so it is reported once.
   const artifactNames = artifactBlobNames(manifest);
+  const artifactHashes = new Set(isObject(manifest?.artifact) && isObject(manifest.artifact.files) ? Object.values(manifest.artifact.files) : []);
   for (const entry of existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs'), { withFileTypes: true }) : []) {
     const name = entry.name;
     if (!entry.isFile()) { add('blobs', `${name} is not a file`); continue; }
     const problem = blobNameProblem(name, artifactNames);
     if (problem) { add('blobs', `${name} ${problem}`); continue; }
-    if (TEXT_FILE.test(name) && !checked.has(name.split('.')[0])) {
-      const found = credentialInFile(name, readFileSync(join(dir, 'blobs', name), 'utf8'));
+    const hash = name.split('.')[0];
+    if (checked.has(hash) || artifactHashes.has(hash)) continue;
+    const bytes = readFileSync(join(dir, 'blobs', name));
+    if (createHash('sha256').update(bytes).digest('hex') !== hash) { add('blobs', `${name} does not hash to its name`); continue; }
+    if (TEXT_FILE.test(name)) {
+      const found = credentialInFile(name, bytes.toString('utf8'));
       if (found) add('blobs', `${name} contains a ${found}`);
     }
   }
