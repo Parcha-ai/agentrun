@@ -49,6 +49,35 @@ export const hasWorkflowReceipt = (dir, sha256) => runsIn(dir).some((r) => r.rec
 /** The digest a proposed workflow's records end on (`latest`), or null. */
 const digestOf = (records) => (typeof records?.latest === 'string' ? records.latest.trim() : null);
 
+/** How many runs recorded under `dir` ran `sha256`, other than `author` (the run that proposed it): its chances so far,
+ *  whatever their outcome. */
+export const runsOf = (dir, sha256, author) => runsIn(dir).filter((r) => r.run !== author && (r.executed ?? []).includes(sha256)).length;
+
+/**
+ * The `admitWorkflow` port with --trial-tenure <n>: a newcomer does not replace its name's live TRIAL until that trial has
+ * been run by `n` recorded runs other than its author, whatever they ended in (an escalation is a chance, though it counts
+ * neither way in the fold); held, it is reported, and a later run may save it again. A champion is never held: a newcomer
+ * goes on trial over it and leaves it restorable. With a stream's runs in flight, a trial so lives until the runs that ran
+ * it report back, and a trial that only escalates still yields after its `n` chances.
+ */
+export function trialTenure(admit, dir, n) {
+  return async (input) => {
+    const { name, records } = input.workflow;
+    try {
+      const text = await input.read(trialPath(name), input.main);
+      const live = text === undefined ? undefined : currentRevision(parseTrial(text, name));
+      const incoming = digestOf(records);
+      if (live?.status === 'trial' && incoming && incoming !== live.sha256) {
+        const chances = runsOf(dir, live.sha256, live.run);
+        if (chances < n) return { status: 'held', reason: `the live trial ${live.sha256.slice(0, 12)} has been run by ${chances} of the ${n} runs its trial gets, so it is not replaced yet` };
+      }
+    } catch {
+      // A trial that does not parse is the admitter's to judge.
+    }
+    return admit(input);
+  };
+}
+
 /** The `admitWorkflow` port with --receipt-holds-trial: a newcomer that has no workflow receipt is held while its name's
  *  live revision, a trial or the champion, has one; anything else goes to `admit` as before. */
 export function receiptHoldsTrial(admit, dir) {

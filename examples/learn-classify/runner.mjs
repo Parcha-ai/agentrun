@@ -35,7 +35,7 @@ import { isHard, SETS } from './sets.mjs';
 import { ANY_HOST, domainOf, fetchPageTool, refuseMccDomains } from './tools.mjs';
 import { answersTheJob, hostRecord, promotedFor } from './dispatch.mjs';
 import { contradictionOf, lookupOfLines, receiptOf } from './eval-lookup.mjs';
-import { LINK_QUESTION, receiptHoldsTrial, receiptLinks, receiptUses, recordRun } from './receipts.mjs';
+import { LINK_QUESTION, receiptHoldsTrial, receiptLinks, receiptUses, recordRun, trialTenure } from './receipts.mjs';
 import { asyncGate, demotionSettler, GATE, gateSpend } from './promotion-gate.mjs';
 import { passSelfTest } from './selftest.mjs';
 import { writeHosts } from './tools-v2.mjs';
@@ -392,7 +392,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
     });
   }
   // Admission and promotion by receipt (receipts.mjs): what the run read of the SEC's record, from its closed store.
-  const receipts = parts.receiptAdmission || parts.receiptHoldsTrial || parts.receiptPromotion;
+  const receipts = parts.receiptAdmission || parts.receiptHoldsTrial || parts.receiptPromotion || parts.trialTenure;
   if (receipts && p.phase === 'ran' && p.receipt === undefined) {
     const { lines } = recordingLines(run.storePath);
     if (parts.set === SETS.mcc) {
@@ -444,7 +444,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
         ...(parts.refuseRefusedHosts ? { refuseRefusedHosts: true } : {}),
         // With promotion by receipt the gate does not hold a promotion back: it confirms or demotes a replacement.
         ...(gate && !parts.promoteNoFloor ? { gate } : {}),
-        ...(parts.receiptHoldsTrial ? { wrapAdmit: (admit) => receiptHoldsTrial(admit, receiptsDir) } : {}),
+        ...(parts.receiptHoldsTrial || parts.trialTenure ? { wrapAdmit: (admit) => { const held = parts.trialTenure ? trialTenure(admit, receiptsDir, parts.trialTenure) : admit; return parts.receiptHoldsTrial ? receiptHoldsTrial(held, receiptsDir) : held; } } : {}),
         ...(parts.promoteNoFloor || parts.escalationNeutral || parts.gatedDemotion ? { wrapSettle: (settle) => armG(byReceipt(settle)) } : {}),
       });
       save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main, ...(gated.length ? { gated } : {}), ...(tally ? { curatedIndex: ++tally.curated, curatedAt: new Date().toISOString() } : {}) });
@@ -816,7 +816,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--escalation-neutral] [--gated-demotion (with --promotion-bank)] [--receipt-admission] [--receipt-holds-trial] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--gate jev-margin --gate-tau <file>] [--pick-node agent] [--teacher <file> (mcc)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--escalation-neutral] [--gated-demotion (with --promotion-bank)] [--trial-tenure <n>] [--receipt-admission] [--receipt-holds-trial] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--gate jev-margin --gate-tau <file>] [--pick-node agent] [--teacher <file> (mcc)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -831,7 +831,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' }, 'edgar-cache': { type: 'string' }, schedule: { type: 'string' }, checkpoints: { type: 'string' },
         'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, 'gate-wait-at-end': { type: 'boolean' }, hindsight: { type: 'string' },
         'receipt-admission': { type: 'boolean' }, 'receipt-holds-trial': { type: 'boolean' }, 'receipt-promotion': { type: 'boolean' }, 'promote-no-floor': { type: 'boolean' },
-        'escalation-neutral': { type: 'boolean' }, 'gated-demotion': { type: 'boolean' },
+        'escalation-neutral': { type: 'boolean' }, 'gated-demotion': { type: 'boolean' }, 'trial-tenure': { type: 'string' },
         'refuse-contradicting': { type: 'boolean' }, 'keep-facts': { type: 'boolean' }, 'refuse-refused-hosts': { type: 'boolean' }, teacher: { type: 'string' },
         'self-test-only': { type: 'boolean' }, gate: { type: 'string' }, 'gate-tau': { type: 'string' }, 'pick-node': { type: 'string' },
       },
@@ -956,6 +956,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     if (values['promote-no-floor']) parts.promoteNoFloor = true;
     if ((values['escalation-neutral'] || values['gated-demotion']) && values.sealed) { console.error(`--escalation-neutral and --gated-demotion settle a learning pass's uses: a sealed pass settles none\n${USAGE}`); process.exit(2); }
     if (values['gated-demotion'] && values['promotion-bank'] === undefined) { console.error(`--gated-demotion asks the replay gate: it takes --promotion-bank\n${USAGE}`); process.exit(2); }
+    if (values['trial-tenure'] !== undefined) {
+      const n = Number(values['trial-tenure']);
+      if (!(Number.isInteger(n) && n >= 1) || values.sealed) { console.error(`--trial-tenure is a whole number from 1, for a learning pass\n${USAGE}`); process.exit(2); }
+      parts.trialTenure = n;
+      console.log(`learn-classify: a newcomer does not replace the live trial until ${n} runs other than its author have run it (receipts.mjs trialTenure)`);
+    }
     if (values['escalation-neutral']) {
       parts.escalationNeutral = true;
       console.log('learn-classify: an escalated use (or one whose task failed) counts neither way; a use fails only when the workflow answered and the run shows it wrong');
