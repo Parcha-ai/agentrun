@@ -102,9 +102,64 @@ It prints `"status": "complete"` and an output with `"total": 6`. The shipped ex
 
 The `agentrun` CLI provides `demo`, `example`, `inspect`, `validate`, `dry-run`, and deterministic `run`. `inspect workflow.json [--json]` displays structure without executing code. Validation/run require `--trusted` because workflow JavaScript can execute, including during validation. This package is not an isolation boundary.
 
-`runWorkflow(workflow, input, deps)` returns a complete schema-validated output or an escalation; its TypeScript output type is `unknown`. `defineWorkflow` binds Standard JSON Schema contracts, including supported Zod schemas, to a frozen v2 document; `runTypedWorkflow` infers those input/output types and delegates to the same interpreter. Intermediate state paths remain runtime-validated. Execution and verification failures throw. Hosts own tools, durable storage, file delivery, idempotency, recovery, and activation. A durable run's store keeps each effect's arguments as given, so redact secrets before they reach an effect.
+`runWorkflow(workflow, input, deps)` returns a complete schema-validated output or an escalation; its TypeScript output type is `unknown`. `defineWorkflow` binds Standard JSON Schema contracts, including supported Zod schemas, to a frozen v2 document; `runTypedWorkflow` infers those input/output types and delegates to the same interpreter. Intermediate state paths remain runtime-validated. Execution and verification failures throw. Hosts own tools, file delivery, idempotency and activation, and choose where a run's journal lives; the package ships the recovery driver (see Durable runs below). A durable run's store keeps each effect's arguments as given, so redact secrets before they reach an effect.
 
 Raw JSON schemas retain `unknown` boundary types. Zod transforms, refinements, defaults and coercion are rejected rather than silently dropped. The core does not depend on Zod at runtime. Other Standard JSON Schema providers must faithfully represent their contracts. Typed execution accepts the original `defineWorkflow` result; copied or deserialized documents use `runWorkflow`.
+
+### A judge on any model
+
+`runJudge` is a plain function: it receives the node's `questions` and returns `answers`, so any model can stand behind it. This one answers every question with a fixed probability, so it runs with no key; replace its body with a call to your model that returns a probability for each question. Save this as `judge.mjs` next to `node_modules` and run `node judge.mjs`:
+
+```js
+import { readFileSync } from 'node:fs';
+import { runWorkflow } from '@parcha/agentrun-dsl';
+
+const dir = 'node_modules/@parcha/agentrun-dsl/skills/author/examples/';
+const workflow = JSON.parse(readFileSync(dir + 'evidence-gate.json', 'utf8'));
+const input = JSON.parse(readFileSync(dir + 'evidence-gate.input.json', 'utf8'));
+
+// A yes-probability for every question, as a noul answer.
+const runJudge = async ({ questions }) => ({
+  answers: Object.fromEntries(Object.keys(questions).map(id => [id, { type: 'noul', noul: 0.95 }])),
+});
+
+const result = await runWorkflow(workflow, input, { runJudge });
+console.log(result.status, result.output?.accepted);
+```
+
+It prints `complete true`: the workflow's own code gate accepts a yes-probability of 0.90 or more. Set `noul` to `0.5` and it prints `escalated undefined` instead. The Jev adapter, `@parcha/agentrun-jev`, is this same function backed by TypeSafe's judgment service.
+
+### Durable runs
+
+`@parcha/agentrun-dsl/recovery` journals a run so a process that dies can continue it. `openRecovery(store, workflow, { key })` opens the run's journal (`fileStore(directory)` keeps it in a directory, `memoryStore()` in memory) and `withRecovery(driver, deps)` wraps your adapters. A run opened again with the same key answers each committed step from the journal and runs only the rest; a tool call that was in flight when the process died has an unknown outcome and is refused, not repeated, unless your `reconcile` option settles it. The same journal opened for a completed run runs nothing. Save this as `durable.mjs` and run it three times: `CRASH=1 node durable.mjs` (the process exits before the last step commits), then `node durable.mjs` (it runs one model step, the one that did not commit), then `node durable.mjs` again (zero steps):
+
+```js
+import { readFileSync } from 'node:fs';
+import { runWorkflow } from '@parcha/agentrun-dsl';
+import { openRecovery, withRecovery, fileStore } from '@parcha/agentrun-dsl/recovery';
+
+const dir = 'node_modules/@parcha/agentrun-dsl/skills/author/examples/';
+const workflow = JSON.parse(readFileSync(dir + 'review-release-notes.json', 'utf8'));
+const input = JSON.parse(readFileSync(dir + 'review-release-notes.input.json', 'utf8'));
+
+let calls = 0;
+const runNode = async ({ label, user }) => {
+  calls += 1;
+  if (process.env.CRASH && label === 'summarize-migration') process.exit(1); // dies before the last step commits
+  const state = JSON.parse(user);
+  return label === 'extract-change'
+    ? { breakingChange: state.text, migrationAction: 'Follow the release note.' }
+    : { summary: `${state.changes.length} breaking changes.`, changes: state.changes };
+};
+
+const driver = await openRecovery(fileStore('./run-journal'), workflow, { key: 'release-review' });
+try {
+  const result = await runWorkflow(workflow, input, withRecovery(driver, { runNode }));
+  console.log(result.status, `model steps run this time: ${calls}`);
+} finally { await driver.close(); }
+```
+
+The first run exits with code 1 and leaves `run-journal/`; the second prints `complete model steps run this time: 1`; the third prints `complete model steps run this time: 0`. Delete `run-journal/` to start over. The key names the run, so use one per run; the journal is bound to the workflow and input it was opened with, and a change to either is refused. Hosts keep the store, the key and the decision to resume: see [Integrate with your application](https://github.com/Parcha-ai/agentrun/blob/main/docs/host-integration.md#recovery-and-versions).
 
 ## Public API
 
