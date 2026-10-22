@@ -1,14 +1,16 @@
 // The adjudication sample and blind packets on synthetic merchants: proportional strata, salted commitments, an order
-// only the salt recovers, nothing stylistic shown, and verdicts back to one row per side.
+// only the salt recovers, codes alone shown, the risk judged from the site against the rubric, verdicts back to rows.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { commitmentOf, drawSample, learnerSide, packetOf, unblind } from './adjudication.mjs';
+import { commitmentOf, drawSample, learnerSide, packetOf, sectionOf, unblind } from './adjudication.mjs';
 import { loadGroups } from './score-mcc.mjs';
 
-const table = loadGroups();
+const groups = loadGroups();
 const SALT = 'x'.repeat(16) + 'synthetic-salt-0001';
 const merchants = (vertical, count) => Array.from({ length: count }, (_, i) => ({ merchantId: `${vertical}-${i}`, name: `${vertical} shop ${i}`, website: `https://${vertical}${i}.example`, vertical }));
 const DEV = [...merchants('nutra', 100), ...merchants('travel', 60), ...merchants('adult', 39), ...merchants('crypto', 1)];
+const onSide = (side) => DEV.find((m) => learnerSide(SALT, m.merchantId) === side);
+const EV = [{ url: 'https://shop.example/products', quote: 'We sell herbal supplements.' }];
 
 test('the sample keeps each vertical\'s share of DEV, gives a one-merchant vertical its one, and rebuilds the same from the salt', () => {
   const { sample, commitments, quota } = drawSample({ dev: DEV, n: 120, salt: SALT });
@@ -17,8 +19,9 @@ test('the sample keeps each vertical\'s share of DEV, gives a one-merchant verti
   assert.equal(new Set(sample.map((m) => m.merchantId)).size, 120);
   assert.deepEqual(commitments, sample.map((m) => commitmentOf(SALT, m.merchantId)).sort());
   assert.ok(commitments.every((c) => /^[0-9a-f]{64}$/.test(c)));
-  assert.deepEqual(drawSample({ dev: [...DEV].reverse(), n: 120, salt: SALT }).sample.map((m) => m.merchantId).sort(), sample.map((m) => m.merchantId).sort(), 'DEV order does not move the sample');
-  assert.notDeepEqual(drawSample({ dev: DEV, n: 120, salt: `${SALT}-other` }).sample.map((m) => m.merchantId).sort(), sample.map((m) => m.merchantId).sort());
+  const ids = (s) => s.map((m) => m.merchantId).sort();
+  assert.deepEqual(ids(drawSample({ dev: [...DEV].reverse(), n: 120, salt: SALT }).sample), ids(sample), 'DEV order does not move the sample');
+  assert.notDeepEqual(ids(drawSample({ dev: DEV, n: 120, salt: `${SALT}-other` }).sample), ids(sample));
   const small = [...merchants('a', 10), ...merchants('b', 1), ...merchants('c', 1)];
   assert.deepEqual(drawSample({ dev: small, n: 3, salt: SALT }).quota, { a: 1, b: 1, c: 1 }, 'a vertical the shares leave empty takes one from the largest');
 });
@@ -29,42 +32,62 @@ test('the sample refuses a short salt, a sample larger than DEV, and repeated me
   assert.throws(() => drawSample({ dev: [...DEV, DEV[0]], n: 120, salt: SALT }), /distinct/);
 });
 
-test('the learner is A for about half the merchants, and the packet shows code, title and tier only', () => {
-  const sides = DEV.map((m) => learnerSide(SALT, m.merchantId));
-  const a = sides.filter((s) => s === 'A').length;
+test('the learner is A for about half the merchants; the packet\'s first stage is the site, its second the two codes alone', () => {
+  const a = DEV.filter((m) => learnerSide(SALT, m.merchantId) === 'A').length;
   assert.ok(a > 70 && a < 130, `${a} of 200 on A`);
-  const merchant = DEV.find((m) => learnerSide(SALT, m.merchantId) === 'B');
-  const learner = { mcc: '5499', risk: 'High', rationale: 'learner style', evidence: [{ url: 'u', quote: 'q' }], flags: ['nutraceuticals'], confidence: 0.9 };
-  const teacher = { mcc: 5999, risk: 'high', rationale: 'swarm style' };
-  const p = packetOf({ merchant, learner, teacher, salt: SALT, table });
-  assert.deepEqual(p.A, { mcc: '5999', mccTitle: 'Miscellaneous and Specialty Retail Shops', risk: 'high' });
-  assert.deepEqual(p.B, { mcc: '5499', mccTitle: 'Miscellaneous Food Stores – Convenience Stores and Specialty Markets', risk: 'high' });
-  assert.deepEqual(p.same, { mcc: false, risk: true });
-  assert.equal(JSON.stringify(p).includes('style'), false);
-  assert.equal(JSON.stringify(p).includes('learner'), false);
+  const merchant = { ...onSide('B'), teacher: { mcc: 5999, riskTier: null, flags: ['nutraceuticals'] } };
+  const answer = { mcc: '5499', mccDescription: 'x', riskTier: 'high', riskRationale: 'learner style', evidence: EV, flags: ['nutraceuticals'], siteStatus: 'live', confidence: 0.9 };
+  const p = packetOf({ merchant, answer, salt: SALT, groups });
+  assert.deepEqual(p.site, { merchantId: merchant.merchantId, name: merchant.name, website: merchant.website });
+  assert.deepEqual(p.codes, {
+    merchantId: merchant.merchantId, same: false,
+    A: { mcc: '5999', mccTitle: 'Miscellaneous and Specialty Retail Shops' },
+    B: { mcc: '5499', mccTitle: 'Miscellaneous Food Stores – Convenience Stores and Specialty Markets' },
+  });
+  for (const leak of ['style', 'high', 'nutraceuticals', 'learner', 'teacher', 'vertical', '0.9']) assert.equal(JSON.stringify(p).includes(leak), false, leak);
 });
 
-test('verdicts unblind to one row per side; the same value takes only both or neither; every verdict carries evidence', () => {
-  const [onA, onB] = [DEV.find((m) => learnerSide(SALT, m.merchantId) === 'A'), DEV.find((m) => learnerSide(SALT, m.merchantId) === 'B')];
-  const packets = [
-    packetOf({ merchant: onA, learner: { mcc: '5499', risk: 'high' }, teacher: { mcc: '5999', risk: 'medium' }, salt: SALT, table }),
-    packetOf({ merchant: onB, learner: { mcc: '5967', risk: 'high' }, teacher: { mcc: '5967', risk: 'high' }, salt: SALT, table }),
+test('verdicts unblind to one row per side: the code by A/B, the tier against the allowed tiers, a teacher with no tier null', () => {
+  const [onA, onB] = [onSide('A'), onSide('B')];
+  const items = [
+    { merchant: { ...onA, teacher: { mcc: '5999', riskTier: null } }, answer: { mcc: '5499', riskTier: 'high' } },
+    { merchant: { ...onB, teacher: { mcc: '5967', riskTier: 'high' } }, answer: { mcc: '5967', riskTier: 'low' } },
   ];
-  const ev = [{ url: 'https://shop.example/products', quote: 'We sell herbal supplements.' }];
   const verdicts = {
-    [onA.merchantId]: { mcc: { verdict: 'A', evidence: ev }, risk: { verdict: 'neither', evidence: ev } },
-    [onB.merchantId]: { mcc: { verdict: 'both', evidence: ev }, risk: { verdict: 'both', evidence: ev } },
+    [onA.merchantId]: { own: { mcc: '5499', evidence: EV }, risk: { tiers: ['medium', 'high'], evidence: EV }, mcc: { verdict: 'A', evidence: EV } },
+    [onB.merchantId]: { own: { mcc: '5967', evidence: EV }, risk: { tiers: ['high'], evidence: EV }, mcc: { verdict: 'both', evidence: EV } },
   };
-  const { learner, teacher } = unblind({ packets, verdicts, salt: SALT, verticals: { [onA.merchantId]: 'nutra', [onB.merchantId]: 'adult' } });
-  assert.deepEqual(learner[0], { merchantId: onA.merchantId, vertical: 'nutra', side: 'learner', mccAdjRight: true, riskAdjRight: false, adjRight: false });
-  assert.deepEqual(teacher[0], { merchantId: onA.merchantId, vertical: 'nutra', side: 'teacher', mccAdjRight: false, riskAdjRight: false, adjRight: false });
-  assert.equal(learner[1].adjRight, true);
-  assert.equal(teacher[1].adjRight, true);
-  assert.throws(() => unblind({ packets, verdicts: { ...verdicts, [onB.merchantId]: { mcc: { verdict: 'A', evidence: ev }, risk: { verdict: 'both', evidence: ev } } }, salt: SALT }), /only both or neither/);
-  assert.throws(() => unblind({ packets, verdicts: { ...verdicts, [onA.merchantId]: { mcc: { verdict: 'A', evidence: [] }, risk: { verdict: 'A', evidence: ev } } }, salt: SALT }), /needs evidence/);
-  assert.throws(() => unblind({ packets, verdicts: { ...verdicts, [onA.merchantId]: { mcc: { verdict: 'learner', evidence: ev }, risk: { verdict: 'A', evidence: ev } } }, salt: SALT }), /must be one of/);
-  assert.throws(() => unblind({ packets, verdicts: { [onA.merchantId]: verdicts[onA.merchantId] }, salt: SALT }), /no verdict/);
-  const gone = unblind({ packets, verdicts: { ...verdicts, [onB.merchantId]: { unjudgeable: 'the site no longer loads' } }, salt: SALT });
-  assert.deepEqual([gone.learner.length, gone.teacher.length], [1, 1]);
-  assert.deepEqual(gone.unjudgeable, [{ merchantId: onB.merchantId, reason: 'the site no longer loads' }]);
+  const { learner, teacher, unjudgeable } = unblind({ items, verdicts, salt: SALT });
+  assert.deepEqual(learner[0], { merchantId: onA.merchantId, vertical: onA.vertical, side: 'learner', mccAdjRight: true, mccOwnExact: true, riskAdjRight: true, riskAdjDistance: 0, adjRight: true });
+  assert.deepEqual(teacher[0], { merchantId: onA.merchantId, vertical: onA.vertical, side: 'teacher', mccAdjRight: false, mccOwnExact: false, riskAdjRight: null, riskAdjDistance: null, adjRight: null });
+  assert.deepEqual([learner[1].mccAdjRight, learner[1].riskAdjRight, learner[1].riskAdjDistance, learner[1].adjRight], [true, false, 2, false]);
+  assert.deepEqual([teacher[1].mccAdjRight, teacher[1].riskAdjRight, teacher[1].adjRight], [true, true, true]);
+  assert.deepEqual(unjudgeable, []);
+});
+
+test('a verdict needs the own code, allowed tiers next to each other, A/B/both/neither, and evidence for each; same codes take only both or neither', () => {
+  const merchant = { ...onSide('A'), teacher: { mcc: '5999' } };
+  const items = [{ merchant, answer: { mcc: '5999', riskTier: 'low' } }];
+  const good = { own: { mcc: '5999', evidence: EV }, risk: { tiers: ['low'], evidence: EV }, mcc: { verdict: 'both', evidence: EV } };
+  const run = (v) => unblind({ items, verdicts: { [merchant.merchantId]: v }, salt: SALT });
+  assert.equal(run(good).learner[0].adjRight, true);
+  assert.throws(() => run({ ...good, mcc: { verdict: 'A', evidence: EV } }), /only both or neither/);
+  assert.throws(() => run({ ...good, own: { evidence: EV } }), /own code/);
+  assert.throws(() => run({ ...good, risk: { tiers: ['low', 'high'], evidence: EV } }), /next to each other/);
+  assert.throws(() => run({ ...good, risk: { tiers: [], evidence: EV } }), /one tier/);
+  assert.throws(() => run({ ...good, risk: { tiers: ['low'], evidence: [] } }), /risk verdict needs evidence/);
+  assert.throws(() => run({ ...good, mcc: { verdict: 'learner', evidence: EV } }), /must be one of/);
+  assert.throws(() => run({ ...good, mcc: { verdict: 'both', evidence: [{ url: 'u' }] } }), /mcc verdict needs evidence/);
+  assert.throws(() => unblind({ items, verdicts: {}, salt: SALT }), /no verdict/);
+  const gone = run({ unjudgeable: 'the site no longer loads' });
+  assert.deepEqual([gone.learner, gone.teacher, gone.unjudgeable], [[], [], [{ merchantId: merchant.merchantId, reason: 'the site no longer loads' }]]);
+});
+
+test('the rubric section is cut at the next heading of its level and hashed, so it can be pinned', () => {
+  const spec = '# Task\n\n## The risk rubric\n\nThe tier is the highest one any row reaches:\n- high, when ...\n### a sub-heading stays\n\n## The flags\n\n- adult\n';
+  const { text, sha256 } = sectionOf(spec, '## The risk rubric');
+  assert.equal(text, '## The risk rubric\n\nThe tier is the highest one any row reaches:\n- high, when ...\n### a sub-heading stays');
+  assert.match(sha256, /^[0-9a-f]{64}$/);
+  assert.equal(sectionOf(`${spec}\n`, '## The risk rubric').sha256, sha256);
+  assert.throws(() => sectionOf(spec, '## Missing'), /no section/);
 });

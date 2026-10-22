@@ -1,11 +1,11 @@
 // The adjudication sample and its blind packets (ADJUDICATION.md): a DEV sample stratified by vertical and committed by
-// salted sha256 before anyone judges it, each merchant's two answers shown as A and B in an order only the salt
-// recovers, and the verdicts turned back into one row per side for lanes/C1/ci.py.
+// salted sha256 before anyone judges it; per merchant, the adjudicator's own code and the tiers the risk rubric allows,
+// both recorded from the site before any answer is shown; then the two codes as A and B in an order only the salt
+// recovers; and the verdicts turned back into one row per side for lanes/C1/ci.py.
 import { createHash } from 'node:crypto';
-import { mccOf, riskOf } from './score-mcc.mjs';
+import { mccOf, RISK_TIERS, riskOf } from './score-mcc.mjs';
 
 export const VERDICTS = Object.freeze(['A', 'B', 'both', 'neither']);
-export const FIELDS = Object.freeze(['mcc', 'risk']);
 
 const sha256 = (...parts) => createHash('sha256').update(parts.join('\u0000')).digest('hex');
 
@@ -49,56 +49,87 @@ export function drawSample({ dev, n = 120, salt }) {
 /** Which side the learner is on for this merchant: the salt fixes it, so neither the packet nor its order tells. */
 export const learnerSide = (salt, merchantId) => (Number.parseInt(sha256(salt, 'order', merchantId).slice(0, 2), 16) & 1 ? 'B' : 'A');
 
-/** What the adjudicator sees of one answer: the code, its Visa title, the tier. Nothing an answer's style could give
- *  away (rationale, evidence, confidence, flags) is shown. */
-const shown = (answer, table) => {
-  const mcc = mccOf(answer?.mcc);
-  return { mcc, mccTitle: mcc === null ? null : table.codes[mcc] ?? table.mastercardOnly[mcc] ?? 'not in the code table', risk: riskOf(answer?.risk) };
+const codeShown = (value, groups) => {
+  const mcc = mccOf(value);
+  return { mcc, mccTitle: mcc === null ? null : groups.codes[mcc] ?? 'not in the code table' };
 };
 
-/** The blind packet for one merchant: its name and website, and the learner's and the teacher's answers as A and B. */
-export function packetOf({ merchant, learner, teacher, salt, table }) {
-  const l = shown(learner, table);
-  const t = shown(teacher, table);
+/**
+ * The blind packet for one merchant, in two stages. `site`: its name and website, all the adjudicator has while it
+ * records its own code and the tiers the rubric allows. `codes`: the learner's and the teacher's (`merchant.teacher`)
+ * codes as A and B, each under its title from the code table. No tier, rationale, evidence, confidence or flag is shown:
+ * each carries its source's style, and the teacher may have no tier at all, which would name its side.
+ */
+export function packetOf({ merchant, answer, salt, groups }) {
+  const l = codeShown(answer?.mcc, groups);
+  const t = codeShown(merchant.teacher?.mcc, groups);
   const [A, B] = learnerSide(salt, merchant.merchantId) === 'A' ? [l, t] : [t, l];
-  return { merchantId: merchant.merchantId, name: merchant.name, website: merchant.website, A, B, same: Object.fromEntries(FIELDS.map((f) => [f, A[f] === B[f]])) };
+  return { site: { merchantId: merchant.merchantId, name: merchant.name, website: merchant.website }, codes: { merchantId: merchant.merchantId, A, B, same: A.mcc === B.mcc } };
+}
+
+const hasEvidence = (given) => Array.isArray(given?.evidence) && given.evidence.length > 0 && given.evidence.every((e) => e?.url && e?.quote);
+
+/** The tiers a risk verdict allows: one tier, or two next to each other when the evidence supports both readings. */
+function allowedTiers(risk, id) {
+  const tiers = Array.isArray(risk?.tiers) ? risk.tiers.map(riskOf) : [];
+  const at = tiers.map((t) => RISK_TIERS.indexOf(t)).sort();
+  if (!tiers.length || tiers.length > 2 || tiers.includes(null) || (at.length === 2 && at[1] - at[0] !== 1)) throw new Error(`${id}: the risk verdict allows one tier, or two next to each other`);
+  if (!hasEvidence(risk)) throw new Error(`${id}: the risk verdict needs evidence, a url and a quote each`);
+  return at;
 }
 
 /**
- * One verdict per field per merchant, back to one row per side. A verdict is `{ mcc: { verdict, evidence: [{ url,
- * quote }] }, risk: {...} }` with verdict A, B, both or neither, and evidence for every verdict; where both sides gave the
- * same value only both or neither can hold. A side is right on a field when the verdict names it or says both. A
- * merchant judged `{ unjudgeable: reason }` (the site does not load, or sells nothing now) is left out of both sides
- * and listed.
+ * The verdicts back to one row per side. A verdict is `{ own: { mcc, evidence }, risk: { tiers, evidence }, mcc: {
+ * verdict, evidence } }`: the adjudicator's own code and the allowed tiers from the site alone, then A, B, both or neither
+ * for the two codes (where they are the same, only both or neither). A side is right on the code when the verdict names
+ * it or says both, and on the tier when its tier is an allowed one; `riskAdjDistance` is the distance to the nearest
+ * allowed tier. A side without a tier (the teacher before its risk stage) has the tier fields null. `items` pairs each
+ * merchant with the learner's answer. A merchant judged `{ unjudgeable: reason }` is left out of both sides and listed.
  */
-export function unblind({ packets, verdicts, salt, verticals = {} }) {
+export function unblind({ items, verdicts, salt }) {
   const learner = [];
   const teacher = [];
   const unjudgeable = [];
-  for (const packet of packets) {
-    const v = verdicts[packet.merchantId];
-    if (!v) throw new Error(`no verdict for ${packet.merchantId}`);
+  for (const { merchant, answer } of items) {
+    const id = merchant.merchantId;
+    const v = verdicts[id];
+    if (!v) throw new Error(`no verdict for ${id}`);
     if (typeof v.unjudgeable === 'string' && v.unjudgeable) {
-      unjudgeable.push({ merchantId: packet.merchantId, reason: v.unjudgeable });
+      unjudgeable.push({ merchantId: id, reason: v.unjudgeable });
       continue;
     }
-    const side = learnerSide(salt, packet.merchantId);
-    const other = side === 'A' ? 'B' : 'A';
-    const row = (who) => ({ merchantId: packet.merchantId, vertical: verticals[packet.merchantId] ?? null, side: who });
-    const l = row('learner');
-    const t = row('teacher');
-    for (const field of FIELDS) {
-      const given = v[field];
-      if (!given || !VERDICTS.includes(given.verdict)) throw new Error(`${packet.merchantId}: the ${field} verdict must be one of ${VERDICTS.join(', ')}`);
-      if (!Array.isArray(given.evidence) || !given.evidence.length || given.evidence.some((e) => !e?.url || !e?.quote)) throw new Error(`${packet.merchantId}: the ${field} verdict needs evidence, a url and a quote each`);
-      if (packet.same[field] && (given.verdict === 'A' || given.verdict === 'B')) throw new Error(`${packet.merchantId}: both sides gave the same ${field}, so only both or neither can hold`);
-      l[`${field}AdjRight`] = given.verdict === 'both' || given.verdict === side;
-      t[`${field}AdjRight`] = given.verdict === 'both' || given.verdict === other;
+    const own = mccOf(v.own?.mcc);
+    if (own === null || !hasEvidence(v.own)) throw new Error(`${id}: the verdict needs the adjudicator's own code with evidence`);
+    const allowed = allowedTiers(v.risk, id);
+    if (!VERDICTS.includes(v.mcc?.verdict)) throw new Error(`${id}: the mcc verdict must be one of ${VERDICTS.join(', ')}`);
+    if (!hasEvidence(v.mcc)) throw new Error(`${id}: the mcc verdict needs evidence, a url and a quote each`);
+    const sides = { learner: answer ?? {}, teacher: merchant.teacher ?? {} };
+    if (mccOf(sides.learner.mcc) === mccOf(sides.teacher.mcc) && (v.mcc.verdict === 'A' || v.mcc.verdict === 'B')) throw new Error(`${id}: both sides gave the same code, so only both or neither can hold`);
+    const learnerOn = learnerSide(salt, id);
+    for (const [who, out] of [['learner', learner], ['teacher', teacher]]) {
+      const on = who === 'learner' ? learnerOn : learnerOn === 'A' ? 'B' : 'A';
+      const tier = riskOf(sides[who].riskTier);
+      const mccAdjRight = v.mcc.verdict === 'both' || v.mcc.verdict === on;
+      const riskAdjRight = tier === null ? null : allowed.includes(RISK_TIERS.indexOf(tier));
+      out.push({
+        merchantId: id, vertical: merchant.vertical ?? null, side: who,
+        mccAdjRight, mccOwnExact: mccOf(sides[who].mcc) === own,
+        riskAdjRight, riskAdjDistance: tier === null ? null : Math.min(...allowed.map((a) => Math.abs(a - RISK_TIERS.indexOf(tier)))),
+        adjRight: riskAdjRight === null ? null : mccAdjRight && riskAdjRight,
+      });
     }
-    l.adjRight = l.mccAdjRight && l.riskAdjRight;
-    t.adjRight = t.mccAdjRight && t.riskAdjRight;
-    learner.push(l);
-    teacher.push(t);
   }
   return { learner, teacher, unjudgeable };
+}
+
+/** A markdown section by its heading line, up to the next heading of the same or a higher level: the rubric text the
+ *  adjudicator is given word for word, and its sha256 to pin before the first verdict. */
+export function sectionOf(markdown, heading) {
+  const lines = markdown.split('\n');
+  const start = lines.findIndex((l) => l.trim() === heading);
+  if (start < 0) throw new Error(`no section ${heading}`);
+  const level = heading.match(/^#+/)[0].length;
+  const end = lines.findIndex((l, i) => i > start && /^#+\s/.test(l) && l.match(/^#+/)[0].length <= level);
+  const text = lines.slice(start, end < 0 ? lines.length : end).join('\n').trimEnd();
+  return { text, sha256: createHash('sha256').update(text).digest('hex') };
 }
