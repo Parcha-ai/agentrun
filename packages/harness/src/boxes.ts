@@ -86,8 +86,8 @@ function labelStore(dir: string) {
     }
     return out;
   };
-  /** A won link(2) is an entry of the DIRECTORY, which the linked file's own fsync does not make durable: the directory is fsynced before the
-   *  claim is used, so a crash that keeps a synced line naming the label never loses its file (the next claim would take the label again). */
+  /** A won link(2), or a rename(2), is an entry of the DIRECTORY, which the file's own fsync does not make durable: the directory is fsynced before
+   *  the claim or the new state is used, so a crash that keeps a synced line naming the label never loses its file (the next claim would take the label again). */
   const durable = () => {
     try { const fd = openSync(dir, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } } catch (error) {
       throw new Error(`the box ids directory ${dir} cannot be made durable (${(error as Error).message}): a claim it might lose is never used`);
@@ -142,9 +142,12 @@ function labelStore(dir: string) {
         }
       } finally { rmSync(from, { force: true }); }
     },
+    /** A new receipt state by rename(2), durable before it is relied on: a crash that kept the rename only in memory would bring back a
+     *  state that says a written receipt is unwritten, and the receipt would be written twice. */
     rewrite(label: string, entry: LedgerEntry) {
       ensure();
       renameSync(temp(entry), join(dir, `${label}.json`));
+      durable();
     },
     /** A name claimed exclusively by link(2), as a label is: `won`, or the value its winner wrote. */
     claimKey(name: string, value: unknown): { won: true } | { won: false; held: unknown } {

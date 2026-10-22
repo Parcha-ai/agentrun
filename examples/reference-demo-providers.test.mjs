@@ -361,6 +361,35 @@ test('a label whose directory entry cannot be made durable is never used: a fail
   assert.deepEqual(readdirSync(hostDir).filter((name) => /^box-\d+\.json$/.test(name)), [], 'no label linked after a key that cannot be made durable');
 });
 
+test('a label\'s new receipt state is durable before it is relied on: after the rename(2) of box-N.json, in the ledger\'s open and the supervisor\'s mark, the ids directory is fsynced, so a crash never brings back a state that says a written receipt is unwritten (a fix: it would be written twice)', async (t) => {
+  const fs = (await import('node:fs')).default;
+  const { syncBuiltinESMExports } = await import('node:module');
+  const { markReceiptWritten } = await import('../packages/harness/dist/boxes.js');
+  const tmp = await mkdtemp(join(tmpdir(), 'box-ids-durable-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'box-ids.internal');
+  const ledger = hostLedger({ dir });
+  const label = ledger.label('alpha', 'alpha-1');
+  const events = [];
+  const opened = new Map();
+  const real = { openSync: fs.openSync, fsyncSync: fs.fsyncSync, renameSync: fs.renameSync };
+  fs.openSync = (path, ...rest) => { const fd = real.openSync(path, ...rest); opened.set(fd, String(path)); return fd; };
+  fs.fsyncSync = (fd) => { if (opened.get(fd) === dir) events.push('fsync the directory'); return real.fsyncSync(fd); };
+  fs.renameSync = (from, to) => { real.renameSync(from, to); events.push(`rename to ${String(to).slice(dir.length + 1)}`); };
+  syncBuiltinESMExports();
+  t.after(() => { Object.assign(fs, real); syncBuiltinESMExports(); });
+  ledger.open(label, { provider: 'alpha', kind: 'container', from: new Date().toISOString() });
+  events.push('rely on open');
+  const entry = JSON.parse(readFileSync(join(dir, `${label}.json`), 'utf8'));
+  markReceiptWritten(dir, label, entry);
+  events.push('rely on written');
+  assert.deepEqual(events, ['rename to box-1.json', 'fsync the directory', 'rely on open', 'rename to box-1.json', 'fsync the directory', 'rely on written']);
+  // A directory that cannot be fsynced refuses the new state by name.
+  fs.fsyncSync = (fd) => { if (opened.get(fd) === dir) throw Object.assign(new Error('EIO: i/o error, fsync'), { code: 'EIO' }); return real.fsyncSync(fd); };
+  syncBuiltinESMExports();
+  assert.throws(() => markReceiptWritten(dir, label, entry), /cannot be made durable \(EIO/);
+});
+
 test('(C) HOST_BOX holds provider, key and run and nothing else: any other key (a box id, a credential) is refused by name, never carried silently, and no value is echoed', () => {
   const secret = `sk-${'s'.repeat(12)}`;
   assert.throws(() => parseHostBox(JSON.stringify({ provider: 'home', key: '0', run: 'a', id: 'sb-provider-box-id', token: secret })), (error) => {
