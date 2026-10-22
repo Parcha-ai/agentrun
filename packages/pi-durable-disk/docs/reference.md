@@ -841,6 +841,8 @@ id and directory as the supervisor computed them.
     `RUN_LABEL`, no `HOST_BOX`. A box's position is then its key, so a box the driver gives no receipt for fails
     `status()` (`STATUS_FAILED`) instead of shifting the boxes after it. A box the place already started and its
     driver adopts again (`adopted: true`, the same attempt started twice) keeps its key: one receipt, stopped once.
+    An adopted handle is that box when every field both handles carry is equal: a driver may answer an adoption
+    with fewer fields (`dockerHost` leaves out the container's id), never with other values.
   - `unheld(run, start)`, optional: a hook in each start's window while nobody holds the run. It runs after
     ensureRunning's revoke and start mark and after the run's directories are made, before the driver starts
     anything, once per start (a takeover's included). It needs `ensure.create` and a control that lists; without
@@ -857,6 +859,8 @@ id and directory as the supervisor computed them.
       labels; a secret never goes through it, since a put file is readable in the run.
     - A put the server refuses because a delegation holds the run (409 `OperationAborted`), and any put after the
       hook returned or overran, is `WINDOW_CLOSED`. Any other failure is `CONTROL_API_FAILED`. Both are `RunFileError`.
+      A put the hook starts and does not await still settles inside the window: the driver starts only once every
+      put has settled, within the hook's bound, so none is written or refused after the box starts.
     - What the hook returns is added to that start's environment, which the instance can read, so plain values only.
       A name the start already sets (`PATH`, `PDA_HOLDER`, `HOST_BOX`, or one in the order's environment), a name that
       is not a variable name, a value that is not a string without NUL, or a key-shaped name fails the start with

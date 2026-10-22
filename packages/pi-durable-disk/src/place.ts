@@ -153,10 +153,14 @@ export type PlaceErrorCode =
   | "CONTROL_API_FAILED"
   | "UNHELD_FAILED";
 
-/** Whether two handles name one instance: the same fields, `adopted` aside. */
+/**
+ * Whether two handles name one instance: they share a field besides `driver`, and every field both carry is equal
+ * (`adopted` aside). A driver may answer an adoption with fewer fields than its fresh start (dockerHost leaves out the
+ * container's id), never with other values for the ones it keeps.
+ */
 function sameHandle(a: HostHandle, b: HostHandle): boolean {
-  const fields = (h: HostHandle) => JSON.stringify(Object.entries(h).filter(([k]) => k !== "adopted").sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)));
-  return fields(a) === fields(b);
+  const shared = Object.keys(a).filter((k) => k !== "adopted" && k in b);
+  return shared.some((k) => k !== "driver") && shared.every((k) => JSON.stringify(a[k]) === JSON.stringify(b[k]));
 }
 
 export class PlaceError extends PdaError {
@@ -537,7 +541,8 @@ export interface UnheldRun {
    * 0755). A path already there is EXISTS, and nothing is written. For non-secret run files (labels): a secret never
    * goes through put, since a put file is readable in the run. A put the server refuses because a delegation holds the
    * run (409 OperationAborted), and any put after the hook returned or overran, is WINDOW_CLOSED; any other failure is
-   * CONTROL_API_FAILED (`RunFileError`).
+   * CONTROL_API_FAILED (`RunFileError`). A put the hook starts and does not await still settles inside the window: the
+   * driver starts only once every put has settled, within the hook's bound.
    */
   put(path: string, text: string): Promise<void>;
 }
@@ -900,39 +905,50 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       const timer = setTimeout(() => bound.abort(new PlaceError("UNHELD_FAILED", `the start window's hook overran its ${unheldMs} ms bound`)), unheldMs);
       let open = true;
       let closed: RunFileError | undefined;
+      /** Every put the hook started, settled or not: the driver starts only once all of them have settled. */
+      const pending = new Set<Promise<void>>();
       const runControl = control as RunFileControl & SupervisorControl;
       const run: UnheldRun = {
         id: ref.id,
         signal: bound.signal,
         read: (path) => readRunFile(runControl, ref, path, { signal: bound.signal }),
         list: (dir) => listRunFiles(runControl, ref, dir, { signal: bound.signal }),
-        put: async (path, text) => {
-          if (!open) throw new RunFileError("WINDOW_CLOSED", "the start window is closed (its hook returned or overran its bound): nothing more is put");
-          try {
-            await putRunFile(runControl, ref, path, text, owner!, { signal: bound.signal });
-          } catch (error) {
+        put: (path, text) => {
+          if (!open) return Promise.reject(new RunFileError("WINDOW_CLOSED", "the start window is closed (its hook returned or overran its bound): nothing more is put"));
+          const put = putRunFile(runControl, ref, path, text, owner!, { signal: bound.signal }).catch((error: unknown) => {
             if (error instanceof RunFileError && error.code === "WINDOW_CLOSED") closed ??= error;
             throw error;
-          }
+          });
+          const settled = put.then(
+            () => undefined,
+            () => undefined,
+          );
+          pending.add(settled);
+          void settled.then(() => pending.delete(settled));
+          return put;
         },
       };
+      // The bound, as a rejection to race against.
+      const overran = new Promise<never>((_, reject) => bound.signal.addEventListener("abort", () => reject(bound.signal.reason), { once: true }));
+      overran.catch(() => undefined);
       let returned: unknown;
       let thrown: { error: unknown } | undefined;
       try {
-        returned = await new Promise<unknown>((resolve, reject) => {
-          const stop = () => reject(bound.signal.reason);
-          bound.signal.addEventListener("abort", stop, { once: true });
-          Promise.resolve()
-            .then(() => hook(run, box ? { attempt, box } : { attempt }))
-            .then(resolve, reject)
-            .finally(() => bound.signal.removeEventListener("abort", stop));
-        });
+        returned = await Promise.race([Promise.resolve().then(() => hook(run, box ? { attempt, box } : { attempt })), overran]);
       } catch (error) {
         thrown = { error };
-      } finally {
-        open = false;
-        clearTimeout(timer);
       }
+      // No put starts once the hook is done, and every put it started (awaited or not) settles inside the bound: none is
+      // written, or refused, after the driver has started.
+      open = false;
+      if (pending.size > 0) {
+        try {
+          await Promise.race([Promise.allSettled([...pending]), overran]);
+        } catch (error) {
+          thrown ??= { error };
+        }
+      }
+      clearTimeout(timer);
       if (closed) throw new PlaceError("WINDOW_CLOSED", "a put in the start window was refused because a delegation holds the run (409 OperationAborted): this start makes no box", { cause: closed });
       if (thrown) {
         const { error } = thrown;
