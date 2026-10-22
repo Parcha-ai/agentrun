@@ -63,22 +63,22 @@ function writeWhole(file, value) {
 export const PROTOCOL = join(import.meta.dirname, '..', 'learn-mcc', 'ADJUDICATION.md');
 
 /** What a pass pins before its first verdict: the sha256 of each input file it reads or that fixed what it reads. */
-function pinsOf({ sample, candidates, commitments, orderSalt, agentSha256 }) {
+function pinsOf({ sample, candidates, commitments, orderSalt, protocol = PROTOCOL, agentSha256 }) {
   return {
     sample: { sha256: fileSha(sample) },
     candidates: { sha256: fileSha(candidates) },
     commitments: { sha256: fileSha(commitments) },
     orderSalt: { sha256: fileSha(orderSalt) },
     adjudicator: { sha256: agentSha256 },
-    protocol: { sha256: fileSha(PROTOCOL) },
+    protocol: { sha256: fileSha(protocol) },
   };
 }
 
 /**
  * The adjudication pass over `sample` (the sealed rows) with `candidates` (merchant id to `[{ code, title }]`). Each
  * merchant without a stage 1 is judged; one judged before is never judged again under that pass id. `files` names the
- * sample, candidates, commitments and order-salt files, whose sha256 meta.json pins; the sample's commitments file must
- * hold one commitment per sample row, by order.
+ * sample, candidates, commitments and order-salt files, and the protocol (PROTOCOL unless named), whose sha256 meta.json
+ * pins; the sample's commitments file must hold one commitment per sample row, by order.
  */
 export async function runAdjudication({ out, parts, passId, files, concurrency = 1, jobs, capUsd, runCapUsd, log = () => {} }) {
   if (parts.set !== SETS.adjudicate) throw new Error('an adjudication pass takes the adjudicate set');

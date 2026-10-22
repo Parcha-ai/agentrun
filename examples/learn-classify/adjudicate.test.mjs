@@ -194,6 +194,12 @@ test('a scripted pass: stage 1 and 2 for unblind, an ungrounded verdict judged o
   // A changed input is a new pass: the same pass id refuses it.
   writeFileSync(given.files.orderSalt, `${SALT}-moved\n`);
   await assert.rejects(runAdjudication({ out, parts, passId: 'p1', files: given.files }), /pinned with other inputs \(orderSalt\)/);
+  // So is a changed protocol (learn-mcc's ADJUDICATION.md, pinned by default).
+  writeFileSync(given.files.orderSalt, `${SALT}\n`);
+  const protocol = join(dir, 'ADJUDICATION.md');
+  writeFileSync(protocol, `${readFileSync(PROTOCOL, 'utf8')}\nA changed rule.\n`);
+  await assert.rejects(runAdjudication({ out, parts, passId: 'p1', files: { ...given.files, protocol } }), /pinned with other inputs \(protocol\)/);
+  assert.deepEqual((await runAdjudication({ out, parts, passId: 'p1', files: given.files })).judged, [], 'the pinned protocol resumes');
   // Commitments that do not cover the sample stop the pass before any run.
   writeFileSync(given.files.commitments, JSON.stringify({ count: 1, commitments: [{ order: 1, sha256: 'x' }] }));
   await assert.rejects(runAdjudication({ out, parts, passId: 'p2', files: given.files }), /one commitment per sample row/);
