@@ -408,6 +408,54 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   }
   const ordered = [...threads.values()].sort((a, b) => (a.t0 ?? 0) - (b.t0 ?? 0));
 
+  // A planned move between hosts leaves a card in the timeline at the host's `handoff` line, between the last line of generation N and the first of N+1. Only fields are read: the
+  // handoff's gen, point, n and `from`, and the holder (its host label and its driver kind) of each side's `run.json`. Never the handoff's prose, never a pid or a boot id; a host is
+  // named only by a recorded `host-N` label, a driver only by a kind (local, daytona, modal, tab). `handoff.failed` is another kind of line and draws nothing.
+  const hostLabel = (value: Json | undefined) => { const text = chatStr(value); return text && /^host-\d{1,3}$/.test(text) ? text : undefined; };
+  const driverKind = (value: Json | undefined) => { const text = chatStr(value); return text && ['local', 'daytona', 'modal', 'tab'].includes(text) ? text : undefined; };
+  const side = (label: string | undefined, kind: string | undefined) => (label ? `${label}${kind ? ` (${kind})` : ''}` : undefined);
+  const ordinalOf = (n: number) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? 'th' : (['th', 'st', 'nd', 'rd'][n % 10] ?? 'th')}`;
+  const holders = live('run.json').flatMap((line) => { const d = chatObj(line.data); const holder = chatObj(d?.holder); return typeof d?.gen === 'number' ? [{ gen: d.gen, t: line.t, label: hostLabel(holder?.host), kind: driverKind(holder?.driver) }] : []; });
+  const threadOfItem = new Map<string, ChatThread>();
+  for (const thread of ordered) for (const item of thread.items) threadOfItem.set(item.id, thread);
+  const top = (thread: ChatThread): ChatThread => {
+    let at = thread;
+    for (const seen = new Set<ChatThread>(); !seen.has(at); ) {
+      seen.add(at);
+      const under = (at as ChatThread & { under?: string }).under;
+      const owner = under ? threadOfItem.get(under) : undefined;
+      if (!owner || owner === at) break;
+      at = owner;
+    }
+    return at;
+  };
+  const bare: Extract<ChatItem, { kind: 'move' }>[] = [];
+  live('handoff').forEach((line, index) => {
+    const d = chatObj(line.data);
+    if (typeof d?.gen !== 'number') return;
+    const left = holders.filter((each) => each.gen === d.gen && each.t <= line.t).at(-1);
+    const arrived = holders.find((each) => each.gen === (d.gen as number) + 1 && each.t >= line.t);
+    const from = hostLabel(d.from) ?? left?.label;
+    const [, effect] = /^effect\.kept ([A-Za-z0-9_.-]{1,40})$/.exec(chatStr(d.point) ?? '') ?? [];
+    const after = effect && typeof d.n === 'number' && Number.isInteger(d.n) && d.n >= 1 ? `after the ${ordinalOf(d.n)} ${effect.replace(/_/g, ' ')}` : undefined;
+    const lead = `${after ? `${after} on` : 'On'} ${side(from, left?.kind) ?? 'its host'}`;
+    const to = side(arrived?.label, arrived?.kind);
+    const text = arrived?.label && arrived.label === from ? `Reopened on ${to} from the same disk; the conversation goes on` : `Moved to ${to ?? 'another host'} from the same disk; the conversation goes on`;
+    const card: ChatItem = { kind: 'move', id: `move-${index + 1}`, t: line.t, lead, text };
+    // A handoff is a run-level event: its card goes in the TOP-LEVEL conversation that was ACTIVE last (the one whose latest line at or before the handoff is the latest; of two alike, the
+    // one that started later), after that line. A conversation drawn under a call of another (a fork, `under` the item that made it) counts toward its top-level ancestor, so a move
+    // never lands inside a fork's fold.
+    const atOf = (item: ChatItem) => (item.kind === 'tool' ? (item.t0 ?? item.t1) : item.t) ?? Infinity;
+    const home = [...ordered].reverse().reduce<{ thread: ChatThread; at: number } | undefined>((best, thread) => {
+      const latest = Math.max(-1, ...top(thread) === thread ? ordered.filter((each) => top(each) === thread).flatMap((each) => each.items.map(atOf).filter((at) => at <= line.t)) : []);
+      return top(thread) === thread && latest >= 0 && (!best || latest > best.at) ? { thread, at: latest } : best;
+    }, undefined)?.thread ?? ordered.find((thread) => top(thread) === thread);
+    // A run that moved before it recorded any conversation has no thread to hold the card: it is kept at the run's own level.
+    if (!home) { bare.push(card as Extract<ChatItem, { kind: 'move' }>); return; }
+    const at = home.items.reduce((found, item, i) => (atOf(item) <= line.t ? i : found), -1);
+    home.items.splice(at + 1, 0, card);
+  });
+
   // The session's spans. Workflow nodes: start to end, each scrolling to its conversation.
   const spans: ChatSpan[] = [];
   for (const [path, node] of nodeAt) {
@@ -721,6 +769,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     title: chatTitle(manifest, inputValue),
     ...(input ? { input } : {}),
     threads: ordered,
+    ...(bare.length > 0 ? { moves: bare } : {}),
     spans: times.length ? spans : [],
     ...(clocked ? {} : { inOrder: true as const }),
     sources,
