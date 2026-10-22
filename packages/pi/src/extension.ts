@@ -13,6 +13,7 @@ import { createJevRunner } from '@parcha/agentrun-jev';
 import { createPiHostRunner, PI_MODEL_SETUP_MESSAGE } from './host-session.js';
 import { piHostLine } from './pi-host.js';
 import { workflowToolContext } from './tool-context.js';
+import { effectResultOf } from './effect-result.js';
 import type { PiHostContext, PiToolDefinition } from './types.js';
 import { WorkflowExtensionService, ExtensionServiceError, extensionStructuralLimits, type ExtensionRunReport } from './extension-service.js';
 import { demoInput, demoSearchTool, demoWorkflow, scriptedDemoDeps } from './demo.js';
@@ -274,6 +275,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           if (error instanceof ToolInputValidationError) throw new ToolInputValidationError(node.label, tool.name, error.problems);
           throw error;
         }
+        // A call the receipts refused is an effect whose outcome is unknown: the DSL's signal, thrown, never a returned value.
+        result = effectResultOf(result, node.label);
         return !configuration.hostTools && ['search', 'support_demo_lookup', 'support_demo_handoff'].includes(node.tool ?? '') ? result.details : { content: result.content, ...(result.details === undefined ? {} : { details: result.details }) };
       },
     };
