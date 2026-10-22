@@ -181,6 +181,9 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
     const listed = await provider.list(labels, context);
     if (!listed.ok) throw boxError(`listing ${provider.name}'s boxes by this attempt's labels`, listed.error);
     for (const ref of listed.value) {
+      // Only a box that carries all three of this attempt's labels is provably this run's: one a list returned anyway
+      // (another run's) is left alone, never adopted, used or ended.
+      if (Object.entries(labels).some(([k, v]) => ref.labels[k] !== v)) continue;
       const attached = await provider.attach(ref.id, context);
       if (!attached.ok) throw boxError(`attaching ${provider.name} box ${ref.id}`, attached.error);
       if (!attached.value) continue;
