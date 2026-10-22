@@ -10,7 +10,7 @@
 // imported here; its launcher is loaded on the first start.
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import type { Box, BoxError, BoxFile, BoxProvider, BoxSpec } from "@parcha/pi-transport";
+import type { Box, BoxError, BoxFacts, BoxFile, BoxProvider, BoxSpec } from "@parcha/pi-transport";
 import type { Launch, LaunchError, LaunchSpec, LaunchState } from "@parcha/pi-transport/launch";
 import type { RunRef } from "./claim.ts";
 import { PdaError } from "./errors.ts";
@@ -77,6 +77,9 @@ const USER = /^(?:[a-z_][a-z0-9_-]{0,31}|[0-9]{1,10})$/;
  * A host driver over `options.provider`'s boxes. `kills` is `box`: a kill destroys the box at once. A box this start finds
  * with a launch that ended or was lost is destroyed and replaced; one whose launch runs is adopted (`adopted: true`).
  */
+/** How many starts may find the same box with a needed fact unmeasured before boxHost refuses it by name (it ends nothing). */
+const ABSENT_STARTS = 5;
+
 export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<HostDriver, "kill" | "kills" | "box" | "provider" | "instanceOf">> {
   const { provider, spec } = options;
   const invalid = (message: string) => new BoxHostError("INVALID_ARGUMENT", message);
@@ -130,6 +133,23 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
   const destroy = async (box: Box, context: Context) => {
     await box.destroy(context).catch(() => undefined);
     ended(box.id);
+  };
+  /** Starts that found the same box with a needed fact unmeasured, by box id: from ABSENT_STARTS on, a named refusal. */
+  const unmeasured = new Map<string, number>();
+  /** A needed fact a found box reports, and wrongly: it cannot serve this place. A GPU's model is never compared. */
+  const wrongFact = (f: BoxFacts): string | undefined => {
+    if (f.fuse === false) return "fuse (false)";
+    if (f.secretsVia !== undefined && f.secretsVia !== "fd") return `secretsVia (${String(f.secretsVia)})`;
+    if (f.liveProcesses === false) return "liveProcesses (false)";
+    if (spec.gpu !== undefined && f.gpu === null) return `gpu (none, for ${spec.gpu})`;
+    return undefined;
+  };
+  /** A needed fact a found box's provider did not measure: never proof enough to end it, and never enough to use it. */
+  const absentFact = (f: BoxFacts): string | undefined => {
+    if (f.fuse === undefined) return "fuse";
+    if (f.secretsVia === undefined) return "secretsVia";
+    if (spec.gpu !== undefined && f.gpu === undefined) return "gpu";
+    return undefined;
   };
   const launchName = (ref: RunRef, attempt: number) => `pda-${ref.id}-g${attempt}`.slice(0, 64);
   const handleOf = (box: Box, attempt: number, launch: Launch): HostHandle => ({ driver: "box", provider: provider.name, box: box.id, attempt, launch: { v: launch.v, name: launch.name } });
@@ -191,17 +211,38 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
         return box ? destroy(box, bounded(callTimeoutMs)).then(() => refusal!) : Promise.resolve(refusal);
       };
 
-      // The box this attempt made already: adopted while its launch runs, used as fresh while it never launched, replaced otherwise.
+      // The box this attempt made already, found again by attach: its facts as read now decide first (the caller rule). A
+      // needed fact present and wrong: it cannot serve, so it is ended through its handle before anything replaces it, and a
+      // failed end makes nothing. A needed fact absent: nothing is ended or made, and this start fails for the next one's;
+      // from the ABSENT_STARTS-th start that finds the same box so, a refusal that names it. Otherwise: adopted while its
+      // launch runs, used as fresh while it never launched, replaced once it ended.
       let box: Box | undefined;
       const found = await find(labels, name, context, l);
       if (found) {
-        const phase = found.state?.phase;
-        if (phase === "starting" || phase === "running" || phase === "restarting") {
-          remember(found.box);
-          return { ...handleOf(found.box, n, launchOf({ launch: { name } })), adopted: true };
+        const facts = found.box.facts();
+        const wrong = wrongFact(facts);
+        const absent = wrong === undefined ? absentFact(facts) : undefined;
+        if (absent !== undefined) {
+          const times = (unmeasured.get(found.box.id) ?? 0) + 1;
+          unmeasured.set(found.box.id, times);
+          const what = `${provider.name} box ${found.box.id}, found again, reports no ${absent}`;
+          if (times >= ABSENT_STARTS) throw new BoxHostError("UNSUPPORTED", `${what} for ${times} starts: nothing is ended or made; end the box, and the next start makes another`);
+          throw new BoxHostError("CREATE_FAILED", `${what}: nothing is ended or made, and the next start asks again`);
         }
-        if (found.state === undefined) box = found.box;
-        else await destroy(found.box, bounded(callTimeoutMs));
+        unmeasured.delete(found.box.id);
+        if (wrong !== undefined) {
+          const gone = await found.box.destroy(bounded(callTimeoutMs));
+          if (!gone.ok) throw boxError(`ending ${provider.name} box ${found.box.id}, found again with ${wrong}`, gone.error, "STOP_FAILED");
+          ended(found.box.id);
+        } else {
+          const phase = found.state?.phase;
+          if (phase === "starting" || phase === "running" || phase === "restarting") {
+            remember(found.box);
+            return { ...handleOf(found.box, n, launchOf({ launch: { name } })), adopted: true };
+          }
+          if (found.state === undefined) box = found.box;
+          else await destroy(found.box, bounded(callTimeoutMs));
+        }
       }
       if (!box) {
         const created = await provider.create({ ...spec, capabilities, labels: { ...spec.labels, ...labels } }, context);
@@ -209,6 +250,8 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
         else {
           // A create that failed after the machine existed: found by its labels and used, never leaked.
           const again = created.error.code === "unknown" || created.error.code === "timeout" ? await find(labels, name, context, l).catch(() => undefined) : undefined;
+          // This start's own create made it: its facts are the create's answer for this spec, judged as a fresh box's below
+          // (a refusal is remembered), not by the caller rule for a box a later start finds again.
           if (again && again.state === undefined) box = again.box;
           else if (again) await destroy(again.box, bounded(callTimeoutMs));
           if (!box) {
