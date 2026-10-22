@@ -4,7 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { GitRemoteError, local, openRepo } from "@parcha/pi-git-remote";
 import {
-  curate, deriveSeed, inboxPath, renderSection, retireLearning, LEARN_TYPES, learningId, learningPath, parseLearning, proposeFiles, QUESTIONS, renderInbox, renderLearning,
+  curate, deriveSeed, inboxPath, renderSection, retireLearning, learningId, learningPath, parseLearning, proposeFiles, QUESTIONS, renderInbox, renderLearning,
 } from "../dist/index.js";
 import { git } from "./git-support.mjs";
 import { AGENT_FILES, agentRepo, learning, learningFiles, scratch } from "./support.mjs";
@@ -145,7 +145,7 @@ test("a candidate the judge says narrows a rule is refused; a case-specific one 
   assert.deepEqual(Object.keys(await learningsOn(w.curator)), [learningId("run-1", LESSON)]);
 });
 
-test("the thresholds come from the caller: the same answer accepts under one cut and holds under the default", async () => {
+test("the thresholds come from the caller: the same answer holds under a tight cut and is accepted under a loose one; a cut or cap out of range is refused", async () => {
   const w = await world();
   await propose(w, "run-1", [candidate(LESSON)]);
   const { judge } = fakeJudge([{ q: "general", p: 0.7 }]);
@@ -503,9 +503,7 @@ test("a run's saved workflow records go to the admitter; its files land, a rules
   assert.deepEqual((await curate({ repo: bare.curator, judge, admitWorkflow: null })).runs[0].held, [{ workflow: "kyb", reason: "no workflow admitter is installed" }]);
 });
 
-const workflowType = LEARN_TYPES.includes("workflow");
-
-test("a learn call of type workflow is asked nothing, and its text reaches neither the admitter nor main", { skip: workflowType ? false : "waits for the learn type workflow" }, async () => {
+test("a learn call of type workflow is asked nothing, and its text reaches neither the admitter nor main", async () => {
   const w = await world();
   const when = (id, text) => ({ callId: `call-${id}`, type: "workflow", id, text, evidence: [] });
   await propose(w, "run-1", [when("kyb", "A US company to check against its state registry.")], recordsOf("run-1", "kyb"));
@@ -555,6 +553,18 @@ test("a run's workflow uses go to the settler; its trial files and decisions lan
   const none = await world();
   await propose(none, "run-1", [], usesFile("run-1", [use("kyb", "frozen")]));
   assert.deepEqual((await curate({ repo: none.curator, judge, settleUses: null })).runs[0].held, [{ reason: "uses: no uses settler is installed" }]);
+});
+
+test("a uses file the default settler would not read is refused by curation, never dropped unreported", async () => {
+  const w = await world();
+  await propose(w, "run-1", [], usesFile("run-1", [use("kyb_check", "frozen")]));
+  await propose(w, "run-2", [], usesFile("run-2", Array.from({ length: 33 }, (_, i) => use("kyb", "frozen", `2026-10-16T05:${String(i).padStart(2, "0")}:00.000Z`))));
+  const { judge } = fakeJudge();
+  const report = await curate({ repo: w.curator, judge });
+  assert.deepEqual(report.runs.map((r) => [r.run, r.settled, r.held, r.refused.map((x) => x.reason)]), [
+    ["run-1", [], [], ["uses: the uses file does not parse"]],
+    ["run-2", [], [], ["uses: the uses file does not parse"]],
+  ]);
 });
 
 test("retireLearning takes out a learning a later run used, where a revert conflicts: the file stays, the section drops it, a relearn is held, twice changes nothing", async () => {

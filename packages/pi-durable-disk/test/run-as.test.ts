@@ -58,6 +58,14 @@ describe("runAs: commands", () => {
     });
   });
 
+  it("refuse uid 0: the agent's commands would run as root, the owner of run.json, the store and the daemon's /proc", async () => {
+    await withRun(async ({ root, work }) => {
+      for (const runAs of [{ uid: 0, gid: 0 }, { uid: 0, gid: 1000 }]) {
+        assert.throws(() => archilEnv({ root, work }, { runAs }), (e: unknown) => e instanceof EnvError && e.code === "INVALID_RUN_AS" && /root/.test((e as Error).message));
+      }
+    });
+  });
+
   it("refuse a uid or gid that is not a non-negative integer", async () => {
     await withRun(async ({ root, work }) => {
       for (const runAs of [{ uid: -1, gid: 1 }, { uid: 1.5, gid: 1 }, { uid: 1, gid: Number.NaN }]) {

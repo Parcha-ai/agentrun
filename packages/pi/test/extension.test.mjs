@@ -1063,6 +1063,14 @@ test('only explicit host null limits allow native execution beyond default model
   for (const value of [Infinity, -1, 0, 'unlimited']) assert.throws(() => createAgentRunExtension({ runtimeLimits: { modelRequests: value } }), /runtimeLimits/);
 });
 
+test('a runtime limit given as undefined keeps its default, as an omitted one does', async () => {
+  const omitted = await harness({ withModel: false, extensionOptions: {} });
+  const unset = await harness({ withModel: false, extensionOptions: { runtimeLimits: { deadlineMs: undefined, modelRequests: undefined } } });
+  try {
+    assert.deepEqual((await unset.tool({ action: 'describe' })).details.limits, (await omitted.tool({ action: 'describe' })).details.limits);
+  } finally { await omitted.shutdown(); await unset.shutdown(); }
+});
+
 // A dry run: the inspected draft on synthetic values (or the given input), with no model, Jev or tool call.
 const flags = { type: 'object', additionalProperties: false, required: ['supported'], properties: { supported: { type: 'boolean', description: 'Does the fictional note support its claim?' } } };
 

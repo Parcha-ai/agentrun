@@ -1,6 +1,6 @@
 // A price the host does not know (`unpriced`) or cannot read (`invalid`) records seconds and charges nothing: a missing
 // price never reads as free and never aborts a run.
-import { LIST_PRICES, type PiUsage, type PriceState, type PriceTable, type SessionRecord, type ToolUsage } from "./host.js";
+import { LIST_PRICES, type PriceState, type PriceTable, type SessionRecord, type ToolUsage } from "./host.js";
 
 const DECIMAL = /^(\d+(\.\d*)?|\.\d+)(e[+-]?\d+)?$/i;
 

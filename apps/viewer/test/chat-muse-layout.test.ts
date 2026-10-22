@@ -8,7 +8,6 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
 import { after, test } from 'node:test';
-// @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 import { museFiles, museFriendlyFile, museShorten, museWhen } from '../src/chat-muse.ts';

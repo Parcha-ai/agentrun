@@ -197,23 +197,37 @@ test('an effect resumes with the arguments it was admitted with, and a run with 
   assert.equal(dispatched, 2);
 });
 
-for (const [place, observed] of Object.entries({
+// A host whose effect adapter cannot know whether the outside call happened says so one way: it throws a RecoveryError
+// with code FROZEN_EFFECT_UNKNOWN, its cause what it observed (or the interpreter's own EffectOutcomeUnknownError). A
+// value the adapter returns is the effect's result, whatever fields it has: a tool that answers { outcome: 'unknown' }
+// (an inconclusive classifier, say) completes like any other.
+for (const [place, returned] of Object.entries({
   outcome: { outcome: 'unknown', request: 'request-17' }, effect_status: { effect_status: 'unknown' },
   'details.outcome': { details: { outcome: 'unknown', request: 'request-17' }, message: 'Submitted' }, 'details.effect_status': { details: { effect_status: 'unknown' } },
 })) {
-  test(`a result whose ${place} is unknown is kept as observed and refused until the host reconciles it`, async () => {
+  test(`a returned value whose ${place} is unknown is the effect's result: the call completes with it`, async () => {
     const store = memoryStore(); const workflow = doc([tool('submit-order')]); let calls = 0;
-    const deps = { runEffect: async () => { calls += 1; return observed; } };
-    await assert.rejects(run(store, workflow, deps), fault('FROZEN_EFFECT_UNKNOWN', `Reconcile ${effect(step(0))}: tool returned an unknown outcome`));
+    const deps = { runEffect: async () => { calls += 1; return returned; } };
+    const done = await run(store, workflow, deps);
+    assert.deepEqual([done.status, done.state['submit-order'], calls], ['complete', returned, 1]);
     const journal = await operator(store, workflow);
-    assert.deepEqual([journal.state.unknownResponses[effect(step(0))], journal.effects[0].status, journal.effects[0].result, journal.state.pin.done], [observed, 'unknown', null, []]);
-    await assert.rejects(run(store, workflow, deps), fault('FROZEN_EFFECT_UNKNOWN', `Reconcile ${effect(step(0))} before resuming; it will not be repeated`));
-    await operator(store, workflow, (held) => held.complete(effect(step(0)), { value: { confirmed: true }, files: {} }));
-    const resumed = await run(store, workflow, deps);
-    assert.deepEqual([resumed.state['submit-order'], calls], [{ confirmed: true }, 1]);
-    assert.deepEqual((await operator(store, workflow)).state.unknownResponses[effect(step(0))], observed);
+    assert.deepEqual([journal.effects[0].status, journal.state.unknownResponses ?? {}], ['completed', {}]);
   });
 }
+
+test('a host that cannot know the outcome throws FROZEN_EFFECT_UNKNOWN: what it observed is kept, and the effect is refused until the host reconciles it', async () => {
+  const store = memoryStore(); const workflow = doc([tool('submit-order')]); let calls = 0;
+  const observed = { message: 'Submitted', request: 'request-17' };
+  const deps = { runEffect: async () => { calls += 1; throw new RecoveryError('submit-order: the order service did not say whether it took the order', 'FROZEN_EFFECT_UNKNOWN', { cause: observed }); } };
+  await assert.rejects(run(store, workflow, deps), fault('FROZEN_EFFECT_UNKNOWN', `Reconcile ${effect(step(0))}: the host reported an unknown outcome`));
+  const journal = await operator(store, workflow);
+  assert.deepEqual([journal.state.unknownResponses[effect(step(0))], journal.effects[0].status, journal.effects[0].result, journal.state.pin.done], [observed, 'unknown', null, []]);
+  await assert.rejects(run(store, workflow, deps), fault('FROZEN_EFFECT_UNKNOWN', `Reconcile ${effect(step(0))} before resuming; it will not be repeated`));
+  await operator(store, workflow, (held) => held.complete(effect(step(0)), { value: { confirmed: true }, files: {} }));
+  const resumed = await run(store, workflow, deps);
+  assert.deepEqual([resumed.state['submit-order'], calls], [{ confirmed: true }, 1]);
+  assert.deepEqual((await operator(store, workflow)).state.unknownResponses[effect(step(0))], observed);
+});
 
 test("an effect's own deadline is its only clock: it cuts the adapter and leaves the effect unknown, and no time before it counts", { timeout: 10000 }, async (t) => {
   holdClocks(t);
