@@ -205,6 +205,19 @@ describe("boxHost: the launch, a start found again, status, stop and receipts", 
     }
   });
 
+  it("names its boxes by provider and box id, the same for a fresh handle and an adopted one, so a place keeps an adopted box's key; another driver's handle names nothing", async () => {
+    const provider = modal();
+    const driver = host(provider);
+    const first = await driver.start(REF, TOKEN, { attempt: 1 });
+    const adopted = await driver.start(REF, TOKEN, { attempt: 1 });
+    assert.equal(adopted.adopted, true);
+    assert.ok(driver.instanceOf(first) !== undefined && driver.instanceOf(first) === driver.instanceOf(adopted));
+    const other = await driver.start(REF, TOKEN, { attempt: 2 });
+    assert.notEqual(driver.instanceOf(other), driver.instanceOf(first), "another attempt's box");
+    assert.equal(driver.instanceOf({ driver: "daytona", sandboxId: "sb-1" }), undefined);
+    assert.equal(driver.instanceOf({ ...first, provider: "another-provider" }), undefined, "a box of another provider is not this driver's");
+  });
+
   it("status maps the launcher's phases: running while it runs or stops, stopped on a clean end, failed on any other end, a lost launcher or none, unknown when unreadable", async () => {
     const provider = modal();
     const driver = host(provider);
