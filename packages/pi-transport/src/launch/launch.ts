@@ -323,18 +323,22 @@ function specScript(spec: LaunchSpec, isolation: string): string {
 	// that user already execs as it is.
 	lines.push(
 		'  if [ -r "$D/user" ]; then',
-		'    read -r u_name u_id u_gid u_home < "$D/user"',
+		'    read -r u_name u_id u_gid u_how u_home < "$D/user"',
 		'    export HOME="$u_home"',
 		'    if [ "$(id -u)" = 0 ] && [ "$u_id" != 0 ]; then',
-		`      if command -v setpriv >/dev/null 2>&1; then exec setpriv --reuid="$u_id" --regid="$u_gid" --init-groups -- ${argv}; fi`,
-		`      exec runuser -u "$u_name" -- ${argv}`,
+		'      case "$u_how" in',
+		`        setpriv) exec setpriv --reuid="$u_id" --regid="$u_gid" --init-groups -- ${argv} ;;`,
+		`        runuser) exec runuser -u "$u_name" -- ${argv} ;;`,
+		'        *) echo "the launcher found no way to run the program as $u_name" >&2; exit 126 ;;',
+		"      esac",
 		"    fi",
 		"  fi",
 		`  exec ${argv}`,
 		"}",
 	);
 	// A stop's hook, run by the launcher as its own user after the drain (README, "beforeStop").
-	if (spec.beforeStop !== undefined) lines.push("before_stop() {", `  exec ${spec.beforeStop.argv.map(quote).join(" ")}`, "}");
+	if (spec.beforeStop !== undefined)
+		lines.push("before_stop() {", `  exec ${spec.beforeStop.argv.map(quote).join(" ")}`, "}");
 	return `${lines.join("\n")}\n`;
 }
 
@@ -597,7 +601,11 @@ export async function launch(
 				bytes: new TextEncoder().encode(LAUNCHER_SCRIPT),
 				mode: 0o700,
 			},
-			{ path: `${directory}/spec.sh.part.${token}`, bytes: new TextEncoder().encode(specScript(spec, box.facts().isolation)), mode: 0o600 },
+			{
+				path: `${directory}/spec.sh.part.${token}`,
+				bytes: new TextEncoder().encode(specScript(spec, box.facts().isolation)),
+				mode: 0o600,
+			},
 		],
 		context,
 	);

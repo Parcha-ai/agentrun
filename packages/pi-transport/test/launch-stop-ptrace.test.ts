@@ -44,13 +44,21 @@ function scope(value: string | undefined): string {
 
 describe("the launcher's ptrace check, measured in the box", () => {
 	it("passes at 1 or more, whatever the box is", () => {
-		for (const [value, isolation] of [["1\n", "container"], ["2\n", "gvisor"], ["3\n", "none"]] as const) {
+		for (const [value, isolation] of [
+			["1\n", "container"],
+			["2\n", "gvisor"],
+			["3\n", "none"],
+		] as const) {
 			expect(check(scope(value), isolation).status).toBe(0);
 		}
 	});
 
 	it("refuses 0, and a missing file (which counts as 0), where it cannot raise it, naming the setting and its value", () => {
-		for (const [value, isolation] of [["0\n", "container"], [undefined, "gvisor"], ["0\n", "none"]] as const) {
+		for (const [value, isolation] of [
+			["0\n", "container"],
+			[undefined, "gvisor"],
+			["0\n", "none"],
+		] as const) {
 			const answered = check(scope(value), isolation);
 			expect(answered.status).toBe(11);
 			expect(answered.out).toMatch(/^REFUSED kernel\.yama\.ptrace_scope is 0 /m);
@@ -71,7 +79,10 @@ describe("the launcher's ptrace check, measured in the box", () => {
 	it("runs at a framed start BEFORE the frame is read: a refused start leaves no supervisor and reads nothing", () => {
 		const dir = join(root, "framed-start");
 		mkdirSync(dir, { recursive: true });
-		writeFileSync(join(dir, "spec.sh"), "GEN='g1'\nFRAMED=1\nRUNAS=''\nISOLATION='container'\nrun_program() {\n  exec true\n}\n");
+		writeFileSync(
+			join(dir, "spec.sh"),
+			"GEN='g1'\nFRAMED=1\nRUNAS=''\nISOLATION='container'\nrun_program() {\n  exec true\n}\n",
+		);
 		// A frame the launcher would refuse as malformed (7, INVALID): the ptrace refusal (11) comes first, so it never reads it.
 		const frame = "not a launch frame at all\n";
 		const ran = spawnSync("sh", [scriptMeasuring(scope("0\n")), "start", dir], {
@@ -87,9 +98,13 @@ describe("the launcher's ptrace check, measured in the box", () => {
 	it("lets a framed launch proceed on a box that reports no ptrace fact when the measured scope is 1 or more", async () => {
 		const measured = readFileSync("/proc/sys/kernel/yama/ptrace_scope", "utf8").trim();
 		if (Number(measured) < 1) return;
-		const box = getOrThrow(await localBoxes({ root: mkdtempSync(join(root, "box-")) }).create({ maxLifetimeMs: 600_000 }, context));
+		const box = getOrThrow(
+			await localBoxes({ root: mkdtempSync(join(root, "box-")) }).create({ maxLifetimeMs: 600_000 }, context),
+		);
 		expect("ptraceScope" in box.facts()).toBe(false);
-		const started = getOrThrow(await launch(box, "measured", { argv: ["sleep", "300"], stdin: new Uint8Array([1]) }, context));
+		const started = getOrThrow(
+			await launch(box, "measured", { argv: ["sleep", "300"], stdin: new Uint8Array([1]) }, context),
+		);
 		expect(started.launcherAlive).toBe(true);
 		getOrThrow(await launchStop(box, started.launch, { graceMs: 1_000 }, context));
 		await box.destroy(context);
@@ -98,7 +113,9 @@ describe("the launcher's ptrace check, measured in the box", () => {
 
 describe("a stop's beforeStop hook", () => {
 	async function aBox(): Promise<Box> {
-		return getOrThrow(await localBoxes({ root: mkdtempSync(join(root, "box-")) }).create({ maxLifetimeMs: 600_000 }, context));
+		return getOrThrow(
+			await localBoxes({ root: mkdtempSync(join(root, "box-")) }).create({ maxLifetimeMs: 600_000 }, context),
+		);
 	}
 	async function fileIn(box: Box, path: string): Promise<string | undefined> {
 		const read = await box.download([path], context);
@@ -109,7 +126,11 @@ describe("a stop's beforeStop hook", () => {
 		const box = await aBox();
 		// The program notes its SIGTERM and keeps running (it ignores it), so only the final kill ends it.
 		const program = ["sh", "-c", "trap ': > got-term' TERM; : > ready; while :; do sleep 1; done"];
-		const hook = ["sh", "-c", "if [ -e got-term ]; then echo after-term > hook-ran; else echo before-term > hook-ran; fi"];
+		const hook = [
+			"sh",
+			"-c",
+			"if [ -e got-term ]; then echo after-term > hook-ran; else echo before-term > hook-ran; fi",
+		];
 		const started = getOrThrow(await launch(box, "hooked", { argv: program, beforeStop: { argv: hook } }, context));
 		await until("the program's start", () => fileIn(box, "ready"));
 		const stopped = getOrThrow(await launchStop(box, started.launch, { graceMs: 1_500 }, context));
@@ -123,7 +144,12 @@ describe("a stop's beforeStop hook", () => {
 	it("is bounded: a hook past its timeout is killed, the stop still ends the program, and reports 137", async () => {
 		const box = await aBox();
 		const started = getOrThrow(
-			await launch(box, "slowhook", { argv: ["sleep", "300"], beforeStop: { argv: ["sleep", "300"], timeoutMs: 1_000 } }, context),
+			await launch(
+				box,
+				"slowhook",
+				{ argv: ["sleep", "300"], beforeStop: { argv: ["sleep", "300"], timeoutMs: 1_000 } },
+				context,
+			),
 		);
 		const began = Date.now();
 		const stopped = getOrThrow(await launchStop(box, started.launch, { graceMs: 500 }, context));
@@ -137,7 +163,11 @@ describe("a stop's beforeStop hook", () => {
 
 	it("refuses an empty argv and a timeout out of range", async () => {
 		const box = await aBox();
-		for (const beforeStop of [{ argv: [] }, { argv: ["true"], timeoutMs: 0 }, { argv: ["true"], timeoutMs: 10 * 60_000 }]) {
+		for (const beforeStop of [
+			{ argv: [] },
+			{ argv: ["true"], timeoutMs: 0 },
+			{ argv: ["true"], timeoutMs: 10 * 60_000 },
+		]) {
 			const refused = await launch(box, "badhook", { argv: ["sleep", "300"], beforeStop }, context);
 			expect(refused.ok ? undefined : refused.error.code).toBe("invalid");
 		}

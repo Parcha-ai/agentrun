@@ -318,12 +318,21 @@ resolve_user() {
     line=$(getent passwd "$RUNAS" 2>/dev/null | awk -F: '{ print $1 " " $3 " " $4 " " $6; exit }')
   fi
   [ -n "$line" ] || { echo "INVALID there is no user $RUNAS in this box"; return 8; }
+  name=$(printf '%s\n' "$line" | cut -d' ' -f1)
   uid=$(printf '%s\n' "$line" | cut -d' ' -f2)
+  gid=$(printf '%s\n' "$line" | cut -d' ' -f3)
+  home=$(printf '%s\n' "$line" | cut -d' ' -f4-)
   if [ "$me" != 0 ] && [ "$uid" != "$me" ]; then echo "UNSUPPORTED only a root launcher runs a program as another user"; return 9; fi
-  if [ "$me" = 0 ] && [ "$uid" != 0 ] && ! command -v setpriv >/dev/null 2>&1 && ! command -v runuser >/dev/null 2>&1; then
-    echo "UNSUPPORTED this box has neither setpriv nor runuser to run the program as $RUNAS"; return 9
+  # How a root launcher drops to the user, found by doing it once: a setpriv that takes --reuid (util-linux; BusyBox's does
+  # not), else runuser. A box with neither refuses here, never at an incarnation.
+  how=self
+  if [ "$me" = 0 ] && [ "$uid" != 0 ]; then
+    if setpriv --reuid="$uid" --regid="$gid" --init-groups -- true >/dev/null 2>&1; then how=setpriv
+    elif runuser -u "$name" -- true >/dev/null 2>&1; then how=runuser
+    else echo "UNSUPPORTED this box cannot run a program as $RUNAS: it has no setpriv that takes --reuid and no runuser"; return 9
+    fi
   fi
-  wr user "$line"
+  wr user "$name $uid $gid $how $home"
 }
 
 # The ptrace scope a launch that holds stdin or secrets needs: 1 or more, or a same-user process could read them from the

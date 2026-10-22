@@ -818,8 +818,9 @@ await launchStop(box, handle!, { graceMs: 5_000 }, BACKGROUND_CONTEXT);
 - The in-box watchdog never brings back the supervisor of a launch that has `stdin` or `secrets`: only that supervisor
   held them. The launch then reads `lost`, and only a `launch` that passes them again starts it again.
 - `user` (a name or a numeric uid) is who the program runs as, resolved in the box (`/etc/passwd`, then `getent`). A
-  root launcher drops to it with `setpriv` (or `runuser`), and needs one for a launch with `stdin` or `secrets`, so the
-  program never shares its memory; a launcher that is not root runs the program only as itself (another user is
+  root launcher finds how it drops to it by doing it once at the start: a `setpriv` that takes `--reuid` (util-linux;
+  BusyBox's does not), else `runuser`, else the launch is `unsupported` (Alpine's base image). It needs a user for a
+  launch with `stdin` or `secrets`, so the program never shares its memory; a launcher that is not root runs the program only as itself (another user is
   `unsupported`). An unknown user is `invalid`. The state reports it (`user: { name, uid }`).
 - If both launcher processes die, the state reads `lost`: the program may still run, unsupervised. The next `launch`
   of the name adopts it and starts a supervisor again.
