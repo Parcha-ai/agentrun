@@ -623,6 +623,53 @@ describe("archilPlace recordHome", () => {
   });
 });
 
+describe("archilPlace HOST_BOX: each host box's runner is told which label to claim", () => {
+  /** A host whose boxes are a provider's, with a receipt for each box unless it is in `noReceipt`. */
+  const providing = (control: FakeControl, provider: string | undefined, noReceipt = new Set<string>()) => {
+    const fake = fakeHost(control);
+    const host: HostDriver = {
+      ...fake.host,
+      ...(provider ? { provider } : {}),
+      box: (h) => (noReceipt.has(String(h.name)) ? null : { provider: provider ?? "none", kind: `sandbox ${h.name}`, from: "2026-10-22T00:00:00.000Z", to: null }),
+    };
+    return { host, starts: fake.starts };
+  };
+
+  it("each start puts HOST_BOX { provider, key: the box's index in status().boxes, run: RUN_LABEL } in that order's env", async () => {
+    const control = new FakeControl();
+    const { host, starts } = providing(control, "modal");
+    const place = makePlace({ ...REF, control, host });
+    const first = await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
+    await place.kill(first, "box");
+    await place.recover(first, "box", { gen: 2, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(2) });
+    const asked = starts.map((s) => JSON.parse(s.attempt!.env!.HOST_BOX!) as { provider: string; key: string; run: string });
+    assert.deepEqual(asked, [{ provider: "modal", key: "0", run: "life-1" }, { provider: "modal", key: "1", run: "life-1" }]);
+    const boxes = (await place.status!()).boxes!;
+    assert.deepEqual(asked.map((a) => boxes[Number(a.key)]!.kind), ["sandbox box-1", "sandbox box-2"], "each key is that box's index in status().boxes");
+    assert.ok(asked.every((a) => boxes[Number(a.key)]!.provider === a.provider), "and names its provider");
+  });
+
+  it("no HOST_BOX without the order's RUN_LABEL or a driver that names its provider; with HOST_BOX in play, a box with no receipt fails status() instead of shifting the rest", async () => {
+    const c1 = new FakeControl();
+    const noLife = providing(c1, "modal");
+    const p1 = makePlace({ ...REF, control: c1, host: noLife.host });
+    await p1.start({ gen: 1, env: {}, stdin: await p1.token!(1) });
+    assert.equal(noLife.starts[0]!.attempt!.env!.HOST_BOX, undefined, "no life, no label to claim");
+    const c2 = new FakeControl();
+    const noProvider = providing(c2, undefined);
+    const p2 = makePlace({ ...REF, control: c2, host: noProvider.host });
+    await p2.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await p2.token!(1) });
+    assert.equal(noProvider.starts[0]!.attempt!.env!.HOST_BOX, undefined, "a driver that names no provider");
+    const c3 = new FakeControl();
+    const missing = new Set<string>();
+    const gap = providing(c3, "modal", missing);
+    const p3 = makePlace({ ...REF, control: c3, host: gap.host });
+    await p3.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await p3.token!(1) });
+    missing.add("box-1");
+    await assert.rejects(p3.status!(), (e: unknown) => e instanceof PlaceError && e.code === "STATUS_FAILED" && /no receipt for host box 0/.test(e.message));
+  });
+});
+
 describe("a place's run files (readRunFile, listRunFiles): its own run, read only", () => {
   const bytes = (t: string) => new TextEncoder().encode(t);
   const code = (c: string) => (e: unknown) => e instanceof RunFileError && e.code === c;

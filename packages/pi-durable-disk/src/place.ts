@@ -777,6 +777,8 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
     const handles: HostHandle[] = [];
     /** Every handle the place started, released or not: the boxes it reports. */
     const started: HostHandle[] = [];
+    /** Whether each host box's runner is told its label (HOST_BOX): the driver makes boxes and names their provider. */
+    const handingOver = typeof host.box === "function" && typeof host.provider === "string" && host.provider !== "";
     const killed = new Map<PlaceRunner, () => void>();
     let resolver = pathlessResolver(control);
     const records = `${runPath(ref.id)}/${RECORDS}/`;
@@ -862,7 +864,11 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
         // Inside ensureRunning, after its revoke and start mark: no delegation holds the run, so S3 takes the writes.
         start: async (r, token, attempt) => {
           await makeDirs(order.gen);
-          return host.start(r, token, { attempt: attempt?.attempt ?? order.gen, env: order.env });
+          // The box this start makes is the next in `started`, so its index in status().boxes is started.length: its runner
+          // claims that label first (HOST_BOX), for the supervisor's life (RUN_LABEL).
+          const life = order.env.RUN_LABEL;
+          const env = handingOver && typeof life === "string" && life !== "" ? { ...order.env, HOST_BOX: JSON.stringify({ provider: host.provider, key: String(started.length), run: life }) } : order.env;
+          return host.start(r, token, { attempt: attempt?.attempt ?? order.gen, env });
         },
         status: (h) => host.status(h),
         stop: (h) => host.stop(h),
@@ -998,7 +1004,11 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
             throw error;
           }),
         ]);
-        const boxes = host.box ? started.map((h) => host.box!(h)).filter((b): b is HostBox => b !== null) : undefined;
+        // With HOST_BOX in play a box's position is its key, so a box never drops out: no receipt fails the read instead.
+        const receipts = host.box ? started.map((h) => host.box!(h)) : undefined;
+        const gap = receipts?.indexOf(null) ?? -1;
+        if (handingOver && gap >= 0) throw new PlaceError("STATUS_FAILED", `the driver gave no receipt for host box ${gap}, which this place started: every later box's key would shift`);
+        const boxes = receipts?.filter((b): b is HostBox => b !== null);
         return { record, delegations: delegations.map(({ clientId, inodeId, path, isOrphaned, isPending }) => ({ clientId, inodeId, path, isOrphaned, isPending })), ...(boxes ? { boxes } : {}) };
       },
       recover: async (last, kind, order) => {
