@@ -191,7 +191,23 @@ export function runUser(spec: string, passwd = "/etc/passwd"): { uid: number; gi
   const uid = m ? Number(m[1]) : Number(row![2]);
   const gid = m?.[2] !== undefined ? Number(m[2]) : row ? Number(row[3]) : uid;
   if (uid === 0) throw new UsageError("--run-as names root: the agent's commands would run as root, next to the archil daemon that holds the mount token");
+  if (gid === 0) throw new UsageError("--run-as puts the agent's commands in group root (gid 0): they could read what root's group can");
   return { uid, gid, home: row?.[5] || "/", name: row?.[0] ?? String(uid) };
+}
+
+/**
+ * The tools user transport's launcher verified for a root launch (`PI_TRANSPORT_TOOLS_USER` and `PI_TRANSPORT_TOOLS_UID`
+ * in this process's environment) must be the one `--run-as` names, by uid: a different one, or none (the agent's
+ * commands would run as this root process), is a usage error. Without the declaration, `--run-as` is as before.
+ */
+export function toolsUserCheck(runAs: { uid: number; name: string } | undefined, env: NodeJS.ProcessEnv): void {
+  const name = env.PI_TRANSPORT_TOOLS_USER;
+  const uidText = env.PI_TRANSPORT_TOOLS_UID;
+  if (name === undefined && uidText === undefined) return;
+  if (uidText === undefined || !/^[0-9]+$/.test(uidText)) throw new UsageError("the launcher's tools user is malformed: PI_TRANSPORT_TOOLS_UID is not a uid");
+  const uid = Number(uidText);
+  if (!runAs) throw new UsageError(`the launcher verified the tools user ${name ?? uid} (uid ${uid}), and this run names none: pass --run-as ${name ?? uid}, or the agent's commands would run as this process`);
+  if (runAs.uid !== uid) throw new UsageError(`--run-as ${runAs.name} (uid ${runAs.uid}) is not the tools user the launcher verified, ${name ?? uid} (uid ${uid})`);
 }
 
 const need = (v: Record<string, unknown>, ...keys: string[]) => {
@@ -253,6 +269,7 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   const ref: RunRef =
     dir === undefined ? { disk: str(values.disk)!, region: str(values.region)!, id: str(values.id)! } : { disk: "local", region: "local", id: str(values.id) ?? basename(dir) };
   const runAs = typeof values["run-as"] === "string" ? runUser(values["run-as"]) : undefined;
+  toolsUserCheck(runAs, process.env);
   if (runAs && process.getuid?.() !== 0) throw new UsageError("--run-as needs an instance that runs as root (inside a container); elsewhere run the instance as the run user");
   const onSigterm = str(values["on-sigterm"], "resume");
   if (onSigterm !== "resume" && onSigterm !== "pause") throw new UsageError("--on-sigterm is resume or pause");
