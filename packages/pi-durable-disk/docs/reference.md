@@ -839,7 +839,35 @@ id and directory as the supervisor computed them.
     `HOST_BOX` in its order's environment, JSON `{ provider, key, run }`. `key` is the box's index in
     `status().boxes`, and `run` is the order's `RUN_LABEL`. The runner claims that box's label first; without
     `RUN_LABEL`, no `HOST_BOX`. A box's position is then its key, so a box the driver gives no receipt for fails
-    `status()` (`STATUS_FAILED`) instead of shifting the boxes after it.
+    `status()` (`STATUS_FAILED`) instead of shifting the boxes after it. A box the place already started and its
+    driver adopts again (`adopted: true`, the same attempt started twice) keeps its key: one receipt, stopped once.
+  - `unheld(run, start)`, optional: a hook in each start's window while nobody holds the run. It runs after
+    ensureRunning's revoke and start mark and after the run's directories are made, before the driver starts
+    anything, once per start (a takeover's included). It needs `ensure.create` and a control that lists; without
+    them `archilPlace` throws `INVALID_ARGUMENT`.
+    - `start` is `{ attempt, box? }`. `box` is exactly the `HOST_BOX` that start carries, absent when the place hands
+      no label over.
+    - `run` holds the run's own files, `runs/<id>/` only, with the paths `readRunFile` takes: `read(path)`,
+      `list(dir)`, `signal` (aborted at the hook's bound, `unheldTimeoutMs`, default 30 s), and `put(path, text)`.
+    - `put` creates a file owned by the run user, mode 0644, after making each missing parent directory (the run
+      user's, 0755). A path that is already there is `EXISTS`, and nothing is written. It is a check, then a write, not
+      a conditional create (Archil's client has none). Two supervisors can be in one window at once, since the mount,
+      not the window, admits one of their instances, so a put is not exclusive between them: put names unique to the
+      start, and bind a shared name in the process that holds the run. `put` is for non-secret run files such as
+      labels; a secret never goes through it, since a put file is readable in the run.
+    - A put the server refuses because a delegation holds the run (409 `OperationAborted`), and any put after the
+      hook returned or overran, is `WINDOW_CLOSED`. Any other failure is `CONTROL_API_FAILED`. Both are `RunFileError`.
+    - What the hook returns is added to that start's environment, which the instance can read, so plain values only.
+      A name the start already sets (`PATH`, `PDA_HOLDER`, `HOST_BOX`, or one in the order's environment), a name that
+      is not a variable name, a value that is not a string without NUL, or a key-shaped name fails the start with
+      `INVALID_ARGUMENT`, naming the variable and never its value. A name is key-shaped when one of its
+      `_`-separated segments, in any case, is `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `CREDENTIAL` or
+      `CREDENTIALS`.
+    - A start fails, and the driver starts no box, when any put was refused because the run is held (`WINDOW_CLOSED`,
+      even if the hook caught it), when the hook throws a `CONTROL_API_FAILED` (`CONTROL_API_FAILED`), or when it
+      throws anything else or overruns its bound (`UNHELD_FAILED`). The token is removed and the start mark goes back
+      to the previous start's. The caller sees ensureRunning's `HOST_START_FAILED`, with that `PlaceError` as its
+      `cause`, as with `DIRS_REFUSED`.
   - `recordHome` (when the control can list, as `archilControl`'s can): an attempt's runner records into
     `recordHome.dir(attempt)`, `<root>/record/<attempt>`, in the run's directory, so its delegation covers it and
     `deleteRunTree` removes it. `bringHome(into, { final })` reads that directory through the control (S3 list and get:
