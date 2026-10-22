@@ -18,6 +18,7 @@ import { refusedHostsJudge } from './refused-hosts.mjs';
 import { gatedSettler } from './promotion-gate.mjs';
 import { HOST_WORKFLOW, handoffText, hostRunName, hostUses, runPromoted } from './dispatch.mjs';
 import { gatedAdmitter } from './gates.mjs';
+import { gatePick } from './pick-gate.mjs';
 
 export { agentHomeFor, prepareRun, readAgentAt } from '../agent-learn/host.mjs';
 
@@ -364,7 +365,7 @@ export function settleWithin(promise, ms, message) {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null, hostOnly = false, callDeadlineMs = CALL_DEADLINE_MS, runDeadlineMs = RUN_DEADLINE_MS }) {
+export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null, hostOnly = false, pickGate = null, callDeadlineMs = CALL_DEADLINE_MS, runDeadlineMs = RUN_DEADLINE_MS }) {
   if (hostOnly && !dispatch) throw new Error('a host-only run needs a workflow to dispatch');
   const started = Date.now();
   const caseValues = caseValuesOf(job);
@@ -451,8 +452,15 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
     // host refused never ran: the root agent gets the job alone.
     const hostRan = dispatch ? await beforeDeadline(runPromoted({ harness, workflows: workflowTool.workflow, dispatch, toolNames: tools.workflowTools.map((t) => t.name), answer, context: ctx })) : null;
     if (hostRan === 'deadline') throw new RunDeadline();
-    const hostRun = hostRan;
-    const dispatched = hostRun ? { dispatch: { name: hostRun.name, revision: hostRun.revision, key: hostRun.key, outcome: hostRun.outcome, ...(dispatch.canary ? { canary: true } : {}), ...(hostRun.invalid ? { invalid: hostRun.invalid } : {}), ...(typeof hostRun.detail === 'string' ? { detail: hostRun.detail } : {}) } } : {};
+    let hostRun = hostRan;
+    // With the pick gate (pick-gate.mjs), a complete host run whose code pick is not sure enough is handed to the root
+    // agent like an escalation, its code left out of what the agent is shown.
+    if (pickGate && !hostOnly && hostRun?.outcome === 'complete') {
+      const gate = await beforeDeadline(gatePick({ ...pickGate, output: hostRun.output, input: dispatch.input, judge, receipt: async () => pickGate.receiptOf(run.storePath, hostRun.output) }));
+      if (gate === 'deadline') throw new RunDeadline();
+      hostRun = gate.gated ? { ...hostRun, outcome: 'escalated', output: gate.stripped, gated: gate.record } : { ...hostRun, gated: gate.record };
+    }
+    const dispatched = hostRun ? { dispatch: { name: hostRun.name, revision: hostRun.revision, key: hostRun.key, outcome: hostRun.outcome, ...(dispatch.canary ? { canary: true } : {}), ...(hostRun.invalid ? { invalid: hostRun.invalid } : {}), ...(typeof hostRun.detail === 'string' ? { detail: hostRun.detail } : {}), ...(hostRun.gated ? { gated: hostRun.gated } : {}) } } : {};
     if (hostRun?.outcome === 'complete' || hostOnly) {
       const answered = hostRun.outcome === 'complete';
       measured = { answer: answered ? hostRun.output : null, answers: answered ? 1 : 0, toolCalls: {}, status: HOST_WORKFLOW, usage: usageTotals(await harness.usage(ctx)), finalText: '', calls: [], results: new Map(), ...dispatched };

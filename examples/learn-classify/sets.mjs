@@ -110,6 +110,8 @@ export const SETS = Object.freeze({
     labelTools: (d) => [sic2GroupsTool(d.labels, d.vocabulary), sicCodesTool(d.codes, d.vocabulary)],
     answer: (d) => answerV4(d.codes),
     answerKey: 'sic4',
+    /** The pick gate's grouping (pick-gate.mjs): sic_codes' own 2-digit groups, each code under the tool's own name. */
+    pickGroups: (d) => ({ key: 'sic4', claim: 'sic', groupOf: (code) => String(code ?? '').slice(0, 2), optionsOf: async (group) => (await sicCodesTool(d.codes, d.vocabulary).run({ group })).codes }),
   }),
   /** The MCC job (learn-mcc's SPEC.md): a merchant's MCC, risk tier, flags and verbatim evidence from its own site, scored
    *  against the teacher's labels (learn-mcc's score-mcc.mjs). */

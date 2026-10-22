@@ -150,11 +150,17 @@ const MAX_HANDOFF = 12_000;
  * run first, so the trial is tried on the jobs the proven revision gives up on.
  */
 export function handoffText(hostRun, dispatch = null) {
-  const how = hostRun.invalid ? `escalated: its output is not a valid answer (${hostRun.invalid.join('; ')})` : hostRun.outcome;
-  const what = JSON.stringify(hostRun.invalid ? hostRun.output : hostRun.detail ?? null) ?? 'null';
+  // A gated run (pick-gate.mjs) completed, but its code pick was not sure enough to stand alone; its output comes without
+  // the code, so the agent's own pick is its own.
+  const gate = hostRun.gated?.gated ? hostRun.gated : null;
+  const how = hostRun.invalid ? `escalated: its output is not a valid answer (${hostRun.invalid.join('; ')})`
+    : gate ? `escalated: its ${gate.key} pick was not sure enough to stand alone (a second, independent pick over the codes of its group gave it a margin of ${gate.m ?? 'no signal'} against the nearest one, under ${gate.tau}), so its ${gate.key} is left out below`
+      : hostRun.outcome;
+  const what = JSON.stringify(hostRun.invalid || gate ? hostRun.output : hostRun.detail ?? null) ?? 'null';
   const returned = [`What it returned (${what.length > MAX_HANDOFF ? `the first ${MAX_HANDOFF} characters` : 'all of it'}):`, what.slice(0, MAX_HANDOFF)];
   if (!dispatch?.canary || !dispatch.trial) {
-    return [`The proven workflow ${hostRun.name} ran first on this company, without you, and did not finish the job: it ${how}.`, ...returned, 'Start from that: do the rest of the job and give the answer.'].join('\n');
+    const next = gate ? `Start from that: choose its ${gate.key} yourself, check the rest as you need, and give the answer.` : 'Start from that: do the rest of the job and give the answer.';
+    return [`The proven workflow ${hostRun.name} ran first on this company, without you, and did not finish the job: it ${how}.`, ...returned, next].join('\n');
   }
   const summary = typeof hostRun.detail?.summary === 'string' ? hostRun.detail.summary.trim().replace(/\.$/, '') : '';
   const reason = hostRun.outcome === 'escalated' && !hostRun.invalid && summary ? `escalated: ${summary}`

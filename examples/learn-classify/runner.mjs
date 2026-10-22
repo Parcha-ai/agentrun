@@ -235,6 +235,7 @@ async function runSet({ parts, repo, run, job, judge, limitUsd, lock = inline, d
     const dispatch = given ?? (parts.dispatch === false ? null : await lock(() => promotedFor({ repo, run, answer, input: set.input(job) })));
     return await runJob({
       run, job, model: await parts.modelFor(job, run), judge, effects, answer, text: set.text, limitUsd, dispatch, hostOnly,
+      ...(parts.pickGate ? { pickGate: parts.pickGate } : {}),
       ...(parts.callDeadlineMs !== undefined ? { callDeadlineMs: parts.callDeadlineMs } : {}), ...(parts.runDeadlineMs !== undefined ? { runDeadlineMs: parts.runDeadlineMs } : {}),
     });
   } finally {
@@ -808,7 +809,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--receipt-admission] [--receipt-holds-trial] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--teacher <file> (mcc)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--receipt-admission] [--receipt-holds-trial] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--gate jev-margin --gate-tau <file>] [--teacher <file> (mcc)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -824,7 +825,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, 'gate-wait-at-end': { type: 'boolean' }, hindsight: { type: 'string' },
         'receipt-admission': { type: 'boolean' }, 'receipt-holds-trial': { type: 'boolean' }, 'receipt-promotion': { type: 'boolean' }, 'promote-no-floor': { type: 'boolean' },
         'refuse-contradicting': { type: 'boolean' }, 'keep-facts': { type: 'boolean' }, 'refuse-refused-hosts': { type: 'boolean' }, teacher: { type: 'string' },
-        'self-test-only': { type: 'boolean' },
+        'self-test-only': { type: 'boolean' }, gate: { type: 'string' }, 'gate-tau': { type: 'string' },
       },
     }));
   } catch (error) {
@@ -902,6 +903,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       parts.refuseRefusedHosts = true;
       console.log('learn-classify: curation refuses a lesson that names a site the tools refuse (refused-hosts.mjs)');
     }
+    if (values.gate !== undefined) {
+      if (values.gate !== 'jev-margin' || values['gate-tau'] === undefined) { console.error(`--gate is jev-margin, with --gate-tau <file>\n${USAGE}`); process.exit(2); }
+      if (!set.pickGroups) { console.error(`--gate needs a set whose codes have groups: pass --set v4\n${USAGE}`); process.exit(2); }
+      const tau = JSON.parse(readFileSync(resolve(values['gate-tau']), 'utf8')).tau;
+      if (!(typeof tau === 'number' && tau >= 0 && tau <= 1)) { console.error(`--gate-tau's file holds { "tau": 0..1 }\n${USAGE}`); process.exit(2); }
+      const receiptOfRun = (storePath, output) => { try { return Boolean(receiptOf(recordingLines(storePath).lines, output)); } catch { return false; } };
+      parts.pickGate = { ...set.pickGroups(parts.data), tau, receiptOf: receiptOfRun };
+      console.log(`learn-classify: a served ${parts.pickGate.key} goes back to the agent when a second pick over its group gives it a margin under ${tau} (pick-gate.mjs); a receipted one stands`);
+    } else if (values['gate-tau'] !== undefined) { console.error(`--gate-tau takes --gate jev-margin\n${USAGE}`); process.exit(2); }
     if (values['curate-sticky']) {
       parts.sticky = true;
       console.log('learn-classify: curation judges each learning by the worst answer its text has had (<out>/curate-sticky.json)');
