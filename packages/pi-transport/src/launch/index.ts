@@ -7,6 +7,7 @@ export {
 	type LaunchSpec,
 	type LaunchState,
 	launch,
+	launchSpecError,
 	launchState,
 	launchStatus,
 	launchStop,
