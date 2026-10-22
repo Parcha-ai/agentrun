@@ -214,12 +214,15 @@ test('a later process that takes over this life\'s box writes NO second box.crea
   const tapped = tap.provider(provider);
   await tap.unheld(aWindow().run, start(1));
   const made = (await tapped.create(keyed('life-1/0/aa'), ctx)).value;
-  tap.bound('life-1/0/aa', 'box-1');
+  await made.exec(['true'], undefined, ctx);
+  // Process 2's command before the label is bound: held, and still process 2's when it is written.
   now.gen = 2;
+  await made.exec(['true'], undefined, ctx);
+  tap.bound('life-1/0/aa', 'box-1');
   const adopted = (await tapped.attach(made.id, ctx)).value;
   await adopted.exec(['true'], undefined, ctx);
   await adopted.destroy(ctx);
-  assert.deepEqual(lines.map(([kind, data]) => [kind, data.box, data.gen]), [['box.created', 'box-1', 1], ['box.exec', 'box-1', 2], ['box.ended', 'box-1', 2]]);
+  assert.deepEqual(lines.map(([kind, data]) => [kind, data.box, data.gen]), [['box.created', 'box-1', 1], ['box.exec', 'box-1', 1], ['box.exec', 'box-1', 2], ['box.exec', 'box-1', 2], ['box.ended', 'box-1', 2]]);
 });
 
 test('a keyed host box of this run that this life did not make is ADOPTED by its key: matched from a tapped list() (no further list) or from one list(); no box.created; its lines carry the adopting gen', async () => {
@@ -246,6 +249,8 @@ test('a box WITHOUT the key label, or keyed for another run, is never taken as t
   const tapped = tap.provider(host.provider);
   const bare = host.plant('bare-1', { 'agentrun-run': 'life-1' });
   const other = host.plant('other-1', { 'agentrun-run': 'life-9', [KEY]: 'life-9/0/cc' });
+  // A host driver that lists every box: the tap sees the other run's key there, and must not learn it.
+  await tapped.list({}, ctx);
   for (const box of [bare, other]) {
     const found = (await tapped.attach(box.id, ctx)).value;
     assert.equal(found, box, `${box.id}: the provider's own box, not a tapped one`);
