@@ -340,6 +340,43 @@ test('a stop given with the start is recorded in the commit that creates the tas
   } finally { await harness.close(ctx); }
 });
 
+test('a cancel recorded before pi marked the task, whose journal commit the store refuses: the waiter gets the refusal, and the run never resumes', async () => {
+  let calls = 0;
+  const file = fileOf();
+  const host = () => hostOf(async () => { calls += 1; return { price: 21 }; });
+  let flow = createWorkflowExtension(host());
+  let harness = await open(file, flow);
+  // The process dies once the start has committed, before pi marks the task.
+  harness.abortTask = async () => { throw new Error('killed before the mark'); };
+  await assert.rejects(flow.start(harness, request(), ctx, { stop: { action: 'cancel', source: 'owner' } }), /killed before the mark/);
+  await harness.close(ctx);
+  // The next process takes the cancel before any step, and the store refuses the journal's cancel: the Session is
+  // poisoned, so nothing ends the task here. Its waiter gets the refusal itself, and the key does not run again here.
+  await refusingWrites(({ kind, content }) => kind === 'agentrun.driver' && content.includes('"status":"cancelled"'), async () => {
+    flow = createWorkflowExtension(host());
+    harness = await open(file, flow);
+    try {
+      const run = await flow.start(harness, request(), ctx);
+      harness.resume();
+      await assert.rejects(within(run.wait(ctx)), (error) => error.code === 'ERR_SQLITE_ERROR' && /injected store write failure/.test(error.message));
+      // The invariant, not the wording: the Session is unusable after the refused write, so a second start on it is
+      // refused (pi-durable's health check throws; its message and name differ across 1.1/1.2/1.3 and later, so this
+      // asserts only that it rejects), and the run never resumes here — no step ran.
+      await assert.rejects(flow.start(harness, request(), ctx));
+      assert.equal(calls, 0, 'the refused Session never ran the step');
+    } finally { await harness.close(ctx).catch(() => undefined); }
+  });
+  // A later process takes the cancel again, and this time it lands: the run ends cancelled, and no step ran.
+  flow = createWorkflowExtension(host());
+  harness = await open(file, flow);
+  try {
+    const run = await flow.start(harness, request(), ctx);
+    harness.resume();
+    assert.deepEqual([run.started, await within(run.wait(ctx)), calls], ['attached', { status: 'stopped', stop: 'cancelled', source: 'owner' }, 0]);
+    assert.deepEqual(await journalOf(harness), { status: 'cancelled', effects: [] });
+  } finally { await harness.close(ctx); }
+});
+
 test('a waiter that began before another start attached still gets the run\'s failure when the Session refuses its commits', async () => {
   const flight = deferred(), release = deferred(); let armed = false;
   // The effect's completion is the write that fails, after the second start attached.

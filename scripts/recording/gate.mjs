@@ -84,6 +84,12 @@ export function gateProblems(dist, lock = existsSync(LOCK) ? JSON.parse(readFile
   const beside = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
   const ids = gallery.map((entry) => entry.id);
   if (canonical([...ids].sort()) !== canonical(beside)) add(where, `${files ? 'lists' : 'embeds'} ${JSON.stringify(ids)}, not the recordings beside it`);
+  // In the lock's order (the ids it does not name after them, by name): the page lists the gallery as the lock sets it.
+  if (lock && Array.isArray(lock.ids)) {
+    const named = lock.ids.map((each) => (isObject(each) ? each.id : each));
+    const expected = [...named.filter((id) => ids.includes(id)), ...ids.filter((id) => !named.includes(id)).sort()];
+    if (canonical(ids) !== canonical(expected)) add(where, `lists ${JSON.stringify(ids)}, not in the lock's order ${JSON.stringify(expected)}`);
+  }
   for (const entry of gallery) {
     if (!beside.includes(entry.id)) continue;
     const dir = join(recordings, entry.id);

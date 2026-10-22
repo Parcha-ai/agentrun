@@ -119,8 +119,9 @@ const backed = [
   ['reference a catalog schema or an inline definition only as', doc(extract(), { schemas: { Result: { type: 'object', properties: { n: { $ref: 'Result' } } } } }), /unsupported \$ref form/],
   ['A node may read only input keys and keys an earlier node wrote', doc(extract({ requires: ['missing'] })), /no upstream node produces it/],
   ['must name an input key or a key an earlier node wrote', { ...doc(extract()), output: { schemaId: 'Result', path: 'elsewhere' } }, /output: path "elsewhere" has no input or upstream producer/],
-  ['No `as` may begin with `$`', doc(extract({ as: '$host' })), /engine-owned/],
-  ['neither may the label of an agent, decide, extract or code node without `as`', doc({ node: 'code', label: '$x', code: 's => ({ result: { count: 1 } })' }), /label must not begin with "\$"/],
+  ['No `as` may hold a `$`', doc(extract({ as: '$host' })), /engine-owned/],
+  ['Keys that hold a `$` are engine-owned', doc(extract({ as: 'result$answers' })), /engine-owned/],
+  ['neither may the label of an agent, decide, extract or code node without `as`', doc({ node: 'code', label: '$x', code: 's => ({ result: { count: 1 } })' }), /label must not contain "\$"/],
   ['Every key a state map, call or child input interpolates must be produced upstream', doc(extract({ state: { t: '{nowhere}' } })), /interpolates \{nowhere\}/],
   ['Each kind accepts exactly these fields; any other field is an error', doc(extract({ colour: 'red' })), /unknown key\(s\) for a extract node: colour/],
   ['`instructions` (required, non-empty)', doc(extract({ instructions: ' ' })), /instructions required/],
@@ -332,6 +333,28 @@ test('schema keywords and examples are data, including in child workflows', () =
     const authored = await authorWorkflow({ request: 'Extract counts', outputDir: dir, runNode, inputKeys: ['text'], rubricSections: { Policy: 'Keep the original count.' } });
     assert.equal(authored.candidates, 1);
   }
+}));
+
+test('a candidate\'s code is not evaluated during pre-acceptance validation when executable candidates are allowed', () => withTemp('agentrun-author-exec-', async dir => {
+  // The same probe as the graph-edge test above: the body bumps a process counter if it is ever evaluated. With
+  // executable candidates allowed, the candidate passes policy, so validation runs; it must still not evaluate the code.
+  globalThis.__authorPolicyProbe = 0;
+  try {
+    const probe = `((function(){}).constructor("globalThis.__authorPolicyProbe++")(), () => ({ result: { count: 1 } }))`;
+    const candidate = { ...workflow, root: { node: 'chain', steps: [{ node: 'code', label: 'compute', code: probe }] } };
+    // The host rejects at acceptance: the counter must be 0 when the hook runs, and 0 after.
+    let atHook;
+    const rejecting = scriptedAuthor([candidate]);
+    await assert.rejects(authorWorkflow({ request: 'Do work', outputDir: dir, runNode: rejecting.runNode, maxCandidates: 1, allowExecutableCandidates: true,
+      acceptance: () => { atHook = globalThis.__authorPolicyProbe; return ['host rejects this candidate']; } }), /ran out of candidates/);
+    assert.equal(atHook, 0, 'code must not be evaluated before the acceptance hook');
+    assert.equal(globalThis.__authorPolicyProbe, 0, 'code must not be evaluated during validation');
+    // No acceptance hook: the candidate is accepted on structure, and its code still must not have been evaluated.
+    const accepting = scriptedAuthor([candidate]);
+    const authored = await authorWorkflow({ request: 'Do work', outputDir: dir, runNode: accepting.runNode, maxCandidates: 1, allowExecutableCandidates: true });
+    assert.equal(authored.workflow.name, 'summary');
+    assert.equal(globalThis.__authorPolicyProbe, 0, 'an accepted candidate\'s code must not be evaluated during validation');
+  } finally { delete globalThis.__authorPolicyProbe; }
 }));
 
 test('executable nodes are refused on every graph edge before any code is evaluated', () => withTemp('agentrun-author-graph-', async dir => {

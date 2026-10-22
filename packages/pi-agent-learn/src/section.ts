@@ -61,6 +61,19 @@ export function checkWorkflows(workflows: readonly WorkflowHint[]): WorkflowHint
   });
 }
 
+/** Why a workflow on trial is run before the job is done by hand: only its own clean runs earn it trust. */
+const TRIAL_FIRST = "A workflow on trial earns trust only from its own clean runs: run it before doing the job yourself, and change it only after it escalates or fails.";
+
+/**
+ * What a host tells the agent when the proven revision of workflow `name` (`served`, a digest) ran first and did not finish
+ * the input while a newer revision (`trial`) is on trial: run the trial first, and do the job by hand only if it escalates
+ * too.
+ */
+export function trialFirstText(input: { readonly name: string; readonly served: string; readonly trial: string }): string {
+  const { name } = input;
+  return `The proven revision ${input.served.slice(0, 8)} of ${name} did not finish this input. A newer revision of ${name}, ${input.trial.slice(0, 8)}, is on trial: load ${name} and run it first; do the job by hand only if it escalates too. Its clean runs are what earn it trust.`;
+}
+
 /**
  * The `<learned>` section body for a seed (pi-durable adds the tags). A pure function of the record, so the text is the
  * same on every request of a run and for every run seeded from the same commit with the same workflows. With
@@ -77,7 +90,8 @@ export function renderSection(seed: SeedRecord, options: { readonly canLearn?: b
     lines.push(`The full entries are in ${LAYOUT.seeded}/.`);
   }
   if (seed.workflows.length) {
-    lines.push(`Workflows to try first for this input: ${seed.workflows.map((w) => `${w.name}${w.status === "trial" ? " (trial)" : ""}`).join(", ")}. Run one with the agentrun tool; if it escalates, continue yourself.`);
+    const onTrial = seed.workflows.some((w) => w.status === "trial");
+    lines.push(`Workflows to try first for this input: ${seed.workflows.map((w) => `${w.name}${w.status === "trial" ? " (trial)" : ""}`).join(", ")}. Run one with the agentrun tool; if it escalates, continue yourself.${onTrial ? ` ${TRIAL_FIRST}` : ""}`);
   }
   if (options.canLearn !== false) {
     lines.push(

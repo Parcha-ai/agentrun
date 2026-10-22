@@ -28,16 +28,21 @@ type Finished = { readonly exitCode: number; readonly stdout: Uint8Array; readon
 
 /** Feed `input` to a started program, read both streams to their end, and report how it ended. */
 export async function finish(process: BoxProcess, input?: Uint8Array): Promise<Result<Finished, BoxError>> {
+	// A write that fails because the box takes no stdin is the caller's answer: the program ran without its input, so its exit code means nothing.
+	let refused: BoxError | undefined;
 	const feed = (async () => {
 		if (input !== undefined && input.length > 0) await process.stdin.write(input);
 		await process.stdin.close();
-	})().catch(() => {});
+	})().catch((cause: unknown) => {
+		if (cause instanceof BoxError && cause.code === "unsupported") refused = cause;
+	});
 	const [stdout, stderr, exit] = await Promise.all([
 		readStream(process.stdout),
 		readStream(process.stderr),
 		process.wait(),
 		feed,
 	]);
+	if (refused !== undefined) return err(refused);
 	if (!exit.ok) return exit;
 	return ok({ exitCode: exit.value, stdout, stderr: new TextDecoder().decode(stderr) });
 }
