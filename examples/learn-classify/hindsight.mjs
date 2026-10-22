@@ -22,6 +22,8 @@ export const HINDSIGHT_FIELDS = Object.freeze(['sic4', 'hq', 'segments', 'subsid
 /** The tool calls one reflection may make before its tools refuse, and what it may spend before it is stopped. */
 export const MAX_REFLECTION_CALLS = 6;
 export const MAX_REFLECTION_USD = 1;
+/** A live pass's limit per reflection (the TL's for ARM D): reflections run beside the stream, so each stays small. */
+export const LIVE_REFLECTION_USD = 0.35;
 
 const RULES_HEAD = `You review one finished run of a research job, together with the true value of one field the run got wrong. Find why
 the run missed it and where the true value could have been read.`;
@@ -130,8 +132,31 @@ export function seededLessons(workspace, { max = 20, chars = 400 } = {}) {
   return readdirSync(dir).filter((f) => f.endsWith('.md')).sort().slice(0, max).map((f) => readFileSync(join(dir, f), 'utf8').replace(/^---[\s\S]*?---\s*/, '').trim().slice(0, chars));
 }
 
-/** The reflection's prompt for one wrong field. */
-export function reflectionPrompt({ job, wrong, digest, lessons }) {
+/** The job's Sources line, verbatim (its continuation lines joined): the first bullet that starts "Sources:" in the rules
+ *  (AGENTS.md), else in the run's skills. Job text, not page text, so a reflection given it still does its own work. */
+export function sourcesOf({ rules, workspace } = {}) {
+  const bullet = (text) => {
+    const lines = String(text ?? '').split('\n');
+    const at = lines.findIndex((l) => /^- Sources:/.test(l));
+    if (at < 0) return null;
+    const out = [lines[at]];
+    for (const l of lines.slice(at + 1)) { if (!/^ {2,}\S/.test(l)) break; out.push(l.trim()); }
+    return out.join(' ');
+  };
+  const fromRules = bullet(rules);
+  if (fromRules) return fromRules;
+  const skills = workspace ? join(workspace, '.agents', 'skills') : null;
+  if (!skills || !existsSync(skills)) return null;
+  for (const name of readdirSync(skills).sort()) {
+    const file = join(skills, name, 'SKILL.md');
+    const found = existsSync(file) ? bullet(readFileSync(file, 'utf8')) : null;
+    if (found) return found;
+  }
+  return null;
+}
+
+/** The reflection's prompt for one wrong field; `sources`, when given, is the job's Sources line. */
+export function reflectionPrompt({ job, wrong, digest, lessons, sources }) {
   const shown = (v) => (typeof v === 'string' ? v : JSON.stringify(v));
   return [
     `The job: classify ${job.name}${job.ticker ? ` (${job.ticker})` : ''}: its SEC SIC code, segments, headquarters, subsidiaries and latest annual report.`,
@@ -140,6 +165,7 @@ export function reflectionPrompt({ job, wrong, digest, lessons }) {
     `The true value: ${shown(wrong.truth)}${wrong.truthTitle ? ` (${wrong.truthTitle})` : ''}`,
     `What the run did:\n${digest}`,
     `The lessons the run had:\n${lessons.length ? lessons.map((l) => `- ${l.replace(/\s+/g, ' ')}`).join('\n') : '(none)'}`,
+    ...(sources ? [`The job's sources: ${sources.replace(/^- /, '')}`] : []),
   ].join('\n\n');
 }
 
@@ -210,19 +236,20 @@ export function verifiedBy(storePath, wrong) {
  * fetch_page and read_document) are asked for only then, each as a value or a function that makes it; the tools are
  * disposed of after.
  */
-export async function reflectOnRun({ job, run, score, answer, model, effects, fields = HINDSIGHT_FIELDS, codes, storeDir, labelOnly = true }) {
+export async function reflectOnRun({ job, run, score, answer, model, effects, fields = HINDSIGHT_FIELDS, codes, storeDir, labelOnly = true, rules, limitUsd = MAX_REFLECTION_USD }) {
   if (!HINDSIGHT_SPLITS.includes(job.split)) return { wrong: [], reflections: [] };
   const wrong = wrongFields(score, fields, { codes });
   if (!wrong.length) return { wrong, reflections: [] };
   const digest = digestOf(toolResultsOf(run.storePath), answer, { labelOnly });
   const lessons = seededLessons(run.workspace);
+  const sources = sourcesOf({ rules, workspace: run.workspace });
   const on = typeof model === 'function' ? model() : model;
   const tools = typeof effects === 'function' ? await effects() : effects;
   const reflections = [];
   try {
     for (const w of wrong) {
       const storePath = join(storeDir, `${run.runId}-${w.field}.sqlite`);
-      const { hypotheses, usage, stopped } = await reflect({ model: on, effects: tools, storePath, prompt: reflectionPrompt({ job, wrong: w, digest, lessons }) });
+      const { hypotheses, usage, stopped } = await reflect({ model: on, effects: tools, storePath, prompt: reflectionPrompt({ job, wrong: w, digest, lessons, sources }), limitUsd });
       reflections.push({ field: w.field, hypotheses, costUsd: usage.costUsd, labelOnly, ...(stopped ? { stopped } : {}), ...verifiedBy(storePath, w) });
     }
   } finally {

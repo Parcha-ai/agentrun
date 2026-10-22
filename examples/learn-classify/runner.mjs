@@ -37,7 +37,7 @@ import { answersTheJob, hostRecord, promotedFor } from './dispatch.mjs';
 import { asyncGate, GATE, gateSpend } from './promotion-gate.mjs';
 import { passSelfTest } from './selftest.mjs';
 import { writeHosts } from './tools-v2.mjs';
-import { HINDSIGHT_FIELDS, proposeHindsight, reflectOnRun } from './hindsight.mjs';
+import { HINDSIGHT_FIELDS, LIVE_REFLECTION_USD, proposeHindsight, recordPagesOnly, reflectOnRun } from './hindsight.mjs';
 
 export const DATA = join(import.meta.dirname, 'data');
 /** Where a pass writes when no --out is given, as the demo's contract names it. */
@@ -195,8 +195,9 @@ export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, e
     judge: () => jev,
     toolsFor,
     modelFor: () => models,
-    // Hindsight's reflections (hindsight.mjs) on the root agent's model, with fetch_page and read_document as the run has them.
-    ...(hindsight ? { hindsight: { fields: hindsight, model: () => models, tools: async (job, run) => (await toolsFor(job, run)).filter((t) => t.name === 'fetch_page' || t.name === 'read_document') } } : {}),
+    // Hindsight's reflections (hindsight.mjs) on the root agent's model, with fetch_page and read_document as the run has them
+    // but limited to the SEC's record pages as archived (01-loop 1.16), each reflection stopped past LIVE_REFLECTION_USD.
+    ...(hindsight ? { hindsight: { fields: hindsight, model: () => models, limitUsd: LIVE_REFLECTION_USD, tools: async (job, run) => recordPagesOnly((await toolsFor(job, run)).filter((t) => t.name === 'fetch_page' || t.name === 'read_document')) } } : {}),
     // The browser's guard on the browser the pass will use, checked by the pass's self-test.
     ...(hard ? { browserCheck: (dir) => hard.guardSelfTest({ root: dir, profileRoot: join(dir, 'chrome'), env, archivedSec }) } : {}),
   };
@@ -358,6 +359,8 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
       ...p,
       hindsight: await reflectOnRun({
         job, run, score: p.score, answer: p.measure.answer, fields: parts.hindsight.fields, codes: parts.data?.codes, storeDir: join(out, 'hindsight'),
+        rules: await repo.read('AGENTS.md', p.seedSha),
+        ...(parts.hindsight.limitUsd !== undefined ? { limitUsd: parts.hindsight.limitUsd } : {}),
         model: () => parts.hindsight.model(job, run), effects: () => parts.hindsight.tools(job, run),
       }),
     });
