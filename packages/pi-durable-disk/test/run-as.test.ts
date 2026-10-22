@@ -11,6 +11,8 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { main, runUser, toolsUserCheck } from "../src/cli.ts";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { archilEnv, EnvError } from "../src/env.ts";
 import { PdaError } from "../src/errors.ts";
 
@@ -168,6 +170,19 @@ test("the tools user the launcher verified (PI_TRANSPORT_TOOLS_USER/UID) must be
   assert.doesNotThrow(() => toolsUserCheck({ ...pda, name: "alias" }, verified), "the same uid under another name is the same user: the uid decides");
   refused(pda, { PI_TRANSPORT_TOOLS_USER: "pda" }, "a name with no uid: the declaration is malformed", /PI_TRANSPORT_TOOLS_UID/);
   refused(pda, { PI_TRANSPORT_TOOLS_USER: "pda", PI_TRANSPORT_TOOLS_UID: "15x0" }, "a uid that is not a number", /PI_TRANSPORT_TOOLS_UID/);
+});
+
+test("the launcher's secrets descriptor (PI_TRANSPORT_SECRETS_FD) is closed before anything runs: no command the instance spawns inherits it, or its number", () => {
+  const child = fileURLToPath(new URL("./fixtures/secrets-fd-child.ts", import.meta.url));
+  const run = (close: boolean) =>
+    spawnSync(process.execPath, [child], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe", "pipe"], env: { ...process.env, PI_TRANSPORT_SECRETS_FD: "3", CLOSE: close ? "1" : "0" } });
+  const fds = (out: string) => out.split("\n").filter((l) => /^[0-9]+$/.test(l)).map(Number);
+  const open = run(false);
+  assert.ok(fds(open.stdout).includes(3), `without the close, a command inherits fd 3 (the leak this guards): ${open.stdout} ${open.stderr}`);
+  const closed = run(true);
+  assert.equal(closed.status, 0, closed.stderr);
+  assert.ok(!fds(closed.stdout).includes(3), `closed: ${closed.stdout}`);
+  assert.match(closed.stdout, /SECRETS_FD=unset/, "and the variable is gone from the commands' environment");
 });
 
 test("run --run-as needs an instance running as root", { skip: process.getuid?.() === 0 && "running as root" }, async () => {
