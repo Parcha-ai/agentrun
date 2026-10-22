@@ -18,13 +18,14 @@ export const LINK_QUESTION = 'Does `learning` tell the agent to read the `field`
 
 /** How each lesson and fact of a run is linked to its receipt: `url` when one of its evidence items holds the receipt's
  *  page address exactly, else `jev` when `ask` (Jev, LINK_QUESTION) answers at 0.8 or more, else none. Returns one entry
- *  per note, `{ candidate (its place in the inbox, from 1), callId, type, link, p }`. */
-export async function receiptLinks(candidates, receipt, ask) {
+ *  per note, `{ candidate (its place in the inbox, from 1), callId, type, link, p }`. `field` is the answer's field the
+ *  receipt grounds (the SEC job's sic4, the MCC job's mcc). */
+export async function receiptLinks(candidates, receipt, ask, { field = 'sic4' } = {}) {
   const out = [];
   for (const [i, c] of candidates.entries()) {
     if (c.type !== 'lesson' && c.type !== 'fact') continue;
     const byUrl = (c.evidence ?? []).some((item) => typeof item === 'string' && item.includes(receipt.url));
-    const p = byUrl ? null : await ask({ learning: { type: c.type, text: c.text }, field: 'sic4', kind: receipt.kind });
+    const p = byUrl ? null : await ask({ learning: { type: c.type, text: c.text }, field, kind: receipt.kind });
     out.push({ candidate: i + 1, callId: c.callId, type: c.type, link: byUrl ? 'url' : p >= 0.8 ? 'jev' : null, p });
   }
   return out;

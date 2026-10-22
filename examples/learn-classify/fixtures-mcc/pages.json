@@ -1,0 +1,92 @@
+{
+ "https://lumencandle.example/": {
+  "title": "Lumen Candle Works",
+  "text": "Lumen Candle Works. We pour soy wax candles by hand in small batches. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. "
+ },
+ "https://copperpotdiner.example/": {
+  "title": "Copper Pot Diner",
+  "text": "Copper Pot Diner. Breakfast and lunch served daily at our counter on Main Street. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. ",
+  "browserOnly": true
+ },
+ "https://valevapour.example/": {
+  "title": "Vale Vapour Supply",
+  "text": "Vale Vapour Supply. We sell e-cigarettes, vape pens and e-liquids to adults over 21. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. You must be of legal age to buy from us."
+ },
+ "https://northwindoutfitters.example/": {
+  "title": "Northwind Outfitters",
+  "text": "Northwind Outfitters. Hiking boots, tents and climbing gear for every season. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. ",
+  "browserOnly": true
+ },
+ "https://paperlanterngifts.example/": {
+  "title": "Paper Lantern Gifts",
+  "text": "Paper Lantern Gifts. Greeting cards, wrapping paper and small gifts for every occasion. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. "
+ },
+ "https://brightsidevitamins.example/": {
+  "title": "Brightside Vitamins",
+  "text": "Brightside Vitamins. Organic teas, honey and pantry staples from local farms. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. "
+ },
+ "https://harborwine.example/": {
+  "title": "Harbor Wine Cellar",
+  "text": "Harbor Wine Cellar. Natural wines and craft beers picked by our staff. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. You must be of legal age to buy from us."
+ },
+ "https://furniture-reviews.example/oakline": {
+  "title": "Oakline reviewed",
+  "text": "Our review of Oakline. Solid oak dining tables and sideboards built to order, the shop says."
+ },
+ "https://oaklinefurniture.example/": {
+  "title": "Oakline Furniture",
+  "text": "Oakline Furniture. Solid oak dining tables and sideboards built to order. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. Most orders cost more than two thousand dollars."
+ },
+ "https://towndirectory.example/quillfeather": {
+  "title": "Town directory",
+  "text": "Quillfeather Books: An independent bookshop listed in the town directory. The listed website could not be reached."
+ },
+ "https://fernandkiln.myshopify.com/": {
+  "title": "Fern and Kiln",
+  "text": "Fern and Kiln. Wheel-thrown stoneware mugs, bowls and planters. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. "
+ },
+ "https://www.etsy.com/shop/TallowAndThyme": {
+  "title": "Tallow and Thyme",
+  "text": "Tallow and Thyme. Whipped tallow balms and herbal soaps made by hand. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. "
+ },
+ "https://ridgebackgolf.example/": {
+  "title": "Ridgeback Golf Club",
+  "text": "Ridgeback Golf Club. Annual memberships include unlimited rounds on our eighteen holes. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. Memberships renew every year until cancelled."
+ },
+ "https://pixelforge.example/": {
+  "title": "Pixel Forge Software",
+  "text": "Pixel Forge Software. Download photo editing software for Windows and macOS. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. Every purchase is delivered as a download."
+ },
+ "https://www.mcc-lookup.example/pixelforge": {
+  "title": "MCC lookup",
+  "text": "Pixel Forge Software: MCC 5734"
+ },
+ "https://goldenhourjewelers.example/": {
+  "title": "Golden Hour Jewelers",
+  "text": "Golden Hour Jewelers. Engagement rings and fine watches crafted in our workshop. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. Most orders cost more than two thousand dollars."
+ },
+ "https://summittravel.example/": {
+  "title": "Summit Travel Co",
+  "text": "Summit Travel Co. We plan guided tours and book flights for trips abroad. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. Trips are booked months before departure."
+ },
+ "https://littleacorntoys.example/": {
+  "title": "Little Acorn Toys",
+  "text": "Little Acorn Toys. Wooden toys, puzzles and board games for children. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. "
+ },
+ "https://crescentpharmacy.example/": {
+  "title": "Crescent Pharmacy",
+  "text": "Crescent Pharmacy. Fill your prescriptions online and pick them up in store. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. You must be of legal age to buy from us."
+ },
+ "https://luckysevenraffles.example/": {
+  "title": "Lucky Seven Raffles",
+  "text": "Lucky Seven Raffles. Buy raffle tickets for a chance to win cash prizes every week. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. Winners are drawn at random every Friday."
+ },
+ "https://meadowgrocer.example/": {
+  "title": "Meadow Grocer",
+  "text": "Meadow Grocer. Fresh produce, cheese and bread from regional growers. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. "
+ },
+ "https://stellarstreams.example/": {
+  "title": "Stellar Streams",
+  "text": "Stellar Streams. Download albums and films to keep on any device. Returns are accepted within 30 days of delivery; see our refund policy and terms of service. Every purchase is delivered as a download."
+ }
+}

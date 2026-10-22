@@ -82,9 +82,9 @@ const fixed = (x) => (x === null ? 'none' : x.toFixed(3));
 
 /** The verdict from the bank's values per company (`Map` cik to `valuesOf`): `serving` null is a first promotion, where a
  *  company counts as right when every part with truth is. */
-export function verdictOf({ bank, candidate, serving, floor = GATE.floor, resamples, seed }) {
+export function verdictOf({ bank, candidate, serving, floor = GATE.floor, resamples, seed, parts: scored = GATE.parts }) {
   if (!serving) {
-    const k = bank.filter((c) => GATE.parts.every((part) => candidate.get(c.cik)[part] === null || candidate.get(c.cik)[part] === 1)).length;
+    const k = bank.filter((c) => scored.every((part) => candidate.get(c.cik)[part] === null || candidate.get(c.cik)[part] === 1)).length;
     const w = wilson(k, bank.length);
     const promote = w.lo > floor;
     return { promote, first: true, k, n: bank.length, lo: w.lo, hi: w.hi, floor, reason: `first promotion: right on ${k} of ${bank.length} bank companies, Wilson lower bound ${fixed(w.lo)} ${promote ? 'above' : 'not above'} the floor ${floor}` };
@@ -92,7 +92,7 @@ export function verdictOf({ bank, candidate, serving, floor = GATE.floor, resamp
   const pairs = bank.map((c) => {
     const a = candidate.get(c.cik);
     const b = serving.get(c.cik);
-    const parts = GATE.parts.filter((part) => a[part] !== null && b[part] !== null);
+    const parts = scored.filter((part) => a[part] !== null && b[part] !== null);
     return { d: parts.reduce((sum, part) => sum + a[part] - b[part], 0), m: parts.length };
   });
   const paired = pairedDifference(pairs, { ...(resamples ? { resamples } : {}), ...(seed !== undefined ? { seed } : {}) });
@@ -131,7 +131,7 @@ export function gateSpend(dir) {
  * while any did the verdict is a hold with `failed`. Under `dir` go the bank runs (bank/<digest>/<cik>.json) and every
  * verdict (verdicts.jsonl).
  */
-export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, floor = GATE.floor, log = () => {} }) {
+export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, floor = GATE.floor, scoreParts = partsOf, parts = GATE.parts, log = () => {} }) {
   if (!bank.length) throw new Error('the promotion gate needs a bank of companies');
   return async ({ name, candidate, serving, main }) => {
     const revisions = serving ? [candidate, serving] : [candidate];
@@ -152,7 +152,7 @@ export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, 
         const { revision, company } = todo[next++];
         try {
           const result = await runOne({ name, sha256: revision.sha256, workflow: revision.workflow, company, main });
-          const record = { revision: revision.sha256, cik: company.cik, outcome: result.outcome, answered: result.outcome === 'complete', parts: partsOf(result.score), costUsd: result.costUsd ?? null, at: new Date().toISOString() };
+          const record = { revision: revision.sha256, cik: company.cik, outcome: result.outcome, answered: result.outcome === 'complete', parts: scoreParts(result.score), costUsd: result.costUsd ?? null, at: new Date().toISOString() };
           writeJson(bankFile(dir, revision.sha256, company.cik), record);
           values.get(revision.sha256).set(company.cik, valuesOf(record));
           costUsd += record.costUsd ?? 0;
@@ -164,7 +164,7 @@ export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, 
     await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, todo.length)) }, worker));
     const verdict = failed.length
       ? { promote: false, reason: `${failed.length} bank run(s) failed, so nothing was compared; they run again at the next ask`, failed }
-      : verdictOf({ bank, candidate: values.get(candidate.sha256), serving: serving ? values.get(serving.sha256) : null, floor });
+      : verdictOf({ bank, candidate: values.get(candidate.sha256), serving: serving ? values.get(serving.sha256) : null, floor, parts });
     const line = { at: new Date().toISOString(), name, candidate: candidate.sha256, serving: serving?.sha256 ?? null, main, bank: bank.length, concurrency, ran: todo.length - failed.length, kept: bank.length * revisions.length - todo.length, costUsd, ...verdict };
     mkdirSync(dir, { recursive: true });
     appendFileSync(join(dir, 'verdicts.jsonl'), `${JSON.stringify(line)}\n`);
@@ -182,8 +182,8 @@ export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, 
  * runs only what is missing. `apply` is the next curate's step, under the lock: each landed verdict is reported once, and
  * a promotion that still holds on main is committed there.
  */
-export function asyncGate({ bank, runOne, dir, concurrency, floor, log = () => {} }) {
-  const compare = replayGate({ bank, runOne, dir, ...(concurrency ? { concurrency } : {}), ...(floor === undefined ? {} : { floor }), log });
+export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, parts, log = () => {} }) {
+  const compare = replayGate({ bank, runOne, dir, ...(concurrency ? { concurrency } : {}), ...(floor === undefined ? {} : { floor }), ...(scoreParts ? { scoreParts } : {}), ...(parts ? { parts } : {}), log });
   const queued = new Map();
   let running = null;
   const pump = () => {

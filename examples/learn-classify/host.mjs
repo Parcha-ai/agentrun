@@ -228,6 +228,9 @@ export function classifyTools({ effects, answer }) {
     description: answer.description,
     parameters: answer.parameters,
     async execute(args) {
+      // An answer's own check across its fields (`problems`), when the job has one: an answer it faults is not recorded.
+      const problems = answer.problems?.(args) ?? [];
+      if (problems.length) throw new Error(`Not recorded: ${problems.join('; ')}. Fix the answer and call answer again.`);
       return toolResult([{ type: 'text', text: `Recorded ${answer.recorded(args)}.` }], { details: { recorded: answer.recorded(args) } });
     },
   });

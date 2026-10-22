@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { answerFacts, FACTS_RULES } from './facts-job.mjs';
 import { answerV1, answerV2, answerV4, jobInput, jobText, sic2GroupsTool, sicCodesTool } from './host.mjs';
+import { answerToolMcc, codeTableOf, jobInputMcc, jobTextMcc, mccCodesTool, mccGroupsTool } from './mcc.mjs';
 
 const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'));
 const readJsonIf = (file) => { try { return readJson(file); } catch { return undefined; } };
@@ -35,6 +36,27 @@ const FACTS_AGENT = {
   description: 'Reads a listed company\'s latest annual report and records six facts from it, each with where it was read.',
   instructions: 'You read a company\'s latest annual report from the web and record the six facts AGENTS.md names, each with the page it comes from and a quote. Follow AGENTS.md.',
   skills: [], tools: ['search_web', 'browse', 'fetch_page', 'read_document', 'answer'], max_cost_usd: 1,
+};
+
+/** The MCC job's data (learn-mcc): the merchants, each keyed by its id as the runner keys a company (`cik`), and the group
+ *  table (learn-mcc's build-mcc-groups.mjs: the ISO 18245 ranges and the code titles), from the data directory when it has
+ *  one, else the example's. `refused` is the data's list of sites that list merchants' codes. */
+const loadMcc = (data) => {
+  const merchants = readJson(join(data, 'merchants.json'));
+  const ids = new Set();
+  for (const m of merchants) {
+    if (typeof m.id !== 'string' || !/^[A-Za-z0-9._-]+$/.test(m.id)) throw new Error(`merchants.json: ${JSON.stringify(m.id)} is not an id ([A-Za-z0-9._-])`);
+    if (ids.has(m.id)) throw new Error(`merchants.json: ${m.id} is listed twice`);
+    ids.add(m.id);
+  }
+  const table = readJsonIf(join(data, 'mcc-groups.json')) ?? readJson(join(import.meta.dirname, '..', 'learn-mcc', 'data', 'mcc-groups.json'));
+  return {
+    companies: merchants.map((m) => ({ ...m, cik: m.id })),
+    table,
+    codes: codeTableOf(table.codes),
+    labels: codeTableOf(table.codes),
+    refused: readJsonIf(join(data, 'refused-hosts.json')) ?? [],
+  };
 };
 
 const loadV4 = (data) => ({
@@ -89,6 +111,18 @@ export const SETS = Object.freeze({
     answer: (d) => answerV4(d.codes),
     answerKey: 'sic4',
   }),
+  /** The MCC job (learn-mcc's SPEC.md): a merchant's MCC, risk tier, flags and verbatim evidence from its own site, scored
+   *  against the teacher's labels (learn-mcc's score-mcc.mjs). */
+  mcc: Object.freeze({
+    name: 'mcc',
+    agentDir: join(import.meta.dirname, '..', 'learn-mcc', 'agent-mcc'),
+    load: loadMcc,
+    input: jobInputMcc,
+    text: jobTextMcc,
+    labelTools: (d) => [mccGroupsTool(d.table.groups), mccCodesTool(d.codes)],
+    answer: (d) => answerToolMcc(d.codes),
+    answerKey: 'mcc',
+  }),
   /** The facts pass (eval-facts.mjs): the v4 companies and tools, no code tool, and an answer with no place for a code. */
   facts: Object.freeze({
     name: 'facts',
@@ -102,6 +136,6 @@ export const SETS = Object.freeze({
   }),
 });
 
-/** The jobs with search, a browser and the document reader beside fetch_page: v2, v4 (each scored after its run) and the
- *  facts pass. */
-export const isHard = (set) => set === SETS.v2 || set === SETS.v4 || set === SETS.facts;
+/** The jobs with search, a browser and the document reader beside fetch_page: v2, v4 and mcc (each scored after its run)
+ *  and the facts pass. */
+export const isHard = (set) => set === SETS.v2 || set === SETS.v4 || set === SETS.mcc || set === SETS.facts;

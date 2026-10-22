@@ -98,8 +98,8 @@ export function rowOf({ run, runId, job, seedSha, afterSha, offered, measure, fi
  * `scoringJudge` the scorer's Jev meter, `lineage` `lineageOf`'s, `phase` a sealed row's (before or after), `jobRecord`
  * job-record.mjs's `jobRecordOf` over the run's recording lines.
  */
-export function rowOfV2({ score, stats, scoringJudge, lineage, phase, jobRecord, ...v1 }) {
-  const row = rowOf({ ...v1, key: 'sic4', tools: [stats.browserCostUsd, stats.searchCostUsd, stats.documentCostUsd] });
+export function rowOfV2({ score, stats, scoringJudge, lineage, phase, jobRecord, key = 'sic4', ...v1 }) {
+  const row = rowOf({ ...v1, key, tools: [stats.browserCostUsd, stats.searchCostUsd, stats.documentCostUsd] });
   const { job } = v1;
   return {
     ...row,

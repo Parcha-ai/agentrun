@@ -48,7 +48,7 @@ export const RECORD_KINDS = Object.freeze(['index', 'headers', 'company', 'submi
 
 /** Every result of a reader tool that did not error, from the root agent, the workflows' agent nodes and their effects, each
  *  `{ tool, args, value, byWorkflow }`, and the run's last answer call's arguments. */
-function readerResults(lines) {
+export function readerResults(lines) {
   const calls = new Map();
   const nodeConvs = new Set();
   let answer;
