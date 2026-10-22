@@ -110,7 +110,27 @@ describe("the launcher's ptrace check, measured in the box", () => {
 			env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
 		});
 		expect(ran.status).toBe(8);
-		expect(ran.stdout.toString()).toMatch(/^INVALID a launch with stdin or secrets never runs its program as root/m);
+		expect(ran.stdout.toString()).toMatch(
+			/^INVALID a launch with stdin or secrets runs its program as root \(uid 0\) only with a toolsUser/m,
+		);
+		expect(existsSync(join(dir, "launcher.pid"))).toBe(false);
+	});
+
+	it("refuses, IN THE BOX, a tools user beside a program that does not run as root (here a launcher that is not root): no supervisor", () => {
+		const dir = join(root, "tools-not-root");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "spec.sh"),
+			"GEN='g3'\nFRAMED=1\nTOOLS='pda'\nISOLATION='none'\nrun_program() {\n  exec true\n}\n",
+		);
+		const frame = `PI-TRANSPORT-LAUNCH/1\n\n${Buffer.from("tok").toString("base64")}\n`;
+		const ran = spawnSync("sh", [scriptMeasuring(scope("1\n")), "start", dir], {
+			input: frame,
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+		});
+		if (process.getuid?.() === 0) return;
+		expect(ran.status).toBe(8);
+		expect(ran.stdout.toString()).toMatch(/^INVALID toolsUser goes only with a program run as root/m);
 		expect(existsSync(join(dir, "launcher.pid"))).toBe(false);
 	});
 
