@@ -327,6 +327,30 @@ test("a demoted digest saved again is refused, whether the trial still holds it 
   assert.deepEqual(parseTrial(renderTrial(next.trial), "audit"), next.trial);
 });
 
+test("the refusals stop at their limit: an admission that keeps exactly the limit goes through, the next is refused and changes nothing", () => {
+  const tick = (n) => new Date(Date.UTC(2026, 9, 17) + n * 1000).toISOString();
+  let n = 0;
+  let trial = churned(TRIAL_LIMITS.revisions);
+  // Each round: a new revision admitted (the last one's digest moves to the refusals), then demoted by two failed uses.
+  const round = (i) => {
+    const digest = `${"cd".repeat(30)}${i.toString(16).padStart(4, "0")}`;
+    const admitted = admitRevision(trial, { name: "audit", sha256: digest, run: "w", at: tick(n++), when: WHEN });
+    if (admitted.status !== "admitted") return admitted;
+    const fail = (k) => ({ run: `y${i}-${k}`, sha256: digest, outcome: "failed", at: tick(n++) });
+    trial = foldUses(admitted.trial, [fail(1), fail(2)]).trial;
+    return admitted;
+  };
+  let i = 0;
+  while ((trial.refused?.length ?? 0) < TRIAL_LIMITS.refused) assert.equal(round(i++).status, "admitted");
+  assert.equal(trial.refused.length, TRIAL_LIMITS.refused, "an admission that keeps exactly the limit went through");
+  renderTrial(trial);
+  const before = structuredClone(trial);
+  const over = round(i);
+  assert.deepEqual([over.status, over.reason], ["refused", "limit"]);
+  assert.match(over.detail, /refused digests/);
+  assert.deepEqual(trial, before, "the trial is unchanged");
+});
+
 test("a short stream's trial is exactly as before: no refusals until the name would hold more than the limit", () => {
   const trial = churned(TRIAL_LIMITS.revisions - 1);
   const admitted = admitRevision(trial, { name: "audit", sha256: "f".repeat(64), run: "w", at: at(9), when: WHEN }).trial;
