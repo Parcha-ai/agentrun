@@ -612,3 +612,48 @@ describe("boxHost: the host box's key, minted per box at each create (agentrun-h
     assert.match(String(labelOf(provider, h.box)), /^L1\/0\/[0-9a-f]{16}$/);
   });
 });
+
+describe("boxHost: a read or an end that fails changes nothing it cannot finish", () => {
+  const runs = (provider: FakeProvider) => provider.program("pi-durable-disk", ({ signal }) => new Promise<number>((r) => signal.addEventListener("abort", () => r(0))));
+  const running = (provider: FakeProvider) => provider.boxes.filter((b) => b.state === "running").map((b) => b.id);
+
+  it("a launch state that cannot be read is not 'never launched': the start fails, and nothing is uploaded, launched or ended", async () => {
+    const provider = fake(modalLike({ facts: fd }));
+    runs(provider);
+    const hA = await host(provider, { files: [{ path: "/opt/app/app.js", bytes: new TextEncoder().encode("x") }] }).start(REF, TOKEN, { attempt: 1 });
+    const before = provider.calls.length;
+    provider.script.on({ op: "launchState" }, { fail: "unknown" }, { times: 1 });
+    await assert.rejects(host(provider, { files: [{ path: "/opt/app/app.js", bytes: new TextEncoder().encode("x") }] }).start(REF, TOKEN, { attempt: 1 }), code("CREATE_FAILED"));
+    const after = provider.calls.slice(before).map((c) => c.op);
+    for (const op of ["upload", "launch", "destroy", "create"]) assert.ok(!after.includes(op as never), `no ${op} after an unreadable launch state: ${after.join(",")}`);
+    assert.deepEqual(running(provider), [hA.box]);
+  });
+
+  it("a found box whose launch ended, and whose end fails: STOP_FAILED, no replacement, and its receipt is not marked ended", async () => {
+    const provider = fake(modalLike({ facts: fd }));
+    const driver = host(provider);
+    provider.program("pi-durable-disk", () => Promise.resolve(3));
+    const made = await provider.create({ ...SPEC, capabilities: ["fuse"], labels: { "pi-durable-disk.disk": REF.disk, "pi-durable-disk.run": REF.id, "pi-durable-disk.attempt": "1", "agentrun-host-key": "r1/1/0000000000000000" } }, BACKGROUND_CONTEXT);
+    assert.ok(made.ok);
+    const launcher = await import("@parcha/pi-transport/launch");
+    const l = await launcher.launch(made.value, "pda-r1-g1", { argv: ["pi-durable-disk"], user: "pda", restart: false }, BACKGROUND_CONTEXT);
+    assert.ok(l.ok);
+    for (let i = 0; i < 50 && (await launcher.launchState(made.value, { v: 1, name: "pda-r1-g1" }, BACKGROUND_CONTEXT)).value?.phase !== "exited"; i++) await new Promise((r) => setTimeout(r, 5));
+    provider.script.on({ op: "destroy" }, { fail: "unknown" });
+    const creates = provider.calls.filter((c) => c.op === "create").length;
+    await assert.rejects(driver.start(REF, TOKEN, { attempt: 1 }), code("STOP_FAILED"));
+    assert.equal(provider.calls.filter((c) => c.op === "create").length, creates, "no replacement while the first may still serve");
+    assert.deepEqual(running(provider), [made.value.id]);
+  });
+
+  it("a refused box whose end fails is ended by a later start, which is still refused at once", async () => {
+    const provider = fake(daytonaLike({ facts: fd }));
+    provider.script.on({ op: "destroy" }, { fail: "unknown" }, { times: 1 });
+    const driver = host(provider);
+    await assert.rejects(driver.start(REF, TOKEN, { attempt: 1 }), code("UNSUPPORTED"));
+    assert.equal(provider.boxes[0]!.state, "running", "the first end failed");
+    await assert.rejects(driver.start(REF, TOKEN, { attempt: 2 }), code("UNSUPPORTED"));
+    assert.equal(provider.boxes[0]!.state, "ended", "the later start ended it");
+    assert.equal(provider.boxes.length, 1, "and made no box");
+  });
+});
