@@ -647,4 +647,14 @@ describe("fakeBoxes: T3's own launcher over a fake box (Box.launcher)", () => {
 			restarts: 0,
 		});
 	});
+
+	it("marks a launch lost when its box ends under the running program, and its launcher is gone", async () => {
+		const provider = fakeBoxes();
+		provider.program("inst", forever);
+		const box = getOrThrow(await provider.create(SPEC, context));
+		getOrThrow(await launch(box, "inst", { argv: ["inst"] }, context));
+		box.end(null);
+		await tick();
+		expect(box.launches[0]?.status).toMatchObject({ phase: "lost", launcherAlive: false });
+	});
 });
