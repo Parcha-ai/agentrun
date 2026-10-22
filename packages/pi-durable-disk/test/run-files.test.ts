@@ -90,6 +90,19 @@ test("every path that is not a relative path of safe segments inside the run is 
   assert.deepEqual(f.calls, [], "no request was made for any of them");
 });
 
+test("an INVALID_PATH message names what is wrong, never the path it was given", async () => {
+  const f = run();
+  const secret = `sk-${"7f3a".repeat(40)}`;
+  for (const [bad, why] of [[`/${secret}`, /absolute/], [`${secret}/../x`, /"\.\."/], [`${secret} x`, /unsafe character at index \d+/], [`.archil/${secret}`, /\.archil/], ["", /empty/], [`a//${secret}`, /empty segment/]] as const) {
+    await assert.rejects(readRunFile(f.control, REF, bad), (e: unknown) => {
+      assert.ok(e instanceof RunFileError && e.code === "INVALID_PATH", String(e));
+      assert.match((e as Error).message, why);
+      assert.ok(!(e as Error).message.includes(secret.slice(0, 16)), `no echo: ${(e as Error).message}`);
+      return true;
+    });
+  }
+});
+
 test("listRunFiles: the names directly under a directory, sorted, names only (no marker, nothing deeper); the run's root with an empty dir", async () => {
   const f = run({
     [`${RUN}box-ids.internal/`]: { kind: "dir" },

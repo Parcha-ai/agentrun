@@ -7,11 +7,12 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
 import { archilPlace, localPlace, PlaceError, writeAll } from "../src/place.ts";
+import { RunFileError } from "../src/run-files.ts";
 import { parseTokenNickname } from "../src/claim.ts";
 import type { HostBox, HostDriver, HostHandle, HostStatus, StartAttempt, SupervisorControl } from "../src/supervise.ts";
 import { currentBootId, procStartTicks } from "../src/hosts/local-host.ts";
@@ -619,6 +620,70 @@ describe("archilPlace recordHome", () => {
     await unowned.start({ gen: 1, env: {}, stdin: await unowned.token!(1) });
     assert.deepEqual(c2.puts, []);
     await unowned.release();
+  });
+});
+
+describe("a place's run files (readRunFile, listRunFiles): its own run, read only", () => {
+  const bytes = (t: string) => new TextEncoder().encode(t);
+  const code = (c: string) => (e: unknown) => e instanceof RunFileError && e.code === c;
+
+  it("archilPlace reads over its control: a file's bytes, null only for a missing file, [] for a directory not there yet; every other failure throws; nothing is written", async () => {
+    const control = new FakeControl();
+    const place = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const run = `runs/${ID}/`;
+    control.objects.set(run, "");
+    control.objects.set(`${run}box-ids.internal/`, "");
+    control.objects.set(`${run}box-ids.internal/box-2.json`, '{"owner":"place"}');
+    control.objects.set(`${run}box-ids.internal/box-10.json`, '{"owner":"tools"}');
+    control.objects.set(`${run}link.json`, "");
+    control.failUnder = { prefix: `${run}link.json`, error: Object.assign(new Error("501 NotImplemented"), { status: 501, code: "NotImplemented" }) };
+    const before = JSON.stringify([...control.objects]);
+    const puts = control.puts.length;
+    assert.deepEqual(await place.readRunFile!("box-ids.internal/box-2.json"), bytes('{"owner":"place"}'));
+    assert.equal(await place.readRunFile!("box-ids.internal/box-3.json"), null, "missing: null, read again later");
+    assert.deepEqual(await place.listRunFiles!("box-ids.internal"), ["box-10.json", "box-2.json"]);
+    assert.deepEqual(await place.listRunFiles!("not-made-yet"), [], "a directory not there yet is not an error");
+    await assert.rejects(place.readRunFile!("link.json"), code("NOT_A_FILE"), "a symlink (S3 answers 501)");
+    await assert.rejects(place.readRunFile!("../other/run.json"), code("INVALID_PATH"));
+    control.objects.delete(run);
+    control.objects.delete(`${run}box-ids.internal/`);
+    control.objects.delete(`${run}box-ids.internal/box-2.json`);
+    control.objects.delete(`${run}box-ids.internal/box-10.json`);
+    await assert.rejects(place.readRunFile!("box-ids.internal/box-2.json"), code("RUN_MISSING"));
+    await assert.rejects(place.listRunFiles!("box-ids.internal"), code("RUN_MISSING"));
+    control.objects.set(run, "");
+    control.failUnder = { prefix: `${run}box-ids.internal/box-4.json`, error: Object.assign(new Error("503"), { status: 503 }) };
+    await assert.rejects(place.readRunFile!("box-ids.internal/box-4.json"), code("CONTROL_API_FAILED"));
+    assert.equal(control.puts.length, puts, "no put");
+    assert.equal(JSON.stringify([...control.objects].filter(([k]) => k !== run)), JSON.stringify(JSON.parse(before).filter(([k]: [string]) => ![run, `${run}box-ids.internal/`, `${run}box-ids.internal/box-2.json`, `${run}box-ids.internal/box-10.json`].includes(k))), "the reads changed nothing");
+  });
+
+  it("localPlace reads its run directory: a file's bytes, null only for a missing file, sorted names, [] for a directory not there yet; a directory or a symlink is NOT_A_FILE, never followed; unsafe paths are refused", async () => {
+    const root = scratch();
+    mkdirSync(join(root, "box-ids.internal", "sub"), { recursive: true });
+    writeFileSync(join(root, "box-ids.internal", "box-2.json"), '{"owner":"place"}');
+    writeFileSync(join(root, "box-ids.internal", "box-10.json"), "");
+    const outside = join(dirname(root), "outside.json");
+    writeFileSync(outside, "SECRET-OUTSIDE");
+    symlinkSync(outside, join(root, "box-ids.internal", "link.json"));
+    symlinkSync(dirname(root), join(root, "up"));
+    const place = localPlace({ app: "app.ts" })({ paths: pathsAt(root) });
+    assert.deepEqual(await place.readRunFile!("box-ids.internal/box-2.json"), bytes('{"owner":"place"}'));
+    const empty = await place.readRunFile!("box-ids.internal/box-10.json");
+    assert.ok(empty instanceof Uint8Array && empty.length === 0, "a real empty file is an empty array");
+    assert.equal(await place.readRunFile!("box-ids.internal/box-3.json"), null);
+    assert.equal(await place.readRunFile!("not-made/box-1.json"), null, "under a directory not there yet: missing");
+    assert.deepEqual(await place.listRunFiles!("box-ids.internal"), ["box-10.json", "box-2.json", "link.json", "sub"]);
+    assert.deepEqual(await place.listRunFiles!(""), ["box-ids.internal", "up"]);
+    assert.deepEqual(await place.listRunFiles!("not-made-yet"), []);
+    await assert.rejects(place.readRunFile!("box-ids.internal/link.json"), code("NOT_A_FILE"), "a symlink is never followed");
+    await assert.rejects(place.readRunFile!("up/outside.json"), code("NOT_A_FILE"), "nor a symlinked directory on the way");
+    await assert.rejects(place.listRunFiles!("up"), code("NOT_A_FILE"));
+    await assert.rejects(place.readRunFile!("box-ids.internal/sub"), code("NOT_A_FILE"), "a directory");
+    for (const bad of ["", "/etc/passwd", "../outside.json", "a/../b", "bad name"]) await assert.rejects(place.readRunFile!(bad), code("INVALID_PATH"), JSON.stringify(bad));
+    const gone = localPlace({ app: "app.ts" })({ paths: pathsAt(join(dirname(root), "no-such-run")) });
+    await assert.rejects(gone.readRunFile!("run.json"), code("RUN_MISSING"));
+    await assert.rejects(gone.listRunFiles!(""), code("RUN_MISSING"));
   });
 });
 

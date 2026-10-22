@@ -14,6 +14,7 @@ import { DEFAULT_MOUNT_ROOT, findDelegations, mintMountToken, pathlessResolver, 
 import { reapCommands } from "./commands.ts";
 import { HeldError, PdaError } from "./errors.ts";
 import { takeOwnerLock } from "./run.ts";
+import { listLocalRunFiles, listRunFiles, readLocalRunFile, readRunFile, type RunFileControl } from "./run-files.ts";
 import { readRunRecord, type RunRecord } from "./status.ts";
 import {
   CONTROL_TIMEOUT_MS,
@@ -126,6 +127,14 @@ export interface Place {
   release(): Promise<void>;
   /** A place whose runners record where the supervisor cannot read says where, and brings the recording home. */
   readonly recordHome?: PlaceRecordHome;
+  /**
+   * The bytes of the run's own file `path` (`runs/<id>/<path>`), or null when there is no such file; every other failure
+   * throws a `RunFileError` (INVALID_PATH, RUN_MISSING, NOT_A_FILE, CONTROL_API_FAILED). Read only: never a write, never
+   * the claim. A place never parses what it reads.
+   */
+  readRunFile?(path: string): Promise<Uint8Array | null>;
+  /** The names directly under `dir` in the run (`""` for its root), sorted; [] for a directory not there yet. A missing run, or a failed read, throws. */
+  listRunFiles?(dir: string): Promise<string[]>;
 }
 
 export type PlaceErrorCode = "INVALID_ARGUMENT" | "HELD" | "START_TIMED_OUT" | "STATUS_FAILED" | "KILL_UNSUPPORTED" | "RELEASE_FAILED" | "BOX_GONE" | "CARRY_FAILED" | "BLOB_MISMATCH" | "DIRS_REFUSED";
@@ -304,6 +313,8 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
     return {
       name: "local",
       paths,
+      readRunFile: (path) => readLocalRunFile(root, paths.id, path),
+      listRunFiles: (dir) => listLocalRunFiles(root, paths.id, dir),
       kills: ctx.destroyBoxes ? ["process", "box"] : ["process"],
       start,
       // The runner is a child of this machine, so its kill request is the supervisor's own file.
@@ -927,6 +938,13 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
     return {
       name: "archil",
       paths,
+      // The run's own files over the control (GET, HEAD, LIST): never a mount, a write, or a wait on the claim.
+      ...(recording
+        ? {
+            readRunFile: (path: string) => readRunFile(control as RunFileControl, ref, path),
+            listRunFiles: (dir: string) => listRunFiles(control as RunFileControl, ref, dir),
+          }
+        : {}),
       kills: host.kill && host.kills ? [host.kills] : [],
       token: async (attempt) => (await mint(attempt)).token,
       ...(recording

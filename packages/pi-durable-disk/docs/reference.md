@@ -798,6 +798,13 @@ run's root), sorted: files and directories alike, names only, never a claim abou
   - `RUN_MISSING`: no such run on the disk.
   - `NOT_A_FILE`: a directory, or a symlink.
   - `CONTROL_API_FAILED`: any other failure of the control, with its cause.
+- **The same reads through a place.** A place offers them for its own run: `place.readRunFile(path)` and
+  `place.listRunFiles(dir)`, both optional members of `Place`, with the same answers. `archilPlace` reads over its
+  control and run ref (when the control can list, as `archilControl`'s can). `localPlace` reads its run directory on this
+  machine, with the same path rules. There, a symlink anywhere on the way is `NOT_A_FILE`, never followed, so nothing
+  outside the run is read. A place never parses what it reads.
+- **`INVALID_PATH` names the fault only** (empty, absolute, an empty, `.` or `..` segment, an unsafe character at index
+  N, under `.archil/`), never the path it was given.
 - **Symlinks.** Archil's S3 API lists a symlink as an ordinary zero-byte key, so a listing can't tell it from an empty
   file. Its HEAD and GET answer 501 NotImplemented, and S3 never follows a link. So `readRunFile` decides `NOT_A_FILE` on
   that 501, never from a listing. A real empty file reads as an empty array. Measured on archil 0.8.42.
