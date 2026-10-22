@@ -173,8 +173,11 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
         argv: [...command, "run", "--disk", ref.disk, "--region", ref.region, "--id", ref.id, "--mount-root", mountRoot, "--archil", archil, "--app", options.app, ...(options.runArgs ?? []), "--run-as", runAs, "--token-stdin"],
         env: { ...options.env, ...extra, PDA_HOLDER: holder },
         inheritEnv: false,
-        // The instance runs as root: it mounts directly (no sudo) and holds the token; its commands drop to runAs.
+        // The instance runs as root: it mounts directly (no sudo) and holds the token; its commands drop to runAs. The
+        // launcher verifies that same user (it exists, is not uid or gid 0, has no sudo rule and no setuid or setcap
+        // helper) and exports it, which the instance checks --run-as against.
         user: "root",
+        toolsUser: runAs,
         stdin: new TextEncoder().encode(`${mountToken}\n`),
         restart: true,
         restartDelayMs: 1_000,
