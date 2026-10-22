@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
-import { main, runUser } from "../src/cli.ts";
+import { main, runUser, toolsUserCheck } from "../src/cli.ts";
 import { archilEnv, EnvError } from "../src/env.ts";
 import { PdaError } from "../src/errors.ts";
 
@@ -140,6 +140,34 @@ test("run --run-as: a name from passwd with its group and home, or uid[:gid]; ro
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("run --run-as never puts the agent's commands in group root: a gid of 0, given or from passwd, is refused", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pda-passwd-"));
+  try {
+    const passwd = join(dir, "passwd");
+    writeFileSync(passwd, "root:x:0:0:root:/root:/bin/bash\nrootgroup:x:1600:0::/home/rg:/bin/bash\n");
+    for (const spec of ["1500:0", "1500:000", "rootgroup"]) {
+      assert.throws(() => runUser(spec, passwd), (e: unknown) => e instanceof PdaError && e.exitCode === 2 && /group root|gid 0/.test((e as Error).message), spec);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the tools user the launcher verified (PI_TRANSPORT_TOOLS_USER/UID) must be --run-as: a different one, or none, is refused; without a declaration nothing changes", () => {
+  const pda = { uid: 1500, gid: 1500, home: "/home/pda", name: "pda" };
+  const verified = { PI_TRANSPORT_TOOLS_USER: "pda", PI_TRANSPORT_TOOLS_UID: "1500" };
+  assert.doesNotThrow(() => toolsUserCheck(pda, verified), "the same user");
+  assert.doesNotThrow(() => toolsUserCheck(pda, {}), "no declaration: --run-as as before");
+  assert.doesNotThrow(() => toolsUserCheck(undefined, {}), "neither");
+  const refused = (runAs: typeof pda | undefined, env: Record<string, string>, why: string, re: RegExp) =>
+    assert.throws(() => toolsUserCheck(runAs, env), (e: unknown) => e instanceof PdaError && e.exitCode === 2 && re.test((e as Error).message), why);
+  refused(undefined, verified, "a verified tools user and no --run-as: the commands would run as this (root) process", /--run-as/);
+  refused({ ...pda, uid: 1501, name: "pdb" }, verified, "another uid", /1500/);
+  assert.doesNotThrow(() => toolsUserCheck({ ...pda, name: "alias" }, verified), "the same uid under another name is the same user: the uid decides");
+  refused(pda, { PI_TRANSPORT_TOOLS_USER: "pda" }, "a name with no uid: the declaration is malformed", /PI_TRANSPORT_TOOLS_UID/);
+  refused(pda, { PI_TRANSPORT_TOOLS_USER: "pda", PI_TRANSPORT_TOOLS_UID: "15x0" }, "a uid that is not a number", /PI_TRANSPORT_TOOLS_UID/);
 });
 
 test("run --run-as needs an instance running as root", { skip: process.getuid?.() === 0 && "running as root" }, async () => {
