@@ -500,3 +500,14 @@ test("a live thinking summary follows the thinking cap, as a stored one does", (
   const [stored] = timelineOf([assistant([{ type: "thinking", thinking: "Checking the page now. More." }, call("c", "read", { path: "a" })])], options);
   assert.equal(stored.summary, live.summary);
 });
+
+test("a tool result carries the round of its call, and a result with no call id has a null tool_use_id and no round", () => {
+  const entries = [assistant([call("c1", "read", { path: "a.md" })]), result("c1", "read", "x"), result(undefined, "read", "orphan")];
+  const rows = timelineOf(entries);
+  const use = rows.find((row) => row.kind === "tool_use");
+  const [paired, orphan] = rows.filter((row) => row.kind === "tool_result");
+  assert.equal(typeof use.round, "number");
+  assert.deepEqual([paired.tool_use_id, paired.round], ["c1", use.round]);
+  assert.deepEqual([orphan.tool_use_id, orphan.round], [null, undefined]);
+  assert.equal("round" in orphan, false, "an absent round is not a key");
+});

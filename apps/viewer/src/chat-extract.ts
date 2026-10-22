@@ -192,7 +192,6 @@ function chatRaw(body: Json | undefined): string {
   return raw;
 }
 
-/** The chat + report view's model of a recording. `readJson` reads a blob's JSON (the run's cited result). */
 /** Each conversation an agent node of the workflow ran, and that node's path. */
 function chatNodeConversations(lines: readonly Line[]): Map<string, string> {
   const pathOfConversation = new Map<string, string>();
@@ -220,11 +219,12 @@ export function chatGivenInput(lines: readonly Line[]): Json | undefined {
 /** A run's title, by one rule wherever it is shown: the artifact's title, else the first line of the input's question,
  *  else the recording's title. Without the run's lines (a gallery's list) the question is not known. */
 export function chatTitle(manifest: Manifest, inputValue?: Json): string {
-  const artifact = chatObj((manifest as { artifact?: Json }).artifact);
+  const artifact = chatObj(manifest.artifact);
   const question = typeof inputValue === 'string' ? inputValue : chatStr(chatObj(inputValue)?.question);
   return chatStr(artifact?.title) ?? (question?.trim() ? chatClip(chatFirstLine(question), 140) : manifest.title);
 }
 
+/** The chat + report view's model of a recording. `readJson` reads a blob's JSON (the run's cited result). */
 export async function extractChat(recording: Recording, readJson: (sha: string) => Promise<Json | undefined>, options: { muse?: boolean } = {}): Promise<ChatModel> {
   const { manifest } = recording;
   // A recording with no times keeps its file's order: each line placed at its position, the axis read as an order.
@@ -237,6 +237,37 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   for (const line of live('node.start')) nodeAt.set(line.path ?? '', { label: chatStr(chatObj(line.data)?.label) ?? line.path ?? 'node', t0: line.t });
   for (const line of live('node.end')) { const node = nodeAt.get(line.path ?? ''); if (node) node.t1 = line.t; }
   const pathOfConversation = chatNodeConversations(lines);
+  // Each conversation's record (pi.conversation): the conversation it was forked from, and the conversation and task that made it.
+  const records = new Map<string, { parent?: string; at?: string; owner?: string; task?: string }>();
+  for (const line of lines) {
+    if (line.channel !== 'durable' || line.kind !== 'pi.conversation') continue;
+    const d = chatObj(line.data);
+    const id = chatId(d?.id);
+    if (!id) continue;
+    const parent = chatId(chatObj(d?.parent)?.conversationId);
+    const at = chatId(chatObj(d?.parent)?.at);
+    const owner = chatObj(d?.owner);
+    records.set(id, { ...(parent ? { parent, ...(at ? { at } : {}) } : {}), ...(chatId(owner?.conversationId) ? { owner: chatId(owner?.conversationId)!, task: chatId(owner?.taskId) } : {}) });
+  }
+  // A tool task's record (pi.tool) names the call it runs.
+  const callOfTask = new Map<string, string>();
+  for (const line of lines) {
+    if (line.channel !== 'durable' || line.kind !== 'pi.tool') continue;
+    const d = chatObj(line.data);
+    const task = chatId(d?.id);
+    const call = chatStr(chatObj(d?.input)?.callId);
+    if (task && call) callOfTask.set(task, call);
+  }
+  // The entries a person submitted: an input submission whose request is not the node runner's own (only a recording that
+  // keeps submissions says).
+  const personal = new Set<string>();
+  if (chatObj(chatObj(manifest as unknown as Json)?.recorded)?.submissions === true) for (const line of lines) {
+    if (line.channel !== 'durable' || line.kind !== 'pi.submission') continue;
+    const d = chatObj(line.data);
+    const conversation = chatId(d?.conversationId);
+    const entry = chatId(d?.entry);
+    if (d?.type === 'input' && conversation && entry && !chatStr(d?.requestId)?.startsWith('node:')) personal.add(`${conversation}:${entry}`);
+  }
   const inputValue = chatGivenInput(lines);
   // A record's `question` is the person's words and its `files` what they handed over; any other field is a detail.
   const inputRecord = chatObj(inputValue);
@@ -266,6 +297,8 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   const assistantItems = new Map<string, { id: string; t: number }[]>();
   const seen = new Set<string>();
   const prompted = new Set<string>();
+  /** The last item each stored entry drew, in file order: where a conversation forked at that entry is drawn. */
+  const entryItems: { conversation: string; entry: string; item: string }[] = [];
   let counter = 0;
   const threadOf = (conversation: string, t: number): ChatThread => {
     let thread = threads.get(conversation);
@@ -290,6 +323,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     if (!conversation || (entry && seen.has(`${conversation}:${entry}`))) continue;
     if (entry) seen.add(`${conversation}:${entry}`);
     const thread = threadOf(conversation, line.t);
+    const drawn = thread.items.length;
     for (const message of chatList(d?.model)) {
       const m = chatObj(message);
       if (!m) continue;
@@ -297,9 +331,12 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
         // In a conversation a workflow node holds, the runner speaks: its first user entry is the prompt composed from
         // the node's input, and any later one is a message the runner added.
         const byRunner = pathOfConversation.has(conversation);
-        if (byRunner && !prompted.has(conversation)) { prompted.add(conversation); continue; }
+        const person = entry !== undefined && personal.has(`${conversation}:${entry}`);
+        if (byRunner && !person && !prompted.has(conversation)) { prompted.add(conversation); continue; }
         const text = chatText(m.content);
-        if (text.trim()) thread.items.push({ kind: byRunner ? 'host' : 'user', id: `item-${++counter}`, text, t: line.t });
+        // In a conversation something made (an owner on its record), a user entry is its maker's, unless a person submitted it.
+        const made = byRunner || records.get(conversation)?.owner !== undefined;
+        if (text.trim()) thread.items.push({ kind: made && !person ? 'host' : 'user', id: `item-${++counter}`, text, t: line.t });
       } else if (line.kind === 'pi.assistant') {
         for (const part of chatList(m.content)) {
           const p = chatObj(part);
@@ -336,6 +373,38 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
         item.media = (line.blobs ?? []).filter((sha) => (recording.blobType(sha) ?? '').startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(recording.blobUrl(sha) ?? ''));
       }
     }
+    if (entry && thread.items.length > drawn) entryItems.push({ conversation, entry, item: thread.items.at(-1)!.id });
+  }
+  // A conversation forked from another is drawn in it at the entry it was forked at (parent.at): under the call that made it
+  // when its owner's task names one, else at that entry's item (the latest at or before it). It is named by its own label,
+  // else by its parent's label and its place among the parent's conversations; a call's conversations open with the tool's words.
+  const labelOf = new Map<string, string>();
+  for (const line of lines) if (line.channel === 'durable' && line.kind === 'reference.label') { const label = chatStr(chatObj(chatObj(line.data)?.value)?.label)?.trim(); const conversation = chatId(line.conv); if (label && conversation) labelOf.set(conversation, label); }
+  const madeBy = (conversation: string) => { const task = records.get(conversation)?.task; const call = task ? callOfTask.get(task) : undefined; return call ? toolItems.get(call) : undefined; };
+  const forkedAt = (conversation: string): string | undefined => {
+    const record = records.get(conversation);
+    if (!record?.parent || record.at === undefined) return undefined;
+    return entryItems.filter((each) => each.conversation === record.parent && Number(each.entry) <= Number(record.at)).at(-1)?.item;
+  };
+  const drawnAt = new Map<string, number>();
+  for (const conversation of [...threads.keys()].sort((a, b) => Number(a) - Number(b) || a.localeCompare(b))) {
+    const call = madeBy(conversation);
+    const at = call?.id ?? forkedAt(conversation);
+    if (!at) continue;
+    const thread = threads.get(conversation)!;
+    const record = records.get(conversation)!;
+    const source = record.parent ?? record.owner ?? '';
+    const path = pathOfConversation.get(source);
+    const above = (path !== undefined ? nodeAt.get(path)?.label : undefined) ?? labelOf.get(source) ?? threads.get(source)?.label;
+    const own = labelOf.get(conversation);
+    const place = (drawnAt.get(source) ?? 0) + 1;
+    drawnAt.set(source, place);
+    if (call) {
+      (call.forks ??= []).push(thread.id);
+      for (const item of thread.items) if (item.kind === 'host') item.by = call.tool;
+    }
+    thread.under = at;
+    thread.label = own && own !== above ? own : `${above ?? call?.tool ?? 'conversation'} · ${place}`;
   }
   const ordered = [...threads.values()].sort((a, b) => (a.t0 ?? 0) - (b.t0 ?? 0));
 
@@ -582,7 +651,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   for (const item of toolItems.values()) if (item.browser) item.browser.frames.sort((a, b) => a.t - b.t);
 
   // A step that ran a command or a script and made no look and no picture is plumbing; a step that drove a browser is never.
-  for (const [callId, item] of toolItems) if (commands.has(callId) && !item.calls.some((call) => call.look) && item.media.length === 0 && !item.browser) item.plumbing = true;
+  for (const [callId, item] of toolItems) if (commands.has(callId) && !item.calls.some((call) => call.look) && item.media.length === 0 && !item.browser && !item.forks) item.plumbing = true;
 
   // The run's answer: its cited result, each cite on the look (and the card) that made it; else the result record it
   // submitted, a field of evidence paths as its cites; else its final assistant text.
@@ -640,12 +709,14 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   const resultLine = lines.findLast((line) => line.kind === 'result');
   // The agent the header names (the Muse view only): the name the host labelled the run with, else the recording's title;
   // done when the run delivered (the manifest names a result or an artifact, or a result line was recorded), waiting when a hold is
-  // still open at the run's end, else working.
-  const labelled = chatStr(chatObj(chatObj(lines.findLast((line) => line.channel === 'durable' && line.kind === 'reference.label')?.data)?.value)?.label)?.trim();
+  // still open at the run's end, else working. A fork's label is never the agent's: a fork is known by its record (a parent or an
+  // owner), whether or not it has a message yet.
+  const forked = (conversation: string | undefined) => { const record = conversation === undefined ? undefined : records.get(conversation); return record?.parent !== undefined || record?.owner !== undefined; };
+  const labelled = chatStr(chatObj(chatObj(lines.findLast((line) => line.channel === 'durable' && line.kind === 'reference.label' && !forked(chatId(line.conv)))?.data)?.value)?.label)?.trim();
   const agentName = options.muse ? labelled || chatStr(manifest.title)?.trim() || undefined : undefined;
   const endsHeld = [...toolItems.values()].some((item) => item.browser?.holds.some((hold) => hold.t1 === undefined));
-  const agent: ChatModel['agent'] = agentName ? { name: agentName, status: manifest.result?.blob || resultLine || (manifest as { artifact?: Json }).artifact ? 'done' : endsHeld ? 'waiting' : 'working' } : undefined;
-  const artifact = chatObj((manifest as { artifact?: Json }).artifact);
+  const agent: ChatModel['agent'] = agentName ? { name: agentName, status: manifest.result?.blob || resultLine || manifest.artifact ? 'done' : endsHeld ? 'waiting' : 'working' } : undefined;
+  const artifact = chatObj(manifest.artifact);
   return {
     title: chatTitle(manifest, inputValue),
     ...(input ? { input } : {}),

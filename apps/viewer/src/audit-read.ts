@@ -128,14 +128,17 @@ export function callFactsOf(value: Json | undefined): CallFacts {
 /** A judge's answer: the choice among `clear`, `notice`, `act` and its confidence. */
 export type Verdict = { answer: string; confidence: number | null };
 export function verdictsOf(doc: DocLine): { row: string; verdict: Verdict; path?: string }[] {
-  if (doc.doc !== 'agentrun.decisions' || !auditIsObj(doc.value) || !Array.isArray(doc.value.receipts)) return [];
+  if (doc.doc !== 'agentrun.decisions' || !auditIsObj(doc.value)) return [];
+  // The single document holds a list of rows; a keyed document is one row (its key stands for the row without an identity).
+  const rows = Array.isArray(doc.value.receipts) ? doc.value.receipts : doc.key !== undefined ? [doc.value] : undefined;
+  if (!rows) return [];
   const out: { row: string; verdict: Verdict; path?: string }[] = [];
-  for (const row of doc.value.receipts) {
+  for (const row of rows) {
     if (!auditIsObj(row) || row.error !== undefined) continue;
     const choice = auditFirstChoice(row.answers ?? row);
     if (!choice) continue;
     const path = [row.execution_path, row.executionPath, row.path].find((each): each is string => typeof each === 'string' && each.startsWith('/'));
-    out.push({ row: `${typeof row.run_key === 'string' ? row.run_key : ''} ${typeof row.decision_id === 'string' ? row.decision_id : out.length}`, verdict: { answer: choice.choice, confidence: choice.confidence }, ...(path ? { path } : {}) });
+    out.push({ row: `${typeof row.run_key === 'string' ? row.run_key : ''} ${typeof row.decision_id === 'string' ? row.decision_id : doc.key !== undefined ? `row ${doc.key}` : out.length}`, verdict: { answer: choice.choice, confidence: choice.confidence }, ...(path ? { path } : {}) });
   }
   return out;
 }
