@@ -163,6 +163,19 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
       const labels = { [DISK_LABEL]: ref.disk, [RUN_LABEL_KEY]: ref.id, [ATTEMPT_LABEL]: String(n) };
       const context = bounded(startTimeoutMs);
       const timedOut = () => new BoxHostError("START_TIMED_OUT", `starting run ${ref.id} attempt ${n} in a ${provider.name} box took over ${startTimeoutMs} ms`);
+      const specFor = (holder: string): LaunchSpec => ({
+        argv: [...command, "run", "--disk", ref.disk, "--region", ref.region, "--id", ref.id, "--mount-root", mountRoot, "--archil", archil, "--app", options.app, ...(options.runArgs ?? []), "--token-stdin"],
+        env: { ...options.env, ...extra, PDA_HOLDER: holder },
+        inheritEnv: false,
+        user,
+        stdin: new TextEncoder().encode(`${mountToken}\n`),
+        restart: true,
+        restartDelayMs: 1_000,
+        terminalExits: [...TERMINAL_EXITS],
+      });
+      // The launcher's own check of the spec, before any call to the provider: an environment it refuses never boots a box.
+      const refused = l.launchSpecError(name, specFor("{}"));
+      if (refused) throw new BoxHostError("INVALID_ARGUMENT", `the launcher refuses this start: ${refused.message}`, { cause: refused });
       const refuse = (box: Box | undefined, message: string, cause?: unknown) => {
         refusal = new BoxHostError("UNSUPPORTED", message, cause === undefined ? {} : { cause });
         return box ? destroy(box, bounded(callTimeoutMs)).then(() => refusal!) : Promise.resolve(refusal);
@@ -212,17 +225,7 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
       }
 
       const handle = handleOf(box, n, { v: 1, name });
-      const launchSpec: LaunchSpec = {
-        argv: [...command, "run", "--disk", ref.disk, "--region", ref.region, "--id", ref.id, "--mount-root", mountRoot, "--archil", archil, "--app", options.app, ...(options.runArgs ?? []), "--token-stdin"],
-        env: { ...options.env, ...extra, PDA_HOLDER: JSON.stringify(handle) },
-        inheritEnv: false,
-        user,
-        stdin: new TextEncoder().encode(`${mountToken}\n`),
-        restart: true,
-        restartDelayMs: 1_000,
-        terminalExits: [...TERMINAL_EXITS],
-      };
-      const launched = await l.launch(box, name, launchSpec, context);
+      const launched = await l.launch(box, name, specFor(JSON.stringify(handle)), context);
       if (!launched.ok) {
         const e: LaunchError = launched.error;
         if (e.code === "unsupported" || e.code === "refused") throw await refuse(box, `the ${provider.name} box cannot run the instance as asked (${e.code}): ${e.message}`, e);
