@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { allowedTiers, armAnswers, candidatesOf, candidateTable, sectionOf, unblind } from './adjudication.mjs';
+import { allowedTiers, armAnswers, candidatesOf, candidateTable, sectionOf, strictRight, unblind } from './adjudication.mjs';
 import { adjudicatorRun } from './adjudicator-tools.mjs';
 import { loadGroups } from './score-mcc.mjs';
 
@@ -93,16 +93,30 @@ test('unblind: a side is right on the code when its code was judged acceptable, 
     b: { codes: { 3504: { acceptable: true, evidence: EV }, 7011: { acceptable: true, evidence: EV } } },
   };
   const { learner, teacher, unjudgeable } = unblind({ items, stage1, stage2 });
-  assert.deepEqual(learner[0], { merchantId: 'a', vertical: 'nutra', side: 'learner', mccAdjRight: true, mccOwnExact: true, riskAdjRight: true, riskAdjDistance: 0, adjRight: true });
-  assert.deepEqual(teacher[0], { merchantId: 'a', vertical: 'nutra', side: 'teacher', mccAdjRight: false, mccOwnExact: false, riskAdjRight: null, riskAdjDistance: null, adjRight: null });
-  assert.deepEqual([learner[1].mccAdjRight, learner[1].mccOwnExact, learner[1].riskAdjRight, learner[1].riskAdjDistance], [true, true, false, 1], 'the general 7011 matches the adjudicator\'s own brand code 3504');
+  assert.deepEqual(learner[0], { merchantId: 'a', vertical: 'nutra', side: 'learner', mccAdjRight: true, mccStrictRight: true, riskAdjRight: true, riskAdjDistance: 0, adjRight: true });
+  assert.deepEqual(teacher[0], { merchantId: 'a', vertical: 'nutra', side: 'teacher', mccAdjRight: false, mccStrictRight: false, riskAdjRight: null, riskAdjDistance: null, adjRight: null });
+  assert.deepEqual([learner[1].mccAdjRight, learner[1].mccStrictRight, learner[1].riskAdjRight, learner[1].riskAdjDistance], [true, true, false, 1], 'the general 7011 matches the adjudicator\'s own brand code 3504');
   assert.deepEqual([teacher[1].mccAdjRight, teacher[1].riskAdjRight, teacher[1].adjRight], [true, true, true]);
   assert.deepEqual(unjudgeable, [{ merchantId: 'c', reason: 'parked' }]);
   const noCode = unblind({ items: [{ merchant: merchant('d', { mcc: '5999' }), answer: { mcc: null } }], stage1: { d: stage1.a }, stage2: { d: { codes: { 5999: { acceptable: true, evidence: EV } } } } });
-  assert.deepEqual([noCode.learner[0].mccAdjRight, noCode.learner[0].mccOwnExact], [false, false], 'no code is wrong');
+  assert.deepEqual([noCode.learner[0].mccAdjRight, noCode.learner[0].mccStrictRight], [false, false], 'no code is wrong');
   assert.throws(() => unblind({ items: items.slice(0, 1), stage1: {}, stage2 }), /no stage 1/);
   assert.throws(() => unblind({ items: items.slice(0, 1), stage1, stage2: { a: { codes: { 5999: stage2.a.codes[5999] } } } }), /5499 was not judged/);
   assert.throws(() => allowedTiers({ tiers: ['low', 'low'], evidence: EV }), /next to each other/);
+});
+
+test('STRICT reads stage 1 alone: the same with any stage 2, and computable with none', () => {
+  const s1 = { own: { mcc: '5712', evidence: EV }, risk: { tiers: ['low'], evidence: EV } };
+  assert.deepEqual(strictRight.length, 2, 'strictRight takes a code and a stage-1 entry, nothing from stage 2');
+  assert.deepEqual(['5712', '5719', '3504', null].map((c) => strictRight(c, s1)), [true, false, false, false]);
+  assert.equal(strictRight('7011', { own: { mcc: '3504' } }), true, 'a brand code is compared as its general code');
+  const items = [{ merchant: merchant('a', { mcc: '5719' }), answer: { mcc: '5712', riskTier: 'low' } }];
+  const lenient = { a: { codes: { 5712: { acceptable: true, evidence: EV }, 5719: { acceptable: true, evidence: EV } } } };
+  const harsh = { a: { codes: { 5712: { acceptable: false, evidence: EV }, 5719: { acceptable: false, evidence: EV } } } };
+  const [l, h] = [lenient, harsh].map((stage2) => unblind({ items, stage1: { a: s1 }, stage2 }));
+  assert.deepEqual([l.learner[0].mccAdjRight, h.learner[0].mccAdjRight], [true, false], 'ACCEPTABLE follows stage 2');
+  assert.deepEqual([l.learner[0].mccStrictRight, h.learner[0].mccStrictRight], [true, true], 'STRICT does not');
+  assert.deepEqual([l.teacher[0].mccAdjRight, l.teacher[0].mccStrictRight], [true, false], 'both defensible, only one is the blind pick');
 });
 
 test('the two commands end to end: the candidates file names no source and no tier; unblind writes rows and counts', () => {
@@ -123,8 +137,8 @@ test('the two commands end to end: the candidates file names no source and no ti
     writeFileSync(join(dir, 'stage1.json'), JSON.stringify(stage1));
     writeFileSync(join(dir, 'stage2.json'), JSON.stringify(stage2));
     const summary = cli('unblind', join(dir, 'sample.json'), join(dir, 'hand.jsonl'), join(dir, 'stage1.json'), join(dir, 'stage2.json'), join(dir, 'out'));
-    assert.deepEqual(summary.learner, { mccAdjRight: { k: 2, n: 2 }, mccOwnExact: { k: 2, n: 2 }, riskAdjRight: { k: 2, n: 2 }, adjRight: { k: 2, n: 2 } });
-    assert.deepEqual(summary.teacher, { mccAdjRight: { k: 1, n: 2 }, mccOwnExact: { k: 1, n: 2 }, riskAdjRight: { k: 0, n: 0 }, adjRight: { k: 0, n: 0 } });
+    assert.deepEqual(summary.learner, { mccAdjRight: { k: 2, n: 2 }, mccStrictRight: { k: 2, n: 2 }, riskAdjRight: { k: 2, n: 2 }, adjRight: { k: 2, n: 2 } });
+    assert.deepEqual(summary.teacher, { mccAdjRight: { k: 1, n: 2 }, mccStrictRight: { k: 1, n: 2 }, riskAdjRight: { k: 0, n: 0 }, adjRight: { k: 0, n: 0 } });
     assert.equal(readFileSync(join(dir, 'out', 'teacher.jsonl'), 'utf8').trim().split('\n').length, 2);
   } finally {
     rmSync(dir, { recursive: true, force: true });
