@@ -200,5 +200,35 @@ const reportFiles = (dir: string, base = '', out: Record<string, Uint8Array> = {
   return out;
 };
 const withReport = (chosen: typeof job): typeof job => (process.env.DEMO_REPORT ? { ...chosen, files: { ...chosen.files, ...reportFiles(process.env.DEMO_REPORT) } } : chosen);
-export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withReport(withProviders ?? withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job), fakes: { ...scriptedHeld, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}), ...(providers ? { providers } : {}), ...(providerExtensions ? { providerExtensions } : {}), ...(process.env.DEMO_RESULT_THROWS ? { result: () => { throw new Error('the result hook failed'); } } : {}), ...(process.env.DEMO_WITH_PLACE ? { place: () => { throw new Error('the place is never asked for'); } } : {}) };
+// And a place of the demo's own beside its tools' boxes (`DEMO_WITH_PLACE`). `labelled` is the local place that also starts a home box (it reports one in `status()`), hands the run's
+// process its identity (`HOST_BOX`), which that process claims first, and lets the supervisor read the run's files (`readRunFile` and `listRunFiles`, disk's K8 shape, here over
+// its own root): the supervisor reads the label itself. `unclaimed` reports the home box and has the reads but never hands it over, so no process claims it. `unreadable` hands it
+// over but its reads fail; `slow` hands it over but its reads answer only after 40 s, past the supervisor's bound on a read. `reporting` reports the home box with no reads and no
+// handover. Any other value is the local place, which has neither.
+const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: string; root: string }; self: string; requestFile: (attempt: number) => string }) => {
+  const { localPlace } = await import('@parcha/agentrun-harness');
+  const { readFile, readdir } = await import('node:fs/promises');
+  const inner = localPlace({ self: context.self, paths: context.paths as never, requestFile: context.requestFile });
+  const mode = process.env.DEMO_WITH_PLACE;
+  const from = new Date().toISOString();
+  const status = async () => ({ boxes: [{ provider: 'home', kind: 'host', from, to: null }] });
+  if (mode === 'reporting') return { ...inner, status };
+  if (mode !== 'labelled' && mode !== 'unclaimed' && mode !== 'unreadable' && mode !== 'slow') return inner;
+  const handOver = (order: Parameters<typeof inner.start>[0]) => (mode !== 'unclaimed' ? { ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ provider: 'home', key: '0', run: order.env.RUN_LABEL }) } } : order);
+  // K8's answers over this place's own root: a missing file is null, a missing directory lists nothing.
+  const gate = async () => {
+    if (mode === 'unreadable') throw new Error('the run files cannot be read here');
+    if (mode === 'slow') await new Promise((resolve) => { setTimeout(resolve, 40_000).unref(); });
+  };
+  const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
+  return {
+    ...inner,
+    start: (order: Parameters<typeof inner.start>[0]) => inner.start(handOver(order)),
+    status,
+    readRunFile: async (path: string) => { await gate(); try { return new Uint8Array(await readFile(join(context.paths.root, path))); } catch (error) { if (missing(error)) return null; throw error; } },
+    listRunFiles: async (dir: string) => { await gate(); try { return (await readdir(join(context.paths.root, dir))).sort(); } catch (error) { if (missing(error)) return []; throw error; } },
+  };
+} : undefined;
+
+export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withReport(withProviders ?? withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job), fakes: { ...scriptedHeld, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}), ...(providers ? { providers } : {}), ...(providerExtensions ? { providerExtensions } : {}), ...(process.env.DEMO_RESULT_THROWS ? { result: () => { throw new Error('the result hook failed'); } } : {}), ...(withPlace ? { place: withPlace } : {}) };
 if (process.argv.includes('--child')) await demo(options);
