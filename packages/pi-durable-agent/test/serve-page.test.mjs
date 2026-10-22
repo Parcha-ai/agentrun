@@ -191,6 +191,7 @@ const AGENT = {
   counts: { runs: 2, skills: 1 },
 };
 const RUN = { id: 'r1"><script>x</script>', startedAt: "2026-10-22T20:01:00.000Z", endedAt: "2026-10-22T20:03:30.000Z", outcome: "completed", cost: 0.44, prompt: { id: "public", reason: `Jev: public at 100% ${HOSTILE}`, confidence: 0.93 }, live: false };
+const FAILED = { id: "r0", startedAt: "2026-10-22T19:00:00.000Z", endedAt: "2026-10-22T19:09:00.000Z", outcome: "failed", cost: 0.25, live: false };
 const LIVE = { id: "r2", startedAt: "2026-10-22T20:05:00.000Z", prompt: { id: "generic", reason: "no overlay was sure" }, live: true };
 
 const row = (seq, kind, fields = {}) => ({ id: `1:${seq}`, kind, seq, summary: null, text: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, conversation_id: 1, ...fields });
@@ -209,6 +210,8 @@ const ROWS = [
   // A call the run never finished, as timelineOf settles it.
   row(11, "tool_use", { tool_name: "web_fetch", tool_use_id: "d", round: 4, summary: "Fetched c.example" }),
   { ...row(12, "tool_result", { tool_name: "web_fetch", tool_use_id: "d", tool_status: "failed", summary: "Fetched c.example interrupted", round: 4 }), id: "1:interrupted:d" },
+  // A result whose call is not among the rows.
+  row(13, "tool_result", { tool_name: "web_fetch", tool_use_id: "gone", tool_status: "failed", summary: `Fetched a page failed: ${HOSTILE}`, tool_result_size_bytes: 20 }),
 ];
 
 test("the three files: HTML with no inline script or style that links page.css and page.js; CSS and JS that reach nothing outside; no HTML sink in the script", () => {
@@ -226,7 +229,7 @@ test("the three files: HTML with no inline script or style that links page.css a
 });
 
 test("the agent, its prompt decision and its runs: markup in any field is text, and the confidence bar is set through the CSSOM", async () => {
-  const page = mount({ "api/agent": AGENT, "api/runs": [RUN] });
+  const page = mount({ "api/agent": AGENT, "api/runs": [RUN, FAILED] });
   await page.settle();
   assertInert(page.app);
   const text = page.app.textContent;
@@ -241,6 +244,8 @@ test("the agent, its prompt decision and its runs: markup in any field is text, 
   assert.deepEqual(bars.map((b) => b.styles["--p"]), ["0.8", "0.93"], "the threshold and the confidence");
   assert.deepEqual(page.fetched, ["api/agent", "api/runs"]);
   assert.equal(page.timers.size, 0, "nothing is live, so nothing polls");
+  const pills = all(page.app).filter((el) => el.getAttribute("class")?.startsWith("pill "));
+  assert.deepEqual(pills.map((el) => [el.getAttribute("class"), el.textContent]), [["pill ok", "completed"], ["pill error", "failed"]], "newest first; a failed run is an error");
 });
 
 test("a run's timeline: markup in rows is text, markdown is elements, only http(s) links get an href, calls group and fold", async () => {
@@ -262,14 +267,17 @@ test("a run's timeline: markup in rows is text, markdown is elements, only http(
   const calls = all(page.app).filter((el) => el.tagName === "DETAILS" && el.getAttribute("class")?.startsWith("call"));
   assert.deepEqual(calls.map((el) => el.getAttribute("class")), ["call many ok", "call ok", "call ok", "call error", "call interrupted"], "the two one-call web_fetch rounds fold; the failed read and the interrupted fetch stand alone");
   assert.ok(text.includes("Fetched c.example interrupted"));
+  const alone = all(page.app).filter((el) => el.getAttribute("class") === "row error");
+  assert.deepEqual(alone.map((el) => el.textContent), [`Fetched a page failed: ${HOSTILE}`], "a result with no call is an error line of its own");
   assert.ok(text.includes(`Fetched a.example ${HOSTILE} and 1 more`));
   assert.ok(text.includes("4 tool calls") && text.includes("took 2m 30s") && text.includes("93%"));
 });
 
 test("a live run refreshes every 2 s until the reader leaves it; a missing run says why; the theme button cycles", async () => {
   const id = encodeURIComponent(LIVE.id);
-  const page = mount({ [`api/runs/${id}`]: { run: LIVE, rows: ROWS.slice(0, 2) }, "api/agent": AGENT, "api/runs": [RUN, LIVE] }, `#/runs/${id}`);
+  const page = mount({ [`api/runs/${id}`]: { run: LIVE, rows: [...ROWS.slice(0, 2), ROWS[9]] }, "api/agent": AGENT, "api/runs": [RUN, LIVE] }, `#/runs/${id}`);
   await page.settle();
+  assert.ok(page.app.textContent.includes("$0.440 so far"), "a live run has no cost yet: its last usage row says what it spent");
   assert.deepEqual([...page.timers.values()].map((t) => t.ms), [2000]);
   assert.ok(page.app.textContent.includes("refreshing every 2 s"));
   await page.tick();

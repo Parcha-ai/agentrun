@@ -334,7 +334,7 @@
   // ---- runs --------------------------------------------------------------------------------------------------------------
   function stateOf(run) {
     if (run.live) return ["live", "Live"];
-    if (run.endedAt) return [run.outcome === "completed" ? "ok" : "ended", run.outcome || "ended"];
+    if (run.endedAt) return [run.outcome === "completed" ? "ok" : /fail|error/i.test(run.outcome || "") ? "error" : "ended", run.outcome || "ended"];
     return ["idle", "Not ended"];
   }
 
@@ -515,6 +515,9 @@
         return el("div", { class: "row error" }, r.text || r.summary || "Error");
       case "usage":
         return null;
+      case "tool_result":
+        // A result no call in the rows asked for: shown alone, a failed one as an error.
+        return el("div", { class: r.tool_status === "failed" ? "row error" : "row phase" }, r.summary || r.text || "");
       case "subagent_started":
       case "subagent_progress":
       case "subagent_completed":
@@ -542,7 +545,9 @@
     var calls = rows.filter(function (r) { return r.kind === "tool_use"; }).length;
     var facts = [el("span", null, "started " + when(run.startedAt))];
     if (run.endedAt) facts.push(el("span", null, "took " + took(run.startedAt, run.endedAt)));
+    var spent = rows.filter(function (r) { return r.kind === "usage" && r.usage && typeof r.usage.usd === "number"; }).pop();
     if (usd(run.cost)) facts.push(el("span", null, usd(run.cost)));
+    else if (spent) facts.push(el("span", null, usd(spent.usage.usd) + " so far"));
     facts.push(el("span", null, calls + (calls === 1 ? " tool call" : " tool calls")));
     return el(
       "section",
