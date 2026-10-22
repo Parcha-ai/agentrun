@@ -3,7 +3,7 @@ import type { Context } from "@earendil-works/chord";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Box } from "../box/box.ts";
 import { finish } from "../box/files.ts";
-import { LAUNCHER_SCRIPT } from "./launcher-script.ts";
+import { LAUNCHER_SCRIPT, LAUNCHER_SHELL_NAMES } from "./launcher-script.ts";
 
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -22,6 +22,11 @@ const MAX_HOOK_MS = 120_000;
 /** A name one of whose `_`-separated segments says it holds a key: refused in `env`, which rests in a file of the box. */
 const KEY_SEGMENT = /^(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|CREDENTIALS)$/i;
 const keyShaped = (name: string): boolean => name.split("_").some((segment) => KEY_SEGMENT.test(segment));
+/** Names that act on the launcher's shell or on the commands it runs (the shell's and the loader's): never a program's setting. */
+const SHELL_AND_LOADER = new Set(["IFS", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS4"]);
+/** A name the program may never set or inherit: one the launcher's shell assigns, or one that acts on the shell or the loader. */
+const reservedName = (name: string): boolean =>
+	LAUNCHER_SHELL_NAMES.includes(name) || SHELL_AND_LOADER.has(name) || name.startsWith("LD_");
 const DEFAULT_RESTART_BURST = 5;
 const DEFAULT_RESTART_INTERVAL_MS = 60_000;
 const DEFAULT_GRACE_MS = 5_000;
@@ -198,6 +203,9 @@ function validate(name: string, spec: LaunchSpec | undefined): LaunchError | und
 		if (!ENV_NAME_PATTERN.test(key) || key.startsWith(RESERVED_ENV_PREFIX) || LAUNCHER_ENV.has(key)) {
 			return new LaunchError("invalid", `the environment name ${JSON.stringify(key)} is not allowed`);
 		}
+		// One of the launcher's own shell names, or the shell's or loader's: a setting could change what the launcher does.
+		if (reservedName(key))
+			return new LaunchError("invalid", `the environment name ${key} is reserved by the launcher`);
 		// The settings rest in a file of the box: a name that says it holds a key is refused by name, never echoing its value.
 		if (keyShaped(key)) {
 			return new LaunchError(
@@ -212,7 +220,12 @@ function validate(name: string, spec: LaunchSpec | undefined): LaunchError | und
 		return new LaunchError("invalid", "inheritEnv is false or a list of names");
 	}
 	for (const name of inherited) {
-		if (!ENV_NAME_PATTERN.test(name) || name.startsWith(RESERVED_ENV_PREFIX) || LAUNCHER_ENV.has(name)) {
+		if (
+			!ENV_NAME_PATTERN.test(name) ||
+			name.startsWith(RESERVED_ENV_PREFIX) ||
+			LAUNCHER_ENV.has(name) ||
+			reservedName(name)
+		) {
 			return new LaunchError("invalid", `inheritEnv names ${JSON.stringify(name)}, which is not a name it can pass`);
 		}
 		if (spec.env !== undefined && Object.hasOwn(spec.env, name)) {
@@ -279,7 +292,8 @@ function validate(name: string, spec: LaunchSpec | undefined): LaunchError | und
 }
 
 /** The spec as a file the launcher sources: settings, and a function that changes directory, sets the environment and execs. */
-function specScript(spec: LaunchSpec, isolation: string): string {
+/** Exported for the namespace test only (not from the package). */
+export function specScript(spec: LaunchSpec, isolation: string): string {
 	const limit = spec.restartLimit ?? { burst: DEFAULT_RESTART_BURST, intervalMs: DEFAULT_RESTART_INTERVAL_MS };
 	const lines = [
 		// One generation per launch: a process left over from an earlier launch of this name sees another and exits.
@@ -300,6 +314,15 @@ function specScript(spec: LaunchSpec, isolation: string): string {
 		"run_program() {",
 	];
 	if (spec.cwd !== undefined) lines.push(`  cd ${quote(spec.cwd)} || exit 126`);
+	// The user switch is decided FIRST, from the launcher's own record ($D/user: name, uid, gid, way, home), before any of the
+	// program's settings is applied: a launch that names a user whose record is gone FAILS, never runs as the launcher's user.
+	lines.push(
+		"  u_how=none",
+		'  if [ -n "$RUNAS" ]; then',
+		'    [ -r "$D/user" ] || { echo "the launch names the user $RUNAS, and the launcher\'s record of how to run as it is gone: refused, never run as the launcher\'s own user" >&2; exit 126; }',
+		'    read -r u_name u_id u_gid u_how u_home < "$D/user"',
+		"  fi",
+	);
 	// Nothing of the launcher's own environment (the box runtime's) reaches the program but the names it asks for: every
 	// exported name is unset, by the names awk lists, and one the shell cannot unset refuses the incarnation. Values never
 	// go through an argv.
@@ -317,23 +340,18 @@ function specScript(spec: LaunchSpec, isolation: string): string {
 	);
 	// The secrets are on fd 3, made for this incarnation from the launcher's memory: only the number is in the environment.
 	if (spec.secrets !== undefined) lines.push("  export PI_TRANSPORT_SECRETS_FD=3");
+	if (spec.user !== undefined) lines.push('  export HOME="$u_home"');
+	// The program's settings come last, and none can name a launcher variable (LAUNCHER_SHELL_NAMES, refused), so what is read
+	// below is the launcher's own.
 	for (const [key, value] of Object.entries(spec.env ?? {})) lines.push(`  export ${key}=${quote(value)}`);
 	const argv = spec.argv.map(quote).join(" ");
-	// The user the launcher resolved at its start ($D/user: name, uid, gid, home). A root launcher drops to it; one that is
-	// that user already execs as it is.
 	lines.push(
-		'  if [ -r "$D/user" ]; then',
-		'    read -r u_name u_id u_gid u_how u_home < "$D/user"',
-		'    export HOME="$u_home"',
-		'    if [ "$(id -u)" = 0 ] && [ "$u_id" != 0 ]; then',
-		'      case "$u_how" in',
-		`        setpriv) exec setpriv --reuid="$u_id" --regid="$u_gid" --init-groups -- ${argv} ;;`,
-		`        runuser) exec runuser -u "$u_name" -- ${argv} ;;`,
-		'        *) echo "the launcher found no way to run the program as $u_name" >&2; exit 126 ;;',
-		"      esac",
-		"    fi",
-		"  fi",
-		`  exec ${argv}`,
+		'  case "$u_how" in',
+		`    none|self) exec ${argv} ;;`,
+		`    setpriv) exec setpriv --reuid="$u_id" --regid="$u_gid" --init-groups -- ${argv} ;;`,
+		`    runuser) exec runuser -u "$u_name" -- ${argv} ;;`,
+		'    *) echo "the launcher found no way to run the program as the user it names: refused" >&2; exit 126 ;;',
+		"  esac",
 		"}",
 	);
 	// A stop's hook, run by the launcher as its own user after the drain (README, "beforeStop").
@@ -341,6 +359,14 @@ function specScript(spec: LaunchSpec, isolation: string): string {
 		lines.push("before_stop() {", `  exec ${spec.beforeStop.argv.map(quote).join(" ")}`, "}");
 	return `${lines.join("\n")}\n`;
 }
+
+/** `env -u` for each variable that acts on a shell or a loader, at the exec that starts every launcher shell. */
+const CLEAN_EXEC = [
+	"env",
+	...["BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS4", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT"].flatMap(
+		(name) => ["-u", name],
+	),
+];
 
 /** Run a script in the box and return its combined output, or an error. */
 async function runScript(
@@ -352,7 +378,9 @@ async function runScript(
 	/** Bytes for the command's stdin (the launch frame), written and then closed. Never in its argv. */
 	input?: Uint8Array,
 ): Promise<Result<{ exitCode: number; text: string }, LaunchError>> {
-	const started = await box.exec(["sh", "-c", script, "sh", ...args], { timeoutMs }, context);
+	// The shell's and the loader's variables are cleared at the exec itself, so nothing of them acts before the script's first
+	// line or inside the commands below it (base64, setpriv, runuser, the program), which inherit this cleared environment.
+	const started = await box.exec([...CLEAN_EXEC, "sh", "-c", script, "sh", ...args], { timeoutMs }, context);
 	if (!started.ok)
 		return err(
 			new LaunchError("box", `could not run a command in box ${box.id}: ${started.error.message}`, started.error),
@@ -625,12 +653,25 @@ export async function launch(
 	);
 	if (!started.ok || started.value.exitCode !== 0) await release(box, directory, token, context);
 	if (!started.ok) return started;
-	if (started.value.exitCode !== 0)
+	if (started.value.exitCode !== 0) {
+		const refused = refusalIn(started.value.text);
+		// A start the launcher refused before any supervisor existed frees its name: the next launch of it starts at once.
+		if (refused !== undefined) await discard(box, directory, token, context);
 		return err(
-			refusalIn(started.value.text) ??
-				new LaunchError("failed", `the launcher did not start: ${started.value.text.trim().slice(0, 200)}`),
+			refused ?? new LaunchError("failed", `the launcher did not start: ${started.value.text.trim().slice(0, 200)}`),
 		);
+	}
 	return waitForStart(box, directory, context);
+}
+
+/** Remove a claim whose start the launcher refused before it started a supervisor: only the caller that holds it (its token). */
+async function discard(box: Box, directory: string, token: string, context: Context): Promise<void> {
+	await runScript(
+		box,
+		'[ "$(cat "$1/owner" 2>/dev/null)" = "$2" ] && [ ! -e "$1/launcher.pid" ] && rm -rf "$1"',
+		[directory, token],
+		context,
+	);
 }
 
 /** Give a claim back when the launch could not be filled, so that the next caller does not have to wait it out. */
