@@ -40,7 +40,7 @@ import { currentRevision, readTrial } from '@parcha/pi-agent-learn';
 import { asyncGate, GATE, gateSpend } from './promotion-gate.mjs';
 import { passSelfTest } from './selftest.mjs';
 import { writeHosts } from './tools-v2.mjs';
-import { HINDSIGHT_FIELDS, proposeHindsight, reflectOnRun } from './hindsight.mjs';
+import { HINDSIGHT_FIELDS, LIVE_REFLECTION_USD, proposeHindsight, recordPagesOnly, reflectOnRun } from './hindsight.mjs';
 
 export const DATA = join(import.meta.dirname, 'data');
 /** Where a pass writes when no --out is given, as the demo's contract names it. */
@@ -198,8 +198,9 @@ export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, e
     judge: () => jev,
     toolsFor,
     modelFor: () => models,
-    // Hindsight's reflections (hindsight.mjs) on the root agent's model, with fetch_page and read_document as the run has them.
-    ...(hindsight ? { hindsight: { fields: hindsight, model: () => models, tools: async (job, run) => (await toolsFor(job, run)).filter((t) => t.name === 'fetch_page' || t.name === 'read_document') } } : {}),
+    // Hindsight's reflections (hindsight.mjs) on the root agent's model, with fetch_page and read_document as the run has them
+    // but limited to the SEC's record pages as archived (01-loop 1.16), each reflection stopped past LIVE_REFLECTION_USD.
+    ...(hindsight ? { hindsight: { fields: hindsight, model: () => models, limitUsd: LIVE_REFLECTION_USD, tools: async (job, run) => recordPagesOnly((await toolsFor(job, run)).filter((t) => t.name === 'fetch_page' || t.name === 'read_document')) } } : {}),
     // The browser's guard on the browser the pass will use, checked by the pass's self-test.
     ...(hard ? { browserCheck: (dir) => hard.guardSelfTest({ root: dir, profileRoot: join(dir, 'chrome'), env, archivedSec }) } : {}),
   };
@@ -361,6 +362,8 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
       ...p,
       hindsight: await reflectOnRun({
         job, run, score: p.score, answer: p.measure.answer, fields: parts.hindsight.fields, codes: parts.data?.codes, storeDir: join(out, 'hindsight'),
+        rules: await repo.read('AGENTS.md', p.seedSha),
+        ...(parts.hindsight.limitUsd !== undefined ? { limitUsd: parts.hindsight.limitUsd } : {}),
         model: () => parts.hindsight.model(job, run), effects: () => parts.hindsight.tools(job, run),
       }),
     });
@@ -397,6 +400,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
         ...(parts.sticky ? { sticky: { file: join(out, 'curate-sticky.json'), cutsId: parts.cutsId ?? 'default', ...(parts.factsOverLessons ? { contradicts: true } : {}) } } : {}),
         ...(parts.factsOverLessons ? { factsOverLessons: true } : {}),
         ...(parts.factFloor ? { factFloor: parts.factFloor } : {}),
+        ...(parts.refuseRefusedHosts ? { refuseRefusedHosts: true } : {}),
         ...(gate ? { gate } : {}),
         ...(gate && parts.receiptPromotion ? { gateOnly: receiptOnly } : {}),
         ...(parts.receiptAdmission && p.receipt ? { receiptTexts: receiptTextsOf(p.finished?.candidates) } : {}),
@@ -774,7 +778,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end] [--receipt-promotion]] [--receipt-admission] [--facts-over-lessons] [--fact-floor <n>] [--hindsight all|<field,...>] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end] [--receipt-promotion]] [--receipt-admission] [--facts-over-lessons] [--fact-floor <n>] [--hindsight all|<field,...>] [--refuse-refused-hosts] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -789,7 +793,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' }, 'edgar-cache': { type: 'string' }, schedule: { type: 'string' }, checkpoints: { type: 'string' },
         'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, 'gate-wait-at-end': { type: 'boolean' }, hindsight: { type: 'string' },
         'receipt-admission': { type: 'boolean' }, 'receipt-promotion': { type: 'boolean' },
-        'facts-over-lessons': { type: 'boolean' }, 'fact-floor': { type: 'string' },
+        'facts-over-lessons': { type: 'boolean' }, 'fact-floor': { type: 'string' }, 'refuse-refused-hosts': { type: 'boolean' },
       },
     }));
   } catch (error) {
@@ -851,6 +855,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       parts.judgeCuts = values['curate-cuts'] === 'v0.1' ? CURATE_CUTS_V01 : null;
       parts.cutsId = values['curate-cuts'];
       console.log(`learn-classify: curation judged by the ${values['curate-cuts'] === 'v0.1' ? 'pre-registered v0.1 cuts' : "package's default cuts"}`);
+    }
+    if (values['refuse-refused-hosts']) {
+      parts.refuseRefusedHosts = true;
+      console.log('learn-classify: curation refuses a lesson that names a site the tools refuse (refused-hosts.mjs)');
     }
     if (values['curate-sticky']) {
       parts.sticky = true;

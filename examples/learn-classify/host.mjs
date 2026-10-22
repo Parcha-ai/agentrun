@@ -14,6 +14,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { learnExtension } from '../agent-learn/host.mjs';
 import { stickyJudge } from './curate-cuts.mjs';
+import { refusedHostsJudge } from './refused-hosts.mjs';
 import { gatedSettler } from './promotion-gate.mjs';
 import { receiptJudge } from './receipts.mjs';
 import { HOST_WORKFLOW, handoffText, hostRunName, hostUses, runPromoted } from './dispatch.mjs';
@@ -602,7 +603,8 @@ export function usageOfStore(storePath) {
  * cap (pi-agent-learn's curate options). None is on unless given: a run that asks for none curates exactly as the package
  * does.
  */
-export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, sticky, gate, gateOnly, receiptTexts, factsOverLessons, factFloor }) {
+export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, sticky, gate, gateOnly, receiptTexts, factsOverLessons, factFloor, refuseRefusedHosts = false }) {
+  const refusedHosts = [];
   const gates = [];
   const settled = [];
   const rules = { ...(tmpRoot ? { tmpRoot } : {}), ...(thresholds ? { thresholds } : {}) };
@@ -611,7 +613,9 @@ export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, s
   const judged = sticky ? stickyJudge(judge.run, sticky) : judge.run;
   const report = await curate({
     repo,
-    judge: receiptTexts?.size ? receiptJudge(judged, receiptTexts) : judged,
+    // With refuseRefusedHosts, a lesson naming a refused site is refused by structure before any model is asked
+    // (refused-hosts.mjs), receipt or not. Off, curate judges exactly as before.
+    judge: (refuseRefusedHosts ? (j) => refusedHostsJudge(j, refusedHosts) : (j) => j)(receiptTexts?.size ? receiptJudge(judged, receiptTexts) : judged),
     ...(factsOverLessons ? { factsOverLessons: true } : {}),
     ...(factFloor ? { factFloor } : {}),
     ...(judgeCuts ? { thresholds: judgeCuts } : {}),
@@ -626,5 +630,5 @@ export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, s
       return result;
     },
   });
-  return { report, gates, settled };
+  return { report, gates, settled, refusedHosts };
 }
