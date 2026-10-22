@@ -20,6 +20,7 @@ import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { ChildEnv } from '@parcha/pi-vision/node';
 import type { Boxes } from './boxes.ts';
 import type { Recorder } from './record.ts';
+import { errorCode } from './errors.ts';
 
 /** Where one run lives: the disk package's `AppContext`. */
 export type RunPlace = { id: string; root: string; work: string; store: string };
@@ -123,8 +124,8 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
   const eventsFile = join(place.root, 'events.jsonl');
   // Both logs exist from the start: a run that called nothing leaves an empty ledger, and a missing one was lost.
   // (A run under `pi-durable-disk run --app` builds its host before the run's directory exists: then the logs are made at their first row, and again when the run opens.)
-  const append = (file: string, text: string) => { try { appendFileSync(file, text); } catch (error) { if ((error as { code?: string }).code !== 'ENOENT') throw error; mkdirSync(place.root, { recursive: true }); appendFileSync(file, text); } };
-  const touchLogs = () => { for (const log of [ledgerFile, eventsFile]) { try { appendFileSync(log, ''); } catch (error) { if ((error as { code?: string }).code !== 'ENOENT') throw error; } } };
+  const append = (file: string, text: string) => { try { appendFileSync(file, text); } catch (error) { if (errorCode(error) !== 'ENOENT') throw error; mkdirSync(place.root, { recursive: true }); appendFileSync(file, text); } };
+  const touchLogs = () => { for (const log of [ledgerFile, eventsFile]) { try { appendFileSync(log, ''); } catch (error) { if (errorCode(error) !== 'ENOENT') throw error; } } };
   if (!options.deferLogs) touchLogs();
   const incarnation = randomUUID();
   const count = (kind: LedgerRow['kind'], name: string, conversation?: string) =>
