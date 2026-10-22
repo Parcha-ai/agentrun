@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { LAUNCHER_SCRIPT } from "../src/home/launcher-script.ts";
+import { LAUNCHER_SCRIPT } from "../src/launch/launcher-script.ts";
 import { guardLeaks } from "./leak-guard.ts";
 
 const { env: MARK } = guardLeaks();
