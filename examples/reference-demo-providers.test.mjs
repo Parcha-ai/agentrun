@@ -354,6 +354,16 @@ for (const record of [true, false]) {
   });
 }
 
+test('the final-read refusal redacts a value the run TRACKS (a declared key\'s value), with --record, though it has no credential shape: the recording\'s redaction applies there, not only the credential pass', { timeout: 300_000 }, async (t) => {
+  const tracked = `plainword${'x'.repeat(14)}`;
+  const spec = { keys: [{ env: 'DEMO_TRACKED_TOKEN', why: 'a value the run tracks', where: 'the test', required: false, for: 'live' }] };
+  const refused = await run(t, spec, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'labelled', DEMO_TRACKED_TOKEN: tracked, DEMO_STDERR_SECRET: tracked }).then(() => undefined, (error) => error);
+  assert.ok(refused, 'the run is refused');
+  assert.match(refused.message, /never claimed it \(the run's last process did not complete/);
+  assert.equal(refused.message.includes(tracked), false, 'the tracked value is not in the refusal');
+  assert.match(refused.message, /and a plain line after it/);
+});
+
 test('two supervisors on one run directory are two lives: the second, resuming the run, is refused at its host box\'s claim, never given the first one\'s label', { timeout: 300_000 }, async (t) => {
   const own = await mkdtemp(join(tmpdir(), 'box-ids-lives-'));
   t.after(() => rm(own, { recursive: true, force: true }));
