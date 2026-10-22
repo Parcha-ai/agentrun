@@ -68,10 +68,20 @@ export function allowedTiers(risk, id = 'the merchant') {
 }
 
 /**
+ * STRICT, from stage 1 alone: the side's code is the adjudicator's own code, recorded blind before any candidate was
+ * shown (a T&E brand code compared as its general code). No code is wrong. Stage 2 never enters it.
+ */
+export function strictRight(code, stage1Entry) {
+  const own = mccOf(stage1Entry?.own?.mcc);
+  return code !== null && own !== null && genericOf(code) === genericOf(own);
+}
+
+/**
  * The verdicts back to one row per side, for one arm. `stage1[id]` is `{ own: { mcc, evidence }, risk: { tiers,
  * evidence } }` or `{ unjudgeable: reason }`; `stage2[id].codes[code]` is `{ acceptable, evidence }` for every candidate.
- * A side is right on the code when its code was judged acceptable (no code is wrong), and on the tier when its tier is an
- * allowed one; `riskAdjDistance` is the distance to the nearest allowed tier. A side without a tier (the teacher before
+ * ACCEPTABLE (`mccAdjRight`): the side's code was judged acceptable in stage 2. STRICT (`mccStrictRight`): strictRight,
+ * stage 1 alone. No code is wrong on either. The tier is right when it is an allowed one; `riskAdjDistance` is the
+ * distance to the nearest allowed tier. A side without a tier (the teacher before
  * its risk stage) has the tier fields null. An unjudgeable merchant is left out of both sides and listed.
  */
 export function unblind({ items, stage1, stage2 }) {
@@ -103,7 +113,7 @@ export function unblind({ items, stage1, stage2 }) {
       const riskAdjRight = tier === null ? null : allowed.includes(RISK_TIERS.indexOf(tier));
       out.push({
         merchantId: id, vertical: merchant.stratum ?? merchant.vertical ?? null, side: who,
-        mccAdjRight, mccOwnExact: code !== null && genericOf(code) === genericOf(own),
+        mccAdjRight, mccStrictRight: strictRight(code, s1),
         riskAdjRight, riskAdjDistance: tier === null ? null : Math.min(...allowed.map((a) => Math.abs(a - RISK_TIERS.indexOf(tier)))),
         adjRight: riskAdjRight === null ? null : mccAdjRight && riskAdjRight,
       });
@@ -124,7 +134,7 @@ export function sectionOf(markdown, heading) {
   return { text, sha256: createHash('sha256').update(text).digest('hex') };
 }
 
-const tallyOf = (rows) => Object.fromEntries(['mccAdjRight', 'mccOwnExact', 'riskAdjRight', 'adjRight'].map((f) => {
+const tallyOf = (rows) => Object.fromEntries(['mccAdjRight', 'mccStrictRight', 'riskAdjRight', 'adjRight'].map((f) => {
   const scored = rows.filter((r) => typeof r[f] === 'boolean');
   return [f, { k: scored.filter((r) => r[f]).length, n: scored.length }];
 }));

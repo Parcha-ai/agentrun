@@ -5,7 +5,9 @@ right means, and who says so"):
 
 1. **Teacher agreement**, on every split: `score-mcc.mjs` against the teacher block of each merchant row. It covers the
    exact MCC and the MCC group. Risk tier agreement and its ordinal distance count only once the teacher has a tier.
-2. **Adjudicated accuracy**, the headline: a sealed DEV sample of 120 merchants, judged by hand.
+2. **Adjudicated accuracy**, the headline: a sealed DEV sample of 120 merchants, judged by hand, as two co-primary
+   numbers per arm: STRICT (the arm's code is the adjudicator's own blind pick) and ACCEPTABLE (the arm's code was
+   judged acceptable). §6 says how they make the headline.
 
 **Risk while the teacher has none.** The swarm's risk stage has not run, so teacher rows carry no `riskTier`. Until
 they do, the pilot and teacher agreement score the MCC only: exact and group. Teacher risk is null, which is never
@@ -110,7 +112,7 @@ fails if the two drift apart.
 <!-- mcc rules: end -->
 
 The learner is not offered the brands' own codes (3000-3999, M1's `servedCodes`), so rule (e)'s second sentence keeps
-a learner from losing a merchant that has one. `mccOwnExact` compares after mapping a brand code to its general code
+a learner from losing a merchant that has one. STRICT (§6) compares after mapping a brand code to its general code
 (`genericOf`), as teacher agreement does.
 
 **Risk tier: SPEC.md's `## The risk rubric`, word for word.** It is quoted below. A test fails if the quote and SPEC.md
@@ -186,31 +188,43 @@ The tools refuse a second stage 1, codes before stage 1, and a verdict that miss
 
 ## 6. The numbers (`unblind`, lanes/C1/ci.py)
 
-`unblind` gives one row per side. The row is:
+`unblind` gives one row per side, per arm. The row is:
 
 ```
-{ merchantId, vertical, side, mccAdjRight, mccOwnExact, riskAdjRight, riskAdjDistance, adjRight }
+{ merchantId, vertical, side, mccAdjRight, mccStrictRight, riskAdjRight, riskAdjDistance, adjRight }
 ```
 
-- **mccAdjRight**: that side's code was judged acceptable. A side with no code is wrong.
-- **mccOwnExact**: the code equals the adjudicator's own code (stricter, reported beside mccAdjRight).
+- **mccStrictRight (STRICT)**: the side's code is the adjudicator's own code from stage 1, recorded blind before any
+  candidate was shown (a brand code compared as its general code). It reads stage 1 alone (`strictRight`); stage 2 never
+  enters it.
+- **mccAdjRight (ACCEPTABLE)**: the side's code was judged acceptable in stage 2.
+- On both, a side with no code is wrong.
 - **riskAdjRight**: the side's tier is an allowed tier. It is null for a side with no tier.
-- **adjRight**: both fields right, or null when the tier is null.
+- **adjRight**: ACCEPTABLE and the tier both right, or null when the tier is null.
 
-The numbers drawn from these rows:
-- **Headline**: the learner's adjudicated accuracy on the code (mccAdjRight) and on the tier (riskAdjRight), each
-  computed with `ci.py wilson K N`, where N is the merchants judged.
-- **Beside it**: the teacher's adjudicated accuracy on the code over the same merchants. This says how good the teacher
+**STRICT and ACCEPTABLE are co-primary.** ACCEPTABLE is lenient exactly where the learners lose: two neighbouring codes
+can both be defensible (5712 and 5719, 5045 and 5732), and the adjudicator may accept both. STRICT asks whether the arm
+made the pick an independent judge made blind.
+
+For each arm (by hand at checkpoint 0, LEARN at the end of 1b's stream, and any later arm), the report gives:
+- STRICT and ACCEPTABLE, each with `ci.py wilson K N`, N being the merchants judged;
+- the paired difference against by hand, for each: `ci.py paired hand/learner.jsonl ARM/learner.jsonl mccStrictRight`,
+  and the same for `mccAdjRight` (a bootstrap of the difference, McNemar exact; pairs on `merchantId`, and a merchant
+  only one arm has is counted as unpaired);
+- the tier (riskAdjRight) with its Wilson interval, since the teacher has no tier yet.
+
+**The headline** ranks the arms by both. When STRICT and ACCEPTABLE rank them the same, the headline says so. When they
+disagree, the headline uses STRICT and reports ACCEPTABLE beside it.
+
+Beside the arms:
+- **The teacher's adjudicated accuracy**: STRICT and ACCEPTABLE over the same merchants. This says how good the teacher
   signal is. The teacher's tier gets a number only once it exists.
-- **Learner against teacher on the code**, paired on merchant: `ci.py paired teacher.jsonl learner.jsonl mccAdjRight`
-  (bootstrap of the difference, McNemar exact). ci.py pairs on `merchantId` when a row has no ticker or CIK, and counts
-  a merchant only one side has as unpaired.
 - **Per vertical**: counts and rates. A vertical with fewer than 20 merchants judged is printed with its n and marked
   too small to trust.
 - **Teacher agreement**: from `summarizeMcc`, under its own name, beside these numbers. Its headline field is the
   exact MCC, with a T&E brand code mapped to its generic code on both sides; `brandMapped`, the rows that mapping
   touched, is printed under the table. The MCC group is secondary and is always printed with the group share table.
-  The two numbers are never averaged, summed or put on one axis.
+  Teacher agreement and adjudicated accuracy are never averaged, summed or put on one axis.
 - **MCC group agreement is weak by construction.** ISO 18245's 5700–7299 range holds restaurants, pharmacies, direct
   marketing, adult content, crypto, lodging and dating, so most of this cell's merchants share one group. To show it,
   `summarizeMcc` prints each group's share of the teacher's codes.
