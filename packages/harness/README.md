@@ -265,8 +265,27 @@ tapped providers through `providerExtensions: ({ providers, live, place }) => [e
 directory by default): a directory with one file per label (`box-N.json`), each claimed by an exclusive `link(2)`, so two processes never take one label, and the next process of the run numbers on from
 them. Either path is refused when it resolves inside the recording. Before its first claim the ledger checks that the disk gives an exclusive link (a second link to one name must fail). A read-only
 mount (EROFS), a directory that exists but takes no files (ENOENT: on a disk place the place must make it, not a process by path), an ids path that is a file, and a damaged label file each refuse the
-run by name, so no label is given twice. `demo.json`'s `boxes` are named by label the same way. A demo with a place of its own cannot pass `providers` yet: the place's boxes and the
-tools' would need one labeller, so such a run is refused.
+run by name, so no label is given twice. `demo.json`'s `boxes` are named by label the same way.
+
+A demo with a place of its own passes `providers` only when that place shares the run's one labeller. Two things are needed:
+- **The handover.** The place hands each run process the host box it started for it, as `HOST_BOX` in the order's environment: JSON
+  `{ provider, key, run }`, where `key` is the box's start index in the place's `status().boxes` and `run` is the supervisor's life (the
+  order's `RUN_LABEL`). The process claims that box's label first, before any model call or tool box. A restarted process in the same life
+  gets the same label, and another life or another provider for the key is refused.
+- **The reads.** The place lets the supervisor read the run's files, through `readRunFile(path)` and `listRunFiles(dir)`. These have the
+  per-path shape of `@parcha/pi-durable-disk`'s `readRunFile` / `listRunFiles`, so a disk place binds its own control and run ref to them.
+  The supervisor reads the labels from `box-ids.internal/` and parses them itself; the place only returns bytes.
+  - `readRunFile` returns `null` for a file that is not there yet: the label has not landed, and the supervisor reads it again at the next tick.
+  - `listRunFiles` returns `[]` for a directory that is not there yet.
+  - Any other failure throws: a missing run, a path that is not a regular file, a failed control call. The supervisor takes a throw as an
+    unreadable label, never as one not yet landed.
+
+At the final read, a host box the place reported with no label refuses the recording, with the reason named:
+- its process never claimed it;
+- its label cannot be read;
+- the read did not finish inside its bound.
+
+A place without both reads numbers its host boxes in the supervisor, and is refused beside `providers`.
 
 ### The judge seam
 
