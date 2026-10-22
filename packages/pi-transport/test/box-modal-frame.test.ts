@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import type { Box } from "../src/box/box.ts";
 import { finish } from "../src/box/files.ts";
 import { modalBoxes } from "../src/box/modal.ts";
@@ -17,6 +17,11 @@ import { FakeModal } from "./modal-fake.ts";
 
 const context = BACKGROUND_CONTEXT;
 const roots: string[] = [];
+// Every box and every launch a case makes is ended whether the case passed or not: a program left running is work left behind.
+const cleanups: (() => Promise<unknown>)[] = [];
+afterEach(async () => {
+	for (const cleanup of cleanups.splice(0).reverse()) await cleanup().catch(() => {});
+});
 afterAll(() => {
 	for (const root of roots) rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 });
@@ -33,7 +38,13 @@ async function aBox(): Promise<{ box: Box; sdk: FakeModal; root: string }> {
 			context,
 		),
 	);
+	cleanups.push(() => box.destroy(context));
 	return { box, sdk, root };
+}
+
+/** A launch the case may leave running: stopped at the end of the case, before its box is destroyed. */
+function stopLater(box: Box, name: string): void {
+	cleanups.push(() => launchStop(box, { v: 1, name }, { graceMs: 500 }, context));
 }
 
 async function fileIn(box: Box, path: string): Promise<string | undefined> {
@@ -83,6 +94,7 @@ describe("a Modal box and T3's launch frame", () => {
 		];
 		const stdin = new TextEncoder().encode(`${token}\n`);
 		const secrets = { MODAL_TOKEN_ID: secret };
+		stopLater(box, "framed");
 		getOrThrow(await launch(box, "framed", { argv: program, stdin, secrets }, context));
 		await until("the second incarnation", async () => {
 			const read = getOrThrow(await launchState(box, { v: 1, name: "framed" }, context));
@@ -122,6 +134,7 @@ describe("a Modal box and T3's launch frame", () => {
 		expect(done.ok && done.value.stdout.length).toBe(0);
 		const secrets = { SECRET_ONE: `sec-${randomBytes(6).toString("hex")}` };
 		const program = ["sh", "-c", "n=$PI_TRANSPORT_INCARNATION; cat | wc -c > in.$n; exec sleep 300"];
+		stopLater(box, "empty");
 		getOrThrow(await launch(box, "empty", { argv: program, secrets }, context));
 		expect((await until("the program's read", () => fileIn(box, "in.1"))).trim()).toBe("0");
 		getOrThrow(await launchStop(box, { v: 1, name: "empty" }, { graceMs: 1_000 }, context));
@@ -135,6 +148,20 @@ describe("a Modal box and T3's launch frame", () => {
 		const done = getOrThrow(await finish(started, big));
 		expect(new TextDecoder().decode(done.stdout).slice(0, 64)).toBe(sha(big));
 		await box.destroy(context);
+	});
+
+	it("returns the failed close to a caller that is reading the program's output, which must not wait for the streams to end", async () => {
+		const { box, sdk } = await aBox();
+		const sandbox = sdk.sandboxList[0];
+		if (sandbox === undefined) throw new Error("no sandbox");
+		sandbox.failClose = true;
+		const running = getOrThrow(await box.exec(["cat"], undefined, context));
+		const done = await Promise.race([
+			finish(running),
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error("finish() never returned")), 20_000)),
+		]);
+		expect(done.ok ? "ok" : done.error.code).toBe("unknown");
+		expect(!done.ok && done.error.message).toMatch(/input/);
 	});
 
 	it("refuses a frame part over 64 KiB as invalid, before anything runs", async () => {

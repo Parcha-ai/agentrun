@@ -335,7 +335,11 @@ class ModalBox implements Box {
 				stop();
 				finish(err(new BoxError("aborted", "the call was aborted")));
 			};
-			failInput = (error) => finish(err(error));
+			failInput = (error) => {
+				// As the timeout and the abort do: the readers of the output streams are let go, so a caller that waits for them returns.
+				stop();
+				finish(err(error));
+			};
 			if (timeoutMs !== undefined) {
 				timer = setTimeout(() => {
 					stop();
