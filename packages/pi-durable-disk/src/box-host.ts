@@ -8,6 +8,7 @@
 //
 // pi-transport is an optional peer of this package: this entry needs it, the package's root does not. Its types are
 // imported here; its launcher is loaded on the first start.
+import { randomBytes } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Box, BoxError, BoxFacts, BoxFile, BoxProvider, BoxSpec } from "@parcha/pi-transport";
@@ -71,6 +72,12 @@ type Launcher = typeof import("@parcha/pi-transport/launch");
 const DISK_LABEL = "pi-durable-disk.disk";
 const RUN_LABEL_KEY = "pi-durable-disk.run";
 const ATTEMPT_LABEL = "pi-durable-disk.attempt";
+/**
+ * The host box's key, minted per box at its create (<run>/<index>/<16 random hex>) and written there as this one provider
+ * label, by boxHost only: the same box across supervisor lives, a new one for every replacement. Its runner is handed it
+ * in HOST_BOX; a recording reads it from the label. The name is the harness's, whose contract HOST_BOX is.
+ */
+const HOST_KEY_LABEL = "agentrun-host-key";
 const USER = /^(?:[a-z_][a-z0-9_-]{0,31}|[0-9]{1,10})$/;
 
 /**
@@ -79,6 +86,17 @@ const USER = /^(?:[a-z_][a-z0-9_-]{0,31}|[0-9]{1,10})$/;
  */
 /** How many starts may find the same box with a needed fact unmeasured before boxHost refuses it by name (it ends nothing). */
 const ABSENT_STARTS = 5;
+
+/** The place's HOST_BOX ({ provider, key, run }, JSON), or nothing when the start carries none or another shape. */
+function hostBoxOf(text: string | undefined): { provider: string; key: string; run: string } | undefined {
+  if (text === undefined) return undefined;
+  try {
+    const v = JSON.parse(text) as Record<string, unknown>;
+    return typeof v.provider === "string" && typeof v.key === "string" && typeof v.run === "string" ? { provider: v.provider, key: v.key, run: v.run } : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<HostDriver, "kill" | "kills" | "box" | "provider" | "instanceOf">> {
   const { provider, spec } = options;
@@ -89,7 +107,7 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
   if (!spec || !(Number.isFinite(spec.maxLifetimeMs) && spec.maxLifetimeMs > 0)) throw invalid("spec.maxLifetimeMs is required: a positive number of milliseconds bounds a leaked box");
   if (spec.env !== undefined) throw invalid("spec.env is refused: a start's environment goes to the launcher, never into a spec the provider stores");
   for (const key of Object.keys(spec.labels ?? {})) {
-    if (key === "pi-transport" || key.startsWith("pi-transport.") || key.startsWith("pi-durable-disk.")) throw invalid(`spec.labels has ${key}, a key that is the provider's or boxHost's own`);
+    if (key === "pi-transport" || key.startsWith("pi-transport.") || key.startsWith("pi-durable-disk.") || key === HOST_KEY_LABEL) throw invalid(`spec.labels has ${key}, a key that is the provider's or boxHost's own`);
   }
   if (typeof options.app !== "string" || options.app === "") throw invalid("app is the module the instance runs, a path inside the box");
   const command = options.command ?? ["pi-durable-disk"];
@@ -109,7 +127,7 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
   /** A refusal that holds for this spec (the box kind cannot hold the mount): later starts are refused without a box. */
   let refusal: BoxHostError | undefined;
   /** What `box()` reports for each box this driver made or found, by box id. */
-  const receipts = new Map<string, { kind: string; from: string; to: string | null }>();
+  const receipts = new Map<string, { kind: string; from: string; to: string | null; key?: string }>();
   let launcher: Launcher | undefined;
   const load = async (): Promise<Launcher> => {
     if (launcher) return launcher;
@@ -125,10 +143,10 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
     const r = receipts.get(id);
     if (r && r.to === null) r.to = new Date().toISOString();
   };
-  const remember = (box: Box) => {
+  const remember = (box: Box, key: string | undefined) => {
     if (receipts.has(box.id)) return;
     const facts = box.facts();
-    receipts.set(box.id, { kind: facts.gpu ?? facts.isolation, from: facts.startedAt ?? new Date().toISOString(), to: null });
+    receipts.set(box.id, { kind: facts.gpu ?? facts.isolation, from: facts.startedAt ?? new Date().toISOString(), to: null, ...(key === undefined ? {} : { key }) });
   };
   const destroy = async (box: Box, context: Context) => {
     await box.destroy(context).catch(() => undefined);
@@ -159,7 +177,7 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
   const boxError = (what: string, error: BoxError, code: BoxHostErrorCode = "CREATE_FAILED") => new BoxHostError(code, `${what}: ${error.code}: ${error.message}`, { cause: error });
 
   /** The box this attempt already made, found by its labels, and what its launch says; or nothing. */
-  const find = async (labels: Record<string, string>, name: string, context: Context, l: Launcher): Promise<{ box: Box; state: LaunchState | undefined } | undefined> => {
+  const find = async (labels: Record<string, string>, name: string, context: Context, l: Launcher): Promise<{ box: Box; state: LaunchState | undefined; key: string | undefined } | undefined> => {
     const listed = await provider.list(labels, context);
     if (!listed.ok) throw boxError(`listing ${provider.name}'s boxes by this attempt's labels`, listed.error);
     for (const ref of listed.value) {
@@ -167,7 +185,7 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
       if (!attached.ok) throw boxError(`attaching ${provider.name} box ${ref.id}`, attached.error);
       if (!attached.value) continue;
       const state = await l.launchState(attached.value, { v: 1, name }, context);
-      return { box: attached.value, state: state.ok ? state.value : undefined };
+      return { box: attached.value, state: state.ok ? state.value : undefined, key: ref.labels[HOST_KEY_LABEL] };
     }
     return undefined;
   };
@@ -189,9 +207,14 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
       const labels = { [DISK_LABEL]: ref.disk, [RUN_LABEL_KEY]: ref.id, [ATTEMPT_LABEL]: String(n) };
       const context = bounded(startTimeoutMs);
       const timedOut = () => new BoxHostError("START_TIMED_OUT", `starting run ${ref.id} attempt ${n} in a ${provider.name} box took over ${startTimeoutMs} ms`);
-      const specFor = (holder: string): LaunchSpec => ({
+      // The place's HOST_BOX names the life (run) and the start's index; the key a box carries is minted at its create from
+      // them, so neither a restarted index nor a retried attempt names two boxes.
+      const placeBox = hostBoxOf(attempt.env?.HOST_BOX);
+      const mint = () => `${placeBox?.run ?? ref.id}/${placeBox?.key ?? String(n)}/${randomBytes(8).toString("hex")}`;
+      const specFor = (holder: string, key: string): LaunchSpec => ({
         argv: [...command, "run", "--disk", ref.disk, "--region", ref.region, "--id", ref.id, "--mount-root", mountRoot, "--archil", archil, "--app", options.app, ...(options.runArgs ?? []), "--run-as", runAs, "--token-stdin"],
-        env: { ...options.env, ...extra, PDA_HOLDER: holder },
+        // The runner is handed its own box's key, never the start's: it binds host-<key> for the box it runs in.
+        env: { ...options.env, ...extra, ...(placeBox ? { HOST_BOX: JSON.stringify({ ...placeBox, key }) } : {}), PDA_HOLDER: holder },
         inheritEnv: false,
         // The instance runs as root: it mounts directly (no sudo) and holds the token; its commands drop to runAs. The
         // launcher verifies that same user (it exists, is not uid or gid 0, has no sudo rule and no setuid or setcap
@@ -204,7 +227,7 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
         terminalExits: [...TERMINAL_EXITS],
       });
       // The launcher's own check of the spec, before any call to the provider: an environment it refuses never boots a box.
-      const refused = l.launchSpecError(name, specFor("{}"));
+      const refused = l.launchSpecError(name, specFor("{}", mint()));
       if (refused) throw new BoxHostError("INVALID_ARGUMENT", `the launcher refuses this start: ${refused.message}`, { cause: refused });
       const refuse = (box: Box | undefined, message: string, cause?: unknown) => {
         refusal = new BoxHostError("UNSUPPORTED", message, cause === undefined ? {} : { cause });
@@ -217,6 +240,7 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
       // from the ABSENT_STARTS-th start that finds the same box so, a refusal that names it. Otherwise: adopted while its
       // launch runs, used as fresh while it never launched, replaced once it ended.
       let box: Box | undefined;
+      let key: string | undefined;
       const found = await find(labels, name, context, l);
       if (found) {
         const facts = found.box.facts();
@@ -230,29 +254,32 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
           throw new BoxHostError("CREATE_FAILED", `${what}: nothing is ended or made, and the next start asks again`);
         }
         unmeasured.delete(found.box.id);
-        if (wrong !== undefined) {
+        // A box without its key label (made before the key) could never be recorded: never adopted or used, but replaced.
+        const why = wrong ?? (found.key === undefined ? `no ${HOST_KEY_LABEL} label` : undefined);
+        if (why !== undefined) {
           const gone = await found.box.destroy(bounded(callTimeoutMs));
-          if (!gone.ok) throw boxError(`ending ${provider.name} box ${found.box.id}, found again with ${wrong}`, gone.error, "STOP_FAILED");
+          if (!gone.ok) throw boxError(`ending ${provider.name} box ${found.box.id}, found again with ${why}`, gone.error, "STOP_FAILED");
           ended(found.box.id);
         } else {
           const phase = found.state?.phase;
           if (phase === "starting" || phase === "running" || phase === "restarting") {
-            remember(found.box);
+            remember(found.box, found.key);
             return { ...handleOf(found.box, n, launchOf({ launch: { name } })), adopted: true };
           }
-          if (found.state === undefined) box = found.box;
+          if (found.state === undefined) [box, key] = [found.box, found.key];
           else await destroy(found.box, bounded(callTimeoutMs));
         }
       }
       if (!box) {
-        const created = await provider.create({ ...spec, capabilities, labels: { ...spec.labels, ...labels } }, context);
+        key = mint();
+        const created = await provider.create({ ...spec, capabilities, labels: { ...spec.labels, ...labels, [HOST_KEY_LABEL]: key } }, context);
         if (created.ok) box = created.value;
         else {
           // A create that failed after the machine existed: found by its labels and used, never leaked.
           const again = created.error.code === "unknown" || created.error.code === "timeout" ? await find(labels, name, context, l).catch(() => undefined) : undefined;
           // This start's own create made it: its facts are the create's answer for this spec, judged as a fresh box's below
           // (a refusal is remembered), not by the caller rule for a box a later start finds again.
-          if (again && again.state === undefined) box = again.box;
+          if (again && again.state === undefined) [box, key] = [again.box, again.key ?? key];
           else if (again) await destroy(again.box, bounded(callTimeoutMs));
           if (!box) {
             if (created.error.code === "invalid") throw boxError(`${provider.name} refused the spec`, created.error, "INVALID_ARGUMENT");
@@ -262,7 +289,7 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
           }
         }
       }
-      remember(box);
+      remember(box, key);
       const facts = box.facts();
       if (facts.fuse !== true) throw await refuse(box, `the ${provider.name} box cannot hold the run's mount: facts().fuse is ${String(facts.fuse)}, not true`);
       if (facts.secretsVia !== "fd") throw await refuse(box, `the ${provider.name} box has no fd for the launcher's frame: facts().secretsVia is ${String(facts.secretsVia)}, not "fd"`);
@@ -278,7 +305,7 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
       }
 
       const handle = handleOf(box, n, { v: 1, name });
-      const launched = await l.launch(box, name, specFor(JSON.stringify(handle)), context);
+      const launched = await l.launch(box, name, specFor(JSON.stringify(handle), key ?? mint()), context);
       if (!launched.ok) {
         const e: LaunchError = launched.error;
         if (e.code === "unsupported" || e.code === "refused") throw await refuse(box, `the ${provider.name} box cannot run the instance as asked (${e.code}): ${e.message}`, e);
@@ -368,7 +395,7 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
     box(h: HostHandle): HostBox | null {
       if (!mine(h)) return null;
       const r = receipts.get(h.box);
-      return r ? { provider: provider.name, kind: r.kind, from: r.from, to: r.to } : null;
+      return r ? { provider: provider.name, kind: r.kind, from: r.from, to: r.to, ...(r.key === undefined ? {} : { key: r.key }) } : null;
     },
   };
 }

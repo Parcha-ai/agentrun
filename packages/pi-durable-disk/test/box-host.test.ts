@@ -109,12 +109,14 @@ describe("boxHost: the instance holds the token as root, and every agent command
 });
 
 describe("boxHost: the box it asks for, and a box that cannot hold the mount", () => {
-  it("creates with the spec, capabilities fuse added, and its three labels; never an env in the spec", async () => {
+  it("creates with the spec, capabilities fuse added, its three labels and the box's minted key; never an env in the spec", async () => {
     const provider = fake(daytonaLike());
     await assert.rejects(host(provider, { spec: { ...SPEC, capabilities: [], labels: { team: "crew" } } }).start(REF, TOKEN, { attempt: 3 }), code("UNSUPPORTED"));
     const asked = provider.callsOf("create")[0]!.spec!;
     assert.deepEqual(asked.capabilities, ["fuse"]);
-    assert.deepEqual(asked.labels, { team: "crew", "pi-durable-disk.disk": REF.disk, "pi-durable-disk.run": REF.id, "pi-durable-disk.attempt": "3" });
+    const { "agentrun-host-key": key, ...rest } = asked.labels!;
+    assert.deepEqual(rest, { team: "crew", "pi-durable-disk.disk": REF.disk, "pi-durable-disk.run": REF.id, "pi-durable-disk.attempt": "3" });
+    assert.match(String(key), /^r1\/3\/[0-9a-f]{16}$/, "no HOST_BOX: the run's id and the attempt, then the nonce");
     assert.equal(asked.env, undefined);
     assert.equal(asked.maxLifetimeMs, SPEC.maxLifetimeMs);
   });
@@ -301,7 +303,8 @@ describe("boxHost: the launch, a start found again, status, stop and receipts", 
     const handle = await driver.start(REF, TOKEN, { attempt: 1 });
     const box = provider.boxes[0]!;
     const open = driver.box(handle)!;
-    assert.deepEqual({ ...open, from: typeof open.from }, { provider: provider.name, kind: "vm", from: "string", to: null });
+    assert.deepEqual({ ...open, from: typeof open.from, key: typeof open.key }, { provider: provider.name, kind: "vm", from: "string", to: null, key: "string" });
+    assert.equal(open.key, box.spec.labels?.["agentrun-host-key"], "the key is the box's label");
     assert.equal(open.from, box.facts().startedAt, "from is the box's own startedAt");
     assert.ok(!("usdPerSecond" in open), "no price");
     await driver.stop(handle);
