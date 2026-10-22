@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, symlinkSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -10,7 +10,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { AgentHomeError, readAgentHome, setAlias, setBindings, startRun } from "../dist/index.js";
+import { AgentHomeError, readAgentHome, setAlias, setBindings, setPrompts, startRun } from "../dist/index.js";
 import { openReadOnly, readDocuments } from "../dist/serve/read.js";
 import { serveHome } from "../dist/serve/index.js";
 import { buildSignedInHome, PRACTICE_ORIGIN, SIGN_IN_MARKER, signedInHomeSkip } from "./fixtures/signed-in-home.mjs";
@@ -52,6 +52,12 @@ const hasSideFiles = (file) => SIDE.some((suffix) => existsSync(`${file}${suffix
 async function seededHome() {
   const dir = await scratch();
   const built = await buildSignedInHome(dir);
+  await setPrompts(built.home, [
+    { id: "kind", role: "question", label: "Kind", text: "What kind of organisation is it?", criteria: { public: "Its shares trade publicly.", other: "Anything else." } },
+    { id: "generic", role: "generic", label: "Generic", text: "Say what the page shows." },
+    { id: "public", role: "overlay", label: "Public", text: "Start with the filings.", when: { question: "kind", option: "public", threshold: 0.8 } },
+    { id: "base", role: "base", label: "Base", text: "Read the practice site." },
+  ]);
   await setAlias(built.home, "other-host", "ALIAS-MARKER-4471");
   await setBindings(built.home, "other-host", { browser: "BINDING-MARKER-4471" });
   const holder = await startRun(built.home, { runId: "holder", host: "other-host", leaseMs: 7_654_321, prompt: { id: "generic", reason: "no overlay applies", confidence: 0.4 } });
@@ -239,6 +245,7 @@ test("a run read while another process appends to it: every response is a whole 
     let last = 0;
     let reads = 0;
     let partial = 0;
+    const lengths = new Set();
     while (!lines.includes("done")) {
       const res = await request(served.url, { target: "/api/runs/holder" });
       assert.equal(res.status, 200, res.body);
@@ -247,6 +254,7 @@ test("a run read while another process appends to it: every response is a whole 
       assert.ok(rows.length >= last, `rows went from ${last} to ${rows.length}`);
       rows.forEach((row, at) => assert.equal(row.summary, `You: message ${at + 1}`, "the rows are the first n entries, in order, none half written"));
       if (rows.length < total) partial++;
+      lengths.add(rows.length);
       last = rows.length;
       reads++;
     }
@@ -254,6 +262,7 @@ test("a run read while another process appends to it: every response is a whole 
     const final = JSON.parse((await request(served.url, { target: "/api/runs/holder" })).body);
     assert.equal(final.rows.length, total, "every entry the other process appended is there once it is done");
     assert.ok(reads > 3 && partial > 0, `the reads (${reads}) overlapped the appends (${partial} saw a partial run)`);
+    assert.ok(lengths.size > 3, `the reader saw the writer's commits as they landed (${lengths.size} different lengths)`);
   } finally {
     await served.close();
     child.kill();
@@ -349,9 +358,11 @@ test("the API's shapes: the agent, the runs newest first, a run's rows, and what
     assert.deepEqual(agent.skills.map(({ path: file, size }) => [file, size]), [["practice/SKILL.md", Buffer.byteLength("# Practice\n\nSign in, then read the page.\n")]]);
     assert.match(agent.skills[0].sha256, /^[0-9a-f]{64}$/);
     assert.equal("content" in agent.skills[0], false, "a skill's text is not sent");
-    assert.deepEqual(agent.prompts.map((prompt) => [prompt.id, prompt.role]), [["base", "base"], ["generic", "generic"]]);
+    assert.deepEqual(agent.prompts.map((prompt) => [prompt.id, prompt.role]), [["base", "base"], ["public", "overlay"], ["generic", "generic"], ["kind", "question"]], "base, overlays, generic, then the question");
+    assert.deepEqual(agent.prompts[1].when, { question: "kind", option: "public", threshold: 0.8 });
+    assert.deepEqual(agent.prompts[3].criteria, { public: "Its shares trade publicly.", other: "Anything else." });
     assert.equal(agent.source, null);
-    assert.deepEqual(agent.counts, { skills: 1, prompts: 2, runs: 2, live: 1 });
+    assert.deepEqual(agent.counts, { skills: 1, prompts: 4, runs: 2, live: 1 });
 
     const runs = JSON.parse((await request(served.url, { target: "/api/runs" })).body);
     assert.deepEqual(runs.map((run) => [run.id, run.live]), [["holder", true], ["signed-in", false]], "newest first");
@@ -372,6 +383,24 @@ test("the API's shapes: the agent, the runs newest first, a run's rows, and what
 
     const missing = await request(served.url, { target: "/api/runs/none" });
     assert.deepEqual([missing.status, JSON.parse(missing.body)], [404, { error: "no such run" }]);
+  } finally {
+    await served.close();
+  }
+});
+
+test("a run's store that is a link out of the home is not read", skip, async () => {
+  const seeded = await seededHome();
+  const outside = path.join(await scratch(), "elsewhere");
+  mkdirSync(outside);
+  cpSync(seeded.holder.storePath, path.join(outside, "run.sqlite"));
+  renameSync(path.join(seeded.holder.dir, "store"), path.join(seeded.holder.dir, "store.moved"));
+  symlinkSync(outside, path.join(seeded.holder.dir, "store"));
+  const served = await serveHome(seeded.home);
+  try {
+    const res = await request(served.url, { target: "/api/runs/holder" });
+    assert.equal(res.status, 500);
+    assert.match(JSON.parse(res.body).error, /not inside the home/);
+    assert.equal((await request(served.url, { target: "/api/runs/signed-in" })).status, 200, "the other runs are read");
   } finally {
     await served.close();
   }
