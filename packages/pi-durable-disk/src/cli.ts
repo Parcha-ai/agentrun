@@ -203,19 +203,31 @@ export function runUser(spec: string, passwd = "/etc/passwd"): { uid: number; gi
 /**
  * Why the root instance must not load `app` under `--run-as`, or null. The path the loader opens is walked as the kernel
  * resolves it, one element at a time from `/`, each link's target spliced in where the link was, so a link is checked
- * where it lives as well as where it points. Refused: any element (directory, link or the module) that is not root's; a
- * directory or the module writable by its group or by others (a sticky bit is no exception); and any element inside
- * `runRoot`, the run's data: a disk run's mount root, where every run is mounted and a file's owner is whatever its
- * writer set (the control API writes any owner), or a local run's directory, whose work/ the agent's commands own. Then
- * only root can change what the path resolves to, so the module root loads is the one checked. What the module imports
- * (its node_modules) is the image's to keep root's.
+ * where it lives as well as where it points. Refused:
+ * - any element (a directory, a link or the module) that is not root's, or a directory or the module writable by its group
+ *   or by others (a sticky bit is no exception), unless the element is on a read-only mount: nothing in the box can write,
+ *   chmod, rename or unlink there, and the agent's commands cannot remount (dockerHost bind-mounts the app's directory,
+ *   the host user's, read-only);
+ * - any element inside `runRoot`, the run's data: a disk run's mount root, where every run is mounted and a file's owner
+ *   is whatever its writer set (the control API writes any owner), or a local run's directory, whose work/ the agent's
+ *   commands own.
+ * Then only root can change what the path resolves to, so the module root loads is the one checked. What the module
+ * imports (its node_modules) is the image's to keep root's.
  */
 export function appWritableReason(
   app: string,
   runRoot: string,
-  fs: { lstatSync(p: string): { uid: number; mode: number }; readlinkSync(p: string): string } = { lstatSync, readlinkSync },
+  fs: AppFs = { lstatSync, readlinkSync, mounts: thisMounts },
 ): string | null {
   const root = resolve(runRoot);
+  let table: readonly { point: string; ro: boolean }[] | undefined;
+  // The mount `p` is on: the last in the table whose point is `p` or above it (a later mount there covers earlier ones).
+  const readOnly = (p: string): boolean => {
+    table ??= fs.mounts?.() ?? [];
+    let on: { point: string; ro: boolean } | undefined;
+    for (const m of table) if (m.point === "/" || p === m.point || p.startsWith(`${m.point}/`)) on = m;
+    return on?.ro === true;
+  };
   const rest = resolve(app).split("/").filter(Boolean);
   let at = "/";
   for (let links = 0; ; ) {
@@ -226,7 +238,7 @@ export function appWritableReason(
     } catch (error) {
       return `${at} cannot be read (${(error as NodeJS.ErrnoException).code ?? error})`;
     }
-    if (st.uid !== 0) return `${at} is owned by uid ${st.uid}, not root`;
+    if (st.uid !== 0 && !readOnly(at)) return `${at} is owned by uid ${st.uid}, not root`;
     if ((st.mode & constants.S_IFMT) === constants.S_IFLNK) {
       // Its directory, checked a step before, is root's and closed to others: only root can replace it.
       if (++links > 40) return `${app} goes through too many links`;
@@ -240,10 +252,38 @@ export function appWritableReason(
       at = target.startsWith("/") ? "/" : dirname(at);
       continue;
     }
-    if ((st.mode & 0o022) !== 0) return `${at} is writable by its group or by others`;
+    if ((st.mode & 0o022) !== 0 && !readOnly(at)) return `${at} is writable by its group or by others`;
     const next = rest.shift();
     if (next === undefined) return null;
     at = next === "." ? at : next === ".." ? dirname(at) : at === "/" ? `/${next}` : `${at}/${next}`;
+  }
+}
+
+type AppFs = {
+  lstatSync(p: string): { uid: number; mode: number };
+  readlinkSync(p: string): string;
+  mounts?(): readonly { point: string; ro: boolean }[];
+};
+
+/** Each mount's point and whether it is read-only (its own options or its superblock's), in the order of a mountinfo table. */
+export function mountInfo(text: string): { point: string; ro: boolean }[] {
+  const out: { point: string; ro: boolean }[] = [];
+  for (const line of text.split("\n")) {
+    const f = line.split(" ");
+    const dash = f.indexOf("-", 6);
+    if (dash < 0 || f.length < dash + 4) continue;
+    const point = f[4]!.replace(/\\([0-7]{3})/g, (_, octal: string) => String.fromCharCode(parseInt(octal, 8)));
+    out.push({ point, ro: f[5]!.split(",").includes("ro") || f[dash + 3]!.split(",").includes("ro") });
+  }
+  return out;
+}
+
+/** This process's mounts; none when the table cannot be read, so nothing is taken as read-only. */
+function thisMounts(): { point: string; ro: boolean }[] {
+  try {
+    return mountInfo(readFileSync("/proc/self/mountinfo", "utf8"));
+  } catch {
+    return [];
   }
 }
 
