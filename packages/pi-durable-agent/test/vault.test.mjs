@@ -460,14 +460,15 @@ async function resealed(h, sessionKey, hostKeyBytes, edit) {
   await writeRow(h, sessionKey, { ...record, origins: plain.capturedFor, iv: iv.toString("base64"), ciphertext: ciphertext.toString("base64") });
 }
 
-test("a provider context whose own origins go beyond the capture's is refused, naming those origins and nothing else, and nothing is written; one within them is kept", async () => {
+test("a provider context whose own origins go beyond the capture's is refused, naming the fault and no origin or id, and nothing is written; one within them is kept", async () => {
   const h = await home();
   const vault = sessionVault(h, { hostKey: KEY, now: NOW });
   const context = (origins) => ({ kind: "provider-context", capturedAt: new Date(T0).toISOString(), provider: "kernel", contextId: marker("wide"), origins });
-  for (const [origins, recorded, outside] of [[[A], [A, B], B], [[A], [B], B], [[A, B], [OTHER, A, B], OTHER]]) {
+  for (const [origins, recorded] of [[[A], [A, B]], [[A], [B]], [[A, B], [OTHER, A, B]]]) {
     await assert.rejects(vault.capture({ sessionKey: "wide", origins, state: context(recorded) }), (error) => {
       assert.ok(refused("invalid")(error), String(error));
-      assert.equal(error.message, `the provider context's origins go beyond the capture's: ${outside}`);
+      assert.equal(error.message, "the provider context's origins go beyond the capture's");
+      for (const text of [...recorded, marker("wide")]) assert.ok(!`${error.message}\n${error.stack}`.includes(text), `the error does not carry ${text}`);
       return true;
     });
   }

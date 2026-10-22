@@ -161,8 +161,7 @@ function keptOf(state: unknown, origins: string[]): Kept {
       throw invalid(`the provider context's origins: ${(error as Error).message}`);
     }
     // A context cannot be cut down: one holding an origin the capture does not allow would keep that origin's sign-in.
-    const outside = [...new Set((state.origins as string[]).filter((origin) => !origins.includes(origin)))];
-    if (outside.length) throw invalid(`the provider context's origins go beyond the capture's: ${outside.join(", ")}`);
+    if (!(state.origins as string[]).every((origin) => origins.includes(origin))) throw invalid("the provider context's origins go beyond the capture's");
     return { kind: "provider-context", provider: state.provider, contextId: state.contextId, origins: [...(state.origins as string[])] };
   }
   throw invalid("the captured state's kind is not cdp or provider-context");
