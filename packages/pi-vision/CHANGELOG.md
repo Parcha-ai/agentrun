@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.0-beta.23 (2026-10-22)
+
+- The README's install lines for the pi packages name `@1.3.0` (`@earendil-works/pi-ai`, `pi-codemode`, and the adapter's peers `pi-durable` and `chord`), and say pi 1.4 is not supported yet: the peers stop below 1.4.0, so an unpinned `npm install @earendil-works/pi-durable @earendil-works/chord` now ends in ERESOLVE. `pi install npm:@parcha/pi-vision@beta` works with pi 1.3 and 1.4.
+
 ## 0.1.0-beta.21 (2026-10-21)
 
 - The report skill holds the summary to its findings: each sentence of the summary restates a finding from the evidence below it with no stronger word, so when a finding says most, part or all but one place the summary says the same, and "none", "all" or "gone" appear only where a finding says so. A caption says only what its own picture shows, in the same measure: a box that holds part water and part land is described that way, never as "completely filled" or "all".

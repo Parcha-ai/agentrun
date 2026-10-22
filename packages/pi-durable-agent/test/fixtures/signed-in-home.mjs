@@ -6,7 +6,7 @@ import { createRegistry, defineDocFamily } from "@earendil-works/pi-durable";
 import { localRun, openDurableRun } from "@parcha/pi-durable-disk";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { AGENT_STORE_FILE, carryBack, createAgentHome, durableProfileStore, setAlias, setBindings, startRun } from "../../dist/index.js";
+import { AGENT_STORE_FILE, carryBack, createAgentHome, durableProfileStore, setAlias, setBindings, setPrompts, startRun } from "../../dist/index.js";
 
 export const SIGN_IN_MARKER = "ctx-FAKE-SIGNIN-0000";
 export const PRACTICE_ORIGIN = "https://practice-site.example";
@@ -27,7 +27,11 @@ export async function buildSignedInHome(dir) {
   });
   await setAlias(home, FIXTURE_HOST, "ext-fixture-1");
   await setBindings(home, FIXTURE_HOST, { browser: "local" });
-  const run = await startRun(home, { runId: "signed-in", host: FIXTURE_HOST });
+  await setPrompts(home, [
+    { id: "base", role: "base", label: "Base", text: "Read the practice site." },
+    { id: "generic", role: "generic", label: "Generic", text: "Say what the page shows." },
+  ]);
+  const run = await startRun(home, { runId: "signed-in", host: FIXTURE_HOST, prompt: { id: "generic", reason: "no overlay applies" } });
   const durable = await openDurableRun({ disk: "local", region: "local", id: run.runId }, { ...localRun(run.dir), harness: { models: createModels(), registry: createRegistry() } });
   try {
     await durable.harness.root(BACKGROUND_CONTEXT, { agent: { instructions: run.agent.instructions } });

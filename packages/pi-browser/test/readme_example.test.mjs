@@ -47,3 +47,27 @@ test("two copies of the README quick start run at once against real Chromes, eac
   }
   assert.deepEqual(fs.readdirSync(dir).filter((name) => name.startsWith("pi-browser-")), [], "each run removed its own profile root");
 });
+
+test("the README quick start names the container setting, creates its session inside the try, and the local Chrome's sandbox option is documented", () => {
+  const readme = fs.readFileSync(path.join(PACKAGE, "README.md"), "utf8");
+  const section = readme.split(/^## /m).find((part) => part.startsWith("Quick start"));
+  assert.ok(section, "the README has a Quick start section");
+  const [prose, code] = [section.split("```js")[0], /```js\n([\s\S]*?)```/.exec(section)?.[1] ?? ""];
+  assert.ok(prose.includes("PI_BROWSER_NO_SANDBOX=1") && prose.includes("sandbox: false") && /container/.test(prose) && prose.includes("--init"), "one sentence on containers, naming both ways and --init");
+  const tryAt = code.indexOf("try {");
+  assert.ok(tryAt > 0 && code.indexOf("provider.create(") > tryAt, "provider.create runs inside the try");
+  assert.match(code, /finally \{\n  if \(session\) await provider\.release\(session\);\n  await rm\(profileRoot/, "a failed create still removes the profile root, and releases only a session that exists");
+  assert.match(readme, /^\| `sandbox` \|/m, "the options table documents sandbox");
+});
+
+test("the README's install block pins a pi-durable host's peers to 1.3.0 and says pi 1.4 is not supported yet, and the pins are the peer range's last version", () => {
+  const readme = fs.readFileSync(path.join(PACKAGE, "README.md"), "utf8");
+  const install = readme.split(/^## /m).find((part) => part.startsWith("Install")) ?? "";
+  const line = install.split("\n").find((l) => l.startsWith("npm install") && l.includes("@earendil-works/pi-durable"));
+  assert.ok(line, "the Install block has a line for a pi-durable host");
+  for (const name of ["pi-durable", "chord", "pi-ai"]) assert.ok(line.includes(`@earendil-works/${name}@1.3.0`), `${name} is pinned to 1.3.0 in that line`);
+  assert.ok(install.includes("pi 1.4 is not supported yet; a later release widens the range."), "the sentence about pi 1.4");
+  const manifest = JSON.parse(fs.readFileSync(path.join(PACKAGE, "package.json"), "utf8"));
+  assert.equal(manifest.peerDependencies["@earendil-works/pi-durable"], ">=1.1.0 <1.4.0", "the pin names the last version below the peer range's bound; move both together");
+  for (const l of readme.split("\n")) if (/^(npm install|pi install)/.test(l) && /@earendil-works\/(pi-durable|chord|pi-ai)(?!@1\.3\.0)/.test(l)) assert.fail(`an unpinned install line: ${l}`);
+});

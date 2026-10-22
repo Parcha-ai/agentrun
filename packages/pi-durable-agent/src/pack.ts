@@ -7,7 +7,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { projectForExport } from "./export.js";
 import { AGENT_STORE_FILE, type AgentHome, type AgentHomeState, homeDir, readState, sha256 } from "./home.js";
-import { DefinitionDoc, IdentityDoc, put, RunsDoc, SkillsDoc, SourceDoc } from "./kinds.js";
+import { DefinitionDoc, IdentityDoc, PromptsDoc, put, RunsDoc, SkillsDoc, SourceDoc } from "./kinds.js";
 import {
   byName, documentKinds, type HomeManifest, invalid, isRunId, iso, MANIFEST_LIMIT, MAX_MEMBERS, memberProblem, PACK_FORMAT, refused, safeSegment, secretIn, SIDE_FILES, SQLITE_MAGIC,
 } from "./pack-shared.js";
@@ -48,6 +48,7 @@ async function buildAgentStore(state: AgentHomeState, scratch: string): Promise<
       await write("agent.definition", state.definition, () => tx.doc(DefinitionDoc));
       if (state.source) await write("agent.source", state.source, () => tx.doc(SourceDoc));
       for (const [key, skill] of Object.entries(state.skills)) await write("agent.skills", skill, () => tx.doc(SkillsDoc, key, null));
+      for (const [key, prompt] of Object.entries(state.prompts)) await write("agent.prompts", prompt, () => tx.doc(PromptsDoc, key, null));
       for (const [key, run] of Object.entries(state.runs)) await write("agent.runs", run, () => tx.doc(RunsDoc, key, null));
     }, BACKGROUND_CONTEXT);
   } finally {
