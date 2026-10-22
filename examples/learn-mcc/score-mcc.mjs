@@ -69,7 +69,9 @@ const flagSet = (flags) => (Array.isArray(flags) ? [...new Set(flags.filter((f) 
  * answer is in the code table), the flags and their Jaccard overlap with the teacher's, siteStatus, confidence.
  */
 export function scoreMcc({ answer, merchant, groups = defaultGroups() }) {
-  const teacher = merchant?.teacher ?? null;
+  // A call without the merchant row would score every field null and look like a row with no teacher label.
+  if (merchant === null || typeof merchant !== 'object') throw new Error('scoreMcc takes { answer, merchant, groups }: the merchant row, its teacher block at merchant.teacher');
+  const teacher = merchant.teacher ?? null;
   const mccAnswer = mccOf(answer?.mcc);
   const mccTeacher = mccOf(teacher?.mcc);
   const riskAnswer = riskOf(answer?.riskTier);
