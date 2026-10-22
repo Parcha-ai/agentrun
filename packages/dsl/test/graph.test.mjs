@@ -37,12 +37,14 @@ test('a chain, a parallel and a call: nodes in document order, JSON Pointer path
     { node: 'call', label: 'look', via: 'tool', tool: 'search', args: {}, out: 'Any' },
     { node: 'parallel', label: 'fan', branches: [code('a'), code('b')] },
   ] }));
+  // Each change check was computed apart from graph.ts: FNV-1a (32 bits, over UTF-16 units) of the node's own fields as
+  // canonical JSON, e.g. {"label":"fan","node":"parallel"} for the parallel, its branches left out.
   assert.deepEqual(graph.nodes, [
-    { path: '/root', kind: 'chain', label: 'chain' },
-    { path: '/root/steps/0', kind: 'call', label: 'look', via: 'tool' },
-    { path: '/root/steps/1', kind: 'parallel', label: 'fan' },
-    { path: '/root/steps/1/branches/0', kind: 'code', label: 'a' },
-    { path: '/root/steps/1/branches/1', kind: 'code', label: 'b' },
+    { path: '/root', kind: 'chain', label: 'chain', changeCheck: 'b465cda2' },
+    { path: '/root/steps/0', kind: 'call', label: 'look', via: 'tool', changeCheck: 'fe6fdfab' },
+    { path: '/root/steps/1', kind: 'parallel', label: 'fan', changeCheck: '98a1b4d5' },
+    { path: '/root/steps/1/branches/0', kind: 'code', label: 'a', changeCheck: 'b7f30294' },
+    { path: '/root/steps/1/branches/1', kind: 'code', label: 'b', changeCheck: 'a7f7287d' },
   ]);
   assert.deepEqual(graph.edges, [
     { from: '/root', to: '/root/steps/0', kind: 'next' },

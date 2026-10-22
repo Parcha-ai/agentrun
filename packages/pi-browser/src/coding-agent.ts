@@ -14,7 +14,7 @@ import { browserFailure, classifyBrowserError, type BrowserFailure } from "./cor
 import { workspaceFiles } from "./core/files.js";
 import type { BrowserConfig, BrowserPolicy, BrowserProvider, HandoffOutcome, HandoffPort, ReleaseReason, SessionRecord, SiteInfo, SiteRunPort, WorkspaceFiles } from "./core/host.js";
 import { leaseTag, type LeaseRef } from "./core/lease.js";
-import { createRedactor, redactDeep, scrubPageUrl, type Redact } from "./core/redact.js";
+import { createRedactor, hostLiveView, redactDeep, scrubPageUrl, type Redact } from "./core/redact.js";
 import { useWebsite, useWebsiteContract } from "./core/sites.js";
 import { drivingGuarded } from "./core/driving-guard.js";
 import { drivingGates, keptFor, personOn, rearmWhenLeft } from "./core/driving.js";
@@ -355,7 +355,8 @@ export class LocalCustody implements CustodyPort<PageDriver> {
     const stop = signal ? AbortSignal.any([this.d.signal, signal]) : this.d.signal;
     try {
       const provider = await this.d.provider();
-      const liveView = provider.liveView ? await provider.liveView({ id: sessionId, tag }).catch(() => null) : null;
+      const view = provider.liveView ? await provider.liveView({ id: sessionId, tag }).catch(() => null) : null;
+      const liveView = view && hostLiveView(view, this.d.redact);
       const asked = await port.request({ requestId: ask.requestId, sessionTag: tag, sessionId, liveView, instruction: ask.instruction, completionCondition: ask.completionCondition }, stop);
       if ("refused" in asked) return asked;
       for (let attempt = 0; ; attempt += 1) {
@@ -465,10 +466,11 @@ async function openRuntime(pi: ExtensionAPI, settings: Settings, ctx: ExtensionC
         const call: ToolCall = { callId, conversationId: CONVERSATION, signal, label: config.label, redact, evidence, workspace: ctx.cwd, files: options.files ?? workspaceFiles(ctx.cwd) };
         return await impl(args, custody, call);
       } catch (error) {
-        // A typed failure thrown before the tool's own handling (the driving guard refuses a release or relaunch for a person who is driving before the tool runs) comes
-        // back as the envelope the durable adapter gives, so the model reads its code and `retryable`; other errors keep their path.
-        if (error instanceof BrowserFailureError) return { content: [{ type: "text", text: JSON.stringify(error.failure) }], isError: true };
-        throw error;
+        // A throw would reach the model as its raw message, unredacted (pi shows a tool's error text): every failure comes back as the typed envelope the durable
+        // adapter gives, redacted, so the model reads its code and `retryable`. A typed one is thrown before the tool's own handling (the driving guard refuses a
+        // release or relaunch for a person who is driving before the tool runs); any other is classified here.
+        const typed = error instanceof BrowserFailureError ? error.failure : classifyBrowserError(error, [...BROWSER_TOOLS, ...WEB_TOOLS].find((contract) => contract.name === tool)?.effect === "effect", { aborted: signal?.aborted === true, redact });
+        return { content: [{ type: "text", text: JSON.stringify(typed) }], isError: true };
       } finally { custody.activity(-1); }
     },
     close: () => (closed ??= (async () => {

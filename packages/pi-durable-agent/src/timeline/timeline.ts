@@ -56,7 +56,7 @@ export type TimelineOptions = {
   now?: () => number;
 };
 
-type Call = { conv: number; name: string; args: Obj; round?: number; use: TimelineEvent; done: boolean };
+type OpenCall = { conv: number; name: string; args: Obj; round?: number; use: TimelineEvent; done: boolean };
 
 const TAG = /^[\w.-]{1,64}$/;
 const blocksOf = (message: Obj | undefined): Obj[] => {
@@ -74,7 +74,7 @@ function createProjector(options: TimelineOptions) {
   const caps = { ...CAPS, ...options.caps };
   const label = (tool: string, args: Obj, result?: ToolResultView) => labelOf(tool, args, result, options.labels);
   const seen = new Set<string>();
-  const calls = new Map<string, Call>();
+  const calls = new Map<string, OpenCall>();
   const previous = new Map<number, string>();
   const systems = new Set<number>();
   const browsers = new Set<number>();
@@ -107,6 +107,16 @@ function createProjector(options: TimelineOptions) {
 
   const viewOf = (message: Obj): ToolResultView => ({ text: textOf(message), details: message.details, isError: message.isError === true });
   const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? text)) || "no detail";
+  /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
+  const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
+    make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...fields });
+  /** The `tool_result` row of a finished call, named `named`; `parent` is a nested call's caller. */
+  const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean }, parent?: string) =>
+    make("tool_result", conv, rowId, {
+      summary: view.isError ? `${named} failed: ${failure(view.text)}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
+      tool_status: view.isError ? "failed" : "success", tool_result_preview: view.text ? cut(scrubUrls(view.text), caps.preview) : null,
+      tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent,
+    });
 
   /** A call that spawned a conversation: its rows, and the child's, now name it as their parent. */
   function adopt(conv: number, child: number, callId: string, args: Obj, fallback: string): TimelineEvent[] {
@@ -160,9 +170,7 @@ function createProjector(options: TimelineOptions) {
             browsers.add(conv);
             add(make("phase", conv, `${base}:${index}:session`, { summary: "Opened a live browser session" }));
           }
-          const use = make("tool_use", conv, `${base}:${index}`, {
-            summary: label(name, args), tool_name: name, tool_use_id: id, tool_input_preview: inputPreview(args, caps.preview), round: entry.id,
-          });
+          const use = useRow(conv, `${base}:${index}`, id, name, args, { round: entry.id });
           calls.set(`${conv}:${id}`, { conv, name, args, round: entry.id, use, done: false });
           add(use);
         });
@@ -179,11 +187,7 @@ function createProjector(options: TimelineOptions) {
         call.use.summary = clean(named, caps.summary);
         touch(call.use);
       }
-      add(make("tool_result", conv, base, {
-        summary: view.isError ? `${named} failed: ${failure(view.text)}` : `${named}: ok`, tool_name: name, tool_use_id: id || null,
-        tool_status: view.isError ? "failed" : "success", tool_result_preview: view.text ? cut(scrubUrls(view.text), caps.preview) : null,
-        tool_result_size_bytes: utf8Bytes(view.text), round: call?.round,
-      }));
+      add(resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view));
       if (!view.isError) {
         const answer = str(args.answer);
         if (name === "submit" && answer !== undefined) add(make("final_answer", conv, `${base}:answer`, { summary: firstLine(answer), text: answer }));
@@ -229,9 +233,7 @@ function createProjector(options: TimelineOptions) {
   /** A nested call: seen live only, since pi drops its result when the caller settles. */
   function nested(conv: number, id: string, parent: string, name: string, args: Obj): TimelineEvent {
     const round = calls.get(`${conv}:${parent}`)?.round;
-    const use = make("tool_use", conv, `${conv}:n:${id}`, {
-      summary: label(name, args), tool_name: name, tool_use_id: id, tool_input_preview: inputPreview(args, caps.preview), round, parent_tool_use_id: parent,
-    });
+    const use = useRow(conv, `${conv}:n:${id}`, id, name, args, { round, parent_tool_use_id: parent });
     calls.set(`${conv}:${id}`, { conv, name, args, round, use, done: false });
     rows.push(use);
     return use;
@@ -247,17 +249,13 @@ function createProjector(options: TimelineOptions) {
     const named = label(call.name, call.args, { text, details: result.details, isError: failed });
     call.done = true;
     call.use.summary = clean(named, caps.summary);
-    const row = make("tool_result", conv, `${conv}:n:${id}:result`, {
-      summary: failed ? `${named} failed: ${failure(text)}` : `${named}: ok`, tool_name: call.name, tool_use_id: id,
-      tool_status: failed ? "failed" : "success", tool_result_preview: text ? cut(scrubUrls(text), caps.preview) : null,
-      tool_result_size_bytes: utf8Bytes(text), round: call.round, parent_tool_use_id: parent,
-    });
+    const row = resultRow(conv, `${conv}:n:${id}:result`, { name: call.name, callId: id, round: call.round }, named, { text, isError: failed }, parent);
     rows.push(row);
     return [call.use, row];
   }
 
   /** A call with no result that will never get one. */
-  function interrupt(call: Call, id: string): TimelineEvent {
+  function interrupt(call: OpenCall, id: string): TimelineEvent {
     call.done = true;
     const row = make("tool_result", call.conv, `${call.conv}:interrupted:${id}`, {
       summary: `${label(call.name, call.args)} interrupted`, tool_name: call.name, tool_use_id: id, tool_status: "failed", round: call.round,
@@ -267,7 +265,7 @@ function createProjector(options: TimelineOptions) {
     return row;
   }
 
-  function open(conv?: number): Array<[string, Call]> {
+  function open(conv?: number): Array<[string, OpenCall]> {
     return [...calls].filter(([, call]) => (conv === undefined || call.conv === conv) && !call.done).map(([key, call]) => [key.slice(key.indexOf(":") + 1), call]);
   }
 
@@ -395,7 +393,8 @@ export function timelineReducer(options: TimelineOptions = {}) {
           if (Array.isArray(event.inbox) && event.inbox.length) wait("queue", `${event.inbox.length} message${event.inbox.length === 1 ? "" : "s"} queued`);
           for (const slot of Array.isArray(event.nestedTools) ? event.nestedTools : []) {
             const s = obj(slot);
-            if (s && str(s.callId) && str(s.parentCallId) && str(s.name)) nestedStart(s.callId as string, s.parentCallId as string, s.name as string, obj(s.arguments) ?? {});
+            const [callId, parentCallId, name] = [str(s?.callId), str(s?.parentCallId), str(s?.name)];
+            if (s && callId && parentCallId && name) nestedStart(callId, parentCallId, name, obj(s.arguments) ?? {});
           }
           break;
         }
@@ -415,8 +414,8 @@ export function timelineReducer(options: TimelineOptions = {}) {
           entry(event.entry);
           break;
         case "tool_execution_start": {
-          const parent = str(event.parentToolCallId);
-          if (parent && str(event.toolCallId)) nestedStart(event.toolCallId as string, parent, str(event.toolName) ?? "tool", obj(event.args) ?? {});
+          const [parent, callId] = [str(event.parentToolCallId), str(event.toolCallId)];
+          if (parent && callId) nestedStart(callId, parent, str(event.toolName) ?? "tool", obj(event.args) ?? {});
           break;
         }
         case "tool_execution_end": {
@@ -466,10 +465,12 @@ export function timelineReducer(options: TimelineOptions = {}) {
         case "compaction_start":
           live("phase", `${conv()}:compaction:${String(event.taskId)}`, "Summarizing older context");
           break;
-        case "compaction_end":
+        case "compaction_end": {
           del(`${conv()}:compaction:${String(event.taskId)}`);
-          if (str(event.error)) live("error", `${conv()}:compaction:${String(event.taskId)}:error`, `Compaction failed: ${firstLine(str(event.error)!)}`, { text: str(event.error)! });
+          const failed = str(event.error);
+          if (failed) live("error", `${conv()}:compaction:${String(event.taskId)}:error`, `Compaction failed: ${firstLine(failed)}`, { text: failed });
           break;
+        }
         case "tool_execution_update": {
           const child = obj(event.details)?.conversationId;
           const id = str(event.toolCallId);
