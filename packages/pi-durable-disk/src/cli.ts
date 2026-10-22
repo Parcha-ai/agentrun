@@ -209,9 +209,9 @@ export function runUser(spec: string, passwd = "/etc/passwd"): { uid: number; gi
  *   root) no writable mount in the instance's table overlaps: nothing in the box can write, chmod, rename or unlink it
  *   then, and the agent's commands cannot remount (dockerHost bind-mounts the app's directory, the host user's, once,
  *   read-only);
- * - any element inside `runRoot`, the run's data: a disk run's mount root, where every run is mounted and a file's owner
- *   is whatever its writer set (the control API writes any owner), or a local run's directory, whose work/ the agent's
- *   commands own.
+ * - any element inside `runRoot` (by its path or its real path), the run's data: a disk run's mount root, where every run
+ *   is mounted and a file's owner is whatever its writer set (the control API writes any owner), or a local run's
+ *   directory, whose work/ the agent's commands own; and any element on an archil mount, wherever it is mounted.
  * Then only root can change what the path resolves to, so the module root loads is the one checked. What the module
  * imports (its node_modules) is the image's to keep root's.
  */
@@ -221,23 +221,39 @@ export function appWritableReason(
   fs: AppFs = INSTANCE_FS,
 ): string | null {
   const root = resolve(runRoot);
+  // The run's data root by its own path and by its real one: a --mount-root that is a link names the same runs.
+  let real: string | undefined;
+  try {
+    real = fs.realpathSync?.(root);
+  } catch {
+    real = undefined;
+  }
+  const roots = real === undefined || real === root ? [root] : [root, real];
   let table: readonly MountRow[] | undefined;
-  // Null when `p` is on a read-only mount whose source no writable mount in the table overlaps, so nothing in the box can
-  // change it; otherwise what to add to the refusal. The mount `p` is on is the last in the table whose point is `p` or
-  // above it: a later mount there covers earlier ones.
-  const exempt = (p: string): string | null => {
-    table ??= fs.mounts?.() ?? [];
+  const mounts = (): readonly MountRow[] => (table ??= fs.mounts?.() ?? []);
+  // The mount `p` is on: the last in the table whose point is `p` or above it (a later mount there covers earlier ones).
+  const mountOf = (p: string): MountRow | undefined => {
     let on: MountRow | undefined;
-    for (const m of table) if (m.point === "/" || p === m.point || p.startsWith(`${m.point}/`)) on = m;
+    for (const m of mounts()) if (m.point === "/" || p === m.point || p.startsWith(`${m.point}/`)) on = m;
+    return on;
+  };
+  // Null when `p` is on a read-only mount whose source no writable mount in the table overlaps, so nothing in the box can
+  // change it; otherwise what to add to the refusal.
+  const exempt = (p: string): string | null => {
+    const on = mountOf(p);
     if (on?.ro !== true) return "";
     const ro = on;
-    const twin = table.find((m) => !m.ro && m.dev === ro.dev && overlaps(m.root, ro.root));
+    const twin = mounts().find((m) => !m.ro && m.dev === ro.dev && overlaps(m.root, ro.root));
     return twin === undefined ? null : ` (its read-only mount's source is also mounted read-write at ${twin.point})`;
   };
   const rest = resolve(app).split("/").filter(Boolean);
   let at = "/";
   for (let links = 0; ; ) {
-    if (at === root || at.startsWith(`${root}/`)) return `${at} is inside the run's data root ${root}, which the agent's commands or the disk's other writers can change`;
+    const inside = roots.find((r) => at === r || at.startsWith(`${r}/`));
+    if (inside !== undefined) return `${at} is inside the run's data root ${inside}, which the agent's commands or the disk's other writers can change`;
+    // An archil mount anywhere (a run's, or a second bind of one) is the runs' data plane, whatever its owners say.
+    const archil = mountOf(at);
+    if (archil?.fstype === "fuse.archil") return `${at} is on an archil mount (${archil.point}), the runs' data plane, which the agent's commands or the disk's other writers can change`;
     let st: { uid: number; mode: number };
     try {
       st = fs.lstatSync(at);
@@ -274,11 +290,12 @@ export function appWritableReason(
 export type AppFs = {
   lstatSync(p: string): { uid: number; mode: number };
   readlinkSync(p: string): string;
+  realpathSync?(p: string): string;
   mounts?(): readonly MountRow[];
 };
 
-/** A mount: where it is, whether it is read-only (its own options or its superblock's), and its source (device, root). */
-export type MountRow = { point: string; ro: boolean; dev: string; root: string };
+/** A mount: where it is, whether it is read-only (its own options or its superblock's), its source (device, root) and type. */
+export type MountRow = { point: string; ro: boolean; dev: string; root: string; fstype?: string };
 
 /** Each mount of a mountinfo table, in its order. */
 export function mountInfo(text: string): MountRow[] {
@@ -289,7 +306,7 @@ export function mountInfo(text: string): MountRow[] {
     const dash = f.indexOf("-", 6);
     if (dash < 0 || f.length < dash + 4) continue;
     const ro = f[5]!.split(",").includes("ro") || f[dash + 3]!.split(",").includes("ro");
-    out.push({ point: unescape(f[4]!), ro, dev: f[2]!, root: unescape(f[3]!) });
+    out.push({ point: unescape(f[4]!), ro, dev: f[2]!, root: unescape(f[3]!), fstype: f[dash + 1]! });
   }
   return out;
 }
@@ -310,7 +327,7 @@ export function instanceMounts(read: (path: string) => string = (path) => readFi
 }
 
 /** What the walk reads by default: this machine's files, and the instance's own mounts. */
-export const INSTANCE_FS: AppFs = { lstatSync, readlinkSync, mounts: () => instanceMounts() };
+export const INSTANCE_FS: AppFs = { lstatSync, readlinkSync, realpathSync, mounts: () => instanceMounts() };
 
 /**
  * Transport's launcher hands a program its secrets on one descriptor, named by `PI_TRANSPORT_SECRETS_FD`, which is not
