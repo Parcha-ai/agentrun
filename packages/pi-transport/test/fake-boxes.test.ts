@@ -464,3 +464,131 @@ describe("fakeBoxes: the launcher (placeholder types, K2's shape)", () => {
 		expect(again.ok ? "ok" : again.error.code).toBe("gone");
 	});
 });
+
+describe("fakeBoxes: review findings (red first)", () => {
+	const hung = (ms: number) => new Promise<string>((resolve) => setTimeout(() => resolve("hung"), ms));
+	const codeOf = (r: string | { ok: boolean; error?: { code: string } }): string =>
+		typeof r === "string" ? r : r.ok ? "ok" : (r.error?.code ?? "error");
+
+	it("settles the wait of an exec with aborted when the caller's context aborts after exec returned", async () => {
+		const provider = fakeBoxes();
+		const box = getOrThrow(await provider.create(SPEC, context));
+		const controller = new AbortController();
+		const proc = getOrThrow(await box.exec(["sleep", "100"], undefined, withAbortSignal(controller.signal, context)));
+		controller.abort();
+		const result = await Promise.race([proc.wait(), hung(500)]);
+		expect(codeOf(result)).toBe("aborted");
+	});
+
+	it("ends a scripted hang at the call's timeoutMs and when the box ends", async () => {
+		const clock = fakeClock();
+		const provider = fakeBoxes({ clock });
+		const box = getOrThrow(await provider.create(SPEC, context));
+		provider.script.on({ op: "exec" }, { hang: true });
+		const timed = box.exec(["true"], { timeoutMs: 50 }, context);
+		await clock.advance(50);
+		const first = await Promise.race([timed, hung(500)]);
+		expect(codeOf(first)).toBe("timeout");
+		provider.script.on({ op: "exec" }, { hang: true });
+		const ending = box.exec(["true"], undefined, context);
+		await clock.advance(1);
+		box.end(null);
+		const second = await Promise.race([ending, hung(500)]);
+		expect(codeOf(second)).toBe("gone");
+	});
+
+	it("counts each call once for nth, whatever rules are installed, and counts calls made before a rule", async () => {
+		const provider = fakeBoxes();
+		const box = getOrThrow(await provider.create(SPEC, context));
+		provider.script.on({ op: "exec", box: box.id, nth: 2 }, { fail: "unknown" });
+		provider.script.on({ op: "exec", box: box.id, nth: 3 }, { fail: "capacity" });
+		const codes: string[] = [];
+		for (let i = 0; i < 3; i++) {
+			const r = await box.exec(["true"], undefined, context);
+			codes.push(r.ok ? "ok" : r.error.code);
+		}
+		expect(codes).toEqual(["ok", "unknown", "capacity"]);
+		const late = fakeBoxes();
+		const b = getOrThrow(await late.create(SPEC, context));
+		await b.exec(["true"], undefined, context);
+		await b.exec(["true"], undefined, context);
+		late.script.on({ op: "exec", nth: 3 }, { fail: "unknown" });
+		const third = await b.exec(["true"], undefined, context);
+		expect(third.ok ? "ok" : third.error.code).toBe("unknown");
+	});
+
+	it("keeps what a delayed outcome says: a delayed exit, and a delayed failing create that leaks its box", async () => {
+		const clock = fakeClock();
+		const provider = fakeBoxes({ clock });
+		const box = getOrThrow(await provider.create(SPEC, context));
+		provider.script.on({ op: "exec" }, { delayMs: 10, then: { exit: 9 } });
+		const pending = box.exec(["echo", "x"], undefined, context);
+		await clock.advance(10);
+		const proc = getOrThrow(await pending);
+		expect(getOrThrow(await finish(proc)).exitCode).toBe(9);
+		provider.script.on({ op: "create" }, { delayMs: 10, then: { fail: "unknown", leakBox: true } });
+		const creating = provider.create({ ...SPEC, labels: { run: "d" } }, context);
+		await clock.advance(10);
+		const failed = await creating;
+		expect(failed.ok ? "ok" : failed.error.code).toBe("unknown");
+		expect(getOrThrow(await provider.list({ run: "d" }, context))).toHaveLength(1);
+	});
+
+	it("records copies: a reused upload buffer and a mutated spec do not change what leaks finds", async () => {
+		const provider = fakeBoxes();
+		const env = { E: "m-env" };
+		const box = getOrThrow(await provider.create({ ...SPEC, env }, context));
+		env.E = "changed";
+		const bytes = new TextEncoder().encode("m-upload");
+		getOrThrow(await box.upload([{ path: "a", bytes }], context));
+		bytes.fill(0);
+		expect(provider.leaks("m-upload").map((l) => l.where)).toEqual(["upload"]);
+		expect(provider.leaks("m-env").map((l) => l.where)).toEqual(["env"]);
+	});
+
+	it("lets the spec's cpus, memory and gpu win over the provider's defaults, and keeps the defaults where the spec is silent", async () => {
+		const provider = fakeBoxes({ facts: { cpus: 8, memoryMb: 4096, gpu: "T4" } });
+		const box = getOrThrow(await provider.create({ ...SPEC, cpus: 2, memoryMb: 512, gpu: "H100" }, context));
+		expect(box.facts()).toMatchObject({ cpus: 2, memoryMb: 512, gpu: "H100" });
+		const plain = getOrThrow(await provider.create(SPEC, context));
+		expect(plain.facts()).toMatchObject({ cpus: 8, memoryMb: 4096, gpu: "T4" });
+	});
+
+	it("closes the before-stop program's stdin, so a hook that reads its input does not block the stop", async () => {
+		const provider = fakeBoxes();
+		provider.program(
+			"inst",
+			({ signal }) => new Promise<number>((resolve) => signal.addEventListener("abort", () => resolve(0))),
+		);
+		const box = getOrThrow(await provider.create(SPEC, context));
+		const launch = getOrThrow(await box.launch({ argv: ["inst"], user: "run", beforeStop: ["cat"] }, context));
+		const stopped = await Promise.race([box.launchStop(launch, { graceMs: 10 }, context), hung(500)]);
+		expect(codeOf(stopped)).toBe("ok");
+		expect(box.launches[0]?.events).toEqual(["drain", "beforeStop", "kill"]);
+	});
+
+	it("does not restart a program that fails while a planned stop is draining", async () => {
+		const provider = fakeBoxes();
+		provider.program(
+			"inst",
+			({ signal }) => new Promise<number>((resolve) => signal.addEventListener("abort", () => resolve(0))),
+		);
+		provider.program("hook", async ({ box }) => {
+			box.launches[0]?.exit(1);
+			await new Promise((resolve) => setImmediate(resolve));
+			return 0;
+		});
+		const box = getOrThrow(await provider.create(SPEC, context));
+		const launch = getOrThrow(
+			await box.launch({ argv: ["inst"], user: "run", restart: { onFailure: true }, beforeStop: ["hook"] }, context),
+		);
+		getOrThrow(await box.launchStop(launch, { graceMs: 10 }, context));
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(provider.callsOf("incarnation")).toHaveLength(1);
+		expect(getOrThrow(await box.launchState(launch, context))).toMatchObject({
+			state: "exited",
+			incarnation: 1,
+			restarts: 0,
+		});
+	});
+});
