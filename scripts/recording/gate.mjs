@@ -6,7 +6,6 @@
 // gallery fails.
 //
 // `node scripts/recording/gate.mjs <dist-dir>`: prints each problem and exits 1, or says what passed.
-import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -45,17 +44,14 @@ export function gateProblems(dist, lock = existsSync(LOCK) ? JSON.parse(readFile
     for (const file of readdirSync(dir, { withFileTypes: true })) {
       if (file.isFile() && (file.name === 'manifest.json' || file.name === 'events.jsonl')) continue;
       if (!file.isDirectory() || file.name !== 'blobs') { add(`${at}/${file.name}`, 'is not part of a recording: only its manifest, its lines and its blobs are published'); continue; }
+      // validateRecording (above) checks every blob, its name, its file and its hash, once. Publishing adds one rule of its own: an artifact page
+      // opened straight would run on the gallery's site, so the build publishes it as `<name>.txt`.
       let manifestOf;
       try { manifestOf = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')); } catch { manifestOf = undefined; }
       const artifactNames = artifactBlobNames(manifestOf);
       for (const blob of readdirSync(join(dir, 'blobs'), { withFileTypes: true })) {
         const named = BLOB.exec(blob.name);
-        const refused = blobNameProblem(blob.name, artifactNames);
-        if (!blob.isFile() || !named) add(`${at}/blobs/${blob.name}`, 'is not a blob named by its SHA-256');
-        else if (refused) add(`${at}/blobs/${blob.name}`, refused);
-        // An artifact page opened straight would run on the gallery's site: the build publishes it as `<name>.txt`.
-        else if (!named[3] && PAGE_EXTENSIONS.includes(named[2].toLowerCase())) add(`${at}/blobs/${blob.name}`, `would open as a page: an artifact page is published as ${blob.name}.txt`);
-        else if (createHash('sha256').update(readFileSync(join(dir, 'blobs', blob.name))).digest('hex') !== named[1]) add(`${at}/blobs/${blob.name}`, 'does not hash to its name');
+        if (blob.isFile() && named && !named[3] && PAGE_EXTENSIONS.includes(named[2].toLowerCase()) && !blobNameProblem(blob.name, artifactNames)) add(`${at}/blobs/${blob.name}`, `would open as a page: an artifact page is published as ${blob.name}.txt`);
       }
     }
   }

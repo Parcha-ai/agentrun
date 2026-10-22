@@ -60,14 +60,15 @@ test('a media file anywhere in the build, not only in a recording\'s blobs, is r
   assert.deepEqual(paths(dist), ['poster.png: contains a machine path']);
 });
 
-test('a blob not named by its SHA-256, or not hashing to its name, is refused', (t) => {
+test('a blob not named by its SHA-256, or not hashing to its name, is refused, and each is reported ONCE (by the recording\'s validation the gate runs)', (t) => {
+  const wrong = `${createHash('sha256').update('other').digest('hex')}.json`;
   const dist = built(t, (dir) => {
     writeFileSync(join(dir, 'reference-job', 'blobs', 'notes.json'), '{}');
-    writeFileSync(join(dir, 'reference-job', 'blobs', `${createHash('sha256').update('other').digest('hex')}.json`), '{}');
+    writeFileSync(join(dir, 'reference-job', 'blobs', wrong), '{}');
   });
-  const found = paths(dist).filter((problem) => problem.includes('/blobs/'));
-  assert.ok(found.includes('recordings/reference-job/blobs/notes.json: is not a blob named by its SHA-256'), found.join('\n'));
-  assert.ok(found.some((problem) => problem.endsWith('does not hash to its name')), found.join('\n'));
+  const about = (name) => paths(dist).filter((problem) => problem.includes(name));
+  assert.deepEqual(about('notes.json'), ['recordings/reference-job/blobs: notes.json is not a blob named by its SHA-256']);
+  assert.deepEqual(about(wrong), [`recordings/reference-job/blobs: ${wrong} does not hash to its name`]);
 });
 
 test('a JWT (a sign-in token) or a Browserbase key in a tool result, a text blob or the manifest is found, escaped in JSON too', (t) => {

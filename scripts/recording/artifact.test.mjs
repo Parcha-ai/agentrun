@@ -72,7 +72,7 @@ test('the published copy holds the report\'s page as plain text, <hash>.html.txt
   writeFileSync(join(blobs, `${sha(svg)}.svg`), svg);
   const refused = gateOf(dist);
   assert.ok(refused.includes(`recordings/one/blobs/${page}.html: would open as a page: an artifact page is published as ${page}.html.txt`), refused.join('\n'));
-  assert.ok(refused.some((each) => each.startsWith(`recordings/one/blobs/${sha(svg)}.svg: has the extension .svg, which a recording's blob may not have`)), refused.join('\n'));
+  assert.deepEqual(refused.filter((each) => each.includes(`${sha(svg)}.svg`)).map((each) => each.split(' (')[0]), [`recordings/one/blobs: ${sha(svg)}.svg has the extension .svg, which a recording's blob may not have`], 'the SVG, once');
 });
 
 test('a data-look that names no look the run filed is refused', (t) => {
@@ -186,7 +186,7 @@ test('the validator checks the artifact\'s shape: entry, paths, hashes, blobs, e
   assert.deepEqual(artifactProblems({ title: '', entry: 'index.html', files: { 'index.html': hash } }), ['artifact.title is not a non-empty string']);
   const tampered = recordingWith(t, { artifact: good, kept });
   writeFileSync(join(tampered, 'blobs', `${hash}.html`), PAGE('<p>changed</p>'));
-  assert.ok(problems(tampered).some((each) => /does not hash to its name/.test(each)));
+  assert.deepEqual(problems(tampered).filter((each) => /does not hash to its name/.test(each)), [`blob ${hash}.html of artifact file index.html does not hash to its name`], 'once, by the artifact check');
 });
 
 test('the gate repeats the machine-path scan on a binary blob of the report', (t) => {
@@ -240,4 +240,18 @@ test('two paths with one content and two extensions are two blobs, and both vali
   const dir = recordingWith(t, { artifact: { title: 'A page', entry: 'index.html', files }, kept });
   writeFileSync(join(dir, 'blobs', `${sha(a)}.jpeg`), a);
   assert.deepEqual(problems(dir), []);
+});
+
+test('beside a valid artifact, a file under its hash but another extension is checked too: tampered, it is refused once, in the recording and in the published copy', (t) => {
+  const { artifact, kept } = take(join(here, 'fixtures', 'report-first-step'));
+  const keys = [...readFile('index.html', readFileSync(join(here, 'fixtures', 'report-first-step', 'index.html'), 'utf8')).looks];
+  const dir = recordingWith(t, { artifact, kept, looks: [...new Set(keys)] });
+  const page = artifact.files['index.html'];
+  writeFileSync(join(dir, 'blobs', `${page}.json`), '{"tampered":true}');
+  assert.deepEqual(problems(dir).filter((each) => each.includes(`${page}.json`)), [`${page}.json does not hash to its name`]);
+  // Published, the page is `<hash>.html.txt` and the gate runs the recording's validation: the tampered file is still refused, once.
+  rmSync(join(dir, 'blobs', `${page}.json`));
+  const dist = publish(t, dir);
+  writeFileSync(join(dist, 'recordings', 'one', 'blobs', `${page}.json`), '{"tampered":true}');
+  assert.deepEqual(gateOf(dist).filter((each) => each.includes(`${page}.json`)), [`recordings/one/blobs: ${page}.json does not hash to its name`]);
 });
