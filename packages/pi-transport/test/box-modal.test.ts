@@ -241,8 +241,7 @@ describe("modal boxes", () => {
 				const plain = unwrap(await provider(sdk).create({ ...SPEC, workspace: root }, context));
 				expect(plain.facts().fuse).toBe(false);
 				for (const [output, missing] of [
-					["disk=1\nptrace=1\nfuse_dev=0\nfuse_helper=1\n", /fuse openable/],
-					["disk=1\nptrace=1\nfuse_dev=1\nfuse_helper=0\n", /setuid fusermount/],
+					["disk=1\nptrace=1\nfuse_dev=0\n", /character device that root can open/],
 				] as const) {
 					sdk.probeOutput = output;
 					const lacking = await provider(sdk).create(
@@ -486,6 +485,51 @@ describe("modal boxes", () => {
 			const ended = await aborted.wait();
 			console.log(`a stalled stream whose context ended: the wait ended after ${Date.now() - abortedAt} ms`);
 			expect(ended.ok ? "ok" : ended.error.code).toBe("aborted");
+		});
+	});
+
+	it("returns a cancellation during the box's own probe, for attach and for create, though no FUSE was asked for", async () => {
+		await withRoot(async (root) => {
+			const sdk = new FakeModal();
+			const provider = modalBoxes(sdk, { appName: "a" });
+			const made = unwrap(await provider.create({ ...SPEC, workspace: root }, context));
+			const cancelDuringProbe = (sandbox: (typeof sdk.sandboxList)[number], cancel: () => void) => {
+				const exec = sandbox.exec.bind(sandbox);
+				sandbox.exec = async (command, params) => {
+					if (command[0] === "sh" && command[2]?.includes("ptrace_scope")) cancel();
+					return exec(command, params);
+				};
+			};
+			const cancelAttach = withCancel(context);
+			cancelDuringProbe(sdk.sandboxList[0] as (typeof sdk.sandboxList)[number], () => cancelAttach.cancel());
+			const attached = await provider.attach(made.id, cancelAttach.context);
+			expect(attached.ok ? "ok" : attached.error.code).toBe("aborted");
+
+			// The probe throws after the caller cancelled: still an abort, not a box that read nothing.
+			const cancelThrown = withCancel(context);
+			const sandbox = sdk.sandboxList[0] as (typeof sdk.sandboxList)[number];
+			const exec = sandbox.exec.bind(sandbox);
+			sandbox.exec = async (command, params) => {
+				if (command[0] === "sh" && command[2]?.includes("ptrace_scope")) {
+					cancelThrown.cancel();
+					throw new Error("the connection went away");
+				}
+				return exec(command, params);
+			};
+			const thrown = await provider.attach(made.id, cancelThrown.context);
+			expect(thrown.ok ? "ok" : thrown.error.code).toBe("aborted");
+
+			const cancelCreate = withCancel(context);
+			const create = sdk.sandboxes.create;
+			sdk.sandboxes.create = async (app, image, params) => {
+				const sandbox = await create(app, image, params);
+				cancelDuringProbe(sandbox as (typeof sdk.sandboxList)[number], () => cancelCreate.cancel());
+				return sandbox;
+			};
+			const created = await provider.create({ ...SPEC, workspace: root }, cancelCreate.context);
+			expect(created.ok ? "ok" : created.error.code).toBe("aborted");
+			expect(sdk.running().map((s) => s.sandboxId)).toEqual([made.id]);
+			unwrap(await made.destroy(context));
 		});
 	});
 

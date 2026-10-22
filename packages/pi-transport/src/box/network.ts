@@ -1,12 +1,12 @@
 import { BoxError, type BoxNetwork, type BoxPort, type BoxSpec } from "./box.ts";
 
 /** A domain, or a wildcard domain with one leading `*.`. */
-const DOMAIN = /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$/i;
+const DOMAIN = /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 const CIDR_V4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/;
 
 const isCidr = (entry: string): boolean => {
 	const m = CIDR_V4.exec(entry);
-	return m !== null && m.slice(1, 5).every((octet) => Number(octet) <= 255) && Number(m[5]) <= 32;
+	return m?.slice(1, 5).every((octet) => Number(octet) <= 255) === true && Number(m[5]) <= 32;
 };
 
 /** What a spec's `network` asks for, checked: `open`, `none`, or an allowlist split into its domains and CIDRs. */
