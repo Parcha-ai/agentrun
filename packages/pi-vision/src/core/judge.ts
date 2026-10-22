@@ -54,16 +54,21 @@ const TYPES = ["choice", "noul", "score", "box"];
 const JEV_FIT: FitLimits = { maxWidth: JEV_MAX_EDGE, maxHeight: JEV_MAX_EDGE, maxBytes: base64Chars(JEV_IMAGE_BYTES), minEdge: JEV_MIN_EDGE, formats: ["image/png", "image/jpeg"], baseline: true };
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
+// A text judgment: no path, image, fragment or example, no box question, and a state that carries the text.
+const textJudgment = (r: Record<string, unknown>, questions: readonly unknown[]): boolean => {
+  const bare = [r.images, r.paths, r.fragments].every((v) => v === undefined || (Array.isArray(v) && v.length === 0)) && (r.examples === undefined || (object(r.examples) && Object.keys(r.examples).length === 0));
+  return bare && object(r.state) && Object.keys(r.state).length > 0 && questions.every((q) => object(q) && q.type !== "box" && q.image === undefined);
+};
+const questionOk = (q: unknown, count: number): boolean => object(q) && TYPES.includes(q.type as string) && (q.image === undefined || (Number.isInteger(q.image) && (q.image as number) >= 0 && (q.image as number) < count));
+const stateOk = (state: unknown): boolean => state === undefined || (object(state) && !("images" in state));
+const examplesOk = (examples: unknown, said: string): boolean => examples === undefined || (object(examples) && Object.keys(examples).every((ref) => said.includes(ref)));
+
 function checked(input: unknown): JudgeRequest {
   const r = (object(input) ? input : {}) as Record<string, unknown>;
   const count = (Array.isArray(r.images) ? r.images.length : 0) + (Array.isArray(r.paths) ? r.paths.length : 0);
   const questions = object(r.questions) ? Object.values(r.questions) : [];
   const said = JSON.stringify(r.questions ?? null);
-  // A text judgment: no path, image, fragment or example, no box question, and a state that carries the text.
-  const bare = [r.images, r.paths, r.fragments].every((v) => v === undefined || (Array.isArray(v) && v.length === 0)) && (r.examples === undefined || (object(r.examples) && Object.keys(r.examples).length === 0));
-  const text = bare && object(r.state) && Object.keys(r.state).length > 0 && questions.every((q) => object(q) && q.type !== "box" && q.image === undefined);
-  if (!(namesMedia(r) || text) || !questions.length || !questions.every((q) => object(q) && TYPES.includes(q.type as string) && (q.image === undefined || (Number.isInteger(q.image) && (q.image as number) >= 0 && (q.image as number) < count)))
-    || !(r.state === undefined || (object(r.state) && !("images" in r.state))) || !(r.examples === undefined || (object(r.examples) && Object.keys(r.examples).every((ref) => said.includes(ref))))) {
+  if (!((namesMedia(r) || textJudgment(r, questions)) && questions.length > 0 && questions.every((q) => questionOk(q, count)) && stateOk(r.state) && examplesOk(r.examples, said))) {
     throw new TypeError("vision.judge takes { questions: { [name]: { type: \"choice\" | \"noul\" | \"score\" | \"box\", instructions?, criteria?, image? } }, paths?, images?, fragments?, examples?: { [reference written in a question]: path or image block }, state?: an object without `images` } with at least one path or image, or, for a text judgment with none, a non-empty state and no box question");
   }
   return r as JudgeRequest;
