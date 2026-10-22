@@ -89,6 +89,8 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
   if (command.length === 0 || command.some((part) => typeof part !== "string" || part === "")) throw invalid("command is a non-empty list of non-empty strings");
   const user = options.user ?? "pda";
   if (!USER.test(user)) throw invalid("user is a user name or a uid");
+  // The token's launch is framed: its program never runs as root, whatever the image's passwd says of other names.
+  if (user === "root" || (/^[0-9]+$/.test(user) && Number(user) === 0)) throw invalid("user is root: the instance never runs as uid 0");
   const mountRoot = options.mountRoot ?? "/mnt/archil";
   if (!mountRoot.startsWith("/")) throw invalid("mountRoot is an absolute path");
   const archil = options.archil ?? "/usr/local/sbin/archil-scoped";
