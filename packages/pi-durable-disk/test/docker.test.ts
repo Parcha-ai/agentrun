@@ -150,6 +150,10 @@ test("start again for the same attempt: a running container is adopted (no secon
     assert.equal(again.name, first.name);
     assert.equal(again.adopted, true, "the handle says the start was adopted, so the supervisor removes the unused token");
     assert.equal(first.adopted, undefined);
+    // A place keys a box by its handle: every field the adopted handle carries is the fresh one's, the name among them.
+    const { adopted: _adopted, ...same } = again;
+    for (const [k, v] of Object.entries(same)) assert.deepEqual(first[k], v, `the adopted handle's ${k} is the fresh one's`);
+    assert.ok("name" in same, "an adopted handle names its container");
     const after = fake.calls().slice(before).map((c) => c.argv[0]);
     assert.ok(!after.includes("cp") && !after.includes("start"), `adopted without a token or a start: ${after}`);
     assert.ok(!carried(fake.calls()).some((t) => t.includes("another-token")), "the second token went nowhere");
