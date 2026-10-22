@@ -982,7 +982,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       case "decide":
       case "extract":
       case "report":
-        if (node.state !== undefined) checkStateMap(node.state, node.label, path);
+        checkStateMap(node.state, node.label, path);
         if (!node.instructions?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): instructions required`);
         if (node.node !== "report" && !Object.hasOwn(workflow.schemas, node.out)) fail("SCHEMA_UNKNOWN", ptrOf(path), `${path} (${node.label}): out schema "${node.out}" not in workflow.schemas`);
         if (node.thinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(String(node.thinking))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): thinking must be low|medium|high — thinking is never off`);
@@ -997,7 +997,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
           else {
             const qs = checkQuestionSchema(v.out, node.label, path);
             if (qs && !Object.values(qs).some((q) => q.type === "noul")) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): verify.out "${v.out}" carries no yes/no question — a verifier decides by yes/no (a boolean named after a submission field verifies it; any other boolean is a requirement)`);
-            if (v.state !== undefined) checkStateMap(v.state, node.label, path, "verify.state");
+            checkStateMap(v.state, node.label, path, "verify.state");
             if (v.maxDrives !== undefined && (!Number.isInteger(v.maxDrives) || v.maxDrives < 1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): verify.maxDrives must be an integer >= 1`);
             if (v.override !== undefined && (typeof v.override?.below !== "number" || v.override.below <= 0 || v.override.below >= 1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): verify.override.below must be in (0, 1)`);
           }
