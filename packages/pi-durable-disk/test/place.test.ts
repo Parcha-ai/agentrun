@@ -15,7 +15,9 @@ import { archilPlace, localPlace, PlaceError, writeAll, type UnheldRun, type Unh
 import { RunFileError } from "../src/run-files.ts";
 import { parseTokenNickname } from "../src/claim.ts";
 import type { HostBox, HostDriver, HostHandle, HostStatus, StartAttempt, SupervisorControl } from "../src/supervise.ts";
-import { currentBootId, procStartTicks } from "../src/hosts/local-host.ts";
+import { currentBootId, localHost, procStartTicks } from "../src/hosts/local-host.ts";
+import { dockerHost } from "../src/hosts/docker.ts";
+import { daytonaHost } from "../src/hosts/daytona.ts";
 import { scratchRoot } from "./_run-support.ts";
 
 const APP = fileURLToPath(new URL("./fixtures/place-app.ts", import.meta.url));
@@ -1066,6 +1068,7 @@ describe("archilPlace: an adopted start keeps the key its box already has (a fix
         control.ops.push(`kill ${h.name}`);
       },
       box: (h) => ({ provider: "modal", kind: `vm ${h.name}`, from: "2026-10-22T00:00:00.000Z", to: null }),
+      instanceOf: (h) => (typeof h.name === "string" ? h.name : undefined),
     };
     return host;
   };
@@ -1088,6 +1091,8 @@ describe("archilPlace: an adopted start keeps the key its box already has (a fix
       },
       status: async (h: HostHandle) => (stopped.has(String(h.name)) ? "stopped" : "running"),
       box: (h) => ({ provider: "docker", kind: `container ${String(h.name)}`, from: "2026-10-22T00:00:00.000Z", to: null }),
+      // The real driver's own identity of its handles.
+      instanceOf: dockerHost().instanceOf,
     };
     const place = archilPlace({ ...REF, control, host, pollMs: 5 })({ paths: pathsAt("/x") });
     let released = false;
@@ -1102,6 +1107,85 @@ describe("archilPlace: an adopted start keeps the key its box already has (a fix
     } finally {
       if (!released) await place.release().catch(() => {});
     }
+  });
+
+  /** A host that answers each start with the next handle from `answers` (adopted or not), making nothing. */
+  const scripted = (control: FakeControl, answers: HostHandle[], instanceOf?: (h: HostHandle) => string | undefined) => {
+    const stopped = new Set<string>();
+    const host: HostDriver & { mountRoot: string } = {
+      mountRoot: "/mnt/fake",
+      provider: "modal",
+      async start(_ref, _token, attempt): Promise<HostHandle> {
+        control.ops.push(`start g${attempt!.attempt}`);
+        control.delegations = [{ clientId: `c-${control.ops.length}`, inodeId: 7, path: `runs/${ID}`, isPending: false, isOrphaned: false }];
+        return answers.shift()!;
+      },
+      status: async (h: HostHandle) => (stopped.has(JSON.stringify(h)) ? "stopped" : "running"),
+      async stop(h: HostHandle) {
+        control.ops.push(`stop ${JSON.stringify({ ...h, adopted: undefined })}`);
+        stopped.add(JSON.stringify(h));
+      },
+      kills: "process",
+      async kill(h: HostHandle) {
+        control.ops.push(`kill ${String(h.name)}`);
+      },
+      box: (h) => ({ provider: "modal", kind: `vm ${String(h.name ?? h.image ?? "unnamed")}`, from: "2026-10-22T00:00:00.000Z", to: null }),
+      ...(instanceOf ? { instanceOf } : {}),
+    };
+    return host;
+  };
+  const twoStarts = async (host: HostDriver, control: FakeControl) => {
+    const place = archilPlace({ ...REF, control, host, pollMs: 5 })({ paths: pathsAt("/x") });
+    try {
+      const first = await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
+      await place.kill(first, "process");
+      await place.recover(first, "process", { gen: 2, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(2) });
+      return (await place.status!()).boxes!.map((b) => b.kind);
+    } finally {
+      await place.release().catch(() => {});
+    }
+  };
+
+  it("an adopted box this place life never saw (another life started it) gets the next key: its own status().boxes entry, as a fresh box would", async () => {
+    const control = new FakeControl();
+    const byName = (h: HostHandle) => (typeof h.name === "string" ? h.name : undefined);
+    const host = scripted(control, [{ driver: "fake", name: "old-box", adopted: true }, { driver: "fake", name: "box-2" }], byName);
+    assert.deepEqual(await twoStarts(host, control), ["vm old-box", "vm box-2"], "the adopted box is key 0, the next box key 1");
+  });
+
+  it("two DIFFERENT boxes are never one entry: handles that share only fields that name no instance (the provider; an image and a region) are two boxes, and so is any handle its driver names no instance for", async () => {
+    const byName = (h: HostHandle) => (typeof h.name === "string" ? h.name : undefined);
+    for (const [why, fresh, adopted, instanceOf] of [
+      ["only the provider shared", { driver: "fake", provider: "modal", name: "box-1" }, { driver: "fake", provider: "modal", adopted: true }, byName],
+      ["only an image and a region shared", { driver: "fake", image: "pda-home", region: "us-east", name: "box-1" }, { driver: "fake", image: "pda-home", region: "us-east", adopted: true }, byName],
+      ["a driver that names no instance", { driver: "fake", name: "box-1" }, { driver: "fake", name: "box-1", adopted: true }, undefined],
+    ] as const) {
+      const control = new FakeControl();
+      const host = scripted(control, [fresh as HostHandle, adopted as HostHandle], instanceOf);
+      assert.equal((await twoStarts(host, control)).length, 2, `${why}: two entries, both tracked and stopped`);
+    }
+  });
+
+  it("each driver names its instances, the same for its fresh handle and its adopted one: docker by daemon and container name, local by host, boot and unit (or tag), daytona by sandbox id", () => {
+    const docker = dockerHost().instanceOf;
+    const fresh = { driver: "docker", fleet: "pda", daemon: "unix:///var/run/docker.sock", name: "pda-r1-g2", mountpoint: "/mnt/archil/runs/r1", image: "pda:1", id: "c0ffee" };
+    const { id: _id, ...adopted } = { ...fresh, adopted: true };
+    assert.ok(docker(fresh) !== undefined && docker(fresh) === docker(adopted), "docker: the adopted handle (no id) names the same container");
+    assert.notEqual(docker({ ...fresh, name: "pda-r1-g3" }), docker(fresh), "another attempt's container");
+    assert.notEqual(docker({ ...fresh, daemon: "tcp://other:2375" }), docker(fresh), "another daemon's");
+    assert.equal(docker({ driver: "docker", fleet: "pda", image: "pda:1" }), undefined, "a docker handle with no name names nothing");
+    const local = localHost().instanceOf;
+    const unit = { driver: "local", mode: "systemd", host: "h1", bootId: "b1", unit: "pda-r1-g2.service", mountpoint: "/mnt/archil/runs/r1" };
+    assert.ok(local(unit) !== undefined && local(unit) === local({ ...unit, adopted: true }));
+    assert.notEqual(local({ ...unit, unit: "pda-r1-g3.service" }), local(unit));
+    assert.notEqual(local({ ...unit, bootId: "b2" }), local(unit), "the same unit after a reboot is another instance");
+    const child = { driver: "local", mode: "child", host: "h1", bootId: "b1", mountpoint: "/mnt/archil/runs/r1", tag: "t-1" };
+    assert.ok(local(child) !== undefined && local(child) !== local({ ...child, tag: "t-2" }));
+    const daytona = daytonaHost({ client: {} as never, snapshot: "pda" } as never).instanceOf;
+    const sandbox = { driver: "daytona", fleet: "pda", target: null, sandboxId: "sb-1", name: "pda-r1-g2", mountpoint: "/mnt/archil/runs/r1" };
+    assert.ok(daytona(sandbox) !== undefined && daytona(sandbox) === daytona({ ...sandbox, adopted: true }));
+    assert.notEqual(daytona({ ...sandbox, sandboxId: "sb-2" }), daytona(sandbox));
+    assert.equal(docker(unit), undefined, "a driver names only its own handles");
   });
 
   it("a box the place already started, adopted again on a repeated attempt, is one entry in status().boxes, never a second key, and is stopped once at release", async () => {
