@@ -29,37 +29,31 @@ where each tool runs. The definition names tools; the host binds them. It does n
 [pi-browser](https://github.com/Parcha-ai/agentrun/blob/main/packages/pi-browser/README.md) does, through the
 `ProfileStore` this package gives it.
 
-This package is held: it is built and tested in this repository and not published yet.
-
 ## Install
 
 ```sh
-npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/pi-ai@~1.2.0 @earendil-works/chord@~1.2.0
+npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
 
 The package needs Node 22.19 or later, and `@earendil-works/pi-durable` and `@earendil-works/chord` as peers
 ([Requirements](#requirements)); `@earendil-works/pi-ai` gives the host's Harness its models. The pi packages are pinned
-to 1.2, the line `@parcha/pi-durable-disk`'s install pins, so the two install side by side. It does not need a browser,
-a key or a network.
+to 1.3.0, the newest its peer range takes. pi 1.4 is not supported yet; a later release widens the range. It does not
+need a browser, a key or a network.
 
-Until it is published, pack it from a checkout and install the tarball it writes
-(`parcha-pi-durable-agent-<version>.tgz`) in place of `@parcha/pi-durable-agent@beta`:
-
-```sh
-git clone https://github.com/Parcha-ai/agentrun.git && cd agentrun && npm ci --ignore-scripts && npm run build
-npm pack -w @parcha/pi-durable-agent
-```
+To try a version that is not on npm yet, `npm pack -w @parcha/pi-durable-agent` in a built checkout writes
+`parcha-pi-durable-agent-<version>.tgz`: install that file's path in place of `@parcha/pi-durable-agent@beta`.
 
 ## Quickstart (no key, no network)
 
 Two runs of one agent on this machine. The first signs in, using a stand-in for the provider, and the second finds that
 sign-in already saved. The reference it prints, `ctx_1`, is a stand-in; a real one is secret.
 
-In an empty directory, install the package and the pi packages it runs with, save this as `quickstart.mjs`, and run
-`node quickstart.mjs`:
+In an empty directory, install the package and the pi packages it runs with (pinned to 1.3.0: pi 1.4 is not supported yet;
+a later release widens the range), save this as `quickstart.mjs`, and run
+`node --no-warnings=ExperimentalWarning quickstart.mjs` (Node's SQLite is marked experimental and says so):
 
 ```sh
-npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/pi-ai@~1.2.0 @earendil-works/chord@~1.2.0
+npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
 
 ```js
@@ -107,17 +101,17 @@ run-2: carried back acme.example
 }
 ```
 
-Run 1 signs in once. Run 2 finds the sign-in ready and never makes one.
+Run 1 signs in once. It starts with no save lease, because the agent has no sign-in to lease yet; a new sign-in goes to
+the first run that carries it back. Run 2 starts with the lease, finds the sign-in ready and never makes one.
 
 ## A runnable example
 
 [`examples/web`](https://github.com/Parcha-ai/agentrun/tree/main/examples/web) is a small web server over an agent home:
 a job history, each run's timeline, its files and its live browser. Its agent asks the person to sign in to a site
-through the live view, and its next run starts signed in. The browser is Browserbase by default, and a run needs a
-Browserbase key and a model endpoint. A local Chrome (`AGENT_BROWSER=chrome`) is there too, and waits for pi-browser's
-live view, which the person needs to sign in. With no key, the quickstart above is the keyless path. Run it from a
-checkout: `npm ci --ignore-scripts && npm run build`, then
-`node --no-warnings=ExperimentalWarning examples/web/server.mjs`.
+through the live view, and its next run starts signed in. A run needs a browser and a model endpoint. With neither,
+the quickstart above is the keyless path.
+[Its README](https://github.com/Parcha-ai/agentrun/tree/main/examples/web#run-it) says which browsers it takes and how
+to run it from a checkout.
 
 ## A saved sign-in
 
@@ -420,10 +414,12 @@ the new one, never a mix, and no old directory is deleted before the commit. Eve
 directory beside it, as they were.
 
 ```js
-import { importPack, packHome, readPack } from "@parcha/pi-durable-agent";
+import { homeRevision, importPack, openAgentHome, packHome, readPack } from "@parcha/pi-durable-agent";
 
+const home = await openAgentHome("./acme"); // the quickstart's home
 const { manifest } = await packHome(home, { out: "acme.tar", maxBytes: 200 * 1024 * 1024 });
 const { ok, checks } = await readPack("acme.tar");
+console.log(manifest.format, ok, checks.map((check) => `${check.name} ${check.status}`).join(", "));
 if (ok) await importPack("acme.tar", "./acme-copy"); // a fresh directory, or { replace: true, ifRevision: await homeRevision(home) } over a home
 ```
 
@@ -436,12 +432,20 @@ built-in, so a page, a viewer and a harness can import the same code. A row has 
 and `usage`.
 
 ```js
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
+import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { groupTimeline, renderText, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 
-// A released run: the entries of its conversation, in log order.
+// A released run: the entries of its root conversation, in log order (here the quickstart's run-1).
+const harness = await Harness.open(await SqliteStorage.open(await openNodeSqliteDatabase("./acme/runs/run-1/store/run.sqlite")), { models: createModels(), registry: createRegistry() }, ctx);
+const { items: entries } = await (await harness.root(ctx)).entries({}, 1000, undefined, ctx);
 console.log(renderText(timelineOf(entries, { settled: true })));
+await harness.close(ctx);
 
-// A live run: the `snapshot` event, then each batch of `watchEvents` (what pi-durable-disk serves on GET /events).
+// A live run: `events` are the `snapshot` event, then each batch of `watchEvents` (what pi-durable-disk serves on GET /events).
 const reducer = timelineReducer();
 const { rows, drop } = reducer.apply(events); // upsert rows by id, delete the drop ids, sort by seq
 const groups = groupTimeline(reducer.rows()); // rounds, folds and nested calls for a page
