@@ -147,6 +147,105 @@ function retryAfterMs(headers: unknown): number | undefined {
   return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
 }
 
+/** What one call sends: the request, the body its hash is taken over, and the image header when it carries an image or a Box. All of it is
+ *  checked before anything is sent: a request that cannot be valid throws the `invalid_request` JevError that names why. */
+function prepareRequest(params: JevJudgeParams, model: string, maxStateBytes: number | null, provider: JevProvider): { request: SystemOneRequest; body: string; headers?: Record<string, string> } {
+  let body: string;
+  let request: SystemOneRequest;
+  const invalid = (reason: JevRequestDiagnostic['reason'], message: string, stateBytes?: number) => new JevError(
+    "invalid_request", message, 0, undefined, { reason,
+      ...(typeof params.label === "string" ? { label: params.label.slice(0, 200) } : {}),
+      ...(stateBytes === undefined || maxStateBytes === null ? {} : { stateBytes, maxStateBytes }) });
+  const state = params.state;
+  let serializedState: string;
+  try {
+    // The SDK refuses a request with no state, so a null or missing state is refused here, before anything is sent.
+    if (typeof state !== "string" && (typeof state !== "object" || state === null)) throw new Error();
+    serializedState = JSON.stringify(state);
+    if (typeof serializedState !== "string") throw new Error();
+  } catch {
+    throw invalid("invalid_state", "Jev state must be JSON-serializable text, an object or an array.");
+  }
+  const stateBytes = Buffer.byteLength(serializedState, "utf8");
+  if (maxStateBytes !== null && stateBytes > maxStateBytes) throw invalid("state_too_large",
+    `Jev assembled state is ${stateBytes} UTF-8 bytes; configured host limit is ${maxStateBytes} bytes. No request was sent.`, stateBytes);
+  const callModel = params.model ?? model;
+  if (typeof callModel !== "string" || callModel.trim().length === 0) throw invalid("unsupported_model", "model must be a nonempty string; no request was sent.");
+  try {
+    body = JSON.stringify({ state: JSON.parse(serializedState), model: callModel, questions: params.questions });
+    request = JSON.parse(body) as SystemOneRequest;
+    if (!isRecord(request.questions) || Object.keys(request.questions).length === 0) throw new Error();
+  } catch {
+    throw invalid("invalid_questions", "Jev requires a nonempty JSON question map; no request was sent.");
+  }
+  // Images and Box questions: validated whole before any send; the header goes with exactly these requests.
+  const hasBox = Object.values(request.questions).some(question => isRecord(question) && question.type === "box");
+  const given = params.assets ?? {};
+  if (!isRecord(given)) throw invalid("invalid_assets", "assets must map each reference to an image; no request was sent.");
+  const references = Object.keys(given);
+  const carriesImage = references.length > 0;
+  if ((carriesImage || hasBox) && provider !== "typesafe") throw invalid("unsupported_provider", "Images and Box questions are sent to TypeSafe's own API only; the OpenRouter path is not verified for them. No request was sent.");
+  if (hasBox && !answersBox(callModel)) throw invalid("unsupported_model", `A Box question needs a model that answers it, by name: ${BOX_MODEL} or later, or jev-preview; jev-latest is refused whatever version it points at. No request was sent.`);
+  if (hasBox && !carriesImage) throw invalid("invalid_assets", "A Box question locates something in an image, and the request carries none. No request was sent.");
+  let assets: Record<string, Image> | undefined;
+  let assetDigests: Record<string, { sha256: string; mime: string; bytes: number }> | undefined;
+  if (carriesImage) {
+    // A reference is replaced where it sits inside a string value of the state, an instruction or a criterion; keys (question ids, option names) are never replaced.
+    const texts = [...stringValues(request.state), ...Object.values(request.questions).flatMap(question => isRecord(question) ? [...stringValues(question.instructions), ...stringValues(question.criteria)] : [])];
+    assets = Object.create(null) as Record<string, Image>; assetDigests = Object.create(null) as Record<string, { sha256: string; mime: string; bytes: number }>;
+    for (const reference of references) {
+      const image = given[reference];
+      const sound = reference.length > 0 && Buffer.byteLength(reference, "utf8") <= MAX_REFERENCE_BYTES && !/["\\\u0000-\u001f]/.test(reference)
+        && isRecord(image) && image.bytes instanceof Uint8Array && (image.mime === "image/png" || image.mime === "image/jpeg")
+        && image.bytes.byteLength > 0 && image.bytes.byteLength <= MAX_IMAGE_BYTES && startsWith(image.bytes, imageMagic[image.mime]);
+      if (!sound) throw invalid("invalid_assets", `Each image is a PNG or JPEG file of at most ${MAX_IMAGE_BYTES / 1024 / 1024} MiB, with bytes that are that type and a plain reference. No request was sent.`);
+      if (!texts.some(text => text.includes(reference))) throw invalid("invalid_assets", "Every image reference must appear in the state or a question. No request was sent.");
+      assets[reference] = new Image(image.bytes);
+      assetDigests[reference] = { sha256: createHash("sha256").update(image.bytes).digest("hex"), mime: image.mime, bytes: image.bytes.byteLength };
+    }
+    // The hash names the images by their own digests, so it identifies the request that was sent without holding the bytes.
+    body = JSON.stringify({ ...request, assets: assetDigests });
+    request = { ...request, assets };
+  }
+  const headers = carriesImage || hasBox ? { [IMAGE_HEADER]: "true" } : undefined;
+  return { request, body, ...(headers ? { headers } : {}) };
+}
+
+/** The runner's result from what the client returned at `attempt`, or the `invalid_response` JevError for the first rule it breaks.
+ *  `questions` are the questions as they were sent. */
+function readResponse(result: unknown, questions: JevJudgeParams["questions"], body: string, pricing: JevOptions["pricing"], attempt: number): JevJudgeResult {
+  const invalid = (reason: JevResponseReason, message: string) => new JevError("invalid_response", message, attempt, undefined, undefined, { reason });
+  if (!isRecord(result)) throw invalid("response_shape", "Jev returned an invalid response.");
+  const answers = result.answers;
+  // Checked against the questions as they were sent: a value JSON cannot carry (an undefined criterion) was never asked.
+  try { validateAnswers(questions, answers); }
+  catch (error) {
+    throw invalid(error instanceof SystemOneError && isSystemOneResponseReason(error.responseReason) ? error.responseReason : "answer_validation",
+      "Jev returned invalid answers or probability distributions.");
+  }
+  const usage = result.usage;
+  // Usage carries token counts, a provider-reported cost (USD), or both; a half pair of counts or a bad cost is invalid.
+  const counted = isRecord(usage) && isTokenCount(usage.input_tokens) && isTokenCount(usage.output_tokens);
+  const reported = isRecord(usage) && usage.cost !== undefined && usage.cost !== null;
+  const reportedCost = reported && typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0 ? usage.cost : undefined;
+  const noCounts = isRecord(usage) && usage.input_tokens === undefined && usage.output_tokens === undefined;
+  // Accepted: no usage; both counts; or a valid cost with both counts or with neither.
+  const usageValid = usage == null || (isRecord(usage) && (reported ? reportedCost !== undefined && (counted || noCounts) : counted));
+  if (!usageValid) throw invalid("token_usage", "Jev returned invalid token usage.");
+  if (result.model != null && (typeof result.model !== "string" || !result.model.trim())) {
+    throw invalid("model_identifier", "Jev returned an invalid model identifier.");
+  }
+  const metering = counted ? { input_tokens: usage.input_tokens as number, output_tokens: usage.output_tokens as number } : null;
+  // The provider's own cost wins; else the configured estimate; else unknown (null), never 0.
+  const cost = reportedCost !== undefined ? reportedCost : pricing && metering ? (metering.input_tokens * pricing.inputUsdPerMillionTokens + metering.output_tokens * pricing.outputUsdPerMillionTokens) / 1_000_000 : null;
+  if (cost !== null && !Number.isFinite(cost)) throw invalid("cost_range", "Jev cost estimate exceeded the numeric range.");
+  return {
+    answers, model: typeof result.model === "string" ? result.model : null,
+    usage: metering, cost_usd: cost,
+    request_sha256: createHash("sha256").update(body).digest("hex"),
+  };
+}
+
 export function createJevRunner(options: JevOptions = {}): JevJudge {
   const timeoutMs = options.timeoutMs === null ? null : (options.timeoutMs ?? 30_000);
   const maxStateBytes = options.maxStateBytes ?? null;
@@ -192,69 +291,11 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
     const abortError = () => (runnerSignal?.aborted || params.signal?.aborted)
       ? new JevError("aborted", "Jev request was cancelled.", attempt)
       : new JevError("timeout", "Jev request exceeded its total deadline.", attempt);
-    const invalidResponse = (reason: JevResponseReason, message: string) => new JevError("invalid_response", message, attempt, undefined, undefined, { reason });
     if (signal.aborted) throw abortError();
     const timer = timeoutMs === null ? undefined : setTimeout(() => deadline.abort(), timeoutMs);
     const started = Date.now();
     try {
-      let body: string;
-      let request: SystemOneRequest;
-      const invalid = (reason: JevRequestDiagnostic['reason'], message: string, stateBytes?: number) => new JevError(
-        "invalid_request", message, 0, undefined, { reason,
-          ...(typeof params.label === "string" ? { label: params.label.slice(0, 200) } : {}),
-          ...(stateBytes === undefined || maxStateBytes === null ? {} : { stateBytes, maxStateBytes }) });
-      const state = params.state;
-      let serializedState: string;
-      try {
-        // The SDK refuses a request with no state, so a null or missing state is refused here, before anything is sent.
-        if (typeof state !== "string" && (typeof state !== "object" || state === null)) throw new Error();
-        serializedState = JSON.stringify(state);
-        if (typeof serializedState !== "string") throw new Error();
-      } catch {
-        throw invalid("invalid_state", "Jev state must be JSON-serializable text, an object or an array.");
-      }
-      const stateBytes = Buffer.byteLength(serializedState, "utf8");
-      if (maxStateBytes !== null && stateBytes > maxStateBytes) throw invalid("state_too_large",
-        `Jev assembled state is ${stateBytes} UTF-8 bytes; configured host limit is ${maxStateBytes} bytes. No request was sent.`, stateBytes);
-      const callModel = params.model ?? model;
-      if (typeof callModel !== "string" || callModel.trim().length === 0) throw invalid("unsupported_model", "model must be a nonempty string; no request was sent.");
-      try {
-        body = JSON.stringify({ state: JSON.parse(serializedState), model: callModel, questions: params.questions });
-        request = JSON.parse(body) as SystemOneRequest;
-        if (!isRecord(request.questions) || Object.keys(request.questions).length === 0) throw new Error();
-      } catch {
-        throw invalid("invalid_questions", "Jev requires a nonempty JSON question map; no request was sent.");
-      }
-      // Images and Box questions: validated whole before any send; the header goes with exactly these requests.
-      const hasBox = Object.values(request.questions).some(question => isRecord(question) && question.type === "box");
-      const given = params.assets ?? {};
-      if (!isRecord(given)) throw invalid("invalid_assets", "assets must map each reference to an image; no request was sent.");
-      const references = Object.keys(given);
-      const carriesImage = references.length > 0;
-      if ((carriesImage || hasBox) && provider !== "typesafe") throw invalid("unsupported_provider", "Images and Box questions are sent to TypeSafe's own API only; the OpenRouter path is not verified for them. No request was sent.");
-      if (hasBox && !answersBox(callModel)) throw invalid("unsupported_model", `A Box question needs a model that answers it, by name: ${BOX_MODEL} or later, or jev-preview; jev-latest is refused whatever version it points at. No request was sent.`);
-      if (hasBox && !carriesImage) throw invalid("invalid_assets", "A Box question locates something in an image, and the request carries none. No request was sent.");
-      let assets: Record<string, Image> | undefined;
-      let assetDigests: Record<string, { sha256: string; mime: string; bytes: number }> | undefined;
-      if (carriesImage) {
-        // A reference is replaced where it sits inside a string value of the state, an instruction or a criterion; keys (question ids, option names) are never replaced.
-        const texts = [...stringValues(request.state), ...Object.values(request.questions).flatMap(question => isRecord(question) ? [...stringValues(question.instructions), ...stringValues(question.criteria)] : [])];
-        assets = Object.create(null) as Record<string, Image>; assetDigests = Object.create(null) as Record<string, { sha256: string; mime: string; bytes: number }>;
-        for (const reference of references) {
-          const image = given[reference];
-          const sound = reference.length > 0 && Buffer.byteLength(reference, "utf8") <= MAX_REFERENCE_BYTES && !/["\\\u0000-\u001f]/.test(reference)
-            && isRecord(image) && image.bytes instanceof Uint8Array && (image.mime === "image/png" || image.mime === "image/jpeg")
-            && image.bytes.byteLength > 0 && image.bytes.byteLength <= MAX_IMAGE_BYTES && startsWith(image.bytes, imageMagic[image.mime]);
-          if (!sound) throw invalid("invalid_assets", `Each image is a PNG or JPEG file of at most ${MAX_IMAGE_BYTES / 1024 / 1024} MiB, with bytes that are that type and a plain reference. No request was sent.`);
-          if (!texts.some(text => text.includes(reference))) throw invalid("invalid_assets", "Every image reference must appear in the state or a question. No request was sent.");
-          assets[reference] = new Image(image.bytes);
-          assetDigests[reference] = { sha256: createHash("sha256").update(image.bytes).digest("hex"), mime: image.mime, bytes: image.bytes.byteLength };
-        }
-        // The hash names the images by their own digests, so it identifies the request that was sent without holding the bytes.
-        body = JSON.stringify({ ...request, assets: assetDigests });
-        request = { ...request, assets };
-      }
-      const headers = carriesImage || hasBox ? { [IMAGE_HEADER]: "true" } : undefined;
+      const { request, body, headers } = prepareRequest(params, model, maxStateBytes, provider);
       // The first attempt that failed in a way the server may have billed (a lost answer, a 408, a 5xx). A later 429 does not make the call free: the give-up reports this one.
       let billable: { status?: number } | undefined;
       for (attempt = 1; ; attempt++) {
@@ -299,35 +340,7 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
           if (error instanceof APIConnectionError) throw new JevError("connection", "Jev transport failed.", attempt);
           throw new JevError("invalid_request", "Jev could not process the request. Check question and transport configuration.", attempt);
         }
-        if (!isRecord(result)) throw invalidResponse("response_shape", "Jev returned an invalid response.");
-        const answers = result.answers;
-        // Checked against the questions as they were sent: a value JSON cannot carry (an undefined criterion) was never asked.
-        try { validateAnswers(request.questions as typeof params.questions, answers); }
-        catch (error) {
-          throw invalidResponse(error instanceof SystemOneError && isSystemOneResponseReason(error.responseReason) ? error.responseReason : "answer_validation",
-            "Jev returned invalid answers or probability distributions.");
-        }
-        const usage = result.usage;
-        // Usage carries token counts, a provider-reported cost (USD), or both; a half pair of counts or a bad cost is invalid.
-        const counted = isRecord(usage) && isTokenCount(usage.input_tokens) && isTokenCount(usage.output_tokens);
-        const reported = isRecord(usage) && usage.cost !== undefined && usage.cost !== null;
-        const reportedCost = reported && typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0 ? usage.cost : undefined;
-        const noCounts = isRecord(usage) && usage.input_tokens === undefined && usage.output_tokens === undefined;
-        // Accepted: no usage; both counts; or a valid cost with both counts or with neither.
-        const usageValid = usage == null || (isRecord(usage) && (reported ? reportedCost !== undefined && (counted || noCounts) : counted));
-        if (!usageValid) throw invalidResponse("token_usage", "Jev returned invalid token usage.");
-        if (result.model != null && (typeof result.model !== "string" || !result.model.trim())) {
-          throw invalidResponse("model_identifier", "Jev returned an invalid model identifier.");
-        }
-        const metering = counted ? { input_tokens: usage.input_tokens as number, output_tokens: usage.output_tokens as number } : null;
-        // The provider's own cost wins; else the configured estimate; else unknown (null), never 0.
-        const cost = reportedCost !== undefined ? reportedCost : pricing && metering ? (metering.input_tokens * pricing.inputUsdPerMillionTokens + metering.output_tokens * pricing.outputUsdPerMillionTokens) / 1_000_000 : null;
-        if (cost !== null && !Number.isFinite(cost)) throw invalidResponse("cost_range", "Jev cost estimate exceeded the numeric range.");
-        return {
-          answers, model: typeof result.model === "string" ? result.model : null,
-          usage: metering, cost_usd: cost,
-          request_sha256: createHash("sha256").update(body).digest("hex"),
-        };
+        return readResponse(result, request.questions as typeof params.questions, body, pricing, attempt);
       }
     } finally {
       clearTimeout(timer);
