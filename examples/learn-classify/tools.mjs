@@ -29,13 +29,10 @@ export const REFUSED_DOMAINS = Object.freeze([
 ]);
 // Any host with a label that starts with EDGAR is refused too (edgar.example.com, edgar-filings.net, edgarlookup.com).
 const EDGAR_LABEL = /(^|[.-])edgar/;
-// Refused before any request as well: sites that state a merchant's category code (MCC lookups by merchant, MCC-by-code
-// pages of payment providers, industry classification lookups), so the MCC comes from what the merchant sells. The card
-// networks' own code manuals list codes, not merchants, and stay readable.
-export const REFUSED_MCC_DOMAINS = Object.freeze([
-  'check-mcc.sg', 'pxp.io', 'tagada.io', 'gratifypay.com', 'eflow.com', 'rapyd.net', 'fitnesspaymentservices.com',
-  'true-naics.com', 'naicscodes.org',
-]);
+// Refused before any request as well: sites that state a merchant's own code (MCC lookups by merchant, industry-code
+// lookups by company), so the MCC comes from what the merchant sells. Pages that define codes and name no merchant's
+// code (the card networks' manuals, payment providers' MCC-by-code pages) stay readable.
+export const REFUSED_MCC_DOMAINS = Object.freeze(['check-mcc.sg', 'true-naics.com', 'naicscodes.org']);
 // Any host with a label that is MCC or an MCC list (check-mcc.sg, mcc-codes.com, mcclookup.net), never a word that only
 // starts with it (mccormick.com).
 const MCC_LABEL = /(^|[.-])mcc(s|codes?|lookup|list|search)?([.-]|$)/;

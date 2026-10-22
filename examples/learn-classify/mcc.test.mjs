@@ -131,10 +131,13 @@ test('the tools: the input is the name and website only; the job text is learn-c
   assert.deepEqual((await codes.run({ group: '0000-0001' })).codes, []);
 });
 
-test('sites that list merchants\' codes are refused by every tool, pinned: the list, any MCC-named host, never a merchant whose name starts with it', () => {
-  assert.deepEqual([...REFUSED_MCC_DOMAINS], ['check-mcc.sg', 'pxp.io', 'tagada.io', 'gratifypay.com', 'eflow.com', 'rapyd.net', 'fitnesspaymentservices.com', 'true-naics.com', 'naicscodes.org']);
-  for (const host of ['www.check-mcc.sg', 'pxp.io', 'mcc-codes.com', 'www.mcclookup.net', 'lookup.mcc.example']) assert.match(refusedHost(host) ?? '', /lists merchants' category codes/, host);
-  for (const host of ['www.mccormick.com', 'usa.visa.com', 'lumencandle.example']) assert.equal(refusedHost(host), null, host);
+test('sites that state a merchant\'s code are refused by every tool, pinned: the list, any MCC-named host; never a page that only defines codes, nor a merchant whose name starts with MCC', () => {
+  assert.deepEqual([...REFUSED_MCC_DOMAINS], ['check-mcc.sg', 'true-naics.com', 'naicscodes.org']);
+  for (const host of ['www.check-mcc.sg', 'www.true-naics.com', 'naicscodes.org', 'mcc-codes.com', 'www.mcclookup.net', 'lookup.mcc.example']) assert.match(refusedHost(host) ?? '', /lists merchants' category codes/, host);
+  // Pages that define codes and name no merchant's code stay open: the networks' manuals, payment providers' code pages.
+  for (const host of ['www.mccormick.com', 'usa.visa.com', 'www.mastercard.us', 'www.pxp.io', 'www.tagada.io', 'www.gratifypay.com', 'www.eflow.com', 'www.rapyd.net', 'fitnesspaymentservices.com', 'lumencandle.example']) {
+    assert.equal(refusedHost(host), null, host);
+  }
 });
 
 test('a hindsight review on an MCC run opens only the merchant\'s own pages', async () => {
