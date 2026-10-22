@@ -10,8 +10,10 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { afterAll, describe, expect, it } from "vitest";
 import type { Box } from "../src/box/box.ts";
+import { finish } from "../src/box/files.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { launch, launchState, launchStop } from "../src/launch/index.ts";
+import { RECLAIM_SCRIPT } from "../src/launch/launch.ts";
 import { LAUNCHER_SCRIPT, PTRACE_FILE_LINE } from "../src/launch/launcher-script.ts";
 import { until } from "./home-launch-support.ts";
 
@@ -108,7 +110,27 @@ describe("the launcher's ptrace check, measured in the box", () => {
 			env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
 		});
 		expect(ran.status).toBe(8);
-		expect(ran.stdout.toString()).toMatch(/^INVALID a launch with stdin or secrets never runs its program as root/m);
+		expect(ran.stdout.toString()).toMatch(
+			/^INVALID a launch with stdin or secrets runs its program as root \(uid 0\) only with a toolsUser/m,
+		);
+		expect(existsSync(join(dir, "launcher.pid"))).toBe(false);
+	});
+
+	it("refuses, IN THE BOX, a tools user beside a program that does not run as root (here a launcher that is not root): no supervisor", () => {
+		const dir = join(root, "tools-not-root");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "spec.sh"),
+			"GEN='g3'\nFRAMED=1\nTOOLS='pda'\nISOLATION='none'\nrun_program() {\n  exec true\n}\n",
+		);
+		const frame = `PI-TRANSPORT-LAUNCH/1\n\n${Buffer.from("tok").toString("base64")}\n`;
+		const ran = spawnSync("sh", [scriptMeasuring(scope("1\n")), "start", dir], {
+			input: frame,
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+		});
+		if (process.getuid?.() === 0) return;
+		expect(ran.status).toBe(8);
+		expect(ran.stdout.toString()).toMatch(/^INVALID toolsUser goes only with a program run as root/m);
 		expect(existsSync(join(dir, "launcher.pid"))).toBe(false);
 	});
 
@@ -213,6 +235,169 @@ describe("a stop's beforeStop hook", () => {
 			const refused = await launch(box, "badhook", { argv: ["sleep", "300"], beforeStop }, context);
 			expect(refused.ok ? undefined : refused.error.code).toBe("invalid");
 		}
+		await box.destroy(context);
+	});
+});
+
+describe("a stop in progress", () => {
+	async function aBox(): Promise<Box> {
+		return getOrThrow(
+			await localBoxes({ root: mkdtempSync(join(root, "box-")) }).create({ maxLifetimeMs: 600_000 }, context),
+		);
+	}
+	async function fileIn(box: Box, path: string): Promise<string | undefined> {
+		const read = await box.download([path], context);
+		return read.ok ? new TextDecoder().decode(read.value[0]!.bytes) : undefined;
+	}
+	/** Whether the process the program wrote to prog.pid still runs, asked in the box. */
+	async function programAlive(box: Box): Promise<boolean> {
+		const pid = (await fileIn(box, "prog.pid"))?.trim();
+		const asked = getOrThrow(
+			await box.exec(["sh", "-c", `kill -0 ${pid} 2>/dev/null && echo alive || echo dead`], undefined, context),
+		);
+		return new TextDecoder().decode(getOrThrow(await finish(asked)).stdout).trim() === "alive";
+	}
+	/** A hook that takes `seconds`, then says whether the program was still alive and when it ended (ms since the epoch). */
+	const slowHook = (seconds: number) => [
+		"sh",
+		"-c",
+		`: > hook-began; sleep ${seconds}; if kill -0 "$(cat prog.pid)" 2>/dev/null; then s=alive; else s=dead; fi; echo "$s $(date +%s%3N)" > hook-end; echo hook >> hooks`,
+	];
+	// The program ignores SIGTERM, so it lives through the drain: only the final kill ends it.
+	const deaf = ["sh", "-c", "trap '' TERM; echo $$ > prog.pid; : > ready; while :; do sleep 1; done"];
+	const hookEnd = async (box: Box) => {
+		const [said, at] = (await until("the hook's end", () => fileIn(box, "hook-end"))).trim().split(" ");
+		return { said, at: Number(at) };
+	};
+
+	it("is ONE stop's: a second stop at the same time never kills before the first one's hook ends, and both return after it", async () => {
+		const box = await aBox();
+		const started = getOrThrow(
+			await launch(box, "overlap", { argv: deaf, beforeStop: { argv: slowHook(3), timeoutMs: 20_000 } }, context),
+		);
+		await until("the program's start", () => fileIn(box, "ready"));
+		const returned: number[] = [];
+		const stop = async () => {
+			const stopped = getOrThrow(await launchStop(box, started.launch, { graceMs: 300 }, context));
+			returned.push(Date.now());
+			return stopped;
+		};
+		const both = await Promise.all([stop(), stop()]);
+		const end = await hookEnd(box);
+		expect(end.said).toBe("alive");
+		for (const at of returned) expect(at).toBeGreaterThanOrEqual(end.at);
+		expect(both.map((each) => each.phase)).toEqual(["stopped", "stopped"]);
+		expect((await fileIn(box, "hooks"))?.trim().split("\n")).toEqual(["hook"]);
+		expect(getOrThrow(await launchState(box, started.launch, context))?.launcherAlive).toBe(false);
+		await box.destroy(context);
+	});
+
+	it("holds the name: while its hook runs the phase is stopping (never exited), and a launch of the name waits for the stop, then starts anew", async () => {
+		const box = await aBox();
+		// No restart, and a program that ends on SIGTERM: its runner sees it end during the stop.
+		const program = ["sh", "-c", 'echo $$ > prog.pid; echo "$(date +%s%3N)" >> starts; exec sleep 300'];
+		const spec = { argv: program, restart: false, beforeStop: { argv: slowHook(3), timeoutMs: 20_000 } };
+		const first = getOrThrow(await launch(box, "held", spec, context));
+		await until("the program's start", () => fileIn(box, "prog.pid"));
+		const stopping = launchStop(box, first.launch, { graceMs: 300 }, context);
+		await until("the hook's start", () => fileIn(box, "hook-began"));
+		expect(getOrThrow(await launchState(box, first.launch, context))?.phase).toBe("stopping");
+		const again = launch(box, "held", spec, context);
+		expect(getOrThrow(await stopping).phase).toBe("stopped");
+		const relaunched = getOrThrow(await again);
+		const end = await hookEnd(box);
+		const starts = await until("the second start", async () => {
+			const lines = (await fileIn(box, "starts"))?.trim().split("\n");
+			return lines !== undefined && lines.length >= 2 ? lines : undefined;
+		});
+		expect(starts).toHaveLength(2);
+		expect(Number(starts[1])).toBeGreaterThanOrEqual(end.at);
+		expect(["starting", "running"]).toContain(relaunched.phase);
+		getOrThrow(await launchStop(box, relaunched.launch, { graceMs: 300 }, context));
+		await box.destroy(context);
+	});
+
+	it("gives a later stop with a shorter grace than the owner's the phase stopping: it never kills, and the program lives until the owner's hook has run", async () => {
+		const box = await aBox();
+		const fast = [
+			"sh",
+			"-c",
+			'if kill -0 "$(cat prog.pid)" 2>/dev/null; then s=alive; else s=dead; fi; echo "$s $(date +%s%3N)" > hook-end',
+		];
+		const started = getOrThrow(
+			await launch(box, "graces", { argv: deaf, beforeStop: { argv: fast, timeoutMs: 1_000 } }, context),
+		);
+		await until("the program's start", () => fileIn(box, "ready"));
+		// The owner drains for 6 s (the program ignores SIGTERM). The later stop's own bound (no grace, the 1 s hook, 3 s) ends first.
+		const owner = launchStop(box, started.launch, { graceMs: 6_000 }, context);
+		await until("the owner's claim", async () =>
+			getOrThrow(await launchState(box, started.launch, context))?.phase === "stopping" ? true : undefined,
+		);
+		const later = getOrThrow(await launchStop(box, started.launch, { graceMs: 0 }, context));
+		expect(later.phase).toBe("stopping");
+		expect(await programAlive(box)).toBe(true);
+		expect(getOrThrow(await owner).phase).toBe("stopped");
+		expect((await hookEnd(box)).said).toBe("alive");
+		await box.destroy(context);
+	});
+
+	it("keeps the stop's phase over its runner's: a program that ends just as a stop begins never has its exit written over the stop", () => {
+		const dir = join(root, "runner-mid-stop");
+		mkdirSync(dir, { recursive: true });
+		// The program plays a stop that arrives as it ends: the stop's request and its phase are written, then the program exits 0.
+		writeFileSync(
+			join(dir, "spec.sh"),
+			'GEN=\'g1\'\nrun_program() {\n  : > "$D/stop.req"\n  echo \'{"phase":"stopping"}\' > "$D/state"\n  exit 0\n}\n',
+		);
+		const ran = spawnSync("sh", [scriptMeasuring(scope("1\n")), "run", dir, "1"], {
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+		});
+		expect(ran.status).toBe(0);
+		expect(readFileSync(join(dir, "state"), "utf8")).toContain('"phase":"stopping"');
+		expect(readFileSync(join(dir, "exit.1"), "utf8").trim()).toBe("0");
+	});
+
+	it("is never cleared by a reclaim while a stop is still ending it (a launch that looked before the stop began), only after", () => {
+		const dir = join(root, "reclaim-mid-stop");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "launcher.sh"), LAUNCHER_SCRIPT);
+		writeFileSync(join(dir, "spec.sh"), "GEN='g1'\n");
+		writeFileSync(
+			join(dir, "state"),
+			'{"phase":"exited","pid":null,"starts":1,"lastExit":0,"since":0,"launcher":null}\n',
+		);
+		writeFileSync(join(dir, "stop.claimed"), "");
+		const reclaim = () =>
+			spawnSync("sh", ["-c", RECLAIM_SCRIPT, "sh", dir, "g1", "0", "tok"], {
+				env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+			})
+				.stdout.toString()
+				.trim();
+		expect(reclaim()).toBe("STOPPING");
+		expect(existsSync(join(dir, "stop.claimed"))).toBe(true);
+		writeFileSync(join(dir, "stop.done"), "");
+		expect(reclaim()).toBe("RECLAIMED");
+		expect(existsSync(join(dir, "stop.claimed"))).toBe(false);
+	});
+
+	it("is taken over by a later stop once its owner is past its deadline (a stop that died): the later stop ends the program and the launch", async () => {
+		const box = await aBox();
+		const started = getOrThrow(await launch(box, "orphaned", { argv: ["sleep", "300"] }, context));
+		// What a stop that claimed the launch and died leaves: its claim and a deadline long past, and no end.
+		const planted = getOrThrow(
+			await box.exec(
+				["sh", "-c", ': > "$1/stop.claimed"; echo 0 > "$1/stop.deadline"', "sh", started.directory],
+				undefined,
+				context,
+			),
+		);
+		expect(getOrThrow(await finish(planted)).exitCode).toBe(0);
+		const began = Date.now();
+		const stopped = getOrThrow(await launchStop(box, started.launch, { graceMs: 300 }, context));
+		expect(stopped.phase).toBe("stopped");
+		expect(stopped.launcherAlive).toBe(false);
+		expect(Date.now() - began).toBeLessThan(10_000);
+		expect(await fileIn(box, `${started.directory}/stop.done`)).toBeDefined();
 		await box.destroy(context);
 	});
 });

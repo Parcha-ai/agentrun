@@ -215,7 +215,7 @@ describe("a launch's user", () => {
 			context,
 		);
 		expect(asRoot.ok ? undefined : asRoot.error.code).toBe("invalid");
-		expect(asRoot.ok ? "" : asRoot.error.message).toMatch(/never runs its program as root/);
+		expect(asRoot.ok ? "" : asRoot.error.message).toMatch(/runs its program as root \(uid 0\) only with a toolsUser/);
 		const unknown = await launch(box, "unknown", { argv: ["sleep", "300"], user: "no-such-user-here" }, context);
 		expect(unknown.ok ? undefined : unknown.error.code).toBe("invalid");
 		await box.destroy(context);

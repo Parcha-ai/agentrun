@@ -85,6 +85,8 @@ describe("the launcher's names", () => {
 				env: { APP: "x" },
 				inheritEnv: ["BOX_THING"],
 				user: "nobody",
+				// A spec the check would refuse (a tools user beside another user): here only its generated names matter.
+				toolsUser: "pda",
 				stdin: new Uint8Array([1]),
 				secrets: { A: "b" },
 				beforeStop: { argv: ["true"] },
