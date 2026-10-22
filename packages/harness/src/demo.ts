@@ -912,12 +912,15 @@ export function handedOutError(error: Error, redact?: (text: string) => string, 
 function copyOf(error: Error, redact: ((text: string) => string) | undefined, seen: Set<unknown>, done: Map<unknown, unknown>): Error {
   // Own data properties, defined (never assigned): an inherited accessor with no setter (a DOMException's code) would refuse an assignment.
   const own = (target: object, key: string, value: unknown, enumerable = false) => Object.defineProperty(target, key, { value, writable: true, configurable: true, enumerable });
-  const out = Object.create(Object.getPrototypeOf(error) as object) as Error & Record<string, unknown>;
+  // A NATIVE error given the original's prototype, so `instanceof` holds and a structured clone (a test runner, a worker, IPC) keeps its message and stack: an
+  // object made from the prototype alone is no error to a clone, which makes it {}. Its own stack, made here, is replaced or removed below.
+  const out = Object.setPrototypeOf(new Error(), Object.getPrototypeOf(error) as object) as Error & Record<string, unknown>;
   const withheld: string[] = [];
   own(out, 'message', processText(String(error.message), redact));
   const name = processText(String(error.name), redact);
   own(out, 'name', name);
-  if (error.stack !== undefined) {
+  if (error.stack === undefined) delete out.stack;
+  else {
     // A stack whose header line held a key is withheld whole: its header is rebuilt from the name and the redacted message, so the class stays visible.
     const stack = processText(String(error.stack), redact);
     const rest = stack.indexOf('\n') === -1 ? '' : stack.slice(stack.indexOf('\n'));

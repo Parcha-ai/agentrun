@@ -6,7 +6,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { inspect } from 'node:util';
+import { inspect, types } from 'node:util';
+import { deserialize, serialize } from 'node:v8';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { FIXTURE, run } from './reference-demo-helpers.mjs';
@@ -207,6 +208,31 @@ test('a value shared down a deep ladder is walked ONCE (linear, not once per pat
     assert.ok(node.text.includes('withheld'));
     assert.equal(fromError.text.includes(KEY), false);
   }
+});
+
+test('a handed-out error is a NATIVE error of its class: a structured clone or a v8 round trip (a test runner, a worker, IPC) keeps its redacted message and stack, never {}, and never the key', () => {
+  const original = Object.assign(new Error(`failed\ntoken ${KEY}`), { code: 'E_PLACE' });
+  const out = handedOutError(original);
+  assert.equal(types.isNativeError(out), true, 'a native error, not an object made from its prototype');
+  for (const [how, copy] of [['structuredClone', structuredClone(out)], ['v8', deserialize(serialize(out))]]) {
+    assert.equal(types.isNativeError(copy), true, `${how}: still an error`);
+    assert.equal(copy.message, out.message, `${how}: the redacted message`);
+    assert.match(copy.message, /^failed\n\[a line withheld/, `${how}: the plain line kept, the key's withheld`);
+    assert.equal(copy.stack, out.stack, `${how}: the stack`);
+    assert.equal(inspect(copy, { depth: 5 }).includes(KEY), false, `${how}: no key`);
+  }
+  assert.equal(out.code, 'E_PLACE', 'its code on the copy (a clone of any native error keeps only its name, message and stack)');
+  // Its class stays on the copy itself, a library's error and a DOMException (its name and code own data properties) alike.
+  const box = handedOutError(new BoxError('unknown', `the box could not start: token ${KEY}`));
+  assert.ok(box instanceof BoxError && types.isNativeError(box));
+  const dom = handedOutError(new DOMException(`token ${KEY}`, 'TimeoutError'));
+  assert.ok(dom instanceof DOMException && types.isNativeError(dom));
+  assert.equal(dom.name, 'TimeoutError');
+  assert.equal(inspect(structuredClone(dom)).includes(KEY), false);
+  // An error with no stack has none on its copy either: never one made where the copy was.
+  const bare = new Error('no stack here');
+  Object.defineProperty(bare, 'stack', { value: undefined, configurable: true });
+  assert.equal(handedOutError(bare).stack, undefined);
 });
 
 test('an ERROR shared down a deep ladder (each error\'s two properties hold the same next error) is copied once, linear, and stays in both branches', () => {
