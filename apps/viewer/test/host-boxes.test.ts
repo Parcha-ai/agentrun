@@ -56,3 +56,17 @@ test('a recording of host boxes only links each runner and the session to the ho
   assert.equal(state.token?.box, 'box-1');
   assert.deepEqual(state.runners.map((runner) => [runner.gen, runner.box]), [[1, 'box-1']]);
 });
+
+test('a host box.created of an EARLIER process that lands after the next process started never moves the session: it waits for the current process\'s box', () => {
+  const late = [
+    host('process.started', 0, { gen: 1, pid: 1 }),
+    host('process.started', 10, { gen: 2, pid: 2 }),
+    // The supervisor's reads are bounded: process 1's host box line can come after process 2 started.
+    host('box.created', 12, { gen: 1, box: 'box-1', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:00.000Z' }),
+    host('box.created', 14, { gen: 2, box: 'box-2', provider: 'modal', facts, role: 'host', from: '2026-10-22T00:00:01.000Z' }),
+  ];
+  assert.notEqual(reduceTo(transportPanel, late, 3).token?.box, 'box-1');
+  const state = reduceTo(transportPanel, late, late.length);
+  assert.equal(state.token?.box, 'box-2');
+  assert.deepEqual(state.runners.map((runner) => [runner.gen, runner.box]), [[1, 'box-1'], [2, 'box-2']]);
+});

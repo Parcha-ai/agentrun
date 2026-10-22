@@ -206,12 +206,14 @@ export const transportPanel: Panel<TransportState> = {
       // A host box (role host): drawn as a box of the session's host, by its run-wide label; one the supervisor took away ended as killed.
       if (line.kind === 'box.created') {
         let next = boxCreated(state, { ...data, environment: str(data.environment) ?? 'host' }, line);
-        // The host box is where the process of its gen runs (data.gen): that runner, and the session while it stands at no box, move to it.
+        // The host box is where the process of its gen runs (data.gen): that runner moves to it, and the session too while it stands at no
+        // box, but only for the CURRENT process (the newest runner). The supervisor's reads are bounded, so an earlier process's line can
+        // land after the next one started; it must not take the session back to a box the run has left.
         const gen = processOf(line);
         const box = str(data.box);
         if (gen === undefined || box === undefined) return next;
         next = { ...next, runners: next.runners.map((runner) => (runner.gen === gen && runner.box === '?' ? { ...runner, box } : runner)) };
-        return next.token?.box === '?' ? tokenTo(next, box, next.token.epoch, line.t) : next;
+        return next.token?.box === '?' && next.runners.at(-1)?.gen === gen ? tokenTo(next, box, next.token.epoch, line.t) : next;
       }
       if (line.kind === 'box.ended') return boxEnded(state, data, line, data.killed === true);
       return state;
