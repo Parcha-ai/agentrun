@@ -192,7 +192,7 @@ function environmentFile(env: Record<string, string>): string {
   return `${lines.join("\n")}\n`;
 }
 
-export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pick<HostDriver, "kill" | "kills">> & { readonly hostName: string; readonly mountRoot: string } {
+export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pick<HostDriver, "kill" | "kills" | "instanceOf">> & { readonly hostName: string; readonly mountRoot: string } {
   const mode = opts.mode ?? "systemd";
   const mountRoot = opts.mountRoot ?? DEFAULT_MOUNT_ROOT;
   const hostName = opts.hostName ?? hostname();
@@ -410,6 +410,11 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
     hostName,
     mountRoot,
     kills: "process",
+    instanceOf: (h) => {
+      if (h.driver !== "local" || typeof h.host !== "string") return undefined;
+      const which = h.mode === "systemd" && typeof h.unit === "string" ? `unit\0${h.unit}` : h.mode === "child" && typeof h.tag === "string" ? `tag\0${h.tag}` : undefined;
+      return which === undefined ? undefined : `local\0${h.host}\0${String(h.bootId)}\0${which}`;
+    },
     async start(ref, token, attempt?: StartAttempt) {
       runPath(ref.id);
       // Never as root: the instance and the agent's tools would share a uid with the archil daemon that holds the mount
