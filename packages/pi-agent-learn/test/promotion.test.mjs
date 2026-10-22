@@ -25,30 +25,30 @@ const statusOf = (trial) => Object.fromEntries(trial.revisions.map((r) => [r.sha
 const live = (trial) => trial.revisions.find((r) => r.status === "trial" || r.status === "active")?.sha256[0];
 const outcomes = (...list) => list.map((outcome, i) => use(`r${i}`, "b", outcome, at(10, i)));
 
-test("the defaults are three clean uses to promote and two bad ones to demote, and a host's thresholds replace them", () => {
-  assert.deepEqual({ ...PROMOTION_DEFAULTS }, { promoteAfter: 3, demoteAfter: 2 });
+test("the defaults are two clean uses to promote and two bad ones to demote, and a host's thresholds replace them", () => {
+  assert.deepEqual({ ...PROMOTION_DEFAULTS }, { promoteAfter: 2, demoteAfter: 2 });
   assert.deepEqual(thresholdsOf({ promoteAfter: 5 }), { promoteAfter: 5, demoteAfter: 2 });
   for (const bad of [0, -1, 1.5, TRIAL_LIMITS.threshold + 1, "3", NaN]) assert.throws(() => thresholdsOf({ promoteAfter: bad }), (e) => e instanceof LearnError && e.code === "invalid");
   assert.throws(() => thresholdsOf({ demoteAfter: 0 }), LearnError);
 });
 
-test("a new workflow is a trial; three clean uses by other runs in a row promote it, two do not", () => {
+test("a new workflow is a trial; two clean uses by other runs in a row promote it, one does not", () => {
   const trial = admit(undefined, "a", 1);
   assert.deepEqual([trial.status, statusOf(trial)], ["trial", { a: "trial" }]);
-  const two = foldUses(trial, [use("r1", "a", "frozen", at(2)), use("r2", "a", "frozen", at(3))]);
-  assert.equal(two.trial.status, "trial");
-  assert.equal(promotionDecision(two.trial).action, "hold");
-  const three = foldUses(two.trial, [use("r3", "a", "frozen", at(4))]);
-  assert.deepEqual([three.trial.status, three.applied.map((a) => a.decision.action)], ["active", ["promote"]]);
-  assert.equal(three.trial.revisions[0].since, at(4), "the standing dates from the use that earned it");
+  const one = foldUses(trial, [use("r1", "a", "frozen", at(2))]);
+  assert.equal(one.trial.status, "trial");
+  assert.equal(promotionDecision(one.trial).action, "hold");
+  const two = foldUses(one.trial, [use("r2", "a", "frozen", at(3))]);
+  assert.deepEqual([two.trial.status, two.applied.map((a) => a.decision.action)], ["active", ["promote"]]);
+  assert.equal(two.trial.revisions[0].since, at(3), "the standing dates from the use that earned it");
 });
 
 test("an escalation or a failure between clean uses starts the count again", () => {
   for (const bad of ["escalated", "failed"]) {
     const trial = admit(undefined, "a", 1);
-    const folded = foldUses(trial, [use("r1", "a", "frozen", at(2)), use("r2", "a", "frozen", at(3)), use("r3", "a", bad, at(4)), use("r4", "a", "frozen", at(5)), use("r5", "a", "frozen", at(6))]);
-    assert.equal(folded.trial.status, "trial", `${bad}: two clean uses since is not three`);
-    assert.equal(foldUses(folded.trial, [use("r6", "a", "frozen", at(7))]).trial.status, "active", `${bad}: the third clean use in a row promotes`);
+    const folded = foldUses(trial, [use("r1", "a", "frozen", at(2)), use("r3", "a", bad, at(4)), use("r4", "a", "frozen", at(5))]);
+    assert.equal(folded.trial.status, "trial", `${bad}: one clean use since is not two`);
+    assert.equal(foldUses(folded.trial, [use("r6", "a", "frozen", at(7))]).trial.status, "active", `${bad}: the second clean use in a row promotes`);
   }
 });
 
@@ -160,7 +160,7 @@ test("a rollback never restores a revision the store can no longer load: it take
   assert.deepEqual(olderOnly.skipped, [], "a stale revision older than the one the search lands on is never named");
 });
 
-test("the order uses happened in decides, not the order they are folded: clean, clean, clean, then two failures promotes and then demotes", () => {
+test("the order uses happened in decides, not the order they are folded: clean, clean, clean, then two failures promotes at the second and then demotes", () => {
   let trial = proven(undefined, "a", 1);
   trial = admit(trial, "b", 5);
   const batch = [
@@ -168,7 +168,7 @@ test("the order uses happened in decides, not the order they are folded: clean, 
     use("r2", "b", "frozen", at(7, 1)), use("r3", "b", "frozen", at(7, 30)),
   ];
   const folded = foldUses(trial, batch);
-  assert.deepEqual(folded.applied.map((a) => [a.decision.action, a.at]), [["promote", at(7, 30)], ["demote", at(9)]]);
+  assert.deepEqual(folded.applied.map((a) => [a.decision.action, a.at]), [["promote", at(7, 1)], ["demote", at(9)]]);
   assert.deepEqual(statusOf(folded.trial), { a: "active", b: "demoted" });
   assert.deepEqual(folded.trial.uses.filter((u) => u.sha256 === sha("b")).map((u) => u.run), ["r1", "r2", "r3", "r4", "r5"]);
 });
@@ -206,8 +206,8 @@ test("only the newest few superseded revisions can be restored: an older one is 
 
 test("the order uses were folded in decides, not a clock: a receipt that arrives late counts toward the standing that followed", () => {
   const trial = admit(undefined, "a", 1);
-  const first = foldUses(trial, [use("r1", "a", "frozen", at(2)), use("r2", "a", "frozen", at(3)), use("r3", "a", "frozen", at(5))]);
-  assert.equal(first.trial.status, "active", "three clean uses were all there was, and they promote");
+  const first = foldUses(trial, [use("r1", "a", "frozen", at(2)), use("r3", "a", "frozen", at(5))]);
+  assert.equal(first.trial.status, "active", "two clean uses were all there was, and they promote");
   const late = foldUses(first.trial, [use("r4", "a", "failed", at(4))]);
   assert.equal(late.trial.status, "active", "one failure, however early its time, is one failure in the standing it arrived in");
   assert.deepEqual(periodUses(late.trial, late.trial.revisions[0]).map((u) => u.run), ["r4"]);
@@ -215,17 +215,17 @@ test("the order uses were folded in decides, not a clock: a receipt that arrives
   assert.deepEqual([second.trial.status, second.applied.map((a) => a.decision.action)], ["demoted", ["demote"]], "a second one demotes");
 });
 
-test("one run is one use of a revision, however many cases it ran: three frozen cases in one run are one use, and three clean uses are three distinct runs", () => {
+test("one run is one use of a revision, however many cases it ran: three frozen cases in one run are one use, and two clean uses are two distinct runs", () => {
   const trial = admit(undefined, "a", 1);
   const cases = (run, ...outcomes) => outcomes.map((outcome, i) => use(run, "a", outcome, at(2, i)));
   const alone = foldUses(trial, cases("r1", "frozen", "frozen", "frozen"));
   assert.deepEqual([alone.trial.status, alone.trial.uses.length], ["trial", 1], "one run on three inputs does not promote it");
   assert.deepEqual(alone.ignored.map((i) => i.reason), ["same_run", "same_run"], "the other two cases are named, not dropped silently");
   const two = foldUses(trial, [...cases("r1", "frozen", "frozen", "frozen"), ...cases("r2", "frozen", "frozen")]);
-  assert.deepEqual([two.trial.status, two.trial.uses.map((u) => u.run).sort()], ["trial", ["r1", "r2"]], "two runs are two uses, whatever they ran");
-  const three = foldUses(trial, [...cases("r1", "frozen", "frozen"), ...cases("r2", "frozen"), ...cases("r3", "frozen", "frozen", "frozen")]);
-  assert.deepEqual([three.trial.status, three.applied.map((a) => a.decision.action)], ["active", ["promote"]], "three distinct runs promote it");
-  assert.equal(foldUses(trial, [...cases("r1", "frozen"), ...cases("r2", "frozen")], { thresholds: { promoteAfter: 2 } }).trial.status, "active", "K clean uses are K runs for the host's K too");
+  assert.deepEqual([two.trial.status, two.trial.uses.map((u) => u.run).sort(), two.applied.map((a) => a.decision.action)], ["active", ["r1", "r2"], ["promote"]], "two runs are two uses, whatever they ran, and promote it");
+  const three = { thresholds: { promoteAfter: 3 } };
+  assert.equal(foldUses(trial, [...cases("r1", "frozen", "frozen"), ...cases("r2", "frozen")], three).trial.status, "trial", "K clean uses are K runs for the host's K too");
+  assert.equal(foldUses(trial, [...cases("r1", "frozen"), ...cases("r2", "frozen"), ...cases("r3", "frozen", "frozen")], three).trial.status, "active");
 });
 
 test("a run's worst case is its outcome: one bad case counts against the run, and failed outranks escalated outranks frozen", () => {
@@ -235,7 +235,7 @@ test("a run's worst case is its outcome: one bad case counts against the run, an
   assert.deepEqual(outcomeOf("frozen", "escalated", "frozen"), ["escalated"]);
   assert.deepEqual(outcomeOf("escalated", "failed"), ["failed"]);
   assert.deepEqual(outcomeOf("failed", "frozen", "escalated"), ["failed"]);
-  const clean = foldUses(trial, [use("r1", "a", "frozen", at(2)), use("r2", "a", "frozen", at(3))]).trial;
+  const clean = foldUses(trial, [use("r1", "a", "frozen", at(2))]).trial;
   const spoiled = foldUses(clean, [use("r3", "a", "frozen", at(4)), use("r3", "a", "escalated", at(5)), use("r3", "a", "frozen", at(6))]);
   assert.equal(spoiled.trial.status, "trial", "a run with one escalated case among clean ones is not a clean use");
   assert.equal(spoiled.trial.uses.at(-1).outcome, "escalated");

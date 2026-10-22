@@ -17,6 +17,7 @@ import { type Admission, admitRevision, type Decision, foldUses, type IgnoredUse
 import type { UsesSource } from "./propose.js";
 import { MAX_WORKFLOW_HINTS, type WorkflowHint } from "./section.js";
 import { readSeed } from "./seed.js";
+import { type ServedRun, servedUse } from "./serving.js";
 import type { AdmitWorkflow, AdmitWorkflowInput, AdmitWorkflowResult, RepoRead, SettleUses, SettleUsesInput, SettleUsesResult, WorkflowUse } from "./types.js";
 import {
   checkPreconditions, currentRevision, deriveWhen, fitTrial, matches, MAX_NAME, parseTrial, type Precondition, readTrial, renderTrial, skillName, skillPath, type Trial, trialPath,
@@ -235,6 +236,10 @@ export function parseRunUses(text: string, run?: string): RunUses {
   } catch {
     throw new LearnError("format", "the uses file is not JSON");
   }
+  return checkRunUses(parsed, run);
+}
+
+function checkRunUses(parsed: unknown, run?: string): RunUses {
   if (!usesChecker.Check(parsed)) throw new LearnError("format", "the uses file does not match its schema");
   const uses = parsed as RunUses;
   if (run !== undefined && uses.run !== run) throw new LearnError("format", "the uses file names another run");
@@ -246,6 +251,8 @@ export type ReadUsesOptions = {
   /** The run's working directory: the project directory of its workflow store, which names what a digest was saved as. */
   readonly workDir: string;
   readonly run: string;
+  /** What the host served the run (`serve`): each is a use of its own revision under its name, with the host's verdict. */
+  readonly served?: readonly ServedRun[];
 } & (
   /** The run's pi-durable store file, read only: once the run's Harness has closed it, or while it is open. */
   | { readonly store: string }
@@ -352,6 +359,7 @@ export async function readUses(options: ReadUsesOptions): Promise<ReadUses> {
     if (!held || Number(task.id) > Number(held.id)) last.set(key, task);
   }
   const uses: RunUse[] = [];
+  const served = new Map((options.served ?? []).filter((run) => run.key !== null).map((run) => [run.key!, run]));
   for (const [key, task] of [...last].sort(([a], [b]) => (a < b ? -1 : 1))) {
     let digest: string;
     try {
@@ -360,9 +368,12 @@ export async function readUses(options: ReadUsesOptions): Promise<ReadUses> {
       skipped.push({ reason: `run ${key} holds a workflow document that does not hash` });
       continue;
     }
-    const names = saved.byDigest.get(digest);
+    const host = served.get(key);
+    // A served run's revision need not be in the run's store (a canary is read from the repository): the host names it,
+    // and its verdict stands for the task's, since it also checked the output.
+    const names = host && host.sha256 === digest ? [host.name] : saved.byDigest.get(digest);
     if (!names) continue;
-    const how = outcomeOf(task);
+    const how = host && host.sha256 === digest ? (servedUse(host) ?? { skip: `the host's run ended ${host.outcome}, which says nothing about the workflow` }) : outcomeOf(task);
     if (typeof how !== "string") {
       skipped.push({ name: names[0]!, reason: `run ${key}: ${how.skip}` });
       continue;
@@ -581,6 +592,14 @@ export async function revisionOf(name: string, records: Readonly<Record<string, 
   } catch {
     return undefined;
   }
+}
+
+/** A revision's workflow from its record in the agent repository at `ref`, read back through the DSL's store, which checks
+ *  the document against its digest; undefined when the record is missing or is not that revision. */
+export async function readRevision(repo: Pick<Repo, "read">, name: string, sha256: string, ref: string): Promise<unknown | undefined> {
+  if (!WORKFLOW_NAME.test(name) || !/^[0-9a-f]{64}$/.test(sha256)) return undefined;
+  const record = await repo.read(`${workflowDir(name)}/${sha256}.json`, ref);
+  return record === undefined ? undefined : (await revisionOf(name, { latest: `${sha256}\n`, [`${sha256}.json`]: record }))?.workflow;
 }
 
 export async function readTrialIn(dir: string, name: string): Promise<Trial | undefined> {
@@ -910,9 +929,9 @@ export type WorkflowAdmitterOptions = {
  * The curator's `admitWorkflow` port, over `admitInDir`: it copies main's `trial.json` and skill for the name into a scratch
  * directory, validates the run's records through the DSL's store there, saves the revision the run ended on, and writes the
  * skill (from `describe` of its document, unless the caller hands over a `description`) and `trial.json`. `admitted` carries every path changed, text or
- * null, for the one commit. A workflow with code in it, or one with no trial to describe, is `held`; a name pi cannot load, a
- * record the store refuses, a demoted revision and the limits are `refused`. The curator's judgments of the `untrusted` text
- * have already been made when the port is called, so the flag changes nothing here.
+ * null, for the one commit. A workflow with code in it, one with no trial to describe, and one whose trial.json on main does not
+ * parse are `held`; a name pi cannot load, a record the store refuses, a demoted revision and the limits are `refused`. The
+ * curator's judgments of the `untrusted` text have already been made when the port is called, so the flag changes nothing here.
  */
 export function workflowAdmitter(options: WorkflowAdmitterOptions = {}): AdmitWorkflow {
   return async (input: AdmitWorkflowInput): Promise<AdmitWorkflowResult> => {
@@ -921,6 +940,15 @@ export function workflowAdmitter(options: WorkflowAdmitterOptions = {}): AdmitWo
       return { status: "refused", reason: "a workflow name is lowercase letters and digits in words joined by single hyphens, so pi can load it as a skill" };
     }
     const name = workflow.name;
+    const held = await input.read(trialPath(name), input.main);
+    if (held !== undefined) {
+      try {
+        parseTrial(held, name);
+      } catch (error) {
+        if (!(error instanceof LearnError)) throw error;
+        return { status: "held", reason: `its trial.json on main does not parse (${error.code}), so the workflow was held` };
+      }
+    }
     const result = await staged(options.tmpRoot, input, async () => [trialPath(name), skillPath(name)], (dir) => admitInDir({
       dir, runId: workflow.run, name, records: workflow.records,
       description: workflow.description ?? options.describe ?? schemaDescription,
@@ -949,7 +977,7 @@ export function usesSettler(options: UsesSettlerOptions = {}): SettleUses {
     const decisions: { name: string; action: "promote" | "demote" | "hold"; reason: string; rollbackTo?: string }[] = [];
     let uses: RunUses;
     try {
-      uses = parseRunUses(JSON.stringify({ version: 1, run: input.run, uses: input.uses }), input.run);
+      uses = checkRunUses({ version: 1, run: input.run, uses: input.uses }, input.run);
     } catch {
       return { files: {}, decisions: [{ name: "uses", action: "hold", reason: "the uses file is not well formed, so none were folded" }] };
     }

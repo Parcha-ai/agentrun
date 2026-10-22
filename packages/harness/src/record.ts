@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AttachInput, CommitRecorder, DurableLine } from './record-store.ts';
+import { supervisedChild } from './boxes.ts';
 import { MEDIA_FILE, blobExtension, credentialInFile, scanRecording } from './scan.ts';
 
 export const FORMAT = 'agentrun.recording/1';
@@ -148,6 +149,7 @@ export function openRecorder(options: { dir: string; /** The recording's clock, 
   appendFileSync(`${liveStream}.0.jsonl`, '');
   let gen = options.gen ?? new Set(readdirSync(spool(dir)).filter((name) => name.startsWith('live-')).map((name) => name.replace(/\.\d+\.jsonl$/, ''))).size;
   let seq = 0;
+  let hostSeq = 0;
   let latest = 0;
   let stop: (() => Promise<void>) | undefined;
   const watching = new Map<number, Promise<Awaited<ReturnType<WatchEvents>> | undefined>>();
@@ -210,7 +212,19 @@ export function openRecorder(options: { dir: string; /** The recording's clock, 
     },
     live: (source, kind, data, meta) => write(source, kind, data, meta),
     // The payoff (`result`) is the supervisor's line: a process with no supervisor writes none. The supervisor's lines have no event-level gen, so the process they are about goes in the data (a `result`: `{ gen, blob, title }`).
-    host: (kind, data, meta) => (!options.supervisor && kind === 'result' ? undefined : options.supervisor ? options.supervisor.host(kind, data !== null && typeof data === 'object' && !Array.isArray(data) && !('gen' in data) ? { gen, ...data } : data, meta) : write('host', kind, data, meta)),
+    host: (kind, data, meta = {}) => {
+      if (!options.supervisor && kind === 'result') return;
+      // The process a host line is about goes in its data: the line itself has no event-level gen (RECORDING.md 3.1).
+      const named = data !== null && typeof data === 'object' && !Array.isArray(data) && !('gen' in data) ? { gen, ...data } : data;
+      if (options.supervisor) return options.supervisor.host(kind, named, meta);
+      // A supervised child (the supervisor says so: HOST_LINES=supervisor) writes no host line: the supervisor owns that space and writes the tool boxes' receipts from the ids directory it owns.
+      if (supervisedChild(process.env)) return;
+      // Otherwise the line is written the supervisor's way, with no event-level gen: an unsupervised run (one writer), or a process whose supervisor does not own the ids directory (a custom place's box child, whose recording is brought home and merged). Its seq is this recorder's own, and every writer's are numbered once, in order, when the recording is finished.
+      const moved = moveImages(named === undefined ? null : named, keep);
+      const blobs = [...new Set([...(meta.blobs ?? []), ...moved.blobs])];
+      const line = { channel: 'live', source: 'host', kind, t: Math.max(0, Date.now() - started), seq: hostSeq++, ...(meta.path !== undefined ? { path: meta.path } : {}), ...(meta.conv !== undefined ? { conv: meta.conv } : {}), data: moved.data, ...(blobs.length ? { blobs } : {}) };
+      append(file, `${redact(JSON.stringify(line))}\n`);
+    },
     blob: (bytes, extension) => keepBlob(dir, typeof bytes === 'string' ? Buffer.from(redact(bytes)) : Buffer.from(bytes), blobExtension(extension)),
   };
 }
@@ -284,6 +298,9 @@ export function finishRecording(dir: string, header: Header): { lines: number } 
   const all = files.flatMap((name) => readLines(join(spool(dir), name)));
   all.sort(compareLines);
   assignMemoOrders(all);
+  // The supervisor's space (live host lines, no event-level gen) is numbered once, in the order the lines now stand: the supervisor's own lines and a process's (a tool box's receipt) were each counted from 0 by their writer.
+  let hostSeq = 0;
+  for (const line of all) if (line.channel === 'live' && line.source === 'host' && line.gen === undefined) line.seq = hostSeq++;
   // The file a follower has been reading is a prefix of the final one when the lines arrived in order: the rest is appended. When one arrived late (after a line that sorts after it) the file is replaced whole, by a rename.
   const redactLine = header.redact ?? ((text: string) => text);
   const finalText = all.map((line) => redactLine(JSON.stringify(line))).join('\n') + (all.length ? '\n' : '');
