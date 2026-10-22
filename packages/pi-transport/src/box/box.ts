@@ -80,7 +80,7 @@ export type BoxSpec = {
 	readonly network?: BoxNetwork;
 	/** Ports to reach from outside. A provider that cannot expose a port refuses the spec with `unsupported`. */
 	readonly ports?: readonly BoxPort[];
-	/** What the box must have. `fuse`: a FUSE mount works for a user who is not root. */
+	/** What the box must have. `fuse`: the device exists and root in the box can open it; a FUSE mount there is root's. */
 	readonly capabilities?: readonly BoxCapability[];
 };
 
@@ -117,7 +117,8 @@ export type BoxFacts = {
 	 */
 	readonly startedAt?: string;
 	/**
-	 * `true` only when the spec asked for `fuse` and a FUSE mount was checked to be possible for a user who is not root.
+	 * `true` only when the spec asked for `fuse` and `/dev/fuse` was checked to be a character device that root in the box can
+	 * open; a FUSE mount there is root's (no user who is not root is promised the device).
 	 * Absent means `false`: a caller that needs FUSE must refuse the box.
 	 */
 	readonly fuse?: boolean;

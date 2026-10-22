@@ -241,8 +241,7 @@ describe("modal boxes", () => {
 				const plain = unwrap(await provider(sdk).create({ ...SPEC, workspace: root }, context));
 				expect(plain.facts().fuse).toBe(false);
 				for (const [output, missing] of [
-					["disk=1\nptrace=1\nfuse_dev=0\nfuse_helper=1\n", /fuse openable/],
-					["disk=1\nptrace=1\nfuse_dev=1\nfuse_helper=0\n", /setuid fusermount/],
+					["disk=1\nptrace=1\nfuse_dev=0\n", /character device that root can open/],
 				] as const) {
 					sdk.probeOutput = output;
 					const lacking = await provider(sdk).create(

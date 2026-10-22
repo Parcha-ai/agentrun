@@ -1,5 +1,15 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	closeSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	openSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,12 +23,19 @@ afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+const canOpen = (path: string): boolean => {
+	try {
+		closeSync(openSync(path, "r+"));
+		return true;
+	} catch {
+		return false;
+	}
+};
+
 type Setup = {
 	yama?: string;
-	device?: "char" | "file" | "absent";
-	setpriv?: boolean;
-	fusermount3?: "setuid" | "plain" | "absent";
-	fusermount?: "setuid" | "plain" | "absent";
+	/** `char` is /dev/null (a character device this user opens), `closed` is a character device this user cannot open. */
+	device?: "char" | "closed" | "file" | "absent";
 	dfKib?: number | "fails";
 };
 
@@ -42,18 +59,11 @@ function run(setup: Setup, request: "fuse" | "-"): { reading: ReturnType<typeof 
 			? "exit 1"
 			: `echo "Filesystem 1024-blocks Used Available Capacity Mounted"\necho "box ${dfKib} 1 1 1% /"`,
 	);
-	if (setup.setpriv ?? true) script("setpriv", 'while [ "$1" != sh ]; do shift; done\nexec "$@"');
-	for (const [name, kind] of [
-		["fusermount3", setup.fusermount3 ?? "setuid"],
-		["fusermount", setup.fusermount ?? "absent"],
-	] as const) {
-		if (kind !== "absent") script(name, "exit 0", kind === "setuid" ? 0o4755 : 0o755);
-	}
 	const yama = join(root, "yama");
 	if (setup.yama !== undefined) writeFileSync(yama, setup.yama);
 	const device = join(root, "fuse");
 	if (setup.device === "file") writeFileSync(device, "");
-	const dev = setup.device === "absent" ? device : setup.device === "file" ? device : "/dev/null";
+	const dev = setup.device === "char" ? "/dev/null" : setup.device === "closed" ? "/dev/mem" : device;
 	const text = PROBE.replaceAll("/proc/sys/kernel/yama/ptrace_scope", yama).replaceAll("/dev/fuse", dev);
 	const ran = spawnSync("/bin/sh", ["-c", text, "sh", root, request], { env: { PATH: bin }, encoding: "utf8" });
 	expect(ran.status, ran.stderr).toBe(0);
@@ -84,33 +94,26 @@ describe("the probe script, run for real", () => {
 		expect(output).not.toContain("fuse_");
 	});
 
-	it("gives fuse only when the device opens for an unprivileged user and a setuid fusermount exists", () => {
+	it("gives fuse when /dev/fuse is a character device that the probe's own user can open, with no helper and no setpriv", () => {
 		expect(run({ device: "char" }, "fuse").reading).toMatchObject({ fuse: true, fuseMissing: [] });
-		expect(run({ device: "char", fusermount3: "absent", fusermount: "setuid" }, "fuse").reading.fuse).toBe(true);
-		const noDevice = run({ device: "file" }, "fuse").reading;
-		expect(noDevice.fuse).toBe(false);
-		expect(noDevice.fuseMissing.join(" ")).toMatch(/fuse openable/);
-		expect(run({ device: "absent" }, "fuse").reading.fuse).toBe(false);
-		// A plain fusermount3 first on the PATH must not hide a working setuid fusermount after it.
-		expect(run({ device: "char", fusermount3: "plain", fusermount: "setuid" }, "fuse").reading).toMatchObject({
-			fuse: true,
-			fuseMissing: [],
-		});
-		expect(run({ device: "char", fusermount3: "setuid", fusermount: "plain" }, "fuse").reading.fuse).toBe(true);
-		expect(run({ device: "char", fusermount3: "plain", fusermount: "plain" }, "fuse").reading.fuse).toBe(false);
-		const plain = run({ device: "char", fusermount3: "plain" }, "fuse").reading;
-		expect(plain.fuse).toBe(false);
-		expect(plain.fuseMissing).toEqual(["a setuid fusermount"]);
-		expect(run({ device: "char", fusermount3: "absent" }, "fuse").reading.fuse).toBe(false);
-		const noSetpriv = run({ device: "char", setpriv: false }, "fuse").reading;
-		expect(noSetpriv.fuse).toBe(false);
-		expect(noSetpriv.fuseMissing.join(" ")).toMatch(/setpriv/);
+	});
+
+	it("gives no fuse for a missing device, a plain file, or a character device the user cannot open", () => {
+		const words = /\/dev\/fuse as a character device that root can open/;
+		for (const device of ["absent", "file"] as const) {
+			const reading = run({ device }, "fuse").reading;
+			expect(reading.fuse, device).toBe(false);
+			expect(reading.fuseMissing.join(" "), device).toMatch(words);
+		}
+		// /dev/mem is root-only on a host: a character device this user cannot open stands for a device root alone opens, read as root.
+		if (existsSync("/dev/mem") && !canOpen("/dev/mem"))
+			expect(run({ device: "closed" }, "fuse").reading.fuse).toBe(false);
 	});
 });
 
 describe("the probe's output, parsed", () => {
 	it("keeps only what is a number or a setting, floors the disk, and leaves out what is not given", () => {
-		expect(parseProbe("disk=52428801\nptrace=2\nfuse_dev=1\nfuse_helper=1\n")).toEqual({
+		expect(parseProbe("disk=52428801\nptrace=2\nfuse_dev=1\n")).toEqual({
 			diskGb: 50,
 			ptraceScope: 2,
 			fuse: true,
@@ -118,7 +121,7 @@ describe("the probe's output, parsed", () => {
 		});
 		expect(parseProbe("disk=\nptrace=banana\n")).toEqual({
 			fuse: false,
-			fuseMissing: ["/dev/fuse openable by a user who is not root (and setpriv)", "a setuid fusermount"],
+			fuseMissing: ["/dev/fuse as a character device that root can open"],
 		});
 		expect(parseProbe("disk=0\nptrace=4\n")).not.toHaveProperty("diskGb");
 		expect(parseProbe("disk=9007199253692416\n")).not.toHaveProperty("diskGb");

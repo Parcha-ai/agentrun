@@ -16,7 +16,7 @@ class FakeSandbox implements ModalSandbox {
 	readonly writes: number[] = [];
 	exitCode: number | null = null;
 	/** What the box's probe of its own disk, Yama setting and FUSE prints (the real script reads this host's /proc). */
-	probeOutput = "disk=104857600\nptrace=1\nfuse_dev=1\nfuse_helper=1\n";
+	probeOutput = "disk=104857600\nptrace=1\nfuse_dev=1\n";
 	#children = new Set<ChildProcess>();
 
 	constructor(sandboxId: string, params: ModalCreateParams) {
