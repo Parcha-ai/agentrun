@@ -248,3 +248,11 @@ test('curate refuses any lesson that names a refused site or an EDGAR-named host
   const passed = await refusedHostsJudge(judge.run, [])({ questions: { narrowsRules: {} }, state: { learning: { text: 'Read the EDGAR header.' } } });
   assert.equal(passed.answers.narrowsRules.noul, 0.05);
 });
+
+test('a pass\'s own spend limit per reflection reaches each reflection', async (t) => {
+  const dir = await scratch(t);
+  const parts = scriptedParts({ set: SETS.v4, data: wrongCodeData(dir) });
+  parts.hindsight = { ...hindsightParts([]), limitUsd: -1 };
+  const { rows } = await runLoop({ out: join(dir, 'out'), parts, jobs: 1, record: false });
+  assert.match(rows[0].hindsight.reflections[0].stopped, /passed its limit of \$-1/);
+});
