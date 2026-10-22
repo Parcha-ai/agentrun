@@ -1,4 +1,4 @@
-import { BrowserFailureError, FenceRefusal, loadedNoPage, passedThrough, type AttachedSession, type BrowserDriver, type CustodyPort, type ToolOutput } from "./custody.js";
+import { BrowserFailureError, FenceRefusal, refusedError, loadedNoPage, passedThrough, type AttachedSession, type BrowserDriver, type CustodyPort, type ToolOutput } from "./custody.js";
 import { defaultInline, type EvidenceRecord, type EvidenceSink } from "./evidence.js";
 import type { Decisions, PageVerdict } from "./decisions.js";
 import { fetchDownloads } from "./downloads.js";
@@ -10,7 +10,7 @@ import { captureWithinBudget, type ScreenshotOptions } from "./images.js";
 import { orderFacts, receiptFacts, sha256Hex } from "./receipts.js";
 import { scrubPageUrl, type Redact } from "./redact.js";
 import { UNANSWERED_CALL } from "./unanswered.js";
-import { pageNotice, wallFailure, wallOf, type WebFailure } from "./web.js";
+import { pageNotice, wallFailure, wallOf } from "./web.js";
 import type { Geo, PendingEffectFacts, ReleaseReason } from "./host.js";
 
 /** One action of a run's batch, as the contract's schema admits it. */
@@ -78,11 +78,10 @@ const pause = (ms: number, signal: AbortSignal | undefined) => new Promise<void>
 const text = (value: unknown, isError = false): ToolOutput =>
   ({ content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }], ...(isError ? { isError: true } : {}) });
 const withNews = (news: string, body: string) => (news ? `${news}\n\n${body}` : body);
-const refused = (message: string): BrowserFailure => ({ ok: false, code: "refused", retryable: false, effect: "none", message });
 
 /** A read of a browser that has loaded no page yet: it is fresh, and the next step is to navigate, to the replaced
  *  session's last page when there is one. */
-function freshBrowser(replaced: AttachedSession<unknown>["replaced"]): WebFailure {
+function freshBrowser(replaced: AttachedSession<unknown>["replaced"]): BrowserFailure {
   const why = replaced ? `it replaced the session released${replaced.at ? ` at ${replaced.at}` : ""} (${replaced.reason})` : "it was just opened";
   const go = replaced?.lastUrl ? `Navigate to the last page, ${replaced.lastUrl}, with run, then read again.` : "Navigate to the page you need with run, then read again.";
   return { ok: false, code: "not_content", retryable: true, effect: "none", message: `This browser is fresh and has loaded no page yet: ${why}. ${go}`, detail: "", next: { action: "drive_page", note: go } };
@@ -318,7 +317,7 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
         try { return await looked(await body(reconnected.session, news)); } catch (retried) {
           const failure = await failureOf(retried, effectful, port, call, action);
           // The browser answered the reconnect, so a call it leaves unanswered again is the page's, not an unreachable browser.
-          return fail(failure.code === "browser_unavailable" && transportFactOf(retried).errorName === UNANSWERED_CALL ? { ...failure, retryable: false, message: HUNG_PAGE, next: RELAUNCH_ONLY } as WebFailure : failure);
+          return fail(failure.code === "browser_unavailable" && transportFactOf(retried).errorName === UNANSWERED_CALL ? { ...failure, retryable: false, message: HUNG_PAGE, next: RELAUNCH_ONLY } : failure);
         }
       }
       const refused = await failureOf(reconnected.error, effectful, port, call, action);
@@ -327,7 +326,7 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
       // person holds or drives it, and the next call opens a fresh one.
       const left = await port.unreachable().catch(() => null);
       if (left?.kept) return fail({ ...refused, code: "browser_unavailable", retryable: false, message: KEPT_FOR_PERSON });
-      return fail({ ...refused, code: "browser_unavailable", retryable: false, message: left?.released ? DROPPED_RELEASED : DROPPED_FOR_GOOD, next: left?.released ? RELAUNCH_NEXT : RELAUNCH_ONLY } as WebFailure);
+      return fail({ ...refused, code: "browser_unavailable", retryable: false, message: left?.released ? DROPPED_RELEASED : DROPPED_FOR_GOOD, next: left?.released ? RELAUNCH_NEXT : RELAUNCH_ONLY });
     }
   }
 
@@ -399,7 +398,7 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
         const wall = wallOf(verdict);
         const facts = { final_url: url, title, ...(read.extractor ? { extractor: read.extractor } : {}), via: "browser", ...(verdict?.guard ? { page_guard: call.redact(verdict.guard) } : {}) };
         const receipt = await file(s, call, { tool: "browser_read", args: { what }, status: wall ? "failed" : "ok", facts, body, ext: read.ext });
-        if (wall) throw new BrowserFailureError({ ...wallFailure(`The browser is on ${url}`, wall, call.redact(page.text)), evidence: receipt.path } as BrowserFailure);
+        if (wall) throw new BrowserFailureError({ ...wallFailure(`The browser is on ${url}`, wall, call.redact(page.text)), evidence: receipt.path });
         const prefix = `${news ? `${news}\n\n` : ""}url: ${url}\ntitle: ${title}\n${pageNotice(verdict)}evidence: ${receipt.path ?? "(not filed)"}\n---\n`;
         const shown = call.evidence.inline ? call.evidence.inline(body, { path: receipt.path, bodyLine: receipt.bodyLine, prefix, filed: body }) : defaultInline(body, { path: receipt.path, prefix });
         return { content: [{ type: "text", text: shown }], details: { evidence: receipt.path, sha256: receipt.sha256, url } };
@@ -409,16 +408,16 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
     browser_upload: async (args, port, call) => {
       const asked = typeof args?.path === "string" ? args.path : "";
       const selector = typeof args?.selector === "string" ? args.selector.trim() : "";
-      if (!call.files) return text(refused("This host gives the browser no workspace to upload from."), true);
-      if (!selector) return text(refused("selector must name the page's file input."), true);
+      if (!call.files) return text(browserFailure("refused", "This host gives the browser no workspace to upload from."), true);
+      if (!selector) return text(browserFailure("refused", "selector must name the page's file input."), true);
       // The host resolves the path before any browser call, so a refused file never reaches the page.
       const file = await call.files.resolve(asked);
-      if ("refused" in file) return text(refused(`browser_upload refused the file: ${file.refused}.`), true);
+      if ("refused" in file) return text(browserFailure("refused", `browser_upload refused the file: ${file.refused}.`), true);
       const uploaded = { name: file.name, bytes: file.bytes.byteLength, sha256: sha256Hex(file.bytes) };
       const codeSha = sha256Hex(JSON.stringify({ upload: selector, sha256: uploaded.sha256 }));
       // A page can send the file once its input changes: an upload is journaled like a run and never repeated.
       return perform("browser_upload", { path: asked, selector }, port, call, { effect: codeSha }, async (s, news) => {
-        if (!s.driver.setInputFiles) throw new BrowserFailureError(refused("This browser driver cannot set a file input."));
+        if (!s.driver.setInputFiles) throw refusedError("This browser driver cannot set a file input.");
         const sent: Array<{ method: string; url: string; held: string | null }> = [];
         const stop = s.effects?.record((row) => { sent.push({ method: row.method, url: call.redact(`${row.origin}${row.path}`), held: row.held }); return port.journal(row); });
         try {
@@ -432,8 +431,8 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
     },
 
     browser_downloads: (args, port, call) => perform("browser_downloads", {}, port, call, "read", async (s, news) => {
-      if (!call.workspace) throw new BrowserFailureError(refused("This host gives the browser no workspace to copy downloads into."));
-      if (!s.downloads) throw new BrowserFailureError(refused("This browser provider cannot list the files its sessions download."));
+      if (!call.workspace) throw refusedError("This host gives the browser no workspace to copy downloads into.");
+      if (!s.downloads) throw refusedError("This browser provider cannot list the files its sessions download.");
       const result = await fetchDownloads({ provider: { downloads: s.downloads }, ref: { id: s.sessionId, tag: s.tag }, session: s.sessionId, workspace: call.workspace, redact: call.redact });
       return { content: [{ type: "text", text: JSON.stringify({ ok: true, ...result, ...(news ? { notice: news } : {}) }) }], details: { downloads: result } };
     }),

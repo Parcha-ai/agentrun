@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
-import { configure, defineDoc, defineExtension, defineTool, ToolResultEntry, type Conversation, type ConversationDocToken, type ConversationId, type DocumentReader, type EntryId, type Extension, type Harness, type PromptSection, type SessionDocToken, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
+import { configure, defineDoc, defineExtension, defineTool, type Conversation, type ConversationDocToken, type ConversationId, type DocumentReader, type Extension, type Harness, type PromptSection, type SessionDocToken, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema, Usage } from "@earendil-works/pi-ai";
-import { BROWSER_TOOL_NAMES, BROWSER_TOOLS, browserSection, WEB_TOOL_NAMES } from "./core/contract.js";
+import { BROWSER_TOOL_NAMES, BROWSER_TOOLS, browserSection, listedFor, WEB_TOOL_NAMES } from "./core/contract.js";
 import { BrowserFailureError, closeDriver, currentRecord, loadedNoPage, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, newSessionRecord, notices, NAVIGATION_CAP, NOTHING_TO_HOLD, profileRefusal, relaunchRefusal, SESSION_REPLACED, sessionSpec, waitingForHuman, type AttachedSession, type CustodyPort, type DriverFactory, type FenceMark, type Overrides, type ToolOutput, NO_HANDOFF } from "./core/custody.js";
-import { forModel } from "./durable-result.js";
+import { forModel } from "./durable/result.js";
 import type { Decisions } from "./core/decisions.js";
 import type { EvidenceSink } from "./core/evidence.js";
 import { EffectObserver, effectDecider, observerFailure } from "./core/effects.js";
@@ -13,15 +13,16 @@ import { browserFailure, classifyBrowserError } from "./core/failures.js";
 import { workspaceFiles } from "./core/files.js";
 import type { RepeatGuard } from "./core/guard.js";
 import { drivingGuarded } from "./core/driving-guard.js";
-import { drivingGates, keptFor, personOn, rearmWhenLeft, type DrivingGate } from "./core/driving.js";
+import { drivingGates, keptReason, personOn, rearmWhenLeft, type DrivingGate } from "./core/driving.js";
 import type { DrivingGates } from "./live-view/protocol.js";
 import { pageTools, type BrowserToolImpls, type PageDriver, type ToolImpl } from "./core/tools.js";
-import type { BrowserConfig, BrowserProvider, ChildRunner, InventoryRow, ObserverRow, PendingEffect, PriceState, PriceTable, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionRow, SessionsState, SiteInfo, SiteRunPort, ToolUsage, HandoffPort, WorkspaceFiles } from "./core/host.js";
+import type { BrowserConfig, BrowserProvider, ChildRunner, InventoryRow, ObserverRow, PriceState, PriceTable, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionRow, SessionsState, SiteInfo, SiteRunPort, ToolUsage, HandoffPort, WorkspaceFiles } from "./core/host.js";
 import { useWebsite, useWebsiteContract } from "./core/sites.js";
 import { leaseTag, type LeaseRef } from "./core/lease.js";
-import { createRedactor, hostLiveView, redactDeep, scrubPageUrl, type Redact } from "./core/redact.js";
+import { createRedactor, hostLiveView, redactContent, redactDeep, scrubPageUrl, type Redact } from "./core/redact.js";
 import { CREATE_DEADLINE_MS, DEFAULT_BROWSER_POLICY, idleTracker, keyedSerializer, oneAtATime, providerKeyValues, type IdleTracker, type KeyedSerializer } from "./core/session-control.js";
-import { custodyStore, now } from "./store.js";
+import { custodyStore, now } from "./durable/store.js";
+import { answerOf, clearJournal, cutOf, cutsOf, inChain, journalOf, owed } from "./durable/journal.js";
 import { withinDeadline } from "./core/unanswered.js";
 import { resolvePrices, sessionCharge, withEstimate } from "./core/usage.js";
 
@@ -95,8 +96,8 @@ export type BrowserExtensionHandle = {
   retained(): number;
 };
 
-export { createWebExtension, type WebExtensionOptions } from "./web.js";
-export { CONFIRM_POLLS, RELEASE_ATTEMPTS } from "./store.js";
+export { createWebExtension, type WebExtensionOptions } from "./durable/web.js";
+export { CONFIRM_POLLS, RELEASE_ATTEMPTS } from "./durable/store.js";
 
 const PLANE = "default";
 const UNCONFIGURED: BrowserConfig = { label: "", run: "", policy: DEFAULT_BROWSER_POLICY };
@@ -211,6 +212,9 @@ async function configOf<D extends PageDriver>(c: Readers<D>, read: DocumentReade
 async function providerOf<D extends PageDriver>(c: Readers<D>, read: DocumentReader, cid: ConversationId, plane: string, context: Context): Promise<BrowserProvider> {
   return c.options.provider({ conversationId: cid, plane, config: await configOf(c, read, cid, context) });
 }
+/** The two lookups for the conversation and plane a tool call runs in. */
+const scopeConfig = <D extends PageDriver>(c: Readers<D>, scope: Scope) => configOf(c, scope.read, scope.cid, scope.context);
+const scopeProvider = <D extends PageDriver>(c: Readers<D>, scope: Scope) => providerOf(c, scope.read, scope.cid, scope.plane, scope.context);
 
 const rowOf = (cid: ConversationId, record: SessionRecord): InventoryRow =>
   ({ tag: record.tag, conversationId: cid, plane: record.plane, provider: record.provider, resourceId: record.resourceId, state: record.state });
@@ -252,7 +256,7 @@ async function attachLive<D extends PageDriver>(c: Custody<D>, scope: Scope, rec
   // An observer whose socket closed holds nothing: driver and observer are attached again together.
   if (held && !c.held.observer(record.tag)?.closed) return held;
   if (held) await c.held.detach(record.tag);
-  const provider = await providerOf(c, scope.read, scope.cid, scope.plane, scope.context);
+  const provider = await scopeProvider(c, scope);
   const ref: LeaseRef = { id: record.resourceId!, tag: record.tag };
   try {
     return await connect(c, bound ? { ...scope, signal: AbortSignal.any([scope.signal, bound]) } : scope, provider, ref);
@@ -263,7 +267,7 @@ async function attachLive<D extends PageDriver>(c: Custody<D>, scope: Scope, rec
 }
 
 async function connect<D extends PageDriver>(c: Custody<D>, scope: Scope, provider: BrowserProvider, ref: LeaseRef): Promise<D> {
-  const config = await configOf(c, scope.read, scope.cid, scope.context);
+  const config = await scopeConfig(c, scope);
   const { actions: policy, batchTimeoutMs } = config.policy;
   c.owned.set(ref.tag, { cid: scope.cid, provider, ref });
   const target = await provider.attach(ref, scope.signal);
@@ -293,16 +297,16 @@ async function markEnded<D extends PageDriver>(c: Custody<D>, scope: Scope, reco
 }
 
 async function refuseHeld<D extends PageDriver>(c: Custody<D>, scope: Scope, record: SessionRecord | null | undefined): Promise<void> {
-  if (record?.state === "held" && !(await markEnded(c, scope, record, await providerOf(c, scope.read, scope.cid, scope.plane, scope.context)))) throw waiting(record);
+  if (record?.state === "held" && !(await markEnded(c, scope, record, await scopeProvider(c, scope)))) throw waiting(record);
 }
 
 async function settleCreating<D extends PageDriver>(c: Custody<D>, scope: Scope, record: SessionRecord): Promise<void> {
-  const provider = await providerOf(c, scope.read, scope.cid, scope.plane, scope.context);
+  const provider = await scopeProvider(c, scope);
   try { await c.store.bindByTag(provider, rowOf(scope.cid, record), scope.commit, scope.signal); } catch (error) { throw failure(error, scope, c.redact); }
 }
 
 async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrides: Overrides, presetTag?: string): Promise<{ record: SessionRecord; driver: D }> {
-  const config = await configOf(c, scope.read, scope.cid, scope.context);
+  const config = await scopeConfig(c, scope);
   const provider = await c.options.provider({ conversationId: scope.cid, plane: scope.plane, config });
   const tag = presetTag ?? leaseTag("ar", config.run, scope.cid, (await stateOf(c, scope)).sessions.length + 1);
   const spec = sessionSpec(config, tag, overrides);
@@ -367,7 +371,7 @@ async function attached<D extends PageDriver>(c: Custody<D>, scope: Scope, recor
   const fresh = state.sessions.find((r) => r.tag === record.tag) ?? record;
   const cuts = await cutsOf(c, scope, journalOf(state, scope.plane));
   const interrupted = cutOf(cuts);
-  const provider = await providerOf(c, scope.read, scope.cid, scope.plane, scope.context);
+  const provider = await scopeProvider(c, scope);
   const fence = fresh.fence ?? 0;
   return { driver: fenced(driver, fence, () => c.fences.get(record.tag)), tag: record.tag, sessionId: fresh.resourceId!, record: fresh, notice: notice || null, interrupted, cuts, recorded: Boolean(provider.recordings), effects: c.held.observer(record.tag) ?? null, fence, downloads: provider.downloads ?? null, replaced: replacedOf(state, scope.plane, fresh) };
 }
@@ -391,106 +395,13 @@ async function releaseRecord<D extends PageDriver>(c: Custody<D>, scope: Scope, 
 
 const editState = <D extends PageDriver>(c: Custody<D>, scope: Scope, edit: (state: SessionsState) => void) =>
   scope.commit(async (tx) => edit(await tx.doc(c.Sessions, scope.cid)));
-const journalOf = (state: SessionsState, plane: string) => [...state.sessions].reverse().find((r) => r.plane === plane && r.pendingEffect !== null)?.pendingEffect ?? null;
-/** The entry with this call's id in a journal chain: the entry itself or one it carries as `prior`. */
-const inChain = (entry: PendingEffect | null | undefined, callId: string): PendingEffect | undefined => {
-  for (let e = entry; e; e = e.prior) if (e.callId === callId) return e;
-  return undefined;
-};
-/** Settles one entry of a journal chain; the entries it carried stay. */
-const clearJournal = <D extends PageDriver>(c: Custody<D>, scope: Scope, callId: string) =>
-  editState(c, scope, (state) => {
-    for (const record of state.sessions) {
-      if (record.plane !== scope.plane || !record.pendingEffect) continue;
-      if (record.pendingEffect.callId === callId) { record.pendingEffect = record.pendingEffect.prior ?? null; continue; }
-      for (let e = record.pendingEffect; e.prior; e = e.prior) {
-        if (e.prior.callId !== callId) continue;
-        if (e.prior.prior) e.prior = e.prior.prior; else delete e.prior;
-        break;
-      }
-    }
-  });
-
-/** The entries of a journal chain whose warning is still owed, as a chain: each an earlier process wrote that is a cut (not
- *  finished with a saved answer) and has not been told by a saved answer. An entry of this process is never a cut, and a told
- *  one whose telling answer was saved was delivered. */
-async function owed<D extends PageDriver>(c: Custody<D>, scope: Scope, entry: PendingEffect | null | undefined): Promise<PendingEffect | null> {
-  if (!entry) return null;
-  const rest = await owed(c, scope, entry.prior);
-  const { prior: _carried, ...own } = entry;
-  const delivered = entry.incarnation === c.incarnation
-    || (entry.told === true && (await toldSaved(scope, entry)))
-    || (entry.finished === true && !entry.told && (await answered(scope, entry)));
-  return delivered ? rest : { ...own, ...(rest ? { prior: rest } : {}) };
-}
-
-/** A journaled action's own answer as pi committed it: true for a success, false for an error, null for none yet. */
-async function answerOf(scope: Scope, pending: PendingEffect): Promise<boolean | null> {
-  const message = await savedAnswer(scope, pending.after, pending.callId);
-  return message === null ? null : message.isError !== true;
-}
-
-/** Whether the call that told a cut had its answer saved, carrying the cut's facts. One killed between the told mark and pi's
- *  commit told nobody, and the cut is told again. */
-async function toldSaved(scope: Scope, pending: PendingEffect): Promise<boolean> {
-  if (!pending.toldBy) return false;
-  const message = await savedAnswer(scope, pending.after, pending.toldBy);
-  return (message?.details as { pendingEffect?: { callId?: unknown } } | undefined)?.pendingEffect?.callId === pending.callId;
-}
-
-/** A call's saved tool result, found by pi's typed tool-result entry. The scan covers only the cut's conversation from where
- *  it was journaled on, never the whole history. */
-async function savedAnswer(scope: Scope, after: number | undefined, callId: string) {
-  if (after === undefined) return null;
-  return scope.commit(async (tx) => {
-    let cursor: Parameters<Tx["scanEntries"]>[2];
-    do {
-      const page = await tx.scanEntries({ conversationId: scope.cid, minEntryId: after as EntryId, order: "ascending" }, 100, cursor);
-      for (const entry of page.items) {
-        const message = ToolResultEntry.is(entry) ? entry.model?.[0] : undefined;
-        if (message?.role === "toolResult" && message.toolCallId === callId) return message;
-      }
-      cursor = page.next;
-    } while (cursor !== undefined);
-    return null;
-  });
-}
-
-/** Whether a journaled action's own answer was committed as a success. */
-const answered = async (scope: Scope, pending: PendingEffect) => (await answerOf(scope, pending)) === true;
-
-/** One journal entry as a cut. In this process an entry is in flight or answered, never cut; one an earlier process wrote is
- *  a cut unless its action finished and pi committed its answer, which only then is looked up. It counts as told only once
- *  the telling call's answer, carrying its facts, was saved. */
-async function oneCut<D extends PageDriver>(c: Custody<D>, scope: Scope, entry: PendingEffect): Promise<PendingEffect | null> {
-  if (entry.incarnation === c.incarnation) return null;
-  const { prior: _carried, ...own } = entry;
-  const pending: PendingEffect = own.told && !(await toldSaved(scope, own)) ? { ...own, told: false } : own;
-  if (!pending.finished || pending.told || !(await answered(scope, pending))) return pending;
-  await clearJournal(c, scope, pending.callId);
-  return null;
-}
-
-/** Every cut in a journal chain, oldest first. An entry a later action replaced counts only while its warning is still owed:
- *  once a saved answer told it, the later action replaced it, as it would have with no chain. */
-async function cutsOf<D extends PageDriver>(c: Custody<D>, scope: Scope, entry: PendingEffect | null | undefined, newest = true): Promise<PendingEffect[]> {
-  if (!entry) return [];
-  const older = await cutsOf(c, scope, entry.prior, false);
-  const own = await oneCut(c, scope, entry);
-  return own && (newest || !own.told) ? [...older, own] : older;
-}
-
-/** The cut a call answers for: the oldest whose warning is still owed (an entry a later action replaced before the telling
- *  of it was saved comes first), else the newest. */
-const cutOf = (cuts: PendingEffect[]): PendingEffect | null => cuts.find((cut) => !cut.told) ?? cuts.at(-1) ?? null;
-
 async function relaunchOn<D extends PageDriver>(c: Custody<D>, scope: Scope, api: ToolExecutionApi, slot: string, overrides: Overrides): Promise<AttachedSession<D>> {
-  const config = await configOf(c, scope.read, scope.cid, scope.context);
+  const config = await scopeConfig(c, scope);
   const refusal = relaunchRefusal(config.policy, overrides);
   if (refusal) throw new BrowserFailureError(refusal);
   await refuseHeld(c, scope, currentRecord(await stateOf(c, scope), scope.plane));
   // A session the host assigned is the only one: refused before anything is released.
-  if ((await providerOf(c, scope.read, scope.cid, scope.plane, scope.context)).caps.fixedSession) throw new BrowserFailureError(FIXED_SESSION_RELAUNCH);
+  if ((await scopeProvider(c, scope)).caps.fixedSession) throw new BrowserFailureError(FIXED_SESSION_RELAUNCH);
   // The relaunch's session is chosen in a memo before its create commits: a rerun runs on it or says
   // session_replaced, never a second launch; a memo with no record yet is an uncommitted create and goes ahead.
   const find = async (tag: string | undefined) => (await stateOf(c, scope)).sessions.find((r) => r.tag === tag);
@@ -599,16 +510,12 @@ function portFor<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, con
         record.lastUrl = url;
       });
       const record = currentRecord(await stateOf(c, scope), scope.plane);
-      if (record) await emit(c, scope.cid, (await configOf(c, scope.read, scope.cid, scope.context)).label, record, "updated", await providerOf(c, scope.read, scope.cid, scope.plane, scope.context));
+      if (record) await emit(c, scope.cid, (await scopeConfig(c, scope)).label, record, "updated", await scopeProvider(c, scope));
     },
     unreachable: () => c.serial.run(key, async () => {
       const record = currentRecord(await stateOf(c, scope), scope.plane);
-      // A session held for a person is theirs: custody never releases it on its own.
-      if (record?.state === "held") return { released: false, lastUrl: record.lastUrl, kept: "held" as const };
-      if (!record || !open(record)) return { released: false, lastUrl: record?.lastUrl ?? null };
-      // A session a person drives or watches through the live view is theirs: custody never releases it on its own.
-      const person = personOn(c.options.gates ?? drivingGates, record.tag);
-      const kept = person && keptFor(person);
+      if (!record || (record.state !== "held" && !open(record))) return { released: false, lastUrl: record?.lastUrl ?? null };
+      const kept = keptReason(record, c.options.gates ?? drivingGates);
       if (kept) return { released: false, lastUrl: record.lastUrl, kept };
       await scope.commit(async (tx) => {
         await c.store.requestRelease(tx, rowOf(scope.cid, record), "lost", now());
@@ -645,7 +552,7 @@ function portFor<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, con
     ended: async () => {
       const record = currentRecord(await stateOf(c, scope), scope.plane);
       if (record?.state !== "live" && record?.state !== "held") return false;
-      return markEnded(c, scope, record, await providerOf(c, scope.read, scope.cid, scope.plane, scope.context));
+      return markEnded(c, scope, record, await scopeProvider(c, scope));
     },
     handoff: async (ask) => {
       const person = c.options.handoff;
@@ -658,7 +565,7 @@ function portFor<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, con
         if (interactionId === undefined) {
           const { tag, sessionId } = await port.hold(ask.requestId);
           const asked = await (async () => {
-            const provider = await providerOf(c, scope.read, scope.cid, scope.plane, scope.context);
+            const provider = await scopeProvider(c, scope);
             const view = provider.liveView ? await provider.liveView({ id: sessionId, tag }).catch(() => null) : null;
             const liveView = view && hostLiveView(view, c.redact);
             return person.request({ requestId: ask.requestId, sessionTag: tag, sessionId, liveView, instruction: ask.instruction, completionCondition: ask.completionCondition }, scope.signal);
@@ -797,7 +704,7 @@ const withSessionTime = (own: ToolOutput["usage"], charged: ToolUsage | null): T
 
 function toolsFor<D extends PageDriver>(c: Custody<D>, impls: Partial<Record<string, ToolImpl<D>>>): ToolRegistration[] {
   return BROWSER_TOOLS
-    .filter((contract) => impls[contract.name] && (contract.listedWhen !== "downloads" || c.options.workspace) && (contract.listedWhen !== "upload" || c.options.files || c.options.workspace) && (contract.listedWhen !== "handoff" || c.options.handoff))
+    .filter((contract) => impls[contract.name] && listedFor(contract, { downloads: !!c.options.workspace, upload: !!(c.options.files || c.options.workspace), handoff: !!c.options.handoff }))
     .map((contract) => defineTool({
       name: contract.name,
       description: contract.description,
@@ -820,7 +727,7 @@ function toolsFor<D extends PageDriver>(c: Custody<D>, impls: Partial<Record<str
           // A charge that cannot be committed now is carried by the next one.
           const usage = withSessionTime(out.usage, await chargeCall(c, api, context).catch(() => null));
           return {
-            ...forModel(out.content.map((item) => item.type === "text" ? { ...item, text: c.redact(item.text) } : item)),
+            ...forModel(redactContent(out.content, c.redact)),
             ...(out.isError ? { isError: true } : {}),
             ...(out.details ? { details: redactDeep(out.details, c.redact) as JsonValue } : {}),
             ...(usage ? { usage: usage as unknown as Usage } : {}),
@@ -900,7 +807,7 @@ function siteTool<D extends PageDriver>(c: Custody<D>, sites: NonNullable<Browse
     executionMode: contract.executionMode,
     execute: async (args, api, context) => {
       const out = await useWebsite(args as Record<string, unknown>, sites.port, sites.listing, { signal: context.abortSignal ?? new AbortController().signal, runChild: childConversation(c, api, context) });
-      return { ...forModel(out.content.map((item) => item.type === "text" ? { ...item, text: c.redact(item.text) } : item)), ...(out.isError ? { isError: true } : {}) };
+      return { ...forModel(redactContent(out.content, c.redact)), ...(out.isError ? { isError: true } : {}) };
     },
   });
 }

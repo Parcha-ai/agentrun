@@ -37,6 +37,9 @@ export function screencast(browserUrl, onFrame, { maxWidth = 640, quality = 55, 
   let timer = null;
   const deliver = () => { timer = null; if (pending !== null) { lastSent = Date.now(); onFrame(pending); pending = null; } };
   const send = (method, params = {}, sessionId) => { if (socket.readyState === 1) socket.send(JSON.stringify({ id: ++seq, method, params, ...(sessionId ? { sessionId } : {}) })); };
+  /** The browser's pages, the one most recently opened or moved last: a tile whose page closes goes back to the latest still open. */
+  const pages = [];
+  const latest = (targetId) => { const at = pages.indexOf(targetId); if (at >= 0) pages.splice(at, 1); pages.push(targetId); follow(targetId); };
   const follow = (targetId) => {
     if (current?.targetId === targetId) return;
     if (current?.sessionId) send("Target.detachFromTarget", { sessionId: current.sessionId });
@@ -46,8 +49,8 @@ export function screencast(browserUrl, onFrame, { maxWidth = 640, quality = 55, 
   socket.onopen = () => send("Target.setDiscoverTargets", { discover: true });
   socket.onmessage = (event) => {
     const { method, params, sessionId } = JSON.parse(String(event.data));
-    if (method === "Target.targetCreated" && params.targetInfo.type === "page") follow(params.targetInfo.targetId);
-    else if (method === "Target.targetInfoChanged" && params.targetInfo.type === "page" && params.targetInfo.url !== "about:blank") follow(params.targetInfo.targetId);
+    if (method === "Target.targetCreated" && params.targetInfo.type === "page") latest(params.targetInfo.targetId);
+    else if (method === "Target.targetInfoChanged" && params.targetInfo.type === "page" && params.targetInfo.url !== "about:blank") latest(params.targetInfo.targetId);
     else if (method === "Target.attachedToTarget") {
       if (params.targetInfo.targetId !== current?.targetId) return send("Target.detachFromTarget", { sessionId: params.sessionId });
       current.sessionId = params.sessionId;
@@ -57,7 +60,11 @@ export function screencast(browserUrl, onFrame, { maxWidth = 640, quality = 55, 
       if (sessionId !== current?.sessionId) return;
       pending = params.data;
       timer ??= setTimeout(deliver, Math.max(0, everyMs - (Date.now() - lastSent)));
-    } else if (method === "Target.targetDestroyed" && params.targetId === current?.targetId) current = null;
+    } else if (method === "Target.targetDestroyed") {
+      const at = pages.indexOf(params.targetId);
+      if (at >= 0) pages.splice(at, 1);
+      if (params.targetId === current?.targetId) { current = null; if (pages.length) follow(pages.at(-1)); }
+    }
   };
   socket.onerror = () => {};
   return { close: () => { clearTimeout(timer); timer = null; pending = null; try { socket.close(); } catch {} } };
