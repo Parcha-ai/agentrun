@@ -342,6 +342,21 @@ power-off, a freeze of the instance and its FUSE daemon, and a network partition
 power-off through the orphaned delegation, the freeze and the partition through the lease, the partitioned box stopped by
 the driver), and the thawed instance exited 75. A driver for another compute (a Kubernetes pod, another sandbox product) is the same three calls.
 
+`modalHost({ sdk, appName, image, ... })` runs each instance, the whole agent, in a Modal sandbox of its own, with the run's
+disk mounted in it (library only; pass the Modal SDK's `ModalClient` as `sdk`, Node 22 or later; the package imports nothing
+from it). It is `daytonaHost` over a Modal-backed client (`modalSandboxes`), so the launcher, the staged mount token, the
+restart rules and the status contract are the same. Handles say `driver: "modal"`, and a box's receipt says
+`provider: "modal"` with no price. The image holds Node, the archil client (`libfuse2`), this package and the run user, as a
+Daytona snapshot does; Modal runs the driver's commands as root, so there is no `sudo`. `runtime: "vm"` (the default) gives
+the sandbox its own kernel, which has `/dev/fuse`, so the box mounts the disk like any FUSE client. `runtime: "gvisor"` (the
+only runtime Modal offers GPUs on) is refused without `command`, as `INVALID_ARGUMENT`: a disk mounted under gVisor kept none
+of ten acknowledged writes, measured. With a `command` it runs an agent started another way. Fleet and run are sandbox tags,
+set right after create (a lost create answer is finished by the retry's lookup), and the sandbox's timeout, at most 24 h,
+bounds a leak. `stop` drains the instance and terminates the sandbox; `kill` terminates it. A stop first ends whatever the
+agent left running under the run's mount (`reapOnStop`, on by default here, opt-in on `daytonaHost`), never pid 1: a
+detached server or browser is outside the instance's tree and would otherwise keep the mount busy, so the unmount would fail
+and the delegation stay held.
+
 `dockerHost({ image })` (`supervise --host docker --image IMAGE`) runs each instance in a container of its own; one
 container is one incarnation.
 - **Start.** `docker create` named `pda-<run>-<disk key>-g<attempt>` (the disk key is 8 hex digits of the disk and region,

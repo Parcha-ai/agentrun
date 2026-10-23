@@ -223,8 +223,10 @@ describe("the suites and their files", () => {
       assert.ok(script, `a test:live:${suite} script`);
       for (const file of script.match(/test\/live\/[\w-]+\.live\.test\.ts/g) ?? []) named.set(file, [...(named.get(file) ?? []), suite]);
     }
-    // Daytona's suite needs a Daytona account and runs on its own; every other live file is in the check.
-    const files = readdirSync(new URL("./live/", import.meta.url)).filter((f) => f.endsWith(".live.test.ts") && f !== "daytona.live.test.ts").map((f) => `test/live/${f}`).sort();
+    // Daytona's and Modal's suites need an account of that provider (and Modal's an SDK the package does not depend on) and
+    // run on their own; every other live file is in the check.
+    const own = new Set(["daytona.live.test.ts", "modal.live.test.ts"]);
+    const files = readdirSync(new URL("./live/", import.meta.url)).filter((f) => f.endsWith(".live.test.ts") && !own.has(f)).map((f) => `test/live/${f}`).sort();
     assert.deepEqual([...named.keys()].sort(), files);
     for (const [file, suites] of named) assert.equal(suites.length, 1, `${file} is run by ${suites.join(", ")}`);
     assert.deepEqual(named.get("test/live/supervise-slow.live.test.ts"), ["supervise-slow"]);

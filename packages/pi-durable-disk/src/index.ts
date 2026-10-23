@@ -39,6 +39,8 @@ export { dockerHost, DockerHostError } from "./hosts/docker.ts";
 export type { ContainerInfo, DockerHostOptions, DockerRan, DockerRunner } from "./hosts/docker.ts";
 export { DAYTONA_LIST_PRICES, DaytonaApiError, daytonaHost, DaytonaHostError, daytonaRest, daytonaUsdPerSecond } from "./hosts/daytona.ts";
 export type { CreateSandboxBody, DaytonaClient, DaytonaHostErrorCode, DaytonaHostOptions, DaytonaRestOptions, ExecResult, SandboxInfo } from "./hosts/daytona.ts";
+export { MODAL_MAX_TIMEOUT_MS, modalHost, modalSandboxes } from "./hosts/modal.ts";
+export type { ModalCreateParams, ModalHostOptions, ModalProcess, ModalSandbox, ModalSandboxesOptions, ModalSdk } from "./hosts/modal.ts";
 
 // Serve: one HTTP request runs one turn.
 export { requestRun, ServeConfigError, ServeError, serveRun } from "./serve.ts";
