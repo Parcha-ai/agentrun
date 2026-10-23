@@ -1,10 +1,13 @@
 // The launcher's pure spec check (`launchSpecError`, `@parcha/pi-transport/launch`): what `launch` refuses about a spec, known
 // before any box exists. A host that makes a box only to launch in it (disk's boxHost, a VM) asks it first, so a bad spec never
 // boots a machine. `launch` calls the same function first: one answer, never two checks that can drift.
+import { existsSync, readFileSync } from "node:fs";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { describe, expect, it } from "vitest";
 import type { Box } from "../src/box/box.ts";
 import { type LaunchSpec, launch, launchSpecError } from "../src/launch/index.ts";
+import { LIBC_UNSECURE_ENVVARS } from "../src/launch/launch.ts";
+import { UNSECURE } from "./home-launch-support.ts";
 
 const context = BACKGROUND_CONTEXT;
 const VALUE = "zz-a-value-never-echoed-zz";
@@ -114,4 +117,64 @@ describe("a framed launch's user", () => {
 		);
 		expect(said({ argv: ["true"], toolsUser: "a b" })).toMatch(/^toolsUser is a user name or a numeric uid/);
 	});
+});
+
+describe("a key-shaped name in env", () => {
+	const keyed = (name: string) => launchSpecError("named", { argv: ["true"], env: { [name]: VALUE } });
+
+	it.each(["KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "CREDENTIALS"])(
+		"is refused for the segment %s, wherever it stands in the name and in any case, naming the name and never its value",
+		(segment) => {
+			for (const name of [segment, `APP_${segment}`, `${segment}_ID`, `MY_${segment.toLowerCase()}_FILE`]) {
+				const refusal = keyed(name);
+				expect(refusal?.code, name).toBe("invalid");
+				expect(refusal?.message, name).toContain(`the environment name ${name} looks like a key`);
+				expect(refusal?.message, name).not.toContain(VALUE);
+			}
+		},
+	);
+
+	it("is not a name with such a word inside a segment: MONKEY, TOKENS, KEYBOARD, SECRETARY and PASSWORDS pass", () => {
+		for (const name of ["MONKEY", "TOKENS", "KEYBOARD", "SECRETARY", "PASSWORDS", "APP_TOKENS", "DONKEY_KONG"])
+			expect(keyed(name), name).toBeUndefined();
+	});
+});
+
+/** The unsecure list inside this machine's glibc loader: the NUL-separated run of names from GCONV_PATH that holds LD_PRELOAD. */
+function loaderList(): string[] | undefined {
+	const loader = ["/lib64/ld-linux-x86-64.so.2", "/lib/ld-linux-aarch64.so.1"].find((path) => existsSync(path));
+	if (loader === undefined) return undefined;
+	const words = readFileSync(loader).toString("latin1").split("\0");
+	for (let i = words.indexOf("GCONV_PATH"); i >= 0; i = words.indexOf("GCONV_PATH", i + 1)) {
+		const end = words.indexOf("", i);
+		const run = words.slice(i, end);
+		if (run.includes("LD_PRELOAD")) return run;
+	}
+	return undefined;
+}
+
+describe("the C library's own unsecure variables (glibc's and musl's)", () => {
+	it.each(UNSECURE)(
+		"refuses %s as a program setting and as an inherited name: it would act on the root launcher's switch to the user",
+		(name) => {
+			const set = launchSpecError("named", { argv: ["true"], user: "pda", env: { [name]: VALUE } });
+			expect(set?.message, `env ${name}`).toBe(`the environment name ${name} is reserved by the launcher`);
+			const inherited = launchSpecError("named", { argv: ["true"], user: "pda", inheritEnv: [name] });
+			expect(inherited?.code, `inheritEnv ${name}`).toBe("invalid");
+		},
+	);
+
+	it("accepts TMPDIR, on glibc's list too, as a program setting and an inherited name: the switch writes no temporary file", () => {
+		expect(launchSpecError("named", { argv: ["true"], user: "pda", env: { TMPDIR: "/srv/tmp" } })).toBeUndefined();
+		expect(launchSpecError("named", { argv: ["true"], user: "pda", inheritEnv: ["TMPDIR"] })).toBeUndefined();
+	});
+
+	it.skipIf(loaderList() === undefined)(
+		"covers the list this machine's own glibc loader carries, TMPDIR aside",
+		() => {
+			const carried = loaderList() ?? [];
+			expect(carried.length).toBeGreaterThan(10);
+			expect(carried.filter((name) => name !== "TMPDIR" && !LIBC_UNSECURE_ENVVARS.includes(name))).toEqual([]);
+		},
+	);
 });
