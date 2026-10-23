@@ -7,14 +7,17 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
-import { archilPlace, localPlace, PlaceError, writeAll } from "../src/place.ts";
+import { archilPlace, localPlace, PlaceError, writeAll, type UnheldRun, type UnheldStart } from "../src/place.ts";
+import { RunFileError } from "../src/run-files.ts";
 import { parseTokenNickname } from "../src/claim.ts";
 import type { HostBox, HostDriver, HostHandle, HostStatus, StartAttempt, SupervisorControl } from "../src/supervise.ts";
-import { currentBootId, procStartTicks } from "../src/hosts/local-host.ts";
+import { currentBootId, localHost, procStartTicks } from "../src/hosts/local-host.ts";
+import { dockerHost } from "../src/hosts/docker.ts";
+import { daytonaHost } from "../src/hosts/daytona.ts";
 import { scratchRoot } from "./_run-support.ts";
 
 const APP = fileURLToPath(new URL("./fixtures/place-app.ts", import.meta.url));
@@ -277,13 +280,18 @@ class FakeControl implements SupervisorControl {
   }
   async getObject(key: string) {
     this.gets++;
+    if (this.onGet) await this.onGet(key);
     if (this.hangUnder !== null && key.startsWith(this.hangUnder)) return new Promise<Uint8Array>(() => {});
     if (this.failUnder !== null && key.startsWith(this.failUnder.prefix)) throw this.failUnder.error;
     const v = this.objects.get(key);
     if (v === undefined) throw Object.assign(new Error("NoSuchKey"), { status: 404, code: "NoSuchKey" });
     return new TextEncoder().encode(v);
   }
+  /** Called before a get or a head answers: a test that must hold two callers at one point (a barrier) waits here. */
+  onGet: ((key: string) => Promise<void> | void) | null = null;
+  onHead: ((key: string) => Promise<void> | void) | null = null;
   async headObject(key: string) {
+    if (this.onHead) await this.onHead(key);
     return this.objects.has(key) ? {} : null;
   }
   /** Every put, with the owner and mode it asked for; and a listing that fails, when set. */
@@ -292,7 +300,12 @@ class FakeControl implements SupervisorControl {
   failList: Error | null = null;
   /** A put of a key under record/ or signals/ that the server refuses (a run a delegation holds), when set. */
   putRefused: Error | null = null;
+  /** Every put of any key, in order, with its body, owner and mode; and an error every put of a key under `putFaultUnder` throws. */
+  allPuts: { key: string; body: string; uid: number; gid: number; mode: number }[] = [];
+  putFaultUnder: { prefix: string; error: Error } | null = null;
   async putObject(key: string, body: string, options: { uid: number; gid: number; mode: number } = { uid: -1, gid: -1, mode: -1 }) {
+    if (this.putFaultUnder !== null && key.startsWith(this.putFaultUnder.prefix)) throw this.putFaultUnder.error;
+    this.allPuts.push({ key, body, ...options });
     if (key.includes("/record/") || key.includes("/signals/")) {
       if (this.putRefused) throw this.putRefused;
       this.ops.push(`put ${key.slice(`runs/${ID}/`.length)}`);
@@ -619,6 +632,646 @@ describe("archilPlace recordHome", () => {
     await unowned.start({ gen: 1, env: {}, stdin: await unowned.token!(1) });
     assert.deepEqual(c2.puts, []);
     await unowned.release();
+  });
+});
+
+describe("archilPlace HOST_BOX: each host box's runner is told which label to claim", () => {
+  /** A host whose boxes are a provider's, with a receipt for each box unless it is in `noReceipt`. */
+  const providing = (control: FakeControl, provider: string | undefined, noReceipt = new Set<string>()) => {
+    const fake = fakeHost(control);
+    const host: HostDriver = {
+      ...fake.host,
+      ...(provider ? { provider } : {}),
+      box: (h) => (noReceipt.has(String(h.name)) ? null : { provider: provider ?? "none", kind: `sandbox ${h.name}`, from: "2026-10-22T00:00:00.000Z", to: null }),
+    };
+    return { host, starts: fake.starts };
+  };
+
+  it("each start puts HOST_BOX { provider, key: the box's index in status().boxes, run: RUN_LABEL } in that order's env", async () => {
+    const control = new FakeControl();
+    const { host, starts } = providing(control, "modal");
+    const place = makePlace({ ...REF, control, host });
+    const first = await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
+    await place.kill(first, "box");
+    await place.recover(first, "box", { gen: 2, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(2) });
+    const asked = starts.map((s) => JSON.parse(s.attempt!.env!.HOST_BOX!) as { provider: string; key: string; run: string });
+    assert.deepEqual(asked, [{ provider: "modal", key: "0", run: "life-1" }, { provider: "modal", key: "1", run: "life-1" }]);
+    const boxes = (await place.status!()).boxes!;
+    assert.deepEqual(asked.map((a) => boxes[Number(a.key)]!.kind), ["sandbox box-1", "sandbox box-2"], "each key is that box's index in status().boxes");
+    assert.ok(asked.every((a) => boxes[Number(a.key)]!.provider === a.provider), "and names its provider");
+  });
+
+  it("no HOST_BOX without the order's RUN_LABEL or a driver that names its provider; with HOST_BOX in play, a box with no receipt fails status() instead of shifting the rest", async () => {
+    const c1 = new FakeControl();
+    const noLife = providing(c1, "modal");
+    const p1 = makePlace({ ...REF, control: c1, host: noLife.host });
+    await p1.start({ gen: 1, env: {}, stdin: await p1.token!(1) });
+    assert.equal(noLife.starts[0]!.attempt!.env!.HOST_BOX, undefined, "no life, no label to claim");
+    const c2 = new FakeControl();
+    const noProvider = providing(c2, undefined);
+    const p2 = makePlace({ ...REF, control: c2, host: noProvider.host });
+    await p2.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await p2.token!(1) });
+    assert.equal(noProvider.starts[0]!.attempt!.env!.HOST_BOX, undefined, "a driver that names no provider");
+    const c3 = new FakeControl();
+    const missing = new Set<string>();
+    const gap = providing(c3, "modal", missing);
+    const p3 = makePlace({ ...REF, control: c3, host: gap.host });
+    await p3.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await p3.token!(1) });
+    missing.add("box-1");
+    await assert.rejects(p3.status!(), (e: unknown) => e instanceof PlaceError && e.code === "STATUS_FAILED" && /no receipt for host box 0/.test(e.message));
+  });
+
+  it("no HOST_BOX from a place that cannot read its run's files (its control cannot list): no read members, no label to claim", async () => {
+    const control = new FakeControl();
+    (control as unknown as { listObjects?: unknown }).listObjects = undefined;
+    const { host, starts } = providing(control, "modal");
+    const place = makePlace({ ...REF, control, host });
+    assert.equal(place.readRunFile, undefined);
+    assert.equal(place.listRunFiles, undefined);
+    await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
+    assert.equal(starts[0]!.attempt!.env!.HOST_BOX, undefined, "a label the place could never read back is never handed over");
+  });
+});
+
+describe("archilPlace unheld: a hook in the start window, while nobody holds the run (K9)", () => {
+  const OWNER = { create: { uid: 1500, gid: 1500 } };
+  const run = `runs/${ID}/`;
+  const LIFE = { RUN_LABEL: "life-1" };
+  /** A host whose boxes are a provider's, with a receipt for each: a start of it carries HOST_BOX, so the hook gets `box`. */
+  const providing = (control: FakeControl) => {
+    const fake = fakeHost(control);
+    const host: HostDriver = { ...fake.host, provider: "modal", box: (h) => ({ provider: "modal", kind: `vm ${h.name}`, from: "2026-10-22T00:00:00.000Z", to: null }) };
+    return { host, starts: fake.starts };
+  };
+  /** How a failed start reaches the caller: ensureRunning wraps the driver's throw, and the place's code is its cause. */
+  const startFails = (code: string, re?: RegExp) => (e: unknown) => {
+    const cause = (e as { cause?: unknown }).cause;
+    return (e as { code?: string }).code === "HOST_START_FAILED" && cause instanceof PlaceError && cause.code === code && (!re || re.test(cause.message));
+  };
+  const runFileCode = (e: unknown) => (e instanceof RunFileError ? e.code : String(e));
+  const owned = (c: FakeControl, key: string) => c.allPuts.filter((p) => p.key === `${run}${key}`).map(({ uid, gid, mode }) => ({ uid, gid, mode }));
+  const closed = Object.assign(new Error("409 OperationAborted: another client holds a write delegation"), { status: 409, code: "OperationAborted" });
+
+  it("runs once per start, after makeDirs and before host.start, with the attempt and exactly the HOST_BOX that start carries; what it returns reaches that start's environment", async () => {
+    const control = new FakeControl();
+    const { host, starts } = providing(control);
+    const seen: UnheldStart[] = [];
+    const place = makePlace({
+      ...REF, control, host, ensure: OWNER,
+      unheld: async (r: UnheldRun, start: UnheldStart) => {
+        control.ops.push(`unheld g${start.attempt}`);
+        assert.equal(r.id, ID);
+        seen.push(start);
+        return { LABEL_HINT: `hint-${start.attempt}` };
+      },
+    });
+    const first = await place.start({ gen: 1, env: LIFE, stdin: await place.token!(1) });
+    await place.kill(first, "box");
+    await place.recover(first, "box", { gen: 2, env: LIFE, stdin: await place.token!(2) });
+    assert.deepEqual(seen, [
+      { attempt: 1, box: { provider: "modal", key: "0", run: "life-1" } },
+      { attempt: 2, box: { provider: "modal", key: "1", run: "life-1" } },
+    ]);
+    starts.forEach((s, i) => {
+      assert.deepEqual(JSON.parse(s.attempt!.env!.HOST_BOX!), seen[i]!.box, "start.box is the HOST_BOX that start carries");
+      assert.equal(s.attempt!.env!.LABEL_HINT, `hint-${i + 1}`, "the returned env reaches that start");
+      assert.equal(s.attempt!.env!.RUN_LABEL, "life-1", "beside the order's own");
+    });
+    const order = control.ops.filter((o) => /^(put signals\/$|unheld g1|start g1)/.test(o));
+    assert.deepEqual(order, ["put signals/", "unheld g1", "start g1"], "makeDirs, then the hook, then the driver");
+  });
+
+  it("start.box is absent when the place hands no label over (no RUN_LABEL, or a driver that names no provider); the hook still runs", async () => {
+    const c1 = new FakeControl();
+    const seen: UnheldStart[] = [];
+    const p1 = makePlace({ ...REF, control: c1, host: providing(c1).host, ensure: OWNER, unheld: async (_r: UnheldRun, s: UnheldStart) => void seen.push(s) });
+    await p1.start({ gen: 1, env: {}, stdin: await p1.token!(1) });
+    const c2 = new FakeControl();
+    const p2 = makePlace({ ...REF, control: c2, host: fakeHost(c2).host, ensure: OWNER, unheld: async (_r: UnheldRun, s: UnheldStart) => void seen.push(s) });
+    await p2.start({ gen: 1, env: LIFE, stdin: await p2.token!(1) });
+    assert.deepEqual(seen, [{ attempt: 1 }, { attempt: 1 }]);
+  });
+
+  it("put is create-only: the file owned by the run user, 0644, every missing parent made first as a 0755 marker the run user owns; a file or a directory already there is EXISTS, and nothing is written; after the hook returns, a put is WINDOW_CLOSED with no request", async () => {
+    const control = new FakeControl();
+    control.objects.set(`${run}box-ids.internal/`, "");
+    control.objects.set(`${run}box-ids.internal/taken.json`, "earlier");
+    control.objects.set(`${run}box-ids.internal/adir/`, "");
+    const answers: string[] = [];
+    let kept: UnheldRun | undefined;
+    const place = makePlace({
+      ...REF, control, host: fakeHost(control).host, ensure: OWNER,
+      unheld: async (r: UnheldRun) => {
+        kept = r;
+        await r.put("box-ids.internal/pending/life-1-1.json", '{"provider":"modal"}');
+        for (const path of ["box-ids.internal/taken.json", "box-ids.internal/adir", "box-ids.internal/pending/life-1-1.json"]) {
+          answers.push(await r.put(path, "x").then(() => "written", runFileCode));
+        }
+      },
+    });
+    await place.start({ gen: 1, env: {}, stdin: await place.token!(1) });
+    assert.deepEqual(answers, ["EXISTS", "EXISTS", "EXISTS"]);
+    assert.equal(control.objects.get(`${run}box-ids.internal/taken.json`), "earlier", "nothing written over");
+    assert.equal(control.objects.get(`${run}box-ids.internal/pending/life-1-1.json`), '{"provider":"modal"}');
+    assert.deepEqual(owned(control, "box-ids.internal/pending/"), [{ uid: 1500, gid: 1500, mode: 0o755 }], "the missing parent, once, the run user's");
+    assert.deepEqual(owned(control, "box-ids.internal/"), [], "a parent already there is not made again");
+    assert.deepEqual(owned(control, "box-ids.internal/pending/life-1-1.json"), [{ uid: 1500, gid: 1500, mode: 0o644 }]);
+    const keys = control.allPuts.map((p) => p.key);
+    assert.ok(keys.indexOf(`${run}box-ids.internal/pending/`) < keys.indexOf(`${run}box-ids.internal/pending/life-1-1.json`), "the parent before the file");
+    const before = control.allPuts.length;
+    await assert.rejects(kept!.put("box-ids.internal/late.json", "{}"), (e: unknown) => runFileCode(e) === "WINDOW_CLOSED");
+    assert.equal(control.allPuts.length, before, "no request once the window is closed");
+  });
+
+  it("put refuses a path outside K8's rules with INVALID_PATH before any request, and its message never echoes the path", async () => {
+    const control = new FakeControl();
+    const refused: string[] = [];
+    const place = makePlace({
+      ...REF, control, host: fakeHost(control).host, ensure: OWNER,
+      unheld: async (r: UnheldRun) => {
+        for (const bad of ["", "/abs.json", "a//b.json", "../up.json", "a/./b.json", ".archil/c.json", "bad name.json", "trailing/"]) {
+          await r.put(bad, "x").then(
+            () => refused.push(`written ${bad}`),
+            (e: unknown) => {
+              assert.equal(runFileCode(e), "INVALID_PATH", JSON.stringify(bad));
+              if (bad.length > 2) assert.ok(!(e as Error).message.includes(bad), `the message never echoes ${JSON.stringify(bad)}`);
+              refused.push("INVALID_PATH");
+            },
+          );
+        }
+      },
+    });
+    await place.start({ gen: 1, env: {}, stdin: await place.token!(1) });
+    assert.deepEqual(refused, Array(8).fill("INVALID_PATH"));
+    assert.deepEqual(control.allPuts.filter((p) => !/\/(signals|record)\//.test(p.key) && !p.key.endsWith("start.json") && p.key !== run), [], "no request was made for any of them");
+  });
+
+  it("a put answered exactly 409 OperationAborted is WINDOW_CLOSED, and it fails the start even when the hook catches it: host.start is never called, the token goes, the hook ran once", async () => {
+    const control = new FakeControl();
+    const { host, starts } = fakeHost(control);
+    control.putFaultUnder = { prefix: `${run}box-ids.internal/`, error: closed };
+    let caught: unknown;
+    let calls = 0;
+    const place = makePlace({
+      ...REF, control, host, ensure: OWNER,
+      unheld: async (r: UnheldRun) => {
+        calls++;
+        await r.put("box-ids.internal/pending/life-1-1.json", "{}").catch((e: unknown) => void (caught = e));
+      },
+    });
+    await assert.rejects(place.start({ gen: 1, env: {}, stdin: await place.token!(1) }), startFails("WINDOW_CLOSED"));
+    assert.equal(runFileCode(caught), "WINDOW_CLOSED");
+    assert.equal((caught as { cause?: unknown }).cause, closed, "the server's answer is its cause");
+    assert.equal(starts.length, 0, "no box");
+    assert.ok(!control.ops.some((o) => o.startsWith("start ")), "host.start was never called");
+    assert.equal(control.users.size, 0, "the token it minted is removed");
+    assert.equal(calls, 1, "nothing is retried in that start");
+  });
+
+  it("any other put failure (a 409 with another code, a 503) is CONTROL_API_FAILED with its cause; a hook that rethrows it fails the start CONTROL_API_FAILED, and no box", async () => {
+    for (const error of [Object.assign(new Error("409 Conflict"), { status: 409, code: "Conflict" }), Object.assign(new Error("503 SlowDown"), { status: 503, code: "SlowDown" })]) {
+      const control = new FakeControl();
+      const { host, starts } = fakeHost(control);
+      control.putFaultUnder = { prefix: `${run}box-ids.internal/`, error };
+      let seen: unknown;
+      const place = makePlace({
+        ...REF, control, host, ensure: OWNER,
+        unheld: async (r: UnheldRun) => {
+          await r.put("box-ids.internal/x.json", "{}").catch((e: unknown) => {
+            seen = e;
+            throw e;
+          });
+        },
+      });
+      await assert.rejects(place.start({ gen: 1, env: {}, stdin: await place.token!(1) }), startFails("CONTROL_API_FAILED"));
+      assert.equal(runFileCode(seen), "CONTROL_API_FAILED", error.message);
+      assert.equal((seen as { cause?: unknown }).cause, error);
+      assert.equal(starts.length, 0);
+    }
+  });
+
+  it("a hook that throws anything else, or overruns its bound, fails the start UNHELD_FAILED with no box; at the bound its signal aborts and a later put is WINDOW_CLOSED with no request", async () => {
+    const c1 = new FakeControl();
+    const h1 = fakeHost(c1);
+    const boom = new Error("the labeller broke");
+    const p1 = makePlace({ ...REF, control: c1, host: h1.host, ensure: OWNER, unheld: async () => { throw boom; } });
+    await assert.rejects(p1.start({ gen: 1, env: {}, stdin: await p1.token!(1) }), (e: unknown) => startFails("UNHELD_FAILED")(e) && ((e as { cause: PlaceError }).cause.cause === boom));
+    assert.equal(h1.starts.length, 0);
+
+    const c2 = new FakeControl();
+    const h2 = fakeHost(c2);
+    let kept: UnheldRun | undefined;
+    const p2 = makePlace({ ...REF, control: c2, host: h2.host, ensure: OWNER, unheldTimeoutMs: 50, unheld: (r: UnheldRun) => { kept = r; return new Promise<void>(() => {}); } });
+    const token = await p2.token!(1);
+    const unbounded = new Error("the start was still waiting on its hook 5 s after a 50 ms bound");
+    const t0 = Date.now();
+    await assert.rejects(Promise.race([p2.start({ gen: 1, env: {}, stdin: token }), sleep(5_000).then(() => { throw unbounded; })]), (e: unknown) => {
+      assert.notEqual(e, unbounded, "the bound ends the wait");
+      return startFails("UNHELD_FAILED", /50 ms/)(e);
+    });
+    assert.ok(Date.now() - t0 < 5_000, "the bound ends the wait");
+    assert.ok(kept!.signal.aborted, "the hook's signal aborts at its bound");
+    const before = c2.allPuts.length;
+    await assert.rejects(kept!.put("box-ids.internal/late.json", "{}"), (e: unknown) => runFileCode(e) === "WINDOW_CLOSED");
+    assert.equal(c2.allPuts.length, before, "no request after the window");
+    assert.equal(h2.starts.length, 0);
+  });
+
+  it("the returned environment: a name the start already sets, a name that is not a variable name, a value that is not a string or holds a NUL, or a key-shaped name fails the start INVALID_ARGUMENT, naming the variable and never its value; anything else passes", async () => {
+    const VALUE = `v-${"q".repeat(16)}`;
+    const refused: Record<string, unknown>[] = [
+      { PATH: VALUE }, { PDA_HOLDER: VALUE }, { HOST_BOX: VALUE }, { RUN_LABEL: VALUE }, { "1BAD": VALUE }, { "A-B": VALUE }, { NUMBER: 7 }, { NUL: "a\0b" },
+      { ANTHROPIC_API_KEY: VALUE }, { MODAL_TOKEN_ID: VALUE }, { MODAL_TOKEN_SECRET: VALUE }, { DB_PASSWORD: VALUE }, { GH_TOKEN: VALUE }, { db_passwd: VALUE },
+      { X_Credentials: VALUE }, { CREDENTIAL: VALUE }, { CACHE_KEY_PREFIX: VALUE },
+    ];
+    for (const env of refused) {
+      const name = Object.keys(env)[0]!;
+      const control = new FakeControl();
+      const { host, starts } = providing(control);
+      const place = makePlace({ ...REF, control, host, ensure: OWNER, unheld: async () => env as Record<string, string> });
+      await assert.rejects(place.start({ gen: 1, env: LIFE, stdin: await place.token!(1) }), (e: unknown) => {
+        assert.ok(startFails("INVALID_ARGUMENT")(e), `${name}: ${String(e)}`);
+        const message = (e as { cause: Error }).cause.message;
+        assert.ok(message.includes(name), `${name}: the message names the variable`);
+        assert.ok(!message.includes(VALUE) && !String(e).includes(VALUE), `${name}: never its value`);
+        return true;
+      });
+      assert.equal(starts.length, 0, `${name}: no box`);
+    }
+    const control = new FakeControl();
+    const { host, starts } = providing(control);
+    const passing = { KEYBOARD: "us", TOKENIZER: "bpe", MONKEY: "1", SECRETARY: "ok", LABEL_HINT: "x" };
+    const place = makePlace({ ...REF, control, host, ensure: OWNER, unheld: async () => passing });
+    await place.start({ gen: 1, env: LIFE, stdin: await place.token!(1) });
+    for (const [k, v] of Object.entries(passing)) assert.equal(starts[0]!.attempt!.env![k], v, k);
+    for (const odd of [null, [], "HOST=1"]) {
+      const c = new FakeControl();
+      const p = makePlace({ ...REF, control: c, host: fakeHost(c).host, ensure: OWNER, unheld: async () => odd as unknown as Record<string, string> });
+      await assert.rejects(p.start({ gen: 1, env: {}, stdin: await p.token!(1) }), startFails("INVALID_ARGUMENT"), JSON.stringify(odd));
+    }
+  });
+
+  it("archilPlace({ unheld }) without ensure.create, with a control that cannot list, or with a bound that is not a positive number is INVALID_ARGUMENT at once", () => {
+    const control = new FakeControl();
+    const host = fakeHost(control).host;
+    const hook = async () => {};
+    const invalid = (re: RegExp) => (e: unknown) => e instanceof PlaceError && e.code === "INVALID_ARGUMENT" && re.test(e.message);
+    assert.throws(() => archilPlace({ ...REF, control, host, unheld: hook }), invalid(/ensure\.create/));
+    const bare = new FakeControl();
+    (bare as unknown as { listObjects?: unknown }).listObjects = undefined;
+    assert.throws(() => archilPlace({ ...REF, control: bare, host: fakeHost(bare).host, ensure: OWNER, unheld: hook }), invalid(/list/));
+    for (const ms of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) assert.throws(() => archilPlace({ ...REF, control, host, ensure: OWNER, unheld: hook, unheldTimeoutMs: ms }), invalid(/unheldTimeoutMs/), String(ms));
+    assert.doesNotThrow(() => archilPlace({ ...REF, control: bare, host: fakeHost(bare).host }), "no hook, no checks: as before");
+  });
+
+  it("a takeover runs the hook again, and a put of a path an earlier start wrote answers EXISTS: read it back and compare", async () => {
+    const control = new FakeControl();
+    const answers: string[] = [];
+    const path = "box-ids.internal/pending/life-1.json";
+    const place = makePlace({
+      ...REF, control, host: providing(control).host, ensure: OWNER,
+      unheld: async (r: UnheldRun, start: UnheldStart) => {
+        answers.push(await r.put(path, `{"attempt":${start.attempt}}`).then(
+          () => "created",
+          async (e: unknown) => (runFileCode(e) === "EXISTS" ? `exists ${new TextDecoder().decode((await r.read(path))!)}` : String(e)),
+        ));
+        assert.deepEqual(await r.list("box-ids.internal/pending"), ["life-1.json"]);
+      },
+    });
+    const first = await place.start({ gen: 1, env: LIFE, stdin: await place.token!(1) });
+    await place.kill(first, "box");
+    await place.recover(first, "box", { gen: 2, env: LIFE, stdin: await place.token!(2) });
+    assert.deepEqual(answers, ["created", 'exists {"attempt":1}']);
+  });
+
+  it("a put the hook started and never awaited settles inside the window: the driver starts only after it is written", async () => {
+    const control = new FakeControl();
+    const fake = fakeHost(control);
+    const seenAtStart: (string | undefined)[] = [];
+    const host: HostDriver = { ...fake.host, start: async (r, token, attempt) => (seenAtStart.push(control.objects.get(`${run}box-ids.internal/pending/late.json`)), fake.host.start(r, token, attempt)) };
+    let open!: () => void;
+    const held = new Promise<void>((r) => (open = r));
+    control.onHead = (key) => (key === `${run}box-ids.internal/pending/late.json` ? held : undefined);
+    const place = makePlace({
+      ...REF, control, host, ensure: OWNER,
+      unheld: async (r: UnheldRun) => {
+        void r.put("box-ids.internal/pending/late.json", "{}").catch(() => {});
+        setTimeout(open, 50);
+      },
+    });
+    await place.start({ gen: 1, env: {}, stdin: await place.token!(1) });
+    assert.deepEqual(seenAtStart, ["{}"], "the file was there when the driver started");
+  });
+
+  it("an unawaited put the server refuses (409 OperationAborted) after the hook returned still fails the start WINDOW_CLOSED, and no box", async () => {
+    const control = new FakeControl();
+    const { host, starts } = fakeHost(control);
+    let open!: () => void;
+    const held = new Promise<void>((r) => (open = r));
+    control.onHead = (key) => (key === `${run}box-ids.internal/pending/late.json` ? held : undefined);
+    control.putFaultUnder = { prefix: `${run}box-ids.internal/`, error: closed };
+    const place = makePlace({
+      ...REF, control, host, ensure: OWNER,
+      unheld: async (r: UnheldRun) => {
+        void r.put("box-ids.internal/pending/late.json", "{}").catch(() => {});
+        setTimeout(open, 50);
+      },
+    });
+    await assert.rejects(place.start({ gen: 1, env: {}, stdin: await place.token!(1) }), startFails("WINDOW_CLOSED"));
+    assert.equal(starts.length, 0, "no box");
+  });
+
+  it("an unawaited put still in flight at the hook's bound fails the start UNHELD_FAILED, and no box", async () => {
+    const control = new FakeControl();
+    const { host, starts } = fakeHost(control);
+    control.onHead = (key) => (key === `${run}box-ids.internal/pending/stuck.json` ? new Promise<void>(() => {}) : undefined);
+    const place = makePlace({
+      ...REF, control, host, ensure: OWNER, unheldTimeoutMs: 100,
+      unheld: async (r: UnheldRun) => void r.put("box-ids.internal/pending/stuck.json", "{}").catch(() => {}),
+    });
+    const token = await place.token!(1);
+    const unbounded = new Error("the start was still waiting on a put 5 s after a 100 ms bound");
+    await assert.rejects(Promise.race([place.start({ gen: 1, env: {}, stdin: token }), sleep(5_000).then(() => { throw unbounded; })]), (e: unknown) => {
+      assert.notEqual(e, unbounded, "the bound covers the puts too");
+      return startFails("UNHELD_FAILED", /100 ms/)(e);
+    });
+    assert.equal(starts.length, 0, "no box");
+  });
+
+  it("two supervisor lives in one window (a barrier holds both past the start-mark read before either writes it): put is NOT exclusive, so both puts of one name succeed; names unique to each start are both kept, neither overwritten", async () => {
+    const control = new FakeControl();
+    const barrier = (n: number) => {
+      let arrived = 0;
+      let open!: () => void;
+      const all = new Promise<void>((r) => (open = r));
+      return () => (++arrived >= n && open(), all);
+    };
+    const marks = barrier(2);
+    let markReads = 0;
+    control.onGet = (key) => (key === `${run}start.json` && markReads++ < 2 ? marks() : undefined);
+    const SAME = "box-ids.internal/pending/same.json";
+    const heads = barrier(2);
+    let sameHeads = 0;
+    control.onHead = (key) => (key === `${run}${SAME}` && sameHeads++ < 2 ? heads() : undefined);
+    const results: Record<string, string> = {};
+    const life = (name: string) => {
+      const place = makePlace({
+        ...REF, control, host: providing(control).host, ensure: OWNER,
+        unheld: async (r: UnheldRun, start: UnheldStart) => {
+          results[`${name} same`] = await r.put(SAME, `{"life":"${name}"}`).then(() => "written", runFileCode);
+          results[`${name} own`] = await r.put(`box-ids.internal/pending/${name}-${start.attempt}.json`, `{"life":"${name}"}`).then(() => "written", runFileCode);
+        },
+      });
+      return { place, name };
+    };
+    const lives = [life("life-a"), life("life-b")];
+    const tokens = await Promise.all(lives.map((l) => l.place.token!(1)));
+    await Promise.all(lives.map((l, i) => l.place.start({ gen: 1, env: { RUN_LABEL: l.name }, stdin: tokens[i] }).catch((e: unknown) => e)));
+    assert.equal(markReads >= 2, true, "both lives read the start mark before either wrote it");
+    assert.deepEqual(results, { "life-a same": "written", "life-a own": "written", "life-b same": "written", "life-b own": "written" }, "check-then-write: both puts of one name succeed (not exclusive, as the contract says)");
+    assert.ok(['{"life":"life-a"}', '{"life":"life-b"}'].includes(control.objects.get(`${run}${SAME}`)!), "that name holds the last writer's body");
+    assert.equal(control.objects.get(`${run}box-ids.internal/pending/life-a-1.json`), '{"life":"life-a"}', "unique names: neither overwritten");
+    assert.equal(control.objects.get(`${run}box-ids.internal/pending/life-b-1.json`), '{"life":"life-b"}');
+  });
+});
+
+describe("archilPlace: an adopted start keeps the key its box already has (a fix to #974's HOST_BOX keys)", () => {
+  /** A driver keyed on the attempt, as localHost's unit and Daytona's label are: the same attempt again finds its own box. */
+  const adopting = (control: FakeControl) => {
+    const byAttempt = new Map<number, string>();
+    const states = new Map<string, HostStatus>();
+    let n = 0;
+    const host: HostDriver & { mountRoot: string } = {
+      mountRoot: "/mnt/fake",
+      provider: "modal",
+      async start(_ref, _token, attempt): Promise<HostHandle> {
+        const a = attempt!.attempt;
+        control.ops.push(`start g${a}`);
+        control.delegations = [{ clientId: `c-${a}-${n}`, inodeId: 7, path: `runs/${ID}`, isPending: false, isOrphaned: false }];
+        const had = byAttempt.get(a);
+        // Its instance never writes run.json, so a takeover starts the same attempt again.
+        if (had !== undefined) return { driver: "fake", name: had, adopted: true };
+        const name = `box-${++n}`;
+        byAttempt.set(a, name);
+        states.set(name, "running");
+        return { driver: "fake", name };
+      },
+      async status(h: HostHandle) {
+        return states.get(String(h.name)) ?? "unknown";
+      },
+      async stop(h: HostHandle) {
+        control.ops.push(`stop ${h.name}`);
+        if (states.has(String(h.name))) states.set(String(h.name), "stopped");
+      },
+      kills: "process",
+      async kill(h: HostHandle) {
+        control.ops.push(`kill ${h.name}`);
+      },
+      box: (h) => ({ provider: "modal", kind: `vm ${h.name}`, from: "2026-10-22T00:00:00.000Z", to: null }),
+      instanceOf: (h) => (typeof h.name === "string" ? h.name : undefined),
+    };
+    return host;
+  };
+
+  it("dockerHost's shapes: its adopted handle drops the container id its fresh one has, and is still the same box (one entry, stopped once)", async () => {
+    const control = new FakeControl();
+    const base = adopting(control);
+    const stopped = new Set<string>();
+    // As dockerHost answers: a fresh start's handle has `id`; an adoption's has the same fields but no `id`.
+    const host: HostDriver & { mountRoot: string } = {
+      ...base,
+      async start(r, token, attempt): Promise<HostHandle> {
+        const h = await base.start(r, token, attempt);
+        const docker = { driver: "docker", fleet: "pda", daemon: "unix:///var/run/docker.sock", name: `pda-${ID}-${String(h.name)}`, mountpoint: `/mnt/fake/runs/${ID}`, image: "pda:test" };
+        return h.adopted ? { ...docker, adopted: true } : { ...docker, id: `c0ffee${String(h.name)}` };
+      },
+      async stop(h: HostHandle) {
+        control.ops.push(`stop ${String(h.name)}`);
+        stopped.add(String(h.name));
+      },
+      status: async (h: HostHandle) => (stopped.has(String(h.name)) ? "stopped" : "running"),
+      box: (h) => ({ provider: "docker", kind: `container ${String(h.name)}`, from: "2026-10-22T00:00:00.000Z", to: null }),
+      // The real driver's own identity of its handles.
+      instanceOf: dockerHost().instanceOf,
+    };
+    const place = archilPlace({ ...REF, control, host, pollMs: 5 })({ paths: pathsAt("/x") });
+    let released = false;
+    try {
+      const first = await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
+      await place.kill(first, "process");
+      await place.recover(first, "process", { gen: 2, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(2) });
+      assert.equal((await place.status!()).boxes!.length, 1, "one box, one key");
+      released = true;
+      await place.release();
+      assert.equal(control.ops.filter((o) => o.startsWith("stop ")).length, 1, "stopped once");
+    } finally {
+      if (!released) await place.release().catch(() => {});
+    }
+  });
+
+  /** A host that answers each start with the next handle from `answers` (adopted or not), making nothing. */
+  const scripted = (control: FakeControl, answers: HostHandle[], instanceOf?: (h: HostHandle) => string | undefined) => {
+    const stopped = new Set<string>();
+    const host: HostDriver & { mountRoot: string } = {
+      mountRoot: "/mnt/fake",
+      provider: "modal",
+      async start(_ref, _token, attempt): Promise<HostHandle> {
+        control.ops.push(`start g${attempt!.attempt}`);
+        control.delegations = [{ clientId: `c-${control.ops.length}`, inodeId: 7, path: `runs/${ID}`, isPending: false, isOrphaned: false }];
+        return answers.shift()!;
+      },
+      status: async (h: HostHandle) => (stopped.has(JSON.stringify(h)) ? "stopped" : "running"),
+      async stop(h: HostHandle) {
+        control.ops.push(`stop ${JSON.stringify({ ...h, adopted: undefined })}`);
+        stopped.add(JSON.stringify(h));
+      },
+      kills: "process",
+      async kill(h: HostHandle) {
+        control.ops.push(`kill ${String(h.name)}`);
+      },
+      box: (h) => ({ provider: "modal", kind: `vm ${String(h.name ?? h.image ?? "unnamed")}`, from: "2026-10-22T00:00:00.000Z", to: null }),
+      ...(instanceOf ? { instanceOf } : {}),
+    };
+    return host;
+  };
+  const twoStarts = async (host: HostDriver, control: FakeControl) => {
+    const place = archilPlace({ ...REF, control, host, pollMs: 5 })({ paths: pathsAt("/x") });
+    try {
+      const first = await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
+      await place.kill(first, "process");
+      await place.recover(first, "process", { gen: 2, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(2) });
+      return (await place.status!()).boxes!.map((b) => b.kind);
+    } finally {
+      await place.release().catch(() => {});
+    }
+  };
+
+  it("an adopted box this place life never saw (another life started it) gets the next key: its own status().boxes entry, as a fresh box would", async () => {
+    const control = new FakeControl();
+    const byName = (h: HostHandle) => (typeof h.name === "string" ? h.name : undefined);
+    const host = scripted(control, [{ driver: "fake", name: "old-box", adopted: true }, { driver: "fake", name: "box-2" }], byName);
+    assert.deepEqual(await twoStarts(host, control), ["vm old-box", "vm box-2"], "the adopted box is key 0, the next box key 1");
+  });
+
+  it("two DIFFERENT boxes are never one entry: handles that share only fields that name no instance (the provider; an image and a region) are two boxes, and so is any handle its driver names no instance for", async () => {
+    const byName = (h: HostHandle) => (typeof h.name === "string" ? h.name : undefined);
+    for (const [why, fresh, adopted, instanceOf] of [
+      ["only the provider shared", { driver: "fake", provider: "modal", name: "box-1" }, { driver: "fake", provider: "modal", adopted: true }, byName],
+      ["only an image and a region shared", { driver: "fake", image: "pda-home", region: "us-east", name: "box-1" }, { driver: "fake", image: "pda-home", region: "us-east", adopted: true }, byName],
+      ["a driver that names no instance", { driver: "fake", name: "box-1" }, { driver: "fake", name: "box-1", adopted: true }, undefined],
+      ["a FRESH handle under a name seen before (a dead container replaced)", { driver: "fake", name: "box-1" }, { driver: "fake", name: "box-1" }, byName],
+      ["an adopted box another life started, named as no box this life has", { driver: "fake", name: "box-1" }, { driver: "fake", name: "box-9", adopted: true }, byName],
+    ] as const) {
+      const control = new FakeControl();
+      const host = scripted(control, [fresh as HostHandle, adopted as HostHandle], instanceOf);
+      assert.equal((await twoStarts(host, control)).length, 2, `${why}: two entries, both tracked and stopped`);
+    }
+  });
+
+  it("each driver names its instances, the same for its fresh handle and its adopted one: docker by daemon and container name, local by host, boot and unit (or tag), daytona by sandbox id", () => {
+    const docker = dockerHost().instanceOf;
+    const fresh = { driver: "docker", fleet: "pda", daemon: "unix:///var/run/docker.sock", name: "pda-r1-g2", mountpoint: "/mnt/archil/runs/r1", image: "pda:1", id: "c0ffee" };
+    const { id: _id, ...adopted } = { ...fresh, adopted: true };
+    assert.ok(docker(fresh) !== undefined && docker(fresh) === docker(adopted), "docker: the adopted handle (no id) names the same container");
+    assert.notEqual(docker({ ...fresh, name: "pda-r1-g3" }), docker(fresh), "another attempt's container");
+    assert.notEqual(docker({ ...fresh, daemon: "tcp://other:2375" }), docker(fresh), "another daemon's");
+    assert.equal(docker({ driver: "docker", fleet: "pda", image: "pda:1" }), undefined, "a docker handle with no name names nothing");
+    const local = localHost().instanceOf;
+    const unit = { driver: "local", mode: "systemd", host: "h1", bootId: "b1", unit: "pda-r1-g2.service", mountpoint: "/mnt/archil/runs/r1" };
+    assert.ok(local(unit) !== undefined && local(unit) === local({ ...unit, adopted: true }));
+    assert.notEqual(local({ ...unit, unit: "pda-r1-g3.service" }), local(unit));
+    assert.notEqual(local({ ...unit, bootId: "b2" }), local(unit), "the same unit after a reboot is another instance");
+    const child = { driver: "local", mode: "child", host: "h1", bootId: "b1", mountpoint: "/mnt/archil/runs/r1", tag: "t-1" };
+    assert.ok(local(child) !== undefined && local(child) !== local({ ...child, tag: "t-2" }));
+    const daytona = daytonaHost({ client: {} as never, snapshot: "pda" } as never).instanceOf;
+    const sandbox = { driver: "daytona", fleet: "pda", target: null, sandboxId: "sb-1", name: "pda-r1-g2", mountpoint: "/mnt/archil/runs/r1" };
+    assert.ok(daytona(sandbox) !== undefined && daytona(sandbox) === daytona({ ...sandbox, adopted: true }));
+    assert.notEqual(daytona({ ...sandbox, sandboxId: "sb-2" }), daytona(sandbox));
+    assert.equal(docker(unit), undefined, "a driver names only its own handles");
+  });
+
+  it("a box the place already started, adopted again on a repeated attempt, is one entry in status().boxes, never a second key, and is stopped once at release", async () => {
+    const control = new FakeControl();
+    const place = archilPlace({ ...REF, control, host: adopting(control), pollMs: 5 })({ paths: pathsAt("/x") });
+    let released = false;
+    try {
+      const first = await place.start({ gen: 1, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(1) });
+      await place.kill(first, "process");
+      const again = await place.recover(first, "process", { gen: 2, env: { RUN_LABEL: "life-1" }, stdin: await place.token!(2) });
+      assert.ok(again.runner, "the takeover adopted its own box");
+      assert.deepEqual(control.ops.filter((o) => o.startsWith("start ")), ["start g1", "start g1"], "the same attempt, started twice");
+      const boxes = (await place.status!()).boxes!;
+      assert.deepEqual(boxes.map((b) => b.kind), ["vm box-1"], "one box, one key: the key its runner claimed");
+      released = true;
+      await place.release();
+      assert.deepEqual(control.ops.filter((o) => o.startsWith("stop ")), ["stop box-1"], "stopped once");
+    } finally {
+      if (!released) await place.release().catch(() => {});
+    }
+  });
+});
+
+describe("a place's run files (readRunFile, listRunFiles): its own run, read only", () => {
+  const bytes = (t: string) => new TextEncoder().encode(t);
+  const code = (c: string) => (e: unknown) => e instanceof RunFileError && e.code === c;
+
+  it("archilPlace reads over its control: a file's bytes, null only for a missing file, [] for a directory not there yet; every other failure throws; nothing is written", async () => {
+    const control = new FakeControl();
+    const place = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const run = `runs/${ID}/`;
+    control.objects.set(run, "");
+    control.objects.set(`${run}box-ids.internal/`, "");
+    control.objects.set(`${run}box-ids.internal/box-2.json`, '{"owner":"place"}');
+    control.objects.set(`${run}box-ids.internal/box-10.json`, '{"owner":"tools"}');
+    control.objects.set(`${run}link.json`, "");
+    control.failUnder = { prefix: `${run}link.json`, error: Object.assign(new Error("501 NotImplemented"), { status: 501, code: "NotImplemented" }) };
+    const before = JSON.stringify([...control.objects]);
+    const puts = control.puts.length;
+    assert.deepEqual(await place.readRunFile!("box-ids.internal/box-2.json"), bytes('{"owner":"place"}'));
+    assert.equal(await place.readRunFile!("box-ids.internal/box-3.json"), null, "missing: null, read again later");
+    assert.deepEqual(await place.listRunFiles!("box-ids.internal"), ["box-10.json", "box-2.json"]);
+    assert.deepEqual(await place.listRunFiles!("not-made-yet"), [], "a directory not there yet is not an error");
+    await assert.rejects(place.readRunFile!("link.json"), code("NOT_A_FILE"), "a symlink (S3 answers 501)");
+    await assert.rejects(place.readRunFile!("../other/run.json"), code("INVALID_PATH"));
+    control.objects.delete(run);
+    control.objects.delete(`${run}box-ids.internal/`);
+    control.objects.delete(`${run}box-ids.internal/box-2.json`);
+    control.objects.delete(`${run}box-ids.internal/box-10.json`);
+    await assert.rejects(place.readRunFile!("box-ids.internal/box-2.json"), code("RUN_MISSING"));
+    await assert.rejects(place.listRunFiles!("box-ids.internal"), code("RUN_MISSING"));
+    control.objects.set(run, "");
+    control.failUnder = { prefix: `${run}box-ids.internal/box-4.json`, error: Object.assign(new Error("503"), { status: 503 }) };
+    await assert.rejects(place.readRunFile!("box-ids.internal/box-4.json"), code("CONTROL_API_FAILED"));
+    assert.equal(control.puts.length, puts, "no put");
+    assert.equal(JSON.stringify([...control.objects].filter(([k]) => k !== run)), JSON.stringify(JSON.parse(before).filter(([k]: [string]) => ![run, `${run}box-ids.internal/`, `${run}box-ids.internal/box-2.json`, `${run}box-ids.internal/box-10.json`].includes(k))), "the reads changed nothing");
+  });
+
+  it("localPlace reads its run directory: a file's bytes, null only for a missing file, sorted names, [] for a directory not there yet; a directory or a symlink is NOT_A_FILE, never followed; unsafe paths are refused", async () => {
+    const root = scratch();
+    mkdirSync(join(root, "box-ids.internal", "sub"), { recursive: true });
+    writeFileSync(join(root, "box-ids.internal", "box-2.json"), '{"owner":"place"}');
+    writeFileSync(join(root, "box-ids.internal", "box-10.json"), "");
+    const outside = join(dirname(root), "outside.json");
+    writeFileSync(outside, "SECRET-OUTSIDE");
+    symlinkSync(outside, join(root, "box-ids.internal", "link.json"));
+    symlinkSync(dirname(root), join(root, "up"));
+    const place = localPlace({ app: "app.ts" })({ paths: pathsAt(root) });
+    assert.deepEqual(await place.readRunFile!("box-ids.internal/box-2.json"), bytes('{"owner":"place"}'));
+    const empty = await place.readRunFile!("box-ids.internal/box-10.json");
+    assert.ok(empty instanceof Uint8Array && empty.length === 0, "a real empty file is an empty array");
+    assert.equal(await place.readRunFile!("box-ids.internal/box-3.json"), null);
+    assert.equal(await place.readRunFile!("not-made/box-1.json"), null, "under a directory not there yet: missing");
+    assert.deepEqual(await place.listRunFiles!("box-ids.internal"), ["box-10.json", "box-2.json", "link.json", "sub"]);
+    assert.deepEqual(await place.listRunFiles!(""), ["box-ids.internal", "up"]);
+    assert.deepEqual(await place.listRunFiles!("not-made-yet"), []);
+    await assert.rejects(place.readRunFile!("box-ids.internal/link.json"), code("NOT_A_FILE"), "a symlink is never followed");
+    await assert.rejects(place.readRunFile!("up/outside.json"), code("NOT_A_FILE"), "nor a symlinked directory on the way");
+    await assert.rejects(place.listRunFiles!("up"), code("NOT_A_FILE"));
+    await assert.rejects(place.readRunFile!("box-ids.internal/sub"), code("NOT_A_FILE"), "a directory");
+    for (const bad of ["", "/etc/passwd", "../outside.json", "a/../b", "bad name"]) await assert.rejects(place.readRunFile!(bad), code("INVALID_PATH"), JSON.stringify(bad));
+    const gone = localPlace({ app: "app.ts" })({ paths: pathsAt(join(dirname(root), "no-such-run")) });
+    await assert.rejects(gone.readRunFile!("run.json"), code("RUN_MISSING"));
+    await assert.rejects(gone.listRunFiles!(""), code("RUN_MISSING"));
   });
 });
 

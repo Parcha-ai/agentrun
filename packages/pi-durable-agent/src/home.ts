@@ -151,10 +151,10 @@ export function localAccess(home: AgentHome): HomeAccess {
 
 /** `work` on the home's agent store as its only writer: inside `access`'s claim, under `owner.lock` in the claimed
  *  directory. */
-export async function inClaimedHome<T>(home: AgentHome, access: HomeAccess | undefined, work: (store: Store) => Promise<T>): Promise<T> {
+export async function inClaimedHome<T>(home: AgentHome, access: HomeAccess | undefined, work: (store: Store, agentDir: string) => Promise<T>): Promise<T> {
   return (access ?? localAccess(home)).claim(async (agentDir) => {
     if (!existsSync(path.join(agentDir, AGENT_STORE_FILE))) throw new AgentHomeError("missing", `the claimed directory holds no ${AGENT_STORE_FILE}`);
-    return inHome(agentDir, work);
+    return inHome(agentDir, (store) => work(store, agentDir));
   });
 }
 

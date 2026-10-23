@@ -1,8 +1,8 @@
 import type { Context } from "@earendil-works/chord";
 import { defineDoc, defineTask, type ConversationDocToken, type ConversationId, type Cursor, type DocumentReader, type Harness, type TaskId, type TaskRuntime, type Tx } from "@earendil-works/pi-durable";
-import { backoffMs, moveRecord, notices } from "./core/custody.js";
-import type { BrowserConfig, BrowserProvider, HandoffOutcome, HandoffPort, InventoryRow, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionsState } from "./core/host.js";
-import type { LeaseRef, LeaseState } from "./core/lease.js";
+import { backoffMs, moveRecord, notices } from "../core/custody.js";
+import type { BrowserConfig, BrowserProvider, HandoffOutcome, HandoffPort, InventoryRow, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionsState } from "../core/host.js";
+import type { LeaseRef, LeaseState } from "../core/lease.js";
 
 export const now = () => new Date().toISOString();
 const iso = (ms: number) => new Date(ms).toISOString();
