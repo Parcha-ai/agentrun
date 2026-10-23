@@ -174,6 +174,40 @@ describe("a Modal box and T3's launch frame", () => {
 		await box.destroy(context);
 	});
 
+	it("treats a close of an input that is already closed as no failure: the program exits at once after reading it all (the launch's own close, then finish()'s), and wait() returns its exit", async () => {
+		const { box } = await aBox();
+		const started = getOrThrow(await box.exec(["sh", "-c", "cat > /dev/null; exit 7"], undefined, context));
+		await started.stdin.write(new TextEncoder().encode("the whole frame"));
+		await started.stdin.close();
+		// A second close, as `finish` makes after `launch` wrote and closed: the stream is already closed.
+		const done = await Promise.race([
+			finish(started),
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error("finish() never returned")), 20_000)),
+		]);
+		expect(done.ok && done.value.exitCode).toBe(7);
+	});
+
+	it("keeps a WRITE that fails a failure: a program that exits before it reads the whole input", async () => {
+		const { box } = await aBox();
+		const started = getOrThrow(await box.exec(["sh", "-c", "head -c 1 > /dev/null; exit 0"], undefined, context));
+		await expect(started.stdin.write(randomBytes(4 * 1024 * 1024))).rejects.toBeDefined();
+	});
+
+	it("still returns a REAL close failure on an open stream, through wait(), after an earlier successful close elsewhere is not involved", async () => {
+		const { box, sdk } = await aBox();
+		const sandbox = sdk.sandboxList[0];
+		if (sandbox === undefined) throw new Error("no sandbox");
+		sandbox.failClose = true;
+		const running = getOrThrow(await box.exec(["cat"], undefined, context));
+		await running.stdin.close();
+		await running.stdin.close();
+		const failed = await Promise.race([
+			running.wait(),
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error("wait never answered")), 20_000)),
+		]);
+		expect(failed.ok ? "ok" : failed.error.code).toBe("unknown");
+	});
+
 	it("returns a close that failed on a running program through wait(), and ignores one on a program that already exited", async () => {
 		const { box, sdk } = await aBox();
 		const sandbox = sdk.sandboxList[0];
