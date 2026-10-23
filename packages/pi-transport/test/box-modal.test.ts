@@ -294,6 +294,30 @@ describe("modal boxes", () => {
 				expect(sdk.running()).toEqual([]);
 			};
 
+			it("is an attach ERROR when the workspace setup fails (mkdir exits non-zero, or the exec errs): the box runs on, nothing is created", async () => {
+				await withRoot(async (root) => {
+					const { sdk, box, sandbox } = await fuseBox(root);
+					const exec = sandbox.exec.bind(sandbox);
+					for (const how of ["exits", "errs"] as const) {
+						sandbox.exec = async (command, params) => {
+							if (command[0] !== "mkdir") return exec(command, params);
+							if (how === "errs") throw new Error("the connection went away");
+							return exec(["sh", "-c", "echo no space left >&2; exit 1"], params);
+						};
+						const attached = await provider(sdk).attach(box.id, context);
+						expect(attached.ok ? "ok" : attached.error.code, how).toBe("unknown");
+						expect(
+							sdk.running().map((each) => each.sandboxId),
+							how,
+						).toEqual([box.id]);
+						expect(sdk.sandboxList, how).toHaveLength(1);
+					}
+					// With the setup working again the same box attaches and is ended through its handle.
+					sandbox.exec = exec;
+					await end(sdk, unwrap(await provider(sdk).attach(box.id, context)));
+				});
+			});
+
 			it("stores what the create measured in the box's tag", async () => {
 				await withRoot(async (root) => {
 					const { box, sandbox } = await fuseBox(root);
