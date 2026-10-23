@@ -494,6 +494,20 @@ own files. The data is JSON:
 | `GET /api/runs/:id` | `{ run, rows }`: the run as above, and its entries as the [timeline](#the-timeline)'s rows (`settled` for a finished run, so a call with no result reads as interrupted, and open for a live one). `400` for an id that is not letters, digits, `.`, `_` or `-`, `404` for a run the index does not list |
 
 An unreadable store is a `500` with `{ error }` that says what is wrong with it and not where it is.
+## A workflow revision
+
+A revision of an agent can be a DSL workflow instead of a prompt. Its run executes the workflow with agentrun-pi's
+durable workflow task on the run's own store, not the agent loop. `@parcha/pi-durable-agent/workflow` holds the three
+steps; the root never imports it, and only these functions load `@parcha/agentrun-dsl` and `@parcha/agentrun-pi`.
+
+1. Before a store commits a workflow revision, `checkWorkflowBody(body)` checks it: the DSL's structural validation,
+   what the durable runner refuses before any step, and that `tools` lists every tool a call node uses.
+2. To run it, open a Harness on the run's `storePath` with agentrun-pi's `createWorkflowExtension` installed (it holds
+   your tools), and call `runWorkflowRevision({ harness, workflows, context, run, input, tools })`. It returns the DSL's
+   `outcome` and a `carry`, `{ state, summary }`, for the store's `carryBack`.
+3. `readWorkflowRun(run)` reads the run back for a page, read-only: the workflow's graph, each node's state, and, once
+   the run ended, how it ended, where it escalated and its output.
+4. `revisionGraph(revision, parent?)` draws a revision's graph, and what changed from a parent that is a workflow too.
 
 ## Library
 
@@ -590,6 +604,20 @@ Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `Ti
 
 Its types: `ServeOptions` and `ServeHandle`. The package's bin, `pi-durable-agent serve <dir> [--port <n>]`, calls it and
 prints `url`; it exits 1 for a directory that is not a home and 2 for a command or port it does not know.
+### `@parcha/pi-durable-agent/workflow`
+
+It loads `@parcha/agentrun-dsl` and `@parcha/agentrun-pi` only when one of its functions runs.
+
+| Export | Does |
+|---|---|
+| `checkWorkflowBody(body)` | Refuses, as `invalid`, a workflow revision's body a store must not commit, naming the node's path and never a value from the body |
+| `runWorkflowRevision(options)` | Runs the revision's workflow as one durable workflow task on the run's store and waits: `{ outcome, carry }`. A workflow that uses a tool the host does not register, or does not take the input, is refused with no task; the run reopened under another revision is refused (`RUN_STORE_BINDING_MISMATCH`) |
+| `readWorkflowRun(run)` | The run as its store shows it, read-only: no write, no lock, no Harness. With `run.state` (the runs row's) ended and no write-ahead log beside the store, it opens the store as an immutable file and makes no file in the run's directory. Working means live: an ended run's interrupted nodes read `stopped`, or `failed` when the run failed. A run in the driver's keyed layout is refused as `format` |
+| `revisionGraph(revision, parent?)` | The revision's graph (the DSL's `workflowGraph`), and the DSL's `graphDiff` from its parent when the parent is a workflow revision; an agentic parent, or none, gives no diff |
+
+Its types: `WorkflowBody`, `WorkflowRunStart` (the part of a store's started run it reads), `WorkflowRunView`,
+`RunState`, `RunNodeState` (the DSL's `NodeState` and `stopped`), and the DSL's `WorkflowGraph`, `GraphDiff`, `NodeState`
+and `WorkflowOutcome`.
 
 ### Errors
 
