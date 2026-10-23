@@ -196,7 +196,7 @@ export class AgentStore extends AgentStoreReader {
     const run: StartedRun = { runId, dir, storePath: runStoreIn(dir), workspace: path.join(dir, "work"), agentId: agent, revision };
     // The directory first, then the row: a seed that fails throws and nothing is written; a hard kill between the two leaves a directory no query shows.
     try {
-      await seedRun({ storePath: run.storePath, workDir: run.workspace }, { runId, agent: { instructions: "instructions" in revision.body ? revision.body.instructions : "", tools: [...revision.body.tools] }, leases: [], profiles: {}, skills } as never);
+      await seedRun({ storePath: run.storePath, workDir: run.workspace }, { runId, leases: [], profiles: {}, skills });
       this.db.prepare("INSERT INTO runs (id, agent_id, revision_id, started_at, state) VALUES (?, ?, ?, ?, 'running')").run(runId, agent, revisionId, new Date().toISOString());
     } catch (error) {
       await rm(dir, { recursive: true, force: true });
@@ -209,7 +209,7 @@ export class AgentStore extends AgentStoreReader {
   carryBack(runId: string, result: { state: "completed" | "failed" | "stopped" | "escalated"; costUsd?: number; summary?: string }): void {
     if (!["completed", "failed", "stopped", "escalated"].includes(result?.state)) throw invalid("the state is not completed, failed, stopped or escalated");
     if (result.costUsd !== undefined && !(Number.isFinite(result.costUsd) && result.costUsd >= 0)) throw invalid("the cost is not a number of at least 0");
-    if (result.summary !== undefined && (typeof result.summary !== "string" || result.summary.length > 2_000)) throw invalid("the summary is not text of at most 2000 characters");
+    if (result.summary !== undefined && (typeof result.summary !== "string" || result.summary === "" || result.summary.length > 2_000)) throw invalid("the summary is not non-empty text of at most 2000 characters");
     const done = this.db.prepare("UPDATE runs SET state = ?, ended_at = ?, cost_usd = ?, summary = ? WHERE id = ? AND ended_at IS NULL").run(result.state, new Date().toISOString(), result.costUsd ?? null, result.summary ?? null, checkId(runId, "run"));
     if (done.changes === 0) throw new AgentHomeError(this.db.prepare("SELECT 1 FROM runs WHERE id = ?").get(runId) ? "exists" : "missing", "that run is unknown or has already ended");
   }
