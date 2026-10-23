@@ -413,6 +413,19 @@ test('a verify receipt missing an answer a threshold reads decided nothing: rede
   assert.deepEqual(rederiveDecision({ rule: { kind: 'verify', thresholds: { text: 0.3, note: null }, present: ['text', 'note'] }, questions: {}, answers: { text: noul(0.9) } }), { accepted: true, doubted: [], unmet: [] });
 });
 
+test('a verify answer typed noul but with no numeric noul decided nothing: no fail-open accepted one level down', () => {
+  // A noul-typed answer is not enough: comparing a missing or non-numeric noul against a threshold is NaN < t,
+  // which is false, so the field would read as supported and the receipt as accepted — a fail-open. A noul
+  // answer whose noul is absent or not a finite number decided nothing (null).
+  const rule = { kind: 'verify', thresholds: { text: 0.3 }, present: ['text'] };
+  assert.equal(rederiveDecision({ rule, questions: {}, answers: { text: { type: 'noul' } } }), null, 'noul-typed with no noul');
+  assert.equal(rederiveDecision({ rule, questions: {}, answers: { text: { type: 'noul', noul: 'x' } } }), null, 'a non-numeric noul');
+  assert.equal(rederiveDecision({ rule, questions: {}, answers: { text: { type: 'noul', noul: NaN } } }), null, 'a NaN noul');
+  // A finite noul still decides: supported above the floor, doubted below it.
+  assert.deepEqual(rederiveDecision({ rule, questions: {}, answers: { text: noul(0.9) } }), { accepted: true, doubted: [], unmet: [] });
+  assert.deepEqual(rederiveDecision({ rule, questions: {}, answers: { text: noul(0.1) } }), { accepted: false, doubted: ['text'], unmet: [] });
+});
+
 test('a receipt states every threshold its rule applied, so the decision can be evaluated again under another', async () => {
   const workflow = flow({ node: 'chain', steps: [
     // No keep rule: every item is kept. Then a keep on the answer's confidence, with no threshold of the author's.

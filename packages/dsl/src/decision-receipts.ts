@@ -103,7 +103,10 @@ export function rederiveDecision(receipt: Pick<DecisionReceipt, "rule" | "answer
         // A field with a threshold needs its yes/no answer; a receipt missing one, or holding another shape, decided
         // nothing (null), never a fail-open "accepted".
         const answer = answers[id];
-        if (answer?.type !== "noul") return null;
+        // The answer must be a noul with a finite numeric probability. A noul-typed answer whose noul is
+        // absent or not a finite number would compare NaN < threshold (false), reading as supported — a
+        // fail-open one level down. It decided nothing.
+        if (answer?.type !== "noul" || typeof answer.noul !== "number" || !Number.isFinite(answer.noul)) return null;
         if (answer.noul < threshold) (rule.present.includes(id) ? doubted : unmet).push(id);
       }
       return { accepted: doubted.length === 0 && unmet.length === 0, doubted, unmet };
