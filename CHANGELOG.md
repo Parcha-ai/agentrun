@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.0-beta.24 (2026-10-22)
+
+- **The chat view puts its dark palette only over an agent's page that declares it supports dark**
+  - An agent's page whose own color-scheme names `dark` (a `meta name="color-scheme"`, the root element's style, or a `:root` or `html` rule in its style elements, read with the browser's CSS parser) is drawn in the site's dark palette, as before; the report skill's pages declare `light dark`, so they look as they did.
+  - Any other page is drawn as its author wrote it: no forced background, colour, color-scheme or palette variables. A page that sets a light background and leaves its text at the default (a table header `th{background:#eee}`) was white on light grey; it now keeps its own contrast. Square corners and the site's type still go over every page.
+- Source-comment corrections in the DSL, no behaviour change: the `effectFiles` JSDoc now names `writeHandoffFiles` (the stale `writeFrozenEvidence` no longer exists), the `executeCode: false` note sits on `validateWorkflow` where it belongs (not on `RETRY_ON_NAMES`), an orphaned `sameValue` comment is dropped, and `applyHostOutputTypes` states why it does not descend into child workflows. The compiled output differs only in these comments.
+
 ## 0.1.0-beta.23 (2026-10-22)
 
 - `agentrun.decisions` is now a keyed document family: one document per typed-question receipt, written once, instead of one session document whose `receipts` list was rewritten at every commit.
