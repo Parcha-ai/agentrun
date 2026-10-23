@@ -388,7 +388,8 @@ test("eviction drops only the evicted digest's uses: the champion's and the live
   let trial = admitted(undefined, x);
   trial = foldUses(trial, [use("x-1", x, "failed")]).trial;
   trial = admitted(trial, l);
-  trial = foldUses(trial, [use("l-1", l, "frozen"), use("l-2", l, "frozen")]).trial;
+  // Two clean uses promote, whatever this build's default.
+  trial = foldUses(trial, [use("l-1", l, "frozen"), use("l-2", l, "frozen")], { thresholds: { promoteAfter: 2 } }).trial;
   assert.deepEqual([trial.status, trial.revisions.find((r) => r.sha256 === l).after], ["active", 3]);
   let i = 0;
   while ((trial.refused?.length ?? 0) < TRIAL_LIMITS.refused) trial = admitted(trial, digestOf(i++));
