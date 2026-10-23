@@ -166,7 +166,8 @@ function costTieOf({ bank, dir, candidate, serving, values, parts: scored, agent
   };
   const candidateUsd = meanUsd(candidate);
   const servingUsd = meanUsd(serving);
-  return { worseAt, candidateUsd, servingUsd, ratio, agentFinishUsd, win: !worseAt.length && candidateUsd <= ratio * servingUsd };
+  // At most `ratio` of a positive cost: two revisions that cost the same, even nothing, are not one cheaper.
+  return { worseAt, candidateUsd, servingUsd, ratio, agentFinishUsd, win: !worseAt.length && servingUsd > 0 && candidateUsd <= ratio * servingUsd };
 }
 
 /**
