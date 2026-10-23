@@ -9,7 +9,7 @@ import {
   type AgentHome, checkSha, homeDir, type HomeAccess, ID_PATTERN, inClaimedHome, isSkillPath, localAccess, readState, RUN_STORE_FILE,
   runStoreIn, sha256, uuidv7,
 } from "./home.js";
-import { type BrowserProfile, canonical, LeasesDoc, MAX_REASON, type ProfileLease, ProfilesDoc, put, type RunRecord, RunsDoc } from "./kinds.js";
+import { type BrowserProfile, canonical, LeasesDoc, MAX_REASON, MAX_SUMMARY, type ProfileLease, ProfilesDoc, put, type RunRecord, RunsDoc, type SkillFile } from "./kinds.js";
 import { AgentHomeError, openStore, readFamily, type Store } from "./store.js";
 
 export { RUN_STORE_FILE };
@@ -81,6 +81,27 @@ const isFree = (lease: ProfileLease | undefined, runs: Record<string, RunRecord>
 /** The variant the host chose for a run, and why: recorded on the run, never chosen here. */
 export type RunPrompt = { id: string; reason: string };
 
+/** A revision's verified body, as a run is pinned to it: the revision's id and kind, its instructions and tool names, and its skill files
+ *  (each with its SHA-256, checked here against the bytes). The run is seeded from this, never from the home's definition. */
+export type RunPin = { revision: string; kind: "agentic" | "workflow"; instructions: string; tools: string[]; skills: Record<string, SkillFile> };
+
+/** A pin's shape, checked before the home is touched. */
+function checkPin(pin: unknown): RunPin {
+  const given = pin as Partial<RunPin> | null;
+  if (typeof given !== "object" || given === null) throw invalid("the pin is not an object");
+  const { revision, kind, instructions, tools, skills } = given;
+  if (typeof revision !== "string" || !ID_PATTERN.test(revision)) throw invalid(`the pin's revision ${JSON.stringify(revision)} is not a revision id`);
+  if (kind !== "agentic" && kind !== "workflow") throw invalid(`the pin's kind ${JSON.stringify(kind)} is not "agentic" or "workflow"`);
+  if (typeof instructions !== "string") throw invalid("the pin's instructions are not a string");
+  if (!Array.isArray(tools) || tools.some((tool) => typeof tool !== "string")) throw invalid("the pin's tools are not a list of names");
+  if (typeof skills !== "object" || skills === null || Array.isArray(skills)) throw invalid("the pin's skills are not a record");
+  for (const [file, skill] of Object.entries(skills)) {
+    if (!isSkillPath(file)) throw invalid(`the pin's skill path ${JSON.stringify(file)} is not a relative path inside .agents/skills/`);
+    if (typeof skill !== "object" || skill === null || typeof skill.content !== "string" || typeof skill.sha256 !== "string") throw invalid(`the pin's skill ${file} is not { content, sha256 }`);
+  }
+  return { revision, kind, instructions, tools: [...tools], skills };
+}
+
 /** A start's host, lease, sha and prompt, checked before the home is touched. */
 function checkStart(options: { host: string; sha?: string; leaseMs?: number; prompt?: RunPrompt }): { leaseMs: number; wanted: string | undefined; prompt: RunPrompt | undefined } {
   if (typeof options.host !== "string" || options.host === "") throw invalid("the host is not a non-empty string");
@@ -111,7 +132,7 @@ export async function prepareRun(home: AgentHome, options: { runId?: string; hos
 }
 
 /** `prepareRun`'s commit, on an agent store already held. */
-async function prepareIn(store: Store, { runId, now, host, leaseMs, wanted, prompt }: { runId: string; now: number; host: string; leaseMs: number; wanted: string | undefined; prompt: RunPrompt | undefined }): Promise<RunSeed> {
+async function prepareIn(store: Store, { runId, now, host, leaseMs, wanted, prompt, pin }: { runId: string; now: number; host: string; leaseMs: number; wanted: string | undefined; prompt: RunPrompt | undefined; pin?: RunPin }): Promise<RunSeed> {
   const state = await readState(store);
   if (own(state.runs, runId)) throw new AgentHomeError("exists", `the run ${runId} already exists`);
   if (prompt && !own(state.prompts, prompt.id)) throw invalid(`the prompt ${prompt.id} is not one of the agent's variants`);
@@ -119,20 +140,22 @@ async function prepareIn(store: Store, { runId, now, host, leaseMs, wanted, prom
   if (wanted !== undefined && wanted !== sha) {
     throw new AgentHomeError("stale", `the agent home's cache is at ${sha ?? "no commit"} and must be refreshed to ${wanted} before a run starts there`);
   }
-  const skills = Object.fromEntries(Object.entries(state.skills).map(([file, skill]) => {
+  // A pinned run is seeded from the revision's verified body; a free one from the home's own skills and definition.
+  const skills = Object.fromEntries(Object.entries(pin ? pin.skills : state.skills).map(([file, skill]) => {
     if (!isSkillPath(file) || sha256(skill.content) !== skill.sha256) throw new AgentHomeError("format", `the skill ${file} does not match its sha256`);
     return [file, skill.content];
   }));
   const leases = Object.keys(state.profiles).filter((key) => isFree(own(state.leases, key), state.runs, now));
   const profiles = Object.fromEntries(Object.entries(state.profiles).map(([key, profile]) => [key, leases.includes(key) ? profile : withoutRef(profile, own(state.leases, key)!.runId)]));
-  const record: RunRecord = { path: `runs/${runId}`, host, startedAt: iso(now), ...(sha !== undefined ? { sha } : {}), ...(prompt ? { prompt } : {}) };
+  const record: RunRecord = { path: `runs/${runId}`, host, startedAt: iso(now), ...(sha !== undefined ? { sha } : {}), ...(prompt ? { prompt } : {}), ...(pin ? { revision: pin.revision, kind: pin.kind } : {}) };
   const lease: ProfileLease = { runId, expiresAt: iso(now + leaseMs) };
   const prior = { record, lease, leases: Object.fromEntries(leases.map((key) => [key, own(state.leases, key) ?? null])) };
   await store.session.commit(async (tx) => {
     put(await tx.doc(RunsDoc, runId, null), record);
     for (const key of leases) put(await tx.doc(LeasesDoc, key, null), lease);
   }, BACKGROUND_CONTEXT);
-  return { runId, agent: { instructions: state.definition.instructions, tools: [...state.definition.tools] }, leases, profiles, skills, ...(sha !== undefined ? { sha } : {}), prior };
+  const agent = pin ? { instructions: pin.instructions, tools: [...pin.tools] } : { instructions: state.definition.instructions, tools: [...state.definition.tools] };
+  return { runId, agent, leases, profiles, skills, ...(sha !== undefined ? { sha } : {}), prior };
 }
 
 /** The run-side half: the run's pi-durable store with the seed's profiles, and its skill files under
@@ -175,6 +198,17 @@ export async function seedRun(dir: { storePath: string; workDir: string }, seed:
  *  its record and leases as they were. When undoing fails too, the error carries both failures. Seeding is this host
  *  step, never a tool. */
 export async function startRun(home: AgentHome, options: { runId?: string; host: string; sha?: string; prompt?: RunPrompt; now?: number; leaseMs?: number }): Promise<RunStart> {
+  return startWith(home, options);
+}
+
+/** `startRun` for a run pinned to a revision: the same start, but the run is seeded from `pin`, a revision's verified body, never from the
+ *  home's definition, and its record names the revision and its kind. The pin is checked (shape, then each skill's bytes against its SHA-256)
+ *  before anything is written; a start that fails is undone as a free start is. The agent store's `startRun` is this, after it resolves the revision. */
+export async function startPinnedRun(home: AgentHome, pin: RunPin, options: { runId?: string; host: string; sha?: string; prompt?: RunPrompt; now?: number; leaseMs?: number }): Promise<RunStart> {
+  return startWith(home, options, checkPin(pin));
+}
+
+async function startWith(home: AgentHome, options: { runId?: string; host: string; sha?: string; prompt?: RunPrompt; now?: number; leaseMs?: number }, pin?: RunPin): Promise<RunStart> {
   const now = options.now ?? Date.now();
   const runId = options.runId ?? uuidv7(now);
   const paths = runPaths(home, runId);
@@ -182,7 +216,7 @@ export async function startRun(home: AgentHome, options: { runId?: string; host:
   homeDir(home.dir);
   if (existsSync(paths.dir)) throw new AgentHomeError("exists", `the run ${runId} already exists`);
   return inClaimedHome(home, undefined, async (store) => {
-    const seed = await prepareIn(store, { runId, now, host: options.host, leaseMs, wanted, prompt });
+    const seed = await prepareIn(store, { runId, now, host: options.host, leaseMs, wanted, prompt, ...(pin ? { pin } : {}) });
     try {
       await seedRun({ storePath: paths.storePath, workDir: paths.workspace }, seed);
     } catch (error) {
@@ -249,9 +283,10 @@ async function readRunProfiles(file: string): Promise<Record<string, BrowserProf
  *  released, and its `agent.runs` entry is completed. A second call for the same run changes nothing. The run store
  *  (`access.runStore`, by default the run's own file) is only read, from a copy, so the files pi-durable-disk adds do not
  *  matter; call it after the run's Harness has closed (pi-durable-disk: after `release()`). */
-export async function carryBack(home: AgentHome, run: Pick<RunStart, "runId">, options: { outcome: string; finalAnswer?: JsonValue; cost?: number; now?: number; access?: HomeAccess }): Promise<CarryBack> {
+export async function carryBack(home: AgentHome, run: Pick<RunStart, "runId">, options: { outcome: string; finalAnswer?: JsonValue; cost?: number; summary?: string; now?: number; access?: HomeAccess }): Promise<CarryBack> {
   if (typeof options?.outcome !== "string" || options.outcome === "") throw invalid("the outcome is not a non-empty string");
   if (options.cost !== undefined && !(typeof options.cost === "number" && Number.isFinite(options.cost) && options.cost >= 0)) throw invalid("the cost is not a non-negative number");
+  if (options.summary !== undefined && !(typeof options.summary === "string" && options.summary !== "" && options.summary.length <= MAX_SUMMARY)) throw invalid(`the summary is not a non-empty string of at most ${MAX_SUMMARY} characters`);
   const now = options.now ?? Date.now();
   const access = options.access ?? localAccess(home);
   return inClaimedHome(home, access, async (store) => {
@@ -270,6 +305,7 @@ export async function carryBack(home: AgentHome, run: Pick<RunStart, "runId">, o
       ...record, endedAt: iso(now), outcome: options.outcome,
       ...(options.finalAnswer !== undefined ? { finalAnswer: options.finalAnswer } : {}),
       ...(options.cost !== undefined ? { cost: options.cost } : {}),
+      ...(options.summary !== undefined ? { summary: options.summary } : {}),
     };
     await store.session.commit(async (tx) => {
       for (const key of copied) put(await tx.doc(ProfilesDoc, key, null), profiles[key]!);

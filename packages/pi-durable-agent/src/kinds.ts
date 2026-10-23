@@ -44,7 +44,15 @@ export type ToolBindings = Record<string, string>;
 export type AgentSource = { sha: string; refreshedAt: string };
 /** `agent.runs`, keyed by run id. `path` is relative to the agent home; `sha` is the home's `agent.source` when the run
  *  started, so it names the skills the run's workspace got; `prompt` is the variant the host chose for it, and why. */
-export type RunRecord = { path: string; host: string; startedAt: string; sha?: string; prompt?: { id: string; reason: string }; endedAt?: string; outcome?: string; finalAnswer?: JsonValue; cost?: number };
+export type RunRecord = {
+  path: string; host: string; startedAt: string; sha?: string; prompt?: { id: string; reason: string }; endedAt?: string; outcome?: string; finalAnswer?: JsonValue; cost?: number;
+  /** The revision a store run is pinned to (its id) and that revision's kind; absent on a run started the free way, from the home's definition. */
+  revision?: string; kind?: "agentic" | "workflow";
+  /** One line for a listing: the answer's first line, or the node path a workflow took. Set by carry back, when given. */
+  summary?: string;
+};
+/** The most characters a run's `summary` has. */
+export const MAX_SUMMARY = 1_000;
 /** The most characters a run's prompt `reason` has. */
 export const MAX_REASON = 2_000;
 /** `agent.vault`, keyed by session key: one saved browser session, as ciphertext. In clear: what kind it is, the origins
