@@ -9,7 +9,8 @@ import { ModelRuntime, ModelRegistry, VERSION as PI_VERSION } from '@earendil-wo
 import { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import agentRunExtension, { createAgentRunExtension } from '../dist/extension.js';
 import { demoWorkflow } from '../dist/demo.js';
-import { authorSkillDirectory } from '@parcha/agentrun-dsl';
+import { WorkflowExtensionService } from '../dist/extension-service.js';
+import { authorSkillDirectory, runWorkflow } from '@parcha/agentrun-dsl';
 import { supportTriageWorkflow, supportTriageInputs, scriptedSupportTriageDeps } from '../dist/triage-demo.js';
 import { tempCwd } from './fixtures/temp-cwd.mjs';
 
@@ -1082,6 +1083,42 @@ test('an error that only reads like an operator message is not shown: what reach
     assert.doesNotMatch(shown, /PRIVATE_HOST_DETAIL/, 'the host error text is not shown');
     assert.match(shown, /AgentRun could not complete this operation/);
   } finally { await app.shutdown(); }
+});
+
+test('the DSL refusing a run state it cannot clone ends the run in its report, never as the command error', async () => {
+  // A tool answers with a function in its details, so the parallel after it cannot snapshot the state: the DSL throws.
+  const answer = async () => ({ ...corpusResult('source'), details: { text: 'source', later: () => 1 } });
+  const definition = toolWorkflow();
+  definition.root = { node: 'chain', steps: [definition.root, { node: 'parallel', label: 'again', branches: ['again', 'once more'].map(label => ({ ...definition.root, label, as: label.replace(' ', '_') })) }] };
+  await assert.rejects(runWorkflow(definition, {}, { runEffect: answer }), { message: 'Workflow state must be structured-cloneable' });
+  // The service, which every run of the extension goes through, makes that throw the report's failure, its text not kept.
+  const service = new WorkflowExtensionService({ allowedTools: ['corpus_search'] });
+  service.prepare(definition);
+  const report = await service.run({}, { deps: { runEffect: answer } });
+  assert.deepEqual([report.status, report.error.code], ['failed', 'execution_failed']);
+  assert.doesNotMatch(report.error.message, /structured-cloneable/);
+  // The extension runs it on a journal, which refuses the answer at the call first: either way the run ends in its report.
+  const app = await harness({ withModel: false, extensionOptions: { hostTools: () => [hostTool(answer)] } });
+  try {
+    await app.tool({ action: 'inspect', workflow: definition });
+    await app.command('run');
+    assert.equal(app.messages.at(-1).details.error.stage, 'read-corpus');
+    assert.doesNotMatch(app.messages.map(message => message.content).join('\n'), /structured-cloneable|could not complete this operation/);
+  } finally { await app.shutdown(); }
+});
+
+test("the durable host's workflow tool is no part of the /agentrun extension, so nothing it throws reaches the command's error", async () => {
+  const dist = new URL('../dist/', import.meta.url), seen = new Set();
+  const visit = async (file) => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    for (const match of (await readFile(new URL(file, dist), 'utf8')).matchAll(/\bfrom\s*["'](\.[^"']+)["']|\bimport\s*\(?\s*["'](\.[^"']+)["']/g)) {
+      await visit(new URL(match[1] ?? match[2], new URL(file, dist)).href.slice(dist.href.length));
+    }
+  };
+  await visit('extension.js');
+  assert.ok(seen.has('workflow-tool.js') && seen.size > 10, 'the closure was read');
+  assert.deepEqual([...seen].filter(file => file.startsWith('durable/')), []);
 });
 
 // A dry run: the inspected draft on synthetic values (or the given input), with no model, Jev or tool call.
