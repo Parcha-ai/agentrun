@@ -316,6 +316,41 @@ describe("boxHost: the launch, a start found again, status, stop and receipts", 
     assert.equal(await driver.status(handle), "gone");
   });
 
+  it("stop acts on nothing its drain answers: one launchStop, then the box destroyed, when the answer is a same-name successor's 'starting' or a failure", async () => {
+    for (const answer of ["successor", "failure"] as const) {
+      const provider = modal();
+      // The launcher's stop re-reads the state by name, so a same-name launch that claimed in between is what it answers.
+      const successor = (box: Box): Box =>
+        new Proxy(box, {
+          get(target, key) {
+            if (key === "launcher") {
+              const real = target.launcher!;
+              return { ...real, stop: async (...args: Parameters<typeof real.stop>) => {
+                const r = await real.stop(...args);
+                return r.ok ? { ok: true as const, value: { ...r.value, phase: "starting" as const } } : r;
+              } };
+            }
+            const v = Reflect.get(target, key, target);
+            return typeof v === "function" ? v.bind(target) : v;
+          },
+        });
+      const wrapped: FakeProvider = Object.assign(Object.create(provider) as FakeProvider, {
+        attach: async (id: string, context: Parameters<FakeProvider["attach"]>[1]) => {
+          const found = await provider.attach(id, context);
+          return found.ok && found.value && answer === "successor" ? { ok: true as const, value: successor(found.value) as never } : found;
+        },
+      });
+      const driver = host(wrapped, { stopGraceMs: 50 });
+      const handle = await driver.start(REF, TOKEN, { attempt: 1 });
+      if (answer === "failure") provider.script.on({ op: "launchStop" }, { fail: "failed", message: "the stop did not finish" });
+      await driver.stop(handle);
+      assert.equal(provider.callsOf("launchStop").length, 1, `${answer}: the launch is stopped once, never again by name`);
+      assert.equal(provider.boxes[0]!.state, "ended", `${answer}: the box is destroyed whatever the drain answered`);
+      assert.equal(await driver.status(handle), "gone", answer);
+      assert.equal(provider.callsOf("create").length, 1, `${answer}: nothing is made`);
+    }
+  });
+
   it("a launch the launcher already reports could not run (exit 126: the user switch, the env clear or the cwd) is a FAILED start: LAUNCH_FAILED naming the exit, the box destroyed, not remembered", async () => {
     const provider = modal();
     // As a real launcher can answer when its first incarnation failed before the state was read: ok(), restarting, exit 126.
