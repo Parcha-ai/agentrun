@@ -60,6 +60,7 @@ alive() {
 gkill() { kill -s "$1" -- "-$2" 2>/dev/null || kill -s "$1" "-$2" 2>/dev/null; }
 @@GROUP_LIVE@@
 @@DIRECTORY_CHECK@@
+@@CAP_LINE@@
 rd() { cat "$D/$1" 2>/dev/null; }
 wr() { printf '%s\n' "$2" > "$D/$1.$$" && mv "$D/$1.$$" "$D/$1"; }
 current_gen() { sed -n "s/^GEN='\(.*\)'\$/\1/p" "$D/spec.sh" 2>/dev/null; }
@@ -451,13 +452,13 @@ verify_tools() {
   if alive "$cp"; then
     if [ -n "$SETSID" ]; then gkill KILL "$cp"; else kill -s KILL "$cp" 2>/dev/null; fi
     wait "$cp" 2>/dev/null
-    rm -f "$D/tools" "$D/tools.probe" "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.err"
+    rm -f "$D/tools" "$D/tools.probe" "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.cs" "$D/tools.err"
     echo "UNSUPPORTED the check of the tools user $t_name did not finish in $(( TOOLS_CHECK_CENTIS / 100 )) s"
     return 10
   fi
   wait "$cp" 2>/dev/null
   # A check that died (killed, crashed) left its probe and its scratch files: they go, whatever it answered.
-  rm -f "$D/tools.probe" "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.err"
+  rm -f "$D/tools.probe" "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.cs" "$D/tools.err"
   said=$(grep -E '^(REFUSED|UNSUPPORTED) ' "$D/tools.check" 2>/dev/null | head -1)
   if [ -z "$said" ] && ! grep -qx CHECKED "$D/tools.check" 2>/dev/null; then said="UNSUPPORTED the check of the tools user $t_name ended without an answer"; fi
   rm -f "$D/tools.check"
@@ -530,9 +531,19 @@ tools_check() {
     find "$m" -xdev -type f -perm /111 -exec "$gc" {} + 2> "$D/tools.err" >> "$D/tools.c" || { echo "UNSUPPORTED the check could not walk $m: $(head -1 "$D/tools.err" | cut -c1-160)"; return; }
   done < "$D/tools.mounts"
   found_s=$(sort -u "$D/tools.s" | while IFS= read -r f; do if $as sh -c 'test -x "$1"' sh "$f" 2>/dev/null; then printf '%s\n' "$f"; fi; done | head -5 | tr '\n' ' ')
-  # getcap prints "path caps" (or "path = caps"): the path is all but the last field.
-  found_c=$(sort -u "$D/tools.c" | while IFS= read -r f; do p=$(printf '%s\n' "$f" | sed 's/ [^ ]*$//; s/ =$//'); if $as sh -c 'test -x "$1"' sh "$p" 2>/dev/null; then printf '%s; ' "$f"; fi; done | cut -d';' -f1-5)
-  rm -f "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.err"
+  # A getcap line whose file the check cannot tell (cap_runnable) is never passed over: the check cannot answer.
+  sort -u "$D/tools.c" > "$D/tools.cs"
+  found_c=
+  nc=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    cap_runnable "$f"
+    case $? in
+      0) if [ "$nc" -lt 5 ]; then found_c="$found_c$f; "; fi; nc=$(( nc + 1 )) ;;
+      2) rm -f "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.cs" "$D/tools.err"; echo "UNSUPPORTED the check cannot tell which file a getcap line names: $(printf '%s\n' "$f" | cut -c1-160)"; return ;;
+    esac
+  done < "$D/tools.cs"
+  rm -f "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.cs" "$D/tools.err"
   if [ -n "$found_s" ]; then echo "REFUSED the tools user $t_name can run a setuid or setgid root file: $found_s"; return; fi
   if [ -n "$found_c" ]; then echo "REFUSED the tools user $t_name can run a file with capabilities: $found_c"; return; fi
   echo CHECKED
@@ -701,6 +712,28 @@ export const DIRECTORY_CHECK = [
 ].join("\n");
 
 /**
+ * `cap_runnable LINE`: whether the getcap line LINE names a file the tools user can run (as the tools check's `$as` runs a test).
+ * getcap prints "path caps", where caps may be several space-separated groups, or the older "path = caps", and a path may hold
+ * spaces: so each candidate path is LINE with one more trailing field cut, from the longest down, and every candidate that is a
+ * file is tested. 0 when one is a file that user can run, 1 when candidates are files and none is, 2 when no candidate is a file
+ * (a line the check did not read, or a file gone since): the caller then cannot answer, and says so.
+ */
+export const CAP_LINE_CHECK = [
+	"cap_runnable() {",
+	"  cn=$1",
+	"  cf=0",
+	"  while :; do",
+	'    case "$cn" in *" "*) cn=\x24{cn% *} ;; *) break ;; esac',
+	'    [ -f "$cn" ] || continue',
+	"    cf=1",
+	'    if $as sh -c \'test -x "$1"\' sh "$cn" 2>/dev/null; then return 0; fi',
+	"  done",
+	'  [ "$cf" = 1 ] || return 2',
+	"  return 1",
+	"}",
+].join("\n");
+
+/**
  * Every name the launcher's shell assigns: the script's own, the spec's (spec.sh) and the program's wrapper's (run_program),
  * temporaries included. The program's settings (`env`) and `inheritEnv` refuse each of them, so a program can never assign one;
  * and the script's FIRST statement unsets each, so a name the box runtime exported keeps no export flag, and what the launcher
@@ -804,6 +837,9 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 	"sm",
 	"sn",
 	"sp",
+	"cn",
+	"cf",
+	"nc",
 ];
 
 /** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */
@@ -818,6 +854,7 @@ export const TOOLS_CHECK_LINE = `TOOLS_CHECK_CENTIS=${TOOLS_CHECK_MS / 10}`;
 /** The supervisor the host uploads to a box: POSIX `sh`, with the programs named in the file's header. */
 export const LAUNCHER_SCRIPT = SCRIPT_TEMPLATE.replace("@@GROUP_LIVE@@", () => GROUP_LIVE)
 	.replace("@@DIRECTORY_CHECK@@", () => DIRECTORY_CHECK)
+	.replace("@@CAP_LINE@@", () => CAP_LINE_CHECK)
 	.replace("@@PTRACE_FILE@@", () => PTRACE_FILE_LINE)
 	.replace("@@TOOLS_CHECK@@", () => TOOLS_CHECK_LINE)
 	.replace("@@UNSET@@", () => `unset ${LAUNCHER_SHELL_NAMES.join(" ")}`);

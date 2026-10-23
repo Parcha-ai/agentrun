@@ -861,7 +861,9 @@ before it makes a box to launch in.
     launch is `refused`, naming up to five; a box without `getcap` is `unsupported`.
   - the check fails closed: `find` and `getcap` must each report a probe it plants (empty, root's, in the launch's own
     root-only directory, removed before anything runs as the tools user), the tools user's test must pass on its own
-    shell, and a walk that fails on a mount, or finds no mount to walk, is `unsupported`. The image needs `getcap` and
+    shell, and a walk that fails on a mount, or finds no mount to walk, is `unsupported`, as is a getcap line that
+    names no file (a line is read to its file whatever its form: several capability groups, `path = caps`, a path
+    with spaces). The image needs `getcap` and
     `setcap` (Debian's `libcap2-bin`).
   The program gets `PI_TRANSPORT_TOOLS_USER` and `PI_TRANSPORT_TOOLS_UID`; the state reports `toolsUser: { name, uid }`.
 - What `toolsUser` means is the HOST'S guarantee: the program runs everything it does not trust as that user, with no
