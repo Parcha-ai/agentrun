@@ -63,6 +63,8 @@ def exampleOracle (codeOut : Ctx → Value) (genOut : Value) (acceptUndefined : 
   afterNode := none
   render _ _ := ""
   questionLimit := 256
+  declared _ := none
+  message _ _ := ""
   choose l := l.headD (.ok [])
   choose_mem l h := by
     cases l with

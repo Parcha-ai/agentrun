@@ -1,0 +1,6 @@
+{
+  "name": "graph-nested",
+  "title": "A map whose body runs a child workflow, killed in the middle and resumed",
+  "claim": "A graph panel's status comes from the store's commits: the driver's frame and the map items' records.",
+  "kills": [{ "point": "effect.kept lookup", "n": 2, "why": "two lookups are kept; the third item and the commits after them are the resumed process's" }]
+}

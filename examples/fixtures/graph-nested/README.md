@@ -1,0 +1,1 @@
+Makes the recording `packages/dsl/test/fixtures/graph/nested.recording.jsonl` that the graph tests read back through `nodeStatus` (`node examples/fixtures/graph-nested/run.ts --kill --record <dir>`, then `node packages/dsl/test/fixtures/graph/record.mjs <dir>`); it is a test fixture's source, not a showcase.

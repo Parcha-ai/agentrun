@@ -1,6 +1,6 @@
 import type { ToolContract } from "./contract.js";
 import type { ToolOutput } from "./custody.js";
-import type { BrowserFailure } from "./failures.js";
+import { browserFailure } from "./failures.js";
 import type { ChildRunner, SiteInfo, SiteRunPort } from "./host.js";
 
 export const MAX_SITE_INSTRUCTIONS = 16_000;
@@ -18,6 +18,7 @@ export function useWebsiteContract(sites: readonly SiteInfo[]): ToolContract {
       "Hand a task to an agent that works on one of these websites in its own browser, and get back what it found or did:",
       ...sites.map((site) => `- ${site.site}: ${site.title}. ${site.description}`),
       "Give a new request_id (a UUID) for each new task. Calling again with the request_id of a finished task answers its result without running it again; a task that failed runs again, and may repeat what it already did on the site.",
+      "Several calls in one turn run at once, each agent in its own browser.",
     ].join("\n"),
     parameters: {
       type: "object", additionalProperties: false, required: ["site", "request_id", "instructions"],
@@ -27,7 +28,7 @@ export function useWebsiteContract(sites: readonly SiteInfo[]): ToolContract {
         instructions: { type: "string", maxLength: MAX_SITE_INSTRUCTIONS, description: "What to do on the website and what to report back." },
       },
     },
-    effect: "effect", replay: "safe", executionMode: "sequential", evidence: "none", listedWhen: "sites",
+    effect: "effect", replay: "safe", executionMode: "parallel", evidence: "none", listedWhen: "sites",
   };
 }
 
@@ -43,7 +44,7 @@ export function siteAnswer(raw: unknown): { run: { id: string; state: string } }
 }
 
 const siteOutput = (body: object, isError = false): ToolOutput => ({ content: [{ type: "text", text: JSON.stringify(body) }], ...(isError ? { isError: true } : {}) });
-const siteRefusal = (message: string) => siteOutput({ ok: false, code: "refused", retryable: false, effect: "none", message } satisfies BrowserFailure, true);
+const siteRefusal = (message: string) => siteOutput(browserFailure("refused", message), true);
 
 export async function useWebsite(args: { site?: unknown; request_id?: unknown; instructions?: unknown }, port: SiteRunPort, sites: readonly SiteInfo[], ctx: { signal: AbortSignal; runChild: ChildRunner }): Promise<ToolOutput> {
   const site = sites.find((known) => known.site === args.site);

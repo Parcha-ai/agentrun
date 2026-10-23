@@ -18,15 +18,27 @@ import {
 import type { Message } from "@earendil-works/pi-ai";
 import type { WorkflowDeps } from "@parcha/agentrun-dsl";
 import { canonicalSha256, runStopOf, type RecoveryNodeParams } from "@parcha/agentrun-dsl/recovery";
+import { SUBMIT_TOOL } from "../host-tools.js";
+import { nodeThinking } from "../thinking.js";
 import { closeNodeAttempt, runNodeAttempt, type NodeScope } from "./node.js";
 import { DELIVERY_ATTEMPTS, lintRecordRoot, submitFooter, type Disagreement, type RecordContract, type Reviewer } from "./record.js";
 import { workspaceRecordFile } from "./record-file.js";
 import { RecordDoc, recordNudge, recordTool, spendNudge, submitDefinition, type RecordToolOptions } from "./record-tool.js";
 
-/** A node's configuration: what its conversation's prompt and `submit` tool are drawn from. */
-export const NodeDoc = defineDoc<{ system: string; label: string; schema: JsonValue | null; fileKey: string | null }>({
-  kind: "agentrun.node", version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ system: "", label: "", schema: null, fileKey: null }),
+/** A node's configuration: what its conversation's prompt and `submit` tool are drawn from. `input` is the node's
+ *  prompt state, the JSON object its user text was stringified from, for a reader that shows what the node was given;
+ *  it is absent when that text is not a JSON object, and in a document an older build wrote. A fork of the conversation
+ *  starts without it, as with the record: the runner never attaches a fork, so a fork is no node and waits for nothing. */
+export const NodeDoc = defineDoc<{ system: string; label: string; schema: JsonValue | null; fileKey: string | null; input?: { [key: string]: JsonValue } }>({
+  kind: "agentrun.node", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ system: "", label: "", schema: null, fileKey: null }),
 });
+
+/** The JSON object a node's user text holds, or nothing: the interpreter sends a node its prompt state stringified. */
+function inputOf(user: string): { input?: { [key: string]: JsonValue } } {
+  let value: unknown;
+  try { value = JSON.parse(user); } catch { return {}; }
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? { input: value as { [key: string]: JsonValue } } : {};
+}
 
 /** A node as the host is asked about it: the interpreter's request, and the attempt it runs as, with the sessions of
  *  the attempts before it (a host that refuses to repeat a call an earlier attempt left unknown reads them). */
@@ -44,7 +56,9 @@ export type NodeRecord = Pick<RecordContract, "contracts" | "checks"> & {
 
 export type NodeHost = {
   /** The agent a node's conversation runs with: its model, thinking level, working directory and the host's own
-   *  extensions and tools. The runner adds its extension and `submit` where the host did not place them. */
+   *  extensions and tools. The runner adds its extension and `submit` where the host did not place them. The node's
+   *  own thinking level outranks the host's; when neither names one, the node thinks at medium (never at the level its
+   *  conversation would copy from its owner's, and never off). */
   agent(node: NodeRequest): AgentChange | Promise<AgentChange>;
   /** Duty text for a node's system prompt, after the interpreter's. `offered` names the tools the agent lists. */
   stance?(node: NodeRequest, offered: { tools: readonly string[] }): string | undefined;
@@ -72,9 +86,14 @@ export type NodeHost = {
  *  answer: its reason (`failed`, `aborted`, ...) and detail. */
 export class NodeFailure extends Error {
   readonly code = "NODE_NOT_DELIVERED";
-  constructor(message: string, readonly node: string, readonly final: boolean, readonly executionPath?: string, readonly unanswered?: { reason: string; detail?: JsonValue }) {
+  /** The item a map that collects its items' failures ends on this (`isItemFailure`): the node's delivery attempts are
+   *  spent, or its model will not answer (`model_error`, as a provider's content filter). Never an abort, a stale or
+   *  faulted run, a missing model, or a schema no record can satisfy. */
+  readonly itemFailure: boolean;
+  constructor(message: string, readonly node: string, readonly final: boolean, readonly executionPath?: string, readonly unanswered?: { reason: string; detail?: JsonValue }, itemFailure = false) {
     super(message);
     this.name = "NodeFailure";
+    this.itemFailure = final && itemFailure;
   }
 }
 
@@ -91,7 +110,7 @@ async function underStop<T>(signal: AbortSignal | undefined, work: () => Promise
   try { return await Promise.race([work(), stopped]); } finally { signal.removeEventListener("abort", onStop); }
 }
 const listed = <T>(value: unknown): value is readonly T[] => Array.isArray(value);
-const isSubmit = (tool: { name: string }) => tool.name === "submit";
+const isSubmit = (tool: { name: string }) => tool.name === SUBMIT_TOOL;
 
 /** The node runner over a host. Install `extension` in the registry before the Harness opens; `on` binds the runner
  *  to where its conversations live (`taskScope`, `hostScope`). */
@@ -157,6 +176,9 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
     sections: [section("task", async (input, context) => (await input.read.snapshot(NodeDoc, input.conversationId, context))?.system || undefined, { tag: false })],
     hooks: [hook(GenerationTask, { beforeRequest: present }), nudge],
   });
+  /** The host's agent at the node's thinking level. A level left unset would follow the conversation's creation: a
+   *  task's node copies its owner's level, and a node no task owns starts off. */
+  const leveled = (agent: AgentChange, node: NodeRequest): AgentChange => ({ ...agent, thinkingLevel: nodeThinking(node.thinking, agent.thinkingLevel) });
   /** The host's agent with the runner's extension first and `submit` last, unless the host placed them. */
   const withNodes = (agent: AgentChange): AgentChange => ({
     ...agent,
@@ -180,16 +202,17 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
         const { review, signal, step, ...asked } = params;
         // An attempt the driver admitted is found again by its session; any other call is a conversation of its own.
         const node: NodeRequest = { ...asked, sessionId: step?.sessionId ?? `unjournaled:${randomUUID()}`, attempt: step?.attempt ?? 0, earlierSessionIds: step?.earlierSessionIds ?? [] };
-        const fail = (message: string, final: boolean, unanswered?: { reason: string; detail?: JsonValue }) => new NodeFailure(message, node.label, final, node.executionPath, unanswered);
+        const fail = (message: string, final: boolean, unanswered?: { reason: string; detail?: JsonValue }, itemFailure = false) => new NodeFailure(message, node.label, final, node.executionPath, unanswered, itemFailure);
         // Only a schema no submit call can satisfy is refused here: any other is the node's contract as its author wrote it.
         const lint = lintRecordRoot(node.schema);
         if (lint.length) throw fail(`${node.kind} node "${node.label}" cannot deliver a record of its schema: ${lint.join("; ")}`, true);
         // The host's own answers are awaited under the stop too: one that lands meanwhile opens no conversation.
-        const { agent, record } = await underStop(signal, async () => ({ agent: await host.agent(node), record: await host.record?.(node) ?? {} }));
+        const { agent, record } = await underStop(signal, async () => ({ agent: leveled(await host.agent(node), node), record: await host.record?.(node) ?? {} }));
         const label = record.label ?? `the ${node.label} record`;
         const offered = (listed<ToolRegistration>(agent.tools) ? agent.tools : listed<Extension>(agent.extensions) ? agent.extensions.flatMap((selected) => selected.tools ?? []) : [])
-          .map((offer) => offer.name).filter((name) => name !== "submit");
+          .map((offer) => offer.name).filter((name) => name !== SUBMIT_TOOL);
         const system = [...node.system, host.stance?.(node, { tools: offered })].filter(Boolean).join("\n\n");
+        const input = inputOf(node.user);
         const reviewers: Reviewer[] = [
           ...(host.verify ? [(candidate: unknown, at: { round: boolean }) => host.verify!(candidate, node, at)] : []),
           ...(review ? [async (candidate: unknown): Promise<Disagreement[]> => {
@@ -208,13 +231,13 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
           agent: withNodes(agent),
           user: `${node.user}\n${submitFooter({ label, schema: node.schema, reviewed: reviewers.length > 0, ...(record.file ? { fileKey: record.file.key } : {}), ...(record.instructions ? { instructions: record.instructions } : {}) })}`,
           init: async (tx, id) => {
-            Object.assign(await tx.doc(NodeDoc, id), { system, label, schema: node.schema as JsonValue, fileKey: record.file?.key ?? null });
+            Object.assign(await tx.doc(NodeDoc, id), { system, label, schema: node.schema as JsonValue, fileKey: record.file?.key ?? null, ...input });
             await host.init?.(node, tx, id);
           },
           adopt: async (tx, id, stored) => {
             const held = await tx.doc(NodeDoc, id);
             if (held.schema !== null) return;
-            Object.assign(held, { system: typeof stored.system === "string" ? stored.system : system, label, schema: node.schema as JsonValue, fileKey: record.file?.key ?? null });
+            Object.assign(held, { system: typeof stored.system === "string" ? stored.system : system, label, schema: node.schema as JsonValue, fileKey: record.file?.key ?? null, ...input });
             // The older build selected an extension of its own for this conversation, which is not installed here.
             const own = typeof stored.extension === "string" ? [{ name: stored.extension } as Extension] : [];
             const given = withNodes(agent);
@@ -243,10 +266,11 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
           if (outcome.delivered) return outcome.delivered.record;
           if (outcome.settled?.status === "unanswered") {
             const { reason, detail } = outcome.settled;
-            throw fail(`${node.label}: the model did not answer (${reason})`, true, { reason, ...(detail !== undefined ? { detail } : {}) });
+            // Only the model's own refusal to answer is the item's: an abort, a stale or faulted run and a missing model are the run's.
+            throw fail(`${node.label}: the model did not answer (${reason})`, true, { reason, ...(detail !== undefined ? { detail } : {}) }, reason === "model_error");
           }
           const spent = ((await scope.snapshot(RecordDoc, outcome.conversationId, base))?.attempts ?? 0) >= maxAttempts;
-          throw fail(`${node.label} did not submit (${spent ? "its delivery attempts are spent" : "it ended its run without a record"})`, spent);
+          throw fail(`${node.label} did not submit (${spent ? "its delivery attempts are spent" : "it ended its run without a record"})`, spent, undefined, spent);
         } catch (error) {
           if (!signal?.aborted) throw error;
           // A pause keeps the node's work for the process that resumes it; any other stop ends that work, and a

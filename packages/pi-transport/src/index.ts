@@ -15,6 +15,14 @@ export {
 } from "./box/box.ts";
 export { downloadByExec, finish, readStream, uploadByExec } from "./box/files.ts";
 export {
+	type BoxMade,
+	type BoxPrice,
+	type BoxReceipt,
+	type BoxReceipts,
+	type BoxReceiptsOptions,
+	boxReceipts,
+} from "./box/receipts.ts";
+export {
 	ConfigError,
 	type ConfigIssue,
 	type EnvironmentConfig,
@@ -24,6 +32,20 @@ export {
 	type TransportConfigInput,
 	TransportConfigSchema,
 } from "./config.ts";
+export { isPlacementRecord, PlacementsDoc, writePlacement } from "./place/log.ts";
+export {
+	type EnvironmentFacts,
+	environmentFacts,
+	type JevPlacerOptions,
+	jevPlacer,
+	type PlacementAsked,
+	PlacementError,
+	type PlacementErrorCode,
+	type PlacementPhase,
+	type PlacementQuery,
+	type PlacementRecord,
+	type Placer,
+} from "./place/placer.ts";
 export {
 	HandsDoc,
 	SessionBoxesDoc,

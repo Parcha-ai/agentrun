@@ -330,6 +330,8 @@ type ServedCall = {
 	/** Every id the call was asked under, and the key it is paid under: let go together. */
 	readonly ids: Set<string>;
 	readonly key: string | undefined;
+	/** The store position the request was made at (its `position`): a checkpoint at or past it covers the answer. */
+	readonly position: number;
 	/** The call ended in an error or was aborted: it has no answer to give a runner that asks under its key again. */
 	failed: boolean;
 	readonly controller: AbortController;
@@ -360,6 +362,13 @@ export interface ModelServer {
 	close(): void;
 	/** Requests the host made to its providers: what it paid for. */
 	readonly paid: number;
+	/**
+	 * A checkpoint now covers the store up to `head` (its `Seal.head`): the keyed answers of requests made below it are
+	 * let go. Until then a completed answer is kept by its `key`, whatever `keepMs` says.
+	 */
+	covered(head: number): void;
+	/** How many keyed answers are kept. */
+	readonly kept: number;
 }
 
 /**
@@ -395,6 +404,7 @@ export function serveModels(
 			id,
 			ids: new Set([id]),
 			key,
+			position: typeof request.position === "number" ? request.position : 0,
 			failed: false,
 			controller: new AbortController(),
 			frames: [],
@@ -450,10 +460,13 @@ export function serveModels(
 			emit(call, { t: "model-error", reason: "error", errorMessage });
 		} finally {
 			call.done = true;
-			// Kept a while for a runner that lost the link at the very end, then let go.
+			if (call.key !== undefined && call.failed && byKey.get(call.key) === call) byKey.delete(call.key);
+			// Kept a while for a runner that lost the link at the very end, then let go. A keyed answer stays until a
+			// checkpoint covers it (`covered`): a runner rebuilt after its box was lost asks again, and is not charged twice.
+			// A call that failed has no answer to keep.
 			setTimeout(() => {
 				for (const known of call.ids) calls.delete(known);
-				if (call.key !== undefined && byKey.get(call.key) === call) byKey.delete(call.key);
+				if (call.key !== undefined && call.failed && byKey.get(call.key) === call) byKey.delete(call.key);
 			}, keepMs).unref?.();
 		}
 	};
@@ -503,6 +516,17 @@ export function serveModels(
 		},
 		get paid() {
 			return paid;
+		},
+		covered(head) {
+			for (const [key, call] of byKey) {
+				if (call.position < head && call.done) {
+					byKey.delete(key);
+					for (const known of call.ids) if (calls.get(known) === call) calls.delete(known);
+				}
+			}
+		},
+		get kept() {
+			return byKey.size;
 		},
 	};
 }

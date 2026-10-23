@@ -356,3 +356,8 @@ test('input and output schema diagnostics omit source-derived property names', a
   }
   await service.dispose();
 });
+
+test('a service limit given as undefined keeps its default, as an omitted one does', async () => {
+  const service = new WorkflowExtensionService({ limits: { maxConcurrency: undefined, deadlineMs: undefined } });
+  await service.dispose();
+});

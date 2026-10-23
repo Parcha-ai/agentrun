@@ -106,7 +106,7 @@ describe("all", () => {
   it("--slow adds supervise-slow after supervise, and the pass line names the tier", async () => {
     const r = await all({ slow: true });
     assert.equal(r.code, 0);
-    assert.deepEqual(r.ran, ["claim", "env", "run", "store", "supervise", "supervise-slow", "lifecycle", "docker"]);
+    assert.deepEqual(r.ran, ["claim", "env", "run", "store", "supervise", "supervise-slow", "lifecycle", "with-claim", "docker"]);
     assert.equal(lastLine(r.lines), `ok: live disk check passed (${SUITE_COUNT + 1} suites incl. slow, sweep left 0)`);
   });
 
@@ -210,7 +210,7 @@ describe("the suites and their files", () => {
     assert.equal(plain.status, 0, plain.stderr);
     assert.deepEqual(suitesOf(plain.stdout), [...HOST_SUITES, "docker"]);
     const slow = ci(["all", "--slow", "--list"], {});
-    assert.deepEqual(suitesOf(slow.stdout), ["claim", "env", "run", "store", "supervise", "supervise-slow", "lifecycle", "docker"]);
+    assert.deepEqual(suitesOf(slow.stdout), ["claim", "env", "run", "store", "supervise", "supervise-slow", "lifecycle", "with-claim", "docker"]);
     assert.match(slow.stdout, /^supervise-slow: npm run test:live:supervise-slow$/m);
     assert.equal(ci(["all", "--fast"], {}).status, 2);
   });

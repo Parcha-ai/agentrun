@@ -1,0 +1,8 @@
+{
+  "about": "as 1, then after the look the agent sends the identical submit again in gen 2: a later-generation dispatch after one that reached the page",
+  "expected": {
+    "repeated": 1,
+    "askedTwice": 0,
+    "possible": 0
+  }
+}

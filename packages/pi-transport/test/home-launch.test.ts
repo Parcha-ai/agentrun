@@ -7,9 +7,11 @@ import { describe, expect, it } from "vitest";
 import { localBoxes } from "../src/box/local.ts";
 import { launch } from "../src/home/launch.ts";
 import { HANG_GUARD_MS, recording, registerLaunchSuite, sh, until } from "./home-launch-support.ts";
+import { assertNothingOfBox, guardLeaks } from "./leak-guard.ts";
 
 const context = BACKGROUND_CONTEXT;
 const HAS_PROC = existsSync("/proc/self/environ");
+const { env: MARK } = guardLeaks();
 
 /** Process ids whose environment holds this entry, read from the machine and not from the provider. */
 function processesWith(entry: string): number[] {
@@ -27,19 +29,20 @@ function processesWith(entry: string): number[] {
 
 registerLaunchSuite("a local box", async (use) => {
 	const root = mkdtempSync(join(tmpdir(), "pi-transport-launch-"));
-	const box = getOrThrow(await localBoxes({ root }).create({ maxLifetimeMs: 10 * 60_000 }, context));
+	const box = getOrThrow(await localBoxes({ root }).create({ maxLifetimeMs: 10 * 60_000, env: MARK }, context));
 	try {
 		await use(box);
 	} finally {
 		await box.destroy(context);
 		rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		await assertNothingOfBox(box.id);
 	}
 });
 
 describe.skipIf(!HAS_PROC)("a local box and the launcher", () => {
 	it("leaves nothing of the launcher or its program after destroy", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-transport-launch-"));
-		const box = getOrThrow(await localBoxes({ root }).create({ maxLifetimeMs: 10 * 60_000 }, context));
+		const box = getOrThrow(await localBoxes({ root }).create({ maxLifetimeMs: 10 * 60_000, env: MARK }, context));
 		try {
 			getOrThrow(
 				(await launch(box, "marked", { argv: ["sh", "-c", recording("exec sleep 300")] }, context)) as never,

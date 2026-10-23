@@ -5,18 +5,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type { RouteNode, Workflow, WorkflowDeps, WorkflowNode } from "../workflow.js";
-import { desugarWorkflow } from "../workflow.js";
-import { chainStep, childrenOf, completedIteration, enclosingChains, enclosingIterations, isWithin, nodeAt, topLevelCompletion } from "./execution-path.js";
+import { desugarWorkflow, isItemFailure } from "../workflow.js";
+import { setLongTimeout, type LongTimer } from "../long-timer.js";
+import { chainStep, childrenOf, completedIteration, enclosingChains, enclosingIterations, isWithin, mapItemOf, nodeAt, topLevelCompletion } from "./execution-path.js";
 import { bindingDigests, LEDGER_FORMAT } from "./binding.js";
 import { canonicalHash as hash } from "./canonical-hash.js";
 import { RecoveryError } from "./errors.js";
 import { gatewayIntentOf } from "./handoff-receipts.js";
 import { validateFrozenSnapshot, openedFrozenSnapshot, serializeFrozenSnapshot,
   frozenStepSessionId, frozenStepId, frozenEffectId, frozenEffectPath, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
-  type FrozenSnapshot as Snapshot, type PathFrame, type RouteDecision, type QuestionReceipts, type FrameTag, type StepRecord, type EscalationRow } from "./frozen-snapshot.js";
-import type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryStore } from "./store.js";
+  failure, SHA256 as SHA,
+  FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4, stateDelta, applyStateDelta, isItemOutcome,
+  type FrozenSnapshot as Snapshot, type FrozenSnapshotV4, type ItemRecord, type MapEntry, type StateDelta,
+  type PathFrame, type RouteDecision, type QuestionReceipts, type FrameTag, type StepRecord, type EscalationRow } from "./frozen-snapshot.js";
+import type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryNote, RecoveryParts, RecoveryStore } from "./store.js";
 
-const failure = (code: string, message: string) => new RecoveryError(message, code);
 
 /** The branch a route runs for its answer, as the interpreter takes it: the node's `unsure` branch when
  *  the answer's confidence is below `unsure.gte`, else the choice the answer names. */
@@ -156,12 +159,32 @@ export type RecoveryOptions = {
    *  dispatched again. One it leaves unknown is refused at resume (`FROZEN_EFFECT_UNKNOWN`). A throw fails the open with
    *  `RECOVERY_RECONCILE_FAILED`, keeping the cause, before any effect is dispatched. */
   reconcile?: (unknown: RecoveryEffect[], complete: (id: string, value: unknown, receipt?: { intent?: { tool: string; args?: unknown }; calls?: unknown[] }) => Promise<void>) => Promise<void>;
+  /** How a new run, or one stored whole, is kept. `"v3"` (the default in this release) keeps the driver's whole state in
+   *  one record, rewritten at every commit, so a map's commits grow with the square of its items. `"v4"`, the keyed
+   *  layout, keeps what lies in each map item in that item's record and each state the driver references once by its
+   *  digest (a failed map's finished results too), so a commit writes what it changed: a run stored whole moves to it at
+   *  its first commit. After that move, the checkpoint bases of the driver's record keep the ids of the effects admitted
+   *  before it: a cost bounded by the work done before the move, which later commits do not grow; each commit after the
+   *  move costs the same however many items the map has. Only a store that
+   *  keeps parts (its opened journal has `items` and `stateOf`) can hold it; on any other the driver keeps `"v3"` and says
+   *  why once per open, in a `layout` note. A run stored in the keyed layout stays in it whatever this says, and a driver
+   *  that knows only `"v3"` refuses to open it (`FROZEN_CHECKPOINT_INVALID`). Release 0.1.0-beta.13 and earlier fail their
+   *  own task on a run in the keyed layout and report it refused; that ends the run's agent nodes in flight, and the run
+   *  then fails on this release too, with no call repeated and nothing corrupted. So opt in only when no process on an
+   *  earlier release can open the run. A build from this release on leaves a run stored in a schema newer than it knows
+   *  pending (`RECOVERY_SCHEMA_NEWER`), for a build that knows it. */
+  layout?: "v3" | "v4";
 };
 
 /** What a host's effect adapter receives under the driver: the interpreter's parameters, `call`, which keeps each
  *  outside call the effect makes on its record as the call ends, and `effect`, the admitted effect: its journal id and
  *  the hash of its arguments, as the journal stores them and the same in every process of the run. A host that keeps
- *  what an outside call answered under them can settle an effect whose call was cut with `journal.complete`. */
+ *  what an outside call answered under them can settle an effect whose call was cut with `journal.complete`.
+ *
+ *  What the adapter returns is the effect's result, whatever its fields. An adapter that cannot know whether the outside
+ *  call happened throws: a `RecoveryError` with code `FROZEN_EFFECT_UNKNOWN`, its `cause` what it observed (kept for the
+ *  operator in the checkpoint's `unknownResponses`), or an `EffectOutcomeUnknownError`. The effect then stays unknown,
+ *  is never dispatched again, and the run resumes only once the host reconciles it, as after any call that throws. */
 export type RecoveryEffectParams = Parameters<NonNullable<WorkflowDeps["runEffect"]>>[0] & {
   call?: (record: unknown) => void;
   effect?: { id: string; argsHash: string };
@@ -215,9 +238,138 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
   const driver = options.key;
   const controller = new AbortController();
   let fatal: unknown;
-  /** A pause or cancel was applied: its commit still lands, and nothing after it. */
+  /** A pause or cancel was applied: its commit is still made, and no admission after it. */
   let stopping = false;
+  /** A commit the store refused after a pause or cancel was applied (the stop's own, say): the stop is not durable, the
+   *  journal still reads as it did, and the host hears it from `flush` and `close`. */
+  let refusedAfterStop: unknown;
   const journal: RecoveryJournal = await store.open(bound);
+  /** Whether the store keeps parts beside the state: the keyed layout needs both reads. */
+  const keyed = typeof journal.items === "function" && typeof journal.stateOf === "function";
+  /** The keyed layout is in effect for this open, and why not when the host asked for it. `moving` is a run stored whole
+   *  that takes the keyed layout at its first write that knows the base of every map still running in it: a map's base
+   *  is the state it starts from, which the run's whole record does not hold, and the map names it when it resumes. */
+  let layoutV4 = false;
+  let moving = false;
+  let layoutReason: string | undefined;
+  // The keyed layout's bookkeeping: the maps the run started (with the base each item is kept against), the states
+  // already stored by digest, each item's record as last written (its revision aside), and the path that produced each
+  // file a map item owns.
+  const maps = new Map<string, { length: number; items: number; base: string; baseState?: State }>();
+  const writtenStates = new Set<string>();
+  const lastItems = new Map<string, string>();
+  const fileOwners = new Map<string, string>();
+  /** At a restore: the files the driver's own record keeps (the latest write of each, whoever made it), and, for a file
+   *  only item records keep, the revision of the record it was taken from (a later record's write is the latest). */
+  const driverFiles = new Set<string>();
+  const fileRevisions = new Map<string, number>();
+  /** The effects this process admitted, landed or still queued on the commit chain: an item's record lists each one it
+   *  owns, even one whose admission has not landed when the record is built. */
+  const queued = new Set<string>();
+  const deltas = new WeakMap<object, StateDelta>();
+  const digests = new WeakMap<object, string>();
+  const digestOf = (state: object): string => { let digest = digests.get(state); if (digest === undefined) { digest = hash(state); digests.set(state, digest); } return digest; };
+  const invalid = (message: string) => failure("FROZEN_CHECKPOINT_INVALID", message);
+  /** A state the run references by digest, read back and checked against it. */
+  const stateBy = async (sha256: string): Promise<State> => {
+    const state = await journal.stateOf!(sha256);
+    if (!state || typeof state !== "object" || Array.isArray(state) || hash(state) !== sha256) throw invalid(`The state ${sha256} the run references is missing or changed`);
+    writtenStates.add(sha256);
+    digests.set(state, sha256);
+    return state as State;
+  };
+  /** A value the run references by digest (a failed map's result, which may be any JSON value), read back and checked. */
+  const valueBy = async (sha256: string): Promise<unknown> => {
+    const value = await journal.stateOf!(sha256);
+    if (value === undefined || hash(value) !== sha256) throw invalid(`The value ${sha256} the run references is missing or changed`);
+    writtenStates.add(sha256);
+    return value;
+  };
+  const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  const validEntry = (entry: unknown): entry is MapEntry => isRecord(entry) && Number.isSafeInteger(entry.length) && (entry.length as number) >= 0
+    && Number.isSafeInteger(entry.items) && (entry.items as number) >= 0 && typeof entry.base === "string" && SHA.test(entry.base);
+  /** The path of map item `index` of the map at `mapPath`: the prefix the interpreter gives every path inside it. */
+  const itemPathOf = (mapPath: string, index: number) => `${mapPath}/items/${index}`;
+  /** Reads back the records of every item the maps in `table` wrote, merging into `snapshot` what lies in them: all of
+   *  it for a map still running, and what a committed map's items keep in the whole state (their committed paths, step
+   *  records, clocks, files and effects) for one that committed. Nested maps are read through their item. */
+  const restoreMaps = async (table: unknown, snapshot: Snapshot): Promise<void> => {
+    if (!isRecord(table)) throw invalid("The run's maps are not a record");
+    const frame = snapshot.pin;
+    for (const [mapPath, entry] of Object.entries(table)) {
+      if (!validEntry(entry) || nodeAt(view, mapPath)?.node !== "map") throw invalid(`The map at ${mapPath} is not one this run can hold`);
+      const committed = frame.done.includes(mapPath);
+      const baseState = committed ? undefined : await stateBy(entry.base);
+      maps.set(mapPath, { length: entry.length, items: entry.items, base: entry.base, ...(baseState ? { baseState } : {}) });
+      const paths = Array.from({ length: entry.items }, (_, index) => itemPathOf(mapPath, index));
+      const records = await journal.items!(paths);
+      for (const [index, item] of records.entries()) {
+        if (item === undefined) continue;
+        const path = paths[index]!;
+        const record = item as unknown as ItemRecord;
+        const valid = record.driver === driver && record.map === mapPath && record.index === index && record.base === entry.base && Number.isSafeInteger(record.revision)
+          && ["running", "committed", "failed"].includes(record.status) && isRecord(record.frame) && Array.isArray(record.frame.done)
+          && [record.frame.states, record.frame.chains, record.frame.loops, record.frame.routes, record.frame.inputs, record.frame.steps, record.clocks, record.files, record.unknownResponses, record.maps].every(isRecord)
+          && Array.isArray(record.effects) && record.effects.every((id) => typeof id === "string")
+          // An item that ended on its failure, and only one, holds how it ended; its map collects its items' failures.
+          && (record.status === "failed"
+            ? isItemOutcome(record.outcome) && (nodeAt(view, mapPath) as { onItemFailure?: unknown } | undefined)?.onItemFailure === "collect"
+            : record.outcome === undefined);
+        if (!valid) throw invalid(`The record of map item ${path} is not one this run wrote`);
+        if (record.outcome) (frame.failures ??= {})[path] = { ...record.outcome };
+        lastItems.set(path, JSON.stringify({ ...record, revision: 0 }));
+        frame.done.push(...record.frame.done);
+        Object.assign(frame.steps, record.frame.steps);
+        Object.assign(snapshot.clocks, record.clocks);
+        for (const [name, sha256] of Object.entries(record.files)) {
+          // A committed item keeps the record it last wrote, so a file a later step wrote again holds an older hash there.
+          if (driverFiles.has(name) || (fileRevisions.get(name) ?? -1) > record.revision) continue;
+          snapshot.files[name] = sha256 as string; fileOwners.set(name, `${path}/body`); fileRevisions.set(name, record.revision);
+        }
+        if (Object.keys(record.unknownResponses).length) Object.assign(snapshot.unknownResponses ??= {}, record.unknownResponses);
+        if (!committed) {
+          for (const [at, delta] of Object.entries(record.frame.states)) {
+            if (!isRecord(delta) || !isRecord(delta.set) || !Array.isArray(delta.unset) || typeof delta.sha256 !== "string") throw invalid(`The state at ${at} is not a delta`);
+            const state = applyStateDelta(baseState!, delta as StateDelta);
+            if (hash(state) !== delta.sha256) throw invalid(`The state at ${at} does not rebuild to the state that was committed`);
+            frame.states[at] = state;
+            deltas.set(state, delta as StateDelta);
+            digests.set(state, delta.sha256);
+          }
+          Object.assign(frame.chains, record.frame.chains);
+          Object.assign(frame.loops, record.frame.loops);
+          Object.assign(frame.routes, record.frame.routes);
+          Object.assign(frame.inputs, record.frame.inputs);
+        }
+        await restoreMaps(record.maps, snapshot);
+      }
+    }
+  };
+  /** The whole state of a run stored in the keyed layout: its own record with every state read back by digest, and what
+   *  its map items keep. */
+  const restoreV4 = async (stored: FrozenSnapshotV4): Promise<Snapshot> => {
+    // A copy: what the items hold is merged into the restored frame, and the store's own state (which it writes back for
+    // a completion that names none) must stay the driver's record alone.
+    const { maps: table, pin, ...rest } = structuredClone(stored);
+    if (!isRecord(pin) || !isRecord(pin.states) || !Object.values(pin.states).every((sha256) => typeof sha256 === "string" && SHA.test(sha256)) || !Array.isArray(pin.done)) throw invalid("Invalid frozen recovery checkpoint");
+    const states: Record<string, State> = {};
+    for (const [at, sha256] of Object.entries(pin.states)) states[at] = await stateBy(sha256);
+    const restored = { ...rest, schema: FROZEN_SNAPSHOT_SCHEMA, pin: { ...pin, done: [...pin.done], states }, clocks: { ...rest.clocks }, files: { ...rest.files } } as Snapshot;
+    for (const name of Object.keys(restored.files)) driverFiles.add(name);
+    // A failed map's finished results: the list of their slots is one value kept by its digest, each slot the digest of
+    // its result or null for an item that never finished.
+    if (pin.partial !== undefined) {
+      const partial = pin.partial as unknown;
+      if (!isRecord(partial) || typeof partial.path !== "string" || typeof partial.as !== "string" || typeof partial.results !== "string" || !SHA.test(partial.results)) {
+        throw invalid("A failed map's results are not kept by digest");
+      }
+      const slots = await valueBy(partial.results);
+      if (!Array.isArray(slots) || !slots.every((slot) => slot === null || (typeof slot === "string" && SHA.test(slot)))) throw invalid("A failed map's results are not a list of digests");
+      restored.pin.partial = { path: partial.path, as: partial.as, results: await Promise.all(slots.map((slot) => (slot === null ? null : valueBy(slot as string)))) };
+    }
+    await restoreMaps(table, restored);
+    return restored;
+  };
   /** The host's stop as it was handed over (a cancel outranks a pause), and who issued it. */
   let requested: RecoveryStop | undefined;
   /** The one error the driver's stop is: its signal's reason and every refusal after it, naming the committed stop. */
@@ -226,21 +378,182 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
   /** This process's ownership generation of the run: one per process that holds it. */
   const generation = journal.generation;
   const serial = () => serializeFrozenSnapshot(snapshot);
+  /** Files the run holds, with the path that produced them: a map item's file is kept in the item's record. */
+  const keepFiles = (files: Record<string, string>, at: string | undefined) => {
+    Object.assign(snapshot.files, files);
+    for (const name of Object.keys(files)) { if (at === undefined) fileOwners.delete(name); else fileOwners.set(name, at); }
+  };
+  /** The path an effect clock belongs to: an attempt's effect, a poll's or a wait's node. */
+  const clockPath = (key: string): string | undefined => {
+    if (key.startsWith("attempt:")) return frozenEffectPath(key.slice("attempt:".length))?.path;
+    // poll:<tag>:<path>, and wait:<tag>:<path>:<ordinal>.
+    const poll = /^poll:[^:]+:(\/root.*)$/s.exec(key);
+    if (poll) return poll[1];
+    const wait = /^wait:[^:]+:(\/root.*):\d+$/s.exec(key);
+    return wait ? wait[1] : undefined;
+  };
+  /** One write in the keyed layout: the driver's record without what lies in map items, the records of the items that
+   *  changed, and the states first referenced now. `admitting` is an effect admitted in this write; `owner` the item that
+   *  lists it. */
+  const keyedWrite = (admitting?: string): { state: FrozenSnapshotV4; parts: (revision: number) => RecoveryParts; owner?: string } => {
+    const frame = snapshot.pin;
+    const done = new Set(frame.done);
+    type Build = { path: string; map: string; index: number; record: ItemRecord };
+    const builds = new Map<string, Build>();
+    /** The record a path lies in: undefined for the driver's own, null for an item of a map that committed (it keeps
+     *  the record it last wrote). */
+    const own = (path: string | undefined): Build | null | undefined => {
+      const at = path === undefined ? undefined : mapItemOf(path);
+      if (!at) return undefined;
+      // A committed map's items keep the records they last wrote; one that committed before the run took the keyed
+      // layout has none, and what lies in its items stays in the driver's record, as it was.
+      // A map that commits in the very write that moves the run has items with no record yet: they are written once, here.
+      if (done.has(at.map) && (!maps.has(at.map) || lastItems.has(at.item))) return maps.has(at.map) ? null : undefined;
+      let build = builds.get(at.item);
+      if (!build) {
+        const map = maps.get(at.map);
+        if (!map) throw invalid(`The map item ${at.item} belongs to no map this run started`);
+        build = { path: at.item, map: at.map, index: at.index, record: {
+          driver, map: at.map, index: at.index, base: map.base, revision: 0, status: "running",
+          frame: { done: [], states: {}, chains: {}, loops: {}, routes: {}, inputs: {}, steps: {} },
+          effects: [], clocks: {}, files: {}, unknownResponses: {}, maps: {},
+        } };
+        builds.set(at.item, build);
+      }
+      return build;
+    };
+    const states: Record<string, unknown> = {};
+    const kept = (state: State): string => {
+      const digest = digestOf(state);
+      if (!writtenStates.has(digest)) { writtenStates.add(digest); states[digest] = state; }
+      return digest;
+    };
+    /** A failed map's result, which may be any JSON value, kept once by its digest. */
+    const keptValue = (value: unknown): string => {
+      if (isRecord(value)) return kept(value as State);
+      const digest = hash(value);
+      if (!writtenStates.has(digest)) { writtenStates.add(digest); states[digest] = value; }
+      return digest;
+    };
+    const deltaOf = (map: string, state: State): StateDelta => {
+      const known = deltas.get(state);
+      if (known) return known;
+      const base = maps.get(map)?.baseState;
+      if (!base) throw invalid(`The base of the map at ${map} is not known`);
+      const delta = stateDelta(base, state, digestOf(state));
+      deltas.set(state, delta);
+      return delta;
+    };
+    const pin: FrozenSnapshotV4["pin"] = { input: frame.input, done: [], states: {}, chains: {}, loops: {}, routes: {}, inputs: {}, steps: {},
+      // A failed map's results: one digest, of the list of each result's digest (null for an item that never finished).
+      ...(frame.partial ? { partial: { path: frame.partial.path, as: frame.partial.as, results: keptValue(frame.partial.results.map((result) => (result === null || result === undefined ? null : keptValue(result)))) } } : {}) };
+    for (const at of frame.done) { const build = own(at); if (build === undefined) pin.done.push(at); else if (build) build.record.frame.done.push(at); }
+    for (const [at, state] of Object.entries(frame.states)) {
+      const build = own(at);
+      if (build === undefined) pin.states[at] = kept(state);
+      else if (build) build.record.frame.states[at] = deltaOf(build.map, state);
+    }
+    for (const table of ["chains", "loops", "routes", "inputs", "steps"] as const) {
+      for (const [at, value] of Object.entries(frame[table])) {
+        const build = own(at);
+        if (build === undefined) (pin[table] as Record<string, unknown>)[at] = value;
+        else if (build) (build.record.frame[table] as Record<string, unknown>)[at] = value;
+      }
+    }
+    const clocks: Record<string, number> = {};
+    for (const [key, value] of Object.entries(snapshot.clocks)) { const build = own(clockPath(key)); if (build === undefined) clocks[key] = value; else if (build) build.record.clocks[key] = value; }
+    const files: Record<string, string> = {};
+    for (const [name, sha256] of Object.entries(snapshot.files)) { const build = own(fileOwners.get(name)); if (build === undefined) files[name] = sha256; else if (build) build.record.files[name] = sha256; }
+    const unknownResponses: Record<string, unknown> = {};
+    for (const [id, value] of Object.entries(snapshot.unknownResponses ?? {})) { const build = own(frozenEffectPath(id)?.path); if (build === undefined) unknownResponses[id] = value; else if (build) build.record.unknownResponses[id] = value; }
+    // An item that ended on its failure keeps it in its own record.
+    for (const [item, outcome] of Object.entries(frame.failures ?? {})) {
+      const build = own(`${item}/body`);
+      if (build === undefined) (pin.failures ??= {})[item] = outcome; else if (build) build.record.outcome = outcome;
+    }
+    for (const id of new Set([...journal.effects().map((effect) => effect.id), ...queued, ...(admitting === undefined ? [] : [admitting])])) {
+      const build = own(frozenEffectPath(id)?.path);
+      if (build) build.record.effects.push(id);
+    }
+    // A map's item records are the first ones: count them before the maps are written.
+    for (const build of builds.values()) { const map = maps.get(build.map)!; map.items = Math.max(map.items, build.index + 1); }
+    const table: Record<string, MapEntry> = {};
+    for (const [at, map] of maps) {
+      const build = own(at);
+      const entry: MapEntry = { length: map.length, items: map.items, base: map.base };
+      if (build === undefined) table[at] = entry; else if (build) build.record.maps[at] = entry;
+      if (!done.has(at) && map.baseState) kept(map.baseState);
+    }
+    /** An item is done when its body committed: a chain never commits itself, so the last step a chain body runs
+     *  through, descending through nested chains, is where the body ends. */
+    const finished = (item: string): boolean => {
+      let at = `${item}/body`;
+      let node = nodeAt(view, at);
+      while (node?.node === "chain" && node.steps.length > 0) { at = `${at}/steps/${node.steps.length - 1}`; node = node.steps[node.steps.length - 1]; }
+      return done.has(at);
+    };
+    const items: Record<string, ItemRecord> = {};
+    for (const build of builds.values()) {
+      build.record.status = build.record.outcome ? "failed" : finished(build.path) ? "committed" : "running";
+      const text = JSON.stringify(build.record);
+      if (lastItems.get(build.path) !== text) { lastItems.set(build.path, text); items[build.path] = build.record; }
+    }
+    const { pin: _pin, schema: _schema, clocks: _clocks, files: _files, unknownResponses: _unknown, ...rest } = snapshot;
+    const state = serializeFrozenSnapshot({ ...rest, schema: FROZEN_SNAPSHOT_SCHEMA_V4, pin, clocks, files,
+      ...(Object.keys(unknownResponses).length ? { unknownResponses } : {}), maps: table } as unknown as Snapshot) as unknown as FrozenSnapshotV4;
+    const owner = admitting === undefined ? undefined : (own(frozenEffectPath(admitting)?.path) ?? undefined)?.path;
+    return { state, parts: (revision) => ({ items: Object.fromEntries(Object.entries(items).map(([path, item]) => [path, { ...item, revision }])), states }), ...(owner ? { owner } : {}) };
+  };
+  /** Whether every map still running with something in its items has its base: then a run stored whole can move. */
+  const basesKnown = (): boolean => {
+    const frame = snapshot.pin;
+    const done = new Set(frame.done);
+    const paths = [...frame.done, ...Object.keys(frame.states), ...Object.keys(frame.chains), ...Object.keys(frame.inputs), ...Object.keys(frame.steps),
+      ...Object.keys(frame.loops), ...Object.keys(frame.routes), ...Object.keys(frame.failures ?? {}).map((item) => `${item}/body`)];
+    return paths.every((path) => { const at = mapItemOf(path); return !at || done.has(at.map) || Boolean(maps.get(at.map)?.baseState); });
+  };
+  /** One write of the driver's state, in the layout this open keeps. */
+  const writeOf = (admitting?: string): { state: unknown; parts?: (revision: number) => RecoveryParts; owner?: string } => {
+    if (admitting !== undefined) queued.add(admitting);
+    if (moving && basesKnown()) { moving = false; layoutV4 = true; }
+    return layoutV4 ? keyedWrite(admitting) : { state: serial() };
+  };
   /** The journal's commits, in the order the driver made them: a commit a synchronous method starts lands before any
    *  later one, and an effect's admission waits for every earlier commit. A failed commit stops the run. */
   let chain: Promise<unknown> = Promise.resolve();
   const persist = <T>(write: () => Promise<T>): Promise<T> => {
     const next = chain.then(() => { if (fatal && !stopping) throw fatal; return write(); });
-    chain = next.catch((error) => { if (!fatal) { fatal = error; controller.abort(error); } });
+    chain = next.catch((error) => {
+      if (!fatal) { fatal = error; controller.abort(error); }
+      else if (stopping && refusedAfterStop === undefined) refusedAfterStop = error;
+    });
     return next;
   };
-  /** Every commit the driver started has landed; a failed one is thrown. */
-  const flush = async () => { await chain; if (fatal && !stopping) throw fatal; };
+  /** Every commit the driver started has landed; a failed one is thrown, a pause's or a cancel's own commit included. */
+  const flush = async () => { await chain; if (refusedAfterStop !== undefined) throw refusedAfterStop; if (fatal && !stopping) throw fatal; };
   try {
     // A driver an earlier process bound, with no checkpoint, is a run killed between its binding and its first
     // checkpoint when the journal holds nothing else of it: it never started, and it starts now. One with effects and
     // no checkpoint needs reconciliation.
-    const saved = journal.state as Snapshot | null;
+    const stored = journal.state as Snapshot | FrozenSnapshotV4 | null;
+    // A run a later build stored in a schema this build does not know: refused with its own code, so a host leaves the
+    // run for a build that knows it rather than ending it.
+    const known = [FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4];
+    const found = (stored as { schema?: unknown } | null)?.schema;
+    const version = typeof found === "string" ? /^agentrun\.frozen_run\.v(\d+)$/.exec(found)?.[1] : undefined;
+    if (version !== undefined && Number(version) > 4) {
+      throw Object.assign(new RecoveryError(`This run is stored as ${found as string}, newer than this build knows (${known.join(", ")}); open it with a build that knows it`, "RECOVERY_SCHEMA_NEWER"), { found, known });
+    }
+    // The keyed layout is sticky: a run stored in it stays in it. A run stored whole, or a new one, takes it when the
+    // host asks for it and the store keeps parts.
+    if (stored?.schema === FROZEN_SNAPSHOT_SCHEMA_V4) {
+      if (!keyed) throw invalid("This run is stored in the keyed layout (agentrun.frozen_run.v4), and this store keeps no parts");
+      layoutV4 = true;
+    } else {
+      moving = options.layout === "v4" && keyed;
+      if (options.layout === "v4" && !keyed) layoutReason = "the store keeps no parts (its journal has no items and stateOf)";
+    }
+    const saved = stored?.schema === FROZEN_SNAPSHOT_SCHEMA_V4 ? await restoreV4(stored as FrozenSnapshotV4) : stored as Snapshot | null;
     if (journal.existing && !saved && journal.effects().length > 0) throw failure("FROZEN_CHECKPOINT_INVALID", "Existing frozen run has no checkpoint; retained workspace requires reconciliation");
     // Only the paths of the run's own document are resolved.
     if (saved) validateFrozenSnapshot(saved, { resolves: (at) => Boolean(nodeAt(view, at)) });
@@ -261,7 +574,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           const at = frozenEffectPath(id)?.path;
           const declared = at === undefined ? undefined : nodeAt(view, at);
           const files = reader.hashes(declared?.node === "call" ? declared.produces ?? [] : []);
-          Object.assign(snapshot.files, files);
+          keepFiles(files, at);
           // The calls an earlier process kept stay: the host's re-send is added after them, so a call that applied before the kill is still on record.
           if (receipt?.calls?.length) await journal.called(id, [...(journal.effect(id)?.calls ?? []), ...receipt.calls]);
           await journal.complete(id, { value, files, ...(receipt?.intent ? { intent: receipt.intent } : {}) });
@@ -271,14 +584,17 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           : new RecoveryError(`Reconcile failed: ${error instanceof Error ? error.message : String(error)}`, "RECOVERY_RECONCILE_FAILED", { cause: error });
       } finally { reconciling = false; }
     }
-    await journal.save(serial());
+    // The open's commit: a run stored whole that takes the keyed layout moves to it here, whole or not at all.
+    const opening = writeOf();
+    const layoutNote: Pick<RecoveryNote, "kind" | "detail"> | undefined = layoutReason ? { kind: "layout", detail: { schema: FROZEN_SNAPSHOT_SCHEMA, reason: layoutReason } } : undefined;
+    await journal.save(opening.state, layoutNote, opening.parts);
   } catch (error) { await journal.close(); throw error; }
   const ordinals = new Map<string, number>();
-  /** One commit of the driver's whole state. */
+  /** One commit of the driver's state. */
   const save = (): Promise<unknown> => {
-    const state = serial();
+    const write = writeOf();
     // A synchronous method does not wait for it; the failure is the run's, and the next awaited commit throws it.
-    return persist(() => journal.save(state)).catch(() => undefined);
+    return persist(() => journal.save(write.state, undefined, write.parts)).catch(() => undefined);
   };
   /** Effects dispatched and not yet completed or failed. A pause is not taken while one is in flight. */
   let inFlight = 0;
@@ -324,9 +640,8 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     if (requested?.action === "pause") { try { guard(); } catch { /* The pause is taken: its commit is queued. */ } }
     wake();
   };
-  const fileHashes = (names: string[]): Record<string, string> => reader.hashes(names);
   const verifyFiles = (files: Record<string, string>) => {
-    if (hash(fileHashes(Object.keys(files))) !== hash(files)) throw failure("FROZEN_ARTIFACT_INVALID", "Committed artifact bytes changed; effect will not be repeated");
+    if (hash(reader.hashes(Object.keys(files))) !== hash(files)) throw failure("FROZEN_ARTIFACT_INVALID", "Committed artifact bytes changed; effect will not be repeated");
   };
   /** An effect-level clock is set once and kept across resume: a poll window or an attempt deadline
    *  belongs to the outside world, so downtime counts against it, never against the run. */
@@ -366,17 +681,36 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     return undefined;
   };
   /** Drops what no resume can ask for again: the states, chain frontiers, loop counts, route decisions
-   *  and start bindings of the paths `gone` names. Step records stay: a host reads its sessions from them. */
+   *  and start bindings of the paths `gone` names. Step records stay: a host reads its sessions from them; and so do
+   *  failed items, as committed paths do: a map that commits in the write that moves its run writes its items' records
+   *  then, a failed one's with its outcome. */
   const prune = (frame: PathFrame, gone: (at: string) => boolean) => {
     for (const table of [frame.states, frame.chains, frame.loops, frame.routes, frame.inputs] as Array<Record<string, unknown>>) {
       for (const key of Object.keys(table)) if (gone(key)) delete table[key];
     }
   };
+  /** Whether `at` lies in an item of a map that collects its items' failures, at any depth. */
+  const collectedAt = (at: string, doc: Workflow): boolean => {
+    for (let item = mapItemOf(at); item; item = mapItemOf(item.map)) {
+      const map = nodeAt(doc, item.map);
+      if (map?.node === "map" && map.onItemFailure === "collect") return true;
+    }
+    return false;
+  };
+  /** The item of a map that collects its items' failures whose body is at `at`, or a fault. */
+  const collectingItem = (at: string, doc: Workflow): { item: string; index: number } => {
+    const item = mapItemOf(at);
+    const map = item && nodeAt(doc, item.map);
+    if (!item || `${item.item}/body` !== at || map?.node !== "map" || map.onItemFailure !== "collect") {
+      throw pathFault(at, "Only the body of an item of a map that collects its items' failures ends on a failure");
+    }
+    return item;
+  };
   const recovery: NonNullable<WorkflowDeps["recovery"]> = {
     // Every store key below is the interpreter's execution path, so a composed graph (a loop, a route, a
     // map whose body is structure, a nested child) resumes where it stopped.
     supportsExecutionPaths: true,
-    async resume(_node, state, _item, executionPath) {
+    async resume(node, state, _item, executionPath) {
       await seam();
       const { frame, doc } = active();
       const at = placed(executionPath, doc);
@@ -389,6 +723,11 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       const committed = answer(frame, at);
       if (committed) return committed;
       if (doneOf(frame).has(at)) throw pathFault(at, "A committed path was asked for again after its state was released");
+      // A map that starts, or starts again, names the base its items are kept against: the state it starts from.
+      if ((layoutV4 || moving) && node.node === "map") {
+        const list = String(node.itemsPath).split(".").reduce<unknown>((value, key) => (value as Record<string, unknown> | null | undefined)?.[key], state);
+        maps.set(at, { length: Array.isArray(list) ? list.length : 0, items: maps.get(at)?.items ?? 0, base: digestOf(state), baseState: state });
+      }
       // A node started in an earlier process starts again from the same state, or not at all. The
       // binding is durable with the next commit, which is the first durable thing done under it.
       const digest = hash(state);
@@ -410,7 +749,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       }
       const step = chainStep(at);
       if (step && (frame.chains[step.chain]?.index ?? -1) >= step.index) throw pathFault(at, "A chain step committed behind its chain's frontier");
-      if (node.node === "artifact" && node.path) Object.assign(snapshot.files, fileHashes([node.path]));
+      if (node.node === "artifact" && node.path) keepFiles(reader.hashes([node.path]), at);
       frame.done.push(at);
       done.add(at);
       // A map that committed, alone or inside what committed, has its results in the state: what it had finished
@@ -439,6 +778,33 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       await save();
       await flush();
     },
+    async failItem(_node, row, executionPath) {
+      // Finished work commits while a pause waits for an effect in flight; it starts nothing.
+      guard();
+      const { frame, doc } = active();
+      const at = placed(executionPath, doc);
+      const { item } = collectingItem(at, doc);
+      if (frame.failures?.[item]) throw pathFault(at, "An item ends on its failure once");
+      // An effect the item admitted and never completed may have happened: that is uncertainty, reconciled before the
+      // run goes on, and never an item failure. A call that threw is one: the driver never certifies a thrown dispatch.
+      const uncertain = journal.effects().find((effect) => effect.status === "unknown" && isWithin(frozenEffectPath(effect.id)?.path ?? "", item));
+      if (uncertain) throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${uncertain.id}: an item whose effect's outcome is unknown does not end on its failure`);
+      // What the item had in progress is no one's now: nothing in it is asked for again. Its committed paths, step
+      // records and effects stay, as a finished item's do.
+      prune(frame, key => isWithin(key, item));
+      (frame.failures ??= {})[item] = { code: row.code, label: row.label, message: row.message };
+      await save();
+      await flush();
+    },
+    async itemFailure(_node, executionPath) {
+      guard();
+      const { frame, doc } = active();
+      const at = placed(executionPath, doc);
+      const { item, index } = collectingItem(at, doc);
+      const held = frame.failures?.[item];
+      // The row as the item's own process wrote it, key for key.
+      return held ? { item_index: index, label: held.label, code: held.code, message: held.message } : undefined;
+    },
     pollStartedAt(node, _item, executionPath) {
       guard();
       const { tag, doc } = active();
@@ -454,8 +820,9 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       // The wait's clock is durable before the wait starts, so a process that dies inside it resumes the same wait.
       await flush();
       await new Promise<void>((resolve, reject) => {
-        const onAbort = () => { clearTimeout(wait); reject(controller.signal.reason); };
-        const wait = setTimeout(() => { controller.signal.removeEventListener("abort", onAbort); resolve(); }, Math.max(0, until - Date.now()));
+        const onAbort = () => { wait.clear(); reject(controller.signal.reason); };
+        // setLongTimeout: a wait past Node's 2^31-1 ms timer limit waits instead of firing at once.
+        const wait = setLongTimeout(() => { controller.signal.removeEventListener("abort", onAbort); resolve(); }, until - Date.now());
         controller.signal.addEventListener("abort", onAbort, { once: true });
       });
       guard();
@@ -486,6 +853,10 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     get generation() { return generation; },
     /** A refusal found before any step, or null: the host escalates it before any step runs. */
     preStepRefusal,
+    /** How this open keeps the run: the layout's schema, and why it is not the keyed one the host asked for. */
+    get layout(): { schema: typeof FROZEN_SNAPSHOT_SCHEMA | typeof FROZEN_SNAPSHOT_SCHEMA_V4; reason?: string } {
+      return { schema: layoutV4 ? FROZEN_SNAPSHOT_SCHEMA_V4 : FROZEN_SNAPSHOT_SCHEMA, ...(layoutReason ? { reason: layoutReason } : {}) };
+    },
     binding,
     /** The run's key: what its step sessions and effects are named under. */
     driverId: driver,
@@ -524,14 +895,18 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     stepAdmitted(executionPath: unknown): boolean { const { frame, at } = llmStep(executionPath); return frame.steps[at] !== undefined; },
     /** The current attempt did not submit: its session closes with its spend kept.
      *  The step is `closed` until a retry is admitted, or `failed` when no attempt remains. */
-    stepAttemptFailed(executionPath: unknown, final = false) {
+    stepAttemptFailed(executionPath: unknown, final = false, error?: unknown) {
       guard();
       const { frame, tag, at } = llmStep(executionPath);
       const step = frame.steps[at];
       if (!step) throw pathFault(at, "Step attempt failed before admission");
       const id = sessionOf(tag, at, step);
       if (options.closeStepSession) void persist(() => options.closeStepSession!(id)).catch(() => undefined);
-      closeFrozenStepAttempt(step, final);
+      // An item failure that fails a step in an item of a map that collects them is kept with the step: the item's own
+      // commit comes after this one, and a process that resumes between the two ends the item on the same failure.
+      const kept = error instanceof Error && isItemFailure(error) && collectedAt(at, view)
+        ? { code: String((error as { code?: unknown }).code), message: String(error.message || error).slice(0, 300) } : undefined;
+      closeFrozenStepAttempt(step, final, kept);
       save();
     },
     /** The step delivered its record; the row and the step record agree before the step commit. */
@@ -605,7 +980,10 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       // The note names the handoff, not the state: the state rides the snapshot.
       const detail = { kind: row.kind, stage: row.stage, summary: String(row.summary ?? "").slice(0, 512), step_label: row.step_label, step_exec_id: stepId, workflow_sha_used: row.workflow_sha_used,
         cost_usd: row.cost_usd, tail: snapshot.escalation.tail, state_keys: Object.keys(row.state ?? {}) };
-      await persist(() => journal.save((revision: number) => { snapshot.escalation!.revision = revision; return serial(); }, { kind: "escalation", detail }));
+      // The parts are computed with the state, after the row has its revision.
+      let parts: ((revision: number) => RecoveryParts) | undefined;
+      await persist(() => journal.save((revision: number) => { snapshot.escalation!.revision = revision; const write = writeOf(); parts = write.parts; return write.state; },
+        { kind: "escalation", detail }, (revision) => parts?.(revision) ?? {}));
       return snapshot.escalation;
     },
     escalation(): EscalationRow | undefined { return snapshot.escalation; },
@@ -628,7 +1006,8 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       const detail = { escalation_revision: row.revision, previous_cost_usd: row.cost_usd,
         cost_usd: spend.cost_usd, turns: spend.turns, effect_calls: spend.effect_calls };
       Object.assign(row, spend);
-      await persist(() => journal.save(serial(), { kind: "handoff", detail }));
+      const write = writeOf();
+      await persist(() => journal.save(write.state, { kind: "handoff", detail }, write.parts));
       return row;
     },
     /** The state the document's committed top-level prefix left behind, plus what a failed map's finished
@@ -662,7 +1041,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           if (existing.status !== "completed") throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id} before resuming; it will not be repeated`);
           const receipt = existing.result as { value: unknown; files: Record<string, string> };
           verifyFiles(receipt.files);
-          Object.assign(snapshot.files, receipt.files);
+          keepFiles(receipt.files, at);
           await save();
           await flush();
           return receipt.value;
@@ -675,13 +1054,15 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         // A tool effect is admitted with the external call it makes, keyed as a continuation keys its own calls
         // (`gatewayIntentOf`: a fetch wrapper's call is the gateway tool it names and its arguments), so a continuation
         // that inherits it unknown refuses the same call.
-        const external = params.node.via === "tool" ? gatewayIntentOf(String((params.node as any).tool), params.input ?? {}) : undefined;
+        const external = params.node.via === "tool" ? gatewayIntentOf(String(params.node.tool), params.input ?? {}) : undefined;
         // From its admission the effect is in flight: a pause waits for it to complete and commit, so the admission is
         // never left without its dispatch.
         inFlight += 1;
+        let deadlineTimer: LongTimer | undefined;
         try {
           // The driver's state and the admission are one transaction.
-          const admitted = await persist(() => journal.admit(id, String((params.node as any).label), argsHash, serial(), driver, external, params.input ?? null));
+          const admission = writeOf(id);
+          const admitted = await persist(() => journal.admit(id, String(params.node.label), argsHash, admission.state, driver, external, params.input ?? null, admission.parts, admission.owner));
           if (admitted !== "new") throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id} before dispatch`);
           // What landed while the admission was being committed still counts: after a cancel, the caller's own
           // cancellation or the effect's deadline, the effect stays admitted and unknown and the adapter is never called.
@@ -689,7 +1070,15 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           guard();
           if (params.signal.aborted) throw params.signal.reason;
           if (Date.now() >= deadline) throw failure("FROZEN_EFFECT_DEADLINE", "Effect exceeded its own deadline");
-          const signal = AbortSignal.any([params.signal, controller.signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]);
+          // The deadline is the clock the driver kept, so a fraction of a millisecond, or a delay past Node's 2^31-1 ms timer
+          // limit, waits out its time; it aborts with the TimeoutError AbortSignal.timeout gives, which a host reads as a deadline.
+          const timeout = new AbortController();
+          deadlineTimer = setLongTimeout(() => timeout.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), deadline - Date.now());
+          const signal = AbortSignal.any([params.signal, controller.signal, timeout.signal]);
+          // Clear the deadline timer the moment the effect is aborted (a cancel, a pause, or the deadline itself): a
+          // `runEffect` that ignores its signal and stays pending would otherwise leave this process alive until the
+          // deadline — hours or days out — because the `finally` runs only when the dispatch settles.
+          signal.addEventListener("abort", () => deadlineTimer?.clear(), { once: true });
           // A thrown/aborted call remains UNKNOWN, including transient failures: no blind retry. Each outside call the effect
           // makes is kept on its record as it ends, on the driver's commit chain, so a process killed mid-effect keeps the
           // calls it made and a commit that fails is the run's failure, which aborts the effect at once.
@@ -697,30 +1086,36 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           const keep = (record: unknown) => { calls.push(record); const held = [...calls]; persist(() => journal.called(id, held)).catch(() => undefined); };
           let value: unknown;
           try { value = await run({ ...params, signal, call: keep, effect: { id, argsHash } }); }
+          catch (error) {
+            // The host's one signal that it cannot know the outcome: what it observed is kept for the operator, without
+            // certifying completion. Any other throw leaves the effect unknown too, with nothing observed.
+            if (error instanceof RecoveryError && error.code === "FROZEN_EFFECT_UNKNOWN") {
+              if (calls.length) await flush();
+              if (error.cause !== undefined) { (snapshot.unknownResponses ??= {})[id] = error.cause; await save(); await flush(); }
+              throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id}: the host reported an unknown outcome`);
+            }
+            throw error;
+          }
           finally { if (calls.length) await flush(); }
           if (signal.aborted) throw signal.reason;
-          const returned = value as { outcome?: unknown; effect_status?: unknown; details?: { outcome?: unknown; effect_status?: unknown } } | null;
-          if (returned?.outcome === "unknown" || returned?.effect_status === "unknown"
-            || returned?.details?.outcome === "unknown" || returned?.details?.effect_status === "unknown") {
-            (snapshot.unknownResponses ??= {})[id] = value;
-            await save(); // Preserve the observation without certifying completion.
-            await flush();
-            throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id}: tool returned an unknown outcome`);
-          }
-          const files = fileHashes(params.produces);
+          const files = reader.hashes(params.produces);
           // A tool effect's receipt names the external call it paid for (the tool and its arguments),
           // so a continuation that inherits the receipt can answer the same call from it. Any other
           // effect keeps its arguments beside its result.
-          const intent = params.node.via === "tool" ? { tool: String((params.node as any).tool), args: params.input } : undefined;
-          Object.assign(snapshot.files, files);
-          await persist(() => journal.complete(id, { value, files, ...(intent ? { intent } : { args: params.input ?? null }) }, serial()));
+          const intent = params.node.via === "tool" ? { tool: String(params.node.tool), args: params.input } : undefined;
+          keepFiles(files, at);
+          const completion = writeOf();
+          await persist(() => journal.complete(id, { value, files, ...(intent ? { intent } : { args: params.input ?? null }) }, completion.state, completion.parts));
           return value;
-        } finally { settled(); }
+        } finally { deadlineTimer?.clear(); settled(); }
       };
     },
-    /** Every commit the driver started has landed; a failed one is thrown. */
+    /** Every commit the driver started has landed; a failed one is thrown, a pause's or a cancel's own commit included. */
     flush,
-    /** Let go of the run once every commit the driver started has landed. */
-    async close() { await chain; await journal.close(); },
+    /** Let go of the run once every commit the driver started has landed. A commit the store refused after a pause or
+     *  cancel is thrown once the journal is released: the stop is not durable, and the host must not take the run as
+     *  stopped. It is thrown even when a later stop's commit lands, since a later commit does not carry every record the
+     *  refused one held. A run's own failed commit is the run's failure and is not thrown again here. */
+    async close() { await chain; await journal.close(); if (refusedAfterStop !== undefined) throw refusedAfterStop; },
   };
 }

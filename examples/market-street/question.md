@@ -1,0 +1,1 @@
+Log every vehicle that crosses in front of the camera: the second it passes, what it is (automobile, horse carriage or wagon, streetcar or cable car, bicycle), boxed in that frame; then count each kind.

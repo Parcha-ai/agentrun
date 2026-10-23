@@ -10,12 +10,12 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import type { FixturePage } from '@parcha/pi-browser/testing';
-import { placeAt, run, type RunResult } from './assemble.ts';
-import { localHost, type BrowserPlane, type LocalHost, type RunPlace, type StatusEvent } from './host.ts';
+import { handedOut, placeAt, processText, run, type RunResult } from '@parcha/agentrun-harness';
+import { localHost, type BrowserPlane, type LocalHost, type RunPlace, type StatusEvent } from '@parcha/agentrun-harness';
 import { fakes, job } from './job.ts';
-import { cost } from './fold.ts';
-import { codeOf, finishRecording, openRecorder, openSupervisor } from './record.ts';
-import { packageCommitRecorder } from './record-store.ts';
+import { cost } from '@parcha/agentrun-harness';
+import { codeOf, finishRecording, openRecorder, openSupervisor } from '@parcha/agentrun-harness';
+import { packageCommitRecorder } from '@parcha/agentrun-harness';
 
 /** The run as one value: what the workflow returned, what each package did, what was spent, every fake call. */
 export function summary(place: RunPlace, result: RunResult, local: LocalHost) {
@@ -70,7 +70,7 @@ async function inBox(kind: string, place: RunPlace, files: Record<string, Uint8A
   const provider = kind === 'local' ? (await import('@parcha/pi-transport/box/local')).localBoxes({ root: join(place.root, 'boxes') })
     : kind === 'docker' ? (await import('@parcha/pi-transport/box/docker')).dockerBoxes() : undefined;
   if (!provider) throw new Error(`--box is local or docker, not ${kind}`);
-  const created = await provider.create({ maxLifetimeMs: 15 * 60_000, labels: { 'agentrun-reference': place.id }, ...(kind === 'local' ? { workspace: place.work } : {}) }, ctx);
+  const created = await provider.create({ maxLifetimeMs: 15 * 60_000, labels: { 'agentrun-harness': place.id }, ...(kind === 'local' ? { workspace: place.work } : {}) }, ctx);
   if (!created.ok) throw created.error;
   const box = created.value;
   if (kind === 'docker') {
@@ -79,6 +79,26 @@ async function inBox(kind: string, place: RunPlace, files: Record<string, Uint8A
   }
   const env = Object.assign(() => boxEnv(box), { cleanup: async () => undefined });
   return { env: () => env, destroy: async () => { await box.destroy(ctx); } };
+}
+
+/** K7: what the reference run prints, JSON or text: every line through the harness's processText (a refused run's message is the run's own text). */
+export function referenceOutput(view: ReturnType<typeof summary>, result: RunResult, root: string, json: boolean): string[] {
+  if (json) return [JSON.stringify(handedOut(view))];
+  const place = { root };
+  const lines: string[] = [];
+  const output = view.output as { company: string; answer: string; citations: string[]; supported: boolean } | null;
+  lines.push(`Reference run: ${view.status}, generation ${view.did.disk.generation}, in ${place.root}`);
+  if (result.status === 'refused') lines.push(`  ${result.code}: ${result.message}`);
+  if (output) lines.push(`\nRecord for ${output.company}\n  ${output.answer}\n  supported: ${output.supported}\n  cites:\n${output.citations.map((path) => `    ${path}`).join('\n')}`);
+  lines.push(`\nEvidence filed: ${view.evidence.length}\n${view.evidence.map((path) => `  ${path}`).join('\n')}`);
+  lines.push('\nWhat each package did');
+  lines.push(`  pi-durable-disk  opened the run on a local directory (generation ${view.did.disk.generation})`);
+  lines.push(`  agentrun-dsl     ${Object.entries(view.did.workflow).map(([type, n]) => `${type} ${n}`).join(', ')}`);
+  lines.push(`  pi-browser       sessions ${Object.entries(view.did.browser).map(([change, n]) => `${change} ${n}`).join(', ')}; reads filed ${view.did.evidence.browser_read ?? 0}`);
+  lines.push(`  pi-vision        looks ${view.did.vision.looks}, misses ${view.did.vision.misses}`);
+  lines.push(`  fakes            ${Object.entries(view.ledger.calls).map(([call, n]) => `${call} x${n}`).join(', ')}`);
+  lines.push(`\nUsage\n${Object.entries(view.usage).map(([name, used]) => `  ${name}: ${used.tokens} tokens, $${used.usd}`).join('\n')}`);
+  return lines.flatMap((line) => line.split('\n')).map((line) => processText(line));
 }
 
 if (import.meta.main) {
@@ -99,20 +119,6 @@ if (import.meta.main) {
     });
   }
   const view = summary(place, result, local);
-  if (values.json) console.log(JSON.stringify(view));
-  else {
-    const output = view.output as { company: string; answer: string; citations: string[]; supported: boolean } | null;
-    console.log(`Reference run: ${view.status}, generation ${view.did.disk.generation}, in ${place.root}`);
-    if (result.status === 'refused') console.log(`  ${result.code}: ${result.message}`);
-    if (output) console.log(`\nRecord for ${output.company}\n  ${output.answer}\n  supported: ${output.supported}\n  cites:\n${output.citations.map((path) => `    ${path}`).join('\n')}`);
-    console.log(`\nEvidence filed: ${view.evidence.length}\n${view.evidence.map((path) => `  ${path}`).join('\n')}`);
-    console.log('\nWhat each package did');
-    console.log(`  pi-durable-disk  opened the run on a local directory (generation ${view.did.disk.generation})`);
-    console.log(`  agentrun-dsl     ${Object.entries(view.did.workflow).map(([type, n]) => `${type} ${n}`).join(', ')}`);
-    console.log(`  pi-browser       sessions ${Object.entries(view.did.browser).map(([change, n]) => `${change} ${n}`).join(', ')}; reads filed ${view.did.evidence.browser_read ?? 0}`);
-    console.log(`  pi-vision        looks ${view.did.vision.looks}, misses ${view.did.vision.misses}`);
-    console.log(`  fakes            ${Object.entries(view.ledger.calls).map(([call, n]) => `${call} x${n}`).join(', ')}`);
-    console.log(`\nUsage\n${Object.entries(view.usage).map(([name, used]) => `  ${name}: ${used.tokens} tokens, $${used.usd}`).join('\n')}`);
-  }
+  for (const line of referenceOutput(view, result, place.root, values.json === true)) console.log(line);
   if (view.status !== 'complete') process.exitCode = 1;
 }

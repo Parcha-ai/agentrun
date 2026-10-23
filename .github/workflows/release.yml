@@ -21,7 +21,7 @@ jobs:
   publish:
     if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     environment: npm-release
     permissions:
       contents: read
@@ -76,7 +76,9 @@ jobs:
             # Exit 3 means an authoritative registry 404. Unknown failures and
             # mismatched published bytes stop the release; they never publish.
             archive="$(node -p 'JSON.parse(require("node:fs").readFileSync(".release/release-plan.json", "utf8")).packages.find(entry => entry.directory === process.argv[1]).filename' "$package")"
-            npm publish ".release/packages/$archive" --ignore-scripts --access public --tag beta --provenance --registry=https://registry.npmjs.org/
+            # Published as latest: npm's package page shows the README of the publish that carried the latest tag, and moving
+            # latest later with dist-tag carries no README. A maintainer moves beta to the same version afterwards.
+            npm publish ".release/packages/$archive" --ignore-scripts --access public --tag latest --provenance --registry=https://registry.npmjs.org/
             node scripts/verify-published.mjs --package "$package"
           done
       - name: Verify a fresh installation from the registry

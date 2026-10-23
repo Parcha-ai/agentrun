@@ -9,20 +9,35 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { credentialIn, validateRecording } from './validate.mjs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { FORBIDDEN, MEDIA_FILE, PAGE_EXTENSIONS, credentialInFile } from '../../packages/harness/src/scan.ts';
+import { artifactBlobNames, blobNameProblem, validateRecording } from './validate.mjs';
 
-const BLOB = /^([0-9a-f]{64})\.[a-z0-9]+$/;
+const MACHINE_PATH = FORBIDDEN.find(([name]) => name === 'machine path')[1];
+/** A blob's name: its SHA-256 and extension, and `.txt` after an artifact page's (the gallery publishes it as text). */
+const BLOB = /^([0-9a-f]{64})\.([A-Za-z0-9]+)(\.txt)?$/;
 const TEXT = /\.(?:html|js|css|json|jsonl|txt|md|csv|svg|xml|yaml|yml|log)$/i;
 const GALLERY = 'window.AGENTRUN_GALLERY = ';
+/** gallery.js in a build that ships the recordings as files (`build.mjs --files`): it only points at the index. */
+const INDEX = "window.AGENTRUN_GALLERY_INDEX = 'recordings/index.json';\n";
+const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
+/** A value's JSON with every object's keys sorted, so two copies of one manifest compare equal. */
+const canonical = (value) => JSON.stringify(value, (_key, item) => (isObject(item) ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]])) : item));
 
-/** Every problem with publishing the built viewer at `dist`, each `{ path, message }` with `path` relative to it. */
-export function gateProblems(dist) {
+/** The gallery's lock, `apps/viewer/recordings.lock.json` of this checkout: what the built index's titles and views must equal. */
+const LOCK = fileURLToPath(new URL('../../apps/viewer/recordings.lock.json', import.meta.url));
+
+/** Every problem with publishing the built viewer at `dist`, each `{ path, message }` with `path` relative to it. `lock`: the gallery's lock (read from the checkout when not given). */
+export function gateProblems(dist, lock = existsSync(LOCK) ? JSON.parse(readFileSync(LOCK, 'utf8')) : undefined) {
   const problems = [];
   const add = (path, message) => problems.push({ path, message });
   const recordings = join(dist, 'recordings');
-  const entries = existsSync(recordings) ? readdirSync(recordings, { withFileTypes: true }) : [];
-  if (entries.length === 0) add('recordings/', 'holds no recording: an empty gallery is never published');
+  // A build that ships the recordings as files keeps its index beside them: the one entry there that is not a recording.
+  const galleryFile = join(dist, 'gallery.js');
+  const text = existsSync(galleryFile) ? readFileSync(galleryFile, 'utf8') : '';
+  const files = text === INDEX;
+  const entries = (existsSync(recordings) ? readdirSync(recordings, { withFileTypes: true }) : []).filter((entry) => !(files && entry.isFile() && entry.name === 'index.json'));
+  if (!entries.some((entry) => entry.isDirectory())) add('recordings/', 'holds no recording: an empty gallery is never published');
   for (const entry of entries) {
     const at = `recordings/${entry.name}`;
     if (!entry.isDirectory()) { add(at, 'is not a recording directory'); continue; }
@@ -31,27 +46,86 @@ export function gateProblems(dist) {
     for (const file of readdirSync(dir, { withFileTypes: true })) {
       if (file.isFile() && (file.name === 'manifest.json' || file.name === 'events.jsonl')) continue;
       if (!file.isDirectory() || file.name !== 'blobs') { add(`${at}/${file.name}`, 'is not part of a recording: only its manifest, its lines and its blobs are published'); continue; }
+      let manifestOf;
+      try { manifestOf = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')); } catch { manifestOf = undefined; }
+      const artifactNames = artifactBlobNames(manifestOf);
       for (const blob of readdirSync(join(dir, 'blobs'), { withFileTypes: true })) {
         const named = BLOB.exec(blob.name);
+        const refused = blobNameProblem(blob.name, artifactNames);
         if (!blob.isFile() || !named) add(`${at}/blobs/${blob.name}`, 'is not a blob named by its SHA-256');
+        else if (refused) add(`${at}/blobs/${blob.name}`, refused);
+        // An artifact page opened straight would run on the gallery's site: the build publishes it as `<name>.txt`.
+        else if (!named[3] && PAGE_EXTENSIONS.includes(named[2].toLowerCase())) add(`${at}/blobs/${blob.name}`, `would open as a page: an artifact page is published as ${blob.name}.txt`);
         else if (createHash('sha256').update(readFileSync(join(dir, 'blobs', blob.name))).digest('hex') !== named[1]) add(`${at}/blobs/${blob.name}`, 'does not hash to its name');
       }
     }
   }
-  // Every text file that goes out is scanned: the page, the script, the gallery and every recording's files.
+  // Every text file that goes out is scanned: the page, the script, the gallery and every recording's files, a blob no line
+  // names included. Raw, and decoded when it is JSON (or JSON lines), so an escape hides nothing (`\u0065yJ`).
   const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? walk(join(dir, entry.name)) : [join(dir, entry.name)]));
   for (const file of existsSync(dist) ? walk(dist) : []) {
-    const found = TEXT.test(file) ? credentialIn(readFileSync(file, 'utf8')) : undefined;
+    const inBlobs = /(?:^|[\\/])blobs[\\/]/.test(relative(dist, file));
+    const found = (inBlobs ? !MEDIA_FILE.test(file) : TEXT.test(file)) ? credentialInFile(file, readFileSync(file, 'utf8')) : undefined;
     if (found) add(relative(dist, file), `contains a ${found}`);
+    // A blob that is not text (an image, a clip, a document of a report) is not read as text: the machine-path pattern runs on its bytes.
+    else if (inBlobs && MEDIA_FILE.test(file) && MACHINE_PATH.test(readFileSync(file).toString('latin1'))) add(relative(dist, file), 'contains a machine path');
   }
-  // The gallery embeds the recordings beside the page, and no other: what it holds was read from what was checked.
-  const galleryFile = join(dist, 'gallery.js');
-  const text = existsSync(galleryFile) ? readFileSync(galleryFile, 'utf8') : '';
-  let embedded;
-  try { embedded = text.startsWith(GALLERY) && text.endsWith(';\n') ? JSON.parse(text.slice(GALLERY.length, -2)).map((entry) => entry.id) : undefined; } catch { embedded = undefined; }
-  if (!Array.isArray(embedded)) add('gallery.js', 'is missing or does not hold the gallery');
-  else if (JSON.stringify([...embedded].sort()) !== JSON.stringify(entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort())) {
-    add('gallery.js', `embeds ${JSON.stringify(embedded)}, not the recordings beside it`);
+  // The gallery holds the recordings beside the page, and no other, each entry exactly what its files give: the page
+  // plays the gallery's copy, so what it plays is what was checked. Embedded in gallery.js, an entry is the recording's
+  // manifest, its lines, and each blob's bytes as a data: URL by its SHA-256; in a build that ships the recordings as
+  // files, listed in the index gallery.js points at, it is the manifest and each blob's path in the recording's directory.
+  const where = files ? 'recordings/index.json' : 'gallery.js';
+  let gallery;
+  try {
+    gallery = files ? JSON.parse(readFileSync(join(recordings, 'index.json'), 'utf8'))
+      : text.startsWith(GALLERY) && text.endsWith(';\n') ? JSON.parse(text.slice(GALLERY.length, -2)) : undefined;
+  } catch { gallery = undefined; }
+  if (!Array.isArray(gallery) || !gallery.every(isObject)) { add(where, 'is missing or does not hold the gallery'); return problems; }
+  const beside = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+  const ids = gallery.map((entry) => entry.id);
+  if (canonical([...ids].sort()) !== canonical(beside)) add(where, `${files ? 'lists' : 'embeds'} ${JSON.stringify(ids)}, not the recordings beside it`);
+  // In the lock's order (the ids it does not name after them, by name): the page lists the gallery as the lock sets it.
+  if (lock && Array.isArray(lock.ids)) {
+    const named = lock.ids.map((each) => (isObject(each) ? each.id : each));
+    const expected = [...named.filter((id) => ids.includes(id)), ...ids.filter((id) => !named.includes(id)).sort()];
+    if (canonical(ids) !== canonical(expected)) add(where, `lists ${JSON.stringify(ids)}, not in the lock's order ${JSON.stringify(expected)}`);
+  }
+  for (const entry of gallery) {
+    if (!beside.includes(entry.id)) continue;
+    const dir = join(recordings, entry.id);
+    const keys = [...(files ? ['blobs', 'id', 'manifest'] : ['blobs', 'events', 'id', 'manifest']), ...('card' in entry ? ['card'] : []), ...('title' in entry ? ['title'] : []), ...('view' in entry ? ['view'] : [])].sort();
+    if (canonical(Object.keys(entry).sort()) !== canonical(keys)) add(where, `holds ${JSON.stringify(Object.keys(entry))} for ${entry.id}, not ${JSON.stringify(keys)}`);
+    // The words and the view of its list entry are the lock's: the page can never drift from it.
+    if (lock) {
+      const named = (Array.isArray(lock.ids) ? lock.ids : []).find((each) => isObject(each) && each.id === entry.id) ?? {};
+      if (canonical(entry.title) !== canonical(named.title)) add(where, `holds the title ${JSON.stringify(entry.title)} for ${entry.id}, not the lock's ${JSON.stringify(named.title)}`);
+      if (canonical(entry.view) !== canonical(named.view)) add(where, `holds the view ${JSON.stringify(entry.view)} for ${entry.id}, not the lock's ${JSON.stringify(named.view)}`);
+    }
+    let manifest;
+    try { manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')); } catch { manifest = undefined; }
+    if (canonical(entry.manifest) !== canonical(manifest)) add(where, `holds a manifest for ${entry.id} other than its manifest.json`);
+    if (!files && (!existsSync(join(dir, 'events.jsonl')) || entry.events !== readFileSync(join(dir, 'events.jsonl'), 'utf8'))) add(where, `holds lines for ${entry.id} other than its events.jsonl`);
+    // Every blob in the recording, by the SHA-256 its name gives, and no other.
+    const held = new Map((existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs')) : []).flatMap((name) => { const named = BLOB.exec(name); return named ? [[named[1], name]] : []; }));
+    const blobs = isObject(entry.blobs) ? entry.blobs : {};
+    if (canonical(Object.keys(blobs).sort()) !== canonical([...held.keys()].sort())) add(where, `maps ${JSON.stringify(Object.keys(blobs))} for ${entry.id}, not the blobs in its directory ${JSON.stringify([...held.keys()])}`);
+    for (const [sha, value] of Object.entries(blobs)) {
+      const name = held.get(sha);
+      if (!name) continue;
+      const data = !files && typeof value === 'string' ? /^data:[^,;]*;base64,([A-Za-z0-9+/]*={0,2})$/.exec(value) : null;
+      const right = files ? value === `blobs/${name}` : data !== null && Buffer.from(data[1], 'base64').equals(readFileSync(join(dir, 'blobs', name)));
+      if (!right) add(where, `names ${JSON.stringify(typeof value === 'string' ? value.slice(0, 80) : value)} for ${sha} of ${entry.id}, not that blob in its directory`);
+    }
+    // Its card, when the build gives one: the run's title and line as words, its place in the lock's order, and a poster
+    // that is an image the recording holds.
+    if ('card' in entry) {
+      const card = entry.card;
+      const shape = isObject(card) && Object.keys(card).every((key) => ['title', 'line', 'poster', 'rank'].includes(key))
+        && typeof card.title === 'string' && card.title.trim() !== '' && (card.line === undefined || typeof card.line === 'string')
+        && (card.rank === undefined || (Number.isInteger(card.rank) && card.rank >= 0));
+      if (!shape) add(where, `holds a card for ${entry.id} that is not { title, line?, poster?, rank? }`);
+      else if (card.poster !== undefined && !(typeof card.poster === 'string' && /\.(png|jpe?g|webp|gif)$/.test(held.get(card.poster) ?? ''))) add(where, `names ${JSON.stringify(card.poster)} as the poster of ${entry.id}, not an image it holds`);
+    }
   }
   return problems;
 }
@@ -62,5 +136,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const problems = gateProblems(dist);
   for (const { path, message } of problems) console.error(`${path}: ${message}`);
   if (problems.length > 0) process.exitCode = 1;
-  else console.log(`${dist}: ${readdirSync(join(dist, 'recordings')).length} recording(s), every published file checked`);
+  else console.log(`${dist}: ${readdirSync(join(dist, 'recordings'), { withFileTypes: true }).filter((entry) => entry.isDirectory()).length} recording(s), every published file checked`);
 }

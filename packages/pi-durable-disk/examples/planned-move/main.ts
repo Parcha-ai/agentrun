@@ -26,6 +26,7 @@ import { findDelegations, LABEL_FLEET, removeMountToken, sweepSandboxes } from "
 import type { EnsureResult, HostHandle, RunRecord } from "@parcha/pi-durable-disk";
 import { BOX, prepareBox } from "./box.ts";
 import { STEPS } from "./app.ts";
+import { pausedOrEnded } from "./pause.ts";
 
 const MOVE_AFTER = 2;
 const MOUNT_ROOT = "/mnt/pda/planned-move";
@@ -107,6 +108,11 @@ async function waitFor<T>(what: string, check: () => Promise<T | null | undefine
   }
 }
 const status = (): Promise<RunRecord | null> => readRunStatus(control, id);
+/** The last lines of a unit's journal (its own output), for a failure message. Empty if they cannot be read. */
+function unitJournal(unit: string): string {
+  const read = spawnSync("sudo", ["-n", "journalctl", "-u", unit, "--no-pager", "-o", "cat", "-n", "12"], { encoding: "utf8" });
+  return String(read.stdout ?? "").split("\n").filter((line) => line.trim()).join(" | ").slice(-1500);
+}
 const text = async (key: string) => new TextDecoder().decode(await control.getObject(`runs/${id}/${key}`));
 
 const started: { driver: "a" | "box"; result: Extract<EnsureResult, { action: "started" }> }[] = [];
@@ -123,10 +129,12 @@ try {
   console.log(`host A: started generation 1 (${String(a.handle.unit)})`);
 
   // The step boundary: the instance records where it is going, releases (the seal), and exits 0.
-  const paused = await waitFor("the run to pause at its step boundary", async () => {
-    const record = await status();
-    return record?.status === "paused" && (await findDelegations(control, id)).length === 0 && record;
-  }, 180_000);
+  // An instance that ends without pausing the run fails the wait at once, with what its unit logged.
+  const paused = await waitFor(
+    "the run to pause at its step boundary",
+    () => pausedOrEnded({ status, delegations: () => findDelegations(control, id), unit: () => hostA.status(a.handle), journal: () => unitJournal(String(a.handle.unit)) }),
+    180_000,
+  );
   const pausedAt = Date.now();
   console.log(`host A: generation 1 paused after step ${MOVE_AFTER} and released: ${JSON.stringify(paused.detail)}`);
   // The delegation goes inside release(); the unit stops just after. A transient unit that exited 0 may already be

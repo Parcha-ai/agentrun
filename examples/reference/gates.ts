@@ -9,8 +9,8 @@ import { nodeAt } from '@parcha/agentrun-dsl/recovery';
 import { durableDoc, readJournal } from '@parcha/agentrun-pi/durable';
 import type { InventoryRow } from '@parcha/pi-browser';
 import { Ajv } from 'ajv';
-import { RUN_KEY, type Job, type RunResult } from './assemble.ts';
-import type { Fakes, LedgerRow } from './host.ts';
+import { RUN_KEY, type Job, type RunResult } from '@parcha/agentrun-harness';
+import type { Fakes, LedgerRow } from '@parcha/agentrun-harness';
 import { job as reference } from './job.ts';
 
 /** A job, the fakes it runs on, and what its run must show: its status, the gates that fail, the tools whose receipts

@@ -5,7 +5,8 @@
 // so natively.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, open, readdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -20,12 +21,13 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { confineHooks, namesHeld, PathOutsideWorkError } from "../src/confine.ts";
 import { ArchilCodingTools, archilEnv, EnvError } from "../src/env.ts";
 import type { ArchilEnvOptions } from "../src/env.ts";
-import { SWAPPER_CAP_SECONDS, spawnSwapper, swapperLoop } from "./fixtures/swapper.ts";
+import { groupRuns, SWAPPER_CAP_SECONDS, spawnSwapper, stopSwapper, swapperLoop } from "./fixtures/swapper.ts";
 import { asPlatform } from "./_macos.ts";
 import { alive } from "./_run-support.ts";
 
 const context = BACKGROUND_CONTEXT;
 const SQLITE = "SQLITE-SENTINEL";
+const RM = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 } as const;
 
 /** Whether the layouts' environments walk paths by name: on macOS, or when confine-by-path.test.ts runs this file. */
 const byPath = process.platform === "darwin" || (globalThis as { confineByPath?: boolean }).confineByPath === true;
@@ -74,8 +76,9 @@ async function withLayout<T>(use: (layout: Layout) => Promise<T>): Promise<T> {
     };
     return await use({ base, work, store, sqlite, elsewhere, claim, env });
   } finally {
-    await rm(base, { recursive: true, force: true });
-    await rm(elsewhere, { recursive: true, force: true });
+    // With a short backoff: a process a test started may still be ending (an entry it made after the walk is ENOTEMPTY).
+    await rm(base, RM);
+    await rm(elsewhere, RM);
   }
 }
 
@@ -681,6 +684,7 @@ describe("a component swapped for a symlink after the check is refused, never fo
     await withLayout(async (layout) => {
       const flip = spawnSwapper(layout.work, process.pid);
       const outcomes: Record<string, number> = { written: 0, refused: 0, failed: 0 };
+      let stopped = false;
       try {
         const env = layout.env();
         const deadline = Date.now() + 2500;
@@ -693,9 +697,11 @@ describe("a component swapped for a symlink after the check is refused, never fo
           assert.equal(content, SQLITE, `the store was written after ${JSON.stringify(outcomes)}`);
         }
       } finally {
-        process.kill(-flip.pid!, "SIGKILL");
+        // Before the layout is removed: a swapper still writing into work/ makes the removal fail (ENOTEMPTY).
+        stopped = await stopSwapper(flip.pid!);
       }
       t.diagnostic(`outcomes ${JSON.stringify(outcomes)}`);
+      assert.ok(stopped, "the swapper's group ended within its stop's deadline");
       assert.ok(outcomes.written + outcomes.refused > 0);
     });
   });
@@ -719,11 +725,7 @@ describe("the swapper fixture", () => {
       } finally {
         driver.kill("SIGKILL");
         // the swapper leads a group of its own: this is the group of the one this test started
-        if (racer > 0) {
-          try {
-            process.kill(-racer, "SIGKILL");
-          } catch {}
-        }
+        if (racer > 0) await stopSwapper(racer);
       }
     });
   });
@@ -747,11 +749,10 @@ describe("the swapper fixture's driver", () => {
       } finally {
         outer.kill("SIGKILL");
         if (pids) {
-          for (const target of [pids.driver, -pids.swapper]) {
-            try {
-              process.kill(target, "SIGKILL");
-            } catch {}
-          }
+          try {
+            process.kill(pids.driver, "SIGKILL");
+          } catch {}
+          await stopSwapper(pids.swapper);
         }
       }
     });
@@ -776,14 +777,93 @@ describe("the swapper fixture's stand-in test process", () => {
       } finally {
         outer.kill("SIGKILL");
         if (pids) {
-          for (const target of [pids.driver, -pids.swapper]) {
-            try {
-              process.kill(target, "SIGKILL");
-            } catch {}
-          }
+          try {
+            process.kill(pids.driver, "SIGKILL");
+          } catch {}
+          await stopSwapper(pids.swapper);
         }
       }
     });
+  });
+});
+
+/** A swapper's stand-in that, once stopped, writes late-0 to late-19 in `work`, one every 10 ms, and exits; `ready` says it is running. */
+function lateSwapper(work: string, onStop = "n=0; while [ $n -lt 20 ]; do : > late-$n; n=$((n+1)); sleep 0.01; done; exit 0"): ChildProcess {
+  return spawn("sh", ["-c", `cd ${work} && trap '${onStop}' TERM && : > ready && while :; do sleep 0.01; done`], { stdio: "ignore", detached: true });
+}
+
+describe("stopping a swapper", () => {
+  const ready = async (work: string) => {
+    for (const t0 = Date.now(); !existsSync(join(work, "ready")) && Date.now() - t0 < 10_000; ) await new Promise((r) => setTimeout(r, 10));
+    assert.ok(existsSync(join(work, "ready")), "the swapper is running");
+  };
+  const late = async (work: string) => (await readdir(work)).filter((name) => name.startsWith("late-")).length;
+
+  it("returns once nothing in its group runs: every write it makes after the stop signal is done, and none comes later", async () => {
+    await withLayout(async (layout) => {
+      const swapper = lateSwapper(layout.work);
+      try {
+        await ready(layout.work);
+        assert.equal(await stopSwapper(swapper.pid!), true, "the group ended within the stop's deadline");
+        assert.equal(await late(layout.work), 20, "every write the swapper made after the stop signal");
+        await new Promise((r) => setTimeout(r, 300));
+        assert.equal(await late(layout.work), 20, "and nothing since");
+      } finally {
+        try {
+          process.kill(-swapper.pid!, "SIGKILL");
+        } catch {}
+      }
+    });
+  });
+
+  it("kills a group that outlives the grace, and waits for it", async () => {
+    await withLayout(async (layout) => {
+      const swapper = lateSwapper(layout.work, "");
+      try {
+        await ready(layout.work);
+        const t0 = Date.now();
+        assert.equal(await stopSwapper(swapper.pid!, 200), true, "the group ended once killed");
+        assert.ok(Date.now() - t0 >= 200, "not before the grace ran out");
+        assert.equal(groupRuns(swapper.pid!), false, "nothing in the group runs");
+      } finally {
+        try {
+          process.kill(-swapper.pid!, "SIGKILL");
+        } catch {}
+      }
+    });
+  });
+});
+
+describe("stopping a swapper whose group holds only zombies", () => {
+  it("counts it stopped at once: a zombie no one has reaped writes nothing", async () => {
+    // A parent that cannot reap (its event loop is blocked): the child it started in a group of its own stays a zombie.
+    const blocked = `const { spawn } = require("node:child_process");
+      const child = spawn("sh", ["-c", "exit 0"], { stdio: "ignore", detached: true });
+      require("node:fs").writeSync(1, child.pid + "\\n");
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000);`;
+    const parent = spawn(process.execPath, ["-e", blocked], { stdio: ["ignore", "pipe", "inherit"] });
+    try {
+      let said = "";
+      parent.stdout.on("data", (chunk) => (said += chunk));
+      for (const t0 = Date.now(); !said.includes("\n") && Date.now() - t0 < 10_000; ) await new Promise((r) => setTimeout(r, 10));
+      const zombie = Number(said.trim());
+      assert.ok(zombie > 0, "the parent started its child");
+      for (const t0 = Date.now(); alive(zombie) && Date.now() - t0 < 5_000; ) await new Promise((r) => setTimeout(r, 10));
+      assert.ok(!alive(zombie), "the child has exited");
+      const stopped = await stopSwapper(zombie, 100, 100);
+      let answer = "success";
+      try {
+        process.kill(-zombie, 0);
+      } catch (error) {
+        answer = String((error as NodeJS.ErrnoException).code);
+      }
+      const members = execFileSync("ps", ["-A", "-o", "pid=,pgid=,stat="], { encoding: "utf8" })
+        .split("\n")
+        .filter((line) => line.trim().split(/\s+/)[1] === String(zombie));
+      assert.equal(stopped, true, `a group of zombies is stopped (kill(0): ${answer}; ps: ${JSON.stringify(members)})`);
+    } finally {
+      parent.kill("SIGKILL");
+    }
   });
 });
 
@@ -809,9 +889,7 @@ describe("the swapper fixture's two ends", () => {
         }
         assert.ok(!alive(racer.pid!));
       } finally {
-        try {
-          process.kill(-racer.pid!, "SIGKILL");
-        } catch {}
+        await stopSwapper(racer.pid!);
       }
     });
   });

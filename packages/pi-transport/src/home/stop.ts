@@ -13,8 +13,9 @@ export type StopRunner = (place: Place, context: Context) => Promise<Result<void
 export const ALIVE_SH = `alive() { kill -0 "$1" 2>/dev/null || return 1; s=$(sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -c1); [ -n "$s" ] && [ "$s" != Z ]; }`;
 
 /**
- * `$1` the pid file, `$2` the store. A process that is gone, or a zombie nobody reaped, is not running. A process
- * whose command line does not name `--store <store>` is not this store's runner: its id was given to another since.
+ * `$1` the pid file, `$2` the store, `$3` the first signal (default TERM). A process that is gone, or a zombie nobody
+ * reaped, is not running. A process whose command line does not name `--store <store>` is not this store's runner: its
+ * id was given to another since.
  */
 const STOP = `${ALIVE_SH}
 p=$(cat "$1" 2>/dev/null) || exit 0
@@ -22,7 +23,7 @@ case "$p" in ''|*[!0-9]*) exit 0;; esac
 alive "$p" || exit 0
 if [ -r "/proc/$p/cmdline" ]; then args="$(tr '\\000' ' ' < "/proc/$p/cmdline")"; else args="$(ps -o args= -p "$p" 2>/dev/null) "; fi
 case "$args" in *"--store $2 "*) ;; *) exit 0;; esac
-kill -TERM "$p" 2>/dev/null
+kill -"\${3:-TERM}" "$p" 2>/dev/null
 i=0
 while alive "$p"; do
 	i=$((i + 1))
@@ -38,9 +39,17 @@ exit 0`;
  * call it had in flight is cut, and pi reports it to the model as interrupted: at most once. A host whose runners a
  * launcher keeps alive stops them through the launcher instead.
  */
-export const stopRunner: StopRunner = async (place, context) => {
+export const stopRunner: StopRunner = (place, context) => endRunner(place, "TERM", context);
+
+/**
+ * Kill the runner of `place`'s store at once, as a crash would: the same runner `stopRunner` finds, sent KILL first.
+ * Nothing closes in order: the store is as the last commit left it, and a call in flight is cut.
+ */
+export const killRunner: StopRunner = (place, context) => endRunner(place, "KILL", context);
+
+async function endRunner(place: Place, signal: "TERM" | "KILL", context: Context): Promise<Result<void, Error>> {
 	const started = await place.box.exec(
-		["sh", "-c", STOP, "sh", `${place.store}.pid`, place.store],
+		["sh", "-c", STOP, "sh", `${place.store}.pid`, place.store, signal],
 		{ timeoutMs: 60_000 },
 		context,
 	);
@@ -51,4 +60,4 @@ export const stopRunner: StopRunner = async (place, context) => {
 		return err(new Error(`the runner of ${place.store} in ${place.box.id} did not stop in 10 s`));
 	}
 	return ok(undefined);
-};
+}

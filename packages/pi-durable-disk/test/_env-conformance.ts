@@ -26,3 +26,18 @@ export function registerEnvCases(label: string, withEnv: EnvConformanceProvider)
   }
   return cases.length;
 }
+
+/**
+ * How the local-disk conformance cases watch. pi's watch cases wait a fixed 3 s for a report, and each step resumes right
+ * after a poll delivered, so the next report needs a whole poll period (the interval plus the scan) inside those 3 s. The
+ * product's 1 s interval leaves 2 s of slack, which a starved CI runner takes away (a period of about 2.7 s was seen). A
+ * 100 ms interval keeps seconds of slack; the cases and their assertions are pi's, unchanged.
+ */
+export const LOCAL_WATCH = { mode: "polling", pollIntervalMs: 100 } as const;
+
+/** One case of the suite by name, run once. */
+export async function runEnvCase(name: string, withEnv: EnvConformanceProvider): Promise<void> {
+  const found = createEnvConformance({ assertions, withEnv }).find((conformance) => conformance.name === name);
+  if (found === undefined) throw new Error(`pi's env conformance has no case named ${JSON.stringify(name)}`);
+  await found.run();
+}

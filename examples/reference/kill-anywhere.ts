@@ -20,14 +20,14 @@ import { join, relative } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/testing';
-import { placeAt, run } from './assemble.ts';
-import { localHost, type LedgerRow, type StatusEvent } from './host.ts';
+import { handedOut, placeAt, processText, run } from '@parcha/agentrun-harness';
+import { localHost, type LedgerRow, type StatusEvent } from '@parcha/agentrun-harness';
 import { gates } from './gates.ts';
 import { fakes, job, lead } from './job.ts';
 import { summary } from './run.ts';
-import { cost } from './fold.ts';
-import { codeOf, finishRecording, openRecorder, openSupervisor } from './record.ts';
-import { packageCommitRecorder } from './record-store.ts';
+import { cost } from '@parcha/agentrun-harness';
+import { codeOf, finishRecording, openRecorder, openSupervisor } from '@parcha/agentrun-harness';
+import { packageCommitRecorder } from '@parcha/agentrun-harness';
 
 const SELF = fileURLToPath(import.meta.url);
 
@@ -135,9 +135,9 @@ async function child() {
   try {
     const result = await run(place, local.host, job);
     await recorder?.detach();
-    console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}) }, view: summary(place, result, local) }));
+    console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: processText(result.message).slice(0, 240) } : {}) }, view: handedOut(summary(place, result, local)) }));
   } catch (error) {
-    console.log(JSON.stringify({ outcome: { status: 'error', code: (error as { code?: string }).code ?? null, message: String((error as Error).message).slice(0, 200) } }));
+    console.log(JSON.stringify({ outcome: { status: 'error', code: (error as { code?: string }).code ?? null, message: processText(String((error as Error).message)).slice(0, 200) } }));
   }
 }
 
@@ -345,6 +345,15 @@ export function isReduced(record: unknown, wanted: unknown): boolean {
   return REDUCED_ANSWERS.includes(got.answer as string) && JSON.stringify(got) === JSON.stringify(expected);
 }
 
+/** K5: the uncut run that did not complete, named by its outcome or its stderr, with a key in either never carried: the harness's processText on each line. */
+export function uncutRefusal(result: { outcome?: unknown; stderr?: string }): Error {
+  return new Error(`the uncut job did not complete: ${JSON.stringify(handedOut(result.outcome ?? result.stderr))}`);
+}
+/** K6: the ledger as it is returned and printed (JSON or rendered): every string through processText (a check's detail holds a process's outcome or stderr). */
+export function ledgerOut(ledger: Ledger): Ledger {
+  return handedOut(ledger);
+}
+
 export async function killAnywhere(options: { seed: number; kills: number; keep?: boolean; record?: string }): Promise<Ledger> {
   if (!Number.isSafeInteger(options.kills) || options.kills < 0) throw new Error(`--kills must be a whole number, not ${options.kills}`);
   if (!Number.isSafeInteger(options.seed)) throw new Error(`--seed must be a whole number, not ${options.seed}`);
@@ -355,7 +364,7 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
   try {
     // The reference: the job uncut. It also counts the crossings a whole run takes, which the plan draws from.
     const reference = await whole(scratch, 'reference');
-    if (reference.result.outcome?.status !== 'complete') throw new Error(`the uncut job did not complete: ${JSON.stringify(reference.result.outcome ?? reference.result.stderr)}`);
+    if (reference.result.outcome?.status !== 'complete') throw uncutRefusal(reference.result);
     
     const dir = join(scratch, 'cut');
     const { backend, state } = watchedBackend();
@@ -459,7 +468,7 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
     const runInterrupted = landed.filter((kill) => inRun.has(`${kill.landed!.side} ${kill.landed!.point}`)).map((kill) => kill.process);
     const browserCalls = backend.ledger.map((row) => row.op);
     for (const { id, ok, detail } of gated) checks.push({ name: `gate ${id}`, ok, detail: ok ? undefined : detail });
-    return { seed: options.seed, kills, processes, browserCalls, runInterrupted, pageRuns, trail, ...(options.keep ? { scratch } : {}), gates: gated, covered: classesOf(kills), final: { status: last?.outcome?.status ?? 'unknown', generation: last?.outcome?.generation ?? null, record }, counted, reference: ref, checks, ms: Date.now() - started };
+    return ledgerOut({ seed: options.seed, kills, processes, browserCalls, runInterrupted, pageRuns, trail, ...(options.keep ? { scratch } : {}), gates: gated, covered: classesOf(kills), final: { status: last?.outcome?.status ?? 'unknown', generation: last?.outcome?.generation ?? null, record }, counted, reference: ref, checks, ms: Date.now() - started });
   } finally {
     if (!options.keep) await rm(scratch, { recursive: true, force: true });
   }

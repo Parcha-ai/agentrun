@@ -3,11 +3,15 @@ export function fakeBrowserbase(knobs = {}) {
   const sessions = new Map();
   let seq = 0;
   let extSeq = 0;
+  let ctxSeq = 0;
   const record = (op, detail = {}) => calls.push({ op, ...detail });
   const httpError = (status, message) => Object.assign(new Error(message), { status });
   const sdk = {
     extensions: {
       create: async (body, options) => { record("extensions.create", { hasFile: Boolean(body?.file), options }); if (knobs.extensionError) throw knobs.extensionError; extSeq += 1; return { id: `ext_${extSeq}` }; },
+    },
+    contexts: {
+      create: async (body, options) => { record("contexts.create", { body, options }); options?.signal?.throwIfAborted(); if (knobs.contextError) throw knobs.contextError; if (knobs.contextDelayMs) await new Promise((r) => setTimeout(r, knobs.contextDelayMs)); ctxSeq += 1; return { id: `ctx_${ctxSeq}` }; },
     },
     sessions: {
       create: async (body, options) => {

@@ -5,6 +5,7 @@ import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after } from "node:test";
@@ -47,3 +48,17 @@ export const DEFINITION = {
   skills: ["cite"],
   tools: ["web_search", "browser"],
 };
+
+/** One request with the Host header chosen by the caller (fetch refuses to set it); an empty `host` sends none. */
+export function request(url, { method = "GET", host, target = "/" } = {}) {
+  const { hostname, port } = new URL(url);
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname, port, path: target, method, setHost: host === undefined, headers: host === undefined || host === "" ? {} : { host } }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString("utf8") }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}

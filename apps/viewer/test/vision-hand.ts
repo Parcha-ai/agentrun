@@ -4,7 +4,7 @@
 // (`apollo11.account/1`) with its photo sort and a weaker eyes model's reading. Every picture is a PNG this file draws,
 // and every name and number in it is made up.
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 import { counterFold, countersOf } from '../src/counters.ts';
@@ -41,6 +41,8 @@ const photo = (r: number, g: number, b: number) => keep(png(48, 48, (x, y) => [r
 export const FILM = [frame(0), frame(30), frame(60), frame(90)];
 export const PAGES = [scan(3), scan(5), scan(7)];
 export const PHOTOS = [photo(120, 110, 96), photo(60, 70, 120), photo(150, 120, 70)];
+/** A file that is not a picture: the scans as one document. */
+export const SCANS = keep(Buffer.from('%PDF-1.4\n% three made-up pages\n'), 'pdf');
 
 /** A look's key, as the package names one: here any fixed hex per name. */
 export const key = (name: string) => sha256(`look ${name}`);
@@ -94,6 +96,45 @@ export const ACCOUNT = {
   weak_eyes: { model: WEAK, source: 'vision-hand-weak', photos: { right: 1, total: 2 }, times: { pages: 1, times: 2, in_typed: 0, unreadable: 0, not_in_typed: [{ page: 1, read: '00 00 0 05', truth: '00 00 00 05', receipt: K.weak1 }, { page: 1, read: '00 00 00 2', truth: '00 00 00 12', receipt: K.weak1 }] } },
 };
 export const RESULT = keep(Buffer.from(JSON.stringify(ACCOUNT)), 'json');
+
+/** The same run delivering the generic cited result (`agentrun.cited/1`): rows citing a look and where in it, a file,
+ *  both, a page known only by its address, or nothing. */
+export const CITED = {
+  format: 'agentrun.cited/1', title: 'Three pages and three photographs, read',
+  rows: [
+    { label: 'The alarm', value: 'number 9', note: 'read off page 2', cites: [{ look: K.page2, fragment: '#page=2&xywh=percent:6,8,80,6', note: 'the line it stands on' }] },
+    { label: 'The first photograph', value: 'ground', cites: [{ look: K.photo1 }, { blob: PHOTOS[0]! }] },
+    { label: 'A share read from a picture', value: 41, note: 'published 41.5, gap 0.5', cites: [{ blob: FILM[0]!, fragment: '#t=3.75', note: 'the picture it was read from' }] },
+    { label: 'A page that was not the dashboard', value: 'failed', cites: [] },
+    { label: 'The published figure', value: '41.5%', cites: [{ url: 'https://data.example.org/figures.csv', at: '2026-10-15T00:00:00Z', note: 'the operator\'s own table' }] },
+    { label: 'A page with no web address', value: 'n/a', cites: [{ url: 'javascript:alert(1)' }] },
+    { label: 'The scans as filed', value: '3 pages', cites: [{ blob: SCANS, fragment: '#page=2', note: 'the page the alarm is on' }] },
+  ],
+};
+
+/** The film read as chapters, as a video run delivers them: a row per chapter citing its keyframes (pictures in the
+ *  recording) beside the window it was read in, and a summary that cites nothing. */
+export const CHAPTERS = {
+  format: 'agentrun.cited/1', title: 'film.mp4, in 2 chapters',
+  rows: [
+    { label: 'Summary', value: 'ground, then a shadow', cites: [] },
+    { label: 'The ground slides past', value: '0 s', note: 'low over flat ground', cites: [{ blob: FILM[0]!, fragment: '#t=0', note: 'keyframe' }, { blob: FILM[1]!, fragment: '#t=7.5', note: 'keyframe' }, { look: K.film, fragment: '#t=0,30', note: 'film.mp4' }] },
+    { label: 'A shadow crosses', value: '20 s', note: 'a shadow crosses the frame', cites: [{ blob: FILM[2]!, fragment: '#t=20', note: 'keyframe' }, { look: K.film, fragment: '#t=0,30', note: 'film.mp4' }] },
+  ],
+};
+
+/** The hand recording's lines without the frames the film's read showed: a window the eyes saw as video, with no picture
+ *  of its own. */
+export const withoutFilmFrames = (run: Line[]): Line[] => run.filter((line) => !(line.kind === 'shown' && (line.data as { media?: { kind?: string } }).media?.kind === 'video'));
+
+/** A recording written by `writeRecording`, made to deliver `value` as its result instead. */
+export function deliverInstead(dir: string, value: Json): string {
+  const bytes = Buffer.from(JSON.stringify(value));
+  const sha = sha256(bytes);
+  writeFileSync(join(dir, 'blobs', `${sha}.json`), bytes);
+  for (const file of ['manifest.json', 'events.jsonl']) writeFileSync(join(dir, file), readFileSync(join(dir, file), 'utf8').replaceAll(RESULT, sha));
+  return sha;
+}
 
 let t = 0;
 let seq = 0;
@@ -177,9 +218,9 @@ export const manifest = {
 };
 
 /** The recording as a directory: manifest.json, events.jsonl and blobs/. */
-export function writeRecording(dir: string): void {
+export function writeRecording(dir: string, run: Line[] = lines): void {
   mkdirSync(join(dir, 'blobs'), { recursive: true });
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2));
-  writeFileSync(join(dir, 'events.jsonl'), `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`);
+  writeFileSync(join(dir, 'events.jsonl'), `${run.map((line) => JSON.stringify(line)).join('\n')}\n`);
   for (const [sha, { ext, bytes }] of blobs) writeFileSync(join(dir, 'blobs', `${sha}.${ext}`), bytes);
 }

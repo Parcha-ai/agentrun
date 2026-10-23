@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import type { AttachTarget, BrowserProvider, LiveView, ProviderCaps, SessionSpec } from "../core/host.js";
 import type { LeaseRef, ResourceStatus } from "../core/lease.js";
 import { directFetch } from "./http.js";
+import { claimWriter, freeWriter, isWriter, noteWriter } from "./profiles.js";
 import { accountKey, assertTag, defaultSleep, DEFAULT_CONFIRM, extensionArchive, kernelHoldings, nonEmpty, releaseAndConfirm, tagValue, untilAborted, uploadOnce } from "./shared.js";
 
 export const KERNEL_BASE_URL = "https://api.onkernel.com";
@@ -12,7 +13,9 @@ export const KERNEL_IDLE_MIN_S = 10;
 export const KERNEL_IDLE_MAX_S = 259_200;
 
 type KernelRow = { session_id?: unknown; cdp_ws_url?: unknown; browser_live_view_url?: unknown; deleted_at?: unknown; tags?: { agentrun_tag?: unknown }; checksum?: unknown; name?: unknown; id?: unknown; code?: unknown };
-type HttpFetch = (input: string, init: { method: string; headers: Record<string, string>; body?: Uint8Array | string; signal?: AbortSignal }) => Promise<Response>;
+/** What the provider reads of a reply: the global fetch's Response and undici's both have it. */
+type HttpReply = { ok: boolean; status: number; headers: { get(name: string): string | null }; text(): Promise<string> };
+type HttpFetch = (input: string, init: { method: string; headers: Record<string, string>; body?: Uint8Array | string; signal?: AbortSignal }) => Promise<HttpReply>;
 export type KernelOptions = {
   /** KERNEL_API_KEY and KERNEL_BASE_URL (default https://api.onkernel.com). Default: process.env. */
   env?: NodeJS.ProcessEnv;
@@ -32,7 +35,7 @@ export type KernelExtensionRef = { id: string } | { name: string };
 
 // Kernel ends a session after `timeout_seconds` with no CDP or live-view connection and sets no wall-clock limit, so
 // the lifetime cap is its largest idle timeout.
-const CAPS: ProviderCaps = { timeoutModel: "inactivity", maxLifetimeS: KERNEL_IDLE_MAX_S, survivesDisconnect: true, releaseIsAsync: false, extension: "uploaded-per-launch", settings: { proxies: false, verified: false, geolocation: false, region: false, context: false } };
+const CAPS: ProviderCaps = { timeoutModel: "inactivity", maxLifetimeS: KERNEL_IDLE_MAX_S, survivesDisconnect: true, releaseIsAsync: false, profiles: true, extension: "uploaded-per-launch", settings: { proxies: false, verified: false, geolocation: false, region: false, context: false } };
 
 /** The call and the HTTP status, plus Kernel's error code when it is a plain identifier. Kernel's message is never
  *  copied: an echo of the request could carry the key or a URL. */
@@ -56,6 +59,7 @@ export function kernelCreateBody(spec: SessionSpec, options: { stealth?: boolean
     timeout_seconds: Math.min(KERNEL_IDLE_MAX_S, Math.max(KERNEL_IDLE_MIN_S, Math.round(spec.idleTimeoutS) || KERNEL_IDLE_MIN_S)),
     viewport: { width: spec.viewport.width, height: spec.viewport.height },
     tags: { ...tags, agentrun_tag: spec.tag },
+    ...(spec.profile ? { profile: { name: spec.profile.name, save_changes: spec.profile.save } } : {}),
     ...(options.extension ? { extensions: [options.extension] } : {}),
   };
 }
@@ -71,18 +75,18 @@ export function kernelProvider(options: KernelOptions = {}): KernelProvider {
   const sleep = options.sleep ?? defaultSleep;
   const confirm = options.confirm ?? DEFAULT_CONFIRM;
   let client: Promise<HttpFetch> | null = null;
-  const http = () => (client ??= options.fetch ? Promise.resolve(options.fetch) : directFetch().then((f) => (f ?? fetch) as HttpFetch));
+  const http = () => (client ??= options.fetch ? Promise.resolve(options.fetch) : directFetch());
 
   /** One request, never retried: a create served twice would be a second paid browser. On failure only Kernel's `code`
    *  survives; a transport failure keeps its cause chain under a message that names the call alone. */
-  async function call<T = KernelRow>(method: string, route: string, init: { body?: unknown; query?: URLSearchParams; signal?: AbortSignal; raw?: { body: Uint8Array; type: string } } = {}): Promise<{ status: number; json: T | null; headers: Headers }> {
+  async function call<T = KernelRow>(method: string, route: string, init: { body?: unknown; query?: URLSearchParams; signal?: AbortSignal; raw?: { body: Uint8Array; type: string } } = {}): Promise<{ status: number; json: T | null; headers: HttpReply["headers"] }> {
     if (!apiKey) throw new Error("the kernel provider needs KERNEL_API_KEY in the env it is given; none is set");
-    const name = `${method} ${route.replace(/\/browsers\/[^/?]+/, "/browsers/{id}").replace(/\/extensions\/[^/?]+/, "/extensions/{name}")}`;
+    const name = `${method} ${route.replace(/\/browsers\/[^/?]+/, "/browsers/{id}").replace(/\/extensions\/[^/?]+/, "/extensions/{name}").replace(/\/profiles\/[^/?]+/, "/profiles/{name}")}`;
     const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}`, Accept: "application/json" };
     let body: Uint8Array | string | undefined;
     if (init.raw) { headers["Content-Type"] = init.raw.type; body = init.raw.body; }
     else if (init.body !== undefined) { headers["Content-Type"] = "application/json"; body = JSON.stringify(init.body); }
-    let response: Response;
+    let response: HttpReply;
     try {
       const query = init.query?.toString();
       response = await (await http())(`${baseUrl}${route}${query ? `?${query}` : ""}`, { method, headers, ...(body !== undefined ? { body } : {}), ...(init.signal ? { signal: init.signal } : {}) });
@@ -153,6 +157,13 @@ export function kernelProvider(options: KernelOptions = {}): KernelProvider {
     if (state !== "running") forget(ref.id);
     return state;
   };
+  const running = (ref: LeaseRef) => async (signal: AbortSignal) => { const now = await status(ref, signal); return now === "running" || now === "pending"; };
+
+  /** A browser can only name a profile Kernel knows. Creating it first is safe to race: a 409 means another process just did. */
+  const ensureProfile = async (name: string, signal?: AbortSignal): Promise<void> => {
+    if ((await call("GET", `/profiles/${encodeURIComponent(name)}`, { signal })).status !== 404) return;
+    try { await call("POST", "/profiles", { body: { name }, signal }); } catch (error) { if ((error as KernelError).status !== 409) throw error; }
+  };
 
   return {
     name: "kernel",
@@ -162,13 +173,20 @@ export function kernelProvider(options: KernelOptions = {}): KernelProvider {
       // The upload is shared by every create on the account: a cancelled caller stops waiting, the upload goes on for
       // the rest.
       signal?.throwIfAborted();
-      const body = kernelCreateBody(spec, { stealth: options.stealth, headless: options.headless, extension: await untilAborted(extension(), signal) });
-      // At most once: a lost answer is found again by its tag (findByTag), never by a second create.
+      if (spec.profile?.save) await claimWriter(`${account}|profile:${spec.profile.name}`, spec.profile.name, spec.tag, `${spec.metadata.run}|${spec.metadata.label}`, signal);
+      let body: Record<string, unknown>;
+      try {
+        if (spec.profile) await ensureProfile(spec.profile.name, signal);
+        body = kernelCreateBody(spec, { stealth: options.stealth, headless: options.headless, extension: await untilAborted(extension(), signal) });
+      } catch (error) { freeWriter(spec.tag); throw error; }
+      // At most once: a lost answer is found again by its tag (findByTag), never by a second create. A failed send keeps the
+      // profile's claim until findByTag has looked: the browser may exist.
       const created = await call("POST", "/browsers", { body, signal });
       const id = nonEmpty(created.json?.session_id);
       const url = nonEmpty(created.json?.cdp_ws_url);
       if (created.status === 404 || !id || !url) throw new KernelError("POST /browsers", created.status, "no_session");
       cdpUrls.set(held(id), url);
+      noteWriter(spec.tag, running({ id, tag: spec.tag }));
       const live = nonEmpty(created.json?.browser_live_view_url);
       if (live) liveUrls.set(held(id), live);
       return { id, tag: spec.tag };
@@ -193,7 +211,11 @@ export function kernelProvider(options: KernelOptions = {}): KernelProvider {
           if (id && row?.tags?.agentrun_tag === tag && !row?.deleted_at && !seen.has(id)) { seen.add(id); out.push({ id, tag }); }
         }
         // Kernel pages by headers: X-Has-More, and X-Next-Offset as the next page's absolute start.
-        if (page.headers.get("x-has-more") !== "true") return out;
+        if (page.headers.get("x-has-more") !== "true") {
+          if (!out.length) freeWriter(tag);
+          for (const ref of out) if (isWriter(ref.tag)) noteWriter(ref.tag, running(ref));
+          return out;
+        }
         // More pages with no usable next offset would truncate the set custody releases: a failure, never a partial
         // answer.
         const next = Number(page.headers.get("x-next-offset"));
@@ -231,7 +253,7 @@ export function kernelProvider(options: KernelOptions = {}): KernelProvider {
       await releaseAndConfirm({
         request: async () => ((await call("DELETE", `/browsers/${encodeURIComponent(ref.id)}`, { signal })).status === 404 ? "gone" : undefined),
         status: () => status(ref, signal),
-        forget: () => forget(ref.id),
+        forget: () => { forget(ref.id); freeWriter(ref.tag); },
         confirm,
         sleep,
         stillRunning: `Kernel session ${ref.id} still running after its delete`,

@@ -6,9 +6,10 @@ export const PI_HOST_ADDENDUM: AuthorHostAddendum = Object.freeze({
   name: 'Pi extension',
   nodeKinds: WORKFLOW_NODE_KINDS.filter(kind => kind !== 'artifact'),
   rules: [
-    'Call agentrun with action describe first, then inspect the complete workflow with its input, then run without a workflow argument.',
+    'Call agentrun with action describe first, then inspect the complete workflow with its input, then dry-run it (action dry-run, without a workflow argument), then run without a workflow argument.',
+    'A dry run runs the inspected workflow on synthetic values, or the input you give it, with no model, Jev or tool call. Its status is passed, not_run (a check could not run; skipped says why, and it proves nothing) or failed (problems say why). Report not_run as not run, never as passed.',
     'Use exactly the tools describe returns. Without host-configured tools these are the active read-only built-ins (read, grep, find, ls), and bash, edit and write exist only in a trusted run; a host that configures its tools offers only those, including in trusted runs. The search tool reads fictional demo sources only.',
-    'Code nodes and mutating tools run only after the user issues /agentrun run --trusted for that run. Trusted execution is local and unsandboxed.',
+    'Code nodes and mutating tools run only after the user issues /agentrun run --trusted for that run. Trusted execution is local and unsandboxed. A dry run of a workflow with code nodes is not_run until the user issues /agentrun dry-run --trusted.',
     'A call uses via tool with a tool describe returns. Shell and executor calls and artifact delivery are unavailable.',
     'This extension supplies no SOP text: do not run a workflow with sopSection here; it needs an SDK host that supplies the authoritative SOP.',
     'Custom extension tools and outer permission hooks are not inherited, including in trusted runs.',

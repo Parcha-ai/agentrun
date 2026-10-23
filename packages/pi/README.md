@@ -1,13 +1,13 @@
 # agent.run() + Pi
 
-Describe a task in Pi, inspect the workflow, run it with your current model, and save its definition for new input. Requires Node 22.19+ and Pi 1.2.0.
+Describe a task in Pi, inspect the workflow, run it with your current model, and save its definition for new input. Requires Node 22.19+ and Pi 1.0.4 to below 1.4 (CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0). Pi 1.4 is not supported yet; the next release widens the range. Pin the peers you install to `@1.3.0` (the install lines below do): an unpinned install of Pi's packages now resolves 1.4.0, which this release does not support, and an unpinned `@earendil-works/pi-durable` or `@earendil-works/chord` fails with `ERESOLVE` against this package's peer range.
 
 ## Install
 
-If you do not have Pi, install the tested host version first:
+If you do not have Pi, install it first; 1.3.0 is the newest version CI tests:
 
 ```sh
-npm install -g @earendil-works/pi-coding-agent@1.2.0
+npm install -g @earendil-works/pi-coding-agent@1.3.0
 ```
 
 Then, in your project:
@@ -17,9 +17,11 @@ pi install npm:@parcha/agentrun-pi@beta -l
 pi --offline
 ```
 
-`-l` writes project settings in `.pi/settings.json`. Omit it to install for all your Pi sessions. `--offline` skips startup downloads; it does not disable model calls. No AgentRun checkout or build is needed.
+`pi --offline` opens Pi's terminal interface, so run it in an interactive terminal; with no terminal attached it prints nothing and exits. `-l` writes project settings in `.pi/settings.json`. Omit it to install for all your Pi sessions. `--offline` skips startup downloads; it does not disable model calls. No AgentRun checkout or build is needed.
 
-On first launch, Pi asks whether you trust the project before loading its extension. If Pi is already open, use `/reload`. The current draft is restored from a persisted Pi session branch when available; named definition saves are stored separately.
+On first launch, Pi asks "Trust project folder?" before loading the extension, with five choices: Trust, Trust parent folder, Trust (this session only), Do not trust, and Do not trust (this session only). Choose Trust, or Trust (this session only), to load it. If Pi is already open, use `/reload`. The current draft is restored from a persisted Pi session branch when available; named definition saves are stored separately.
+
+With no model configured, `pi --offline` prints two warnings at startup: `Warning: fd not found. Offline mode enabled, skipping download.` (the optional `fd` tool is not installed and `--offline` skips fetching it) and `Warning: No models available. Use /login to log into a provider via OAuth or API key.` Both are expected here and the scripted demo needs neither. The `[Skills]` list shows `agentrun-author` and the `[Extensions]` list shows `@parcha/agentrun-pi` when the extension loaded.
 
 For live tasks, configure model access in Pi first. AgentRun uses Pi's current model and authentication; it needs no separate model configuration. The scripted demo below works without provider access.
 
@@ -37,11 +39,13 @@ npx @parcha/agentrun-pi@beta demo
 
 It prints each sub-question with its answer, then `Status: complete`, the answer and the scripted call counts, and exits 0. `npx @parcha/agentrun-pi@beta demo empty` runs the missing-evidence path and prints `Status: escalated`.
 
-The demo shows the workflow graph, progress, and a completed result with call counts. It uses scripted responses over fictional sources. It makes no model calls and does not test model quality. Run `/agentrun status` to check the loaded skill and Pi host version. The tested version is 1.2.0; status flags a different host without blocking it. Missing Pi or Jev access does not prevent the scripted demo. To repeat it, run `/agentrun run` or `/agentrun demo`. A scripted demo stays scripted on rerun, including its missing-evidence path. Use `/agentrun demo live` to switch to real Pi and Jev calls. Workflows authored by Pi use real adapters.
+The demo shows the workflow graph, progress, and a completed result with call counts. It uses scripted responses over fictional sources. It makes no model calls and does not test model quality. Run `/agentrun status` to check the loaded skill and Pi host version. Status names the supported range, 1.0.4 to below 1.4, and flags a host outside it without blocking it. Missing Pi or Jev access does not prevent the scripted demo. To repeat it, run `/agentrun run` or `/agentrun demo`. A scripted demo stays scripted on rerun, including its missing-evidence path. Use `/agentrun demo live` to switch to real Pi and Jev calls. Workflows authored by Pi use real adapters.
 
 For an offline Pi startup, use `pi --offline`. Without that flag, Pi may download optional command-line tools on first launch. This is separate from the scripted demo, which makes no network calls.
 
 ## Preview, run, save, reuse
+
+**This section needs a configured model.** Authoring a workflow from a task is a model call, so the preview below, and the `input`, `run`, `save` and `load` steps after it, are for a Pi with a model selected. With no model, `/agentrun <task>` answers `AgentRun requires an active Pi model. Use /login to connect a provider, then /model to select it. Try /agentrun demo without model access.` and `/agentrun demo` (above) is the one workflow you have: `/agentrun input`, `run` and `save` act on that scripted demo, not on a release review.
 
 ```text
 /agentrun Preview a reusable workflow that identifies breaking changes and migration actions in supplied release notes. Do not run it yet.
@@ -65,7 +69,7 @@ After inspecting a definition, save it and reuse it in a new Pi session in the s
 /agentrun run
 ```
 
-Loading starts with empty input and does not execute. A save retains the definition, not input or execution permission. Scripted demo adapters are not saved: loading a saved demo uses live adapters and requires the corresponding model and Jev access. Each run restarts with the current input and model; it is not checkpoint resume.
+Loading starts with empty input and does not execute. A save retains the definition, not input or execution permission. Scripted demo adapters are not saved: loading a saved demo uses live adapters and requires the corresponding model and Jev access. Loading a saved definition starts a new run with the current input and model. A run that was interrupted continues with `/agentrun run` (see the durable run below).
 
 | Command | What happens |
 | --- | --- |
@@ -74,6 +78,7 @@ Loading starts with empty input and does not execute. A save retains the definit
 | `/agentrun` | Inspect the current workflow, or show help if there is none. |
 | `/agentrun input <case or JSON>` | Set new input without changing the definition or running it. |
 | `/agentrun run` | Repeat the current workflow with its last supplied input. Scripted demos stay scripted; authored workflows use real adapters. |
+| `/agentrun dry-run` | Run the current workflow on synthetic values, with no model, Jev or tool call. |
 | `/agentrun save <name>` | Save an immutable, project-local definition revision. |
 | `/agentrun load <name> [digest]` | Load the newest or exact revision; input starts empty. |
 | `/agentrun list` | List saved revisions. |
@@ -83,19 +88,33 @@ Loading starts with empty input and does not execute. A save retains the definit
 
 A progress widget shows active steps and the number finished. Results distinguish completion, escalation, failure, and interruption. Decision records show supplied evidence, criteria, answer, and route, not hidden reasoning or proof of correctness.
 
-Pi 1.1.0 cannot export a fresh session containing only slash-command results. To save an offline research receipt from the checkout, run `node examples/research-live.mjs --out research-result.json`. This runs the scripted example again and writes its result; it does not export the Pi session.
+Pi 1.1.0 cannot export a fresh session containing only slash-command results. To save an offline research receipt, run [`examples/research-live.mjs`](https://github.com/Parcha-ai/agentrun/blob/main/examples/research-live.mjs) from a checkout of the repository (the `examples/` directory is in the repository, not in the npm package): `node examples/research-live.mjs --out research-result.json`. This runs the scripted example again and writes its result; it does not export the Pi session.
 
 A live run is durable. Its journal is kept in `.pi/agentrun/runs/<run id>/journal.json`, and `/agentrun run` after an interruption (`/agentrun stop`, a closed session, a killed process) or a failure continues the same run: committed steps are answered from the journal, a tool call that completed is answered from its receipt and is not made again, and the next step runs. The run is bound to its workflow, input, SOP text and tool names; a change to any of them starts a new run. A tool call that was in flight when the run stopped has an unknown outcome and is never made again: the resumed run fails naming it, and the person who knows whether it happened reconciles it before a new run. An agent step that was interrupted starts over from its first turn. A run that completed or escalated is not resumed; `/agentrun run` starts a new one. Scripted demos keep no journal.
 
 One workflow runs at a time. Named definitions are durable across sessions in the same project. Pi run receipts belong to the current branch and may remain in memory until Pi persists its session; saving a definition does not save a receipt.
 
-### Three demo modes
+A host that does not run the extension can save, load and list the same definitions with `@parcha/agentrun-pi/workflows`, which loads nothing from pi:
+
+```ts
+import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
+
+const store = new WorkflowStore(projectDirectory);   // records go to <projectDirectory>/.pi/agentrun/workflows/<name>/
+const saved = await store.save('release-review', workflow);   // an immutable revision, named by its SHA-256
+const again = await store.load('release-review');             // the last one saved; pass a digest for an exact revision
+const revisions = await store.list();                         // every revision, newest first
+```
+
+The argument is a project directory, not the workflows directory: the extension keeps its records for `ctx.cwd` in the same place, so a host that passes that directory and the extension read each other's records. Storage needs real directories and regular files (a symbolic link in the path or among the records fails with `WorkflowStoreError` code `unsafe_path`), and every load checks the record's metadata and the SHA-256 of its workflow. A `<name>/` directory copied into the workflows directory loads. A saved workflow is a procedure, not authority: the host still checks it against its current capabilities before it runs.
+
+### Demo modes
 
 | Command | What it demonstrates |
 | --- | --- |
 | `/agentrun demo` | Scripted successful execution over the bundled fictional sources, without model calls. |
 | `/agentrun demo empty` | Scripted insufficient-evidence path, without model calls. |
 | `/agentrun demo live` | Real Pi agent steps and Jev system one decisions over the same fictional sources. |
+| `/agentrun triage` | A second scripted workflow, support-ticket triage over a fictional ticket, without model calls. |
 
 Live mode uses your active Pi model and requires configured TypeSafe access for Jev. It still does not search the web or prove accuracy on real research. See the [Jev adapter configuration](https://github.com/Parcha-ai/agentrun/tree/main/packages/jev#readme). Live calls can incur usage charges; scripted mode needs no provider access.
 
@@ -104,6 +123,8 @@ Live mode uses your active Pi model and requires configured TypeSafe access for 
 By default, the extension exposes currently active Pi built-in `read`, `grep`, `find`, and `ls` tools. A workflow can narrow that set; it cannot enable a tool that the host has not supplied. The additional `search` tool reads only the bundled fictional demo sources.
 
 The user must issue `/agentrun run --trusted` for each run that needs code nodes or active built-in `bash`, `edit`, or `write` tools. This permits local, unsandboxed execution; authorization does not carry into the next run. A model cannot grant itself that permission with a tool argument.
+
+A dry run (`/agentrun dry-run`, the inspector's Dry-run action, or the tool's `dry-run` action, which also takes an `input`) runs the inspected workflow on synthetic values: agent and judge answers and tool results are synthesized from their schemas, so it makes no model, Jev or tool call, writes no run journal and leaves the last run's receipt as it was. Its `status` is `passed`, `failed` (`problems` say why), or `not_run`: a check could not run, for example a schema the generator cannot satisfy (`pattern`, `format`), a synthetic answer that escalated, or SOP text that was not supplied, and `skipped` says which. A `not_run` dry run proves nothing. A workflow with code nodes is `not_run` unless the user issues `/agentrun dry-run --trusted`, which runs its code in this process for that dry run only; a code node that throws is reported by its label, without what it threw. A dry run stops after 10,000 synthetic steps, or at `/agentrun stop`, as `not_run`.
 
 A workflow that names `sopSection`s needs SOP text. `/agentrun sop <file>` reads a Markdown file inside the project (up to 512 KiB) and checks that it has a `## <section>` heading for each section the workflow names; `/agentrun sop` shows what is set. The file's digest is kept with the session, and a run is refused if the file changed since it was supplied. A host that passes `sop` to `createAgentRunExtension` supplies the text itself and `/agentrun sop` is not used.
 
@@ -144,7 +165,7 @@ The native model-facing interface starts with `agentrun` and `action: "describe"
 
 ### Configure the native extension from a host
 
-Hosts that own a restricted corpus, an approved Jev transport, or shared accounting can configure the same native extension:
+Hosts that own a restricted corpus, an approved Jev transport, or shared accounting can configure the same native extension. This is a sketch, not a runnable sample: `approvedToolsFor`, `makeHostJudge` and `sharedBudget` stand for your own host's code. See [Integrate with your application](../../docs/host-integration.md) for what a host supplies.
 
 ```js
 import { createAgentRunExtension } from '@parcha/agentrun-pi/extension';
@@ -185,7 +206,7 @@ An operator may select a different active Pi model between inspection and execut
 
 ## SDK: embed the runner
 
-The native extension handles configuration above. For another Pi extension that already has a context:
+The native extension handles configuration above. For another Pi extension that already has a context, this sketch shows the call (not runnable as it stands: `ctx` is the context Pi hands your extension, and `workflow`, `input` and `allowedTools` are yours; see [Integrate with your application](../../docs/host-integration.md)):
 
 ```js
 import { runWorkflow } from '@parcha/agentrun-dsl';
@@ -197,7 +218,7 @@ const result = await runWorkflow(workflow, input, {
 });
 ```
 
-`ctx` supplies the active model and public model registry. Tools are explicitly supplied and receive the original context; outer hooks are not copied. The captured active model remains fixed for the run. The host thinking level is inherited when provided, and a node can override it. The runner bounds turns, submissions, and time, and refuses an absent model instead of selecting a fallback. These limits do not impose token or spending caps.
+`ctx` supplies the active model and public model registry. Tools are explicitly supplied and receive the original context; outer hooks are not copied. The captured active model remains fixed for the run. A node thinks at its own `thinking` level; a node that names none thinks at medium, not at the host session's level, unless the runner's own `thinkingLevel` option sets another. Thinking is never off: a level of `off` runs at medium. The runner bounds turns, submissions, and time, and refuses an absent model instead of selecting a fallback. These limits do not impose token or spending caps.
 
 For a standalone application, `createPiRunner(options)` accepts a configured SDK `ModelRuntime` and its selected `model`. Supply `tools` explicitly. It loads no ambient filesystem tools, workspace instructions, extensions, prompt templates, or skills. `createPiHostSessionFactory(ctx)` exposes the same native child session transport for integrations that own their own runner. Factories are unnecessary for ordinary extension use.
 
@@ -207,7 +228,7 @@ The child model delivers `{value: result}` through its `submit` tool. Schema and
 
 ## SDK: retain candidates and check fixed fixtures
 
-`authorWorkflow` lives in `@parcha/agentrun-dsl` beside the language it teaches. It saves candidate files separately from the native extension's current draft and named procedure revisions. Give it a Pi runner with no host tools, and bound its submissions by the candidate limit:
+`authorWorkflow` lives in `@parcha/agentrun-dsl` beside the language it teaches. It saves candidate files separately from the native extension's current draft and named procedure revisions. Give it a Pi runner with no host tools, and bound its submissions by the candidate limit. This is a sketch, not runnable as it stands: `options` is your configured `PiRunnerOptions` and `checkAgainstYourFixtures` is your own function (see [Integrate with your application](../../docs/host-integration.md)):
 
 ```js
 import { authorWorkflow } from '@parcha/agentrun-dsl';
@@ -228,7 +249,44 @@ The host owns `checkAgainstYourFixtures`: return diagnostics, or `[]` to accept.
 
 With `rubricSections`, every supplied section must appear on every generated LLM node, including child workflows. The author conservatively rejects Jev nodes, semantic `ask` predicates, and `verify` clauses under that policy; those need a separately reviewed question contract. Schema properties named `node`, `verify`, or `predicate` remain ordinary data. Supply the authoritative rubric as `deps.sop` when executing the candidate.
 
-The standalone CLI remains available as `node packages/pi/dist/cli.js --help` from source. It imports a trusted caller-owned `--config` module for `author` and `run`; importing that module executes its code. `validate` can evaluate code probes. Review executable workflows before using it.
+The package also installs a command line, `agentrun-pi`. Try it from an empty directory after `npm install @parcha/agentrun-pi@beta`:
+
+```sh
+npx agentrun-pi --help
+npx agentrun-pi demo
+cp node_modules/@parcha/agentrun-dsl/skills/author/examples/review-release-notes.json workflow.json
+npx agentrun-pi validate workflow.json --inputs notes
+```
+
+`--inputs` names the keys of the workflow's input object; `review-release-notes.json` takes one, `notes`. `demo` needs no key and no peers. `author` and `run` import a trusted caller-owned `--config` module (its code runs when imported) that exports your runner options, and need the peers listed under Dependencies. `validate` can evaluate code probes. Review executable workflows before using it.
+
+## Durable workflows on pi-durable
+
+`@parcha/agentrun-pi/durable` runs a workflow as one pi-durable task, `agentrun.workflow`. `createWorkflowTool(host)` gives a pi-durable session the `agentrun` tool and the task its runs are; `createWorkflowExtension(host)` is the task alone, with `start`, `read` and `stop` for your own code. Install pi-durable and chord beside the package at the tested version: `npm install @earendil-works/pi-durable@1.3.0 @earendil-works/chord@1.3.0`. The `host` object supplies what a run needs (its tools, its node runner, its judge, an optional `reconcile`); see [the agentrun tool in a pi-durable session](../../docs/host-integration.md#the-agentrun-tool-in-a-pi-durable-session) and [Recovery and versions](../../docs/host-integration.md#recovery-and-versions). The code below is a description, not a sample: the host is yours.
+
+A run keeps its journal in the session's store. A process that is killed leaves the task pending, and `harness.resume()` in the next process runs the workflow again: committed nodes and effects are answered from the journal and not run again, and the run continues at the first step that did not commit. A typed question is a different matter: a route's answer is kept by the recovery wrapper itself, but any other question (`judge`, `pick`, `sift`, `ask`, `verify`) is answered again from its receipt only when the host wires both hooks of `decisionRecovery({ key, runtime, context })` (`recordDecision` in the dependencies it returns, `decision` in their `recovery`). Without them, a question inside a node that had not committed is asked again after a crash, and a second call can answer differently; see [Decision receipts](../../docs/host-integration.md#decision-receipts). An agent step is run again from its first turn after a crash, unless the host's node runner is the durable one (`nodeRunner`, from the same entry, with `durableNodes: true` in the `adapters` the host returns): then the step is one conversation the task owns, found again by its id, and a turn that committed is not requested again. Neither entry chooses this for you; it is the host's `runNode`. A tool call that was in flight at the crash has an unknown outcome and is never made again: the resume refuses it unless the host's `reconcile` settles it with a recorded result. A typed failure is a recorded outcome (`failed`, with a code), not a throw. A pause stops at a step boundary and the task stays pending until the host closes the Harness; reopening continues it. A cancel (pi's `abortTask`) ends the run for good, and a cancelled run never resumes.
+
+## Sign in, pick a model, check keys
+
+`@parcha/agentrun-pi/signin` is what a demo, or your own app, runs before its first model call. The sample below is a sketch, not runnable as written: `spec` is a demo's spec (the `demo.json` of an example in the repository's `examples/` directory), and `provider`, `modelId` and `context` are your app's. It is the only entry of this package that loads `@earendil-works/pi-ai`, an optional peer: install it beside the package (`npm install @earendil-works/pi-ai@1.3.0`) to use this entry. No other entry imports it.
+
+```js
+import { builtinModels } from '@earendil-works/pi-ai/providers/all';
+import { checkKeys, resolveModel, usageLimitError } from '@parcha/agentrun-pi/signin';
+
+const report = checkKeys(spec, { live: true, dir: demoDir });
+if (!report.ok) { console.error(report.text); process.exit(report.exitCode); } // 2: nothing was sent
+const { model, getApiKey, source } = await resolveModel(spec, { provider, model: modelId });
+const message = await builtinModels().completeSimple(model, context, { apiKey: await getApiKey() });
+if (usageLimitError(message)) throw usageLimitError(message);
+```
+
+- `checkKeys(spec, options)` lists what this run needs and what is missing: each key by its env name and where to create it, each program on `PATH` (refused outside its `platforms`, or below its `min` version as the first x.y.z that `<cmd> --version` prints), and each package as the demo's directory resolves it, with the exact `npm install --no-save <name>@<version>` line when it is missing. An item with `for: 'live'` or `for: 'kill'` counts only in that mode. A `oneOf` choice is met by any member, and an array member only by all of its items. A Jev judge asks for `TYPESAFE_API_KEY` or `OPENROUTER_API_KEY`. The check sends no request and prompts for nothing; a key's value is never printed.
+- `checkSetupPrompt(spec, text)` checks a demo's setup prompt against its spec: every key env name, program command and package name in the spec appears in it, and it names no credential env name (`*_API_KEY`, `*_KEY`, `*_TOKEN*`, `*_SECRET*`, `*_PROJECT_ID`) the spec does not list. `node scripts/check-setup-prompts.mjs` runs it for every `examples/*/demo.json` in CI.
+- `resolveModel(spec, options)` picks the model and its key. An explicit `provider` (and `model`) with that provider's env key wins, passed on as an explicit key; Anthropic takes `ANTHROPIC_API_KEY` only. Otherwise a stored ChatGPT sign-in is used, and the model is chosen from the account's own `GET /v1/models` by what the spec needs (text, tools, images): the spec's default when the account lists it, else the newest one pi-ai knows. With neither, it runs the sign-in. A sign-in's model takes only streaming Responses calls with `store: false` (`responsesOnly`, `unsupported`). The spec's eyes model resolves the same way: an explicit `eyes` model with its key, else the lead model when it meets the eyes' needs, else a `ResolveError` naming the gap; the ChatGPT plan takes no video input. The result serializes without its key.
+- `signIn(options)` runs pi-ai's own Sign in with ChatGPT once per install, with this app's name and a host id kept for the install. pi-ai's callback port is fixed at 1455; when another login holds it, the sign-in fails at once and says to finish or cancel that login. A pi-ai that ignores the app name (before 1.1) is refused before the page opens.
+- The sign-in lives in `$AGENTRUN_HOME/auth.json` (default `~/.config/agentrun/`): the directory is 0700 and the file 0600, written whole and renamed into place. An existing directory others can read is refused, not changed. Refreshes are serialized across processes by an operating-system lock, an exclusive SQLite transaction on `auth.json.lock` (an empty database beside it, through `node:sqlite`). The system frees it when its holder exits or is killed, so a crashed run leaves no lock to clear, the rotating refresh token is never sent twice, and a process that waited reads the new token. On Node 22, `node:sqlite` prints one experimental warning when the first write loads it. A token never reaches a log, a URL or a recording.
+- The plan's usage limit (`subscription_sharing_usage_limit_exceeded`) maps to `UsageLimitError`: "Your ChatGPT plan's usage limit is reached; wait, or set a provider key." It is never retried.
 
 ## Develop from source
 
@@ -250,9 +308,9 @@ These commands create a separate `agentrun-pi-project` beside the checkout. You 
 
 ## Dependencies and retained data
 
-Pi is optional for `@parcha/agentrun-dsl`. This package depends on the DSL and the Jev adapter only. The Pi packages it uses (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-tui`) and `typebox` are optional peer dependencies at `*`, as Pi's package guidance requires, so an installed copy never shadows the host's. The release inventory records the locked versions.
+Pi is optional for `@parcha/agentrun-dsl`. This package depends on the DSL and the Jev adapter only. The Pi packages it uses (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-tui`, and `@earendil-works/pi-ai` for the sign-in entry only) and `typebox` are optional peer dependencies at `*`, as Pi's package guidance requires, so an installed copy never shadows the host's. The release inventory records the locked versions.
 
-When loaded as an extension, Pi resolves its core packages and TypeBox through the host loader, and `pi install` adds nothing else. A standalone application or the `agentrun-pi` CLI has no host: install the peers yourself (`npm install @earendil-works/pi-coding-agent@~1.2.0 @earendil-works/pi-agent-core@~1.2.0 @earendil-works/pi-tui@~1.2.0 typebox`). The pi packages are pinned to 1.2: pi 1.3.0 pins its own packages to exact versions, and this release's ranges stop below 1.3 until the next one. The tested host is Pi 1.2.0; peer ranges at `*` do not make an older or newer host compatible. The offline loader regression checks competing local dependencies, a native file read, and the scripted workflow. Pi's [package guidance](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md#dependencies) is the rule this follows.
+When loaded as an extension, Pi resolves its core packages and TypeBox through the host loader, and `pi install` adds nothing else. A standalone application or the `agentrun-pi` CLI has no host: install the peers yourself (`npm install @earendil-works/pi-coding-agent@1.3.0 @earendil-works/pi-agent-core@1.3.0 @earendil-works/pi-tui@1.3.0 typebox@1.3.7`). This release supports Pi 1.0.4 to below 1.4, and CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0; peer ranges at `*` do not make an older or newer host compatible. The sign-in entry needs pi-ai 1.1.0 or later: pi-ai 1.0.x ignores the app name and would put pi's name on ChatGPT's sign-in page, so `signIn` refuses it with `SignInError` (`APP_NAME_IGNORED`) before the page is shown. The offline loader regression checks competing local dependencies, a native file read, and the scripted workflow. Pi's [package guidance](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md#dependencies) is the rule this follows.
 
 The durable entry (`@parcha/agentrun-pi/durable`) takes pi-durable and chord as optional peers from 1.0.4 to below 1.4; CI runs it on 1.0.4, 1.1.0, 1.2.0 and 1.3.0. A run that pi-durable 1.1 left (killed, paused, or with a tool call in flight) continues on 1.2. The move does not go back. A run that pi 1.2 left with a tool call in flight cannot be continued by pi 1.1: 1.1 waits on the newer task, and the only thing it writes is that task's mark from running back to pending, as pi does for any task a dead process left running. Continue such a run on 1.2, and do not downgrade pi under a live run. A host can call `refuseNewerTasks(harness, context)` from the durable entry after opening its Harness. On pi before 1.2, it then fails such a store with `NewerTaskError` (code `PI_TASK_NEWER`, naming the task's kind and version) instead of waiting.
 

@@ -25,7 +25,7 @@ async function killMidSuite(t, kill, chrome, slowReport = false) {
   const { NODE_TEST_CONTEXT: _, ...outer } = process.env;
   const env = { ...outer, VICTIM_READY: ready, ...(chrome ? { VICTIM_CHROME: CHROME } : {}), ...(slowReport ? { VICTIM_SLOW_REPORT_MS: "1500" } : {}) };
   const runner = spawn(process.execPath, [fixture("hygiene-runner.mjs"), fixture("hygiene-victim.mjs"), path.join(import.meta.dirname, "preload.mjs")], { env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
-  t.after(() => { try { process.kill(-runner.pid, "SIGKILL"); } catch {} });
+  t.after(() => { try { process.kill(-runner.pid, "SIGKILL"); } catch {} }, { timeout: 30_000 });
   let stderr = "", exited = false;
   runner.stderr.on("data", (chunk) => { stderr += chunk; });
   runner.once("exit", () => { exited = true; });
@@ -63,7 +63,7 @@ test("a scratch directory is removed after every other cleanup its test register
     let dir, seen;
     await t.test(fails ? "a failing test" : "a passing test", fails ? { todo: "throws on purpose" } : {}, async (inner) => {
       dir = await scratch(inner, "order-");
-      inner.after(() => { seen = fs.existsSync(dir); });
+      inner.after(() => { seen = fs.existsSync(dir); }, { timeout: 30_000 });
       if (fails) throw new Error("on purpose");
     });
     assert.equal(seen, true, "the later cleanup still found the directory");

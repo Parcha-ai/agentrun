@@ -19,11 +19,11 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error
 
 test("the use_website demo: a child agent reads the site in a real Chrome, its report comes back to the parent, and its Chrome is released", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
   const site = await startSite();
-  t.after(() => site.close());
+  t.after(() => site.close(), { timeout: 30_000 });
   const root = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "use-website-chrome-"));
   const before = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
-  t.after(() => { if (before === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = before; fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+  t.after(() => { if (before === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = before; fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }, { timeout: 30_000 });
   const startUrl = `${site.base}/a`;
   const requestId = randomUUID();
 

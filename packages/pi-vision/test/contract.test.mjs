@@ -3,7 +3,7 @@
 // arguments, so a change here is a change for every host; it is never made to pass this test.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MISS_CODES, READ_MEDIA_ARGUMENTS, READ_MEDIA_DESCRIPTION, READ_MEDIA_PARAMETERS, VISION_SEE, visionSection, withReadMedia } from "@parcha/pi-vision";
+import { MISS_CODES, READ_MEDIA_ARGUMENTS, READ_MEDIA_DESCRIPTION, READ_MEDIA_PARAMETERS, VISION_JUDGE, VISION_SEE, visionSection, withReadMedia } from "@parcha/pi-vision";
 
 const SNAPSHOT = {
   parameters: {
@@ -59,6 +59,13 @@ test("vision.see is a code-mode global, not a tool: a namespaced name, a doc com
   assert.ok(Object.isFrozen(VISION_SEE));
   assert.deepEqual(Object.keys(VISION_SEE), ["name", "description", "signature"], "no parameters schema and no replay class: it enters no tool list");
   assert.match(VISION_SEE.signature, /^\(request: \{ ask: string; paths\?: string\[\]; images\?: .*fragments\?: string\[\] \}\): Promise<\{ text: string; model: string; costUsd: number \| null; receipts: string\[\]; kept\?: true \}>$/);
+});
+
+test("vision.judge is a code-mode global beside vision.see: its four question types, examples, and answers with a box's fragment", () => {
+  assert.equal(VISION_JUDGE.name, "vision.judge");
+  assert.ok(Object.isFrozen(VISION_JUDGE));
+  assert.deepEqual(Object.keys(VISION_JUDGE), ["name", "description", "signature"]);
+  assert.match(VISION_JUDGE.signature, /^\(request: \{ questions: \{ \[name: string\]: \{ type: "choice" \| "noul" \| "score" \| "box";.* examples\?: .*\}\): Promise<\{ answers: .*fragment\?: string \} \}; model: string; costUsd: number \| null; receipts: string\[\]; kept\?: true \}>$/);
 });
 
 test("the miss codes keep the three hosts already write, and add the rest", () => {

@@ -120,6 +120,10 @@ export type MoveFileOptions = {
 	readonly toPipe?: Pipe;
 	/** The size of the parts when a side moves files and names no size. Default 32 MiB. */
 	readonly chunkBytes?: number;
+	/** No byte moved for this long ends the copy. Default 60 s. */
+	readonly stallMs?: number;
+	/** The whole copy must end within this. Default: a base and the time the file's size needs at an assumed floor. */
+	readonly deadlineMs?: number;
 };
 
 /** How a directory is moved. */
@@ -279,6 +283,7 @@ async function list(
 	root: string,
 	options: WorkspaceOptions | undefined,
 	context: Context,
+	skipped?: { path: string; kind: string; bytes: number }[],
 ): Promise<Result<Listed[], WorkspaceError>> {
 	const ran = await run(
 		box,
@@ -308,7 +313,10 @@ async function list(
 			string,
 			string,
 		];
-		if (skip(path)) continue;
+		if (skip(path)) {
+			skipped?.push({ path, kind: type, bytes: type === "f" ? Number(size) : 0 });
+			continue;
+		}
 		const kind = KINDS[type];
 		if (kind === undefined) {
 			return err(
@@ -1088,8 +1096,8 @@ export async function moveFile(
 			? filesSink(to, JOIN_FILE_SCRIPT, [partial], toPipe.chunkBytes)
 			: streamStarter(to, ["sh", "-c", RECEIVE_SCRIPT, "sh", partial]),
 		{
-			stallMs: DEFAULT_STALL_MS,
-			deadlineMs: BASE_DEADLINE_MS + (seal.bytes / ASSUMED_FLOOR_BYTES_PER_SECOND) * 1000,
+			stallMs: options?.stallMs ?? DEFAULT_STALL_MS,
+			deadlineMs: options?.deadlineMs ?? BASE_DEADLINE_MS + (seal.bytes / ASSUMED_FLOOR_BYTES_PER_SECOND) * 1000,
 		},
 		context,
 	);
@@ -1142,4 +1150,191 @@ export async function moveFile(
 		return err(new WorkspaceError("box_failed", `could not place ${toPath}: ${placed.value.stderr.trim()}`));
 	}
 	return ok({ ms: performance.now() - started });
+}
+
+/** Whether two entries are the same file as far as a listing can tell: kind, size, mode, target and time. */
+/**
+ * The entries of `current` that a pull has to copy: new ones, and any whose listing (size, mode, link target or time) or
+ * content differs from the same path in `previous`. `moveChanged` copies exactly these, so a budget counts them too.
+ */
+export function changedEntries(previous: Manifest | undefined, current: Manifest): ManifestEntry[] {
+	const before = new Map((previous?.entries ?? []).map((entry) => [entry.path, entry]));
+	return current.entries.filter((entry) => {
+		const old = before.get(entry.path);
+		return old === undefined || !sameListed(old, entry) || old.sha256 !== entry.sha256;
+	});
+}
+
+function sameListed(a: Listed, b: Listed): boolean {
+	return a.kind === b.kind && a.bytes === b.bytes && a.mode === b.mode && a.target === b.target && a.mtime === b.mtime;
+}
+
+/**
+ * Like `manifestOf`, but a file that is the same as in `previous` as far as a listing can tell (kind, size, mode, link
+ * target and time) takes its SHA-256 from there and is not read. A rewrite that keeps size and time is not seen: the
+ * next `manifestOf` is the one that reads everything.
+ */
+export async function manifestSince(
+	box: Box,
+	root: string,
+	previous: Manifest | undefined,
+	options: WorkspaceOptions | undefined,
+	context: Context,
+): Promise<Result<Manifest, WorkspaceError>> {
+	const listed = await list(box, root, options, context);
+	if (!listed.ok) return listed;
+	const before = new Map((previous?.entries ?? []).map((entry) => [entry.path, entry]));
+	const reused = new Map<string, string>();
+	const toRead: Listed[] = [];
+	for (const entry of listed.value) {
+		if (entry.kind !== "file") continue;
+		const old = before.get(entry.path);
+		if (old?.sha256 !== undefined && sameListed(old, entry)) reused.set(entry.path, old.sha256);
+		else toRead.push(entry);
+	}
+	const hashes = await hashFiles(box, root, toRead, options, context);
+	if (!hashes.ok) return hashes;
+	const entries: ManifestEntry[] = [];
+	for (const entry of listed.value) {
+		if (entry.kind !== "file") {
+			entries.push(entry);
+			continue;
+		}
+		const sha256 = reused.get(entry.path) ?? hashes.value.get(entry.path);
+		if (sha256 === undefined) return err(new WorkspaceError("changed", `${entry.path} vanished while it was hashed`));
+		entries.push({ ...entry, sha256 });
+	}
+	return ok({ entries, bytes: entries.reduce((sum, entry) => sum + entry.bytes, 0) });
+}
+
+/** What `moveChanged` did. */
+export type ChangedReceipt = {
+	/** Entries copied: new or different from what the target held. */
+	readonly changed: number;
+	/** Entries removed from the target because the source no longer has them. */
+	readonly removed: number;
+	/** Bytes of the files copied. */
+	readonly bytes: number;
+	readonly totalMs: number;
+};
+
+/**
+ * Bring a directory in `to` from the state `previous` describes to the state `current` describes, copying what is new or
+ * different and removing what is gone, then check what was copied against `current`: each copied file's SHA-256, and
+ * the kind of each entry. The target must hold `previous`'s tree. A file of the source that changed after `current`
+ * was taken is `mismatch` (it names the path); nothing is promised about the target then, and the caller starts the
+ * tree again from a copy it trusts. The same transport rules as `moveWorkspace`: each side by its box's `bulk` fact.
+ */
+export async function moveChanged(
+	from: Box,
+	to: Box,
+	options: MoveWorkspaceOptions & { readonly previous: Manifest | undefined; readonly current: Manifest },
+	context: Context,
+): Promise<Result<ChangedReceipt, WorkspaceError>> {
+	const started = performance.now();
+	const fromPipeResult = pipeOf(from, options.fromPipe, options.chunkBytes);
+	if (!fromPipeResult.ok) return fromPipeResult;
+	const toPipeResult = pipeOf(to, options.toPipe, options.chunkBytes);
+	if (!toPipeResult.ok) return toPipeResult;
+	const before = new Map((options.previous?.entries ?? []).map((entry) => [entry.path, entry]));
+	const now = new Map(options.current.entries.map((entry) => [entry.path, entry]));
+	const changed = changedEntries(options.previous, options.current);
+	const removed = [...before.keys()].filter((path) => {
+		const entry = now.get(path);
+		// A path that changed kind is removed first, so the new entry does not meet the old one.
+		return entry === undefined || entry.kind !== before.get(path)?.kind;
+	});
+	const bytes = changed.reduce((sum, entry) => sum + entry.bytes, 0);
+	if (options.maxBytes !== undefined && bytes > options.maxBytes) {
+		return err(new WorkspaceError("too_large", `${bytes} bytes of files changed, the limit is ${options.maxBytes}`));
+	}
+	if (removed.length > 0) {
+		const gone = await run(
+			to,
+			["sh", "-c", 'cd -- "$1" && xargs -0 -r rm -rf --', "sh", options.toRoot],
+			nulList(removed),
+			options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+			context,
+		);
+		if (!gone.ok) return gone;
+		if (gone.value.exitCode !== 0) {
+			return err(new WorkspaceError("box_failed", `could not remove what is gone: ${gone.value.stderr.trim()}`));
+		}
+	}
+	if (changed.length > 0) {
+		const names = nulList(changed.map((entry) => entry.path));
+		const fromPipe = fromPipeResult.value;
+		const toPipe = toPipeResult.value;
+		const moved = await transfer(
+			fromPipe.kind === "files"
+				? filesSource(from, PACK_FILES_SCRIPT, [options.fromRoot], names, fromPipe.chunkBytes)
+				: streamStarter(from, ["sh", "-c", PACK_SCRIPT, "sh", options.fromRoot]),
+			names,
+			toPipe.kind === "files"
+				? filesSink(to, UNPACK_FILES_SCRIPT, [options.toRoot], toPipe.chunkBytes)
+				: streamStarter(to, ["sh", "-c", UNPACK_SCRIPT, "sh", options.toRoot]),
+			{
+				stallMs: options.stallMs ?? DEFAULT_STALL_MS,
+				deadlineMs: options.deadlineMs ?? BASE_DEADLINE_MS + (bytes / ASSUMED_FLOOR_BYTES_PER_SECOND) * 1000,
+			},
+			context,
+		);
+		if (!moved.ok) return moved;
+		// What arrived, read in the target and compared with the moment `current` was taken.
+		const files = changed.filter((entry) => entry.kind === "file");
+		const landed = await hashFiles(to, options.toRoot, files, options, context);
+		if (!landed.ok) return landed;
+		for (const entry of files) {
+			if (landed.value.get(entry.path) !== entry.sha256) {
+				return err(new WorkspaceError("mismatch", `${entry.path} is not as it was when the checkpoint was taken`));
+			}
+		}
+	}
+	return ok({ changed: changed.length, removed: removed.length, bytes, totalMs: performance.now() - started });
+}
+
+/** What `exclude` left out of a workspace. */
+export type Excluded = {
+	/** The patterns that were applied. */
+	readonly patterns: readonly string[];
+	/** The top-most entries left out (a directory stands for what is in it), at most 50, sorted. */
+	readonly entries: readonly string[];
+	/** How many more top-most entries there were than `entries` names. */
+	readonly more: number;
+	/** Files left out, all of them, and their bytes. */
+	readonly files: number;
+	readonly bytes: number;
+};
+
+const MAX_EXCLUDED_ENTRIES = 50;
+
+/** What the `exclude` patterns leave out of the tree at `root`, without reading any of it. */
+export async function excludedOf(
+	box: Box,
+	root: string,
+	options: WorkspaceOptions | undefined,
+	context: Context,
+): Promise<Result<Excluded, WorkspaceError>> {
+	const skipped: { path: string; kind: string; bytes: number }[] = [];
+	const listed = await list(box, root, options, context, skipped);
+	if (!listed.ok) return listed;
+	const gone = new Set(skipped.map((entry) => entry.path));
+	const top = skipped
+		.map((entry) => entry.path)
+		.filter((path) => !hasExcludedAncestor(path, gone))
+		.sort();
+	return ok({
+		patterns: [...(options?.exclude ?? [])],
+		entries: top.slice(0, MAX_EXCLUDED_ENTRIES),
+		more: Math.max(0, top.length - MAX_EXCLUDED_ENTRIES),
+		files: skipped.filter((entry) => entry.kind === "f").length,
+		bytes: skipped.reduce((sum, entry) => sum + entry.bytes, 0),
+	});
+}
+
+function hasExcludedAncestor(path: string, gone: ReadonlySet<string>): boolean {
+	for (let at = path.lastIndexOf("/"); at > 0; at = path.lastIndexOf("/", at - 1)) {
+		if (gone.has(path.slice(0, at))) return true;
+	}
+	return false;
 }

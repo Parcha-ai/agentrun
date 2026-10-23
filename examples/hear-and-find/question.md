@@ -1,0 +1,1 @@
+In this film, at which second does the crew make the landing call, "Tranquility Base here. The Eagle has landed.", during the descent? The line may be heard more than once: tell me each time, and which one is the landing. Then: at which second is the United States flag first seen standing planted on the ground, and where is it in the frame? Cite the moments you heard and saw.

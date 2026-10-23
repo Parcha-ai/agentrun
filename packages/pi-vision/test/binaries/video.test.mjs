@@ -45,12 +45,14 @@ if (have) {
   // 12 s of 1080p at 12 Mbit/s: a stream copy of it is far over a few megabytes, its re-encode is not.
   ffmpeg("-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=25", "-t", "12", ...x264, "-preset", "ultrafast", "-b:v", "12M", at("heavy.mp4"));
   ffmpeg("-f", "lavfi", "-i", "sine=frequency=440", "-t", "2", "-c:a", "aac", "-f", "mp4", at("audio-only.mp4"));
+  // 8 s of picture with a tone under it: a recording someone speaks over.
+  ffmpeg("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=10", "-f", "lavfi", "-i", "sine=frequency=440", "-t", "8", ...x264, "-c:a", "aac", "-shortest", at("spoken.mp4"));
   await writeFile(at("text.mp4"), "this is not a video\n");
   // A concat script posing as a video, naming a real one beside it: ffmpeg opens it as a script when nothing stops it.
   await writeFile(at("script.mp4"), "ffconcat version 1.0\nfile ramp.mp4\n");
   const ramp = await readFile(at("ramp.mp4"));
   await writeFile(at("truncated.mp4"), ramp.subarray(0, Math.floor(ramp.length * 0.6)));
-  for (const name of ["ramp", "long", "heavy", "audio-only", "text", "script", "truncated"]) {
+  for (const name of ["ramp", "long", "heavy", "audio-only", "spoken", "text", "script", "truncated"]) {
     const bytes = await readFile(at(`${name}.mp4`));
     files[name] = { path: at(`${name}.mp4`), kind: "video", bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
   }
@@ -159,6 +161,23 @@ test("a window too large to copy is re-encoded once at 1280 px and 6 frames a se
   await writeFile(file, Buffer.from(out.part.data, "base64"));
   const stream = probeJson(file, "stream=width,height,r_frame_rate,codec_name").streams[0];
   assert.deepEqual([stream.width, stream.height, stream.r_frame_rate, stream.codec_name], [1280, 720, "6/1", "h264"]);
+  assert.deepEqual(await left(), []);
+});
+
+test("a window keeps the video's sound, by stream copy and through the re-encode", { skip }, async () => {
+  const { call, left } = await session();
+  const audioOf = async (out, name) => {
+    assert.equal(out.ok, true, out.text);
+    const file = join(dir.path, name);
+    await writeFile(file, Buffer.from(out.part.data, "base64"));
+    return probeJson(file, "stream=codec_type,codec_name").streams.filter((stream) => stream.codec_type === "audio").map((stream) => stream.codec_name);
+  };
+  assert.deepEqual(await audioOf(await videoClip(provider, files.spoken, { fromS: 2, toS: 5 }, limits, call), "spoken-copy.mp4"), ["aac"]);
+  const copied = (await stat(files.spoken.path)).size;
+  const squeezed = resolveLimits(undefined, { video: { inlineBytes: copied - 1 } });
+  assert.deepEqual(await audioOf(await videoClip(provider, files.spoken, { fromS: 0, toS: 8 }, squeezed, call), "spoken-encoded.mp4"), ["aac"], "the re-encode keeps it too");
+  const picture = probeJson(join(dir.path, "spoken-encoded.mp4"), "stream=codec_type,r_frame_rate").streams.find((stream) => stream.codec_type === "video");
+  assert.equal(picture.r_frame_rate, "6/1", "the window over the budget was re-encoded");
   assert.deepEqual(await left(), []);
 });
 

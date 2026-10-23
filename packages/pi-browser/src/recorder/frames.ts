@@ -38,6 +38,12 @@ export type FrameRecorderOptions = {
   probeClock?: ProbeClock;
   /** Called with the probe clock's time as each check of the page is sent. */
   onProbe?: (at: number) => void;
+  /** Asked wherever the capture asks whether it is paused: true while the host does not want the session recorded (a person is driving it through a live view).
+   *  While it is true no frame is stored and one `frame.gap` line (`credential_on_page`, detail `host`) marks the span, not one per skipped frame; when it turns false
+   *  frames resume. It is read when a frame arrives (the frame is dropped, and the page is not checked) and again at the sink, the last step before a frame's write, so a frame
+   *  queued behind another session's slow write is still held back (the guarantee: no frame is stored while the hold is true at its write). A span that begins and ends
+   *  between two reads is not seen. A hold that throws counts as true; any answer but `true` as false. */
+  hold?: (ref: LeaseRef) => boolean;
 };
 export type ProbeClock = { now(): number; sleep(ms: number): Promise<void> };
 
@@ -62,6 +68,8 @@ type Verdict = { hold: boolean; why: string | null } | "unchecked";
 type Held = { bytes: Buffer; page: { deviceWidth: number; deviceHeight: number; epoch: number }; verdict?: Verdict };
 /** One session asks its page at most 1000 / PROBE_GAP_MS = 20 times a second: arrival checks and delivery checks share one pace, each sent at least this far after the last. */
 const PROBE_GAP_MS = 50;
+/** While the host holds a session, the hold is asked again this often (nothing else asks when the page does not repaint), so its lifting is seen. */
+const HOLD_POLL_MS = 500;
 
 type Capture = {
   ref: LeaseRef; conv: number; provider: string;
@@ -69,6 +77,12 @@ type Capture = {
   lastFrameT: number | null;
   paused: boolean;
   navigated: boolean;
+  /** The host's hold was true at the last read; the gap of its span is written. */
+  hostHeld: boolean;
+  /** Asks the hold again while it is true, so a lift is seen on a page that sends no frames. */
+  holdTimer: NodeJS.Timeout | null;
+  /** Counts every screencast frame that arrives, so a capture asked for earlier can tell a newer picture came while it was in flight. */
+  frameSeq: number;
   /** The newest frame that has been judged against the page at its capture, waiting for its turn to be kept. */
   ready: Held | null;
   /** The newest frame that has not: it waits for the check that is running. */
@@ -106,19 +120,21 @@ export function frameRecorder(options: FrameRecorderOptions): FrameRecorder {
   /** The timers of lines waiting or being written: unreferenced while the process lives on its own, referenced once `close` waits on them. */
   const sinkTimers = new Set<NodeJS.Timeout>();
   /** `make` builds the line when its turn comes (a gap reads the last frame that was saved by then). */
-  const emit = (make: () => [FrameLine, Record<string, Uint8Array>?]): Promise<boolean> => {
+  const emit = (make: () => [FrameLine, Record<string, Uint8Array>?], withhold?: () => boolean): Promise<boolean> => {
     if (queued >= MAX_QUEUED_LINES) { counts.dropped += 1; return Promise.resolve(false); }
     queued += 1;
     let abandoned = false;
     let answered = false;
-    let answer: (ok: boolean) => void = () => {};
-    const result = new Promise<boolean>((resolve) => { answer = (ok) => { if (answered) return; answered = true; if (!ok) counts.dropped += 1; resolve(ok); }; });
+    let answer: (ok: boolean, counted?: boolean) => void = () => {};
+    const result = new Promise<boolean>((resolve) => { answer = (ok, counted = true) => { if (answered) return; answered = true; if (!ok && counted) counts.dropped += 1; resolve(ok); }; });
     const timer = setTimeout(() => { abandoned = true; answer(false); }, sinkTimeoutMs);
     sinkTimers.add(timer);
     if (closed) timer.ref?.(); else timer.unref?.();
     queue = queue.then(async () => {
       try {
         if (abandoned) return;
+        // The last step before the write: a frame that waited behind another session's slow write is judged by the hold as it is now, not as it was when it was queued.
+        if (withhold?.()) { answer(false, false); return; }
         const [line, blobs] = make();
         await options.sink(line, blobs);
         answer(true); // too late to count when the timeout already answered
@@ -138,6 +154,37 @@ export function frameRecorder(options: FrameRecorderOptions): FrameRecorder {
     c.paused = true;
     c.navigated = false;
     void gap(c, "credential_on_page", undefined, why ?? "field");
+  };
+  /** The host's hold, read now. A hold that throws is a hold (a host that cannot say is not asked twice); anything but `true` is none. The first read of a span writes its one gap;
+   *  the read that finds it over ends it. */
+  const held = (c: Capture): boolean => {
+    if (!options.hold) return false;
+    let on: boolean;
+    try { on = options.hold(c.ref) === true; } catch { on = true; }
+    if (!on) { if (c.hostHeld) { c.hostHeld = false; lifted(c); } return false; }
+    if (!c.hostHeld) { c.hostHeld = true; if (!c.stopped) { void gap(c, "credential_on_page", undefined, "host"); watchHold(c); } }
+    return true;
+  };
+  const watchHold = (c: Capture): void => {
+    if (c.holdTimer) return;
+    c.holdTimer = setInterval(() => { if (c.stopped || closed) stopWatching(c); else held(c); }, HOLD_POLL_MS);
+    c.holdTimer.unref?.();
+  };
+  const stopWatching = (c: Capture): void => { if (c.holdTimer) clearInterval(c.holdTimer); c.holdTimer = null; };
+  /** The hold was true and is not: the screencast sends a frame only when the page repaints, and a person's login has often already left the page, so the replay would end at the hold. One frame of the page as it is
+   *  now is asked for and judged like any other (a field still holding a value makes it the credential gap, not a frame). A failed capture costs this frame: the next screencast frame covers it. */
+  const lifted = (c: Capture): void => { stopWatching(c); void captureNow(c); };
+  const captureNow = async (c: Capture): Promise<void> => {
+    const follower = c.follower;
+    if (!follower || c.stopped) return;
+    try {
+      const seen = c.frameSeq;
+      const frame = await follower.capture();
+      // A screencast frame that came while the capture was in flight is a newer picture of the page: the late capture is dropped, so the replay never jumps back.
+      if (c.stopped || c.follower !== follower || c.frameSeq !== seen) return;
+      c.waiting = frame;
+      judge(c);
+    } catch { /* no capture this time */ }
   };
   const check = async (c: Capture): Promise<Verdict> => {
     try {
@@ -207,7 +254,7 @@ export function frameRecorder(options: FrameRecorderOptions): FrameRecorder {
       if (!size) return;
       const hash = createHash("sha256").update(frame.bytes).digest("hex");
       const t = options.clock();
-      const saved = await emit(() => [{ ...base(c, t), kind: "frame", data: { session: c.ref.id, provider: c.provider, w: size.w, h: size.h, mime: "image/jpeg" }, blobs: [hash] }, { [hash]: new Uint8Array(frame.bytes) }]);
+      const saved = await emit(() => [{ ...base(c, t), kind: "frame", data: { session: c.ref.id, provider: c.provider, w: size.w, h: size.h, mime: "image/jpeg" }, blobs: [hash] }, { [hash]: new Uint8Array(frame.bytes) }], () => held(c));
       if (saved) { counts.frames += 1; c.lastFrameT = t; }
       c.lastEmitMs = Date.now();
     } finally {
@@ -220,7 +267,9 @@ export function frameRecorder(options: FrameRecorderOptions): FrameRecorder {
     c.follower = followPage(url, {
       frame(bytes, page) {
         if (c.stopped) return;
+        c.frameSeq += 1;
         // The newest frame wins: an older one still held is not worth keeping.
+        if (held(c)) return;
         c.waiting = { bytes, page };
         judge(c);
       },
@@ -239,7 +288,7 @@ export function frameRecorder(options: FrameRecorderOptions): FrameRecorder {
     const owner = conv ?? tagConversation(ref.tag);
     if (owner === null || owner === undefined) return;
     if (captures.get(ref.id)) return;
-    const c: Capture = { ref, conv: owner, provider: provider.name, follower: null, lastFrameT: null, paused: false, navigated: false, ready: null, waiting: null, probing: false, lastProbeAt: -Infinity, pacing: Promise.resolve(), busy: false, timer: null, lastEmitMs: 0, stopped: false, reconnect: null };
+    const c: Capture = { ref, conv: owner, provider: provider.name, follower: null, lastFrameT: null, paused: false, navigated: false, hostHeld: false, holdTimer: null, frameSeq: 0, ready: null, waiting: null, probing: false, lastProbeAt: -Infinity, pacing: Promise.resolve(), busy: false, timer: null, lastEmitMs: 0, stopped: false, reconnect: null };
     captures.set(ref.id, c);
     // A session first seen in this process that an earlier process already framed: the frames stopped when that process was killed.
     if (!made.has(ref.id)) {
@@ -253,6 +302,7 @@ export function frameRecorder(options: FrameRecorderOptions): FrameRecorder {
     c.stopped = true;
     if (c.timer) clearTimeout(c.timer);
     if (c.reconnect) clearTimeout(c.reconnect);
+    stopWatching(c);
     c.timer = null; c.reconnect = null; c.ready = null; c.waiting = null;
     c.follower?.close();
     c.follower = null;

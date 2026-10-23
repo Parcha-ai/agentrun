@@ -5,6 +5,7 @@ export async function fakeKernel({ key, backend = null, sentinels = {}, knobs = 
   const calls = [];
   const browsers = new Map();
   const extensions = new Map();
+  const profiles = new Map();
   let seq = 0;
   const secrets = () => [key, sentinels.kernelJwt, sentinels.kernelCdpUrl, sentinels.kernelLiveViewUrl].filter(Boolean);
   const cdpUrl = (id) => `${sentinels.kernelCdpUrl ?? "wss://kernel.fake.test/browser/cdp?jwt=not-a-secret"}&sessionId=${id}`;
@@ -26,7 +27,7 @@ export async function fakeKernel({ key, backend = null, sentinels = {}, knobs = 
     for await (const chunk of req) chunks.push(chunk);
     const raw = Buffer.concat(chunks);
     const url = new URL(req.url, "http://fake");
-    const route = `${req.method} ${url.pathname.replace(/^\/browsers\/[^/]+/, "/browsers/{id}").replace(/^\/extensions\/[^/]+/, "/extensions/{name}")}`;
+    const route = `${req.method} ${url.pathname.replace(/^\/browsers\/[^/]+/, "/browsers/{id}").replace(/^\/extensions\/[^/]+/, "/extensions/{name}").replace(/^\/profiles\/[^/]+/, "/profiles/{name}")}`;
     const row = { op: route, path: url.pathname, query: Object.fromEntries(url.searchParams), authorized: req.headers.authorization === `Bearer ${key}`, contentType: req.headers["content-type"] ?? null };
     calls.push(row);
     const send = (status, body, headers = {}) => { res.writeHead(status, { "content-type": "application/json", ...headers }); res.end(body === undefined ? "" : JSON.stringify(body)); };
@@ -40,6 +41,7 @@ export async function fakeKernel({ key, backend = null, sentinels = {}, knobs = 
         const body = JSON.parse(raw.toString("utf8"));
         row.body = body;
         if (knobs.createStatus) return fail(knobs.createStatus, "internal_error");
+        if (body.profile && !profiles.has(body.profile.name)) return fail(404, "not_found");
         const { agentrun_tag: tag, ...metadata } = body.tags ?? {};
         const ref = backend ? await backend.provider.create({ tag, metadata, viewport: body.viewport, maxLifetimeS: 0, idleTimeoutS: body.timeout_seconds, proxies: false, verified: false, captcha: false }, new AbortController().signal) : { id: `kb_${(seq += 1)}` };
         const b = { id: ref.id, tags: { ...body.tags }, deletedAt: null, url: cdpUrl(ref.id), lookupsSinceDelete: null, body };
@@ -63,6 +65,7 @@ export async function fakeKernel({ key, backend = null, sentinels = {}, knobs = 
         return send(200, page, { "x-has-more": String(more), ...(more && !knobs.hasMoreWithoutOffset ? { "x-next-offset": String(offset + size) } : {}) });
       }
       if (route === "GET /browsers/{id}") {
+        if (knobs.lookupDelayMs) await new Promise((r) => setTimeout(r, knobs.lookupDelayMs));
         const b = browsers.get(id);
         if (!b) return fail(404, "not_found");
         if (b.lookupsSinceDelete !== null && (b.lookupsSinceDelete += 1) > (knobs.deleteLag ?? 0) && !b.deletedAt) b.deletedAt = new Date().toISOString();
@@ -78,6 +81,16 @@ export async function fakeKernel({ key, backend = null, sentinels = {}, knobs = 
         b.lookupsSinceDelete = 0;
         if (!knobs.deleteLag) b.deletedAt = new Date().toISOString();
         res.writeHead(200); return res.end();
+      }
+      if (route === "GET /profiles/{name}" && knobs.profileMissOnce?.delete(id)) return fail(404, "not_found");
+      if (route === "GET /profiles/{name}") return profiles.has(id) ? send(200, profiles.get(id)) : fail(404, "not_found");
+      if (route === "POST /profiles") {
+        const body = JSON.parse(raw.toString("utf8"));
+        row.body = body;
+        if (knobs.profileCreateStatus) return fail(knobs.profileCreateStatus, "internal_error");
+        if (profiles.has(body.name)) return fail(409, "conflict");
+        profiles.set(body.name, { id: `prof_${profiles.size + 1}`, name: body.name, created_at: "2026-10-08T00:00:00Z" });
+        return send(200, profiles.get(body.name));
       }
       if (route === "GET /extensions") {
         const all = [...extensions.entries()].map(([name, e]) => ({ id: e.id, name, size_bytes: e.size, checksum: e.checksum ?? null, created_at: "2026-10-08T00:00:00Z" }));
@@ -114,7 +127,7 @@ export async function fakeKernel({ key, backend = null, sentinels = {}, knobs = 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   return {
-    url: base, calls, browsers, extensions, knobs,
+    url: base, calls, browsers, extensions, profiles, knobs,
     // A stray request (another program probing an ephemeral port) never carries the key, so only the provider's count.
     only: (op) => calls.filter((c) => c.op === op && c.authorized),
     alive: () => [...browsers.values()].filter((b) => !b.deletedAt),

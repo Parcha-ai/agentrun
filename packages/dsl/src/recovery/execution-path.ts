@@ -98,6 +98,20 @@ export function completedIteration(workflow: Workflow, path: string): { loop: st
   return node && node.node !== "chain" ? innermost : undefined;
 }
 
+/** The innermost map item `path` lies in, when it lies in one: the item's own path (`<map>/items/<i>`, a prefix of
+ *  `path` without the item's `/body`), its map's path and its index. A map's own path lies in the item that holds the
+ *  map, not in its own items. */
+export function mapItemOf(path: string): { item: string; map: string; index: number } | undefined {
+  const segments = pathSegments(path);
+  if (!segments) return undefined;
+  for (let i = segments.length - 3; i >= 1; i -= 1) {
+    if (segments[i].segment === "items" && INDEX.test(segments[i + 1].segment) && segments[i + 2].segment === "body") {
+      return { item: prefix(path, segments, i + 2), map: prefix(path, segments, i), index: Number(segments[i + 1].segment) };
+    }
+  }
+  return undefined;
+}
+
 /** Whether `inner` is `outer` or lies inside it, compared segment by segment. */
 export function isWithin(inner: string, outer: string): boolean {
   const a = pathSegments(inner); const b = pathSegments(outer);

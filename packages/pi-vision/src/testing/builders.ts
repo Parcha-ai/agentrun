@@ -13,6 +13,7 @@ export type SharpPipeline = {
   withMetadata(options: { readonly orientation: number }): SharpPipeline;
   toBuffer(): Promise<Buffer>;
 };
+/** The part of sharp's default export the builders call. */
 export type SharpFactory = (input: Uint8Array, options?: { readonly raw: { readonly width: number; readonly height: number; readonly channels: 3 } }) => SharpPipeline;
 
 /** A page drawn as one JPEG over the whole Letter page. */

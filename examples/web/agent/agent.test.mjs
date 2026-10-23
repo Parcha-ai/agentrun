@@ -3,8 +3,10 @@
 // conversation is created the way the serve door creates it, after the app's `beforeResume`.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { chmod, cp, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -13,12 +15,18 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import { carryBack, readAgentHome, startRun } from '@parcha/pi-durable-agent';
-import { browserOptions, createAgent, liveOf, NO_LOCAL_VIEW, PROFILE, promptOf, signInAsked, toolsOf } from './app.ts';
-import { CHROME_PROFILE, chromeArgs, chromeProfileFor, startChrome } from './chrome.ts';
+import { defineDocFamily } from '@earendil-works/pi-durable';
+import { carryBack, homeRevision, readAgentHome, setPrompts, startRun } from '@parcha/pi-durable-agent';
+import { archilEnv } from '@parcha/pi-durable-disk';
+import { frameRecorder } from '@parcha/pi-browser/recorder';
+import { fakeCdp, jpeg as fakeJpeg } from '../../../packages/pi-browser/test/fixtures/fake-cdp.mjs';
+import { browserOptions, createAgent, liveOf, LOCAL_DOWNLOADS, NO_LOCAL_VIEW, PROFILE, promptOf, providerOf, signInAsked, signInSite, toolsOf } from './app.ts';
+import { CHROME_PROFILE, chromeArgs, chromeProfileFor, listsBrowser, startChrome } from './chrome.ts';
+import { frameStore } from './frames.ts';
 import { ensureAgentHome } from './home.mjs';
+import { promptForRun } from './select.ts';
 
-const ENV = { BROWSERBASE_API_KEY: 'unused', AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9/v1', AGENT_MODEL: 'test-model' };
+const ENV = { AGENT_BROWSER: 'browserbase', BROWSERBASE_API_KEY: 'unused', AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9/v1', AGENT_MODEL: 'test-model' };
 
 async function agentHome(t) {
   const tmp = await mkdtemp(join(tmpdir(), 'web-agent-'));
@@ -27,14 +35,15 @@ async function agentHome(t) {
 }
 
 /** Run `runId` started in `home`, as pi-durable-disk hands it to the app. */
-async function started(home, runId) {
-  const run = await startRun(home, { runId, host: 'test' });
+async function started(home, runId, prompt) {
+  const run = await startRun(home, { runId, host: 'test', ...(prompt ? { prompt } : {}) });
   return { run, where: { ref: { disk: 'local', region: 'local', id: runId }, root: run.dir, work: run.workspace, store: dirname(run.storePath) } };
 }
 
-/** The app's options on the run's own store, `beforeResume` included, as pi-durable-disk opens a run. */
-async function open(t, run, options) {
-  const harness = await Harness.open(await openNodeSqliteStorage(run.storePath), { models: options.models, registry: options.registry, onReport: () => {} }, ctx);
+/** The app's options on the run's own store, `beforeResume` included, as pi-durable-disk opens a run; `env` gives the
+ *  file tools their workspace, confined to work/ as pi-durable-disk confines a run's. */
+async function open(t, run, options, { env = false } = {}) {
+  const harness = await Harness.open(await openNodeSqliteStorage(run.storePath), { models: options.models, registry: options.registry, onReport: () => {}, ...(env ? { env: archilEnv({ root: run.dir, work: run.workspace }, { noNewPrivs: false }) } : {}) }, ctx);
   t.after(() => harness.close(ctx).catch(() => {}));
   await options.beforeResume({ harness, context: ctx });
   return harness;
@@ -44,7 +53,7 @@ test('the home is made from agent.json and the skills: the definition names no m
   const { tmp, home } = await agentHome(t);
   const state = await readAgentHome(home);
   assert.equal(state.identity.id, 'site-reporter');
-  assert.deepEqual(Object.keys(state.skills).sort(), ['sign-in/SKILL.md', 'site-report/SKILL.md']);
+  assert.deepEqual(Object.keys(state.skills).sort(), ['memory/SKILL.md', 'sign-in/SKILL.md', 'site-report/SKILL.md']);
   const prompt = promptOf(state);
   assert.ok(prompt.indexOf('<skill name="sign-in">') < prompt.indexOf('<skill name="site-report">'), 'skills follow the definition order');
   assert.equal((await stat(home.dir)).mode & 0o777, 0o700, 'the home holds sign-ins: owner only');
@@ -56,6 +65,46 @@ test('the home is made from agent.json and the skills: the definition names no m
   await assert.rejects(ensureAgentHome(join(tmp, 'other'), agentDir), /fields it does not keep: model/);
   assert.throws(() => toolsOf({ tools: ['read', 'bash'] }, { coding: [{ name: 'read' }] }), /names the tool bash/);
   assert.throws(() => promptOf({ definition: { ...state.definition, skills: ['missing'] }, skills: {} }), /no missing\/SKILL\.md/);
+});
+
+test('a run the host chose a prompt for: its instructions, then its guide, then the skills', () => {
+  const state = { definition: { instructions: 'You are Desk.', skills: ['brief'] }, skills: { 'brief/SKILL.md': { content: 'Write brief.md.' } } };
+  assert.equal(promptOf(state, 'Research it.\n\nStart at EDGAR.'), 'You are Desk.\n\nResearch it.\n\nStart at EDGAR.\n\nYour skills follow. Use the one that fits the step you are on.\n\n<skill name="brief">\nWrite brief.md.\n</skill>');
+  assert.equal(promptOf(state), 'You are Desk.\n\nYour skills follow. Use the one that fits the step you are on.\n\n<skill name="brief">\nWrite brief.md.\n</skill>', 'a run with no chosen prompt gets none');
+});
+
+test('the skills, the definition and the host\'s download line name no site: no address, domain or path of one, so no example in them reads as a step the run took', async () => {
+  const skills = (await readdir(join(import.meta.dirname, 'skills'))).map((name) => `skills/${name}/SKILL.md`);
+  const texts = [...(await Promise.all(['agent.json', ...skills].map(async (file) => [file, await readFile(join(import.meta.dirname, file), 'utf8')]))), ['LOCAL_DOWNLOADS', LOCAL_DOWNLOADS]];
+  for (const [file, text] of texts) {
+    for (const [what, pattern] of [['an address', /[a-z]+:\/\//i], ['a domain', /\b[a-z0-9-]+\.(?:com|org|net|io|dev|app|ai|co|edu|gov)\b/i], ['a site path', /(?<![\w./])\/[a-z][\w-]*/i]]) {
+      assert.doesNotMatch(text, pattern, `${file} names ${what}`);
+    }
+  }
+});
+
+test('a run is launched again with the guide it started with, though its variant is gone and the base edited since', async (t) => {
+  const { home } = await agentHome(t);
+  const variants = [
+    { id: 'kind', role: 'question', label: 'Kind', text: 'What kind of organisation is it?', criteria: { public: 'listed', other: 'anything else' } },
+    { id: 'base', role: 'base', label: 'Base', text: 'Research it.' },
+    { id: 'public', role: 'overlay', label: 'Public company', text: 'Start at EDGAR.', when: { question: 'kind', option: 'public', threshold: 0.8 } },
+    { id: 'generic', role: 'generic', label: 'Not sure', text: 'Start at its own site.' },
+  ];
+  await setPrompts(home, variants);
+  const judge = async () => ({ answers: { kind: { type: 'choice', choice: 'public', probabilities: { public: 1, other: 0 }, confidence: 1 } } });
+  const chosen = await promptForRun({ stored: (await readAgentHome(home)).prompts, input: 'Caterpillar Inc.', judge, lookup: async () => null });
+  // As the server starts it: the choice on the run's entry, and prompt.json beside it.
+  const one = await started(home, 'run-1', chosen.prompt);
+  await writeFile(join(one.run.dir, 'prompt.json'), JSON.stringify(chosen.record));
+  const guide = 'Research it.\n\nStart at EDGAR.';
+  assert.ok((await createAgent(one.where, ENV, { makeContext: async () => 'ctx-1' })).options.root.agent.instructions.includes(`\n\n${guide}\n\n`));
+
+  // While it sleeps, the person edits the base and the overlay and saves the overlay under another id.
+  await setPrompts(home, variants.map((v) => (v.id === 'base' ? { ...v, text: 'Research it twice.' } : v.id === 'public' ? { ...v, id: 'listed', text: 'Start at the filings twice.' } : v)));
+  const { options } = await createAgent(one.where, ENV, { makeContext: async () => 'ctx-1' });
+  assert.ok(options.root.agent.instructions.includes(`\n\n${guide}\n\n`), 'the guide it started with');
+  assert.doesNotMatch(options.root.agent.instructions, /twice/);
 });
 
 test('run 1 makes the browser profile once, the root conversation carries it, and carryBack gives it to run 2, which makes none', async (t) => {
@@ -125,6 +174,49 @@ test('thinking is never off, and the model and the key come from the host', asyn
   await assert.rejects(createAgent(where, { ...ENV, BROWSERBASE_API_KEY: '' }), /BROWSERBASE_API_KEY/);
 });
 
+test('the model\'s API: OpenAI Responses by default; an Anthropic model over the Messages API at the endpoint\'s root, with pi-ai\'s own entry and price, thinking adaptive and summarized at the effort asked', async (t) => {
+  const { home } = await agentHome(t);
+  const { where } = await started(home, 'run-1');
+  const responses = await createAgent(where, ENV, { makeContext: async () => 'ctx-1' });
+  assert.equal(responses.options.models.getModel('agent-model', 'test-model').api, 'openai-responses');
+  await assert.rejects(createAgent(where, { ...ENV, AGENT_MODEL_API: 'chat' }), /AGENT_MODEL_API is openai-responses or anthropic-messages/);
+  await assert.rejects(createAgent(where, { ...ENV, AGENT_MODEL_API: 'anthropic-messages', AGENT_MODEL: 'no-such-claude' }), /pi-ai has no Anthropic model no-such-claude/);
+
+  // A gateway that records what it is asked and answers one short message, as the Messages API streams it.
+  const asked = [];
+  const gateway = createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      asked.push({ path: req.url, key: req.headers['x-api-key'], body: JSON.parse(body) });
+      const events = [
+        ['message_start', { type: 'message_start', message: { id: 'm1', type: 'message', role: 'assistant', model: 'claude-sonnet-5-5', content: [], stop_reason: null, usage: { input_tokens: 3, output_tokens: 1 } } }],
+        ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
+        ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } }],
+        ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+        ['message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } }],
+        ['message_stop', { type: 'message_stop' }],
+      ];
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join(''));
+    });
+  });
+  await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+  const env = { ...ENV, AGENT_MODEL_API: 'anthropic-messages', AGENT_MODEL: 'claude-sonnet-5-5', AGENT_MODEL_BASE_URL: `http://127.0.0.1:${gateway.address().port}/v1`, AGENT_MODEL_API_KEY: 'gw-key', AGENT_THINKING: 'high' };
+  const { options } = await createAgent(where, env, { makeContext: async () => 'ctx-1' });
+  const model = options.models.getModel('agent-model', 'claude-sonnet-5-5');
+  assert.deepEqual([model.api, model.baseUrl, model.cost.input, model.cost.output], ['anthropic-messages', `http://127.0.0.1:${gateway.address().port}`, 2, 10], 'the root, and pi-ai\'s own price');
+  assert.equal(options.root.agent.thinkingLevel, 'high');
+  const answer = await options.models.completeSimple(model, { messages: [{ role: 'user', content: 'hi', timestamp: Date.now() }] }, { reasoning: 'high' });
+  assert.equal(answer.content.find((part) => part.type === 'text')?.text, 'ok');
+  const [request] = asked;
+  assert.deepEqual([new URL(request.path, 'http://gateway').pathname, request.key], ['/v1/messages', 'gw-key']);
+  assert.deepEqual([request.body.model, request.body.thinking?.type, request.body.thinking?.display, request.body.output_config?.effort], ['claude-sonnet-5-5', 'adaptive', 'summarized', 'high']);
+  const priced = await createAgent(where, { ...env, AGENT_MODEL_PRICE: '1,5,0.1,1.25' }, { makeContext: async () => 'ctx-1' });
+  assert.equal(priced.options.models.getModel('agent-model', 'claude-sonnet-5-5').cost.output, 5, 'AGENT_MODEL_PRICE still names the price when set');
+});
+
 test('live.json shows the live view while the session is open and nothing once it is released', () => {
   const row = { conversationId: 1, label: 'site-reporter', session: { resourceId: 'session-1' }, liveView: { fullscreen: 'https://live.example/full?t=x', framed: 'https://live.example/framed?t=x', pages: [] } };
   const at = new Date('2026-10-15T21:00:00Z');
@@ -133,15 +225,235 @@ test('live.json shows the live view while the session is open and nothing once i
   assert.equal(liveOf({ ...row, liveView: null }, 'updated', at).liveViewUrl, null);
 });
 
+// ---- the sign-in's site, and the browser's frames ------------------------------------------------------------------
+
+const Profiles = defineDocFamily({ kind: 'browser.profiles', version: 1, scope: 'session', family: true, initial: () => ({}) });
+const jpeg = (n) => Buffer.from([0xff, 0xd8, 0xff, 0xe0, n, 0xff, 0xd9]);
+const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
+/** A frame line as the recorder hands it over, with its JPEG. */
+const frame = (t, n) => [{ channel: 'live', source: 'browser', kind: 'frame', t, conv: 1, data: { session: 's1', provider: 'browserbase', w: 800, h: 500, mime: 'image/jpeg' }, blobs: [sha(jpeg(n))] }, { [sha(jpeg(n))]: jpeg(n) }];
+const linesOf = async (dir) => (await readFile(join(dir, 'frames', 'frames.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+
+test('the sign-in\'s site: the page the browser is on, or an address the agent named; a name alone is no site', () => {
+  assert.deepEqual(signInSite('the practice site', 'https://the-internet.herokuapp.com/login?next=%2Fsecure'), { origin: 'https://the-internet.herokuapp.com', startUrl: 'https://the-internet.herokuapp.com/login' });
+  assert.deepEqual(signInSite('https://the-internet.herokuapp.com/login', null), { origin: 'https://the-internet.herokuapp.com', startUrl: 'https://the-internet.herokuapp.com/login' });
+  assert.deepEqual(signInSite('the-internet.herokuapp.com', null), { origin: 'https://the-internet.herokuapp.com' });
+  assert.equal(signInSite('the practice site', null), null);
+  assert.equal(signInSite('localhost', null), null);
+  assert.equal(signInSite('the practice site', 'about:blank'), null);
+});
+
+test('the hold starts when request_sign_in is called, before its result exists: a frame that arrives in between is dropped, and one gap marks it', async (t) => {
+  const { home } = await agentHome(t);
+  const one = await started(home, 'run-1');
+  const { options, frames } = await createAgent(one.where, ENV, { makeContext: async () => 'ctx-1' });
+  const tool = options.registry.snapshot().tools().find(({ tool }) => tool.name === 'request_sign_in').tool;
+  const [a, aBlob] = frame(1_000, 1);
+  await frames.sink(a, aBlob);
+  let open;
+  const gate = new Promise((resolve) => (open = resolve));
+  // The call is still on its first await (reading the profile) when the next frame comes: the run cannot show it waits yet.
+  const api = { conversationId: 1, snapshot: () => gate.then(() => undefined), commit: async () => assert.fail('no ready profile, nothing to record') };
+  const result = tool.execute({ site: 'https://the-internet.herokuapp.com/login', reason: 'The secure page needs a sign-in.' }, api, ctx);
+  assert.equal(frames.held, true, 'held as the call starts');
+  await assert.rejects(frames.sink(...frame(1_500, 2)), /not kept/, 'refused, so the recorder counts it dropped and no gap starts from it');
+  open();
+  assert.equal((await result).control.terminate, true);
+  await assert.rejects(frames.sink(...frame(2_000, 3)), /not kept/, 'and still held once the run waits');
+  frames.hold();
+  await frames.flush();
+  const lines = await linesOf(one.run.dir);
+  assert.deepEqual(lines.map((l) => [l.seq, l.kind, l.t]), [[1, 'frame', 1_000], [2, 'frame.gap', lines[1].t]]);
+  assert.deepEqual(lines[1].data, { session: 's1', from: 1_000, reason: 'credential_on_page', detail: 'host' });
+  assert.deepEqual(await readdir(join(one.run.dir, 'frames', 'blobs')), [`${a.blobs[0]}.jpg`], 'no JPEG from the sign-in window');
+});
+
+test('frames are owner-only beside the run; the file tools cannot reach them; the agent\'s next step after the answer ends the hold; the site goes on the profile and back to the home', async (t) => {
+  const { home } = await agentHome(t);
+  const one = await started(home, 'run-1');
+  const agent = await createAgent(one.where, ENV, { makeContext: async () => 'ctx-1' });
+  const { options, frames } = agent;
+  const dir = join(one.run.dir, 'frames');
+  const [a, aBlob] = frame(1_000, 1);
+  const attempts = [
+    ['read', { path: '../frames/frames.jsonl' }],
+    ['read', { path: join(dir, 'blobs', `${a.blobs[0]}.jpg`) }],
+    ['write', { path: '../frames/frames.jsonl', content: 'x' }],
+    ['edit', { path: '../frames/frames.jsonl', edits: [{ oldText: 'frame', newText: 'x' }] }],
+  ];
+  const faux = fauxProvider({ models: [{ id: 'scripted' }] });
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall('request_sign_in', { site: 'https://the-internet.herokuapp.com/login', reason: 'The secure page needs a sign-in.' }, { id: 'ask' })], { stopReason: 'toolUse' }),
+    ...attempts.map(([name, args], i) => fauxAssistantMessage([fauxToolCall(name, args, { id: `try-${i}` })], { stopReason: 'toolUse' })),
+    fauxAssistantMessage([fauxText('I could not read those.')], { stopReason: 'stop' }),
+  ]);
+  options.models.setProvider(faux.provider);
+  const harness = await open(t, one.run, options, { env: true });
+  const root = await harness.root(ctx, { ...options.root, agent: { ...options.root.agent, model: { provider: faux.provider.id, modelId: 'scripted' } } });
+
+  await frames.sink(a, aBlob);
+  assert.equal((await (await root.submit({ type: 'input', content: 'Log in and report.', requestId: 'ask-1' }, ctx)).wait(ctx)).status, 'done');
+  await assert.rejects(frames.sink(...frame(5_000, 2)), /not kept/);
+  assert.equal(frames.held, true, 'the run waits for the person: held');
+  const asked = await harness.snapshot(Profiles, PROFILE, ctx);
+  assert.deepEqual([asked.ref, asked.allowedOrigins, asked.startUrl, asked.verifiedAt], ['ctx-1', ['https://the-internet.herokuapp.com'], 'https://the-internet.herokuapp.com/login', undefined]);
+
+  assert.equal((await (await root.submit({ type: 'input', content: 'done', requestId: 'ask-2' }, ctx)).wait(ctx)).status, 'done');
+  const results = (await root.entries({}, 50, undefined, ctx)).items.filter((e) => e.kind === 'pi.tool-result' && e.model[0].toolCallId.startsWith('try-'));
+  assert.equal(results.length, attempts.length);
+  for (const r of results) assert.ok(r.model[0].isError && /outside the workspace/.test(JSON.stringify(r.model[0].content)), `${r.model[0].toolName} is refused`);
+  assert.equal(frames.held, false, 'the agent\'s next step ended the hold');
+  await frames.sink(...frame(9_000, 3));
+  await frames.flush();
+  assert.deepEqual((await linesOf(one.run.dir)).map((l) => [l.kind, l.t, l.data.detail ?? null]), [['frame', 1_000, null], ['frame.gap', (await linesOf(one.run.dir))[1].t, 'host'], ['frame', 9_000, null]]);
+
+  for (const path of [dir, join(dir, 'blobs')]) assert.equal((await stat(path)).mode & 0o777, 0o700, `${relative(one.run.dir, path)} is owner-only`);
+  for (const name of ['frames.jsonl', ...(await readdir(join(dir, 'blobs'))).map((f) => `blobs/${f}`)]) assert.equal((await stat(join(dir, name))).mode & 0o777, 0o600, `frames/${name} is owner-only`);
+  assert.ok(relative(one.run.workspace, dir).startsWith('..'), 'frames/ is not under work/');
+
+  await agent.signIn.seen('https://elsewhere.example/');
+  assert.equal((await harness.snapshot(Profiles, PROFILE, ctx)).verifiedAt, undefined, 'a page of another site verifies nothing');
+  await agent.signIn.seen('https://the-internet.herokuapp.com/secure');
+  const verified = (await harness.snapshot(Profiles, PROFILE, ctx)).verifiedAt;
+  assert.ok(Date.parse(verified) > Date.now() - 60_000);
+  await harness.close(ctx);
+  await carryBack(home, one.run, { outcome: 'completed' });
+  assert.deepEqual((await readAgentHome(home)).profiles[PROFILE], { provider: 'browserbase', ref: 'ctx-1', state: 'ready', allowedOrigins: ['https://the-internet.herokuapp.com'], startUrl: 'https://the-internet.herokuapp.com/login', verifiedAt: verified });
+});
+
+test('with the recorder itself: a frame refused during the hold never becomes where a gap starts; no line\'s t or from falls inside the hold', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'web-frames-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const cdp = await fakeCdp();
+  t.after(() => cdp.close());
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const until = async (check) => { for (const end = Date.now() + 4000; !check(); await sleep(10)) if (Date.now() > end) throw new Error('timed out'); };
+  const started = Date.now();
+  const clock = () => Date.now() - started;
+  const store = frameStore(dir, clock);
+  const recorder = frameRecorder({ sink: store.sink, clock });
+  t.after(() => recorder.close());
+  // A provider over the fake DevTools endpoint, as Browserbase's hands the recorder its session.
+  const provider = {
+    name: 'browserbase', caps: { timeoutModel: 'wall-clock', maxLifetimeS: 600, survivesDisconnect: true, releaseIsAsync: false, extension: 'loaded-locally' },
+    async create(spec) { return { id: 'sess-1', tag: spec.tag }; }, async attach() { return { sdkCdpUrl: cdp.url }; }, async release() {}, async status() { return 'running'; }, async findByTag() { return []; },
+  };
+  const watched = recorder.watch(provider, 1);
+  const signal = new AbortController().signal;
+  const ref = await watched.create({ tag: 'ar-run-1-1', maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1280, height: 800 }, metadata: {} }, signal);
+  await watched.attach(ref, signal);
+  await until(() => cdp.screencasts().length === 1);
+  const handled = () => recorder.stats().frames + recorder.stats().dropped;
+  cdp.frame({ bytes: fakeJpeg(800, 500, 10, 1) });
+  await until(() => handled() === 1);
+
+  store.hold();
+  const holdAt = clock();
+  for (const tag of [2, 3]) {
+    await sleep(150);
+    cdp.frame({ bytes: fakeJpeg(800, 500, 10, tag) });
+    await until(() => handled() === tag);
+  }
+  assert.deepEqual([recorder.stats().frames, recorder.stats().dropped], [1, 2], 'the recorder counts both frames of the sign-in as dropped');
+  await sleep(50);
+  const liftAt = clock();
+  store.lift();
+  // The page does not change after the sign-in: no frame comes, and the session is released.
+  await watched.release(ref, signal);
+  await recorder.close();
+  await store.flush();
+  const lines = (await readFile(join(dir, 'frames', 'frames.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.deepEqual(lines.map((l) => [l.kind, l.data.reason ?? null, l.data.detail ?? null]), [['frame', null, null], ['frame.gap', 'credential_on_page', 'host'], ['frame.gap', 'session_released', null]]);
+  const [kept, , released] = lines;
+  assert.equal(released.data.from, kept.t, 'the release\'s gap starts at the last frame kept');
+  const inside = (ms) => ms > holdAt && ms < liftAt;
+  assert.deepEqual(lines.filter((l) => inside(l.t) || inside(l.data.from)), [], 'no line names a time inside the hold');
+  assert.deepEqual(await readdir(join(dir, 'frames', 'blobs')), [`${kept.blobs[0]}.jpg`]);
+});
+
 const CHROME_ENV = { AGENT_MODEL_BASE_URL: ENV.AGENT_MODEL_BASE_URL, AGENT_MODEL: ENV.AGENT_MODEL, AGENT_BROWSER: 'chrome', AGENT_CHROME_ENDPOINT: 'http://127.0.0.1:9', AGENT_PAGE_ORIGIN: 'http://127.0.0.1:8787' };
 
-test('the browser switch: Browserbase by default, the run\'s own Chrome by its loopback endpoint, anything else refused', () => {
-  assert.equal(browserOptions(ENV).kind, 'browserbase');
-  assert.deepEqual(browserOptions({ ...CHROME_ENV, AGENT_CHROME_ENDPOINT: 'http://127.0.0.1:41233' }), { kind: 'chrome', options: { endpoint: 'http://127.0.0.1:41233' } });
-  assert.throws(() => browserOptions({ ...CHROME_ENV, AGENT_CHROME_ENDPOINT: 'http://10.0.0.5:41233' }), /127\.0\.0\.1/);
-  assert.throws(() => browserOptions({ ...CHROME_ENV, AGENT_CHROME_ENDPOINT: '' }), /AGENT_CHROME_ENDPOINT/);
-  assert.throws(() => browserOptions({ ...ENV, AGENT_BROWSER: 'firefox' }), /browserbase or chrome/);
-  assert.throws(() => browserOptions({ ...ENV, BROWSERBASE_API_KEY: '' }), /BROWSERBASE_API_KEY/);
+test('the browser setting: local (the run\'s own Chrome by its loopback endpoint), browserbase or kernel, each with its key; chrome is local; no setting and anything else are refused', () => {
+  const local = { ...CHROME_ENV, AGENT_BROWSER: 'local', AGENT_CHROME_ENDPOINT: 'http://127.0.0.1:41233' };
+  assert.deepEqual(browserOptions(local), { kind: 'chrome', options: { endpoint: 'http://127.0.0.1:41233' } });
+  assert.deepEqual(browserOptions({ ...local, AGENT_BROWSER: 'chrome' }), browserOptions(local), 'chrome is local for one more release');
+  assert.throws(() => browserOptions({ ...local, AGENT_CHROME_ENDPOINT: 'http://10.0.0.5:41233' }), /127\.0\.0\.1/);
+  assert.throws(() => browserOptions({ ...local, AGENT_CHROME_ENDPOINT: '' }), /AGENT_CHROME_ENDPOINT/);
+  assert.deepEqual(browserOptions(ENV), { kind: 'browserbase', options: { env: ENV } });
+  assert.throws(() => browserOptions({ ...ENV, BROWSERBASE_API_KEY: '' }), /^Error: set BROWSERBASE_API_KEY$/);
+  assert.equal(browserOptions({ ...ENV, BROWSERBASE_PROJECT_ID: undefined }).kind, 'browserbase', 'the project id is optional: Browserbase infers it from the key');
+  const kernel = { ...ENV, AGENT_BROWSER: 'kernel', KERNEL_API_KEY: 'k' };
+  assert.deepEqual(browserOptions(kernel), { kind: 'kernel', options: { env: kernel } });
+  assert.throws(() => browserOptions({ ...kernel, KERNEL_API_KEY: '' }), /^Error: set KERNEL_API_KEY$/);
+  for (const value of [undefined, '']) {
+    assert.throws(() => browserOptions({ ...ENV, AGENT_BROWSER: value }), (error) => {
+      assert.equal(error.message, 'set AGENT_BROWSER (or --browser): local (no key; a Chrome on this machine), browserbase (BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID) or kernel (KERNEL_API_KEY)');
+      return true;
+    }, 'no default browser, Browserbase\'s key set or not');
+  }
+  for (const value of ['firefox', 'Local', 'fake']) assert.throws(() => browserOptions({ ...ENV, AGENT_BROWSER: value }), new RegExp(`^Error: AGENT_BROWSER is local, browserbase or kernel, not ${value}$`));
+  assert.deepEqual([local, ENV, kernel].map((env) => providerOf(browserOptions(env)).name), ['cdp', 'browserbase', 'kernel'], 'each value drives its own provider');
+});
+
+test('a Kernel run keeps no sign-in: no Browserbase context is made and no profile is recorded, even with a stray AGENT_CHROME_PROFILE', async (t) => {
+  const { home } = await agentHome(t);
+  const one = await started(home, 'run-1');
+  const { options, browser } = await createAgent(one.where, { ...ENV, AGENT_BROWSER: 'kernel', KERNEL_API_KEY: 'k', BROWSERBASE_API_KEY: '', AGENT_CHROME_PROFILE: 'shared' }, { makeContext: async () => assert.fail('a Kernel run makes no Browserbase context') });
+  const harness = await open(t, one.run, options);
+  const root = await harness.root(ctx, options.root);
+  assert.equal((await harness.snapshot(browser.docs.Config, root.id, ctx)).policy.contextId, null);
+  await harness.close(ctx);
+  await carryBack(home, one.run, { outcome: 'completed' });
+  assert.deepEqual((await readAgentHome(home)).profiles, {}, 'no sign-in kept');
+});
+
+test('a Kernel run with AGENT_CHROME_PROFILE=shared neither reads nor changes a ready shared Chrome profile that is in the store: its bytes are the same after the run', async (t) => {
+  const { home } = await agentHome(t);
+  // The profile a local Chrome run leaves in the home: ready, shared.
+  const first = await started(home, 'run-1');
+  const local = { ...CHROME_ENV, AGENT_CHROME_PROFILE: 'shared', AGENT_LIVE_VIEW_MODULE: pathToFileURL(join(first.run.dir, 'none.mjs')).href };
+  const chrome = await createAgent(first.where, local, { makeContext: async () => assert.fail('a local Chrome makes no Browserbase context') });
+  const opened = await open(t, first.run, chrome.options);
+  await opened.root(ctx, chrome.options.root);
+  await opened.close(ctx);
+  await carryBack(home, first.run, { outcome: 'completed' });
+  const ready = (await readAgentHome(home)).profiles[CHROME_PROFILE];
+  assert.deepEqual(ready, { provider: 'chrome', ref: `chrome/${CHROME_PROFILE}`, state: 'ready' });
+  const bytes = JSON.stringify(ready);
+  // What a run costs the home's revision with nothing of a profile in it: it starts and it carries back (a control run that opens no browser).
+  const c0 = await homeRevision(home);
+  const control = await started(home, 'run-0');
+  await carryBack(home, control.run, { outcome: 'completed' });
+  const costOfARun = (await homeRevision(home)) - c0;
+  assert.ok(costOfARun > 0);
+  const r0 = await homeRevision(home);
+
+  // A Kernel run with the same setting: the agent asks for a sign-in, which on a run that holds a profile edits it.
+  const two = await started(home, 'run-2');
+  const kernel = { ...ENV, AGENT_BROWSER: 'kernel', KERNEL_API_KEY: 'k', BROWSERBASE_API_KEY: '', AGENT_CHROME_PROFILE: 'shared' };
+  const agent = await createAgent(two.where, kernel, { makeContext: async () => assert.fail('a Kernel run makes no Browserbase context') });
+  const faux = fauxProvider({ models: [{ id: 'scripted' }] });
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall('request_sign_in', { site: 'https://the-internet.herokuapp.com/login', reason: 'The secure page needs a sign-in.' }, { id: 'ask' })], { stopReason: 'toolUse' }),
+    fauxAssistantMessage([fauxText('Waiting for the person.')], { stopReason: 'stop' }),
+  ]);
+  agent.options.models.setProvider(faux.provider);
+  const harness = await Harness.open(await openNodeSqliteStorage(two.run.storePath), { models: agent.options.models, registry: agent.options.registry, onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx).catch(() => {}));
+  // Every read of a profile document through the run's harness is noted, from the first call on.
+  const reads = [];
+  const snapshot = harness.snapshot.bind(harness);
+  harness.snapshot = (family, key, context) => (reads.push(key), snapshot(family, key, context));
+  await agent.options.beforeResume({ harness, context: ctx });
+  const root = await harness.root(ctx, { ...agent.options.root, agent: { ...agent.options.root.agent, model: { provider: faux.provider.id, modelId: 'scripted' } } });
+  assert.equal((await (await root.submit({ type: 'input', content: 'Log in and report.', requestId: 'ask-1' }, ctx)).wait(ctx)).status, 'done');
+  assert.equal(agent.frames.held, true, 'the sign-in was asked');
+  await harness.close(ctx);
+  await carryBack(home, two.run, { outcome: 'completed' });
+
+  assert.deepEqual(reads.filter((key) => key === CHROME_PROFILE), [], 'the shared profile was not read');
+  assert.equal(JSON.stringify((await readAgentHome(home)).profiles[CHROME_PROFILE]), bytes, 'its bytes are the same');
+  assert.equal((await homeRevision(home)) - r0, costOfARun, 'the home\'s revision moved by what a run costs and by nothing the profile caused');
 });
 
 test('the agent\'s Chrome profile is owner-only, in the home and outside every run\'s work/; only the lease holder, or the first run, opens it', async (t) => {
@@ -195,6 +507,17 @@ test('on a local Chrome without a live view: live.json says so, the root has no 
   assert.deepEqual((await readAgentHome(home)).profiles[CHROME_PROFILE], { provider: 'chrome', ref: `chrome/${CHROME_PROFILE}`, state: 'ready' });
 });
 
+test('only a run on a local Chrome is told where a download lands; a Browserbase run, whose clicks save on Browserbase\'s machine, is not', async (t) => {
+  const { home } = await agentHome(t);
+  const one = await started(home, 'run-1');
+  const local = { ...CHROME_ENV, AGENT_CHROME_PROFILE: 'shared', AGENT_LIVE_VIEW_MODULE: pathToFileURL(join(one.run.dir, 'none.mjs')).href };
+  const onChrome = (await createAgent(one.where, local, { makeContext: async () => assert.fail('no context') })).options.root.agent.instructions;
+  assert.ok(onChrome.includes(LOCAL_DOWNLOADS));
+  const onBrowserbase = (await createAgent((await started(home, 'run-2')).where, ENV, { makeContext: async () => 'ctx-1' })).options.root.agent.instructions;
+  assert.doesNotMatch(onBrowserbase, /downloads\//, 'no folder a download would land in');
+  assert.match(onBrowserbase, /download it only when your instructions say where a download lands/);
+});
+
 test('on a local Chrome with a live view: its viewer is mounted on a loopback port of the run, named in live-host.json, at /live/<run id> on the page\'s origin', async (t) => {
   const { home } = await agentHome(t);
   const one = await started(home, 'run-1');
@@ -241,4 +564,70 @@ test('a stop while the run\'s Chrome starts ends that Chrome by its pid, and the
   const ended = await new Promise((resolve) => launcher.once('exit', (code, signal) => resolve(code ?? signal)));
   assert.equal(ended, 1, 'the launcher exits on its own, after its cleanup');
   assert.throws(() => process.kill(chrome, 0), { code: 'ESRCH' }, 'the Chrome it was starting is gone');
+});
+
+test('an agent that lists web_fetch and no browser tool: Browserbase\'s fetch and search, no browser, the receipt filed, the key and project id redacted', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'web-pages-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const agentDir = join(tmp, 'agent');
+  await mkdir(agentDir);
+  const definition = { id: 'desk', version: 1, name: 'Desk', description: 'Researches one company.', instructions: 'Research it.', skills: [], tools: ['read', 'write', 'web_fetch', 'web_search'] };
+  await writeFile(join(agentDir, 'agent.json'), JSON.stringify(definition));
+  const home = await ensureAgentHome(join(tmp, 'home'), agentDir);
+  assert.equal(listsBrowser(definition), false);
+  assert.equal(listsBrowser((await readAgentHome(await ensureAgentHome(join(tmp, 'wren')))).definition), true, 'Wren lists the browser');
+
+  const key = 'bb_live_0123456789abcdef', project = '01234567-89ab-cdef-0123-456789abcdef';
+  const env = { AGENT_MODEL_BASE_URL: ENV.AGENT_MODEL_BASE_URL, AGENT_MODEL: ENV.AGENT_MODEL, BROWSERBASE_API_KEY: key, BROWSERBASE_PROJECT_ID: project };
+  const fetched = [], searched = [];
+  const fetcher = {
+    fetch: async (request) => (fetched.push(request), { finalUrl: request.url, statusCode: 200, contentType: 'text/markdown', content: `# Acme\nAcme makes anvils. Project ${project}, key ${key}.` }),
+    search: async (request) => (searched.push(request), { results: [{ url: 'https://acme.example/', title: 'Acme' }] }),
+  };
+  const one = await started(home, 'run-1');
+  const { options } = await createAgent(one.where, env, { fetcher, makeContext: async () => assert.fail('no browser profile is made') });
+  assert.deepEqual(options.root.agent.tools.map((tool) => tool.name), ['read', 'write', 'web_fetch', 'web_search']);
+  assert.equal(existsSync(join(one.where.root, 'live.json')), false, 'no browser, so no live view');
+
+  const faux = fauxProvider({ models: [{ id: 'scripted' }] });
+  faux.setResponses([
+    () => fauxAssistantMessage([fauxToolCall('web_search', { query: 'Acme anvils' }, { id: 'call-1' })], { stopReason: 'toolUse' }),
+    () => fauxAssistantMessage([fauxToolCall('web_fetch', { url: 'https://acme.example/' }, { id: 'call-2' })], { stopReason: 'toolUse' }),
+    () => fauxAssistantMessage([fauxText('Acme makes anvils.')], { stopReason: 'stop' }),
+  ]);
+  options.models.setProvider(faux.provider);
+  const harness = await open(t, one.run, options, { env: true });
+  const root = await harness.root(ctx, { ...options.root, agent: { ...options.root.agent, model: { provider: faux.provider.id, modelId: 'scripted' } } });
+  assert.equal((await (await root.submit({ type: 'input', content: 'Research Acme.', requestId: 'ask-1' }, ctx)).wait(ctx)).status, 'done');
+
+  assert.equal(searched[0].query, 'Acme anvils');
+  assert.equal(fetched[0].url, 'https://acme.example/');
+  const results = (await root.entries({}, 20, undefined, ctx)).items.filter((entry) => entry.kind === 'pi.tool-result').map((entry) => entry.model[0].content.map((part) => part.text).join(''));
+  const page = results.find((text) => text.includes('Acme makes anvils'));
+  assert.ok(page, 'the fetched page reaches the model');
+  assert.match(page, /evidence: evidence\/web\//, 'the read is filed in the workspace');
+  for (const text of results) for (const value of [key, project]) assert.equal(text.includes(value), false, 'no tool result holds the key or the project id');
+  const filed = await readdir(join(one.run.workspace, 'evidence', 'web'));
+  assert.ok(filed.some((name) => name.startsWith('web_fetch-')));
+  for (const name of filed) for (const value of [key, project]) assert.equal((await readFile(join(one.run.workspace, 'evidence', 'web', name), 'utf8')).includes(value), false, 'no receipt holds them either');
+
+  await assert.rejects(createAgent((await started(home, 'run-2')).where, { ...env, BROWSERBASE_API_KEY: '' }), /names the tool web_fetch, which this host does not have/, 'without a key the web tools are not listed');
+});
+
+test('start-run.mjs refuses a run with no browser setting in the pinned words, names the key each value needs, and says chrome is now local', async (t) => {
+  const { home } = await agentHome(t);
+  const { run } = await started(home, 'run-1');
+  const base = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(AGENT_|CHROME_PATH|BROWSERBASE_|KERNEL_)/.test(name)));
+  const launch = (extra) => new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--no-warnings', join(import.meta.dirname, 'start-run.mjs'), run.dir], { env: { ...base, AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9/v1', AGENT_MODEL: 'test-model', ...extra }, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => (stderr += chunk));
+    child.once('exit', (code) => resolve({ code, lines: stderr.trim().split('\n') }));
+  });
+  assert.deepEqual(await launch({}), { code: 2, lines: ['set AGENT_BROWSER (or --browser): local (no key; a Chrome on this machine), browserbase (BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID) or kernel (KERNEL_API_KEY)'] });
+  assert.deepEqual(await launch({ AGENT_BROWSER: 'local' }), { code: 2, lines: ['set CHROME_PATH first (see examples/web/agent/README.md)'] });
+  assert.deepEqual(await launch({ AGENT_BROWSER: 'chrome' }), { code: 2, lines: ['AGENT_BROWSER=chrome is now AGENT_BROWSER=local; chrome is accepted for one more release', 'set CHROME_PATH first (see examples/web/agent/README.md)'] });
+  assert.deepEqual(await launch({ AGENT_BROWSER: 'kernel' }), { code: 2, lines: ['set KERNEL_API_KEY first (see examples/web/agent/README.md)'] });
+  assert.deepEqual(await launch({ AGENT_BROWSER: 'browserbase' }), { code: 2, lines: ['set BROWSERBASE_API_KEY first (see examples/web/agent/README.md)'] });
+  assert.deepEqual(await launch({ AGENT_BROWSER: 'firefox' }), { code: 2, lines: ['AGENT_BROWSER is local, browserbase or kernel, not firefox'] });
 });

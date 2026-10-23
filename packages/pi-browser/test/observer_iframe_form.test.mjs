@@ -17,11 +17,11 @@ test("a form POST in a cross-origin iframe is journaled under journal and held a
   const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "effects-"));
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, args: [LOOPBACK] } });
   let ref = null;
-  t.after(async () => { if (ref) await provider.release(ref); await server.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { if (ref) await provider.release(ref); await server.close(); await rm(root, { recursive: true, force: true }); }, { timeout: 30_000 });
   ref = await provider.create({ tag: "iframe-form", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal);
   const target = await provider.attach(ref);
   const driver = await cdpDriver(server.base)(target);
-  t.after(() => driver.close());
+  t.after(() => driver.close(), { timeout: 30_000 });
 
   for (const mode of ["journal", "deny"]) {
     const observer = await EffectObserver.open(target, mode === "deny" ? effectDecider("deny") : null);

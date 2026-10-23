@@ -71,25 +71,25 @@ test('dry-run synthesizes declared input including sibling refs, and respects ex
   const workflow = plan();
   workflow.schemas.Input.properties.count = { $ref: '#/definitions/Count' };
   workflow.schemas.Count = { type: 'integer', minimum: 2 };
-  assert.deepEqual(await dryRunWorkflow(workflow), { ok: true });
-  assert.deepEqual(await dryRunWorkflow(workflow, { input: { count: 5 } }), { ok: true });
+  assert.deepEqual(await dryRunWorkflow(workflow), { ok: true, status: 'passed' });
+  assert.deepEqual(await dryRunWorkflow(workflow, { input: { count: 5 } }), { ok: true, status: 'passed' });
   assert.equal((await dryRunWorkflow(workflow, { input: {} })).ok, false);
   assert.equal((await dryRunWorkflow(workflow, { input: { count: 'bad' } })).ok, false);
   workflow.schemas.Result.properties.count.const = 6;
   assert.equal((await dryRunWorkflow(workflow)).ok, false);
-  assert.deepEqual(await dryRunWorkflow(workflow, { input: { count: 5 } }), { ok: true });
+  assert.deepEqual(await dryRunWorkflow(workflow, { input: { count: 5 } }), { ok: true, status: 'passed' });
 });
 
 test('dry-run has no ambient question or context, but explicit reference fixtures remain supported', async () => {
   const workflow = plan();
   delete workflow.input;
   workflow.root.code = 's => { if (Object.keys(s).length) throw new Error("unexpected input"); return { result: { count: 1 } }; }';
-  assert.deepEqual(await dryRunWorkflow(workflow), { ok: true });
+  assert.deepEqual(await dryRunWorkflow(workflow), { ok: true, status: 'passed' });
   workflow.root.code = 's => ({ result: { count: s.context.references.reference.length } })';
   assert.equal((await dryRunWorkflow(workflow)).ok, false);
-  assert.deepEqual(await dryRunWorkflow(workflow, { probeContext: { references: { reference: 'abc' } } }), { ok: true });
+  assert.deepEqual(await dryRunWorkflow(workflow, { probeContext: { references: { reference: 'abc' } } }), { ok: true, status: 'passed' });
   workflow.schemas.Result.properties.count.const = 5;
-  assert.deepEqual(await dryRunWorkflow(workflow, { input: { context: { references: { reference: 'input' } } }, probeContext: { references: {} } }), { ok: true });
+  assert.deepEqual(await dryRunWorkflow(workflow, { input: { context: { references: { reference: 'input' } } }, probeContext: { references: {} } }), { ok: true, status: 'passed' });
 });
 
 test('support triage rejects incomplete input as input_invalid before invoking adapters', async () => {

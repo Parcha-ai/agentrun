@@ -2,6 +2,300 @@
 
 ## Unreleased
 
+## 0.1.0-beta.25 (2026-10-23)
+
+- `archilPlace({ unheld })` takes a hook that runs in each start's window while nobody holds the run: after ensureRunning's revoke and start mark and after the run's directories are made, before the driver starts anything, once per start. It gets the start's `attempt` and, when the place hands labels over, exactly the `HOST_BOX` that start carries (`start.box`). It also gets the run's own files: `read`, `list`, and `put(path, text)`, which creates a file the run user owns (0644, parents 0755) and refuses a path already there with `EXISTS`. What it returns is added to that start's environment. It needs `ensure.create` and a control that lists. New types `UnheldHook`, `UnheldRun` and `UnheldStart`, and new `unheldTimeoutMs` (default 30 s).
+  - A put the hook does not await still settles inside the window: the driver starts only once every put has settled, within the hook's bound.
+  - `put` is a check, then a write, not a conditional create, so it is not exclusive between two supervisors in one window: put names unique to the start, and bind a shared name in the process that holds the run. It is for non-secret run files; a secret never goes through it.
+  - A start fails, and the driver starts no box, when a put was refused because the run is held (`WINDOW_CLOSED`, even if the hook caught it), when the hook throws a control failure (`CONTROL_API_FAILED`), when it throws anything else or overruns its bound (`UNHELD_FAILED`), or when its environment has a name the start already sets, a name that is not a variable name, a key-shaped name (a `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `CREDENTIAL` or `CREDENTIALS` segment), or a value that is not a string without NUL (`INVALID_ARGUMENT`, naming the variable, never its value). The caller sees `HOST_START_FAILED` with that `PlaceError` as its cause. `RunFileErrorCode` gains `EXISTS` and `WINDOW_CLOSED`; `PlaceErrorCode` gains `WINDOW_CLOSED`, `CONTROL_API_FAILED` and `UNHELD_FAILED`.
+  - Fix to merged behavior: a box the place already started and its driver adopts again (`adopted: true`, the same attempt started twice) keeps its key in `status().boxes`. New optional `HostDriver.instanceOf(handle)` names the instance a handle is for, the same for its fresh and its adopted handle; `dockerHost` (daemon and container name), `localHost` (host, boot, unit or tag) and `daytonaHost` (sandbox id) implement it, and without it no two handles are one box. It used to get a second entry: a key no runner claimed under `HOST_BOX`, the box counted twice in the receipts, and stopped twice at release.
+
+## 0.1.0-beta.24 (2026-10-22)
+
+- `readRunFile(control, ref, path)` and `listRunFiles(control, ref, dir)` read a run's own files over the disk's control (S3 GET, HEAD and LIST): they never mount, write, or take or wait on the claim, so they read a run another host holds. `readRunFile` returns the bytes, or `null` for a file not written yet; `listRunFiles` returns the names directly under a directory, sorted, names only. Refusals are `RunFileError`: `INVALID_PATH` (before any request: absolute, `.`/`..`, unsafe characters, `.archil/`), `RUN_MISSING`, `NOT_A_FILE` (a directory, or a symlink, decided on Archil's 501 for it, never from a listing, where a symlink looks like an empty file), and `CONTROL_API_FAILED`. Both take a `signal`.
+  - A place offers the same reads of its own run: `Place.readRunFile(path)` and `Place.listRunFiles(dir)`, optional members that `archilPlace` implements over its control and `localPlace` over its run directory on this machine, where a symlink anywhere on the way is `NOT_A_FILE`, never followed. A missing file is `null`; a directory not there yet lists `[]`; every other failure throws.
+  - `INVALID_PATH` names what is wrong with a path (empty, absolute, a `.` or `..` segment, an unsafe character at an index, under `.archil/`), never the path itself.
+  - `archilPlace` tells each host box's runner which label to claim: when its driver makes boxes and names their provider (new optional `HostDriver.provider`; `daytonaHost` names `daytona`) and the place can read the label back (its control lists), each start puts `HOST_BOX` (`{ provider, key, run }`: the box's index in `status().boxes`, the order's `RUN_LABEL`) in that order's environment. With it, `status()` fails (`STATUS_FAILED`) on a box its driver gives no receipt for, instead of shifting the keys of the boxes after it.
+- **Known issue:** a host box an instance adopted is listed twice in `status()` (under a second key), so its receipts and stops are counted twice. The fix ships in the next release.
+
+## 0.1.0-beta.23 (2026-10-22)
+
+- The CLI's duration flags take a unit: `ms`, `s`, `m` or `h` (`500ms`, `30s`, `1.5m`, `1h`). A bare number used to mean milliseconds, so `--every 90` ran every 90 ms. It is now refused with exit 2 and a hint: `not a duration: "90": give a unit, e.g. 90s or 90ms`. Every duration flag a command is given is checked before the command acts. **Who breaks:** a script or service unit that passes a bare number to `--park-threshold`, `--park-idle`, `--drain-timeout`, `--stop-timeout`, `--control-timeout`, `--lease-expiry`, `--stonith-timeout`, `--start-grace`, `--start-backoff-max`, `--token-grace` or `--every`. **What to do:** add the unit you meant (`90ms` keeps today's behaviour).
+  - Flags named -ms keep bare milliseconds (`--heartbeat-ms`, `--lease-expiry-ms`, `--lease-margin-ms`): their name carries the unit, and units are still accepted.
+  - A bare `0` still turns off `--park-threshold` (no parking), `--start-grace` (no grace, so no backoff) and `--start-backoff-max` (no backoff). Elsewhere `0` takes a unit (`0s`) and behaves as before.
+- **SECURITY: `localHost` stops and kills only a unit it could have started, and says so when it refuses one.** A handle comes back from `run.json`, which the run's user can write, and `stop` and `kill` act on it as root (`systemctl stop` and `kill`, `archil unmount`, `fusermount`, `umount`, `rmdir`). Before, only the shape of the unit's name was checked, so a handle that named another service on the host had it stopped. Now `stop` and `kill` act only on a unit with the driver's `unitPrefix` whose mountpoint is one run's under the driver's mount root, as `dockerHost` and `daytonaHost` act only on their fleet's. For any other handle of this host and boot, and for a child-mode handle whose pid is 1 or below or that has no start ticks, they throw `INVALID_ARGUMENT`, naming the handle and saying that nothing was stopped or killed. `supervise` logs that STONITH as `failed` with the reason, where it used to log `stopped`, then revokes and starts as before. A handle of another host or boot, and a child that is already gone, are still no-ops; `status` is unchanged.
+
+  - Who notices: a supervisor that changed `--unit-prefix` or `--mount-root` between runs no longer stops the units started under the old values. Their STONITH logs the refusal, and the revoke fences them as before.
+- **SECURITY: `localHost` and `archilEnv` refuse to run the agent as root.** The docs say instances and the agent's tools never run as root, and `--run-as`, `daytonaHost` and the in-box launcher already refused uid 0. `localHost` only required a `user` when the supervisor runs as root, so `user: "root"`, `"0"` or `0` started the unit with `User=0`, and child mode in a root process ran the instance as root; `archilEnv` accepted `runAs: { uid: 0 }`. Now `localHost.start` throws `INVALID_ARGUMENT` for a user that is uid 0 (a name is looked up in `/etc/passwd`) or empty (systemd runs a unit with an empty `User=` as root), and for child mode in a root process, and `archilEnv` throws `INVALID_RUN_AS` for a `runAs` uid of 0, each before anything runs. A driver is constructed as before, so the `status` command's read-only driver is unaffected.
+- **SECURITY: `localHost` in systemd mode no longer puts the instance environment on the `systemd-run` command line, which sudo logged to the journal and `systemctl show` exposed; it passes it through a root-only file.**
+  - Before, each variable of the driver's `env` and of a start's own environment (`StartAttempt.env`) went to `systemd-run` as `--setenv=NAME=value`, under `sudo -n`. `sudo` logs the whole command line to the journal, and `--setenv` is stored in the unit's `Environment=` property, which any local user reads with `systemctl show`. A secret in either place was in both. The mount token and the API key were never affected: the token travels on stdin and the API key never reaches the driver.
+  - Now the environment is written to a root-only (mode 0600) file beside the mount token's, through stdin, and the unit loads it with `-p EnvironmentFile=<path>`. No value is on any argument. The file lives as long as the unit may restart (a restart in place loads it again). It is removed when the unit is stopped, when a start fails, and by the unit itself (`ExecStopPost=`) when it ends for good: a park or a finish, or a terminal exit. A unit that systemd gave up restarting keeps it until `stop`. A value with a newline, a carriage return or a NUL, or a name that is not a variable name, is refused with `INVALID_ARGUMENT` before anything runs, rather than written mangled.
+  - A deployment that put a secret in `localHost`'s `env` or in `StartAttempt.env` under systemd mode should treat it as exposed to anyone who could read its journal or run `systemctl show` on the unit, and rotate it. Child mode is unaffected: its environment goes in `spawn`'s `env`.
+- Every install line in the README and the examples pins `@earendil-works/pi-durable`, `@earendil-works/pi-ai` and `@earendil-works/chord` at 1.3.0. pi 1.4.0 is now npm's `latest`, and an unpinned line ends in ERESOLVE against the peer ranges (`>=1.0.4 <1.4.0`). pi 1.4 is not supported yet; a later release widens the range.
+- The README opens with the agent as the workspace, and the package description is its short form: its conversation and its files live together in
+  one directory on a disk, which any Linux host or container can mount, release and mount somewhere else, and the agent carries on
+  where the last host released it. The second paragraph says what opening and releasing a run do on an Archil disk (mount and
+  claim, then seal, give up the claim and unmount) and on a plain directory (no mount).
+
+## 0.1.0-beta.21 (2026-10-21)
+
+- `supervise --no-restart` is in the usage text and the reference: it turns off the local driver's restart on failure (`localHost({ restart: false })`), so an instance that exits stays down until the supervisor's next pass.
+
+## 0.1.0-beta.20 (2026-10-20)
+
+- A start mark keeper whose rewrite fails because the run's directory moved after its check now warns that the directory is no longer the one it started on, and stops. Before, the `PDA_START_MARK` warning said the rewrite failed (ENOENT or ENOTDIR). Nothing is written in either case; only the stated reason changes.
+- The local-disk env conformance cases watch with a 100 ms poll, so pi's fixed 3 s wait for a report keeps seconds of slack on a loaded runner; the product's 1 s watch default is unchanged.
+
+## 0.1.0-beta.19 (2026-10-20)
+
+- An instance whose app released the run ends by itself: `pi-durable-disk run --app` exits 0 once `onOpen` has returned and the run is released, so the unit does not stay up with no mount.
+  - A stop (SIGTERM or SIGINT) after the app's release, from `onOpen` or later, exits 0 with no drain and no wake written to the released run.
+  - `DurableRun` gains `readonly releasing: boolean`, true once `release()` began. A caller that implements `DurableRun` itself must add it.
+  - `pi-durable-disk --help`, `help` and `<command> --help` print the usage on stdout and exit 0.
+- **The README is the overview, `docs/reference.md` the reference; three new keyless examples**
+  - The package README is now the overview: what it is (an agent's home and runs live on a disk, so any host can open a run where
+    the last one released it), when to use it, a keyless example to run from an npm install, Archil as "bring your own disk",
+    what you can do with it, what it costs, what it does not do, the install lines, and the low-level API (`openDurableRun`, `localRun`, `seed`, `localPlace` and
+    `archilPlace`, `PlaceOutcome`, `withClaim`, `recordHome`) with an example or test for each. The reference sections moved,
+    with their headings, to `docs/reference.md` (requirements, the quickstarts on a disk, the app, the CLI, host drivers and the
+    supervisor, the failure table, security, the layout, the library). `docs/` is not in the published package, so the README's
+    links to it resolve on npm's and GitHub's pages, as the links to `examples/` do. Two fixes in the moved text: `readReleased`
+    returns `{ bytes, etag }` or null (a snippet bound it to the bytes), and the quickstarts say what the run does (it moves to
+    another host from the disk) with the kill as one line.
+  - New examples, all keyless: `pick-up-a-run` (three processes open one run in turn; the README's first example, which the
+    stranger test runs), `seed-a-run` (what `seed` writes, once, and the next open keeps what the run changed) and
+    `place-outcome` (`localPlace` reports a run that delivers as `complete` and one that gives up as `failed`, with the models).
+    `01-durable-chat/on-a-directory.mjs` stays and is still run in CI.
+  - The install lines in the README and in `examples/README.md` no longer pin the pi packages to 1.2: the published beta's peers
+    are `>=1.0.4 <1.4.0`.
+- The README and `docs/reference.md` say that an instance ends after its app releases the run: returning from `onOpen` after
+  `await run.release()` is enough, and the examples' `process.exit(0)` is fine too. This follows the fix that makes such an
+  instance exit 0 and a stop after the release clean.
+
+## 0.1.0-beta.17 (2026-10-18)
+
+- **A claim directory's descriptor is closed by `close()` only, never by garbage collection (GRE-3853)**
+  - While a new run's seed waited on a promise nothing else held, the open's pending await chain was all that reached the
+    claim directory, so a collection could close its FileHandle. The start mark's keeper, which writes through
+    `/proc/self/fd/<n>` on a thread of its own, then failed silently, and the supervisor's grace ran out under a live seed.
+    A later open in the process could also be handed that number, and the keeper would have written the mark there.
+  - Every handle the package hands out as `/proc/self/fd/<n>` (the claim directory's `at`, a confined pin's paths, the walk
+    that makes them, the text line reader and the temp directory) is now held until it is closed.
+  - The keeper writes only while its directory is still the one it started on (same device and inode). If the directory
+    can't be reached or is another one, it stops. Its first failure is a process warning, code `PDA_START_MARK`, not
+    silence.
+
+## 0.1.0-beta.16 (2026-10-18)
+
+- **A place's outcome carries the models the run's live parts chose (`PlaceOutcome.models`)**
+  - `PlaceOutcome.models?: Record<string, string>`: the role-to-model ids (`lead`, `eyes`, ...) the app reported, on any
+    outcome status, so a supervisor's manifest names the models of a remote run as of a local one.
+  - `archilPlace` reads it from `run.json`'s final status detail (`detail.models`); `localPlace` from the instance's
+    `{"outcome":...}` line, or from `run.json` without one.
+  - Both keep it only when it is a plain object whose values are all strings. A missing or malformed one is left out, never
+    replaced by `{}`. Before, `localPlace` passed the outcome line's `models` through unchecked, a malformed one included,
+    and `archilPlace` never carried it.
+- **`archilPlace.recordHome`: a runner on a box records into the run's disk, and the place brings the recording home**
+  - `Place.recordHome` (`PlaceRecordHome`): `dir(attempt)` is where that attempt's runner records, and
+    `bringHome(into, { final })` brings what it recorded into the supervisor's recording directory. `archilPlace` has
+    it when its control can list (`RecordControl`, as `archilControl` does); `localPlace` has none, since its runner
+    writes the supervisor's directory itself.
+  - `dir(attempt)` is `<root>/record/<attempt>`, inside the run's directory. `bringHome` reads it over S3 (list and get,
+    never the run's claim). Blobs come first, hash-checked and written whole; then the new whole lines of each
+    `.spool/*.jsonl` segment, with an offset per file name kept as what `into` already holds, so it is idempotent across
+    calls and processes. Carriers that overlap on one destination append each line once: one call at a time per
+    destination in a place, and a lock file per spool file across places and processes (a gone holder's is taken over;
+    one held past 5 s is `CARRY_FAILED`). Every write is carried to its last byte.
+  - With `ensure.create`, each start first makes the EMPTY `signals/`, `record/<attempt>/.spool/` and
+    `record/<attempt>/blobs/` over the control, owned by the run user (mode 0755), while no delegation holds the run. A
+    directory made by path on an Archil mount was seen to refuse file creates. Every file in them stays the runner's; a
+    refused put fails the start with `DIRS_REFUSED`.
+  - Box receipts: `HostDriver.box(handle)` (`HostBox`) and `PlaceStatus.boxes`. `archilPlace.status()` lists a receipt
+    for each box it started, released ones included: provider, kind, `from`, `to` and, when it has a price, the published
+    list price per second (`usdPerSecond`), the page it was read from (`source`) and the date read (`priced`). An unpriced
+    box has none of the three, never 0, and no field holds the provider's box id. `daytonaHost` reports its sandboxes, priced at `DAYTONA_LIST_PRICES`
+    (https://www.daytona.io/pricing, read 2026-10-16), with the "first 5 GiB free" applied to disk (the footnote's
+    placement is ambiguous). A box of unknown size has no price, nor does a box with a GPU, which the page prices per
+    model (`daytonaUsdPerSecond`). `localPlace` reports none.
+  - Failures carry codes (`PlaceError`). `BLOB_MISMATCH` is thrown after everything else came home. `CARRY_FAILED` is
+    thrown for a list or get that fails, and on `final` for a line whose blob never landed. `BOX_GONE` is never thrown
+    by this place: the recording lives on the disk, which outlives the box.
+- **A seed of any length stays in the supervisor's start grace**
+  - While a new run seeds it has no `run.json` heartbeat, and `ensureRunning` keeps a start in its grace only while the
+    start mark (`runs/<id>/start.json`) is younger than the grace (90 s by default). A longer seed was taken as a failed
+    start: revoked, then seeded again.
+  - Now, while the seed runs, the instance rewrites the mark's `at` every heartbeat through its claim (fsync and rename).
+    It does so only when a supervisor's mark for generation 1 is there, keeping its generation, `by`, `failures` and
+    `lastExit`. The rewrite runs on a thread of its own, one at a time, so a seed that blocks its thread (a synchronous
+    import) stays covered. It stops when the seed ends, before the open goes on, and `run.json`'s heartbeat takes over.
+  - A seeder that dies stops rewriting, and the grace runs out as for any start. The mark's format does not change.
+
+## 0.1.0-beta.15 (2026-10-16)
+
+- **`HostDriver.kill`: take an instance away as a crash would, and `kills` says what that takes**
+  - `kill(handle)` is optional on the interface and implemented by the three drivers. It drains nothing, releases
+    nothing and cleans nothing: the run's claim is left as a crash leaves it, and the supervisor's next pass decides what
+    follows. A handle the driver cannot reach, or one from another fleet or boot, is a no-op.
+  - `kills` is `process` or `box`. `localHost` kills `process`: `systemctl kill --signal=SIGKILL --kill-whom=all` on the
+    unit, or SIGKILL to the child's process group (checked against its start ticks). `dockerHost` and `daytonaHost` kill
+    `box`: `docker kill` (the container is left exited and the next start removes it), and the Daytona sandbox's delete
+    (a refused delete stops it and deletes again). The launcher is not asked to stop.
+  - A kill that fails while the instance still runs throws `KILL_FAILED` (`LocalHostError`, `DockerHostError`,
+    `DaytonaHostError`).
+- **`archilPlace.signals`: a runner's kill request travels through the run's disk, so a box can be killed at a named crossing**
+  - `Place.requestFile(attempt)` says where an attempt's runner writes its kill request; a place with `signals` has it,
+    and `signals(attempt)` reads what is written there. `localPlace`'s is the supervisor's own file (`ctx.requestFile`).
+  - `archilPlace`'s is `<root>/signals/kill-<attempt>.json`, in the run's directory and outside `work/`, read over S3
+    every 500 ms (`signalPollMs`). The runner writes it durably (a temporary file, fsync, rename, fsync of the directory)
+    or S3 may not see it. A missing object is a request not written yet; once reads have failed otherwise for
+    `signalFailMs` (60 s) without a break, the iterator yields one `signals-failed` signal (`code`, `message`) and ends.
+    It never rejects.
+  - A request is yielded once it names `point` and `n`, with every other field it carries in `crossing`, except the
+    per-attempt nonce from the supervisor's order, which is the signal's own `nonce` (`PlaceSignal.nonce`), where the
+    supervisor reads it for its check. The place's token (on a disk, the mount token) never goes into a request. The
+    iterator's `return()` ends a pending `next()` even while its read is in flight.
+- **Places: `localPlace` and `archilPlace`, a run that a supervisor can kill and bring back**
+  - Each factory returns `(ctx) => Place`, matching agentrun's reference place seam structurally: `token`, `kills`,
+    `start`, `signals`, `kill`, `status`, `recover`, `release`. The package exports the types as `Place`, `PlaceRunner`, `PlaceExit`,
+    `RunnerOrder`, `PlaceSignal` and `PlaceContext`, with `PlaceError` for its failures.
+  - `localPlace({ app, root? })` runs `run --dir` as a child in its own process group, with no disk and no key. A process
+    kill is SIGKILL to the group, and the next runner resumes the run from the directory. `release()` also ends the
+    commands the run recorded, which run in process groups of their own, under the run's owner lock (while another
+    process holds the run, they are its own). Given `ctx.requestFile`,
+    `signals(attempt)` yields the runner's kill request (`PlaceSignal`), and the iterator's `return()` ends a pending
+    `next()`.
+  - `archilPlace({ disk, region, control, host })` mints each attempt's mount token itself (`token(attempt)`) and starts
+    through `ensureRunning`. Its kill is the driver's `kill`. Its recovery takes the run over: the killed holder's delegations
+    are revoked whatever its lease says, and the result lists them; a newer incarnation another supervisor started gets
+    the usual checks instead. A runner's outcome is `run.json`, read over S3.
+    `release()` stops what the place started and removes the tokens it minted; what it could not, it reports
+    (`RELEASE_FAILED`) and tries again on the next `release()`.
+  - `EnsureOptions.mountToken`: a start uses a token the caller minted instead of minting one, and removes it as it would
+    its own when the driver starts nothing or adopts.
+  - `StartAttempt.env`: what one start adds to its instance's environment. `localHost`, `dockerHost` and `daytonaHost` merge
+    it over their own `env`. An order that sets PATH or PDA_HOLDER (the driver's), or a name that is not a variable name,
+    is refused (`INVALID_ARGUMENT`).
+- **`readLocalRunStatus(root)`: the status of a run on a local directory, from the root entry**
+  - New root export `readLocalRunStatus(root)` returns the `RunRecord` of a run on a local directory (`localRun`): the same strict
+    reader and the same type as `readRunStatus`, which reads a disk's `run.json` through the control API and so cannot serve a
+    directory. It answers `null` for a run with no `run.json` yet (or no directory) and throws `RunRecordError`
+    (`RUN_JSON_INVALID`) for a malformed record. Before, a caller had `parseRunRecord` and `RUN_JSON` from `./internals`, which
+    carries no compatibility promise. The `serve-and-park` example reads its run this way, so its Since is 0.1.0-beta.15.
+    Additive.
+- **`seed`: what a new run starts with, written before anything sees the run**
+  - `openDurableRun` and `openRunLease` take `seed: (dir: { root, storePath, workDir }) => void | Promise<void>`. It runs
+    once, on the open that finds no `run.json`: inside the run's first claim, with the owner lock held, after `store/`,
+    `work/` and `tmp/` exist, and before `run.json` is written and the store opens (step `seed`). What it wrote is made
+    durable (the claim's barrier) before `run.json` publishes the run.
+  - It never runs for a run that has `run.json`. A seed that throws fails the open with its own error, and a process killed
+    while it seeds leaves the run unpublished; either way the next open seeds again. It works the same with `localRun`.
+  - New types `RunSeed` and `RunSeedDir`, exported from the package and from `./lease`.
+- **`withClaim` and `readReleased`: a short exclusive claim on any path of a disk, and a consistent S3 read of what it
+  released**
+  - `withClaim({ control, disk, region, path }, fn, options)` holds `path` exclusively while `fn` runs (pi-durable-agent's
+    carry back of `agent/agent.sqlite` at a run's end). It mounts at a fresh `<mountRoot>/runs/<pid>-<uuid>`, writes `.claim`
+    with its deadline (`holdMs`, 60 s), runs `fn`, then barriers, unmounts and gives its mount token back, also when `fn`
+    throws.
+    - A lost holder is revoked before the mount: orphaned, or holding exactly the path with an expired `.claim` that stays
+      the same for 3 s. A live one within its deadline is waited for (`waitMs`, 30 s), never revoked. An abort of
+      `signal` before the mount runs nothing.
+    - It makes the path's directories the disk lacks (owned by the calling process, 0700, or `owner`): archil mounts no
+      path whose directory is missing.
+    - It refuses `INVALID_ARGUMENT` for an unsafe path or one under `runs/` or `.archil/`, `CLAIM_HELD` (76) for a live
+      holder after `waitMs`, and `CONTROL_API_FAILED`. It is `FENCED` (75) when revoked from under `fn`, whose writes are
+      then not durable.
+  - `readReleased({ control, path }, file, { sqlite })` reads a released file over S3, with no mount: no delegation before
+    or after, the object unchanged across the read, and for SQLite no `-wal` with content (`NOT_RELEASED`). It returns
+    `null` when the file does not exist.
+  - `CLAIM_HELD` from either is retryable: the path is not released yet. Retry within `waitMs`, and never fall back to an
+    older release.
+- **On a host that refuses every unmount (Sysbox, as Daytona runs sandboxes), the archil client's own bookkeeping no longer fails the release**
+  - Deleting any file under an archil mount makes the client list two Active delegations of its own, `<mp>/.archil/client-<n>`
+    and `<mp>/.archil/client-<n>/unlinked`. They are outside the run's tree, a checkin of the run leaves them, and a
+    checkin of them fails `EROFS` once the mount is read-only.
+  - The release counted them as the run's. So any run whose app deleted a file failed every release with
+    `UNMOUNT_FAILED` ("still lists a delegation after archil checkin"), even after a completed run. Its instance then
+    exited failed, and the restarts failed `CLAIM_NOT_VERIFIED` until the box was deleted.
+  - They no longer count. Every other Active delegation under the mount still holds the run, and the mount is left where
+    it is, as before.
+- **`run --app`: the app's factory runs once the claim is held, so `ctx.root` is the live run directory**
+  - The CLI called the app module's factory before the claim mounted, and a factory that wrote under `ctx.root` (a
+    recorder's spool, a `signals/` directory) wrote into the bare mountpoint. The mount hid those writes, and the run later
+    failed `ENOENT` on its own files. The claim is now taken first: the mount, the owner lock, the run's directories and
+    the end of a killed incarnation's commands. Then the factory runs, then this incarnation's `run.json`, and the Harness
+    opens with what the factory returned.
+  - `openDurableRun` gains `afterClaim(claim)`, awaited once the claim is held and before `run.json`, with the claim's
+    `ref`, `root`, `work` and `store`. Its result (`harness`, `beforeResume`, as `AfterClaim`) goes into the open, so
+    `harness` is now optional in the options when `afterClaim` gives it. With neither, the open is refused
+    (`INVALID_ARGUMENT`) before any claim; an `afterClaim` that returns no `harness` is refused the same way, after the
+    claim. A rejection fails the open and lets the claim go. The open step is `after-claim` (`OpenStep`).
+  - The open order changed, for `openRunLease` too: acquire, owner lock, layout (`store/`, `work/`, `tmp/`), the
+    `commands` reap, `after-claim`, `seed` (a new run's), `run.json`, heartbeat, then store, seal and Harness. `afterClaim`
+    may return a new run's `seed` (`AfterClaim.seed`), which runs over the options' one, right after it. The layout and the reap used to
+    come after `run.json` and the heartbeat, and the reap ran only in `openDurableRun`. Code that reads `onStep` sees the
+    new order.
+  - An open that fails before `run.json` publishes nothing of its incarnation: a new run keeps no `run.json`, and a
+    resumed run keeps the previous one as it was. So a module that does not load (`APP_FAILED`, exit 1, as before), or a
+    reap refused by a surviving command (exit 76), reads to `ensureRunning` as a failed start: it backs off (the grace
+    doubled per failure), instead of finding a fresh `running` record and starting the run again on every tick. The steps
+    before `run.json` run inside the supervisor's start grace, not under the heartbeat. Claim options, if one ever needs
+    them, are static (CLI flags or the environment), never returned by the factory.
+- **The keyless examples run on macOS, from 0.1.0-beta.14, and say so**
+  - kill-9's own check that the cut command still runs read `/proc`, so on macOS the example crashed after the kill. It
+    reads `ps` where there is no `/proc`.
+  - The examples index says macOS needs 0.1.0-beta.14 or later (the first release that runs there), whatever an
+    example's Since says; it no longer says "Linux only".
+  - The stranger's walk of the examples installs, per platform, the later of an example's Since and the spec's
+    `examples.platformFloors` (macOS: 0.1.0-beta.14). Its Since alone installed 0.1.0-beta.13 on a Mac, which has no
+    macOS support, and failed kill-9, audit-across-crashes and no-double-charge there.
+  - The macOS CI job runs the keyless example tests (kill-9, audit-across-crashes, no-double-charge, fork-into-many,
+    serve-and-park) on a Mac, and its stranger step is blocking again.
+- **A start whose own writes are in the bare mountpoint is refused, `MOUNTPOINT_WRITTEN`, instead of losing them**
+  - The CLI calls an app's factory before its claim mounts. A factory that wrote under `ctx.root` (a recorder, a `signals/`
+    directory) wrote into the bare mountpoint. Acquire then moved those entries aside as an earlier incarnation's
+    leftovers, the mount hid the rest, and the run later failed `ENOENT` on files it had written itself. Every pre-mount
+    write was lost without a word.
+  - Acquire now tells the two apart by time. Entries written since this process started are its own, so the start is
+    refused: `ClaimError` `MOUNTPOINT_WRITTEN`, exit 65 (terminal, since a restart would write them again). The message
+    names the first few as `<mp>/...` in at most 240 characters. Nothing moves aside and nothing mounts. Older leftovers
+    are moved aside as before, logged by count only.
+  - The check looks at every entry, since a directory keeps its time when a file in it is rewritten in place. A mountpoint
+    it cannot look at whole (more than 100,000 entries, or an entry this process cannot read) may hide such a write, so it
+    is refused too: `ClaimError` `MOUNTPOINT_UNCHECKED`, exit 65, naming none of the entries. Nothing moves aside and
+    nothing mounts; someone looks at the directory and moves it aside by hand.
+  - `ClaimError` takes an `exitCode`.
+- **A place's outcome from `run.json` is in the run's word: `complete` or `failed`, not the record's status**
+  - `localPlace` (without the instance's outcome line) and `archilPlace` read a runner's outcome from `run.json`. Its
+    `status` was the record's (`done`, `failed`, `running`, ...), which a supervisor would have to know the package to
+    read. It is now `complete` when the run is `done` and the detail of the app's last status carries a `record`, and
+    `failed` for anything else: done with no record, failed, or a run its instance left `running`, `paused` or `sleeping`.
+    The generation, `code`, `message`, `record` and `storeSha256` are unchanged. An outcome line the instance prints is
+    passed through as it is.
+- **A restart whose mount went with the failed incarnation mounts again on Daytona, and fails at once and clearly everywhere else**
+  - `daytonaHost`'s launcher handed the attempt's mount token to the first incarnation only, so a restart could only reuse a
+    live mount. When the failed incarnation's release had already let the mount go (always on Sysbox, where it is moved
+    aside), every restart had no token and no mount. Each one then failed with archil's misleading "Authentication failed",
+    until the launcher's restart limit, and the run never recovered. Every incarnation of an attempt now gets the token:
+    such a restart mounts again, and after a takeover that mount is `HeldError` (76, terminal), as before.
+  - Everywhere, an incarnation given no mount token (`--token-stdin` read nothing) that finds no live mount to reuse is now
+    fenced at once, before any mount: `FencedError` `CLAIM_GONE_NO_TOKEN`, exit 75, terminal. It no longer loops on a mount
+    that cannot succeed, and the supervisor's next start brings a new token. `localHost` keeps handing its token to the
+    first incarnation only.
+- **The Daytona live helpers build a runtime snapshot, so a box is ready in about 2 s instead of 16 s**
+  - `test/live/daytona-snapshot.ts build <commit>` builds `pda-p9-runtime-<commit>-<stamp>` from `snapshotDockerfile`:
+    `daytona-medium`'s image with the pinned Node and archil client, the run user, the wrapper, the sudoers drop-in and the
+    package's dependencies. `prepareOnSnapshot` is the matching `prepare` for a `daytonaHost` start with `snapshot: <name>`:
+    it puts the checkout's package source over the snapshot's `node_modules` and installs dependencies only when they
+    changed. `check`, `baseline` and `delete` boot, compare and remove.
+  - `build <commit> --demo` adds the disk demo's dependencies: the third-party closure of the five workspace packages its box
+    installs (dsl, pi, pi-browser, pi-vision, pi-transport) and pi-codemode, pinned to the workspace lockfile at `commit`.
+    `installDemoPacks` then installs the checkout's packs offline, in about 1.5 s instead of 6 to 7 s over the network;
+    `check-demo` measures it and imports every entry the demo's child uses.
+  - The ledger (`P9-STATE.json`) records snapshots too. A snapshot is built once under a new name, never over an existing
+    one, and only one this lane built can be deleted. Every command needs the same `PDA_STATE_DIR`. A box whose delete
+    failed stays open in the ledger and fails the command, and a build still running when the wait ends stays open.
+  - No package code changes: `daytonaHost` already takes `snapshot` and `prepare`.
+
 ## 0.1.0-beta.14 (2026-10-16)
 
 - **The root entry lists its exports, 134 instead of 0.1.0-beta.13's 228; the rest move to `./lease`, to a new `./internals`, or out of the package's entries.** Root values go from 136 to 46: 92 leave root (19 to `./lease`, 15 to `./internals`, 58 to no entry) and 2 are new. Who breaks: an import of one of the names below from `@parcha/pi-durable-disk`. What to do: import it from the entry named here; a name that no entry exports had no caller outside the package; open an issue if you need one.
@@ -253,7 +547,6 @@ published.
   `X-Daytona-Source` header. An existing host's sudoers drop-in and wrapper copy need the new paths.
 - Unchanged, because they name the Archil disk: `bin/archil-scoped` (and the `./bin/archil-scoped` export), `ARCHIL_API_KEY`, `archilEnv`,
   `ArchilCodingTools`, the claim's internals and the `archil` client it runs.
-
 
 **A holder the control API lists without a path**
 - Archil's control API resolves a delegation's path best-effort and can list one with no path, live or orphaned, even on a

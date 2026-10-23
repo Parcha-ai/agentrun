@@ -1,5 +1,5 @@
 // The document store, held to the store contract by the conformance suite, over a pi-durable Harness on SQLite.
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -8,12 +8,14 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { registerStoreConformance } from '@parcha/agentrun-dsl/recovery/testing';
+import { EffectOutcomeUnknownError, runWorkflow } from '@parcha/agentrun-dsl';
+import { FROZEN_SNAPSHOT_SCHEMA_V4, openRecovery, withRecovery } from '@parcha/agentrun-dsl/recovery';
 import { committedRoutes, documentStore, durableDoc, readJournal } from '@parcha/agentrun-pi/durable';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-document-store-'));
 after(() => rmSync(root, { recursive: true, force: true }));
 
-const open = async (file) => Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: {} }, ctx);
+const open = async (file, storage) => Harness.open(await openNodeSqliteStorage(file, storage), { registry: createRegistry(), models: {} }, ctx);
 
 // Each journal opens as successive processes of one run would: the suite's opens share one Harness, and the file
 // tests below reopen the file itself.
@@ -46,6 +48,36 @@ test('document store: two admissions of one effect asked for together write one 
   await journal.close();
 });
 
+test('document store: with immutable, the readers open a store no process writes as an immutable file: the same view, and no file made beside it', async () => {
+  const directory = mkdtempSync(join(root, 'run a#b-'));
+  const file = join(directory, 'run.sqlite');
+  const harness = await open(file);
+  const journal = await documentStore(harness, 'run-1').open({ binding: 'binding-1', inputs: { workflow: 'digest-a' } });
+  await journal.save({ step: 'done' });
+  await journal.close();
+  await harness.close(ctx);
+  assert.equal(existsSync(`${file}-wal`), false, 'the closed store keeps no write-ahead log');
+  const files = readdirSync(directory).sort();
+  const view = readJournal(file, 'run-1', { immutable: true });
+  assert.deepEqual(view.state, { step: 'done' });
+  assert.equal(durableDoc(file, 'agentrun.driver', 'run-1', { immutable: true }).generation, 1);
+  assert.deepEqual(readdirSync(directory).sort(), files, 'an immutable read makes no file');
+  assert.deepEqual(readJournal(file, 'run-1'), view, 'a plain read gives the same view');
+  assert.equal(readJournal(join(directory, 'missing.sqlite'), 'run-1', { immutable: true }), undefined);
+});
+
+test('document store: with no option, the readers see commits that are only in the write-ahead log of a writer still open', async () => {
+  const file = join(mkdtempSync(join(root, 'run-')), 'run.sqlite');
+  const harness = await open(file, { walAutoCheckpointPages: 0 });
+  const journal = await documentStore(harness, 'run-1').open({ binding: 'binding-1', inputs: { workflow: 'digest-a' } });
+  await journal.save({ step: 'done' });
+  await journal.close();
+  assert.equal(existsSync(`${file}-wal`), true);
+  assert.deepEqual(readJournal(file, 'run-1')?.state, { step: 'done' });
+  assert.equal(durableDoc(file, 'agentrun.driver', 'run-1')?.generation, 1);
+  await harness.close(ctx);
+});
+
 test('document store: the readers see a journal from the store file, wherever the host keeps it, without the Harness, as the last commit left it', async () => {
   // pi-durable-disk's layout: the store under the claim's `store/` directory.
   const directory = mkdtempSync(join(root, 'run-'));
@@ -73,6 +105,55 @@ test('document store: the readers see a journal from the store file, wherever th
   assert.deepEqual(committedRoutes({ pin: { routes: { 'root/0': { answer: 1 } } } }), { 'root/0': { answer: 1 } });
   assert.deepEqual(committedRoutes(null), {});
   await harness.close(ctx);
+});
+
+// A map whose items each make an outside call and run a nested map of calls; item b's call ends with its outcome unknown.
+const MAPPED = {
+  v: 2, name: 'mapped', schemas: { In: { type: 'object', required: ['items'], properties: { items: { type: 'array' } } }, Any: { type: 'object' } },
+  input: { schemaId: 'In' }, output: { schemaId: 'Any' },
+  root: { node: 'chain', steps: [{ node: 'map', label: 'each', itemsPath: 'items', as: 'found', maxConcurrency: 1, body: { node: 'chain', steps: [
+    { node: 'call', label: 'fetch', via: 'tool', tool: 'fetch', args: { id: '{item.id}' }, out: 'Any', as: 'got', deadline_s: 5 },
+    { node: 'map', label: 'parts', itemsPath: 'item.parts', as: 'subs', maxConcurrency: 1, body: { node: 'call', label: 'sub', via: 'tool', tool: 'sub', args: { part: '{item}' }, out: 'Any', as: 'sub', deadline_s: 5 } },
+  ] } }] },
+};
+
+test('document store: readJournal lists a keyed-layout journal\'s effects as the whole layout does, the ones its map items own included, nested maps too, once each, in the order they were admitted', async () => {
+  const run = async (layout, { together = 1, unknown = true } = {}) => {
+    const file = join(mkdtempSync(join(root, 'run-')), 'run.sqlite');
+    const harness = await open(file);
+    const workflow = structuredClone(MAPPED);
+    workflow.root.steps[0].maxConcurrency = together;
+    const driver = await openRecovery(documentStore(harness, 'run-1'), workflow, { key: 'run-1', layout });
+    const deps = withRecovery(driver, {
+      runEffect: async ({ node, input }) => {
+        if (unknown && node.label === 'fetch' && input.id === 'b') throw new EffectOutcomeUnknownError('fetch', 'deadline', 1, 'key', Promise.resolve({ status: 'rejected', reason: null }));
+        return { label: node.label, input };
+      },
+    });
+    const running = runWorkflow(workflow, { items: [{ id: 'a', parts: [1, 2] }, { id: 'b', parts: [3] }] }, deps);
+    if (unknown) await assert.rejects(running, EffectOutcomeUnknownError);
+    else assert.equal((await running).status, 'complete');
+    await driver.close();
+    await harness.close(ctx);
+    return { driver: durableDoc(file, 'agentrun.driver', 'run-1'), effects: readJournal(file, 'run-1').effects };
+  };
+  const whole = await run('v3');
+  const keyed = await run('v4');
+  assert.equal(keyed.driver.state.schema, FROZEN_SNAPSHOT_SCHEMA_V4);
+  assert.deepEqual(keyed.driver.effects, [], 'every effect of this run belongs to a map item, so the driver record lists none');
+  assert.deepEqual(keyed.effects.map(({ id, name, status }) => [id, name, status]), [
+    ['step:/root/steps/0/items/0/body/steps/0#call:0', 'fetch', 'completed'],
+    ['step:/root/steps/0/items/0/body/steps/1/items/0/body#call:0', 'sub', 'completed'],
+    ['step:/root/steps/0/items/0/body/steps/1/items/1/body#call:0', 'sub', 'completed'],
+    ['step:/root/steps/0/items/1/body/steps/0#call:0', 'fetch', 'unknown'],
+  ]);
+  assert.deepEqual(keyed.effects, whole.effects, 'both layouts list the same effects, each whole');
+  // Two items at once: the calls are admitted across the items, and both layouts list them in that order, not item by item.
+  const [wholeTogether, keyedTogether] = [await run('v3', { together: 2, unknown: false }), await run('v4', { together: 2, unknown: false })];
+  assert.deepEqual(keyedTogether.driver.effects, []);
+  assert.deepEqual(keyedTogether.effects, wholeTogether.effects);
+  assert.deepEqual(keyedTogether.effects.slice(0, 2).map(({ name }) => name), ['fetch', 'fetch'], 'both items\' calls were admitted before either item\'s nested ones');
+  assert.equal(keyedTogether.effects.length, 5);
 });
 
 test('document store: a key or an effect id with a NUL is refused, so two journals never name one effect document', async () => {

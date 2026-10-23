@@ -15,6 +15,15 @@ export type AppContext = {
 	readonly models: HarnessOptions["models"];
 	/** Which environment of the config this home is, and its provider. */
 	readonly where: { readonly environment: string; readonly provider: string };
+	/** The session's directory on this machine: the parent of `workspace`. */
+	readonly root: string;
+	/** The epoch of the lease this home opens at: a restart in the same place keeps it, a restore raises it. */
+	readonly epoch: number;
+	/**
+	 * The session's environment for this process, from the host's resume order (`ResumeOrder.env`): a box inherits none
+	 * of the host's, and it never travels in argv. Empty when the host gave none. Not copied into `process.env`.
+	 */
+	readonly env: Readonly<Record<string, string>>;
 };
 
 /**
@@ -25,8 +34,13 @@ export type AppOptions = Omit<HarnessOptions, "env" | "models" | "registry"> & {
 	readonly registry: Registry;
 	/** pi's `root()` options: how the root conversation is made when the session is new. */
 	readonly root?: Parameters<Harness["root"]>[1];
-	/** Called at each open, once the Harness is open and before it resumes. */
+	/** Called at each open, once the Harness is open and before it resumes. The order that opened it waits for it. */
 	readonly onOpen?: (harness: Harness, context: Context) => void | Promise<void>;
+	/**
+	 * Called at each open once the session has resumed, and not awaited by the order that opened it: the work an app
+	 * drives for its session (a job) runs here, for as long as it takes. A rejection is written to the error output.
+	 */
+	readonly onResumed?: (harness: Harness, context: Context) => void | Promise<void>;
 };
 
 /** An app: the default export of the module a home runs. */

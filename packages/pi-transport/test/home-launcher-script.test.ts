@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { LAUNCHER_SCRIPT } from "../src/home/launcher-script.ts";
+import { guardLeaks } from "./leak-guard.ts";
 
+const { env: MARK } = guardLeaks();
 const root = mkdtempSync(join(tmpdir(), "pi-transport-launcher-script-"));
 const script = join(root, "launcher.sh");
 writeFileSync(script, LAUNCHER_SCRIPT);
@@ -31,7 +33,7 @@ function groupLive(proc: string, pgrp: number): boolean {
 	const dir = join(root, "launch-dir");
 	mkdirSync(dir, { recursive: true });
 	const ran = spawnSync("sh", [script, "group-live", dir, String(pgrp)], {
-		env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PI_TRANSPORT_PROC: proc },
+		env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PI_TRANSPORT_PROC: proc, ...MARK },
 	});
 	return ran.status === 0;
 }
@@ -77,7 +79,7 @@ function centis(uptime: string): { status: number | null; out: string } {
 	const dir = join(root, "launch-dir");
 	mkdirSync(dir, { recursive: true });
 	const ran = spawnSync("sh", [script, "centis", dir], {
-		env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PI_TRANSPORT_PROC: proc },
+		env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PI_TRANSPORT_PROC: proc, ...MARK },
 	});
 	return { status: ran.status, out: String(ran.stdout).trim() };
 }
@@ -103,7 +105,7 @@ describe("the launcher's clock", () => {
 		mkdirSync(proc, { recursive: true });
 		writeFileSync(join(proc, "uptime"), "0.88 1.00\n");
 		const sum = spawnSync("sh", ["-c", 'echo $(( $(sh "$1" centis "$2") - 5 ))', "sh", script, dir], {
-			env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PI_TRANSPORT_PROC: proc },
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PI_TRANSPORT_PROC: proc, ...MARK },
 		});
 		expect(String(sum.stdout).trim()).toBe("83");
 	});

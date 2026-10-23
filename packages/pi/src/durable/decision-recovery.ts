@@ -5,7 +5,7 @@
 // the run's key and a run is answered only from its own rows.
 import { DECISION_RECEIPT_VERSION, type DecisionExchange, type DecisionReceipt, type DecisionRule } from "@parcha/agentrun-dsl";
 import type { DocumentReader, Harness, Tx } from "@earendil-works/pi-durable";
-import { appendDecision, DECISION_ROW_VERSION, readDecisions, type DecisionRow } from "./decisions.js";
+import { appendDecision, DECISION_ROW_VERSION, readDecisionsFrom, type DecisionRow } from "./decisions.js";
 import type { WorkflowInvocation } from "./task.js";
 
 type Context = WorkflowInvocation["context"];
@@ -52,13 +52,18 @@ function answeredReceipt(rows: DecisionRow[], id: string, key: string): Decision
  *  `recovery.decision` beside the driver's recovery hooks. */
 export function decisionRecovery(invocation: { key: string; runtime: Pick<WorkflowInvocation["runtime"], "commit"> & DocumentReader; context: Context }): DecisionRecovery {
   const { key, runtime, context } = invocation;
-  const harness: Pick<Harness, "commit"> = {
+  const harness: Pick<Harness, "commit"> & Pick<DocumentReader, "snapshot"> = {
     commit: async <T>(change: (tx: Tx) => T | Promise<T>): Promise<T> => {
       let result!: T;
       await runtime.commit(async (tx) => { result = await change(tx); return undefined; }, context);
       return result;
     },
+    // The form the store holds is settled once per invocation, from this reader: the run's open.
+    snapshot: ((...args: unknown[]) => (runtime.snapshot as (...a: unknown[]) => unknown)(...args)) as DocumentReader["snapshot"],
   };
+  // The run's rows as read so far: a resumed process reads the store once, and each later answer reads only the rows after them.
+  const known: DecisionRow[] = [];
+  let next = 0;
   let chain: Promise<unknown> = Promise.resolve();
   return {
     recordDecision(receipt, exchange) {
@@ -68,7 +73,10 @@ export function decisionRecovery(invocation: { key: string; runtime: Pick<Workfl
       return committed;
     },
     async decision(id) {
-      return answeredReceipt(await readDecisions(runtime, context), id, key);
+      const read = await readDecisionsFrom(harness, next, context);
+      known.push(...read.rows);
+      next = read.next;
+      return answeredReceipt(known, id, key);
     },
   };
 }

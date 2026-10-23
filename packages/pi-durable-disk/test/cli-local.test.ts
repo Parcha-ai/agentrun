@@ -2,7 +2,7 @@
 // disk and no key, to its end and across a kill -9; and the Archil flags refused beside --dir.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -85,6 +85,22 @@ describe("the CLI on a local directory", () => {
       assert.equal(status.code, 0, status.stderr);
       const report = status.events.at(-1) as { run: string; dir: string; runJson: { status: string; generation: number; sealedSeq: number | null }; holderStatus: string };
       assert.deepEqual([report.run, report.dir, report.runJson.status, report.runJson.generation, report.holderStatus], ["chat", root, "done", 1, "stopped"]);
+      assert.equal(typeof report.runJson.sealedSeq, "number", "released and sealed");
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("an app that releases the run in onOpen and returns ends the instance by itself: exit 0, the run sealed done", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("cli-local-released");
+    try {
+      const root = join(dir.root, "run");
+      const app = fileURLToPath(new URL("./fixtures/release-in-onopen-app.ts", import.meta.url));
+      const run = await cli(["run", "--dir", root, "--app", app], { timeoutMs: 20_000 });
+      assert.equal(run.code, 0, `the instance ended by itself (signal ${run.signal}): ${run.stderr}`);
+      const status = await cli(["status", "--dir", root]);
+      const report = status.events.at(-1) as { runJson: { status: string; sealedSeq: number | null } };
+      assert.equal(report.runJson.status, "done");
       assert.equal(typeof report.runJson.sealedSeq, "number", "released and sealed");
     } finally {
       dir.remove();
@@ -219,6 +235,20 @@ describe("the CLI on a local directory", () => {
       assert.equal(await status(table("boot-1", { start: 78 })), "stopped");
       assert.equal(await status(table("boot-1", "gone")), "stopped");
       assert.equal(await status(table("boot-2", "fails")), "gone", "another boot, whatever the listing");
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("the app's factory runs once the claim is held, before this incarnation's run.json, and what it writes under ctx.root is in the run", async () => {
+    const dir = scratchRoot("cli-factory");
+    try {
+      const run = join(dir.root, "run");
+      const saw = join(dir.root, "saw");
+      const r = spawnSync(process.execPath, [CLI, "run", "--dir", run, "--app", fileURLToPath(new URL("./fixtures/factory-on-claim.ts", import.meta.url))], { env: { ...process.env, FACTORY_SAW: saw }, encoding: "utf8", timeout: 60_000 });
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(JSON.parse(readFileSync(saw, "utf8")), { runJson: "absent", ownerLock: true, work: true }, "the claim was held (owner lock, layout) and nothing of the run published yet");
+      assert.equal(readFileSync(join(run, "factory.txt"), "utf8"), "written by the factory\n");
     } finally {
       dir.remove();
     }

@@ -9,7 +9,7 @@ export interface InspectorView {
   output?: string[];
   readOnly?: boolean;
 }
-export type InspectorAction = 'run' | 'save' | 'load' | 'input' | 'history' | 'stop' | 'edit';
+export type InspectorAction = 'run' | 'dry-run' | 'save' | 'load' | 'input' | 'history' | 'stop' | 'edit';
 type Page = 'overview' | 'stages' | 'detail' | 'output' | 'actions';
 const MAX_CHARS = 24_000, MAX_LINES = 600;
 const safeLine = (value: string) => cleanText(value).replace(/[\n\t]/g, ' ');
@@ -51,7 +51,7 @@ export class WorkflowInspector implements Component {
   }
   private actions(view: InspectorView): InspectorAction[] {
     if (view.readOnly) return [];
-    return view.status === 'running' ? ['stop', 'history'] : ['run', 'input', 'edit', 'save', 'load', 'history'];
+    return view.status === 'running' ? ['stop', 'history'] : ['run', 'dry-run', 'input', 'edit', 'save', 'load', 'history'];
   }
   private fingerprint(): string {
     const view = this.view();
@@ -148,7 +148,7 @@ export class WorkflowInspector implements Component {
     } else if (this.page === 'actions') {
       const actions = this.actions(view);
       this.actionIndex = Math.min(this.actionIndex, actions.length - 1);
-      const labels: Record<InspectorAction, string> = { run: 'Run this workflow', save: 'Save procedure', load: 'Load procedure', input: 'Change input', history: 'Inspect run history', stop: 'Stop running workflow', edit: 'Edit procedure' };
+      const labels: Record<InspectorAction, string> = { run: 'Run this workflow', 'dry-run': 'Dry-run on synthetic values (no model calls)', save: 'Save procedure', load: 'Load procedure', input: 'Change input', history: 'Inspect run history', stop: 'Stop running workflow', edit: 'Edit procedure' };
       const first = Math.max(0, this.actionIndex - this.viewport + 1);
       body = actions.slice(first, first + this.viewport).map((action, index) => cut(`${first + index === this.actionIndex ? '›' : ' '} ${labels[action]}`));
       position = 'Choose an action; execution stays with Pi.';

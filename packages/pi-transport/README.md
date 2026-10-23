@@ -2,15 +2,47 @@
 
 **Experimental.** The API changes without notice between releases.
 
-Run a [pi-durable](https://github.com/earendil-works/pi) session's tools in another machine, or move the session
-there. This release holds the first layers: the `Box` interface with two providers and a conformance suite, `boxEnv`,
-which runs a session's tools in a box, and `transport()`, which sends each conversation's tools to the box its
-config names.
+A pi agent's tool calls go to Daytona and Modal sandboxes, and Jev places each one on the sandbox that fits it.
+
+Tool calls can also run as serverless calls on an Archil disk (`archilExecBoxes`).
+
+`boxEnv(box)` gives a [pi](https://github.com/earendil-works/pi) agent's `read`, `write`, `edit` and `bash` a box: it
+is pi's `ExecutionEnv` over the box, for a pi-durable Harness. `transport(config, host)` does it for each conversation,
+from a config that names the environments. The session, its store and its model calls stay with the host; only the
+tool calls go to the box. Every provider is behind one `Box` interface:
+
+| Where | Provider | Isolation |
+| --- | --- | --- |
+| This machine | `localBoxes`, from `@parcha/pi-transport/box/local` | none: for development and tests |
+| Docker | `dockerBoxes`, from `@parcha/pi-transport/box/docker` | a container per box |
+| Daytona | `daytonaBoxes`, from `@parcha/pi-transport/box/daytona` | a container per box on the host kernel; a `linux-vm` snapshot is a VM |
+| Modal | `modalBoxes`, from `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
+| Archil exec | `archilExecBoxes`, from `@parcha/pi-transport/box/archil-exec` | a directory of the agent's work disk; each `exec` is one serverless call in a fresh VM container, and boxes on one disk share it |
+
+Jev places a call from each environment's one-line `purpose`: the host asks `jevPlacer`, Jev reads the step and those
+lines and says where it should run, and the host points its tools there.
+
+The reference below takes each part in turn: [a box](#a-box), [tools in a box](#hands-tools-run-in-a-box),
+[where tools run](#where-tools-run-is-a-line-of-config),
+[a store and a workspace](#moving-a-home-a-store-and-a-workspace),
+[a home](#a-home-the-session-runs-somewhere-and-can-stop-without-a-cut), [Jev's placement](#where-a-session-runs-the-placer),
+[ownership](#ownership-one-writer-per-session), [the box place](#a-sessions-place-in-a-box-place),
+[receipts](#what-a-box-cost-receipts), [a program kept alive in a box](#home-a-program-kept-alive-in-a-box) and
+[writing a provider](#writing-a-provider).
 
 ## A box
 
 A `Box` is one running machine: a directory on this machine, a container, a sandbox, a VM. A `BoxProvider` creates
 boxes, finds them again by id and lists them by label.
+
+Install the package with its pi peers, pinned. pi 1.4 is not supported yet; a later release widens the range.
+
+```sh
+npm install @parcha/pi-transport@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+```
+
+The example below needs Docker; `localBoxes({ root: "./boxes" })` from `@parcha/pi-transport/box/local` runs it with
+no Docker, in a directory on this machine.
 
 ```ts
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -30,14 +62,7 @@ await box.destroy(BACKGROUND_CONTEXT);
 Expected failures are returned as `Result` values with a `BoxError` and a code. Every box has a maximum lifetime
 that its provider enforces with no call from the host, so a host that dies does not leave boxes behind. A program in
 a box never receives the host process's environment. A provider refuses a spec field it cannot honour instead of
-ignoring it.
-
-| Provider | Import | Isolation |
-| --- | --- | --- |
-| This machine | `@parcha/pi-transport/box/local` | none: for development and tests |
-| Docker | `@parcha/pi-transport/box/docker` | a container per box |
-| Daytona | `@parcha/pi-transport/box/daytona` | a container per box on the host kernel; a `linux-vm` snapshot is a VM |
-| Modal | `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
+ignoring it. The table above lists the providers; the sections below say what each one does with a spec.
 
 ### Daytona
 
@@ -88,6 +113,82 @@ It refuses `image`, `snapshot`, `cpus`, `memoryMb`, `gpu`, `region` and any `iso
 `dockerBoxes` runs `sleep` for the lifetime in place of the image's own entrypoint, so Docker ends the box. It refuses
 `snapshot`, `region` and any `isolation` but `container`. Docker cannot choose a GPU model: any `gpu` gives the
 container every GPU of the host.
+
+### Archil exec
+
+`archilExecBoxes({ client, disk })` makes a box of a directory of an agent's Archil WORK disk (never the disk of its
+store), and runs each `exec` as one Archil serverless `exec`: a fresh container with the disk mounted, one request that
+answers when the command ends. It takes the host's own SDK, so this package depends on none: `client` is `new Archil({
+apiKey, region })` and `disk` is a disk of it, from the `disk` package (version 1.9.0 was measured; `npm install
+--no-save disk@1.9.0`).
+
+```ts
+import * as archil from "disk";
+import { archilExecBoxes } from "@parcha/pi-transport/box/archil-exec";
+
+const client = new archil.Archil({ apiKey, region: "aws-us-east-1" });
+const { disk } = await client.disks.create({ name: "agent-work" });
+const provider = archilExecBoxes({ client, disk });
+```
+
+The box is the directory `boxes/<id>/` of the disk. Its labels, facts and end time are the file
+`boxes.records/<id>.json`, outside every directory a command can hold, so `attach` and `list` find the box after a
+restart and a box can be ended while a command runs in it. These are the limits, each one in the facts or refused with
+a typed error:
+
+- **One request per command.** `facts().liveProcesses` is `false`: no program keeps running between calls, and a
+  command's output arrives after it ended. A box like this never serves as a home: the box place refuses it with
+  `MoveError` code `no_live_processes`. Use it for tools.
+- **A 300 s limit.** `facts().maxExecMs` is 300 000. A `timeoutMs` above it is refused with `invalid`; a command with
+  none still gets a deadline of 295 s of its own inside the container, so nothing runs past the point where the
+  platform cuts a call and loses its later writes. A command ended by its deadline is a `timeout` error; an exit code
+  of 124, which is what ends a command at its deadline, is read that way too.
+- **No stdin.** `stdin.write` rejects with `unsupported`. Output is text: bytes that are not UTF-8 come back as U+FFFD,
+  so move bytes with `upload` and `download`, which use the disk's object API and carry every byte value (8 MiB measured
+  in about 0.3 s each way).
+- **Aborting the context ends the wait at once.** The SDK has no signal to stop the command in the container, so the
+  command ends at its own deadline (an abort of the raw HTTP request was measured to stop a command at the platform, but
+  not through this SDK).
+- **Through `boxEnv` (the file and bash tools).** An environment on such a box reads and writes files through `upload` and
+  `download`, so a write keeps every byte and a binary read is exact. Each transfer runs under the operation deadline and is
+  cancelled with its call, so one still queued behind a command is not run after a timeout or an abort. An append is the bytes
+  uploaded to a file of their own and one command that appends it, so a command queued beside it keeps its change. A binary
+  reader refuses a file over its limit before moving a byte. A path outside the box's workspace can be read as text only, and
+  not written. A command's own deadline is the caller's `timeout`, and a caller that gives up never has its command run later.
+  A command stopped by a timeout or an abort cannot be killed: nothing reaches a running call, so it ends at its own deadline
+  and the next call to the box waits for it. Temporary and spill files go under the workspace. A watcher bills one call per
+  interval.
+- **One command at a time per box, across processes.** Every `exec` checks out the box's directory with a queue
+  (`queueMs`, default 60 s), so a second process that attached the same box (a restore, another host) waits for the
+  first instead of being refused (a plain write without a checkout loses writes: 3 of 5 parallel appends were refused),
+  and this process also runs a box's execs in the order they were asked. Boxes do not wait for each other. A file
+  written through `upload` takes no checkout: it waits for this process's own commands and retries while another process
+  holds the directory, up to `queueMs`.
+- **`destroy` ends the box for every client at once**, whatever still runs in it, by deleting its record; the directory
+  is removed through its parent (`destroyWaitMs`, default 5 s) and a directory a running command held is removed by the
+  next `list`, which sweeps every directory with no record.
+- **A lifetime is checked, not enforced by a timer.** Archil has no timer that ends a directory: a box past its
+  `maxLifetimeMs` is ended, and its directory removed, by the first call that looks at it (`attach`, `list`, `exec`,
+  `status`, `upload`, `download`). A box nobody calls again stays on the disk until a `list` finds it.
+- **The isolation is one VM per call, and the disk is shared.** Each call runs in its own fresh VM container, but boxes on one
+  disk share it: a command can read and write every box's directory, and the records, on that disk. Give each agent its own
+  work disk, never one disk to two agents.
+- **A box has no env.** Archil's exec carries only the command, so a value could only ride in the command or in the box's
+  record on the disk, where any command on that disk can read it. A spec with an env (any name, any value) is refused with
+  `unsupported`, a per-call env of a `boxEnv` environment on such a box (any name, and `PATH`) is refused with a
+  `spawn_error`, and the record and every call's command carry none. A program gets what it is given as arguments or as
+  files. Each exec container's own environment holds the platform's `ARCHIL_CONTAINER_ID`, `ARCHIL_DISK_ID` and
+  `ARCHIL_REGION` (measured; no key).
+- Refused before any call: a GPU, a snapshot, a `workspace`, an isolation other than `vm`, more than 2 vCPU or 3938 MiB
+  (`unsupported`); a label in the providers' namespace, an env of any kind, a lifetime that is not
+  positive (`invalid`).
+- A box billed per call gets its receipt with `calls` in place of seconds (see
+  [receipts](#what-a-box-cost-receipts)).
+
+The live suite spends money and runs only when asked. It needs the key in `ARCHIL_API_KEY` and the SDK:
+`PI_TRANSPORT_LIVE_ARCHIL=1 npm run test:live -w @parcha/pi-transport` (`PI_TRANSPORT_LIVE_ARCHIL_SDK` names the SDK's
+entry file when `disk` here is another version). It makes its own new disk in `aws-us-east-1`, deletes it at the end and
+checks that none is left.
 
 ## Hands: tools run in a box
 
@@ -141,43 +242,6 @@ Where it differs from `NodeExecutionEnv`, on purpose:
   Node reads the ranges it is asked for. `readTextLines` with `maxLines` brings only those lines out of the box.
 
 Not covered by hands: MCP servers, code mode and model calls stay with the Harness.
-## Moving a home: a store and a workspace
-
-`@parcha/pi-transport/home` holds the two movers a session needs when there is no disk the boxes share. They know
-nothing of sessions beyond "a SQLite file and a directory". Node only.
-
-- **A store.** `sealStore(path)` returns a `Seal` (head, SHA-256, size) of a store its owner has closed; a store with a
-  write-ahead log that holds content is refused with `not_sealed`. `checkpointStore(path, to)` takes a consistent copy
-  of a store that is still open, with `VACUUM INTO` through a second read-only connection; the copy appears whole or
-  not at all. `verifyStore(path, seal)` checks size, hash, SQLite's quick check and the head, in that order. The head is
-  one read of `durable_metadata.next_seq`, the only knowledge of pi's schema here.
-- **A file.** `moveFile(from, path, to, path, seal)` copies one file between boxes through this process and checks it by
-  hash on the way and on the target; it appears at its path whole or not at all.
-- **A directory.** `manifestOf(box, root, { exclude })` lists a directory in the box: every path with its kind, size,
-  mode, link target and, for files, SHA-256. `moveWorkspace(from, to, { fromRoot, toRoot, exclude, maxBytes })` copies it
-  as a `tar` stream, relayed a chunk at a time with no temporary file, then checks the target against the source:
-  `too_large` and `unsupported_entry` (a socket, device or pipe, named) are decided from the listing before a byte
-  moves; `changed` says the source changed during the copy; `mismatch` names the first path where the target differs.
-  The receipt has bytes, files, the time of each part, MB per second and which side the relay waited on more.
-
-Kept: file contents, permission bits, symbolic links as links, empty directories, modification times in whole
-seconds, names with any bytes. Not kept: owners and groups, extended attributes, ACLs, and the access times. A target
-that already holds other files fails the check. The boxes need `tar`, `find`, `xargs`, `split` and `sha256sum` from GNU
-coreutils and findutils, as `boxEnv` does.
-
-**How the bytes travel.** Each side of a move decides for itself by its box's `facts().bulk`: `stream` moves the
-archive through the streams of `exec`, and is what `localBoxes` and `dockerBoxes` say; anything else, including a box
-that says nothing, moves it as files through `upload` and `download`, because a remote provider's streams can be far
-slower than its file calls (measured: Daytona's at 0.1 to 2.8 MB/s against 25 to 40 MB/s for files, a Modal sandbox's
-at 2 MB/s against 31 to 35). Out of Docker into Daytona the archive streams out and arrives as files. A host can
-override either side in the options (`fromPipe`, `toPipe`) and set the size of the parts (`chunkBytes`, default
-32 MiB). With files, the archive is cut into parts in a directory of its own under the box's temporary directory
-(`TMPDIR`, else `/tmp`); every part is hashed where it is made and checked where it lands, so a part that is missing,
-short or flipped is `mismatch`; the directories are removed on success, on failure and on abort.
-
-**Disk a move needs.** A side that moves files holds the archive once more: the source box needs free space for the
-archive next to the tree it is packing (about the size of the files), and the target box for the archive next to the
-tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
 
 ### Where tools run is a line of config
 
@@ -243,7 +307,47 @@ a provider may store and return, and never in a command line.
 node --experimental-strip-types examples/01-hands.ts examples/hands.docker.json 'hostname; pwd'
 ```
 
+## Moving a home: a store and a workspace
+
+`@parcha/pi-transport/home` holds the two movers a session needs when there is no disk the boxes share. They know
+nothing of sessions beyond "a SQLite file and a directory". Node only.
+
+- **A store.** `sealStore(path)` returns a `Seal` (head, SHA-256, size) of a store its owner has closed; a store with a
+  write-ahead log that holds content is refused with `not_sealed`. `checkpointStore(path, to)` takes a consistent copy
+  of a store that is still open, with `VACUUM INTO` through a second read-only connection; the copy appears whole or
+  not at all. `verifyStore(path, seal)` checks size, hash, SQLite's quick check and the head, in that order. The head is
+  one read of `durable_metadata.next_seq`, the only knowledge of pi's schema here.
+- **A file.** `moveFile(from, path, to, path, seal)` copies one file between boxes through this process and checks it by
+  hash on the way and on the target; it appears at its path whole or not at all.
+- **A directory.** `manifestOf(box, root, { exclude })` lists a directory in the box: every path with its kind, size,
+  mode, link target and, for files, SHA-256. `moveWorkspace(from, to, { fromRoot, toRoot, exclude, maxBytes })` copies it
+  as a `tar` stream, relayed a chunk at a time with no temporary file, then checks the target against the source:
+  `too_large` and `unsupported_entry` (a socket, device or pipe, named) are decided from the listing before a byte
+  moves; `changed` says the source changed during the copy; `mismatch` names the first path where the target differs.
+  The receipt has bytes, files, the time of each part, MB per second and which side the relay waited on more.
+
+Kept: file contents, permission bits, symbolic links as links, empty directories, modification times in whole
+seconds, names with any bytes. Not kept: owners and groups, extended attributes, ACLs, and the access times. A target
+that already holds other files fails the check. The boxes need `tar`, `find`, `xargs`, `split` and `sha256sum` from GNU
+coreutils and findutils, as `boxEnv` does.
+
+**How the bytes travel.** Each side of a move decides for itself by its box's `facts().bulk`: `stream` moves the
+archive through the streams of `exec`, and is what `localBoxes` and `dockerBoxes` say; anything else, including a box
+that says nothing, moves it as files through `upload` and `download`, because a remote provider's streams can be far
+slower than its file calls (measured: Daytona's at 0.1 to 2.8 MB/s against 25 to 40 MB/s for files, a Modal sandbox's
+at 2 MB/s against 31 to 35). Out of Docker into Daytona the archive streams out and arrives as files. A host can
+override either side in the options (`fromPipe`, `toPipe`) and set the size of the parts (`chunkBytes`, default
+32 MiB). With files, the archive is cut into parts in a directory of its own under the box's temporary directory
+(`TMPDIR`, else `/tmp`); every part is hashed where it is made and checked where it lands, so a part that is missing,
+short or flipped is `mismatch`; the directories are removed on success, on failure and on abort.
+
+**Disk a move needs.** A side that moves files holds the archive once more: the source box needs free space for the
+archive next to the tree it is packing (about the size of the files), and the target box for the archive next to the
+tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
+
 ## A home: the session runs somewhere, and can stop without a cut
+
+A session can live in a box too: it moves between boxes, and comes back from a killed process or a lost box.
 
 `openHome(options)` is one place a session can run: its store, its workspace and pi's Harness over them. It does
 nothing by itself. A host gives it orders, in its own process today and over a link later:
@@ -260,9 +364,13 @@ const seal = drained.ok ? await home.value.seal(BACKGROUND_CONTEXT) : undefined;
 ```
 
 - **The app.** `app` is `(ctx) => options`: pi's Harness options without `env` and without `models`, plus `root` (how
-  the root conversation is made) and `onOpen`. The home adds the store, the models it was given and the environment,
-  the same way wherever it runs, so one module serves every place. `ctx.workspace` is the only absolute path an app
-  may build on. `loadApp(path)` takes the default export of a module file.
+  the root conversation is made), `onOpen` and `onResumed`. The home adds the store, the models it was given and the
+  environment, the same way wherever it runs, so one module serves every place. `ctx.workspace` is the only absolute
+  path an app may build on; `ctx.root` is its parent, `ctx.epoch` the lease's epoch the home opened at, and `ctx.env`
+  the session's environment from the host's resume order (`ResumeOrder.env`: over the link, never in argv; a box
+  inherits none of the host's). `onOpen` runs before the session resumes, and the order that opened it waits for it;
+  `onResumed` runs once it has resumed, and the order does not wait: work the app drives for the session (a job) runs
+  there. `loadApp(path)` takes the default export of a module file.
 - **The gate.** A drain holds new work at three hooks of the home's own extension (installed as `transport`): a tool
   call before its intent is written, a model request before it is sent, a compaction before it selects. A held task
   has written nothing, so the close leaves no outcome for it and the next home runs it from the start. Work of a
@@ -391,6 +499,16 @@ line names this store), and a call that runner had in flight is cut, at most onc
 store into its hold, so a runner refused with `busy` never hides the one that holds it. A host whose runners a
 launcher keeps passes the launcher's stop as `stop`.
 
+Each move leaves a durable record in the session's store, so a recording proves the hop from durable lines: the
+document `transport.moves`, keyed by the move id, written once by the target in the first commit it makes when it
+opens the moved store (`MoveRecord`: `kind`, `epoch`, `head`, `from` and `to` as `{ environment, provider, box }`,
+`drainMs`, `shipMs`, `takeMs`, `bytes`, `stopped`, and a move's `seal`, a restore's `checkpoint` or `replayed`).
+`head` is the store's next commit at open: a move's `seal.head`, a restore's `replayed.to + 1` or its checkpoint's
+head. The record's commit is `head`, or `head + 1` when pi committed once as it opened the store (a generation was
+running, and pi recovers it first). The host sends what only it knows in `ResumeOrder.move.record` (`MoveFacts`); `moveHome` does. A place names
+its box by its `label` (the host's `box-1`), never the provider's id; a place with no label is named by the id. An
+order that carries no record writes none, and an open after the first finds the record and writes nothing.
+
 `registerMoveConformance(runner, name, withPair)` (`./testing`) runs the handoff on two places of a provider: a move
 with nothing cut, a move given up at the drain and at the ship, a move there and back, a take whose answer was lost,
 a take another host won (to another place, and to the same place), a kill of the host,
@@ -405,8 +523,74 @@ one file.
 
 What a kill loses, in these words: a host, a source or a target process that dies loses nothing; the session
 finishes with every effect once when the kill came after the drain held it, and at most once when it came while
-the session ran. A box that dies with its disk loses the work since the last checkpoint: that needs the checkpoint
-of a later release, or a disk that outlives the box.
+the session ran. A box that dies with its disk loses the work since the last checkpoint, and the next section
+says what the host keeps so that it loses no more.
+
+### A checkpoint, and a box that is gone
+
+`pullCheckpoint({ session, place, home, epoch, vault, ... })` takes one moment of a session off its box. It holds the
+session (a short drain), makes a sealed copy of the store in the box (`checkpointStore`), takes the workspace manifest,
+pulls the store (`moveFile`) and the files that changed since the previous checkpoint (`moveChanged`) into the vault,
+checks all of it, and lets the session go. The session is held through the pull because a file it writes meanwhile
+would no longer match the manifest. `holdMs` bounds the hold (120 s by default): every phase of the pull draws on the same clock, and a pull that outruns it is skipped (`failed`) and lets the session go. A checkpoint exists only when the
+store and the files are both on the host and verified; a store without its files is never kept. The vault
+(`localVault(directory)`: put `begin`/`commit`, `latest`, `get`, `prune`) is the host's disk, a generation per
+checkpoint made with hard links so that a generation costs its delta, and the newest 3 are kept (`keep`).
+A pull that does not complete is skipped, never half kept: `busy` (the session did not come to rest, with what held
+it), `changed` (a file moved on), `too_large` (`workspace.maxBytes`) or `failed`; the previous checkpoint stays the
+latest. `checkpointStats()` counts the checkpoints taken and the skips by reason, for a panel that says "checkpoint
+skipped: still running".
+
+`recoverHome` gains `vault` and `replace(place, context)`. When the lease's box is **gone** (`Box.status` says
+`ended`, or the provider no longer has it; a timeout or an error is never gone), the host's `replace` makes a box for
+the same environment, the newest checkpoint that still checks out (an older generation when it does not) is copied in
+and verified, the lease is taken at the next epoch (move id `restore-<epoch>`, the checkpoint's seal) and the home
+resumes there. `recoverHome` never makes boxes. With no usable checkpoint it fails with `no_checkpoint` and changes
+nothing. The resume order's `move` says `kind: "restore"` and carries the checkpoint's `head` (`Seal.head`): commits of
+the lost box at or after it are gone and their sequence numbers are taken again, so whoever records the session's
+moves and commits drops that branch. The model is told once (request id `transport.move:restore-<epoch>`) when the
+checkpoint was taken and which calls ran since: those that may have had an effect and are not run again, and those
+safe to run again. The host knows the calls from `call` frames the runner sends (`onCall`; the tool name and the
+replay flag, never the arguments), kept in the host's memory (`HomeHandle.calls()`, the last 1000): a host that dies
+with the box loses that list, and the notice then names no calls.
+
+A workspace that holds what the session downloads again (a media cache) is left out of the checkpoint:
+`pullCheckpoint({ workspace: { exclude: ["media"] } })` takes patterns as `WorkspaceOptions.exclude` does (a name at any
+depth, or an anchored path; `*`, `**`, `?`). An excluded path is never listed for hashing, never pulled and not
+counted, however large; the record names what was left out (`Checkpoint.excluded`: patterns, the top-most entries,
+file count and bytes), and the restore notice says so: "Not restored: media (1 file, N bytes) are left out of checkpoints.
+Fetch them again if you need them." so that a replay-safe download tool runs again. Two budgets: `workspace.maxBytes` is
+the most the workspace may hold (excluded paths not counted), and `maxPullBytes` the most one pull may move (the store
+copy and every file the pull copies, also one whose time or mode changed with the same content); a pull over either is skipped as `too_large` before a file moves. The pause of a pull
+is `CheckpointStats.last.heldMs`.
+
+The commits between two checkpoints are kept too, on the record stream: a host that gives `connectHome` (or `boxRunner`) a
+`records` sink receives each commit's exact `StorageWrite` batch (`record { commit, writes }`), acknowledged after the sink
+has it. `recordSink(vault, session, context)` is that sink for the vault: `held` is where the vault's log is (`vault.through`),
+`append` keeps a commit on disk in order (`vault.appendLog`: ignores a repeat, refuses a gap with `through`, keeps nothing the
+latest checkpoint covers), and a checkpoint's `prune` cuts the log below the oldest generation kept. A restore takes the
+checkpoint's store, applies the unbroken run of commits from its head (`replayCommits`, through the store's own `Storage`,
+on a copy on the host and before any Harness opens it), seals the result, and gives the lease and the resume order that
+seal. The order's `move` says `replayed: { from, to }` and `head: to + 1`; the notice says the history was brought up to
+date. So a call the lost box admitted after the checkpoint is in the history the new box opens, and is settled by pi's
+recovery, not run again. A log that does not start where the checkpoint ends is not used: the restore is the checkpoint, as
+before.
+
+A session that never rests (a workflow job) never takes a checkpoint, and its commits are all in the host's log from the first.
+`recoverHome({ ..., restoreFromLog: true })` restores it from that log alone when no checkpoint checks out: an empty store
+with every shipped commit replayed into it, an empty workspace in the new box, the lease taken at the next epoch with that
+seal, and a notice that says no checkpoint existed and no file came back. It needs a log whole from commit 1 (any other log is
+`no_checkpoint`), and it is off by default: a host that needs the files keeps the error. The result has `restored` undefined and
+`replayed { from: 1, to, count }`.
+
+A model call paid between two checkpoints is not paid twice: `boxRunner` serves every runner it starts with one `serveModels` server (pass your own as `server`, and give it to `pullCheckpoint({ answers })`), so a replacement runner finds the answers already kept. A restore that did not replay every shipped commit drops the rest from the host's log (`dropLogAbove`), so a runner at the new epoch is not told the host holds commits it no longer has. A request can carry a `key` and a `position` (the store's
+next sequence number; `proxyModels({ keyOf })` makes them, the key must not change across a restore). `serveModels`
+keeps a completed answer by its key, not for `keepMs`, until `covered(head)`: a repeat from a rebuilt runner gets the
+kept frames (or joins the call still streaming) and `server.paid` does not move. A failure is not kept, so a retry
+pays. `pullCheckpoint({ answers: server })` lets go of the answers below the oldest generation it keeps.
+
+`registerRestoreConformance` (`./testing`) kills the whole box of the source or the target before each of the seven
+steps of a move and recovers; the suite runs on local boxes and on Docker.
 
 ### The record stream: the host keeps the session's log
 
@@ -442,6 +626,37 @@ lease left behind writes nothing to the log. The host's log alone rebuilds the s
 the runner's process: `runMain(app, { recording })`, with `@parcha/agentrun-pi/durable`'s `snapshotLines` and
 `recordCommits`. `registerMoveConformance(..., { records: true })` runs the move suite with the stream on.
 
+### Where a session runs: the placer
+
+A config whose `home` is `auto` lets Jev place the session. Each environment then has a `purpose`, the author's one
+line on what it is for, which is what Jev reads for it (required when auto places the session, never made up from the
+facts); `auto.rest` is where the session goes back when nothing needs it elsewhere (default the first declared
+environment) and `auto.threshold` how sure Jev must be (default 0.5).
+
+`jevPlacer(models, auto.classifier, { rest, threshold })` asks Jev through pi-ai's `Models.classify` (provider
+`typesafe`, model `jev-latest`): one call a decision, two questions. `need` is whether the step needs something `rest`
+cannot do, wherever the session is now; `where` is a choice among the environments, each by its purpose. Jev reads
+the step and each environment's purpose and facts (GPU, CPUs, memory, capabilities, isolation, region; not the
+provider, which names how a box is made). The session
+moves only for a need: `need` at least the threshold and `where` elsewhere. A session away from rest stays while its
+next step needs that place, and goes back to rest at a turn's end when nothing does, by the config. Code checks only
+structure: the judgment is Jev's.
+
+- **Jev or the config, nothing else.** Every decision is a `PlacementRecord` whose `by` is `jev` or `config`. A
+  decision Jev does not give (an error, an answer that is not one, the placer's own deadline, 15 s by default)
+  keeps the session where it is and says why in `error`.
+- **No stand-in.** `jevPlacer` refuses to build without the classifier model (`no_classifier`) or its provider's key
+  (`no_key`).
+- **Kept with the session.** `HomeHandle.recordPlacement(record)` writes the decision into the session's store
+  (`transport.placements`, keyed by its id) in a commit of its runner: it travels with the session, and with the
+  record stream it reaches the host's log. A record whose `by` is anything else is refused (`invalid`).
+- **Cost.** A decision's usage counts tokens; `costUsd` is `null` when the classifier has no price (pi-ai's catalog
+  gives TypeSafe none): unknown, not 0.
+
+`./testing` has `replayClassifier`, TypeSafe as a replay set keyed by the canonical question (an unknown question is
+an error, never an answer), and `recordingClassifications` to record one. This package's set, 40 decisions recorded
+against Jev, replays in its tests offline.
+
 ## Ownership: one writer per session
 
 `@parcha/pi-transport/home` holds the lease that says which home may write a session. It is a numbered epoch, not a
@@ -470,6 +685,82 @@ const taken = await lease.take("session-1", { environment: "gpu", provider: "mod
   writes, 50 takers of one version with one winner in each of 20 epochs, no read of half a value while takers write,
   every byte value, any text as a key, and, when the store gives a writer that dies, a kill between writing and
   making the value current.
+
+## A session's place in a box (`./place`)
+
+`boxPlace({ session, provider, spec, environment, ownership, program, models, vault, ... })` is where one session
+lives in a box, for a supervisor that starts, kills and restarts it: the place a reference entry's `demo()` drives.
+It makes the box, and
+
+- `start(order)` takes the lease at epoch 1, starts the runner in the box (`boxRunner`) and resumes it with the order's
+  environment (`ResumeOrder.env`). `exited` resolves with the exit as the box saw it and the outcome the runner printed
+  as one line `{"outcome":{...}}`; that line ends the runner in order (the link closes, the home closes, exit 0).
+- `kill(runner, "process")` kills the runner as a crash would (`killRunner`: KILL first, the store as the last commit
+  left it); `kill(runner, "box")` destroys the box. `recover(last, "process", order)` starts the next runner in the
+  same box where the store left off (`recoverHome`, same epoch); `recover(last, "box", order)` makes a new box, restores
+  the newest checkpoint into it and replays the shipped commits (`recoverHome` with `vault` and `replace`), at the next
+  epoch, and says what it restored. Before any checkpoint it rebuilds the store from the vault's log alone
+  (`restoreFromLog`), in an empty workspace: `restored` is undefined and `replayed` starts at commit 1. A box kill
+  needs no checkpoint at rest; a checkpoint brings the workspace's files along. `checkpoint()` takes one at rest (`pullCheckpoint`, tried again while the session
+  is busy) and announces `transport.checkpoint.taken`; a call while one is being taken gets that one, so the session
+  is held once. The hold admits no new tool call or model request and waits for the ones in flight up to
+  `checkpoint.drain.timeoutMs` (10 s by default): a session whose effects run longer than that is skipped as busy.
+- Every runner of the session ships its commits into `vault`'s log (`recordSink`) and asks one model server: the log a
+  lost box is restored from is always the one the runners wrote, and a runner that comes back is answered what was
+  paid for, not charged again. The host passes only where the recorder's lines go (`recorder`).
+- `recordPlacement(record)` keeps a placement decision the host made (`jevPlacer`, on the host where Jev's key is) in
+  the session's store, through the runner that runs it now (`HomeHandle.recordPlacement`): the app reads it there
+  (`PlacementsDoc`, keyed by the record's id), and it reaches the vault's log with the session's commits.
+- A box is named by its label everywhere the place names one, never by its provider's id: the status record's
+  `holder.host`, a crossing's `info.box`, and the place's own live lines, source `transport`, that it hands the host's
+  `lines`: `box.created`, `box.killed` before a box kill, `box.ended`, `lease` at each epoch, and `restore` from the lost
+  box to the new one (with its `checkpoint` or `replayed`), so a panel draws the home's lane and its hop. With the
+  host's receipts ledger (`receipts`), the place makes its boxes through it: each has its receipt and its label in the
+  ledger's numbering, the same as the pool's boxes. Without one, the place labels its boxes `box-1`, `box-2` itself.
+- `signals(attempt)` reads the runner's kill request from `requestFile(attempt)` in the box, with the nonce it wrote,
+  and passes on the transport's crossings; its iterator's `return()` ends a pending `next()`. `status()` is the run's
+  record: `run`, the epoch as `generation`, the box in `holder.host`, the home's state, and `sealedSeq` when sealed.
+- `carry` names host files an order's environment holds that the runner writes (a crossings log): each is given a path
+  in the box, and the file comes back whole when the runner exits.
+- `recording` names the order's recording directory. The runner writes the recording in `recordHome.dir(attempt)` in
+  the box, and the supervisor brings it home with `recordHome.bringHome(into, { final })`: the blobs not yet home
+  (hash-checked against their names, written to a temporary name, synced, renamed), then the new bytes of every
+  `.spool/*.jsonl` up to its last whole line. It throws an error with a `code`: `BOX_GONE` (the box the runner ran in is
+  gone), `CARRY_FAILED` (a read failed in a box that is still there), `BLOB_MISMATCH` (a blob whose bytes are not its
+  name: the rest comes home first). `clockSkewMs` is how far the box's clock may be from the host's, measured when the
+  box is made.
+- `release()` closes the link and destroys every box the place made.
+
+## What a box cost: receipts
+
+`boxReceipts` names each box by a label (`box-1`, `box-2`, never the provider's id) and writes its receipt when it
+ends: the provider, the kind of box, when it started and ended, and its cost at the rates the host passes. This
+package holds no price table; a box the host gives no rate gets no receipt.
+
+`boxReceipts({ prices, write })` keeps a ledger of the boxes its providers make: `ledger.wrap(provider)` is the same
+provider, and each box it makes gets one receipt when it ends, destroyed through it, found ended by `status`, or found
+gone by `attach` (a lifetime that ran out, or a sweep). The host writes each receipt as a live line, source
+`transport`, kind `box.receipt`: `{ box, provider, kind, from, to, seconds, usd_per_second, cost_usd, source, priced }`;
+a box its provider bills per call instead (`archil-exec`) carries `calls` and `usd_per_call` in place of `usd_per_second`,
+which is then absent, never 0 (RECORDING.md draft 40).
+`box` is a label, `box-1`, `box-2` as the boxes are made, never the provider's id. Hand the wrapped providers to
+everything that makes boxes: a box place, and the transport's hands pools (`TransportHost.providers`).
+
+A host that labels boxes of its own passes `label(made)`: it is called once when a provider has made a box, with that
+box's own request and facts (`{ provider, kind, spec, facts }`, its id left out), so a host reads its label from the
+request it made (`spec.labels`), never from the order it asked in: boxes asked for together, from providers that answer
+at different speeds, are made in any order. After a restart, `taken` passes the labels the recording already holds (its
+`box.receipt` lines), and the default labeler numbers on past them. A box the killed process made or was making is not
+the new ledger's: no receipt is written for it, so its cost stays unknown.
+
+The prices are the host's (`prices: [{ provider, kind, usdPerSecond, source, priced }]`, with `source` the page a price
+was read from and `priced` the date it was read): this package holds no price table. A box's `kind` is found from its
+facts (`gpu:<gpu>` for a box with a GPU, else its isolation), or by the host's `kindOf`. A box with no price writes no
+receipt, so its cost stays unknown, never 0. `cost_usd` is an estimate at list price, `seconds` times the price per
+second: not the provider's invoice, which bills by its own rounding, minimums and discounts. A price with `usdPerCall`
+(and no `usdPerSecond`) is for a box billed per call: its receipt counts the `exec` calls the box started, one aborted or
+given up on included, and `cost_usd` is `calls` times `usd_per_call` rounded to 9 decimals; `seconds` stays its lifetime,
+for display only. A call refused before it is made is not counted. A box another process or host made is its maker's to receipt.
 
 ## Home: a program kept alive in a box
 
@@ -529,3 +820,9 @@ registerBoxConformance({ describe, expect, it }, "my boxes", (use) => use(myBoxe
 ```
 
 A box whose `exec` carries input and streams output can take `uploadByExec` and `downloadByExec` as its file calls.
+
+A provider whose boxes keep no program running between calls and take no input (`facts().liveProcesses` is false) passes
+`withoutLiveProcesses: "<why>"`: the suite then leaves out the cases that need a live program or stdin, and one case in
+their place requires the facts to say so and stdin to be refused with `unsupported`; the reason is in its name.
+A provider whose boxes have no env passes `withoutEnv: "<why>"`: the suite creates its boxes with no env, leaves out the case that
+reads the spec's env, and adds one that requires a spec with an env to be refused with `unsupported`; the reason is in its name.

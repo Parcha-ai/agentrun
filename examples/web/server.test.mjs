@@ -9,16 +9,18 @@ import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { durableProfileStore, readAgentHome, startRun } from "@parcha/pi-durable-agent";
+import { carryBack, durableProfileStore, readAgentHome, setPrompts, startRun } from "@parcha/pi-durable-agent";
 import { foldCalls, groupTimeline } from "@parcha/pi-durable-agent/timeline";
 import { PROFILE } from "./agent/app.ts";
 import { ensureAgentHome } from "./agent/home.mjs";
-import { assistant, call, fakeDoor, makeRun, result, text, transcript, user } from "./fixtures.mjs";
+import { assistant, call, fakeDoor, frameLine, jpegSha, makeRun, result, signInGap, signInRun, text, transcript, user, writeFrames } from "./fixtures.mjs";
+import { httpSource } from "./page/source.js";
 import { startServer } from "./server.mjs";
 
 /** A server over a new agent home made from examples/web/agent; `root` is the home's runs directory. */
@@ -67,7 +69,7 @@ test("runs are the agent home's, listed newest first, with agent, status, times 
   const at = (hours) => new Date(Date.now() - hours * 3_600_000).toISOString();
   const oldEnd = at(29);
   await makeRun(home, "old", { status: "done", entries: [user(1, "old one"), assistant(2, [text("ok")])], meta: { createdAt: at(30) }, updatedAt: oldEnd });
-  await makeRun(home, "newest", { status: "sleeping", entries: transcript, meta: { title: "Newest run", agent: "Site reporter", createdAt: at(1) } });
+  await makeRun(home, "newest", { status: "sleeping", entries: transcript, meta: { title: "Newest run", agent: "Wren", createdAt: at(1) } });
   await makeRun(home, "middle", { status: "failed", meta: { createdAt: at(5) } });
   await makeRun(home, "broken", { meta: { createdAt: at(100) } });
   writeFileSync(join(root, "broken", "run.json"), "not json");
@@ -75,7 +77,7 @@ test("runs are the agent home's, listed newest first, with agent, status, times 
   mkdirSync(join(root, ".hidden"));
   mkdirSync(join(root, "unindexed"));
   const { runs } = await json("/runs");
-  assert.deepEqual(runs.slice(0, 3).map((r) => [r.id, r.status, r.title, r.agent]), [["newest", "sleeping", "Newest run", "Site reporter"], ["middle", "failed", "middle", "Site reporter"], ["old", "done", "old one", "Site reporter"]]);
+  assert.deepEqual(runs.slice(0, 3).map((r) => [r.id, r.status, r.title, r.agent]), [["newest", "sleeping", "Newest run", "Wren"], ["middle", "failed", "middle", "Wren"], ["old", "done", "old one", "Wren"]]);
   assert.equal(runs.length, 4, "the broken run is listed as unknown; a stray file, a dot directory and a directory the runs index does not name are not runs");
   assert.equal((await get("/runs/unindexed")).status, 404);
   assert.equal(runs.find((r) => r.id === "broken").status, "unknown");
@@ -132,6 +134,40 @@ const asking = [
   result(3, "c1", "request_sign_in", ASKED, false, { site: "the practice site", reason: "The secure page needs a sign-in." }),
 ];
 
+test("a run of an imported home has no run.json: its endedAt in the home's index makes it done and reads its store; without one it is not read as released", async (t) => {
+  const { home, root, get, json } = await app(t);
+  const tiny = (dir) => {
+    rmSync(join(dir, "store"), { recursive: true });
+    mkdirSync(join(dir, "store"));
+    const db = new DatabaseSync(join(dir, "store", "run.sqlite"));
+    db.exec("CREATE TABLE entries (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, head INTEGER, commit_seq INTEGER NOT NULL, record TEXT NOT NULL CHECK (json_valid(record))) STRICT");
+    const insert = db.prepare("INSERT INTO entries (id, conversation_id, head, commit_seq, record) VALUES (?, ?, NULL, ?, ?)");
+    for (const entry of transcript.slice(0, 8)) insert.run(entry.id, entry.conversationId, entry.id, JSON.stringify(entry));
+    db.close();
+  };
+  const arrived = await makeRun(home, "arrived", { files: { "report.md": "# Report" } });
+  await carryBack(home, { runId: "arrived" }, { outcome: "completed", cost: 0.02 });
+  const unended = await makeRun(home, "unended");
+  const restarted = await makeRun(home, "restarted", { status: "running" });
+  await carryBack(home, { runId: "restarted" }, { outcome: "completed" });
+  for (const dir of [arrived, unended]) {
+    tiny(dir);
+    rmSync(join(dir, "run.json"));
+  }
+  const run = await json("/runs/arrived");
+  assert.equal(run.status, "done");
+  assert.equal(run.costUsd, 0.03, "its store's rows give the cost, as for any released run");
+  const stored = await json("/runs/arrived/timeline");
+  assert.equal(stored.rows[0].kind, "user_message", "the rows of its store");
+  assert.ok(stored.rows.some((r) => r.kind === "waiting"));
+  assert.equal(stored.state, "waiting");
+  assert.deepEqual((await json("/runs/arrived/files")).files.map((f) => f.path), ["report.md"]);
+  assert.equal((await get("/runs/unended/timeline")).status, 409, "a run no one carried back and no run.json says released is not read from its store");
+  assert.equal((await json("/runs/unended")).status, "unknown");
+  tiny(restarted);
+  assert.equal((await get("/runs/restarted/timeline")).status, 409, "a run that has a run.json is judged by it, as before, whatever its index says");
+});
+
 test("a turn that ends on request_sign_in is a wait: its own group, the reason, the waiting state, no blank assistant bubble", async (t) => {
   const { home, root, get, post, json } = await app(t);
   const door = await fakeDoor({
@@ -173,12 +209,14 @@ test("a live run that ended on a successful tool result is waiting; one that is 
     working: await fakeDoor({ snapshot: ended, run: true, hold: false }),
     answered: await fakeDoor({ snapshot: [...ended, assistant(4, [text("Done.")])] }),
     failed: await fakeDoor({ snapshot: [...ended.slice(0, 2), result(3, "c1", "submit_form", "boom", true)] }),
+    // Busy with no turn of the agent's: the instance letting go of its browser after the answer.
+    releasing: await fakeDoor({ snapshot: [...ended, assistant(4, [text("Done.")])], busy: true }),
   };
   t.after(() => Promise.all(Object.values(doors).map((d) => d.close())));
   for (const [id, door] of Object.entries(doors)) await makeRun(home, id, { status: "running", door: door.url });
   const states = {};
   for (const id of Object.keys(doors)) states[id] = (await liveRows(get, id)).state;
-  assert.deepEqual(states, { ended: "waiting", working: "working", answered: "idle", failed: "idle" });
+  assert.deepEqual(states, { ended: "waiting", working: "working", answered: "idle", failed: "idle", releasing: "idle" });
   const listed = Object.fromEntries((await (await get("/runs")).json()).runs.map((r) => [r.id, r.state]));
   assert.deepEqual(listed, states, "the history shows each live run in the state its page shows");
 });
@@ -281,6 +319,18 @@ test("files: dotfiles are hidden, nothing outside work/ is reachable, html is sa
   assert.equal((await big.arrayBuffer()).byteLength, 512 * 1024);
 });
 
+test("httpSource reads a long text file cut short to show it, and whole to download it", async (t) => {
+  const { home, server } = await app(t);
+  await makeRun(home, "r1", { status: "done", files: { "big.txt": "x".repeat(600 * 1024) } });
+  const source = httpSource(`${server.url}/`);
+  const shown = await source.file("r1", "big.txt");
+  assert.equal(shown.headers.get("x-truncated"), "1");
+  assert.equal((await shown.arrayBuffer()).byteLength, 512 * 1024);
+  const whole = await source.file("r1", "big.txt", { download: true });
+  assert.equal(whole.headers.get("x-truncated"), null);
+  assert.equal((await whole.arrayBuffer()).byteLength, 600 * 1024);
+});
+
 test("search finds file contents, file names and a finished run's transcript, and skips dotfiles", async (t) => {
   const { home, root, json } = await app(t);
   await makeRun(home, "a", { status: "done", entries: [user(1, "Find the Quokka report"), assistant(2, [text("The quokka is a marsupial.")])], files: { "notes/animals.txt": "Zebra and QUOKKA live here", ".private": "quokka secret", "quokka-list.csv": "x\n" } });
@@ -358,7 +408,6 @@ test("the live view is a redirect to the host's file; its address never appears 
 test("a new run starts the start command on its own directory and sends the first message to its door; a parked run is woken by a message; close ends only those pids", async (t) => {
   const door = await fakeDoor();
   t.after(() => door.close());
-  process.env.FAKE_DOOR = door.url;
   const dir = await mkdtemp(join(tmpdir(), "web-start-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const script = join(dir, "start.mjs");
@@ -366,15 +415,15 @@ test("a new run starts the start command on its own directory and sends the firs
     script,
     `import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-const dir = process.argv[2];
+const [door, dir] = process.argv.slice(2);
 mkdirSync(join(dir, "work"), { recursive: true });
-const write = (status) => writeFileSync(join(dir, "run.json"), JSON.stringify({ run: "x", status, generation: 2, sealedSeq: null, wakeAt: null, holder: status === "running" ? { driver: "local", host: "h", bootId: null, pid: process.pid, since: new Date().toISOString(), serve: process.env.FAKE_DOOR } : null, heartbeatAt: status === "running" ? new Date().toISOString() : null, updatedAt: new Date().toISOString(), detail: null }));
+const write = (status) => writeFileSync(join(dir, "run.json"), JSON.stringify({ run: "x", status, generation: 2, sealedSeq: null, wakeAt: null, holder: status === "running" ? { driver: "local", host: "h", bootId: null, pid: process.pid, since: new Date().toISOString(), serve: door } : null, heartbeatAt: status === "running" ? new Date().toISOString() : null, updatedAt: new Date().toISOString(), detail: null }));
 write("running");
 process.on("SIGTERM", () => { write("sleeping"); process.exit(0); });
 setInterval(() => {}, 1000);
 `,
   );
-  const { home, server, root, post, json } = await app(t, { start: [process.execPath, script] });
+  const { home, server, root, post, json } = await app(t, { start: [process.execPath, script, door.url] });
   const bystander = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
   t.after(() => bystander.kill());
 
@@ -387,7 +436,7 @@ setInterval(() => {}, 1000);
   const pid = server.children.get(id).pid;
   assert.ok(existsSync(join(root, id, "web.json")));
   const summary = await json(`/runs/${id}`);
-  assert.deepEqual([summary.title, summary.agent, summary.live], ["Do the thing", "Site reporter", true]);
+  assert.deepEqual([summary.title, summary.agent, summary.live], ["Do the thing", "Wren", true]);
 
   await makeRun(home, "asleep", { status: "sleeping", entries: transcript });
   assert.equal((await post("/runs/asleep/messages", { content: "wake up" })).status, 200);
@@ -399,78 +448,251 @@ setInterval(() => {}, 1000);
   assert.doesNotThrow(() => process.kill(bystander.pid, 0), "a process that is not a run is left alone");
 });
 
-/** A start command that plays a run's instance: run.json running with the door in FAKE_DOOR, sleeping on SIGTERM. */
+test("a home with prompt variants: each new run's prompt is chosen before it starts, recorded on its entry and in prompt.json; a home without any asks nobody", async (t) => {
+  const door = await fakeDoor();
+  t.after(() => door.close());
+  const dir = await mkdtemp(join(tmpdir(), "web-prompt-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const script = join(dir, "start.mjs");
+  writeFileSync(script, `import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const [door, dir] = process.argv.slice(2);
+mkdirSync(join(dir, "work"), { recursive: true });
+writeFileSync(join(dir, "run.json"), JSON.stringify({ run: "x", status: "running", generation: 1, sealedSeq: null, wakeAt: null, holder: { driver: "local", host: "h", bootId: null, pid: process.pid, since: new Date().toISOString(), serve: door }, heartbeatAt: new Date().toISOString(), updatedAt: new Date().toISOString(), detail: null }));
+process.on("SIGTERM", () => process.exit(0));
+setInterval(() => {}, 1000);
+`);
+  const asked = [];
+  const answers = [{ choice: "nonprofit", probabilities: { public: 0.1, nonprofit: 0.53, other: 0.37 }, confidence: 0.41 }, { choice: "nonprofit", probabilities: { public: 0, nonprofit: 0.95, other: 0.05 }, confidence: 0.95 }];
+  const judge = async (params) => (asked.push(params.state), { answers: { kind: { type: "choice", ...answers.shift() } }, model: "jev-test", cost_usd: 0.00002 });
+  const sources = [{ via: "wikipedia", url: "https://en.wikipedia.org/wiki/Habitat_for_Humanity", title: "Habitat for Humanity" }];
+  const { home, root, post } = await app(t, { start: [process.execPath, script, door.url], prompting: { judge, lookup: async () => ({ text: "A housing charity.", sources }) } });
+
+  const plain = await (await post("/runs", { content: "Do the thing" })).json();
+  assert.equal(existsSync(join(root, plain.id, "prompt.json")), false, "a home with no variants writes no prompt.json");
+  assert.deepEqual([asked.length, (await readAgentHome(home)).runs[plain.id].prompt], [0, undefined], "and asks Jev nothing");
+  // The plain run's message has reached the door before the next run is posted: each message goes out when its run's start command has written run.json, so on a slow first start the second run's message would otherwise arrive first.
+  for (let i = 0; i < 100 && door.submits.length < 1; i++) await new Promise((r) => setTimeout(r, 100));
+
+  await setPrompts(home, [
+    { id: "kind", role: "question", label: "Kind", text: "What kind of organisation is it?", criteria: { public: "listed", nonprofit: "charity", other: "anything else" } },
+    { id: "base", role: "base", label: "Base", text: "Research it." },
+    { id: "public", role: "overlay", label: "Public company", text: "Start at EDGAR.", when: { question: "kind", option: "public", threshold: 0.8 } },
+    { id: "nonprofit", role: "overlay", label: "Non-profit", text: "Start at the 990s.", when: { question: "kind", option: "nonprofit", threshold: 0.8 } },
+    { id: "generic", role: "generic", label: "Not sure", text: "Start at its own site." },
+  ]);
+  const { id } = await (await post("/runs", { content: "  Habitat " })).json();
+  const record = JSON.parse(readFileSync(join(root, id, "prompt.json"), "utf8"));
+  assert.deepEqual([record.version, record.question, record.input, record.variant, record.instructions, record.passes.length, record.lookup.used, record.lookup.sources], [1, "kind", "Habitat", "nonprofit", "Research it.\n\nStart at the 990s.", 2, true, sources]);
+  assert.deepEqual(asked, [{ input: "Habitat" }, { input: "Habitat", lookup: "A housing charity." }], "Jev was asked about the first message, then with what the lookup read");
+  assert.deepEqual((await readAgentHome(home)).runs[id].prompt, { id: "nonprofit", reason: record.reason }, "startRun recorded the choice on the run's entry");
+  assert.equal(statSync(join(root, id, "prompt.json")).mode & 0o777, 0o600);
+  for (let i = 0; i < 100 && door.submits.length < 2; i++) await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(door.submits.map((s) => s.content), ["Do the thing", "  Habitat "], "the run still gets the message as it was sent");
+});
+
+/**
+ * A start command that plays a run's instance: run.json running with a door, sleeping on SIGTERM. `next(config)` sets
+ * what the next instance started plays: `door`, and the `entries` its store holds when it is released, as pi would have
+ * committed them. An instance reads its config once, when it starts; after that it touches only its run's directory,
+ * where life.log gets a line for its start and one for its SIGTERM (`lifeOf`).
+ */
 function fakeInstance(dir) {
   const script = join(dir, "start.mjs");
+  const config = join(dir, "next.json");
   writeFileSync(
     script,
-    `import { readFileSync, writeFileSync } from "node:fs";
+    `import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-const dir = process.argv[2];
-const door = process.env.FAKE_DOOR;
-// What the run's store holds when it is released: FAKE_ENTRIES names a file of entries, as pi would have committed them.
+const [config, dir] = process.argv.slice(2);
+const { door, entries = [] } = JSON.parse(readFileSync(config, "utf8"));
+const life = (event) => appendFileSync(join(dir, "life.log"), event + " " + process.pid + "\\n");
 const commit = () => {
-  if (!process.env.FAKE_ENTRIES) return;
   const db = new DatabaseSync(join(dir, "store", "run.sqlite"));
   const insert = db.prepare("INSERT INTO entries (id, conversation_id, head, commit_seq, record) VALUES (?, ?, NULL, ?, ?)");
-  for (const entry of JSON.parse(readFileSync(process.env.FAKE_ENTRIES, "utf8"))) insert.run(entry.id, entry.conversationId, entry.id, JSON.stringify(entry));
+  for (const entry of entries) insert.run(entry.id, entry.conversationId, entry.id, JSON.stringify(entry));
   db.close();
 };
 writeFileSync(join(dir, "origin.txt"), process.env.AGENT_PAGE_ORIGIN ?? "");
 const write = (status) => writeFileSync(join(dir, "run.json"), JSON.stringify({ run: "x", status, generation: 1, sealedSeq: null, wakeAt: null, holder: status === "running" ? { driver: "local", host: "h", bootId: null, pid: process.pid, since: new Date().toISOString(), serve: door } : null, heartbeatAt: status === "running" ? new Date().toISOString() : null, updatedAt: new Date().toISOString(), detail: null }));
+life("start");
 write("running");
-process.on("SIGTERM", () => { commit(); write("sleeping"); process.exit(0); });
+process.on("SIGTERM", () => {
+  life("term");
+  try {
+    if (entries.length) commit();
+  } catch (error) {
+    writeFileSync(join(dir, "commit-failed.txt"), String(error));
+  }
+  write("sleeping");
+  process.exit(0);
+});
 setInterval(() => {}, 1000);
 `,
   );
-  return script;
+  return { start: [process.execPath, script, config], next: (next) => writeFileSync(config, JSON.stringify(next)) };
+}
+
+/** A run directory's life.log from `fakeInstance`: [event, pid] for each instance's start and SIGTERM, in order. */
+const lifeOf = (dir) => readFileSync(join(dir, "life.log"), "utf8").trim().split("\n").map((line) => line.split(" "));
+
+/** Another process holding the agent home's lock, as a second writer of the home would, until the returned call. */
+async function holdHome(t, home) {
+  const code = `const { DatabaseSync } = require("node:sqlite");
+const db = new DatabaseSync(process.argv[1], { timeout: 0 });
+db.exec("PRAGMA locking_mode = EXCLUSIVE");
+db.exec("BEGIN EXCLUSIVE");
+db.exec("COMMIT");
+process.stdout.write("held");
+process.stdin.on("end", () => process.exit(0)).resume();`;
+  const holder = spawn(process.execPath, ["--no-warnings", "-e", code, join(home.dir, "owner.lock")], { stdio: ["pipe", "pipe", "inherit"] });
+  await new Promise((resolve, reject) => (holder.stdout.once("data", resolve), holder.once("exit", reject)));
+  const release = () => new Promise((resolve) => (holder.exitCode !== null || holder.signalCode !== null ? resolve() : (holder.once("exit", resolve), holder.stdin.end())));
+  t.after(release);
+  return release;
 }
 
 test("a run that answered is released and carried back once, with the sign-in it made and the answer its store holds; then it is finished; a run waiting for the person is left running", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "web-carry-"));
+  const fake = fakeInstance(dir);
+  const { home, server, post } = await app(t, { start: fake.start, watchMs: 50 });
+  // Registered after app(), so they run after the server has stopped the runs it started.
   const answered = await fakeDoor({ snapshot: transcript, hold: true, busy: true });
   const waiting = await fakeDoor({ snapshot: asking, hold: true });
-  t.after(() => Promise.all([answered.close(), waiting.close()]));
-  const dir = await mkdtemp(join(tmpdir(), "web-carry-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const { home, server, post } = await app(t, { start: [process.execPath, fakeInstance(dir)], watchMs: 50 });
+  t.after(() => Promise.all([answered.close(), waiting.close(), rm(dir, { recursive: true, force: true })]));
 
   // The door showed the answer when the run was stopped; a follow-up was admitted and answered while it drained, so the
   // released store holds a later answer, and that is the one kept.
   const late = [...transcript, user(13, "And one more thing?"), assistant(14, [text("Here is the late answer.")])];
-  writeFileSync(join(dir, "late.json"), JSON.stringify(late));
-  process.env.FAKE_DOOR = answered.url;
-  process.env.FAKE_ENTRIES = join(dir, "late.json");
-  t.after(() => void delete process.env.FAKE_ENTRIES);
+  fake.next({ door: answered.url, entries: late });
   const { id } = await (await post("/runs", { content: "Log in to the practice site and save notes.md" })).json();
   // The run's own sign-in, as the agent app commits it while the run works: a Browserbase context in its store.
   const run = (await readAgentHome(home)).runs[id];
   const harness = await Harness.open(await openNodeSqliteStorage(join(home.dir, run.path, "store", "run.sqlite")), { models: createModels(), registry: createRegistry(), onReport: () => {} }, ctx);
   await durableProfileStore(harness).resolve(PROFILE, async () => "ctx-signed-in");
   await harness.close(ctx);
+  // The door already shows an answer: the run goes idle only once the first message is in, or the server releases it
+  // while that message is still on its way and the delivery starts the run again.
+  for (let i = 0; i < 100 && answered.submits.length < 1; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(answered.submits.map((s) => s.content), ["Log in to the practice site and save notes.md"]);
+  // The person said how they want things done; the agent kept it in its memory.
+  mkdirSync(join(home.dir, run.path, "work", "memory"));
+  writeFileSync(join(home.dir, run.path, "work", "memory", "preferences.md"), "- Bills as PDF, newest first\n");
   answered.busy = false;
   for (let i = 0; i < 100 && server.children.has(id); i++) await new Promise((r) => setTimeout(r, 50));
   assert.ok(!server.children.has(id), "the run that answered was released");
+  assert.ok(!existsSync(join(home.dir, run.path, "commit-failed.txt")), "the released instance committed its entries");
   let state = await readAgentHome(home);
   for (let i = 0; i < 100 && !state.runs[id].endedAt; i++) await new Promise((r) => setTimeout(r, 50)), (state = await readAgentHome(home));
   assert.deepEqual([state.runs[id].outcome, state.runs[id].finalAnswer, state.runs[id].cost], ["completed", "Here is the late answer.", 0.06]);
   assert.equal(readFileSync(join(home.dir, run.path, "origin.txt"), "utf8"), server.url, "the run is told the page's origin, for a local Chrome's viewer");
   assert.equal(state.profiles[PROFILE].ref, "ctx-signed-in", "the sign-in went back to the agent home");
+  // The memory goes home right after the carry back's commit.
+  for (let i = 0; i < 100 && !existsSync(join(home.dir, "memory", "preferences.md")); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(readFileSync(join(home.dir, "memory", "preferences.md"), "utf8"), "- Bills as PDF, newest first\n", "and its memory with it");
+  assert.deepEqual((await (await fetch(`${server.url}/agent`)).json()).memory, [{ name: "preferences.md", text: "- Bills as PDF, newest first\n" }]);
 
   // Carried back, the run is finished: a message is refused with a code, and the run is never woken.
   const refused = await post(`/runs/${id}/messages`, { content: "one more?" });
   assert.deepEqual([refused.status, (await refused.json()).error], [409, "RUN_FINISHED"]);
   assert.ok(!server.children.has(id), "a finished run is not started again");
   assert.equal((await (await fetch(`${server.url}/runs/${id}`)).json()).status, "done");
-  delete process.env.FAKE_ENTRIES;
 
-  process.env.FAKE_DOOR = waiting.url;
+  fake.next({ door: waiting.url });
   const second = await (await post("/runs", { content: "Log in again" })).json();
+  for (let i = 0; i < 100 && waiting.submits.length < 1; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(waiting.submits.map((s) => s.content), ["Log in again"]);
   const next = await startRun(home, { host: "test" });
   assert.deepEqual(next.leases, [], "the waiting run holds the profile's save lease");
   await new Promise((r) => setTimeout(r, 500));
   assert.ok(server.children.has(second.id), "a run waiting for the person keeps its browser and its process");
   assert.equal((await readAgentHome(home)).runs[second.id].endedAt, undefined);
+});
+
+test("a run carried back whose memory did not reach the home has it copied by the next server", async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), "web-hand-off-"));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const home = await ensureAgentHome(join(tmp, "home"));
+  // Released before the server started: signed in, its answer in its store, a note in its memory.
+  const dir = await makeRun(home, "r1", { status: "sleeping" });
+  const store = join(dir, "store", "run.sqlite");
+  await signInRun(store, { [PROFILE]: { ref: "ctx-1" } });
+  const db = new DatabaseSync(store);
+  const insert = db.prepare("INSERT INTO entries (id, conversation_id, head, commit_seq, record) VALUES (?, ?, NULL, ?, ?)");
+  for (const entry of transcript) insert.run(entry.id, entry.conversationId, entry.id, JSON.stringify(entry));
+  db.close();
+  mkdirSync(join(dir, "work", "memory"), { recursive: true });
+  writeFileSync(join(dir, "work", "memory", "preferences.md"), "- Bills as PDF, newest first\n");
+  // The copy fails: the home holds a folder where the file goes.
+  mkdirSync(join(home.dir, "memory", "preferences.md"), { recursive: true });
+
+  const first = await startServer({ home });
+  await first.close();
+  const state = await readAgentHome(home);
+  assert.deepEqual([state.runs.r1.outcome, state.profiles[PROFILE].ref], ["completed", "ctx-1"], "carried back, its sign-in home");
+  assert.ok(statSync(join(home.dir, "memory", "preferences.md")).isDirectory(), "its memory is not");
+
+  rmSync(join(home.dir, "memory", "preferences.md"), { recursive: true });
+  const second = await startServer({ home });
+  t.after(() => second.close());
+  assert.equal(readFileSync(join(home.dir, "memory", "preferences.md"), "utf8"), "- Bills as PDF, newest first\n");
+  assert.deepEqual((await (await fetch(`${second.url}/agent`)).json()).memory, [{ name: "preferences.md", text: "- Bills as PDF, newest first\n" }]);
+});
+
+test("a message that comes while a run that answered is being carried back waits for it and is refused; the run is never started again", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "web-after-"));
+  const fake = fakeInstance(dir);
+  const { home, server, post, json } = await app(t, { start: fake.start, watchMs: 50 });
+  const answered = await fakeDoor({ snapshot: transcript, hold: true, busy: true });
+  t.after(() => Promise.all([answered.close(), rm(dir, { recursive: true, force: true })]));
+  fake.next({ door: answered.url, entries: transcript });
+  const { id } = await (await post("/runs", { content: "Do the thing" })).json();
+  for (let i = 0; i < 100 && answered.submits.length < 1; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(answered.submits.map((s) => s.content), ["Do the thing"]);
+  const runDir = join(home.dir, (await readAgentHome(home)).runs[id].path);
+  // The server reads the home now, so that while another writer holds it only the carry back waits.
+  assert.equal((await json(`/runs/${id}`)).live, true);
+
+  const release = await holdHome(t, home);
+  answered.busy = false;
+  for (let i = 0; i < 100 && server.children.has(id); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.ok(!server.children.has(id), "the run that answered was released");
+  const message = post(`/runs/${id}/messages`, { content: "one more?" });
+  const early = await Promise.race([message.then(() => "answered"), new Promise((r) => setTimeout(r, 1_000, "waiting"))]);
+  assert.equal(early, "waiting", "the message waits for the carry back");
+  assert.ok(!server.children.has(id), "the run is not started again while it is carried back");
+  await release();
+  const refused = await message;
+  assert.deepEqual([refused.status, (await refused.json()).error], [409, "RUN_FINISHED"]);
+
+  const state = await readAgentHome(home);
+  assert.deepEqual([state.runs[id].outcome, state.runs[id].finalAnswer], ["completed", "I saved **notes.md**."]);
+  const life = lifeOf(runDir);
+  assert.deepEqual(life.map(([event]) => event), ["start", "term"], "one instance, released once");
+  assert.throws(() => process.kill(Number(life[0][1]), 0), { code: "ESRCH" }, "no instance is left");
+  assert.deepEqual(answered.submits.map((s) => s.content), ["Do the thing"]);
+});
+
+test("an instance of a run carried back by another writer is stopped once", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "web-ended-"));
+  const fake = fakeInstance(dir);
+  const { home, server, post } = await app(t, { start: fake.start, watchMs: 50 });
+  const working = await fakeDoor({ snapshot: transcript, hold: true, busy: true });
+  t.after(() => Promise.all([working.close(), rm(dir, { recursive: true, force: true })]));
+  fake.next({ door: working.url });
+  const { id } = await (await post("/runs", { content: "Do the thing" })).json();
+  for (let i = 0; i < 100 && working.submits.length < 1; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(working.submits.map((s) => s.content), ["Do the thing"]);
+  const runDir = join(home.dir, (await readAgentHome(home)).runs[id].path);
+
+  await carryBack(home, { runId: id }, { outcome: "stopped" });
+  for (let i = 0; i < 100 && server.children.has(id); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.ok(!server.children.has(id), "the finished run's instance was stopped");
+  const life = lifeOf(runDir);
+  assert.deepEqual(life.map(([event]) => event), ["start", "term"]);
+  assert.throws(() => process.kill(Number(life[0][1]), 0), { code: "ESRCH" }, "no instance is left");
+  assert.equal((await readAgentHome(home)).runs[id].outcome, "stopped", "the other writer's carry back stands");
 });
 
 test("a request target that is not a URL is refused, as a request or as a WebSocket upgrade, and the server goes on", async (t) => {
@@ -548,4 +770,76 @@ test("the page and its timeline module are served; nothing else under /timeline 
   assert.equal((await get("/timeline/index.js")).status, 200);
   assert.equal((await get("/timeline/group.js")).headers.get("content-type"), "text/javascript; charset=utf-8");
   for (const path of ["/timeline/../server.mjs", "/timeline/%2e%2e/server.mjs", "/timeline/x.mjs", "/timeline/", "/rows.mjs"]) assert.equal((await get(path)).status, 404, path);
+});
+
+test("GET /agent: the saved sign-ins, their sites and when they last worked, never a ref; a run started on them says so, and holds them", async (t) => {
+  const waiting = await fakeDoor({ snapshot: asking, hold: true });
+  t.after(() => waiting.close());
+  const dir = await mkdtemp(join(tmpdir(), "web-signins-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const instance = fakeInstance(dir);
+  instance.next({ door: waiting.url });
+  const { home, root, get, post, json } = await app(t, { start: instance.start });
+  const first = await startRun(home, { runId: "first", host: "test" });
+  await signInRun(first.storePath, {
+    [PROFILE]: { ref: "ctx-secret-ref", allowedOrigins: ["https://the-internet.herokuapp.com", "not an origin", "https://x.example/path"], startUrl: "https://the-internet.herokuapp.com/login", verifiedAt: "2026-10-16T05:58:00.000Z" },
+    plain: { ref: "ctx-plain-ref" },
+  });
+  await carryBack(home, first, { outcome: "completed" });
+
+  const body = await (await get("/agent")).text();
+  assert.ok(!/ctx-secret-ref|ctx-plain-ref|\/login/.test(body), "no ref and no start address");
+  assert.deepEqual(JSON.parse(body), {
+    name: "Wren",
+    signIns: [
+      { key: PROFILE, provider: "browserbase", state: "ready", sites: ["https://the-internet.herokuapp.com"], verifiedAt: "2026-10-16T05:58:00.000Z", heldBy: null },
+      { key: "plain", provider: "browserbase", state: "ready", sites: [], verifiedAt: null, heldBy: null },
+    ],
+    memory: [],
+  });
+
+  const { id } = await (await post("/runs", { content: "Log in again" })).json();
+  const started = [{ key: PROFILE, provider: "browserbase", sites: ["https://the-internet.herokuapp.com"] }, { key: "plain", provider: "browserbase", sites: [] }];
+  assert.deepEqual(JSON.parse(readFileSync(join(root, id, "web.json"), "utf8")).signedIn, started, "recorded when the run started");
+  assert.deepEqual((await json(`/runs/${id}`)).signedIn, started);
+  assert.deepEqual((await json("/agent")).signIns.map((s) => s.heldBy), [id, id], "the new run holds both");
+  const later = await (await post("/runs", { content: "And another" })).json();
+  assert.deepEqual((await json(`/runs/${later.id}`)).signedIn, [], "a run whose profiles another run holds starts signed out");
+  assert.deepEqual((await json("/runs/first")).signedIn, [], "a run with no record of it says nothing");
+});
+
+test("a run's frames: its lines and the JPEGs they name, no-store, to this page only; never among its files or in search, never by another name or through a link", async (t) => {
+  const { home, root, get, json } = await app(t);
+  const dir = await makeRun(home, "r", { status: "done", entries: transcript, files: { "notes.md": "# Notes" } });
+  await makeRun(home, "plain", { status: "done", entries: transcript });
+  const [a, b] = [Buffer.from([0xff, 0xd8, 0xff, 0xd9, 1]), Buffer.from([0xff, 0xd8, 0xff, 0xd9, 2])];
+  const lines = [frameLine(1, 1_000, jpegSha(a)), signInGap(2, 2_000, 1_000), frameLine(3, 9_000, jpegSha(b))];
+  writeFrames(dir, lines, [a, b]);
+  assert.deepEqual([(await json("/runs/r")).frames, (await json("/runs/plain")).frames], [true, false]);
+
+  const all = await get("/runs/r/frames");
+  assert.equal(all.status, 200);
+  for (const [name, value] of [["content-type", "application/x-ndjson; charset=utf-8"], ["cache-control", "no-store"], ["cross-origin-resource-policy", "same-origin"], ["x-content-type-options", "nosniff"]]) assert.equal(all.headers.get(name), value, name);
+  assert.deepEqual((await all.text()).trim().split("\n").map((l) => JSON.parse(l)), lines);
+  const jpeg = await get(`/runs/r/frames/${jpegSha(a)}.jpg`);
+  assert.deepEqual([jpeg.status, jpeg.headers.get("content-type"), jpeg.headers.get("cache-control")], [200, "image/jpeg", "no-store"]);
+  assert.deepEqual(Buffer.from(await jpeg.arrayBuffer()), a);
+
+  symlinkSync(join(dir, "work", "notes.md"), join(dir, "frames", "blobs", `${"c".repeat(64)}.jpg`));
+  for (const path of [`/runs/r/frames/${jpegSha(a)}.png`, `/runs/r/frames/${jpegSha(a).toUpperCase()}.jpg`, `/runs/r/frames/blobs%2F${jpegSha(a)}.jpg`, `/runs/r/frames/${"d".repeat(64)}.jpg`, `/runs/r/frames/${"c".repeat(64)}.jpg`, "/runs/r/frames/..%2Fstore%2Frun.sqlite", "/runs/plain/frames"]) {
+    assert.equal((await get(path)).status, 404, path);
+  }
+  for (const headers of [{ "sec-fetch-site": "cross-site" }, { "sec-fetch-site": "same-site" }, { origin: "https://elsewhere.example" }]) {
+    assert.equal((await get("/runs/r/frames", { headers })).status, 403, JSON.stringify(headers));
+    assert.equal((await get(`/runs/r/frames/${jpegSha(a)}.jpg`, { headers })).status, 403);
+  }
+  assert.equal((await get("/runs/r/frames", { headers: { "sec-fetch-site": "same-origin" } })).status, 200);
+
+  assert.deepEqual((await json("/runs/r/files")).files.map((f) => f.path), ["notes.md"], "frames/ is not the run's files");
+  assert.deepEqual((await json(`/search?q=${jpegSha(b).slice(0, 16)}`)).results, [], "nor in search");
+  rmSync(join(dir, "frames"), { recursive: true });
+  mkdirSync(join(root, "elsewhere", "blobs"), { recursive: true });
+  writeFileSync(join(root, "elsewhere", "frames.jsonl"), "{}\n");
+  symlinkSync(join(root, "elsewhere"), join(dir, "frames"));
+  assert.equal((await get("/runs/r/frames")).status, 404, "a frames/ that is a link is not the run's");
 });

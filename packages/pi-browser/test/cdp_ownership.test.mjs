@@ -51,7 +51,7 @@ async function rig(t) {
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: profiles, args: [LOOPBACK] } });
   const leases = [];
   t.after(async () => { for (const [p, ref] of leases) await p.release(ref).catch(() => undefined); // The squatter Chrome may still be writing its profile as its process group dies: retry the removal.
-    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); });
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }, { timeout: 30_000 });
   const lease = async (p, tag) => { const ref = await p.create(spec(tag), signal()); leases.push([p, ref]); return ref; };
   return { root, profiles, provider, lease };
 }
@@ -93,7 +93,7 @@ test("a launch whose profile names a browser other than the one answering on its
   const { root } = await rig(t);
   process.env.CHROME_REAL = CHROME;
   process.env.LIAR = "1";
-  t.after(() => { delete process.env.LIAR; });
+  t.after(() => { delete process.env.LIAR; }, { timeout: 30_000 });
   const provider = cdpProvider({ chrome: { executablePath: collidingChrome(root), profileRoot: path.join(root, "c"), args: [LOOPBACK] } });
   let ref = null;
   try { ref = await provider.create(spec("liar"), signal()); } catch {}

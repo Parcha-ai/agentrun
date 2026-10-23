@@ -1,0 +1,75 @@
+{
+  "v": 2,
+  "name": "route",
+  "schemas": {
+    "Any": {
+      "type": "object"
+    },
+    "Item": {
+      "type": "object"
+    },
+    "Found": {
+      "type": "object",
+      "required": [
+        "id",
+        "score"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "score": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "output": {
+    "schemaId": "Any",
+    "path": "final"
+  },
+  "root": {
+    "node": "chain",
+    "steps": [
+      {
+        "node": "code",
+        "label": "seed",
+        "code": "s => (({ pick: \"a/b\" }))"
+      },
+      {
+        "node": "route",
+        "label": "choose",
+        "valuePath": "pick",
+        "branches": {
+          "a/b": {
+            "body": {
+              "node": "call",
+              "label": "slash",
+              "via": "tool",
+              "tool": "lookup",
+              "args": {
+                "id": "s"
+              },
+              "out": "Found",
+              "as": "slash",
+              "deadline_s": 30
+            }
+          },
+          "other": {
+            "body": {
+              "node": "code",
+              "label": "other",
+              "code": "s => (({ taken: \"other\" }))"
+            }
+          }
+        },
+        "otherwise": "other"
+      },
+      {
+        "node": "code",
+        "label": "finish",
+        "code": "s => (({ final: { taken: s.slash.id } }))"
+      }
+    ]
+  }
+}

@@ -2,7 +2,8 @@
 // pi 1.4, the next minor no package has been tested on: the family breaks in minors, and from 1.3 pins its own packages
 // to exact versions, so a fresh install is all one minor. The packages Pi provides to the
 // packages it loads (pi-ai, pi-agent-core, pi-coding-agent, pi-tui, typebox) are "*", as Pi's package guidance asks; a
-// pi version newer than the tested ones is guarded by the version legs and each README's tested-host line, not a range.
+// pi version newer than the tested ones is guarded by the version legs and by `/agentrun status`, which flags a host
+// outside @parcha/agentrun-pi's range, not by a peer range.
 import assert from 'node:assert/strict';
 import { dirname } from 'node:path';
 import { test } from 'node:test';

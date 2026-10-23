@@ -48,7 +48,7 @@ async function rig(t) {
     for (const pid of chromeOf(dir)) { try { process.kill(pid, "SIGKILL"); } catch {} }
     await site.close();
     await rm(dir, { recursive: true, force: true });
-  });
+  }, { timeout: 30_000 });
   const env = { DB: path.join(dir, "run.sqlite"), OUT: path.join(dir, "out.json"), PROFILE_ROOT: path.join(dir, "profiles") };
   return { capable: await capable(t, dir), dir, site, env, read: () => JSON.parse(fs.readFileSync(env.OUT, "utf8")) };
 }

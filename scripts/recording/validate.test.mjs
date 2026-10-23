@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { validateRecording } from './validate.mjs';
+import { makeSentinels } from '../../packages/pi-browser/src/testing/sentinels.ts';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const png = Buffer.from('not really a png');
@@ -110,6 +111,24 @@ test('every blob a line or the manifest names is present and hashes to its name'
   assert.match(problem.message, /bbbb.* not in blobs/);
 });
 
+test('a line or the manifest that records a URL carrying a credential in its query is refused at its line, naming the parameter and no value', async t => {
+  const s = makeSentinels();
+  const withUrl = url => events.map((line, index) => (index === 3 ? { ...line, data: { liveView: { url } } } : line));
+  const cases = [
+    [s.bbLiveViewUrl, 'url with a token-bearing query parameter (token)', [s.bbLiveViewToken, s.bbSessionId]],
+    [s.bbConnectUrl.replace(s.bbApiKey, 'opaque-api-value'), 'url with a token-bearing query parameter (apiKey)', ['opaque-api-value', s.bbSigningKey]],
+    ['wss://kernel.sentinel.test/browser/cdp?session=opaque-value', 'websocket url with a query (session)', ['opaque-value']],
+  ];
+  for (const [url, expected, values] of cases) {
+    const problem = first(await recording(t, { lines: withUrl(url) }));
+    assert.deepEqual([problem.where, problem.line, problem.message], ['events.jsonl', 4, `contains a ${expected}`], url.slice(0, 40));
+    for (const value of values) assert.ok(!JSON.stringify(problem).includes(value), 'the problem repeats a value');
+  }
+  const inManifest = validateRecording(await recording(t, { manifestOver: { title: s.bbLiveViewUrl }, started: 2 })).find(problem => problem.where === 'manifest.json');
+  assert.equal(inManifest.message, 'contains a url with a token-bearing query parameter (token)');
+  assert.deepEqual(validateRecording(await recording(t, { lines: withUrl('https://example.test/search?q=cats&page=2'), started: 2 })), [], 'a plain link with ?q= passes');
+});
+
 test('a line or the manifest that holds a credential-shaped value is refused', async t => {
   const secret = `sk-${'a1'.repeat(20)}`;
   const withSecret = events.map((line, index) => (index === 3 ? { ...line, data: { header: `Bearer ${'x'.repeat(30)}` } } : line));
@@ -134,8 +153,12 @@ test('an image stays out of the line: a block holds its blob, never its data', a
   assert.deepEqual([first(await recording(t, { lines: inline })).line, first(await recording(t, { lines: inline })).message.slice(0, 22)], [4, 'holds image data inlin']);
   const dataUrl = events.map((line, index) => (index === 3 ? { ...line, data: { src: 'data:image/png;base64,AAAA' } } : line));
   assert.match(first(await recording(t, { lines: dataUrl })).message, /image data inline/);
-  const long = events.map((line, index) => (index === 3 ? { ...line, data: { frame: 'A'.repeat(5000) } } : line));
-  assert.match(first(await recording(t, { lines: long })).message, /image data inline/);
+  // What is an image is structural: an image block that holds its data. Long base64 anywhere else is data (a store's
+  // chunk, a checkpoint), whatever its length, so a writer never has to cut it up to pass.
+  const long = events.map((line, index) => (index === 3 ? { ...line, data: { frame: 'A'.repeat(5000), chunks: ['A'.repeat(8000)], part: { type: 'chunk', data: 'A'.repeat(6000) } } } : line));
+  assert.deepEqual(validateRecording(await recording(t, { lines: long, started: 2 })), []);
+  const longBlock = events.map((line, index) => (index === 3 ? { ...line, data: { content: [{ type: 'image', mimeType: 'image/png', data: 'A'.repeat(5000) }] } } : line));
+  assert.match(first(await recording(t, { lines: longBlock })).message, /image data inline/);
   const unlisted = events.map((line, index) => (index === 3 ? { ...line, blobs: undefined, data: { content: [block] } } : line));
   assert.match(first(await recording(t, { lines: unlisted })).message, /does not list/);
 });
@@ -194,7 +217,13 @@ test('a restore (3.2): a drop in commit at a generation\'s first snapshot is acc
   const none = await refused(restored);
   assert.equal(none.line, lost.length + 1 + 2);
   assert.match(none.message, /first snapshot is at commit 4, below the 7 already seen.*no transport\.moves restore record( after it)? with checkpoint head 5/);
-  assert.match((await refused([...restored, moves(4, 24)])).message, /checkpoint head 5/);
+  // Draft 37: pi may commit once at open, so a snapshot at the head (4) with the first new commit head + 1 (5) is accepted;
+  // a head below the snapshot's commit, or above the first new commit, is not.
+  assert.deepEqual(validateRecording(await recording(t, { lines: [...restored, moves(4, 24)], started: 2 })), []);
+  assert.match((await refused([...restored, moves(3, 24)])).message, /checkpoint head 5/);
+  assert.match((await refused([...restored, moves(6, 24)])).message, /checkpoint head 5/);
+  const twoAtOpen = [...lost, snap(4, 0, 20, 2), snap(4, 1, 21, 2), durable(6, 0, { t: 22, gen: 2 }), moves(4, 24)];
+  assert.ok(validateRecording(await recording(t, { lines: twoAtOpen, started: 2 })).some(problem => /a restore's head is 4, but the process's first commit is 6/.test(problem.message)), 'head + 2 is more than pi\'s one commit at open');
   assert.ok(validateRecording(await recording(t, { lines: [...restored, moves(5, 24, 2, 'move')], started: 2 })).some(problem => /no transport\.moves restore record( after it)? with checkpoint head 5/.test(problem.message)), 'a move is not a restore');
   // matched by process, not by generation value: the snapshot's gen is an earlier process's, and the record's is whatever the driver says
   assert.deepEqual(validateRecording(await recording(t, { lines: [...restored, moves(5, 24, 3)], started: 2 })), []);
@@ -229,6 +258,17 @@ test('a move: the target\'s record anchors on its snapshot at open (3.2)', async
   const dropped = await run([durable(1, 0), durable(3, 0, { t: 12 }), snap(2, 0, 20, 2), moveAt(3, 3, 0, 22)]);
   assert.ok(dropped.some(problem => /first snapshot is at commit 2, below the 3 already seen/.test(problem.message)));
   assert.ok(dropped.some(problem => /highest commit seen before it is 3; a move keeps one store/.test(problem.message)) || dropped.some(problem => /restore record/.test(problem.message)));
+});
+
+test('draft 37: a restore whose pi committed once at open, snapshot at head 9: the record at commit 10 passes, at 11 fails', async t => {
+  // pi-transport's restore mid-turn: process 1 reached commit 12; the store reopens at the checkpoint's head 9 and pi
+  // commits once at open, so process 2's snapshot is at commit 9 and its first new commit, the moves record's, is 10.
+  const first = Array.from({ length: 12 }, (_, n) => durable(n + 1, 0, { t: n + 1 }));
+  const record = commit => durable(commit, 0, { source: 'transport', kind: 'transport.moves', t: 22, gen: 2, data: { doc: 'transport.moves', value: { moves: [{ kind: 'restore', head: 9, checkpoint: { head: 9, sha256: 'a'.repeat(64), bytes: 1, at: 'x' } }] } } });
+  const lines = at => [...first, durable(9, 0, { snapshot: true, t: 20, gen: 2 }), durable(9, 1, { snapshot: true, t: 21, gen: 2 }), record(at), durable(at, 1, { t: 23, gen: 2 })];
+  assert.deepEqual(validateRecording(await recording(t, { lines: lines(10), started: 2 })), []);
+  const late = validateRecording(await recording(t, { lines: lines(11), started: 2 }));
+  assert.ok(late.some(problem => /a restore's head is 9, but the process's first commit is 11/.test(problem.message)), JSON.stringify(late));
 });
 
 test('head is top-level: a move\'s head equals its seal.head, and a replayed restore has no drop', async t => {
@@ -294,4 +334,58 @@ test('a snapshot restating an earlier process\'s move is not a move of this proc
   const bad = { doc: 'transport.moves', value: { moves: [{ kind: 'restore', checkpoint: { head: 4 } }] } };
   const own = [durable(1, 0), durable(2, 0, { t: 12, source: 'transport', kind: 'transport.moves', data: bad })];
   assert.match(first(await recording(t, { lines: own, started: 2, manifestOver: { generations: 2 } })).message, /a restore record has no integer head/);
+});
+
+test('agentrun.decisions in both forms is refused: the single document or the keyed documents, never both in one recording', async t => {
+  const single = (commit) => durable(commit, 0, { kind: 'agentrun.decisions', data: { doc: 'agentrun.decisions', value: { receipts: [{ v: 1, decision_id: 'a', run_key: 'r', cost_usd: 0 }] }, version: 1 } });
+  const keyed = (commit, key) => durable(commit, 0, { kind: 'agentrun.decisions', data: { doc: 'agentrun.decisions', key, value: { v: 1, decision_id: key, run_key: 'r', cost_usd: 0 }, version: 1 } });
+  const only = async lines => validateRecording(await recording(t, { lines, manifestOver: { generations: 1 } })).filter(problem => /both forms/.test(problem.message));
+  assert.deepEqual(await only([single(1), single(2)]), [], 'the single document alone');
+  assert.deepEqual(await only([keyed(1, '00000000'), keyed(2, '00000001')]), [], 'keyed documents alone');
+  const both = await only([single(1), keyed(2, '00000000')]);
+  assert.equal(both.length, 1);
+  assert.equal(both[0].line, 2);
+  assert.match(both[0].message, /single document from line 1, keyed documents from line 2/);
+  assert.equal((await only([keyed(1, '00000000'), single(2)])).length, 1, 'in either order');
+});
+
+test('draft 54: a pi.conversation names its parent entry and its owner task, and each is in the recording', async t => {
+  const pi = (commit, kind, conv, data) => durable(commit, 0, { t: commit * 10, source: 'pi', kind, conv, data });
+  const lines = record => [
+    durable(1, 0),
+    pi(2, 'pi.user', 33, { kind: 'pi.user', id: 40, conversationId: 33, model: [{ role: 'user', content: 'Fork the threads.' }] }),
+    pi(3, 'pi.assistant', 33, { kind: 'pi.assistant', id: 41, conversationId: 33, model: [{ role: 'assistant', content: [{ type: 'toolCall', id: 'threads-fork', name: 'fork_threads', arguments: {} }] }] }),
+    pi(4, 'pi.tool', 33, { id: 45, conversationId: 33, kind: 'pi.tool', version: 1, input: { assistant: 41, callId: 'threads-fork' }, background: false, abortRequested: false, state: { status: 'running' } }),
+    // Lines of kinds outside the lists: one that carries `model`, one that carries `state`, and an entry of another conversation.
+    pi(5, 'pi.note', 33, { kind: 'pi.note', id: 46, conversationId: 33, model: [{ role: 'user', content: 'a note' }] }),
+    pi(6, 'pi.future', 33, { id: 47, conversationId: 33, kind: 'pi.future', version: 1, input: {}, state: { status: 'running' } }),
+    pi(7, 'pi.user', 33, { kind: 'pi.user', id: 48, conversationId: 40, model: [{ role: 'user', content: 'elsewhere' }] }),
+    // A task of an extension's own kind, as pi writes it: pi lets any extension define a task kind.
+    pi(8, 'recording-test.owner', 33, { id: 49, conversationId: 33, kind: 'recording-test.owner', version: 1, input: null, background: false, abortRequested: false, state: { status: 'running' } }),
+    pi(9, 'pi.conversation', 51, record),
+  ];
+  const problems = async record => validateRecording(await recording(t, { lines: lines(record), started: 1, manifestOver: { generations: 1 } })).map(problem => problem.message);
+  const fork = { id: 51, parent: { conversationId: 33, at: 40 }, owner: { conversationId: 33, taskId: 45 } };
+  assert.deepEqual(await problems(fork), [], 'a fork: its parent entry and its owner task are here');
+  assert.deepEqual(await problems({ id: 51, owner: fork.owner }), [], 'a node\'s conversation: an owner and no parent');
+  assert.deepEqual(await problems({ id: 51 }), [], 'an ownerless conversation');
+  assert.deepEqual(await problems({ ...fork, parent: { conversationId: 70, at: 40 } }), ['pi.conversation 51: its parent names conversation 70, which is not in this recording']);
+  assert.deepEqual(await problems({ ...fork, parent: { conversationId: 33, at: 999 } }), ['pi.conversation 51: its parent names entry 999, which is no entry (pi.user, pi.system, pi.assistant, pi.tool-result) of conversation 33']);
+  assert.deepEqual(await problems({ ...fork, parent: { conversationId: 33, at: 45 } }), ['pi.conversation 51: its parent names entry 45, which is no entry (pi.user, pi.system, pi.assistant, pi.tool-result) of conversation 33'], 'a task id is not an entry');
+  assert.deepEqual(await problems({ ...fork, owner: { conversationId: 33, taskId: 999 } }), ['pi.conversation 51: its owner names task 999, which is no task record of conversation 33']);
+  assert.deepEqual(await problems({ ...fork, owner: { conversationId: 33, taskId: 40 } }), ['pi.conversation 51: its owner names task 40, which is no task record of conversation 33'], 'an entry id is not a task');
+  assert.deepEqual(await problems({ ...fork, owner: { conversationId: 33, taskId: 49 } }), [], 'a fork an extension\'s task owns: a task is found by pi\'s task record shape, whatever its kind');
+  assert.deepEqual(await problems({ ...fork, owner: { conversationId: 70, taskId: 45 } }), ['pi.conversation 51: its owner names task 45, which is no task record of conversation 70'], 'a task of another conversation');
+  assert.deepEqual(await problems({ ...fork, parent: { ...fork.parent, content: 'copied message' } }), ['pi.conversation 51: its parent holds content: a parent keeps only conversationId and at, no content']);
+  assert.deepEqual(await problems({ ...fork, owner: { ...fork.owner, title: 'thread 1' } }), ['pi.conversation 51: its owner holds title: an owner keeps only conversationId and taskId, no content']);
+  // An entry is found by kind, and a task by pi's whole task record shape: a line short of either is neither (fails closed).
+  assert.deepEqual(await problems({ ...fork, parent: { conversationId: 33, at: 46 } }), ['pi.conversation 51: its parent names entry 46, which is no entry (pi.user, pi.system, pi.assistant, pi.tool-result) of conversation 33'], 'a pi.note with model is no entry');
+  assert.deepEqual(await problems({ ...fork, owner: { conversationId: 33, taskId: 47 } }), ['pi.conversation 51: its owner names task 47, which is no task record of conversation 33'], 'a line with a state but no abortRequested or background is no task');
+  assert.deepEqual(await problems({ ...fork, parent: { conversationId: 33, at: 48 } }), ['pi.conversation 51: its parent names entry 48, which is no entry (pi.user, pi.system, pi.assistant, pi.tool-result) of conversation 33'], 'an entry whose data.conversationId is another conversation');
+  assert.deepEqual(await problems({ ...fork, parent: { conversationId: 33 } }), ['pi.conversation 51: its parent is not { conversationId, at }, each an integer']);
+  assert.deepEqual(await problems({ ...fork, owner: 'tool' }), ['pi.conversation 51: its owner is not { conversationId, taskId }, each an integer']);
+  assert.deepEqual(await problems({ ...fork, title: 'thread 1' }), ['pi.conversation 51 holds title: the line keeps only id, parent and owner, no content']);
+  assert.deepEqual(await problems({ ...fork, id: '51' }), ['a pi.conversation line has no integer id: its data is the record, { id, parent?, owner? }']);
+  // Written as a document, the record is still checked, never skipped.
+  assert.deepEqual(await problems({ doc: 'pi.conversation', key: '51', value: fork }), ['a pi.conversation line has no integer id: its data is the record, { id, parent?, owner? }']);
 });

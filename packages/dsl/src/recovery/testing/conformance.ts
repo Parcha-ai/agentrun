@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { RecoveryError } from "../errors.js";
-import type { RecoveryBinding, RecoveryStore } from "../store.js";
+import type { RecoveryBinding, RecoveryJournal, RecoveryStore } from "../store.js";
 
 const BOUND: RecoveryBinding = { binding: "binding-1", inputs: { workflow: "digest-a", "config.question": "digest-b" } };
 const refused = (pattern?: RegExp) => (error: unknown) => {
@@ -226,5 +226,55 @@ export function registerStoreConformance(name: string, create: () => RecoverySto
     const fourth = await store.open(BOUND);
     assert.deepEqual(fourth.state, { kept: 1, nested: [null, { at: "1970-01-01T00:00:00.000Z" }] });
     await fourth.close();
+  });
+
+  // Parts: a store that keeps them declares it with both reads, `items` and `stateOf`; a store with neither keeps the
+  // driver's whole state in one record, and these cases hold for it trivially.
+  const keeps = (journal: RecoveryJournal) => {
+    assert.equal(typeof journal.items === "function", typeof journal.stateOf === "function", "a store declares both items and stateOf, or neither");
+    return typeof journal.items === "function";
+  };
+  const ITEM = "/root/steps/0/items/0";
+
+  it("parts are kept beside the state, in the same commit: an item's record replaced whole at each write, a state written once", async (store) => {
+    const first = await store.open(BOUND);
+    if (!keeps(first)) { await first.close(); return; }
+    assert.equal(await first.save({ n: 1 }, undefined, (revision) => ({ items: { [ITEM]: { effects: [], status: "running", revision } }, states: { "sha-a": { a: 1 } } })), 1);
+    assert.equal(await first.save({ n: 2 }, undefined, (revision) => ({ items: { [ITEM]: { effects: [], revision } }, states: { "sha-a": { a: "rewritten" }, "sha-b": { b: 2 } } })), 2);
+    await first.close();
+    const second = await store.open(BOUND);
+    assert.deepEqual(await second.items!([ITEM, "/root/steps/0/items/1"]), [{ effects: [], revision: 2 }, undefined]);
+    assert.deepEqual([await second.stateOf!("sha-a"), await second.stateOf!("sha-b")], [{ a: 1 }, { b: 2 }]);
+    assert.deepEqual(second.state, { n: 2 });
+    await second.close();
+  });
+
+  it("an effect admitted with an owner is listed by the owner's record, and by effects() once that record is read", async (store) => {
+    const first = await store.open(BOUND);
+    if (!keeps(first)) { await first.close(); return; }
+    const owned = (ids: string[]) => () => ({ items: { [ITEM]: { effects: ids } } });
+    assert.equal(await first.admit("e1", "lookup", "args-1", { n: 1 }, "run-1", undefined, { id: 1 }, owned(["e1"]), ITEM), "new");
+    assert.equal(await first.admit("e2", "lookup", "args-2", { n: 2 }, "run-1", undefined, undefined, owned(["e1", "e2"]), ITEM), "new");
+    await first.complete("e1", { value: 1 }, { n: 3 }, owned(["e1", "e2"]));
+    await first.close();
+    const second = await store.open(BOUND);
+    const [record] = await second.items!([ITEM]);
+    assert.deepEqual(record?.effects, ["e1", "e2"]);
+    assert.deepEqual(second.effects().map((effect) => [effect.id, effect.status, effect.result]).sort(), [["e1", "completed", { value: 1 }], ["e2", "unknown", null]]);
+    assert.deepEqual(second.effect("e1")?.args, { id: 1 });
+    assert.deepEqual(second.state, { n: 3 });
+    await second.close();
+  });
+
+  it("a write whose parts cannot be stored writes nothing at all, its state included", async (store) => {
+    const first = await store.open(BOUND);
+    if (!keeps(first)) { await first.close(); return; }
+    await first.save({ kept: 1 });
+    await assert.rejects(first.save({ kept: 2 }, undefined, () => ({ items: { [ITEM]: { effects: [], bad: Number.POSITIVE_INFINITY } } })), refused());
+    assert.equal(first.revision, 1);
+    await first.close();
+    const second = await store.open(BOUND);
+    assert.deepEqual([second.state, second.revision, await second.items!([ITEM])], [{ kept: 1 }, 1, [undefined]]);
+    await second.close();
   });
 }

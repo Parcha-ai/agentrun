@@ -1,4 +1,5 @@
 import { Agent, type AgentTool, type StreamFn } from '@earendil-works/pi-agent-core';
+import { SUBMIT_TOOL } from './host-tools.js';
 import { createPiRunner, type PiRunner } from './runner.js';
 import { workflowToolContext } from './tool-context.js';
 import type { PiHostContext, PiHostRunnerOptions, PiModel, PiSessionFactory } from './types.js';
@@ -30,7 +31,7 @@ export function createPiHostSessionFactory(context: PiHostContext): PiSessionFac
       parameters: tool.parameters,
       async execute(id, args, signal, onUpdate) {
         const result = await tool.execute(id, args, signal, onUpdate, toolContext);
-        if (tool.name === 'submit' && (result.details as { accepted?: boolean })?.accepted === true) delivered = true;
+        if (tool.name === SUBMIT_TOOL && (result.details as { accepted?: boolean })?.accepted === true) delivered = true;
         return result;
       },
     } satisfies AgentTool)) as AgentTool[];
@@ -73,9 +74,10 @@ export function createPiHostSessionFactory(context: PiHostContext): PiSessionFac
 
 export function createPiHostRunner(context: PiHostContext, options: PiHostRunnerOptions = {}): PiRunner {
   const model = selectedModel(context);
+  // The host session's thinking level is not a node's: a node that names none thinks at medium, unless the caller
+  // passes its own `thinkingLevel`.
   return createPiRunner({
     ...options, model, cwd: options.cwd ?? context.cwd,
-    thinkingLevel: options.thinkingLevel ?? context.thinkingLevel,
     sessionFactory: createPiHostSessionFactory(context),
   });
 }

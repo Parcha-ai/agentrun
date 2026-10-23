@@ -4,8 +4,10 @@
 // readers take the store file itself (pi-durable's SQLite file, wherever the host keeps it), never a directory.
 import fs from "node:fs";
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { apply } from "@earendil-works/chord/delta";
 import type { RecoveryEffect, RecoveryNote } from "@parcha/agentrun-dsl/recovery";
+import { decisionKey } from "./decisions.js";
 import { effectKey } from "./store.js";
 
 type Database = import("node:sqlite").DatabaseSync;
@@ -18,12 +20,16 @@ export type JournalView = {
 };
 type DriverRecord = { binding: string | null; inputs: Record<string, string> | null; generation: number; revision: number; state: Json; notes: RecoveryNote[]; effects: string[] };
 
+/** How a reader opens the store file. `immutable` opens it as SQLite's immutable file, for a store no process writes any
+ *  more and with no write-ahead log beside it (an ended run's): nothing beside it is read or made. */
+export type DurableReadOptions = { immutable?: boolean };
+
 /** The run's store `file`, opened read-only for `read`; null when there is no such file. Every query of one `read` runs
  *  in one read transaction, so what it returns is one commit's view, whatever a writer commits meanwhile. */
-export function withDurableFile<T>(file: string, read: (db: Database) => T): T | null {
+export function withDurableFile<T>(file: string, read: (db: Database) => T, options: DurableReadOptions = {}): T | null {
   if (!fs.existsSync(file)) return null;
   const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
-  const db = new DatabaseSync(file, { readOnly: true, timeout: 5000 });
+  const db = new DatabaseSync(options.immutable ? `${pathToFileURL(file).href}?immutable=1` : file, { readOnly: true, timeout: 5000 });
   try { db.exec("BEGIN"); return read(db); } finally { db.close(); }
 }
 
@@ -38,30 +44,78 @@ function revisionsOf(db: Database, id: number): Record<string, unknown> | undefi
   return value;
 }
 
-/** A Session document's current value. `key` names a family member; a singleton has none. */
-function sessionDoc(db: Database, kind: string, key?: string): Record<string, unknown> | undefined {
+/** The row of a Session document. `key` names a family member; a singleton has none. */
+function sessionDocId(db: Database, kind: string, key?: string): number | undefined {
   const row = db.prepare("SELECT id FROM documents WHERE kind = ? AND scope_kind = 'session' AND owner_id = 0 AND family = ? AND key_value = ? AND retired_at IS NULL ORDER BY created_at DESC LIMIT 1")
     .get(JSON.stringify(kind), key === undefined ? 0 : 1, JSON.stringify(key ?? "")) as { id?: number } | undefined;
-  return row?.id === undefined ? undefined : revisionsOf(db, row.id);
+  return row?.id;
+}
+
+/** A Session document's current value. `key` names a family member; a singleton has none. */
+function sessionDoc(db: Database, kind: string, key?: string): Record<string, unknown> | undefined {
+  const id = sessionDocId(db, kind, key);
+  return id === undefined ? undefined : revisionsOf(db, id);
+}
+
+/** The ids of the effects the map items of `table` own (the keyed layout's `maps`: `{ <map path>: { items, ... } }`), each
+ *  item's own nested maps included, read as the driver reads them back: item `i` of a map is its record at
+ *  `<map path>/items/<i>`, for every item the map started. */
+function itemEffects(db: Database, key: string, table: unknown, into: string[]): void {
+  if (!table || typeof table !== "object" || Array.isArray(table)) return;
+  for (const [mapPath, entry] of Object.entries(table as Record<string, { items?: unknown } | null>)) {
+    const started = entry?.items;
+    if (typeof started !== "number" || !Number.isSafeInteger(started)) continue;
+    for (let index = 0; index < started; index += 1) {
+      const item = sessionDoc(db, "agentrun.items", effectKey(key, `${mapPath}/items/${index}`)) as { effects?: unknown; maps?: unknown } | undefined;
+      if (!item) continue;
+      if (Array.isArray(item.effects)) for (const id of item.effects) if (typeof id === "string") into.push(id);
+      itemEffects(db, key, item.maps, into);
+    }
+  }
 }
 
 /** A Session document of the run's store `file`, read-only; undefined when the file or the document is absent. */
-export function durableDoc<T = Record<string, unknown>>(file: string, kind: string, key?: string): T | undefined {
-  return (withDurableFile(file, (db) => sessionDoc(db, kind, key)) ?? undefined) as T | undefined;
+export function durableDoc<T = Record<string, unknown>>(file: string, kind: string, key?: string, options: DurableReadOptions = {}): T | undefined {
+  return (withDurableFile(file, (db) => sessionDoc(db, kind, key), options) ?? undefined) as T | undefined;
+}
+
+/** The decision rows (`agentrun.decisions`) of the run's store `file`, in commit order, in whichever form the store holds: the single
+ *  document's `receipts` list, or the keyed documents (one row each, in the order of their keys). A reader that folds decisions from the
+ *  store uses this and not `durableDoc(file, "agentrun.decisions").receipts`, which is nothing in the keyed form. */
+export function durableDecisions(file: string): Array<Record<string, unknown>> {
+  return withDurableFile(file, (db) => {
+    const single = sessionDoc(db, "agentrun.decisions") as { receipts?: unknown } | undefined;
+    if (single) return Array.isArray(single.receipts) ? (single.receipts as Array<Record<string, unknown>>) : [];
+    const count = (sessionDoc(db, "agentrun.decisions.count") as { count?: unknown } | undefined)?.count;
+    const rows: Array<Record<string, unknown>> = [];
+    if (typeof count === "number") for (let place = 0; place < count; place += 1) { const row = sessionDoc(db, "agentrun.decisions", decisionKey(place)); if (row) rows.push(row as Record<string, unknown>); }
+    return rows;
+  }) ?? [];
 }
 
 /** The journal `key` holds in the run's store `file`, as the last commit left it; undefined when the file holds no
- *  such journal or none has bound it. */
-export function readJournal(file: string, key: string): JournalView | undefined {
+ *  such journal or none has bound it. `effects` are every effect the journal admitted, once each, in the order they were
+ *  admitted, in either layout: in the keyed one (`agentrun.frozen_run.v4`) the effects a map item owns, nested maps
+ *  included, are listed by that item's record, not the driver's, and are read from there. `state` is the driver's own
+ *  record: in the keyed layout what lies in each map item stays in the item's record. */
+export function readJournal(file: string, key: string, options: DurableReadOptions = {}): JournalView | undefined {
   return withDurableFile(file, (db): JournalView | undefined => {
     const doc = sessionDoc(db, "agentrun.driver", key) as DriverRecord | undefined;
     if (!doc || doc.binding === null) return undefined;
-    const effects = doc.effects.map((id) => {
+    // The driver's record lists the effects no map item owns; in the keyed layout each item's record lists its own. All of
+    // them, once each, in the order they were admitted: an effect's document is created by its admission, and a document's
+    // row is numbered when it is created (a later checkpoint folds its revisions, never its row).
+    const ids = [...doc.effects];
+    itemEffects(db, key, (doc.state as { maps?: unknown } | null)?.maps, ids);
+    const admitted = new Map<string, number>();
+    for (const id of new Set(ids)) admitted.set(id, sessionDocId(db, "agentrun.effects", effectKey(key, id)) ?? Number.MAX_SAFE_INTEGER);
+    // A stable sort: an id whose document is missing keeps its place in the listing, after every admitted one.
+    const effects = [...admitted.keys()].sort((a, b) => admitted.get(a)! - admitted.get(b)!).map((id) => {
       const e = sessionDoc(db, "agentrun.effects", effectKey(key, id)) as (Omit<RecoveryEffect, "id"> & { intent?: { tool: string; argsHash: string } }) | undefined;
       return { id, name: e?.name ?? "", argsHash: e?.argsHash ?? "", status: e?.status ?? "unknown", session: e?.session ?? null, result: e?.result ?? null, ...(e?.intent ? { intent: e.intent } : {}), ...(e?.args !== undefined ? { args: e.args } : {}), ...(Array.isArray((e as { calls?: unknown })?.calls) ? { calls: (e as { calls: unknown[] }).calls } : {}) } as RecoveryEffect;
     });
     return { binding: doc.binding, inputs: doc.inputs, generation: doc.generation, revision: doc.revision, state: doc.state, notes: doc.notes, effects };
-  }) ?? undefined;
+  }, options) ?? undefined;
 }
 
 /** Every committed route decision a frozen snapshot holds (each judge's answer, whole), by execution path. Empty for a

@@ -151,12 +151,11 @@ test('a cost that is null is unknown, never $0', () => {
 
 const live = (kind: string, t: number, data: Line['data'], gen = 1): Line => ({ channel: 'live', source: 'transport', kind, t, seq: t, gen, data });
 const boxAt = (id: string, environment: string, t: number) => live('box.created', t, { environment, provider: 'docker', box: id });
-const leaseAt = (id: string, environment: string, epoch: number, t: number) => live('lease', t, { epoch, holder: { environment, provider: 'docker', box: id } });
 const moveOf = (id: string, t: number, to: string, extra: { [key: string]: Json } = {}) => live('move', t, { id, to: { environment: 'x', provider: 'docker', box: to }, epoch: 2, head: 5, ...extra });
 const stepsOf = (names: string[], from: number) => names.map((step, index) => live('move.step', from + index, { move: 'move', step }));
 
 test('the lane cells that carry the class token are styled by their own selector only, never by a bare .token rule', () => {
-  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../viewer.css', import.meta.url), 'utf8');
   assert.match(html, /\.tcells \.cell\.token \{/);
   assert.doesNotMatch(html, /\.transport \.token \{/);
   assert.doesNotMatch(html, /\.transport > \.token \{/);

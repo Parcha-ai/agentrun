@@ -73,6 +73,11 @@ export type WorkflowHostParts =
   | { adapters: RecoveryAdapters; durableNodes?: boolean }
   | { deps: WorkflowDeps; interpret?: (workflow: Workflow, input: Record<string, unknown>, deps: WorkflowDeps) => ReturnType<typeof runWorkflow> };
 
+/** What starting and reading a run asks of its caller: a Harness, or a tool's own `api` inside its invocation, whose
+ *  commits create the run's task in the calling conversation. A caller with no `root` names the conversation in
+ *  `start`'s options; one with no `abortTask` cannot start a run with a cancel. */
+export type WorkflowCaller = Pick<Harness, "commit" | "snapshot" | "getTask" | "waitForTask"> & Partial<Pick<Harness, "root" | "resume" | "abortTask">>;
+
 /** A started run. `wait` resolves with the run's outcome once its task is terminal, and rejects with the storage's error
  *  when the Session failed at one. */
 export type WorkflowRun = {
@@ -176,8 +181,8 @@ const live = new Map<string, { driver: RecoveryDriver; ended: Promise<void> }>()
 /** The task definition, the extension that carries it, and the host's three operations on a run. */
 export function createWorkflowExtension(host: WorkflowTaskHost): {
   extension: Extension;
-  start(harness: Harness, request: WorkflowRequest, context: Context, options?: { conversationId?: number; background?: boolean; stop?: { action: "pause" | "cancel"; source?: string } }): Promise<WorkflowRun>;
-  read(harness: Harness, key: string, context: Context): Promise<{ taskId: TaskId<WorkflowResult>; status: string; outcome?: WorkflowOutcome } | undefined>;
+  start(harness: WorkflowCaller, request: WorkflowRequest, context: Context, options?: { conversationId?: number; background?: boolean; stop?: { action: "pause" | "cancel"; source?: string } }): Promise<WorkflowRun>;
+  read(harness: WorkflowCaller, key: string, context: Context): Promise<{ taskId: TaskId<WorkflowResult>; status: string; outcome?: WorkflowOutcome } | undefined>;
   stop(harness: Harness, key: string, action: "pause" | "cancel", context: Context, source?: string): Promise<WorkflowStop>;
 } {
   /** The run's driver over its journal, with the host's options. */
@@ -211,10 +216,19 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
           try { await runtime.commit(() => ({ status: "terminal", outcome }), context); }
           catch (error) { if (!runtime.signal.aborted) uncommittedOf(key, task.id).fail(cause ?? error); throw error; }
         };
+        /** The invocation ends when the host closes the Harness, and the task stays pending. */
+        const untilClosed = () => new Promise<void>((resolve) => { if (runtime.signal.aborted) resolve(); else runtime.signal.addEventListener("abort", () => resolve(), { once: true }); });
         let opened: Awaited<ReturnType<typeof open>>;
         try { opened = await open(task, runtime, context); }
         catch (error) {
           if (runtime.signal.aborted) throw error;
+          // A run a later build stored in a schema this build does not know is left for that build: the task stays
+          // pending, and this process's waiters get the refusal. Any other failure to open ends the run.
+          if (codeOf(error) === "RECOVERY_SCHEMA_NEWER") {
+            uncommittedOf(key, task.id).fail(error);
+            await untilClosed();
+            throw runtime.signal.reason;
+          }
           await commitEnd(failed(error), error);
           return;
         }
@@ -312,7 +326,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
     },
   });
 
-  const outcomeOf = async (harness: Harness, settled: TaskRecord<unknown, unknown, WorkflowResult> | SettledTask<WorkflowResult>, key: string, context: Context): Promise<WorkflowOutcome | undefined> => {
+  const outcomeOf = async (harness: WorkflowCaller, settled: TaskRecord<unknown, unknown, WorkflowResult> | SettledTask<WorkflowResult>, key: string, context: Context): Promise<WorkflowOutcome | undefined> => {
     if (settled.state.status !== "terminal") return undefined;
     const outcome = settled.state.outcome;
     if (outcome.status === "completed") return outcome.result;
@@ -323,7 +337,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
     const error = (outcome as { error?: { message?: string; detail?: { code?: string } } }).error;
     return { status: "refused", code: error?.detail?.code ?? String(outcome.status).toUpperCase(), message: error?.message ?? String((outcome as { reason?: unknown }).reason ?? outcome.status), ...(error?.detail ? { detail: error.detail } : {}) };
   };
-  const handle = (harness: Harness, key: string, taskId: TaskId<WorkflowResult>, started: WorkflowRun["started"]): WorkflowRun => ({
+  const handle = (harness: WorkflowCaller, key: string, taskId: TaskId<WorkflowResult>, started: WorkflowRun["started"]): WorkflowRun => ({
     key, taskId, started,
     wait: async (context) => {
       const failure = uncommittedOf(key, taskId);
@@ -362,7 +376,9 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
      *  step. So a pause given with a start that attaches to a run already running in this process is not taken now: it
      *  is recorded, and taken when the run's next invocation opens. `stop` pauses a run that is running here. */
     async start(harness, request, context, options = {}) {
-      const conversationId = options.conversationId ?? (await harness.root(context)).id;
+      if (options.stop?.action === "cancel" && !harness.abortTask) throw new Error("A start with a cancel needs a caller that can abort a task: the Harness");
+      const conversationId = options.conversationId ?? (harness.root ? (await harness.root(context)).id : undefined);
+      if (conversationId === undefined) throw new Error("A caller with no root conversation names the conversation the run belongs to: options.conversationId");
       const stop = options.stop ? { action: options.stop.action, source: options.stop.source ?? null } : null;
       const asked = json(request) as unknown as WorkflowRequest;
       const [taskId, started] = await harness.commit(async (tx) => {
@@ -385,8 +401,8 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
       // so the waiters it has and the invocation that may yet fail share it.
       const earlier = uncommittedId(request.key, taskId);
       if (uncommitted.get(earlier)?.failed) uncommitted.delete(earlier);
-      if (stop?.action === "cancel" && started !== "settled") await harness.abortTask(taskId as TaskId, context);
-      harness.resume();
+      if (stop?.action === "cancel" && started !== "settled") await harness.abortTask!(taskId as TaskId, context);
+      harness.resume?.();
       return handle(harness, request.key, taskId as TaskId<WorkflowResult>, started);
     },
     /** The run's task and, once it is terminal, its outcome; undefined when no start named the key. */

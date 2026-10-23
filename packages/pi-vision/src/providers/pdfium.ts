@@ -1,12 +1,13 @@
-// PDF pages rendered with nothing installed: PDFium compiled to WASM, in a worker thread with a time and heap cap and a
+// PDF pages rendered with nothing installed: PDFium compiled to WASM, in a child process with a time and heap cap and a
 // cap on the pixels of a page, encoded to PNG with Node's own zlib. The page is drawn at the size poppler's `pdftoppm`
 // would give it (its size in points times dpi over 72, rounded up), so the two agree to the pixel.
 import { PDF_RENDER_MAX_PIXELS, PDF_RENDER_TIMEOUT_MS, PDF_WORKER_MEMORY_MB, PdfProviderError, readPdfBytes, resolvePdfDependency, runPdfWorker } from "../core/pdf.js";
 import type { Provider, RenderedImage } from "../core/provider.js";
+import { messageLine } from "../core/primitives.js";
 
-/** The worker's script. PDFium's bitmap comes back as R, G, B, A bytes; the PNG is RGB with no filter. It takes its
+/** The engine's script. PDFium's bitmap comes back as R, G, B, A bytes; the PNG is RGB with no filter. It takes its
  *  built-in modules from the process, so it runs the same whether the host's eval is CommonJS or ESM. PDFium's WASM memory
- *  is outside the worker's heap limit, so growth past `memoryMb` is refused here; PDFium then aborts, and that abort is
+ *  is outside the heap limit, so growth past `memoryMb` is refused here; PDFium then aborts, and that abort is
  *  reported as the cap it hit. */
 const SCRIPT = `
 const { parentPort, workerData: d } = process.getBuiltinModule("node:worker_threads");
@@ -51,8 +52,10 @@ const chunk = (type, body) => {
 })().catch((e) => (refused ? fail("OverBudget", "the PDF engine needed more than " + d.memoryMb + " MB") : fail(e && e.name, String((e && e.message) || e))));
 `;
 
+/** The worker's time and heap caps and the cap on a page's pixels; the defaults hold when they are left out. */
 export type PdfiumOptions = { readonly timeoutMs?: number; readonly memoryMb?: number; readonly maxPixels?: number };
 
+/** PDF pages as PNG with nothing installed: PDFium compiled to WASM, in a worker thread with a time and heap cap, at the size poppler would give. */
 export function pdfiumProvider(options: PdfiumOptions = {}): Provider {
   const maxPixels = options.maxPixels ?? PDF_RENDER_MAX_PIXELS;
   return {
@@ -63,7 +66,7 @@ export function pdfiumProvider(options: PdfiumOptions = {}): Provider {
       try {
         return { available: true, version: (await resolvePdfDependency("@hyzyla/pdfium")).version };
       } catch (error) {
-        return { available: false, needs: "@hyzyla/pdfium", reason: String((error as Error)?.message ?? error).split("\n")[0]! };
+        return { available: false, needs: "@hyzyla/pdfium", reason: messageLine(error) };
       }
     },
     async render(source, request, call) {

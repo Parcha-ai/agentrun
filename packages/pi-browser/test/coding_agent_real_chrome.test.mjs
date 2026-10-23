@@ -22,7 +22,7 @@ function privateTmp(t) {
   const outer = process.env.TMPDIR;
   const dir = scratchSync(t, "chrome-scope-");
   process.env.TMPDIR = dir;
-  t.after(() => { if (outer === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = outer; });
+  t.after(() => { if (outer === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = outer; }, { timeout: 30_000 });
   return dir;
 }
 /** A Chrome of the same command-line shape as another test file's; it must be running and seen by the scan before the
@@ -30,7 +30,7 @@ function privateTmp(t) {
 async function startDecoy(t) {
   const profile = path.join(OUTER_TMP, `pi-browser-decoy-${process.pid}-${Date.now()}`, "profile");
   const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120000)", "--", `--user-data-dir=${profile}`, "--remote-debugging-port=1"], { stdio: "ignore" });
-  t.after(() => child.kill("SIGKILL"));
+  t.after(() => child.kill("SIGKILL"), { timeout: 30_000 });
   const seen = () => child.exitCode === null && processes().some((p) => p.pid === child.pid && p.args.includes(`--user-data-dir=${profile}`));
   await until(seen, 5_000).catch(() => { throw new Error("the decoy Chrome never appeared in the process scan, so this test would check nothing"); });
   assert.equal(child.exitCode, null, "the decoy is still running");
@@ -42,7 +42,7 @@ const until = async (check, ms = 10_000) => { for (const end = Date.now() + ms; 
 
 async function rig(t, flags = {}) {
   const site = await startSite();
-  t.after(() => site.close());
+  t.after(() => site.close(), { timeout: 30_000 });
   // A CI runner's Chrome cannot start its sandbox (the reason Stagehand adds --no-sandbox when `CI` is set); a
   // developer's own Chrome keeps it.
   const env = { PI_BROWSER_CHROME: CHROME, PATH: process.env.PATH ?? "", ...(process.env.CI ? { PI_BROWSER_NO_SANDBOX: "1" } : {}) };
@@ -152,7 +152,7 @@ function lateWriter(t, dir) {
     let n = 0, last = 0;
     for (;;) { const now = performance.now(); if (now - last < 25) continue; last = now; try { fs.writeFileSync(path.join(dir, "Default", "new-" + n++), "x"); } catch {} }
   `, dir], { stdio: ["ignore", "pipe", "ignore"] });
-  t.after(() => { try { writer.kill("SIGKILL"); } catch {} });
+  t.after(() => { try { writer.kill("SIGKILL"); } catch {} }, { timeout: 30_000 });
   return new Promise((resolve, reject) => { writer.stdout.once("data", () => resolve(writer)); writer.once("exit", () => reject(new Error("the writer ended without writing"))); });
 }
 

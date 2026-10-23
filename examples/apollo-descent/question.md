@@ -1,0 +1,1 @@
+Read NASA's own record of the Apollo 11 descent (the ten pages of the typed air-to-ground transcript that cover it, twelve photographs and eight windows of the descent film) and tell me what happened, minute by minute. Cite the page, photo or film moment behind every line.

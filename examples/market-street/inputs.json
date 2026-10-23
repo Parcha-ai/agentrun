@@ -1,0 +1,14 @@
+{
+ "about": "The files the question is about, fetched once on --live (or with --fetch-sources) and checked by size and SHA-256 before they are used.",
+ "items": [
+  {
+   "id": "market-street",
+   "title": "A trip down Market Street before the fire (Miles Brothers, filmed 14 April 1906; Library of Congress viewing copy, 9 minutes 39 seconds, silent): one unbroken ride down San Francisco's main street on the front of a cable car",
+   "url": "https://tile.loc.gov/storage-services/service/mbrs/ntscrm/00015143/00015143.mp4",
+   "source": "https://www.loc.gov/item/00694408/",
+   "license": "Public domain, as the source page states it: \"The contents of the Library of Congress Before and After the Great Earthquake and Fire: Early Films of San Francisco, 1897 to 1916 Collection are in the public domain and are free to use and reuse.\" A silent film (the file carries one audio track of digital silence). The project uses the film as the source page publishes it, relying on that statement.",
+   "bytes": 226536580,
+   "sha256": "13938707da4cf835a7f6215980b013a8370a13ec6447d292e0f4c498fe938c58"
+  }
+ ]
+}

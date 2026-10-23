@@ -9,6 +9,7 @@ import { popplerProvider } from "./poppler.js";
 import { sofficeProvider } from "./soffice.js";
 import { unpdfProvider } from "./unpdf.js";
 
+/** The package's own providers, in the order to try: a program in the environment before the zero-install reader of the same job. */
 export function packageProviders(): Provider[] {
   return [popplerProvider(), pdfiumProvider(), unpdfProvider(), officeJsProvider(), sofficeProvider(), ffmpegProvider()];
 }

@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import { imageHeader } from "../core/kinds.js";
 
+/** A directory under the temp root that a test writes its fixtures into and removes when it is done. */
 export type FixtureDir = {
   readonly path: string;
   /** Write `name` (a relative path, directories made as needed) and give its absolute path. */

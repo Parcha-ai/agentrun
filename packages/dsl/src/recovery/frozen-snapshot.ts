@@ -3,12 +3,76 @@
 // the path grammar, maps nodes onto these records and owns the store's lifecycle.
 import { createHash } from "node:crypto";
 import { RecoveryError } from "./errors.js";
+import { itemState as rebuildItemState, partialResults as readPartialResults, type PartialSlot, type Sha256, type StateDelta } from "./item-state.js";
 
-const failure = (code: string, message: string) => new RecoveryError(message, code);
+export const failure = (code: string, message: string) => new RecoveryError(message, code);
 
 export const FROZEN_SNAPSHOT_SCHEMA = "agentrun.frozen_run.v3";
+/** The keyed layout: what lies in a map item is kept in that item's record beside the state, and a state the driver
+ *  references is kept once by its digest, so no record rewritten at a commit grows with a map's items. */
+export const FROZEN_SNAPSHOT_SCHEMA_V4 = "agentrun.frozen_run.v4";
 
 type State = Record<string, unknown>;
+
+export { stateDelta, applyStateDelta, canonicalJson, type StateDelta, type Sha256, type PartialSlot } from "./item-state.js";
+
+/** A map the run started: how many items it has, how many item records were written (always the first ones: items
+ *  start in order, and an item has a record from its start), and the digest of its base. */
+export type MapEntry = { length: number; items: number; base: string };
+
+/** One map item's share of the driver's state (`agentrun.items`), keyed by the item's path. Every path in it lies in
+ *  this item and in no item nested in it. */
+export type ItemRecord = {
+  driver: string;
+  map: string;
+  index: number;
+  base: string;
+  /** The journal revision of the commit that wrote this value. */
+  revision: number;
+  /** `failed`: the item ended on its failure, which `outcome` holds; its map collects its items' failures. */
+  status: "running" | "committed" | "failed";
+  /** Present exactly when `status` is `failed`. */
+  outcome?: ItemOutcome;
+  frame: {
+    done: string[];
+    states: Record<string, StateDelta>;
+    chains: PathFrame["chains"];
+    loops: PathFrame["loops"];
+    routes: PathFrame["routes"];
+    inputs: PathFrame["inputs"];
+    steps: PathFrame["steps"];
+  };
+  effects: string[];
+  clocks: Record<string, number>;
+  files: Record<string, string>;
+  unknownResponses: Record<string, unknown>;
+  /** Maps started inside this item. */
+  maps: Record<string, MapEntry>;
+};
+
+/** The driver's own record in the keyed layout: the v3 snapshot without what lies in map items, its frame's states by
+ *  digest, and the maps the run started. */
+export type FrozenSnapshotV4 = Omit<FrozenSnapshot, "schema" | "pin"> & {
+  schema: typeof FROZEN_SNAPSHOT_SCHEMA_V4;
+  pin: Omit<PathFrame, "states" | "partial"> & { states: Record<string, string>; partial?: { path: string; as: string; results: string } };
+  maps: Record<string, MapEntry>;
+};
+
+/** A map item's state at `path`, rebuilt as the driver rebuilds it (`./item-state.ts`, which imports nothing): the
+ *  `agentrun.states` value its `base` names, with the item's `set` and `unset` for that path applied, checked against
+ *  that path's `sha256`. `item` is an `agentrun.items` value; `states` holds `agentrun.states` values by SHA-256. When
+ *  the base is missing, or a digest differs, it says why and never guesses. `sha256` defaults to Node's. */
+export function itemState(item: unknown, states: Readonly<Record<string, unknown>> | ReadonlyMap<string, unknown>, path: string, options: { sha256?: Sha256 } = {}): { state: State } | { unreadable: string } {
+  return rebuildItemState(item, states, path, { sha256: options.sha256 ?? ((text) => createHash("sha256").update(text).digest("hex")) });
+}
+
+/** A failed map's finished results from the driver state's `pin.partial` (`./item-state.ts`, which imports nothing): in
+ *  the keyed layout, the list of slots and each result read by digest and checked; a whole-state run's list as it is.
+ *  Each slot is null (the item never finished), `{ result }`, or `{ unreadable }`, never a guess. `sha256` defaults to
+ *  Node's. */
+export function partialResults(partial: unknown, states: Readonly<Record<string, unknown>> | ReadonlyMap<string, unknown>, options: { sha256?: Sha256 } = {}): { slots: PartialSlot[] } | { unreadable: string } {
+  return readPartialResults(partial, states, { sha256: options.sha256 ?? ((text) => createHash("sha256").update(text).digest("hex")) });
+}
 
 /** What a question's receipts need beyond its answer: the request's producer invocation, its size and its
  *  latency. */
@@ -42,7 +106,13 @@ export type PathFrame = {
   /** A map that ended on an item's failure: the finished items' results, keyed by the map's `as`, so
    *  the handoff carries the completed child work and a redispatch never loses it. */
   partial?: { path: string; as: string; results: unknown[] };
+  /** The map items that ended on their failure (`onItemFailure: "collect"`), by the item's path (`<map>/items/<i>`): an
+   *  item here is answered from its row and its body never runs again. Kept with the run, as committed paths are. */
+  failures?: Record<string, ItemOutcome>;
 };
+
+/** How a map item that ended on its failure ended: the failing node's label, the failure's code and its message. */
+export type ItemOutcome = { code: string; label: string; message: string };
 
 /** The recovery driver's durable state. It lives whole in the journal; each commit replaces it. No run
  *  clock: clocks exist only per effect. */
@@ -62,7 +132,10 @@ export type FrozenSnapshot = {
   escalation?: EscalationRow;
 };
 
-export type StepRecord = { label: string; attempt: number; attemptsAllowed: number; status: "running" | "closed" | "failed" | "submitted" };
+export type StepRecord = { label: string; attempt: number; attemptsAllowed: number; status: "running" | "closed" | "failed" | "submitted";
+  /** The failure that failed the step, when it was an item failure (`isItemFailure`) in an item of a map that collects
+   *  its items' failures: a later open refuses the step with it, so the item ends on the same failure in every process. */
+  failure?: { code: string; message: string } };
 
 export type EscalationRow = {
   kind: string; stage: string; summary: string;
@@ -87,12 +160,21 @@ export type FrozenShape = { resolves: (path: string) => boolean };
 export const emptyPathFrame = (): PathFrame => ({ input: null, done: [], states: {}, chains: {}, loops: {}, routes: {}, inputs: {}, steps: {} });
 
 const record = (value: unknown): boolean => Boolean(value) && typeof value === "object" && !Array.isArray(value);
-const SHA256 = /^[a-f0-9]{64}$/;
+export const SHA256 = /^[a-f0-9]{64}$/;
 
 type Fields = Record<string, unknown>;
 /** `value` as an object whose fields can be read, or null. */
 const fields = (value: unknown): Fields | null => record(value) ? value as Fields : null;
 const entriesOf = (value: unknown): Array<[string, unknown]> | null => { const object = fields(value); return object ? Object.entries(object) : null; };
+const isStepFailure = (value: unknown): boolean => {
+  const at = fields(value);
+  return Boolean(at && Object.keys(at).length === 2 && typeof at.code === "string" && typeof at.message === "string");
+};
+/** Whether a value is an item's committed failure: three strings, and nothing else. */
+export const isItemOutcome = (value: unknown): value is ItemOutcome => {
+  const at = fields(value);
+  return Boolean(at && Object.keys(at).length === 3 && typeof at.code === "string" && typeof at.label === "string" && typeof at.message === "string");
+};
 const nonNegativeInt = (value: unknown): boolean => Number.isSafeInteger(value) && (value as number) >= 0;
 
 /** Whether a saved frame is one the driver could have written for its document. */
@@ -105,7 +187,9 @@ function validFrame(value: unknown, resolves: (path: string) => boolean): boolea
   if (!(frame.input === null ? doneList.length === 0 : typeof frame.input === "string" && SHA256.test(frame.input))) return false;
   const [states, chains, loops, routes, inputs, steps] = [frame.states, frame.chains, frame.loops, frame.routes, frame.inputs, frame.steps].map(entriesOf);
   const partial = frame.partial === undefined ? undefined : fields(frame.partial);
+  const failures = frame.failures === undefined ? [] : entriesOf(frame.failures);
   return Boolean(states && states.every(([path, state]) => done.has(path) && record(state))
+    && failures && failures.every(([item, outcome]) => /\/items\/(?:0|[1-9]\d*)$/.test(item) && resolves(`${item}/body`) && isItemOutcome(outcome))
     && chains && chains.every(([, head]) => { const at = fields(head); return Boolean(at && nonNegativeInt(at.index) && typeof at.path === "string" && done.has(at.path)); })
     && loops && loops.every(([loop, count]) => resolves(loop) && nonNegativeInt(count))
     && routes && routes.every(([route, decision]) => {
@@ -119,7 +203,8 @@ function validFrame(value: unknown, resolves: (path: string) => boolean): boolea
       const at = fields(step);
       return Boolean(at && resolves(path) && typeof at.label === "string"
         && nonNegativeInt(at.attempt) && Number.isSafeInteger(at.attemptsAllowed) && (at.attemptsAllowed as number) >= 1
-        && ["running", "closed", "failed", "submitted"].includes(String(at.status)));
+        && ["running", "closed", "failed", "submitted"].includes(String(at.status))
+        && (at.failure === undefined || (at.status === "failed" && isStepFailure(at.failure))));
     })
     && (partial === undefined || (partial && typeof partial.path === "string" && resolves(partial.path) && typeof partial.as === "string" && Array.isArray(partial.results))));
 }
@@ -213,8 +298,9 @@ export function admitFrozenStep(steps: Record<string, StepRecord>, path: string,
 
 /** The current attempt ended without a submission: `closed` until a retry is admitted, or
  *  `failed` when the failure is final or no attempt remains. */
-export function closeFrozenStepAttempt(step: StepRecord, final: boolean): void {
+export function closeFrozenStepAttempt(step: StepRecord, final: boolean, failure?: StepRecord["failure"]): void {
   step.status = final || step.attempt + 1 >= step.attemptsAllowed ? "failed" : "closed";
+  if (step.status === "failed" && failure) step.failure = { code: failure.code, message: failure.message };
 }
 
 /** The run-wide stop the driver applies: the host's pause or cancel it was handed, or null when it keeps

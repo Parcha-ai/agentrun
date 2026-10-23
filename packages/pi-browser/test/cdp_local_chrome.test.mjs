@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
+import { readdirSync } from "node:fs";
 import { mkdir, readdir, readFile, readlink, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import http from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { setDownloadBehavior } from "../dist/providers/browserbase.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
+import { stopWatchingChromeStderr, watchedChromeStderr } from "../dist/providers/chrome-stderr.js";
 import { CHROME, commandLine, isRunning, LOCAL_TELEMETRY, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
-import { CHROME_SINGLETON, scratch } from "./fixtures/scratch.mjs";
+import { CHROME_SINGLETON, scratch, scratchShort } from "./fixtures/scratch.mjs";
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const pidOf = (ref) => Number(/^local:(\d+):/.exec(ref.id)[1]);
@@ -248,6 +251,94 @@ test("Chrome's sandbox is a knob, never keyed on CI: --no-sandbox only for sandb
   }
 });
 
+test("a Chrome that exits before its port opens puts the last lines of what it said in the failure, scrubbed; the sandbox hint comes when the sandbox is on and Chrome aborted or named the sandbox", async (t) => {
+  const root = await scratch(t, "cdp-said-");
+  const secret = ["sk", "ABCDEFGHIJKLMNOPQRSTUVWX"].join("-");
+  // Stand-in Chromes: each writes to stderr, then exits the way its name says.
+  const stand = async (name, body) => { const file = path.join(root, name); await writeFile(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 }); return file; };
+  const sandboxed = await stand("sandbox.sh", `echo '[1:1:ERROR:zygote_host_impl_linux.cc:130] No usable sandbox! If this is a Debian system, install the chromium-sandbox package.' >&2\nexit 1`);
+  const other = await stand("other.sh", `i=1; while [ $i -le 14 ]; do echo "gpu line $i" >&2; i=$((i+1)); done\necho 'key ${secret}' >&2\nexit 2`);
+  const silent = await stand("silent.sh", "exit 3");
+  // sandbox: true is explicit: the host's PI_BROWSER_NO_SANDBOX=1 (the documented container setting) must not turn the sandbox-on cases off.
+  const create = (executablePath, tag, chrome = {}) => cdpProvider({ chrome: { executablePath, profileRoot: path.join(root, "p"), sandbox: true, ...chrome } }).create(spec(tag), new AbortController().signal).then(() => null, (error) => error);
+
+  const named = await create(sandboxed, "said-sandbox");
+  assert.equal(named?.name, "BrowserFailureError", "a Chrome that exited 1 and named its sandbox is the typed failure");
+  assert.deepEqual([named.failure.code, named.failure.retryable, named.failure.effect], ["browser_unavailable", false, "none"]);
+  assert.match(named.failure.message, /\(1\)/);
+  assert.ok(named.failure.message.includes("No usable sandbox!"), "Chrome's own words are in the failure");
+  assert.ok(named.failure.message.includes("sandbox: false") && named.failure.message.includes("PI_BROWSER_NO_SANDBOX=1") && named.failure.message.includes("container"), "and so is how to turn the sandbox off");
+
+  const off = await create(sandboxed, "said-sandbox-off", { sandbox: false });
+  assert.ok(off && off.name !== "BrowserFailureError", "with the sandbox already off the sandbox hint is not given");
+  assert.ok(off.message.includes("No usable sandbox!") && !off.message.includes("PI_BROWSER_NO_SANDBOX"), "Chrome's words stay, the hint does not");
+
+  const plain = await create(other, "said-other");
+  assert.ok(plain && plain.name !== "BrowserFailureError", "another reason is not a sandbox failure");
+  assert.match(plain.message, /\(2\)/);
+  const lines = plain.message.split("\n").map((line) => line.trim());
+  assert.ok(lines.includes("gpu line 14") && lines.includes("gpu line 6") && !lines.includes("gpu line 5"), "the last ten lines of stderr, no more");
+  assert.ok(!plain.message.includes(secret) && plain.message.includes("[redacted]"), "a key of a common shape is redacted");
+  assert.ok(!plain.message.includes("sandbox"), "no sandbox hint when Chrome's words do not name the sandbox");
+
+  // A key that straddles the 300-character cut, and a key the 4096-byte window starts inside, are redacted whole lines first: the cut must not leave a prefix the shapes no longer match.
+  const google = ["AI", "za"].join("") + "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345678";
+  const longLine = `${"z".repeat(280)} ${google} tail`;
+  const first = `${"a".repeat(50)} ${secret} end`;
+  const windowStart = first.indexOf(secret) + 12;  // inside the key's body, after its "sk-" prefix
+  const pad = "p".repeat(4096 + windowStart - (first.length + 1) - 1);  // the file is 4096 + windowStart bytes, so the last 4096 begin there
+  await writeFile(path.join(root, "cut.txt"), `${longLine}\n`);
+  await writeFile(path.join(root, "window.txt"), `${first}\n${pad}\n`);
+  const cut = await stand("cut.sh", `cat "${path.join(root, "cut.txt")}" >&2\nexit 4`);
+  const window = await stand("window.sh", `cat "${path.join(root, "window.txt")}" >&2\nexit 5`);
+  // No newline anywhere in the window: one partial line, whose key lost its prefix, so nothing of it is shown.
+  await writeFile(path.join(root, "nonl.txt"), `${first}${"p".repeat(4096 + windowStart - first.length)}`);
+  const nonl = await stand("nonl.sh", `cat "${path.join(root, "nonl.txt")}" >&2\nexit 6`);
+  const nonlError = await create(nonl, "said-nonl");
+  assert.ok(!nonlError.message.includes(secret.slice(-12)) && !nonlError.message.includes("Chrome said"), "a window with no newline in it shows nothing, not a partial line");
+  const cutError = await create(cut, "said-cut");
+  assert.ok(cutError.message.includes("zzzz") && !cutError.message.includes(google.slice(4, 14)), "a Google key the 300-character cut would have split is redacted whole");
+  const windowError = await create(window, "said-window");
+  assert.ok(!windowError.message.includes(secret.slice(-12)), "a first line the byte window starts inside is dropped, so no suffix of its key shows");
+
+  const quiet = await create(silent, "said-silent");
+  assert.ok(quiet && quiet.name !== "BrowserFailureError" && /\(3\)/.test(quiet.message) && !quiet.message.includes("Chrome said"), "a Chrome that said nothing adds nothing");
+  const leftover = (await readdir(path.join(root, "p")).catch(() => [])).filter((name) => !name.endsWith(".downloads"));
+  assert.deepEqual(leftover.filter((name) => !name.startsWith(".")), [], "no profile is left behind by the failed starts");
+});
+
+test("a launch whose spawn throws closes the parent's copy of Chrome's stderr file and leaves no private directory: repeated failed creates leak neither", { skip: process.platform !== "linux" }, async (t) => {
+  const root = await scratch(t, "cdp-fd-");
+  const fake = path.join(root, "chrome.sh");
+  await writeFile(fake, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  // An argument with a null byte makes spawn throw at once, before any child exists.
+  const provider = cdpProvider({ chrome: { executablePath: fake, profileRoot: path.join(root, "p"), args: ["--bad\0arg"] } });
+  const signal = new AbortController().signal;
+  const fds = () => readdirSync("/proc/self/fd").length;
+  const privates = () => readdirSync(os.tmpdir()).filter((name) => name.startsWith("pib-")).length;
+  await provider.create(spec("fd-warm"), signal).catch(() => undefined);
+  const [fdsBefore, privatesBefore] = [fds(), privates()];
+  for (let i = 0; i < 5; i++) assert.ok(await provider.create(spec(`fd-${i}`), signal).then(() => null, (error) => error), "a spawn that throws rejects the create");
+  assert.equal(fds(), fdsBefore, "no descriptor is left open by the failed creates");
+  assert.equal(privates(), privatesBefore, "no private directory is left by the failed creates");
+});
+
+test("a host that recovers a running Chrome bounds its stderr file too: attach on a lease this host did not start watches the file again", { skip: NO_CHROME, timeout: 60_000 }, async (t) => {
+  const root = await scratch(t, "cdp-recover-watch-");
+  const owner = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
+  const ref = await owner.create(spec("recover-watch-1"), new AbortController().signal);
+  try {
+    assert.ok(watchedChromeStderr() >= 1, "the launching host watches the file once the port is open");
+    stopWatchingChromeStderr();
+    assert.equal(watchedChromeStderr(), 0);
+    const restarted = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
+    await restarted.attach(ref);
+    assert.equal(watchedChromeStderr(), 1, "the restarted host watches it");
+    await restarted.attach(ref);
+    assert.equal(watchedChromeStderr(), 1, "a second attach does not add a second timer");
+  } finally { stopWatchingChromeStderr(); await owner.release(ref); await rm(root, { recursive: true, force: true }); }
+});
+
 test("a real Chrome starts with sandbox: false", { skip: NO_CHROME, timeout: 60_000 }, async (t) => {
   const root = await scratch(t, "cdp-nosandbox-");
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, sandbox: false } });
@@ -260,15 +351,14 @@ test("a real Chrome starts with sandbox: false", { skip: NO_CHROME, timeout: 60_
 
 test("Chrome's singleton socket directory, and everything else it writes to its TMPDIR, is in a private directory of the lease's, which release removes: the host's TMPDIR is as it was", { skip: NO_CHROME, timeout: 60_000 }, async (t) => {
   const root = await scratch(t, "cdp-singleton-");
-  const tmp = path.join(root, "tmp");
-  await mkdir(tmp);
+  const tmp = await scratchShort(t, "single-tmp-");
   const outer = process.env.TMPDIR;
   process.env.TMPDIR = tmp;
-  t.after(() => { process.env.TMPDIR = outer; });
+  t.after(() => { process.env.TMPDIR = outer; }, { timeout: 30_000 });
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: path.join(root, "profiles") } });
   let ref;
   try { ref = await provider.create(spec("singleton-1"), new AbortController().signal); } catch (error) { if (skipIncapable(t, error)) return; throw error; }
-  t.after(() => provider.release(ref).catch(() => undefined));
+  t.after(() => provider.release(ref).catch(() => undefined), { timeout: 30_000 });
   process.env.TMPDIR = outer;
   const made = await readdir(tmp);
   // The host's TMPDIR holds the lease's private directory and nothing else: Chrome was given that directory as its TMPDIR, so what it makes goes in it.

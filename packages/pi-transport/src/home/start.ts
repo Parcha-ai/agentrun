@@ -4,10 +4,12 @@ import { posix } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
-import type { Box } from "../box/box.ts";
+import type { Box, BoxProcess } from "../box/box.ts";
 import { finish } from "../box/files.ts";
+import { type Crossing, type CrossingCounter, crossingCounter } from "./crossing.ts";
 import { connectHome, type HomeHandle } from "./host.ts";
 import { processLink } from "./link.ts";
+import { type ModelServer, serveModels } from "./models.ts";
 import { MoveError, type Place, type StartRunner } from "./move.ts";
 import type { RecordSink } from "./records.ts";
 
@@ -29,6 +31,17 @@ export type BoxRunnerOptions = {
 	readonly onErrors?: (text: string) => void;
 	/** Where the session's record stream goes: the same sink for every runner of the session, wherever it runs. */
 	readonly records?: RecordSink;
+	/** Announced when a tool of a runner this starts begins (`transport.tool.started`): see `ConnectOptions.crossing`. */
+	readonly crossing?: Crossing;
+	/** The place's counter, shared with its `pullCheckpoint`s, so that `n` counts across restarts and points of one session. */
+	readonly crossingCount?: CrossingCounter;
+	/** Handed each runner's process as it starts, before the host holds it: for its exit (`wait()`). Read no stream of it. */
+	readonly onProcess?: (process: BoxProcess) => void;
+	/**
+	 * The host's model server, shared by every runner this starts so that paid answers survive a restore. Default: one made
+	 * from `models`. Pass your own to call `covered(head)` on it (`pullCheckpoint({ answers })` does) and to read `paid`.
+	 */
+	readonly server?: ModelServer;
 };
 
 /** The output of one short program in a box, or why it did not run. */
@@ -77,6 +90,11 @@ async function checkNode(box: Box, context: Context): Promise<Result<string, Mov
  * directory as `runner-<sha256>.mjs`, uploaded only when the box does not hold that file yet; Node is checked first.
  */
 export function boxRunner(options: BoxRunnerOptions): StartRunner {
+	// One server for every runner this starts: a runner that comes back (a restore, a restart) asks again for an answer the
+	// host already paid for, and gets the kept one. `covered` on it lets the answers go once a checkpoint covers them.
+	const server = options.server ?? serveModels(options.models);
+	// One count for every runner this starts: a restarted runner goes on counting.
+	const counter = options.crossingCount ?? crossingCounter();
 	let file: Promise<{ readonly bytes: Uint8Array; readonly sha256: string }> | undefined;
 	return async (place: Place, epoch: number, context: Context): Promise<Result<HomeHandle, MoveError>> => {
 		const { box } = place;
@@ -129,6 +147,7 @@ export function boxRunner(options: BoxRunnerOptions): StartRunner {
 		if (!started.ok)
 			return err(new MoveError("prepare", `could not start the runner in ${box.id}: ${started.error.message}`));
 		const process = started.value;
+		options.onProcess?.(process);
 		void (async () => {
 			const decoder = new TextDecoder();
 			for await (const chunk of process.stderr) options.onErrors?.(decoder.decode(chunk, { stream: true }));
@@ -136,8 +155,16 @@ export function boxRunner(options: BoxRunnerOptions): StartRunner {
 		return ok(
 			connectHome(processLink(process), {
 				models: options.models,
+				server,
 				epoch,
 				...(options.records === undefined ? {} : { records: options.records }),
+				...(options.crossing === undefined
+					? {}
+					: {
+							crossing: options.crossing,
+							crossingFor: { session: options.session, box: place.box.id },
+							crossingCount: counter,
+						}),
 			}),
 		);
 	};

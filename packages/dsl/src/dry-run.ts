@@ -3,9 +3,11 @@ import { runWorkflow, validateWorkflow, WorkflowInvalidError, WorkflowInputInval
 import { resolveSchemaForWorkflow } from "./schema-references.js";
 import { synthesizeAnswers } from "./system-one.js";
 
+/** `ok` keeps its meaning: false only when a check failed. `status` says whether every check ran: `passed`, `not_run`
+ *  (a check stood down; `skipped` says which and why, so this is not proof the graph was exercised) or `failed`. */
 export type DryRunResult =
-  | { ok: true; skipped?: string[] }
-  | { ok: false; problems: string[]; stage?: string };
+  | { ok: true; status: "passed" | "not_run"; skipped?: string[] }
+  | { ok: false; status: "failed"; problems: string[]; stage?: string };
 
 export function synthesizeInstance(schema: unknown, definitions: Record<string, unknown> = {}, depth = 0): unknown {
   if (depth > 12 || !schema || typeof schema !== "object") return null;
@@ -119,11 +121,18 @@ export type DryRunOptions = {
   /** The host's executor for `code` nodes (WorkflowDeps.runCode). Present, the dry run validates
    *  with executeCode:false and hands every code node to it, so no code body runs in this process. */
   runCode?: WorkflowDeps["runCode"];
+  /** Ends the dry run: it stops at its next step, as not run. */
+  signal?: AbortSignal;
+  /** The most synthetic steps (an agent's or a judge's answer, an effect, a code node the host runs) before the dry run
+   *  stops, as not run: synthetic answers can keep a loop going to its bound, and a map over a long list. 10,000 by
+   *  default. */
+  maxSteps?: number;
 };
+
 
 export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {}): Promise<DryRunResult> {
   const valid = validateWorkflow(workflow, { ...(opts.input === undefined ? {} : { input: opts.input }), ...(opts.runCode ? { executeCode: false } : {}) });
-  if (!valid.ok) return { ok: false, problems: [new WorkflowInvalidError(String(workflow?.name), valid.errors).message] };
+  if (!valid.ok) return { ok: false, status: "failed", problems: [new WorkflowInvalidError(String(workflow?.name), valid.errors, valid.issues).message] };
   const skipped: string[] = [];
   const scanSchemas = (plan: Workflow): void => {
     for (const [id, schema] of Object.entries(plan.schemas || {})) unsupportedConstructs(schema, id, skipped);
@@ -137,51 +146,69 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
     visit(plan.root);
   };
   scanSchemas(workflow);
-  if (skipped.length) return { ok: true, skipped };
+  if (skipped.length) return { ok: true, status: "not_run", skipped };
 
   let input: Record<string, unknown> = opts.input ?? {};
   if (opts.input === undefined && workflow.input) {
     const schema = resolveSchemaForWorkflow(workflow, workflow.schemas[workflow.input.schemaId]);
     const generated = synthesizeInstance(schema, (schema.definitions as Record<string, unknown> | undefined) ?? workflow.schemas);
     if (!generated || typeof generated !== "object" || Array.isArray(generated) || !Compile(schema as never).Check(generated)) {
-      return { ok: true, skipped: ["Could not synthesize a valid input object. Supply input explicitly to dryRunWorkflow or the dry-run CLI."] };
+      return { ok: true, status: "not_run", skipped: ["Could not synthesize a valid input object. Supply input explicitly to dryRunWorkflow or the dry-run CLI."] };
     }
     input = generated as Record<string, unknown>;
   }
   if (opts.probeContext && !Object.prototype.hasOwnProperty.call(input, "context")) {
     input = { ...input, context: {
-      references: opts.probeContext?.references ?? {},
-      references_parsed: opts.probeContext?.references_parsed ?? {},
+      references: opts.probeContext.references ?? {},
+      references_parsed: opts.probeContext.references_parsed ?? {},
     } };
   }
   let currentLabel = "";
+  // Every synthetic step counts, and every 64th yields to the event loop, so the host can take a stop meanwhile.
+  const maxSteps = opts.maxSteps ?? 10_000;
+  let steps = 0;
+  // Why the dry run stopped early, kept here: the interpreter may wrap what an adapter throws.
+  let stopped: string | undefined;
+  const stop = (reason: string) => { stopped ??= reason; throw new Error(stopped); };
+  const step = async () => {
+    if (opts.signal?.aborted) stop("The dry run was stopped before it finished.");
+    steps += 1;
+    if (steps > maxSteps) stop(`The dry run stopped after ${maxSteps} synthetic steps: on synthetic values the workflow's loops or maps go on further. Supply input, or lower a loop's maxIters.`);
+    if (steps % 64 === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (opts.signal?.aborted) stop("The dry run was stopped before it finished.");
+    }
+  };
+  const runCode = opts.runCode;
   try {
     const result = await runWorkflow(workflow, input, {
       sop: opts.sop,
-      ...(opts.runCode ? { runCode: opts.runCode } : {}),
+      ...(runCode ? { runCode: async (...args: Parameters<typeof runCode>) => { await step(); return runCode(...args); } } : {}),
       onEvent: (event) => { if (typeof event.label === "string") currentLabel = event.label; },
       runNode: async ({ schema, review }) => {
+        await step();
         const candidate = synthesizeInstance(schema, (schema.definitions as Record<string, unknown> | undefined) ?? workflow.schemas);
         if (review) await review(candidate);
         return candidate;
       },
-      runJudge: async ({ questions }) => ({ answers: synthesizeAnswers(questions), model: "synthetic", usage: null, cost_usd: null, request_sha256: "" }),
+      runJudge: async ({ questions }) => { await step(); return { answers: synthesizeAnswers(questions), model: "synthetic", usage: null, cost_usd: null, request_sha256: "" }; },
       syntheticEffects: true,
-      runEffect: async ({ node, schema }) => node.via === "shell"
+      runEffect: async ({ node, schema }) => { await step(); return node.via === "shell"
         ? { code: 0, stdout: "{}", stderr: "", truncated: false }
-        : synthesizeInstance(schema ?? (workflow.schemas || {})[node.out as string] as Record<string, unknown>, (schema?.definitions as Record<string, unknown> | undefined) ?? workflow.schemas ?? {}),
+        : synthesizeInstance(schema ?? (workflow.schemas || {})[node.out as string] as Record<string, unknown>, (schema?.definitions as Record<string, unknown> | undefined) ?? workflow.schemas ?? {}); },
     });
     if (result.status === "escalated") {
       // Synthetic values tripping an escalate predicate proves nothing about real cases.
-      return { ok: true, skipped: [`escalated:${result.escalation.kind}@${result.escalation.stage} on synthetic values`] };
+      return { ok: true, status: "not_run", skipped: [`escalated:${result.escalation.kind}@${result.escalation.stage} on synthetic values`] };
     }
-    return { ok: true };
+    return { ok: true, status: "passed" };
   } catch (error) {
+    if (stopped) return { ok: true, status: "not_run", skipped: [stopped] };
     if (error instanceof WorkflowOutputInvalidError) {
-      return { ok: false, problems: error.problems, stage: error.stage };
+      return { ok: false, status: "failed", problems: error.problems, stage: error.stage };
     }
-    if (error instanceof WorkflowInputInvalidError) return { ok: false, problems: [error.message] };
+    if (error instanceof WorkflowInputInvalidError) return { ok: false, status: "failed", problems: [error.message] };
     const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, problems: [`deterministic path threw over schema-conforming inputs${currentLabel ? ` (at "${currentLabel}")` : ""}: ${message.slice(0, 1200)}`], stage: currentLabel || undefined };
+    return { ok: false, status: "failed", problems: [`deterministic path threw over schema-conforming inputs${currentLabel ? ` (at "${currentLabel}")` : ""}: ${message.slice(0, 1200)}`], stage: currentLabel || undefined };
   }
 }

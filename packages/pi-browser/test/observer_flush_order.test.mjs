@@ -30,11 +30,11 @@ test("flush returns only once a request the page has just started is in the jour
   const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "effects-"));
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, args: [LOOPBACK] } });
   let ref = null;
-  t.after(async () => { if (ref) await provider.release(ref); await server.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { if (ref) await provider.release(ref); await server.close(); await rm(root, { recursive: true, force: true }); }, { timeout: 30_000 });
   ref = await provider.create(spec("flush-order"), new AbortController().signal);
   const target = await provider.attach(ref);
   const driver = await cdpDriver(server.base)(target);
-  t.after(() => driver.close());
+  t.after(() => driver.close(), { timeout: 30_000 });
 
   const misses = [];
   for (const mode of ["journal", "deny"]) {

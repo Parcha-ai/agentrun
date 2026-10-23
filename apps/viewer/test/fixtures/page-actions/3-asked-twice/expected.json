@@ -1,0 +1,8 @@
+{
+  "about": "no kill: the identical submit is dispatched twice in gen 1, the first finished",
+  "expected": {
+    "repeated": 0,
+    "askedTwice": 1,
+    "possible": 0
+  }
+}

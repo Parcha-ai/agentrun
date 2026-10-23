@@ -1,0 +1,102 @@
+[
+  {
+    "driver": "graph-fixture",
+    "map": "/root/steps/0",
+    "index": 0,
+    "base": "5a8962bce76d21ad55ca04896aaa6aa0efca355c2e730a913108cdea40dd5e95",
+    "revision": 9,
+    "status": "committed",
+    "frame": {
+      "done": [
+        "/root/steps/0/items/0/body/steps/0/workflow/root/steps/0",
+        "/root/steps/0/items/0/body/steps/0/workflow/root/steps/1",
+        "/root/steps/0/items/0/body/steps/0",
+        "/root/steps/0/items/0/body/steps/1"
+      ],
+      "states": {
+        "/root/steps/0/items/0/body/steps/1": {
+          "set": {
+            "item": {
+              "id": "i0"
+            },
+            "item_index": 0,
+            "sub": {
+              "ok": true
+            },
+            "done": true
+          },
+          "unset": [],
+          "sha256": "5946e44ce0829676b5de7999383824f82145fbdfbdd6c1f931bcbc68660e37bc"
+        }
+      },
+      "chains": {
+        "/root/steps/0/items/0/body": {
+          "index": 1,
+          "path": "/root/steps/0/items/0/body/steps/1"
+        }
+      },
+      "loops": {},
+      "routes": {},
+      "inputs": {},
+      "steps": {}
+    },
+    "effects": [
+      "step:/root/steps/0/items/0/body/steps/0/workflow/root/steps/0#call:0"
+    ],
+    "clocks": {
+      "attempt:step:/root/steps/0/items/0/body/steps/0/workflow/root/steps/0#call:0": 1792000000000
+    },
+    "files": {},
+    "unknownResponses": {},
+    "maps": {}
+  },
+  {
+    "driver": "graph-fixture",
+    "map": "/root/steps/0",
+    "index": 1,
+    "base": "5a8962bce76d21ad55ca04896aaa6aa0efca355c2e730a913108cdea40dd5e95",
+    "revision": 15,
+    "status": "running",
+    "frame": {
+      "done": [
+        "/root/steps/0/items/1/body/steps/0/workflow/root/steps/0",
+        "/root/steps/0/items/1/body/steps/0/workflow/root/steps/1",
+        "/root/steps/0/items/1/body/steps/0"
+      ],
+      "states": {
+        "/root/steps/0/items/1/body/steps/0": {
+          "set": {
+            "item": {
+              "id": "i1"
+            },
+            "item_index": 1,
+            "sub": {
+              "ok": true
+            }
+          },
+          "unset": [],
+          "sha256": "5ba4020bf7efac304517eb8b62fcdf34faa2c3ba78111f1afea13c8c07c5042d"
+        }
+      },
+      "chains": {
+        "/root/steps/0/items/1/body": {
+          "index": 0,
+          "path": "/root/steps/0/items/1/body/steps/0"
+        }
+      },
+      "loops": {},
+      "routes": {},
+      "inputs": {},
+      "steps": {}
+    },
+    "effects": [
+      "step:/root/steps/0/items/1/body/steps/0/workflow/root/steps/0#call:0"
+    ],
+    "clocks": {
+      "attempt:step:/root/steps/0/items/1/body/steps/0/workflow/root/steps/0#call:0": 1792000000000
+    },
+    "files": {},
+    "unknownResponses": {},
+    "maps": {}
+  }
+]

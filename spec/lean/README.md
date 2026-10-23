@@ -73,8 +73,11 @@ failed commit between any two actions. It proves, for every number of steps and 
 journal before it goes out, that no effect goes out twice, that a completed effect went out exactly once and is
 never sent again, that an effect this process did not admit is never sent, and that the driver never moves past an
 effect it did not complete; a witness shows a resume does meet a completed effect, so those hold over the step that
-answers it. `AgentRunRecovery/Check.lean` audits its axioms and lists its theorems (six of the names it lists are
-the fields of the invariant `Inv`, which Lean counts as theorems). The TLA+ model
+answers it. With the host's cancel, it proves that a stop the host let go of is on the journal or the host heard
+that it is not, that a run with a stop admits and settles nothing, and that a cancelled run never resumes; a witness
+shows a refused stop commit is reached and heard. `AgentRunRecovery/Check.lean` audits its axioms and lists its
+theorems (ten of the names it lists are the fields of the invariants `Inv` and `StopInv`, which Lean counts as
+theorems). The TLA+ model
 `spec/receipts/Receipts.tla` states the same machine, and TLC checks it at small bounds with mutants
 ([`spec/receipts/README.md`](../receipts/README.md)). `lake build` builds and checks both Lean models.
 

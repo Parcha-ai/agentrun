@@ -8,7 +8,9 @@ import { firstLine } from "./misses.js";
 import type { ImageProcessor } from "./image.js";
 import type { Kind } from "./kinds.js";
 
+/** What a provider can do. */
 export const CAPABILITIES = Object.freeze(["text", "positions", "render", "office", "cells", "frames", "clip", "fit", "ocr"] as const);
+/** One of `CAPABILITIES`. */
 export type Capability = (typeof CAPABILITIES)[number];
 
 /** The method that serves each capability. `positions` and `ocr` have none in this release, so no provider may declare
@@ -38,6 +40,8 @@ export type RenderedImage = { readonly data: Uint8Array; readonly mimeType: stri
  *  had a stored result. */
 export type Cell = { readonly ref: string; readonly value: string | number | boolean | null; readonly formula?: string; readonly cached?: boolean };
 
+/** Something that reads or makes media for a kind of source. It names itself, says which capabilities and kinds it serves,
+ *  detects whether it can run in an environment, and has the method of each capability it declares. */
 export type Provider = {
   readonly name: string;
   readonly capabilities: readonly Capability[];

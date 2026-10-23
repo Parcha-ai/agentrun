@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { defineExtension, type Extension, GenerationTask, hook } from "@earendil-works/pi-durable";
+import { canonicalJson } from "../canonical.ts";
 
 /** The name of the extension that tells the model proxy which generation asks. */
 export const KEYS_EXTENSION = "pi-transport.keys";
@@ -12,18 +13,6 @@ export type KeyedRequest = {
 	readonly options: Readonly<Record<string, unknown>>;
 };
 
-/** JSON with every object's keys in order: the same value is the same text. */
-function canonical(value: unknown): string {
-	if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-	if (value !== null && typeof value === "object") {
-		const entries = Object.entries(value)
-			.filter(([, item]) => item !== undefined)
-			.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
-		return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`;
-	}
-	return JSON.stringify(value) ?? "null";
-}
-
 /**
  * The key a paid answer is kept under: `sha256` of the session, the `pi.generation` task that asks, the model and the
  * request (its messages, the system message with the instructions and the tools among them, and its options). The
@@ -31,7 +20,7 @@ function canonical(value: unknown): string {
  * answered from the kept answer; a deliberate re-ask is a new generation, a new key, and is paid.
  */
 export function requestKey(session: string, task: string, request: KeyedRequest): string {
-	const body = canonical({
+	const body = canonicalJson({
 		v: 1,
 		session,
 		task,

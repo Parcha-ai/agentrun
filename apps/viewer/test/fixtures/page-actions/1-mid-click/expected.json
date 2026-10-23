@@ -1,0 +1,8 @@
+{
+  "about": "the submit journaled in gen 1 reached the page (finished), the kill cut it before pi saved its answer; in gen 2 the identical submit is refused (effect_unknown, no entry), the read looks and settles",
+  "expected": {
+    "repeated": 0,
+    "askedTwice": 0,
+    "possible": 0
+  }
+}

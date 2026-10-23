@@ -9,7 +9,7 @@
 // pi-mcp under the coding agent) at it too, so the root holds one copy of each family package at that version and every
 // leg workspace loads it, as a host's install of these packages does (other workspaces keep their own copies, nested).
 // It fails unless every family package a leg workspace declares, and the chord and pi-ai its pi-durable loads, is that
-// one copy at that version, then builds the workspace and runs each leg workspace's type-check and tests with
+// one copy at that version, then builds the leg's workspaces and those they use and runs each leg workspace's type-check and tests with
 // PI_EXPECT_VERSION set. A leg workspace that depends on another pi workspace runs only with that one in the leg: their
 // tests load both in one process.
 import { spawnSync } from 'node:child_process';
@@ -76,6 +76,21 @@ export function legOf(workspaces, version, only) {
     if (needs.length) refused.push({ name: w.name, needs });
   }
   return { version, leg: leg.map((w) => w.name), out, refused, pi: pi.map((w) => w.name) };
+}
+
+/** The workspaces a leg builds, in workspace order: the leg's and every workspace they use. A workspace outside the leg
+ *  that uses one in it is not built: it would load the leg's pi family through that one and its own copies beside it. */
+export function buildOf(workspaces, leg) {
+  const byName = new Map(workspaces.map((w) => [w.name, w]));
+  const used = new Set();
+  const add = (name) => {
+    if (used.has(name) || !byName.has(name)) return;
+    used.add(name);
+    const { manifest } = byName.get(name);
+    for (const dependency of Object.keys({ ...manifest.dependencies, ...manifest.devDependencies, ...manifest.peerDependencies })) add(dependency);
+  };
+  for (const name of leg) add(name);
+  return workspaces.filter((w) => used.has(w.name)).map((w) => w.name);
 }
 
 /** The workspaces of the repository at `root`: each `dir/*` pattern of its manifest, one level deep. */
@@ -218,7 +233,8 @@ function main() {
   for (const { name, paths } of extraCopies(report.resolved)) { console.log(`pi ${args.pi}: FAILED: the leg loads ${paths.length} copies of ${name}: ${paths.join(', ')}`); failed = true; }
   if (failed) { write(); process.exit(1); }
   const env = { ...process.env, PI_EXPECT_VERSION: args.pi };
-  const build = run('npm', ['run', 'build'], { cwd: args.root, env });
+  report.built = buildOf(workspaces, plan.leg);
+  const build = run('npm', ['run', 'build', '--if-present', ...report.built.flatMap((name) => ['-w', name])], { cwd: args.root, env });
   report.steps.push({ step: 'build', rc: build });
   if (build !== 0) { write(); process.exit(1); }
   for (const workspace of leg) {

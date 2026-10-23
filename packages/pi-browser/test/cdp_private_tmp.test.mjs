@@ -18,7 +18,7 @@ async function hostTmp(t) {
   const dir = await scratch(t, "host-tmp-");
   const outer = process.env.TMPDIR;
   process.env.TMPDIR = dir;
-  t.after(() => { if (outer === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = outer; });
+  t.after(() => { if (outer === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = outer; }, { timeout: 30_000 });
   return dir;
 }
 const provider = (root, extra = {}) => cdpProvider({ chrome: { executablePath: FAKE, profileRoot: root, ...extra } });
@@ -43,7 +43,7 @@ test("the host's environment reaches Chrome as before: only TMPDIR changes", asy
   const root = await scratch(t, "cdp-private-env-");
   await hostTmp(t);
   process.env.PI_PRIVATE_TMP_TEST = "kept";
-  t.after(() => { delete process.env.PI_PRIVATE_TMP_TEST; });
+  t.after(() => { delete process.env.PI_PRIVATE_TMP_TEST; }, { timeout: 30_000 });
   const p = provider(root);
   const ref = await p.create(spec("cdp-tmp-2"), signal);
   const env = seen(root, "cdp-tmp-2").env;
@@ -71,7 +71,7 @@ test("a private directory that stays unremovable is reported by name with the pr
   const tmp = seen(root, "cdp-tmp-4").tmpdir;
   const fetcher = path.join(tmp, readdirSync(tmp).find((n) => n.includes("url_fetcher")));
   chmodSync(fetcher, 0o500);
-  t.after(() => { try { chmodSync(fetcher, 0o700); } catch {} });
+  t.after(() => { try { chmodSync(fetcher, 0o700); } catch {} }, { timeout: 30_000 });
   const failure = await p.release(ref).then(() => null, (error) => error);
   assert.ok(failure instanceof ProfileNotRemovedError, String(failure));
   assert.ok(failure.dirs.includes(tmp) || failure.dirs.some((d) => d.startsWith(tmp)), `the private directory is named: ${failure.dirs}`);
@@ -136,7 +136,7 @@ test("a Chrome that exits before it opens its port leaves nothing in the host's 
   const root = await scratch(t, "cdp-private-exit-");
   const host = await hostTmp(t);
   process.env.FAKE_CHROME_EXIT = "3";
-  t.after(() => { delete process.env.FAKE_CHROME_EXIT; });
+  t.after(() => { delete process.env.FAKE_CHROME_EXIT; }, { timeout: 30_000 });
   await assert.rejects(provider(root).create(spec("cdp-tmp-7"), signal), /exited before it opened its debugging port/);
   assert.deepEqual(readdirSync(host), []);
 });
@@ -152,7 +152,7 @@ test("a Chrome still writing into its private directory when it is killed: the r
   const root = await scratch(t, "cdp-private-writer-");
   const host = await hostTmp(t);
   process.env.FAKE_CHROME_WRITER = "1";
-  t.after(() => { delete process.env.FAKE_CHROME_WRITER; });
+  t.after(() => { delete process.env.FAKE_CHROME_WRITER; }, { timeout: 30_000 });
   const p = provider(root);
   const ref = await p.create(spec("cdp-tmp-9"), signal);
   const tmp = seen(root, "cdp-tmp-9").tmpdir;

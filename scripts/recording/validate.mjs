@@ -5,35 +5,20 @@
 //
 // `node scripts/recording/validate.mjs <recording-dir>`
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { BLOB_EXTENSIONS, PAGE_EXTENSIONS, SHEET_EXTENSIONS, TEXT_FILE, credentialIn, credentialInFile, credentialInValue } from '../../packages/harness/src/scan.ts';
+import { artifactProblems, readFile, readsAs } from '../../packages/harness/src/artifact.ts';
 
 export const FORMAT = 'agentrun.recording/1';
 export const SOURCES = ['workflow', 'pi', 'browser', 'vision', 'transport', 'host'];
 const CHANNELS = ['durable', 'live'];
 const SHA256 = /^[0-9a-f]{64}$/;
 
-// The credential shapes the package check and the source export refuse (scripts/export-source.mjs), with the machine paths.
-const FORBIDDEN = [
-  ['machine path', /\/(?:home|Users)\/[A-Za-z0-9._-]+\//],
-  ['private key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
-  ['github token', /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b/],
-  ['provider secret', /\bsk-(?:proj-|ant-api\d+-)?[A-Za-z0-9_-]{30,}\b/],
-  ['aws access key', /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/],
-  ['credential url', /https?:\/\/[^\s/:]+:[^\s/@]+@/],
-  ['bearer secret', /\bBearer\s+[A-Za-z0-9._-]{24,}/],
-  ['literal credential', /(?:api[_-]?key|password|access[_-]?token|auth[_-]?token|client[_-]?secret)['"]?\s*[=:]\s*['"][^'"\n]{8,}['"]/i],
-];
-export const credentialIn = text => FORBIDDEN.find(([, pattern]) => pattern.test(text))?.[0];
-/** The credential shape in any string or key of a decoded JSON value: the raw text can hide one behind an escape (`\u0073k-`). */
-export function credentialInValue(value) {
-  if (typeof value === 'string') return credentialIn(value);
-  if (Array.isArray(value)) { for (const inner of value) { const found = credentialInValue(inner); if (found) return found; } return undefined; }
-  if (isObject(value)) { for (const [key, inner] of Object.entries(value)) { const found = credentialIn(key) ?? credentialInValue(inner); if (found) return found; } }
-  return undefined;
-}
-const TEXT_BLOB = /^(?:json|jsonl|txt|md|html|csv|svg|xml|yaml|yml|log)$/i;
+// The credential and machine-path scan is the reference example's own (packages/harness/src/scan.ts, the package's `./scan` export): one scanner, which its
+// recorder runs before it finishes a recording and which this validator and the gallery's gate import.
+export { credentialIn, credentialInValue } from '../../packages/harness/src/scan.ts';
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isInt = value => Number.isInteger(value);
@@ -61,7 +46,32 @@ export function manifestProblems(manifest) {
   need(isObject(manifest.source) && typeof manifest.source.run === 'string' && SHA256.test(manifest.source.store_sha256 ?? ''), 'source needs run and a 64-hex store_sha256');
   if (manifest.providers !== undefined) need(manifest.providers === 'real' || manifest.providers === 'scripted', `providers is ${JSON.stringify(manifest.providers)}, expected real or scripted`);
   if (manifest.result !== undefined) need(isObject(manifest.result) && SHA256.test(manifest.result.blob ?? '') && typeof manifest.result.title === 'string', 'result needs a 64-hex blob and a title');
+  if (manifest.artifact !== undefined) problems.push(...artifactProblems(manifest.artifact).map(what => `manifest.${what}`));
   return problems;
+}
+
+/** The files a look read, by key: the file part of the look's `args.path` (and the other places a look's arguments name a file or an address), as written. */
+export function lookSourcesOf(data) {
+  const out = [];
+  const add = record => {
+    if (!isObject(record) || !isObject(record.facts) || typeof record.facts.key !== 'string' || !isObject(record.args)) return;
+    const named = [];
+    for (const field of ['path', 'file', 'source', 'url']) if (typeof record.args[field] === 'string') named.push(...record.args[field].split(', '));
+    for (const field of ['paths', 'files']) if (Array.isArray(record.args[field])) named.push(...record.args[field].filter(each => typeof each === 'string'));
+    out.push([record.facts.key, named.map(each => each.replace(/[?#].*$/s, '')).filter(Boolean)]);
+  };
+  if (!isObject(data)) return out;
+  add(data.record);
+  if (isObject(data.value) && Array.isArray(data.value.looks)) for (const filing of data.value.looks) if (isObject(filing)) add(filing.record);
+  return out;
+}
+
+/** The look keys a line files: a live `LookEvent` (`data.record.facts.key`) and a `vision.*` document's `looks` (`data.value.looks[].record.facts.key`). */
+export function lookKeysOf(data) {
+  const keyOf = record => (isObject(record) && isObject(record.facts) && typeof record.facts.key === 'string' ? [record.facts.key] : []);
+  if (!isObject(data)) return [];
+  const filed = isObject(data.value) && Array.isArray(data.value.looks) ? data.value.looks.flatMap(filing => (isObject(filing) ? keyOf(filing.record) : [])) : [];
+  return [...keyOf(data.record), ...filed];
 }
 
 /** The problems with one parsed line, as strings (not its place among the others). */
@@ -72,10 +82,11 @@ export function lineProblems(event) {
   need(CHANNELS.includes(event.channel), `channel is ${JSON.stringify(event.channel)}, expected durable or live`);
   need(SOURCES.includes(event.source), `source is ${JSON.stringify(event.source)}, expected one of ${SOURCES.join(', ')}`);
   need(typeof event.kind === 'string' && event.kind !== '', 'kind is not a non-empty string');
-  // A durable line has no `gen` before the earliest surviving driver revision; a live line always has the process's.
   // A durable line has no `gen` before the earliest surviving driver revision, and the supervisor's host lines have none
   // (no run process wrote them); every other line carries the process's.
-  need(event.gen === undefined && (event.channel === 'durable' || event.source === 'host') || isInt(event.gen) && event.gen >= 1, 'gen is not an integer of at least 1');
+  // A live host line is the supervisor's (RECORDING.md 3.1): no event-level gen, the process it is about in data.gen. A process writes none.
+  if (event.channel === 'live' && event.source === 'host') need(event.gen === undefined, `a supervisor line (${event.kind}) has no event-level gen`);
+  else need(event.gen === undefined && event.channel === 'durable' || isInt(event.gen) && event.gen >= 1, 'gen is not an integer of at least 1');
   need(typeof event.t === 'number' && Number.isFinite(event.t) && event.t >= 0, 't is not a non-negative number');
   need('data' in event && event.data !== undefined, 'data is missing');
   if (event.channel === 'durable') {
@@ -93,10 +104,11 @@ export function lineProblems(event) {
   return problems;
 }
 
-/** Image data left inline in a line: an image block that still holds `data`, a data: URL, or a long run of base64. */
+/** Image data left inline in a line, by its structure: an image block that still holds `data`, or a data: URL that says it
+ *  is an image. Long base64 anywhere else is data (a store's chunk, a checkpoint), however long. */
 export function inlineImage(value) {
   if (Array.isArray(value)) return value.some(inlineImage);
-  if (typeof value === 'string') return /^data:image\//.test(value) || /^[A-Za-z0-9+/]{4000,}={0,2}$/.test(value);
+  if (typeof value === 'string') return /^data:image\//.test(value);
   if (!isObject(value)) return false;
   if (value.type === 'image' && typeof value.data === 'string') return true;
   return Object.values(value).some(inlineImage);
@@ -124,11 +136,74 @@ export function moveRecords(value, found = []) {
   return found;
 }
 
+/** What a blob's extension may be (draft 50): the allowlist, and `html`/`htm`/`css` only as a file of the manifest's artifact. Everything else (`svg`, `xml`, `js`, an unknown one) is refused. */
+export function blobNameProblem(name, artifactNames) {
+  // A gallery publishes an artifact page as `<hash>.html.txt` (apps/viewer/build.mjs): plain text when opened straight.
+  const published = /^([0-9a-f]{64})\.([A-Za-z0-9]+)\.txt$/.exec(name);
+  if (published) {
+    const inner = `${published[1]}.${published[2].toLowerCase()}`;
+    if (PAGE_EXTENSIONS.includes(published[2].toLowerCase()) && artifactNames.has(inner)) return undefined;
+    return blobNameProblem(inner, artifactNames) ?? 'is not a blob named by its SHA-256: only an artifact page is published with .txt after its name';
+  }
+  const named = /^([0-9a-f]{64})\.([A-Za-z0-9]+)$/.exec(name);
+  if (!named) return 'is not a blob named by its SHA-256';
+  const extension = named[2].toLowerCase();
+  if (BLOB_EXTENSIONS.includes(extension)) return undefined;
+  if ((PAGE_EXTENSIONS.includes(extension) || SHEET_EXTENSIONS.includes(extension)) && artifactNames.has(name)) return undefined;
+  return `has the extension .${extension}, which a recording's blob may not have (png jpg jpeg webp gif webm mp4 pdf json jsonl txt md csv vtt; html and css only as the artifact's own files)`;
+}
+
+/** The blob names `manifest.artifact.files` gives its pages and stylesheets. */
+export const artifactBlobNames = manifest => new Set(isObject(manifest?.artifact) && isObject(manifest.artifact.files)
+  ? Object.entries(manifest.artifact.files).filter(([path, hash]) => typeof hash === 'string' && /\.(?:html?|css)$/i.test(path)).map(([path, hash]) => `${hash}.${path.slice(path.lastIndexOf('.') + 1).toLowerCase()}`)
+  : []);
+
 const blobFiles = dir => {
   const folder = join(dir, 'blobs');
   const files = existsSync(folder) ? readdirSync(folder) : [];
-  return new Map(files.map(file => [file.split('.')[0], join(folder, file)]));
+  // A hash may be several files (one content, several extensions): every one is a blob to check.
+  const out = new Map();
+  for (const file of files) out.set(file.split('.')[0], [...(out.get(file.split('.')[0]) ?? []), join(folder, file)]);
+  return out;
 };
+
+/** What the report's files do (draft 41): each blob is `blobs/<hash>.<the path's extension>`, present and hashing to its name (two paths with one content and two extensions are two blobs); every page is read with the parser: no script, no on* attribute, no data: URL, no iframe, object, embed, form, base or meta refresh, every load inside `files`, and each `data-look` names a look the run filed. A relative link to a file the report does not hold is a document link: it is allowed only when it carries a `data-look` and names the file that look read. */
+function artifactFileProblems(artifact, dir, lookKeys, lookSources, add) {
+  const where = 'manifest.json';
+  const base = path => path.slice(path.lastIndexOf('/') + 1);
+  for (const [path, hash] of Object.entries(artifact.files)) {
+    const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
+    // A published copy (apps/viewer/build.mjs) holds a page or a script as `<hash>.<extension>.txt`, plain text when opened.
+    const file = [`${hash}.${extension}`, `${hash}.${extension}.txt`].map((name) => join(dir, 'blobs', name)).find((each) => existsSync(each));
+    if (!file) { add(where, `artifact file ${path} needs blob ${hash}.${extension}, which is not in blobs/`); continue; }
+    const bytes = readFileSync(file);
+    if (createHash('sha256').update(bytes).digest('hex') !== hash) { add(where, `blob ${hash}.${extension} of artifact file ${path} does not hash to its name`); continue; }
+    if (TEXT_FILE.test(file)) {
+      const found = credentialInFile(file, bytes.toString('utf8'));
+      if (found) add(where, `blob ${hash}.${extension} of artifact file ${path} contains a ${found}`);
+    }
+    const kind = blobNameProblem(`${hash}.${extension}`, new Set([`${hash}.${extension}`]));
+    if (kind) add(where, `artifact file ${path}: blob ${kind}`);
+    if (!readsAs(path)) continue;
+    const reading = readFile(path, bytes.toString('utf8'));
+    for (const message of reading.problems) add(where, `artifact page ${path} ${message}`);
+    for (const target of reading.loads) if (!(target in artifact.files)) add(where, `artifact page ${path} reaches ${target}, which is not in files`);
+    for (const key of reading.looks) if (!lookKeys.has(key)) add(where, `artifact page ${path} cites look ${JSON.stringify(key.slice(0, 80))}, which the run did not file`);
+    for (const document of reading.documents) {
+      if (document.inside && document.inside in artifact.files) continue;
+      const sources = document.look === undefined ? undefined : lookSources.get(document.look);
+      if (!sources?.some(source => base(source) === base(document.target))) add(where, `artifact page ${path} links to ${document.target.slice(0, 80)}, which is not in files and is not the file of a look it cites (data-look)`);
+    }
+  }
+}
+
+/** The entry kinds a `pi.conversation` record's `parent.at` may point at (draft 54). Any other kind is refused, so a new entry kind
+ *  is a visible change to the format. */
+export const ENTRY_KINDS = new Set(['pi.user', 'pi.system', 'pi.assistant', 'pi.tool-result']);
+
+/** A task record as pi writes one, whatever its kind (any extension may define a task kind): every field pi's TaskRecord requires. */
+const isTaskRecord = (kind, data) => data.kind === kind && Number.isInteger(data.version) && 'input' in data && typeof data.background === 'boolean'
+  && typeof data.abortRequested === 'boolean' && isObject(data.state) && typeof data.state.status === 'string';
 
 /** Every problem in the recording at `dir`, in file order: `{ where, line?, message }`. */
 export function validateRecording(dir) {
@@ -142,7 +217,7 @@ export function validateRecording(dir) {
     const text = readFileSync(manifestPath, 'utf8');
     try { manifest = JSON.parse(text); } catch (error) { add('manifest.json', `is not JSON: ${error.message}`); }
     if (manifest !== undefined) for (const message of manifestProblems(manifest)) add('manifest.json', message);
-    const found = credentialIn(text) ?? (manifest === undefined ? undefined : credentialInValue(manifest));
+    const found = credentialInFile('manifest.json', text);
     if (found) add('manifest.json', `contains a ${found}`);
   }
   const blobs = blobFiles(dir);
@@ -150,16 +225,17 @@ export function validateRecording(dir) {
   const checkBlob = (hash, where, line) => {
     if (checked.has(hash)) return;
     checked.add(hash);
-    const file = blobs.get(hash);
-    if (!file) return add(where, `names blob ${hash}, which is not in blobs/`, line);
-    const bytes = readFileSync(file);
-    if (createHash('sha256').update(bytes).digest('hex') !== hash) add(where, `blob ${hash} does not hash to its name`, line);
-    // A blob is kept whole and shared with the recording, so its text is checked as the lines are: raw, and decoded when it is JSON.
-    if (TEXT_BLOB.test(file.slice(file.lastIndexOf('.') + 1))) {
-      const text = bytes.toString('utf8');
-      let found = credentialIn(text);
-      if (!found) { try { found = credentialInValue(JSON.parse(text)); } catch { /* not one JSON value */ } }
-      if (found) add(where, `blob ${hash} contains a ${found}`, line);
+    const held = blobs.get(hash);
+    if (!held) return add(where, `names blob ${hash}, which is not in blobs/`, line);
+    for (const file of held) {
+      if (!statSync(file).isFile()) continue;
+      const bytes = readFileSync(file);
+      if (createHash('sha256').update(bytes).digest('hex') !== hash) add(where, `blob ${hash} does not hash to its name`, line);
+      // A blob is kept whole and shared with the recording, so its text is checked as the lines are: raw, and decoded when it is JSON. Every file that is not media is text, whatever else shares its hash.
+      if (TEXT_FILE.test(file)) {
+        const found = credentialInFile(file, bytes.toString('utf8'));
+        if (found) add(where, `blob ${hash} contains a ${found}`, line);
+      }
     }
   };
   if (manifest?.result?.blob) checkBlob(manifest.result.blob, 'manifest.json', undefined);
@@ -171,16 +247,24 @@ export function validateRecording(dir) {
   let last = { commit: -Infinity, order: -Infinity };
   let lastT = -Infinity;
   const lastSeq = new Map();
-  // The process a line belongs to is the latest one the supervisor started before it (3.2): a snapshot's `gen` is an earlier process's, so
-  // a restore is matched by process, never by generation value.
-  let processIndex = 0;
+  // The processes the supervisor has started so far. A line belongs to the latest of them, number `processes` (3.2): a snapshot's `gen` is
+  // an earlier process's, so a restore is matched by process, never by generation value.
+  let processes = 0;
   const snapshotted = new Set();
   const snapshotAt = new Map();
   const firstCommit = new Map();
   const records = [];
   const drops = [];
-  let processes = 0;
+  const lookKeys = new Set();
+  const lookSources = new Map();
   const liveGenerations = new Set();
+  // `agentrun.decisions` has two forms: the single document (a `receipts` list in one document) and the keyed documents (one row each, with a `key`). A recording holds one.
+  const decisionForms = { single: undefined, keyed: undefined };
+  // Draft 54: the conversations, entries and task records (by kind) the recording holds, and its pi.conversation lines.
+  const conversations = new Set();
+  const entries = new Set();
+  const tasks = new Set();
+  const conversationRecords = [];
   lines.forEach((text, index) => {
     const line = index + 1;
     if (text.trim() === '') return add('events.jsonl', 'has an empty line', line);
@@ -191,15 +275,19 @@ export function validateRecording(dir) {
     const own = lineProblems(event);
     for (const message of own) add('events.jsonl', message, line);
     if (own.length) return;
-    if (event.source === 'host' && event.kind === 'process.started') { processes += 1; processIndex += 1; }
+    if (event.channel === 'durable' && event.kind === 'agentrun.decisions' && isObject(event.data)) {
+      if (event.data.key !== undefined) decisionForms.keyed ??= line;
+      else if (isObject(event.data.value) && Array.isArray(event.data.value.receipts)) decisionForms.single ??= line;
+    }
+    if (event.source === 'host' && event.kind === 'process.started') processes += 1;
     if (event.channel === 'durable' && (event.kind === 'transport.moves' || event.data?.doc === 'transport.moves')) {
       // A snapshot restates the records an earlier process wrote: only a process's own lines are its moves.
       if (!event.snapshot) for (const record of moveRecords(event.data?.value ?? event.data)) {
         if (!isInt(record.head)) add('events.jsonl', `a ${record.kind} record has no integer head`, line);
-        else records.push({ ...record, process: processIndex, line, commit: event.commit });
+        else records.push({ ...record, process: processes, line, commit: event.commit });
       }
     }
-    if (event.channel === 'durable' && !event.snapshot && !firstCommit.has(processIndex)) firstCommit.set(processIndex, event.commit);
+    if (event.channel === 'durable' && !event.snapshot && !firstCommit.has(processes)) firstCommit.set(processes, event.commit);
     if (event.channel === 'live' && event.gen !== undefined) liveGenerations.add(event.gen);
     if (inlineImage(event.data)) add('events.jsonl', 'holds image data inline; an image belongs in blobs/ and its block keeps { type, mimeType, blob }', line);
     for (const hash of imageBlobs(event.data)) {
@@ -210,19 +298,18 @@ export function validateRecording(dir) {
     lastT = Math.max(lastT, event.t);
     if (event.channel === 'durable' && event.gen !== undefined) {
       // A durable line's gen is the driver's, so it never decreases, outside a restore (3.2), whose snapshot starts the generation again.
-      const restores = event.snapshot && !snapshotted.has(processIndex) && event.commit < lastCommit;
+      const restores = event.snapshot && !snapshotted.has(processes) && event.commit < lastCommit;
       if (event.gen < lastGen && !restores) add('events.jsonl', `durable gen ${event.gen} is lower than the previous durable line's ${lastGen}`, line);
       lastGen = restores ? event.gen : Math.max(lastGen, event.gen);
     }
     if (event.channel === 'durable' && event.snapshot) {
       // A snapshot is state at the store's latest commit when its process opened: never below an earlier line's commit, except
       // at a process's first snapshot after a restore (3.2), which is accepted only with that process's restore record, written after it.
-      const proc = processIndex;
-      if (!snapshotted.has(proc)) {
-        snapshotted.add(proc);
-        snapshotAt.set(proc, { commit: event.commit, line, before: lastCommit });
+      if (!snapshotted.has(processes)) {
+        snapshotted.add(processes);
+        snapshotAt.set(processes, { commit: event.commit, line, before: lastCommit });
         if (event.commit < lastCommit) {
-          drops.push({ line, process: proc, commit: event.commit, was: lastCommit });
+          drops.push({ line, process: processes, commit: event.commit, was: lastCommit });
           last = { commit: event.commit, order: Infinity };
           lastCommit = event.commit;
         }
@@ -240,12 +327,46 @@ export function validateRecording(dir) {
       if (before !== undefined && event.seq <= before) add('events.jsonl', `seq ${event.seq} does not increase past ${before} in ${event.gen === undefined ? 'the supervisor\'s lines' : `generation ${event.gen}`}`, line);
       lastSeq.set(space, event.seq);
     }
+    if (event.conv !== undefined) conversations.add(event.conv);
+    if (event.channel === 'durable' && event.kind === 'pi.conversation') {
+      conversationRecords.push({ line, record: event.data });
+      if (isInt(event.data?.id)) conversations.add(event.data.id);
+    } else if (event.channel === 'durable' && isObject(event.data) && isInt(event.data.id) && isInt(event.data.conversationId)) {
+      const pair = `${event.data.conversationId}\u0000${event.data.id}`;
+      if (ENTRY_KINDS.has(event.kind)) entries.add(pair);
+      else if (isTaskRecord(event.kind, event.data)) tasks.add(pair);
+    }
+    for (const key of lookKeysOf(event.data)) lookKeys.add(key);
+    for (const [key, named] of lookSourcesOf(event.data)) lookSources.set(key, [...(lookSources.get(key) ?? []), ...named]);
     for (const hash of event.blobs ?? []) checkBlob(hash, 'events.jsonl', line);
   });
+  // A conversation's record (draft 54) holds no content, and its parent entry and owner task are in this recording.
+  for (const { line, record } of conversationRecords) {
+    if (!isObject(record) || !isInt(record.id)) { add('events.jsonl', 'a pi.conversation line has no integer id: its data is the record, { id, parent?, owner? }', line); continue; }
+    const name = `pi.conversation ${record.id}`;
+    for (const key of Object.keys(record)) if (!['id', 'parent', 'owner'].includes(key)) add('events.jsonl', `${name} holds ${key}: the line keeps only id, parent and owner, no content`, line);
+    const { parent, owner } = record;
+    const extraKeys = (value, role, keys) => {
+      if (isObject(value)) for (const key of Object.keys(value)) if (!keys.includes(key)) add('events.jsonl', `${name}: its ${role} holds ${key}: ${role === 'owner' ? 'an' : 'a'} ${role} keeps only ${keys.join(' and ')}, no content`, line);
+    };
+    if (parent !== undefined) {
+      extraKeys(parent, 'parent', ['conversationId', 'at']);
+      if (!isObject(parent) || !isInt(parent.conversationId) || !isInt(parent.at)) add('events.jsonl', `${name}: its parent is not { conversationId, at }, each an integer`, line);
+      else if (!conversations.has(parent.conversationId)) add('events.jsonl', `${name}: its parent names conversation ${parent.conversationId}, which is not in this recording`, line);
+      else if (!entries.has(`${parent.conversationId}\u0000${parent.at}`)) add('events.jsonl', `${name}: its parent names entry ${parent.at}, which is no entry (${[...ENTRY_KINDS].join(', ')}) of conversation ${parent.conversationId}`, line);
+    }
+    if (owner !== undefined) {
+      extraKeys(owner, 'owner', ['conversationId', 'taskId']);
+      if (!isObject(owner) || !isInt(owner.conversationId) || !isInt(owner.taskId)) add('events.jsonl', `${name}: its owner is not { conversationId, taskId }, each an integer`, line);
+      else if (!tasks.has(`${owner.conversationId}\u0000${owner.taskId}`)) add('events.jsonl', `${name}: its owner names task ${owner.taskId}, which is no task record of conversation ${owner.conversationId}`, line);
+    }
+  }
+  if (isObject(manifest?.artifact) && artifactProblems(manifest.artifact).length === 0) artifactFileProblems(manifest.artifact, dir, lookKeys, lookSources, add);
   // A restore or a move names the head of the store its target generation opened, anchored on that generation's snapshot at open
-  // (the store's latest commit then). A generation with no snapshot (a bare export) skips the continuity check.
+  // (the store's latest commit then). A generation with no snapshot (a bare export) skips the continuity check. A restore's
+  // snapshot may be at its head itself when pi committed once at open (draft 37): its first new commit is then head + 1.
   for (const drop of drops) {
-    const found = records.filter(record => record.kind === 'restore' && record.process === drop.process && record.line > drop.line && record.head === drop.commit + 1);
+    const found = records.filter(record => record.kind === 'restore' && record.process === drop.process && record.line > drop.line && (record.head === drop.commit + 1 || record.head === drop.commit));
     if (!found.length) add('events.jsonl', `process ${drop.process}'s first snapshot is at commit ${drop.commit}, below the ${drop.was} already seen, and the process has no transport.moves restore record after it with checkpoint head ${drop.commit + 1}`, drop.line);
   }
   for (const record of records) {
@@ -255,10 +376,23 @@ export function validateRecording(dir) {
     if (record.kind === 'restore' && !record.replayed && record.head !== record.checkpoint?.head) add('events.jsonl', `a restore with no replay has head ${record.head}, but its checkpoint.head is ${JSON.stringify(record.checkpoint?.head)}`, record.line);
     if (record.commit < record.head) add('events.jsonl', `a ${record.kind} record at commit ${record.commit} names head ${record.head}, which is a later commit`, record.line);
     if (!snapshot) continue;
-    if (record.head !== snapshot.commit + 1) add('events.jsonl', `a ${record.kind}'s head is ${record.head}, but the process's snapshot is at commit ${snapshot.commit}, so the target's first commit would be ${snapshot.commit + 1}`, record.line);
+    const atOpen = record.kind === 'restore' && record.head === snapshot.commit;
+    if (record.head !== snapshot.commit + 1 && !atOpen) add('events.jsonl', `a ${record.kind}'s head is ${record.head}, but the process's snapshot is at commit ${snapshot.commit}, so the target's first commit would be ${snapshot.commit + 1}`, record.line);
     // A move keeps one store: its snapshot is at the highest commit seen. A restore may drop (checked above) or replay and not.
     else if (record.kind === 'move' && Number.isFinite(snapshot.before) && snapshot.commit !== snapshot.before) add('events.jsonl', `a move's snapshot is at commit ${snapshot.commit}, but the highest commit seen before it is ${snapshot.before}; a move keeps one store, so they are equal`, snapshot.line);
-    else if (firstCommit.has(record.process) && firstCommit.get(record.process) !== record.head) add('events.jsonl', `a ${record.kind}'s head is ${record.head}, but the process's first commit is ${firstCommit.get(record.process)}`, record.line);
+    else if (firstCommit.has(record.process) && firstCommit.get(record.process) !== record.head + (atOpen ? 1 : 0)) add('events.jsonl', `a ${record.kind}'s head is ${record.head}, but the process's first commit is ${firstCommit.get(record.process)}${atOpen ? `; with its snapshot at the head (pi's commit at open), the first commit is ${record.head + 1}` : ''}`, record.line);
+  }
+  // Every file in blobs/ is a blob of the allowlist (draft 50), named by its own SHA-256, and read as text when it is not media, whether or not a line names it.
+  const artifactNames = artifactBlobNames(manifest);
+  for (const entry of existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs'), { withFileTypes: true }) : []) {
+    const name = entry.name;
+    if (!entry.isFile()) { add('blobs', `${name} is not a file`); continue; }
+    const problem = blobNameProblem(name, artifactNames);
+    if (problem) { add('blobs', `${name} ${problem}`); continue; }
+    if (TEXT_FILE.test(name) && !checked.has(name.split('.')[0])) {
+      const found = credentialInFile(name, readFileSync(join(dir, 'blobs', name), 'utf8'));
+      if (found) add('blobs', `${name} contains a ${found}`);
+    }
   }
   // Processes come from the supervisor, never from a durable line's gen: that counts journal opens, which can outnumber processes.
   if (manifest && isInt(manifest.generations)) {
@@ -266,6 +400,7 @@ export function validateRecording(dir) {
     const beyond = [...liveGenerations].filter(gen => gen > processes);
     if (beyond.length) add('events.jsonl', `a live line carries gen ${Math.max(...beyond)}, beyond the ${processes} processes that started`);
   }
+  if (decisionForms.single !== undefined && decisionForms.keyed !== undefined) add('events.jsonl', `holds agentrun.decisions in both forms (the single document from line ${decisionForms.single}, keyed documents from line ${decisionForms.keyed}): a recording holds one`, Math.max(decisionForms.single, decisionForms.keyed));
   return problems;
 }
 

@@ -1,22 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { installedExtension, STAGEHAND_EXTENSION } from "../dist/driver/extension-worker.js";
-import { fakeCdp } from "./fixtures/fake-cdp-worker.mjs";
+import { fakeCdp, NO_REPLY } from "./fixtures/fake-cdp-worker.mjs";
 
 const ID = "abcdefghijklmnopabcdefghijklmnop";
 const WAKE = `chrome-extension://${ID}/wake-service-worker.html`;
 const worker = (n) => ({ targetId: `worker-${n}`, type: "service_worker", url: `chrome-extension://${ID}/service-worker.js` });
 
-function browser({ workers = [worker(1)], wakeThatStarts = 1, replies = true, dropOnWake = false } = {}) {
-  const state = { workers, wakes: 0, pages: new Set(), closedWorkers: [], held: true };
+/** `listing`: "now" answers Target.getTargets at once, "never" never answers it, a number answers it that many ms late. */
+/** `replyId`: the id the runtime's reply carries (default: the close's own). */
+function browser({ workers = [worker(1)], wakeThatStarts = 1, replies = true, replyId, dropOnWake = false, listing = "now", wakeReplyAt = 0 } = {}) {
+  const state = { workers, wakes: 0, pages: new Set(), closedWorkers: [], held: true, firstCall: 0 };
   const handle = (method, params, { sessionId, emit, drop }) => {
+    state.firstCall ||= Date.now();
     if (method === "Extensions.getExtensions") return { extensions: [{ id: ID, name: STAGEHAND_EXTENSION, enabled: true }] };
-    if (method === "Target.getTargets") return { targetInfos: state.workers };
+    if (method === "Target.getTargets") {
+      if (listing === "never") return NO_REPLY;
+      const list = { targetInfos: [...state.workers, ...[...state.pages].map((targetId) => ({ targetId, type: "page", url: WAKE }))] };
+      return listing === "now" ? list : new Promise((resolve) => setTimeout(() => resolve(list), listing));
+    }
     if (method === "Target.attachToTarget") return { sessionId: `session-${params.targetId}` };
     if (method === "Runtime.evaluate") {
       const close = JSON.parse(JSON.parse(/__stagehandReceiveFromHost\((".*")\)/.exec(params.expression)[1]));
       if (close.method === "stagehand.close") state.held = false;
-      if (replies) emit("Runtime.bindingCalled", { name: "__stagehandSendToHost", payload: JSON.stringify({ jsonrpc: "2.0", id: close.id, result: { closed: true } }), executionContextId: 1 }, sessionId);
+      if (replies) emit("Runtime.bindingCalled", { name: "__stagehandSendToHost", payload: JSON.stringify({ jsonrpc: "2.0", id: replyId ?? close.id, result: { closed: true } }), executionContextId: 1 }, sessionId);
       return { result: { type: "boolean", value: true } };
     }
     if (method === "Target.closeTarget") {
@@ -29,7 +36,9 @@ function browser({ workers = [worker(1)], wakeThatStarts = 1, replies = true, dr
       state.wakes += 1;
       state.pages.add(`wake-${state.wakes}`);
       if (state.wakes === wakeThatStarts) state.workers = [worker(2)];
-      return { targetId: `wake-${state.wakes}` };
+      const opened = { targetId: `wake-${state.wakes}` };
+      // wakeReplyAt: the opening is answered that many ms after the reset's first command.
+      return wakeReplyAt ? new Promise((resolve) => setTimeout(() => resolve(opened), state.firstCall + wakeReplyAt - Date.now())) : opened;
     }
     return {};
   };
@@ -47,6 +56,23 @@ test("a held runtime is released by its own close RPC, and its worker keeps runn
   const sent = cdp.calls.filter((call) => call.sessionId === "session-worker-1").map((call) => call.method);
   assert.deepEqual(sent, ["Runtime.enable", "Runtime.addBinding", "Runtime.evaluate"]);
   assert.ok(cdp.calls.some((call) => call.method === "Target.detachFromTarget" && call.params.sessionId === "session-worker-1"), "the reset's session is let go");
+});
+
+test("the runtime's reply to the close ends the wait at once, and a reply to another id does not", { timeout: 20_000 }, async (t) => {
+  const answered = browser();
+  const a = await fakeCdp(answered.handle);
+  t.after(() => a.close());
+  let started = Date.now();
+  assert.equal(await installedExtension(a.url, undefined, undefined, 8_000), ID);
+  const fast = Date.now() - started;
+  assert.ok(fast < 2_000, `the reply ended the wait: ${fast} ms of an 8,000 ms reply deadline`);
+  const other = browser({ replyId: 7 });
+  const b = await fakeCdp(other.handle);
+  t.after(() => b.close());
+  started = Date.now();
+  assert.equal(await installedExtension(b.url, undefined, undefined, 1_500), ID);
+  const waited = Date.now() - started;
+  assert.ok(waited >= 1_400, `a reply to another id is not the close's: the attach waited ${waited} ms of a 1,500 ms deadline`);
 });
 
 test("with no worker running nothing is held: the extension is woken until a worker is listed, a lost wake is sent again, and every wake page is closed", async (t) => {
@@ -90,4 +116,51 @@ test("a browser that drops the connection while the worker is woken ends the att
   const started = Date.now();
   assert.equal(await installedExtension(cdp.url, undefined, ID), ID);
   assert.ok(Date.now() - started < 1_500, `${Date.now() - started} ms`);
+});
+
+test("a target list the browser never gives fails the attach by the deadline: it is not a list without a worker, so the reset is never skipped", { timeout: 30_000 }, async (t) => {
+  const { state, handle } = browser({ listing: "never" });
+  const cdp = await fakeCdp(handle);
+  t.after(() => cdp.close());
+  const started = Date.now();
+  const error = await installedExtension(cdp.url, undefined, ID).then(() => null, (e) => e);
+  const took = Date.now() - started;
+  assert.match(error?.message ?? "", /did not list its targets within 10000 ms/);
+  assert.ok(took >= 9_000 && took < 13_000, `failed after ${took} ms`);
+  assert.equal(state.wakes, 0, "no worker was woken on a list it never had");
+  assert.equal(state.held, true);
+});
+
+test("a list that answers late is still read: the held runtime gets its close", { timeout: 30_000 }, async (t) => {
+  const { state, handle } = browser({ listing: 2_500 });
+  const cdp = await fakeCdp(handle);
+  t.after(() => cdp.close());
+  assert.equal(await installedExtension(cdp.url, undefined, ID), ID);
+  assert.equal(state.held, false, "stagehand.close reached the runtime");
+});
+
+test("a worker still not listed at the deadline: the wake loop stops there and its last wake page is closed on the same socket", { timeout: 30_000 }, async (t) => {
+  // Each list comes 800 ms late and never holds a worker, so the wake loop is still running when the deadline comes.
+  const { state, handle } = browser({ workers: [], wakeThatStarts: 99, listing: 800 });
+  const cdp = await fakeCdp(handle);
+  t.after(() => cdp.close());
+  const started = Date.now();
+  assert.equal(await installedExtension(cdp.url, undefined, ID), ID);
+  const took = Date.now() - started;
+  assert.ok(state.wakes >= 1, `woken ${state.wakes} times`);
+  assert.deepEqual([...state.pages], [], "no wake page is left open");
+  assert.ok(took < 12_000, `ended after ${took} ms`);
+});
+
+test("a wake page whose opening is answered only after the deadline is still closed, in the second the socket outlives it", { timeout: 30_000 }, async (t) => {
+  // Lists come 800 ms late with no worker; the one wake page opens early, but its opening is answered 10.2 s after the
+  // reset's first command, past its 10 s deadline.
+  const { state, handle } = browser({ workers: [], wakeThatStarts: 99, listing: 800, wakeReplyAt: 10_200 });
+  const cdp = await fakeCdp(handle);
+  t.after(() => cdp.close());
+  const started = Date.now();
+  assert.equal(await installedExtension(cdp.url, undefined, ID), ID);
+  assert.equal(state.wakes, 1);
+  assert.ok(Date.now() - started > 10_000, "the opening's reply came after the deadline");
+  assert.deepEqual([...state.pages], [], "the page is closed though its id came late");
 });

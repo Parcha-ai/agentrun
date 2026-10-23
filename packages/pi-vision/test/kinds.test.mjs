@@ -38,7 +38,7 @@ test("every image format is an image by its bytes, whatever its file is called",
   assert.equal(sniffKind(built.png, "photo.jpg").format, "png");
 });
 
-test("the other kinds are told by their bytes: documents, containers, video, text, binary and nothing", async () => {
+test("the other kinds are told by their bytes: documents, containers, video, audio, text, binary and nothing", async () => {
   const zip = zipSync({ "word/document.xml": strToU8("<w/>") });
   const cases = [
     [text("%PDF-1.7\n1 0 obj"), "a.pdf", "pdf", "pdf"],
@@ -52,6 +52,9 @@ test("the other kinds are told by their bytes: documents, containers, video, tex
     [ftyp("isom", "iso2", "mp41"), "a.mp4", "video", "mp4"], [ftyp("qt  ", "qt  "), "a.mov", "video", "mov"],
     [Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(4), text("\x42\x82\x84webm")]), "a.webm", "video", "webm"],
     [Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(4), text("\x42\x82\x88matroska")]), "a.mkv", "video", "mkv"],
+    [Buffer.concat([text("ID3\x04\0\0"), Buffer.alloc(16)]), "a.mp3", "audio", "mp3"], [Buffer.from([0xff, 0xfb, 0x90, 0x64, 0, 0, 0, 0]), "a.mp3", "audio", "mp3"],
+    [Buffer.concat([text("RIFF"), Buffer.alloc(4), text("WAVEfmt ")]), "a.wav", "audio", "wav"], [Buffer.concat([text("OggS"), Buffer.alloc(24)]), "a.ogg", "audio", "ogg"],
+    [Buffer.concat([text("fLaC"), Buffer.alloc(8)]), "a.flac", "audio", "flac"], [ftyp("M4A ", "M4A ", "isom"), "a.m4a", "audio", "m4a"],
     [ftyp("heic", "mif1", "heic"), "a.heic", "image", "heic"], [ftyp("mif1", "mif1", "avif"), "a.avif", "image", "avif"], [ftyp("avis", "avif"), "a.avif", "image", "avif"],
     [text("plain notes\nsecond line\n"), "notes.txt", "text", "text"], [text("a,b\n1,2\n"), "a.csv", "text", "text"], [text("BMW notes"), "notes", "text", "text"],
     [new Uint8Array(0), "empty", "text", "empty"],
@@ -62,7 +65,7 @@ test("the other kinds are told by their bytes: documents, containers, video, tex
     assert.ok(sniffed.ok, `${name}: ${JSON.stringify(sniffed)}`);
     assert.deepEqual([sniffed.kind, sniffed.format], [kind, format], name);
   }
-  assert.deepEqual(KINDS.filter((k) => !["recording"].includes(k)).sort(), ["image", "office", "pdf", "sheet", "text", "unknown", "video"], "every kind but a handle is reachable from bytes");
+  assert.deepEqual(KINDS.filter((k) => !["recording"].includes(k)).sort(), ["audio", "image", "office", "pdf", "sheet", "text", "unknown", "video"], "every kind but a handle is reachable from bytes");
 });
 
 const BODY = "Total due: 31,50 € — résumé\r\nsecond line\n";

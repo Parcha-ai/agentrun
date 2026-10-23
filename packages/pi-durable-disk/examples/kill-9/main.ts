@@ -6,7 +6,7 @@
 //   node examples/kill-9/main.ts     (from packages/pi-durable-disk, after `npm run build` at the repository root)
 //
 // One file is both the supervisor (no argument) and the agent process (`instance`). One machine: the directory is the claim.
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -139,8 +139,17 @@ console.log("the long command is running: SIGKILL to the first process (its comm
 first.kill("SIGKILL");
 const cut = await firstClosed;
 const job = Number(readFileSync(join(work, "job.pid"), "utf8"));
-/** Whether the command's process group still has a live member: a zombie waiting for a parent that does not reap (a container's pid 1) is not running. */
+/**
+ * Whether the command's process group still has a live member: a zombie waiting for a parent that does not reap (a
+ * container's pid 1) is not running. /proc on Linux; ps where there is none (macOS).
+ */
 const running = (): boolean => {
+  if (process.platform !== "linux") {
+    return execFileSync("ps", ["-A", "-o", "pgid=,stat="], { encoding: "utf8" }).split("\n").some((line) => {
+      const [group, state] = line.trim().split(/\s+/);
+      return Number(group) === job && state !== undefined && !state.startsWith("Z");
+    });
+  }
   for (const entry of readdirSync("/proc")) {
     if (!/^\d+$/.test(entry)) continue;
     try {

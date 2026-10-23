@@ -153,7 +153,7 @@ test("what a reader cannot do is a miss: text the model acts on, the text that s
   assert.equal(text(out), "scan.pdf could not be read: page 2 has no text layer and no page renderer is installed (PDFium or poppler). The file is saved at scan.pdf. Receipt filed at evidence/n/1-look.md. What does not need it still reads; to have the rest, install it where the shell runs, or work from the saved file with bash.\nText layer of page 2: none");
   assert.deepEqual(out.details, { path: "scan.pdf", look: "evidence/n/1-look.md", miss: { code: "needs" } });
   assert.deepEqual([r.filed[0].status, r.filed[0].args, receiptFacts(r.filed[0]).sha256], ["failed", { path: "scan.pdf", ask: "What is the date?", page: 2, model: "none", native: false }, sha(bytes)]);
-  assert.deepEqual(r.misses, [{ conversationId: "c1", tool: "read", source: "scan.pdf", ask: "What is the date?", code: "needs", reason: "page 2 has no text layer and no page renderer is installed (PDFium or poppler)", receipt: "evidence/n/1-look.md" }]);
+  assert.deepEqual(r.misses, [{ conversationId: "c1", tool: "read", source: "scan.pdf", ask: "What is the date?", code: "needs", reason: "page 2 has no text layer and no page renderer is installed (PDFium or poppler)", receipt: "evidence/n/1-look.md", record: r.filed[0] }]);
 });
 
 test("a sink that throws before it returns a promise loses no miss", async (t) => {

@@ -220,3 +220,39 @@ test('native Pi brand-new offline session warns that history is volatile while p
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+// A procedure whose synthetic answers never end its loop: its dry run goes on until its step budget or a stop.
+const endless = { v: 2, name: 'Check until done', schemas: { Done: { type: 'object', additionalProperties: false, required: ['done'], properties: { done: { type: 'boolean' } } } },
+  output: { schemaId: 'Done', path: 'check' },
+  root: { node: 'loop', label: 'until-done', maxIters: 200000, until: { predicate: 'field_true', path: 'check.done' },
+    body: { node: 'extract', label: 'check', instructions: 'Say whether the fictional task is done.', out: 'Done', as: 'check' } } };
+
+test('in a real Pi host, /agentrun stop reaches a dry run in flight: the dry run ends stopped, not at its budget', { timeout: 90_000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentrun-native-dry-run-'));
+  const session = join(directory, 'dry-run.jsonl');
+  await mkdir(join(directory, 'agent'));
+  await writeFile(session, '');
+  try {
+    const { WorkflowStore } = await import('../dist/workflow-store.js');
+    await new WorkflowStore(directory).save('endless', endless);
+    const host = startHost(t, directory, session);
+    await host.command('load endless', message => /Loaded procedure/.test(message.content));
+    const before = (await host.messages()).length;
+    // Sent one after the other, as a user types them: the stop must not wait for the dry run to end.
+    await Promise.all([host.request('prompt', { message: '/agentrun dry-run' }), host.request('prompt', { message: '/agentrun stop' })]);
+    const deadline = Date.now() + 30_000;
+    let dried, stopped;
+    while (Date.now() < deadline && !(dried && stopped)) {
+      const added = (await host.messages()).slice(before).filter(message => message.role === 'custom' && message.customType === 'agentrun');
+      dried = added.find(message => message.details?.dryRun);
+      stopped = added.find(message => /Dry run stopped|Nothing is running/.test(message.content));
+      if (!(dried && stopped)) await nextTurn();
+    }
+    assert.ok(dried && stopped, 'both answered');
+    assert.match(stopped.content, /Dry run stopped/, 'the stop reached the dry run');
+    assert.equal(dried.details.dryRun.status, 'not_run');
+    // Before its first step or after some: either way the stop ended it, not its step budget.
+    assert.match(dried.details.dryRun.skipped.join('\n'), /stopped before it (started|finished)/);
+    await host.stop();
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

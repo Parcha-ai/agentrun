@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 
 export const DEFAULT_REGION = "aws-us-east-1";
 /** The host suites the default check runs, in order. */
-export const HOST_SUITES = ["claim", "env", "run", "store", "supervise", "lifecycle"] as const;
+export const HOST_SUITES = ["claim", "env", "run", "store", "supervise", "lifecycle", "with-claim"] as const;
 /** The tests that wait out fixed windows (the archil client's 5 min token refresh, five minutes of backoff): `--slow` only. */
 export const SLOW_SUITES = ["supervise-slow"] as const;
 /** The suites `suites` accepts: the package's `test:live:<name>` scripts. */

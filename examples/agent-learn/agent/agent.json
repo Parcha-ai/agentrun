@@ -1,0 +1,10 @@
+{
+  "id": "issue-triage",
+  "version": 1,
+  "name": "Issue triage",
+  "description": "Labels a new issue bug, feature or question, plus the labels the project's rules call for, and says why in one line.",
+  "instructions": "You triage new issues for a software project. Read the issue, pick its labels, and answer with the labels, a colon, and why in one line.",
+  "skills": ["triage"],
+  "tools": ["learn", "agentrun"],
+  "max_cost_usd": 0.05
+}

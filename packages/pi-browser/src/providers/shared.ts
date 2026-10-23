@@ -50,7 +50,7 @@ export function uploadOnce<T>(uploads: Map<string, Promise<T>>, account: string,
 export async function releaseAndConfirm(o: {
   request: () => Promise<"gone" | void>;
   status: () => Promise<ResourceStatus>;
-  forget: () => void;
+  forget: () => void | Promise<void>;
   confirm: { polls: number; intervalMs: number };
   sleep: (ms: number) => Promise<void>;
   stillRunning: string;
@@ -86,6 +86,11 @@ export const kernelHoldings = {
   uploads: new Map<string, Promise<{ id: string } | { name: string }>>(),
 };
 
+/** Which session may save to a named profile now, by profile: claimed by both cloud providers (providers/profiles.ts). */
+export const profileHoldings = {
+  writers: new Map<string, { tag: string; owner: string; running?: (signal: AbortSignal) => Promise<boolean>; settle?: () => Promise<void> }>(),
+};
+
 export function resetProviderHoldings(): void {
-  for (const holdings of [browserbaseHoldings, kernelHoldings]) for (const map of Object.values(holdings)) map.clear();
+  for (const holdings of [browserbaseHoldings, kernelHoldings, profileHoldings]) for (const map of Object.values(holdings)) map.clear();
 }

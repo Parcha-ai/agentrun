@@ -1,0 +1,8 @@
+{
+  "about": "gen 1's submit was held at the driver and killed: neither finished nor a sent row (no observer); in gen 2 it is refused, looked at, and sent again",
+  "expected": {
+    "repeated": 0,
+    "askedTwice": 0,
+    "possible": 1
+  }
+}

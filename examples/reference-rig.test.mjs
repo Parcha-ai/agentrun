@@ -10,10 +10,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { FakeBackend } from '@parcha/pi-browser/testing';
-import { placeAt, run } from './reference/assemble.ts';
+import { placeAt, run } from '@parcha/agentrun-harness';
 import { cases } from './reference/cases/index.ts';
 import { filed, gates } from './reference/gates.ts';
-import { localHost } from './reference/host.ts';
+import { localHost } from '@parcha/agentrun-harness';
 import { fakes, job, lead } from './reference/job.ts';
 import { summary } from './reference/run.ts';
 
@@ -59,8 +59,8 @@ for (const ofCase of [reference, ...cases]) {
 const at = (path) => new URL(path, import.meta.url).href;
 const CHILD = `
 import { remoteDriver, remoteProvider } from '${import.meta.resolve('@parcha/pi-browser/testing')}';
-import { placeAt, run } from '${at('./reference/assemble.ts')}';
-import { localHost } from '${at('./reference/host.ts')}';
+import { placeAt, run } from '${at('../packages/harness/dist/assemble.js')}';
+import { localHost } from '${at('../packages/harness/dist/host.js')}';
 import { fakes, job } from '${at('./reference/job.ts')}';
 const place = await placeAt(process.env.DIR);
 const model = (messages) => {

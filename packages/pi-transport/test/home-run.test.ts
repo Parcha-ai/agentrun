@@ -27,7 +27,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { parseTransportConfig } from "../src/config.ts";
-import { type App, loadApp } from "../src/home/app.ts";
+import { type App, type AppContext, loadApp } from "../src/home/app.ts";
 import { DrainError } from "../src/home/gate.ts";
 import { checkHomeHands } from "../src/home/place.ts";
 import { type Home, type HomeOptions, MOVE_ENTRY, openHome } from "../src/home/run.ts";
@@ -169,6 +169,54 @@ describe("a home: starting and moving a session", () => {
 			await root.waitForIdle(context);
 			expect(made.effects()).toEqual(everyRoundOnce);
 			expect(made.requests()).toBe(ROUNDS + 1);
+			await home.close(context);
+		});
+	});
+
+	it("gives the app the order's environment, its directory and its epoch, and refuses an environment that is not names to strings", async () => {
+		await withWorld(async (made) => {
+			const base = made.home("a");
+			let seen: AppContext | undefined;
+			let resumedAt: number | undefined;
+			const app: App = async (ctx) => {
+				seen = ctx;
+				return {
+					...(await base.app(ctx)),
+					onResumed: () => {
+						resumedAt = ctx.epoch;
+					},
+				};
+			};
+			const home = await opened({ ...base, app });
+			const refused = await home.resume({ epoch: 1, env: { NAME: 1 as unknown as string } }, context);
+			expect(refused.ok ? "opened" : refused.error.code).toBe("invalid");
+			expect(home.state).toBe("closed");
+			getOrThrow(await home.resume({ epoch: 1, env: { NAME: "value" } }, context));
+			expect(seen).toMatchObject({ env: { NAME: "value" }, root: dirname(base.workspace), epoch: 1 });
+			// Once the session resumed, and not before: the order had answered.
+			for (let waited = 0; waited < 2_000 && resumedAt === undefined; waited += 10) await sleep(10);
+			expect(resumedAt).toBe(1);
+			await home.close(context);
+		});
+	});
+
+	it("keeps the environment it was given for a reopen after its seal, and for a resume in the same process", async () => {
+		await withWorld(async (made) => {
+			const base = made.home("a");
+			const given: AppContext["env"][] = [];
+			const app: App = async (ctx) => {
+				given.push(ctx.env);
+				return base.app(ctx);
+			};
+			const home = await opened({ ...base, app });
+			getOrThrow(await home.resume({ epoch: 1, env: { NAME: "value" } }, context));
+			getOrThrow(await home.drain({ timeoutMs: 5_000 }, context));
+			getOrThrow(await home.seal(context));
+			// A reopen's order is its epoch alone.
+			getOrThrow(await home.reopen({ epoch: 1 }, context));
+			await home.close(context);
+			getOrThrow(await home.resume({ epoch: 1 }, context));
+			expect(given).toEqual([{ NAME: "value" }, { NAME: "value" }, { NAME: "value" }]);
 			await home.close(context);
 		});
 	});

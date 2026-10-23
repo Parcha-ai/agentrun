@@ -1,0 +1,100 @@
+[
+  {
+    "driver": "graph-fixture",
+    "map": "/root/steps/0",
+    "index": 0,
+    "base": "dab4ea9d49bbc250f9477d3e5e413b64e1c92e63b24b811399e65cf6e0b8b4b7",
+    "revision": 7,
+    "status": "committed",
+    "frame": {
+      "done": [
+        "/root/steps/0/items/0/body/steps/0",
+        "/root/steps/0/items/0/body/steps/1"
+      ],
+      "states": {
+        "/root/steps/0/items/0/body/steps/1": {
+          "set": {
+            "item": {
+              "id": "a"
+            },
+            "item_index": 0,
+            "look": {
+              "id": "a",
+              "score": 1
+            },
+            "score": 2
+          },
+          "unset": [],
+          "sha256": "3bdad388d80e4d404868fc55574bbd03e02d6082777befae598919ace7927df3"
+        }
+      },
+      "chains": {
+        "/root/steps/0/items/0/body": {
+          "index": 1,
+          "path": "/root/steps/0/items/0/body/steps/1"
+        }
+      },
+      "loops": {},
+      "routes": {},
+      "inputs": {},
+      "steps": {}
+    },
+    "effects": [
+      "step:/root/steps/0/items/0/body/steps/0#call:0"
+    ],
+    "clocks": {
+      "attempt:step:/root/steps/0/items/0/body/steps/0#call:0": 1792000000000
+    },
+    "files": {},
+    "unknownResponses": {},
+    "maps": {}
+  },
+  {
+    "driver": "graph-fixture",
+    "map": "/root/steps/0",
+    "index": 1,
+    "base": "dab4ea9d49bbc250f9477d3e5e413b64e1c92e63b24b811399e65cf6e0b8b4b7",
+    "revision": 11,
+    "status": "running",
+    "frame": {
+      "done": [
+        "/root/steps/0/items/1/body/steps/0"
+      ],
+      "states": {
+        "/root/steps/0/items/1/body/steps/0": {
+          "set": {
+            "item": {
+              "id": "b"
+            },
+            "item_index": 1,
+            "look": {
+              "id": "b",
+              "score": 1
+            }
+          },
+          "unset": [],
+          "sha256": "8632c22f63d4694a26001e3acdd457f09040c8913648cfd204349ab30b2b2462"
+        }
+      },
+      "chains": {
+        "/root/steps/0/items/1/body": {
+          "index": 0,
+          "path": "/root/steps/0/items/1/body/steps/0"
+        }
+      },
+      "loops": {},
+      "routes": {},
+      "inputs": {},
+      "steps": {}
+    },
+    "effects": [
+      "step:/root/steps/0/items/1/body/steps/0#call:0"
+    ],
+    "clocks": {
+      "attempt:step:/root/steps/0/items/1/body/steps/0#call:0": 1792000000000
+    },
+    "files": {},
+    "unknownResponses": {},
+    "maps": {}
+  }
+]

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { test } from 'node:test';
-import { argsHashOf, receiptKeyOf, sha256Hex } from '../src/receipt-key.ts';
+import { argsHashOf, receiptKeyOf, sha256Hex, sha256OfBytes, sha256Paused } from '../src/receipt-key.ts';
 
 const node = (text: string) => createHash('sha256').update(text).digest('hex');
 
@@ -13,6 +13,18 @@ test('sha256 matches Node\'s on the known vectors, block boundaries and multi-by
   assert.equal(sha256Hex('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
   for (const length of [1, 54, 55, 56, 57, 63, 64, 65, 119, 120, 128, 1000]) assert.equal(sha256Hex('x'.repeat(length)), node('x'.repeat(length)), `${length} bytes`);
   for (const text of ['héllo wörld', '日本語のテキスト', 'emoji 🙂 mixed', '{"q":"a b\\n"}']) assert.equal(sha256Hex(text), node(text), text);
+});
+
+test('a large blob is hashed in slices that give the page back between them, to the same digest', async () => {
+  const bytes = new Uint8Array(4 * 1024 * 1024 + 17).map((_, at) => (at * 31 + (at >> 9)) & 0xff);
+  let pauses = 0;
+  assert.equal(await sha256Paused(bytes, async () => { pauses += 1; }), createHash('sha256').update(bytes).digest('hex'));
+  assert.ok(pauses >= 3, `the page is given back between slices: ${pauses} pauses`);
+  for (const length of [0, 55, 56, 64, 65, 1000]) {
+    const some = bytes.subarray(5, 5 + length);
+    assert.equal(await sha256Paused(some, async () => undefined), createHash('sha256').update(some).digest('hex'), `${length} bytes, a view into a larger buffer`);
+    assert.equal(sha256OfBytes(some), createHash('sha256').update(some).digest('hex'));
+  }
 });
 
 test('the arguments\' hash ignores key order at every depth and keeps array order', () => {
