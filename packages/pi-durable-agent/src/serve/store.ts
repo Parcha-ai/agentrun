@@ -86,8 +86,7 @@ async function runView(dir: string, reader: AgentStoreReader, run: RunRow, readR
   checkInside(dir, storePath, "store");
   if (revision.kind === "agentic") return { ...value, rows: timelineOf(readEntriesAt(dir, storePath, "store"), { settled: run.state !== "running" }) };
   try {
-    // The store keeps a workflow as the JSON checkWorkflowBody passed at its commit; ./workflow types it as the DSL's Workflow.
-    return { ...value, workflow: await readRun({ runId: run.id, storePath, revision: revision as unknown as Parameters<ReadWorkflowRun>[0]["revision"] }) };
+    return { ...value, workflow: await readRun({ runId: run.id, storePath, revision }) };
   } catch (error) {
     if (error instanceof AgentHomeError) return { ...value, refused: error.message };
     throw error;
