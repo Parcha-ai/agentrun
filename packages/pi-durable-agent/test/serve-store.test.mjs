@@ -172,6 +172,30 @@ test("an agentic run: its row, agent and note, and its own store's entries as th
   }
 });
 
+test("a copy of the fixture folder served through serveStore: its workflow runs read by ./workflow's own reader, completed, escalated and stopped, with the node states their journals hold", async () => {
+  const { root, ids } = await buildSampleStore(await scratch());
+  const copy = path.join(await scratch(), "copied-agents");
+  cpSync(root, copy, { recursive: true });
+  const served = await serveStore({ dir: copy });
+  const PUBLIC_BODY = "/root/steps/1/branches/public/body";
+  try {
+    const read = async (role) => JSON.parse((await request(served.url, { target: `/api/runs/${ids[role]}` })).body);
+    const completed = await read("c1");
+    assert.deepEqual([completed.run.state, completed.run.summary], ["completed", "Read the site, Jev: public or private, Check the filing"]);
+    assert.deepEqual(completed.workflow.status, { "/root": "done", "/root/steps/0": "done", "/root/steps/1": "done", [PUBLIC_BODY]: "done", [PRIVATE]: "not-run" });
+    assert.deepEqual([completed.workflow.outcome, completed.workflow.output], ["completed", { brief: "Caterpillar Inc. makes heavy machinery; its 10-K is cited." }]);
+    const escalated = await read("c2");
+    assert.deepEqual([escalated.run.state, escalated.run.summary], ["escalated", "Read the site; escalated at No public record"]);
+    assert.deepEqual(escalated.workflow.status, { "/root": "escalated", "/root/steps/0": "done", "/root/steps/1": "escalated", [PUBLIC_BODY]: "not-run", [PRIVATE]: "escalated" });
+    assert.deepEqual([escalated.workflow.outcome, escalated.workflow.escalatedAt, "output" in escalated.workflow], ["escalated", { path: PRIVATE, label: "No public record" }, false]);
+    const stopped = await read("m4");
+    assert.deepEqual([stopped.run.state, stopped.run.summary, stopped.workflow.outcome], ["stopped", "Read the site", "stopped"]);
+    assert.deepEqual(stopped.workflow.status, { "/root": "stopped", "/root/steps/0": "done", "/root/steps/1": "stopped", "/root/steps/2": "not-run", "/root/steps/3": "not-run" });
+  } finally {
+    await served.close();
+  }
+});
+
 test("a workflow run: the reader is given the run's own store and its revision's workflow; the answer is the graph, each node's state, where an escalation stopped it, and a completed run's output", async () => {
   const { root, revisions, served, get, workflow, ids } = await sample();
   try {
