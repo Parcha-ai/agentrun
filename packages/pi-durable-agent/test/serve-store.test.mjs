@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { workflowGraph } from "@parcha/agentrun-dsl/graph";
 import { AgentHomeError, durableProfileStore, openStoreReader } from "../dist/index.js";
+import { serveStore } from "../dist/serve/index.js";
 import { lineDiff, serveStoreWith } from "../dist/serve/store.js";
 import { BRIEF_WORKFLOW, buildSampleStore, MCC_WORKFLOW_2, PRIVATE, PROMPT_A, PROMPT_B, sampleReadRun, SKILL_MARKER } from "./fixtures/store-sample.mjs";
 import { all, assertInert, mount } from "./page-dom.mjs";
@@ -241,6 +242,19 @@ test("a store a writer was killed in mid-transaction: the picker and an agent pa
     await served.close();
   }
   assert.deepEqual(hashes(), before, "store.sqlite and its journal are byte-identical");
+});
+
+test("serveStore on a folder with no store.sqlite is missing, in words that name no folder", async () => {
+  const dir = path.join(await scratch(), "private-folder-name-4417");
+  mkdirSync(dir);
+  await assert.rejects(serveStore({ dir }), (error) => error instanceof AgentHomeError && error.code === "missing" && error.message === "there is no store.sqlite in that folder");
+});
+
+test("the bin on a folder that is neither a store nor a home exits 1, in words that name no folder", async () => {
+  const dir = path.join(await scratch(), "private-folder-name-4417");
+  mkdirSync(dir);
+  const child = spawnSync(process.execPath, [CLI, "serve", dir], { encoding: "utf8" });
+  assert.deepEqual([child.status, child.stdout, child.stderr], [1, "", "that folder is not an agent home or an agent store: it holds no agent.sqlite and no store.sqlite\n"]);
 });
 
 test("the bin serves the store's page for a folder holding a store.sqlite, drawing a workflow and reading a workflow run with what it loads on demand", { timeout: 60_000 }, async (t) => {
