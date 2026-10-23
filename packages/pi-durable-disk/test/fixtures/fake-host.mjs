@@ -135,7 +135,7 @@ if (cmd === "mount") {
     state.holders[target] = mp;
     // fileDelegations: delegations the client also holds on files under the mount (paths relative to it), which a
     // checkin of the mountpoint leaves; each goes with a checkin of its own path, unless fileCheckinKeeps.
-    state.mounts[mp] = { source: `${target}[${region}]`, alive: true, fenced: false, delegation: b.mount === "no-delegation" ? null : "Active", files: b.fileDelegations ?? [], ...(b.unhardened ? { options: "rw,relatime,user_id=0,group_id=0,allow_other" } : {}) };
+    state.mounts[mp] = { source: `${target}[${region}]`, alive: true, fenced: false, delegation: b.mount === "no-delegation" ? null : "Active", files: b.fileDelegations ?? [], ...(b.mountOptions ? { options: b.mountOptions } : b.unhardened ? { options: "rw,relatime,user_id=0,group_id=0,allow_other" } : {}) };
     if (state.proc) {
       state.nextPid = (state.nextPid ?? 7000) + 1;
       (state.daemons ??= {})[state.nextPid] = ["/usr/bin/archil", "mount", target, mp, "--region", region];

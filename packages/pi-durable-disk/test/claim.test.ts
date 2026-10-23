@@ -384,6 +384,14 @@ test("acquire refuses a mount that is not nosuid,nodev (archil takes no mount op
   assert.deepEqual(Object.keys(r.read().mounts), [], "the unhardened mount is gone");
 });
 
+test("acquire needs BOTH flags: a mount with nosuid but not nodev, or nodev but not nosuid, is refused MOUNT_FAILED and unmounted", async () => {
+  for (const options of ["rw,nosuid,relatime,user_id=0,group_id=0,allow_other", "rw,nodev,relatime,user_id=0,group_id=0,allow_other"]) {
+    const r = disposeAfter(rig({ behave: { mountOptions: options } }));
+    await assert.rejects(acquire(r.opts), (e: unknown) => e instanceof ClaimError && e.code === "MOUNT_FAILED" && /nosuid,nodev/.test((e as Error).message), options);
+    assert.deepEqual(Object.keys(r.read().mounts), [], `${options}: the mount is gone`);
+  }
+});
+
 test("acquire mounts exclusively with a fixed argv, the token only on the wrapper's stdin, then verifies and probes", async () => {
   const r = disposeAfter(rig());
   process.env.ARCHIL_API_KEY = API_KEY_SENTINEL;
