@@ -811,10 +811,13 @@ before it makes a box to launch in.
   the program has exited. The launcher holds no pipe to the host.
 - The launcher keeps its files in a spool, `.pi-transport-launch` in the box's `TMPDIR` (or `/tmp`), one directory per
   launch. The spool and each launch directory must be the launcher's uid's alone: a directory, never a symbolic link
-  (read without following it), owned by that uid, with no group- or other-write bit. Every call checks both before it
-  uses them, a spool that already existed like a new one, and the launcher checks them again before it starts a process
-  from them (a restart, its watchdog, the tools user's check) and before a stop's hook. A failed check is `unsafe`,
-  naming the directory and why, and nothing runs from it.
+  (read without following it), owned by that uid, with no group- or other-write bit. Every directory above the spool,
+  up to `/`, must be root's or that uid's, never a symbolic link, with no group- or other-write bit unless it has the
+  sticky bit (as `/tmp` does): else another user could rename the spool away and put another in its place. `TMPDIR` is
+  read as the directory it names (`pwd -P`). Every call checks all of them before it uses them, a spool that already
+  existed like a new one, and the launcher checks them again before it starts a process from them (a restart, its
+  watchdog, the tools user's check) and before a stop's hook. A failed check is `unsafe`, naming the directory and why,
+  and nothing runs from it. A local box makes its own directories (its `home`, `tmp` and `pids`) mode 700.
 - The program's environment is PATH, HOME, LANG (`C.UTF-8`), `PI_TRANSPORT_INCARNATION` (its incarnation) and `env`.
   Nothing of the box runtime's own environment reaches it unless `inheritEnv` names it (default `false`): the
   incarnation unsets every other exported name, and a name the shell cannot unset refuses the incarnation (exit 126).

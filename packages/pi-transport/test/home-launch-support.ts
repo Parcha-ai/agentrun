@@ -97,6 +97,8 @@ export function expectUnsafe(result: Result<unknown, LaunchError>, why: RegExp, 
 
 const WRITABLE = /can be written by its group or by other users/;
 const LINK = /is a symbolic link/;
+/** The refusal of a directory above the spool. */
+export const ABOVE = /, above the spool, can be written by its group or by other users and has no sticky bit/;
 
 /** A path's type, mode and owner, read with `stat` (not the `ls` the launcher reads them with). */
 const statOf = async (box: Box, path: string): Promise<string> =>
@@ -530,6 +532,32 @@ export function registerLaunchSuite(label: string, withBox: WithBox): void {
 			expect(unwrap(await launch(box, "linked", program(recording("exec sleep 300")), context)).phase).toBe(
 				"running",
 			);
+		},
+	);
+
+	each(
+		"a directory above the spool another user could write is refused, unless it has the sticky bit",
+		async (box) => {
+			const spool = await spoolOf(box);
+			// TMPDIR, or /tmp: root's in a container, the box's own in a local box.
+			const parent = spool.slice(0, spool.lastIndexOf("/"));
+			const was = (await sh(box, `stat -c %a "${parent}"`)).text.trim();
+			const spec = program(recording("exec sleep 300"));
+			try {
+				await sh(box, `chmod 770 "${parent}"`);
+				const refused = await launch(box, "above", spec, context);
+				expectUnsafe(refused, ABOVE);
+				expect(refused.ok ? "" : refused.error.message.startsWith(`${parent}, `)).toBe(true);
+				expect(await pids(box)).toHaveLength(0);
+				// Sticky, as /tmp is: only an entry's owner may rename it away.
+				await sh(box, `chmod 1777 "${parent}"`);
+				expect(unwrap(await launch(box, "above", spec, context)).phase).toBe("running");
+				// Its owner's alone.
+				await sh(box, `chmod 700 "${parent}"`);
+				expect(unwrap(await launch(box, "above-700", spec, context)).phase).toBe("running");
+			} finally {
+				await sh(box, `chmod ${was} "${parent}"`);
+			}
 		},
 	);
 

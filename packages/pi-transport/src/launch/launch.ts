@@ -164,14 +164,16 @@ export class LaunchError extends Error {
 
 const TERMINAL_PHASES: ReadonlySet<LaunchPhase> = new Set(["exited", "gave_up", "stopped"]);
 
-/** A script that checks the directories it uses first: `own_dir` and `own_dirs` (DIRECTORY_CHECK), then `lines`. */
+/** A script that checks the directories it uses first (`own_dir`, `own_spool`, `own_dirs`: DIRECTORY_CHECK), then `lines`. */
 const checked = (...lines: string[]): string => [DIRECTORY_CHECK, ...lines].join("\n");
 
 const CLAIM_SCRIPT = checked(
 	't=$TMPDIR; [ -n "$t" ] || t=/tmp',
+	`mkdir -p -m 700 "$t/${SPOOL_DIRECTORY}" || exit 3`,
+	// The directory TMPDIR names, with no symbolic link on the way: the check walks every directory above the spool.
+	't=$(cd -- "$t" && pwd -P) || exit 3',
 	`b="$t/${SPOOL_DIRECTORY}"`,
-	'mkdir -p -m 700 "$b" || exit 3',
-	'own_dir "$b" || exit $?',
+	'own_spool "$b" || exit $?',
 	'if mkdir -m 700 "$b/$1" 2>/dev/null; then c=CLAIMED; else c=EXISTS; fi',
 	// Gone for a moment while another caller replaces it: the caller looks at it again.
 	'own_dir "$b/$1" || [ $? = 4 ] || exit 13',
@@ -188,7 +190,7 @@ const CLAIM_SCRIPT = checked(
 export const RECLAIM_SCRIPT = checked(
 	// The lock is beside the launch directories under a name no launch can have: a launch name starts with a letter or digit.
 	'D=$1; E=$2; A=$3; T=$4; L="\x24{D%/*}/.lock.\x24{D##*/}"',
-	'own_dir "\x24{D%/*}" || exit $?',
+	'own_spool "\x24{D%/*}" || exit $?',
 	'if ! mkdir "$L" 2>/dev/null; then',
 	'  at=$(cat "$L/at" 2>/dev/null); now=$(date +%s)',
 	'  if [ -n "$at" ] && [ $((now - at)) -gt 120 ]; then rm -rf "$L"; fi',
@@ -219,6 +221,7 @@ export const RECLAIM_SCRIPT = checked(
 
 const LOCATE_SCRIPT = checked(
 	't=$TMPDIR; [ -n "$t" ] || t=/tmp',
+	't=$(cd -- "$t" 2>/dev/null && pwd -P) || { echo NODIR; exit 4; }',
 	`D="$t/${SPOOL_DIRECTORY}/$1"`,
 	"own_dirs || { [ $? = 4 ] || exit 13; echo NODIR; exit 4; }",
 	'echo "DIR $D"',

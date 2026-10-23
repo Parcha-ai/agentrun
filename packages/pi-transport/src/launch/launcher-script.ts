@@ -657,9 +657,13 @@ const GROUP_LIVE = [
  * `own_dir PATH`: whether PATH is a directory only the launcher's uid can change, from ONE listing of PATH itself (a symbolic
  * link is never followed): a directory, owned by `id -u`, with no group- or other-write bit. 0 when it is, 4 when nothing is
  * there, 13 and a line `UNSAFE <why>` when it is not. A path that is there and did not list (another caller may have removed
- * and made it again in between) is listed again, at most three times in all; one that never lists is unsafe. `own_dirs`
- * asks it of $D's parent (the spool) and then of $D. Every script that uses the spool or a launch directory asks first, the
- * launcher's own included: a `mkdir -p` that succeeded proves nothing.
+ * and made it again in between) is listed again, at most three times in all; one that never lists is unsafe.
+ * `own_above PATH`: every directory above PATH, up to /, is root's or the launcher's uid's, never a symbolic link, with no
+ * group- or other-write bit unless it has the sticky bit (where only an entry's owner may rename it away): else another user
+ * could rename the spool away and put another in its place between a check and a use. 0, or 13 and a line `UNSAFE <why>`
+ * naming the directory. `own_spool` asks both of the spool; `own_dirs` asks it of $D's parent (the spool), then own_dir of
+ * $D. Every script that uses the spool or a launch directory asks first, the launcher's own included: a `mkdir -p` that
+ * succeeded proves nothing.
  */
 export const DIRECTORY_CHECK = [
 	"own_dir() {",
@@ -679,7 +683,21 @@ export const DIRECTORY_CHECK = [
 	'  [ "\x24{sd#* }" = "$(id -u)" ] || { echo "UNSAFE $1 belongs to uid \x24{sd#* }, not to the launcher\'s uid $(id -u)"; return 13; }',
 	'  case "$sm" in d????-??-*) ;; *) echo "UNSAFE $1 can be written by its group or by other users ($sm)"; return 13 ;; esac',
 	"}",
-	'own_dirs() { own_dir "\x24{D%/*}" && own_dir "$D"; }',
+	"own_above() {",
+	'  case "$1" in /*) ;; *) echo "UNSAFE $1 is not an absolute path"; return 13 ;; esac',
+	"  sp=$1",
+	'  while [ "$sp" != / ]; do',
+	"    sp=\x24{sp%/*}",
+	'    [ -n "$sp" ] || sp=/',
+	'    sd=$(ls -ldn "$sp" 2>/dev/null | awk \'NR == 1 { print $1 " " $3 }\')',
+	"    sm=\x24{sd%% *}",
+	'    case "$sm" in d*) ;; *) echo "UNSAFE $sp, above the spool, is not a directory (a symbolic link or another file)"; return 13 ;; esac',
+	'    [ "\x24{sd#* }" = 0 ] || [ "\x24{sd#* }" = "$(id -u)" ] || { echo "UNSAFE $sp, above the spool, belongs to uid \x24{sd#* }: neither root nor the launcher\'s uid $(id -u)"; return 13; }',
+	'    case "$sm" in ?????????[tT]*|d????-??-*) ;; *) echo "UNSAFE $sp, above the spool, can be written by its group or by other users and has no sticky bit ($sm)"; return 13 ;; esac',
+	"  done",
+	"}",
+	'own_spool() { own_dir "$1" && own_above "$1"; }',
+	'own_dirs() { own_spool "\x24{D%/*}" && own_dir "$D"; }',
 ].join("\n");
 
 /**
@@ -785,6 +803,7 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 	"sd",
 	"sm",
 	"sn",
+	"sp",
 ];
 
 /** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */

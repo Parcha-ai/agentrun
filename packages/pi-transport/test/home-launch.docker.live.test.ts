@@ -59,6 +59,30 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 					await box.destroy(context);
 				}
 			}, 300_000);
+
+			it(`${image ?? "default image"}: a directory above the spool another uid owns is refused, sticky or not`, async () => {
+				const box = getOrThrow(
+					await provider.create(
+						{ maxLifetimeMs: 10 * 60_000, labels, ...(image === undefined ? {} : { image }) },
+						context,
+					),
+				);
+				try {
+					const spec = { argv: ["sh", "-c", "echo $$ >> prog.pids; exec sleep 300"] };
+					const owned = /^\/tmp, above the spool, belongs to uid 65534: neither root nor the launcher's uid 0/;
+					// Sticky, and then open to all without it: neither excuses another owner.
+					for (const mode of ["1777", "777"]) {
+						expect((await sh(box, `chown 65534 /tmp && chmod ${mode} /tmp`)).exitCode).toBe(0);
+						expectUnsafe(await launch(box, "above", spec, context), owned, `mode ${mode}`);
+					}
+					expect((await sh(box, "cat prog.pids 2>/dev/null")).text).toBe("");
+					// Root's and sticky, as a box's /tmp is.
+					await sh(box, "chown 0 /tmp && chmod 1777 /tmp");
+					expect(getOrThrow(await launch(box, "above", spec, context)).phase).toBe("running");
+				} finally {
+					await box.destroy(context);
+				}
+			}, 300_000);
 		}
 	});
 

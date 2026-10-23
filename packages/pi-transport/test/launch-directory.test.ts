@@ -1,14 +1,32 @@
-// The launcher's directory check (own_dir, own_dirs), run as the box's shell runs it: the owner case a test with one uid can
-// reach (root's /), and the launcher's own start, which checks its directory and the spool before it starts anything from them.
-// The cases through `launch` run in the shared launcher suite (home-launch-support.ts), locally and in Docker.
+// The launcher's directory check (own_dir, own_spool, own_dirs), run as the box's shell runs it: the owner case a test with one
+// uid can reach (root's /), the launcher's own start, which checks its directory and the spool before it starts anything from
+// them, and the directories above the spool in a local box. The other cases through `launch` run in the shared launcher suite
+// (home-launch-support.ts), locally and in Docker.
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { afterAll, describe, expect, it } from "vitest";
+import type { Box } from "../src/box/box.ts";
+import { localBoxes } from "../src/box/local.ts";
+import { launch, launchStop } from "../src/launch/launch.ts";
 import { DIRECTORY_CHECK, LAUNCHER_SCRIPT } from "../src/launch/launcher-script.ts";
-import { until } from "./home-launch-support.ts";
+import { ABOVE, expectUnsafe, sh, spoolOf, until } from "./home-launch-support.ts";
 import { guardLeaks } from "./leak-guard.ts";
+
+const context = BACKGROUND_CONTEXT;
 
 const { env: MARK } = guardLeaks();
 const root = mkdtempSync(join(tmpdir(), "pi-transport-launch-directory-"));
@@ -108,5 +126,65 @@ describe("the launcher's own start", () => {
 		expect(ran.status, ran.stdout).toBe(0);
 		await until("the program", async () => (existsSync(marker) ? true : undefined));
 		await until("the launch to end", async () => (existsSync(join(dir, "done")) ? true : undefined));
+	});
+});
+
+/** A local box in a root of its own, ended after `use`. */
+async function withLocalBox(
+	env: Readonly<Record<string, string>>,
+	use: (box: Box, root: string) => Promise<void>,
+): Promise<void> {
+	const boxRoot = mkdtempSync(join(root, "boxes-"));
+	const box = getOrThrow(
+		await localBoxes({ root: boxRoot }).create({ maxLifetimeMs: 10 * 60_000, env: { ...MARK, ...env } }, context),
+	);
+	try {
+		await use(box, boxRoot);
+	} finally {
+		await box.destroy(context);
+	}
+}
+
+const spec = { argv: ["sh", "-c", "exec sleep 300"] };
+
+describe("the directories above the spool in a local box", () => {
+	it("walks them all, not only the spool's parent: the box's own directory, two above it, refuses when its group can write it", async () => {
+		await withLocalBox({}, async (box) => {
+			const spool = await spoolOf(box);
+			const boxDir = spool.slice(0, spool.lastIndexOf("/", spool.lastIndexOf("/") - 1));
+			chmodSync(boxDir, 0o770);
+			const refused = await launch(box, "deep", spec, context);
+			chmodSync(boxDir, 0o700);
+			expectUnsafe(refused, ABOVE);
+			expect(refused.ok ? "" : refused.error.message.startsWith(`${boxDir}, `)).toBe(true);
+			const started = getOrThrow(await launch(box, "deep", spec, context));
+			getOrThrow(await launchStop(box, started.launch, { graceMs: 1_000 }, context));
+		});
+	});
+
+	it("reads a TMPDIR reached through a symbolic link as the directory it names: the walk sees no link", async () => {
+		const real = mkdtempSync(join(root, "real-tmp-"));
+		const link = join(root, `link-${real.slice(real.lastIndexOf("-") + 1)}`);
+		symlinkSync(real, link);
+		await withLocalBox({ TMPDIR: link }, async (box) => {
+			const started = getOrThrow(await launch(box, "linked-tmp", spec, context));
+			expect(started.directory).toBe(`${realpathSync(real)}/.pi-transport-launch/linked-tmp`);
+			getOrThrow(await launchStop(box, started.launch, { graceMs: 1_000 }, context));
+		});
+	});
+
+	it("launches in a box made under a umask that lets a group write (002): the box's own directories are its user's alone", async () => {
+		const before = process.umask(0o002);
+		try {
+			await withLocalBox({}, async (box) => {
+				const tmp = (await sh(box, 'printf %s "$TMPDIR"')).text;
+				expect(statSync(tmp).mode & 0o777).toBe(0o700);
+				expect(statSync(tmp.slice(0, tmp.lastIndexOf("/"))).mode & 0o777).toBe(0o700);
+				const started = getOrThrow(await launch(box, "umask", spec, context));
+				getOrThrow(await launchStop(box, started.launch, { graceMs: 1_000 }, context));
+			});
+		} finally {
+			process.umask(before);
+		}
 	});
 });
