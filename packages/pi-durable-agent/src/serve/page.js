@@ -824,6 +824,7 @@
         if (token !== view) return;
         var agent = both[0].agent;
         var revisions = both[0].revisions || [];
+        var current = revisions.filter(function (revision) { return revision.current; })[0];
         crumb([[agent.name, agentHref(agentId)]]);
         doc.title = agent.name + " · agent store";
         show([
@@ -832,7 +833,7 @@
             { class: "card agent" },
             kicker("Agent"),
             el("h1", null, agent.name),
-            el("p", { class: "facts" }, kindPill(agent.currentKind), el("span", { class: "id" }, agent.id), el("span", null, "created " + when(agent.createdAt)), agent.current ? el("span", null, "current " + short(agent.current)) : null),
+            el("p", { class: "facts" }, kindPill(current && current.kind), el("span", { class: "id" }, agent.id), el("span", null, "created " + when(agent.createdAt)), agent.current ? el("span", null, "current " + short(agent.current)) : null),
             agent.description ? el("p", { class: "lede" }, agent.description) : null
           ),
           runsCard(agentId, revisions, both[1], filter),

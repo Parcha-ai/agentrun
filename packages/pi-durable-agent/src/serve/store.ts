@@ -2,7 +2,7 @@
 // store's reader on store.sqlite in place, read-only, does its reads and closes it: nothing is copied, cached or written.
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { type AgentStoreReader, openStoreReader, type Revision, type RunRow, STORE_FILE } from "../agent-store.js";
+import { type AgentStoreReader, openStoreReader, type Revision, STORE_FILE } from "../agent-store.js";
 import { ID_PATTERN } from "../home.js";
 import { AgentHomeError } from "../store.js";
 import { timelineOf } from "../timeline/index.js";
@@ -63,16 +63,15 @@ function agenticDiff(parent: Revision, revision: Revision) {
   };
 }
 
-/** A revision for the agent page. An agentic one has its prompt diffed against an agentic parent. A workflow has its graph
- *  and, against a workflow parent, the graph's diff as the drawer's marks, both from ./workflow's revisionGraph; its
- *  workflow's JSON is not sent. */
-async function revisionView(reader: AgentStoreReader, revision: Revision, current: boolean) {
-  const parent = revision.parent === null ? null : reader.readRevision(revision.parent);
-  const head = { id: revision.id, kind: revision.kind, current, createdAt: revision.createdAt, note: revision.note, parent: revision.parent, parentKind: parent?.kind ?? null };
+/** A revision for the agent page, given its parent. An agentic one has its prompt diffed against an agentic parent. A
+ *  workflow has its graph and, against a workflow parent, the graph's diff as the drawer's marks, both from ./workflow's
+ *  revisionGraph; its workflow's JSON is not sent. */
+async function revisionView(revision: Revision & { current: boolean }, parent: Revision | undefined) {
+  const head = { id: revision.id, kind: revision.kind, current: revision.current, createdAt: revision.createdAt, note: revision.note, parent: revision.parent, parentKind: parent?.kind ?? null };
   if (revision.kind === "agentic") return { ...head, body: revision.body, diff: parent?.kind === "agentic" ? agenticDiff(parent, revision) : null };
   // ./workflow is loaded here, for a workflow revision only: a store of agentic revisions never loads it or the DSL.
   const { revisionGraph } = await import("../workflow.js");
-  const { graph, diff } = await revisionGraph(revision, parent ?? undefined);
+  const { graph, diff } = await revisionGraph(revision, parent);
   const body = { tools: revision.body.tools, skills: revision.body.skills };
   if (!diff) return { ...head, body, graph, diff: null };
   const edited = [...diff.changed, ...diff.rewritten].map((node) => node.next);
@@ -84,9 +83,9 @@ async function revisionView(reader: AgentStoreReader, revision: Revision, curren
  *  makes no file beside it; a running one's is read through its log. An AgentHomeError from the workflow's reader (a run
  *  this version does not read) is the one line the page shows in place of the graph. A run whose directory is gone says
  *  so. */
-async function runView(dir: string, reader: AgentStoreReader, run: RunRow) {
+async function runView(dir: string, reader: AgentStoreReader, { agentName, note, ...run }: NonNullable<ReturnType<AgentStoreReader["readRun"]>>) {
   const revision = reader.readRevision(run.revision);
-  const value = { run, agent: reader.listAgents().find((agent) => agent.id === run.agent)?.name ?? run.agent, note: revision.note };
+  const value = { run, agent: agentName, note };
   const storePath = reader.runStorePath(run.id);
   if (!existsSync(storePath)) return { ...value, gone: true };
   checkInside(dir, storePath, "store");
@@ -131,13 +130,15 @@ export async function serveStore(store: { readonly dir: string }, options: Serve
       if (id === undefined) return notFound("page");
       if (!ID_PATTERN.test(id)) return badId;
       if (route === "agents") {
-        const agent = reader.listAgents().find((candidate) => candidate.id === id);
-        if (!agent) return notFound("agent");
+        const found = reader.readAgent(id);
+        if (!found) return notFound("agent");
+        // A revision's parent is its own agent's, so it is in the same list.
+        const byId = new Map(found.revisions.map((revision) => [revision.id, revision]));
         const revisions = [];
-        for (const row of reader.listRevisions(agent.id)) revisions.push(await revisionView(reader, reader.readRevision(row.id), row.current));
-        return { status: 200, value: { agent, revisions } };
+        for (const revision of found.revisions) revisions.push(await revisionView(revision, revision.parent === null ? undefined : byId.get(revision.parent)));
+        return { status: 200, value: { agent: found.agent, revisions } };
       }
-      const run = reader.listRuns().find((candidate) => candidate.id === id);
+      const run = reader.readRun(id);
       return run ? { status: 200, value: await runView(dir, reader, run) } : notFound("run");
     } finally {
       reader.close();
