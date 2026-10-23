@@ -492,3 +492,41 @@ test("a sealed provider context whose own origins go beyond the ones it was capt
   assert.deepEqual(vault.handedOut(), []);
   assert.deepEqual(await vault.restore({ sessionKey: "crafted", origins: [A, B] }), context, "a request that names every origin it holds gets it");
 });
+
+/** Every place an error holds text: its message, its stack, its cause, and every own property, however nested. */
+const errorText = (error) => {
+  const seen = new Set();
+  const texts = [];
+  const walk = (value) => {
+    if (typeof value === "string") return void texts.push(value);
+    if (value === null || typeof value !== "object" || seen.has(value)) return;
+    seen.add(value);
+    for (const name of Object.getOwnPropertyNames(value)) walk(value[name]);
+    if (value.cause !== undefined) walk(value.cause);
+  };
+  walk(error);
+  texts.push(String(error), JSON.stringify(error, Object.getOwnPropertyNames(error)));
+  return texts.join("\n");
+};
+
+const ORIGIN_FAULT = "the origins are not all http(s) origins (scheme, host and port only)";
+const LOCAL_STORAGE_FAULT = "the localStorage holds an origin whose items are not names to strings";
+
+test("an error about a malformed origin names only the fault: a fixed message, with the value nowhere in the error, on capture, restore and a provider context", async () => {
+  const h = await home();
+  const vault = sessionVault(h, { hostKey: KEY, now: NOW });
+  const secret = marker("origin");
+  // not an http(s) origin: a path, a scheme, a bare word, a credential in the authority
+  const malformed = [`https://app.acme.example/${secret}`, `ftp://${secret}.example`, secret, ["https://user", `${secret}@app.acme.example`].join(":")];
+  const named = (error, message) => error instanceof AgentHomeError && error.code === "invalid" && error.message === message && !errorText(error).includes(secret);
+  for (const origin of malformed) {
+    await assert.rejects(vault.capture({ sessionKey: "x", origins: [origin], state: chromeState() }), (error) => named(error, ORIGIN_FAULT), `capture ${origin.slice(0, 30)}`);
+    await assert.rejects(vault.restore({ sessionKey: "x", origins: [A, origin] }), (error) => named(error, ORIGIN_FAULT), `restore ${origin.slice(0, 30)}`);
+    const context = { kind: "provider-context", capturedAt: new Date(T0).toISOString(), provider: "kernel", contextId: marker("ctx"), origins: [origin] };
+    await assert.rejects(vault.capture({ sessionKey: "x", origins: [A], state: context }), (error) => named(error, `the provider context's origins: ${ORIGIN_FAULT}`), `context ${origin.slice(0, 30)}`);
+  }
+  // a captured localStorage keyed by a value that is not an origin's items: the key is an origin, and it is not echoed either
+  const state = { ...chromeState(), localStorage: { [`https://${secret}.example`]: { k: 1 } } };
+  await assert.rejects(vault.capture({ sessionKey: "x", origins: [A], state }), (error) => named(error, LOCAL_STORAGE_FAULT), "localStorage");
+  assert.equal((await vault.list()).some((entry) => entry.sessionKey === "x"), false, "nothing was saved");
+});

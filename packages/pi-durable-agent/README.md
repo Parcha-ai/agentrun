@@ -23,6 +23,9 @@ there is no second format. This package opens its own at `synchronous = FULL`.
   home. A pack and an export leave the saved sign-ins behind, so a new machine asks once.
 - **Reads a run as a timeline.** `@parcha/pi-durable-agent/timeline` turns a run's entries or live events into plain rows
   that a page can draw.
+- **Shows a home or a store.** `npx @parcha/pi-durable-agent serve <dir>` opens a local page over a home's files, read-only
+  ([Looking at a home](#looking-at-a-home)), or over an agent store's agents, revisions and runs
+  ([Looking at a store](#looking-at-a-store)).
 
 It does not run the agent. The host keeps what a run needs from outside: the model, the thinking level, the tools, and
 where each tool runs. The definition names tools; the host binds them. It does not drive a browser either:
@@ -170,8 +173,8 @@ at a time, the host passes the claim as a `HomeAccess` and the lock is taken ins
    another run holds the lease for is copied without its `ref` (`state: "held"`, `heldBy` naming that run). It returns
    `{ runId, dir, storePath, workspace, agent: { instructions, tools }, leases }`, where `leases` lists the profiles
    this run can write to. Seeding is this host step; nothing here is a tool, and the model never sees a sign-in.
-   `prompt` is the [prompt variant](#prompt-variants) the host chose for the run, `{ id, reason }`, recorded on its
-   entry; an id that is not one of the agent's variants is refused.
+   `prompt` is the [prompt variant](#prompt-variants) the host chose for the run, `{ id, reason, confidence? }`, recorded on
+   its entry; an id that is not one of the agent's variants is refused, and so is a `confidence` that is not a number from 0 to 1.
 2. The host opens its own Harness on `storePath`, itself or through pi-durable-disk on `dir`, and creates the root
    conversation with `agent.instructions`, its chosen model and thinking level, and its tools for the names in
    `agent.tools`.
@@ -318,7 +321,7 @@ fields are the stored format.
 | `agent.prompts` | agent | id | `{ role, label, text, when?, criteria? }`: `role` is `base`, `overlay`, `generic` or `question`, one base, one generic and at most one question per set; `when` (an overlay's only) is `{ question, option, threshold }`, the question's id, the option the variant needs and its least probability, 0 to 1; `criteria` (a question's only) describes options by name |
 | `agent.aliases` | agent | host | `{ externalId }`: the agent's id in that host |
 | `agent.bindings` | agent | host | `{ [tool]: target }`: where each tool runs in that host |
-| `agent.runs` | agent | run id | `{ path, host, startedAt, sha?, prompt?, endedAt?, outcome?, finalAnswer?, cost? }`; `path` is relative to the home; `sha` is the home's `agent.source` when the run started; `prompt` is `{ id, reason }`, the variant the host chose |
+| `agent.runs` | agent | run id | `{ path, host, startedAt, sha?, prompt?, endedAt?, outcome?, finalAnswer?, cost? }`; `path` is relative to the home; `sha` is the home's `agent.source` when the run started; `prompt` is `{ id, reason, confidence? }`, the variant the host chose and how sure the choice was (0 to 1) |
 | `agent.leases` | agent | profile key | `{ runId, expiresAt }` |
 | `agent.vault` | agent | session key (1 to 128 of letters, digits, `_`, `.`, `:` and `-`, starting with a letter or digit, as pi-browser takes it) | `{ kind, origins, capturedAt, provider?, keyId, iv, ciphertext, alg, v }`: a saved browser session as AES-256-GCM ciphertext; `keyId` names its item key in `vault.keys`, beside the store ([the vault](#saved-browser-sessions-the-vault)) |
 | `browser.profiles` | agent and run | profile key | `{ provider, ref, state, startUrl?, allowedOrigins?, verifiedAt?, heldBy? }`; `ref` is the provider's saved sign-in (a Browserbase context id, or a local Chrome's profile directory), `state` is `ready` once it names one, or `held` in a run store whose run has no lease on it (`ref` empty, `heldBy` the run that has) |
@@ -457,10 +460,118 @@ by `tool_use_id`, never by time. A row is built from pi entries and events only:
 browser context id or a cookie, and every summary, preview and text (a person's own message excepted) keeps a URL's
 origin, path and query keys but drops its query values, fragment and userinfo. `registerLabel(tool, label)` adds the label of a host's own tool.
 
+## Looking at a home
+
+`pi-durable-agent serve <dir>` serves a page about the agent home in `<dir>` and prints its address. It opens nothing
+itself, and it writes nothing to the home.
+
+```sh
+npx @parcha/pi-durable-agent serve ./agent-home
+# http://127.0.0.1:41297/
+```
+
+`--port <n>` takes a port (the default is a free one). From code, `serveHome(home, { port?, signal? })` from
+`@parcha/pi-durable-agent/serve` does the same and returns `{ url, close() }`.
+
+The page shows the agent (its identity, definition, the repo commit it came from, its skills' names and sizes, and its
+prompt variants), its runs (newest first, with the variant each loaded, why, and how sure the choice was), and each
+run's timeline. A live run is polled. The files are read directly, with no lock, so a home can be watched while a run
+writes it. Reads open the stores read-only; SQLite may create its shared-memory side files beside them. The agent store
+is copied by SQLite's backup (a consistent snapshot) into a private temporary directory, read there with the package's
+own reader, and the directory is removed; a run's store is read for its entries with one query. A store from a newer
+pi-durable than this package reads (a schema version other than 1) is refused, not guessed at.
+
+It sends only what an exporter may copy (`EXPORTABLE_KINDS`: identity, definition, source, skills, prompts and the runs
+index without each run's `host`), so a saved sign-in, saved session, lease, binding or alias is never in an answer. It
+sends no skill's text and no run's final answer. It listens on `127.0.0.1` only, and there is
+no option to change that; it answers `421` to a request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>`, and
+`405` to anything but `GET` and `HEAD`; it sends no CORS header, and the page's content security policy allows only its
+own files. The data is JSON:
+
+| Request | Answer |
+|---|---|
+| `GET /api/agent` | `{ identity, definition, source, skills: [{ path, sha256, size }], prompts, counts: { skills, prompts, questions, runs, live } }`; `prompts` are the variants and the question row, with their `id`, `role`, `label`, `text`, `when` and `criteria`, and `counts.prompts` counts the variants only |
+| `GET /api/runs` | `[{ id, startedAt, endedAt?, outcome?, cost?, prompt?: { id, reason, confidence? }, live }]`, newest first; `live` is a run with no `endedAt` |
+| `GET /api/runs/:id` | `{ run, rows }`: the run as above, and its entries as the [timeline](#the-timeline)'s rows (`settled` for a finished run, so a call with no result reads as interrupted, and open for a live one). `400` for an id that is not letters, digits, `.`, `_` or `-`, `404` for a run the index does not list |
+
+An unreadable store is a `500` with `{ error }` that says what is wrong with it and not where it is.
+
+## Agents in a folder: the agent store
+
+One folder holds many agents. An agent has revisions, written once and never edited; a run says which revision it ran. **Copy the
+FOLDER** (never `store.sqlite` alone: a writer killed mid-write leaves a journal beside it) and every agent, revision and run comes
+with it. The agents are rows in `store.sqlite`, not one home each; the beta.24 home API above is unchanged, and `store.importHome(dir)`
+turns a home into an agent.
+
+```
+my-agents/store.sqlite       agents, revisions, skills, runs
+my-agents/runs/<run id>/     each run's own store and work directory
+```
+
+```sql
+CREATE TABLE agents    (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, created_at TEXT NOT NULL, current_revision TEXT REFERENCES revisions(id));
+CREATE TABLE revisions (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), parent_id TEXT REFERENCES revisions(id),
+                        kind TEXT NOT NULL CHECK (kind IN ('agentic', 'workflow')), body_json TEXT NOT NULL, note TEXT, created_at TEXT NOT NULL);
+CREATE TABLE skills    (sha256 TEXT PRIMARY KEY, content TEXT NOT NULL);
+CREATE TABLE runs      (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), revision_id TEXT NOT NULL REFERENCES revisions(id),
+                        state TEXT NOT NULL CHECK (state IN ('running', 'completed', 'failed', 'stopped', 'escalated')),
+                        started_at TEXT NOT NULL, ended_at TEXT, cost_usd REAL, summary TEXT);
+```
+
+```js
+const store = openStore("my-agents");
+const agent = store.createAgent({ name: "Company researcher" });
+await store.commitRevision(agent.id, { kind: "agentic", instructions: "Research the company." });                        // A
+await store.commitRevision(agent.id, { kind: "agentic", instructions: "Research the company; cite sources." });         // B
+await store.commitRevision(agent.id, { kind: "workflow", workflow }, { setCurrent: true });                              // C: the DSL's JSON
+const run = await store.startRun({ agent: agent.id });                  // pinned to the current revision; { revision } picks another
+store.carryBack(run.runId, { state: "completed", costUsd: 0.12, summary: "A housing charity" });
+```
+
+A revision's id is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; the database refuses an `UPDATE` of one. Every
+run of every revision is one join:
+
+```sql
+SELECT runs.id, agents.name, revisions.id AS revision, revisions.kind, runs.state, runs.started_at, runs.cost_usd, runs.summary
+FROM runs JOIN revisions ON revisions.id = runs.revision_id JOIN agents ON agents.id = runs.agent_id ORDER BY runs.started_at DESC;
+```
+
+A workflow revision whose call nodes name a tool that is not a `tool` call passes the commit check on purpose: whether it runs is the host's to decide. `openStoreReader(folder)` reads `store.sqlite` in place, read-only: it writes nothing and makes no copy. On a store a run was stopped in the middle of writing, it says so in one line and changes no file; open the store once with write access to roll the write back.
+
+## Looking at a store
+
+```sh
+npx @parcha/pi-durable-agent serve ./my-agents
+# http://127.0.0.1:41297/
+```
+
+On a folder holding a `store.sqlite`, the same command serves the store's page: its agents; each agent's revisions,
+newest first, an agentic one's prompt diffed line by line against its parent's and a workflow's graph with what changed;
+its runs across revisions, filtered by revision; and each run, an agentic run's timeline or a workflow run's path lit
+on its graph. It reads `store.sqlite` and the runs' own stores in place, read-only, and never copies them. A run that
+has ended is read as an immutable file, so serving adds no file beside it or to `store.sqlite`; a running run's store
+is read the way SQLite reads a live file. From code, `serveStore({ dir }, { port?, signal? })` from
+`@parcha/pi-durable-agent/serve` does the same.
+
+## A workflow revision
+
+A revision of an agent can be a DSL workflow instead of a prompt. Its run executes the workflow with agentrun-pi's
+durable workflow task on the run's own store, not the agent loop. `@parcha/pi-durable-agent/workflow` holds the three
+steps; the root never imports it, and only these functions load `@parcha/agentrun-dsl` and `@parcha/agentrun-pi`.
+
+1. Before a store commits a workflow revision, `checkWorkflowBody(body)` checks it: the DSL's structural validation,
+   what the durable runner refuses before any step, and that `tools` lists every tool a call node uses.
+2. To run it, open a Harness on the run's `storePath` with agentrun-pi's `createWorkflowExtension` installed (it holds
+   your tools), and call `runWorkflowRevision({ harness, workflows, context, run, input, tools })`. It returns the DSL's
+   `outcome` and a `carry`, `{ state, summary }`, for the store's `carryBack`.
+3. `readWorkflowRun(run)` reads the run back for a page, read-only: the workflow's graph, each node's state, and, once
+   the run ended, how it ended, where it escalated and its output.
+4. `revisionGraph(revision, parent?)` draws a revision's graph, and what changed from a parent that is a workflow too.
+
 ## Library
 
-Three entry points: `@parcha/pi-durable-agent` (everything below but the timeline), `@parcha/pi-durable-agent/export`
-and `@parcha/pi-durable-agent/timeline`. A function that opens a home can also fail with the home's own errors:
+Four entry points: `@parcha/pi-durable-agent` (everything below but the timeline), `@parcha/pi-durable-agent/export`
+`@parcha/pi-durable-agent/timeline` and `@parcha/pi-durable-agent/serve`. A function that opens a home can also fail with the home's own errors:
 `missing` (the directory is not a home), `format` (a store this version does not read) and `busy` (another writer held
 the home for more than 5 seconds). `busy` applies to everything that writes the home, and to `openAgentHome` and
 `readAgentHome`, which take the writer lock to read. The Throws column does not repeat these except where a function
@@ -479,7 +590,7 @@ exists to check them. [Errors](#errors) says what each code means.
 | `setPrompts(home, variants, { ifRevision?, access? })` | The agent's prompt variants replaced by `variants` (each with its `id`), in one commit; an equal set writes nothing. Returns `{ changed }` ([Prompt variants](#prompt-variants)) | `invalid`: not exactly one base and one generic, more than one question, an id that is not one URL segment or is given twice, a label, text or rule over its limits, a rule that names no question row or an option another overlay needs, or a field a row does not keep. `stale`: the home is not at `ifRevision`. Nothing is written on either |
 | `choosePrompt(prompts, input, { judge, lookup?, signal? })` | The variant a run starts with, by the set's Jev choice question and at most one lookup. Returns `{ variant, instructions, passes, lookup, reason }` ([Prompt variants](#prompt-variants)) | `invalid`: a set `setPrompts` would refuse. A judge or lookup failure never throws: the run gets the generic, and `reason` says why |
 | `refreshAgentHome(home, { sha, from?, ifRevision?, definition, skills, now? })` | The cached definition and skills replaced by the ones at `sha`. Returns `{ changed }` ([Following the agent's repo](#following-the-agents-repo)) | `invalid`: a bad `sha`, `from`, `ifRevision`, definition or skill, a definition `id` that is not the agent's. `stale`: the home is not at `ifRevision`, or its cache is not at `from`. Nothing is written on either |
-| `startRun(home, { host, runId?, sha?, prompt?, now?, leaseMs? })` | A run's start on this machine, above; `prompt` (`{ id, reason }`) is the variant the host chose, recorded on the run. Returns a `RunStart`: `{ runId, dir, storePath, workspace, agent, leases, sha? }` | `invalid`: an empty `host`, a bad `leaseMs`, `sha` or run id, or a `prompt` that is not `{ id, reason }` or names no variant of the agent. `exists`: the run id is taken. `stale`: `sha` is not the home's. `format`: a skill does not match its SHA-256. A start that fails part way is undone; when the undo fails too the error is an `AggregateError` with both |
+| `startRun(home, { host, runId?, sha?, prompt?, now?, leaseMs? })` | A run's start on this machine, above; `prompt` (`{ id, reason, confidence? }`) is the variant the host chose, recorded on the run. Returns a `RunStart`: `{ runId, dir, storePath, workspace, agent, leases, sha? }` | `invalid`: an empty `host`, a bad `leaseMs`, `sha` or run id, or a `prompt` that is not `{ id, reason, confidence? }` (a `confidence` outside 0 to 1 included) or names no variant of the agent. `exists`: the run id is taken. `stale`: `sha` is not the home's. `format`: a skill does not match its SHA-256. A start that fails part way is undone; when the undo fails too the error is an `AggregateError` with both |
 | `prepareRun(home, { host, runId?, sha?, prompt?, now?, leaseMs?, access? })` | A start's home half: the lease and the record, as a `RunSeed` ([An agent home on a disk](#an-agent-home-on-a-disk)) | as `startRun`, but `exists` only for a run in the index |
 | `seedRun({ storePath, workDir }, seed)` | A start's run half: the run's store and its skills. Safe to run again on a half-written directory | `invalid`: a seed that gives a run the reference of a sign-in it does not lease, or a bad skill path. Nothing is written |
 | `undoPrepare(home, seed, { access? })` | Undoes a `prepareRun` whose seed never landed. Returns `{ undone }`, which is `false` when that start is no longer the run's | |
@@ -496,6 +607,9 @@ exists to check them. [Errors](#errors) says what each code means.
 | `sessionVault(home, { hostKey, maxSessionCookieAgeMs?, runId?, access?, now? })` | The session vault: `capture`, `restore`, `forget`, `forgetAll`, `list` and `handedOut` ([Saved browser sessions](#saved-browser-sessions-the-vault)) | `invalid`: a host key that is not `{ id, wrap, unwrap }`, a cap that is not above 0 and at most 24 hours, an empty `runId`; its calls: a bad session key, origin, captured state or `capturedAt`. `key`: a host key that does not open the vault. `busy`: with `runId`, another live run holds the session's save lease. `format`: a key file or a saved session that does not read or decrypt, or a saved session whose row's origins or `capturedAt` were changed. A refused call writes nothing |
 | `localHostKey(id, bytes)` | A `HostKey` held in this process: 32 bytes, AES-256-GCM | `invalid`: an id that is not letters, digits, `.`, `_`, `:` or `-`, or not 32 bytes |
 | `VAULT_KEYS_FILE`, `MAX_SESSION_COOKIE_AGE_MS` | `vault.keys`, and 24 hours | |
+| `openStore(dir)` | The agent store in `dir`, created if missing: `createAgent({ name, description?, id? })`, `commitRevision(agent, revision, { setCurrent? })`, `setCurrent(agent, revision)`, `listAgents()`, `listRevisions(agent)`, `readRevision(id)`, `listRuns({ agent?, revision? })`, `startRun({ agent, revision? })`, `carryBack(runId, { state, costUsd?, summary? })`, `importHome(homeDir)`, `close()` ([above](#agents-in-a-folder-the-agent-store)) | `invalid`, `missing`, `exists`, `format`: a revision whose content does not match its id |
+| `openStoreReader(dir)` | The same reads on a read-only handle (`store.sqlite` in place, no copy), plus `runStorePath(runId)`; it writes nothing | `missing`: no `store.sqlite` in `dir`; `busy`: a store with an unfinished write; `format`: a store a newer version wrote |
+| `AgentStore`, `AgentStoreReader`, `STORE_FILE` | The two classes `openStore` and `openStoreReader` return, and `store.sqlite` | |
 | `AgentHomeError` | The one error class of this package ([Errors](#errors)) | |
 | `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)). Also from `@parcha/pi-durable-agent/export` | |
 
@@ -513,6 +627,7 @@ The types the package exports:
   `CapturedState`, `VaultCookie` and `VaultEntry`.
 - **Runs.** `RunPaths`, `RunStart`, `RunSeed` (plain data, so a host can carry it to the run's side), `CarryBack`,
   `ProfileStore` and `ProfileTarget` (the host's Harness, or any Session on the run store).
+- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `NewRevision`, `StartedRun`, `RunRow` and `RunState`.
 - **Packs.** `PackOptions`, `Skipped`, `HomeManifest` (the manifest's fields, in [Moving a home](#moving-a-home)),
   `ImportOptions`, `ImportReport`, and `HomeCheck` (`{ name, status, message, detail? }`, `status` being `ok`, `warn`
   or `fail`). `ImportStep` and `ImportOptions.inject` belong to this package's tests and are not part of its contract.
@@ -543,6 +658,32 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `TimelineKind`, `TimelineOptions`,
 `EntryLike` (a pi conversation entry as stored), `AgentEventLike` (a pi event), `Call`, `Fold`, `Group`, `LabelFn`,
 `FoldSpec` and `ToolResultView`.
+
+### `@parcha/pi-durable-agent/serve`
+
+| Export | Does | Throws |
+|---|---|---|
+| `serveHome(home, { port?, signal? })` | Serves `home.dir` ([Looking at a home](#looking-at-a-home)) on `127.0.0.1` and resolves to `{ url, close() }` once it is listening; `close()` stops it, and so does aborting `signal`. It takes no lock and opens the home's stores read-only. `home` is anything with a `dir`, an `AgentHome` included | `missing`: the directory is not a home. `invalid`: a `port` that is not an integer from 0 to 65535 |
+| `serveStore(store, { port?, signal? })` | Serves the agent store at `store.dir` ([Looking at a store](#looking-at-a-store)) as `serveHome` serves a home | `missing`: the directory has no `store.sqlite`. `invalid`: a `port` that is not an integer from 0 to 65535 |
+
+Its types: `ServeOptions` and `ServeHandle`. The package's bin,
+`pi-durable-agent serve <dir> [--port <n>]`, calls `serveStore` for a directory holding a `store.sqlite` and `serveHome`
+otherwise, and prints `url`; it exits 1 for a directory that is neither and 2 for a command or port it does not know.
+
+### `@parcha/pi-durable-agent/workflow`
+
+It loads `@parcha/agentrun-dsl` and `@parcha/agentrun-pi` only when one of its functions runs.
+
+| Export | Does |
+|---|---|
+| `checkWorkflowBody(body)` | Refuses, as `invalid`, a workflow revision's body a store must not commit, naming the node's path and never a value from the body |
+| `runWorkflowRevision(options)` | Runs the revision's workflow as one durable workflow task on the run's store and waits: `{ outcome, carry }`. A workflow that uses a tool the host does not register, or does not take the input, is refused with no task; the run reopened under another revision is refused (`RUN_STORE_BINDING_MISMATCH`) |
+| `readWorkflowRun(run)` | The run as its store shows it, read-only: no write, no lock, no Harness. With `run.state` (the runs row's) ended and no write-ahead log beside the store, it opens the store as an immutable file and makes no file in the run's directory. Working means live: an ended run's interrupted nodes read `stopped`, or `failed` when the run failed. A run in the driver's keyed layout is refused as `format` |
+| `revisionGraph(revision, parent?)` | The revision's graph (the DSL's `workflowGraph`), and the DSL's `graphDiff` from its parent when the parent is a workflow revision; an agentic parent, or none, gives no diff |
+
+Its types: `WorkflowBody`, `WorkflowRunStart` (the part of a store's started run it reads), `WorkflowRunView`,
+`RunState`, `RunNodeState` (the DSL's `NodeState` and `stopped`), and the DSL's `WorkflowGraph`, `GraphDiff`, `NodeState`
+and `WorkflowOutcome`.
 
 ### Errors
 

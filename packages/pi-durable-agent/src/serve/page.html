@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<!-- The serve page: page.js fills #app from the server's API and draws workflow graphs with graph.js; page.css, graph.js and page.js are served beside it, and nothing is inline. -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>Agent home</title>
+<link rel="stylesheet" href="/page.css">
+</head>
+<body>
+<header class="top">
+<a class="brand" href="#/"><span class="mark" aria-hidden="true"></span><span>agent home</span><span class="sub">pi-durable-agent</span></a>
+<nav class="crumbs" id="crumbs" aria-label="Where you are"></nav>
+<button class="theme" id="theme" type="button" title="Light, dark or the system's">auto</button>
+</header>
+<main id="app"><p class="loading">Reading the agent home…</p></main>
+<footer class="foot">@parcha/pi-durable-agent serve: the agent home's own SQLite files, read on this machine.</footer>
+<script src="/graph.js"></script>
+<script src="/page.js"></script>
+</body>
+</html>

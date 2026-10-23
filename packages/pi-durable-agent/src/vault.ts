@@ -103,7 +103,7 @@ function checkOrigins(origins: unknown): string[] {
   if (!Array.isArray(origins) || origins.length === 0 || origins.length > MAX_ORIGINS) throw invalid(`the origins are not a list of 1 to ${MAX_ORIGINS}`);
   for (const origin of origins) {
     const url = typeof origin === "string" ? URL.parse(origin) : null;
-    if (!url || url.origin !== origin || !["http:", "https:"].includes(url.protocol)) throw invalid(`${JSON.stringify(origin)} is not an http(s) origin (scheme, host and port only)`);
+    if (!url || url.origin !== origin || !["http:", "https:"].includes(url.protocol)) throw invalid("the origins are not all http(s) origins (scheme, host and port only)");
   }
   return [...new Set(origins as string[])];
 }
@@ -146,7 +146,7 @@ function keptOf(state: unknown, origins: string[]): Kept {
     if (!isObject(storage)) throw invalid("the localStorage is not origins to items");
     const localStorage: Record<string, Record<string, string>> = {};
     for (const [origin, items] of Object.entries(storage)) {
-      if (!isObject(items) || !Object.values(items).every((item) => typeof item === "string")) throw invalid(`the localStorage of ${origin} is not names to strings`);
+      if (!isObject(items) || !Object.values(items).every((item) => typeof item === "string")) throw invalid("the localStorage holds an origin whose items are not names to strings");
       if (origins.includes(origin)) localStorage[origin] = { ...(items as Record<string, string>) };
     }
     return { kind: "cdp", cookies, localStorage };
