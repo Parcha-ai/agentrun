@@ -265,3 +265,60 @@ test("a running agentic run's page is read again every 2 s until the reader leav
   assert.deepEqual(pills(gone.app)[0], ["pill missing", "missing"]);
   assert.match(gone.app.textContent, /This run's directory is not in the store/);
 });
+
+const PRIVATE = "/root/steps/1/branches/private/body";
+const BRIEF = { nodes: [node("/root", "chain", "chain"), node("/root/steps/0", "call", "Read the site"), node("/root/steps/1", "route", "Jev: public or private"), node("/root/steps/1/branches/public/body", "call", "Check the filing"), node(PRIVATE, "escalate", `No public record ${HOSTILE}`), node("/root/steps/2", "code", "Answer")], edges: [] };
+const ESCALATED_STATUS = { "/root": "escalated", "/root/steps/0": "done", "/root/steps/1": "escalated", "/root/steps/1/branches/public/body": "not-run", [PRIVATE]: "escalated", "/root/steps/2": "not-run" };
+const REV_C = rev("c", { kind: "workflow", parent: REV_B.id, current: true, note: "The cheap one" });
+const WORKFLOW_RUN = {
+  run: runRow("run-9", REV_C, "escalated", { startedAt: "2026-10-23T05:10:00.000Z", endedAt: "2026-10-23T05:11:00.000Z", costUsd: 0.018, summary: `escalated at No public record ${HOSTILE}` }),
+  agent: { id: "company-researcher", name: "Company researcher" },
+  revision: REV_C,
+  stored: true,
+  workflow: { graph: BRIEF, status: ESCALATED_STATUS, outcome: "escalated", escalatedAt: { path: PRIVATE, label: `No public record ${HOSTILE}` } },
+};
+
+test("a workflow run's page: the graph with the run's node states as marks.status and the escalation as marks.fired, drawn as escalated, never failed", async () => {
+  const drawn = [];
+  const page = mount({ "api/runs/run-9": WORKFLOW_RUN }, "#/runs/run-9", { serve: STORE, window: { drawWorkflowGraph: (svg, graph, marks) => drawn.push({ svg, graph, marks }) } });
+  await page.settle();
+  assertInert(page.app, drawn.map((d) => d.svg));
+  assert.equal(drawn.length, 1);
+  assert.deepEqual(plain(drawn[0].marks), { status: ESCALATED_STATUS, fired: PRIVATE });
+  assert.deepEqual(plain(drawn[0].graph), BRIEF);
+  const head = all(page.app).find((el) => classOf(el) === "card run-head");
+  assert.deepEqual(pills(head).slice(0, 2), [["pill escalated", "escalated"], ["pill workflow", "workflow"]]);
+  assert.ok(head.textContent.includes("$0.018") && head.textContent.includes(`escalated at No public record ${HOSTILE}`) && !head.textContent.includes("tool call"));
+  assert.match(page.app.textContent, new RegExp(`Escalated at No public record`));
+  assert.ok(!pills(page.app).some(([cls]) => cls === "pill error"), "nothing escalated is drawn as failed");
+});
+
+test("a workflow run's page without the drawer: the nodes as text with each one's state, the escalation marked where it stopped", async () => {
+  const page = mount({ "api/runs/run-9": WORKFLOW_RUN }, "#/runs/run-9", { serve: STORE });
+  await page.settle();
+  assertInert(page.app);
+  const items = all(page.app).filter((el) => el.tagName === "LI" && classOf(el).startsWith("node"));
+  assert.deepEqual(items.map((el) => [classOf(el), pills(el)]), [
+    ["node", [["pill escalated", "escalated"]]],
+    ["node", [["pill ok", "done"]]],
+    ["node", [["pill escalated", "escalated"]]],
+    ["node", [["pill idle", "not-run"]]],
+    ["node fired", [["pill escalated", "escalated"]]],
+    ["node", [["pill idle", "not-run"]]],
+  ]);
+  assert.ok(items[4].textContent.includes(`No public record ${HOSTILE}`) && items[4].textContent.includes("stopped here"));
+  assert.ok(!pills(page.app).some(([cls]) => cls === "pill error"));
+  const completed = { ...WORKFLOW_RUN, run: { ...WORKFLOW_RUN.run, state: "completed", summary: "Read the site → Answer" }, workflow: { graph: BRIEF, status: { "/root": "done" }, outcome: "completed" } };
+  const done = mount({ "api/runs/run-9": completed }, "#/runs/run-9", { serve: STORE });
+  await done.settle();
+  assert.equal(all(done.app).filter((el) => classOf(el) === "node fired").length, 0);
+  assert.match(done.app.textContent, /The path it took/);
+});
+
+test("a workflow run's page when the graph cannot be read here says what to install, with the run's row still shown", async () => {
+  const page = mount({ "api/runs/run-9": { ...WORKFLOW_RUN, workflow: null, unavailable: "install @parcha/agentrun-dsl to see this workflow's graph" } }, "#/runs/run-9", { serve: STORE });
+  await page.settle();
+  assertInert(page.app);
+  assert.match(page.app.textContent, /install @parcha\/agentrun-dsl to see this workflow's graph/);
+  assert.deepEqual(pills(page.app)[0], ["pill escalated", "escalated"]);
+});

@@ -8,7 +8,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { serveStore } from "../dist/serve/index.js";
-import { AGENTS, BRIEF_GRAPH, buildSampleStore, fakeReader, fakeWorkflow, MCC_GRAPH_1, MCC_GRAPH_2, REVISIONS, RUN, RUNS } from "./fixtures/store-sample.mjs";
+import { AGENTS, BRIEF_GRAPH, BRIEF_WORKFLOW, buildSampleStore, fakeReader, fakeWorkflow, MCC_GRAPH_1, MCC_GRAPH_2, REVISIONS, RUN, RUNS } from "./fixtures/store-sample.mjs";
 import { request, scratch } from "./support.mjs";
 
 const CLI = fileURLToPath(new URL("../dist/serve/cli.js", import.meta.url));
@@ -238,6 +238,45 @@ test("a run's store that is a link out of the store is not read, and a run whose
     const away = await get(`/api/runs/${RUN.b002.id}`);
     assert.equal(away.status, 200);
     assert.deepEqual([away.json.stored, away.json.rows, away.json.run.id], [false, [], RUN.b002.id]);
+  } finally {
+    await served.close();
+  }
+});
+
+test("a workflow run: its row and the workflow views' record of it (each node's state, where an escalation stopped it), read from a copy of its store", linux, async () => {
+  const { root, served, get, workflow } = await sample();
+  const before = files(root);
+  try {
+    const escalated = await get(`/api/runs/${RUN.c002.id}`);
+    assert.equal(escalated.status, 200);
+    assert.deepEqual([escalated.json.run.state, escalated.json.run.summary, escalated.json.stored], ["escalated", "escalated at No public record", true]);
+    assert.deepEqual(escalated.json.workflow.graph, BRIEF_GRAPH);
+    assert.deepEqual(escalated.json.workflow.escalatedAt, { path: "/root/steps/1/branches/private/body", label: "No public record" });
+    assert.equal(escalated.json.workflow.outcome, "escalated");
+    assert.equal(escalated.json.workflow.status["/root/steps/1/branches/private/body"], "escalated");
+    assert.equal(escalated.json.workflow.status["/root/steps/1/branches/public/body"], "not-run");
+    assert.equal("rows" in escalated.json, false, "a workflow run has no timeline of its own here");
+    const [[name, input, existed]] = workflow.calls;
+    assert.equal(name, "readWorkflowRun");
+    assert.deepEqual([input.runId, input.revision.body.workflow], [RUN.c002.id, BRIEF_WORKFLOW]);
+    assert.ok(existed && !input.storePath.startsWith(root) && !existsSync(input.storePath), "the views read a copy of the run's store, removed after");
+    const done = (await get(`/api/runs/${RUN.c001.id}`)).json;
+    assert.deepEqual([done.workflow.outcome, done.workflow.escalatedAt, done.workflow.status["/root/steps/2"]], ["completed", undefined, "done"]);
+    const missing = (await get(`/api/runs/${RUN.e002.id}`)).json;
+    assert.deepEqual([missing.run.state, missing.stored, missing.workflow], ["missing", false, null], "a run whose directory is gone has its row only");
+    assert.equal(workflow.calls.length, 2, "and nothing is read for it");
+  } finally {
+    await served.close();
+  }
+  assert.deepEqual(files(root), before, "nothing in the store changed");
+});
+
+test("a workflow run when the DSL peer is not installed: the run's row and the words to install it", linux, async () => {
+  const { served, get } = await sample({ workflow: { missing: "@parcha/agentrun-dsl" } });
+  try {
+    const res = await get(`/api/runs/${RUN.c002.id}`);
+    assert.equal(res.status, 200);
+    assert.deepEqual([res.json.run.state, res.json.workflow, res.json.unavailable], ["escalated", null, "install @parcha/agentrun-dsl to see this workflow's graph"]);
   } finally {
     await served.close();
   }

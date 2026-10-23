@@ -6,7 +6,7 @@
 // workflowGraph and graphDiff give for the workflows below.
 // `node test/fixtures/store-sample.mjs <dir>` builds it in <dir>/store and serves it, printing the address.
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
@@ -201,7 +201,7 @@ export function fakeWorkflow({ missing } = {}) {
         return { added: [], removed: [], changed: [], moved: [], rewritten: [], edges: { added: [], removed: [] } };
       },
       async readWorkflowRun(input) {
-        calls.push(["readWorkflowRun", input]);
+        calls.push(["readWorkflowRun", input, existsSync(input.storePath)]);
         if (missing) throw peer();
         const view = WORKFLOW_RUNS[input.runId];
         if (!view) throw new AgentHomeError("missing", `the run ${input.runId} has no workflow record`);
