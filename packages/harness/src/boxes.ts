@@ -17,7 +17,7 @@
 // `priced` null), so the run's cost reads unknown, never 0. The provider ids go only to the ledger's file, outside the recording.
 import { randomBytes } from 'node:crypto';
 import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Box, BoxProvider } from '@parcha/pi-transport';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import type { Cross, EffectWindow } from './crossings.ts';
@@ -86,6 +86,20 @@ function labelStore(dir: string) {
     }
     return out;
   };
+  /** A won link(2), or a rename(2), is an entry of the DIRECTORY, which the file's own fsync does not make durable: the directory is fsynced before
+   *  the claim or the new state is used, so a crash that keeps a synced line naming the label never loses its file (the next claim would take the label again). */
+  const syncDirectory = (path: string) => {
+    try { const fd = openSync(path, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } } catch (error) {
+      throw new Refusal(`the box ids directory ${dir} cannot be made durable (${(error as Error).message}): a claim it might lose is never used`);
+    }
+  };
+  const durable = () => syncDirectory(dir);
+  /** The levels this ledger's mkdir made (box-ids.internal/ and any missing ancestor), top first, each durable only once its PARENT is
+   *  fsynced: until then they stay here, so a claim after a failed fsync syncs them again (its mkdir finds them made). */
+  let unsynced: string[] = [];
+  const syncParents = () => {
+    while (unsynced.length) { syncDirectory(dirname(unsynced[0]!)); unsynced = unsynced.slice(1); }
+  };
   /** The disk must give an exclusive link: a second link to one name fails with EEXIST. */
   const probe = () => {
     const from = temp({ probe: true });
@@ -106,7 +120,13 @@ function labelStore(dir: string) {
   const ensure = () => {
     if (ready) return;
     // `recursive`: a directory already there (a disk place makes it before the runner starts) is used as it is; the local place has none made, so it is made here.
-    try { mkdirSync(dir, { recursive: true }); probe(); } catch (error) {
+    try {
+      const made = mkdirSync(dir, { recursive: true });
+      // The levels made, from the first (an ancestor, or the directory itself) down to the directory.
+      if (made !== undefined) { const levels = [dir]; while (levels[0] !== made && dirname(levels[0]!) !== levels[0]) levels.unshift(dirname(levels[0]!)); unsynced = levels; }
+      syncParents();
+      probe();
+    } catch (error) {
       const unusable = cannotTakeFiles(error);
       if (unusable) throw unusable;
       const file = (error as NodeJS.ErrnoException).code === 'EEXIST' ? aFile() : undefined;
@@ -120,21 +140,29 @@ function labelStore(dir: string) {
   };
   return {
     list,
+    /** The directory made durable, for a label or key handed out again (idempotent: one fsync). */
+    sync: durable,
     claim(entry: LedgerEntry): string {
       ensure();
       let from: string;
       try { from = temp(entry); } catch (error) { throw cannotTakeFiles(error) ?? new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`); }
       try {
         for (let n = Math.max(0, ...[...list().keys()].map((label) => Number(label.slice(4)))) + 1; ; n += 1) {
-          try { linkSync(from, join(dir, `box-${n}.json`)); return `box-${n}`; } catch (error) {
+          try { linkSync(from, join(dir, `box-${n}.json`)); } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`);
+            continue;
           }
+          durable();
+          return `box-${n}`;
         }
       } finally { rmSync(from, { force: true }); }
     },
+    /** A new receipt state by rename(2), durable before it is relied on: a crash that kept the rename only in memory would bring back a
+     *  state that says a written receipt is unwritten, and the receipt would be written twice. */
     rewrite(label: string, entry: LedgerEntry) {
       ensure();
       renameSync(temp(entry), join(dir, `${label}.json`));
+      durable();
     },
     /** A name claimed exclusively by link(2), as a label is: `won`, or the value its winner wrote. */
     claimKey(name: string, value: unknown): { won: true } | { won: false; held: unknown } {
@@ -142,10 +170,17 @@ function labelStore(dir: string) {
       let from: string;
       try { from = temp(value); } catch (error) { throw cannotTakeFiles(error) ?? new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`); }
       try {
-        try { linkSync(from, join(dir, name)); return { won: true }; } catch (error) {
+        let won = true;
+        try { linkSync(from, join(dir, name)); } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`);
+          won = false;
         }
-        try { return { won: false, held: JSON.parse(readFileSync(join(dir, name), 'utf8')) }; } catch (error) { throw refused(`the host key file ${join(dir, name)} cannot be read`, error); }
+        if (won) { durable(); return { won: true }; }
+        let held: unknown;
+        try { held = JSON.parse(readFileSync(join(dir, name), 'utf8')); } catch (error) { throw refused(`the host key file ${join(dir, name)} cannot be read`, error); }
+        // A key read back may be one this life won and could not make durable: durable now, or refused again.
+        durable();
+        return { won: false, held };
       } finally { rmSync(from, { force: true }); }
     },
   };
@@ -157,6 +192,7 @@ function memoryStore() {
   const keys = new Map<string, unknown>();
   return {
     list: () => new Map(entries),
+    sync() { /* nothing on a disk */ },
     claim(entry: LedgerEntry) { const label = `box-${entries.size + 1}`; entries.set(label, { ...entry }); return label; },
     rewrite(label: string, entry: LedgerEntry) { entries.set(label, { ...entry }); },
     claimKey(name: string, value: unknown): { won: true } | { won: false; held: unknown } { if (keys.has(name)) return { won: false, held: keys.get(name) }; keys.set(name, value); return { won: true }; },
@@ -270,11 +306,15 @@ export function boxLedger(options: { dir?: string; recorder?: Recorder; supervis
         if (held.provider !== box.provider) throw new Error(`the host box ${box.key} already has ${mine(box.run) ?? 'its key'} on ${held.provider}, not on ${box.provider}: refused, so no box label is given twice`);
       }
       // The key is this life's: the label it already claimed (a restarted process), else a new one.
-      return mine(box.run) ?? store.claim({ provider: box.provider, owner: 'place', key: box.key, run: box.run, kind: 'host', from });
+      // A label handed out again (a restarted process) is made durable first, as a new one is.
+      const had = mine(box.run);
+      if (had !== undefined) { store.sync(); return had; }
+      return store.claim({ provider: box.provider, owner: 'place', key: box.key, run: box.run, kind: 'host', from });
     },
     label(provider, id) {
       const had = [...store.list()].find(([, entry]) => entry.owner === 'tools' && entry.provider === provider && entry.id === id)?.[0];
-      return had ?? store.claim({ provider, owner: 'tools', id });
+      if (had !== undefined) { store.sync(); return had; }
+      return store.claim({ provider, owner: 'tools', id });
     },
     open(label, made) {
       const entry = store.list().get(label);

@@ -496,7 +496,10 @@ revision's own newest uses. The run that wrote a revision is no evidence for it,
 revision is not folded again. The thresholds are the host's: `usesSettler({ thresholds: { promoteAfter, demoteAfter } })`,
 1 to 15. A frozen workflow never fails a case: the agent is the fallback, and a use only moves the workflow's own standing.
 The decisions come back one per promotion, demotion or name held, each with a reason that names no value from the case; a
-`trial.json` that does not parse holds its name and never stops curation.
+`trial.json` that does not parse holds its name and never stops curation. Curation settles a run's uses BEFORE it admits the
+workflows the run saved, and the admitter reads `trial.json` as the uses left it: a run that ran a trial cleanly and saved a
+new revision of the same name has its use counted on the trial it ran (which a promotion then keeps restorable, superseded
+under the new trial), never dropped.
 
 ## Versions
 

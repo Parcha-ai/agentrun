@@ -137,7 +137,7 @@ function copyJson(value: unknown, ancestors: Set<object>, budget: { entries: num
   if (depth > 128) throw new Error("workflow document exceeds nesting depth 128");
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value !== "object" || value === null) throw new Error("workflow documents must contain only finite JSON values");
+  if (typeof value !== "object") throw new Error("workflow documents must contain only finite JSON values");
   if (utilTypes.isProxy(value)) throw new Error("workflow documents must not contain proxies");
   if (ancestors.has(value)) throw new Error("workflow documents must not contain cycles");
   const prototype = Object.getPrototypeOf(value);
