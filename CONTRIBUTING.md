@@ -1,8 +1,9 @@
 # Contributing
 
-Use Node 22.19+ and npm. From the repository root:
+Use Node 22.19+ and npm 11.21.0. From the repository root:
 
 ```sh
+npm install --global npm@11.21.0 --ignore-scripts
 npm ci --ignore-scripts
 npm run check
 npm run verify:packages

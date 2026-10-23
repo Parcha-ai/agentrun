@@ -8,9 +8,10 @@ The packages a release may publish are named, in publication order, in `releaseP
 
 ## Verify the source and packages
 
-Use Node 22.23.2 and GNU tar for release verification. From a clean checkout:
+Use Node 22.23.2, npm 11.21.0 and GNU tar for release verification. From a clean checkout:
 
 ```sh
+npm install --global npm@11.21.0 --ignore-scripts
 npm ci --ignore-scripts
 npm run check
 npm run export:source
