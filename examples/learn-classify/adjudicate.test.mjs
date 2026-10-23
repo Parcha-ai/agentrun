@@ -162,6 +162,7 @@ test('a scripted pass: stage 1 and 2 for unblind, an ungrounded verdict judged o
   assert.deepEqual(result.ungrounded, [{ merchantId: 'adj-003', ungrounded: ['own', 'risk', ...JSON.parse(readFileSync(given.files.candidates, 'utf8'))['adj-003'].map((c) => c.code)] }]);
   const pass = join(out, 'adjudication', 'p1');
   const manifest = readFileSync(join(pass, 'manifest.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  assert.ok(manifest.every((l) => l.knownUsd === 0 && l.unpriced?.modelAnswers === 0), 'each attempt carries its priced spend and its unpriced parts');
   const harbor = manifest.filter((l) => l.merchantId === 'adj-003');
   assert.equal(harbor.length, 2, 'judged once more');
   assert.equal(harbor[1].rerunOf, harbor[0].runId);

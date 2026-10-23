@@ -121,7 +121,7 @@ export async function runAdjudication({ out, parts, passId, files, concurrency =
     await adjudicationSelfTest({ out, repo, parts, job, adjudicator: adjudicationRun({ candidates: candidates[job.merchantId], groups: parts.data.table }), log });
   }
   const lock = concurrency > 1 ? serial() : (step) => step();
-  let spent = readLines(manifestPath).reduce((sum, m) => sum + (m.costUsd ?? 0), 0);
+  let spent = readLines(manifestPath).reduce((sum, m) => sum + (m.knownUsd ?? m.costUsd ?? 0), 0);
   const judged = [];
   const failed = [];
   const ungrounded = [];
@@ -160,7 +160,8 @@ export async function runAdjudication({ out, parts, passId, files, concurrency =
     const line = {
       merchantId: job.merchantId, runId: prepared.runId, rerunOf: rerunOf ?? null, ok: Boolean(recorded), reason: recorded ? null : measure.stopped ?? measure.reason ?? measure.status ?? 'no answer',
       unjudgeable: recorded?.stage1.unjudgeable ? true : undefined, grounded: grounding?.grounded ?? null, ungrounded: grounding?.ungrounded ?? [],
-      mccLookupRefused: mccLookupRefusalsOf(lines), costUsd: spend.costUsd, model: parts.modelName, thinking: model?.agent?.thinkingLevel ?? null,
+      // costUsd is null when a part went unpriced (a model answer the gateway did not price); knownUsd is what was priced.
+      mccLookupRefused: mccLookupRefusalsOf(lines), costUsd: spend.costUsd, knownUsd: spend.knownUsd, unpriced: spend.unpriced, model: parts.modelName, thinking: model?.agent?.thinkingLevel ?? null,
       start: new Date(started).toISOString(), end: new Date(ended).toISOString(), recording: recording ? join('recordings', prepared.runId) : null,
     };
     spent += spend.knownUsd ?? spend.costUsd ?? 0;
