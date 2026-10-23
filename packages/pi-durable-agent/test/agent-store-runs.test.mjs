@@ -6,7 +6,7 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { AgentHomeError, openStore } from "../dist/index.js";
+import { AgentHomeError, openStore, openStoreReader } from "../dist/index.js";
 import { openStoreChecking } from "../dist/agent-store.js";
 import { scratch } from "./support.mjs";
 
@@ -228,4 +228,48 @@ test("the free home functions are unchanged next to the store: a free startRun o
   const home = await createAgentHome(await scratch(), { definition: DEFINITION });
   const run = await startRun(home, { runId: "free-1", host: "test" });
   assert.deepEqual(run.agent, { instructions: DEFINITION.instructions, tools: DEFINITION.tools });
+});
+
+test("the reader's readRun is the README join for one run: the run, its agent's name and its revision's note; an unknown run is undefined", async () => {
+  const { dir, store, agent, b } = await aStore();
+  const other = store.createAgent({ name: "Other" });
+  await store.commitRevision(other.id, { ...B, note: "second start" }, { setCurrent: true });
+  const first = await store.startRun({ agent: agent.id, revision: b.id });
+  await store.carryBack(first.runId, { state: "completed", costUsd: 0.5, summary: "done" });
+  const second = await store.startRun({ agent: other.id });
+  const reader = openStoreReader(dir);
+  assert.deepEqual(reader.readRun(first.runId), { ...reader.listRuns({ agent: agent.id })[0], agentName: "Researcher" });
+  assert.deepEqual({ ...reader.readRun(first.runId) }, { id: first.runId, agent: agent.id, revision: b.id, kind: "agentic", state: "completed", startedAt: reader.readRun(first.runId).startedAt, endedAt: reader.readRun(first.runId).endedAt, costUsd: 0.5, summary: "done", agentName: "Researcher" });
+  const two = reader.readRun(second.runId);
+  assert.deepEqual({ agentName: two.agentName, note: two.note, state: two.state }, { agentName: "Other", note: "second start", state: "running" });
+  const plain = joined(dir);
+  for (const row of plain) assert.deepEqual({ id: reader.readRun(row.id).id, agentName: reader.readRun(row.id).agentName, revision: reader.readRun(row.id).revision, kind: reader.readRun(row.id).kind, state: reader.readRun(row.id).state }, { id: row.id, agentName: row.name, revision: row.revision, kind: row.kind, state: row.state }, "readRun gives the README join's row");
+  assert.equal(plain.length, 2);
+  assert.equal(reader.readRun("no-such-run"), undefined);
+  assert.throws(() => reader.readRun("../x"), refused("invalid"));
+  reader.close();
+  await store.close();
+});
+
+test("the reader's readAgent is one agent with every revision and its body, newest first, current marked, each hash-verified; an unknown agent is undefined", async () => {
+  const { dir, store, agent, a, b } = await aStore();
+  const empty = store.createAgent({ name: "Empty" });
+  await store.close();
+  const reader = openStoreReader(dir);
+  const got = reader.readAgent(agent.id);
+  assert.deepEqual({ id: got.agent.id, name: got.agent.name, current: got.agent.current }, { id: agent.id, name: "Researcher", current: a.id });
+  assert.deepEqual(got.revisions.map((v) => [v.id, v.current]), [[b.id, false], [a.id, true]], "newest first, current marked");
+  assert.deepEqual(got.revisions[1], { ...reader.readRevision(a.id), current: true }, "the body comes with it, as readRevision gives it");
+  assert.deepEqual(reader.readAgent(empty.id).revisions, []);
+  assert.equal(reader.readAgent("no-such-agent"), undefined);
+  reader.close();
+  // a revision whose content was changed does not pass, as in readRevision
+  const db = new DatabaseSync(path.join(dir, "store.sqlite"));
+  db.exec("DROP TRIGGER revisions_are_written_once");
+  db.prepare("UPDATE revisions SET body_json = ? WHERE id = ?").run(JSON.stringify({ ...a.body, instructions: "changed" }), a.id);
+  db.close();
+  const tampered = openStoreReader(dir);
+  assert.throws(() => tampered.readAgent(agent.id), refused("format"));
+  assert.throws(() => tampered.readRevision(a.id), refused("format"));
+  tampered.close();
 });

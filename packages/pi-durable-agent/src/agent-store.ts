@@ -117,7 +117,7 @@ function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: 
   return { body: { workflow: structuredClone(input.workflow), skills, tools: [...tools] }, texts };
 }
 
-/** The reads: plain SQL over the one file, on a read-only handle. `openStoreReader` is the open serve uses on a copy: it writes nothing. */
+/** The reads: plain SQL over the one file, on a read-only handle. `openStoreReader` reads `store.sqlite` in place: it writes nothing and makes no copy, and a store with an unfinished write is named, not rolled back. */
 export class AgentStoreReader {
   constructor(readonly dir: string, protected readonly db: DatabaseSync) {}
   close(): void { this.db.close(); }
@@ -143,6 +143,24 @@ export class AgentStoreReader {
     const rows = this.db.prepare(`SELECT r.id, r.agent_id, r.revision_id, v.kind, r.state, r.started_at, r.ended_at, r.cost_usd, r.summary FROM runs r JOIN revisions v ON v.id = r.revision_id
       WHERE (? IS NULL OR r.agent_id = ?) AND (? IS NULL OR r.revision_id = ?) ORDER BY r.started_at DESC, r.rowid DESC`).all(filter.agent ?? null, filter.agent ?? null, filter.revision ?? null, filter.revision ?? null) as Array<Record<string, unknown>>;
     return rows.map((r) => ({ id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.summary ? { summary: r.summary as string } : {}) }));
+  }
+  /** One run: the README's join (runs, agents, revisions) for one run id, in one statement. The run plus its agent's name and its revision's note; undefined for an unknown run. */
+  readRun(runId: string): (RunRow & { agentName: string; note?: string }) | undefined {
+    const r = this.db.prepare(`SELECT r.id, r.agent_id, r.revision_id, v.kind, r.state, r.started_at, r.ended_at, r.cost_usd, r.summary, a.name AS agent_name, v.note
+      FROM runs r JOIN agents a ON a.id = r.agent_id JOIN revisions v ON v.id = r.revision_id WHERE r.id = :id`).get({ id: checkId(runId, "run") }) as Record<string, unknown> | undefined;
+    if (!r) return undefined;
+    return { id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.summary ? { summary: r.summary as string } : {}), agentName: r.agent_name as string, ...(r.note ? { note: r.note as string } : {}) };
+  }
+  /** One agent with every revision and its body, newest first, `current` marked: one statement. Each revision is hash-verified as `readRevision` verifies it. Undefined for an unknown agent. */
+  readAgent(agentId: string): { agent: Agent; revisions: Array<Revision & { current: boolean }> } | undefined {
+    const rows = this.db.prepare(`SELECT a.id AS agent_id, a.name, a.description, a.created_at AS agent_created_at, a.current_revision,
+        v.id, v.parent_id, v.kind, v.body_json, v.note, v.created_at
+      FROM agents a LEFT JOIN revisions v ON v.agent_id = a.id WHERE a.id = :id ORDER BY v.created_at DESC, v.rowid DESC`).all({ id: checkId(agentId, "agent") }) as Array<Record<string, unknown>>;
+    const first = rows[0];
+    if (!first) return undefined;
+    const agent: Agent = { id: first.agent_id as string, name: first.name as string, ...(first.description ? { description: first.description as string } : {}), createdAt: first.agent_created_at as string, current: (first.current_revision as string | null) ?? null };
+    const revisions = rows.filter((r) => r.id !== null).map((r) => ({ ...revisionOf({ ...r, agent_id: r.agent_id }), current: r.id === first.current_revision }));
+    return { agent, revisions };
   }
   /** `<dir>/runs/<run id>/store/run.sqlite`, for a run's timeline. It does not check that the file exists. */
   runStorePath(runId: string): string { return runStoreIn(path.join(this.dir, "runs", checkId(runId, "run"))); }
