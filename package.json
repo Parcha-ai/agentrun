@@ -42,7 +42,7 @@
     "ajv": "^8.18.0",
     "typescript": "5.9.3",
     "typescript-json-schema": "^0.68.0",
-    "zod": "4.6.5"
+    "zod": "4.6.6"
   },
   "repository": {
     "type": "git",
@@ -52,5 +52,8 @@
     "url": "https://github.com/Parcha-ai/agentrun/issues"
   },
   "homepage": "https://agentrun.ai",
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "overrides": {
+    "zod": "$zod"
+  }
 }

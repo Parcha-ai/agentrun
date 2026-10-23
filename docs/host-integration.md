@@ -13,6 +13,19 @@ For a durable pi host that also runs a browser and vision, see [what a host supp
 
 Your application controls credentials, tools, budgets and delivery. An accepted model answer or completed workflow does not prove that an external action succeeded.
 
+## Browser dependency pins
+
+Applications using `@parcha/pi-browser` need Zod 4.6.6 or later for every installed copy, including Stagehand's dependency. Set the dependency and override in the application's root `package.json`:
+
+```json
+{
+  "dependencies": { "zod": "4.6.6" },
+  "overrides": { "zod": "$zod" }
+}
+```
+
+Merge these entries with the application's other dependencies and overrides, then reinstall with npm 11. `npm ls zod --all` must show only patched versions. npm applies overrides from the application root; a library's own override does not control its consumers. The workspace and packaged-consumer verification use the same Zod pin.
+
 ## Admit a workflow before running it
 
 Use `inspectWorkflow` to read structure and required capabilities without running authored code. `validateWorkflow` can execute JavaScript probes. Code nodes run with process privileges, so untrusted authors require isolation supplied by your application.
