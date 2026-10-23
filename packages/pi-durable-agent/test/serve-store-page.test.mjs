@@ -110,3 +110,60 @@ test("one revision's own page: the same block, by itself", async () => {
   assert.equal(all(page.app).filter((el) => classOf(el).startsWith("revision")).length, 1);
   assert.match(page.app.textContent, /\+Line one, cited\./);
 });
+
+const wrev = (id, fields) => rev(id, { agent: "mcc-classifier", kind: "workflow", ...fields });
+const REV_M1 = wrev("1", { note: "First cut", runs: 2 });
+const REV_M2 = wrev("2", { parent: REV_M1.id, createdAt: "2026-10-22T15:00:00.000Z", current: true, note: "Marketplaces", runs: 2 });
+const node = (path, kind, label) => ({ path, kind, label });
+const GRAPH_1 = { nodes: [node("/root", "chain", "chain"), node("/root/steps/0", "call", "Read the site"), node("/root/steps/1", "pick", "Pick the MCC"), node("/root/steps/2", "code", "Format the answer")], edges: [{ from: "/root", to: "/root/steps/0", kind: "next" }] };
+const GRAPH_2 = { nodes: [node("/root", "chain", "chain"), node("/root/steps/0", "call", "Read the site"), node("/root/steps/1", "decide", `Jev: a marketplace? ${HOSTILE}`), node("/root/steps/2", "pick", "Pick the MCC"), node("/root/steps/3", "report", "Answer")], edges: [{ from: "/root", to: "/root/steps/0", kind: "next" }] };
+const MARKS = { added: ["/root/steps/1", "/root/steps/3"], edited: ["/root/steps/2"], removed: [{ label: `Format the answer ${HOSTILE}`, kind: "code" }] };
+const workflowApi = (m2 = {}) => ({
+  "api/agents/mcc-classifier": { agent: { id: "mcc-classifier", name: "MCC classifier", current: REV_M2.id, currentKind: "workflow", revisions: 2, runs: 4 }, revisions: [REV_M2, REV_M1] },
+  [`api/agents/mcc-classifier/revisions/${REV_M2.id}`]: { revision: { ...REV_M2, body: { skills: {}, tools: ["web_fetch"] } }, parent: REV_M1, diff: { against: REV_M1.id, marks: MARKS, moved: ["/root/steps/2"] }, graph: GRAPH_2, ...m2 },
+  [`api/agents/mcc-classifier/revisions/${REV_M1.id}`]: { revision: { ...REV_M1, body: { skills: {}, tools: ["web_fetch"] } }, parent: null, diff: null, graph: GRAPH_1 },
+});
+
+test("a workflow revision: its graph drawn by window.drawWorkflowGraph into an svg of the page's own, with graphDiff's badges as marks.diff", async () => {
+  const drawn = [];
+  const top = (node) => (node.parentNode ? top(node.parentNode) : node);
+  const drawWorkflowGraph = (svg, graph, marks) => drawn.push({ svg, graph, marks, attached: top(svg).tagName === "BODY" });
+  const page = mount(workflowApi(), "#/agents/mcc-classifier", { serve: STORE, window: { drawWorkflowGraph } });
+  await page.settle();
+  assertInert(page.app, drawn.map((d) => d.svg));
+  assert.equal(drawn.length, 2, "one graph per workflow revision");
+  assert.deepEqual(drawn.map((d) => [d.svg.tagName, d.svg.namespaceURI, d.svg.getAttribute("class")]), [["svg", "http://www.w3.org/2000/svg", "workflow-graph"], ["svg", "http://www.w3.org/2000/svg", "workflow-graph"]]);
+  assert.ok(drawn.every((d) => d.attached), "drawn once the svg is in the page");
+  assert.deepEqual([drawn[0].graph, drawn[0].marks], [GRAPH_2, { diff: MARKS }]);
+  assert.deepEqual([drawn[1].graph, drawn[1].marks], [GRAPH_1, {}], "a revision with no parent has no badges");
+  const blocks = all(page.app).filter((el) => classOf(el).startsWith("revision"));
+  assert.ok(blocks[0].textContent.includes("+2 added") && blocks[0].textContent.includes("1 edited") && blocks[0].textContent.includes("1 removed") && blocks[0].textContent.includes("1 moved"));
+  assert.ok(blocks[0].textContent.includes("Workflow, against 111111111111"));
+});
+
+test("a workflow revision without the graph drawer: its nodes as a text list with the same badges, the removed ones named", async () => {
+  const page = mount(workflowApi(), "#/agents/mcc-classifier", { serve: STORE });
+  await page.settle();
+  assertInert(page.app);
+  const [m2] = all(page.app).filter((el) => classOf(el).startsWith("revision"));
+  const items = all(m2).filter((el) => el.tagName === "LI" && classOf(el).startsWith("node"));
+  assert.deepEqual(items.map((el) => [classOf(el), el.styles["--depth"]]), [["node", "0"], ["node", "1"], ["node added", "1"], ["node edited", "1"], ["node added", "1"]]);
+  assert.ok(items[2].textContent.includes(`Jev: a marketplace? ${HOSTILE}`) && items[2].textContent.includes("decide"));
+  assert.deepEqual(pills(items[2]), [["pill added", "added"]]);
+  assert.deepEqual(pills(items[3]), [["pill edited", "edited"]]);
+  assert.ok(m2.textContent.includes(`Format the answer ${HOSTILE} (code)`), "a removed node is named");
+});
+
+test("a workflow revision whose graph cannot be drawn here says what to install, and one whose parent is agentic says so", async () => {
+  const page = mount(workflowApi({ graph: null, diff: null, unavailable: "install @parcha/agentrun-dsl to see this workflow's graph" }), "#/agents/mcc-classifier", { serve: STORE });
+  await page.settle();
+  assertInert(page.app);
+  const [m2] = all(page.app).filter((el) => classOf(el).startsWith("revision"));
+  assert.ok(m2.textContent.includes("install @parcha/agentrun-dsl to see this workflow's graph"));
+  assert.equal(all(m2).filter((el) => el.tagName === "LI" && classOf(el).startsWith("node")).length, 0);
+
+  const agentic = mount(workflowApi({ parent: { ...REV_M1, kind: "agentic" }, diff: null }), "#/agents/mcc-classifier", { serve: STORE });
+  await agentic.settle();
+  const [first] = all(agentic.app).filter((el) => classOf(el).startsWith("revision"));
+  assert.ok(first.textContent.includes("Its parent 111111111111 is an agentic revision"));
+});

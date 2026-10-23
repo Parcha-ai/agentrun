@@ -8,7 +8,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { serveStore } from "../dist/serve/index.js";
-import { AGENTS, buildSampleStore, fakeReader, fakeWorkflow, REVISIONS, RUN, RUNS } from "./fixtures/store-sample.mjs";
+import { AGENTS, BRIEF_GRAPH, buildSampleStore, fakeReader, fakeWorkflow, MCC_GRAPH_1, MCC_GRAPH_2, REVISIONS, RUN, RUNS } from "./fixtures/store-sample.mjs";
 import { request, scratch } from "./support.mjs";
 
 const CLI = fileURLToPath(new URL("../dist/serve/cli.js", import.meta.url));
@@ -124,6 +124,44 @@ test("an agentic revision: its prompt and, against its agentic parent, a line di
     const a = (await get(`/api/agents/company-researcher/revisions/${REVISIONS.A.id}`)).json;
     assert.deepEqual([a.parent, a.diff], [null, null], "the first revision has nothing to be compared with");
     assert.equal(a.revision.body.instructions, REVISIONS.A.body.instructions);
+  } finally {
+    await served.close();
+  }
+});
+
+test("a workflow revision: its graph, and against a workflow parent graphDiff's answer as the drawer's marks (added, edited, removed); never the workflow's JSON", linux, async () => {
+  const { served, get, workflow } = await sample();
+  try {
+    const m2 = (await get(`/api/agents/mcc-classifier/revisions/${REVISIONS.M2.id}`)).json;
+    assert.deepEqual(m2.graph, MCC_GRAPH_2);
+    assert.deepEqual(m2.revision.body, { skills: {}, tools: ["web_fetch"] }, "the workflow is drawn, not sent");
+    assert.deepEqual(m2.diff, {
+      against: REVISIONS.M1.id,
+      marks: { added: ["/root/steps/1", "/root/steps/3"], edited: ["/root/steps/2"], removed: [{ label: "Format the answer", kind: "code" }] },
+      moved: ["/root/steps/2"],
+    });
+    assert.deepEqual(workflow.calls.map(([name, ...args]) => [name, ...args]), [
+      ["readWorkflowGraph", REVISIONS.M2.body.workflow],
+      ["readWorkflowGraph", REVISIONS.M1.body.workflow],
+      ["diffWorkflowGraphs", MCC_GRAPH_1, MCC_GRAPH_2],
+    ]);
+    const m1 = (await get(`/api/agents/mcc-classifier/revisions/${REVISIONS.M1.id}`)).json;
+    assert.deepEqual([m1.graph, m1.diff, m1.parent], [MCC_GRAPH_1, null, null]);
+    const c = (await get(`/api/agents/company-researcher/revisions/${REVISIONS.C.id}`)).json;
+    assert.deepEqual([c.graph, c.diff, c.parent.kind, c.revision.current], [BRIEF_GRAPH, null, "agentic", true], "a workflow whose parent is agentic has a graph and nothing to diff it with");
+  } finally {
+    await served.close();
+  }
+});
+
+test("a workflow revision when the DSL peer is not installed: the revision and the words to install it, never a crash", linux, async () => {
+  const { served, get } = await sample({ workflow: { missing: "@parcha/agentrun-dsl" } });
+  try {
+    const res = await get(`/api/agents/mcc-classifier/revisions/${REVISIONS.M2.id}`);
+    assert.equal(res.status, 200);
+    assert.deepEqual([res.json.graph, res.json.diff, res.json.unavailable], [null, null, "install @parcha/agentrun-dsl to see this workflow's graph"]);
+    assert.equal(res.json.revision.id, REVISIONS.M2.id);
+    assert.equal((await get(`/api/agents/company-researcher/revisions/${REVISIONS.B.id}`)).json.diff.against, REVISIONS.A.id, "an agentic revision needs no peer");
   } finally {
     await served.close();
   }

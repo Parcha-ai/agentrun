@@ -180,7 +180,7 @@ export function fakeReader(index = { agents: AGENTS, revisions: Object.values(RE
 /** A stand-in for @parcha/pi-durable-agent/workflow, from the graphs and runs above, with every call it was given. */
 export function fakeWorkflow({ missing } = {}) {
   const calls = [];
-  const peer = () => new AgentHomeError("missing", `install ${missing} to see this run's graph`);
+  const peer = () => new AgentHomeError("missing", `install ${missing} to see this workflow's graph`);
   const graphOf = (workflow) => {
     const found = [[BRIEF_WORKFLOW, BRIEF_GRAPH], [MCC_WORKFLOW_1, MCC_GRAPH_1], [MCC_WORKFLOW_2, MCC_GRAPH_2]].find(([w]) => JSON.stringify(w) === JSON.stringify(workflow));
     if (!found) throw new AgentHomeError("invalid", "the fixture knows no such workflow");
