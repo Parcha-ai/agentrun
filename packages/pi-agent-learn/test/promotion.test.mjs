@@ -3,7 +3,7 @@
 // was active before; never promote a demoted revision again; promote a trial after K clean uses that finished frozen.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { admitRevision, applyDecision, foldUses, LearnError, parseTrial, periodUses, PROMOTION_DEFAULTS, promotionDecision, renderTrial, thresholdsOf, TRIAL_LIMITS } from "../dist/index.js";
+import { admitRevision, applyDecision, currentRevision, foldUses, LearnError, parseTrial, periodUses, PROMOTION_DEFAULTS, promotionDecision, renderTrial, thresholdsOf, TRIAL_LIMITS } from "../dist/index.js";
 
 const sha = (c) => c.repeat(64);
 const at = (h, m = 0) => `2026-10-16T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00.000Z`;
@@ -370,6 +370,40 @@ test("a digest that leaves the refusals takes its kept uses with it: the trial r
   assert.equal(trial.revisions.at(-1).after, trial.uses.length);
   const clean = Array.from({ length: PROMOTION_DEFAULTS.promoteAfter }, (_, k) => ({ run: `c${k}`, sha256: trial.revisions.at(-1).sha256, outcome: "frozen", at: at(9, k + 1) }));
   assert.equal(foldUses(trial, clean).trial.status, "active", "the live trial still earns its promotion");
+});
+
+test("eviction drops only the evicted digest's uses: the champion's and the live trial's uses stay, and every after counts only the uses kept", () => {
+  // X gets one failed use and is retired; L is promoted on two clean uses (after 3) and stays superseded, restorable, while
+  // retired trials fill the refusals with X oldest; the live trial T gets a use of its own; admitting N retires T and
+  // evicts X. Only X's use may leave: a rule that drops the name's uses wholesale loses L's and T's.
+  const [x, l, n] = ["c".repeat(64), "d".repeat(64), "e".repeat(64)];
+  const tick = (i) => new Date(Date.UTC(2026, 9, 19) + i * 1000).toISOString();
+  let k = 0;
+  const admitted = (trial, sha256) => {
+    const a = admitRevision(trial, { name: "audit", sha256, run: "w", at: tick(k++), when: WHEN });
+    assert.equal(a.status, "admitted", a.detail);
+    return a.trial;
+  };
+  const use = (run, sha256, outcome) => ({ run, sha256, outcome, at: tick(k++) });
+  let trial = admitted(undefined, x);
+  trial = foldUses(trial, [use("x-1", x, "failed")]).trial;
+  trial = admitted(trial, l);
+  trial = foldUses(trial, [use("l-1", l, "frozen"), use("l-2", l, "frozen")]).trial;
+  assert.deepEqual([trial.status, trial.revisions.find((r) => r.sha256 === l).after], ["active", 3]);
+  let i = 0;
+  while ((trial.refused?.length ?? 0) < TRIAL_LIMITS.refused) trial = admitted(trial, digestOf(i++));
+  assert.equal(trial.refused[0], x, "X is the oldest refusal");
+  assert.equal(trial.revisions.find((r) => r.sha256 === l).status, "superseded");
+  const t = trial.revisions.at(-1).sha256;
+  trial = foldUses(trial, [use("t-1", t, "frozen")]).trial;
+  assert.equal(currentRevision(trial).sha256, t, "T is still the live trial, with one use of its own");
+  const next = admitted(trial, n);
+  assert.equal(next.refused.includes(x), false, "X left the refusals");
+  assert.deepEqual(next.uses.map((u) => [u.run, u.sha256]), [["l-1", l], ["l-2", l], ["t-1", t]], "only X's use left with it");
+  assert.equal(next.refused.at(-1), t, "T, retired, keeps its digest among the refusals, and its use stays");
+  assert.equal(next.revisions.find((r) => r.sha256 === l).after, 2, "L's after counts only the uses kept");
+  assert.equal(next.revisions.find((r) => r.sha256 === n).after, 3, "the new trial's uses start after the kept ones");
+  assert.deepEqual(parseTrial(renderTrial(next), "audit"), next);
 });
 
 test("a short stream's trial is exactly as before: no refusals until the name would hold more than the limit", () => {
