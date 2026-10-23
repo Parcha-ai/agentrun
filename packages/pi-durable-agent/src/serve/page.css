@@ -136,7 +136,7 @@ a.run:hover .id{color:var(--accent)}
 .live-note{color:var(--accent)}
 .run-head .ran{margin-top:-4px}
 .run-head .ran .rev-id{font-weight:600}
-.run-head .summary{color:var(--ink);border-left:3px solid var(--accent);padding:4px 0 4px 12px;margin:10px 0 4px}
+.run-head .summary{color:var(--ink);border:1px solid var(--line);padding:8px 12px;margin:10px 0 4px}
 .steps{position:relative;margin-left:6px;padding-left:20px;border-left:1px solid var(--line)}
 .steps>*{position:relative;margin:0 0 12px}
 .steps>*::after{content:"";position:absolute;left:-24px;top:14px;width:7px;height:7px;background:var(--line)}
@@ -185,9 +185,9 @@ pre.bad{border-color:var(--red);color:var(--red)}
 .diff{border:1px solid var(--line);background:var(--panel2);font:12.5px/1.6 var(--mono);margin:0 0 8px;padding:6px 0;max-height:420px;overflow:auto}
 .diff .line{display:flex;gap:10px;padding:0 12px;white-space:pre-wrap;overflow-wrap:anywhere}
 .diff .mark{flex:none;width:1ch;color:var(--faint)}
-.diff .line.add{background:var(--green-soft);box-shadow:inset 3px 0 var(--green)}
+.diff .line.add{background:var(--green-soft)}
 .diff .line.add .mark{color:var(--green)}
-.diff .line.del{color:var(--red);box-shadow:inset 3px 0 var(--red)}
+.diff .line.del{color:var(--red);background:var(--red-soft)}
 .diff .line.del .mark{color:var(--red)}
 .chip.add{color:var(--green);border-color:var(--green);background:var(--green-soft)}
 .chip.del{color:var(--red);border-color:var(--red);background:transparent;text-decoration:line-through}
@@ -195,7 +195,7 @@ pre.bad{border-color:var(--red);color:var(--red)}
 .files li.del .path{color:var(--red);text-decoration:line-through}
 .files li.changed .path{color:var(--accent)}
 .graph-box{overflow-x:auto;border:1px solid var(--line);background:var(--panel2);padding:12px;margin:0 0 8px}
-.note{color:var(--muted);border-left:3px solid var(--line);background:var(--panel2);padding:8px 14px;margin:0 0 8px}
+.note{color:var(--muted);border:1px solid var(--line);background:var(--panel2);padding:8px 14px;margin:0 0 8px}
 .foot{max-width:1180px;margin:0 auto;padding:0 16px 40px;font:11.5px var(--mono);color:var(--faint)}
 @media (max-width:560px){.brand .sub{display:none}.top{gap:10px}.call>summary .tool{display:none}.call>summary b{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}.row.think>summary .gist{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}}
 /* The workflow graph graph.js draws, at its own size: shrunk to fit, never below 480px (its box scrolls it instead), never grown. A square's colour says who works; a tag or a word, never a colour alone, says what a diff or a run did. */
