@@ -267,7 +267,10 @@ test("a running agentic run's page is read again every 2 s until the reader leav
 });
 
 const PRIVATE = "/root/steps/1/branches/private/body";
-const BRIEF = { nodes: [node("/root", "chain", "chain"), node("/root/steps/0", "call", "Read the site"), node("/root/steps/1", "route", "Jev: public or private"), node("/root/steps/1/branches/public/body", "call", "Check the filing"), node(PRIVATE, "escalate", `No public record ${HOSTILE}`), node("/root/steps/2", "code", "Answer")], edges: [] };
+const BRIEF = {
+  nodes: [node("/root", "chain", "chain"), node("/root/steps/0", "call", "Read the site"), node("/root/steps/1", "route", "Jev: public or private"), node("/root/steps/1/branches/public/body", "call", "Check the filing"), node(PRIVATE, "escalate", `No public record ${HOSTILE}`), node("/root/steps/2", "code", "Answer")],
+  edges: [{ from: "/root", to: "/root/steps/0", kind: "next" }, { from: "/root/steps/0", to: "/root/steps/1", kind: "next" }, { from: "/root/steps/1", to: "/root/steps/1/branches/public/body", kind: "route" }, { from: "/root/steps/1", to: PRIVATE, kind: "route" }, { from: "/root/steps/1", to: "/root/steps/2", kind: "next" }],
+};
 const ESCALATED_STATUS = { "/root": "escalated", "/root/steps/0": "done", "/root/steps/1": "escalated", "/root/steps/1/branches/public/body": "not-run", [PRIVATE]: "escalated", "/root/steps/2": "not-run" };
 const REV_C = rev("c", { kind: "workflow", parent: REV_B.id, current: true, note: "The cheap one" });
 const WORKFLOW_RUN = {
@@ -284,7 +287,7 @@ test("a workflow run's page: the graph with the run's node states as marks.statu
   await page.settle();
   assertInert(page.app, drawn.map((d) => d.svg));
   assert.equal(drawn.length, 1);
-  assert.deepEqual(plain(drawn[0].marks), { status: ESCALATED_STATUS, fired: PRIVATE });
+  assert.deepEqual(plain(drawn[0].marks), { status: ESCALATED_STATUS, fired: PRIVATE, taken: [PRIVATE] }, "the route branch it took is marked taken, the one it did not is not");
   assert.deepEqual(plain(drawn[0].graph), BRIEF);
   const head = all(page.app).find((el) => classOf(el) === "card run-head");
   assert.deepEqual(pills(head).slice(0, 2), [["pill escalated", "escalated"], ["pill workflow", "workflow"]]);
@@ -339,4 +342,21 @@ test("a run with no cost reads unknown, in the runs table and on its page, never
   const workflow = mount({ "api/runs/run-9": { ...WORKFLOW_RUN, run: { ...WORKFLOW_RUN.run, costUsd: undefined } } }, "#/runs/run-9", { serve: STORE });
   await workflow.settle();
   assert.ok(all(workflow.app).find((el) => classOf(el) === "card run-head").textContent.includes("cost unknown"));
+});
+
+test("a running store run whose refresh fails keeps what it shows and tries again, as an agent home's live run does", async () => {
+  const api = { "api/runs/run-5": { ...AGENTIC_RUN, run: RUNS[0], rows: TIMELINE.slice(0, 2) } };
+  const page = mount(api, "#/runs/run-5", { serve: STORE });
+  await page.settle();
+  api["api/runs/run-5"] = [503, { error: "busy" }];
+  await page.tick();
+  assert.equal(page.fetched.length, 2);
+  assert.ok(page.app.textContent.includes("refreshing every 2 s") && !page.app.textContent.includes("Could not read"), "the run stays");
+  assert.deepEqual([...page.timers.values()].map((t) => t.ms), [2000], "and it tries again");
+  api["api/runs/run-5"] = { ...AGENTIC_RUN, run: { ...RUNS[0], state: "completed", costUsd: 0.3 }, rows: TIMELINE };
+  await page.tick();
+  assert.ok(page.app.textContent.includes("$0.300") && page.timers.size === 0, "the next answer is drawn, and a finished run is not read again");
+  const first = mount({ "api/runs/run-5": [503, { error: "busy" }] }, "#/runs/run-5", { serve: STORE });
+  await first.settle();
+  assert.match(first.app.textContent, /Could not read the agent store\. 503 busy/, "a first read that fails says why");
 });
