@@ -209,12 +209,14 @@ test("a live run that ended on a successful tool result is waiting; one that is 
     working: await fakeDoor({ snapshot: ended, run: true, hold: false }),
     answered: await fakeDoor({ snapshot: [...ended, assistant(4, [text("Done.")])] }),
     failed: await fakeDoor({ snapshot: [...ended.slice(0, 2), result(3, "c1", "submit_form", "boom", true)] }),
+    // Busy with no turn of the agent's: the instance letting go of its browser after the answer.
+    releasing: await fakeDoor({ snapshot: [...ended, assistant(4, [text("Done.")])], busy: true }),
   };
   t.after(() => Promise.all(Object.values(doors).map((d) => d.close())));
   for (const [id, door] of Object.entries(doors)) await makeRun(home, id, { status: "running", door: door.url });
   const states = {};
   for (const id of Object.keys(doors)) states[id] = (await liveRows(get, id)).state;
-  assert.deepEqual(states, { ended: "waiting", working: "working", answered: "idle", failed: "idle" });
+  assert.deepEqual(states, { ended: "waiting", working: "working", answered: "idle", failed: "idle", releasing: "idle" });
   const listed = Object.fromEntries((await (await get("/runs")).json()).runs.map((r) => [r.id, r.state]));
   assert.deepEqual(listed, states, "the history shows each live run in the state its page shows");
 });
@@ -775,8 +777,9 @@ test("GET /agent: the saved sign-ins, their sites and when they last worked, nev
   t.after(() => waiting.close());
   const dir = await mkdtemp(join(tmpdir(), "web-signins-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  process.env.FAKE_DOOR = waiting.url;
-  const { home, root, get, post, json } = await app(t, { start: [process.execPath, fakeInstance(dir)] });
+  const instance = fakeInstance(dir);
+  instance.next({ door: waiting.url });
+  const { home, root, get, post, json } = await app(t, { start: instance.start });
   const first = await startRun(home, { runId: "first", host: "test" });
   await signInRun(first.storePath, {
     [PROFILE]: { ref: "ctx-secret-ref", allowedOrigins: ["https://the-internet.herokuapp.com", "not an origin", "https://x.example/path"], startUrl: "https://the-internet.herokuapp.com/login", verifiedAt: "2026-10-16T05:58:00.000Z" },

@@ -65,7 +65,7 @@ async function recordedRun(t, { env: base, plant = false, record = true }) {
   const sentinels = { ...makeSentinels(), bbConnectUrl: `${cdp.url}?sessionId=none` };
   const backend = new FakeBackend({ sentinels, start: SECURE, pages: { [SECURE]: fixturePage(SECURE, `Secure Area. Welcome to the Secure Area. Signed in as ${ACCOUNT[0]}; the login page said to use ${ACCOUNT[1]}. Project ${PROJECT}. Press: ${EMAIL}.`, 'The Internet') } });
   const contextId = randomUUID();
-  const env = { ...base, ...(record ? { RECORD_DIR: dir, RECORD_REDACT: JSON.stringify(ACCOUNT) } : {}), ...(base.AGENT_BROWSER === 'chrome' ? {} : { BROWSERBASE_API_KEY: sentinels.bbApiKey, BROWSERBASE_PROJECT_ID: PROJECT }) };
+  const env = { ...base, ...(record ? { RECORD_DIR: dir, RECORD_REDACT: JSON.stringify(ACCOUNT) } : {}), ...(base.AGENT_BROWSER === 'chrome' ? {} : { AGENT_BROWSER: 'browserbase', BROWSERBASE_API_KEY: sentinels.bbApiKey, BROWSERBASE_PROJECT_ID: PROJECT }) };
   const agent = await createAgent(where, env, { makeContext: async () => contextId, provider: backend.provider, driver: fakeDriver(backend) });
   const framesFile = join(run.dir, 'frames', 'frames.jsonl');
   const kept = () => (existsSync(framesFile) ? readFileSync(framesFile, 'utf8').trim().split('\n').filter(Boolean).length : 0);

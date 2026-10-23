@@ -1,4 +1,4 @@
-// The agent's own Chrome, for `AGENT_BROWSER=chrome`: start-run.mjs starts one Chrome for the run, headless, on a
+// The agent's own Chrome, for `AGENT_BROWSER=local`: start-run.mjs starts one Chrome for the run, headless, on a
 // loopback debugging port Chrome picks, and pi-browser attaches to it by endpoint. Its profile directory is the
 // sign-in: `<home>/chrome/<profile key>`, owner-only and outside every run's `work/`, so the model's file tools never
 // reach it, and a sign-in made in it is still there for the next run. Only the run that holds the profile's save lease
@@ -9,7 +9,8 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BROWSER_TOOL_NAMES } from "@parcha/pi-browser";
 
-export type BrowserKind = "browserbase" | "chrome";
+/** The browser a run drives. `chrome` is the run's own Chrome on this machine (`AGENT_BROWSER=local`). */
+export type BrowserKind = "browserbase" | "chrome" | "kernel";
 
 /** Whether a definition lists a browser tool: one of pi-browser's, the whole `browser` extension, or the sign-in. An
  *  agent that lists none gets no browser: start-run.mjs starts no Chrome for it and app.ts never dials one. */
@@ -18,11 +19,18 @@ export const listsBrowser = (definition: { tools: readonly string[] }) =>
 /** The agent's local Chrome profile, as a key in the agent home's `browser.profiles` (its save lease decides who opens it). */
 export const CHROME_PROFILE = "local-chrome";
 
-/** `AGENT_BROWSER`: `browserbase` (default) or `chrome`. */
+/** What a run with no `AGENT_BROWSER` is refused with: there is no default browser. */
+export const NO_BROWSER_SETTING = "set AGENT_BROWSER (or --browser): local (no key; a Chrome on this machine), browserbase (BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID) or kernel (KERNEL_API_KEY)";
+/** The notice for `AGENT_BROWSER=chrome`, which is `local` for one more release. */
+export const CHROME_ALIAS_NOTICE = "AGENT_BROWSER=chrome is now AGENT_BROWSER=local; chrome is accepted for one more release";
+
+/** `AGENT_BROWSER`: `local` (the run's own Chrome), `browserbase` or `kernel`, with no default. `chrome` is `local`. */
 export function browserOf(env: NodeJS.ProcessEnv): BrowserKind {
-  const kind = env.AGENT_BROWSER || "browserbase";
-  if (kind !== "browserbase" && kind !== "chrome") throw new Error(`AGENT_BROWSER is browserbase or chrome, not ${kind}`);
-  return kind;
+  const value = env.AGENT_BROWSER;
+  if (!value) throw new Error(NO_BROWSER_SETTING);
+  if (value === "local" || value === "chrome") return "chrome";
+  if (value === "browserbase" || value === "kernel") return value;
+  throw new Error(`AGENT_BROWSER is local, browserbase or kernel, not ${value}`);
 }
 
 export const chromeProfileDir = (home: string, key = CHROME_PROFILE) => join(home, "chrome", key);

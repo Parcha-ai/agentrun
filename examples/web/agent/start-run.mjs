@@ -3,7 +3,7 @@
 // `startRun` of @parcha/pi-durable-agent created (the server does that). It runs `pi-durable-disk run --dir
 // <home>/runs/<id> --app examples/web/agent/app.ts --serve 0` on loopback, so the run's door address is in its run.json
 // (`holder.serve`). SIGTERM or SIGINT goes to the run, which releases its browser and exits 0; starting the same
-// directory again resumes it. With `AGENT_BROWSER=chrome` it first starts the run's own Chrome (chrome.ts) and stops
+// directory again resumes it. With `AGENT_BROWSER=local` it first starts the run's own Chrome (chrome.ts) and stops
 // it, by its pid, once the run has exited; an agent that lists no browser tool gets no browser. With `RECORD_DIR` set,
 // the run's recording is finished once the run has exited (record.ts). Credentials come from the environment and
 // nothing here prints them.
@@ -13,7 +13,7 @@ import { rm } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openAgentHome, readAgentHome } from '@parcha/pi-durable-agent';
-import { browserOf, chromeProfileFor, listsBrowser, startChrome } from './chrome.ts';
+import { browserOf, CHROME_ALIAS_NOTICE, chromeProfileFor, listsBrowser, startChrome } from './chrome.ts';
 import { seedMemory } from './memory.ts';
 import { finishRunRecording } from './record.ts';
 
@@ -32,11 +32,12 @@ const state = await readAgentHome(await openAgentHome(home));
 let browser = null;
 try {
   if (listsBrowser(state.definition)) browser = browserOf(process.env);
+  if (browser && process.env.AGENT_BROWSER === 'chrome') console.error(CHROME_ALIAS_NOTICE);
 } catch (error) {
   console.error(error.message);
   process.exit(2);
 }
-const needed = ['AGENT_MODEL_BASE_URL', 'AGENT_MODEL', ...(browser ? [browser === 'chrome' ? 'CHROME_PATH' : 'BROWSERBASE_API_KEY'] : [])];
+const needed = ['AGENT_MODEL_BASE_URL', 'AGENT_MODEL', ...(browser ? [{ chrome: 'CHROME_PATH', browserbase: 'BROWSERBASE_API_KEY', kernel: 'KERNEL_API_KEY' }[browser]] : [])];
 const missing = needed.filter((name) => !process.env[name]);
 if (missing.length) {
   console.error(`set ${missing.join(', ')} first (see examples/web/agent/README.md)`);

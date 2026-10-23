@@ -21,17 +21,21 @@ its skills, its saved sign-ins and the index of its runs in `agent.sqlite`, and 
 
 ## Run it
 
-You need Node 22.19 or later. The server itself needs no key and no network. A run needs whatever its agent needs (see
-[agent/README.md](agent/README.md)), and the agent's start command uses the built packages, so build the repository first.
+You need Node 22.19 or later. The server itself needs no key and no network. A run needs a model endpoint and a
+browser, set in the server's environment, which it passes to every run it starts (all of it is in
+[agent/README.md](agent/README.md#run-one)). The agent's start command uses the built packages, so build the repository
+first.
 
-Starting a run needs a Browserbase key (`BROWSERBASE_API_KEY`) and a model endpoint, until pi-browser's `./live-view`
-lets a person sign in through a local Chrome. With no key, use the keyless
-[quickstart](../../packages/pi-durable-agent/README.md#quickstart-no-key-no-network) in the package README instead.
+With no model endpoint, the keyless [quickstart](../../packages/pi-durable-agent/README.md#quickstart-no-key-no-network)
+in the package README shows the agent home on its own.
 
 ```sh
 npm ci --ignore-scripts && npm run build
-node --no-warnings=ExperimentalWarning examples/web/server.mjs
+export AGENT_MODEL_BASE_URL=https://api.openai.com/v1 AGENT_MODEL=<model id> AGENT_MODEL_API_KEY=...   # any OpenAI Responses endpoint
+AGENT_BROWSER=local CHROME_PATH=$(command -v google-chrome) node --no-warnings=ExperimentalWarning examples/web/server.mjs
 ```
+
+On macOS, `CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"`.
 
 Open `http://127.0.0.1:8787/`, type what the agent should do and press Start run. The agent home is
 `examples/web/.data/agent-home`, ignored by git. The server makes it from `agent/agent.json` and `agent/skills/` the first
@@ -39,10 +43,10 @@ time, owner-only, and opens it as it is after that: to change the agent, start a
 
 Without a start command the server only shows the home's runs: it cannot start or wake one.
 
-The agent's browser is Browserbase by default. `AGENT_BROWSER=chrome` runs each run on its own headless Chrome on this
-machine instead (see [agent/README.md](agent/README.md#a-local-chrome)); the person signs in through it once pi-browser
-ships its live view (`./live-view`), which this server then shows at `/live/<run id>/`. Until then Browserbase stays the
-default.
+`AGENT_BROWSER` picks the agent's browser, with no default: `local` (a Chrome on this machine, no key; the person signs
+in through pi-browser's live view, which this server shows at `/live/<run id>/`), `browserbase` (`BROWSERBASE_API_KEY`)
+or `kernel` (`KERNEL_API_KEY`). The env each one needs, and the network, are in
+[agent/README.md](agent/README.md#the-browser).
 
 | Flag | Default | What |
 | --- | --- | --- |
