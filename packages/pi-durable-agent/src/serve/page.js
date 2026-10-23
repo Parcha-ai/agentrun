@@ -903,6 +903,9 @@
         var open = openCalls();
         var y = window.scrollY || 0;
         show([storeRunHead(data, rows), data.gone ? null : run.kind === "workflow" ? workflowRun(data) : timeline(rows)]);
+        // An exit that fired can sit past the edge of a narrow graph's box: bring it into view.
+        var fired = app.querySelector(".fired");
+        if (fired) fired.scrollIntoView({ block: "nearest", inline: "center" });
         reopen(open);
         if (y) window.scrollTo(0, y);
         if (run.state === "running") later(token, 2000, function () { storeRunPage(id, token, true); });
