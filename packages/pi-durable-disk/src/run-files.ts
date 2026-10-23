@@ -1,7 +1,8 @@
 // A run's own files, read over the disk's control (S3 GET, HEAD and LIST) and nothing else: these calls never mount, never
 // write, and never take or wait on the run's claim, so anyone may read a run another host holds. A read sees what the
 // holder has synced (its last barrier), and a file the holder writes whole (a temp file, then a link or a rename) is never
-// seen half-written. What a file means is the reader's business: disk parses none of them.
+// seen half-written. What a file means is the reader's business: disk parses none of them. The one write here,
+// `putRunFile`, creates a file in a run nobody holds (a held run refuses it), for a place's start window.
 //
 // How Archil's S3 API answers, measured on archil 0.8.42: a missing key is 404; a directory is a marker key ending in "/";
 // a symlink is listed as an ordinary zero-byte key, but its HEAD and GET answer 501 NotImplemented, and S3 never follows a
@@ -20,7 +21,7 @@ export interface RunFileControl {
   listObjects(prefix: string, options?: { recursive?: boolean }): Promise<{ objects: { key: string; size?: number }[]; commonPrefixes?: string[] }>;
 }
 
-export type RunFileErrorCode = "INVALID_PATH" | "RUN_MISSING" | "NOT_A_FILE" | "CONTROL_API_FAILED";
+export type RunFileErrorCode = "INVALID_PATH" | "RUN_MISSING" | "NOT_A_FILE" | "CONTROL_API_FAILED" | "EXISTS" | "WINDOW_CLOSED";
 
 /** A read of a run's files that cannot be answered. Its message names the path, never what a file holds. */
 export class RunFileError extends PdaError {
@@ -134,6 +135,56 @@ export async function listRunFiles(control: RunFileControl, ref: RunRef, dir: st
   }
   if (names.size === 0) await runMissing(control, run, ref, signal);
   return [...names].sort();
+}
+
+/** The calls of the disk's control a put uses: HEAD, and PutObject with an owner. `archilControl` has both. */
+export interface RunFilePutControl {
+  headObject(key: string): Promise<unknown | null>;
+  putObject(key: string, body: string, options: { uid: number; gid: number; mode: number }): Promise<unknown>;
+}
+
+/** A put Archil refused because a delegation holds the run: exactly 409 OperationAborted, as D2 measured on archil 0.8.42. */
+const windowClosed = (error: unknown) => statusOf(error) === 409 && (error as { code?: unknown })?.code === "OperationAborted";
+
+/**
+ * Create `path` in the run (`runs/<id>/<path>`) holding `text`, owned by `owner` with mode 0644, after making each missing
+ * parent directory as a marker `owner` owns, mode 0755 (a directory made by path on a mount refuses later creates).
+ * Create-only: a file or a directory already at `path` is EXISTS and nothing is written. The check is a HEAD before the
+ * PutObject, not a conditional create (Archil's client has none), so it is not exclusive against another writer at the
+ * same moment: claim a shared name where a single writer is certain. Only a run nobody holds takes the write; a held one
+ * answers 409 OperationAborted, which is WINDOW_CLOSED. For non-secret run files: a put file is readable in the run.
+ */
+export async function putRunFile(
+  control: RunFilePutControl,
+  ref: RunRef,
+  path: string,
+  text: string,
+  owner: { uid: number; gid: number },
+  options: { signal?: AbortSignal } = {},
+): Promise<void> {
+  const { signal } = options;
+  const segments = runFileSegments(path, false);
+  const run = `${runPath(ref.id)}/`;
+  const key = `${run}${segments.join("/")}`;
+  const call = async <T>(what: string, fn: () => Promise<T>): Promise<T> => {
+    try {
+      return await bounded(fn, signal);
+    } catch (error) {
+      if (signal?.aborted && error === signal.reason) throw error;
+      if (windowClosed(error)) throw new RunFileError("WINDOW_CLOSED", `${what} was refused: a delegation holds run ${ref.id} (409 OperationAborted)`, { cause: error });
+      throw new RunFileError("CONTROL_API_FAILED", `${what} over the control failed`, { cause: error });
+    }
+  };
+  if ((await call(`reading ${path}`, () => control.headObject(key))) !== null || (await call(`reading ${path}/`, () => control.headObject(`${key}/`))) !== null) {
+    throw new RunFileError("EXISTS", `${path} is already in run ${ref.id}: a put creates, never replaces`);
+  }
+  for (let i = 1; i < segments.length; i++) {
+    const dir = segments.slice(0, i).join("/");
+    if ((await call(`reading ${dir}/`, () => control.headObject(`${run}${dir}/`))) === null) {
+      await call(`making ${dir}/`, () => control.putObject(`${run}${dir}/`, "", { uid: owner.uid, gid: owner.gid, mode: 0o755 }));
+    }
+  }
+  await call(`writing ${path}`, () => control.putObject(key, text, { uid: owner.uid, gid: owner.gid, mode: 0o644 }));
 }
 
 // ---- the same reads over a run directory on this machine (localPlace) -------------------------------------------------
