@@ -157,6 +157,15 @@ test('history is read-only and branch navigation cannot restore sibling history'
   } finally { await app.shutdown(); }
 });
 
+test('the agentrun tool tells the model that a run left interrupted or failed resumes from its journal', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    const { description } = app.tools.get('agentrun');
+    assert.doesNotMatch(description, /no checkpoint resume|always restarts/, 'a run can resume');
+    assert.match(description, /interrupted or failed resumes from its journal when its draft, input, SOP and tools are unchanged/);
+  } finally { await app.shutdown(); }
+});
+
 test('native tool declares object-valued workflows and rejects encoded JSON without changing the staged draft', async () => {
   const app = await harness({ withModel: false });
   try {
