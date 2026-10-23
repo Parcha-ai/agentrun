@@ -80,19 +80,21 @@ async function revisionView(reader: AgentStoreReader, revision: Revision, curren
 }
 
 /** One run: its row, its agent's name and its revision's note, then what it did, read from its own store under runs/: an
- *  agentic run's timeline, or a workflow run's record. An AgentHomeError from the workflow's reader (a run this version
- *  does not read) is the one line the page shows in place of the graph. A run whose directory is gone says so. */
+ *  agentic run's timeline, or a workflow run's record. An ended run's store is read as an immutable file, so the read
+ *  makes no file beside it; a running one's is read through its log. An AgentHomeError from the workflow's reader (a run
+ *  this version does not read) is the one line the page shows in place of the graph. A run whose directory is gone says
+ *  so. */
 async function runView(dir: string, reader: AgentStoreReader, run: RunRow) {
   const revision = reader.readRevision(run.revision);
   const value = { run, agent: reader.listAgents().find((agent) => agent.id === run.agent)?.name ?? run.agent, note: revision.note };
   const storePath = reader.runStorePath(run.id);
   if (!existsSync(storePath)) return { ...value, gone: true };
   checkInside(dir, storePath, "store");
-  if (revision.kind === "agentic") return { ...value, rows: timelineOf(readEntriesAt(dir, storePath, "store"), { settled: run.state !== "running" }) };
+  if (revision.kind === "agentic") return { ...value, rows: timelineOf(readEntriesAt(dir, storePath, "store", { ended: run.endedAt !== undefined }), { settled: run.state !== "running" }) };
   try {
     // ./workflow is imported here, for a workflow run only: a store of agentic runs never loads it.
     const { readWorkflowRun } = await import("../workflow.js");
-    return { ...value, workflow: await readWorkflowRun({ runId: run.id, storePath, revision }) };
+    return { ...value, workflow: await readWorkflowRun({ runId: run.id, storePath, revision, state: run.state }) };
   } catch (error) {
     if (error instanceof AgentHomeError) return { ...value, refused: error.message };
     throw error;
