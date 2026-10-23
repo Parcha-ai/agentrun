@@ -15,8 +15,9 @@ export type DecisionRule =
   | { kind: "judge" }
   /** pick: the chosen option names an item by its position, or none. */
   | { kind: "pick"; options: string[]; none: string | null }
-  /** route: the chosen branch, or the unsure branch when the choice's confidence is below `gte`. */
-  | { kind: "route"; unsure: { gte: number; branch: string } | null }
+  /** route: the chosen branch, or the unsure branch when the choice's confidence is below `gte`. The chosen
+   *  branch names one of `branches`; `unsure`, when set, judges its confidence against `gte`. */
+  | { kind: "route"; branches: string[]; unsure: { gte: number; branch: string } | null }
   /** sift: an item of this request is kept when its `keep` measure meets `gte`; every item without a keep
    *  rule. `items` counts this request's items; the action names them by their position in the request. */
   | { kind: "sift"; items: number; ids: string[]; keep: { id: string; measure: "confidence" | "value"; gte: number } | null }
@@ -79,7 +80,11 @@ export function rederiveDecision(receipt: Pick<DecisionReceipt, "rule" | "answer
       const answer = answers.pick;
       if (!answer || typeof answer !== "object") return null;
       const choice = answer.choice;
+      // The choice must be a string that names an option, or the none option. Anything else (no string
+      // choice, or a choice in neither set) is a malformed answer, never a fail-open {index: -1}.
+      if (typeof choice !== "string") return null;
       const none = rule.none !== null && choice === rule.none;
+      if (!none && !rule.options.includes(choice)) return null;
       return { index: none ? null : rule.options.indexOf(choice), none };
     }
     case "route": {
@@ -87,6 +92,11 @@ export function rederiveDecision(receipt: Pick<DecisionReceipt, "rule" | "answer
       const answer = answers.branch;
       if (!answer || typeof answer !== "object") return null;
       const branch = answer.choice;
+      // The chosen branch must name one of the route's branches; an out-of-set choice is malformed.
+      if (typeof branch !== "string" || !rule.branches.includes(branch)) return null;
+      // When unsure is set, judging SURE/UNSURE needs a finite numeric confidence. A missing or non-numeric
+      // confidence must not compare false and re-derive as SURE (a fail-open onto the chosen branch).
+      if (rule.unsure && !(typeof answer.confidence === "number" && Number.isFinite(answer.confidence))) return null;
       const unsure = Boolean(rule.unsure && answer.confidence < rule.unsure.gte);
       return { branch, taken: unsure ? rule.unsure!.branch : branch, unsure };
     }
