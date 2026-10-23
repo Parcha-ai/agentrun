@@ -65,10 +65,11 @@ test('in Chrome: the dark palette goes only over a page that declares dark; any 
     for (const id of Object.keys(PAGES)) {
       await page.evaluate(`location.href = '${base}/chat.html?r=${id}'`);
       // Setting the address does not wait for the navigation: until it commits, the previous page's report is still there.
-      const report = `document.querySelector('.report-frame')?.contentDocument`;
-      await page.once(`location.href === '${base}/chat.html?r=${id}' && ${report}?.title === '${id}' && ${report}?.readyState === 'complete'`, 'true', 20_000, `${id}: the agent's page drawn`);
-      seen[id] = JSON.parse(String(await page.evaluate(`(() => { const d = document.querySelector('.report-frame').contentDocument; const css = (n) => getComputedStyle(n);
-        const th = d.querySelector('th'); return JSON.stringify({ ...(th ? { th: [css(th).color, css(th).backgroundColor] } : {}), body: [css(d.documentElement).colorScheme, css(d.body).backgroundColor, css(d.body).color] }); })()`)));
+      // The read is its own readiness check, in one evaluation: the report frame can be drawn again between a check and a
+      // later read, so only a frame that is this id's page, loaded, gives its colours (else '', and the read is polled).
+      seen[id] = JSON.parse(String(await page.until(`(() => { const d = document.querySelector('.report-frame')?.contentDocument; const css = (n) => getComputedStyle(n);
+        if (location.href !== '${base}/chat.html?r=${id}' || !d || d.title !== '${id}' || d.readyState !== 'complete' || !d.body) return '';
+        const th = d.querySelector('th'); return JSON.stringify({ ...(th ? { th: [css(th).color, css(th).backgroundColor] } : {}), body: [css(d.documentElement).colorScheme, css(d.body).backgroundColor, css(d.body).color] }); })()`, 20_000, `${id}: the agent's page drawn`)));
     }
   } finally {
     await page.close();

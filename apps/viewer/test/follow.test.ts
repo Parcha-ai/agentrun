@@ -13,7 +13,7 @@ import { finishedManifest, placeLines, tailOf } from '../src/follow.ts';
 import { blobsNamed } from '../src/load.ts';
 import { fileOrder, type Line } from '../src/format.ts';
 import { stopsOf } from '../src/replay.ts';
-import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
+import { chrome, closeAll, closeLeftBrowsers, drivenPage, pageFor } from './driven-page.ts';
 import { blobs, lines, manifest } from './vision-hand.ts';
 
 // A browser a test left open would hold this file's process: each is ended here, and the file fails.
@@ -298,8 +298,7 @@ test('the page recovers: a run not started yet, a blob whose connection drops, b
   const live = liveServer(join(out, 'dist'), { absent: true });
   const port = await listen(live.server);
   live.fail('/run/manifest.json', 1);
-  const followed = await drivenPage(`http://127.0.0.1:${port}/viewer/index.html?follow=/run/`, join(out, 'profile'));
-  t.after(() => closeAll([followed], () => { live.server.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }));
+  const followed = await pageFor(t, `http://127.0.0.1:${port}/viewer/index.html?follow=/run/`, join(out, 'profile'), () => { live.server.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); });
   const seen = async () => JSON.parse(String(await followed.evaluate(`JSON.stringify({ position: document.querySelector('.position')?.textContent ?? '', status: document.querySelector('.live-status')?.textContent ?? '',
     missing: [...document.querySelectorAll('.missing')].map((each) => each.textContent).join(' | '), text: document.body.textContent })`))) as Record<string, string>;
   const until = async (test: (now: Record<string, string>) => boolean, what: string) => {
@@ -348,8 +347,7 @@ test('a run on another server is never followed', { skip: existsSync(chrome) ? f
   const away = liveServer(join(out, 'dist'));
   const [homePort, awayPort] = [await listen(home.server), await listen(away.server)];
   away.append(lines.slice(0, 5));
-  const page = await drivenPage(`http://127.0.0.1:${homePort}/viewer/index.html?follow=${encodeURIComponent(`http://127.0.0.1:${awayPort}/run/`)}`, join(out, 'profile'));
-  t.after(() => closeAll([page], () => { home.server.close(); away.server.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }));
+  const page = await pageFor(t, `http://127.0.0.1:${homePort}/viewer/index.html?follow=${encodeURIComponent(`http://127.0.0.1:${awayPort}/run/`)}`, join(out, 'profile'), () => { home.server.close(); away.server.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); });
   let text = '';
   for (let tries = 0; tries < 300 && !text.includes('could not be opened'); tries += 1) { await page.sleep(100); text = String(await page.evaluate('document.body.textContent')); }
   assert.match(text, /could not be opened: a run is followed only from this page's own server/);
