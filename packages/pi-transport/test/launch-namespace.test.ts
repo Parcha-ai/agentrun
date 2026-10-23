@@ -5,7 +5,8 @@
 // | variable                                             | from                                                  | program `env` / `inheritEnv` | box runtime        |
 // |------------------------------------------------------|-------------------------------------------------------|------------------------------|--------------------|
 // | MODE D SELF                                          | the script's argv ($1, $2, $0), set by the launcher   | refused (listed)             | unset at line 1    |
-// | TICK STEP STEPS SETSID PROC                          | the script, from `command -v`/`sleep` probes          | refused (listed)             | unset at line 1    |
+// | TICK STEP STEPS SETSID                               | the script, from `command -v`/`sleep` probes          | refused (listed)             | unset at line 1    |
+// | PROC                                                 | one script line, like PTRACE_FILE (a test's /proc)    | refused (listed)             | unset at line 1    |
 // | GEN RESTART DELAY BURST INTERVAL TERMINALS LOGMAX    | spec.sh, written by the host from the LaunchSpec      | refused (listed)             | unset at line 1    |
 // | FRAMED RUNAS ISOLATION HOOK HOOK_TENTHS              | spec.sh, written by the host                          | refused (listed)             | unset at line 1    |
 // | PTRACE_FILE                                          | one script line (no environment can change it)        | refused (listed)             | unset at line 1    |
@@ -14,11 +15,12 @@
 // | the temporaries (n code pid line name uid gid home   | the script itself                                     | refused (listed)             | unset at line 1    |
 // |   how me v hp hcode limit magic extra phase st ...)  |                                                       |                              |                    |
 // | u_name u_id u_gid u_how u_home (run_program)         | the launcher's own user record, $D/user               | refused (listed)             | unset at line 1    |
-// | PI_TRANSPORT_PROC                                    | the box runtime only (a test's /proc)                 | refused (PI_TRANSPORT_*)     | read: the box's    |
+// | PI_TRANSPORT_PROC                                    | nowhere: the launcher never reads it                  | refused (PI_TRANSPORT_*)     | never read         |
 // | PATH HOME TMPDIR                                     | the box runtime (the exec's environment)              | PATH, HOME refused           | read: the box's    |
 // | BASH_ENV ENV SHELLOPTS BASHOPTS PS4 LD_*             | the box runtime, cleared at the exec (`env -u`)       | refused (named)              | cleared at exec    |
-// So no program setting assigns a launcher variable; no runtime export keeps an export flag on one; and the shell's and the
-// loader's variables are gone before the script's first line. A requested user switch that cannot happen fails (exit 126).
+// | GLIBC_TUNABLES LOCPATH                               | the box runtime, cleared at the exec (`env -u`)       | refused (named)              | cleared at exec    |
+// So no program setting assigns a launcher variable; no runtime export keeps an export flag on one; and the shell's, the
+// loader's and the C library's variables are gone before the script's first line. A requested user switch that cannot happen fails (exit 126).
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -187,6 +189,28 @@ describe("a box runtime that exports the launcher's names", () => {
 		expect(log).not.toMatch(/LD_PRELOAD|cannot be preloaded/);
 		expect(readdirSync(scratch)).not.toContain("sourced");
 		for (const value of [token, Buffer.from(stdin).toString("base64")]) expect(processesHolding(value)).toEqual([]);
+		getOrThrow(await launchStop(box, started.launch, { graceMs: 1_000 }, context));
+		await box.destroy(context);
+	});
+});
+
+describe("the C library's tunables and locale path", () => {
+	it("reach neither the launcher's processes nor the program from the box runtime: cleared at the exec that starts each launcher shell", async () => {
+		const tag = randomBytes(6).toString("hex");
+		const { box } = await aBox({ GLIBC_TUNABLES: `glibc.zz.marker${tag}=1`, LOCPATH: `/nonexistent-zz-${tag}` });
+		const program = ["sh", "-c", "env > seen-env; exec sleep 300"];
+		const started = getOrThrow(await launch(box, "libc", { argv: program }, context));
+		await until("the program's environment", () => fileIn(box, "seen-env"));
+		const dir = started.directory;
+		const pids = ["launcher.pid", "watch.pid", "pid.1"].map((file) => readFileSync(join(dir, file), "utf8").trim());
+		for (const pid of pids) {
+			const names = readFileSync(`/proc/${pid}/environ`, "utf8")
+				.split("\0")
+				.map((entry) => entry.slice(0, entry.indexOf("=")));
+			expect(names, `pid ${pid}`).not.toContain("GLIBC_TUNABLES");
+			expect(names, `pid ${pid}`).not.toContain("LOCPATH");
+		}
+		expect((await fileIn(box, "seen-env")) ?? "").not.toContain(tag);
 		getOrThrow(await launchStop(box, started.launch, { graceMs: 1_000 }, context));
 		await box.destroy(context);
 	});

@@ -633,13 +633,13 @@ esac
  * Whether a process of group $1 that is not a zombie is left. A killed process whose parent has gone stays a zombie where the
  * box's init does not reap orphans (a Modal VM): it still answers signal 0 and still belongs to its group. Built from shell
  * builtins only (a fork per process is seconds on a host with thousands), and only once the cheap group probe says
- * something is there. PROC is /proc; a test points it at a directory of its own. The text lives in an ordinary string because
+ * something is there. PROC is /proc, from PROC_LINE: a test copy of the script points it at a directory of its own, and no
+ * environment can. The text lives in an ordinary string because
  * it holds a dollar sign and a brace, which a template literal would take for its own.
  */
 const GROUP_LIVE = [
-	"# Whether a process of group $1 that is not a zombie is left (shell builtins only; PROC is /proc, a test's own in a test).",
-	"PROC=/proc",
-	'if [ -n "$PI_TRANSPORT_PROC" ]; then PROC=$PI_TRANSPORT_PROC; fi',
+	"# Whether a process of group $1 that is not a zombie is left (shell builtins only; PROC is /proc, a test copy's own in one).",
+	"@@PROC@@",
 	"group_live() {",
 	"  g=$1",
 	'  gkill 0 "$g" || [ "$PROC" != /proc ] || return 1',
@@ -845,6 +845,9 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 /** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */
 export const PTRACE_FILE_LINE = "PTRACE_FILE=/proc/sys/kernel/yama/ptrace_scope";
 
+/** The one line that names the process table the launcher reads (group_live, centis): a script-level constant like PTRACE_FILE_LINE. */
+export const PROC_LINE = "PROC=/proc";
+
 /** How long the tools user's check may take in the box (60 s). A start's call to the box is given this and more. */
 export const TOOLS_CHECK_MS = 60_000;
 
@@ -852,7 +855,9 @@ export const TOOLS_CHECK_MS = 60_000;
 export const TOOLS_CHECK_LINE = `TOOLS_CHECK_CENTIS=${TOOLS_CHECK_MS / 10}`;
 
 /** The supervisor the host uploads to a box: POSIX `sh`, with the programs named in the file's header. */
-export const LAUNCHER_SCRIPT = SCRIPT_TEMPLATE.replace("@@GROUP_LIVE@@", () => GROUP_LIVE)
+export const LAUNCHER_SCRIPT = SCRIPT_TEMPLATE.replace("@@GROUP_LIVE@@", () =>
+	GROUP_LIVE.replace("@@PROC@@", () => PROC_LINE),
+)
 	.replace("@@DIRECTORY_CHECK@@", () => DIRECTORY_CHECK)
 	.replace("@@CAP_LINE@@", () => CAP_LINE_CHECK)
 	.replace("@@PTRACE_FILE@@", () => PTRACE_FILE_LINE)

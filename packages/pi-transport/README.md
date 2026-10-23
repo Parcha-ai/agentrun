@@ -823,7 +823,9 @@ before it makes a box to launch in.
   incarnation unsets every other exported name, and a name the shell cannot unset refuses the incarnation (exit 126).
 - `env` is plain settings kept in a file of the box. Never put a secret in it: a key-shaped name (a `_`-separated
   segment KEY, TOKEN, SECRET, PASSWORD, PASSWD, CREDENTIAL or CREDENTIALS) is refused by name, as are PATH, HOME, LANG
-  and the names the launcher sets.
+  and the names the launcher sets. So are the shell's, the loader's (`LD_*`) and the C library's (`GLIBC_TUNABLES`,
+  `LOCPATH`), in `env` and `inheritEnv`: `env` is exported before a root launcher drops to `user`, so they would act on
+  that switch. The launcher clears them at every exec that starts its shell, and reads only `/proc`.
 - A box may launch natively (`Box.launcher`, a test's fake box): the three calls then use it, read on every call. A
   provider leaves it undefined.
 - `stdin` (bytes, at most 64 KiB; disk's mount token) is written to EVERY incarnation's stdin and then closed. `secrets`

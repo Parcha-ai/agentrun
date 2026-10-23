@@ -136,3 +136,14 @@ describe("a key-shaped name in env", () => {
 			expect(keyed(name), name).toBeUndefined();
 	});
 });
+
+describe("the C library's tunables and locale path", () => {
+	it("are refused as a program setting and as an inherited name: they would act on the root launcher's switch to the user", () => {
+		for (const name of ["GLIBC_TUNABLES", "LOCPATH"]) {
+			const set = launchSpecError("named", { argv: ["true"], user: "pda", env: { [name]: VALUE } });
+			expect(set?.message, `env ${name}`).toBe(`the environment name ${name} is reserved by the launcher`);
+			const inherited = launchSpecError("named", { argv: ["true"], user: "pda", inheritEnv: [name] });
+			expect(inherited?.code, `inheritEnv ${name}`).toBe("invalid");
+		}
+	});
+});

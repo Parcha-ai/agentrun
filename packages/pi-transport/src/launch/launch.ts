@@ -30,8 +30,21 @@ const MAX_HOOK_MS = 120_000;
 /** A name one of whose `_`-separated segments says it holds a key: refused in `env`, which rests in a file of the box. */
 const KEY_SEGMENT = /^(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|CREDENTIALS)$/i;
 const keyShaped = (name: string): boolean => name.split("_").some((segment) => KEY_SEGMENT.test(segment));
-/** Names that act on the launcher's shell or on the commands it runs (the shell's and the loader's): never a program's setting. */
-const SHELL_AND_LOADER = new Set(["IFS", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS4"]);
+/**
+ * Names that act on the launcher's shell or on the commands it runs (the shell's, the loader's and the C library's): never a
+ * program's setting. The program's settings are exported before the root launcher's setpriv or runuser drops to `user`, so the
+ * C library's tunables and locale path would act on that privileged switch.
+ */
+const SHELL_AND_LOADER = new Set([
+	"IFS",
+	"BASH_ENV",
+	"ENV",
+	"SHELLOPTS",
+	"BASHOPTS",
+	"PS4",
+	"GLIBC_TUNABLES",
+	"LOCPATH",
+]);
 /** A name the program may never set or inherit: one the launcher's shell assigns, or one that acts on the shell or the loader. */
 const reservedName = (name: string): boolean =>
 	LAUNCHER_SHELL_NAMES.includes(name) || SHELL_AND_LOADER.has(name) || name.startsWith("LD_");
@@ -435,12 +448,21 @@ export function specScript(spec: LaunchSpec, isolation: string): string {
 	return `${lines.join("\n")}\n`;
 }
 
-/** `env -u` for each variable that acts on a shell or a loader, at the exec that starts every launcher shell. */
+/** `env -u` for each variable that acts on a shell, the loader or the C library, at the exec that starts every launcher shell. */
 const CLEAN_EXEC = [
 	"env",
-	...["BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS4", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT"].flatMap(
-		(name) => ["-u", name],
-	),
+	...[
+		"BASH_ENV",
+		"ENV",
+		"SHELLOPTS",
+		"BASHOPTS",
+		"PS4",
+		"LD_PRELOAD",
+		"LD_LIBRARY_PATH",
+		"LD_AUDIT",
+		"GLIBC_TUNABLES",
+		"LOCPATH",
+	].flatMap((name) => ["-u", name]),
 ];
 
 /** Run a script in the box and return its combined output, or an error. */
