@@ -13,7 +13,7 @@ import { AgentHomeError, durableProfileStore, openStore, openStoreReader } from 
 import { serveStore } from "../dist/serve/index.js";
 import { lineDiff } from "../dist/serve/store.js";
 import { runWorkflowRevision } from "../dist/workflow.js";
-import { BRIEF_WORKFLOW, buildSampleStore, MCC_WORKFLOW_2, PRIVATE, PROMPT_A, PROMPT_B, SKILL_MARKER } from "./fixtures/store-sample.mjs";
+import { BRIEF_WORKFLOW, buildSampleStore, MCC_WORKFLOW_2, PRIVATE, PROMPT_A, PROMPT_B, recordWorkflow, SKILL_MARKER } from "./fixtures/store-sample.mjs";
 import { all, assertInert, mount } from "./page-dom.mjs";
 import { hostFor, mapDoc } from "./workflow-support.mjs";
 import { ctx, openSession, request, scratch } from "./support.mjs";
@@ -243,6 +243,40 @@ test("an agentic-only store whose runs have all ended: serving every route makes
     await served.close();
   }
   assert.deepEqual(files(root), before);
+});
+
+test("an ended workflow run has no working node, in its answer or on its page: completed, escalated, stopped and failed; an interrupted node reads stopped, or failed in a failed run", async () => {
+  const { root, ids } = await buildSampleStore(await scratch());
+  const store = openStore(root);
+  try {
+    const started = await store.startRun({ agent: "mcc-classifier" });
+    store.carryBack(started.runId, await recordWorkflow(started, { failAt: "mcc.pick" }));
+    ids.failed = started.runId;
+  } finally {
+    store.close();
+  }
+  const served = await serveStore({ dir: root });
+  const classOf = (el) => (el.getAttribute("class") ?? "").split(" ");
+  try {
+    const seen = {};
+    const drawn = {};
+    for (const role of ["c1", "c2", "m4", "failed"]) {
+      const view = JSON.parse((await request(served.url, { target: `/api/runs/${ids[role]}` })).body);
+      seen[role] = [view.run.state, view.workflow.status];
+      const server = serverFetch(served.url);
+      const page = mount({}, `#/runs/${ids[role]}`, { serve: "store", fetch: server.fetch });
+      await server.idle(page);
+      const nodes = all(page.app).filter((el) => el.getAttribute("data-path") !== null);
+      assert.equal(nodes.length, view.workflow.graph.nodes.length, role);
+      assert.deepEqual(nodes.filter((el) => classOf(el).includes("working")).map((el) => el.getAttribute("data-path")), [], role);
+      drawn[role] = Object.fromEntries(nodes.map((el) => [el.getAttribute("data-path"), classOf(el)]));
+    }
+    assert.deepEqual(Object.fromEntries(Object.entries(seen).map(([role, [state, status]]) => [role, [state, Object.values(status).includes("working")]])), { c1: ["completed", false], c2: ["escalated", false], m4: ["stopped", false], failed: ["failed", false] });
+    assert.deepEqual([seen.m4[1]["/root/steps/1"], seen.failed[1]["/root/steps/2"]], ["stopped", "failed"]);
+    assert.ok(drawn.m4["/root/steps/1"].includes("stopped") && drawn.failed["/root/steps/2"].includes("failed"), "graph.js draws each as its state");
+  } finally {
+    await served.close();
+  }
 });
 
 test("a workflow run its reader refuses (one in the keyed layout) is that refusal's one line beside the run's row; a run store that is no store is a plain 500", async () => {

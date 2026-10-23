@@ -67,8 +67,8 @@ const PUBLIC_PAGE = { kind: "public", employees: 4_000 };
 
 /** A started workflow run, run to its end as a host runs one: ./workflow's runWorkflowRevision on the run's own store,
  *  with scripted tools that answer `page` for the site and ANSWERS for the rest. With `stopAt`, the run is stopped when
- *  that tool is called. Resolves to what carryBack takes. */
-async function recordWorkflow(started, { page = PUBLIC_PAGE, stopAt } = {}) {
+ *  that tool is called; with `failAt`, that tool throws. Resolves to what carryBack takes. */
+export async function recordWorkflow(started, { page = PUBLIC_PAGE, stopAt, failAt } = {}) {
   let stopping;
   const workflows = createWorkflowExtension({
     options: () => ({ files: workspaceFiles(started.workspace) }),
@@ -76,6 +76,7 @@ async function recordWorkflow(started, { page = PUBLIC_PAGE, stopAt } = {}) {
       adapters: {
         runEffect: async ({ node }) => {
           if (node.tool === stopAt) stopping ??= workflows.stop(harness, started.runId, "cancel", ctx);
+          if (node.tool === failAt) throw new Error(`${failAt}: 503 Service Unavailable`);
           return node.tool === "web.fetch" ? page : ANSWERS[node.tool];
         },
       },
