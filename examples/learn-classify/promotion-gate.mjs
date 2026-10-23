@@ -132,7 +132,7 @@ const writeJson = (file, value) => {
 };
 const bankFile = (dir, sha256, cik) => join(dir, 'bank', sha256, `${cik}.json`);
 const verdictFile = (dir, key) => join(dir, 'verdicts', `${key}.json`);
-const keyOf = (name, candidate, serving, demotion = false) => (demotion ? `${name}/demote-${candidate}-${serving ?? 'none'}` : `${name}/${candidate}-${serving ?? 'first'}`);
+const keyOf = (name, candidate, serving, demotion = false, challenger = false) => (demotion ? `${name}/demote-${candidate}-${serving ?? 'none'}` : challenger ? `${name}/challenge-${candidate}-${serving}` : `${name}/${candidate}-${serving ?? 'first'}`);
 
 /** What the gate's bank runs under `dir` have cost, as far as it is known. */
 export function gateSpend(dir) {
@@ -151,7 +151,7 @@ export function gateSpend(dir) {
  */
 export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, floor = GATE.floor, scoreParts = partsOf, parts = GATE.parts, log = () => {} }) {
   if (!bank.length) throw new Error('the promotion gate needs a bank of companies');
-  return async ({ name, candidate, serving, main, demotion = false }) => {
+  return async ({ name, candidate, serving, main, demotion = false, challenger }) => {
     const revisions = serving ? [candidate, serving] : [candidate];
     const values = new Map(revisions.map((r) => [r.sha256, new Map()]));
     const todo = [];
@@ -184,7 +184,7 @@ export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, 
       ? { promote: false, reason: `${failed.length} bank run(s) failed, so nothing was compared; they run again at the next ask`, failed }
       : demotion ? demotionVerdictOf({ bank, champion: values.get(candidate.sha256), back: serving ? values.get(serving.sha256) : null, parts })
       : verdictOf({ bank, candidate: values.get(candidate.sha256), serving: serving ? values.get(serving.sha256) : null, floor, parts });
-    const line = { at: new Date().toISOString(), name, candidate: candidate.sha256, serving: serving?.sha256 ?? null, main, bank: bank.length, concurrency, ran: todo.length - failed.length, kept: bank.length * revisions.length - todo.length, costUsd, ...verdict };
+    const line = { at: new Date().toISOString(), name, candidate: candidate.sha256, serving: serving?.sha256 ?? null, main, bank: bank.length, concurrency, ran: todo.length - failed.length, kept: bank.length * revisions.length - todo.length, costUsd, ...verdict, ...(challenger ? { challenger: true } : {}) };
     mkdirSync(dir, { recursive: true });
     appendFileSync(join(dir, 'verdicts.jsonl'), `${JSON.stringify(line)}\n`);
     const outcome = demotion ? (verdict.demote ? 'demotes' : 'keeps it') : verdict.promote ? 'passes' : 'holds';
@@ -211,7 +211,7 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, p
     const [name, job] = queued.entries().next().value;
     queued.delete(name);
     const done = compare(job)
-      .then((line) => { if (!line.failed) writeJson(verdictFile(dir, job.key), { ...line, key: job.key, ...(job.receipt ? { receipt: true } : {}), ...(job.confirm ? { confirm: true } : {}) }); },
+      .then((line) => { if (!line.failed) writeJson(verdictFile(dir, job.key), { ...line, key: job.key, ...(job.receipt ? { receipt: true } : {}), ...(job.confirm ? { confirm: true } : {}), ...(job.challenger ? { challenger: true, workflowInput: job.challenger } : {}) }); },
         (error) => log(`  promotion gate on ${name}: ${String(error?.message ?? error).slice(0, 200)}; no verdict`))
       .finally(() => { running = null; pump(); });
     running = { key: job.key, job, done };
@@ -227,14 +227,14 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, p
     /** `front`: this comparison goes ahead of every other queued one. `receipt` (asked for a receipt) and `confirm` (a
      *  promotion that already stands, which the verdict confirms or demotes) are kept on its verdict. `demotion` asks the
      *  gated demotion's comparison (`demotionVerdictOf`), its verdict kept apart from the promotion's. */
-    ask({ name, candidate, serving, main, front = false, receipt = false, confirm = false, demotion = false }) {
-      const key = keyOf(name, candidate.sha256, serving?.sha256, demotion);
+    ask({ name, candidate, serving, main, front = false, receipt = false, confirm = false, demotion = false, challenger }) {
+      const key = keyOf(name, candidate.sha256, serving?.sha256, demotion, Boolean(challenger));
       const landed = readJson(verdictFile(dir, key));
       if (landed) return { status: 'landed', key, verdict: landed };
       if (running?.key === key) return { status: 'running', key };
       const before = queued.get(name);
       if (before && before.key !== key) log(`  promotion gate on ${name}: ${candidate.sha256.slice(0, 8)} replaces the queued ${before.candidate.sha256.slice(0, 8)}`);
-      const job = { name, candidate, serving, main, key, ...(receipt || before?.receipt ? { receipt: true } : {}), ...(confirm ? { confirm: true } : {}), ...(demotion ? { demotion: true } : {}) };
+      const job = { name, candidate, serving, main, key, ...(receipt || before?.receipt ? { receipt: true } : {}), ...(confirm ? { confirm: true } : {}), ...(demotion ? { demotion: true } : {}), ...(challenger ? { challenger } : {}) };
       if (front) {
         const rest = [...queued].filter(([n]) => n !== name);
         queued.clear();
@@ -243,6 +243,12 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, p
       } else queued.set(name, job);
       pump();
       return { status: running?.key === key ? 'running' : 'queued', key };
+    },
+    /** What the challengers' comparisons have cost so far (--challenge-on-hold's budget). */
+    challengeSpend() {
+      const file = join(dir, 'verdicts.jsonl');
+      if (!existsSync(file)) return 0;
+      return readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.challenger).reduce((sum, l) => sum + (l.costUsd ?? 0), 0);
     },
     /** Resolves when nothing is running or queued. */
     async idle() {
@@ -263,7 +269,7 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, p
      * (another live revision or serving one) or its uses no longer call for the promotion; a stale verdict still answers
      * a later ask for the same pair. `thresholds` are the pass's promotion rule.
      */
-    async apply({ repo, thresholds }) {
+    async apply({ repo, thresholds, admitAgain }) {
       const reported = [];
       for (const v of landedUnapplied()) {
         try {
@@ -272,6 +278,27 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, p
           const trial = await readTrial(repo, v.name, main).catch(() => undefined);
           const live = trial && currentRevision(trial);
           const same = live?.sha256 === v.candidate && (lastProven(trial)?.sha256 ?? null) === v.serving;
+          if (v.challenger) {
+            // A revision held against a receipted champion, compared with it on the bank: a verdict that passes (LB > 0)
+            // admits it and promotes it in one commit, the champion superseded and restorable; any other leaves it held.
+            const still = live?.sha256 === v.serving && live.status === 'active';
+            let applied = !still ? 'stale' : !v.promote ? 'held' : !admitAgain ? 'held: no admitter to admit it with' : null;
+            if (applied === null) {
+              const admitted = await admitAgain({ main, read: (path, sha) => repo.read(path, sha), list: (prefix, sha) => repo.list(prefix, sha), workflow: v.workflowInput });
+              const staged = admitted?.status === 'admitted' && typeof admitted.files?.[trialPath(v.name)] === 'string' ? parseTrial(admitted.files[trialPath(v.name)], v.name) : undefined;
+              if (!staged || currentRevision(staged)?.sha256 !== v.candidate) applied = `held: the admitter did not admit it now (${admitted?.status ?? 'no answer'})`;
+              else {
+                const promoted = applyDecision(staged, { action: 'promote', sha256: v.candidate, reason: `challenge: ${v.reason}` }, new Date().toISOString());
+                const commit = await repo.commitTo('main', { files: { ...admitted.files, [trialPath(v.name)]: renderTrial(promoted) }, message: `promotion gate: ${v.name} ${v.candidate.slice(0, 12)} challenged the champion ${v.serving.slice(0, 12)} and won: ${v.reason}`, parent: main });
+                await repo.push(commit.sha, 'main');
+                applied = 'promoted';
+              }
+            }
+            writeJson(verdictFile(dir, v.key), { ...v, applied: { as: applied, at: new Date().toISOString(), main } });
+            reported.push({ name: v.name, candidate: v.candidate, serving: v.serving, promote: v.promote, applied, reason: v.reason, challenger: true });
+            log(`  challenge of ${v.name} ${v.serving.slice(0, 8)} by ${v.candidate.slice(0, 8)}: ${applied}`);
+            continue;
+          }
           if (v.demotion) {
             // A demotion the uses called for, held for the bank: the verdict demotes the champion, or it keeps serving.
             const applied = !same ? 'stale' : v.demote ? await demote({ repo, trial, name: v.name, sha256: v.candidate, back: v.serving, reason: v.reason, main }) : 'kept';

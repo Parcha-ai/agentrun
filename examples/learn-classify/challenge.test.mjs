@@ -111,3 +111,60 @@ test('flags off: the hold answers exactly as before and asks nothing', async (t)
   const off = await receiptHoldsTrial(base, s.receipts)(s.input);
   assert.deepEqual(off, { status: 'held', reason: `the live champion ${s.b.slice(0, 12)} has a workflow receipt and this revision has none, so it does not replace it` });
 });
+
+test('a scripted stream: the champion escalates, the agent saves a fix without a receipt, it challenges and wins; the next fix ties and stays held', async (t) => {
+  const { cp } = await import('node:fs/promises');
+  const { readFileSync } = await import('node:fs');
+  const { runLoop, scriptedParts } = await import('./runner.mjs');
+  const { teacherLabelsOf } = await import('./mcc.mjs');
+  const { escalatingVariant, FIXTURES_MCC, MCC_WORKFLOW } = await import('./scripted-mcc.mjs');
+  const { workflowSha256 } = await import('@parcha/agentrun-dsl');
+  const root = await scratch(t);
+  const data = join(root, 'data');
+  await cp(FIXTURES_MCC, data, { recursive: true });
+  const answers = JSON.parse(await readFile(join(data, 'answers.json'), 'utf8'));
+  const bankNames = ['Tallow and Thyme', 'Ridgeback Golf Club', 'Pixel Forge Software', 'Golden Hour Jewelers'];
+  const c0 = { escalateFor: [...bankNames, 'Brightside Vitamins'], tag: 'c0' };
+  const c1 = { escalateFor: ['Harbor Wine Cellar'], tag: 'c1' };
+  const c2 = { escalateFor: ['Oakline Furniture'], tag: 'c2' };
+  answers['Lumen Candle Works'].saveWorkflow = c0;
+  answers['Brightside Vitamins'].saveWorkflow = c1;
+  answers['Harbor Wine Cellar'].saveWorkflow = c2;
+  await writeFile(join(data, 'answers.json'), JSON.stringify(answers, null, 2));
+  const [d0, d1, d2] = [c0, c1, c2].map((v) => workflowSha256(escalatingVariant(v)));
+  const parts = scriptedParts({ set: SETS.mcc, data });
+  const labels = teacherLabelsOf(join(data, 'teacher.json'));
+  for (const m of parts.companies) Object.assign(m, labels.get(m.cik) ?? { teacher: null, stratum: null });
+  Object.assign(parts, {
+    receiptAdmission: true, receiptHoldsTrial: true, receiptPromotion: true, promoteNoFloor: true, thresholds: { promoteAfter: 2 },
+    escalationNeutral: true, gatedDemotion: true, pickNode: { key: 'mcc' }, bank: ['m-011', 'm-012', 'm-013', 'm-014'].map((id) => ({ id })), bankConcurrency: 2,
+    challengeOnHold: true, challengeCapUsd: 40,
+  });
+  // m-001 saves C0 (blind to the bank); m-003 runs it with a receipt (promoted); m-006 makes C0 escalate, and its fix C1 is
+  // held and challenges; served runs give C1 its own receipts once it wins; m-007 makes C1 escalate, and its fix C2 ties.
+  const seq = ['m-001', 'm-003', 'm-006', 'm-005', 'm-010', 'm-003', 'm-005', 'm-010', 'm-001', 'm-003', 'm-005', 'm-007', 'm-010', 'm-003'];
+  const list = seq.map((id, i) => ({ id, epoch: seq.slice(0, i).filter((x) => x === id).length + 1 }));
+  const out = join(root, 'out');
+  const { rows } = await runLoop({ out, parts, split: 'train', list, record: false, gateWaitAtEnd: true });
+  assert.equal(rows.length, seq.length);
+  const verdicts = readFileSync(join(out, 'gate', 'verdicts.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((v) => v.challenger);
+  const won = verdicts.find((v) => v.candidate === d1);
+  const tied = verdicts.find((v) => v.candidate === d2);
+  assert.deepEqual([won?.serving, won?.promote], [d0, true], 'C1 challenged C0 and won');
+  assert.deepEqual([tied?.serving, tied?.promote], [d1, false], 'C2 challenged C1 and tied');
+  const { repo } = await openOut(out, { mode: 'scripted', set: SETS.mcc });
+  const trial = await readTrial(repo, MCC_WORKFLOW, await repo.resolve('main'));
+  assert.deepEqual([currentRevision(trial).sha256, currentRevision(trial).status], [d1, 'active'], 'C1 is the champion');
+  assert.equal(trial.revisions.find((r) => r.sha256 === d0)?.status, 'superseded', 'C0 stays restorable');
+  assert.equal(trial.revisions.some((r) => r.sha256 === d2), false, 'C2 was never admitted');
+});
+
+test('--challenge-on-hold takes --receipt-holds-trial and --promotion-bank in a learning pass; --challenge-cap-usd is dollars', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const run = (...args) => spawnSync(process.execPath, [join(import.meta.dirname, 'runner.mjs'), '--set', 'mcc', '--scripted', '--out', join(tmpdir(), 'never'), ...args], { encoding: 'utf8' });
+  for (const args of [['--challenge-on-hold'], ['--challenge-on-hold', '--receipt-holds-trial'], ['--challenge-cap-usd', '10'], ['--challenge-on-hold', '--receipt-holds-trial', '--promotion-bank', join(tmpdir(), 'x.json'), '--challenge-cap-usd', 'lots']]) {
+    const r = run(...args);
+    assert.equal(r.status, 2, `${args.join(' ')}: ${r.stderr}`);
+    assert.match(r.stderr, /--challenge-on-hold takes --receipt-holds-trial and --promotion-bank/);
+  }
+});

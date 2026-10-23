@@ -90,6 +90,23 @@ export function savedEveryRun(job) {
   };
 }
 
+/** merchant-mcc-risk as a challenge rehearsal's merchant saves it (the fixture's `saveWorkflow`): its pick an agent node,
+ *  escalating for the merchants it names, and a step that never fires tagged so each variant has its own digest. */
+export function escalatingVariant({ escalateFor = [], tag = '' }) {
+  const picked = agentPick(CLASSIFY_MERCHANT);
+  return {
+    ...picked,
+    root: {
+      ...picked.root,
+      steps: [
+        { node: 'escalate', label: 'not one it knows', when: { predicate: 'in', path: 'name', values: escalateFor.length ? escalateFor : ['never'] }, kind: 'review', stage: 'research', summary: 'a merchant this revision has not seen the like of' },
+        { node: 'escalate', label: 'never', when: { predicate: 'in', path: 'name', values: [`never-${createHash('sha256').update(String(tag)).digest('hex').slice(0, 12)}`] }, kind: 'review', stage: 'research', summary: 'never fires' },
+        ...picked.root.steps,
+      ],
+    },
+  };
+}
+
 /** A workflow with its answer-writing extract made an agent node, as a learned workflow's pick step usually is. */
 const agentPick = (workflow) => ({ ...workflow, root: { ...workflow.root, steps: workflow.root.steps.map((step) => (step.node === 'extract' ? { ...step, node: 'agent' } : step)) } });
 
@@ -148,6 +165,13 @@ export function agentScriptMcc({ job, offered, fixtures }) {
           { call: 'agentrun', args: { action: 'load', name: MCC_WORKFLOW, input } },
           { call: 'agentrun', args: { action: 'run' } },
         ].map((step) => ({ ...step, when: (context) => !notComplete(context) })) : []),
+        // A fixture merchant with `saveWorkflow` (a challenge rehearsal): when the workflow does not finish, the job by hand,
+        // and a new revision saved without running it, so the run holds no workflow receipt for it.
+        ...(t.saveWorkflow ? [
+          { call: 'agentrun', args: { action: 'inspect', workflow: escalatingVariant(t.saveWorkflow), input } },
+          { call: 'agentrun', args: { action: 'dry-run' } },
+          { call: 'agentrun', args: { action: 'save', name: MCC_WORKFLOW } },
+        ].map((step) => ({ ...step, when: notComplete })) : []),
         ...(t.browserOnly ? [
           { call: 'agentrun', args: { action: 'inspect', workflow: t.saveEvery ? agentPick(CLASSIFY_MERCHANT_BROWSE) : CLASSIFY_MERCHANT_BROWSE, input } },
           { call: 'agentrun', args: { action: 'dry-run' } },
@@ -168,7 +192,7 @@ export function agentScriptMcc({ job, offered, fixtures }) {
       { call: 'answer', args: answerOfMcc(t, job.website) },
       { call: 'learn', args: { type: 'lesson', text: MCC_LESSON } },
       { call: 'agentrun', args: { action: 'describe' } },
-      { call: 'agentrun', args: { action: 'inspect', workflow: t.saveEvery ? savedEveryRun(job) : CLASSIFY_MERCHANT, input } },
+      { call: 'agentrun', args: { action: 'inspect', workflow: t.saveWorkflow ? escalatingVariant(t.saveWorkflow) : t.saveEvery ? savedEveryRun(job) : CLASSIFY_MERCHANT, input } },
       { call: 'agentrun', args: { action: 'dry-run' } },
       { call: 'agentrun', args: { action: 'save', name: MCC_WORKFLOW } },
       { call: 'learn', args: { type: 'workflow', id: MCC_WORKFLOW, text: MCC_WORKFLOW_WHEN } },

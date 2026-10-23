@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { applyDecision, currentRevision, parseTrial, renderTrial, trialPath } from '@parcha/pi-agent-learn';
+import { workflowSha256 } from '@parcha/agentrun-dsl';
 import { lastProven, recordedWorkflow } from './dispatch.mjs';
 
 /** The Jev question that links a note to a run's receipt when its evidence does not name the page. */
@@ -49,22 +50,48 @@ export const hasWorkflowReceipt = (dir, sha256) => runsIn(dir).some((r) => r.rec
 /** The digest a proposed workflow's records end on (`latest`), or null. */
 const digestOf = (records) => (typeof records?.latest === 'string' ? records.latest.trim() : null);
 
-/** The `admitWorkflow` port with --receipt-holds-trial: a newcomer that has no workflow receipt is held while its name's
- *  live revision, a trial or the champion, has one; anything else goes to `admit` as before. */
-export function receiptHoldsTrial(admit, dir) {
+/** The newcomer's workflow from the run's own records, when its record hashes to its digest. */
+function recordsWorkflow(records, digest) {
+  try {
+    const record = JSON.parse(records?.[`${digest}.json`] ?? 'null');
+    return record?.digest === digest && workflowSha256(record.workflow) === digest ? record.workflow : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The `admitWorkflow` port with --receipt-holds-trial: a newcomer that has no workflow receipt is held while its name's
+ * live revision, a trial or the champion, has one; anything else goes to `admit` as before. With `challenge` ({ gate,
+ * capUsd }, --challenge-on-hold), a newcomer so held against a receipted CHAMPION is still held, but, when `admit` would
+ * admit it, the promotion gate is asked to compare it with that champion on the bank (`challenger`): a landed verdict
+ * that passes (LB > 0) makes it the champion at a later curate (asyncGate.apply). Once the comparisons have spent
+ * `capUsd`, a hold is a plain hold again, and its reason says so.
+ */
+export function receiptHoldsTrial(admit, dir, challenge) {
   return async (input) => {
     const { name, records } = input.workflow;
+    let live;
     try {
       const text = await input.read(trialPath(name), input.main);
-      const live = text === undefined ? undefined : currentRevision(parseTrial(text, name));
-      const incoming = digestOf(records);
-      if (live && incoming && incoming !== live.sha256 && hasWorkflowReceipt(dir, live.sha256) && !hasWorkflowReceipt(dir, incoming)) {
-        return { status: 'held', reason: `the live ${live.status === 'active' ? 'champion' : 'trial'} ${live.sha256.slice(0, 12)} has a workflow receipt and this revision has none, so it does not replace it` };
-      }
+      live = text === undefined ? undefined : currentRevision(parseTrial(text, name));
     } catch {
       // A trial that does not parse is the admitter's to judge.
+      return admit(input);
     }
-    return admit(input);
+    const incoming = digestOf(records);
+    if (!(live && incoming && incoming !== live.sha256 && hasWorkflowReceipt(dir, live.sha256) && !hasWorkflowReceipt(dir, incoming))) return admit(input);
+    const held = { status: 'held', reason: `the live ${live.status === 'active' ? 'champion' : 'trial'} ${live.sha256.slice(0, 12)} has a workflow receipt and this revision has none, so it does not replace it` };
+    if (!challenge || live.status !== 'active') return held;
+    if (challenge.gate.challengeSpend() >= challenge.capUsd) return { ...held, reason: `${held.reason}; the challenge budget of $${challenge.capUsd} is spent, so it is not compared` };
+    const workflow = recordsWorkflow(records, incoming);
+    const champion = await recordedWorkflow(input, name, live.sha256, input.main);
+    if (!workflow || !champion) return held;
+    // The newcomer must pass every admission check before the bank spends anything on it; what `admit` writes is not kept.
+    const checked = await admit(input);
+    if (checked?.status !== 'admitted') return checked;
+    const asked = challenge.gate.ask({ name, candidate: { sha256: incoming, workflow }, serving: { sha256: live.sha256, workflow: champion }, main: input.main, challenger: input.workflow });
+    return { ...held, reason: `${held.reason}; ${asked.status === 'landed' ? 'its challenge has landed already' : 'queued to challenge it on the bank'}` };
   };
 }
 
