@@ -171,6 +171,9 @@
       "SuperviseErrorCode",
       "SupervisorControl",
       "TokenUser",
+      "UnheldHook",
+      "UnheldRun",
+      "UnheldStart",
       "Unmounted",
       "WithClaimOptions"
     ]
