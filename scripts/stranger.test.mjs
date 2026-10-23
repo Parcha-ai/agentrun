@@ -55,6 +55,14 @@ test('every spec in the repository is valid and every snippet it runs is in its 
   }
 });
 
+test("a README's install line keeps its own arguments, with this tree's companions after them, and must name the package", () => {
+  const line = 'npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@1.3.0\n';
+  const packed = new Map([['@parcha/pi-durable-agent', '/packs/agent.tgz']]);
+  assert.deepEqual(readmeInstallArgs(line, packed, ['/packs/dsl.tgz', '/packs/pi.tgz']),
+    ['install', '/packs/agent.tgz', '@earendil-works/pi-durable@1.3.0', '/packs/dsl.tgz', '/packs/pi.tgz']);
+  assert.throws(() => readmeInstallArgs('npm install @earendil-works/pi-durable@1.3.0\n', packed, ['/packs/dsl.tgz']), /does not install @parcha\/pi-durable-agent/);
+});
+
 test("a README's install line is installed as written, with this tree's packed package in its place", () => {
   const line = 'npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord\n';
   assert.deepEqual(readmeInstallArgs(line), ['install', '@parcha/pi-durable-disk@beta', '@earendil-works/pi-durable', '@earendil-works/pi-ai', '@earendil-works/chord']);

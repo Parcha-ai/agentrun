@@ -74,9 +74,11 @@ const nameOf = argument => { const at = argument.indexOf('@', 1); return at > 0 
  * The `npm install` arguments of a README's install line (the block a spec's `readmeInstall` names: one `npm install ...`
  * command), as a stranger types it. `packed` maps a package name to a tarball; that package's argument becomes the tarball
  * and every other argument stays as the README writes it, so its peers resolve to whatever the registry serves now. Each
- * packed package must be on the line. Only plain arguments are taken: a line that needs a shell to read it is refused.
+ * packed package must be on the line. `companions` are this tree's tarballs of the repository packages the line's package
+ * depends on, which the next release publishes beside it and the registry does not serve before it: they are installed
+ * after the line's own arguments. Only plain arguments are taken: a line that needs a shell to read it is refused.
  */
-export function readmeInstallArgs(snippet, packed = new Map()) {
+export function readmeInstallArgs(snippet, packed = new Map(), companions = []) {
   const lines = snippet.split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#'));
   assert.equal(lines.length, 1, `The install block holds one command, not ${lines.length}`);
   const [npm, verb, ...rest] = lines[0].split(/\s+/);
@@ -90,7 +92,7 @@ export function readmeInstallArgs(snippet, packed = new Map()) {
     return tarball;
   });
   assert.deepEqual([...unused], [], `The install line does not install ${[...unused].join(', ')}`);
-  return ['install', ...args];
+  return ['install', ...args, ...companions];
 }
 
 export async function loadSpec(name) {
@@ -156,8 +158,8 @@ export function exitCodeOf(code, signal) {
 /**
  * `readmeLine`: install with the README's own install line (`readmeInstall`) instead of the spec's package and pinned
  * peers. With `registry` the line runs as written; without, this tree's packed package takes its place on the line, the
- * repository packages it depends on are installed beside it from this tree, and the peers stay as written, so the result
- * says whether the next release installs the way the README says.
+ * repository packages it depends on (the spec's other packed packages) are installed after it from this tree, and the
+ * peers stay as written, so the result says whether the next release installs the way the README says.
  */
 export async function stranger(name, { registry = false, tarballs: given, readmeLine = false, examplesOnly = false } = {}) {
   const spec = await loadSpec(name);
@@ -181,20 +183,16 @@ export async function stranger(name, { registry = false, tarballs: given, readme
     let installArgs;
     if (readmeLine) {
       const line = extractSnippet(await readFile(join(root, spec.readmeInstall.readme), 'utf8'), spec.readmeInstall);
-      const named = new Set(line.trim().split(/\s+/).map(nameOf));
-      assert.ok(named.has(spec.package), `${name}: the README's install line does not install ${spec.package}`);
-      const packed = new Map(), beside = [];
+      const packed = new Map(), companions = [];
       if (!registry) {
         const tarballs = await pack(spec.install, packs);
         for (const [i, directory] of spec.install.entries()) {
           const packageName = JSON.parse(await readFile(join(root, 'packages', directory, 'package.json'), 'utf8')).name;
-          // A package the line does not name is one the line's packages depend on, packed from this tree because the
-          // registry does not serve its version before the release: it is installed beside the line's own.
-          if (named.has(packageName)) packed.set(packageName, tarballs[i]); else beside.push(tarballs[i]);
+          if (packageName === spec.package) packed.set(packageName, tarballs[i]); else companions.push(tarballs[i]);
         }
       }
       // Scripts, audit and fund change nothing about what resolves.
-      installArgs = [...readmeInstallArgs(line, packed), ...beside, '--ignore-scripts', '--no-audit', '--no-fund'];
+      installArgs = [...readmeInstallArgs(line, packed, companions), '--ignore-scripts', '--no-audit', '--no-fund'];
     } else {
       let sources;
       if (registry) sources = [`${spec.package}@beta`, ...(spec.companions ?? []).map(companion => `${companion}@beta`)];
