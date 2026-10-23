@@ -468,6 +468,29 @@ nothing proven before it, gives none, and a retired or demoted revision is never
 ref)` returns a revision's workflow from its record at a commit, through the DSL's store, undefined when the record is missing
 or is not that revision; `planServing` passes over a superseded revision whose record does not read, for the one before it.
 
+**Serving.** The host can run a saved workflow itself, before the agent says anything, so a run a proven workflow finishes
+costs no agent turn. `planServing` picks what to serve for the run: the live revision when it is active; while it is on
+trial, the revision it superseded, the last one proven (a canary), read from the repository at `sha` and checked against its
+digest, so the trial still earns its place through the agent; nothing for a first revision on trial. `takes(workflow)` is
+the host's: whether the workflow takes this job, its input and the shape of its output. `serve` runs the plan as a durable
+workflow task of the run, under the key `host:<name>:<sha256>:<input hash>` (`hostKey`, `hostRunName`), after the checks the
+`agentrun` tool makes: no code node, no SOP text, only the host's `tools`, an input the workflow takes and no node that reads
+a key the input lacks; a refusal writes no task. `check(output)` is the host's too: the problems with an output as the job's
+answer, none when it is valid. A complete run `check` accepts is the run's answer; one it refuses is `escalated` with the
+problems, so a workflow that returns what the job cannot use counts against itself. Anything else hands the job to the
+agent; when the served revision was a canary, `trialFirstText({ name, served, trial })` is what to tell it: the trial is
+named and asked to run first, the job done by hand only if it escalates too. Pass what was served to
+`proposeLearning({ served })` (or `usesSource({ store, workDir, run, served })`): each served run is a use of its own
+revision under its name, with the host's verdict, though the run's own store need not hold that revision. A canary's uses
+never count toward the trial.
+
+`planServing` stands on two pieces a host can use alone. `servingRevision(trial, { unrunnable })` says which revision to
+run: the live revision when it is active; while the live revision is on trial, the most recent superseded revision that can
+still run (`unrunnable` names those the host cannot load), with the trial named and `canary` true. A first trial, with
+nothing proven before it, gives none, and a retired or demoted revision is never served. `readRevision(repo, name, sha256,
+ref)` returns a revision's workflow from its record at a commit, through the DSL's store, undefined when the record is missing
+or is not that revision; `planServing` passes over a superseded revision whose record does not read, for the one before it.
+
 **Uses.** A use is one `agentrun.workflow` task in the run's store (`@parcha/agentrun-pi/durable`'s `createWorkflowExtension`),
 read from the store file with `recordingLines` (one read transaction, never written; open or closed) or from the open Session. It counts when the
 task's workflow has the digest of a revision the run's own store holds under a name. The outcome is `frozen` when the workflow
