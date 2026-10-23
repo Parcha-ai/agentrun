@@ -706,7 +706,7 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
   const pendingGates = gate ? gate.pending() : [];
   await writeCurve(out);
   const challenge = parts.challengeOnHold && gate ? { ...gate.challengeTally(), capUsd: parts.challengeCapUsd } : undefined;
-  if (challenge) log(`learn-classify: challenge on hold: ${challenge.compared} compared (${challenge.won} won, ${challenge.held} held), ${usd(challenge.costUsd)} of the $${challenge.capUsd} budget; ${challenge.uncompared} held uncompared, the budget spent`);
+  if (challenge) log(`learn-classify: challenge on hold: ${challenge.compared} compared (${challenge.won} won, ${challenge.held} held), ${usd(challenge.costUsd)} of the $${challenge.capUsd} budget; ${challenge.uncompared} hold(s) left uncompared by a spent budget`);
   if (stoppedBy) log(`stopped: ${stoppedBy}`);
   return { rows, stoppedBy, spentUsd: spentNow(), seedSha: meta.seedSha, pendingGates, ...(challenge ? { challenge } : {}) };
 }

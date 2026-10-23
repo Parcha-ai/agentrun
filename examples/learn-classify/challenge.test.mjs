@@ -161,7 +161,7 @@ test('a scripted stream: the champion escalates, the agent saves a fix without a
   const { rows, challenge } = await runLoop({ out, parts, split: 'train', list, record: false, gateWaitAtEnd: true, log: (line) => lines.push(line) });
   assert.equal(rows.length, seq.length);
   assert.deepEqual(challenge, { compared: 2, won: 1, held: 1, costUsd: 0, uncompared: 0, capUsd: 40 });
-  assert.ok(lines.some((l) => /^learn-classify: challenge on hold: 2 compared \(1 won, 1 held\), \$0\.0000 of the \$40 budget; 0 held uncompared/.test(l)), lines.slice(-3).join('\n'));
+  assert.ok(lines.some((l) => /^learn-classify: challenge on hold: 2 compared \(1 won, 1 held\), \$0\.0000 of the \$40 budget; 0 hold\(s\) left uncompared by a spent budget$/.test(l)), lines.slice(-3).join('\n'));
   const verdicts = readFileSync(join(out, 'gate', 'verdicts.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((v) => v.challenger);
   const won = verdicts.find((v) => v.candidate === d1);
   const tied = verdicts.find((v) => v.candidate === d2);
