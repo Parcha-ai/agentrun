@@ -269,13 +269,19 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, p
   return {
     /** `front`: this comparison goes ahead of every other queued one. `receipt` (asked for a receipt) and `confirm` (a
      *  promotion that already stands, which the verdict confirms or demotes) are kept on its verdict. `demotion` asks the
-     *  gated demotion's comparison (`demotionVerdictOf`), its verdict kept apart from the promotion's. */
+     *  gated demotion's comparison (`demotionVerdictOf`), its verdict kept apart from the promotion's. A `challenger` ask
+     *  never replaces a queued demotion or confirm (a champion's standing, which the uses called for): it `waits`, and the
+     *  next hold asks again. */
     ask({ name, candidate, serving, main, front = false, receipt = false, confirm = false, demotion = false, challenger }) {
       const key = keyOf(name, candidate.sha256, serving?.sha256, demotion, Boolean(challenger));
       const landed = readJson(verdictFile(dir, key));
       if (landed) return { status: 'landed', key, verdict: landed };
       if (running?.key === key) return { status: 'running', key };
       const before = queued.get(name);
+      if (challenger && before && (before.demotion || before.confirm)) {
+        log(`  promotion gate on ${name}: ${candidate.sha256.slice(0, 8)} waits behind the queued ${before.demotion ? 'demotion' : 'confirm'} of ${before.candidate.sha256.slice(0, 8)}`);
+        return { status: 'waiting', key };
+      }
       if (before && before.key !== key) log(`  promotion gate on ${name}: ${candidate.sha256.slice(0, 8)} replaces the queued ${before.candidate.sha256.slice(0, 8)}`);
       const job = { name, candidate, serving, main, key, ...(receipt || before?.receipt ? { receipt: true } : {}), ...(confirm ? { confirm: true } : {}), ...(demotion ? { demotion: true } : {}), ...(challenger ? { challenger } : {}) };
       if (front) {

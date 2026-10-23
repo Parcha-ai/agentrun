@@ -94,7 +94,7 @@ export function receiptHoldsTrial(admit, dir, challenge) {
     const checked = await admit(input);
     if (checked?.status !== 'admitted') return checked;
     const asked = challenge.gate.ask({ name, candidate: { sha256: incoming, workflow }, serving: { sha256: live.sha256, workflow: champion }, main: input.main, challenger: input.workflow });
-    return { ...held, reason: `${held.reason}; ${asked.status === 'landed' ? 'its challenge has landed already' : 'queued to challenge it on the bank'}` };
+    return { ...held, reason: `${held.reason}; ${asked.status === 'landed' ? 'its challenge has landed already' : asked.status === 'waiting' ? 'its challenge waits behind the champion\'s own comparison (a later hold asks again)' : 'queued to challenge it on the bank'}` };
   };
 }
 
