@@ -38,6 +38,7 @@ import { answersTheJob, hostRecord, promotedFor } from './dispatch.mjs';
 import { contradictionOf, lookupOfLines, receiptOf } from './eval-lookup.mjs';
 import { LINK_QUESTION, receiptHoldsTrial, receiptLinks, receiptUses, recordRun } from './receipts.mjs';
 import { asyncGate, COST_ON_TIES, demotionSettler, GATE, gateSpend } from './promotion-gate.mjs';
+import { tenureTracker } from './tenure.mjs';
 import { passSelfTest } from './selftest.mjs';
 import { writeHosts } from './tools-v2.mjs';
 import { HINDSIGHT_FIELDS, LIVE_REFLECTION_USD, proposeHindsight, recordPagesOnly, reflectOnRun } from './hindsight.mjs';
@@ -325,7 +326,7 @@ function progressOf(out, job) {
  *  attempt (carried back as abandoned, its spend kept, never proposed); a second one is the job's outcome. `lock` takes the
  *  steps on the home and the repository one at a time, so the jobs in flight run side by side; `tally.curated`, read with
  *  the prepare, is how many runs main had learned from when this one was prepared. */
-async function startJob({ out, repo, home, parts, judge, job, runCapUsd, log, lock = inline, tally }) {
+async function startJob({ out, repo, home, parts, judge, job, runCapUsd, log, lock = inline, tally, tenure }) {
   const { state, save, idOf } = progressOf(out, job);
   let p = state.p;
   for (;;) {
@@ -350,6 +351,8 @@ async function startJob({ out, repo, home, parts, judge, job, runCapUsd, log, lo
       const prepared = await lock(async () => {
         const run = await prepareRun({ home, repo, host: HOST, runId, input: parts.set.input(job) });
         curatedBefore = tally?.curated;
+        // --trial-tenure: the run is in flight from the main it was prepared from, in the pass's start order.
+        tenure?.start(runId, run.sha);
         return run;
       });
       save(p = { ...p, phase: 'started', seedSha: prepared.sha, offered: prepared.workflows.loaded.map((w) => w.name), started: Date.now(), ...(curatedBefore === undefined ? {} : { curatedBefore }) });
@@ -361,6 +364,7 @@ async function startJob({ out, repo, home, parts, judge, job, runCapUsd, log, lo
     if (p.phase === 'ran' && modelError(p.measure) && !p.infraFailed?.length) {
       const runId = idOf(p.attempt);
       await lock(() => carryBack(home, { runId, ...runPaths(home, runId) }, { outcome: 'abandoned' }).catch(() => {}));
+      tenure?.end(runId, 'ended without curate');
       const { measure, ended, ...rest } = p;
       save(p = { ...rest, attempt: p.attempt + 1, phase: 'new', infraFailed: [{ runId, reason: measure.reason, costUsd: attemptUsd(measure) }] });
       log(`  ${runId} ended on a model error: running it again once, as ${idOf(p.attempt)}`);
@@ -374,7 +378,7 @@ async function startJob({ out, repo, home, parts, judge, job, runCapUsd, log, lo
  *  The score reads the run's own closed store, so it goes on beside the other jobs; proposing, curating and reading main
  *  take the repository one job at a time, so curate stays the single writer of main. `tally` numbers each curate in the
  *  order it ran and freezes main at the pass's checkpoints. */
-async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence = false, lock = inline, tally, gate }) {
+async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence = false, lock = inline, tally, gate, tenure }) {
   const { state, save: write, idOf } = progressOf(out, job);
   let p = state.p;
   const save = (next) => { p = next; write(next); };
@@ -453,7 +457,10 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
         ...(gate && !parts.promoteNoFloor ? { gate } : {}),
         ...(parts.receiptHoldsTrial ? { wrapAdmit: (admit) => receiptHoldsTrial(admit, receiptsDir, parts.challengeOnHold && gate ? { gate, capUsd: parts.challengeCapUsd } : undefined) } : {}),
         ...(parts.promoteNoFloor || parts.escalationNeutral || parts.gatedDemotion ? { wrapSettle: (settle) => armG(byReceipt(settle)) } : {}),
+        ...(tenure ? { tenure } : {}),
       });
+      // Its curation has committed: the run is no longer in flight for any trial's tenure.
+      tenure?.end(runId, 'curated');
       save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main, ...(gated.length ? { gated } : {}), ...(tally ? { curatedIndex: ++tally.curated, curatedAt: new Date().toISOString() } : {}) });
       tally?.landed(job, p);
     }
@@ -647,7 +654,7 @@ function bankRunner({ out, bare, parts, runCapUsd, dropEvidence }) {
  *  curated as it lands. `batch` takes the queue in batches of K by place: a batch's runs all start from one main and go
  *  side by side, then each is curated in queue order, so learning lands between batches. Rows go to runs.jsonl as jobs
  *  land; `checkpoints` freezes main after those curates (curateTally). */
-export async function runLoop({ out, parts, jobs, list, split = 'run', openTest = false, concurrency = 1, schedule = 'rolling', checkpoints = [], capUsd, runCapUsd, record = true, dropEvidence = false, gate: given, gateWaitAtEnd = false, log = () => {} }) {
+export async function runLoop({ out, parts, jobs, list, split = 'run', openTest = false, concurrency = 1, schedule = 'rolling', checkpoints = [], capUsd, runCapUsd, record = true, dropEvidence = false, gate: given, gateWaitAtEnd = false, tenure: givenTenure, log = () => {} }) {
   if (!['rolling', 'batch'].includes(schedule)) throw new Error(`the schedule is rolling or batch, not ${schedule}`);
   out = resolve(out);
   const { repo, bare, meta } = await openOut(out, { mode: parts.mode, set: parts.set, agentDir: parts.agentDir });
@@ -672,7 +679,9 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
   log(`learn-classify: ${parts.mode} pass in ${out}, seed ${short(meta.seedSha)}, ${queue.length} job(s)${shape}${capUsd === undefined ? '' : `, cap ${usd(capUsd)}`}`);
   if (queue.some((job) => !done.has(job.order))) await selfTest({ out, repo, parts, log });
   const lock = concurrency > 1 ? serial() : inline;
-  const args = (job) => ({ out, repo, home, parts, judge, job, runCapUsd, record, dropEvidence, log, lock, tally, gate });
+  // --trial-tenure (pi-agent-learn's workflowAdmitter tenure): where each run started and which are in flight (tenure.mjs).
+  const tenure = parts.trialTenure ? (givenTenure ?? tenureTracker()) : undefined;
+  const args = (job) => ({ out, repo, home, parts, judge, job, runCapUsd, record, dropEvidence, log, lock, tally, gate, ...(tenure ? { tenure } : {}) });
   const capped = () => {
     if (capUsd === undefined || spentNow() < capUsd) return false;
     stoppedBy ??= `spent ${usd(spentNow())}, at or over the cap of ${usd(capUsd)}`;
@@ -825,7 +834,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--escalation-neutral] [--gated-demotion (with --promotion-bank)] [--receipt-admission] [--receipt-holds-trial [--challenge-on-hold [--challenge-cap-usd <usd>] [--cost-on-ties]]] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--gate jev-margin --gate-tau <file>] [--pick-node agent] [--teacher <file> (mcc)] [--stage1-labels <file> (mcc, a learning pass)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--escalation-neutral] [--gated-demotion (with --promotion-bank)] [--receipt-admission] [--receipt-holds-trial [--challenge-on-hold [--challenge-cap-usd <usd>] [--cost-on-ties]]] [--trial-tenure] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--gate jev-margin --gate-tau <file>] [--pick-node agent] [--teacher <file> (mcc)] [--stage1-labels <file> (mcc, a learning pass)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -840,7 +849,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' }, 'edgar-cache': { type: 'string' }, schedule: { type: 'string' }, checkpoints: { type: 'string' },
         'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, 'gate-wait-at-end': { type: 'boolean' }, hindsight: { type: 'string' },
         'receipt-admission': { type: 'boolean' }, 'receipt-holds-trial': { type: 'boolean' }, 'receipt-promotion': { type: 'boolean' }, 'promote-no-floor': { type: 'boolean' },
-        'challenge-on-hold': { type: 'boolean' }, 'challenge-cap-usd': { type: 'string' }, 'cost-on-ties': { type: 'boolean' },
+        'challenge-on-hold': { type: 'boolean' }, 'challenge-cap-usd': { type: 'string' }, 'cost-on-ties': { type: 'boolean' }, 'trial-tenure': { type: 'boolean' },
         'escalation-neutral': { type: 'boolean' }, 'gated-demotion': { type: 'boolean' },
         'refuse-contradicting': { type: 'boolean' }, 'keep-facts': { type: 'boolean' }, 'refuse-refused-hosts': { type: 'boolean' }, teacher: { type: 'string' }, 'stage1-labels': { type: 'string' },
         'self-test-only': { type: 'boolean' }, gate: { type: 'string' }, 'gate-tau': { type: 'string' }, 'pick-node': { type: 'string' },
@@ -875,7 +884,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     if (values[name] !== undefined && !values.sealed) { console.error(`--${name} takes a sealed pass\n${USAGE}`); process.exit(2); }
   }
   if (values.split === 'test' && !values['open-test']) { console.error('the test split is opened once per finalist: pass --open-test'); process.exit(2); }
-  for (const name of ['schedule', 'checkpoints', 'stage1-labels']) {
+  for (const name of ['schedule', 'checkpoints', 'stage1-labels', 'trial-tenure']) {
     if (values[name] !== undefined && values.sealed) { console.error(`--${name} takes a learning pass\n${USAGE}`); process.exit(2); }
   }
   if (values.schedule !== undefined && !['rolling', 'batch'].includes(values.schedule)) { console.error(`--schedule is rolling or batch\n${USAGE}`); process.exit(2); }
@@ -983,6 +992,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     if (values['promote-no-floor']) parts.promoteNoFloor = true;
     if ((values['escalation-neutral'] || values['gated-demotion']) && values.sealed) { console.error(`--escalation-neutral and --gated-demotion settle a learning pass's uses: a sealed pass settles none\n${USAGE}`); process.exit(2); }
     if (values['gated-demotion'] && values['promotion-bank'] === undefined) { console.error(`--gated-demotion asks the replay gate: it takes --promotion-bank\n${USAGE}`); process.exit(2); }
+    // D: a live trial keeps its tenure while runs that started with it are in flight (pi-agent-learn, tenure.mjs).
+    if (values['trial-tenure']) parts.trialTenure = true;
     if (values['cost-on-ties'] && !values['challenge-on-hold']) { console.error(`--cost-on-ties reads a challenger's comparison: it takes --challenge-on-hold\n${USAGE}`); process.exit(2); }
     if (values['challenge-on-hold'] || values['challenge-cap-usd'] !== undefined) {
       const cap = values['challenge-cap-usd'] === undefined ? 40 : Number(values['challenge-cap-usd']);

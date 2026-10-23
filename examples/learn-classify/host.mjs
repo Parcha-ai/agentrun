@@ -679,12 +679,13 @@ export function usageOfStore(storePath) {
  * cap (pi-agent-learn's curate options). None is on unless given: a run that asks for none curates exactly as the package
  * does.
  */
-export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, sticky, gate, wrapAdmit, wrapSettle, factsOverLessons, factFloor, refuseRefusedHosts = false }) {
+export async function curateJob({ repo, judge, tmpRoot, thresholds, judgeCuts, sticky, gate, wrapAdmit, wrapSettle, factsOverLessons, factFloor, refuseRefusedHosts = false, tenure }) {
   const refusedHosts = [];
   const gates = [];
   const settled = [];
   const rules = { ...(tmpRoot ? { tmpRoot } : {}), ...(thresholds ? { thresholds } : {}) };
-  const gated = gatedAdmitter({ judge: judge.run, base: workflowAdmitter({ when: schemaWhen, ...rules }), ...(tmpRoot ? { tmpRoot } : {}) });
+  // `tenure` (--trial-tenure): the host's runs, for the admitter's trial tenure (pi-agent-learn; tenure.mjs).
+  const gated = gatedAdmitter({ judge: judge.run, base: workflowAdmitter({ when: schemaWhen, ...rules, ...(tenure ? { tenure } : {}) }), ...(tmpRoot ? { tmpRoot } : {}) });
   const admit = wrapAdmit ? wrapAdmit(gated) : gated;
   const settling = gate ? gatedSettler({ settle: usesSettler(rules), gate }) : usesSettler(rules);
   const settle = wrapSettle ? wrapSettle(settling) : settling;
