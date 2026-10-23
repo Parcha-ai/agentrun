@@ -18,6 +18,9 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "pi-durable-agent": "./dist/serve/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -30,6 +33,10 @@
     "./timeline": {
       "types": "./dist/timeline/index.d.ts",
       "default": "./dist/timeline/index.js"
+    },
+    "./serve": {
+      "types": "./dist/serve/index.d.ts",
+      "default": "./dist/serve/index.js"
     },
     "./workflow": {
       "types": "./dist/workflow.d.ts",
@@ -46,7 +53,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "build": "rm -rf dist && tsc -p tsconfig.json && node scripts/copy-page.mjs",
     "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "node --test --test-concurrency=8 'test/*.test.mjs'"

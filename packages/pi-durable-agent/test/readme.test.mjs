@@ -52,8 +52,9 @@ const EXCERPTS = [
   { heading: "An agent home on a disk", language: "js", index: 0 },
   { heading: "Prompt variants", language: "js", index: 0 },
   { heading: "Saved browser sessions: the vault", language: "js", index: 0 },
+  { heading: "Agents in a folder: the agent store", language: "js", index: 0 },
 ];
-const NOT_CODE = new Set(["", "text", "sh"]);
+const NOT_CODE = new Set(["", "text", "sh", "sql"]);
 const CODE = new Set(["js", "mjs", "ts", "mts", "javascript", "typescript"]);
 
 test("every code block in the README is the quickstart, a named excerpt that parses, or not code", () => {
@@ -134,6 +135,7 @@ test("every name each entry point exports is documented in that entry point's Li
     { title: "`@parcha/pi-durable-agent`", declaration: "index.d.ts" },
     { title: "`@parcha/pi-durable-agent/export`", declaration: "export.d.ts" },
     { title: "`@parcha/pi-durable-agent/timeline`", declaration: "timeline/index.d.ts" },
+    { title: "`@parcha/pi-durable-agent/serve`", declaration: "serve/index.d.ts" },
     { title: "`@parcha/pi-durable-agent/workflow`", declaration: "workflow.d.ts" },
   ];
   const missing = [];
