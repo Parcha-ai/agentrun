@@ -35,7 +35,7 @@ function rig(init: { behave?: Record<string, unknown> } = {}) {
   const write = (s: Record<string, unknown>) => {
     replace(statePath, JSON.stringify(s));
     const mounts = s.mounts as Record<string, { source: string }>;
-    replace(procMounts, Object.entries(mounts).map(([mp, m]) => `${m.source} ${mp} fuse.archil rw,allow_other 0 0`).join("\n") + "\n");
+    replace(procMounts, Object.entries(mounts).map(([mp, m]) => `${m.source} ${mp} fuse.archil rw,nosuid,nodev,allow_other 0 0`).join("\n") + "\n");
   };
   write({ procMounts, proc, daemons: {}, token: TOKEN, mounts: {}, holders: {}, extraMounts: [], behave: init.behave ?? {}, calls: [] });
   const wrap = (tool: string) => {

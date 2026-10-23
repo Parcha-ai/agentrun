@@ -8,8 +8,8 @@
 //   fork       copy a released, sealed run into a new run; its first open is generation 1
 // The API key is read from the environment variable named by `--api-key-env` (default ARCHIL_API_KEY) and only by the
 // supervisor commands; `run` never needs it and a host driver never passes it on.
-import { closeSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { closeSync, constants, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { ARCHIL_SCOPED, DEFAULT_MOUNT_ROOT, NO_TOKEN, runPath, TOKEN_PREFIX, unmountClaim, type Claim, type RunRef } from "./claim.ts";
@@ -191,7 +191,169 @@ export function runUser(spec: string, passwd = "/etc/passwd"): { uid: number; gi
   const uid = m ? Number(m[1]) : Number(row![2]);
   const gid = m?.[2] !== undefined ? Number(m[2]) : row ? Number(row[3]) : uid;
   if (uid === 0) throw new UsageError("--run-as names root: the agent's commands would run as root, next to the archil daemon that holds the mount token");
+  if (gid === 0) throw new UsageError("--run-as puts the agent's commands in group root (gid 0): they could read what root's group can");
   return { uid, gid, home: row?.[5] || "/", name: row?.[0] ?? String(uid) };
+}
+
+/**
+ * The tools user transport's launcher verified for a root launch (`PI_TRANSPORT_TOOLS_USER` and `PI_TRANSPORT_TOOLS_UID`
+ * in this process's environment) must be the one `--run-as` names, by uid: a different one, or none (the agent's
+ * commands would run as this root process), is a usage error. Without the declaration, `--run-as` is as before.
+ */
+/**
+ * Why the root instance must not load `app` under `--run-as`, or null. The path the loader opens is walked as the kernel
+ * resolves it, one element at a time from `/`, each link's target spliced in where the link was, so a link is checked
+ * where it lives as well as where it points. Refused:
+ * - any element (a directory, a link or the module) that is not root's, or a directory or the module writable by its group
+ *   or by others (a sticky bit is no exception), unless the element is on a read-only mount whose source (device and
+ *   root) no writable mount in the instance's table overlaps: nothing in the box can write, chmod, rename or unlink it
+ *   then, and the agent's commands cannot remount (dockerHost bind-mounts the app's directory, the host user's, once,
+ *   read-only);
+ * - any element inside `runRoot` (by its path or its real path), the run's data: a disk run's mount root, where every run
+ *   is mounted and a file's owner is whatever its writer set (the control API writes any owner), or a local run's
+ *   directory, whose work/ the agent's commands own; and any element on an archil mount, wherever it is mounted.
+ * Then only root can change what the path resolves to, so the module root loads is the one checked. What the module
+ * imports (its node_modules) is the image's to keep root's.
+ */
+export function appWritableReason(
+  app: string,
+  runRoot: string,
+  fs: AppFs = INSTANCE_FS,
+): string | null {
+  const root = resolve(runRoot);
+  // The run's data root by its own path and by its real one: a --mount-root that is a link names the same runs.
+  let real: string | undefined;
+  try {
+    real = fs.realpathSync?.(root);
+  } catch {
+    real = undefined;
+  }
+  const roots = real === undefined || real === root ? [root] : [root, real];
+  let table: readonly MountRow[] | undefined;
+  const mounts = (): readonly MountRow[] => (table ??= fs.mounts?.() ?? []);
+  // The mount `p` is on: the last in the table whose point is `p` or above it (a later mount there covers earlier ones).
+  const mountOf = (p: string): MountRow | undefined => {
+    let on: MountRow | undefined;
+    for (const m of mounts()) if (m.point === "/" || p === m.point || p.startsWith(`${m.point}/`)) on = m;
+    return on;
+  };
+  // Null when `p` is on a read-only mount whose source no writable mount in the table overlaps, so nothing in the box can
+  // change it; otherwise what to add to the refusal.
+  const exempt = (p: string): string | null => {
+    const on = mountOf(p);
+    if (on?.ro !== true) return "";
+    const ro = on;
+    const twin = mounts().find((m) => !m.ro && m.dev === ro.dev && overlaps(m.root, ro.root));
+    return twin === undefined ? null : ` (its read-only mount's source is also mounted read-write at ${twin.point})`;
+  };
+  const rest = resolve(app).split("/").filter(Boolean);
+  let at = "/";
+  for (let links = 0; ; ) {
+    const inside = roots.find((r) => at === r || at.startsWith(`${r}/`));
+    if (inside !== undefined) return `${at} is inside the run's data root ${inside}, which the agent's commands or the disk's other writers can change`;
+    // An archil mount anywhere (a run's, or a second bind of one) is the runs' data plane, whatever its owners say.
+    const archil = mountOf(at);
+    if (archil?.fstype === "fuse.archil") return `${at} is on an archil mount (${archil.point}), the runs' data plane, which the agent's commands or the disk's other writers can change`;
+    let st: { uid: number; mode: number };
+    try {
+      st = fs.lstatSync(at);
+    } catch (error) {
+      return `${at} cannot be read (${(error as NodeJS.ErrnoException).code ?? error})`;
+    }
+    if (st.uid !== 0) {
+      const why = exempt(at);
+      if (why !== null) return `${at} is owned by uid ${st.uid}, not root${why}`;
+    }
+    if ((st.mode & constants.S_IFMT) === constants.S_IFLNK) {
+      // Its directory, checked a step before, is root's and closed to others: only root can replace it.
+      if (++links > 40) return `${app} goes through too many links`;
+      let target: string;
+      try {
+        target = fs.readlinkSync(at);
+      } catch (error) {
+        return `${at} cannot be read (${(error as NodeJS.ErrnoException).code ?? error})`;
+      }
+      rest.unshift(...target.split("/").filter(Boolean));
+      at = target.startsWith("/") ? "/" : dirname(at);
+      continue;
+    }
+    if ((st.mode & 0o022) !== 0) {
+      const why = exempt(at);
+      if (why !== null) return `${at} is writable by its group or by others${why}`;
+    }
+    const next = rest.shift();
+    if (next === undefined) return null;
+    at = next === "." ? at : next === ".." ? dirname(at) : at === "/" ? `/${next}` : `${at}/${next}`;
+  }
+}
+
+export type AppFs = {
+  lstatSync(p: string): { uid: number; mode: number };
+  readlinkSync(p: string): string;
+  realpathSync?(p: string): string;
+  mounts?(): readonly MountRow[];
+};
+
+/** A mount: where it is, whether it is read-only (its own options or its superblock's), its source (device, root) and type. */
+export type MountRow = { point: string; ro: boolean; dev: string; root: string; fstype?: string };
+
+/** Each mount of a mountinfo table, in its order. */
+export function mountInfo(text: string): MountRow[] {
+  const out: MountRow[] = [];
+  const unescape = (field: string) => field.replace(/\\([0-7]{3})/g, (_, octal: string) => String.fromCharCode(parseInt(octal, 8)));
+  for (const line of text.split("\n")) {
+    const f = line.split(" ");
+    const dash = f.indexOf("-", 6);
+    if (dash < 0 || f.length < dash + 4) continue;
+    const ro = f[5]!.split(",").includes("ro") || f[dash + 3]!.split(",").includes("ro");
+    out.push({ point: unescape(f[4]!), ro, dev: f[2]!, root: unescape(f[3]!), fstype: f[dash + 1]! });
+  }
+  return out;
+}
+
+/** Two roots of one device share files: the same directory, or one inside the other. */
+const overlaps = (a: string, b: string): boolean => a === b || a === "/" || b === "/" || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+
+/**
+ * The instance's own mounts (`/proc/self`, read at its start, before any of the agent's commands exists), never a
+ * command's; none when the table cannot be read, so nothing is taken as read-only.
+ */
+export function instanceMounts(read: (path: string) => string = (path) => readFileSync(path, "utf8")): MountRow[] {
+  try {
+    return mountInfo(read("/proc/self/mountinfo"));
+  } catch {
+    return [];
+  }
+}
+
+/** What the walk reads by default: this machine's files, and the instance's own mounts. */
+export const INSTANCE_FS: AppFs = { lstatSync, readlinkSync, realpathSync, mounts: () => instanceMounts() };
+
+/**
+ * Transport's launcher hands a program its secrets on one descriptor, named by `PI_TRANSPORT_SECRETS_FD`, which is not
+ * close-on-exec: every command the instance spawns would inherit it. Closed here, with its variable dropped, before
+ * anything runs (the instance takes no secrets that way yet; one that does reads it first).
+ */
+export function closeSecretsFd(env: NodeJS.ProcessEnv): void {
+  const text = env.PI_TRANSPORT_SECRETS_FD;
+  if (text === undefined) return;
+  delete env.PI_TRANSPORT_SECRETS_FD;
+  if (!/^[0-9]+$/.test(text) || Number(text) < 3) throw new UsageError("PI_TRANSPORT_SECRETS_FD is not a descriptor above 2");
+  try {
+    closeSync(Number(text));
+  } catch {
+    // not open: nothing to inherit
+  }
+}
+
+export function toolsUserCheck(runAs: { uid: number; name: string } | undefined, env: NodeJS.ProcessEnv): void {
+  const name = env.PI_TRANSPORT_TOOLS_USER;
+  const uidText = env.PI_TRANSPORT_TOOLS_UID;
+  if (name === undefined && uidText === undefined) return;
+  if (uidText === undefined || !/^[0-9]+$/.test(uidText)) throw new UsageError("the launcher's tools user is malformed: PI_TRANSPORT_TOOLS_UID is not a uid");
+  const uid = Number(uidText);
+  if (!runAs) throw new UsageError(`the launcher verified the tools user ${name ?? uid} (uid ${uid}), and this run names none: pass --run-as ${name ?? uid}, or the agent's commands would run as this process`);
+  if (runAs.uid !== uid) throw new UsageError(`--run-as ${runAs.name} (uid ${runAs.uid}) is not the tools user the launcher verified, ${name ?? uid} (uid ${uid})`);
 }
 
 const need = (v: Record<string, unknown>, ...keys: string[]) => {
@@ -252,7 +414,9 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   else need(values, "app");
   const ref: RunRef =
     dir === undefined ? { disk: str(values.disk)!, region: str(values.region)!, id: str(values.id)! } : { disk: "local", region: "local", id: str(values.id) ?? basename(dir) };
+  closeSecretsFd(process.env);
   const runAs = typeof values["run-as"] === "string" ? runUser(values["run-as"]) : undefined;
+  toolsUserCheck(runAs, process.env);
   if (runAs && process.getuid?.() !== 0) throw new UsageError("--run-as needs an instance that runs as root (inside a container); elsewhere run the instance as the run user");
   const onSigterm = str(values["on-sigterm"], "resume");
   if (onSigterm !== "resume" && onSigterm !== "pause") throw new UsageError("--on-sigterm is resume or pause");
@@ -267,6 +431,10 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   if (servePort !== undefined && tokenFile === undefined && !isLoopback(serveHost)) throw new UsageError(`--serve-host ${serveHost} is not loopback: name a --serve-token-file`);
   const serveToken = tokenFile === undefined ? undefined : readServeToken(tokenFile);
   const mountRoot = str(values["mount-root"], DEFAULT_MOUNT_ROOT)!;
+  if (runAs) {
+    const why = appWritableReason(str(values.app)!, dir ?? mountRoot);
+    if (why) throw new UsageError(`--run-as: this instance runs as root and loads --app, which the agent's commands could change: ${why}`);
+  }
   // On a disk the id names the run's directory: an unsafe one stops the instance here (INVALID_ARGUMENT), before it serves.
   if (dir === undefined) runPath(ref.id);
   const log = (event: string, extra: Record<string, unknown> = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event, run: ref.id, ...extra })}\n`);

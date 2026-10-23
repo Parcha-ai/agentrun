@@ -452,11 +452,11 @@ function detail(r: Ran, secret = ""): string {
 
 const unescapeMount = (s: string) => s.replace(/\\([0-7]{3})/g, (_, o: string) => String.fromCharCode(parseInt(o, 8)));
 
-async function mountEntry(host: Host, mountpoint: string): Promise<{ source: string; fstype: string } | null> {
-  let found: { source: string; fstype: string } | null = null;
+async function mountEntry(host: Host, mountpoint: string): Promise<{ source: string; fstype: string; options: string[] } | null> {
+  let found: { source: string; fstype: string; options: string[] } | null = null;
   for (const line of (await readFile(host.procMounts, "utf8")).split("\n")) {
     const f = line.split(" ");
-    if (f.length >= 3 && unescapeMount(f[1]) === mountpoint) found = { source: unescapeMount(f[0]), fstype: f[2] };
+    if (f.length >= 3 && unescapeMount(f[1]) === mountpoint) found = { source: unescapeMount(f[0]), fstype: f[2], options: (f[3] ?? "").split(",") };
   }
   return found;
 }
@@ -465,6 +465,9 @@ async function mountEntry(host: Host, mountpoint: string): Promise<{ source: str
 export type MountTarget = { readonly disk: string; readonly region: string; readonly path: string };
 
 const targetOf = (ref: RunRef): MountTarget => ({ disk: ref.disk, region: ref.region, path: runPath(ref.id) });
+
+/** A mount that honours no setuid bit or device file on the disk: archil takes no mount options; the wrapper's bind remount adds them. */
+const hardened = (entry: { options: string[] }): boolean => entry.options.includes("nosuid") && entry.options.includes("nodev");
 
 function isOurs(entry: { source: string; fstype: string }, target: MountTarget): boolean {
   const base = `${target.disk}:/${target.path}`;
@@ -594,7 +597,12 @@ async function mountTarget(host: Host, target: MountTarget, mountpoint: string, 
   const args = [host.archil, "mount", ...(force ? ["--force"] : []), `${target.disk}:/${path}`, mountpoint, "--region", target.region];
   const r = await sh(asRoot(host, args), host.timeoutMs.mount, `${token}\n`);
   const entry = await mountEntry(host, mountpoint);
-  if (ok(r) && entry && isOurs(entry, target)) return;
+  if (ok(r) && entry && isOurs(entry, target)) {
+    // archil-scoped's bind remount makes it nosuid,nodev; a mount without them (an older wrapper) is never run on.
+    if (hardened(entry)) return;
+    await unmountWith(host, mountpoint).catch(() => {});
+    throw new ClaimError("MOUNT_FAILED", `archil mount ${path} left ${mountpoint} without nosuid,nodev (archil-scoped's bind remount makes them): unmounted`);
+  }
   if (entry) await unmountWith(host, mountpoint).catch(() => {});
   if (ok(r)) throw new ClaimError("MOUNT_FAILED", `archil mount ${path} exited 0 but ${mountpoint} is not an archil mount of ${path}`);
   if (STALE_MARKER.test(r.stderr)) throw new ClaimError("MOUNT_FAILED", `an archil daemon of this host still runs for ${mountpoint}: ${detail(r, token)}`);
@@ -821,7 +829,10 @@ export async function acquire(opts: AcquireOptions): Promise<Claim> {
   if (existing) {
     if (!isOurs(existing, targetOf(ref))) throw new ClaimError("MOUNTPOINT_BUSY", `${root} already holds ${existing.fstype} ${existing.source}`);
     if (await isDead(host, root)) await cleanDead(host, root);
-    else reused = true;
+    // An older wrapper's mount lacks nosuid,nodev: given back, then mounted again below through the wrapper, which adds
+    // them; with no token to do that, the restart is fenced as any restart without a live mount is.
+    else if (hardened(existing)) reused = true;
+    else await unmountWith(host, root);
   }
   let stray: { to: string; entries: number } | null = null;
   // No live mount to reuse and no token to mount with: a restart whose mount went with the failed incarnation. It cannot
