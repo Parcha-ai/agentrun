@@ -1,6 +1,7 @@
 // A demo's `run.ts` as the reference entry's own test uses it: the reference job and its fakes, the spec from `DEMO_SPEC` (a JSON file), the standard flags.
 import type { Message } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
+import { randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -251,6 +252,68 @@ const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: s
   if (mode === 'start-fails-property') return { ...inner, start: async () => { throw Object.assign(new Error('the place could not start the process'), { code: 'START_FAILED', stderr: process.env.DEMO_START_FAILS_TEXT ?? '' }); } };
   // `handing` hands its home box over but has no reads: its supervisor numbers the box itself, so the process must refuse to claim it (two labellers).
   if (mode === 'handing') return { ...inner, status, start: (order: Parameters<typeof inner.start>[0]) => inner.start({ ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ provider: 'home', key: '0', run: order.env.RUN_LABEL }) } }) };
+  // `tapped` (H3) is a place whose host driver makes its host box with the provider the supervisor tapped (`context.hostTap.provider`,
+  // a local box here), in an unheld window (`context.hostTap.unheld`, over a K9-shaped window on its own root: create-only puts), runs
+  // one command in it, reports it in `status()` (the receipt), lets the supervisor read the run's files, and hands the box to the
+  // run's process (`HOST_BOX`), which binds its label. Its box is destroyed when the place lets the run go.
+  if (mode === 'tapped') {
+    const { localBoxes: boxesHere } = await import('@parcha/pi-transport/box/local');
+    const { mkdir, open, readdir: list, readFile: read } = await import('node:fs/promises');
+    const { dirname } = await import('node:path');
+    const tap = (context as unknown as { hostTap: { provider<P>(provider: P): P; unheld(run: unknown, start: unknown): Promise<void> } }).hostTap;
+    const hostProvider = tap.provider(boxesHere({ root: join(context.paths.root, '..', 'host-boxes') }));
+    const made: { box: { id: string; facts(): { gpu: string | null; isolation: string }; destroy(ctx: unknown): Promise<unknown>; exec(command: string[], options: unknown, ctx: unknown): Promise<{ ok: boolean; value?: { wait(): Promise<unknown> } }> }; from: string; to: string | null; key: string }[] = [];
+    const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
+    const window = {
+      signal: new AbortController().signal,
+      read: async (path: string) => { try { return new Uint8Array(await read(join(context.paths.root, path))); } catch (error) { if (missing(error)) return null; throw error; } },
+      list: async (dir: string) => { try { return (await list(join(context.paths.root, dir))).sort(); } catch (error) { if (missing(error)) return []; throw error; } },
+      put: async (path: string, text: string) => {
+        await mkdir(dirname(join(context.paths.root, path)), { recursive: true });
+        let file;
+        try { file = await open(join(context.paths.root, path), 'wx'); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw Object.assign(new Error(`${path} exists`), { code: 'EXISTS' }); throw error; }
+        try { await file.writeFile(text); } finally { await file.close(); }
+      },
+    };
+    const { BACKGROUND_CONTEXT } = await import('@earendil-works/chord/context');
+    let recordDir: string | undefined;
+    return {
+      ...inner,
+      start: async (order: Parameters<typeof inner.start>[0]) => {
+        recordDir ??= order.env.RECORD_DIR;
+        // The window holds the start's provisional box ({ run, index }); the host driver MINTS the box's key at its create (Amendment 2):
+        // <run>/<index>/<random nonce>, written as the box's one agentrun-host-key label, handed to its runner, and reported in the status.
+        const box = { provider: 'local', key: String(made.length), run: order.env.RUN_LABEL! };
+        await tap.unheld(window, { attempt: order.gen, box });
+        const key = `${box.run}/${box.key}/${randomBytes(8).toString('hex')}`;
+        const created = await (hostProvider as unknown as { create(spec: unknown, ctx: unknown): Promise<{ ok: boolean; value: (typeof made)[number]['box']; error?: unknown }> }).create({ maxLifetimeMs: 600_000, labels: { 'agentrun-host-key': key } }, BACKGROUND_CONTEXT);
+        if (!created.ok) throw Object.assign(new Error('the host box could not be made'), { cause: created.error });
+        made.push({ box: created.value, from: new Date().toISOString(), to: null, key });
+        const ran = await created.value.exec(['true'], undefined, BACKGROUND_CONTEXT);
+        if (ran.ok) await ran.value!.wait();
+        const entry = made.at(-1)!;
+        // `DEMO_PLANT_BOX_LINE` (1 for box-1, or a label): the residue of a crash, a synced line naming that label for a tool box whose label file was lost, already in the recording.
+        if (process.env.DEMO_PLANT_BOX_LINE && order.env.RECORD_DIR) {
+          await mkdir(join(order.env.RECORD_DIR, '.spool'), { recursive: true });
+          writeFileSync(join(order.env.RECORD_DIR, '.spool', 'planted.jsonl'), `${JSON.stringify({ channel: 'live', source: 'transport', kind: 'box.created', gen: 1, t: 0, seq: 0, data: { box: process.env.DEMO_PLANT_BOX_LINE === '1' ? 'box-1' : process.env.DEMO_PLANT_BOX_LINE, provider: 'alpha', facts: { isolation: 'none', cpus: 1, gpu: null } } })}\n`);
+        }
+        const runner = await inner.start({ ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ ...box, key }) } });
+        // `DEMO_HOST_BOX_UNTIL_RELEASE`: the place keeps its host box until it lets the run go (a host driver whose stop is at release).
+        if (process.env.DEMO_HOST_BOX_UNTIL_RELEASE) return runner;
+        // The host box ends with its process, as a host driver's stop does: before the supervisor hears the process ended.
+        return { ...runner, exited: runner.exited.then(async (exit) => { await entry.box.destroy(BACKGROUND_CONTEXT); entry.to = new Date().toISOString(); return exit; }) };
+      },
+      status: async () => ({ boxes: made.map(({ box, from, to, key }) => ({ provider: 'local', kind: box.facts().gpu ?? box.facts().isolation, from, to, key })) }),
+      readRunFile: window.read,
+      listRunFiles: window.list,
+      release: async () => {
+        // `DEMO_RELEASE_MARK`: a file the release writes, saying whether the recording was already finished (its manifest written) when the place was let go.
+        if (process.env.DEMO_RELEASE_MARK) writeFileSync(process.env.DEMO_RELEASE_MARK, JSON.stringify({ manifestFirst: recordDir !== undefined && existsSync(join(recordDir, 'manifest.json')) }));
+        for (const entry of made) if (entry.to === null) { await entry.box.destroy(BACKGROUND_CONTEXT); entry.to = new Date().toISOString(); }
+        await inner.release();
+      },
+    };
+  }
   if (mode !== 'labelled' && mode !== 'unclaimed' && mode !== 'unreadable' && mode !== 'slow') return inner;
   const handOver = (order: Parameters<typeof inner.start>[0]) => (mode !== 'unclaimed' ? { ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ provider: 'home', key: '0', run: order.env.RUN_LABEL }) } } : order);
   // K8's answers over this place's own root: a missing file is null, a missing directory lists nothing.
