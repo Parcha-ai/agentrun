@@ -472,7 +472,9 @@ export function localBoxes(options: LocalBoxesOptions): BoxProvider {
 				expiresAt: Date.now() + spec.maxLifetimeMs,
 			};
 			try {
-				for (const name of ["home", "tmp", "pids"]) await mkdir(join(directory, name), { recursive: true });
+				// Its user's alone, whatever the umask: the launcher refuses a spool below a directory another user can write.
+				for (const name of ["home", "tmp", "pids"])
+					await mkdir(join(directory, name), { recursive: true, mode: 0o700 });
 				await mkdir(record.workspace, { recursive: true });
 				await writeFile(join(directory, RECORD_FILE), JSON.stringify(record));
 			} catch (error) {

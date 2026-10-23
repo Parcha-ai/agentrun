@@ -3,7 +3,7 @@ import type { Context } from "@earendil-works/chord";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Box } from "../box/box.ts";
 import { finish } from "../box/files.ts";
-import { LAUNCHER_SCRIPT, LAUNCHER_SHELL_NAMES } from "./launcher-script.ts";
+import { DIRECTORY_CHECK, LAUNCHER_SCRIPT, LAUNCHER_SHELL_NAMES, TOOLS_CHECK_MS } from "./launcher-script.ts";
 
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -30,8 +30,55 @@ const MAX_HOOK_MS = 120_000;
 /** A name one of whose `_`-separated segments says it holds a key: refused in `env`, which rests in a file of the box. */
 const KEY_SEGMENT = /^(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|CREDENTIALS)$/i;
 const keyShaped = (name: string): boolean => name.split("_").some((segment) => KEY_SEGMENT.test(segment));
-/** Names that act on the launcher's shell or on the commands it runs (the shell's and the loader's): never a program's setting. */
-const SHELL_AND_LOADER = new Set(["IFS", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS4"]);
+/**
+ * The variables the C library itself strips in secure mode: glibc's UNSECURE_ENVVARS (sysdeps/generic/unsecvars.h), as the loaders
+ * of glibc 2.36 (Debian 12) and 2.39 (Ubuntu 24.04) carry it, and musl's MUSL_LOCPATH, which musl reads only outside secure mode
+ * (its other secure-mode checks are on LD_PRELOAD and LD_LIBRARY_PATH, listed, and on TZ file paths, while TZ stays a setting).
+ * The program's settings are exported before a root launcher's setpriv or runuser drops to `user`, and that switch is not setuid,
+ * so the C library honours them there (GCONV_PATH loads code): `env` and `inheritEnv` refuse each, and the exec that starts every
+ * launcher shell clears each. Exported for the tests only (not from the package).
+ */
+export const LIBC_UNSECURE_ENVVARS: readonly string[] = [
+	"GCONV_PATH",
+	"GETCONF_DIR",
+	"GLIBC_TUNABLES",
+	"HOSTALIASES",
+	"LD_AUDIT",
+	"LD_BIND_NOT",
+	"LD_BIND_NOW",
+	"LD_DEBUG",
+	"LD_DEBUG_OUTPUT",
+	"LD_DYNAMIC_WEAK",
+	"LD_HWCAP_MASK",
+	"LD_LIBRARY_PATH",
+	"LD_ORIGIN_PATH",
+	"LD_PRELOAD",
+	"LD_PROFILE",
+	"LD_SHOW_AUXV",
+	"LD_VERBOSE",
+	"LD_WARN",
+	"LOCALDOMAIN",
+	"LOCPATH",
+	"MALLOC_ARENA_MAX",
+	"MALLOC_ARENA_TEST",
+	"MALLOC_MMAP_MAX_",
+	"MALLOC_MMAP_THRESHOLD_",
+	"MALLOC_PERTURB_",
+	"MALLOC_TOP_PAD_",
+	"MALLOC_TRACE",
+	"MALLOC_TRIM_THRESHOLD_",
+	"MUSL_LOCPATH",
+	"NIS_PATH",
+	"NLSPATH",
+	"RESOLV_HOST_CONF",
+	"RES_OPTIONS",
+	// TMPDIR, on glibc's list too, stays a program's setting: the switch writes no temporary file, and the spool is under it.
+	"TZDIR",
+];
+/** Names that act on the launcher's shell itself. */
+const SHELL_ENV = ["BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS4"];
+/** Names that act on the launcher's shell or on the commands it runs (the shell's, the loader's and the C library's): never a program's setting. */
+const SHELL_AND_LOADER = new Set(["IFS", ...SHELL_ENV, ...LIBC_UNSECURE_ENVVARS]);
 /** A name the program may never set or inherit: one the launcher's shell assigns, or one that acts on the shell or the loader. */
 const reservedName = (name: string): boolean =>
 	LAUNCHER_SHELL_NAMES.includes(name) || SHELL_AND_LOADER.has(name) || name.startsWith("LD_");
@@ -52,6 +99,8 @@ const MAX_RESTART_BURST = 1_000_000;
 const START_WAIT_MS = 15_000;
 const POLL_MS = 100;
 const CALL_TIMEOUT_MS = 30_000;
+/** A start runs the tools user's check, so its call to the box is given the check's whole bound and the usual time on top. */
+const START_CALL_TIMEOUT_MS = TOOLS_CHECK_MS + CALL_TIMEOUT_MS;
 const MAX_EXIT_CODE = 255;
 const SPOOL_DIRECTORY = ".pi-transport-launch";
 
@@ -144,9 +193,10 @@ export type LaunchState = {
 /**
  * Why a launcher call failed. `invalid` is a bad spec or name; `box` is a failed call to the box; `timeout` is a program that
  * did not start; `unsupported` is a spec the box cannot honour; `refused` is a box whose setting would expose what the launch
- * holds (its ptrace scope).
+ * holds (its ptrace scope); `unsafe` is a spool or launch directory in the box that another user could change (a symbolic link,
+ * another owner, a group- or other-write bit), from which the launcher ran nothing.
  */
-export type LaunchErrorCode = "invalid" | "box" | "timeout" | "failed" | "unsupported" | "refused";
+export type LaunchErrorCode = "invalid" | "box" | "timeout" | "failed" | "unsupported" | "refused" | "unsafe";
 
 /** An expected failure of a launcher call. Returned, never thrown. */
 export class LaunchError extends Error {
@@ -161,12 +211,22 @@ export class LaunchError extends Error {
 
 const TERMINAL_PHASES: ReadonlySet<LaunchPhase> = new Set(["exited", "gave_up", "stopped"]);
 
-const CLAIM_SCRIPT = [
+/** A script that checks the directories it uses first (`own_dir`, `own_spool`, `own_dirs`: DIRECTORY_CHECK), then `lines`. */
+const checked = (...lines: string[]): string => [DIRECTORY_CHECK, ...lines].join("\n");
+
+const CLAIM_SCRIPT = checked(
 	't=$TMPDIR; [ -n "$t" ] || t=/tmp',
+	`mkdir -p -m 700 "$t/${SPOOL_DIRECTORY}" || exit 3`,
+	// The directory TMPDIR names, with no symbolic link on the way: the check walks every directory above the spool.
+	't=$(cd -- "$t" && pwd -P) || exit 3',
 	`b="$t/${SPOOL_DIRECTORY}"`,
-	'mkdir -p -m 700 "$b" || exit 3',
-	'if mkdir -m 700 "$b/$1" 2>/dev/null; then date +%s > "$b/$1/claimed.at"; echo "$2" > "$b/$1/owner"; echo "CLAIMED $b/$1"; else echo "EXISTS $b/$1"; fi',
-].join("\n");
+	'own_spool "$b" || exit $?',
+	'if mkdir -m 700 "$b/$1" 2>/dev/null; then c=CLAIMED; else c=EXISTS; fi',
+	// Gone for a moment while another caller replaces it: the caller looks at it again.
+	'own_dir "$b/$1" || [ $? = 4 ] || exit 13',
+	'if [ "$c" = CLAIMED ]; then date +%s > "$b/$1/claimed.at"; echo "$2" > "$b/$1/owner"; fi',
+	'echo "$c $b/$1"',
+);
 
 /**
  * Take over a directory that is not live, for one caller only. $1 is the directory, $2 the generation of the launch the caller
@@ -174,15 +234,18 @@ const CLAIM_SCRIPT = [
  * lives beside the directory, and only if the directory still holds what the caller saw; every other caller is told
  * BUSY, CHANGED or YOUNG and looks again. A lock older than two minutes belongs to a caller that died.
  */
-export const RECLAIM_SCRIPT = [
+export const RECLAIM_SCRIPT = checked(
 	// The lock is beside the launch directories under a name no launch can have: a launch name starts with a letter or digit.
-	'D=$1; E=$2; A=$3; T=$4; L="${D%/*}/.lock.${D##*/}"',
+	'D=$1; E=$2; A=$3; T=$4; L="\x24{D%/*}/.lock.\x24{D##*/}"',
+	'own_spool "\x24{D%/*}" || exit $?',
 	'if ! mkdir "$L" 2>/dev/null; then',
 	'  at=$(cat "$L/at" 2>/dev/null); now=$(date +%s)',
 	'  if [ -n "$at" ] && [ $((now - at)) -gt 120 ]; then rm -rf "$L"; fi',
 	"  echo BUSY; exit 0",
 	"fi",
 	'date +%s > "$L/at"',
+	// Under the lock no other caller is between removing the directory and making it again: one that is gone is looked at below.
+	'own_dir "$D" || [ $? = 4 ] || { rm -rf "$L"; exit 13; }',
 	`cur=$(sed -n "s/^GEN='\\(.*\\)'\\$/\\1/p" "$D/spec.sh" 2>/dev/null)`,
 	'if [ "$cur" != "$E" ]; then rm -rf "$L"; echo CHANGED; exit 0; fi',
 	'if [ -z "$E" ]; then',
@@ -201,14 +264,15 @@ export const RECLAIM_SCRIPT = [
 	"fi",
 	'date +%s > "$D/claimed.at"; echo "$T" > "$D/owner"',
 	'rm -rf "$L"; echo RECLAIMED',
-].join("\n");
+);
 
-const LOCATE_SCRIPT = [
+const LOCATE_SCRIPT = checked(
 	't=$TMPDIR; [ -n "$t" ] || t=/tmp',
+	't=$(cd -- "$t" 2>/dev/null && pwd -P) || { echo NODIR; exit 4; }',
 	`D="$t/${SPOOL_DIRECTORY}/$1"`,
-	'[ -d "$D" ] || { echo NODIR; exit 4; }',
+	"own_dirs || { [ $? = 4 ] || exit 13; echo NODIR; exit 4; }",
 	'echo "DIR $D"',
-].join("\n");
+);
 
 function quote(word: string): string {
 	return `'${word.replaceAll("'", "'\\''")}'`;
@@ -418,13 +482,8 @@ export function specScript(spec: LaunchSpec, isolation: string): string {
 	return `${lines.join("\n")}\n`;
 }
 
-/** `env -u` for each variable that acts on a shell or a loader, at the exec that starts every launcher shell. */
-const CLEAN_EXEC = [
-	"env",
-	...["BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS4", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT"].flatMap(
-		(name) => ["-u", name],
-	),
-];
+/** `env -u` for each variable that acts on a shell, the loader or the C library, at the exec that starts every launcher shell. */
+const CLEAN_EXEC = ["env", ...[...SHELL_ENV, ...LIBC_UNSECURE_ENVVARS].flatMap((name) => ["-u", name])];
 
 /** Run a script in the box and return its combined output, or an error. */
 async function runScript(
@@ -457,7 +516,11 @@ async function runScript(
 		return err(
 			new LaunchError("box", `a command in box ${box.id} failed: ${finished.error.message}`, finished.error),
 		);
-	return ok({ exitCode: finished.value.exitCode, text: new TextDecoder().decode(finished.value.stdout) });
+	const text = new TextDecoder().decode(finished.value.stdout);
+	// A directory own_dir refused: the script ran nothing from it.
+	const unsafe = finished.value.exitCode === 13 ? /^UNSAFE (.+)$/m.exec(text) : null;
+	if (unsafe !== null) return err(new LaunchError("unsafe", unsafe[1]!.slice(0, 200)));
+	return ok({ exitCode: finished.value.exitCode, text });
 }
 
 function parseState(text: string, directory: string): LaunchState | "none" | undefined {
@@ -528,7 +591,9 @@ async function readSeen(box: Box, directory: string, context: Context): Promise<
 	const answered = await runScript(
 		box,
 		// A launch another caller has claimed but not yet filled has no launcher script: it is still starting.
-		'D=$1; [ -d "$D" ] || { echo NODIR; exit 4; }; [ -r "$D/launcher.sh" ] || { echo NOSTATE; exit 0; }; sh "$D/launcher.sh" status "$D"',
+		checked(
+			'D=$1; own_dirs || { [ $? = 4 ] || exit 13; echo NODIR; exit 4; }; [ -r "$D/launcher.sh" ] || { echo NOSTATE; exit 0; }; sh "$D/launcher.sh" status "$D"',
+		),
 		[directory],
 		context,
 	);
@@ -614,7 +679,8 @@ function handleError(launch: Launch): LaunchError | undefined {
  * restarts the program when it exits. It outlives the call and the host. A second `launch` with the same name starts
  * nothing and returns the first one's state, unless that one has ended (`exited`, `gave_up`, `stopped`), when it starts
  * again. The spec's `env` is plain settings kept in a file of the box and never a secret. Needs POSIX `sh`, `setsid`,
- * `sed`, `cut`, `awk`, `wc`, `tail`, `date` and `sleep` in the box.
+ * `sed`, `cut`, `awk`, `wc`, `tail`, `date`, `sleep`, `id` and `ls` in the box. Its spool and launch directories must be
+ * the launcher's uid's alone, else the call is `unsafe` and runs nothing from them.
  */
 export async function launch(
 	box: Box,
@@ -668,10 +734,10 @@ export async function launch(
 			// Two callers that do so make one supervisor: it takes a lock before it looks for another.
 			const revived = await runScript(
 				box,
-				'sh "$1/launcher.sh" start "$1"',
+				checked('D=$1; own_dirs || exit $?; sh "$D/launcher.sh" start "$D"'),
 				[directory],
 				context,
-				CALL_TIMEOUT_MS,
+				START_CALL_TIMEOUT_MS,
 				frame,
 			);
 			if (!revived.ok) return revived;
@@ -723,10 +789,12 @@ export async function launch(
 	const started = await runScript(
 		box,
 		// Only the holder publishes: a caller whose slow upload let another take the directory over finds its token gone.
-		'[ "$(cat "$1/owner" 2>/dev/null)" = "$2" ] || { echo "the claim was taken over"; exit 5; }; mv "$1/spec.sh.part.$2" "$1/spec.sh" && mv "$1/launcher.sh.part.$2" "$1/launcher.sh" && sh "$1/launcher.sh" start "$1"',
+		checked(
+			'D=$1; own_dirs || exit $?; [ "$(cat "$D/owner" 2>/dev/null)" = "$2" ] || { echo "the claim was taken over"; exit 5; }; mv "$D/spec.sh.part.$2" "$D/spec.sh" && mv "$D/launcher.sh.part.$2" "$D/launcher.sh" && sh "$D/launcher.sh" start "$D"',
+		),
 		[directory, token],
 		context,
-		CALL_TIMEOUT_MS,
+		START_CALL_TIMEOUT_MS,
 		frame,
 	);
 	if (!started.ok || started.value.exitCode !== 0) await release(box, directory, token, context);
@@ -746,7 +814,9 @@ export async function launch(
 async function discard(box: Box, directory: string, token: string, context: Context): Promise<void> {
 	await runScript(
 		box,
-		'[ "$(cat "$1/owner" 2>/dev/null)" = "$2" ] && [ ! -e "$1/launcher.pid" ] && rm -rf "$1"',
+		checked(
+			'D=$1; own_dirs && [ "$(cat "$D/owner" 2>/dev/null)" = "$2" ] && [ ! -e "$D/launcher.pid" ] && rm -rf "$D"',
+		),
 		[directory, token],
 		context,
 	);
@@ -756,7 +826,9 @@ async function discard(box: Box, directory: string, token: string, context: Cont
 async function release(box: Box, directory: string, token: string, context: Context): Promise<void> {
 	await runScript(
 		box,
-		'[ "$(cat "$1/owner" 2>/dev/null)" = "$2" ] && [ ! -e "$1/launcher.sh" ] && rm -rf "$1"',
+		checked(
+			'D=$1; own_dirs && [ "$(cat "$D/owner" 2>/dev/null)" = "$2" ] && [ ! -e "$D/launcher.sh" ] && rm -rf "$D"',
+		),
 		[directory, token],
 		context,
 	);
@@ -842,7 +914,7 @@ export async function launchStop(
 	// running with its supervisor already told to stop.
 	const stopped = await runScript(
 		box,
-		'sh "$1/launcher.sh" stop "$1" "$2"',
+		checked('D=$1; own_dirs || exit $?; sh "$D/launcher.sh" stop "$D" "$2"'),
 		[current.value.directory, String(tenths)],
 		context,
 		// The grace, a stop hook at its longest, and the usual time on top.

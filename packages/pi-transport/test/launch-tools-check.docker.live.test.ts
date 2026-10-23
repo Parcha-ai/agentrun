@@ -14,6 +14,7 @@ import { dockerBoxes } from "../src/box/docker.ts";
 import { finish } from "../src/box/files.ts";
 import { LAUNCHER_SCRIPT, PTRACE_FILE_LINE, TOOLS_CHECK_LINE } from "../src/launch/launcher-script.ts";
 import { sh, until } from "./home-launch-support.ts";
+import { capLineCases, capLineScript } from "./launch-tools-caps-support.ts";
 
 const context = BACKGROUND_CONTEXT;
 const labels = { "pi-transport-live": `launch-tools-check-${process.pid}-${Date.now()}` };
@@ -51,7 +52,9 @@ async function start(
 	box: Box,
 	options: { script?: string; spec?: string; dirMode?: string; before?: (dir: string) => string } = {},
 ): Promise<{ exitCode: number; out: string; dir: string; ms: number }> {
-	const dir = `/tmp/tc-${randomBytes(4).toString("hex")}`;
+	// Its parent stands for the spool: root's, with no group or other write (the launcher refuses one), and 0755, so a launch
+	// directory a case opens to the tools user (dirMode 755) is within that user's reach.
+	const dir = `/opt/pi-transport-tc/tc-${randomBytes(4).toString("hex")}`;
 	const spec =
 		options.spec ?? "GEN='g1'\nFRAMED=1\nTOOLS='pda'\nISOLATION='none'\nrun_program() {\n  exec sleep 300\n}\n";
 	getOrThrow(
@@ -162,6 +165,96 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 				expect(ran.exitCode, ran.out).toBe(0);
 				expect(await exists(box, `${ran.dir}/tools.probe`)).toBe(false);
 			});
+		});
+
+		it("checks the launch directory before the check runs from it: one any user can write refuses (13), and no check ran", async () => {
+			// A setuid root file the check refuses (12): a check that ran would say so before the directory's refusal.
+			await withBox(
+				"cp /bin/true /usr/local/bin/rootbin && chown root:root /usr/local/bin/rootbin && chmod 4755 /usr/local/bin/rootbin",
+				async (box) => {
+					const ran = await start(box, { dirMode: "777" });
+					expect(ran.exitCode, ran.out).toBe(13);
+					expect(ran.out).toMatch(/^UNSAFE \S+ can be written by its group or by other users/m);
+					expect(ran.out).not.toContain("REFUSED");
+					expect(await exists(box, `${ran.dir}/launcher.pid`)).toBe(false);
+				},
+			);
+		});
+
+		it("refuses a file the tools user can run that has TWO capability groups: getcap prints both after its path", async () => {
+			await withBox(
+				"cp /bin/true /usr/local/bin/twocaps && setcap 'cap_net_raw=ep cap_net_admin=ei' /usr/local/bin/twocaps && getcap /usr/local/bin/twocaps | grep -q ' .* '",
+				async (box) => {
+					const ran = await start(box);
+					expect(ran.exitCode, ran.out).toBe(12);
+					expect(ran.out).toMatch(
+						/^REFUSED the tools user pda can run a file with capabilities: \/usr\/local\/bin\/twocaps /m,
+					);
+				},
+			);
+		});
+
+		it("passes a file with two capability groups that the tools user cannot run (root's, 0700): the control", async () => {
+			await withBox(
+				"cp /bin/true /usr/local/bin/twocaps && chmod 0700 /usr/local/bin/twocaps && setcap 'cap_net_raw=ep cap_net_admin=ei' /usr/local/bin/twocaps",
+				async (box) => {
+					const ran = await start(box);
+					expect(ran.exitCode, ran.out).toBe(0);
+				},
+			);
+		});
+
+		it("refuses a file the tools user can run whose name holds a space, with one capability", async () => {
+			await withBox(
+				"cp /bin/true '/usr/local/bin/with space' && setcap cap_net_raw=ep '/usr/local/bin/with space'",
+				async (box) => {
+					const ran = await start(box);
+					expect(ran.exitCode, ran.out).toBe(12);
+					expect(ran.out).toMatch(
+						/^REFUSED the tools user pda can run a file with capabilities: \/usr\/local\/bin\/with space /m,
+					);
+				},
+			);
+		});
+
+		it("reads getcap's older form, path = caps, and refuses a file the tools user can run", async () => {
+			const body =
+				'out=$(/usr/sbin/getcap "$@") || exit $?; [ -z "$out" ] || printf \'%s\\n\' "$out" | sed \'s/ \\([^ ]*\\)$/ = \\1/\'';
+			await withBox(
+				`${shim("getcap", body)} && cp /bin/true /usr/local/bin/oldform && setcap cap_net_raw=ep /usr/local/bin/oldform`,
+				async (box) => {
+					const ran = await start(box);
+					expect(ran.exitCode, ran.out).toBe(12);
+					expect(ran.out).toMatch(
+						/^REFUSED the tools user pda can run a file with capabilities: \/usr\/local\/bin\/oldform = /m,
+					);
+				},
+			);
+		});
+
+		it("gives a getcap line that names no file unsupported, naming the line: never a line dropped in silence", async () => {
+			const body = '/usr/sbin/getcap "$@" || exit $?; echo "/nonexistent/zz-gone cap_net_raw=ep"';
+			await withBox(shim("getcap", body), async (box) => {
+				const ran = await start(box);
+				expect(ran.exitCode, ran.out).toBe(10);
+				expect(ran.out).toMatch(/^UNSUPPORTED .*\/nonexistent\/zz-gone cap_net_raw=ep/m);
+				expect(await exists(box, `${ran.dir}/launcher.pid`)).toBe(false);
+			});
+		});
+
+		it("reads a getcap line in BusyBox sh as in dash: several groups, the older form, a path with spaces, a line with no file", async () => {
+			const box = getOrThrow(
+				await dockerBoxes().create({ maxLifetimeMs: 10 * 60_000, labels, image: "alpine:3.20" }, context),
+			);
+			try {
+				const ran = await sh(box, capLineScript("/tmp/caps"));
+				expect(ran.exitCode).toBe(0);
+				expect(ran.text.trim().split("\n").map(Number)).toEqual(
+					capLineCases("/tmp/caps").map(([, answer]) => answer),
+				);
+			} finally {
+				await box.destroy(context);
+			}
 		});
 
 		it("gives a check that is killed (no answer) unsupported, never accepted", async () => {
