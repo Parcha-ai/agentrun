@@ -306,7 +306,7 @@ test("the bin serves the store's page for a folder holding a store.sqlite, drawi
   assert.equal(await new Promise((resolve) => child.once("exit", (code) => resolve(code))), 0);
 });
 
-test("an agentic agent's pages never load the DSL or ./workflow; a workflow revision's page loads the DSL's graph", async () => {
+test("an agentic agent's pages never load the DSL or ./workflow; a workflow revision's page loads ./workflow, and the DSL's graph through its revisionGraph", async () => {
   const { root, ids } = await buildSampleStore(await scratch());
   const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
     import { registerHooks } from "node:module";
@@ -323,7 +323,15 @@ test("an agentic agent's pages never load the DSL or ./workflow; a workflow revi
   assert.equal(child.status, 0, child.stderr);
   const { agentic, workflow } = JSON.parse(child.stdout);
   assert.deepEqual(agentic, [], "nothing of the DSL, agentrun-pi or ./workflow");
-  assert.deepEqual(workflow, ["@parcha/agentrun-dsl/graph"], "the DSL's graph once a workflow is drawn, and nothing else");
+  assert.deepEqual(workflow, ["../workflow.js", "@parcha/agentrun-dsl/graph"], "./workflow, then the DSL's graph it loads, once a workflow is drawn, and nothing else");
+});
+
+test("serve names no @parcha/agentrun-dsl, in its source or its build: a workflow revision's graph and diff come from ./workflow's revisionGraph", () => {
+  for (const dir of ["../src/serve/", "../dist/serve/"]) {
+    const root = fileURLToPath(new URL(dir, import.meta.url));
+    const naming = readdirSync(root, { recursive: true }).filter((file) => statSync(path.join(root, file)).isFile() && readFileSync(path.join(root, file), "utf8").includes("@parcha/agentrun-dsl"));
+    assert.deepEqual(naming, [], dir);
+  }
 });
 
 /** The page's fetch, answered by the server at `url`, and a wait until every answer it asked for is drawn. */
