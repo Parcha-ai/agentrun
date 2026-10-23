@@ -347,6 +347,8 @@ class ModalBox implements Box {
 		// Whether the program has exited, and how a failed close of its input reaches the caller: through `wait()`.
 		let exited = false;
 		let failInput: (error: BoxError) => void = () => {};
+		// This adapter's own close of the input: its first call, shared by every later one.
+		let closing: Promise<void> | undefined;
 		// One deadline and one abort listener cover the whole wait: the program's exit, then the end of every stream the
 		// caller read. A program's exit is only good when those streams reached their end without a failure: a stream
 		// that broke after some bytes must not look like a complete output.
@@ -416,16 +418,25 @@ class ModalBox implements Box {
 						await process.stdin.writeBytes(bytes.subarray(at, at + STDIN_CHUNK_BYTES));
 					}
 				},
-				// A program that already exited closed its input, and its exit code reports it. A close that fails on a program
-				// still running leaves it waiting for an EOF that will not come: `wait()` answers with that failure.
-				close: async () => {
-					try {
-						await process.stdin.close();
-					} catch (cause) {
-						if (!exited) {
-							failInput(new BoxError("unknown", `could not close the program's input: ${String(cause)}`, cause));
+				// `close()` means the program's input is closed, and it is closed ONCE: this adapter tracks its own close (a launch closes the
+				// input after it writes the frame, and `finish` closes it again), so a later call, in flight or done, returns the first and
+				// asks the stream for nothing: a stream the SDK has closed rejects a second close, which is no failure. Decided by that
+				// state, never by the text of an error and never by waiting. A program that already exited closed its input, and its exit
+				// code reports it. A close that fails the first time on a program still running leaves it waiting for an EOF that will not
+				// come: `wait()` answers with that failure.
+				close: () => {
+					closing ??= (async () => {
+						try {
+							await process.stdin.close();
+						} catch (cause) {
+							if (!exited) {
+								failInput(
+									new BoxError("unknown", `could not close the program's input: ${String(cause)}`, cause),
+								);
+							}
 						}
-					}
+					})();
+					return closing;
 				},
 			},
 			stdout: until(process.stdout, stopped, out),

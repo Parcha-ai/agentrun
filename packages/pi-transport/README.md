@@ -112,7 +112,8 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
   errors, echoed output) and no place in the box but the program's pipes holds the secret. The provider is trusted with the box,
   and whether it keeps an exec's stdin is undocumented, so no claim is made about that. A `close()` that fails on a program still
   running is returned by `wait()` (the program would otherwise wait for an EOF that never comes); on a program that already exited it
-  is ignored.
+  is ignored. The input is closed once: a `close()` after the first (a launch closes it after the frame, and `finish` closes it again) returns
+  the first and is no failure.
 - **Attach never fails a live sandbox and never ends it.** A box found again by `attach` is always handed back, and the caller ends it
   through the handle if its facts do not fit. The facts are read in the box again (a failed read is tried three times, with a pause).
   A read that answers gives the facts as measured, so a box with no usable FUSE reads `fuse: false`. If every try errs, the handle
