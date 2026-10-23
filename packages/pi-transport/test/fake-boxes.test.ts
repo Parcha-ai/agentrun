@@ -655,6 +655,23 @@ describe("fakeBoxes: T3's own launcher over a fake box (Box.launcher)", () => {
 		expect(gone.ok ? "ok" : gone.error.code).toBe("box");
 	});
 
+	it("answers a scripted unsafe as the launcher's own LaunchError unsafe, at launch, state and stop", async () => {
+		const provider = fakeBoxes();
+		provider.program("inst", forever);
+		const box = getOrThrow(await provider.create(SPEC, context));
+		const started = getOrThrow(await launch(box, "inst", { argv: ["inst"] }, context));
+		for (const op of ["launch", "launchState", "launchStop"] as const) provider.script.on({ op }, { fail: "unsafe" });
+		const answers = [
+			await launch(box, "second", { argv: ["inst"] }, context),
+			await launchState(box, started.launch, context),
+			await launchStop(box, started.launch, undefined, context),
+		];
+		for (const answer of answers) {
+			expect(answer.ok ? "ok" : answer.error).toBeInstanceOf(LaunchError);
+			expect(answer.ok ? "ok" : answer.error.code).toBe("unsafe");
+		}
+	});
+
 	it("exits with a chosen code by a rule at launch or by the test later", async () => {
 		const provider = fakeBoxes();
 		provider.program("inst", forever);
