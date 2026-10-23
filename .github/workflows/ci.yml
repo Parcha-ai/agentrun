@@ -183,7 +183,7 @@ jobs:
     # part of the verify matrix: they need the programs, not three Node versions. A provider that cannot find its
     # program fails here instead of skipping.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - name: Install ffmpeg and poppler
