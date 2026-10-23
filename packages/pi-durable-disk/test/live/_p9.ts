@@ -209,8 +209,8 @@ export const PDA_ID = 1500;
 export const APP_OUT = "/var/tmp/pda-out";
 const NODE_URL = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz";
 const NODE_SHA256 = "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6";
-const ARCHIL_URL = "https://s3.amazonaws.com/archil-client/pkg/archil_0.8.42-1790378297_amd64.deb";
-const ARCHIL_SHA256 = "ee593dde01f1c2cbd4ff9cba7852aa87b45f58b97dc328e66e03ced98d9c60d3";
+const ARCHIL_URL = "https://s3.amazonaws.com/archil-client/pkg/archil_0.10.0-1792692895_amd64.deb";
+const ARCHIL_SHA256 = "7d75f7b94d64952a939570dc79d0996c914696be176b45e9fed51a45c15ad0ba";
 const REPO = new URL("../../", import.meta.url).pathname;
 
 /** This checkout's working tree (no node_modules, .git or .tmp) as a gzipped tar. */
@@ -273,7 +273,7 @@ export async function sh(client: DaytonaClient, box: SandboxInfo, script: string
   return r.result;
 }
 
-/** Install the pinned runtime (Node 24.21.0, archil 0.8.42, both sha256-checked), the package, the run user and sudoers. */
+/** Install the pinned runtime (Node 24.21.0, archil 0.10.0, both sha256-checked), the package, the run user and sudoers. */
 export async function prepareBox(client: DaytonaClient, box: SandboxInfo): Promise<{ ms: number; steps: Record<string, number>; versions: Record<string, string> }> {
   const t0 = performance.now();
   await client.upload(box, "/tmp/pda-pkg.tar.gz", packageTarball());
