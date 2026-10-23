@@ -7,8 +7,14 @@
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { BROWSER_TOOL_NAMES } from "@parcha/pi-browser";
 
 export type BrowserKind = "browserbase" | "chrome";
+
+/** Whether a definition lists a browser tool: one of pi-browser's, the whole `browser` extension, or the sign-in. An
+ *  agent that lists none gets no browser: start-run.mjs starts no Chrome for it and app.ts never dials one. */
+export const listsBrowser = (definition: { tools: readonly string[] }) =>
+  definition.tools.some((name) => name === "browser" || name === "sign-in" || name === "request_sign_in" || BROWSER_TOOL_NAMES.includes(name));
 /** The agent's local Chrome profile, as a key in the agent home's `browser.profiles` (its save lease decides who opens it). */
 export const CHROME_PROFILE = "local-chrome";
 
@@ -49,13 +55,16 @@ export type RunChrome = { pid: number; endpoint: string; stop(): Promise<void> }
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The profile restores its last session, so Chrome keeps a site's session cookies (a sign-in that ends "when the
- *  browser closes") across the runs that open it. Chrome rewrites Preferences; only this one setting is changed. */
-async function keepSessionCookies(userDataDir: string): Promise<void> {
+ *  browser closes") across the runs that open it. With `downloads`, a file the page offers as a download is saved there
+ *  without asking: the run's own `work/downloads/`, set again for every run, since the profile is shared across runs.
+ *  Chrome rewrites Preferences; only these settings are changed. */
+export async function prepareProfile(userDataDir: string, options: { downloads?: string } = {}): Promise<void> {
   const file = join(userDataDir, "Default", "Preferences");
   await mkdir(join(userDataDir, "Default"), { recursive: true, mode: 0o700 });
-  const prefs = JSON.parse(await readFile(file, "utf8").catch(() => "{}")) as { session?: Record<string, unknown> };
-  if (prefs.session?.restore_on_startup === 1) return;
-  await writeFile(file, JSON.stringify({ ...prefs, session: { ...prefs.session, restore_on_startup: 1 } }), { mode: 0o600 });
+  const prefs = JSON.parse(await readFile(file, "utf8").catch(() => "{}")) as { session?: Record<string, unknown>; download?: Record<string, unknown> };
+  if (options.downloads) await mkdir(options.downloads, { recursive: true });
+  const download = options.downloads ? { download: { ...prefs.download, default_directory: options.downloads, prompt_for_download: false } } : {};
+  await writeFile(file, JSON.stringify({ ...prefs, session: { ...prefs.session, restore_on_startup: 1 }, ...download }), { mode: 0o600 });
 }
 
 /** Ask the browser to close itself over its debugging socket: Chrome writes its cookies to disk only on a clean close. */
@@ -71,10 +80,10 @@ async function closeGracefully(endpoint: string): Promise<void> {
  *  `DevToolsActivePort`. `stop` closes that browser cleanly, then ends that process by its pid if it is still there,
  *  and no other. An abort of `signal` before the port is known stops the Chrome being started, by its pid, and rejects:
  *  a launcher told to stop while Chrome starts leaves no Chrome holding the profile. */
-export async function startChrome(executablePath: string, userDataDir: string, options: { sandbox?: boolean; readyMs?: number; signal?: AbortSignal } = {}): Promise<RunChrome> {
+export async function startChrome(executablePath: string, userDataDir: string, options: { sandbox?: boolean; readyMs?: number; signal?: AbortSignal; downloads?: string } = {}): Promise<RunChrome> {
   options.signal?.throwIfAborted();
   await mkdir(userDataDir, { recursive: true, mode: 0o700 });
-  await keepSessionCookies(userDataDir);
+  await prepareProfile(userDataDir, options.downloads ? { downloads: options.downloads } : {});
   const portFile = join(userDataDir, "DevToolsActivePort");
   // A file left by an earlier Chrome names a browser that is not this one.
   await rm(portFile, { force: true });
