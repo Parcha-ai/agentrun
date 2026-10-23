@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { workflowGraph } from "@parcha/agentrun-dsl/graph";
 import { AgentHomeError, durableProfileStore, openStoreReader } from "../dist/index.js";
-import { serveStoreWith } from "../dist/serve/store.js";
+import { lineDiff, serveStoreWith } from "../dist/serve/store.js";
 import { BRIEF_WORKFLOW, buildSampleStore, MCC_WORKFLOW_2, PRIVATE, PROMPT_A, PROMPT_B, sampleReadRun, SKILL_MARKER } from "./fixtures/store-sample.mjs";
 import { all, assertInert, mount } from "./page-dom.mjs";
 import { ctx, openSession, request, scratch } from "./support.mjs";
@@ -90,6 +90,28 @@ test("an agent: its revisions newest first, the current one marked; an agentic o
   } finally {
     await served.close();
   }
+});
+
+const numbered = (prefix, count) => Array.from({ length: count }, (_, i) => `${prefix}${i}`);
+
+test("the prompt diff on long prompts: identical ones are all the same lines, compared in one pass", () => {
+  const prompt = numbered("line ", 10_000).join("\n");
+  const lines = lineDiff(prompt, prompt);
+  assert.equal(lines.length, 10_000);
+  assert.ok(lines.every((line) => line.op === "same"));
+});
+
+test("the prompt diff on long prompts: two with more than a million line pairs left to compare are not diffed (null)", () => {
+  assert.equal(lineDiff(numbered("a", 2_000).join("\n"), numbered("b", 2_000).join("\n")), null);
+});
+
+test("the prompt diff on long prompts: one changed line in the middle of 3,000 is that one line removed and added", () => {
+  const before = numbered("line ", 3_000);
+  const after = before.map((line, i) => (i === 1_500 ? "line 1500, cited" : line));
+  const lines = lineDiff(before.join("\n"), after.join("\n"));
+  assert.equal(lines.length, 3_001);
+  assert.deepEqual(lines.slice(1_499, 1_503), [{ op: "same", text: "line 1499" }, { op: "del", text: "line 1500" }, { op: "add", text: "line 1500, cited" }, { op: "same", text: "line 1501" }]);
+  assert.equal(lines.filter((line) => line.op !== "same").length, 2);
 });
 
 test("a workflow revision against a workflow parent: graphDiff's added, edited (changed and rewritten) and removed nodes as the drawer's marks", async () => {

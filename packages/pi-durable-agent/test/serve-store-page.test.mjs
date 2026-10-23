@@ -101,6 +101,18 @@ test("an agent page: its revisions newest first, the current one marked, an agen
   assert.ok(all(a).some((el) => el.tagName === "PRE" && el.textContent === REV_A.body.instructions), "a first revision shows its prompt whole");
 });
 
+test("a prompt too long to diff line by line: the note says so, then the prompt whole, and what else changed is still shown", async () => {
+  const tooLong = { ...REV_B, diff: { ...REV_B.diff, prompt: null } };
+  const page = mount(agentApi({ "api/agents/company-researcher": { ...AGENT, revisions: [tooLong, REV_A] } }), "#/agents/company-researcher", { serve: STORE });
+  await page.settle();
+  assertInert(page.app);
+  const [b] = revisionsOf(page);
+  assert.deepEqual(all(b).filter((el) => classOf(el) === "note").map((el) => el.textContent), ["The prompt is too long to diff line by line."]);
+  assert.ok(all(b).some((el) => el.tagName === "PRE" && el.textContent === REV_B.body.instructions), "the new prompt, whole");
+  assert.equal(all(b).filter((el) => classOf(el).startsWith("line ")).length, 0);
+  assert.ok(b.textContent.includes("+read") && b.textContent.includes("thinking low → medium"), "the tools and settings that changed");
+});
+
 const node = (path, kind, label) => ({ path, kind, label });
 const GRAPH_1 = { nodes: [node("/root", "chain", "chain"), node("/root/steps/0", "call", "Read the site"), node("/root/steps/1", "call", "Pick the MCC"), node("/root/steps/2", "call", "Format the answer")], edges: [] };
 const GRAPH_2 = { nodes: [node("/root", "chain", "chain"), node("/root/steps/0", "call", "Read the site"), node("/root/steps/1", "call", `Is it a marketplace ${HOSTILE}`), node("/root/steps/2", "call", "Pick the MCC"), node("/root/steps/3", "call", "Answer")], edges: [] };
