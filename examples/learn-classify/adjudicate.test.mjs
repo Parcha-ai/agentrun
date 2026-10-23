@@ -4,7 +4,7 @@
 // more, pins its inputs in meta.json, resumes, and refuses changed inputs.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { candidateTable, unblind } from '../learn-mcc/adjudication.mjs';
 import { groupOf, loadGroups } from '../learn-mcc/score-mcc.mjs';
-import { adjudicationRun, jobTextAdjudicate, sampleJobs } from './adjudicate-job.mjs';
+import { adjudicationRun, jobTextAdjudicate, sampleJobs, STAGE1_RECORDED } from './adjudicate-job.mjs';
 import { PROTOCOL, runAdjudication } from './eval-adjudicate.mjs';
 import { openOut, scriptedParts } from './runner.mjs';
 import { SETS } from './sets.mjs';
@@ -204,6 +204,63 @@ test('a scripted pass: stage 1 and 2 for unblind, an ungrounded verdict judged o
   // Commitments that do not cover the sample stop the pass before any run.
   writeFileSync(given.files.commitments, JSON.stringify({ count: 1, commitments: [{ order: 1, sha256: 'x' }] }));
   await assert.rejects(runAdjudication({ out, parts, passId: 'p2', files: given.files }), /one commitment per sample row/);
+});
+
+test('a stage-2-only pass judges a later arm\'s new codes on the earlier stage 1: carried, merged, judged again, refused when its inputs move', async (t) => {
+  const dir = await scratch(t);
+  const given = await writeInputs(dir);
+  const out = join(dir, 'out');
+  const json = (file) => JSON.parse(readFileSync(file, 'utf8'));
+  const parts = scriptedParts({ set: SETS.adjudicate, data: given.data });
+  await runAdjudication({ out, parts, passId: 'r1', files: given.files });
+  const r1 = join(out, 'adjudication', 'r1');
+  const before = { stage1: json(join(r1, 'stage1.json')), stage2: json(join(r1, 'stage2.json')) };
+  // A later arm: a new code for adj-001 and adj-003, none for adj-002 (5993 was judged), and adj-004 unjudgeable.
+  const later = { name: 'a3', rows: [['adj-001', '5411'], ['adj-002', '5993'], ['adj-003', '5999'], ['adj-004', '5943']].map(([merchantId, mccAnswer]) => ({ merchantId, mccAnswer, riskAnswer: 'low' })) };
+  const table = candidateTable({ sample: given.sample, arms: [...given.arms, later], salt: SALT, groups: GROUPS }).candidates;
+  const files = { ...given.files, candidates: join(dir, 'candidates-4.json') };
+  writeFileSync(files.candidates, JSON.stringify(table));
+  const result = await runAdjudication({ out, parts, passId: 'r1-a3', files, stage1From: r1 });
+  assert.deepEqual([result.carried, result.judged.sort()], [2, ['adj-001', 'adj-003']], 'only the merchants with a new code run');
+  assert.deepEqual(result.ungrounded, [{ merchantId: 'adj-003', ungrounded: ['5999'] }], 'only the new codes are the run\'s own to ground');
+  const pass = join(out, 'adjudication', 'r1-a3');
+  const stage1 = json(join(pass, 'stage1.json'));
+  const stage2 = json(join(pass, 'stage2.json'));
+  assert.deepEqual(stage1, before.stage1, 'stage 1 is the earlier pass\'s, for every merchant');
+  for (const id of ['adj-002', 'adj-004']) assert.deepEqual(stage2[id], before.stage2[id], `${id} is carried over`);
+  assert.deepEqual(Object.keys(stage2['adj-001'].codes).sort(), ['5411', '5499', '5999']);
+  assert.deepEqual(stage2['adj-001'].codes['5499'], before.stage2['adj-001'].codes['5499'], 'an earlier judgment stands');
+  assert.equal(stage2['adj-001'].codes['5411'].acceptable, false);
+  // The earlier codes, shown again beside the new one, were judged again: a consistency check, never merged.
+  assert.deepEqual(json(join(pass, 'rejudged.json'))['adj-001'], { 5499: { earlier: true, now: true }, 5999: { earlier: false, now: false } });
+  assert.deepEqual(result.consistency, { rejudged: 4, same: 4 });
+  const manifest = readFileSync(join(pass, 'manifest.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  assert.deepEqual(manifest.map((l) => [l.merchantId, l.stage2Only, l.newCodes]), [['adj-001', true, ['5411']], ['adj-003', true, ['5999']], ['adj-003', true, ['5999']]]);
+  // The run was told stage 1 is recorded; site refused and named it; codes answered without it.
+  const events = readFileSync(join(pass, manifest[0].recording, 'events.jsonl'), 'utf8');
+  assert.ok(events.includes(JSON.stringify(STAGE1_RECORDED).slice(1, -1)));
+  assert.match(events, /Stage 1 is already recorded for this merchant: own code 5499/);
+  assert.ok(events.includes('"candidates":[{'));
+  const meta = json(join(pass, 'meta.json'));
+  assert.equal(meta.pins.stage1From.sha256, sha256(readFileSync(join(r1, 'stage1.json'))));
+  assert.deepEqual(meta.stage1From, { passId: 'r1', protocol: sha256(readFileSync(PROTOCOL)), show: 'all' });
+  // unblind scores the later arm on the merged files: STRICT from stage 1 alone, ACCEPTABLE from the new judgment.
+  const scored = unblind({ items: given.sample.map((merchant) => ({ merchant, answer: { mcc: later.rows.find((r) => r.merchantId === merchant.merchantId).mccAnswer, riskTier: 'low' } })), stage1, stage2 });
+  assert.deepEqual(scored.learner.map((r) => [r.merchantId, r.mccStrictRight, r.mccAdjRight]), [['adj-001', false, false], ['adj-002', true, true], ['adj-003', false, false]]);
+  // Shown only the new codes: a run sees the new code alone, and nothing is judged again.
+  await runAdjudication({ out, parts, passId: 'r1-a3-new', files, stage1From: r1, show: 'new' });
+  const only = join(out, 'adjudication', 'r1-a3-new');
+  assert.ok(!existsSync(join(only, 'rejudged.json')));
+  assert.deepEqual(Object.keys(json(join(only, 'stage2.json'))['adj-001'].codes).sort(), ['5411', '5499', '5999']);
+  const first = readFileSync(join(only, 'manifest.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))[0];
+  assert.match(readFileSync(join(only, first.recording, 'events.jsonl'), 'utf8'), /"candidates":\[\{"code":"5411","title":"[^"]*"\}\]/);
+  // Refused: resumed with the other candidates shown; an earlier pass with another salt; candidates that drop a judged code.
+  await assert.rejects(runAdjudication({ out, parts, passId: 'r1-a3', files, stage1From: r1, show: 'new' }), /pinned with other inputs \(show\)/);
+  writeFileSync(files.orderSalt, `${SALT}-moved\n`);
+  await assert.rejects(runAdjudication({ out, parts, passId: 'r1-a3-salt', files, stage1From: r1 }), /pinned with another orderSalt/);
+  writeFileSync(files.orderSalt, `${SALT}\n`);
+  writeFileSync(files.candidates, JSON.stringify({ ...table, 'adj-001': table['adj-001'].filter((c) => c.code !== '5999') }));
+  await assert.rejects(runAdjudication({ out, parts, passId: 'r1-a3-drop', files, stage1From: r1 }), /leave out 5999/);
 });
 
 test('a live adjudication pass runs its self-test first: the root thinks, it is offered no learning tool, codes refuses before stage 1', async (t) => {

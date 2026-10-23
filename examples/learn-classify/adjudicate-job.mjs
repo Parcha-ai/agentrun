@@ -9,6 +9,9 @@ import { groundedPage } from './mcc.mjs';
 /** The run's input: the merchant's name and website. */
 export const jobInputAdjudicate = (job) => ({ name: job.name, website: job.website });
 
+/** The line a stage-2-only run's job text adds (eval-adjudicate.mjs --stage1-from): its stage 1 is an earlier pass's. */
+export const STAGE1_RECORDED = 'Stage 1 for this merchant was recorded in an earlier run. Do not record it again: call codes and judge every candidate.';
+
 export const jobTextAdjudicate = (job) => [
   'Judge this merchant, blind.',
   `Merchant: ${job.name}`,
@@ -26,9 +29,9 @@ export function sampleJobs(sample) {
 
 /** One run's host tools and answer for a merchant: a fresh adjudicatorRun over its candidates (their stage state is the
  *  run's own), and its verdict as the answer, refused until `problems` is empty. `record(verdict)` is the run's stage 1
- *  and stage 2. */
-export function adjudicationRun({ candidates, groups }) {
-  const run = adjudicatorRun({ candidates, groups });
+ *  and stage 2. With `stage1` (an earlier pass's, for a stage-2-only run) the run starts with it recorded. */
+export function adjudicationRun({ candidates, groups, stage1 = null }) {
+  const run = adjudicatorRun({ candidates, groups, ...(stage1 ? { stage1 } : {}) });
   return {
     tools: run.tools,
     answer: { ...run.answer, problems: run.problems, recorded: (verdict) => `the verdict on ${(verdict?.codes ?? []).length} candidate codes` },
@@ -38,10 +41,13 @@ export function adjudicationRun({ candidates, groups }) {
 
 /** Whether a recorded verdict grounds (SPEC.md's grounding, as the learner's receipt reads it): each judgment (the own
  *  code, the risk tiers, each candidate) has at least one evidence item that a page of the merchant's own, read in the
- *  run, holds word for word. `ungrounded` names the judgments that do not; an unjudgeable site grounds nothing (null). */
-export function adjudicationGrounding(lines, recorded, merchant) {
+ *  run, holds word for word. `ungrounded` names the judgments that do not; an unjudgeable site grounds nothing (null).
+ *  With `codes` (a stage-2-only run) only those candidates' judgments are the run's own to ground. */
+export function adjudicationGrounding(lines, recorded, merchant, { codes } = {}) {
   if (recorded.stage1.unjudgeable) return { grounded: null, ungrounded: [] };
-  const judgments = [['own', recorded.stage1.own.evidence], ['risk', recorded.stage1.risk.evidence], ...Object.entries(recorded.stage2.codes).map(([code, v]) => [code, v.evidence])];
+  const judgments = codes
+    ? codes.map((code) => [code, recorded.stage2.codes[code]?.evidence])
+    : [['own', recorded.stage1.own.evidence], ['risk', recorded.stage1.risk.evidence], ...Object.entries(recorded.stage2.codes).map(([code, v]) => [code, v.evidence])];
   const ungrounded = judgments.filter(([, evidence]) => !(evidence ?? []).some((cite) => groundedPage(lines, cite, merchant))).map(([what]) => what);
   return { grounded: ungrounded.length === 0, ungrounded };
 }
