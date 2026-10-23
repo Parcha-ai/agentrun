@@ -2,30 +2,13 @@
 // be done, why, and what still works or how to narrow the request. A refusal of the arguments themselves is an error.
 
 import type { MissCode } from "./contract.js";
-import { fileLook, quietly, type Filing, type LookRecord } from "./evidence.js";
-import type { ToolResult } from "./host.js";
+import type { ToolResult } from "./call.js";
+import { fileLook, quietly } from "./evidence.js";
+import type { Filing, LookRecord, MissEvent } from "./records.js";
 import { pathSafe } from "./paths.js";
 
-/** One read or look that could not give the model what it asked for, for the host's rows. */
-export type MissEvent = {
-  readonly conversationId: string;
-  /** `read` or `vision.see`, or the tool whose result held the image (`CallContext.tool`). */
-  readonly tool: string;
-  readonly source: string;
-  readonly ask?: string;
-  readonly code: MissCode;
-  /** The first line of the cause, as the model reads it. */
-  readonly reason: string;
-  /** The eyes' model, when eyes were asked. */
-  readonly model?: string;
-  /** Where the failed look was filed, or null when the sink filed nothing (an image no door named has no receipt). */
-  readonly receipt: string | null;
-  /** The failed look as it was filed, whether or not the sink filed it: `status` failed, a `body` that says why, and in
-   *  `facts` its `key` and what the eyes charged (`cost_usd` null when the price is unknown, absent when a request
-   *  threw and may have been billed). A host files it like any look it keeps, so what a failed look cost is counted.
-   *  Absent when the host's own setup failed before any look was made. */
-  readonly record?: LookRecord;
-};
+export type { MissEvent } from "./records.js";
+
 
 /** Why a look did not happen: the code, the cause in one line, and the eyes' model when eyes were asked. `setup` is set
  *  when the host's own callbacks failed before any look was made: the event then carries no record. */
