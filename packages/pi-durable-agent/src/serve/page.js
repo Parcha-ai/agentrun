@@ -1007,8 +1007,68 @@
     );
   }
 
+  /** A store run's head: its state, when it ran and what it cost, its agent and revision, and its summary. */
+  function storeRunHead(data, rows) {
+    var run = data.run;
+    var agent = data.agent || { id: run.agent, name: run.agent };
+    var revision = data.revision || { id: run.revision, kind: run.kind };
+    var facts = [el("span", null, "started " + when(run.startedAt))];
+    if (run.endedAt) facts.push(el("span", null, "took " + took(run.startedAt, run.endedAt)));
+    var spent = rows.filter(function (r) { return r.kind === "usage" && r.usage && typeof r.usage.usd === "number"; }).pop();
+    if (usd(run.costUsd)) facts.push(el("span", null, usd(run.costUsd)));
+    else if (spent) facts.push(el("span", null, usd(spent.usage.usd) + " so far"));
+    if (run.kind !== "workflow") {
+      var calls = rows.filter(function (r) { return r.kind === "tool_use"; }).length;
+      facts.push(el("span", null, calls + (calls === 1 ? " tool call" : " tool calls")));
+    }
+    return el(
+      "section",
+      { class: "card run-head" },
+      kicker("Run"),
+      el("h1", { class: "id" }, run.id),
+      el("p", { class: "facts" }, runState(run.state), facts, run.state === "running" ? el("span", { class: "live-note" }, "refreshing every 2 s") : null),
+      el(
+        "p",
+        { class: "facts ran" },
+        el("span", { class: "word" }, "agent"),
+        el("a", { href: agentHref(agent.id) }, agent.name || agent.id),
+        el("span", { class: "word" }, "revision"),
+        el("a", { class: "rev-id", href: revisionHref(agent.id, revision.id) }, short(revision.id)),
+        kindPill(revision.kind || run.kind),
+        revision.note ? el("span", null, revision.note) : null
+      ),
+      run.summary ? el("p", { class: "lede summary" }, run.summary) : null,
+      data.stored === false ? el("p", { class: "note" }, "This run's directory is not in the store: only its row in the index is left.") : null
+    );
+  }
+
+  function storeRunPage(id, token) {
+    crumb([["Run", "#/runs/" + encodeURIComponent(id)]]);
+    get("api/runs/" + encodeURIComponent(id)).then(
+      function (data) {
+        if (token !== view) return;
+        var run = (data && data.run) || { id: id };
+        var agent = (data && data.agent) || { id: run.agent, name: run.agent };
+        crumb([[agent.name || agent.id, agentHref(agent.id)], [short(run.revision), revisionHref(agent.id, run.revision)], ["Run", "#/runs/" + encodeURIComponent(id)]]);
+        doc.title = "Run " + short(run.id) + " · " + (agent.name || agent.id) + " · agent store";
+        var rows = data && Array.isArray(data.rows) ? data.rows : [];
+        var open = openCalls();
+        var y = window.scrollY || 0;
+        show([storeRunHead(data, rows), timeline(rows)]);
+        reopen(open);
+        if (y) window.scrollTo(0, y);
+        if (run.state === "running") later(token, 2000, function () { storeRunPage(id, token); });
+      },
+      function (error) {
+        if (token === view) show(failed(error));
+      }
+    );
+  }
+
   function storeRoute(hash, token) {
-    var m = /^#\/agents\/([^/?#]+)\/revisions\/([^/?#]+)$/.exec(hash);
+    var m = /^#\/runs\/([^/?#]+)$/.exec(hash);
+    if (m) return storeRunPage(decoded(m[1]), token);
+    m = /^#\/agents\/([^/?#]+)\/revisions\/([^/?#]+)$/.exec(hash);
     if (m) return revisionPage(decoded(m[1]), decoded(m[2]), token);
     m = /^#\/agents\/([^/?#]+)(?:\?revision=([^&#]*))?$/.exec(hash);
     if (m) return agentPage(decoded(m[1]), m[2] ? decoded(m[2]) : null, token);

@@ -134,6 +134,9 @@ a.run:hover .id{color:var(--accent)}
 .run-head .picked{margin-top:14px;padding:12px 16px;border:1px solid var(--line);background:var(--panel2)}
 .run-head .reason{color:var(--muted);font-size:13.5px;margin-top:8px}
 .live-note{color:var(--accent)}
+.run-head .ran{margin-top:-4px}
+.run-head .ran .rev-id{font-weight:600}
+.run-head .summary{color:var(--ink);border-left:3px solid var(--accent);padding:4px 0 4px 12px;margin:10px 0 4px}
 .steps{position:relative;margin-left:6px;padding-left:20px;border-left:1px solid var(--line)}
 .steps>*{position:relative;margin:0 0 12px}
 .steps>*::after{content:"";position:absolute;left:-24px;top:14px;width:7px;height:7px;background:var(--line)}

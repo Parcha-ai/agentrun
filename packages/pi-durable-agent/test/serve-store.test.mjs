@@ -204,7 +204,7 @@ test("an agentic run: its row, its agent and revision, and its store's entries a
     assert.deepEqual(done.json.agent, { id: "company-researcher", name: "Company researcher" });
     assert.deepEqual([done.json.revision.id, done.json.revision.kind, done.json.revision.note, "body" in done.json.revision], [REVISIONS.A.id, "agentic", "Prompt A: the first brief", false]);
     assert.equal(done.json.stored, true);
-    assert.deepEqual(done.json.rows.filter((row) => row.kind !== "usage").map((row) => row.kind), ["user_message", "thinking", "tool_use", "tool_result", "tool_use", "tool_use", "tool_result", "tool_result", "tool_use", "tool_result", "final_answer"]);
+    assert.deepEqual(done.json.rows.filter((row) => row.kind !== "usage").map((row) => row.kind), ["user_message", "thinking", "tool_use", "tool_result", "tool_use", "tool_use", "tool_result", "tool_result", "tool_use", "tool_result", "phase", "final_answer"]);
     assert.equal(done.json.rows[0].text, "Research Caterpillar Inc..");
     const failed = (await get(`/api/runs/${RUN.a002.id}`)).json;
     assert.ok(failed.rows.some((row) => row.kind === "tool_result" && row.tool_status === "failed"), "the 403 is a failed result");

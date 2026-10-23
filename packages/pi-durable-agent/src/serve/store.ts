@@ -8,7 +8,8 @@ import path from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { ID_PATTERN } from "../home.js";
 import { AgentHomeError } from "../store.js";
-import { signature } from "./read.js";
+import { timelineOf } from "../timeline/index.js";
+import { readEntriesAt, signature } from "./read.js";
 import { checkPort, type ServeHandle, serveLocal, type ServeOptions } from "./server.js";
 
 /** The store's index, beside its agents' homes. */
@@ -66,6 +67,8 @@ export type StoreView = {
   revisions: Map<string, RevisionRow[]>;
   bodies: Map<string, Revision | AgentHomeError>;
   runs: RunRow[];
+  /** Each run's store, relative to the store's directory, as the reader names it; absent when it names none. */
+  runStores: Map<string, string>;
 };
 const bodyKey = (agent: string, revision: string) => `${agent}/${revision}`;
 
@@ -97,7 +100,18 @@ async function snapshot(dir: string, openReader: (dir: string) => Promise<StoreR
           bodies.set(bodyKey(agent.id, row.id), body);
         }
       }
-      return { agents, revisions, bodies, runs: await reader.listRuns() };
+      const runs = await reader.listRuns();
+      // The reader is opened on the copy, so where it says a run's store is is taken relative to the copy, and read in the store.
+      const runStores = new Map<string, string>();
+      for (const run of runs) {
+        try {
+          const relative = path.relative(scratch, reader.runStorePath(run.agent, run.id));
+          if (relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative)) runStores.set(run.id, relative);
+        } catch (error) {
+          if (!(error instanceof AgentHomeError)) throw error;
+        }
+      }
+      return { agents, revisions, bodies, runs, runStores };
     } finally {
       await reader.close?.();
     }
@@ -247,6 +261,18 @@ const runShown = (run: RunRow): RunRow => ({
   ...(run.summary !== undefined ? { summary: run.summary } : {}),
 });
 
+/** One run: its row, its agent's id and name, its revision's row, whether its store is there, and its store's entries as
+ *  the timeline (an agentic run). */
+function runView(dir: string, view: StoreView, run: RunRow) {
+  const agent = view.agents.find((candidate) => candidate.id === run.agent);
+  const revision = (view.revisions.get(run.agent) ?? []).find((candidate) => candidate.id === run.revision) ?? null;
+  const relative = view.runStores.get(run.id);
+  const storePath = relative === undefined ? undefined : path.join(dir, relative);
+  const stored = storePath !== undefined && existsSync(storePath);
+  const value = { run: runShown(run), agent: { id: run.agent, name: agent?.name ?? run.agent }, revision, stored };
+  return { status: 200, value: { ...value, rows: stored ? timelineOf(readEntriesAt(dir, storePath, "store"), { settled: run.state !== "running" }) : [] } };
+}
+
 const badId = (what: string) => ({ status: 400, value: { error: `the ${what} id is not letters, digits, ".", "_" or "-"` } });
 const notFound = (what: string) => ({ status: 404, value: { error: `no such ${what}` } });
 
@@ -284,7 +310,7 @@ const PAGE_FILES: Record<string, { file: string; type: string }> = {
 /**
  * Serve the agent store at `store.dir` on 127.0.0.1, as `serveHome` serves a home: `GET /` is the page, `GET /api/store`
  * its agents, `GET /api/agents/:id` one agent and its revisions, `GET /api/agents/:id/revisions/:revision` one revision
- * against its parent, and `GET /api/runs?agent=&revision=` the runs, newest first.
+ * against its parent, `GET /api/runs?agent=&revision=` the runs, newest first, and `GET /api/runs/:id` one run.
  */
 export async function serveStore(store: { readonly dir: string }, options: StoreServeOptions = {}): Promise<ServeHandle> {
   const dir = path.resolve(store.dir);
@@ -304,6 +330,14 @@ export async function serveStore(store: { readonly dir: string }, options: Store
       }
       const runs = (await read()).runs.filter((run) => (filter.agent === undefined || run.agent === filter.agent) && (filter.revision === undefined || run.revision === filter.revision));
       return { status: 200, value: [...runs].sort(byNewest).map(runShown) };
+    }
+    const run = /^\/api\/runs\/([^/]+)$/.exec(pathname);
+    if (run) {
+      const id = run[1]!;
+      if (!ID_PATTERN.test(id)) return badId("run");
+      const view = await read();
+      const found = view.runs.find((candidate) => candidate.id === id);
+      return found ? runView(dir, view, found) : notFound("run");
     }
     if (pathname === "/api/store") {
       const view = await read();

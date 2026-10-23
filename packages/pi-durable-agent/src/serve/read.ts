@@ -125,21 +125,24 @@ export function agentReader(dir: string): () => Promise<AgentView> {
   };
 }
 
-/**
- * The entries of run `id`'s store, in the order pi committed them (every conversation's, so a subagent's rows nest under
- * its caller), or none when the home holds the run's index entry only. Whole records, read-only; `ended` says the run's
- * index entry has an end.
- */
-export function readRunEntries(dir: string, id: string, ended: boolean): EntryLike[] {
-  if (!ID_PATTERN.test(id)) throw new AgentHomeError("invalid", "the run id is not an id");
-  const storePath = runStoreIn(path.join(path.resolve(dir), "runs", id));
+/** The entries of the run store at `storePath`, in the order pi committed them (every conversation's, so a subagent's rows
+ *  nest under its caller), or none when there is no store there; refused when the store, links resolved, is not inside
+ *  `root`. Whole records, read-only; `ended` says the run has an end, as `openReadOnly` takes it. */
+export function readEntriesAt(root: string, storePath: string, what = "home", { ended = false }: { ended?: boolean } = {}): EntryLike[] {
   if (!existsSync(storePath)) return [];
-  const home = realpathSync(dir);
-  if (!realpathSync(storePath).startsWith(`${home}${path.sep}`)) throw new AgentHomeError("check", "the run's store is not inside the home");
+  const inside = realpathSync(root);
+  if (!realpathSync(storePath).startsWith(`${inside}${path.sep}`)) throw new AgentHomeError("check", `the run's store is not inside the ${what}`);
   const db = openReadOnly(storePath, { ended });
   try {
     return (db.prepare("SELECT record FROM entries ORDER BY id").all() as { record: string }[]).map((row) => JSON.parse(row.record) as EntryLike);
   } finally {
     db.close();
   }
+}
+
+/** The entries of run `id`'s store in the home at `dir`, or none when the home holds the run's index entry only; `ended`
+ *  says the run's index entry has an end. */
+export function readRunEntries(dir: string, id: string, ended: boolean): EntryLike[] {
+  if (!ID_PATTERN.test(id)) throw new AgentHomeError("invalid", "the run id is not an id");
+  return readEntriesAt(dir, runStoreIn(path.join(path.resolve(dir), "runs", id)), "home", { ended });
 }
