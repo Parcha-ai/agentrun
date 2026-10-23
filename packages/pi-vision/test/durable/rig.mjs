@@ -38,7 +38,9 @@ export const piDurableVersion = () => {
 
 /** A new directory under the temp root, removed when this process exits. */
 const made = [];
-process.on("exit", () => { for (const dir of made) fs.rmSync(dir, { recursive: true, force: true }); });
+const sweep = () => { for (const dir of made) fs.rmSync(dir, { recursive: true, force: true }); };
+process.on("exit", sweep);
+for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { sweep(); process.kill(process.pid, signal); });
 export const tmp = (prefix = "vision-durable-") => {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), prefix));
   made.push(dir);
