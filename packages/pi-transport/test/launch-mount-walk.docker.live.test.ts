@@ -12,7 +12,7 @@ import type { Box } from "../src/box/box.ts";
 import { dockerBoxes } from "../src/box/docker.ts";
 import { finish } from "../src/box/files.ts";
 import { LAUNCHER_SCRIPT } from "../src/launch/launcher-script.ts";
-import { sh } from "./home-launch-support.ts";
+import { sh, until } from "./home-launch-support.ts";
 
 const context = BACKGROUND_CONTEXT;
 const labels = { "pi-transport-live": `launch-mount-walk-${process.pid}-${Date.now()}` };
@@ -73,12 +73,12 @@ const dirs = (...names: string[]) =>
 const plant = (path: string) => `cp /bin/true ${path} && chown root:root ${path} && chmod 4755 ${path}`;
 
 /** A framed start of the script (the tools user pda), as the check's tests run it: its output and exit code. */
-async function start(box: Box): Promise<{ exitCode: number; out: string }> {
+async function start(box: Box, script: string = SCRIPT): Promise<{ exitCode: number; out: string }> {
 	const dir = `/tmp/mw-${randomBytes(4).toString("hex")}`;
 	getOrThrow(
 		await box.upload(
 			[
-				{ path: `${dir}/launcher.sh`, bytes: new TextEncoder().encode(SCRIPT), mode: 0o700 },
+				{ path: `${dir}/launcher.sh`, bytes: new TextEncoder().encode(script), mode: 0o700 },
 				{
 					path: `${dir}/spec.sh`,
 					bytes: new TextEncoder().encode(
@@ -208,35 +208,79 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 				);
 		});
 
-		it("a real GNU find, with files deleted under it while it walks, gives no misfire", async (task) => {
-			const walk =
-				"( i=0; while [ $i -lt 6 ]; do /usr/bin/find /opt/w/r -xdev -type f -delete 2>/dev/null; i=$((i+1)); done ) &";
+		it("a real GNU find, with files deleted under the check's own walk (the overlap proved by timestamps), gives no misfire, and the strict find does", async () => {
+			// A large directory emptied in slow batches for the whole start (about 15 s), the window of the deletion logged.
+			const deleter = [
+				"rm -f /opt/w/del.start /opt/w/del.end",
+				"date +%s%N > /opt/w/del.start",
+				"/usr/bin/find /opt/w/r -xdev -type f -print0 | xargs -0 -n 300 sh -c 'rm -f \"$@\"; sleep 0.03' sh",
+				"date +%s%N > /opt/w/del.end",
+			].join("\n");
+			// The script's own walk, timed through the text of a copy: from before its first find to after its last.
+			const walkWith = (race: boolean) => {
+				const begin = '  : > "$D/tools.s"\n  : > "$D/tools.c"\n';
+				const end = '  done < "$D/tools.mounts"\n';
+				expect(SCRIPT).toContain(begin);
+				expect(SCRIPT).toContain(end);
+				const marked = SCRIPT.replace(begin, `${begin}  date +%s%N > /opt/w/walk.start\n`).replace(
+					end,
+					`${end}  date +%s%N > /opt/w/walk.end\n`,
+				);
+				return race ? marked : marked.replaceAll(" $race", "");
+			};
 			await withBox(
-				setup(
-					[line("/opt/w/r", "ext4")],
-					`${dirs("r")} && cd /opt/w/r && seq 1 120000 | sed 's/^/f/' | xargs touch`,
-				),
+				setup([line("/opt/w/r", "ext4")], `${dirs("r")} && cat > /opt/w/deleter.sh <<'ZZ_DEL'\n${deleter}\nZZ_DEL`),
 				async (box) => {
-					// the race must be real: a strict find, with the walk's own predicates (they stat each entry), over a directory being emptied fails at least once
-					let provoked = false;
-					for (let at = 0; at < 12 && !provoked; at++) {
-						await sh(box, "cd /opt/w/r && seq 1 120000 | sed 's/^/f/' | xargs touch");
-						const raced = await sh(
+					/** One start of `script` while the directory is emptied under it: its outcome, and whether the deletion's window covered the walk's. */
+					const overlapped = async (script: string) => {
+						await sh(
 							box,
-							`${walk} /usr/bin/find /opt/w/r -xdev \\( -perm -4000 -user 0 -o -perm -2000 -group 0 \\) -type f -print >/dev/null 2>/tmp/race.err; echo rc=$?; wait`,
+							"rm -rf /opt/w/r; mkdir -p /opt/w/r && cd /opt/w/r && seq 1 60000 | sed 's/^/f/' | xargs touch",
 						);
-						provoked = /rc=[1-9]/.test(raced.text);
+						await sh(
+							box,
+							"rm -f /opt/w/walk.start /opt/w/walk.end; nohup sh /opt/w/deleter.sh >/dev/null 2>&1 &",
+						);
+						await until("the deletion", async () =>
+							(await sh(box, "cat /opt/w/del.start 2>/dev/null")).text.trim() ? true : undefined,
+						);
+						const ran = await start(box, script);
+						await until(
+							"the deletion to end",
+							async () => ((await sh(box, "cat /opt/w/del.end 2>/dev/null")).text.trim() ? true : undefined),
+							120_000,
+						);
+						const read = async (file: string) => (await sh(box, `cat ${file} 2>/dev/null`)).text.trim();
+						const [delStart, delEnd, walkStart, walkEnd] = await Promise.all(
+							["del.start", "del.end", "walk.start", "walk.end"].map(async (f) =>
+								BigInt((await read(`/opt/w/${f}`)) || "0"),
+							),
+						);
+						// a walk that failed never wrote its end: it ran until the deletion ended at the latest, so only its start is held to the window
+						const covered = walkStart > delStart && (walkEnd === 0n ? walkStart < delEnd : walkEnd < delEnd);
+						return { ran, met: walkStart > 0n && covered };
+					};
+					// with the flag, three starts, each overlapped by a deletion, none a misfire
+					for (let at = 0; at < 3; at++) {
+						const o = await overlapped(walkWith(true));
+						expect(o.met, "the deletion's window covered the walk's").toBe(true);
+						passes(o.ran);
 					}
-					if (!provoked) return task.skip("the container did not provoke a readdir race in 12 tries");
-					// the check itself walks while the directory is emptied under it, five times: none may misfire
-					for (let at = 0; at < 5; at++) {
-						await sh(box, "cd /opt/w/r && seq 1 120000 | sed 's/^/f/' | xargs touch");
-						await sh(box, "nohup sh -c '/usr/bin/find /opt/w/r -xdev -type f -delete' >/dev/null 2>&1 &");
-						passes(await start(box));
+					// without it, the same overlapped starts are UNSUPPORTED: the test sees the race
+					let strictFailed = 0;
+					for (let at = 0; at < 3; at++) {
+						const o = await overlapped(walkWith(false));
+						expect(o.met, "the deletion's window covered the walk's").toBe(true);
+						if (o.ran.exitCode === 10 && o.ran.out.includes("UNSUPPORTED the check could not walk /opt/w/r"))
+							strictFailed++;
 					}
+					expect(
+						strictFailed,
+						"a strict find, walking while the directory is deleted from, misfires",
+					).toBeGreaterThan(0);
 				},
 			);
-		});
+		}, 900_000);
 
 		it("leaves no container behind", async () => {
 			expect(getOrThrow(await dockerBoxes().list(labels, context))).toEqual([]);
