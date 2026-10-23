@@ -3,8 +3,9 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { STORE_FILE } from "../agent-store.js";
 import { serveHome } from "./server.js";
-import { serveStore, STORE_FILE } from "./store.js";
+import { serveStore } from "./store.js";
 
 const USAGE = "usage: pi-durable-agent serve <dir> [--port <n>]\n  Serves the agent store or agent home in <dir> read-only on 127.0.0.1 and prints its address. It opens nothing.";
 

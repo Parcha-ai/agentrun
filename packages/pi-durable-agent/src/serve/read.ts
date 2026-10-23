@@ -125,13 +125,17 @@ export function agentReader(dir: string): () => Promise<AgentView> {
   };
 }
 
+/** Refuses a run's store that, links resolved, is not inside `root` (the home or the store it belongs to). */
+export function checkInside(root: string, storePath: string, what: string): void {
+  if (!realpathSync(storePath).startsWith(`${realpathSync(root)}${path.sep}`)) throw new AgentHomeError("check", `the run's store is not inside the ${what}`);
+}
+
 /** The entries of the run store at `storePath`, in the order pi committed them (every conversation's, so a subagent's rows
- *  nest under its caller), or none when there is no store there; refused when the store, links resolved, is not inside
- *  `root`. Whole records, read-only; `ended` says the run has an end, as `openReadOnly` takes it. */
+ *  nest under its caller), or none when there is no store there; refused when the store is not inside `root`. Whole
+ *  records, read-only; `ended` says the run has an end, as `openReadOnly` takes it. */
 export function readEntriesAt(root: string, storePath: string, what = "home", { ended = false }: { ended?: boolean } = {}): EntryLike[] {
   if (!existsSync(storePath)) return [];
-  const inside = realpathSync(root);
-  if (!realpathSync(storePath).startsWith(`${inside}${path.sep}`)) throw new AgentHomeError("check", `the run's store is not inside the ${what}`);
+  checkInside(root, storePath, what);
   const db = openReadOnly(storePath, { ended });
   try {
     return (db.prepare("SELECT record FROM entries ORDER BY id").all() as { record: string }[]).map((row) => JSON.parse(row.record) as EntryLike);

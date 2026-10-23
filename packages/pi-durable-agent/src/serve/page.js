@@ -636,14 +636,14 @@
     return kind === "agentic" || kind === "workflow" ? pill(kind) : null;
   }
 
-  function agentTile(agent) {
-    return el(
-      "a",
-      { class: "agent-tile", href: "#/agents/" + encodeURIComponent(agent.id) },
-      el("span", { class: "head" }, el("b", null, agent.name || agent.id), kindPill(agent.currentKind), agent.missing ? pill("missing") : null),
-      agent.description ? el("span", { class: "lede" }, agent.description) : null,
-      el("span", { class: "facts" }, agent.currentKind ? null : el("span", null, "no revision yet"), el("span", null, plural(agent.revisions || 0, "revision")), el("span", null, plural(agent.runs || 0, "run")), el("span", { class: "id" }, agent.id))
-    );
+  function agentHref(agent) {
+    return "#/agents/" + encodeURIComponent(agent);
+  }
+
+  /** A recorded cost in dollars; a run with none recorded reads unknown, never $0. */
+  function cost(n, kind) {
+    var known = usd(n);
+    return el("span", { class: kind + (known ? "" : " unknown") }, known || (kind === "c cost" ? "unknown" : "cost unknown"));
   }
 
   function picker(token) {
@@ -659,8 +659,17 @@
             { class: "card picker" },
             kicker("Agent store"),
             el("h1", null, plural(agents.length, "agent")),
-            el("p", { class: "lede" }, "Every agent in this folder, with its revisions and its runs: copy the folder and they all come with it."),
-            agents.length ? el("div", { class: "agents" }, agents.map(agentTile)) : el("p", { class: "none" }, "No agents in this store yet.")
+            agents.length
+              ? el("div", { class: "agents" }, agents.map(function (agent) {
+                  return el(
+                    "a",
+                    { class: "agent-tile", href: agentHref(agent.id) },
+                    el("span", { class: "head" }, el("b", null, agent.name || agent.id), kindPill(agent.currentKind)),
+                    agent.description ? el("span", { class: "lede" }, agent.description) : null,
+                    el("span", { class: "facts" }, agent.currentKind ? null : el("span", null, "no revision yet"), el("span", null, plural(agent.runs || 0, "run")), el("span", { class: "id" }, agent.id))
+                  );
+                }))
+              : el("p", { class: "none" }, "No agents in this store yet.")
           )
         );
       },
@@ -670,342 +679,190 @@
     );
   }
 
-  function decoded(part) {
-    try {
-      return decodeURIComponent(part);
-    } catch (e) {
-      return part;
-    }
-  }
-
-  function agentHref(agent) {
-    return "#/agents/" + encodeURIComponent(agent);
-  }
-  function revisionHref(agent, id) {
-    return agentHref(agent) + "/revisions/" + encodeURIComponent(id);
-  }
-  function runsHref(agent, revision) {
-    return agentHref(agent) + "?revision=" + encodeURIComponent(revision);
-  }
-  function revisionApi(agent, id) {
-    return "api/agents/" + encodeURIComponent(agent) + "/revisions/" + encodeURIComponent(id);
-  }
-
-  function stat(n, word) {
-    return el("div", { class: "stat" }, el("b", null, String(n || 0)), el("span", null, n === 1 ? word : word + "s"));
-  }
-
-  function agentHead(agent) {
-    var name = agent.name || agent.id || "Agent";
-    doc.title = name + " · agent store";
-    var facts = [el("span", { class: "id" }, agent.id || "")];
-    if (agent.createdAt) facts.push(el("span", null, "created " + when(agent.createdAt)));
-    if (agent.current) facts.push(el("span", null, "current ", el("a", { href: revisionHref(agent.id, agent.current) }, short(agent.current))));
-    return el(
-      "section",
-      { class: "card agent" },
-      kicker("Agent"),
-      el("h1", null, name),
-      el("p", { class: "facts" }, kindPill(agent.currentKind), agent.missing ? pill("missing") : null, facts),
-      agent.description ? el("p", { class: "lede" }, agent.description) : null,
-      el("div", { class: "stats" }, stat(agent.revisions, "revision"), stat(agent.runs, "run"))
-    );
-  }
-
+  // ---- an agent: its revisions and its runs ----------------------------------------------------------------------------
   var MARKS = { add: "+", del: "−", same: " " };
-  function diffLine(line) {
-    var op = MARKS[line && line.op] ? line.op : "same";
-    return el("div", { class: "line " + op }, el("span", { class: "mark", "aria-hidden": "true" }, MARKS[op]), el("span", { class: "text" }, line && line.text != null ? line.text : ""));
-  }
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var NODE_STATES = { done: "ok", working: "running", failed: "error", "not-run": "idle", escalated: "escalated" };
 
   /** The tools as chips: the ones it kept, then the ones it added and removed against its parent. */
   function toolChips(tools, change) {
-    var added = change && Array.isArray(change.added) ? change.added : [];
-    var removed = change && Array.isArray(change.removed) ? change.removed : [];
+    var added = (change && change.added) || [];
+    var removed = (change && change.removed) || [];
     var chips = tools.filter(function (t) { return added.indexOf(t) < 0; }).map(function (t) { return el("span", { class: "chip" }, t); })
       .concat(added.map(function (t) { return el("span", { class: "chip add", title: "added" }, "+" + t); }))
       .concat(removed.map(function (t) { return el("span", { class: "chip del", title: "removed" }, "−" + t); }));
     return chips.length ? el("p", { class: "chips" }, chips) : el("p", { class: "none" }, "No tools.");
   }
 
-  /** The skills by path and sha256, each marked when its parent did not have it, had it with another sha256, or had a
-   *  skill this one dropped. */
+  /** The skills by path and sha256, each marked added, changed or removed against its parent. */
   function skillList(skills, change) {
-    var byPath = function (list) {
-      var out = {};
-      (change && Array.isArray(list) ? list : []).forEach(function (s) { if (s && typeof s.path === "string") out[s.path] = s; });
-      return out;
-    };
-    var added = byPath(change && change.added);
-    var removed = byPath(change && change.removed);
-    var changed = byPath(change && change.changed);
-    var paths = Object.keys(skills).concat(Object.keys(removed).filter(function (p) { return !Object.prototype.hasOwnProperty.call(skills, p); })).sort();
+    var marked = function (list) { return (change && change[list]) || []; };
+    var paths = Object.keys(skills).concat(marked("removed")).sort();
     if (!paths.length) return el("p", { class: "none" }, "No skills.");
     return el("ul", { class: "files" }, paths.map(function (p) {
-      if (changed[p]) return el("li", { class: "changed" }, el("span", { class: "path" }, p), el("span", { class: "meta" }, "sha256 " + short(changed[p].was) + " → " + short(changed[p].now)));
-      if (added[p]) return el("li", { class: "add" }, el("span", { class: "path" }, p), el("span", { class: "meta" }, "added · sha256 " + short(skills[p])));
-      if (removed[p]) return el("li", { class: "del" }, el("span", { class: "path" }, p), el("span", { class: "meta" }, "removed · sha256 " + short(removed[p].sha256)));
-      return el("li", null, el("span", { class: "path" }, p), el("span", { class: "meta" }, "sha256 " + short(skills[p])));
+      var mark = marked("added").indexOf(p) >= 0 ? "add" : marked("changed").indexOf(p) >= 0 ? "changed" : marked("removed").indexOf(p) >= 0 ? "del" : null;
+      var words = { add: "added · ", changed: "changed · ", del: "removed" }[mark] || "";
+      return el("li", { class: mark }, el("span", { class: "path" }, p), el("span", { class: "meta" }, words + (skills[p] ? "sha256 " + short(skills[p]) : "")));
     }));
   }
 
-  function settingsLine(body, diff) {
-    var settings = [];
-    ["model", "thinking"].forEach(function (k) {
-      var change = diff && diff[k];
-      if (change) settings.push(el("span", null, k + " " + (change.was || "unset") + " → " + (change.now || "unset")));
-      else if (body[k]) settings.push(el("span", null, k + " " + body[k]));
-    });
-    return settings.length ? el("p", { class: "facts settings" }, settings) : null;
-  }
-
-  function agenticBody(detail) {
-    var body = detail.revision.body || {};
-    var diff = detail.diff && typeof detail.diff === "object" ? detail.diff : null;
-    var parent = detail.parent;
-    var prompt;
-    if (diff && Array.isArray(diff.prompt)) {
-      var count = function (op) { return diff.prompt.filter(function (l) { return l && l.op === op; }).length; };
-      prompt = [
-        el("h3", null, "Prompt, against ", el("span", { class: "id" }, short(diff.against))),
-        el("p", { class: "facts" }, el("span", { class: "size" }, "+" + count("add") + " −" + count("del") + " lines")),
-        el("div", { class: "diff", role: "group", "aria-label": "The prompt against its parent's" }, diff.prompt.map(diffLine)),
-      ];
-    } else {
-      prompt = [
-        el("h3", null, "Prompt"),
-        parent && parent.kind !== "agentic" ? el("p", { class: "none" }, "Its parent " + short(parent.id) + " is a " + parent.kind + " revision: it has no prompt to compare with.") : null,
-        el("pre", { class: "prompt" }, body.instructions || ""),
-      ];
-    }
+  function toolsAndSkills(body, diff) {
     return el(
       "div",
-      { class: "rev-body" },
-      prompt,
-      settingsLine(body, diff),
-      el("div", { class: "split" }, el("div", null, el("h3", null, "Skills"), skillList(body.skills && typeof body.skills === "object" ? body.skills : {}, diff && diff.skills)), el("div", null, el("h3", null, "Tools"), toolChips(Array.isArray(body.tools) ? body.tools : [], diff && diff.tools)))
+      { class: "split" },
+      el("div", null, el("h3", null, "Skills"), skillList(body.skills || {}, diff && diff.skills)),
+      el("div", null, el("h3", null, "Tools"), toolChips(body.tools || [], diff && diff.tools))
     );
   }
 
-  var SVG_NS = "http://www.w3.org/2000/svg";
-  var NODE_STATES = { done: "ok", working: "running", failed: "error", "not-run": "idle", escalated: "escalated" };
-
-  function nodeState(state) {
-    return pill(NODE_STATES[state] || "idle", state);
+  function agenticBody(r) {
+    var body = r.body || {};
+    var diff = r.diff;
+    var settings = ["model", "thinking"].map(function (k) {
+      if (diff && diff[k]) return el("span", null, k + " " + (diff[k].was || "unset") + " → " + (diff[k].now || "unset"));
+      return body[k] ? el("span", null, k + " " + body[k]) : null;
+    }).filter(Boolean);
+    var prompts = body.prompts && typeof body.prompts === "object" ? Object.keys(body.prompts) : [];
+    var count = function (op) { return diff.prompt.filter(function (l) { return l.op === op; }).length; };
+    return el(
+      "div",
+      { class: "rev-body" },
+      diff
+        ? [
+            el("h3", null, "Prompt, against ", el("span", { class: "id" }, short(diff.against))),
+            el("p", { class: "facts" }, "+" + count("add") + " −" + count("del") + " lines"),
+            el("div", { class: "diff" }, diff.prompt.map(function (line) {
+              var op = MARKS[line.op] ? line.op : "same";
+              return el("div", { class: "line " + op }, el("span", { class: "mark", "aria-hidden": "true" }, MARKS[op]), el("span", { class: "text" }, line.text));
+            })),
+          ]
+        : [el("h3", null, "Prompt"), r.parentKind === "workflow" ? el("p", { class: "none" }, "Its parent " + short(r.parent) + " is a workflow revision: it has no prompt to compare with.") : null, el("pre", { class: "prompt" }, body.instructions || "")],
+      settings.length ? el("p", { class: "facts" }, settings) : null,
+      prompts.length ? el("details", { class: "fold" }, el("summary", null, plural(prompts.length, "prompt variant")), prompts.map(function (id) { return el("pre", null, id + ": " + ((body.prompts[id] || {}).text || "")); })) : null,
+      toolsAndSkills(body, diff)
+    );
   }
 
-  /** The graph's nodes as text, indented by how deep each is, with the marks the drawer would draw: added and edited
-   *  nodes, each node's state in a run, the node an escalation stopped at, and the removed nodes by name. */
+  /** The graph's nodes as text, indented by depth, with the marks the drawer would draw. */
   function nodeList(graph, marks) {
-    var nodes = graph && Array.isArray(graph.nodes) ? graph.nodes.filter(function (n) { return n && typeof n.path === "string"; }) : [];
-    var diff = (marks && marks.diff) || {};
-    var status = (marks && marks.status) || {};
-    var added = Array.isArray(diff.added) ? diff.added : [];
-    var edited = Array.isArray(diff.edited) ? diff.edited : [];
-    var removed = Array.isArray(diff.removed) ? diff.removed : [];
-    var list = el("ol", { class: "nodes" }, nodes.map(function (n) {
-      var mark = added.indexOf(n.path) >= 0 ? "added" : edited.indexOf(n.path) >= 0 ? "edited" : null;
+    var nodes = (graph && graph.nodes) || [];
+    var diff = marks.diff || {};
+    var status = marks.status || {};
+    return el("ol", { class: "nodes" }, nodes.map(function (n) {
+      var mark = (diff.added || []).indexOf(n.path) >= 0 ? "added" : (diff.edited || []).indexOf(n.path) >= 0 ? "edited" : null;
       var state = Object.prototype.hasOwnProperty.call(status, n.path) ? status[n.path] : null;
-      var fired = marks && marks.fired === n.path;
-      var item = el("li", { class: ["node", mark, fired ? "fired" : null].filter(Boolean).join(" "), title: n.path }, el("span", { class: "word" }, n.kind || ""), el("b", null, n.label || n.kind || ""), mark ? pill(mark) : null, state ? nodeState(state) : null, fired ? el("span", { class: "word fired" }, "stopped here") : null);
-      var depth = nodes.filter(function (m) { return m.path !== n.path && n.path.indexOf(m.path + "/") === 0; }).length;
-      item.style.setProperty("--depth", String(depth));
+      var fired = marks.fired === n.path;
+      var item = el("li", { class: ["node", mark, fired ? "fired" : null].filter(Boolean).join(" "), title: n.path }, el("span", { class: "word" }, n.kind), el("b", null, n.label), mark ? pill(mark) : null, state ? pill(NODE_STATES[state] || "idle", state) : null, fired ? el("span", { class: "word fired" }, "stopped here") : null);
+      item.style.setProperty("--depth", String(nodes.filter(function (m) { return n.path.indexOf(m.path + "/") === 0; }).length));
       return item;
     }));
-    return [
-      list,
-      removed.length ? el("p", { class: "chips removed" }, el("span", { class: "word" }, "removed"), removed.map(function (r) { return el("span", { class: "chip del" }, (r && r.label) + " (" + (r && r.kind) + ")"); })) : null,
-    ];
   }
 
-  /** A workflow's graph: drawn by graph.js's window.drawWorkflowGraph into an svg once the svg is in the page, or, when
-   *  the drawer is not loaded or cannot draw it, its nodes as text. */
-  function graphBox(graph, marks, label) {
-    var box = el("div", { class: "graph" });
+  /** A workflow's graph in a .graph-box: drawn by graph.js once its svg is in the page, or listed as text without it. */
+  function graphBox(graph, marks) {
+    var box = el("div", { class: "graph-box" });
+    var removed = (marks.diff && marks.diff.removed) || [];
     if (typeof window.drawWorkflowGraph !== "function") {
-      add(box, nodeList(graph, marks));
+      add(box, [nodeList(graph, marks), removed.length ? el("p", { class: "chips removed" }, el("span", { class: "word" }, "removed"), removed.map(function (r) { return el("span", { class: "chip del" }, r.label + " (" + r.kind + ")"); })) : null]);
       return box;
     }
     var svg = doc.createElementNS(SVG_NS, "svg");
-    svg.setAttribute("class", "workflow-graph");
     svg.setAttribute("role", "img");
-    svg.setAttribute("aria-label", label);
+    svg.setAttribute("aria-label", "The workflow's graph");
     box.appendChild(svg);
     drawing.push(function () {
-      try {
-        window.drawWorkflowGraph(svg, graph, marks);
-      } catch (e) {
-        clear(box);
-        add(box, nodeList(graph, marks));
-      }
+      window.drawWorkflowGraph(svg, graph, marks);
     });
     return box;
   }
 
-  function diffLegend(diff) {
-    var m = diff.marks || {};
-    var n = function (list) { return Array.isArray(list) ? list.length : 0; };
-    return el(
-      "p",
-      { class: "facts legend" },
-      pill("added", "+" + n(m.added) + " added"),
-      pill("edited", n(m.edited) + " edited"),
-      pill("removed", n(m.removed) + " removed"),
-      n(diff.moved) ? el("span", null, n(diff.moved) + " moved") : null
-    );
-  }
-
-  function workflowBody(detail) {
-    var body = detail.revision.body || {};
-    var diff = detail.diff && typeof detail.diff === "object" && detail.diff.marks ? detail.diff : null;
-    var parent = detail.parent;
+  function workflowBody(r) {
+    var diff = r.diff;
+    var n = function (list) { return (diff[list] || []).length; };
     return el(
       "div",
       { class: "rev-body" },
       el("h3", null, diff ? ["Workflow, against ", el("span", { class: "id" }, short(diff.against))] : "Workflow"),
-      diff ? diffLegend(diff) : null,
-      !diff && parent && parent.kind !== "workflow" ? el("p", { class: "none" }, "Its parent " + short(parent.id) + " is an agentic revision: this revision runs a workflow in place of a prompt.") : null,
-      detail.unavailable ? el("p", { class: "note" }, detail.unavailable) : graphBox(detail.graph, diff ? { diff: diff.marks } : {}, "The workflow's graph"),
-      el("div", { class: "split" }, el("div", null, el("h3", null, "Skills"), skillList(body.skills && typeof body.skills === "object" ? body.skills : {}, null)), el("div", null, el("h3", null, "Tools"), toolChips(Array.isArray(body.tools) ? body.tools : [], null)))
+      diff ? el("p", { class: "facts" }, pill("added", "+" + n("added") + " added"), pill("edited", n("edited") + " edited"), pill("removed", n("removed") + " removed")) : null,
+      r.parentKind === "agentic" ? el("p", { class: "none" }, "Its parent " + short(r.parent) + " is an agentic revision: this revision runs a workflow in place of a prompt.") : null,
+      graphBox(r.graph, diff ? { diff: { added: diff.added, edited: diff.edited, removed: diff.removed } } : {}),
+      toolsAndSkills(r.body || {}, null)
     );
   }
 
-  /** One revision: its id, kind, note, parent and runs, then what it is. `detail` is its api/agents/:id/revisions/:id,
-   *  or { error } when that could not be read. */
-  function revisionBlock(agentId, row, detail) {
-    var r = detail && detail.revision ? detail.revision : row;
-    var body;
-    if (!detail || detail.error) body = failed(detail ? detail.error : "no answer");
-    else if (r.kind === "workflow") body = workflowBody(detail);
-    else body = agenticBody(detail);
+  function revisionBlock(r) {
     return el(
       "article",
       { class: "revision" + (r.current ? " current" : "") },
-      el("div", { class: "rev-head" }, el("a", { class: "rev-id", href: revisionHref(agentId, r.id), title: r.id }, short(r.id)), kindPill(r.kind), r.current ? pill("current") : null, r.note ? el("b", { class: "rev-note" }, r.note) : null),
-      el(
-        "p",
-        { class: "facts" },
-        el("span", null, "created " + when(r.createdAt)),
-        r.parent ? el("span", null, "from ", el("a", { href: revisionHref(agentId, r.parent) }, short(r.parent))) : el("span", null, "the first revision"),
-        el("a", { href: runsHref(agentId, r.id) }, plural(row.runs || 0, "run"))
-      ),
-      body
+      el("div", { class: "rev-head" }, el("b", { class: "rev-id", title: r.id }, short(r.id)), kindPill(r.kind), r.current ? pill("current") : null, r.note ? el("b", { class: "rev-note" }, r.note) : null),
+      el("p", { class: "facts" }, el("span", null, "created " + when(r.createdAt)), el("span", null, r.parent ? "from " + short(r.parent) : "the first revision")),
+      r.kind === "workflow" ? workflowBody(r) : agenticBody(r)
     );
   }
 
-  var RUN_STATES = { running: "live", completed: "ok", failed: "error", stopped: "stopped", escalated: "escalated", missing: "missing" };
-  /** A run's state as its own word and class: escalated (a gate stopped it for a person) and missing (its directory is
-   *  gone) are never drawn as failed. */
+  var RUN_STATES = { running: "live", completed: "ok", failed: "error", stopped: "stopped", escalated: "escalated" };
+  /** A run's state as its own word and class: escalated (a gate stopped it for a person) is never drawn as failed. */
   function runState(state) {
-    return pill(Object.prototype.hasOwnProperty.call(RUN_STATES, state) ? RUN_STATES[state] : "ended", state || "ended");
+    return pill(RUN_STATES[state] || "ended", state);
   }
 
-  /** A recorded cost in dollars; a run with none recorded reads unknown, never $0. */
-  function cost(n, kind) {
-    var known = usd(n);
-    return el("span", { class: kind + (known ? "" : " unknown") }, known || (kind === "c cost" ? "unknown" : "cost unknown"));
-  }
-
-  function storeRunRow(run) {
-    return el(
-      "a",
-      { class: "run", href: "#/runs/" + encodeURIComponent(run.id) },
-      el("span", { class: "c when" }, el("b", null, when(run.startedAt)), el("small", null, ago(run.startedAt))),
-      el("span", { class: "c state" }, runState(run.state)),
-      el("span", { class: "c rev" }, el("span", { class: "rev-id" }, short(run.revision)), " ", el("span", { class: "word" }, run.kind || "")),
-      cost(run.costUsd, "c cost"),
-      el("span", { class: "c reason" }, run.summary ? clip(run.summary, 160) : ""),
-      el("span", { class: "c id" }, run.id)
-    );
-  }
-
-  function runsApi(agentId, filter) {
-    return "api/runs?agent=" + encodeURIComponent(agentId) + (filter ? "&revision=" + encodeURIComponent(filter) : "");
-  }
-
-  /** The agent's runs across its revisions, with links that filter them by revision; `runs` is the API's answer, or
-   *  { error } when it could not be read. */
-  function storeRuns(agentId, rows, runs, filter) {
-    var filters = [el("a", { class: "filter" + (filter ? "" : " on"), href: agentHref(agentId), "aria-current": filter ? null : "true" }, "All revisions")].concat(
-      rows.map(function (r) {
-        return el("a", { class: "filter" + (filter === r.id ? " on" : ""), href: runsHref(agentId, r.id), "aria-current": filter === r.id ? "true" : null }, el("span", { class: "rev-id" }, short(r.id)), " ", el("span", { class: "word" }, r.kind));
-      })
-    );
+  /** The agent's runs across its revisions, with links that filter them by revision; `runs` is { error } when unread. */
+  function runsCard(agentId, revisions, runs, filter) {
     var list = Array.isArray(runs) ? runs : [];
+    var link = function (id, label) {
+      return el("a", { class: "filter" + (filter === id ? " on" : ""), href: agentHref(agentId) + (id ? "?revision=" + encodeURIComponent(id) : ""), "aria-current": filter === id ? "true" : null }, label);
+    };
     return el(
       "section",
       { class: "card runs" },
       kicker("Runs"),
       el("h2", null, plural(list.length, "run") + (filter ? " of " + short(filter) : "")),
-      el("nav", { class: "filters", "aria-label": "Runs of one revision" }, filters),
+      el("nav", { class: "filters", "aria-label": "Runs of one revision" }, link(null, "All revisions"), revisions.map(function (r) { return link(r.id, [el("span", { class: "rev-id" }, short(r.id)), " ", el("span", { class: "word" }, r.kind)]); })),
       runs && runs.error
         ? failed(runs.error)
         : list.length
-          ? el("div", { class: "table store", role: "table" }, el("div", { class: "run head", role: "row" }, ["Started", "State", "Revision", "Cost", "Summary", "Run"].map(function (h) { return el("span", { class: "c" }, h); })), list.map(storeRunRow))
+          ? el(
+              "div",
+              { class: "table store", role: "table" },
+              el("div", { class: "run head", role: "row" }, ["Started", "State", "Revision", "Cost", "Summary", "Run"].map(function (h) { return el("span", { class: "c" }, h); })),
+              list.map(function (run) {
+                return el(
+                  "a",
+                  { class: "run", href: "#/runs/" + encodeURIComponent(run.id) },
+                  el("span", { class: "c when" }, el("b", null, when(run.startedAt)), el("small", null, ago(run.startedAt))),
+                  el("span", { class: "c state" }, runState(run.state)),
+                  el("span", { class: "c rev" }, el("span", { class: "rev-id" }, short(run.revision)), " ", el("span", { class: "word" }, run.kind)),
+                  cost(run.costUsd, "c cost"),
+                  el("span", { class: "c reason" }, run.gone ? el("span", { class: "unknown" }, "its directory is gone") : clip(run.summary || "", 160)),
+                  el("span", { class: "c id" }, run.id)
+                );
+              })
+            )
           : el("p", { class: "none" }, filter ? "No runs of this revision yet." : "No runs yet.")
     );
   }
 
-  function running(runs) {
-    return Array.isArray(runs) && runs.some(function (r) { return r && r.state === "running"; });
-  }
-
-  /** While one of them is running, the runs are read again every 5 s, and only the runs. */
-  function pollRuns(agentId, rows, filter, token) {
-    later(token, 5000, function () {
-      get(runsApi(agentId, filter)).then(
-        function (runs) {
-          if (token !== view) return;
-          var next = storeRuns(agentId, rows, runs, filter);
-          if (runsNode && runsNode.parentNode === app) app.replaceChild(next, runsNode);
-          runsNode = next;
-          if (running(runs)) pollRuns(agentId, rows, filter, token);
-        },
-        function () {
-          if (token === view) pollRuns(agentId, rows, filter, token);
-        }
-      );
-    });
-  }
-
   function agentPage(agentId, filter, token) {
     crumb([[agentId, agentHref(agentId)]]);
-    Promise.all([get("api/agents/" + encodeURIComponent(agentId)), get(runsApi(agentId, filter)).catch(function (error) { return { error: error }; })])
-      .then(function (both) {
+    Promise.all([get("api/agents/" + encodeURIComponent(agentId)), get("api/runs?agent=" + encodeURIComponent(agentId) + (filter ? "&revision=" + encodeURIComponent(filter) : "")).catch(function (error) { return { error: error }; })]).then(
+      function (both) {
         if (token !== view) return;
-        var data = both[0];
-        var agent = (data && data.agent) || { id: agentId };
-        var rows = data && Array.isArray(data.revisions) ? data.revisions : [];
-        crumb([[agent.name || agentId, agentHref(agentId)]]);
-        return Promise.all(rows.map(function (row) { return get(revisionApi(agentId, row.id)).catch(function (error) { return { error: error }; }); })).then(function (details) {
-          if (token !== view) return;
-          runsNode = storeRuns(agentId, rows, both[1], filter);
-          show([
-            agentHead(agent),
-            runsNode,
-            el("section", { class: "card revs" }, kicker("Revisions"), el("h2", null, plural(rows.length, "revision") + (rows.length > 1 ? ", newest first" : "")), rows.length ? rows.map(function (row, i) { return revisionBlock(agentId, row, details[i]); }) : el("p", { class: "none" }, "No revisions yet.")),
-          ]);
-          if (running(both[1])) pollRuns(agentId, rows, filter, token);
-        });
-      })
-      .catch(function (error) {
-        if (token === view) show(failed(error));
-      });
-  }
-
-  function revisionPage(agentId, id, token) {
-    crumb([[agentId, agentHref(agentId)], [short(id), revisionHref(agentId, id)]]);
-    Promise.all([get("api/agents/" + encodeURIComponent(agentId)), get(revisionApi(agentId, id)), get(runsApi(agentId, id)).catch(function (error) { return { error: error }; })]).then(
-      function (got) {
-        if (token !== view) return;
-        var agent = (got[0] && got[0].agent) || { id: agentId };
-        var rows = (got[0] && got[0].revisions) || [];
-        var row = rows.filter(function (r) { return r.id === id; })[0] || (got[1] && got[1].revision) || { id: id };
-        crumb([[agent.name || agentId, agentHref(agentId)], [short(id), revisionHref(agentId, id)]]);
-        doc.title = short(id) + " · " + (agent.name || agentId) + " · agent store";
-        runsNode = storeRuns(agentId, rows, got[2], id);
-        show([el("section", { class: "card revs" }, kicker("Revision of " + (agent.name || agentId)), revisionBlock(agentId, row, got[1])), runsNode]);
-        if (running(got[2])) pollRuns(agentId, rows, id, token);
+        var agent = both[0].agent;
+        var revisions = both[0].revisions || [];
+        crumb([[agent.name, agentHref(agentId)]]);
+        doc.title = agent.name + " · agent store";
+        show([
+          el(
+            "section",
+            { class: "card agent" },
+            kicker("Agent"),
+            el("h1", null, agent.name),
+            el("p", { class: "facts" }, kindPill(agent.currentKind), el("span", { class: "id" }, agent.id), el("span", null, "created " + when(agent.createdAt)), agent.current ? el("span", null, "current " + short(agent.current)) : null),
+            agent.description ? el("p", { class: "lede" }, agent.description) : null
+          ),
+          runsCard(agentId, revisions, both[1], filter),
+          el("section", { class: "card revs" }, kicker("Revisions"), el("h2", null, plural(revisions.length, "revision") + (revisions.length > 1 ? ", newest first" : "")), revisions.length ? revisions.map(revisionBlock) : el("p", { class: "none" }, "No revisions yet.")),
+        ]);
       },
       function (error) {
         if (token === view) show(failed(error));
@@ -1013,37 +870,36 @@
     );
   }
 
-  /** A workflow run: its graph with each node's state as marks.status, the route branches it took as marks.taken and,
-   *  when an escalation stopped it, that node as marks.fired. */
-  function workflowRunCard(data) {
-    var w = data.workflow && typeof data.workflow === "object" ? data.workflow : null;
-    var at = w && w.escalatedAt && typeof w.escalatedAt.path === "string" ? w.escalatedAt : null;
-    var status = (w && w.status) || {};
-    var edges = w && w.graph && Array.isArray(w.graph.edges) ? w.graph.edges : [];
+  // ---- one run ------------------------------------------------------------------------------------------------------------
+  /** A workflow run: its graph with each node's state, the route branches it took and, when an escalation stopped it,
+   *  the node it stopped at; its answer when it completed, or the one line its reader gave in place of the graph. */
+  function workflowRun(data) {
+    var w = data.workflow;
+    if (!w) return el("section", { class: "card workflow-run" }, kicker("Workflow"), el("p", { class: "note" }, data.refused));
+    var status = w.status || {};
+    var edges = (w.graph && w.graph.edges) || [];
     // A route's branch is taken when its body ran: graph.js draws that branch's wire as the path.
-    var taken = edges.filter(function (e) { return e && e.kind === "route" && Object.prototype.hasOwnProperty.call(status, e.to) && status[e.to] !== "not-run"; }).map(function (e) { return e.to; });
+    var taken = edges.filter(function (e) { return e.kind === "route" && status[e.to] && status[e.to] !== "not-run"; }).map(function (e) { return e.to; });
     var marks = { status: status, taken: taken };
-    if (at) marks.fired = at.path;
+    if (w.escalatedAt) marks.fired = w.escalatedAt.path;
+    var output = w.output === undefined ? null : typeof w.output === "string" ? w.output : JSON.stringify(w.output);
     return el(
       "section",
       { class: "card workflow-run" },
       kicker("Workflow"),
-      el("h2", null, at ? "Escalated at " + (at.label || at.path) : "The path it took"),
-      data.unavailable ? el("p", { class: "note" }, data.unavailable) : w ? graphBox(w.graph, marks, "The workflow's graph, with the path this run took") : el("p", { class: "none" }, "No record of the path it took.")
+      el("h2", null, w.escalatedAt ? "Escalated at " + w.escalatedAt.label : "The path it took"),
+      graphBox(w.graph, marks),
+      output === null ? null : el("div", { class: "row answer" }, el("span", { class: "who" }, "Answer"), el("pre", null, output))
     );
   }
 
-  /** A store run's head: its state, when it ran and what it cost, its agent and revision, and its summary. */
   function storeRunHead(data, rows) {
     var run = data.run;
-    var agent = data.agent || { id: run.agent, name: run.agent };
-    var revision = data.revision || { id: run.revision, kind: run.kind };
     var facts = [el("span", null, "started " + when(run.startedAt))];
     if (run.endedAt) facts.push(el("span", null, "took " + took(run.startedAt, run.endedAt)));
     var spent = rows.filter(function (r) { return r.kind === "usage" && r.usage && typeof r.usage.usd === "number"; }).pop();
-    if (!usd(run.costUsd) && spent && run.state === "running") facts.push(el("span", null, usd(spent.usage.usd) + " so far"));
-    else facts.push(cost(run.costUsd, "cost"));
-    if (run.kind !== "workflow") {
+    facts.push(!usd(run.costUsd) && spent && run.state === "running" ? el("span", null, usd(spent.usage.usd) + " so far") : cost(run.costUsd, "cost"));
+    if (run.kind === "agentic") {
       var calls = rows.filter(function (r) { return r.kind === "tool_use"; }).length;
       facts.push(el("span", null, calls + (calls === 1 ? " tool call" : " tool calls")));
     }
@@ -1053,18 +909,9 @@
       kicker("Run"),
       el("h1", { class: "id" }, run.id),
       el("p", { class: "facts" }, runState(run.state), facts, run.state === "running" ? el("span", { class: "live-note" }, "refreshing every 2 s") : null),
-      el(
-        "p",
-        { class: "facts ran" },
-        el("span", { class: "word" }, "agent"),
-        el("a", { href: agentHref(agent.id) }, agent.name || agent.id),
-        el("span", { class: "word" }, "revision"),
-        el("a", { class: "rev-id", href: revisionHref(agent.id, revision.id) }, short(revision.id)),
-        kindPill(revision.kind || run.kind),
-        revision.note ? el("span", null, revision.note) : null
-      ),
+      el("p", { class: "facts ran" }, el("span", { class: "word" }, "agent"), el("a", { href: agentHref(run.agent) }, data.agent), el("span", { class: "word" }, "revision"), el("span", { class: "rev-id" }, short(run.revision)), kindPill(run.kind), data.note ? el("span", null, data.note) : null),
       run.summary ? el("p", { class: "lede summary" }, run.summary) : null,
-      data.stored === false ? el("p", { class: "note" }, "This run's directory is not in the store: only its row in the index is left.") : null
+      data.gone ? el("p", { class: "note" }, "This run's directory is gone from the store's runs folder: only its row is left.") : null
     );
   }
 
@@ -1074,15 +921,13 @@
     get("api/runs/" + encodeURIComponent(id)).then(
       function (data) {
         if (token !== view) return;
-        var run = (data && data.run) || { id: id };
-        var agent = (data && data.agent) || { id: run.agent, name: run.agent };
-        crumb([[agent.name || agent.id, agentHref(agent.id)], [short(run.revision), revisionHref(agent.id, run.revision)], ["Run", "#/runs/" + encodeURIComponent(id)]]);
-        doc.title = "Run " + short(run.id) + " · " + (agent.name || agent.id) + " · agent store";
-        var rows = data && Array.isArray(data.rows) ? data.rows : [];
+        var run = data.run;
+        crumb([[data.agent, agentHref(run.agent)], ["Run", "#/runs/" + encodeURIComponent(id)]]);
+        doc.title = "Run " + short(run.id) + " · " + data.agent + " · agent store";
+        var rows = Array.isArray(data.rows) ? data.rows : [];
         var open = openCalls();
         var y = window.scrollY || 0;
-        if (run.kind === "workflow") show([storeRunHead(data, rows), data.stored === false ? null : workflowRunCard(data)]);
-        else show([storeRunHead(data, rows), timeline(rows)]);
+        show([storeRunHead(data, rows), data.gone ? null : run.kind === "workflow" ? workflowRun(data) : timeline(rows)]);
         reopen(open);
         if (y) window.scrollTo(0, y);
         if (run.state === "running") later(token, 2000, function () { storeRunPage(id, token, true); });
@@ -1098,11 +943,17 @@
   function storeRoute(hash, token) {
     var m = /^#\/runs\/([^/?#]+)$/.exec(hash);
     if (m) return storeRunPage(decoded(m[1]), token);
-    m = /^#\/agents\/([^/?#]+)\/revisions\/([^/?#]+)$/.exec(hash);
-    if (m) return revisionPage(decoded(m[1]), decoded(m[2]), token);
     m = /^#\/agents\/([^/?#]+)(?:\?revision=([^&#]*))?$/.exec(hash);
     if (m) return agentPage(decoded(m[1]), m[2] ? decoded(m[2]) : null, token);
     picker(token);
+  }
+
+  function decoded(part) {
+    try {
+      return decodeURIComponent(part);
+    } catch (e) {
+      return part;
+    }
   }
 
   // ---- routing ------------------------------------------------------------------------------------------------------------

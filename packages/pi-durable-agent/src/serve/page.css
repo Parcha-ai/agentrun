@@ -86,7 +86,6 @@ pre{margin:0 0 8px;padding:12px 14px;background:var(--panel2);border:1px solid v
 .pill.interrupted{color:var(--red);border-color:var(--red);border-style:dashed}
 .pill.escalated{color:var(--purple);border-color:var(--purple)}
 .pill.stopped{color:var(--muted);border-color:var(--muted)}
-.pill.missing{color:var(--faint);border-color:var(--faint);border-style:dashed}
 .pill.agentic,.pill.workflow{color:var(--ink);border-color:var(--ink);text-transform:none;letter-spacing:0}
 .pill.workflow{background:var(--panel2)}
 .pill.current{color:var(--accent);border-color:var(--accent)}
@@ -180,7 +179,7 @@ pre.bad{border-color:var(--red);color:var(--red)}
 .revs>h2+.revision,.revs>.kicker+.revision{border-top:0;padding-top:6px}
 .rev-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin-bottom:2px}
 .rev-head .rev-id{font:600 15px var(--mono);color:var(--ink);text-decoration:none}
-.rev-head .rev-id:hover,.revision.current .rev-head .rev-id{color:var(--accent)}
+.revision.current .rev-head .rev-id{color:var(--accent)}
 .rev-head .rev-note{font-weight:500;overflow-wrap:anywhere}
 .rev-body h3 .id{text-transform:none;letter-spacing:0;color:var(--ink)}
 .diff{border:1px solid var(--line);background:var(--panel2);font:12.5px/1.6 var(--mono);margin:0 0 8px;padding:6px 0;max-height:420px;overflow:auto}
@@ -195,9 +194,8 @@ pre.bad{border-color:var(--red);color:var(--red)}
 .files li.add .path{color:var(--green)}
 .files li.del .path{color:var(--red);text-decoration:line-through}
 .files li.changed .path{color:var(--accent)}
-.legend{margin-top:-4px}
-.graph{border:1px solid var(--line);background:var(--panel2);padding:12px;margin:0 0 8px;overflow-x:auto}
-.graph svg{display:block}
+.graph-box{overflow-x:auto;border:1px solid var(--line);background:var(--panel2);padding:12px;margin:0 0 8px}
+.graph-box svg{display:block}
 .nodes{list-style:none;margin:-12px;padding:0}
 .nodes .node{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;padding:6px 12px 6px calc(12px + var(--depth,0)*20px);border-bottom:1px solid var(--line)}
 .nodes .node:last-child{border-bottom:0}

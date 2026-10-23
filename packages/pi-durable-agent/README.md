@@ -25,7 +25,7 @@ there is no second format. This package opens its own at `synchronous = FULL`.
   that a page can draw.
 - **Shows a home or a store.** `npx @parcha/pi-durable-agent serve <dir>` opens a local page over a home's files, read-only
   ([Looking at a home](#looking-at-a-home)), or over an agent store's agents, revisions and runs
-  ([Looking at an agent store](#looking-at-an-agent-store)).
+  ([Looking at a store](#looking-at-a-store)).
 
 It does not run the agent. The host keeps what a run needs from outside: the model, the thinking level, the tools, and
 where each tool runs. The definition names tools; the host binds them. It does not drive a browser either:
@@ -538,33 +538,18 @@ FROM runs JOIN revisions ON revisions.id = runs.revision_id JOIN agents ON agent
 
 A workflow revision whose call nodes name a tool that is not a `tool` call passes the commit check on purpose: whether it runs is the host's to decide. `openStoreReader(folder)` reads `store.sqlite` in place, read-only: it writes nothing and makes no copy. On a store a run was stopped in the middle of writing, it says so in one line and changes no file; open the store once with write access to roll the write back.
 
-## Looking at an agent store
+## Looking at a store
 
-The same command on a directory holding a `store.sqlite` (an agent store: many agents, each with immutable revisions
-and the runs of each) serves the store's page instead. It shows an agent picker (each agent with its current revision's
-kind and its run count); an agent's revisions, newest first with the current one marked, where an agentic revision shows
-its prompt as a line diff against its parent's (every line of both, each kept, added or removed) with the tools and
-skills it added or removed, a skill whose sha256 changed, and its model and thinking when they changed, and a workflow
-revision shows its graph with graphDiff's badges against a workflow parent (added, edited and removed nodes); the
-agent's runs across its revisions, filtered by one revision in the address's hash; and each run: an agentic run's
-timeline as above, a workflow run's graph with the path it took lit and, when an escalation stopped it, the node it
-stopped at. Escalated and missing (a run whose directory is gone) are states of their own, never failed, and a run with no
-recorded cost reads unknown, never $0.
+```sh
+npx @parcha/pi-durable-agent serve ./my-agents
+# http://127.0.0.1:41297/
+```
 
-The store's index is read through the store's reader from a copy that SQLite's backup takes, removed once read; a run's
-entries are read through a read-only handle, and a workflow run's record from a copy of its store. A workflow is drawn
-through `@parcha/pi-durable-agent/workflow`, which reaches the optional `@parcha/agentrun-dsl` peer: without it, the page
-says what to install. It is read-only and loopback-only as a home's page is. The data is JSON:
-
-| Request | Answer |
-|---|---|
-| `GET /api/store` | `{ agents: [{ id, name, description?, createdAt, current, currentKind, runs, revisions, missing? }] }` |
-| `GET /api/agents/:id` | `{ agent, revisions }`: the agent as above, and its revisions newest first, each `{ id, agent, parent, createdAt, note?, kind, current, runs }` |
-| `GET /api/agents/:id/revisions/:revision` | `{ revision, parent, diff, graph?, unavailable? }`: the revision with its `body` (an agentic one's `instructions`, `skills` as path to sha256, `tools`, `model?`, `thinking?`; a workflow's `skills` and `tools`, its workflow drawn as `graph`), its parent's row, and `diff` against a parent of its kind (an agentic `{ against, prompt: [{ op, text }], tools, skills, model?, thinking? }`, a workflow `{ against, marks: { added, edited, removed }, moved }`) or `null` |
-| `GET /api/runs?agent=&revision=` | `[{ id, agent, revision, kind, state, startedAt, endedAt?, costUsd?, summary? }]`, newest first; `state` is `running`, `completed`, `failed`, `stopped`, `escalated` or `missing` |
-| `GET /api/runs/:id` | `{ run, agent: { id, name }, revision, stored }`, and `rows` (an agentic run's [timeline](#the-timeline)) or `workflow: { graph, status, outcome?, escalatedAt? }` (a workflow run), or `unavailable` saying what to install |
-
-An id that is not letters, digits, `.`, `_` or `-` is a `400`, an agent, revision or run the index does not list a `404`.
+On a folder holding a `store.sqlite`, the same command serves the store's page: its agents; each agent's revisions,
+newest first, an agentic one's prompt diffed line by line against its parent's and a workflow's graph with what changed;
+its runs across revisions, filtered by revision; and each run, an agentic run's timeline or a workflow run's path lit
+on its graph. It reads `store.sqlite` and the runs' own stores in place, read-only, and never copies them. From code,
+`serveStore({ dir }, { port?, signal? })` from `@parcha/pi-durable-agent/serve` does the same.
 
 ## A workflow revision
 
@@ -678,9 +663,9 @@ Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `Ti
 |---|---|---|
 | `serveHome(home, { port?, signal? })` | Serves `home.dir` ([Looking at a home](#looking-at-a-home)) on `127.0.0.1` and resolves to `{ url, close() }` once it is listening; `close()` stops it, and so does aborting `signal`. It takes no lock and opens the home's stores read-only. `home` is anything with a `dir`, an `AgentHome` included | `missing`: the directory is not a home. `invalid`: a `port` that is not an integer from 0 to 65535 |
 
-| `serveStore(store, { port?, signal?, openReader?, workflow? })` | Serves the agent store at `store.dir` ([Looking at an agent store](#looking-at-an-agent-store)) as `serveHome` serves a home. `openReader(dir)` opens the store's reader on the directory holding the index's copy (by default the package's own), and `workflow` gives `readWorkflowGraph`, `diffWorkflowGraphs` and `readWorkflowRun` (by default `@parcha/pi-durable-agent/workflow`'s) | `missing`: the directory has no `store.sqlite`. `invalid`: a `port` that is not an integer from 0 to 65535 |
+| `serveStore(store, { port?, signal? })` | Serves the agent store at `store.dir` ([Looking at a store](#looking-at-a-store)) as `serveHome` serves a home | `missing`: the directory has no `store.sqlite`. `invalid`: a `port` that is not an integer from 0 to 65535 |
 
-Its types: `ServeOptions`, `ServeHandle`, `StoreServeOptions`, `StoreReader` and `WorkflowViews`. The package's bin,
+Its types: `ServeOptions` and `ServeHandle`. The package's bin,
 `pi-durable-agent serve <dir> [--port <n>]`, calls `serveStore` for a directory holding a `store.sqlite` and `serveHome`
 otherwise, and prints `url`; it exits 1 for a directory that is neither and 2 for a command or port it does not know.
 
