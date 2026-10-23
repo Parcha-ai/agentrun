@@ -76,3 +76,55 @@ test("the bin serves the store page for a directory with a store.sqlite, and an 
   child.kill("SIGINT");
   assert.equal(await new Promise((resolve) => child.once("exit", (code) => resolve(code))), 0);
 });
+
+test("an agent: its revisions newest first with the current one marked and each one's run count; bad and unknown ids are refused", linux, async () => {
+  const { served, get } = await sample();
+  try {
+    const agent = await get("/api/agents/company-researcher");
+    assert.equal(agent.status, 200);
+    assert.deepEqual([agent.json.agent.id, agent.json.agent.name, agent.json.agent.currentKind, agent.json.agent.runs, agent.json.agent.revisions], ["company-researcher", "Company researcher", "workflow", 6, 3]);
+    assert.deepEqual(agent.json.revisions.map((r) => [r.id, r.kind, r.current, r.parent, r.runs, r.note]), [
+      [REVISIONS.C.id, "workflow", true, REVISIONS.B.id, 2, "The cheap one: a workflow"],
+      [REVISIONS.B.id, "agentic", false, REVISIONS.A.id, 2, "Prompt B: every fact cited"],
+      [REVISIONS.A.id, "agentic", false, null, 2, "Prompt A: the first brief"],
+    ]);
+    assert.equal("body" in agent.json.revisions[0], false, "a listing carries no body");
+    for (const target of ["/api/agents/..%2fstore.sqlite", "/api/agents/-x", `/api/agents/${"a".repeat(129)}`, `/api/agents/company-researcher/revisions/..%2f..`]) {
+      const res = await get(target);
+      assert.equal(res.status, 400, target);
+      assert.match(res.json.error, /id is not/);
+    }
+    assert.equal((await get("/api/agents/nobody")).status, 404);
+    assert.equal((await get("/api/agents/constructor")).status, 404, "a name like an Object property is not an agent");
+    assert.equal((await get(`/api/agents/company-researcher/revisions/${REVISIONS.M1.id}`)).status, 404, "another agent's revision is not this agent's");
+    assert.equal((await get(`/api/agents/company-researcher/revisions/${"0".repeat(64)}`)).status, 404);
+  } finally {
+    await served.close();
+  }
+});
+
+test("an agentic revision: its prompt and, against its agentic parent, a line diff that loses no word, and its tools, model, thinking and skills as what changed", linux, async () => {
+  const { served, get } = await sample();
+  try {
+    const b = (await get(`/api/agents/company-researcher/revisions/${REVISIONS.B.id}`)).json;
+    assert.deepEqual([b.revision.id, b.revision.kind, b.revision.current, b.revision.parent], [REVISIONS.B.id, "agentic", false, REVISIONS.A.id]);
+    assert.deepEqual(b.revision.body, { instructions: REVISIONS.B.body.instructions, skills: REVISIONS.B.body.skills, tools: ["web_search", "web_fetch", "write", "read"], model: "luna", thinking: "medium" });
+    assert.deepEqual([b.parent.id, b.parent.kind, "body" in b.parent], [REVISIONS.A.id, "agentic", false]);
+    assert.equal(b.diff.against, REVISIONS.A.id);
+    const [a0, a1, a2, a3] = REVISIONS.A.body.instructions.split("\n");
+    const [b0, , b2, , b4] = REVISIONS.B.body.instructions.split("\n");
+    assert.deepEqual(b.diff.prompt, [{ op: "del", text: a0 }, { op: "add", text: b0 }, { op: "same", text: a1 }, { op: "del", text: a2 }, { op: "add", text: b2 }, { op: "same", text: a3 }, { op: "add", text: b4 }]);
+    assert.deepEqual(b.diff.tools, { added: ["read"], removed: [] });
+    assert.deepEqual(b.diff.skills, {
+      added: [{ path: "cite/SKILL.md", sha256: REVISIONS.B.body.skills["cite/SKILL.md"] }],
+      removed: [],
+      changed: [{ path: "research-brief/SKILL.md", was: REVISIONS.A.body.skills["research-brief/SKILL.md"], now: REVISIONS.B.body.skills["research-brief/SKILL.md"] }],
+    });
+    assert.deepEqual([b.diff.model, b.diff.thinking], [undefined, { was: "low", now: "medium" }], "only what changed");
+    const a = (await get(`/api/agents/company-researcher/revisions/${REVISIONS.A.id}`)).json;
+    assert.deepEqual([a.parent, a.diff], [null, null], "the first revision has nothing to be compared with");
+    assert.equal(a.revision.body.instructions, REVISIONS.A.body.instructions);
+  } finally {
+    await served.close();
+  }
+});
