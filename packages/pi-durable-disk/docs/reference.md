@@ -363,7 +363,9 @@ peer this entry needs and the package's root does not.
 - **What it checks.** A box whose `facts().fuse` is not true, with no fd for the launcher's frame (`secretsVia` other
   than `"fd"`), or that keeps no program running is destroyed before any upload or launch, and the start is
   `UNSUPPORTED`. That refusal is remembered for the spec: later starts are refused at once, with no box made. Otherwise
-  ensureRunning, which restarts on every tick, would boot and destroy a VM each time.
+  ensureRunning, which restarts on every tick, would boot and destroy a VM each time. A launch the launcher answers
+  `unsupported`, `refused` or `unsafe` (a spool or launch directory another user could change, named by its path) is the
+  same remembered `UNSUPPORTED`, its box destroyed: each comes from the image or the box's layout, so a new box repeats it.
 - **The launch.** Into a fresh box it uploads `files`. Transport's launcher then keeps `pi-durable-disk run ... --app
   <app> --run-as <runAs> --token-stdin` running AS ROOT, restarting it on failure but not after 0, 65, 70, 75 or 76.
   - The instance mounts the disk itself, with no sudo.

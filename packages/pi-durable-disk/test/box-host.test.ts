@@ -368,10 +368,11 @@ describe("boxHost: the launch, a start found again, status, stop and receipts", 
     assert.equal(status, "failed");
   });
 
-  it("the launch's errors: refused and unsupported are UNSUPPORTED and remembered; timeout is START_TIMED_OUT; failed and box are LAUNCH_FAILED and not remembered; invalid is INVALID_ARGUMENT; the box is destroyed every time", async () => {
+  it("the launch's errors: refused, unsupported and unsafe are UNSUPPORTED and remembered; timeout is START_TIMED_OUT; failed and box are LAUNCH_FAILED and not remembered; invalid is INVALID_ARGUMENT; the box is destroyed every time", async () => {
     const cases = [
       { fail: "refused", expect: "UNSUPPORTED", remembered: true },
       { fail: "unsupported", expect: "UNSUPPORTED", remembered: true },
+      { fail: "unsafe", expect: "UNSUPPORTED", remembered: true },
       { fail: "timeout", expect: "START_TIMED_OUT", remembered: false },
       { fail: "failed", expect: "LAUNCH_FAILED", remembered: false },
       { fail: "box", expect: "LAUNCH_FAILED", remembered: false },
@@ -386,6 +387,18 @@ describe("boxHost: the launch, a start found again, status, stop and receipts", 
       await driver.start(REF, TOKEN, { attempt: 1 }).catch(() => undefined);
       assert.equal(provider.callsOf("create").length, c.remembered ? 1 : 2, `${c.fail}: ${c.remembered ? "remembered" : "a later start tries again"}`);
     }
+  });
+
+  it("an unsafe launch (a spool or launch directory another user could change: the image's layout, so a retry repeats it) ends the box and is UNSUPPORTED naming the code and the path; the next tick makes no box", async () => {
+    const provider = modal();
+    const why = "/tmp/.pi-transport-launch belongs to uid 1500, not to the launcher's uid 0";
+    provider.script.on({ op: "launch" }, { fail: "unsafe", message: why }, { times: 1 });
+    const driver = host(provider);
+    const named = (e: unknown) => code("UNSUPPORTED")(e) && (e as Error).message.includes("(unsafe)") && (e as Error).message.includes(why);
+    await assert.rejects(driver.start(REF, TOKEN, { attempt: 1 }), named);
+    assert.equal(provider.boxes[0]!.state, "ended", "the box is ended");
+    await assert.rejects(driver.start(REF, TOKEN, { attempt: 2 }), (e: unknown) => named(e) && /refused before/.test((e as Error).message), "the next tick is refused at once");
+    assert.equal(provider.callsOf("create").length, 1, "no second box");
   });
 });
 

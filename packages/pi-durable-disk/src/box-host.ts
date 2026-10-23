@@ -332,7 +332,9 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
       const launched = await l.launch(box, name, specFor(JSON.stringify(handle), key ?? mint()), context);
       if (!launched.ok) {
         const e: LaunchError = launched.error;
-        if (e.code === "unsupported" || e.code === "refused") throw await refuse(box, `the ${provider.name} box cannot run the instance as asked (${e.code}): ${e.message}`, e);
+        // unsafe: a spool or launch directory another user could change. That is the image's or the box's layout, so a new box
+        // would repeat it: refused for the spec like unsupported and refused, never retried.
+        if (e.code === "unsupported" || e.code === "refused" || e.code === "unsafe") throw await refuse(box, `the ${provider.name} box cannot run the instance as asked (${e.code}): ${e.message}`, e);
         await destroy(box, bounded(callTimeoutMs));
         if (e.code === "invalid") throw new BoxHostError("INVALID_ARGUMENT", `the launch was refused: ${e.message}`, { cause: e });
         if (e.code === "timeout" || context.abortSignal?.aborted) throw new BoxHostError("START_TIMED_OUT", `the instance did not start in ${provider.name} box ${box.id}: ${e.message}`, { cause: e });
