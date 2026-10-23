@@ -57,34 +57,30 @@ export const MCC_WORKFLOW_2 = workflow("mcc", { schemaId: "Answer", path: "answe
 export const PRIVATE = "/root/steps/1/branches/private/body";
 const PUBLIC = "/root/steps/1/branches/public/body";
 
-/** The run ids, by revision. */
-export const RUN = {
-  a1: "run-a1", a2: "run-a2", b1: "run-b1", b2: "run-b2", c1: "run-c1", c2: "run-c2",
-  m1: "run-m1", m2: "run-m2", m3: "run-m3", m4: "run-m4", t1: "run-t1",
-};
-
-/** What the workflow run reader gives for each workflow run, beside the graph of the run's revision. */
+/** What the workflow run reader gives for each workflow run, by its role in the store, beside the graph of its revision. */
 const RECORDS = {
-  [RUN.c1]: { status: { "/root": "done", "/root/steps/0": "done", "/root/steps/1": "done", [PUBLIC]: "done", [PRIVATE]: "not-run" }, outcome: "completed", output: { brief: "Caterpillar Inc. makes heavy machinery; its 10-K is cited." } },
-  [RUN.c2]: { status: { "/root": "escalated", "/root/steps/0": "done", "/root/steps/1": "escalated", [PUBLIC]: "not-run", [PRIVATE]: "escalated" }, outcome: "escalated", escalatedAt: { path: PRIVATE, label: "No public record" } },
-  [RUN.m1]: { status: { "/root": "done", "/root/steps/0": "done", "/root/steps/1": "done", "/root/steps/2": "done" }, outcome: "completed", output: "5732" },
-  [RUN.m3]: { status: { "/root": "done", "/root/steps/0": "done", "/root/steps/1": "done", "/root/steps/2": "done", "/root/steps/3": "done" }, outcome: "completed", output: { code: "5399" } },
-  [RUN.m4]: { status: { "/root": "working", "/root/steps/0": "done", "/root/steps/1": "working", "/root/steps/2": "not-run", "/root/steps/3": "not-run" }, outcome: "stopped" },
+  c1: { status: { "/root": "done", "/root/steps/0": "done", "/root/steps/1": "done", [PUBLIC]: "done", [PRIVATE]: "not-run" }, outcome: "completed", output: { brief: "Caterpillar Inc. makes heavy machinery; its 10-K is cited." } },
+  c2: { status: { "/root": "escalated", "/root/steps/0": "done", "/root/steps/1": "escalated", [PUBLIC]: "not-run", [PRIVATE]: "escalated" }, outcome: "escalated", escalatedAt: { path: PRIVATE, label: "No public record" } },
+  m1: { status: { "/root": "done", "/root/steps/0": "done", "/root/steps/1": "done", "/root/steps/2": "done" }, outcome: "completed", output: "5732" },
+  m3: { status: { "/root": "done", "/root/steps/0": "done", "/root/steps/1": "done", "/root/steps/2": "done", "/root/steps/3": "done" }, outcome: "completed", output: { code: "5399" } },
+  m4: { status: { "/root": "working", "/root/steps/0": "done", "/root/steps/1": "working", "/root/steps/2": "not-run", "/root/steps/3": "not-run" }, outcome: "stopped" },
 };
 
-/** A stand-in for readWorkflowRun: it answers from RECORDS with the graph of the run's revision, keeps what it was
- *  asked, and throws `refuse` when given one. */
-export function sampleReadRun({ refuse } = {}) {
+/** A stand-in for readWorkflowRun over the store's runs (`ids`, a run's id by its role): it answers from RECORDS with
+ *  the graph of the run's revision, keeps what it was asked, and throws `refuse` when given one. */
+export function sampleReadRun(ids, { refuse } = {}) {
   const calls = [];
   const readWorkflowRun = async (run) => {
     calls.push(run);
     if (refuse) throw refuse;
-    return { graph: workflowGraph(run.revision.body.workflow), ...RECORDS[run.runId] };
+    const role = Object.keys(ids).find((name) => ids[name] === run.runId);
+    return { graph: workflowGraph(run.revision.body.workflow), ...RECORDS[role] };
   };
   return { calls, readWorkflowRun };
 }
 
-/** The sample store in `dir/my-agents`, through openStore; resolves to its path and its revisions. */
+/** The sample store in `dir/my-agents`, through openStore; resolves to its path, its revisions and each run's id by its
+ *  role (a1, a2, b1, b2, c1, c2, m1 to m4, t1), as startRun minted them. */
 export async function buildSampleStore(dir) {
   const root = path.join(dir, "my-agents");
   const store = openStore(root);
@@ -103,26 +99,28 @@ export async function buildSampleStore(dir) {
     };
     // Oldest first: each run starts after the one before.
     const runs = [
-      [RUN.m1, revisions.M1, { state: "completed", costUsd: 0.027, summary: "Read the site → Pick the MCC → Format the answer" }],
-      [RUN.m2, revisions.M1, { state: "completed", costUsd: 0.03 }],
-      [RUN.a1, revisions.A, { state: "completed", costUsd: 0.409, summary: "Caterpillar Inc. builds heavy machinery." }, research("Caterpillar Inc.", "10-K", 0)],
-      [RUN.a2, revisions.A, { state: "failed", costUsd: 0.221, summary: "web_fetch: 403 Forbidden on the investor page" }, research("Caterpillar Inc.", "investors", 10).slice(0, 6)],
-      [RUN.b1, revisions.B, { state: "completed", costUsd: 0.312, summary: "Caterpillar Inc. builds heavy machinery; brief.md cites 6 pages." }, research("Caterpillar Inc.", "10-K", 20)],
-      [RUN.b2, revisions.B, { state: "completed", summary: "Habitat for Humanity builds homes; brief.md cites its Form 990." }, research("Habitat for Humanity", "Form 990", 30)],
-      [RUN.m3, revisions.M2, { state: "completed", costUsd: 0.022, summary: "Read the site → Is it a marketplace → Pick the MCC → Answer" }],
-      [RUN.m4, revisions.M2, { state: "stopped", summary: "Read the site" }],
-      [RUN.t1, revisions.T1, null, [user("Sort today's inbox.", Date.UTC(2026, 9, 23, 3, 30)), assistant([{ type: "thinking", thinking: "Forty messages; I will read them in date order." }, call("t1", "read", { path: "inbox/0001.eml" })], Date.UTC(2026, 9, 23, 3, 30, 4))]],
-      [RUN.c1, revisions.C, { state: "completed", costUsd: 0.041, summary: "Read the site → Jev: public or private → Check the filing" }],
-      [RUN.c2, revisions.C, { state: "escalated", costUsd: 0.018, summary: "escalated at No public record" }],
+      ["m1", revisions.M1, { state: "completed", costUsd: 0.027, summary: "Read the site → Pick the MCC → Format the answer" }],
+      ["m2", revisions.M1, { state: "completed", costUsd: 0.03 }],
+      ["a1", revisions.A, { state: "completed", costUsd: 0.409, summary: "Caterpillar Inc. builds heavy machinery." }, research("Caterpillar Inc.", "10-K", 0)],
+      ["a2", revisions.A, { state: "failed", costUsd: 0.221, summary: "web_fetch: 403 Forbidden on the investor page" }, research("Caterpillar Inc.", "investors", 10).slice(0, 6)],
+      ["b1", revisions.B, { state: "completed", costUsd: 0.312, summary: "Caterpillar Inc. builds heavy machinery; brief.md cites 6 pages." }, research("Caterpillar Inc.", "10-K", 20)],
+      ["b2", revisions.B, { state: "completed", summary: "Habitat for Humanity builds homes; brief.md cites its Form 990." }, research("Habitat for Humanity", "Form 990", 30)],
+      ["m3", revisions.M2, { state: "completed", costUsd: 0.022, summary: "Read the site → Is it a marketplace → Pick the MCC → Answer" }],
+      ["m4", revisions.M2, { state: "stopped", summary: "Read the site" }],
+      ["t1", revisions.T1, null, [user("Sort today's inbox.", Date.UTC(2026, 9, 23, 3, 30)), assistant([{ type: "thinking", thinking: "Forty messages; I will read them in date order." }, call("t1", "read", { path: "inbox/0001.eml" })], Date.UTC(2026, 9, 23, 3, 30, 4))]],
+      ["c1", revisions.C, { state: "completed", costUsd: 0.041, summary: "Read the site → Jev: public or private → Check the filing" }],
+      ["c2", revisions.C, { state: "escalated", costUsd: 0.018, summary: "escalated at No public record" }],
     ];
-    for (const [runId, revision, end, entries] of runs) {
-      const started = await store.startRun({ agent: revision.agent, revision: revision.id, runId });
+    const ids = {};
+    for (const [role, revision, end, entries] of runs) {
+      const started = await store.startRun({ agent: revision.agent, revision: revision.id });
+      ids[role] = started.runId;
       if (entries) append(started.storePath, entries);
-      if (end) store.carryBack(runId, end);
+      if (end) store.carryBack(started.runId, end);
       await new Promise((resolve) => setTimeout(resolve, 2));
     }
-    rmSync(path.join(root, "runs", RUN.m2), { recursive: true });
-    return { root, revisions };
+    rmSync(path.join(root, "runs", ids.m2), { recursive: true });
+    return { root, revisions, ids };
   } finally {
     store.close();
   }
@@ -132,8 +130,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   if (!process.argv[2]) throw new Error("usage: node test/fixtures/store-sample.mjs <dir>");
   const dir = path.resolve(process.argv[2]);
   mkdirSync(dir, { recursive: true });
-  const { root } = await buildSampleStore(dir);
+  const { root, ids } = await buildSampleStore(dir);
   const { serveStoreWith } = await import("../../dist/serve/store.js");
-  const served = await serveStoreWith({ dir: root }, {}, sampleReadRun().readWorkflowRun);
+  const served = await serveStoreWith({ dir: root }, {}, sampleReadRun(ids).readWorkflowRun);
   console.log(served.url);
 }
