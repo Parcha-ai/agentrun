@@ -166,3 +166,30 @@ test("a workflow revision when the DSL peer is not installed: the revision and t
     await served.close();
   }
 });
+
+test("runs: one list across agents and revisions, newest first, filtered by agent and revision; a filter that is not an id is refused", linux, async () => {
+  const { served, get } = await sample();
+  try {
+    const all = await get("/api/runs");
+    assert.equal(all.status, 200);
+    assert.deepEqual(all.json.map((run) => run.id), RUNS.map((run) => run.id), "newest first");
+    assert.deepEqual(Object.keys(all.json[0]).sort(), ["agent", "costUsd", "endedAt", "id", "kind", "revision", "startedAt", "state", "summary"]);
+    const researcher = (await get("/api/runs?agent=company-researcher")).json;
+    assert.deepEqual(researcher.map((run) => [run.revision, run.kind, run.state]), [
+      [REVISIONS.C.id, "workflow", "escalated"], [REVISIONS.C.id, "workflow", "completed"],
+      [REVISIONS.B.id, "agentic", "completed"], [REVISIONS.B.id, "agentic", "completed"],
+      [REVISIONS.A.id, "agentic", "failed"], [REVISIONS.A.id, "agentic", "completed"],
+    ]);
+    const b = (await get(`/api/runs?agent=company-researcher&revision=${REVISIONS.B.id}`)).json;
+    assert.deepEqual(b.map((run) => run.id), [RUN.b002.id, RUN.b001.id]);
+    assert.deepEqual((await get(`/api/runs?revision=${REVISIONS.M2.id}`)).json.map((run) => run.state), ["stopped", "completed"]);
+    assert.deepEqual((await get("/api/runs?agent=nobody")).json, []);
+    for (const target of ["/api/runs?agent=..%2f", "/api/runs?revision=a%20b", `/api/runs?agent=${"a".repeat(129)}`, "/api/runs?agent="]) {
+      const res = await get(target);
+      assert.equal(res.status, 400, target);
+      assert.match(res.json.error, /id is not/);
+    }
+  } finally {
+    await served.close();
+  }
+});

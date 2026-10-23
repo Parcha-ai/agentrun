@@ -169,3 +169,53 @@ test("a workflow revision whose graph cannot be drawn here says what to install,
   const [first] = all(agentic.app).filter((el) => classOf(el).startsWith("revision"));
   assert.ok(first.textContent.includes("Its parent 111111111111 is an agentic revision"));
 });
+
+const runRow = (id, revision, state, fields = {}) => ({ id, agent: "company-researcher", revision: revision.id, kind: revision.kind, state, startedAt: "2026-10-22T11:00:00.000Z", ...fields });
+const RUNS = [
+  runRow("run-5", REV_B, "running", { startedAt: "2026-10-23T05:00:00.000Z" }),
+  runRow("run-4", REV_B, "escalated", { startedAt: "2026-10-23T04:00:00.000Z", endedAt: "2026-10-23T04:01:00.000Z", costUsd: 0.018, summary: `escalated at No public record ${HOSTILE}` }),
+  runRow("run-3", REV_B, "completed", { startedAt: "2026-10-22T12:00:00.000Z", endedAt: "2026-10-22T12:04:00.000Z", costUsd: 0.312, summary: "Caterpillar builds machinery." }),
+  runRow("run-2", REV_A, "failed", { endedAt: "2026-10-22T11:03:00.000Z", costUsd: 0.221, summary: "403 on the investor page" }),
+  runRow("run-1", REV_A, "stopped", { startedAt: "2026-10-21T10:00:00.000Z", endedAt: "2026-10-21T10:01:00.000Z", costUsd: 0.01 }),
+  runRow("run-0", REV_A, "missing", { startedAt: "2026-10-20T10:00:00.000Z", costUsd: 0.02 }),
+];
+
+test("the runs: one table across the agent's revisions (revision and kind, state, cost, summary, started), escalated and missing each a state of its own", async () => {
+  const page = mount(agentApi({ "api/runs?agent=company-researcher": RUNS }), "#/agents/company-researcher", { serve: STORE });
+  await page.settle();
+  assertInert(page.app);
+  assert.deepEqual(page.fetched.slice(0, 2), ["api/agents/company-researcher", "api/runs?agent=company-researcher"]);
+  const rows = all(page.app).filter((el) => el.tagName === "A" && classOf(el) === "run");
+  assert.deepEqual(rows.map((el) => el.getAttribute("href")), RUNS.map((r) => `#/runs/${r.id}`));
+  assert.deepEqual(rows.map((el) => pills(el)[0]), [["pill live", "running"], ["pill escalated", "escalated"], ["pill ok", "completed"], ["pill error", "failed"], ["pill stopped", "stopped"], ["pill missing", "missing"]], "escalated is never drawn as failed");
+  assert.ok(rows[1].textContent.includes("bbbbbbbbbbbb") && rows[1].textContent.includes("agentic") && rows[1].textContent.includes("$0.018") && rows[1].textContent.includes(`escalated at No public record ${HOSTILE}`));
+  assert.ok(rows[1].textContent.includes(new Date("2026-10-23T04:00:00.000Z").getFullYear() + "-"), "when it started");
+  const filters = all(page.app).filter((el) => el.tagName === "A" && classOf(el).startsWith("filter"));
+  assert.deepEqual(filters.map((el) => [el.getAttribute("href"), classOf(el), el.textContent]), [
+    ["#/agents/company-researcher", "filter on", "All revisions"],
+    [`#/agents/company-researcher?revision=${REV_B.id}`, "filter", "bbbbbbbbbbbb agentic"],
+    [`#/agents/company-researcher?revision=${REV_A.id}`, "filter", "aaaaaaaaaaaa agentic"],
+  ]);
+  assert.deepEqual([...page.timers.values()].map((t) => t.ms), [5000], "a running run: the runs are read again every 5 s");
+  await page.tick();
+  assert.equal(page.fetched.filter((p) => p === "api/runs?agent=company-researcher").length, 2);
+  assert.equal(page.fetched.filter((p) => p === "api/agents/company-researcher").length, 1, "only the runs");
+});
+
+test("the runs filtered by a revision: the filter is in the hash, so a reload keeps it, and the API is asked for that revision's runs", async () => {
+  const filtered = RUNS.filter((r) => r.revision === REV_A.id);
+  const page = mount(agentApi({ [`api/runs?agent=company-researcher&revision=${REV_A.id}`]: filtered }), `#/agents/company-researcher?revision=${REV_A.id}`, { serve: STORE });
+  await page.settle();
+  assert.deepEqual(page.fetched.slice(0, 2), ["api/agents/company-researcher", `api/runs?agent=company-researcher&revision=${REV_A.id}`]);
+  assert.equal(all(page.app).filter((el) => el.tagName === "A" && classOf(el) === "run").length, 3);
+  const on = all(page.app).filter((el) => classOf(el) === "filter on");
+  assert.deepEqual(on.map((el) => [el.getAttribute("href"), el.getAttribute("aria-current")]), [[`#/agents/company-researcher?revision=${REV_A.id}`, "true"]]);
+  assert.match(page.app.textContent, /3 runs of aaaaaaaaaaaa/);
+  assert.equal(page.timers.size, 0, "nothing is running, so nothing polls");
+  const reloaded = mount(agentApi({ [`api/runs?agent=company-researcher&revision=${REV_A.id}`]: filtered }), `#/agents/company-researcher?revision=${REV_A.id}`, { serve: STORE });
+  await reloaded.settle();
+  assert.equal(all(reloaded.app).filter((el) => el.tagName === "A" && classOf(el) === "run").length, 3, "the same three after a reload");
+  const revisionPage = mount(agentApi({ [`api/runs?agent=company-researcher&revision=${REV_A.id}`]: filtered }), `#/agents/company-researcher/revisions/${REV_A.id}`, { serve: STORE });
+  await revisionPage.settle();
+  assert.equal(all(revisionPage.app).filter((el) => el.tagName === "A" && classOf(el) === "run").length, 3, "a revision's own page shows its runs");
+});
