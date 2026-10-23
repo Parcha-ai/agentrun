@@ -789,8 +789,11 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 /** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */
 export const PTRACE_FILE_LINE = "PTRACE_FILE=/proc/sys/kernel/yama/ptrace_scope";
 
-/** The bound of the tools user's check, in centiseconds (60 s): a script-level constant like PTRACE_FILE_LINE, which no environment can change. */
-export const TOOLS_CHECK_LINE = "TOOLS_CHECK_CENTIS=6000";
+/** How long the tools user's check may take in the box (60 s). A start's call to the box is given this and more. */
+export const TOOLS_CHECK_MS = 60_000;
+
+/** The bound of the tools user's check, in centiseconds: a script-level constant like PTRACE_FILE_LINE, which no environment can change. */
+export const TOOLS_CHECK_LINE = `TOOLS_CHECK_CENTIS=${TOOLS_CHECK_MS / 10}`;
 
 /** The supervisor the host uploads to a box: POSIX `sh`, with the programs named in the file's header. */
 export const LAUNCHER_SCRIPT = SCRIPT_TEMPLATE.replace("@@GROUP_LIVE@@", () => GROUP_LIVE)

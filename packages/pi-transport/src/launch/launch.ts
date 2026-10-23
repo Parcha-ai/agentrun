@@ -3,7 +3,7 @@ import type { Context } from "@earendil-works/chord";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Box } from "../box/box.ts";
 import { finish } from "../box/files.ts";
-import { DIRECTORY_CHECK, LAUNCHER_SCRIPT, LAUNCHER_SHELL_NAMES } from "./launcher-script.ts";
+import { DIRECTORY_CHECK, LAUNCHER_SCRIPT, LAUNCHER_SHELL_NAMES, TOOLS_CHECK_MS } from "./launcher-script.ts";
 
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -52,6 +52,8 @@ const MAX_RESTART_BURST = 1_000_000;
 const START_WAIT_MS = 15_000;
 const POLL_MS = 100;
 const CALL_TIMEOUT_MS = 30_000;
+/** A start runs the tools user's check, so its call to the box is given the check's whole bound and the usual time on top. */
+const START_CALL_TIMEOUT_MS = TOOLS_CHECK_MS + CALL_TIMEOUT_MS;
 const MAX_EXIT_CODE = 255;
 const SPOOL_DIRECTORY = ".pi-transport-launch";
 
@@ -690,7 +692,7 @@ export async function launch(
 				checked('D=$1; own_dirs || exit $?; sh "$D/launcher.sh" start "$D"'),
 				[directory],
 				context,
-				CALL_TIMEOUT_MS,
+				START_CALL_TIMEOUT_MS,
 				frame,
 			);
 			if (!revived.ok) return revived;
@@ -747,7 +749,7 @@ export async function launch(
 		),
 		[directory, token],
 		context,
-		CALL_TIMEOUT_MS,
+		START_CALL_TIMEOUT_MS,
 		frame,
 	);
 	if (!started.ok || started.value.exitCode !== 0) await release(box, directory, token, context);

@@ -849,7 +849,7 @@ before it makes a box to launch in.
   0). It is the user that program runs everything it does not trust as: the user disk's `--run-as` names. A launch with
   `stdin` or `secrets` runs its program as root only with one, and then needs no ptrace scope: a process of the tools
   user cannot attach to a root one without `CAP_SYS_PTRACE`. The launcher checks it in the box, before it reads the frame,
-  in at most 60 s:
+  in at most 60 s (the start's call to the box, a revive's too, is given that and its usual 30 s on top):
   - it exists, is not root and has not the root group (else `invalid`);
   - where the box has `sudo`, `sudo -l -U`, run with no environment but PATH, answers exactly its sentence for a user who
     may run nothing (else `refused`, with sudo's first line);
