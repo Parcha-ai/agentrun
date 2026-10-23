@@ -13,3 +13,9 @@ test("the root exports openStore and openStoreReader and no constructor for the 
   assert.equal(typeof store.createAgent, "function");
   await store.close();
 });
+
+test("the store module has one opener for the store: no second constructor with a check given, for tests or otherwise", async () => {
+  const module = await import("../dist/agent-store.js");
+  assert.equal("openStoreChecking" in module, false);
+  assert.equal(typeof module.openStore, "function");
+});
