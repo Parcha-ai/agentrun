@@ -705,8 +705,10 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
   if (gate && gateWaitAtEnd) await gate.idle();
   const pendingGates = gate ? gate.pending() : [];
   await writeCurve(out);
+  const challenge = parts.challengeOnHold && gate ? { ...gate.challengeTally(), capUsd: parts.challengeCapUsd } : undefined;
+  if (challenge) log(`learn-classify: challenge on hold: ${challenge.compared} compared (${challenge.won} won, ${challenge.held} held), ${usd(challenge.costUsd)} of the $${challenge.capUsd} budget; ${challenge.uncompared} held uncompared, the budget spent`);
   if (stoppedBy) log(`stopped: ${stoppedBy}`);
-  return { rows, stoppedBy, spentUsd: spentNow(), seedSha: meta.seedSha, pendingGates };
+  return { rows, stoppedBy, spentUsd: spentNow(), seedSha: meta.seedSha, pendingGates, ...(challenge ? { challenge } : {}) };
 }
 
 async function homeAt(dir, repo, sha) {

@@ -99,11 +99,13 @@ test('only a receipted CHAMPION is challenged: a hold against a receipted trial 
   assert.equal((await receiptHoldsTrial(base, tr.receipts, { gate: fake, capUsd: 40 })(tr.input)).status, 'held');
   assert.equal(asked.length, 0, 'a trial is not challenged');
   const s = await setup(t);
-  const spent = { ask: (job) => { asked.push(job); return { status: 'queued' }; }, challengeSpend: () => 40 };
+  const uncompared = [];
+  const spent = { ask: (job) => { asked.push(job); return { status: 'queued' }; }, challengeSpend: () => 40, challengeUncompared: (hold) => uncompared.push(hold) };
   const plain = await receiptHoldsTrial(base, s.receipts, { gate: spent, capUsd: 40 })(s.input);
   assert.equal(plain.status, 'held');
   assert.match(plain.reason, /challenge budget of \$40 is spent/);
   assert.equal(asked.length, 0);
+  assert.deepEqual(uncompared, [{ name: WORKFLOW, candidate: s.c, serving: s.b }]);
 });
 
 test('the holds the spent budget left uncompared are counted on the gate, beside what the comparisons did and cost', async (t) => {
@@ -159,7 +161,7 @@ test('a scripted stream: the champion escalates, the agent saves a fix without a
   const { rows, challenge } = await runLoop({ out, parts, split: 'train', list, record: false, gateWaitAtEnd: true, log: (line) => lines.push(line) });
   assert.equal(rows.length, seq.length);
   assert.deepEqual(challenge, { compared: 2, won: 1, held: 1, costUsd: 0, uncompared: 0, capUsd: 40 });
-  assert.ok(lines.some((l) => /^learn-classify: challenge on hold: 2 compared \(1 won, 1 held\), \$0\.00 of the \$40\.00 budget; 0 held uncompared/.test(l)), lines.slice(-3).join('\n'));
+  assert.ok(lines.some((l) => /^learn-classify: challenge on hold: 2 compared \(1 won, 1 held\), \$0\.0000 of the \$40 budget; 0 held uncompared/.test(l)), lines.slice(-3).join('\n'));
   const verdicts = readFileSync(join(out, 'gate', 'verdicts.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((v) => v.challenger);
   const won = verdicts.find((v) => v.candidate === d1);
   const tied = verdicts.find((v) => v.candidate === d2);

@@ -66,7 +66,7 @@ function recordsWorkflow(records, digest) {
  * capUsd }, --challenge-on-hold), a newcomer so held against a receipted CHAMPION is still held, but, when `admit` would
  * admit it, the promotion gate is asked to compare it with that champion on the bank (`challenger`): a landed verdict
  * that passes (LB > 0) makes it the champion at a later curate (asyncGate.apply). Once the comparisons have spent
- * `capUsd`, a hold is a plain hold again, and its reason says so.
+ * `capUsd`, a hold is a plain hold again, its reason says so, and the gate counts it (challengeTally).
  */
 export function receiptHoldsTrial(admit, dir, challenge) {
   return async (input) => {
@@ -83,7 +83,10 @@ export function receiptHoldsTrial(admit, dir, challenge) {
     if (!(live && incoming && incoming !== live.sha256 && hasWorkflowReceipt(dir, live.sha256) && !hasWorkflowReceipt(dir, incoming))) return admit(input);
     const held = { status: 'held', reason: `the live ${live.status === 'active' ? 'champion' : 'trial'} ${live.sha256.slice(0, 12)} has a workflow receipt and this revision has none, so it does not replace it` };
     if (!challenge || live.status !== 'active') return held;
-    if (challenge.gate.challengeSpend() >= challenge.capUsd) return { ...held, reason: `${held.reason}; the challenge budget of $${challenge.capUsd} is spent, so it is not compared` };
+    if (challenge.gate.challengeSpend() >= challenge.capUsd) {
+      challenge.gate.challengeUncompared({ name, candidate: incoming, serving: live.sha256 });
+      return { ...held, reason: `${held.reason}; the challenge budget of $${challenge.capUsd} is spent, so it is not compared` };
+    }
     const workflow = recordsWorkflow(records, incoming);
     const champion = await recordedWorkflow(input, name, live.sha256, input.main);
     if (!workflow || !champion) return held;

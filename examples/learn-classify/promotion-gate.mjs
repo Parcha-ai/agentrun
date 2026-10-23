@@ -217,6 +217,10 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, p
     running = { key: job.key, job, done };
   };
   const brief = (job, state) => ({ name: job.name, candidate: job.candidate.sha256, serving: job.serving?.sha256 ?? null, state });
+  const challengeLines = () => {
+    const file = join(dir, 'verdicts.jsonl');
+    return existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.challenger) : [];
+  };
   const landedUnapplied = () => {
     const root = join(dir, 'verdicts');
     if (!existsSync(root)) return [];
@@ -246,9 +250,22 @@ export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, p
     },
     /** What the challengers' comparisons have cost so far (--challenge-on-hold's budget). */
     challengeSpend() {
-      const file = join(dir, 'verdicts.jsonl');
-      if (!existsSync(file)) return 0;
-      return readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.challenger).reduce((sum, l) => sum + (l.costUsd ?? 0), 0);
+      return challengeLines().reduce((sum, l) => sum + (l.costUsd ?? 0), 0);
+    },
+    /** A hold the spent budget left uncompared: counted on disk, so a resumed pass keeps the count. */
+    challengeUncompared({ name, candidate, serving }) {
+      mkdirSync(dir, { recursive: true });
+      appendFileSync(join(dir, 'challenge-uncompared.jsonl'), `${JSON.stringify({ at: new Date().toISOString(), name, candidate, serving })}\n`);
+    },
+    /** The challengers' comparisons (a failed one compares nothing but its cost counts) and the holds left uncompared. */
+    challengeTally() {
+      const lines = challengeLines();
+      const compared = lines.filter((l) => !l.failed);
+      const file = join(dir, 'challenge-uncompared.jsonl');
+      return {
+        compared: compared.length, won: compared.filter((l) => l.promote).length, held: compared.filter((l) => !l.promote).length,
+        costUsd: lines.reduce((sum, l) => sum + (l.costUsd ?? 0), 0), uncompared: existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).length : 0,
+      };
     },
     /** Resolves when nothing is running or queued. */
     async idle() {
