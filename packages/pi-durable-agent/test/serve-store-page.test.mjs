@@ -219,3 +219,49 @@ test("the runs filtered by a revision: the filter is in the hash, so a reload ke
   await revisionPage.settle();
   assert.equal(all(revisionPage.app).filter((el) => el.tagName === "A" && classOf(el) === "run").length, 3, "a revision's own page shows its runs");
 });
+
+const row = (seq, kind, fields = {}) => ({ id: `1:${seq}`, kind, seq, summary: null, text: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, conversation_id: 1, ...fields });
+const TIMELINE = [
+  row(0, "user_message", { text: `Research ${HOSTILE}`, summary: "You: Research" }),
+  row(1, "tool_use", { tool_name: "web_fetch", tool_use_id: "a", round: 1, summary: `Fetched a.example ${HOSTILE}` }),
+  row(2, "tool_result", { tool_name: "web_fetch", tool_use_id: "a", tool_status: "success", tool_result_preview: "ok", tool_result_size_bytes: 2 }),
+  row(3, "tool_use", { tool_name: "web_fetch", tool_use_id: "b", round: 2, summary: "Fetched b.example" }),
+  row(4, "tool_result", { tool_name: "web_fetch", tool_use_id: "b", tool_status: "success", tool_result_preview: "ok", tool_result_size_bytes: 2 }),
+  row(5, "usage", { usage: { usd: 0.2, requests: 2 } }),
+  row(6, "final_answer", { text: "**Done**: wrote `brief.md`." }),
+];
+const AGENTIC_RUN = { run: RUNS[2], agent: { id: "company-researcher", name: `Company researcher ${HOSTILE}` }, revision: REV_B, rows: TIMELINE, stored: true };
+
+test("an agentic run's page: its state, revision, agent and summary, then the timeline exactly as an agent home's run draws it", async () => {
+  const page = mount({ "api/runs/run-3": AGENTIC_RUN }, "#/runs/run-3", { serve: STORE });
+  await page.settle();
+  assertInert(page.app);
+  assert.deepEqual(page.fetched, ["api/runs/run-3"]);
+  const head = all(page.app).find((el) => classOf(el) === "card run-head");
+  assert.deepEqual(pills(head).slice(0, 2), [["pill ok", "completed"], ["pill agentic", "agentic"]]);
+  assert.ok(head.textContent.includes("Caterpillar builds machinery.") && head.textContent.includes("took 4m 00s") && head.textContent.includes(`Company researcher ${HOSTILE}`));
+  const hrefs = all(head).filter((el) => el.tagName === "A").map((el) => el.getAttribute("href"));
+  assert.deepEqual(hrefs, ["#/agents/company-researcher", `#/agents/company-researcher/revisions/${REV_B.id}`]);
+  const calls = all(page.app).filter((el) => el.tagName === "DETAILS" && classOf(el).startsWith("call"));
+  assert.deepEqual(calls.map(classOf), ["call many ok", "call ok", "call ok"], "the two one-call web_fetch rounds fold, as an agent home's page folds them");
+  assert.ok(page.app.textContent.includes(`Fetched a.example ${HOSTILE} and 1 more`));
+  assert.ok(all(page.app).some((el) => el.tagName === "B" && el.textContent === "Done"));
+  assert.deepEqual(all(page.document.getElementById("crumbs")).filter((el) => el.tagName === "A").map((el) => el.textContent), ["Agents", `Company researcher ${HOSTILE}`, "bbbbbbbbbbbb", "Run"]);
+  assert.equal(page.timers.size, 0);
+});
+
+test("a running agentic run's page is read again every 2 s until the reader leaves it, and a run whose directory is gone says so", async () => {
+  const live = { ...AGENTIC_RUN, run: RUNS[0], rows: TIMELINE.slice(0, 2) };
+  const page = mount({ "api/runs/run-5": live, "api/store": { agents: AGENTS } }, "#/runs/run-5", { serve: STORE });
+  await page.settle();
+  assert.deepEqual([...page.timers.values()].map((t) => t.ms), [2000]);
+  assert.ok(page.app.textContent.includes("refreshing every 2 s"));
+  await page.tick();
+  assert.deepEqual(page.fetched, ["api/runs/run-5", "api/runs/run-5"]);
+  await page.go("#/");
+  assert.equal(page.timers.size, 0);
+  const gone = mount({ "api/runs/run-0": { ...AGENTIC_RUN, run: RUNS[5], rows: [], stored: false } }, "#/runs/run-0", { serve: STORE });
+  await gone.settle();
+  assert.deepEqual(pills(gone.app)[0], ["pill missing", "missing"]);
+  assert.match(gone.app.textContent, /This run's directory is not in the store/);
+});

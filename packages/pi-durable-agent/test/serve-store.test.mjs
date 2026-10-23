@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -189,6 +189,55 @@ test("runs: one list across agents and revisions, newest first, filtered by agen
       assert.equal(res.status, 400, target);
       assert.match(res.json.error, /id is not/);
     }
+  } finally {
+    await served.close();
+  }
+});
+
+test("an agentic run: its row, its agent and revision, and its store's entries as the timeline, read-only; a running run's open call is still running", linux, async () => {
+  const { root, served, get } = await sample();
+  const before = files(root);
+  try {
+    const done = await get(`/api/runs/${RUN.a001.id}`);
+    assert.equal(done.status, 200);
+    assert.deepEqual(done.json.run, RUN.a001);
+    assert.deepEqual(done.json.agent, { id: "company-researcher", name: "Company researcher" });
+    assert.deepEqual([done.json.revision.id, done.json.revision.kind, done.json.revision.note, "body" in done.json.revision], [REVISIONS.A.id, "agentic", "Prompt A: the first brief", false]);
+    assert.equal(done.json.stored, true);
+    assert.deepEqual(done.json.rows.filter((row) => row.kind !== "usage").map((row) => row.kind), ["user_message", "thinking", "tool_use", "tool_result", "tool_use", "tool_use", "tool_result", "tool_result", "tool_use", "tool_result", "final_answer"]);
+    assert.equal(done.json.rows[0].text, "Research Caterpillar Inc..");
+    const failed = (await get(`/api/runs/${RUN.a002.id}`)).json;
+    assert.ok(failed.rows.some((row) => row.kind === "tool_result" && row.tool_status === "failed"), "the 403 is a failed result");
+    const live = (await get(`/api/runs/${RUN.d001.id}`)).json;
+    assert.equal(live.run.state, "running");
+    assert.deepEqual(live.rows.map((row) => row.kind), ["user_message", "thinking", "tool_use", "usage"], "a running run's open call has no result yet");
+    for (const target of ["/api/runs/..%2f..%2fstore.sqlite", "/api/runs/-x", `/api/runs/${"a".repeat(129)}`]) assert.equal((await get(target)).status, 400, target);
+    assert.equal((await get("/api/runs/none")).status, 404);
+    assert.equal((await get("/api/runs/constructor")).status, 404);
+  } finally {
+    await served.close();
+  }
+  assert.deepEqual(files(root), before, "reading the runs changed nothing in the store");
+});
+
+test("a run's store that is a link out of the store is not read, and a run whose store is gone has its row and no entries", linux, async () => {
+  const { root, served, get } = await sample();
+  try {
+    const runDir = path.join(root, "company-researcher", "runs", RUN.b001.id);
+    const outside = path.join(await scratch(), "elsewhere");
+    mkdirSync(outside);
+    cpSync(path.join(runDir, "store", "run.sqlite"), path.join(outside, "run.sqlite"));
+    renameSync(path.join(runDir, "store"), path.join(runDir, "store.moved"));
+    symlinkSync(outside, path.join(runDir, "store"));
+    const linked = await get(`/api/runs/${RUN.b001.id}`);
+    assert.equal(linked.status, 500);
+    assert.match(linked.json.error, /not inside the store/);
+    assert.ok(!linked.body.includes(root), "no path in the answer");
+    const gone = path.join(root, "company-researcher", "runs", RUN.b002.id);
+    renameSync(gone, `${gone}.away`);
+    const away = await get(`/api/runs/${RUN.b002.id}`);
+    assert.equal(away.status, 200);
+    assert.deepEqual([away.json.stored, away.json.rows, away.json.run.id], [false, [], RUN.b002.id]);
   } finally {
     await served.close();
   }
