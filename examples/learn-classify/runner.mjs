@@ -37,7 +37,7 @@ import { ANY_HOST, domainOf, fetchPageTool, refuseMccDomains } from './tools.mjs
 import { answersTheJob, hostRecord, promotedFor } from './dispatch.mjs';
 import { contradictionOf, lookupOfLines, receiptOf } from './eval-lookup.mjs';
 import { LINK_QUESTION, receiptHoldsTrial, receiptLinks, receiptUses, recordRun } from './receipts.mjs';
-import { asyncGate, demotionSettler, GATE, gateSpend } from './promotion-gate.mjs';
+import { asyncGate, COST_ON_TIES, demotionSettler, GATE, gateSpend } from './promotion-gate.mjs';
 import { passSelfTest } from './selftest.mjs';
 import { writeHosts } from './tools-v2.mjs';
 import { HINDSIGHT_FIELDS, LIVE_REFLECTION_USD, proposeHindsight, recordPagesOnly, reflectOnRun } from './hindsight.mjs';
@@ -662,7 +662,7 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
   // the pass one already made.
   // The MCC job's bank runs are scored on two parts, the code and the tier, each against the teacher.
   const gateParts = gatePartsOf(parts);
-  const gate = given ?? (parts.bank ? asyncGate({ bank: bankOf(parts.companies, parts.bank, stream), runOne: bankRunner({ out, bare, parts, runCapUsd, dropEvidence }), dir: join(out, 'gate'), ...(parts.bankConcurrency ? { concurrency: parts.bankConcurrency } : {}), ...gateParts, ...(parts.gatedDemotion ? { gatedDemotion: true } : {}), log }) : undefined);
+  const gate = given ?? (parts.bank ? asyncGate({ bank: bankOf(parts.companies, parts.bank, stream), runOne: bankRunner({ out, bare, parts, runCapUsd, dropEvidence }), dir: join(out, 'gate'), ...(parts.bankConcurrency ? { concurrency: parts.bankConcurrency } : {}), ...gateParts, ...(parts.gatedDemotion ? { gatedDemotion: true } : {}), ...(parts.costOnTies ? { costOnTies: parts.costOnTies } : {}), log }) : undefined);
   const judge = parts.judge();
   const spentNow = () => knownSpend(out);
   const tally = curateTally({ out, stream, seedSha: meta.seedSha, checkpoints, ...(gate ? { gates: () => gate.pending() } : {}) });
@@ -825,7 +825,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--escalation-neutral] [--gated-demotion (with --promotion-bank)] [--receipt-admission] [--receipt-holds-trial [--challenge-on-hold [--challenge-cap-usd <usd>]]] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--gate jev-margin --gate-tau <file>] [--pick-node agent] [--teacher <file> (mcc)] [--stage1-labels <file> (mcc, a learning pass)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--escalation-neutral] [--gated-demotion (with --promotion-bank)] [--receipt-admission] [--receipt-holds-trial [--challenge-on-hold [--challenge-cap-usd <usd>] [--cost-on-ties]]] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--gate jev-margin --gate-tau <file>] [--pick-node agent] [--teacher <file> (mcc)] [--stage1-labels <file> (mcc, a learning pass)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -840,7 +840,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' }, 'edgar-cache': { type: 'string' }, schedule: { type: 'string' }, checkpoints: { type: 'string' },
         'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, 'gate-wait-at-end': { type: 'boolean' }, hindsight: { type: 'string' },
         'receipt-admission': { type: 'boolean' }, 'receipt-holds-trial': { type: 'boolean' }, 'receipt-promotion': { type: 'boolean' }, 'promote-no-floor': { type: 'boolean' },
-        'challenge-on-hold': { type: 'boolean' }, 'challenge-cap-usd': { type: 'string' },
+        'challenge-on-hold': { type: 'boolean' }, 'challenge-cap-usd': { type: 'string' }, 'cost-on-ties': { type: 'boolean' },
         'escalation-neutral': { type: 'boolean' }, 'gated-demotion': { type: 'boolean' },
         'refuse-contradicting': { type: 'boolean' }, 'keep-facts': { type: 'boolean' }, 'refuse-refused-hosts': { type: 'boolean' }, teacher: { type: 'string' }, 'stage1-labels': { type: 'string' },
         'self-test-only': { type: 'boolean' }, gate: { type: 'string' }, 'gate-tau': { type: 'string' }, 'pick-node': { type: 'string' },
@@ -983,6 +983,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     if (values['promote-no-floor']) parts.promoteNoFloor = true;
     if ((values['escalation-neutral'] || values['gated-demotion']) && values.sealed) { console.error(`--escalation-neutral and --gated-demotion settle a learning pass's uses: a sealed pass settles none\n${USAGE}`); process.exit(2); }
     if (values['gated-demotion'] && values['promotion-bank'] === undefined) { console.error(`--gated-demotion asks the replay gate: it takes --promotion-bank\n${USAGE}`); process.exit(2); }
+    if (values['cost-on-ties'] && !values['challenge-on-hold']) { console.error(`--cost-on-ties reads a challenger's comparison: it takes --challenge-on-hold\n${USAGE}`); process.exit(2); }
     if (values['challenge-on-hold'] || values['challenge-cap-usd'] !== undefined) {
       const cap = values['challenge-cap-usd'] === undefined ? 40 : Number(values['challenge-cap-usd']);
       if (!values['challenge-on-hold'] || !values['receipt-holds-trial'] || values['promotion-bank'] === undefined || values.sealed || !(Number.isFinite(cap) && cap >= 0)) {
@@ -990,6 +991,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       }
       parts.challengeOnHold = true;
       parts.challengeCapUsd = cap;
+      // Proposal C, Amendment 1: a challenger correctness does not pass still wins when no company is worse and it costs at
+      // most 0.75 of the champion (COST_ON_TIES, pinned).
+      if (values['cost-on-ties']) parts.costOnTies = COST_ON_TIES;
       console.log(`learn-classify: a revision the receipt hold holds against a receipted champion is compared with it on the bank, and becomes the champion on a lower bound above 0 (comparisons up to $${cap}, then plain holds)`);
     }
     if (values['escalation-neutral']) {

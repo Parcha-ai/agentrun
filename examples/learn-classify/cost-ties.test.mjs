@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { MCC_GATE_BOTH, partsOfMccBoth } from './mcc.mjs';
-import { COST_ON_TIES, replayGate } from './promotion-gate.mjs';
+import { asyncGate, COST_ON_TIES, replayGate } from './promotion-gate.mjs';
 
 const CAND = 'c'.repeat(64);
 const SERV = 'd'.repeat(64);
@@ -81,4 +81,22 @@ test('a win on correctness is recorded as such; without the option the verdict i
   const off = await compare(t, { [CAND]: right(0.02), [SERV]: right(0.05) }, { costOnTies: null });
   assert.equal(off.promote, false);
   assert.equal('decidedBy' in off || 'cost' in off, false);
+});
+
+test('the stream\'s gate carries the option to every challenger comparison; --cost-on-ties takes --challenge-on-hold', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'lc-cost-ties-async-'));
+  await chmod(dir, 0o755);
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const bank = Array.from({ length: 4 }, (_, i) => ({ cik: `m${i}` }));
+  const runOne = async ({ sha256 }) => ({ outcome: 'complete', score: both(true), costUsd: sha256 === CAND ? 0.01 : 0.05 });
+  const gate = asyncGate({ bank, runOne, dir, scoreParts: partsOfMccBoth, parts: MCC_GATE_BOTH, concurrency: 2, costOnTies: COST_ON_TIES });
+  gate.ask({ name: 'merchant-mcc-risk', candidate: { sha256: CAND, workflow: {} }, serving: { sha256: SERV, workflow: {} }, main: 'x', challenger: { run: 'run-9' } });
+  await gate.idle();
+  const { readFileSync } = await import('node:fs');
+  const [line] = readFileSync(join(dir, 'verdicts.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  assert.deepEqual([line.promote, line.decidedBy, line.challenger], [true, 'cost', true]);
+  const { spawnSync } = await import('node:child_process');
+  const r = spawnSync(process.execPath, [join(import.meta.dirname, 'runner.mjs'), '--set', 'mcc', '--scripted', '--out', join(dir, 'never'), '--cost-on-ties'], { encoding: 'utf8' });
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /--cost-on-ties reads a challenger's comparison: it takes --challenge-on-hold/);
 });

@@ -18,6 +18,9 @@ import { lastProven, recordedWorkflow } from './dispatch.mjs';
  *  the ±1 utility; the bootstrap; the first promotion's floor; and the bank runs in flight at once (the slots the cell's
  *  schedule keeps for the gate under its ceiling of 48). */
 export const GATE = Object.freeze({ parts: Object.freeze(['sic4', 'segments', 'hq']), resamples: 10_000, seed: 20261021, floor: 0.5, concurrency: 8 });
+/** Proposal C's cost on ties (--cost-on-ties): what the agent costs to finish a company the workflow escalated or failed (B's
+ *  mean over its escalated TRAIN rows), and the share of the champion's mean cost a challenger must come in at or under. */
+export const COST_ON_TIES = Object.freeze({ agentFinishUsd: 0.71, ratio: 0.75 });
 const Z = 1.959963984540054;
 
 /** A bank run's scored parts (scoreV4's score): 1 right, 0 wrong, null where the company has no truth for it. */
@@ -143,13 +146,37 @@ export function gateSpend(dir) {
 }
 
 /**
+ * Cost on ties: a challenger the correctness verdict does not promote still wins when no bank company is worse with it than
+ * with the serving revision, on any scored part, AND its mean cost per company, as the stream pays it (the bank run's own
+ * spend, plus `agentFinishUsd` where the host gave no answer and the agent would finish the job), is at most `ratio` of the
+ * serving revision's. Reads the bank runs kept under `dir`.
+ */
+function costTieOf({ bank, dir, candidate, serving, values, parts: scored, agentFinishUsd, ratio }) {
+  const worseAt = bank.filter((company) => {
+    const c = values.get(candidate).get(company.cik) ?? {};
+    const s = values.get(serving).get(company.cik) ?? {};
+    return scored.some((part) => c[part] !== null && c[part] !== undefined && s[part] !== null && s[part] !== undefined && c[part] < s[part]);
+  }).map((company) => company.cik);
+  const meanUsd = (sha256) => {
+    const usd = bank.map((company) => {
+      const run = readJson(bankFile(dir, sha256, company.cik));
+      return (run?.costUsd ?? 0) + (run?.answered ? 0 : agentFinishUsd);
+    });
+    return Math.round((usd.reduce((a, b) => a + b, 0) / usd.length) * 1e6) / 1e6;
+  };
+  const candidateUsd = meanUsd(candidate);
+  const servingUsd = meanUsd(serving);
+  return { worseAt, candidateUsd, servingUsd, ratio, agentFinishUsd, win: !worseAt.length && candidateUsd <= ratio * servingUsd };
+}
+
+/**
  * One comparison on the bank, to its verdict. `bank` is the bank's companies (truth rows); `runOne({ name, sha256,
  * workflow, company, main })` runs one revision on one company by the host alone and returns `{ outcome, score, costUsd }`,
  * `score` being scoreV4's and `outcome` the host's run's (only `complete` is an answer). A run that throws is not kept, and
  * while any did the verdict is a hold with `failed`. Under `dir` go the bank runs (bank/<digest>/<cik>.json) and every
  * verdict (verdicts.jsonl).
  */
-export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, floor = GATE.floor, scoreParts = partsOf, parts = GATE.parts, log = () => {} }) {
+export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, floor = GATE.floor, scoreParts = partsOf, parts = GATE.parts, costOnTies, log = () => {} }) {
   if (!bank.length) throw new Error('the promotion gate needs a bank of companies');
   return async ({ name, candidate, serving, main, demotion = false, challenger }) => {
     const revisions = serving ? [candidate, serving] : [candidate];
@@ -180,10 +207,21 @@ export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, 
       }
     };
     await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, todo.length)) }, worker));
-    const verdict = failed.length
+    let verdict = failed.length
       ? { promote: false, reason: `${failed.length} bank run(s) failed, so nothing was compared; they run again at the next ask`, failed }
       : demotion ? demotionVerdictOf({ bank, champion: values.get(candidate.sha256), back: serving ? values.get(serving.sha256) : null, parts })
       : verdictOf({ bank, candidate: values.get(candidate.sha256), serving: serving ? values.get(serving.sha256) : null, floor, parts });
+    // --cost-on-ties: a challenger's comparison that correctness does not pass is read on cost too, and says which decided.
+    if (costOnTies && challenger && serving && !failed.length && !demotion) {
+      if (verdict.promote) verdict = { ...verdict, decidedBy: 'correctness' };
+      else {
+        const cost = costTieOf({ bank, dir, candidate: candidate.sha256, serving: serving.sha256, values, parts, ...costOnTies });
+        const usd = (n) => `$${n.toFixed(4)}`;
+        verdict = cost.win
+          ? { ...verdict, promote: true, decidedBy: 'cost', cost, reason: `${verdict.reason}; cost on ties: no company worse, ${usd(cost.candidateUsd)} vs ${usd(cost.servingUsd)} a company, at most ${cost.ratio} of it` }
+          : { ...verdict, decidedBy: 'correctness', cost, reason: `${verdict.reason}; cost on ties: ${cost.worseAt.length ? `${cost.worseAt.length} company(ies) worse` : `${usd(cost.candidateUsd)} vs ${usd(cost.servingUsd)} a company, over ${cost.ratio} of it`}` };
+      }
+    }
     const line = { at: new Date().toISOString(), name, candidate: candidate.sha256, serving: serving?.sha256 ?? null, main, bank: bank.length, concurrency, ran: todo.length - failed.length, kept: bank.length * revisions.length - todo.length, costUsd, ...verdict, ...(challenger ? { challenger: true } : {}) };
     mkdirSync(dir, { recursive: true });
     appendFileSync(join(dir, 'verdicts.jsonl'), `${JSON.stringify(line)}\n`);
@@ -202,8 +240,8 @@ export function replayGate({ bank, runOne, dir, concurrency = GATE.concurrency, 
  * runs only what is missing. `apply` is the next curate's step, under the lock: each landed verdict is reported once, and
  * a promotion that still holds on main is committed there.
  */
-export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, parts, gatedDemotion = false, log = () => {} }) {
-  const compare = replayGate({ bank, runOne, dir, ...(concurrency ? { concurrency } : {}), ...(floor === undefined ? {} : { floor }), ...(scoreParts ? { scoreParts } : {}), ...(parts ? { parts } : {}), log });
+export function asyncGate({ bank, runOne, dir, concurrency, floor, scoreParts, parts, gatedDemotion = false, costOnTies, log = () => {} }) {
+  const compare = replayGate({ bank, runOne, dir, ...(concurrency ? { concurrency } : {}), ...(floor === undefined ? {} : { floor }), ...(scoreParts ? { scoreParts } : {}), ...(parts ? { parts } : {}), ...(costOnTies ? { costOnTies } : {}), log });
   const queued = new Map();
   let running = null;
   const pump = () => {
