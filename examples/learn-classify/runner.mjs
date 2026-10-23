@@ -681,6 +681,7 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
   const lock = concurrency > 1 ? serial() : inline;
   // --trial-tenure (pi-agent-learn's workflowAdmitter tenure): where each run started and which are in flight (tenure.mjs).
   const tenure = parts.trialTenure ? (givenTenure ?? tenureTracker()) : undefined;
+  tenure?.sink((event) => appendFileSync(join(out, 'tenure.jsonl'), `${JSON.stringify(event)}\n`));
   const args = (job) => ({ out, repo, home, parts, judge, job, runCapUsd, record, dropEvidence, log, lock, tally, gate, ...(tenure ? { tenure } : {}) });
   const capped = () => {
     if (capUsd === undefined || spentNow() < capUsd) return false;
@@ -834,7 +835,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--escalation-neutral] [--gated-demotion (with --promotion-bank)] [--receipt-admission] [--receipt-holds-trial [--challenge-on-hold [--challenge-cap-usd <usd>] [--cost-on-ties]]] [--trial-tenure] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--gate jev-margin --gate-tau <file>] [--pick-node agent] [--teacher <file> (mcc)] [--stage1-labels <file> (mcc, a learning pass)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--escalation-neutral] [--gated-demotion (with --promotion-bank)] [--receipt-admission] [--receipt-holds-trial [--challenge-on-hold [--challenge-cap-usd <usd>] [--cost-on-ties]]] [--trial-tenure] [--run-deadline-ms <ms> (scripted)] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--gate jev-margin --gate-tau <file>] [--pick-node agent] [--teacher <file> (mcc)] [--stage1-labels <file> (mcc, a learning pass)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -849,7 +850,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'edgar-archive': { type: 'boolean' }, 'agent-dir': { type: 'string' }, 'edgar-cache': { type: 'string' }, schedule: { type: 'string' }, checkpoints: { type: 'string' },
         'curate-cuts': { type: 'string' }, 'curate-sticky': { type: 'boolean' }, 'promotion-bank': { type: 'string' }, 'promotion-bank-concurrency': { type: 'string' }, 'gate-wait-at-end': { type: 'boolean' }, hindsight: { type: 'string' },
         'receipt-admission': { type: 'boolean' }, 'receipt-holds-trial': { type: 'boolean' }, 'receipt-promotion': { type: 'boolean' }, 'promote-no-floor': { type: 'boolean' },
-        'challenge-on-hold': { type: 'boolean' }, 'challenge-cap-usd': { type: 'string' }, 'cost-on-ties': { type: 'boolean' }, 'trial-tenure': { type: 'boolean' },
+        'challenge-on-hold': { type: 'boolean' }, 'challenge-cap-usd': { type: 'string' }, 'cost-on-ties': { type: 'boolean' }, 'trial-tenure': { type: 'boolean' }, 'run-deadline-ms': { type: 'string' },
         'escalation-neutral': { type: 'boolean' }, 'gated-demotion': { type: 'boolean' },
         'refuse-contradicting': { type: 'boolean' }, 'keep-facts': { type: 'boolean' }, 'refuse-refused-hosts': { type: 'boolean' }, teacher: { type: 'string' }, 'stage1-labels': { type: 'string' },
         'self-test-only': { type: 'boolean' }, gate: { type: 'string' }, 'gate-tau': { type: 'string' }, 'pick-node': { type: 'string' },
@@ -884,6 +885,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     if (values[name] !== undefined && !values.sealed) { console.error(`--${name} takes a sealed pass\n${USAGE}`); process.exit(2); }
   }
   if (values.split === 'test' && !values['open-test']) { console.error('the test split is opened once per finalist: pass --open-test'); process.exit(2); }
+  // A rehearsal's knob: a scripted pass's run deadline, so a take can kill a run (with a fixture page marked hang).
+  if (values['run-deadline-ms'] !== undefined && !values.scripted) { console.error(`--run-deadline-ms is a scripted rehearsal's: it takes --scripted\n${USAGE}`); process.exit(2); }
+  if (values['run-deadline-ms'] !== undefined && !(Number.isInteger(Number(values['run-deadline-ms'])) && Number(values['run-deadline-ms']) > 0)) { console.error(`--run-deadline-ms is a whole number of milliseconds\n${USAGE}`); process.exit(2); }
   for (const name of ['schedule', 'checkpoints', 'stage1-labels', 'trial-tenure']) {
     if (values[name] !== undefined && values.sealed) { console.error(`--${name} takes a learning pass\n${USAGE}`); process.exit(2); }
   }
@@ -994,6 +998,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     if (values['gated-demotion'] && values['promotion-bank'] === undefined) { console.error(`--gated-demotion asks the replay gate: it takes --promotion-bank\n${USAGE}`); process.exit(2); }
     // D: a live trial keeps its tenure while runs that started with it are in flight (pi-agent-learn, tenure.mjs).
     if (values['trial-tenure']) parts.trialTenure = true;
+    if (values['run-deadline-ms'] !== undefined) parts.runDeadlineMs = Number(values['run-deadline-ms']);
     if (values['cost-on-ties'] && !values['challenge-on-hold']) { console.error(`--cost-on-ties reads a challenger's comparison: it takes --challenge-on-hold\n${USAGE}`); process.exit(2); }
     if (values['challenge-on-hold'] || values['challenge-cap-usd'] !== undefined) {
       const cap = values['challenge-cap-usd'] === undefined ? 40 : Number(values['challenge-cap-usd']);

@@ -5,22 +5,28 @@
 // the order of both, for a test or a report.
 
 /** A pass's tenure tracker: `start(run, sha)` as each run is prepared, `end(run, why)` as it ends; the admitter's `started`
- *  and `inFlight`. */
+ *  and `inFlight`. `sink(fn)` hands every event to `fn` as well (the runner keeps them in <out>/tenure.jsonl). */
 export function tenureTracker() {
   const started = new Map();
   const live = new Set();
   const events = [];
+  const sinks = [];
   let order = 0;
+  const note = (event) => {
+    events.push(event);
+    for (const fn of sinks) fn(event);
+  };
   return {
     events,
+    sink(fn) { sinks.push(fn); },
     start(run, sha) {
-      started.set(run, { sha, order: order++ });
+      started.set(run, { sha, order });
       live.add(run);
-      events.push({ event: 'start', run, at: Date.now() });
+      note({ event: 'start', run, sha, order: order++, at: new Date().toISOString() });
     },
     end(run, why) {
       if (!live.delete(run)) return;
-      events.push({ event: 'end', run, why, at: Date.now() });
+      note({ event: 'end', run, why, at: new Date().toISOString() });
     },
     started: (run) => started.get(run),
     inFlight: () => [...live],

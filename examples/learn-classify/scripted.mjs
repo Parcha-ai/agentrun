@@ -38,13 +38,15 @@ export function fixtureFetch(pages, seen = []) {
 const escapeHtml = (text) => String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
 /** A `fetch` over the fixture pages, as HTML, for lane C1's fetch_page: the scripted pass runs the real tool on them. A
- *  page marked `browserOnly` comes back without its text, as a site whose scripts draw it does. */
+ *  page marked `browserOnly` comes back without its text, as a site whose scripts draw it does; one marked `hang` never
+ *  answers (a rehearsal's run past its deadline). */
 export function fixtureWeb(pages, seen = []) {
   const byHref = new Map(Object.entries(pages).map(([url, page]) => [new URL(url).href, page]));
   return async (href) => {
     seen.push(href);
     const page = byHref.get(new URL(href).href);
     if (!page) return new Response('not found', { status: 404, headers: { 'content-type': 'text/plain' } });
+    if (page.hang) return new Promise(() => {});
     const links = (page.links ?? []).map((link) => `<a href="${escapeHtml(link)}">more</a>`).join(' ');
     const body = page.browserOnly ? '<div id="app"></div>' : `<main><p>${escapeHtml(page.text)}</p>${links}</main>`;
     const html = `<!doctype html><html><head><title>${escapeHtml(page.title)}</title></head><body>${body}</body></html>`;
