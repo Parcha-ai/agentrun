@@ -469,6 +469,8 @@ setInterval(() => {}, 1000);
   const plain = await (await post("/runs", { content: "Do the thing" })).json();
   assert.equal(existsSync(join(root, plain.id, "prompt.json")), false, "a home with no variants writes no prompt.json");
   assert.deepEqual([asked.length, (await readAgentHome(home)).runs[plain.id].prompt], [0, undefined], "and asks Jev nothing");
+  // The plain run's message has reached the door before the next run is posted: each message goes out when its run's start command has written run.json, so on a slow first start the second run's message would otherwise arrive first.
+  for (let i = 0; i < 100 && door.submits.length < 1; i++) await new Promise((r) => setTimeout(r, 100));
 
   await setPrompts(home, [
     { id: "kind", role: "question", label: "Kind", text: "What kind of organisation is it?", criteria: { public: "listed", nonprofit: "charity", other: "anything else" } },
