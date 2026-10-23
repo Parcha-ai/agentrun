@@ -859,9 +859,14 @@ before it makes a box to launch in.
   - it exists, is not root and has not the root group (else `invalid`);
   - where the box has `sudo`, `sudo -l -U`, run with no environment but PATH, answers exactly its sentence for a user who
     may run nothing (else `refused`, with sudo's first line);
-  - on every mount without `nosuid`, it can run no setuid or setgid root file and no file with capabilities. Each file is
-    found as root and tested as the tools user, so a directory it can pass through but not list hides nothing. Else the
-    launch is `refused`, naming up to five; a box without `getcap` is `unsupported`.
+  - on every mount without `nosuid`, it can run no setuid or setgid root file and no file with capabilities. The mounts
+    are chosen by filesystem type from the mount table, never by mount point: the kernel's own pseudo filesystems (`proc`,
+    `sysfs`, `cgroup`, `cgroup2`, `devpts`, `mqueue`, `securityfs`, `debugfs`, `tracefs`, `bpf`, `pstore`, `configfs`,
+    `fusectl`, `binfmt_misc`, `efivarfs`) are skipped, and every other type, an unknown one, `tmpfs` and `devtmpfs`
+    included, is walked. Each file is found as root and tested as the tools user, so a directory it can pass through but
+    not list hides nothing. Else the launch is `refused`, naming up to five; a box without `getcap` is `unsupported`. A
+    walk ignores an entry that ends mid-walk only where `find` takes `-ignore_readdir_race` (the control runs it); on a
+    `find` without it (busybox's) that stays `unsupported`, and every other `find` error is `unsupported` on every `find`.
   - the check fails closed: `find` and `getcap` must each report a probe it plants (empty, root's, in the launch's own
     root-only directory, removed before anything runs as the tools user), the tools user's test must pass on its own
     shell, and a walk that fails on a mount, or finds no mount to walk, is `unsupported`, as is a getcap line that
