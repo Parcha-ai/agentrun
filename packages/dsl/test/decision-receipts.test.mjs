@@ -96,7 +96,7 @@ test('each typed question is one receipt, recorded before its answer is acted on
   assert.deepEqual(screen.request, { index: 0, count: 1, items: [0, 1, 2] });
   assert.deepEqual(screen.rule, { kind: 'sift', items: 3, ids: ['keep'], keep: { id: 'keep', measure: 'value', gte: 0.7 } });
   assert.deepEqual(screen.action, { kept: [0, 2] });
-  assert.deepEqual(lane.rule, { kind: 'route', unsure: { gte: 0.8, branch: 'slow' } });
+  assert.deepEqual(lane.rule, { kind: 'route', branches: ['fast', 'slow'], unsure: { gte: 0.8, branch: 'slow' } });
   assert.deepEqual(lane.action, { branch: 'fast', taken: 'slow', unsure: true });
   assert.deepEqual(stop.rule, { kind: 'ask', gte: 0.6 });
   assert.deepEqual(stop.action, { holds: false });
@@ -543,4 +543,76 @@ test('a recorded review answers only the candidate it reviewed', async () => {
   await runWorkflow(workflow, {}, deps({ text: 'one' }));
   // The second run's first review is of another candidate: it is asked. The third run's is the first run's: it is not.
   assert.deepEqual(reviewed, ['one', 'two']);
+});
+
+test('a route receipt without its branch answer decided nothing: rederiveDecision returns null, and never throws', () => {
+  // An answered route always carries its branch answer; a receipt that lost it (a damaged or hand-built one) decided nothing.
+  const rule = (unsure) => ({ kind: 'route', branches: ['a', 'b'], unsure });
+  for (const unsure of [{ branch: 'b', gte: 0.5 }, null]) {
+    assert.equal(rederiveDecision({ rule: rule(unsure), answers: {}, questions: {} }), null, `unsure ${JSON.stringify(unsure)}`);
+    assert.equal(rederiveDecision({ rule: rule(unsure), answers: { branch: 'a' }, questions: {} }), null, `a bare string is no answer (unsure ${JSON.stringify(unsure)})`);
+  }
+  // With its answer the route decides as before, sure or unsure.
+  assert.deepEqual(rederiveDecision({ rule: rule({ branch: 'b', gte: 0.5 }), answers: { branch: choice(['a', 'b'], 'a', 0.9) }, questions: {} }), { branch: 'a', taken: 'a', unsure: false });
+  assert.deepEqual(rederiveDecision({ rule: rule({ branch: 'b', gte: 0.5 }), answers: { branch: choice(['a', 'b'], 'a', 0.3) }, questions: {} }), { branch: 'a', taken: 'b', unsure: true });
+});
+
+test('a pick receipt without its pick answer decided nothing: rederiveDecision returns null', () => {
+  // An answered pick carries its pick answer; a receipt that lost it decided nothing, as for a route.
+  const rule = { kind: 'pick', options: ['a', 'b'], none: null };
+  assert.equal(rederiveDecision({ rule, answers: {}, questions: {} }), null);
+  assert.equal(rederiveDecision({ rule, answers: { pick: 'a' }, questions: {} }), null, 'a bare string is no answer');
+  // With its answer the pick decides as before, including its none option.
+  assert.deepEqual(rederiveDecision({ rule, answers: { pick: choice(['a', 'b'], 'b') }, questions: {} }), { index: 1, none: false });
+  assert.deepEqual(rederiveDecision({ rule: { ...rule, none: 'neither' }, answers: { pick: choice(['a', 'b', 'neither'], 'neither') }, questions: {} }), { index: null, none: true });
+});
+
+test('a pick whose choice names no option and no none decided nothing: no fail-open {index:-1}', () => {
+  // A present pick answer is not enough: its choice must be a string that names an option, or the none option.
+  // An object with no string choice, or a choice in neither set, is a malformed answer, not "none of the options".
+  const rule = { kind: 'pick', options: ['a', 'b'], none: 'neither' };
+  assert.equal(rederiveDecision({ rule, answers: { pick: {} }, questions: {} }), null, 'an object with no string choice');
+  assert.equal(rederiveDecision({ rule, answers: { pick: { choice: 42 } }, questions: {} }), null, 'a non-string choice');
+  assert.equal(rederiveDecision({ rule, answers: { pick: choice(['a', 'b'], 'c') }, questions: {} }), null, 'a choice in neither options nor none');
+  // The choice that names the none option still decides none, not null.
+  assert.deepEqual(rederiveDecision({ rule, answers: { pick: choice(['a', 'b', 'neither'], 'neither') }, questions: {} }), { index: null, none: true });
+  // And a real option still re-derives.
+  assert.deepEqual(rederiveDecision({ rule, answers: { pick: choice(['a', 'b'], 'a') }, questions: {} }), { index: 0, none: false });
+});
+
+test('a route whose branch answer is unsure-shaped but has no numeric confidence decided nothing: no fail-open SURE', () => {
+  // When rule.unsure is set, re-deriving the route needs a finite numeric confidence to compare against gte.
+  // A missing or non-numeric confidence must NOT compare false and re-derive as SURE (a fail-open that takes the
+  // chosen branch instead of the unsure one); it decided nothing.
+  const rule = { kind: 'route', branches: ['a', 'b'], unsure: { branch: 'b', gte: 0.8 } };
+  const noConfidence = { type: 'choice', choice: 'a', probabilities: { a: 1, b: 0 } };
+  assert.equal(rederiveDecision({ rule, answers: { branch: noConfidence }, questions: {} }), null, 'missing confidence');
+  assert.equal(rederiveDecision({ rule, answers: { branch: { ...noConfidence, confidence: 'high' } }, questions: {} }), null, 'string confidence');
+  assert.equal(rederiveDecision({ rule, answers: { branch: { ...noConfidence, confidence: NaN } }, questions: {} }), null, 'NaN confidence');
+  // A route with no unsure rule does not read confidence, so a missing one is fine there.
+  assert.deepEqual(rederiveDecision({ rule: { ...rule, unsure: null }, answers: { branch: noConfidence }, questions: {} }), { branch: 'a', taken: 'a', unsure: false });
+  // With a finite confidence it decides as before.
+  assert.deepEqual(rederiveDecision({ rule, answers: { branch: choice(['a', 'b'], 'a', 0.9) }, questions: {} }), { branch: 'a', taken: 'a', unsure: false });
+  assert.deepEqual(rederiveDecision({ rule, answers: { branch: choice(['a', 'b'], 'a', 0.3) }, questions: {} }), { branch: 'a', taken: 'b', unsure: true });
+});
+
+test('a route whose choice names no branch decided nothing: no fail-open on an out-of-set choice', () => {
+  // The chosen branch must be one of rule.branches; a choice outside the set is a malformed answer, not a route.
+  const rule = { kind: 'route', branches: ['a', 'b'], unsure: { branch: 'b', gte: 0.8 } };
+  assert.equal(rederiveDecision({ rule, answers: { branch: choice(['a', 'b'], 'c', 0.9) }, questions: {} }), null, 'a choice outside the branches');
+  assert.equal(rederiveDecision({ rule, answers: { branch: { type: 'choice', confidence: 0.9, probabilities: {} } }, questions: {} }), null, 'no string choice at all');
+  // A valid branch still re-derives.
+  assert.deepEqual(rederiveDecision({ rule, answers: { branch: choice(['a', 'b'], 'b', 0.9) }, questions: {} }), { branch: 'b', taken: 'b', unsure: false });
+});
+
+test('a route rule recorded before branches re-derives as before: the branch check is skipped, never throws', () => {
+  // branches is optional on the route rule: a route receipt stored before it was added has no branches, and
+  // pi's durable rows re-derive such a rule. The membership check must be skipped there, not throw on a
+  // missing field (a TypeError is the very fail-open-to-crash #980 removes).
+  const old = { kind: 'route', unsure: null };
+  assert.deepEqual(rederiveDecision({ rule: old, answers: { branch: choice(['a', 'b'], 'a', 0.9) }, questions: {} }), { branch: 'a', taken: 'a', unsure: false }, 'sure, no branches');
+  const oldUnsure = { kind: 'route', unsure: { branch: 'b', gte: 0.8 } };
+  assert.deepEqual(rederiveDecision({ rule: oldUnsure, answers: { branch: choice(['a', 'b'], 'a', 0.3) }, questions: {} }), { branch: 'a', taken: 'b', unsure: true }, 'unsure, no branches');
+  // The present-answer and confidence guards still apply to an old-shape rule.
+  assert.equal(rederiveDecision({ rule: oldUnsure, answers: { branch: { type: 'choice', choice: 'a', probabilities: { a: 1 } } }, questions: {} }), null, 'old shape, missing confidence under unsure');
 });
