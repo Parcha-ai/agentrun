@@ -257,6 +257,13 @@ test("the bin on a folder that is neither a store nor a home exits 1, in words t
   assert.deepEqual([child.status, child.stdout, child.stderr], [1, "", "that folder is not an agent home or an agent store: it holds no agent.sqlite and no store.sqlite\n"]);
 });
 
+test("a start checks its port once, in the server both pages share, after the folder's own check", async () => {
+  const sources = ["server.js", "store.js"].map((file) => readFileSync(new URL(`../dist/serve/${file}`, import.meta.url), "utf8")).join("\n");
+  assert.equal(sources.match(/is not 0 to 65535/g)?.length, 1, "one port check");
+  assert.deepEqual(sources.match(/checkPort\(/g) ?? [], [], "no second call of it");
+  await assert.rejects(serveStore({ dir: path.join(await scratch(), "none") }, { port: -1 }), (error) => error.code === "missing", "the missing store is said first");
+});
+
 test("the bin serves the store's page for a folder holding a store.sqlite, drawing a workflow and reading a workflow run with what it loads on demand", { timeout: 60_000 }, async (t) => {
   const { root, revisions, ids } = await buildSampleStore(await scratch());
   const child = spawn(process.execPath, [CLI, "serve", root], { stdio: ["ignore", "pipe", "pipe"] });
