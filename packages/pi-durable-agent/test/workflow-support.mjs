@@ -5,7 +5,6 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { workspaceFiles } from "@parcha/agentrun-dsl/recovery";
 import { createWorkflowExtension } from "@parcha/agentrun-pi/durable";
-import { scratch } from "./support.mjs";
 
 export { ctx };
 
@@ -45,7 +44,8 @@ export const bodyOf = (workflow = workflowDoc()) => ({ workflow, skills: {}, too
 
 /** A run of an agent's workflow revision, in the shape `startRun` gives one, on a fresh store file. */
 export async function runOf({ body = bodyOf(), revision = "rev-a", runId = "run-1", agentId = "agent-1" } = {}) {
-  const root = await scratch();
+  // Loaded here, not at the top: support.mjs registers test hooks, and a child process that runs a host loads this module.
+  const root = await (await import("./support.mjs")).scratch();
   await mkdir(path.join(root, "store"));
   await mkdir(path.join(root, "work"));
   return { runId, dir: root, storePath: path.join(root, "store", "run.sqlite"), workspace: path.join(root, "work"), agentId, revision: { id: revision, kind: "workflow", body } };
@@ -53,9 +53,10 @@ export async function runOf({ body = bodyOf(), revision = "rev-a", runId = "run-
 
 /**
  * The host's part for a run: the DSL's workflow extension with fake tools that count their calls, on a Harness open on
- * the run's store file. `onCall(tool, count)` runs after a tool answers, before its result is committed.
+ * the run's store file. `onCall(tool, count)` runs after a tool answers, before its result is committed; the tool `fail`
+ * names throws instead.
  */
-export async function hostFor(run, { tier = "fast", onCall } = {}) {
+export async function hostFor(run, { tier = "fast", onCall, fail } = {}) {
   const calls = {};
   const answers = { "stock.check": () => ({ tier }), "prices.quote": () => ({ price: 21 }), "prices.slow_quote": () => ({ price: 34 }) };
   const workflows = createWorkflowExtension({
@@ -64,6 +65,7 @@ export async function hostFor(run, { tier = "fast", onCall } = {}) {
       adapters: {
         runEffect: async ({ node }) => {
           calls[node.tool] = (calls[node.tool] ?? 0) + 1;
+          if (node.tool === fail) throw new Error("the tool is down");
           const answer = answers[node.tool]();
           await onCall?.(node.tool, calls[node.tool]);
           return answer;
