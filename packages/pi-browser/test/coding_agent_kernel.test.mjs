@@ -15,6 +15,16 @@ test("kernel is asked for by flag and refused, naming the key, when none is set"
   assert.match(answer.message, /KERNEL_API_KEY/);
 });
 
+test("a key that is only whitespace is no key: kernel and browserbase are refused as auth, naming the key, as the providers themselves read it", { timeout: 60_000 }, async (t) => {
+  for (const [provider, env, name] of [["kernel", { KERNEL_API_KEY: "  " }, /KERNEL_API_KEY/], ["browserbase", { BROWSERBASE_API_KEY: " \t" }, /BROWSERBASE_API_KEY/]]) {
+    const agent = await startAgent(t, { extension: { env: { PATH: process.env.PATH ?? "", ...env } }, flags: { "browser-provider": provider } });
+    const [snap] = await agent.run(turn(["snapshot"]));
+    const answer = JSON.parse(snap.text);
+    assert.deepEqual([snap.isError, answer.code], [true, "auth"], `${provider}: ${snap.text}`);
+    assert.match(answer.message, name);
+  }
+});
+
 test("kernel by flag creates at Kernel with the host's key, shows the model no secret, and deletes the session on release", { timeout: 60_000 }, async (t) => {
   const sentinels = makeSentinels();
   const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });

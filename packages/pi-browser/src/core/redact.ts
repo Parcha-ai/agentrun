@@ -39,6 +39,11 @@ export function scrubPageUrl(raw: string, redact: Redact): string {
   return redact(`${url.origin}${url.pathname}${names.length ? `?${names.map((n) => `${encodeURIComponent(n)}=${REDACTED}`).join("&")}` : ""}`);
 }
 
+/** A tool result's content as the model is shown it: every text passes the redactor; an image is left as it is. */
+export function redactContent<T extends { type: string; text?: string }>(content: readonly T[], redact: Redact): T[] {
+  return content.map((item) => (item.type === "text" && typeof item.text === "string" ? { ...item, text: redact(item.text) } : item));
+}
+
 /** A live view as the host receives it, on every channel (`onSession`, a handoff's `request`): the viewer's own URLs stay
  *  whole, since the host needs their token; a browsed page's URL and title are scrubbed, since its query can carry a credential. */
 export function hostLiveView(view: LiveView, redact: Redact): LiveView {

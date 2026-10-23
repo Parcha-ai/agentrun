@@ -267,6 +267,9 @@ pi 1.0.4 or 1.1.x users: pin `@earendil-works/pi-codemode` to the same version a
 - `/providers/browserbase`, `/providers/kernel`, `/providers/cdp`: where browsers come from. Browserbase through its SDK,
   with the credential-proxy dial and the connect-URL rewrite. Kernel through its REST API on the package's own HTTP agent.
   Any CDP endpoint, or a local Chrome the provider starts and kills by exact pid.
+- `/providers/chrome-args`: `chromeArgs()`, the arguments the cdp provider starts a local Chrome with, and `extensionOrigin()`,
+  the one Origin its DevTools socket allows (Stagehand's extension). A host that starts its own Chrome for Stagehand takes them
+  from here rather than copying Stagehand's `--remote-allow-origins=*`.
 - `/providers/assigned`: `assignedSessionProvider()`, over the one session a host assigned to the run. It never creates or
   ends a browser: it hands that session to one custody at a time, and the host takes it back itself.
 - `/live-view`: a person sees and drives the local Chrome (the cdp provider) from your page, with nothing leaving the machine but the model. See
@@ -309,6 +312,10 @@ What it does with your machine and your data:
   that a crashed pi left running is closed when that session is next started, never adopted.
 - Stagehand's trace export is pointed at a closed loopback port, so nothing you browse goes to a third party.
 - `browser_relaunch` with `verified` or `geolocation` changes nothing on a local Chrome or on Kernel; they are Browserbase features.
+- A host that builds the extension with `policy: { actions: "deny" }` or `"ask"` asks for requests to be held, and the coding
+  agent has no request observer to hold them. So under either it starts no browser: every browser tool answers
+  `browser_unavailable`, naming the action policy, and `web_fetch` still works. Set `actions: "allow"` (or leave it out) to
+  browse, or use the pi-durable adapter (`/durable`), which holds requests under `deny` and `ask`.
 
 Providers and `web_fetch`:
 
@@ -386,6 +393,14 @@ after the extensions are installed and
 before anything resumes, it calls `handle.reconcile(harness, isActive, ctx)`, and every session a dead process left is bound,
 kept or released. The host wraps the tools (`handle.tools`) with its own policy: pause, call records, a result cap, media for
 the route.
+
+A policy's `navigation` is a restriction the host relies on, so a session that would not hold to it is never started. No
+provider enforces a `block` list today, so a policy with one refuses every session. An `allow` list is enforced only by a
+provider whose `caps.navigationAllow` is true (Browserbase, through `allowedDomains`); on any other provider the session is
+refused. Each refusal names the part of the policy and the provider. Both adapters behave the same.
+A provider applies an allow list only when it creates a session, so the durable adapter records it on the session. A live
+session used again under a policy whose `allow` list it was not started under (none, or a wider one) is refused the same way,
+and `browser_relaunch` starts one under the current policy.
 
 A host with its own provider implements `BrowserProvider`: `name`, `caps`, `create` (at most once, the tag stamped on the
 provider's side), `findByTag`, `status`, `attach`, `release`, and optionally `liveView`, `recordings`, `downloads`, `fetch`
