@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { AgentHomeError, readAgentHome, setAlias, setBindings, setPrompts, startRun } from "../dist/index.js";
 import { agentReader, openReadOnly, signature } from "../dist/serve/read.js";
 import { serveHome } from "../dist/serve/index.js";
+import { main as serveMain } from "../dist/serve/command.js";
 import { buildSignedInHome, PRACTICE_ORIGIN, SIGN_IN_MARKER, signedInHomeSkip } from "./fixtures/signed-in-home.mjs";
 import { scratch } from "./support.mjs";
 
@@ -555,4 +556,27 @@ test("the package says it has a bin and a ./serve entry, and the bin starts with
   assert.ok(readFileSync(CLI, "utf8").startsWith("#!/usr/bin/env node\n"));
   for (const file of ["page.html", "page.css", "page.js"]) assert.ok(existsSync(new URL(`../dist/serve/${file}`, import.meta.url)), `the build copies ${file}`);
   assert.match(readFileSync(new URL("../dist/serve/page.html", import.meta.url), "utf8"), /<link rel="stylesheet" href="\/?page\.css">[\s\S]*<script src="\/?page\.js"[^>]*><\/script>/);
+});
+
+test("an interrupt while the server is still starting stops it: main returns 0 and prints no address", { timeout: 60_000 }, async () => {
+  const dir = await scratch();
+  writeFileSync(path.join(dir, "agent.sqlite"), "");
+  const within = async (promise) => {
+    let timer;
+    const late = new Promise((resolve) => (timer = setTimeout(() => resolve("still running"), 3_000)));
+    try {
+      return await Promise.race([promise, late]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  for (const early of [false, true]) {
+    const stop = new AbortController();
+    if (early) stop.abort();
+    const out = [];
+    const ran = serveMain(["serve", dir], { out: (line) => out.push(line), err: (line) => out.push(line), signal: stop.signal });
+    stop.abort();
+    assert.equal(await within(ran), 0, early ? "a signal already aborted" : "a signal aborted during startup");
+    assert.deepEqual(out, []);
+  }
 });

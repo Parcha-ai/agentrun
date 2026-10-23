@@ -32,11 +32,17 @@ export async function main(argv: readonly string[], io: { out: (line: string) =>
   const interrupt = () => stop.abort();
   process.once("SIGINT", interrupt);
   process.once("SIGTERM", interrupt);
-  io.signal?.addEventListener("abort", interrupt, { once: true });
+  if (io.signal?.aborted) interrupt();
+  else io.signal?.addEventListener("abort", interrupt, { once: true });
+  // Made before the server starts, so an interrupt during startup is not missed.
+  const stopped = new Promise<void>((resolve) => {
+    if (stop.signal.aborted) resolve();
+    else stop.signal.addEventListener("abort", () => resolve(), { once: true });
+  });
   try {
     const served = await serveHome({ dir }, { port, signal: stop.signal });
-    io.out(served.url);
-    await new Promise<void>((resolve) => stop.signal.addEventListener("abort", () => resolve(), { once: true }));
+    if (!stop.signal.aborted) io.out(served.url);
+    await stopped;
     await served.close();
     return 0;
   } catch (error) {
