@@ -75,7 +75,7 @@
   "peerDependencies": {
     "@earendil-works/chord": ">=1.0.4 <1.4.0",
     "@earendil-works/pi-durable": ">=1.0.4 <1.4.0",
-    "@parcha/pi-transport": "0.1.0-beta.23"
+    "@parcha/pi-transport": "0.1.0-beta.24"
   },
   "dependencies": {
     "disk": "1.7.0"
@@ -84,7 +84,7 @@
     "@earendil-works/chord": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
     "@earendil-works/pi-durable": "1.1.0",
-    "@parcha/pi-transport": "0.1.0-beta.23"
+    "@parcha/pi-transport": "0.1.0-beta.24"
   },
   "repository": {
     "type": "git",
