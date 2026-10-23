@@ -7,12 +7,7 @@ import { ID_PATTERN } from "../home.js";
 import { AgentHomeError } from "../store.js";
 import { timelineOf } from "../timeline/index.js";
 import { checkInside, readEntriesAt } from "./read.js";
-import type { readWorkflowRun as ReadRun } from "../workflow.js";
 import { type ServeHandle, serveLocal, type ServeOptions } from "./server.js";
-
-/** ./workflow's readWorkflowRun, imported only when a workflow run is shown. */
-export type ReadWorkflowRun = typeof ReadRun;
-const readWorkflowRun: ReadWorkflowRun = async (run) => (await import("../workflow.js")).readWorkflowRun(run);
 
 export type DiffLine = { op: "same" | "add" | "del"; text: string };
 
@@ -87,7 +82,7 @@ async function revisionView(reader: AgentStoreReader, revision: Revision, curren
 /** One run: its row, its agent's name and its revision's note, then what it did, read from its own store under runs/: an
  *  agentic run's timeline, or a workflow run's record. An AgentHomeError from the workflow's reader (a run this version
  *  does not read) is the one line the page shows in place of the graph. A run whose directory is gone says so. */
-async function runView(dir: string, reader: AgentStoreReader, run: RunRow, readRun: ReadWorkflowRun) {
+async function runView(dir: string, reader: AgentStoreReader, run: RunRow) {
   const revision = reader.readRevision(run.revision);
   const value = { run, agent: reader.listAgents().find((agent) => agent.id === run.agent)?.name ?? run.agent, note: revision.note };
   const storePath = reader.runStorePath(run.id);
@@ -95,7 +90,9 @@ async function runView(dir: string, reader: AgentStoreReader, run: RunRow, readR
   checkInside(dir, storePath, "store");
   if (revision.kind === "agentic") return { ...value, rows: timelineOf(readEntriesAt(dir, storePath, "store"), { settled: run.state !== "running" }) };
   try {
-    return { ...value, workflow: await readRun({ runId: run.id, storePath, revision }) };
+    // ./workflow is imported here, for a workflow run only: a store of agentic runs never loads it.
+    const { readWorkflowRun } = await import("../workflow.js");
+    return { ...value, workflow: await readWorkflowRun({ runId: run.id, storePath, revision }) };
   } catch (error) {
     if (error instanceof AgentHomeError) return { ...value, refused: error.message };
     throw error;
@@ -116,12 +113,7 @@ const PAGES = {
  * the agents, `GET /api/agents/:id` one agent and its revisions, `GET /api/runs?agent=&revision=` the runs newest first,
  * and `GET /api/runs/:id` one run.
  */
-export function serveStore(store: { readonly dir: string }, options: ServeOptions = {}): Promise<ServeHandle> {
-  return serveStoreWith(store, options, readWorkflowRun);
-}
-
-/** @internal `serveStore` with the workflow run reader given, for tests. */
-export async function serveStoreWith(store: { readonly dir: string }, options: ServeOptions, readRun: ReadWorkflowRun): Promise<ServeHandle> {
+export async function serveStore(store: { readonly dir: string }, options: ServeOptions = {}): Promise<ServeHandle> {
   const dir = path.resolve(store.dir);
   if (!existsSync(path.join(dir, STORE_FILE))) throw new AgentHomeError("missing", `there is no ${STORE_FILE} in that folder`);
   return serveLocal(PAGES, async (pathname, query) => {
@@ -144,7 +136,7 @@ export async function serveStoreWith(store: { readonly dir: string }, options: S
         return { status: 200, value: { agent, revisions } };
       }
       const run = reader.listRuns().find((candidate) => candidate.id === id);
-      return run ? { status: 200, value: await runView(dir, reader, run, readRun) } : notFound("run");
+      return run ? { status: 200, value: await runView(dir, reader, run) } : notFound("run");
     } finally {
       reader.close();
     }

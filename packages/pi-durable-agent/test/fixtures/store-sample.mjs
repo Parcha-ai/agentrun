@@ -1,13 +1,18 @@
 // A small agent store for looking at `pi-durable-agent serve` on a store, written through the store's own API: three
 // agents, the first with three revisions (A agentic with prompt A, B agentic with prompt B, C a workflow), runs in every
-// state, one with no cost, one still running and one whose directory is gone. A stand-in for ./workflow's
-// readWorkflowRun answers for the workflow runs below; the graphs are the DSL's own.
+// state, one with no cost, one still running and one whose directory is gone. Each workflow run is run for real with
+// scripted tools, as a host runs one, so ./workflow's readWorkflowRun reads it from its own store.
 // `node test/fixtures/store-sample.mjs <dir>` builds it in <dir>/my-agents and serves it, printing the address.
 import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { workflowGraph } from "@parcha/agentrun-dsl/graph";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { workspaceFiles } from "@parcha/agentrun-dsl/recovery";
+import { createWorkflowExtension } from "@parcha/agentrun-pi/durable";
 import { openStore } from "../../dist/index.js";
+import { runWorkflowRevision } from "../../dist/workflow.js";
 import { append, assistant, call, research, user } from "./serve-sample.mjs";
 
 export const PROMPT_A = [
@@ -55,28 +60,37 @@ export const MCC_WORKFLOW_2 = workflow("mcc", { schemaId: "Answer", path: "answe
   step("Answer", "mcc.report", "answer", "Answer"),
 ]);
 export const PRIVATE = "/root/steps/1/branches/private/body";
-const PUBLIC = "/root/steps/1/branches/public/body";
 
-/** What the workflow run reader gives for each workflow run, by its role in the store, beside the graph of its revision. */
-const RECORDS = {
-  c1: { status: { "/root": "done", "/root/steps/0": "done", "/root/steps/1": "done", [PUBLIC]: "done", [PRIVATE]: "not-run" }, outcome: "completed", output: { brief: "Caterpillar Inc. makes heavy machinery; its 10-K is cited." } },
-  c2: { status: { "/root": "escalated", "/root/steps/0": "done", "/root/steps/1": "escalated", [PUBLIC]: "not-run", [PRIVATE]: "escalated" }, outcome: "escalated", escalatedAt: { path: PRIVATE, label: "No public record" } },
-  m1: { status: { "/root": "done", "/root/steps/0": "done", "/root/steps/1": "done", "/root/steps/2": "done" }, outcome: "completed", output: "5732" },
-  m3: { status: { "/root": "done", "/root/steps/0": "done", "/root/steps/1": "done", "/root/steps/2": "done", "/root/steps/3": "done" }, outcome: "completed", output: { code: "5399" } },
-  m4: { status: { "/root": "working", "/root/steps/0": "done", "/root/steps/1": "working", "/root/steps/2": "not-run", "/root/steps/3": "not-run" }, outcome: "stopped" },
-};
+/** What each scripted tool answers; a run's page (`web.fetch`) is its own. */
+const ANSWERS = { "filings.search": { brief: "Caterpillar Inc. makes heavy machinery; its 10-K is cited." }, "mcc.pick": { code: "5732" }, "mcc.format": { code: "5732" }, "market.check": { code: "no" }, "mcc.report": { code: "5399" } };
+const PUBLIC_PAGE = { kind: "public", employees: 4_000 };
 
-/** A stand-in for readWorkflowRun over the store's runs (`ids`, a run's id by its role): it answers from RECORDS with
- *  the graph of the run's revision, keeps what it was asked, and throws `refuse` when given one. */
-export function sampleReadRun(ids, { refuse } = {}) {
-  const calls = [];
-  const readWorkflowRun = async (run) => {
-    calls.push(run);
-    if (refuse) throw refuse;
-    const role = Object.keys(ids).find((name) => ids[name] === run.runId);
-    return { graph: workflowGraph(run.revision.body.workflow), ...RECORDS[role] };
-  };
-  return { calls, readWorkflowRun };
+/** A started workflow run, run to its end as a host runs one: ./workflow's runWorkflowRevision on the run's own store,
+ *  with scripted tools that answer `page` for the site and ANSWERS for the rest. With `stopAt`, the run is stopped when
+ *  that tool is called. Resolves to what carryBack takes. */
+async function recordWorkflow(started, { page = PUBLIC_PAGE, stopAt } = {}) {
+  let stopping;
+  const workflows = createWorkflowExtension({
+    options: () => ({ files: workspaceFiles(started.workspace) }),
+    run: () => ({
+      adapters: {
+        runEffect: async ({ node }) => {
+          if (node.tool === stopAt) stopping ??= workflows.stop(harness, started.runId, "cancel", ctx);
+          return node.tool === "web.fetch" ? page : ANSWERS[node.tool];
+        },
+      },
+    }),
+  });
+  const registry = createRegistry();
+  registry.install(workflows.extension);
+  const harness = await Harness.open(await openNodeSqliteStorage(started.storePath), { registry, models: {} }, ctx);
+  try {
+    const { carry } = await runWorkflowRevision({ harness, workflows, context: ctx, run: started, input: { site: "https://example.org" }, tools: started.revision.body.tools });
+    await stopping;
+    return carry;
+  } finally {
+    await harness.close(ctx);
+  }
 }
 
 /** The sample store in `dir/my-agents`, through openStore; resolves to its path, its revisions and each run's id by its
@@ -99,24 +113,27 @@ export async function buildSampleStore(dir) {
     };
     // Oldest first: each run starts after the one before.
     const runs = [
-      ["m1", revisions.M1, { state: "completed", costUsd: 0.027, summary: "Read the site → Pick the MCC → Format the answer" }],
-      ["m2", revisions.M1, { state: "completed", costUsd: 0.03 }],
+      ["m1", revisions.M1, { costUsd: 0.027 }],
+      ["m2", revisions.M1, { costUsd: 0.03 }],
       ["a1", revisions.A, { state: "completed", costUsd: 0.409, summary: "Caterpillar Inc. builds heavy machinery." }, research("Caterpillar Inc.", "10-K", 0)],
       ["a2", revisions.A, { state: "failed", costUsd: 0.221, summary: "web_fetch: 403 Forbidden on the investor page" }, research("Caterpillar Inc.", "investors", 10).slice(0, 6)],
       ["b1", revisions.B, { state: "completed", costUsd: 0.312, summary: "Caterpillar Inc. builds heavy machinery; brief.md cites 6 pages." }, research("Caterpillar Inc.", "10-K", 20)],
       ["b2", revisions.B, { state: "completed", summary: "Habitat for Humanity builds homes; brief.md cites its Form 990." }, research("Habitat for Humanity", "Form 990", 30)],
-      ["m3", revisions.M2, { state: "completed", costUsd: 0.022, summary: "Read the site → Is it a marketplace → Pick the MCC → Answer" }],
-      ["m4", revisions.M2, { state: "stopped", summary: "Read the site" }],
+      ["m3", revisions.M2, { costUsd: 0.022 }],
+      ["m4", revisions.M2, { stopAt: "market.check" }],
       ["t1", revisions.T1, null, [user("Sort today's inbox.", Date.UTC(2026, 9, 23, 3, 30)), assistant([{ type: "thinking", thinking: "Forty messages; I will read them in date order." }, call("t1", "read", { path: "inbox/0001.eml" })], Date.UTC(2026, 9, 23, 3, 30, 4))]],
-      ["c1", revisions.C, { state: "completed", costUsd: 0.041, summary: "Read the site → Jev: public or private → Check the filing" }],
-      ["c2", revisions.C, { state: "escalated", costUsd: 0.018, summary: "escalated at No public record" }],
+      ["c1", revisions.C, { costUsd: 0.041 }],
+      ["c2", revisions.C, { costUsd: 0.018, page: { kind: "private", employees: 12 } }],
     ];
     const ids = {};
     for (const [role, revision, end, entries] of runs) {
       const started = await store.startRun({ agent: revision.agent, revision: revision.id });
       ids[role] = started.runId;
       if (entries) append(started.storePath, entries);
-      if (end) store.carryBack(started.runId, end);
+      if (revision.kind === "workflow") {
+        const { state, summary } = await recordWorkflow(started, end);
+        store.carryBack(started.runId, { state, ...(summary ? { summary } : {}), ...(end.costUsd !== undefined ? { costUsd: end.costUsd } : {}) });
+      } else if (end) store.carryBack(started.runId, end);
       await new Promise((resolve) => setTimeout(resolve, 2));
     }
     rmSync(path.join(root, "runs", ids.m2), { recursive: true });
@@ -130,8 +147,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   if (!process.argv[2]) throw new Error("usage: node test/fixtures/store-sample.mjs <dir>");
   const dir = path.resolve(process.argv[2]);
   mkdirSync(dir, { recursive: true });
-  const { root, ids } = await buildSampleStore(dir);
-  const { serveStoreWith } = await import("../../dist/serve/store.js");
-  const served = await serveStoreWith({ dir: root }, {}, sampleReadRun(ids).readWorkflowRun);
+  const { root } = await buildSampleStore(dir);
+  const { serveStore } = await import("../../dist/serve/index.js");
+  const served = await serveStore({ dir: root });
   console.log(served.url);
 }

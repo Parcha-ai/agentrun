@@ -4,16 +4,18 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, symlinkSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { workflowGraph } from "@parcha/agentrun-dsl/graph";
-import { AgentHomeError, durableProfileStore, openStoreReader } from "../dist/index.js";
+import { AgentHomeError, durableProfileStore, openStore, openStoreReader } from "../dist/index.js";
 import { serveStore } from "../dist/serve/index.js";
-import { lineDiff, serveStoreWith } from "../dist/serve/store.js";
-import { BRIEF_WORKFLOW, buildSampleStore, MCC_WORKFLOW_2, PRIVATE, PROMPT_A, PROMPT_B, sampleReadRun, SKILL_MARKER } from "./fixtures/store-sample.mjs";
+import { lineDiff } from "../dist/serve/store.js";
+import { runWorkflowRevision } from "../dist/workflow.js";
+import { BRIEF_WORKFLOW, buildSampleStore, MCC_WORKFLOW_2, PRIVATE, PROMPT_A, PROMPT_B, SKILL_MARKER } from "./fixtures/store-sample.mjs";
 import { all, assertInert, mount } from "./page-dom.mjs";
+import { hostFor, mapDoc } from "./workflow-support.mjs";
 import { ctx, openSession, request, scratch } from "./support.mjs";
 
 const CLI = fileURLToPath(new URL("../dist/serve/cli.js", import.meta.url));
@@ -27,15 +29,14 @@ const files = (dir) => readdirSync(dir, { withFileTypes: true, recursive: true }
 /** The same, but for the run stores' shared-memory side files, which a read-only open of a WAL store may make. */
 const mainFiles = (dir) => files(dir).filter((file) => !/-(wal|shm)$/.test(file.path));
 
-async function sample(options = {}) {
+async function sample() {
   const { root, revisions, ids } = await buildSampleStore(await scratch());
-  const workflow = sampleReadRun(ids, options);
-  const served = await serveStoreWith({ dir: root }, {}, workflow.readWorkflowRun);
+  const served = await serveStore({ dir: root });
   const get = async (target) => {
     const res = await request(served.url, { target });
     return { ...res, json: res.headers["content-type"]?.startsWith("application/json") ? JSON.parse(res.body) : undefined };
   };
-  return { root, revisions, ids, workflow, served, get };
+  return { root, revisions, ids, served, get };
 }
 
 test("the picker: the store's agents, each with its current revision's kind and its run count, read in place without a write: the file stays byte-identical and the reader's handle cannot write", async () => {
@@ -196,35 +197,33 @@ test("a copy of the fixture folder served through serveStore: its workflow runs 
   }
 });
 
-test("a workflow run: the reader is given the run's own store and its revision's workflow; the answer is the graph, each node's state, where an escalation stopped it, and a completed run's output", async () => {
-  const { root, revisions, served, get, workflow, ids } = await sample();
+test("a workflow run its reader refuses (one in the keyed layout) is that refusal's one line beside the run's row; a run store that is no store is a plain 500", async () => {
+  const dir = path.join(await scratch(), "keyed-agents");
+  const store = openStore(dir);
+  const agent = store.createAgent({ name: "Keyed" });
+  await store.commitRevision(agent.id, { kind: "workflow", workflow: mapDoc(), tools: ["stock.check"] }, { setCurrent: true });
+  const keyed = await store.startRun({ agent: agent.id });
+  const host = await hostFor(keyed, { layout: "v4" });
   try {
-    const escalated = (await get(`/api/runs/${ids.c2}`)).json;
-    assert.deepEqual(workflow.calls.map((call) => [call.runId, call.storePath, call.revision]), [[ids.c2, path.join(root, "runs", ids.c2, "store", "run.sqlite"), revisions.C]], "the run's own store, in place, and its verified revision");
-    assert.deepEqual([escalated.run.state, escalated.workflow.outcome, escalated.workflow.escalatedAt, escalated.workflow.status[PRIVATE], escalated.workflow.output], ["escalated", "escalated", { path: PRIVATE, label: "No public record" }, "escalated", undefined]);
-    assert.deepEqual(escalated.workflow.graph, JSON.parse(JSON.stringify(workflowGraph(BRIEF_WORKFLOW))));
-    const completed = (await get(`/api/runs/${ids.c1}`)).json;
-    assert.deepEqual([completed.workflow.outcome, completed.workflow.output], ["completed", { brief: "Caterpillar Inc. makes heavy machinery; its 10-K is cited." }]);
+    await assert.rejects(runWorkflowRevision({ harness: host.harness, workflows: host.workflows, context: ctx, run: keyed, input: { skus: ["a", "b"] }, tools: ["stock.check"] }), (error) => error.code === "format");
+  } finally {
+    await host.close();
+  }
+  store.carryBack(keyed.runId, { state: "failed", costUsd: 0.01, summary: "two items stocked" });
+  const broken = await store.startRun({ agent: agent.id });
+  store.carryBack(broken.runId, { state: "failed" });
+  writeFileSync(broken.storePath, "not a database");
+  store.close();
+  const served = await serveStore({ dir });
+  try {
+    const refused = await request(served.url, { target: `/api/runs/${keyed.runId}` });
+    const json = JSON.parse(refused.body);
+    assert.equal(refused.status, 200);
+    assert.deepEqual([json.refused, json.run.state, json.run.costUsd, json.run.summary, json.workflow], ["a run in the keyed layout is not read here", "failed", 0.01, "two items stocked", undefined]);
+    const bad = await request(served.url, { target: `/api/runs/${broken.runId}` });
+    assert.deepEqual([bad.status, JSON.parse(bad.body)], [500, { error: "the agent store could not be read" }], "no value and no path");
   } finally {
     await served.close();
-  }
-});
-
-test("a workflow run its reader refuses is that refusal's one line beside the run's row; any other failure is a plain 500", async () => {
-  const refused = await sample({ refuse: new AgentHomeError("format", "a run in the keyed layout is not read here") });
-  try {
-    const res = await refused.get(`/api/runs/${refused.ids.c2}`);
-    assert.equal(res.status, 200);
-    assert.deepEqual([res.json.refused, res.json.run.state, res.json.run.costUsd, res.json.run.summary, res.json.workflow], ["a run in the keyed layout is not read here", "escalated", 0.018, "escalated at No public record", undefined]);
-  } finally {
-    await refused.served.close();
-  }
-  const broken = await sample({ refuse: new Error(`boom at ${"/secret/path"}`) });
-  try {
-    const res = await broken.get(`/api/runs/${broken.ids.c2}`);
-    assert.deepEqual([res.status, res.json], [500, { error: "the agent store could not be read" }]);
-  } finally {
-    await broken.served.close();
   }
 });
 
@@ -255,7 +254,7 @@ test("a store a writer was killed in mid-transaction: the picker and an agent pa
   assert.equal(killed.signal, "SIGKILL");
   const hashes = () => ["store.sqlite", "store.sqlite-journal"].map((name) => createHash("sha256").update(readFileSync(path.join(root, name))).digest("hex"));
   const before = hashes();
-  const served = await serveStoreWith({ dir: root }, {}, sampleReadRun(ids).readWorkflowRun);
+  const served = await serveStore({ dir: root });
   try {
     for (const target of ["/api/store", "/api/agents/company-researcher", "/api/store"]) {
       const res = await request(served.url, { target });
