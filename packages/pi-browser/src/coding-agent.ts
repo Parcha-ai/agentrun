@@ -7,7 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { BROWSER_TOOLS, WEB_TOOLS, browserSection, listedFor, type ToolContract } from "./core/contract.js";
 import {
-  BrowserFailureError, closeDriver, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, loadedNoPage, moveRecord, newSessionRecord, notices, NOTHING_TO_HOLD, profileRefusal, sessionSpec, waitingForHuman, backoffMs, NO_HANDOFF,
+  BrowserFailureError, closeDriver, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, loadedNoPage, moveRecord, newSessionRecord, notices, NOTHING_TO_HOLD, navigationRefusal, profileRefusal, sessionSpec, waitingForHuman, backoffMs, NO_HANDOFF,
   type AttachedSession, type CustodyPort, type DriverFactory, type FenceMark, type Overrides, type ToolOutput,
 } from "./core/custody.js";
 import { browserFailure, classifyBrowserError, type BrowserFailure } from "./core/failures.js";
@@ -55,6 +55,8 @@ export type CodingAgentOptions = {
 };
 
 const BROWSER_FLAGS = ["browser-provider", "browser-endpoint", "browser-chrome", "browser-headed", "browser-no-sandbox"] as const;
+
+const UNHELD_ACTIONS = browserFailure("browser_unavailable", "This run's action policy holds the requests the browser would send (deny or ask), and the pi coding agent cannot hold them, so no browser is started. web_fetch still reads pages. To browse, the person sets the policy's `actions` to \"allow\" (or leaves it out), or runs the browser through the pi-durable adapter, which holds requests.");
 
 /** No browser can be had: a missing key, a bad flag or no Chrome. Unavailable unless the cause is a credential (`auth`) or a refusal. */
 const noBrowser = (message: string, code: BrowserFailure["code"] = "browser_unavailable"): BrowserFailureError =>
@@ -156,10 +158,13 @@ export class LocalCustody implements CustodyPort<PageDriver> {
   }
 
   private async launch(overrides: Overrides): Promise<AttachedSession<PageDriver>> {
+    // This host has no request observer, so a policy that holds requests (deny, ask) would be dropped and every request sent:
+    // it starts no browser instead, as the durable adapter refuses to browse without its observer.
+    if (this.d.config.policy.actions && this.d.config.policy.actions !== "allow") throw new BrowserFailureError(UNHELD_ACTIONS);
     const provider = await this.d.provider();
     const tag = leaseTag("pib", this.d.config.run, randomUUID().slice(0, 8), ++this.seq);
     const spec = sessionSpec(this.d.config, tag, overrides);
-    const unsupported = profileRefusal(spec, provider.caps);
+    const unsupported = profileRefusal(spec, provider.caps) ?? navigationRefusal(spec, provider);
     if (unsupported) throw new BrowserFailureError(unsupported);
     const record = newSessionRecord({ plane: "browser", tag, provider: provider.name, spec, at: now(), honours: provider.caps.settings });
     this.save(record);

@@ -4,7 +4,7 @@ import { configure, defineDoc, defineExtension, defineTool, type Conversation, t
 import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema, Usage } from "@earendil-works/pi-ai";
 import { BROWSER_TOOL_NAMES, BROWSER_TOOLS, browserSection, listedFor, WEB_TOOL_NAMES } from "./core/contract.js";
-import { BrowserFailureError, closeDriver, currentRecord, loadedNoPage, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, newSessionRecord, notices, NAVIGATION_CAP, NOTHING_TO_HOLD, profileRefusal, relaunchRefusal, SESSION_REPLACED, sessionSpec, waitingForHuman, type AttachedSession, type CustodyPort, type DriverFactory, type FenceMark, type Overrides, type ToolOutput, NO_HANDOFF } from "./core/custody.js";
+import { BrowserFailureError, closeDriver, currentRecord, loadedNoPage, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, newSessionRecord, notices, NAVIGATION_CAP, NOTHING_TO_HOLD, navigationRefusal, profileRefusal, relaunchRefusal, SESSION_REPLACED, sessionSpec, waitingForHuman, type AttachedSession, type CustodyPort, type DriverFactory, type FenceMark, type Overrides, type ToolOutput, NO_HANDOFF } from "./core/custody.js";
 import { forModel } from "./durable/result.js";
 import type { Decisions } from "./core/decisions.js";
 import type { EvidenceSink } from "./core/evidence.js";
@@ -252,6 +252,14 @@ const failure = (error: unknown, scope: Scope, redact: Redact) =>
 /** `bound`, when given, limits the attach beside the call's own signal (a reconnect's budget); the check for a session the
  *  provider ended keeps the call's own. */
 async function attachLive<D extends PageDriver>(c: Custody<D>, scope: Scope, record: SessionRecord, bound?: AbortSignal): Promise<D | null> {
+  // A live session reused, resumed by another process or kept across a change of policy, meets the navigation check a new one
+  // meets at create: a policy its provider cannot enforce is refused, and so is an allow list the session was not started under,
+  // never browsed under because the session already existed.
+  const navigation = (await scopeConfig(c, scope)).policy.navigation;
+  if (navigation) {
+    const refusal = navigationRefusal({ navigation }, await scopeProvider(c, scope), { applied: record.settings.navigationAllow });
+    if (refusal) throw new BrowserFailureError(refusal);
+  }
   const held = c.held.driver(record.tag);
   // An observer whose socket closed holds nothing: driver and observer are attached again together.
   if (held && !c.held.observer(record.tag)?.closed) return held;
@@ -310,7 +318,7 @@ async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrid
   const provider = await c.options.provider({ conversationId: scope.cid, plane: scope.plane, config });
   const tag = presetTag ?? leaseTag("ar", config.run, scope.cid, (await stateOf(c, scope)).sessions.length + 1);
   const spec = sessionSpec(config, tag, overrides);
-  const unsupported = profileRefusal(spec, provider.caps);
+  const unsupported = profileRefusal(spec, provider.caps) ?? navigationRefusal(spec, provider);
   if (unsupported) throw new BrowserFailureError(unsupported);
   const record = newSessionRecord({ plane: scope.plane, tag, provider: provider.name, spec, at: now(), honours: provider.caps.settings });
   const row = rowOf(scope.cid, record);

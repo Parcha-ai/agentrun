@@ -160,6 +160,8 @@ function keptOf(state: unknown, origins: string[]): Kept {
     } catch (error) {
       throw invalid(`the provider context's origins: ${(error as Error).message}`);
     }
+    // A context cannot be cut down: one holding an origin the capture does not allow would keep that origin's sign-in.
+    if (!(state.origins as string[]).every((origin) => origins.includes(origin))) throw invalid("the provider context's origins go beyond the capture's");
     return { kind: "provider-context", provider: state.provider, contextId: state.contextId, origins: [...(state.origins as string[])] };
   }
   throw invalid("the captured state's kind is not cdp or provider-context");
@@ -220,10 +222,10 @@ const recordAad = (agentId: string, sessionKey: string, keyId: string, kind: str
  * new item key and destroys the one before it, `forget` destroys a session's key and `forgetAll` every key. The first
  * capture binds the home to `hostKey`; any other host key is refused (`key`). Session cookies come back for at most
  * `maxSessionCookieAgeMs` after their capture (24 hours, the most; a host may only lower it). A provider context, which
- * cannot be cut down to fewer origins, comes back only to a restore that names every origin it was captured for; any
- * other gets null. A capture is dated by its state's `capturedAt` (a time to come counts as now), and one older than
- * the session already kept is ignored. With `runId`, a capture is refused (`busy`) while another live run holds that
- * session's save lease.
+ * cannot be cut down to fewer origins, comes back only to a restore that names every origin it was captured for or
+ * records; any other gets null. A context that records an origin its capture does not allow is refused (`invalid`). A
+ * capture is dated by its state's `capturedAt` (a time to come counts as now), and one older than the session already
+ * kept is ignored. With `runId`, a capture is refused (`busy`) while another live run holds that session's save lease.
  */
 export function sessionVault(home: AgentHome, options: { hostKey: HostKey; maxSessionCookieAgeMs?: number; runId?: string; access?: HomeAccess; now?: () => number }): SessionVault {
   const hostKey = options?.hostKey;
@@ -335,7 +337,7 @@ export function sessionVault(home: AgentHome, options: { hostKey: HostKey; maxSe
         }
         const at = now();
         if (captured.kind === "provider-context") {
-          if (!record.origins.every((origin) => requested.includes(origin))) return null;
+          if (![...record.origins, ...(captured.origins ?? [])].every((origin) => requested.includes(origin))) return null;
           handed.add(captured.contextId);
           return { kind: "provider-context", capturedAt: captured.capturedAt, provider: captured.provider, contextId: captured.contextId, ...(captured.origins ? { origins: captured.origins } : {}) };
         }
