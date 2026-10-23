@@ -25,11 +25,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const invalid = (message: string) => new AgentHomeError("invalid", message);
 
 /**
- * Checks a workflow revision's body before a store commits it: the workflow passes the DSL's structural validation (code
- * not run, no input) and what the durable runner checks before any step, and every tool a call node uses is in `tools`
- * (none when absent). A refusal is an `AgentHomeError`
- * `invalid` naming the node's path and what is wrong, never a value from the body. A call node that is not `via: "tool"`
- * passes on purpose: whether it runs is the host's to decide. It writes nothing.
+ * Checks a workflow revision's body before a store commits it: the workflow passes the DSL's structural validation
+ * (code not run, no input) and what the durable runner checks before any step, and every tool a call node uses is in
+ * `tools` (none when absent). A refusal is an `AgentHomeError` `invalid` naming the node's path and what is wrong,
+ * never a value from the body. A call node that is not `via: "tool"` passes on purpose: whether it runs is the host's
+ * to decide. It writes nothing.
  */
 export async function checkWorkflowBody(body: unknown): Promise<void> {
   if (!isRecord(body) || !isRecord(body.workflow)) throw invalid("a workflow revision's body must be an object holding its workflow as an object");

@@ -155,8 +155,9 @@ export function exitCodeOf(code, signal) {
 
 /**
  * `readmeLine`: install with the README's own install line (`readmeInstall`) instead of the spec's package and pinned
- * peers. With `registry` the line runs as written; without, this tree's packed package takes its place on the line and
- * the peers stay as written, so the result says whether the next release installs the way the README says.
+ * peers. With `registry` the line runs as written; without, this tree's packed package takes its place on the line, the
+ * repository packages it depends on are installed beside it from this tree, and the peers stay as written, so the result
+ * says whether the next release installs the way the README says.
  */
 export async function stranger(name, { registry = false, tarballs: given, readmeLine = false, examplesOnly = false } = {}) {
   const spec = await loadSpec(name);
@@ -180,15 +181,20 @@ export async function stranger(name, { registry = false, tarballs: given, readme
     let installArgs;
     if (readmeLine) {
       const line = extractSnippet(await readFile(join(root, spec.readmeInstall.readme), 'utf8'), spec.readmeInstall);
-      const packed = new Map();
+      const named = new Set(line.trim().split(/\s+/).map(nameOf));
+      assert.ok(named.has(spec.package), `${name}: the README's install line does not install ${spec.package}`);
+      const packed = new Map(), beside = [];
       if (!registry) {
         const tarballs = await pack(spec.install, packs);
         for (const [i, directory] of spec.install.entries()) {
-          packed.set(JSON.parse(await readFile(join(root, 'packages', directory, 'package.json'), 'utf8')).name, tarballs[i]);
+          const packageName = JSON.parse(await readFile(join(root, 'packages', directory, 'package.json'), 'utf8')).name;
+          // A package the line does not name is one the line's packages depend on, packed from this tree because the
+          // registry does not serve its version before the release: it is installed beside the line's own.
+          if (named.has(packageName)) packed.set(packageName, tarballs[i]); else beside.push(tarballs[i]);
         }
       }
       // Scripts, audit and fund change nothing about what resolves.
-      installArgs = [...readmeInstallArgs(line, packed), '--ignore-scripts', '--no-audit', '--no-fund'];
+      installArgs = [...readmeInstallArgs(line, packed), ...beside, '--ignore-scripts', '--no-audit', '--no-fund'];
     } else {
       let sources;
       if (registry) sources = [`${spec.package}@beta`, ...(spec.companions ?? []).map(companion => `${companion}@beta`)];

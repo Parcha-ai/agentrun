@@ -457,6 +457,20 @@ by `tool_use_id`, never by time. A row is built from pi entries and events only:
 browser context id or a cookie, and every summary, preview and text (a person's own message excepted) keeps a URL's
 origin, path and query keys but drops its query values, fragment and userinfo. `registerLabel(tool, label)` adds the label of a host's own tool.
 
+## A workflow revision
+
+A revision of an agent can be a DSL workflow instead of a prompt. Its run executes the workflow with agentrun-pi's
+durable workflow task on the run's own store, not the agent loop. `@parcha/pi-durable-agent/workflow` holds the three
+steps; the root never imports it, and only these functions load `@parcha/agentrun-dsl` and `@parcha/agentrun-pi`.
+
+1. Before a store commits a workflow revision, `checkWorkflowBody(body)` checks it: the DSL's structural validation,
+   what the durable runner refuses before any step, and that `tools` lists every tool a call node uses.
+2. To run it, open a Harness on the run's `storePath` with agentrun-pi's `createWorkflowExtension` installed (it holds
+   your tools), and call `runWorkflowRevision({ harness, workflows, context, run, input, tools })`. It returns the DSL's
+   `outcome` and a `carry`, `{ state, summary }`, for the store's `carryBack`.
+3. `readWorkflowRun(run)` reads the run back for a page, read-only: the workflow's graph, each node's state, and, once
+   the run ended, how it ended, where it escalated and its output.
+
 ## Library
 
 Three entry points: `@parcha/pi-durable-agent` (everything below but the timeline), `@parcha/pi-durable-agent/export`
@@ -543,6 +557,19 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `TimelineKind`, `TimelineOptions`,
 `EntryLike` (a pi conversation entry as stored), `AgentEventLike` (a pi event), `Call`, `Fold`, `Group`, `LabelFn`,
 `FoldSpec` and `ToolResultView`.
+
+### `@parcha/pi-durable-agent/workflow`
+
+It loads `@parcha/agentrun-dsl` and `@parcha/agentrun-pi` only when one of its functions runs.
+
+| Export | Does |
+|---|---|
+| `checkWorkflowBody(body)` | Refuses, as `invalid`, a workflow revision's body a store must not commit, naming the node's path and never a value from the body |
+| `runWorkflowRevision(options)` | Runs the revision's workflow as one durable workflow task on the run's store and waits: `{ outcome, carry }`. A workflow that uses a tool the host does not register, or does not take the input, is refused with no task; the run reopened under another revision is refused (`RUN_STORE_BINDING_MISMATCH`) |
+| `readWorkflowRun(run)` | The run as its store shows it, read-only: no write, no lock, no Harness. A run in the driver's keyed layout is refused as `format` |
+
+Its types: `WorkflowBody`, `WorkflowRunStart` (the part of a store's started run it reads), `WorkflowRunView`,
+`RunState`, and the DSL's `WorkflowGraph`, `NodeState` and `WorkflowOutcome`.
 
 ### Errors
 
