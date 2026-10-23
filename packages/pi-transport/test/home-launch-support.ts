@@ -562,6 +562,28 @@ export function registerLaunchSuite(label: string, withBox: WithBox): void {
 	);
 
 	each(
+		"a directory above the spool that other users, not its group, could write is refused (707, no sticky bit)",
+		async (box) => {
+			const spool = await spoolOf(box);
+			// TMPDIR, or /tmp: the launcher's uid's own, root's in a container. Only the other-write bit stands between it and 700.
+			const parent = spool.slice(0, spool.lastIndexOf("/"));
+			const was = (await sh(box, `stat -c %a "${parent}"`)).text.trim();
+			const spec = program(recording("exec sleep 300"));
+			try {
+				await sh(box, `chmod 707 "${parent}"`);
+				const refused = await launch(box, "above-other", spec, context);
+				expectUnsafe(refused, ABOVE);
+				expect(refused.ok ? "" : refused.error.message.startsWith(`${parent}, `)).toBe(true);
+				expect(await pids(box)).toHaveLength(0);
+				await sh(box, `chmod 700 "${parent}"`);
+				expect(unwrap(await launch(box, "above-other", spec, context)).phase).toBe("running");
+			} finally {
+				await sh(box, `chmod ${was} "${parent}"`);
+			}
+		},
+	);
+
+	each(
 		"a launch directory replaced between two calls is refused at the second, and nothing runs from it",
 		async (box) => {
 			const started = unwrap(await launch(box, "moved", program(recording("exec sleep 300")), context));
