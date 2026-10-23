@@ -20,6 +20,7 @@ import { HOST_WORKFLOW, handoffText, hostRunName, hostUses, runPromoted } from '
 import { gatedAdmitter } from './gates.mjs';
 import { gatePick } from './pick-gate.mjs';
 import { PICK_NODE_INSTRUCTIONS, pickLabelsOf, READ_TOOLS } from './pick-node.mjs';
+import { TIER_NODE_INSTRUCTIONS, tierLabelsOf } from './tier-node.mjs';
 
 export { agentHomeFor, prepareRun, readAgentAt } from '../agent-learn/host.mjs';
 
@@ -366,11 +367,16 @@ export function settleWithin(promise, ms, message) {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null, hostOnly = false, pickGate = null, pickNode = null, callDeadlineMs = CALL_DEADLINE_MS, runDeadlineMs = RUN_DEADLINE_MS }) {
+export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null, hostOnly = false, pickGate = null, pickNode = null, tierNode = null, callDeadlineMs = CALL_DEADLINE_MS, runDeadlineMs = RUN_DEADLINE_MS }) {
   if (hostOnly && !dispatch) throw new Error('a host-only run needs a workflow to dispatch');
   // ARM H (pick-node.mjs): with `pickNode` ({ key }), each whole-job workflow's pick step runs on the root's model and
   // thinking with its own tools and the run's read tools; a workflow that has no pick step refuses the run here.
   const pickLabels = pickNode ? await pickLabelsOf({ run, dispatch, key: pickNode.key }) : new Set();
+  // ARM H2 (tier-node.mjs): with `tierNode` ({ key }), each whole-job workflow's tier step, of any kind, runs the same way
+  // with its own sentence; a workflow that has no tier step, or whose tier step is its pick, refuses the run here.
+  const tierLabels = tierNode ? await tierLabelsOf({ run, dispatch, key: tierNode.key }) : new Set();
+  const both = [...tierLabels].filter((label) => pickLabels.has(label));
+  if (both.length) throw new Error(`--tier-node agent: the pick step and the tier step are one node (${both.map((l) => JSON.stringify(l)).join(', ')}), which the two flags would convert twice`);
   const started = Date.now();
   const caseValues = caseValuesOf(job);
   const learn = learnExtension({ caseValues });
@@ -397,6 +403,11 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
     agent: (node) => (pickLabels.has(node.label) && node.kind !== 'decide' ? {
       ...model.agent,
       instructions: `${NODE_INSTRUCTIONS}\n\n${PICK_NODE_INSTRUCTIONS}`,
+      extensions: [tools.extension],
+      tools: tools.nodeTools(node.tools === undefined ? undefined : [...new Set([...node.tools, ...readTools])]),
+    } : tierLabels.has(node.label) ? {
+      ...model.agent,
+      instructions: `${NODE_INSTRUCTIONS}\n\n${TIER_NODE_INSTRUCTIONS}`,
       extensions: [tools.extension],
       tools: tools.nodeTools(node.tools === undefined ? undefined : [...new Set([...node.tools, ...readTools])]),
     } : {
@@ -470,7 +481,7 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
       if (gate === 'deadline') throw new RunDeadline();
       hostRun = gate.gated ? { ...hostRun, outcome: 'escalated', output: gate.stripped, gated: gate.record } : { ...hostRun, gated: gate.record };
     }
-    const dispatched = hostRun ? { dispatch: { name: hostRun.name, revision: hostRun.revision, key: hostRun.key, outcome: hostRun.outcome, ...(dispatch.canary ? { canary: true } : {}), ...(hostRun.invalid ? { invalid: hostRun.invalid } : {}), ...(typeof hostRun.detail === 'string' ? { detail: hostRun.detail } : {}), ...(hostRun.gated ? { gated: hostRun.gated } : {}), ...(pickLabels.size ? { pickNode: [...pickLabels] } : {}) } } : {};
+    const dispatched = hostRun ? { dispatch: { name: hostRun.name, revision: hostRun.revision, key: hostRun.key, outcome: hostRun.outcome, ...(dispatch.canary ? { canary: true } : {}), ...(hostRun.invalid ? { invalid: hostRun.invalid } : {}), ...(typeof hostRun.detail === 'string' ? { detail: hostRun.detail } : {}), ...(hostRun.gated ? { gated: hostRun.gated } : {}), ...(pickLabels.size ? { pickNode: [...pickLabels] } : {}), ...(tierLabels.size ? { tierNode: [...tierLabels] } : {}) } } : {};
     if (hostRun?.outcome === 'complete' || hostOnly) {
       const answered = hostRun.outcome === 'complete';
       measured = { answer: answered ? hostRun.output : null, answers: answered ? 1 : 0, toolCalls: {}, status: HOST_WORKFLOW, usage: usageTotals(await harness.usage(ctx)), finalText: '', calls: [], results: new Map(), ...dispatched };

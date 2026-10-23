@@ -15,18 +15,14 @@ export const READ_TOOLS = Object.freeze(['fetch_page', 'read_document']);
 /** The node kinds the host's node runner runs on a model. */
 const MODEL_NODES = Object.freeze(['agent', 'extract', 'report']);
 
-/**
- * The label of `workflow`'s pick node for the code field `key`, or null when the workflow's output does not carry `key`
- * (it is no whole-job workflow). Throws when the output carries `key` and no node but a decide outputs it, or when the one
- * found runs no model.
- */
-export function pickNodeOf(workflow, key) {
-  const schemaOf = (ref) => (typeof ref === 'string' ? workflow.schemas?.[ref] : typeof ref?.schemaId === 'string' ? workflow.schemas?.[ref.schemaId] : ref);
-  const carries = (ref) => {
-    const schema = schemaOf(ref);
-    return Boolean(schema?.properties && Object.hasOwn(schema.properties, key));
-  };
-  if (!carries(workflow.output)) return null;
+/** Whether the schema `ref` names (a schema id, `{ schemaId }` or a schema) has the property `key`. */
+export function carriesField(workflow, ref, key) {
+  const schema = typeof ref === 'string' ? workflow.schemas?.[ref] : typeof ref?.schemaId === 'string' ? workflow.schemas?.[ref.schemaId] : ref;
+  return Boolean(schema?.properties && Object.hasOwn(schema.properties, key));
+}
+
+/** Every node of `workflow`, in its own order: depth first, as the steps are written, branches and bodies included. */
+export function nodesInOrder(workflow) {
   const order = [];
   const walk = (value) => {
     if (Array.isArray(value)) value.forEach(walk);
@@ -36,7 +32,18 @@ export function pickNodeOf(workflow, key) {
     }
   };
   walk(workflow.root);
-  const pick = order.find((node) => node.node !== 'decide' && node.out !== undefined && carries(node.out));
+  return order;
+}
+
+/**
+ * The label of `workflow`'s pick node for the code field `key`, or null when the workflow's output does not carry `key`
+ * (it is no whole-job workflow). Throws when the output carries `key` and no node but a decide outputs it, or when the one
+ * found runs no model.
+ */
+export function pickNodeOf(workflow, key) {
+  const carries = (ref) => carriesField(workflow, ref, key);
+  if (!carries(workflow.output)) return null;
+  const pick = nodesInOrder(workflow).find((node) => node.node !== 'decide' && node.out !== undefined && carries(node.out));
   if (!pick) throw new Error(`--pick-node agent: ${workflow.name} answers with ${key}, and no node but a decide outputs it, so it has no pick step`);
   if (!MODEL_NODES.includes(pick.node)) throw new Error(`--pick-node agent: ${workflow.name}'s pick step "${pick.label}" is a ${pick.node} node, which runs no model`);
   return pick.label;

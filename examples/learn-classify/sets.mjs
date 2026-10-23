@@ -127,6 +127,8 @@ export const SETS = Object.freeze({
     labelTools: (d) => [mccGroupsTool(d.table), mccCodesTool(d.table)],
     answer: (d) => answerToolMcc(d.table),
     answerKey: 'mcc',
+    /** The answer's tier field (tier-node.mjs). */
+    tierKey: 'riskTier',
     /** The pick gate's grouping (pick-gate.mjs): the scorer's ISO 18245 groups (learn-mcc's group table, the data's), each
      *  group's codes as mcc_codes serves them. The output's code title and its MCC evidence are left out of the pick's
      *  state. A merchant's page is no registry record, so no MCC answer has a receipt that exempts it. */

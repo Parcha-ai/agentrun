@@ -1,0 +1,315 @@
+{
+ "v": 2,
+ "name": "merchant-mcc-risk",
+ "schemas": {
+  "Input": {
+   "type": "object",
+   "properties": {
+    "name": {},
+    "website": {}
+   }
+  },
+  "Page": {
+   "type": "object",
+   "properties": {
+    "ok": {},
+    "url": {},
+    "status": {},
+    "title": {},
+    "text": {},
+    "links": {},
+    "refused": {},
+    "error": {},
+    "retried": {}
+   }
+  },
+  "Survey": {
+   "type": "object",
+   "properties": {
+    "pages": {},
+    "excerpts": {}
+   }
+  },
+  "OnPage": {
+   "type": "object",
+   "properties": {
+    "onPage": {}
+   }
+  },
+  "Mcc": {
+   "type": "object",
+   "properties": {
+    "mainLine": {},
+    "mcc": {},
+    "mccDescription": {},
+    "url": {},
+    "quote": {},
+    "confidence": {}
+   }
+  },
+  "MccCheck": {
+   "type": "object",
+   "properties": {
+    "quoteHolds": {},
+    "quoteSaysWhatIsSold": {}
+   }
+  },
+  "Status": {
+   "type": "object",
+   "properties": {
+    "siteStatus": {}
+   }
+  },
+  "Rubric": {
+   "type": "object",
+   "properties": {
+    "adult": {},
+    "gambling": {},
+    "crypto": {},
+    "money_services": {},
+    "financial_services": {},
+    "regulated_high": {},
+    "alcohol": {},
+    "free_trial": {},
+    "travel": {},
+    "subscription": {},
+    "nutraceuticals": {},
+    "high_ticket": {},
+    "future_delivery": {},
+    "digital_goods": {},
+    "marketplace": {},
+    "no_policies": {}
+   }
+  },
+  "FlagCheck": {
+   "type": "object",
+   "properties": {
+    "flagsHaveEvidence": {},
+    "quotesFromPages": {},
+    "tierFollowsFlags": {}
+   }
+  },
+  "Answer": {
+   "type": "object",
+   "properties": {
+    "mcc": {},
+    "mccDescription": {},
+    "riskTier": {},
+    "riskRationale": {},
+    "flags": {},
+    "siteStatus": {},
+    "evidence": {},
+    "confidence": {}
+   }
+  }
+ },
+ "input": {
+  "schemaId": "Input"
+ },
+ "output": {
+  "schemaId": "Answer",
+  "path": "answer"
+ },
+ "root": {
+  "node": "chain",
+  "steps": [
+   {
+    "node": "call",
+    "label": "read-home",
+    "out": "Page",
+    "as": "home",
+    "tool": "fetch_page",
+    "via": "tool"
+   },
+   {
+    "node": "route",
+    "label": "pick-reader",
+    "as": "reader",
+    "branches": {
+     "fetch": {
+      "body": {
+       "node": "chain",
+       "steps": [
+        {
+         "node": "agent",
+         "label": "survey-site",
+         "out": "Survey",
+         "as": "survey",
+         "tools": [
+          "fetch_page",
+          "search_web"
+         ],
+         "tier": "fast"
+        },
+        {
+         "node": "map",
+         "label": "reread-pages",
+         "as": "pages",
+         "itemsPath": "survey.pages",
+         "body": {
+          "node": "call",
+          "label": "reread",
+          "out": "Page",
+          "as": "pg",
+          "tool": "fetch_page",
+          "via": "tool"
+         }
+        }
+       ]
+      }
+     },
+     "browser": {
+      "body": {
+       "node": "chain",
+       "steps": [
+        {
+         "node": "call",
+         "label": "browse-home",
+         "out": "Page",
+         "as": "home",
+         "tool": "browse",
+         "via": "tool"
+        },
+        {
+         "node": "agent",
+         "label": "survey-site-browser",
+         "out": "Survey",
+         "as": "survey",
+         "tools": [
+          "browse",
+          "search_web"
+         ],
+         "tier": "fast"
+        },
+        {
+         "node": "map",
+         "label": "reread-pages-browser",
+         "as": "pages",
+         "itemsPath": "survey.pages",
+         "body": {
+          "node": "call",
+          "label": "reread-browser",
+          "out": "Page",
+          "as": "pg",
+          "tool": "browse",
+          "via": "tool"
+         }
+        }
+       ]
+      }
+     }
+    }
+   },
+   {
+    "node": "escalate",
+    "label": "home-empty",
+    "kind": "needs_input",
+    "stage": "read",
+    "when": {
+     "predicate": "empty",
+     "path": "x"
+    }
+   },
+   {
+    "node": "judge",
+    "label": "site-status",
+    "out": "Status",
+    "as": "status"
+   },
+   {
+    "node": "sift",
+    "label": "check-excerpts",
+    "out": "OnPage",
+    "as": "verified",
+    "itemsPath": "survey.excerpts"
+   },
+   {
+    "node": "escalate",
+    "label": "no-excerpts",
+    "kind": "needs_input",
+    "stage": "survey",
+    "when": {
+     "predicate": "empty",
+     "path": "x"
+    }
+   },
+   {
+    "node": "agent",
+    "label": "choose-mcc",
+    "out": "Mcc",
+    "as": "mcc",
+    "tools": [
+     "mcc_groups",
+     "mcc_codes"
+    ],
+    "tier": "fast"
+   },
+   {
+    "node": "judge",
+    "label": "check-mcc-quote",
+    "out": "MccCheck",
+    "as": "mccCheck"
+   },
+   {
+    "node": "escalate",
+    "label": "mcc-quote-unsupported",
+    "kind": "needs_input",
+    "stage": "mcc",
+    "when": {
+     "predicate": "empty",
+     "path": "x"
+    }
+   },
+   {
+    "node": "judge",
+    "label": "rubric",
+    "out": "Rubric",
+    "as": "rubric"
+   },
+   {
+    "node": "decide",
+    "label": "assemble",
+    "out": "Answer",
+    "as": "answer",
+    "tools": [],
+    "tier": "fast"
+   },
+   {
+    "node": "judge",
+    "label": "check-answer",
+    "out": "FlagCheck",
+    "as": "answerCheck"
+   },
+   {
+    "node": "escalate",
+    "label": "flags-unbacked",
+    "kind": "needs_input",
+    "stage": "assemble",
+    "when": {
+     "predicate": "empty",
+     "path": "x"
+    }
+   },
+   {
+    "node": "escalate",
+    "label": "quotes-unbacked",
+    "kind": "needs_input",
+    "stage": "assemble",
+    "when": {
+     "predicate": "empty",
+     "path": "x"
+    }
+   },
+   {
+    "node": "escalate",
+    "label": "tier-mismatch",
+    "kind": "needs_input",
+    "stage": "assemble",
+    "when": {
+     "predicate": "empty",
+     "path": "x"
+    }
+   }
+  ]
+ }
+}
