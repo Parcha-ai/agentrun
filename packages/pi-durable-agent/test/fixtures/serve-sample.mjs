@@ -7,13 +7,13 @@ import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { carryBack, createAgentHome, setPrompts, startRun } from "../../dist/index.js";
 
-const at = (minute, second = 0) => Date.UTC(2026, 9, 22, 14, minute, second);
-const user = (text, t) => ({ kind: "pi.user", model: [{ role: "user", content: text, timestamp: t }] });
-const assistant = (blocks, t, stopReason = "toolUse", cost = 0.012) => ({ kind: "pi.assistant", model: [{ role: "assistant", content: blocks, stopReason, usage: { cost: { total: cost } }, timestamp: t }] });
-const call = (id, name, args) => ({ type: "toolCall", id, name, arguments: args });
-const result = (id, name, text, t, isError = false) => ({ kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: id, toolName: name, content: [{ type: "text", text }], isError, timestamp: t }] });
+export const at = (minute, second = 0) => Date.UTC(2026, 9, 22, 14, minute, second);
+export const user = (text, t) => ({ kind: "pi.user", model: [{ role: "user", content: text, timestamp: t }] });
+export const assistant = (blocks, t, stopReason = "toolUse", cost = 0.012) => ({ kind: "pi.assistant", model: [{ role: "assistant", content: blocks, stopReason, usage: { cost: { total: cost } }, timestamp: t }] });
+export const call = (id, name, args) => ({ type: "toolCall", id, name, arguments: args });
+export const result = (id, name, text, t, isError = false) => ({ kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: id, toolName: name, content: [{ type: "text", text }], isError, timestamp: t }] });
 
-function append(storePath, entries) {
+export function append(storePath, entries) {
   const db = new DatabaseSync(storePath, { timeout: 10_000 });
   try {
     const insert = db.prepare("INSERT INTO entries (id, conversation_id, head, commit_seq, record) VALUES (?, 1, NULL, ?, ?)");
@@ -23,7 +23,7 @@ function append(storePath, entries) {
   }
 }
 
-const research = (company, kind, minute) => [
+export const research = (company, kind, minute) => [
   user(`Research ${company}.`, at(minute)),
   assistant([{ type: "thinking", thinking: `The task names ${company}. Its filings are the primary record. I will start there.` }, call("a1", "web_search", { query: `${company} ${kind}` })], at(minute, 4)),
   result("a1", "web_search", `Found 6 results for ${company}.`, at(minute, 6)),

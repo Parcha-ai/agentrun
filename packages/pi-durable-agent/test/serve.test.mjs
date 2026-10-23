@@ -6,7 +6,6 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, s
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { syncBuiltinESMExports as syncExports } from "node:module";
-import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -19,7 +18,7 @@ import { serveHome } from "../dist/serve/index.js";
 import { main as serveMain } from "../dist/serve/command.js";
 import { buildSampleHome } from "./fixtures/serve-sample.mjs";
 import { buildSignedInHome, PRACTICE_ORIGIN, SIGN_IN_MARKER, signedInHomeSkip } from "./fixtures/signed-in-home.mjs";
-import { scratch } from "./support.mjs";
+import { request, scratch } from "./support.mjs";
 
 const skip = { skip: signedInHomeSkip, timeout: 60_000 };
 const CLI = fileURLToPath(new URL("../dist/serve/cli.js", import.meta.url));
@@ -34,20 +33,6 @@ function snapshot(dir) {
     const info = statSync(file);
     return { path: path.relative(dir, file), dir: entry.isDirectory(), size: entry.isDirectory() ? 0 : info.size, mtimeMs: info.mtimeMs, sha: entry.isFile() ? createHash("sha256").update(readFileSync(file)).digest("hex") : "" };
   }).sort((a, b) => (a.path < b.path ? -1 : 1));
-}
-
-/** One request with the Host header chosen by the caller (fetch refuses to set it); an empty `host` sends none. */
-function request(url, { method = "GET", host, target = "/" } = {}) {
-  const { hostname, port } = new URL(url);
-  return new Promise((resolve, reject) => {
-    const req = http.request({ hostname, port, path: target, method, setHost: host === undefined, headers: host === undefined || host === "" ? {} : { host } }, (res) => {
-      const chunks = [];
-      res.on("data", (chunk) => chunks.push(chunk));
-      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString("utf8") }));
-    });
-    req.on("error", reject);
-    req.end();
-  });
 }
 
 const hasSideFiles = (file) => SIDE.some((suffix) => existsSync(`${file}${suffix}`));
