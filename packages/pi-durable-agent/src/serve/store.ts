@@ -64,19 +64,19 @@ function agenticDiff(parent: Revision, revision: Revision) {
 }
 
 /** A revision for the agent page. An agentic one has its prompt diffed against an agentic parent. A workflow has its graph
- *  and, against a workflow parent, graphDiff's answer as the drawer's marks; its workflow's JSON is not sent. */
+ *  and, against a workflow parent, the graph's diff as the drawer's marks, both from ./workflow's revisionGraph; its
+ *  workflow's JSON is not sent. */
 async function revisionView(reader: AgentStoreReader, revision: Revision, current: boolean) {
   const parent = revision.parent === null ? null : reader.readRevision(revision.parent);
   const head = { id: revision.id, kind: revision.kind, current, createdAt: revision.createdAt, note: revision.note, parent: revision.parent, parentKind: parent?.kind ?? null };
   if (revision.kind === "agentic") return { ...head, body: revision.body, diff: parent?.kind === "agentic" ? agenticDiff(parent, revision) : null };
-  // The DSL is loaded here, for a workflow revision only: a store of agentic revisions never loads it.
-  const { graphDiff, workflowGraph } = await import("@parcha/agentrun-dsl/graph");
-  const graph = workflowGraph(revision.body.workflow);
+  // ./workflow is loaded here, for a workflow revision only: a store of agentic revisions never loads it or the DSL.
+  const { revisionGraph } = await import("../workflow.js");
+  const { graph, diff } = await revisionGraph(revision, parent ?? undefined);
   const body = { tools: revision.body.tools, skills: revision.body.skills };
-  if (parent?.kind !== "workflow") return { ...head, body, graph, diff: null };
-  const diff = graphDiff(workflowGraph(parent.body.workflow), graph);
+  if (!diff) return { ...head, body, graph, diff: null };
   const edited = [...diff.changed, ...diff.rewritten].map((node) => node.next);
-  return { ...head, body, graph, diff: { against: parent.id, added: diff.added.map((node) => node.path), edited, removed: diff.removed.map(({ label, kind }) => ({ label, kind })) } };
+  return { ...head, body, graph, diff: { against: revision.parent, added: diff.added.map((node) => node.path), edited, removed: diff.removed.map(({ label, kind }) => ({ label, kind })) } };
 }
 
 /** One run: its row, its agent's name and its revision's note, then what it did, read from its own store under runs/: an
