@@ -74,7 +74,8 @@ const plant = (path: string) => `cp /bin/true ${path} && chown root:root ${path}
 
 /** A framed start of the script (the tools user pda), as the check's tests run it: its output and exit code. */
 async function start(box: Box, script: string = SCRIPT): Promise<{ exitCode: number; out: string }> {
-	const dir = `/tmp/mw-${randomBytes(4).toString("hex")}`;
+	// Its parent stands for the spool: root's, with no group or other write (the launcher refuses one, as it does /tmp).
+	const dir = `/opt/pi-transport-mw/mw-${randomBytes(4).toString("hex")}`;
 	getOrThrow(
 		await box.upload(
 			[
