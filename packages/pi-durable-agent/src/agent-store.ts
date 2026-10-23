@@ -23,6 +23,15 @@ export type Agent = { id: string; name: string; description?: string; createdAt:
 export type AgentRow = Agent & { currentKind: RevisionKind | null; runs: number };
 export type RevisionRow = { id: string; agent: string; parent: string | null; createdAt: string; note?: string; kind: RevisionKind; current: boolean };
 export type RunState = "running" | "completed" | "failed" | "stopped" | "escalated";
+/** At most 2000 UTF-16 units: a longer text keeps its start plus an ellipsis, and never splits a surrogate pair. */
+function cutSummary(text: string): string {
+  if (text.length <= 2_000) return text;
+  let end = 1_999;
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return text.slice(0, end) + "\u2026";
+}
+
 export type RunRow = { id: string; agent: string; revision: string; kind: RevisionKind; state: RunState; startedAt: string; endedAt?: string; costUsd?: number; summary?: string };
 export type NewRevision =
   | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; note?: string }
@@ -219,12 +228,12 @@ export class AgentStore extends AgentStoreReader {
     return run;
   }
 
-  /** End a run, once: `state` is how it ended, `summary` a line for the list. A second call for an ended run is refused. */
+  /** End a run, once: `state` is how it ended, `summary` a line for the list (cut to 2000 characters, never refused, so a run always ends). A second call for an ended run is refused. */
   carryBack(runId: string, result: { state: "completed" | "failed" | "stopped" | "escalated"; costUsd?: number; summary?: string }): void {
     if (!["completed", "failed", "stopped", "escalated"].includes(result?.state)) throw invalid("the state is not completed, failed, stopped or escalated");
     if (result.costUsd !== undefined && !(Number.isFinite(result.costUsd) && result.costUsd >= 0)) throw invalid("the cost is not a number of at least 0");
-    if (result.summary !== undefined && (typeof result.summary !== "string" || result.summary === "" || result.summary.length > 2_000)) throw invalid("the summary is not non-empty text of at most 2000 characters");
-    const done = this.db.prepare("UPDATE runs SET state = ?, ended_at = ?, cost_usd = ?, summary = ? WHERE id = ? AND ended_at IS NULL").run(result.state, new Date().toISOString(), result.costUsd ?? null, result.summary ?? null, checkId(runId, "run"));
+    if (result.summary !== undefined && (typeof result.summary !== "string" || result.summary === "")) throw invalid("the summary is not non-empty text");
+    const done = this.db.prepare("UPDATE runs SET state = ?, ended_at = ?, cost_usd = ?, summary = ? WHERE id = ? AND ended_at IS NULL").run(result.state, new Date().toISOString(), result.costUsd ?? null, result.summary === undefined ? null : cutSummary(result.summary), checkId(runId, "run"));
     if (done.changes === 0) throw new AgentHomeError(this.db.prepare("SELECT 1 FROM runs WHERE id = ?").get(runId) ? "exists" : "missing", "that run is unknown or has already ended");
   }
 

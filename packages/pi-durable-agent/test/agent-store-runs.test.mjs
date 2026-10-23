@@ -177,9 +177,34 @@ test("each ended state is its own state; one outside the set, an unknown run, a 
   const run = await store.startRun({ agent: agent.id });
   for (const state of ["running", "done", "", 3, undefined, "Completed"]) assert.throws(() => store.carryBack(run.runId, { state }), refused("invalid"));
   for (const costUsd of [-1, Number.NaN, "1", Infinity]) assert.throws(() => store.carryBack(run.runId, { state: "completed", costUsd }), refused("invalid"));
-  for (const summary of ["", 3, "x".repeat(5_000)]) assert.throws(() => store.carryBack(run.runId, { state: "completed", summary }), refused("invalid"));
+  for (const summary of ["", 3]) assert.throws(() => store.carryBack(run.runId, { state: "completed", summary }), refused("invalid"));
   assert.throws(() => store.carryBack("no-such-run", { state: "completed" }), (e) => refused("missing")(e) && valueFree("no-such-run")(e));
   assert.equal(runs(dir).find((r) => r.id === run.runId).state, "running", "nothing above ended the run");
+  await store.close();
+});
+
+test("a summary over 2000 characters is cut to the limit with an ellipsis and the run still ends; one at the limit is kept whole", async () => {
+  const { dir, store, agent } = await aStore();
+  const ended = async (summary) => { const run = await store.startRun({ agent: agent.id }); await store.carryBack(run.runId, { state: "failed", summary }); return runs(dir).find((r) => r.id === run.runId); };
+  const long = await ended("x".repeat(5_000));
+  assert.equal(long.state, "failed");
+  assert.equal(long.summary, "x".repeat(1_999) + "\u2026");
+  assert.equal((await ended("y".repeat(2_000))).summary, "y".repeat(2_000));
+  assert.equal((await ended("z".repeat(2_001))).summary, "z".repeat(1_999) + "\u2026");
+  await store.close();
+});
+
+test("a cut never splits a surrogate pair: an astral character at the cut is dropped whole", async () => {
+  const { dir, store, agent } = await aStore();
+  const run = await store.startRun({ agent: agent.id });
+  const text = "a".repeat(1_998) + "\u{1F600}" + "b".repeat(50);
+  await store.carryBack(run.runId, { state: "completed", summary: text });
+  const summary = runs(dir).find((r) => r.id === run.runId).summary;
+  assert.equal(summary, "a".repeat(1_998) + "\u2026");
+  assert.ok(summary.isWellFormed(), "no lone surrogate");
+  const run2 = await store.startRun({ agent: agent.id });
+  await store.carryBack(run2.runId, { state: "completed", summary: "a".repeat(1_997) + "\u{1F600}" + "b".repeat(50) });
+  assert.equal(runs(dir).find((r) => r.id === run2.runId).summary, "a".repeat(1_997) + "\u{1F600}\u2026", "a pair that fits is kept");
   await store.close();
 });
 
