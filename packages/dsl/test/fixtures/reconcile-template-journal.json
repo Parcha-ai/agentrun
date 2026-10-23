@@ -1,0 +1,96 @@
+{
+ "workflow": {
+  "v": 2,
+  "name": "reconcile-template",
+  "schemas": {
+   "Any": {
+    "type": "object"
+   }
+  },
+  "output": {
+   "schemaId": "Any"
+  },
+  "root": {
+   "node": "chain",
+   "steps": [
+    {
+     "node": "code",
+     "label": "seed",
+     "code": "s => ({ tag: \"t1\" })"
+    },
+    {
+     "node": "call",
+     "label": "render",
+     "via": "shell",
+     "command": "true",
+     "as": "r",
+     "deadline_s": 5,
+     "produces": [
+      "out/{tag}.txt"
+     ]
+    }
+   ]
+  }
+ },
+ "key": "reconcile",
+ "record": {
+  "binding": "34fa39cd57bd53fbdc42217ec3cdc8ab505353f13e1d9f02b5b7220d65e2fe10",
+  "inputs": {
+   "engine": "0c9c0c2b2dca56b068be340d3cffaddcac3d4ff61d6395e1b6c19d442bf9e838",
+   "ledger": "4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce",
+   "workflow.v": "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35",
+   "workflow.name": "dfa29a20f0fab0913caf3b451136c4c8bc96b821a39dffb154b27227072f27cd",
+   "workflow.schemas": "466336ba330917e00bf72191addf85283c705d0e1fa719cd934ff81695bebb5c",
+   "workflow.output": "cec5aae635fcebcfe761b7da02e55012a10abecf691fe71f2a998ca67b05e7ea",
+   "workflow.root": "cde074fa323999810968adcbd04f281a41dfb02ccee677fd43b6980793be3dbd"
+  },
+  "generation": 1,
+  "revision": 5,
+  "state": {
+   "schema": "agentrun.frozen_run.v3",
+   "pin": {
+    "input": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "done": [
+     "/root/steps/0"
+    ],
+    "states": {
+     "/root/steps/0": {
+      "tag": "t1"
+     }
+    },
+    "chains": {
+     "/root": {
+      "index": 0,
+      "path": "/root/steps/0"
+     }
+    },
+    "loops": {},
+    "routes": {},
+    "inputs": {
+     "/root/steps/1": "dafe98e8e15b4ab7a20fac7218bc134d799d2cf9040ed001f22b570a93ab54db"
+    },
+    "steps": {}
+   },
+   "startedAt": 1792570435515,
+   "status": "running",
+   "clocks": {
+    "attempt:step:/root/steps/1#call:0": 1792570440533
+   },
+   "files": {}
+  },
+  "notes": [],
+  "effects": [
+   {
+    "id": "step:/root/steps/1#call:0",
+    "name": "render",
+    "argsHash": "234acf7b3b5cefef69feb5bf06936b6f8d7b48139c82052163e973f48dbc9546",
+    "status": "unknown",
+    "session": "reconcile",
+    "result": null,
+    "args": {
+     "command": "true"
+    }
+   }
+  ]
+ }
+}
