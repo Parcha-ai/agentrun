@@ -83,9 +83,9 @@ export async function runOf({ body = bodyOf(), revision = "rev-a", runId = "run-
  * The host's part for a run: the DSL's workflow extension with fake tools that count their calls, on a Harness open on
  * the run's store file. `onCall(tool, count)` runs after a tool answers, before its result is committed; the tool `fail`
  * names throws instead. `effect`, when given, answers every call in their place. `layout` is the driver's layout the host
- * asks for.
+ * asks for, and `storage` the store file's SQLite options.
  */
-export async function hostFor(run, { tier = "fast", onCall, fail, effect, layout } = {}) {
+export async function hostFor(run, { tier = "fast", onCall, fail, effect, layout, storage } = {}) {
   const calls = {};
   const answers = { "stock.check": () => ({ tier }), "prices.quote": () => ({ price: 21 }), "prices.slow_quote": () => ({ price: 34 }) };
   const workflows = createWorkflowExtension({
@@ -106,6 +106,6 @@ export async function hostFor(run, { tier = "fast", onCall, fail, effect, layout
   });
   const registry = createRegistry();
   registry.install(workflows.extension);
-  const harness = await Harness.open(await openNodeSqliteStorage(run.storePath), { registry, models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(run.storePath, storage), { registry, models: {} }, ctx);
   return { harness, workflows, calls, close: () => harness.close(ctx) };
 }
