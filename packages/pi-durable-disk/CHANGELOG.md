@@ -8,6 +8,7 @@
   - A place offers the same reads of its own run: `Place.readRunFile(path)` and `Place.listRunFiles(dir)`, optional members that `archilPlace` implements over its control and `localPlace` over its run directory on this machine, where a symlink anywhere on the way is `NOT_A_FILE`, never followed. A missing file is `null`; a directory not there yet lists `[]`; every other failure throws.
   - `INVALID_PATH` names what is wrong with a path (empty, absolute, a `.` or `..` segment, an unsafe character at an index, under `.archil/`), never the path itself.
   - `archilPlace` tells each host box's runner which label to claim: when its driver makes boxes and names their provider (new optional `HostDriver.provider`; `daytonaHost` names `daytona`) and the place can read the label back (its control lists), each start puts `HOST_BOX` (`{ provider, key, run }`: the box's index in `status().boxes`, the order's `RUN_LABEL`) in that order's environment. With it, `status()` fails (`STATUS_FAILED`) on a box its driver gives no receipt for, instead of shifting the keys of the boxes after it.
+- **Known issue:** a host box an instance adopted is listed twice in `status()` (under a second key), so its receipts and stops are counted twice. The fix ships in the next release.
 
 ## 0.1.0-beta.23 (2026-10-22)
 
