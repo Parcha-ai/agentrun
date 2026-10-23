@@ -88,6 +88,13 @@ export class Element extends Node {
   querySelectorAll(tag) {
     return all(this).filter((node) => node.tagName === tag.toUpperCase());
   }
+  /** The first element under this one with the class `.name` names: the one selector the page uses. */
+  querySelector(selector) {
+    return all(this).find((node) => (node.getAttribute("class") ?? "").split(" ").includes(selector.slice(1))) ?? null;
+  }
+  scrollIntoView(options) {
+    this.scrolledIntoView = options;
+  }
 }
 for (const name of ["innerHTML", "outerHTML"]) Object.defineProperty(Element.prototype, name, { get: sink(name), set: sink(name) });
 Element.prototype.insertAdjacentHTML = sink("insertAdjacentHTML");

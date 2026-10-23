@@ -276,6 +276,16 @@ test("a completed workflow run's page shows its answer as text; an escalated one
   assert.ok(escalated.app.textContent.includes(`No public record ${HOSTILE}`));
 });
 
+test("an escalated run's page brings the exit that fired into view inside its graph's box; a run with none scrolls nothing", async () => {
+  const page = mount({ "api/runs/run-9": WORKFLOW_RUN }, "#/runs/run-9", { serve: STORE });
+  await page.settle();
+  const scrolled = all(page.app).filter((el) => el.scrolledIntoView);
+  assert.deepEqual(scrolled.map((el) => [el.getAttribute("data-path"), plain(el.scrolledIntoView)]), [[PRIVATE, { block: "nearest", inline: "center" }]]);
+  const completed = mount({ "api/runs/run-9": { ...WORKFLOW_RUN, run: { ...WORKFLOW_RUN.run, state: "completed" }, workflow: { graph: BRIEF, status: { "/root": "done" }, outcome: "completed" } } }, "#/runs/run-9", { serve: STORE });
+  await completed.settle();
+  assert.equal(all(completed.app).filter((el) => el.scrolledIntoView).length, 0);
+});
+
 test("a workflow run its reader refuses shows that one line in place of the graph, with the run's row still shown", async () => {
   const refused = { ...WORKFLOW_RUN, workflow: undefined, refused: "a run in the keyed layout is not read here" };
   const page = mount({ "api/runs/run-9": refused }, "#/runs/run-9", { serve: STORE });
