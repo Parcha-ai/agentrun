@@ -18,7 +18,8 @@
 // | PI_TRANSPORT_PROC                                    | nowhere: the launcher never reads it                  | refused (PI_TRANSPORT_*)     | never read         |
 // | PATH HOME TMPDIR                                     | the box runtime (the exec's environment)              | PATH, HOME refused           | read: the box's    |
 // | BASH_ENV ENV SHELLOPTS BASHOPTS PS4 LD_*             | the box runtime, cleared at the exec (`env -u`)       | refused (named)              | cleared at exec    |
-// | GLIBC_TUNABLES LOCPATH                               | the box runtime, cleared at the exec (`env -u`)       | refused (named)              | cleared at exec    |
+// | glibc's UNSECURE_ENVVARS (GCONV_PATH, GLIBC_TUNABLES, | the box runtime, cleared at the exec (`env -u`)       | refused (named)              | cleared at exec    |
+// |   LOCPATH, ...; TMPDIR excepted), musl's MUSL_LOCPATH |                                                       |                              |                    |
 // So no program setting assigns a launcher variable; no runtime export keeps an export flag on one; and the shell's, the
 // loader's and the C library's variables are gone before the script's first line. A requested user switch that cannot happen fails (exit 126).
 import { createHash, randomBytes } from "node:crypto";
@@ -32,7 +33,7 @@ import type { Box } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { launch, launchState, launchStop, specScript } from "../src/launch/launch.ts";
 import { LAUNCHER_SCRIPT, LAUNCHER_SHELL_NAMES } from "../src/launch/launcher-script.ts";
-import { sh, until } from "./home-launch-support.ts";
+import { sh, UNSECURE, until } from "./home-launch-support.ts";
 
 const context = BACKGROUND_CONTEXT;
 const roots: string[] = [];
@@ -194,23 +195,39 @@ describe("a box runtime that exports the launcher's names", () => {
 	});
 });
 
-describe("the C library's tunables and locale path", () => {
-	it("reach neither the launcher's processes nor the program from the box runtime: cleared at the exec that starts each launcher shell", async () => {
+describe("the C library's own unsecure variables in the box runtime", () => {
+	it("reach neither the launcher's processes nor the program: cleared at the exec that starts each launcher shell", async () => {
 		const tag = randomBytes(6).toString("hex");
-		const { box } = await aBox({ GLIBC_TUNABLES: `glibc.zz.marker${tag}=1`, LOCPATH: `/nonexistent-zz-${tag}` });
+		// Each set to a value its library takes as harmless. LD_SHOW_AUXV is left out: glibc acts on it at any value, so every program
+		// this runtime starts, the env that clears it among them, prints its auxv first.
+		const value = (name: string) =>
+			name.startsWith("LD_")
+				? ""
+				: name === "GLIBC_TUNABLES"
+					? `glibc.zz.marker${tag}=1`
+					: name.startsWith("MALLOC_") && name !== "MALLOC_TRACE"
+						? "8"
+						: name === "RES_OPTIONS"
+							? "ndots:1"
+							: `/nonexistent-zz-${tag}`;
+		const set = UNSECURE.filter((name) => name !== "LD_SHOW_AUXV");
+		const { box } = await aBox(Object.fromEntries(set.map((name) => [name, value(name)])));
 		const program = ["sh", "-c", "env > seen-env; exec sleep 300"];
 		const started = getOrThrow(await launch(box, "libc", { argv: program }, context));
 		await until("the program's environment", () => fileIn(box, "seen-env"));
 		const dir = started.directory;
-		const pids = ["launcher.pid", "watch.pid", "pid.1"].map((file) => readFileSync(join(dir, file), "utf8").trim());
-		for (const pid of pids) {
+		for (const file of ["launcher.pid", "watch.pid", "pid.1"]) {
+			const pid = readFileSync(join(dir, file), "utf8").trim();
 			const names = readFileSync(`/proc/${pid}/environ`, "utf8")
 				.split("\0")
 				.map((entry) => entry.slice(0, entry.indexOf("=")));
-			expect(names, `pid ${pid}`).not.toContain("GLIBC_TUNABLES");
-			expect(names, `pid ${pid}`).not.toContain("LOCPATH");
+			expect(
+				set.filter((name) => names.includes(name)),
+				`${file} ${pid}`,
+			).toEqual([]);
 		}
-		expect((await fileIn(box, "seen-env")) ?? "").not.toContain(tag);
+		const seen = ((await fileIn(box, "seen-env")) ?? "").split("\n").map((line) => line.slice(0, line.indexOf("=")));
+		expect(set.filter((name) => seen.includes(name))).toEqual([]);
 		getOrThrow(await launchStop(box, started.launch, { graceMs: 1_000 }, context));
 		await box.destroy(context);
 	});

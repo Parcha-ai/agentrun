@@ -97,6 +97,44 @@ export function expectUnsafe(result: Result<unknown, LaunchError>, why: RegExp, 
 
 const WRITABLE = /can be written by its group or by other users/;
 const LINK = /is a symbolic link/;
+/** The C library's own unsecure variables: glibc's UNSECURE_ENVVARS (2.36 and 2.39, less TMPDIR) and musl's MUSL_LOCPATH. */
+export const UNSECURE = [
+	"GCONV_PATH",
+	"GETCONF_DIR",
+	"GLIBC_TUNABLES",
+	"HOSTALIASES",
+	"LD_AUDIT",
+	"LD_BIND_NOT",
+	"LD_BIND_NOW",
+	"LD_DEBUG",
+	"LD_DEBUG_OUTPUT",
+	"LD_DYNAMIC_WEAK",
+	"LD_HWCAP_MASK",
+	"LD_LIBRARY_PATH",
+	"LD_ORIGIN_PATH",
+	"LD_PRELOAD",
+	"LD_PROFILE",
+	"LD_SHOW_AUXV",
+	"LD_VERBOSE",
+	"LD_WARN",
+	"LOCALDOMAIN",
+	"LOCPATH",
+	"MALLOC_ARENA_MAX",
+	"MALLOC_ARENA_TEST",
+	"MALLOC_MMAP_MAX_",
+	"MALLOC_MMAP_THRESHOLD_",
+	"MALLOC_PERTURB_",
+	"MALLOC_TOP_PAD_",
+	"MALLOC_TRACE",
+	"MALLOC_TRIM_THRESHOLD_",
+	"MUSL_LOCPATH",
+	"NIS_PATH",
+	"NLSPATH",
+	"RESOLV_HOST_CONF",
+	"RES_OPTIONS",
+	"TZDIR",
+];
+
 /** The refusal of a directory above the spool. */
 export const ABOVE = /, above the spool, can be written by its group or by other users and has no sticky bit/;
 

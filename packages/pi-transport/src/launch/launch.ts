@@ -31,20 +31,54 @@ const MAX_HOOK_MS = 120_000;
 const KEY_SEGMENT = /^(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|CREDENTIALS)$/i;
 const keyShaped = (name: string): boolean => name.split("_").some((segment) => KEY_SEGMENT.test(segment));
 /**
- * Names that act on the launcher's shell or on the commands it runs (the shell's, the loader's and the C library's): never a
- * program's setting. The program's settings are exported before the root launcher's setpriv or runuser drops to `user`, so the
- * C library's tunables and locale path would act on that privileged switch.
+ * The variables the C library itself strips in secure mode: glibc's UNSECURE_ENVVARS (sysdeps/generic/unsecvars.h), as the loaders
+ * of glibc 2.36 (Debian 12) and 2.39 (Ubuntu 24.04) carry it, and musl's MUSL_LOCPATH, which musl reads only outside secure mode
+ * (its other secure-mode checks are on LD_PRELOAD and LD_LIBRARY_PATH, listed, and on TZ file paths, while TZ stays a setting).
+ * The program's settings are exported before a root launcher's setpriv or runuser drops to `user`, and that switch is not setuid,
+ * so the C library honours them there (GCONV_PATH loads code): `env` and `inheritEnv` refuse each, and the exec that starts every
+ * launcher shell clears each. Exported for the tests only (not from the package).
  */
-const SHELL_AND_LOADER = new Set([
-	"IFS",
-	"BASH_ENV",
-	"ENV",
-	"SHELLOPTS",
-	"BASHOPTS",
-	"PS4",
+export const LIBC_UNSECURE_ENVVARS: readonly string[] = [
+	"GCONV_PATH",
+	"GETCONF_DIR",
 	"GLIBC_TUNABLES",
+	"HOSTALIASES",
+	"LD_AUDIT",
+	"LD_BIND_NOT",
+	"LD_BIND_NOW",
+	"LD_DEBUG",
+	"LD_DEBUG_OUTPUT",
+	"LD_DYNAMIC_WEAK",
+	"LD_HWCAP_MASK",
+	"LD_LIBRARY_PATH",
+	"LD_ORIGIN_PATH",
+	"LD_PRELOAD",
+	"LD_PROFILE",
+	"LD_SHOW_AUXV",
+	"LD_VERBOSE",
+	"LD_WARN",
+	"LOCALDOMAIN",
 	"LOCPATH",
-]);
+	"MALLOC_ARENA_MAX",
+	"MALLOC_ARENA_TEST",
+	"MALLOC_MMAP_MAX_",
+	"MALLOC_MMAP_THRESHOLD_",
+	"MALLOC_PERTURB_",
+	"MALLOC_TOP_PAD_",
+	"MALLOC_TRACE",
+	"MALLOC_TRIM_THRESHOLD_",
+	"MUSL_LOCPATH",
+	"NIS_PATH",
+	"NLSPATH",
+	"RESOLV_HOST_CONF",
+	"RES_OPTIONS",
+	// TMPDIR, on glibc's list too, stays a program's setting: the switch writes no temporary file, and the spool is under it.
+	"TZDIR",
+];
+/** Names that act on the launcher's shell itself. */
+const SHELL_ENV = ["BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS4"];
+/** Names that act on the launcher's shell or on the commands it runs (the shell's, the loader's and the C library's): never a program's setting. */
+const SHELL_AND_LOADER = new Set(["IFS", ...SHELL_ENV, ...LIBC_UNSECURE_ENVVARS]);
 /** A name the program may never set or inherit: one the launcher's shell assigns, or one that acts on the shell or the loader. */
 const reservedName = (name: string): boolean =>
 	LAUNCHER_SHELL_NAMES.includes(name) || SHELL_AND_LOADER.has(name) || name.startsWith("LD_");
@@ -449,21 +483,7 @@ export function specScript(spec: LaunchSpec, isolation: string): string {
 }
 
 /** `env -u` for each variable that acts on a shell, the loader or the C library, at the exec that starts every launcher shell. */
-const CLEAN_EXEC = [
-	"env",
-	...[
-		"BASH_ENV",
-		"ENV",
-		"SHELLOPTS",
-		"BASHOPTS",
-		"PS4",
-		"LD_PRELOAD",
-		"LD_LIBRARY_PATH",
-		"LD_AUDIT",
-		"GLIBC_TUNABLES",
-		"LOCPATH",
-	].flatMap((name) => ["-u", name]),
-];
+const CLEAN_EXEC = ["env", ...[...SHELL_ENV, ...LIBC_UNSECURE_ENVVARS].flatMap((name) => ["-u", name])];
 
 /** Run a script in the box and return its combined output, or an error. */
 async function runScript(
