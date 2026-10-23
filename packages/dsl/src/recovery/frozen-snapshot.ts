@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { RecoveryError } from "./errors.js";
 import { itemState as rebuildItemState, partialResults as readPartialResults, type PartialSlot, type Sha256, type StateDelta } from "./item-state.js";
 
-const failure = (code: string, message: string) => new RecoveryError(message, code);
+export const failure = (code: string, message: string) => new RecoveryError(message, code);
 
 export const FROZEN_SNAPSHOT_SCHEMA = "agentrun.frozen_run.v3";
 /** The keyed layout: what lies in a map item is kept in that item's record beside the state, and a state the driver
@@ -160,7 +160,7 @@ export type FrozenShape = { resolves: (path: string) => boolean };
 export const emptyPathFrame = (): PathFrame => ({ input: null, done: [], states: {}, chains: {}, loops: {}, routes: {}, inputs: {}, steps: {} });
 
 const record = (value: unknown): boolean => Boolean(value) && typeof value === "object" && !Array.isArray(value);
-const SHA256 = /^[a-f0-9]{64}$/;
+export const SHA256 = /^[a-f0-9]{64}$/;
 
 type Fields = Record<string, unknown>;
 /** `value` as an object whose fields can be read, or null. */

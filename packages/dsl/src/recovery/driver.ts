@@ -14,12 +14,12 @@ import { RecoveryError } from "./errors.js";
 import { gatewayIntentOf } from "./handoff-receipts.js";
 import { validateFrozenSnapshot, openedFrozenSnapshot, serializeFrozenSnapshot,
   frozenStepSessionId, frozenStepId, frozenEffectId, frozenEffectPath, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
+  failure, SHA256 as SHA,
   FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4, stateDelta, applyStateDelta, isItemOutcome,
   type FrozenSnapshot as Snapshot, type FrozenSnapshotV4, type ItemRecord, type MapEntry, type StateDelta,
   type PathFrame, type RouteDecision, type QuestionReceipts, type FrameTag, type StepRecord, type EscalationRow } from "./frozen-snapshot.js";
 import type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryNote, RecoveryParts, RecoveryStore } from "./store.js";
 
-const failure = (code: string, message: string) => new RecoveryError(message, code);
 
 /** The branch a route runs for its answer, as the interpreter takes it: the node's `unsure` branch when
  *  the answer's confidence is below `unsure.gte`, else the choice the answer names. */
@@ -285,7 +285,6 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     writtenStates.add(sha256);
     return value;
   };
-  const SHA = /^[a-f0-9]{64}$/;
   const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
   const validEntry = (entry: unknown): entry is MapEntry => isRecord(entry) && Number.isSafeInteger(entry.length) && (entry.length as number) >= 0
     && Number.isSafeInteger(entry.items) && (entry.items as number) >= 0 && typeof entry.base === "string" && SHA.test(entry.base);
@@ -542,7 +541,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     const known = [FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4];
     const found = (stored as { schema?: unknown } | null)?.schema;
     const version = typeof found === "string" ? /^agentrun\.frozen_run\.v(\d+)$/.exec(found)?.[1] : undefined;
-    if (version !== undefined && !known.includes(found as string) && Number(version) > 4) {
+    if (version !== undefined && Number(version) > 4) {
       throw Object.assign(new RecoveryError(`This run is stored as ${found as string}, newer than this build knows (${known.join(", ")}); open it with a build that knows it`, "RECOVERY_SCHEMA_NEWER"), { found, known });
     }
     // The keyed layout is sticky: a run stored in it stays in it. A run stored whole, or a new one, takes it when the
@@ -641,9 +640,8 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     if (requested?.action === "pause") { try { guard(); } catch { /* The pause is taken: its commit is queued. */ } }
     wake();
   };
-  const fileHashes = (names: string[]): Record<string, string> => reader.hashes(names);
   const verifyFiles = (files: Record<string, string>) => {
-    if (hash(fileHashes(Object.keys(files))) !== hash(files)) throw failure("FROZEN_ARTIFACT_INVALID", "Committed artifact bytes changed; effect will not be repeated");
+    if (hash(reader.hashes(Object.keys(files))) !== hash(files)) throw failure("FROZEN_ARTIFACT_INVALID", "Committed artifact bytes changed; effect will not be repeated");
   };
   /** An effect-level clock is set once and kept across resume: a poll window or an attempt deadline
    *  belongs to the outside world, so downtime counts against it, never against the run. */
@@ -751,7 +749,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       }
       const step = chainStep(at);
       if (step && (frame.chains[step.chain]?.index ?? -1) >= step.index) throw pathFault(at, "A chain step committed behind its chain's frontier");
-      if (node.node === "artifact" && node.path) keepFiles(fileHashes([node.path]), at);
+      if (node.node === "artifact" && node.path) keepFiles(reader.hashes([node.path]), at);
       frame.done.push(at);
       done.add(at);
       // A map that committed, alone or inside what committed, has its results in the state: what it had finished
@@ -1100,7 +1098,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           }
           finally { if (calls.length) await flush(); }
           if (signal.aborted) throw signal.reason;
-          const files = fileHashes(params.produces);
+          const files = reader.hashes(params.produces);
           // A tool effect's receipt names the external call it paid for (the tool and its arguments),
           // so a continuation that inherits the receipt can answer the same call from it. Any other
           // effect keeps its arguments beside its result.

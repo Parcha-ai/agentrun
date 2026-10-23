@@ -39,10 +39,14 @@ const childPrompt = (index, count, { site, task }) => [
   "Finish with your answer in at most three short lines.",
 ].join("\n");
 
+/** One server-sent event; a chat event carries its id, so a viewer that reconnects is sent what it missed. */
+const sse = (event, id) => `${id ? `id: ${id}\n` : ""}data: ${JSON.stringify(event)}\n\n`;
+const tileEvent = (tile) => ({ type: "tile", index: tile.index, site: tile.site, state: tile.state, status: tile.status, released: tile.released === true });
+
 const textOf = (message) => (message?.content ?? []).filter((part) => part.type === "text").map((part) => part.text).join("").trim();
 const shortStatus = (toolName, args) => {
   const goto = typeof args?.code === "string" ? /page\.goto\(\s*["'`]([^"'`]+)/.exec(args.code)?.[1] : null;
-  if (goto) { try { return `opening ${new URL(goto).host}${new URL(goto).pathname === "/" ? "" : new URL(goto).pathname}`; } catch { return "opening a page"; } }
+  if (goto) { try { const { host, pathname } = new URL(goto); return `opening ${host}${pathname === "/" ? "" : pathname}`; } catch { return "opening a page"; } }
   return { snapshot: "reading the page", screenshot: "looking at the page", browser_read: "reading the page", run: "working on the page", web_fetch: "fetching a page" }[toolName] ?? toolName;
 };
 
@@ -63,14 +67,15 @@ export async function startLiveGrid({ makeProvider, models, maxChildren = 10, ho
   let closed = false;
 
   const emit = (event) => {
-    let line = `data: ${JSON.stringify(event)}\n\n`;
-    if (event.type === "chat") { const id = ++seq; chat.push({ id, event }); line = `id: ${id}\n${line}`; }
+    const id = event.type === "chat" ? ++seq : undefined;
+    if (id) chat.push({ id, event });
+    const line = sse(event, id);
     for (const res of clients) res.write(line);
   };
   const setTile = (index, change) => {
     const tile = Object.assign(tiles.get(index) ?? { index }, change);
     tiles.set(index, tile);
-    emit({ type: "tile", index, site: tile.site, state: tile.state, status: tile.status, released: tile.released === true });
+    emit(tileEvent(tile));
     return tile;
   };
 
@@ -115,7 +120,7 @@ export async function startLiveGrid({ makeProvider, models, maxChildren = 10, ho
       await runtime.dispose().catch(() => undefined);
       sessions.delete(`child-${index}`);
       for (const ref of refs.created) if (!refs.released.includes(ref)) await base.release(ref).then(() => refs.released.push(ref), () => undefined);
-      setTile(index, { status: tiles.get(index).status, released: refs.created.length === refs.released.length });
+      setTile(index, { released: refs.created.length === refs.released.length });
     }
   }
 
@@ -149,11 +154,11 @@ export async function startLiveGrid({ makeProvider, models, maxChildren = 10, ho
       if (!same(url.searchParams.get("token"), token)) return refuse(res, 403, "no token");
       const after = Number(req.headers["last-event-id"]) || 0;
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
-      res.write(`data: ${JSON.stringify({ type: "hello", maxChildren, busy })}\n\n`);
-      for (const { id, event } of chat) if (id > after) res.write(`id: ${id}\ndata: ${JSON.stringify(event)}\n\n`);
+      res.write(sse({ type: "hello", maxChildren, busy }));
+      for (const { id, event } of chat) if (id > after) res.write(sse(event, id));
       for (const tile of tiles.values()) {
-        res.write(`data: ${JSON.stringify({ type: "tile", index: tile.index, site: tile.site, state: tile.state, status: tile.status, released: tile.released === true })}\n\n`);
-        if (tile.liveUrl) res.write(`data: ${JSON.stringify({ type: "live", index: tile.index, url: tile.liveUrl })}\n\n`);
+        res.write(sse(tileEvent(tile)));
+        if (tile.liveUrl) res.write(sse({ type: "live", index: tile.index, url: tile.liveUrl }));
       }
       clients.add(res);
       req.on("close", () => clients.delete(res));
@@ -186,10 +191,12 @@ export async function startLiveGrid({ makeProvider, models, maxChildren = 10, ho
   }
   const keepAlive = setInterval(() => { for (const res of clients) res.write(": keep-alive\n\n"); }, 15_000);
   const address = server.address();
-  hosts = new Set([`${address.address}:${address.port}`, `localhost:${address.port}`]);
+  // An IPv6 address is bracketed in a Host header and a URL.
+  const listening = `${address.family === "IPv6" ? `[${address.address}]` : address.address}:${address.port}`;
+  hosts = new Set([listening, `localhost:${address.port}`]);
 
   return {
-    url: `http://${address.address}:${address.port}/`,
+    url: `http://${listening}/`,
     prompt,
     tiles: () => [...tiles.values()].map(({ index, site, state, status, refs, frames, live }) => ({ index, site, state, status, created: refs.created.length, released: refs.released.length, refs: refs.created, frames, live })),
     async close() {

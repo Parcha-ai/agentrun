@@ -11,3 +11,6 @@ export { type HomeManifest, PACK_FORMAT } from "./pack-shared.js";
 export { type ImportOptions, type ImportReport, type ImportStep, importPack, readPack } from "./unpack.js";
 export { AgentHomeError, type HomeCheck, LOCK_FILE } from "./store.js";
 export { choosePrompt, LOOKUP_TEXT_MAX, type PromptChoice, type PromptJudge, type PromptLookup, type PromptLookupSource, type PromptPass, type PromptQuestion } from "./prompts.js";
+export {
+  type CapturedState, type HostKey, localHostKey, MAX_SESSION_COOKIE_AGE_MS, sessionVault, type SessionVault, type SessionVaultPort, VAULT_KEYS_FILE, type VaultCookie, type VaultEntry,
+} from "./vault.js";
