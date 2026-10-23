@@ -883,6 +883,11 @@ before it makes a box to launch in.
     recorded it before it released the name: never that launch of the name, and never text the program or its hook
     printed. The record rests in the spool as `.stopped.<name>.<generation>` until a later reclaim of the name finds
     it older than any stop that could wait for it.
+  - A stop is for the launch the call found: one whose script reaches the box only after that launch has ended and
+    another of the name took the directory returns the launch it was for, from that record (or is `invalid`, as for a
+    launch that does not exist, when there is none), and leaves the new one alone. This holds only when the host and the
+    launch's `launcher.sh` are both of this version: a stop from a host that passes no generation, or for a launch an
+    older `launcher.sh` runs, behaves as before, so a late stop can still act on a later launch of the name.
 - Callers that meet are safe: several `launch` calls for one name start one program, a claim whose caller died before
   filling it is taken over after a minute, and a launch that ended is replaced by one caller only.
 - The program's output goes to `out.log` in the launcher's directory, bounded to its tail (`logMaxBytes`), also after

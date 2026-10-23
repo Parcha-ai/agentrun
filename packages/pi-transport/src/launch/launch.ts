@@ -863,18 +863,11 @@ export async function launchState(
 	if (invalid !== undefined) return err(invalid);
 	if (box.launcher !== undefined) return box.launcher.state(launch, context);
 	const name = launch.name;
-	const located = await runScript(box, LOCATE_SCRIPT, [name], context);
-	if (!located.ok) return located;
-	if (located.value.exitCode === 4) return ok(undefined);
-	const directory = located.value.text
-		.split("\n")
-		.find((line) => line.startsWith("DIR "))
-		?.slice(4)
-		.trim();
-	if (directory === undefined) return err(new LaunchError("failed", "the launch directory cannot be found"));
-	const state = await readState(box, directory, context);
-	if (!state.ok) return state;
-	if (state.value === "none")
+	const found = await locateSeen(box, name, context);
+	if (!found.ok) return found;
+	if (found.value === undefined) return ok(undefined);
+	const { directory, seen } = found.value;
+	if (seen.state === "none")
 		return ok({
 			launch: { v: 1, name },
 			phase: "starting",
@@ -885,7 +878,26 @@ export async function launchState(
 			launcherAlive: false,
 			directory,
 		});
-	return ok(state.value);
+	return ok(seen.state);
+}
+
+/** The launch of `name` as the box holds it now: its directory and what that holds (its state and generation), or undefined. */
+async function locateSeen(
+	box: Box,
+	name: string,
+	context: Context,
+): Promise<Result<{ directory: string; seen: Seen } | undefined, LaunchError>> {
+	const located = await runScript(box, LOCATE_SCRIPT, [name], context);
+	if (!located.ok) return located;
+	if (located.value.exitCode === 4) return ok(undefined);
+	const directory = located.value.text
+		.split("\n")
+		.find((line) => line.startsWith("DIR "))
+		?.slice(4)
+		.trim();
+	if (directory === undefined) return err(new LaunchError("failed", "the launch directory cannot be found"));
+	const seen = await readSeen(box, directory, context);
+	return seen.ok ? ok({ directory, seen: seen.value }) : seen;
 }
 
 /**
@@ -913,24 +925,36 @@ export async function launchStop(
 	if (invalid !== undefined) return err(invalid);
 	if (box.launcher !== undefined) return box.launcher.stop(launch, options, context);
 	const name = launch.name;
-	const current = await launchStatus(box, name, context);
+	const current = await locateSeen(box, name, context);
 	if (!current.ok) return current;
 	if (current.value === undefined) return err(new LaunchError("invalid", `no launch named ${name} in box ${box.id}`));
+	const { directory } = current.value;
 	const graceMs = options?.graceMs ?? DEFAULT_GRACE_MS;
 	if (!Number.isFinite(graceMs) || graceMs < 0 || graceMs > MAX_GRACE_MS)
 		return err(new LaunchError("invalid", `graceMs must be a number from 0 to ${MAX_GRACE_MS}`));
 	const tenths = Math.ceil(graceMs / 100);
 	// The call is given the grace period and the usual time on top: a call that ended inside the grace would leave the program
 	// running with its supervisor already told to stop.
+	// The stop is for the launch this call saw, by its generation: a script that starts only after a launch of the name took the
+	// directory reports the one it was for and leaves the new one alone.
 	const stopped = await runScript(
 		box,
-		checked('D=$1; own_dirs || exit $?; sh "$D/launcher.sh" stop "$D" "$2"'),
-		[current.value.directory, String(tenths)],
+		checked('D=$1; own_dirs || exit $?; sh "$D/launcher.sh" stop "$D" "$2" "$3"'),
+		[directory, String(tenths), current.value.seen.gen],
 		context,
 		// The grace, a stop hook at its longest, and the usual time on top.
 		graceMs + MAX_HOOK_MS + CALL_TIMEOUT_MS,
 	);
 	if (!stopped.ok) return stopped;
+	// Exit 4: the launch this call found has ended (its directory is gone, or a later launch of the name holds it and its stop left
+	// no record): a launch that does not exist, never another launch's state.
+	if (stopped.value.exitCode === 4)
+		return err(
+			new LaunchError(
+				"invalid",
+				`the launch of ${name} this call found has ended: ${stopped.value.text.trim().slice(0, 200) || "its directory is gone"}`,
+			),
+		);
 	// The stop script prints the state and exits 0. Any other end means it did not finish: the program may still run.
 	if (stopped.value.exitCode !== 0) {
 		const said = stopped.value.text.trim().slice(0, 200);
@@ -941,7 +965,7 @@ export async function launchStop(
 	// The stopped incarnation's own status, as the stop printed it before it released the name: never read again by name, which a
 	// launch of the name that waited for the stop may hold by then.
 	const block = lastStatusBlock(stopped.value.text);
-	const state = block === undefined ? undefined : parseState(block, current.value.directory);
+	const state = block === undefined ? undefined : parseState(block, directory);
 	if (state === undefined || state === "none")
 		return err(
 			new LaunchError("failed", `the stop of ${name} reported no state: ${stopped.value.text.trim().slice(0, 200)}`),

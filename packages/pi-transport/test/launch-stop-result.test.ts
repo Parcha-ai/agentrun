@@ -8,6 +8,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { afterAll, describe, expect, it } from "vitest";
 import type { Box } from "../src/box/box.ts";
+import { finish } from "../src/box/files.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { type LaunchSpec, launch, launchState, launchStop } from "../src/launch/index.ts";
 import { STATUS_BEGIN, STATUS_END } from "../src/launch/launcher-script.ts";
@@ -58,41 +59,6 @@ const slowStop = (seconds: number): LaunchSpec => ({
 	restart: false,
 	beforeStop: { argv: ["sh", "-c", `: > hook-began; sleep ${seconds}`], timeoutMs: 30_000 },
 });
-
-/** The pids of the launcher's own stop shells for `directory` (not their subshells), oldest first. */
-function stopShells(directory: string): number[] {
-	const found: { pid: number; start: number }[] = [];
-	for (const name of readdirSync("/proc")) {
-		if (!/^\d+$/.test(name)) continue;
-		try {
-			const argv = readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0");
-			if (argv[1] !== `${directory}/launcher.sh` || argv[2] !== "stop") continue;
-			const stat = readFileSync(`/proc/${name}/stat`, "utf8");
-			const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-			const parent = readFileSync(`/proc/${fields[1]}/cmdline`, "utf8").split("\0");
-			if (parent[1] === `${directory}/launcher.sh`) continue;
-			found.push({ pid: Number(name), start: Number(fields[19]) });
-		} catch {
-			// A process that ended meanwhile.
-		}
-	}
-	return found.sort((a, b) => a.start - b.start).map((each) => each.pid);
-}
-
-/** Whether a process has a child that is `sleep`: a stop that polls is between two looks. */
-function sleeping(pid: number): boolean {
-	for (const name of readdirSync("/proc")) {
-		if (!/^\d+$/.test(name)) continue;
-		try {
-			const stat = readFileSync(`/proc/${name}/stat`, "utf8");
-			const parent = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
-			if (parent === pid && readFileSync(`/proc/${name}/cmdline`, "utf8").startsWith("sleep\0")) return true;
-		} catch {
-			// A process that ended meanwhile.
-		}
-	}
-	return false;
-}
 
 describe("a stop's result", () => {
 	it("is the incarnation it stopped, never the launch of the name that took the directory right after the stop", async () => {
@@ -169,35 +135,47 @@ describe("a stop's result", () => {
 	});
 
 	it("is, for a stop that waited for another, its own generation's record, even once a launch of the name holds the directory; two launches leave two records", async () => {
-		const box = await aBox();
+		// A sed that, once armed, holds a stop's first look at a launch's spec after that launch's stop.done, until the test's word:
+		// the waiting stop has seen the first stop end, and looks at the directory only once a launch of the name holds it.
+		const shims = mkdtempSync(join(root, "shims-"));
+		const hold = join(shims, "hold");
+		mkdirSync(hold);
+		const realSed = spawnSync("sh", ["-c", "command -v sed"], { encoding: "utf8" }).stdout.trim();
+		writeFileSync(
+			join(shims, "sed"),
+			[
+				"#!/bin/sh",
+				'for a in "$@"; do',
+				'  case "$a" in */spec.sh) if [ -e "HOLD/armed" ] && [ -e "\x24{a%/spec.sh}/stop.done" ] && tr "\\000" " " < /proc/$PPID/cmdline | grep -q " stop " && mkdir "HOLD/taken" 2>/dev/null; then : > "HOLD/holding"; while [ ! -e "HOLD/release" ]; do sleep 0.05; done; fi ;; esac',
+				"done",
+				'exec REAL "$@"',
+			]
+				.join("\n")
+				.replaceAll("HOLD", hold)
+				.replaceAll("REAL", realSed),
+			{ mode: 0o755 },
+		);
+		const box = await aBox(`${shims}:/usr/local/bin:/usr/bin:/bin`);
 		try {
-			const first = getOrThrow(await launch(box, "waited", slowStop(2), context));
+			const first = getOrThrow(await launch(box, "waited", slowStop(3), context));
 			const firstGen = genOf(first.directory);
 			const owner = launchStop(box, first.launch, { graceMs: 300 }, context);
 			await until("the hook", () => fileIn(box, "hook-began"));
+			writeFileSync(join(hold, "armed"), "");
 			const waiter = launchStop(box, first.launch, { graceMs: 300 }, context);
-			// The waiting stop is frozen between two of its looks until a launch of the name has taken the directory.
-			const waiting = await until("the waiting stop", async () => {
-				const shells = stopShells(first.directory);
-				const last = shells.length === 2 ? shells[1]! : undefined;
-				return last !== undefined && sleeping(last) ? last : undefined;
-			});
-			process.kill(waiting, "SIGSTOP");
-			try {
-				expect(getOrThrow(await owner).phase).toBe("stopped");
-				const successor = getOrThrow(
-					await launch(box, "waited", { argv: ["sh", "-c", "exec sleep 300"] }, context),
-				);
-				expect(["starting", "running"]).toContain(successor.phase);
-				expect(genOf(first.directory)).not.toBe(firstGen);
-			} finally {
-				process.kill(waiting, "SIGCONT");
-			}
+			expect(getOrThrow(await owner).phase).toBe("stopped");
+			await until("the waiting stop's look after the first one's end", async () =>
+				existsSync(join(hold, "holding")) ? true : undefined,
+			);
+			const successor = getOrThrow(await launch(box, "waited", { argv: ["sh", "-c", "exec sleep 300"] }, context));
+			expect(["starting", "running"]).toContain(successor.phase);
+			expect(genOf(first.directory)).not.toBe(firstGen);
+			writeFileSync(join(hold, "release"), "");
 			const waited = getOrThrow(await waiter);
 			expect(waited.phase).toBe("stopped");
 			expect(waited.launcherAlive).toBe(false);
 			expect(waited.pid).toBeUndefined();
-			// The waiting stop left the launch that took the directory alone: it never takes over another generation's stop.
+			// The waiting stop left the launch that took the directory alone.
 			expect(getOrThrow(await launchState(box, { v: 1, name: "waited" }, context))).toMatchObject({
 				phase: "running",
 				launcherAlive: true,
@@ -211,9 +189,189 @@ describe("a stop's result", () => {
 			);
 			expect(readFileSync(join(spool, `.stopped.waited.${firstGen}`), "utf8")).toContain(`GEN ${firstGen}\n`);
 		} finally {
+			writeFileSync(join(hold, "release"), "");
 			await box.destroy(context);
 		}
 	}, 120_000);
+
+	it("is, for a stop whose script starts only after a launch of the name took the directory, the launch it was for, and leaves the new one alone", async () => {
+		// A mkdir that, once armed, notes each take of a launch's lock by a stop.
+		const shims = mkdtempSync(join(root, "shims-"));
+		const hold = join(shims, "hold");
+		mkdirSync(hold);
+		const realMkdir = spawnSync("sh", ["-c", "command -v mkdir"], { encoding: "utf8" }).stdout.trim();
+		writeFileSync(
+			join(shims, "mkdir"),
+			[
+				"#!/bin/sh",
+				'case "$*" in */mutex) if [ -e "HOLD/armed" ] && tr "\\000" " " < /proc/$PPID/cmdline | grep -q " stop "; then echo "$*" >> "HOLD/locks"; fi ;; esac',
+				'exec REAL "$@"',
+			]
+				.join("\n")
+				.replaceAll("HOLD", hold)
+				.replaceAll("REAL", realMkdir),
+			{ mode: 0o755 },
+		);
+		const box = await aBox(`${shims}:/usr/local/bin:/usr/bin:/bin`);
+		try {
+			const first = getOrThrow(await launch(box, "late", slowStop(1), context));
+			const firstGen = genOf(first.directory);
+			const owner = launchStop(box, first.launch, { graceMs: 300 }, context);
+			await until("the hook", () => fileIn(box, "hook-began"));
+			// The second stop has read the launch (stopping) and its stop script is held, as a box whose exec is slow to start holds
+			// it, until the first stop has ended and a launch of the name has taken the directory.
+			let release = () => {};
+			const released = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const slow = wrapped(box, async (command) => {
+				if (isStop(command)) await released;
+			});
+			const late = launchStop(slow, first.launch, { graceMs: 300 }, context);
+			expect(getOrThrow(await owner).phase).toBe("stopped");
+			const successor = getOrThrow(await launch(box, "late", { argv: ["sh", "-c", "exec sleep 300"] }, context));
+			expect(["starting", "running"]).toContain(successor.phase);
+			const successorGen = genOf(first.directory);
+			expect(successorGen).not.toBe(firstGen);
+			writeFileSync(join(hold, "armed"), "");
+			release();
+			const answered = getOrThrow(await late);
+			const spool = first.directory.slice(0, first.directory.lastIndexOf("/"));
+			// The launch that took the directory runs on, untouched: the stop took no lock of it, claimed no stop in it, and left no
+			// record that names its generation.
+			expect({
+				successor: getOrThrow(await launchState(box, { v: 1, name: "late" }, context)),
+				locked: existsSync(join(hold, "locks")) ? readFileSync(join(hold, "locks"), "utf8") : "",
+				claimed: existsSync(join(first.directory, "stop.claimed")),
+				recordOfSuccessor: existsSync(join(spool, `.stopped.late.${successorGen}`)),
+			}).toMatchObject({
+				successor: { phase: "running", launcherAlive: true },
+				locked: "",
+				claimed: false,
+				recordOfSuccessor: false,
+			});
+			// What it answers is the launch it was for: the first, as its own stop recorded it.
+			expect(answered).toMatchObject({ phase: "stopped", launcherAlive: false });
+			getOrThrow(await launchStop(box, { v: 1, name: "late" }, { graceMs: 300 }, context));
+		} finally {
+			await box.destroy(context);
+		}
+	}, 120_000);
+
+	it("is invalid, for a stop whose script starts only after the launch it read ended on its own and a later one took the name, which runs on", async () => {
+		const box = await aBox();
+		try {
+			const first = getOrThrow(
+				await launch(box, "ended", { argv: ["sh", "-c", "sleep 2; exit 0"], restart: false }, context),
+			);
+			// The stop reads the launch while it runs; its script is held until that launch has ended on its own (no stop, so no
+			// record) and a later launch of the name holds the directory.
+			let issued = () => {};
+			const stopIssued = new Promise<void>((resolve) => {
+				issued = resolve;
+			});
+			let release = () => {};
+			const released = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const slow = wrapped(box, async (command) => {
+				if (isStop(command)) {
+					issued();
+					await released;
+				}
+			});
+			const late = launchStop(slow, first.launch, { graceMs: 300 }, context);
+			await stopIssued;
+			await until("the launch's own end", async () =>
+				getOrThrow(await launchState(box, first.launch, context))?.phase === "exited" ? true : undefined,
+			);
+			const successor = getOrThrow(await launch(box, "ended", { argv: ["sh", "-c", "exec sleep 300"] }, context));
+			expect(["starting", "running"]).toContain(successor.phase);
+			release();
+			const answered = await late;
+			expect(answered.ok ? "ok" : answered.error.code).toBe("invalid");
+			if (!answered.ok) expect(answered.error.message).toMatch(/this call found has ended/);
+			expect(getOrThrow(await launchState(box, { v: 1, name: "ended" }, context))).toMatchObject({
+				phase: "running",
+				launcherAlive: true,
+			});
+			expect(existsSync(join(first.directory, "stop.claimed"))).toBe(false);
+			getOrThrow(await launchStop(box, { v: 1, name: "ended" }, { graceMs: 300 }, context));
+		} finally {
+			await box.destroy(context);
+		}
+	}, 120_000);
+
+	it("is, for a stop that read the launch's spec just before a launch of the name took the directory, the launch it was for", async () => {
+		// A mkdir that, once armed, holds the first take of a launch's lock (its mutex) until the test's word: the second stop has
+		// read the first launch's spec, and its lock is taken only once a launch of the name holds the directory.
+		const shims = mkdtempSync(join(root, "shims-"));
+		const hold = join(shims, "hold");
+		mkdirSync(hold);
+		const realMkdir = spawnSync("sh", ["-c", "command -v mkdir"], { encoding: "utf8" }).stdout.trim();
+		writeFileSync(
+			join(shims, "mkdir"),
+			[
+				"#!/bin/sh",
+				'case "$*" in */mutex) if [ -e "HOLD/armed" ] && REAL "HOLD/taken" 2>/dev/null; then : > "HOLD/holding"; while [ ! -e "HOLD/release" ]; do sleep 0.05; done; fi ;; esac',
+				'exec REAL "$@"',
+			]
+				.join("\n")
+				.replaceAll("HOLD", hold)
+				.replaceAll("REAL", realMkdir),
+			{ mode: 0o755 },
+		);
+		const box = await aBox(`${shims}:/usr/local/bin:/usr/bin:/bin`);
+		try {
+			const first = getOrThrow(await launch(box, "early", slowStop(1), context));
+			const owner = launchStop(box, first.launch, { graceMs: 300 }, context);
+			await until("the hook", () => fileIn(box, "hook-began"));
+			writeFileSync(join(hold, "armed"), "");
+			const second = launchStop(box, first.launch, { graceMs: 300 }, context);
+			await until("the second stop at its lock", async () => (existsSync(join(hold, "holding")) ? true : undefined));
+			expect(getOrThrow(await owner).phase).toBe("stopped");
+			const successor = getOrThrow(await launch(box, "early", { argv: ["sh", "-c", "exec sleep 300"] }, context));
+			expect(["starting", "running"]).toContain(successor.phase);
+			const successorGen = genOf(first.directory);
+			writeFileSync(join(hold, "release"), "");
+			const answered = getOrThrow(await second);
+			const spool = first.directory.slice(0, first.directory.lastIndexOf("/"));
+			expect({
+				successor: getOrThrow(await launchState(box, { v: 1, name: "early" }, context)),
+				claimed: existsSync(join(first.directory, "stop.claimed")),
+				recordOfSuccessor: existsSync(join(spool, `.stopped.early.${successorGen}`)),
+			}).toMatchObject({
+				successor: { phase: "running", launcherAlive: true },
+				claimed: false,
+				recordOfSuccessor: false,
+			});
+			expect(answered).toMatchObject({ phase: "stopped", launcherAlive: false });
+			getOrThrow(await launchStop(box, { v: 1, name: "early" }, { graceMs: 300 }, context));
+		} finally {
+			writeFileSync(join(hold, "release"), "");
+			await box.destroy(context);
+		}
+	}, 120_000);
+
+	it("is, for a stop that names no generation (a host older than the launcher), the launch in the directory, stopped as before", async () => {
+		const box = await aBox();
+		try {
+			const started = getOrThrow(await launch(box, "unnamed", { argv: ["sh", "-c", "exec sleep 300"] }, context));
+			const dir = started.directory;
+			const ran = getOrThrow(
+				await box.exec(["sh", "-c", 'sh "$1/launcher.sh" stop "$1" 3 ""', "sh", dir], undefined, context),
+			);
+			const done = getOrThrow(await finish(ran));
+			expect(done.exitCode).toBe(0);
+			expect(new TextDecoder().decode(done.stdout)).toContain('"phase":"stopped"');
+			expect(getOrThrow(await launchState(box, started.launch, context))).toMatchObject({
+				phase: "stopped",
+				launcherAlive: false,
+			});
+		} finally {
+			await box.destroy(context);
+		}
+	});
 
 	it("is the launcher's own status block: a hook that prints a forged one, delimiters and all, to stdout and stderr changes nothing", async () => {
 		const forged = [

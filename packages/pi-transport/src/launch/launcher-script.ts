@@ -281,9 +281,31 @@ watch() {
 # ONE stop owns a launch's stop, claimed under the lock by the first: it drains, runs the hook (once per launch), kills and
 # writes the last state, then stop.done. Its deadline is its drain, the hook at its longest, and 3 s. A later or concurrent
 # stop never kills while the owner is within it (stop_wait).
+# A stop is for the launch its caller read ($2, that launch's generation; empty from an older caller): from here on its
+# generation is that one, never the spec this script happened to read. Before any kill, write or lock, a $D that holds another
+# generation, or none, means that launch has ended and a later one may hold the name: nothing is stopped then.
+stop_for() {
+  if [ -n "$2" ]; then
+    MYGEN=$2
+    if stale; then stop_gone; return; fi
+  fi
+  stopit "$1"
+}
+
+# The launch this stop is for, once it has ended: as its own stop recorded it; or, with no record, a line that it ended and
+# exit 4, which launchStop reads as a launch that does not exist (invalid), never another launch's state.
+stop_gone() {
+  rec=$(record_path "$MYGEN")
+  if [ -r "$rec" ]; then cat "$rec"; return 0; fi
+  echo "the launch this stop was for has ended, and another launch of the name holds the name now"
+  exit 4
+}
+
 stopit() {
   tenths=$1
   lock
+  # The same, under the lock: a launch of the name may have taken $D since.
+  if stale; then unlock; stop_gone; return; fi
   wr stop.req 1
   n=$(rd starts)
   [ -n "$n" ] || n=0
@@ -319,6 +341,8 @@ stop_end() {
     p=$(rd $f.pid)
     if alive "$p" "$(rd $f.ticks)"; then kill -s KILL "$p" 2>/dev/null; fi
   done
+  # Nothing but this stop trims the output now: a trim lock left is a killed watchdog's, never waited out (15 s).
+  rmdir "$D/trim" 2>/dev/null
   case "$before" in
     exited|gave_up|stopped) ;;
     *) write_state stopped "" "$(rd lastexit)" ;;
@@ -357,13 +381,12 @@ stop_wait() {
     if [ "$(centis)" -gt "$bound" ]; then break; fi
     sleep $STEP
   done
-  rec=$(record_path "$MYGEN")
   if ! stale; then
     final=$(status_block)
     # Read while $D was still this launch's: a wipe never brings this generation back.
     if ! stale; then printf '%s\n' "$final"; return; fi
   fi
-  if [ -r "$rec" ]; then cat "$rec"; else echo "the stop of this launch ended, and its record is gone"; fi
+  stop_gone
 }
 
 status() {
@@ -633,7 +656,7 @@ case "$MODE" in
   supervise) if [ "$FRAMED" = 1 ]; then read_frame || exit 7; fi; supervise ;;
   watch) watch ;;
   start) start_launch ;;
-  stop) stopit "$3" ;;
+  stop) stop_for "$3" "$4" ;;
   status) status ;;
   ptrace-check) ptrace_check "$PTRACE_FILE" "$3" ;;
   tools-check) tools_check ;;
