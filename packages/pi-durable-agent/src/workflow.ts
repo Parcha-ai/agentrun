@@ -26,7 +26,8 @@ const invalid = (message: string) => new AgentHomeError("invalid", message);
 
 /**
  * Checks a workflow revision's body before a store commits it: the workflow passes the DSL's structural validation (code
- * not run, no input), and every tool a call node uses is in `tools` (none when absent). A refusal is an `AgentHomeError`
+ * not run, no input) and what the durable runner checks before any step, and every tool a call node uses is in `tools`
+ * (none when absent). A refusal is an `AgentHomeError`
  * `invalid` naming the node's path and what is wrong, never a value from the body. A call node that is not `via: "tool"`
  * passes on purpose: whether it runs is the host's to decide. It writes nothing.
  */
@@ -46,6 +47,12 @@ export async function checkWorkflowBody(body: unknown): Promise<void> {
     const node = entry.path.split("/").slice(1).reduce<any>((at, part) => at?.[part.replace(/~1/g, "/").replace(/~0/g, "~")], workflow);
     if (node?.via === "tool" && !tools.includes(node.tool)) throw invalid(`the call node at ${entry.path} uses a tool the revision does not list`);
   }
+  // What the durable runner refuses before any step (each label once), asked of the runner itself on a memory store.
+  const { memoryStore, openRecovery } = await import("@parcha/agentrun-dsl/recovery");
+  const driver = await openRecovery(memoryStore(), workflow, { key: "check" });
+  const refusal = driver.preStepRefusal;
+  await driver.close();
+  if (refusal) throw invalid(refusal.kind === "duplicate_label" ? "the workflow names two nodes with one label, and the durable runner needs each label once" : `the durable runner refuses the workflow before any step: ${refusal.code}`);
 }
 
 /** How a run of a workflow revision ended, as the store's `carryBack` takes it. */
