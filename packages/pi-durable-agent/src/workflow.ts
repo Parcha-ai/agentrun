@@ -66,12 +66,13 @@ type WorkflowStarter = Pick<ReturnType<typeof createWorkflowExtension>, "start">
 
 /**
  * Runs a workflow revision on its run's store as one durable workflow task, and waits for it. `harness` is open on
- * `run.storePath` with `workflows` (agentrun-pi's `createWorkflowExtension`, which holds the host's adapters) installed.
- * It refuses with no task when the workflow uses a tool not in `tools` or does not take `input`. The run's id is its key,
- * and the agent and the revision are bound beside the workflow, so the run reopened under another revision is refused
- * (`RUN_STORE_BINDING_MISMATCH`) and nothing runs. `carry` is what the store's `carryBack` takes: the state, and the
- * labels of the nodes that completed, in graph order (chains aside), then `failed at <label>` for each deepest node that
- * failed and `escalated at <label>` for the node a gate fired at.
+ * `run.storePath` with `workflows` (agentrun-pi's `createWorkflowExtension`, which holds the host's adapters)
+ * installed. It refuses with no task when the workflow uses a tool not in `tools` or does not take `input`. The run's
+ * id is its key, and the agent and the revision are bound beside the workflow, so the run reopened under another
+ * revision is refused (`RUN_STORE_BINDING_MISMATCH`) and nothing runs. `carry` is what the store's `carryBack` takes:
+ * the state, and the labels of the nodes that completed, in graph order (chains aside), then `failed at <label>` for
+ * each deepest node that failed and `escalated at <label>` for the node a gate fired at; with none of these, `<state>
+ * before any node completed`.
  */
 export async function runWorkflowRevision(options: {
   harness: WorkflowCaller;
@@ -98,7 +99,9 @@ export async function runWorkflowRevision(options: {
   const done = inState("done").filter((node) => node.kind !== "chain").map((node) => node.label);
   const failed = inState("failed").filter((node, _, all) => !all.some((other) => other.path.startsWith(`${node.path}/`))).map((node) => node.label);
   const summary = [done.join(", "), failed.length ? `failed at ${failed.join(", ")}` : "", view.escalatedAt ? `escalated at ${view.escalatedAt.label}` : ""];
-  return { outcome, carry: { state: stateOf(outcome), summary: summary.filter(Boolean).join("; ") } };
+  // The store refuses an empty summary: a run with none of the three still says how it ended.
+  const state = stateOf(outcome);
+  return { outcome, carry: { state, summary: summary.filter(Boolean).join("; ") || `${state} before any node completed` } };
 }
 
 /** A workflow run as its store shows it: the workflow's graph and each node's state; once the run ended, how it ended,
