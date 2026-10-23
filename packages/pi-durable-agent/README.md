@@ -662,7 +662,6 @@ Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `Ti
 | Export | Does | Throws |
 |---|---|---|
 | `serveHome(home, { port?, signal? })` | Serves `home.dir` ([Looking at a home](#looking-at-a-home)) on `127.0.0.1` and resolves to `{ url, close() }` once it is listening; `close()` stops it, and so does aborting `signal`. It takes no lock and opens the home's stores read-only. `home` is anything with a `dir`, an `AgentHome` included | `missing`: the directory is not a home. `invalid`: a `port` that is not an integer from 0 to 65535 |
-
 | `serveStore(store, { port?, signal? })` | Serves the agent store at `store.dir` ([Looking at a store](#looking-at-a-store)) as `serveHome` serves a home | `missing`: the directory has no `store.sqlite`. `invalid`: a `port` that is not an integer from 0 to 65535 |
 
 Its types: `ServeOptions` and `ServeHandle`. The package's bin,
