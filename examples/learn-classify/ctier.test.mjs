@@ -82,7 +82,7 @@ test('--stage1-labels takes the MCC job\'s learning pass, and refuses a file tha
   const dev = mcc.companies.find((c) => c.split === 'dev' || c.split === 'test');
   const file = (name, ids) => {
     const path = join(dir, name);
-    return writeFile(path, ids.map((id) => JSON.stringify({ merchantId: id, mcc: '5812', allowedTiers: ['medium'] })).join('\n')).then(() => path);
+    return writeFile(path, ids.map((id) => JSON.stringify({ merchant: id, mcc: '5812', allowedTiers: ['medium'], unjudgeable: false, reason: null })).join('\n')).then(() => path);
   };
   const trainOnly = await file('train.jsonl', [train.cik]);
   const leaky = await file('leaky.jsonl', [train.cik, dev.cik]);

@@ -43,7 +43,7 @@ import { writeHosts } from './tools-v2.mjs';
 import { HINDSIGHT_FIELDS, LIVE_REFLECTION_USD, proposeHindsight, recordPagesOnly, reflectOnRun } from './hindsight.mjs';
 import { scoreMcc } from '../learn-mcc/score-mcc.mjs';
 import {
-  hindsightJobMcc, MCC_GATE_PARTS, MCC_HINDSIGHT_FIELDS, mccLookupRefusalsOf, merchantPage, merchantPagesOnly, merchantScope, merchantTouchOf, partsOfMcc, receiptOfMcc, rowOfMcc, teacherLabelsOf,
+  hindsightJobMcc, MCC_GATE_BOTH, MCC_GATE_PARTS, MCC_HINDSIGHT_FIELDS, mccLookupRefusalsOf, merchantPage, merchantPagesOnly, merchantScope, merchantTouchOf, partsOfMcc, partsOfMccBoth, receiptOfMcc, rowOfMcc, teacherLabelsOf,
   teacherValuesMcc, wrongFieldsMcc,
 } from './mcc.mjs';
 import { agentScriptMcc, FIXTURES_MCC } from './scripted-mcc.mjs';
@@ -260,8 +260,13 @@ async function scoreRun({ parts, run, job, measure, hostsDir }) {
   return { score, stats: toolStats(results), scoringJudge: { ...judge.meter } };
 }
 
-/** An MCC answer's score against the merchant's teacher labels (learn-mcc's scoreMcc; none joined, nothing scored). */
-const scoreMccOf = (answer, job, data) => scoreMcc({ answer: answer ?? null, merchant: job, groups: data.table });
+/** An MCC answer's score against the merchant's teacher labels (learn-mcc's scoreMcc; none joined, nothing scored), or with
+ *  --stage1-labels (`data.stage1Labels`) against the merchant's stage-1 label, the teacher where it has none. */
+export const scoreMccOf = (answer, job, data) => scoreMcc({ answer: answer ?? null, merchant: job, groups: data.table, ...(data.stage1Labels ? { labels: data.stage1Labels } : {}) });
+
+/** The MCC bank's scored parts: the code and the tier, each a cell; with --stage1-labels (proposal C) ONE cell per company,
+ *  right on both fields (partsOfMccBoth). */
+export const gatePartsOf = (parts) => (parts.set !== SETS.mcc ? {} : parts.stage1Labels ? { scoreParts: partsOfMccBoth, parts: MCC_GATE_BOTH } : { scoreParts: partsOfMcc, parts: MCC_GATE_PARTS });
 
 const short = (sha) => (sha ? sha.slice(0, 7) : '-');
 const usd = (n) => (n === null ? 'unknown' : `$${n.toFixed(4)}`);
@@ -387,7 +392,7 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
         job, run, score: p.score, answer: p.measure.answer, fields: parts.hindsight.fields, codes: parts.data?.codes, storeDir: join(out, 'hindsight'),
         rules: await repo.read('AGENTS.md', p.seedSha),
         ...(parts.hindsight.limitUsd !== undefined ? { limitUsd: parts.hindsight.limitUsd } : {}),
-        ...(parts.set === SETS.mcc ? { wrongOf: wrongFieldsMcc, jobLine: hindsightJobMcc(job), isRecord: (url) => merchantPage(url, merchantScope(job.website)) } : {}),
+        ...(parts.set === SETS.mcc ? { wrongOf: wrongFieldsMcc, jobLine: hindsightJobMcc(job, p.score?.against), isRecord: (url) => merchantPage(url, merchantScope(job.website)) } : {}),
         model: () => parts.hindsight.model(job, run), effects: () => parts.hindsight.tools(job, run),
       }),
     });
@@ -431,8 +436,8 @@ async function endJob({ out, repo, home, parts, judge, job, record, dropEvidence
       }
       const curateJudge = meteredJudge(judge);
       // ARM G (demotionSettler): the revision whose answer was this run's (the host's dispatch, complete) is shown wrong when
-      // the truth (the teacher, for MCC) disagrees with the code it answered.
-      const answeredWrong = p.measure.dispatch?.outcome === 'complete' && (parts.set === SETS.mcc ? p.score?.mccCorrect === false : p.score?.sicCorrect4 === false);
+      // the truth (the teacher, for MCC) disagrees with the code it answered; with --stage1-labels, with either field.
+      const answeredWrong = p.measure.dispatch?.outcome === 'complete' && (parts.set === SETS.mcc ? (parts.stage1Labels ? p.score?.correct === false : p.score?.mccCorrect === false) : p.score?.sicCorrect4 === false);
       const armG = parts.escalationNeutral || parts.gatedDemotion
         ? (settle) => demotionSettler({ settle, neutral: Boolean(parts.escalationNeutral), shownWrong: new Set(answeredWrong ? [p.measure.dispatch.revision] : []), ...(parts.gatedDemotion ? { gate } : {}) })
         : (settle) => settle;
@@ -656,7 +661,7 @@ export async function runLoop({ out, parts, jobs, list, split = 'run', openTest 
   // stream, never holding it: a curate that would promote queues it, and a later curate applies its verdict. `gate` gives
   // the pass one already made.
   // The MCC job's bank runs are scored on two parts, the code and the tier, each against the teacher.
-  const gateParts = parts.set === SETS.mcc ? { scoreParts: partsOfMcc, parts: MCC_GATE_PARTS } : {};
+  const gateParts = gatePartsOf(parts);
   const gate = given ?? (parts.bank ? asyncGate({ bank: bankOf(parts.companies, parts.bank, stream), runOne: bankRunner({ out, bare, parts, runCapUsd, dropEvidence }), dir: join(out, 'gate'), ...(parts.bankConcurrency ? { concurrency: parts.bankConcurrency } : {}), ...gateParts, ...(parts.gatedDemotion ? { gatedDemotion: true } : {}), log }) : undefined);
   const judge = parts.judge();
   const spentNow = () => knownSpend(out);
@@ -820,7 +825,7 @@ export async function runSealed({ out, parts, at = 'main', from, split = 'sealed
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--escalation-neutral] [--gated-demotion (with --promotion-bank)] [--receipt-admission] [--receipt-holds-trial [--challenge-on-hold [--challenge-cap-usd <usd>]]] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--gate jev-margin --gate-tau <file>] [--pick-node agent] [--teacher <file> (mcc)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4|mcc] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--split <name> [--open-test]] [--concurrency <n>] [--drop-evidence] [--agent-dir <dir>] [--edgar-archive [--edgar-cache <dir>]] [--schedule rolling|batch] [--checkpoints <n,n,...>] [--curate-cuts v0.1|default] [--curate-sticky] [--promotion-bank <file> [--promotion-bank-concurrency <n>] [--gate-wait-at-end]] [--promote-no-floor [--receipt-promotion]] [--escalation-neutral] [--gated-demotion (with --promotion-bank)] [--receipt-admission] [--receipt-holds-trial [--challenge-on-hold [--challenge-cap-usd <usd>]]] [--refuse-contradicting] [--keep-facts] [--refuse-refused-hosts] [--gate jev-margin --gate-tau <file>] [--pick-node agent] [--teacher <file> (mcc)] [--stage1-labels <file> (mcc, a learning pass)] [--self-test-only (live)] [--hindsight all|<field,...> (mcc: mcc,risk)] [--sealed --at seed|main|<sha> [--from <agent.git or bundle>] [--shard <i>/<n>]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -837,7 +842,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         'receipt-admission': { type: 'boolean' }, 'receipt-holds-trial': { type: 'boolean' }, 'receipt-promotion': { type: 'boolean' }, 'promote-no-floor': { type: 'boolean' },
         'challenge-on-hold': { type: 'boolean' }, 'challenge-cap-usd': { type: 'string' },
         'escalation-neutral': { type: 'boolean' }, 'gated-demotion': { type: 'boolean' },
-        'refuse-contradicting': { type: 'boolean' }, 'keep-facts': { type: 'boolean' }, 'refuse-refused-hosts': { type: 'boolean' }, teacher: { type: 'string' },
+        'refuse-contradicting': { type: 'boolean' }, 'keep-facts': { type: 'boolean' }, 'refuse-refused-hosts': { type: 'boolean' }, teacher: { type: 'string' }, 'stage1-labels': { type: 'string' },
         'self-test-only': { type: 'boolean' }, gate: { type: 'string' }, 'gate-tau': { type: 'string' }, 'pick-node': { type: 'string' },
       },
     }));
@@ -870,7 +875,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     if (values[name] !== undefined && !values.sealed) { console.error(`--${name} takes a sealed pass\n${USAGE}`); process.exit(2); }
   }
   if (values.split === 'test' && !values['open-test']) { console.error('the test split is opened once per finalist: pass --open-test'); process.exit(2); }
-  for (const name of ['schedule', 'checkpoints']) {
+  for (const name of ['schedule', 'checkpoints', 'stage1-labels']) {
     if (values[name] !== undefined && values.sealed) { console.error(`--${name} takes a learning pass\n${USAGE}`); process.exit(2); }
   }
   if (values.schedule !== undefined && !['rolling', 'batch'].includes(values.schedule)) { console.error(`--schedule is rolling or batch\n${USAGE}`); process.exit(2); }
@@ -900,6 +905,23 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       const labels = teacherLabelsOf(resolve(values.teacher));
       for (const merchant of parts.companies) Object.assign(merchant, labels.get(merchant.cik) ?? { teacher: null, stratum: null });
       console.log(`learn-classify: teacher labels for ${parts.companies.filter((m) => m.teacher).length} of ${parts.companies.length} merchants (${values.teacher})`);
+    }
+    if (values['stage1-labels'] !== undefined) {
+      // Proposal C: the adjudicator's stage-1 labels for the take's own TRAIN merchants (and the bank's), scored on both
+      // fields everywhere the loop is scored. A DEV or TEST label never enters a take: such a file is refused.
+      if (set !== SETS.mcc) { console.error(`--stage1-labels joins the MCC job's stage-1 labels: pass --set mcc\n${USAGE}`); process.exit(2); }
+      const { loadStage1Labels } = await import('../learn-mcc/score-mcc.mjs');
+      let labels;
+      try { labels = loadStage1Labels(resolve(values['stage1-labels'])); } catch (error) { console.error(`--stage1-labels ${values['stage1-labels']}: ${error.message}`); process.exit(2); }
+      const byId = new Map(parts.companies.map((m) => [m.cik, m]));
+      for (const id of Object.keys(labels)) {
+        const merchant = byId.get(id);
+        if (!merchant) { console.error(`--stage1-labels holds ${id}, not a merchant of the data\n${USAGE}`); process.exit(2); }
+        if (merchant.split !== 'train') { console.error(`--stage1-labels holds ${id}, a ${merchant.split} merchant: a DEV or TEST label never enters a take\n${USAGE}`); process.exit(2); }
+      }
+      parts.stage1Labels = labels;
+      parts.data = { ...parts.data, stage1Labels: labels };
+      console.log(`learn-classify: stage-1 labels for ${Object.keys(labels).length} of ${parts.companies.length} merchants (${values['stage1-labels']}): scored on both fields`);
     }
     if (values['agent-dir'] !== undefined) {
       const agentDir = resolve(values['agent-dir']);

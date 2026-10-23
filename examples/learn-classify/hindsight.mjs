@@ -160,10 +160,11 @@ export function sourcesOf({ rules, workspace } = {}) {
  *  agent's label, never as the truth. */
 export function reflectionPrompt({ job, wrong, digest, lessons, sources, jobLine }) {
   const shown = (v) => (typeof v === 'string' ? v : JSON.stringify(v));
-  const label = wrong.label === 'teacher' ? 'The teacher\'s value (another agent\'s label, not ground truth)' : 'The true value';
+  const label = wrong.label === 'teacher' ? 'The teacher\'s value (another agent\'s label, not ground truth)'
+    : wrong.label === 'stage1' ? 'The adjudicated label (stage 1, not ground truth; a list of tiers is every tier it allows)' : 'The true value';
   return [
     jobLine ?? `The job: classify ${job.name}${job.ticker ? ` (${job.ticker})` : ''}: its SEC SIC code, segments, headquarters, subsidiaries and latest annual report.`,
-    `The field the run ${wrong.label === 'teacher' ? 'and the teacher disagree on' : 'got wrong'}: ${wrong.field}.`,
+    `The field the run ${wrong.label === 'teacher' ? 'and the teacher disagree on' : wrong.label === 'stage1' ? 'and the adjudicated label disagree on' : 'got wrong'}: ${wrong.field}.`,
     `The run answered: ${shown(wrong.answer)}`,
     `${label}: ${shown(wrong.truth)}${wrong.truthTitle ? ` (${wrong.truthTitle})` : ''}`,
     `What the run did:\n${digest}`,

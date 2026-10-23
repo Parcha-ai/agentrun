@@ -239,24 +239,38 @@ export const partsOfMcc = (score) => ({
 });
 export const MCC_GATE_PARTS = Object.freeze(['mcc', 'risk']);
 
+/** Proposal C's bank cell (--stage1-labels): ONE per company. On a merchant the stage-1 labels cover (`against:
+ *  'stage1'`) it is 1 when the code and the tier are both right, else 0; on any other it is the code alone, null when
+ *  there is no label. The gate turns it into +1 or -1 for a host answer and 0 for none (valuesOf). */
+export const partsOfMccBoth = (score) => ({
+  both: score?.against === 'stage1' ? (score.mccCorrect === true && score.riskCorrect === true ? 1 : 0)
+    : typeof score?.mccCorrect === 'boolean' ? (score.mccCorrect ? 1 : 0) : null,
+});
+export const MCC_GATE_BOTH = Object.freeze(['both']);
+
 export const MCC_HINDSIGHT_FIELDS = Object.freeze(['mcc', 'risk']);
 
-/** The fields of an MCC score where the run and the teacher disagree, among `fields`, with the answer and the teacher's
- *  label. The label is the teacher's, not truth: `label: 'teacher'` says so wherever it is shown or kept. */
+/** The fields of an MCC score where the run and its label disagree, among `fields`, with the answer and the label: the
+ *  teacher's, or with --stage1-labels the adjudicated stage-1 label (`score.against`), its tier the list of tiers it
+ *  allows. Neither is truth: `label` says which wherever it is shown or kept. */
 export function wrongFieldsMcc(score, fields = MCC_HINDSIGHT_FIELDS, { codes } = {}) {
   if (!score) return [];
   const title = (code) => codes?.[code];
   const out = [];
-  if (score.mccCorrect === false) out.push({ field: 'mcc', answer: score.mccAnswer, truth: score.mccTeacher, truthTitle: title(score.mccTeacher) ?? null, label: 'teacher' });
-  if (score.riskCorrect === false) out.push({ field: 'risk', answer: score.riskAnswer, truth: score.riskTeacher, label: 'teacher' });
+  const label = score.against ?? 'teacher';
+  if (score.mccCorrect === false) out.push({ field: 'mcc', answer: score.mccAnswer, truth: score.mccTeacher, truthTitle: title(score.mccTeacher) ?? null, label });
+  if (score.riskCorrect === false) out.push({ field: 'risk', answer: score.riskAnswer, truth: score.riskTeacher, label });
   return out.filter((w) => fields.includes(w.field));
 }
 
 /** The teacher's values a hindsight lesson may not carry: the code (the guard skips short values, so the tier is left). */
 export const teacherValuesMcc = (wrong) => wrong.filter((w) => w.field === 'mcc' && w.truth).map((w) => String(w.truth));
 
-/** The reflection's first line for an MCC run. */
-export const hindsightJobMcc = (job) => `The job: classify the merchant ${job.name}: its MCC (ISO 18245), risk tier, flags and evidence. The value given below as true is another agent's label (the teacher's), not ground truth.`;
+/** The reflection's first line for an MCC run: the value shown as right is the teacher's label, or with --stage1-labels
+ *  (`against: 'stage1'`) the adjudicated stage-1 label; never ground truth. */
+export const hindsightJobMcc = (job, against = 'teacher') => (against === 'stage1'
+  ? `The job: classify the merchant ${job.name}: its MCC (ISO 18245), risk tier, flags and evidence. The value given below is the adjudicated label (stage 1 of the adjudication), not ground truth; for the risk tier it lists every tier the label allows.`
+  : `The job: classify the merchant ${job.name}: its MCC (ISO 18245), risk tier, flags and evidence. The value given below as true is another agent's label (the teacher's), not ground truth.`);
 
 /** Tools that open only the merchant's own pages: any other URL (or a path) is refused before a request. */
 export function merchantPagesOnly(effects, merchant) {
@@ -277,7 +291,7 @@ export function rowOfMcc(base, score, job) {
     set: 'mcc',
     merchantId: base.cik,
     stratum: job?.stratum ?? null,
-    label: 'teacher',
+    label: score?.against ?? 'teacher',
     answer: score?.mccAnswer ?? null,
     truth: score?.mccTeacher ?? null,
     correct: score?.correct ?? null,
@@ -299,5 +313,8 @@ export function rowOfMcc(base, score, job) {
     flagsJaccard: score?.flagsJaccard ?? null,
     siteStatus: score?.siteStatus ?? null,
     confidence: score?.confidence ?? null,
+    // With --stage1-labels: why a merchant fell back to the teacher, and the swarm teacher's code, which decides nothing.
+    ...(score?.labelFallback !== undefined ? { labelFallback: score.labelFallback } : {}),
+    ...(score?.mccSwarm !== undefined ? { mccSwarm: score.mccSwarm, mccSwarmCorrect: score.mccSwarmCorrect ?? null } : {}),
   };
 }
