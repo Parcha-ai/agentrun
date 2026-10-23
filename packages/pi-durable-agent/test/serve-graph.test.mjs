@@ -110,7 +110,7 @@ const FIRED = `${PRIVATE}/steps/1`;
 const GRAPH = {
   nodes: [
     node("/root", "chain"),
-    node("/root/steps/0", "agent", "Find the filings"),
+    { ...node("/root/steps/0", "agent", "Find the filings"), changeCheck: "0badf00d" },
     node("/root/steps/1", "escalate", "no filings at all"),
     node("/root/steps/2", "route", "Kind of company"),
     node("/root/steps/2/branches/public/body", "call", "Read the 10-K", "http"),
@@ -206,7 +206,7 @@ test("a diff: NEW and EDITED tags on their nodes, the exit's beside its pill, th
   const card = box(svg, "/root/steps/0");
   const tag = inside(group(svg, "/root/steps/0"), "tag-box")[0];
   assert.ok(num(tag, "x") + num(tag, "width") <= num(card, "x") + num(card, "width") && num(tag, "y") < num(card, "y"), "a card's tag sits on its top edge");
-  assert.equal(words(svg, "removed").join(""), "Removed: Check the registry (judge), Old brief (report)");
+  assert.deepEqual(words(svg, "removed"), ["Removed:", "Check the registry (judge)", "Old brief (report)"], "one line each");
   for (const text of inside(svg, "removed")) assert.ok(num(text, "y") > Math.max(...inside(svg, "box").map((el) => num(el, "y") + num(el, "height"))), "under the graph");
   assert.equal(groups(svg).length, GRAPH.nodes.length, "a removed node is not drawn: it is not in the graph");
 
@@ -215,7 +215,7 @@ test("a diff: NEW and EDITED tags on their nodes, the exit's beside its pill, th
   assert.deepEqual([words(again, "tag"), words(again, "removed")], [[], []]);
 });
 
-test("a run's state: one class per node, the fired exit escalated though its state says not-run, escalated never failed, the taken branch marked", () => {
+test("a run's state: one class per node, the fired exit escalated though its state says not-run and marked fired, escalated never failed, the taken branch marked", () => {
   const { draw } = mount();
   const status = {
     "/root": "escalated", "/root/steps/0": "done", "/root/steps/1": "done", "/root/steps/2": "escalated",
@@ -229,6 +229,7 @@ test("a run's state: one class per node, the fired exit escalated though its sta
   assert.match(titleOf(fired), /escalated/, "its title says so");
   assert.deepEqual(words(fired, "state"), ["escalated"], "and so does a word beside it");
   assert.ok(!has(fired, "failed") && !has(fired, "not-run"));
+  assert.deepEqual(groups(svg).filter((el) => has(el, "fired")).map((el) => el.getAttribute("data-path")), [FIRED], "only the exit that fired is fired");
   assert.deepEqual(words(group(svg, "/root/steps/0"), "state"), ["done"]);
   assert.deepEqual(words(group(svg, "/root/steps/4"), "state"), [], "a node not run is faded, with no word");
   assert.match(titleOf(group(svg, "/root/steps/4")), /not run/);
@@ -240,13 +241,33 @@ test("a run's state: one class per node, the fired exit escalated though its sta
   });
   const states = Object.fromEntries(groups(failed).map((el) => [el.getAttribute("data-path"), stateOf(el)]));
   assert.deepEqual(states, {
-    "/root": ["failed"], "/root/steps/0": ["done"], "/root/steps/1": ["skipped"], "/root/steps/2": ["failed"], "/root/steps/2/branches/public/body": ["failed"],
+    "/root": ["failed"], "/root/steps/0": ["done"], "/root/steps/1": [], "/root/steps/2": ["failed"], "/root/steps/2/branches/public/body": ["failed"],
     [PRIVATE]: [], [`${PRIVATE}/steps/0`]: [], [FIRED]: [], "/root/steps/3": ["working"], "/root/steps/3/body": [], "/root/steps/4": [],
-  }, "a state the drawer does not know adds nothing");
+  }, "a state the drawer does not know, skipped among them, adds nothing");
   assert.deepEqual(words(group(failed, "/root/steps/2/branches/public/body"), "state"), ["failed"]);
   assert.deepEqual(words(group(failed, "/root/steps/3"), "state"), ["working"]);
   for (const el of groups(failed)) assert.deepEqual(classes(el).filter((name) => /onclick|constructor|"/.test(name)), [], "no class from a state's text");
   for (const el of [...groups(svg), ...groups(failed)]) assert.ok(!(has(el, "escalated") && has(el, "failed")), "escalated is never failed");
+});
+
+test("a container on the escalation's path: escalated with a light look of its own, the exit that fired inside it filled", () => {
+  const BODY = "/root/steps/1/body";
+  const EXIT = `${BODY}/steps/1`;
+  const graph = {
+    nodes: [node("/root", "chain"), node("/root/steps/0", "agent", "List the officers"), node("/root/steps/1", "map", "Each officer"), node(BODY, "chain"), node(`${BODY}/steps/0`, "agent", "Screen the officer"), node(EXIT, "escalate", "sanctioned"), node("/root/steps/2", "report", "Write the brief")],
+    edges: [{ from: "/root", to: "/root/steps/0", kind: "next" }, { from: "/root/steps/0", to: "/root/steps/1", kind: "next" }, { from: "/root/steps/1", to: BODY, kind: "item" }, { from: BODY, to: `${BODY}/steps/0`, kind: "next" }, { from: `${BODY}/steps/0`, to: EXIT, kind: "next" }, { from: "/root/steps/1", to: "/root/steps/2", kind: "next" }],
+  };
+  const { draw } = mount();
+  const svg = draw(graph, { status: { "/root": "escalated", "/root/steps/0": "done", "/root/steps/1": "escalated", [BODY]: "escalated", [`${BODY}/steps/0`]: "done", [EXIT]: "escalated", "/root/steps/2": "not-run" }, fired: EXIT });
+  const map = group(svg, "/root/steps/1");
+  const exit = group(svg, EXIT);
+  assert.deepEqual([stateOf(map), has(map, "fired"), has(map, "failed")], [["escalated"], false, false], "the map is on the path, not the exit that fired");
+  assert.deepEqual(words(map, "state"), ["escalated"]);
+  assert.deepEqual([stateOf(exit), has(exit, "fired")], [["escalated"], true]);
+  const rule = (selector) => new RegExp(`(^|[},])${selector.replace(/[.>]/g, "\\$&")}[,{][^}]*`, "m").exec(PAGE_CSS)?.[0] ?? "";
+  assert.match(rule(".wf .escalated>.box"), /stroke:var\(--exit\)/, "a container on the path is outlined in the exit colour");
+  assert.doesNotMatch(rule(".wf .escalated>.box"), /fill|--red/, "not filled, and never the failed look");
+  assert.match(rule(".wf .fired>.exit-box"), /fill:var\(--exit\)/, "the exit that fired is filled");
 });
 
 test("labels, branch names, a transport and removed nodes with markup are text: no element is made from them", () => {
@@ -274,7 +295,7 @@ test("labels, branch names, a transport and removed nodes with markup are text: 
   assert.equal(titleOf(group(svg, "/root/steps/0")), `Read ${HOSTILE} (agent): done`, "the whole label in the title");
   assert.ok(words(group(svg, "/root/steps/0"), "label")[0].startsWith("Read <img src=x"), "the card's label is the text, clipped to the card");
   assert.ok(titleOf(group(svg, "/root/steps/2/branches/a~1b <i>x<~1i>/body")).includes("<svg onload=alert(3)>"));
-  assert.ok(words(svg, "removed").join("").startsWith(`Removed: ${HOSTILE.slice(0, 20)}`));
+  assert.ok(words(svg, "removed")[1].startsWith(HOSTILE.slice(0, 20)), "a removed node's label is text");
   assert.ok(all(svg).some((el) => el.tagName === "title" && el.textContent.includes(`${HOSTILE} (<i>judge</i>)`)), "a removed node's whole label is in a title");
 });
 
