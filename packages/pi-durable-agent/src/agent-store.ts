@@ -132,7 +132,7 @@ export class AgentStoreReader {
   /** Newest first; a run joined to its revision's kind. */
   listRuns(filter: { agent?: string; revision?: string } = {}): RunRow[] {
     const rows = this.db.prepare(`SELECT r.id, r.agent_id, r.revision_id, v.kind, r.state, r.started_at, r.ended_at, r.cost_usd, r.summary FROM runs r JOIN revisions v ON v.id = r.revision_id
-      WHERE (?1 IS NULL OR r.agent_id = ?1) AND (?2 IS NULL OR r.revision_id = ?2) ORDER BY r.started_at DESC, r.rowid DESC`).all(filter.agent ?? null, filter.revision ?? null) as Array<Record<string, unknown>>;
+      WHERE (? IS NULL OR r.agent_id = ?) AND (? IS NULL OR r.revision_id = ?) ORDER BY r.started_at DESC, r.rowid DESC`).all(filter.agent ?? null, filter.agent ?? null, filter.revision ?? null, filter.revision ?? null) as Array<Record<string, unknown>>;
     return rows.map((r) => ({ id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.summary ? { summary: r.summary as string } : {}) }));
   }
   /** `<dir>/runs/<run id>/store/run.sqlite`, for a run's timeline. It does not check that the file exists. */
