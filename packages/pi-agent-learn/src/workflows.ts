@@ -923,7 +923,8 @@ export type WorkflowAdmitterOptions = {
    *  `schemaDescription`, so no text from the run reaches a later prompt. */
   readonly describe?: (workflow: unknown) => string;
   readonly now?: () => Date;
-  /** A live trial's tenure while runs are in flight (`TrialTenure`). Default: none, and a newcomer replaces a trial at once. */
+  /** A live trial's tenure while runs are in flight (`TrialTenure`). Opt-in: absent, a newcomer replaces a trial at once, as
+   *  before. */
   readonly tenure?: TrialTenure;
 };
 
@@ -939,7 +940,9 @@ export type TrialTenure = {
   /** The main commit `run` was prepared from and its place in the order the host started runs, or undefined for a run the
    *  host does not know (no tenure applies to its revision). */
   readonly started: (run: string) => { readonly sha: string; readonly order: number } | undefined;
-  /** The runs the host has started and not yet handed to curate. */
+  /** The runs the host has started that have not ENDED. It must exclude every run that has ended, however it ended
+   *  (reported, crashed, aborted, deadline-killed, infra-failed): a run that never reaches curate still leaves `inFlight()`
+   *  at its end, so a dead run cannot pin a hold. The package cannot see a crash; this is the host's contract. */
   readonly inFlight: () => readonly string[];
 };
 
