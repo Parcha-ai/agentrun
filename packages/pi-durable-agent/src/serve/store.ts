@@ -8,7 +8,7 @@ import { AgentHomeError } from "../store.js";
 import { timelineOf } from "../timeline/index.js";
 import { checkInside, readEntriesAt } from "./read.js";
 import type { readWorkflowRun as ReadRun } from "../workflow.js";
-import { checkPort, type ServeHandle, serveLocal, type ServeOptions } from "./server.js";
+import { type ServeHandle, serveLocal, type ServeOptions } from "./server.js";
 
 /** ./workflow's readWorkflowRun, imported only when a workflow run is shown. */
 export type ReadWorkflowRun = typeof ReadRun;
@@ -124,7 +124,6 @@ export function serveStore(store: { readonly dir: string }, options: ServeOption
 export async function serveStoreWith(store: { readonly dir: string }, options: ServeOptions, readRun: ReadWorkflowRun): Promise<ServeHandle> {
   const dir = path.resolve(store.dir);
   if (!existsSync(path.join(dir, STORE_FILE))) throw new AgentHomeError("missing", `there is no ${STORE_FILE} in that folder`);
-  checkPort(options.port ?? 0);
   return serveLocal(PAGES, async (pathname, query) => {
     const reader = openStoreReader(dir);
     try {

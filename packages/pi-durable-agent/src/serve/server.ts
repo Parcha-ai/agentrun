@@ -50,20 +50,14 @@ function failure(error: unknown, what: string): { status: number; message: strin
   return { status: 500, message: `the ${what} could not be read` };
 }
 
-/** The port a caller asked for, refused unless it is 0 to 65535. */
-export function checkPort(port: unknown): number {
-  if (!Number.isInteger(port) || (port as number) < 0 || (port as number) > 65_535) throw new AgentHomeError("invalid", `the port ${String(port)} is not 0 to 65535`);
-  return port as number;
-}
-
 /**
  * Listen on 127.0.0.1 and answer GET and HEAD: `pages` maps a path to one of this directory's files (a missing file is
  * not served), and `api` answers every other path. A request whose `Host` is not this server's own address is refused (a
  * page on another origin cannot reach it through a rebound name), and so is any method but GET and HEAD.
  */
 export async function serveLocal(pages: Record<string, { file: string; type: string }>, api: Api, what: string, options: ServeOptions): Promise<ServeHandle> {
-  const port = checkPort(options.port ?? 0);
-  const { signal } = options;
+  const { port = 0, signal } = options;
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new AgentHomeError("invalid", `the port ${String(port)} is not 0 to 65535`);
   const assets = new Map<string, { type: string; body: Buffer }>();
   for (const [route, { file, type }] of Object.entries(pages)) {
     const body = await readFile(new URL(file, import.meta.url)).catch(() => undefined);
@@ -127,7 +121,6 @@ export async function serveLocal(pages: Record<string, { file: string; type: str
 export async function serveHome(home: { readonly dir: string }, options: ServeOptions = {}): Promise<ServeHandle> {
   const dir = path.resolve(home.dir);
   if (!existsSync(path.join(dir, AGENT_STORE_FILE))) throw new AgentHomeError("missing", `${path.basename(dir)} is not an agent home (no ${AGENT_STORE_FILE})`);
-  checkPort(options.port ?? 0);
   const readAgent = agentReader(dir);
   return serveLocal(PAGE_FILES, async (pathname) => {
     if (pathname === "/api/agent") {
