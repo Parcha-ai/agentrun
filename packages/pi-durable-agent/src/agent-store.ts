@@ -1,4 +1,5 @@
 import type { JsonObject } from "@earendil-works/pi-durable";
+import type { Workflow } from "@parcha/agentrun-dsl"; // a type only: a store that never holds a workflow loads nothing of the DSL
 import { existsSync, mkdirSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import path from "node:path";
@@ -15,7 +16,7 @@ import { AgentHomeError } from "./store.js";
 export const STORE_FILE = "store.sqlite";
 export type RevisionKind = "agentic" | "workflow";
 export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant> };
-export type WorkflowBody = { workflow: JsonObject; skills: Record<string, string>; tools: string[] };
+export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[] };
 /** Written once, never edited. `id` is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; `body.skills` maps a skill path to the SHA-256 of its text. */
 export type Revision = { id: string; agent: string; parent: string | null; createdAt: string; note?: string } & ({ kind: "agentic"; body: AgenticBody } | { kind: "workflow"; body: WorkflowBody });
 export type Agent = { id: string; name: string; description?: string; createdAt: string; current: string | null };
@@ -25,7 +26,7 @@ export type RunState = "running" | "completed" | "failed" | "stopped" | "escalat
 export type RunRow = { id: string; agent: string; revision: string; kind: RevisionKind; state: RunState; startedAt: string; endedAt?: string; costUsd?: number; summary?: string };
 export type NewRevision =
   | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; note?: string }
-  | { kind: "workflow"; workflow: JsonObject; skills?: Record<string, string>; tools?: string[]; note?: string };
+  | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; note?: string };
 export type StartedRun = { runId: string; dir: string; storePath: string; workspace: string; agentId: string; revision: Revision };
 
 const SCHEMA = `
@@ -104,7 +105,7 @@ function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: 
   }
   if (input.kind !== "workflow") throw invalid("the revision kind is not agentic or workflow");
   if (!isObject(input.workflow)) throw invalid("a workflow revision needs a workflow (a JSON object)");
-  return { body: { workflow: structuredClone(input.workflow) as JsonObject, skills, tools: [...tools] }, texts };
+  return { body: { workflow: structuredClone(input.workflow), skills, tools: [...tools] }, texts };
 }
 
 /** The reads: plain SQL over the one file, on a read-only handle. `openStoreReader` is the open serve uses on a copy: it writes nothing. */
