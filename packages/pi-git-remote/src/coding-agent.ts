@@ -29,7 +29,8 @@ export type GitRemoteOptions = {
   remote?: Remote | string;
   /** The branch or commit the session starts from. Default: `main`. */
   ref?: string;
-  /** Globs over repository paths that may be committed, such as `notes/**`. Required: an empty list commits nothing. */
+  /** Globs over repository paths that may be committed, such as `notes/**`. Required when a remote is configured: a
+   *  missing or empty list is refused. */
   allow?: readonly string[];
   /** The session branch, with `{sessionId}` in it exactly once. Default: `sessions/{sessionId}`. */
   branch?: string;
