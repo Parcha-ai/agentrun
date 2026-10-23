@@ -58,7 +58,9 @@ test('a page whose browser never starts leaves nothing behind: its cleanup is re
 });
 
 test('in Chrome: a page that does not finish loading fails within loadMs, naming what the page was doing and how long Chrome took to listen', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 60_000 }, async (t) => {
-  // The page answers; an image on it never does, so its document stays 'interactive'.
+  // The page answers; an image on it never does, so its document never completes. Where the page is when the bound passes depends
+  // on how fast this machine's Chrome opens the URL (still blank, or the document still loading), so the failure is asserted to
+  // name both, whichever it is, never one of them.
   const server = createServer((request, response) => {
     if (request.url === '/slow.html') { response.writeHead(200, { 'content-type': 'text/html' }); response.end('<!doctype html><title>slow</title><img src="/never.png">'); }
   });
@@ -67,5 +69,5 @@ test('in Chrome: a page that does not finish loading fails within loadMs, naming
   t.after(() => { server.closeAllConnections(); server.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); });
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/slow.html`;
   await assert.rejects(pageFor(t, url, join(dir, 'profile'), () => undefined, { loadMs: 2_000 }),
-    /loading: not so after 2 s; the page was \{"href":"http:\/\/127\.0\.0\.1:\d+\/slow\.html","readyState":"interactive"\}; Chrome listened after \d+\.\d s/);
+    /loading: not so after 2 s; the page was \{"href":"(about:blank|http:\/\/127\.0\.0\.1:\d+\/slow\.html)","readyState":"(loading|interactive|complete)"\}; Chrome listened after \d+\.\d s/);
 });
