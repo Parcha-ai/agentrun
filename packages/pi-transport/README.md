@@ -92,7 +92,10 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
 
 - `isolation: "vm"` starts a VM with its own kernel. `"gvisor"` or no value starts Modal's default sandbox. Any other
   value is refused with `unsupported`.
-- `gpu: "T4"` works on the default sandbox only; a GPU with `isolation: "vm"` is refused with `invalid`.
+- `gpu: "T4"` works on the default sandbox only; a GPU with `isolation: "vm"` is refused with `invalid`. `facts().gpu` is the model
+  served, read in the box with `nvidia-smi` (a bare `H100` may be served an H200; `H100!` pins the type): one name for identical
+  cards, every model, in the order first seen and joined by ` + `, for a mixed box (`NVIDIA A100 + NVIDIA H100 80GB HBM3`). The request stays what the caller passed. A box that asked for a GPU and
+  reports none fails the create and is ended. On attach the read runs again and the box is handed back whatever it says (see "Attach never fails a live sandbox"): a model named is the fact, none named reads `gpu: null` and the caller ends the box through the handle, and when every try errs the handle keeps the model measured at create (from the tag), or the attach is an error for a box whose tag has none.
 - A `snapshot` and any `isolation` but `gvisor` or `vm` are refused with `unsupported`; a label key that is `pi-transport` or starts
   with `pi-transport.` is refused with `invalid`; every box carries `pi-transport=1` as its own tag. No other field of the spec is ignored.
 - `network: "none"` blocks all traffic from the box. `network: { allow: ["api.example.com", "*.example.com", "10.0.0.0/8"] }`

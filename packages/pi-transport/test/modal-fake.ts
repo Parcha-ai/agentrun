@@ -15,6 +15,8 @@ class FakeSandbox implements ModalSandbox {
 	readonly execs: { command: string[]; params: ExecParams }[] = [];
 	readonly writes: number[] = [];
 	exitCode: number | null = null;
+	/** The cards `nvidia-smi` names in this sandbox, one entry per card (none: a box with no GPU). */
+	served: string[] = [];
 	/** What the box's probe of its own disk, Yama setting and FUSE prints (the real script reads this host's /proc). */
 	probeOutput = "disk=104857600\nptrace=1\nfuse_dev=1\n";
 	#children = new Set<ChildProcess>();
@@ -28,7 +30,11 @@ class FakeSandbox implements ModalSandbox {
 		if (this.exitCode !== null) throw new Error("the sandbox has been terminated");
 		this.execs.push({ command, params });
 		const probed = command[0] === "sh" && command[2]?.includes("ptrace_scope");
-		const [program, ...rest] = probed ? ["printf", "%s", this.probeOutput] : command;
+		const output =
+			command[6] === "gpu"
+				? this.probeOutput + this.served.map((name) => `gpu=${name}\n`).join("")
+				: this.probeOutput;
+		const [program, ...rest] = probed ? ["printf", "%s", output] : command;
 		const child = spawn(program ?? "", rest, {
 			cwd: params.workdir,
 			env: { PATH: process.env.PATH ?? "", ...this.params.env },
@@ -99,6 +105,8 @@ export class FakeModal implements ModalSdk {
 	readonly fail: { create?: Error; fromId?: Error } = {};
 	/** Overrides what each new sandbox's probe prints. */
 	probeOutput: string | undefined;
+	/** The cards a sandbox that asked for a GPU is served, as `nvidia-smi` names them (one entry per card). */
+	served: string[] = [];
 
 	readonly apps: ModalSdk["apps"] = {
 		fromName: async (name) => {
@@ -112,6 +120,7 @@ export class FakeModal implements ModalSdk {
 			if (this.fail.create) throw this.fail.create;
 			const sandbox = new FakeSandbox(`sb-${this.sandboxList.length + 1}`, params);
 			if (this.probeOutput !== undefined) sandbox.probeOutput = this.probeOutput;
+			sandbox.served = this.served;
 			this.sandboxList.push(sandbox);
 			return sandbox;
 		},
