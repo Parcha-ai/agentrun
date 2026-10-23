@@ -78,15 +78,17 @@ const RUNS = [
   run("run-2", REV_A, "failed", { endedAt: "2026-10-22T11:03:00.000Z", costUsd: 0, summary: "403 on the investor page" }),
   run("run-1", REV_A, "stopped", { startedAt: "2026-10-21T10:00:00.000Z", endedAt: "2026-10-21T10:01:00.000Z", gone: true, summary: "never shown" }),
 ];
-const AGENT = { agent: { ...AGENTS[0], current: REV_B.id, currentKind: "agentic", runs: 5 }, revisions: [REV_B, REV_A] };
+// The agent as the reader's readAgent reads it: no kind or run count of its own.
+const AGENT = { agent: { id: AGENTS[0].id, name: AGENTS[0].name, description: AGENTS[0].description, createdAt: AGENTS[0].createdAt, current: REV_B.id }, revisions: [REV_B, REV_A] };
 const agentApi = (extra = {}) => ({ "api/agents/company-researcher": AGENT, "api/runs?agent=company-researcher": RUNS, ...extra });
 
-test("an agent page: its revisions newest first, the current one marked, an agentic one's prompt diffed line by line against its parent with what else changed", async () => {
+test("an agent page: its kind the current revision's, its revisions newest first, the current one marked, an agentic one's prompt diffed line by line against its parent with what else changed", async () => {
   const page = mount(agentApi(), "#/agents/company-researcher", { serve: STORE });
   await page.settle();
   assertInert(page.app);
   assert.deepEqual(page.fetched.slice(0, 2), ["api/agents/company-researcher", "api/runs?agent=company-researcher"]);
   assert.equal(page.document.title, `Company researcher ${HOSTILE} · agent store`);
+  assert.deepEqual(pills(all(page.app).filter((el) => classOf(el) === "card agent")[0]), [["pill agentic", "agentic"]], "the current revision's kind");
   const [b, a] = revisionsOf(page);
   assert.deepEqual([classOf(b), classOf(a)], ["revision current", "revision"]);
   assert.ok(b.textContent.includes("bbbbbbbbbbbb") && b.textContent.includes("current") && b.textContent.includes("from aaaaaaaaaaaa") && a.textContent.includes(`Prompt A ${HOSTILE}`));
@@ -118,7 +120,7 @@ const GRAPH_1 = { nodes: [node("/root", "chain", "chain"), node("/root/steps/0",
 const GRAPH_2 = { nodes: [node("/root", "chain", "chain"), node("/root/steps/0", "call", "Read the site"), node("/root/steps/1", "call", `Is it a marketplace ${HOSTILE}`), node("/root/steps/2", "call", "Pick the MCC"), node("/root/steps/3", "call", "Answer")], edges: [] };
 const MCC_1 = revision("1", { kind: "workflow", note: "First cut", body: { tools: ["web.fetch"], skills: {} }, graph: GRAPH_1 });
 const MCC_2 = revision("2", { kind: "workflow", current: true, note: "Marketplaces", parent: MCC_1.id, parentKind: "workflow", body: { tools: ["web.fetch"], skills: {} }, graph: GRAPH_2, diff: { against: MCC_1.id, added: ["/root/steps/1", "/root/steps/3"], edited: ["/root/steps/2"], removed: [{ label: `Format the answer ${HOSTILE}`, kind: "call" }] } });
-const mccApi = (revisions = [MCC_2, MCC_1]) => ({ "api/agents/mcc-classifier": { agent: { id: "mcc-classifier", name: "MCC classifier", createdAt: "2026-10-20T08:00:00.000Z", current: MCC_2.id, currentKind: "workflow", runs: 0 }, revisions }, "api/runs?agent=mcc-classifier": [] });
+const mccApi = (revisions = [MCC_2, MCC_1]) => ({ "api/agents/mcc-classifier": { agent: { id: "mcc-classifier", name: "MCC classifier", createdAt: "2026-10-20T08:00:00.000Z", current: MCC_2.id }, revisions }, "api/runs?agent=mcc-classifier": [] });
 const SVG = "http://www.w3.org/2000/svg";
 const MARKS = ["new", "edited", "done", "working", "failed", "escalated", "not-run", "fired"];
 /** What graph.js drew: each node's path and the marks on it (a diff's tag, a run's state, the fired exit), by path. */

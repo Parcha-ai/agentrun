@@ -67,10 +67,15 @@ test("the picker: the store's agents, each with its current revision's kind and 
 });
 
 test("an agent: its revisions newest first, the current one marked; an agentic one diffed against its agentic parent; a first one with nothing to compare", async () => {
-  const { revisions, served, get } = await sample();
+  const { root, revisions, served, get } = await sample();
   try {
     const page = (await get("/api/agents/company-researcher")).json;
-    assert.deepEqual([page.agent.id, page.agent.currentKind, page.agent.runs], ["company-researcher", "workflow", 6]);
+    const reader = openStoreReader(root);
+    try {
+      assert.deepEqual(page.agent, JSON.parse(JSON.stringify(reader.readAgent("company-researcher").agent)), "the agent as the reader's readAgent reads it");
+    } finally {
+      reader.close();
+    }
     assert.deepEqual(page.revisions.map((r) => [r.id, r.kind, r.current, r.parent, r.parentKind, r.note]), [
       [revisions.C.id, "workflow", true, revisions.B.id, "agentic", "The cheap one: a workflow"],
       [revisions.B.id, "agentic", false, revisions.A.id, "agentic", "Prompt B: every fact cited"],
@@ -367,6 +372,13 @@ test("an agentic agent's pages never load the DSL or ./workflow; a workflow revi
   const { agentic, workflow } = JSON.parse(child.stdout);
   assert.deepEqual(agentic, [], "nothing of the DSL, agentrun-pi or ./workflow");
   assert.deepEqual(workflow, ["../workflow.js", "@parcha/agentrun-dsl/graph"], "./workflow, then the DSL's graph it loads, once a workflow is drawn, and nothing else");
+});
+
+test("serve reads one run with readRun and one agent with readAgent, each one statement; nothing on its read path finds a row in a list", () => {
+  const source = readFileSync(fileURLToPath(new URL("../src/serve/store.ts", import.meta.url)), "utf8");
+  assert.equal(source.includes(".find("), false);
+  assert.match(source, /reader\.readRun\(id\)/);
+  assert.match(source, /reader\.readAgent\(id\)/);
 });
 
 test("serve names no @parcha/agentrun-dsl, in its source or its build: a workflow revision's graph and diff come from ./workflow's revisionGraph", () => {
