@@ -228,6 +228,19 @@ test("the three files: HTML with no inline script or style that links page.css a
   assert.doesNotThrow(() => new vm.Script(PAGE_JS), "the script parses");
 });
 
+test("no accent bar: no rule sets border-left or an inset shadow wider than 1px, but the steps' 1px spine and the threshold marker", () => {
+  const allowed = new Map([[".steps", "border-left:1px solid var(--line)"], [".bar.threshold .fill", "border-left:2px solid var(--accent)"]]);
+  const bars = [];
+  for (const [, selector, body] of PAGE_CSS.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    for (const decl of body.split(";").map((d) => d.trim())) {
+      const [prop, value = ""] = decl.split(/:(.*)/s).map((s) => s.trim());
+      const insetWide = prop === "box-shadow" && /\binset\b/.test(value) && value.match(/-?\d*\.?\d+px/g)?.some((n) => Math.abs(parseFloat(n)) > 1);
+      if (prop === "border-left" || prop.startsWith("border-left-") || insetWide) bars.push([selector.trim(), decl]);
+    }
+  }
+  assert.deepEqual(bars.filter(([selector, decl]) => allowed.get(selector) !== decl), [], "no left-border accent bar");
+});
+
 test("the agent, its prompt decision and its runs: markup in any field is text, and the confidence bar is set through the CSSOM", async () => {
   const page = mount({ "api/agent": AGENT, "api/runs": [RUN, FAILED] });
   await page.settle();
