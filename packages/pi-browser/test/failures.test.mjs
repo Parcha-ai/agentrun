@@ -49,6 +49,22 @@ test("an ended session outranks a timeout, and both are retryable", () => {
   assert.equal(classifyBrowserError(new Error("x"), false, { timedOut: true }).retryable, true);
 });
 
+test("the stale-snapshot texts the classifier knows are the vendored facade's own, so an upstream rewording cannot turn them into command_failed unnoticed", async () => {
+  // The core keeps its own copies so the root entry does not load the facade (and zod); this pins them to the facade's.
+  const facade = await import("../dist/vendor/stagehand-facade/contract.js");
+  assert.deepEqual(
+    [NO_HYDRATED_SNAPSHOT_ERROR, NAVIGATED_SNAPSHOT_ERROR, STALE_SNAPSHOT_ID_ERROR.replace("${id}", "e12")],
+    [facade.NO_HYDRATED_SNAPSHOT_ERROR, facade.NAVIGATED_SNAPSHOT_ERROR, facade.staleSnapshotIdError("e12")],
+  );
+});
+
+test("a provider's 429 is rate_limited on the browser plane too: worth a retry when nothing was acted on, and never told as a plain failure", () => {
+  const limited = (effectful) => classifyBrowserError(Object.assign(new Error("Too Many Requests"), { status: 429 }), effectful);
+  assert.deepEqual([limited(false).code, limited(false).retryable, limited(false).effect], ["rate_limited", true, "none"]);
+  assert.deepEqual([limited(true).code, limited(true).retryable, limited(true).effect], ["rate_limited", false, "possibly_effected"], "an effectful call may have acted: no blind retry");
+  assert.equal(code({ cause: { statusCode: 429 } }), "rate_limited", "the status on Stagehand's cause counts too");
+});
+
 test("a stale snapshot is known by its exact refusal text, and acted on nothing", () => {
   const stale = STALE_SNAPSHOT_ID_ERROR.replace("${id}", "e12");
   for (const message of [NO_HYDRATED_SNAPSHOT_ERROR, NAVIGATED_SNAPSHOT_ERROR, stale]) {

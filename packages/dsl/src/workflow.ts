@@ -605,9 +605,7 @@ export type ValidationIssue = { path: string; code: ValidationCode; message: str
 
 const pointerKey = (key: string): string => key.replace(/~/g, "~0").replace(/\//g, "~1");
 
-/** Set executeCode:false for untrusted author feedback: check syntax and mechanical contracts
- * without evaluating authored expressions or probing transforms. This is not execution admission;
- * trusted/default validation and runtime output checks remain authoritative. */
+/** The names `retry.on` accepts: a call's retry classes and the effect-failure codes. */
 const RETRY_ON_NAMES: readonly string[] = [...CALL_RETRY_CLASSES, ...EFFECT_FAILURE_CODES];
 
 /** Advice the validator gives without refusing: a shape that runs and costs more than it needs to. A map with no
@@ -637,7 +635,10 @@ function workflowWarnings(workflow: Workflow): string[] {
   return warnings;
 }
 
-/** Whether a workflow can run, checked without running it: `errors` refuse it, `warnings` advise and never refuse. */
+/** Whether a workflow can run, checked without running it: `errors` refuse it, `warnings` advise and never refuse.
+ *  Set `executeCode: false` for untrusted author feedback: check syntax and mechanical contracts without evaluating
+ *  authored expressions or probing transforms. That is not execution admission; trusted/default validation and runtime
+ *  output checks remain authoritative. */
 export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: boolean; input?: Record<string, unknown>; inputKeys?: string[]; probeContext?: { references?: Record<string, string>; references_parsed?: Record<string, { header: string[]; rows: string[][] }> } }): { ok: true; warnings?: string[] } | { ok: false; errors: string[]; issues: ValidationIssue[]; warnings?: string[] } {
   const bounded = workflowDocumentError(workflow);
   if (bounded) return { ok: false, errors: [bounded], issues: [{ path: "", code: "DOCUMENT_INVALID", message: bounded }] };
@@ -982,7 +983,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       case "decide":
       case "extract":
       case "report":
-        if (node.state !== undefined) checkStateMap(node.state, node.label, path);
+        checkStateMap(node.state, node.label, path);
         if (!node.instructions?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): instructions required`);
         if (node.node !== "report" && !Object.hasOwn(workflow.schemas, node.out)) fail("SCHEMA_UNKNOWN", ptrOf(path), `${path} (${node.label}): out schema "${node.out}" not in workflow.schemas`);
         if (node.thinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(String(node.thinking))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): thinking must be low|medium|high — thinking is never off`);
@@ -997,7 +998,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
           else {
             const qs = checkQuestionSchema(v.out, node.label, path);
             if (qs && !Object.values(qs).some((q) => q.type === "noul")) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): verify.out "${v.out}" carries no yes/no question — a verifier decides by yes/no (a boolean named after a submission field verifies it; any other boolean is a requirement)`);
-            if (v.state !== undefined) checkStateMap(v.state, node.label, path, "verify.state");
+            checkStateMap(v.state, node.label, path, "verify.state");
             if (v.maxDrives !== undefined && (!Number.isInteger(v.maxDrives) || v.maxDrives < 1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): verify.maxDrives must be an integer >= 1`);
             if (v.override !== undefined && (typeof v.override?.below !== "number" || v.override.below <= 0 || v.override.below >= 1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): verify.override.below must be in (0, 1)`);
           }

@@ -153,17 +153,45 @@ function saveChain(raw: string): number | null {
   return at === null ? seen.size : null;
 }
 
+const PERCENT = 0x25, OPEN_PAREN = 0x28, CLOSE_PAREN = 0x29, SLASH = 0x2f, LESS_THAN = 0x3c, BACKSLASH = 0x5c, LOWER_S = 0x73, LF = 10, CR = 13;
+const BYTE_RANGE_KEY_LENGTH = 10;
+const BYTE_RANGE_WINDOW = 24;
+const STREAM_END = "endstream";
+
+const skipComment = (raw: string, from: number): number => {
+  let i = from;
+  while (i < raw.length && raw.charCodeAt(i) !== LF && raw.charCodeAt(i) !== CR) i++;
+  return i;
+};
+const skipString = (raw: string, from: number): number => {
+  let i = from;
+  for (let depth = 0; i < raw.length; i++) {
+    const c = raw.charCodeAt(i);
+    if (c === BACKSLASH) i++;
+    else if (c === OPEN_PAREN) depth++;
+    else if (c === CLOSE_PAREN && --depth === 0) break;
+  }
+  return i + 1;
+};
+const skipAngle = (raw: string, from: number): number => (raw.charCodeAt(from + 1) === LESS_THAN ? from + 2 : (raw.indexOf(">", from) + 1 || raw.length));
+const startsStream = (raw: string, at: number): boolean => raw.startsWith("stream", at) && /[\r\n]/.test(raw[at + 6] ?? "") && !/[a-z]/i.test(raw[at - 1] ?? "");
+const skipStream = (raw: string, from: number): number => {
+  const end = raw.indexOf(STREAM_END, from + 6);
+  return end < 0 ? raw.length : end + STREAM_END.length;
+};
+const startsByteRange = (raw: string, at: number): boolean => /^\/ByteRange\s*\[/.test(raw.slice(at, at + BYTE_RANGE_WINDOW));
+
 /** The `/ByteRange` keys of signature dictionaries: names outside strings, comments and stream data, so text a page shows
  *  is not one. */
 function signatureCount(raw: string): number {
   let count = 0;
   for (let i = 0; i < raw.length; ) {
     const c = raw.charCodeAt(i);
-    if (c === 0x25) { while (i < raw.length && raw.charCodeAt(i) !== 10 && raw.charCodeAt(i) !== 13) i++; }
-    else if (c === 0x28) { for (let depth = 0; i < raw.length; i++) { const d = raw.charCodeAt(i); if (d === 0x5c) i++; else if (d === 0x28) depth++; else if (d === 0x29 && --depth === 0) break; } i++; }
-    else if (c === 0x3c) i = raw.charCodeAt(i + 1) === 0x3c ? i + 2 : (raw.indexOf(">", i) + 1 || raw.length);
-    else if (c === 0x73 && raw.startsWith("stream", i) && /[\r\n]/.test(raw[i + 6] ?? "") && !/[a-z]/i.test(raw[i - 1] ?? "")) { const end = raw.indexOf("endstream", i + 6); i = end < 0 ? raw.length : end + 9; }
-    else if (c === 0x2f && /^\/ByteRange\s*\[/.test(raw.slice(i, i + 24))) { count++; i += 10; }
+    if (c === PERCENT) i = skipComment(raw, i);
+    else if (c === OPEN_PAREN) i = skipString(raw, i);
+    else if (c === LESS_THAN) i = skipAngle(raw, i);
+    else if (c === LOWER_S && startsStream(raw, i)) i = skipStream(raw, i);
+    else if (c === SLASH && startsByteRange(raw, i)) { count++; i += BYTE_RANGE_KEY_LENGTH; }
     else i++;
   }
   return count;

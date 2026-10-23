@@ -5,24 +5,26 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { BROWSER_TOOLS, WEB_TOOLS, browserSection, type ToolContract } from "./core/contract.js";
+import { BROWSER_TOOLS, WEB_TOOLS, browserSection, listedFor, type ToolContract } from "./core/contract.js";
 import {
-  BrowserFailureError, closeDriver, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, loadedNoPage, moveRecord, newSessionRecord, notices, NOTHING_TO_HOLD, profileRefusal, sessionSpec, waitingForHuman, backoffMs, NO_HANDOFF,
+  BrowserFailureError, closeDriver, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, loadedNoPage, moveRecord, newSessionRecord, notices, NOTHING_TO_HOLD, navigationRefusal, profileRefusal, sessionSpec, waitingForHuman, backoffMs, NO_HANDOFF,
   type AttachedSession, type CustodyPort, type DriverFactory, type FenceMark, type Overrides, type ToolOutput,
 } from "./core/custody.js";
 import { browserFailure, classifyBrowserError, type BrowserFailure } from "./core/failures.js";
 import { workspaceFiles } from "./core/files.js";
 import type { BrowserConfig, BrowserPolicy, BrowserProvider, HandoffOutcome, HandoffPort, ReleaseReason, SessionRecord, SiteInfo, SiteRunPort, WorkspaceFiles } from "./core/host.js";
 import { leaseTag, type LeaseRef } from "./core/lease.js";
-import { createRedactor, hostLiveView, redactDeep, scrubPageUrl, type Redact } from "./core/redact.js";
+import { createRedactor, hostLiveView, redactContent, redactDeep, scrubPageUrl, type Redact } from "./core/redact.js";
 import { useWebsite, useWebsiteContract } from "./core/sites.js";
 import { drivingGuarded } from "./core/driving-guard.js";
-import { drivingGates, keptFor, personOn, rearmWhenLeft } from "./core/driving.js";
+import { drivingGates, keptReason, personOn, rearmWhenLeft } from "./core/driving.js";
 import type { DrivingGates } from "./live-view/protocol.js";
 import { pageTools, type PageDriver, type ToolCall, type ToolImpl } from "./core/tools.js";
 import { CREATE_DEADLINE_MS, DEFAULT_BROWSER_POLICY, idleTracker, keyedSerializer, oneAtATime, providerKeyValues, type IdleTracker } from "./core/session-control.js";
 import { createWebTools, type WebBackup, type WebTools } from "./core/web.js";
 import { fileEvidenceSink, findChrome, httpBackup } from "./coding-agent-local.js";
+// The providers' own rule for a key that is set (trimmed, not empty), so a key they would refuse is refused here as `auth`, first.
+import { nonEmpty } from "./providers/shared.js";
 
 export { findChrome } from "./coding-agent-local.js";
 export const SESSION_ENTRY = "browser.session";
@@ -54,7 +56,10 @@ export type CodingAgentOptions = {
 
 const BROWSER_FLAGS = ["browser-provider", "browser-endpoint", "browser-chrome", "browser-headed", "browser-no-sandbox"] as const;
 
-const refused = (message: string, code: BrowserFailure["code"] = "browser_unavailable"): BrowserFailureError =>
+const UNHELD_ACTIONS = browserFailure("browser_unavailable", "This run's action policy holds the requests the browser would send (deny or ask), and the pi coding agent cannot hold them, so no browser is started. web_fetch still reads pages. To browse, the person sets the policy's `actions` to \"allow\" (or leaves it out), or runs the browser through the pi-durable adapter, which holds requests.");
+
+/** No browser can be had: a missing key, a bad flag or no Chrome. Unavailable unless the cause is a credential (`auth`) or a refusal. */
+const noBrowser = (message: string, code: BrowserFailure["code"] = "browser_unavailable"): BrowserFailureError =>
   new BrowserFailureError(browserFailure(code, message));
 
 type Live = { record: SessionRecord; ref: LeaseRef; driver: PageDriver | null; mark?: FenceMark };
@@ -153,10 +158,13 @@ export class LocalCustody implements CustodyPort<PageDriver> {
   }
 
   private async launch(overrides: Overrides): Promise<AttachedSession<PageDriver>> {
+    // This host has no request observer, so a policy that holds requests (deny, ask) would be dropped and every request sent:
+    // it starts no browser instead, as the durable adapter refuses to browse without its observer.
+    if (this.d.config.policy.actions && this.d.config.policy.actions !== "allow") throw new BrowserFailureError(UNHELD_ACTIONS);
     const provider = await this.d.provider();
     const tag = leaseTag("pib", this.d.config.run, randomUUID().slice(0, 8), ++this.seq);
     const spec = sessionSpec(this.d.config, tag, overrides);
-    const unsupported = profileRefusal(spec, provider.caps);
+    const unsupported = profileRefusal(spec, provider.caps) ?? navigationRefusal(spec, provider);
     if (unsupported) throw new BrowserFailureError(unsupported);
     const record = newSessionRecord({ plane: "browser", tag, provider: provider.name, spec, at: now(), honours: provider.caps.settings });
     this.save(record);
@@ -333,11 +341,7 @@ export class LocalCustody implements CustodyPort<PageDriver> {
       const live = this.live;
       if (!live) return { released: false, lastUrl: null };
       const lastUrl = live.record.lastUrl;
-      // A session held for a person is theirs: custody never releases it on its own.
-      if (live.record.state === "held") return { released: false, lastUrl, kept: "held" };
-      // A session a person drives or watches through the live view is theirs: custody never releases it on its own.
-      const person = personOn(this.d.gates ?? drivingGates, live.record.tag);
-      const kept = person && keptFor(person);
+      const kept = keptReason(live.record, this.d.gates ?? drivingGates);
       if (kept) return { released: false, lastUrl, kept };
       await this.finish(live, "lost").catch(() => undefined);
       if (this.live === live) return { released: false, lastUrl }; // the release failed, so the session is kept to retry it
@@ -408,23 +412,23 @@ async function chooseProvider(pi: ExtensionAPI, { options, env }: Settings, prof
   if (options.provider) return typeof options.provider === "function" ? options.provider() : options.provider;
   const kind = flagOf(pi, "browser-provider", env.PI_BROWSER_PROVIDER ?? "cdp");
   if (kind === "browserbase") {
-    if (!(env.BROWSERBASE_API_KEY || env.BB_API_KEY)) throw refused("The browserbase provider needs BROWSERBASE_API_KEY in the environment; none is set. Use the default local browser, or ask the person to set the key.", "auth");
+    if (!(nonEmpty(env.BROWSERBASE_API_KEY) || nonEmpty(env.BB_API_KEY))) throw noBrowser("The browserbase provider needs BROWSERBASE_API_KEY in the environment; none is set. Use the default local browser, or ask the person to set the key.", "auth");
     return (await import("./providers/browserbase.js")).browserbaseProvider({ env });
   }
   if (kind === "kernel") {
-    if (!env.KERNEL_API_KEY) throw refused("The kernel provider needs KERNEL_API_KEY in the environment; none is set. Use the default local browser, or ask the person to set the key.", "auth");
+    if (!nonEmpty(env.KERNEL_API_KEY)) throw noBrowser("The kernel provider needs KERNEL_API_KEY in the environment; none is set. Use the default local browser, or ask the person to set the key.", "auth");
     return (await import("./providers/kernel.js")).kernelProvider({ env, stealth: env.PI_BROWSER_STEALTH === "1" });
   }
-  if (kind !== "cdp") throw refused(`--browser-provider is "${kind}"; it is cdp, browserbase or kernel.`, "refused");
+  if (kind !== "cdp") throw noBrowser(`--browser-provider is "${kind}"; it is cdp, browserbase or kernel.`, "refused");
   const { cdpProvider } = await import("./providers/cdp.js");
   const endpoint = flagOf(pi, "browser-endpoint", env.PI_BROWSER_ENDPOINT);
   if (endpoint) return cdpProvider({ endpoint });
   // A Chrome the person named is used or refused by name, never swapped; only when none is named are the usual
   // places searched.
   const named = flagOf(pi, "browser-chrome") ?? (env.PI_BROWSER_CHROME || undefined);
-  if (named && !existsSync(named)) throw refused(`The Chrome named by --browser-chrome or PI_BROWSER_CHROME, ${named}, does not exist. Ask the person for the right path.`);
+  if (named && !existsSync(named)) throw noBrowser(`The Chrome named by --browser-chrome or PI_BROWSER_CHROME, ${named}, does not exist. Ask the person for the right path.`);
   const executablePath = named ?? findChrome(env);
-  if (!executablePath) throw refused("No Chrome or Chromium was found on this machine. Ask the person to install one, or to set PI_BROWSER_CHROME (or pass --browser-chrome) to its path, or --browser-endpoint to a running one.");
+  if (!executablePath) throw noBrowser("No Chrome or Chromium was found on this machine. Ask the person to install one, or to set PI_BROWSER_CHROME (or pass --browser-chrome) to its path, or --browser-endpoint to a running one.");
   const headed = pi.getFlag("browser-headed") === true || env.PI_BROWSER_HEADED === "1";
   // Absent the flag, the provider reads PI_BROWSER_NO_SANDBOX itself.
   return cdpProvider({ chrome: { executablePath, profileRoot: await profiles.root(), headless: !headed, ...(pi.getFlag("browser-no-sandbox") === true ? { sandbox: false } : {}) } });
@@ -496,7 +500,7 @@ function registerTool(pi: ExtensionAPI, contract: ToolContract, runtimeOf: (ctx:
       const out: ToolOutput = web ? { content: [{ type: "text", text: web.text }], details: web.details, isError: web.isError } : await rt.call(contract.name, params, callId, signal);
       // Every text the model is shown passes the redactor, as the durable adapter does: a snapshot or a run's return value is
       // where a registered key on a page would otherwise appear.
-      const content = out.content.map((item) => item.type === "text" ? { ...item, text: rt.redact(item.text) } : item);
+      const content = redactContent(out.content, rt.redact);
       return { content, details: out.details ? redactDeep(out.details, rt.redact) : undefined, ...(out.isError ? { isError: true } : {}) };
     },
   });
@@ -600,12 +604,12 @@ export function createBrowserExtension(options: CodingAgentOptions = {}): (pi: E
             const run = () => childSession(ctx, task.prompt, childSignal);
             return rt.sharedBrowser ? inTurn(run) : run();
           } });
-          return { content: out.content.map((item) => item.type === "text" ? { ...item, text: rt.redact(item.text) } : item), details: undefined, ...(out.isError ? { isError: true } : {}) };
+          return { content: redactContent(out.content, rt.redact), details: undefined, ...(out.isError ? { isError: true } : {}) };
         },
       });
     }
 
-    for (const contract of BROWSER_TOOLS) if (contract.listedWhen === "always" || (fileTools && ["downloads", "upload"].includes(contract.listedWhen)) || (contract.listedWhen === "handoff" && options.handoff)) registerTool(pi, contract, runtimeOf);
+    for (const contract of BROWSER_TOOLS) if (listedFor(contract, { downloads: fileTools, upload: fileTools, handoff: !!options.handoff })) registerTool(pi, contract, runtimeOf);
     registerTool(pi, WEB_TOOLS.find((tool) => tool.name === "web_fetch")!, runtimeOf);
   };
 }

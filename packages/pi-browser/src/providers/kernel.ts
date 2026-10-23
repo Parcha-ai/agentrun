@@ -13,7 +13,9 @@ export const KERNEL_IDLE_MIN_S = 10;
 export const KERNEL_IDLE_MAX_S = 259_200;
 
 type KernelRow = { session_id?: unknown; cdp_ws_url?: unknown; browser_live_view_url?: unknown; deleted_at?: unknown; tags?: { agentrun_tag?: unknown }; checksum?: unknown; name?: unknown; id?: unknown; code?: unknown };
-type HttpFetch = (input: string, init: { method: string; headers: Record<string, string>; body?: Uint8Array | string; signal?: AbortSignal }) => Promise<Response>;
+/** What the provider reads of a reply: the global fetch's Response and undici's both have it. */
+type HttpReply = { ok: boolean; status: number; headers: { get(name: string): string | null }; text(): Promise<string> };
+type HttpFetch = (input: string, init: { method: string; headers: Record<string, string>; body?: Uint8Array | string; signal?: AbortSignal }) => Promise<HttpReply>;
 export type KernelOptions = {
   /** KERNEL_API_KEY and KERNEL_BASE_URL (default https://api.onkernel.com). Default: process.env. */
   env?: NodeJS.ProcessEnv;
@@ -73,18 +75,18 @@ export function kernelProvider(options: KernelOptions = {}): KernelProvider {
   const sleep = options.sleep ?? defaultSleep;
   const confirm = options.confirm ?? DEFAULT_CONFIRM;
   let client: Promise<HttpFetch> | null = null;
-  const http = () => (client ??= options.fetch ? Promise.resolve(options.fetch) : directFetch().then((f) => (f ?? fetch) as HttpFetch));
+  const http = () => (client ??= options.fetch ? Promise.resolve(options.fetch) : directFetch());
 
   /** One request, never retried: a create served twice would be a second paid browser. On failure only Kernel's `code`
    *  survives; a transport failure keeps its cause chain under a message that names the call alone. */
-  async function call<T = KernelRow>(method: string, route: string, init: { body?: unknown; query?: URLSearchParams; signal?: AbortSignal; raw?: { body: Uint8Array; type: string } } = {}): Promise<{ status: number; json: T | null; headers: Headers }> {
+  async function call<T = KernelRow>(method: string, route: string, init: { body?: unknown; query?: URLSearchParams; signal?: AbortSignal; raw?: { body: Uint8Array; type: string } } = {}): Promise<{ status: number; json: T | null; headers: HttpReply["headers"] }> {
     if (!apiKey) throw new Error("the kernel provider needs KERNEL_API_KEY in the env it is given; none is set");
     const name = `${method} ${route.replace(/\/browsers\/[^/?]+/, "/browsers/{id}").replace(/\/extensions\/[^/?]+/, "/extensions/{name}").replace(/\/profiles\/[^/?]+/, "/profiles/{name}")}`;
     const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}`, Accept: "application/json" };
     let body: Uint8Array | string | undefined;
     if (init.raw) { headers["Content-Type"] = init.raw.type; body = init.raw.body; }
     else if (init.body !== undefined) { headers["Content-Type"] = "application/json"; body = JSON.stringify(init.body); }
-    let response: Response;
+    let response: HttpReply;
     try {
       const query = init.query?.toString();
       response = await (await http())(`${baseUrl}${route}${query ? `?${query}` : ""}`, { method, headers, ...(body !== undefined ? { body } : {}), ...(init.signal ? { signal: init.signal } : {}) });
