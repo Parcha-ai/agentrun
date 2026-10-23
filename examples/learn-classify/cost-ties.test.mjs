@@ -30,8 +30,17 @@ async function compare(t, plan, { n = 8, costOnTies = COST_ON_TIES } = {}) {
 }
 const right = (usd) => () => ({ usd });
 
-test('the pinned price: an escalated company costs its workflow spend plus the agent finishing it; the ratio is 0.75', () => {
+test('the pinned price: an escalated company costs its workflow spend plus the agent finishing it; the ratio is 0.75', async () => {
   assert.deepEqual(COST_ON_TIES, { agentFinishUsd: 0.71, ratio: 0.75 });
+  // The constant is the derivation's, kept beside it: B's TRAIN rows of runs 1-237, n = 115.
+  const { readFileSync } = await import('node:fs');
+  const read = JSON.parse(readFileSync(join(import.meta.dirname, 'cost-on-ties-price.json'), 'utf8'));
+  assert.deepEqual([read.through, read.rows, read.n, read.meanUsd, read.agentFinishUsd], [237, 237, 115, 0.7127, COST_ON_TIES.agentFinishUsd]);
+  // The derivation: an escalated or failed host run's cost less its workflow's; served and by-hand rows count nothing.
+  const { priceOf } = await import('./cost-on-ties-price.mjs');
+  const row = (run, outcome, costUsd, workflowUsd) => JSON.stringify({ run, costUsd, ...(outcome ? { dispatch: { outcome } } : {}), executions: workflowUsd === undefined ? [] : [{ key: 'host:x', costUsd: workflowUsd }] });
+  const text = [row(1, 'escalated', 0.71, 0.01), row(2, 'complete', 0.05, 0.05), row(3, null, 0.9), row(4, 'failed', 0.51, 0.01), row(5, 'escalated', 9, 0)].join('\n');
+  assert.deepEqual([priceOf(text, 4).n, priceOf(text, 4).meanUsd, priceOf(text, 4).agentFinishUsd], [2, 0.6, 0.6]);
 });
 
 test('a cheaper challenger equal on every company wins on cost, and the verdict says cost decided it', async (t) => {

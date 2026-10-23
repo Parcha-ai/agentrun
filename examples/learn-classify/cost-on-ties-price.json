@@ -1,0 +1,11 @@
+{
+ "source": "the MCC challenge stream B (research/PREREG-MCC-challenge.md), its TRAIN take's runs.jsonl, the rows of stream runs 1-237",
+ "command": "node examples/learn-classify/cost-on-ties-price.mjs <runs.jsonl> --through 237",
+ "rows": 237,
+ "rowsSha256": "c762b0ec2ad87fffb69fa09990b3fc6eb449a7901c85b8fe7095c2b75bf7183b",
+ "through": 237,
+ "n": 115,
+ "meanUsd": 0.7127,
+ "medianUsd": 0.6916,
+ "agentFinishUsd": 0.71
+}
