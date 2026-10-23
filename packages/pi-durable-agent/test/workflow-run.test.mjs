@@ -115,7 +115,8 @@ test("a run cancelled while it runs ends stopped, and one whose tool fails ends 
   try {
     const { outcome, carry } = await runOn(stopped, host);
     assert.equal(outcome.status, "stopped");
-    assert.equal(carry.state, "stopped");
+    // No node completed, failed or escalated: the summary still says how the run ended, since the store refuses an empty one.
+    assert.deepEqual(carry, { state: "stopped", summary: "stopped before any node completed" });
     assert.equal(await (await cancel.promise), "marked");
     assert.equal((await readWorkflowRun(stopped)).outcome, "stopped");
   } finally {
