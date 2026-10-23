@@ -1013,12 +1013,16 @@
     );
   }
 
-  /** A workflow run: its graph with each node's state as marks.status and, when an escalation stopped it, that node as
-   *  marks.fired. */
+  /** A workflow run: its graph with each node's state as marks.status, the route branches it took as marks.taken and,
+   *  when an escalation stopped it, that node as marks.fired. */
   function workflowRunCard(data) {
     var w = data.workflow && typeof data.workflow === "object" ? data.workflow : null;
     var at = w && w.escalatedAt && typeof w.escalatedAt.path === "string" ? w.escalatedAt : null;
-    var marks = { status: (w && w.status) || {} };
+    var status = (w && w.status) || {};
+    var edges = w && w.graph && Array.isArray(w.graph.edges) ? w.graph.edges : [];
+    // A route's branch is taken when its body ran: graph.js draws that branch's wire as the path.
+    var taken = edges.filter(function (e) { return e && e.kind === "route" && Object.prototype.hasOwnProperty.call(status, e.to) && status[e.to] !== "not-run"; }).map(function (e) { return e.to; });
+    var marks = { status: status, taken: taken };
     if (at) marks.fired = at.path;
     return el(
       "section",
@@ -1064,7 +1068,8 @@
     );
   }
 
-  function storeRunPage(id, token) {
+  /** `live` is set when the page already shows this run running: a failed refresh then keeps it and tries again. */
+  function storeRunPage(id, token, live) {
     crumb([["Run", "#/runs/" + encodeURIComponent(id)]]);
     get("api/runs/" + encodeURIComponent(id)).then(
       function (data) {
@@ -1080,10 +1085,12 @@
         else show([storeRunHead(data, rows), timeline(rows)]);
         reopen(open);
         if (y) window.scrollTo(0, y);
-        if (run.state === "running") later(token, 2000, function () { storeRunPage(id, token); });
+        if (run.state === "running") later(token, 2000, function () { storeRunPage(id, token, true); });
       },
       function (error) {
-        if (token === view) show(failed(error));
+        if (token !== view) return;
+        if (live) later(token, 2000, function () { storeRunPage(id, token, true); });
+        else show(failed(error));
       }
     );
   }
