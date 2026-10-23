@@ -13,6 +13,8 @@ const lock = {
   [`node_modules/${scope}/pi-ai`]: { version: '1.1.0' },
   [`node_modules/${scope}/chord`]: { version: '1.0.4' },
   'node_modules/typebox': { version: '1.0.0' },
+  'node_modules/zod': { version: '4.6.6' },
+  'node_modules/stagehand/node_modules/zod': { version: '4.4.3' },
 };
 const codingAgent = `node_modules/${scope}/pi-coding-agent`;
 const key = name => `${scope}/${name}`;
@@ -34,6 +36,7 @@ test('a pinned dependency carries its own pins beside its version', () => {
 test('npm 10 gives every package with @earendil-works dependencies its own top-level entry', () => {
   const { overrides } = buildOverrides(lock, 10);
   assert.deepEqual(overrides, {
+    zod: '4.6.6',
     [key('pi-agent-core')]: '1.1.0',
     [key('pi-ai')]: '1.1.0',
     [`${key('pi-coding-agent')}@1.1.0`]: { [key('pi-agent-core')]: { '.': '1.1.0', [key('pi-ai')]: { '.': '1.1.0' } }, [key('chord')]: { '.': '1.1.0' } },
@@ -44,6 +47,7 @@ test('npm 10 gives every package with @earendil-works dependencies its own top-l
 test('npm 11 pins a package that another one depends on through its parent only', () => {
   const { overrides } = buildOverrides(lock, 11);
   assert.deepEqual(overrides, {
+    zod: '4.6.6',
     [key('pi-agent-core')]: '1.1.0',
     [key('pi-ai')]: '1.1.0',
     [`${key('pi-coding-agent')}@1.1.0`]: { [key('pi-agent-core')]: { '.': '1.1.0', [key('pi-ai')]: { '.': '1.1.0' } }, [key('chord')]: { '.': '1.1.0' } },
