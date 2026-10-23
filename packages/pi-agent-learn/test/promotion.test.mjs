@@ -327,28 +327,49 @@ test("a demoted digest saved again is refused, whether the trial still holds it 
   assert.deepEqual(parseTrial(renderTrial(next.trial), "audit"), next.trial);
 });
 
-test("the refusals stop at their limit: an admission that keeps exactly the limit goes through, the next is refused and changes nothing", () => {
-  const tick = (n) => new Date(Date.UTC(2026, 9, 17) + n * 1000).toISOString();
-  let n = 0;
-  let trial = churned(TRIAL_LIMITS.revisions);
-  // Each round: a new revision admitted (the last one's digest moves to the refusals), then demoted by two failed uses.
-  const round = (i) => {
-    const digest = `${"cd".repeat(30)}${i.toString(16).padStart(4, "0")}`;
-    const admitted = admitRevision(trial, { name: "audit", sha256: digest, run: "w", at: tick(n++), when: WHEN });
-    if (admitted.status !== "admitted") return admitted;
-    const fail = (k) => ({ run: `y${i}-${k}`, sha256: digest, outcome: "failed", at: tick(n++) });
-    trial = foldUses(admitted.trial, [fail(1), fail(2)]).trial;
-    return admitted;
-  };
-  let i = 0;
-  while ((trial.refused?.length ?? 0) < TRIAL_LIMITS.refused) assert.equal(round(i++).status, "admitted");
-  assert.equal(trial.refused.length, TRIAL_LIMITS.refused, "an admission that keeps exactly the limit went through");
-  renderTrial(trial);
-  const before = structuredClone(trial);
-  const over = round(i);
-  assert.deepEqual([over.status, over.reason], ["refused", "limit"]);
-  assert.match(over.detail, /refused digests/);
-  assert.deepEqual(trial, before, "the trial is unchanged");
+test("a 400-revision stream of demotions always admits: a full refusals list loses its oldest digest and never refuses", () => {
+  const n = 400;
+  const trial = churned(n);
+  assert.equal(trial.refused.length, TRIAL_LIMITS.refused);
+  // The newest refusals, oldest first: every revision but the last (still held, demoted) moved there in turn.
+  assert.deepEqual(trial.refused, Array.from({ length: TRIAL_LIMITS.refused }, (_, k) => digestOf(n - 1 - TRIAL_LIMITS.refused + k)));
+  assert.deepEqual(trial.revisions.map((r) => [r.sha256, r.status]), [[digestOf(n - 1), "demoted"]]);
+  assert.deepEqual(parseTrial(renderTrial(trial), "audit"), trial, "the trial still renders and reads back");
+});
+
+test("the newest refused digests stay refused when saved again; the oldest, once it left the list, is admitted again", () => {
+  const n = 400;
+  const trial = churned(n);
+  for (let i = n - 1 - TRIAL_LIMITS.refused; i < n; i += 1) {
+    const again = admitRevision(trial, { name: "audit", sha256: digestOf(i), run: "w", at: at(23), when: WHEN });
+    assert.deepEqual([again.status, again.reason], ["refused", "demoted"], `revision ${i}`);
+  }
+  for (const i of [0, n - 2 - TRIAL_LIMITS.refused]) {
+    const again = admitRevision(trial, { name: "audit", sha256: digestOf(i), run: "w", at: at(23), when: WHEN });
+    assert.equal(again.status, "admitted", `revision ${i}, evicted: ${again.detail ?? ""}`);
+    assert.equal(again.trial.revisions.at(-1).sha256, digestOf(i));
+    assert.deepEqual(parseTrial(renderTrial(again.trial), "audit"), again.trial);
+  }
+});
+
+test("a digest that leaves the refusals takes its kept uses with it: the trial reads back, the new trial's uses start after them", () => {
+  // X gets one failed use (not demoted) and is retired by the next trial; retired trials follow with no use of their own,
+  // so X's use is still among the kept uses when its digest leaves the full refusals list.
+  const x = "c".repeat(64);
+  let trial = admitRevision(undefined, { name: "audit", sha256: x, run: "w", at: at(1), when: WHEN }).trial;
+  trial = foldUses(trial, [{ run: "x-1", sha256: x, outcome: "failed", at: at(1, 1) }]).trial;
+  const tick = (i) => new Date(Date.UTC(2026, 9, 18) + i * 1000).toISOString();
+  for (let i = 0; i < TRIAL_LIMITS.revisions + TRIAL_LIMITS.refused + 1; i += 1) {
+    const admitted = admitRevision(trial, { name: "audit", sha256: digestOf(i), run: "w", at: tick(i), when: WHEN });
+    assert.equal(admitted.status, "admitted", `revision ${i}: ${admitted.detail ?? ""}`);
+    trial = admitted.trial;
+    assert.deepEqual(parseTrial(renderTrial(trial), "audit"), trial, `revision ${i}: the trial reads back`);
+  }
+  assert.equal(trial.refused.includes(x), false, "X left the refusals");
+  assert.equal(trial.uses.some((u) => u.sha256 === x), false, "and its use with it");
+  assert.equal(trial.revisions.at(-1).after, trial.uses.length);
+  const clean = Array.from({ length: PROMOTION_DEFAULTS.promoteAfter }, (_, k) => ({ run: `c${k}`, sha256: trial.revisions.at(-1).sha256, outcome: "frozen", at: at(9, k + 1) }));
+  assert.equal(foldUses(trial, clean).trial.status, "active", "the live trial still earns its promotion");
 });
 
 test("a short stream's trial is exactly as before: no refusals until the name would hold more than the limit", () => {

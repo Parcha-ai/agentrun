@@ -31,9 +31,9 @@ export const LIMITS = Object.freeze({
    *  trial would hold more, admission moves its retired and demoted revisions to `refused`, and stops only when the live
    *  ones fill it. */
   revisions: 32,
-  /** Digests of revisions a trial no longer holds (retired or demoted), kept so the same digest is never admitted again. A
-   *  trial that keeps any holds only its live and restorable revisions beside them (at most `restorable` + 2), so it fits
-   *  the file cap at both limits. */
+  /** Digests of revisions a trial no longer holds (retired or demoted), kept so the same digest is not admitted again. When
+   *  full, the oldest leaves and may be tried again: a full list never refuses an admission. A trial that keeps any holds
+   *  only its live and restorable revisions beside them (at most `restorable` + 2), so it fits the file cap at both limits. */
   refused: 128,
   /** The newest uses kept, in the order they were folded; thresholds never reach further back than twice `threshold`. */
   uses: 30,
@@ -82,7 +82,8 @@ export type Trial = {
   readonly revisions: readonly Revision[];
   /** Oldest first. */
   readonly uses: readonly Use[];
-  /** Digests of retired or demoted revisions moved out of `revisions` to make room, oldest first: never admitted again. */
+  /** Digests of retired or demoted revisions moved out of `revisions` to make room, oldest first: not admitted again while
+   *  they are here (the newest `LIMITS.refused`). */
   readonly refused?: readonly string[];
 };
 
@@ -202,6 +203,17 @@ export function pruneUses(trial: Trial, target: number): Trial {
   }
   for (let i = trial.uses.length - 1; i >= 0 && kept.size < target; i -= 1) kept.add(i);
   const indexes = [...kept].sort((a, b) => a - b);
+  return {
+    ...trial, uses: indexes.map((i) => trial.uses[i]!),
+    revisions: trial.revisions.map((r) => ({ ...r, after: indexes.filter((i) => i < r.after).length })),
+  };
+}
+
+/** The trial without the uses that name `digests`, each revision's `after` counting only the uses kept: a digest that leaves
+ *  `refused` takes them with it, since a use must name a revision the trial holds or refuses. */
+export function dropUsesOf(trial: Trial, digests: readonly string[]): Trial {
+  if (!digests.length || !trial.uses.some((use) => digests.includes(use.sha256))) return trial;
+  const indexes = trial.uses.map((use, i) => (digests.includes(use.sha256) ? -1 : i)).filter((i) => i >= 0);
   return {
     ...trial, uses: indexes.map((i) => trial.uses[i]!),
     revisions: trial.revisions.map((r) => ({ ...r, after: indexes.filter((i) => i < r.after).length })),

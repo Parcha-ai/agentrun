@@ -432,7 +432,8 @@ name. The revision it replaces is `superseded` if it was active, keeping its pre
 so a demotion can restore both, or `retired` if it never proved itself; only the 3 newest superseded revisions keep that. A
 demoted revision stays in the list so it is never tried again. Only the live and restorable revisions count toward the
 limit of 32: when admitting a new one would take the list past it, its retired and demoted revisions leave the list and
-keep only their digests in `refused` (at most 128), which are never admitted again either; a trial that keeps refusals
+keep only their digests in `refused`, which are not admitted again either. `refused` keeps the newest 128: when it is full the
+oldest leaves, with any kept use that names it, and may be tried again, so a full list never refuses an admission. A trial that keeps refusals
 holds only its live and restorable revisions from then on. A name that churns through many revisions in a long stream so
 keeps admitting new ones. `status` is that of the live revision, or `demoted` when there
 is none. `when` is a list of typed checks on the run's input, each a JSON pointer and one of `eq`, `in`, `exists`, `gte`,
