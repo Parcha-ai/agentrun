@@ -1094,6 +1094,55 @@ test('an error that only reads like an operator message is not shown: what reach
   } finally { await app.shutdown(); }
 });
 
+// The extension's own refusals reach the operator through /agentrun as written, each naming what to do next.
+const shownAsWritten = (app, text) => {
+  const shown = app.messages.at(-1).content;
+  assert.doesNotMatch(shown, /AgentRun could not complete this operation/);
+  assert.equal(shown, text);
+};
+const noDraft = 'Inspect a workflow first. Try /agentrun demo, or describe a task with /agentrun <task>.';
+
+test('/agentrun run with no inspected workflow tells the operator to inspect one first', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    await app.command('run');
+    shownAsWritten(app, noDraft);
+  } finally { await app.shutdown(); }
+});
+
+test('/agentrun dry-run with no inspected workflow tells the operator to inspect one first', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    await app.command('dry-run');
+    shownAsWritten(app, noDraft);
+  } finally { await app.shutdown(); }
+});
+
+test('/agentrun run while a run is under way tells the operator to stop it first', { timeout: 5000 }, async () => {
+  const entered = deferred(), release = deferred();
+  const app = await harness({ hasUI: true, withModel: false, extensionOptions: {
+    hostTools: () => [hostTool(async () => { entered.resolve(); await release.promise; return corpusResult('Late result'); })],
+  } });
+  try {
+    await app.tool({ action: 'inspect', workflow: toolWorkflow() });
+    await app.command('run'); await entered.promise;
+    await app.command('run');
+    shownAsWritten(app, 'A workflow is already running. Use /agentrun stop first.');
+    release.resolve();
+    await waitUntil(() => app.messages.some(message => message.details?.status));
+  } finally { release.resolve(); await app.shutdown(); }
+});
+
+test('/agentrun run of a workflow naming SOP sections with no SOP text tells the operator to supply it', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    const definition = workflow(); definition.root.sopSection = ['Blockers'];
+    await app.tool({ action: 'inspect', workflow: definition });
+    await app.command('run');
+    shownAsWritten(app, 'Workflow requires SOP text for "Blockers". Supply it with /agentrun sop <file>.');
+  } finally { await app.shutdown(); }
+});
+
 test('the DSL refusing a run state it cannot clone ends the run in its report, never as the command error', async () => {
   // A tool answers with a function in its details, so the parallel after it cannot snapshot the state: the DSL throws.
   const answer = async () => ({ ...corpusResult('source'), details: { text: 'source', later: () => 1 } });
