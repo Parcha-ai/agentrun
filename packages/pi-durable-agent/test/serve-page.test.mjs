@@ -228,6 +228,13 @@ test("the three files: HTML with no inline script or style that links page.css a
   assert.doesNotThrow(() => new vm.Script(PAGE_JS), "the script parses");
 });
 
+test("the breadcrumb wraps instead of clipping: no crumb is cut at a phone's width", () => {
+  const rule = (selector) => PAGE_CSS.match(new RegExp(`(?:^|[}\\n])${selector.replace(/\./g, "\\.")}\\{([^}]*)\\}`))?.[1] ?? "";
+  assert.match(rule(".crumbs"), /flex-wrap:wrap/);
+  assert.doesNotMatch(rule(".crumbs"), /overflow:hidden|text-overflow|min-width:0/);
+  assert.match(rule(".top"), /flex-wrap:wrap/, "the bar wraps too, so the crumbs never shrink under their widest word");
+});
+
 test("no accent bar: no rule sets border-left or an inset shadow wider than 1px, but the steps' 1px spine and the threshold marker", () => {
   const allowed = new Map([[".steps", "border-left:1px solid var(--line)"], [".bar.threshold .fill", "border-left:2px solid var(--accent)"]]);
   const bars = [];
