@@ -15,7 +15,9 @@ import { chromeArgs } from "./chrome-args.js";
 
 export type CdpOptions =
   /** An existing browser: `http://host:port` or a `ws://` debugger URL. Release leaves it running. */
-  | { endpoint: string; extensionId?: string }
+  | { endpoint: string; extensionId?: string;
+    /** The host asserts this endpoint is the run's OWN browser (the launcher that owns its process and its stop started it for this run alone), not one other runs or people share. Only then is a session of it offered to a session vault. Never set it for a shared browser. */
+    ownBrowser?: boolean }
   /** Start Chrome under `profileRoot/<tag>` on a loopback port Chrome picks; release kills that process by exact pid. */
   | { chrome: {
     executablePath: string; profileRoot: string; headless?: boolean; args?: string[];
@@ -279,6 +281,8 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
   };
   /** A spawned Chrome whose handle we hold is ours (a handle cannot name a recycled pid); after a restart, only while
    *  the browser on the recorded port reports that pid. */
+  /** The endpoint leases this provider has released. An endpoint is left running, so a released lease has no process to look at: it is over because it was released. */
+  const endpointReleased = new Set<string>();
   const isOurs = async ({ pid, port }: { pid: number; port: number }): Promise<boolean> => {
     const child = children.get(pid);
     if (child) return child.exitCode === null && child.signalCode === null;
@@ -287,6 +291,7 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
   return {
     name: "cdp",
     caps: { ...CAPS, profiles: "chrome" in options, ...("endpoint" in options ? { sharedBrowser: true } : {}) },
+    ...("chrome" in options || options.ownBrowser === true ? { vault: { kind: "cdp" } as const } : {}),
     ...(downloads ? { downloads } : {}),
 
     async create(spec, signal) {
@@ -389,6 +394,7 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
     async findByTag() { return []; },
 
     async status(ref): Promise<ResourceStatus> {
+      if (ref.id.startsWith("endpoint:")) return endpointReleased.has(ref.id) ? "gone" : "running";
       const local = parse(ref.id);
       // A local-shaped id this provider cannot read names no process it can vouch for: gone, never "running" unchecked.
       if (!local) return ref.id.startsWith("local:") ? "gone" : "running";
@@ -409,6 +415,7 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
     },
 
     async release(ref) {
+      if (ref.id.startsWith("endpoint:")) { endpointReleased.add(ref.id); return; }
       const local = parse(ref.id);
       if (!local || local.tag !== ref.tag) return;
       const ours = await isOurs(local);

@@ -312,6 +312,7 @@ What it does with your machine and your data:
   that a crashed pi left running is closed when that session is next started, never adopted.
 - Stagehand's trace export is pointed at a closed loopback port, so nothing you browse goes to a third party.
 - `browser_relaunch` with `verified` or `geolocation` changes nothing on a local Chrome or on Kernel; they are Browserbase features.
+  With proxies off (the default), a `geolocation` is refused and the session is left as it was, as in the pi-durable adapter.
 - A host that builds the extension with `policy: { actions: "deny" }` or `"ask"` asks for requests to be held, and the coding
   agent has no request observer to hold them. So under either it starts no browser: every browser tool answers
   `browser_unavailable`, naming the action policy, and `web_fetch` still works. Set `actions: "allow"` (or leave it out) to
