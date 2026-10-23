@@ -86,6 +86,11 @@ export const kernelHoldings = {
   uploads: new Map<string, Promise<{ id: string } | { name: string }>>(),
 };
 
+/** Which session may save to a named profile now, by profile: claimed by both cloud providers (providers/profiles.ts). */
+export const profileHoldings = {
+  writers: new Map<string, { tag: string; owner: string; running?: (signal: AbortSignal) => Promise<boolean>; settle?: () => Promise<void> }>(),
+};
+
 export function resetProviderHoldings(): void {
-  for (const holdings of [browserbaseHoldings, kernelHoldings]) for (const map of Object.values(holdings)) map.clear();
+  for (const holdings of [browserbaseHoldings, kernelHoldings, profileHoldings]) for (const map of Object.values(holdings)) map.clear();
 }

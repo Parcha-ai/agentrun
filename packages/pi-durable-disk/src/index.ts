@@ -16,6 +16,9 @@ export type { AcquireOptions, ArchilHost, Claim, ControlApi, PathlessResolver, R
 // A short exclusive claim on any path of a disk, and a consistent S3 read of a released file (an agent home beside the runs).
 export { readReleased, withClaim } from "./with-claim.ts";
 export type { ClaimControl, HeldPath, WithClaimOptions } from "./with-claim.ts";
+// A run's own files, read over the control: never a mount, a write, or a wait on the claim.
+export { listRunFiles, readRunFile, RunFileError } from "./run-files.ts";
+export type { RunFileControl, RunFileErrorCode } from "./run-files.ts";
 export { PathOutsideWorkError } from "./confine.ts";
 export type { RefusalReason } from "./confine.ts";
 export { ClaimError, FencedError, HeldError, PdaError } from "./errors.ts";
@@ -43,7 +46,7 @@ export type { RequestOptions, RunResponse, RunServer, ServeConfigErrorCode, Serv
 
 // Places: where a run lives for a supervisor that kills it and brings it back (agentrun's reference place seam).
 export { archilPlace, localPlace, PlaceError } from "./place.ts";
-export type { ArchilPlaceOptions, LocalPlaceOptions, Place, PlaceContext, PlaceErrorCode, PlaceExit, PlaceKill, PlaceOutcome, PlacePaths, PlaceRecordHome, PlaceRecovery, PlaceRunner, PlaceSignal, PlaceStatus, RecordControl, RunnerOrder } from "./place.ts";
+export type { ArchilPlaceOptions, LocalPlaceOptions, Place, PlaceContext, PlaceErrorCode, PlaceExit, PlaceKill, PlaceOutcome, PlacePaths, PlaceRecordHome, PlaceRecovery, PlaceRunner, PlaceSignal, PlaceStatus, RecordControl, RunnerOrder, UnheldHook, UnheldRun, UnheldStart } from "./place.ts";
 
 // Parking: an idle run gives its host back.
 export { busyState, drain, leaseParkTarget, watchParking } from "./park.ts";

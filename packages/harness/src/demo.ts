@@ -30,7 +30,8 @@ import type { BoxProvider } from '@parcha/pi-transport';
 import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { CodeModeOptions } from './code-mode.ts';
 import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
-import { boxLedger, ledgerBoxes, markReceiptWritten, RUN_LABEL, supervisedChild, tapBox, type Boxes, type LedgerEntry } from './boxes.ts';
+import { boxLedger, hostLabelIn, ledgerBoxes, markReceiptWritten, parseHostBox, RUN_LABEL, supervisedChild, tapBox, type Boxes, type LedgerEntry, type RunFiles } from './boxes.ts';
+import { credentialIn } from './scan.ts';
 import type { Recorder, Redact } from './record.ts';
 import { priceJudge } from './judge.ts';
 import { askToBeKilled, aroundOwnFiling, crossings, tapFakes, tapHost, tapLive, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
@@ -138,7 +139,16 @@ export async function demo(options: DemoOptions): Promise<DemoResult | undefined
   if ((globalThis as Record<symbol, unknown>)[IMPORTING_DEMO]) return undefined;
   const { values } = parseArgs({ args: options.argv ?? process.argv.slice(2), options: FLAGS });
   if (values.child) { await child(options); return undefined; }
-  const result = await supervise(options, values);
+  // The harness's SINKS: whatever leaves demo() (K4, an error thrown to the caller, a place's start included; K3, the result it returns; K1, the
+  // JSON the CLI prints; K2, the summary) passes processText first: the run's tracked redaction when it records, the credential pass always. A
+  // run process's stderr, a tool's output and a provider's error (pi-transport's carry their commands' stderr) reach a caller only through here.
+  const sink: { redact?: (text: string) => string } = {};
+  let raw: DemoResult;
+  try { raw = await supervise(options, values, sink); } catch (error) {
+    // K4: a new error, its message, stack, cause chain and properties handed out (never the original, whose cause a caller's log would print).
+    throw error instanceof Error ? handedOutError(error, sink.redact) : new Error(processText(String(error), sink.redact));
+  }
+  const result = handedOut(raw, sink.redact);
   if (values.json) console.log(JSON.stringify(result));
   else summarize(options, result, Boolean(values.kill || values.debug));
   // A command line ends with a failing code when the run did not complete or went past its cap; a caller that passed its own arguments reads the result.
@@ -235,7 +245,7 @@ export type Prepared = { models: Record<string, string> | undefined; /** Writes 
 
 /** The outcome line a process reports on its way out: how the run ended, the record it delivered, what the demo's result hook made of it, and the hash of its store. */
 export function outcomeOf(result: Awaited<ReturnType<typeof run>>, storeSha256: string | undefined, made?: { json: unknown; title: string }, models?: Record<string, string>) {
-  return { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}), ...(result.status === 'complete' ? { record: result.output } : {}), ...(made ? { result: made } : {}), ...(models ? { models } : {}), ...(storeSha256 ? { storeSha256 } : {}) };
+  return { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: processText(result.message).slice(0, 240) } : {}), ...(result.status === 'complete' ? { record: result.output } : {}), ...(made ? { result: made } : {}), ...(models ? { models } : {}), ...(storeSha256 ? { storeSha256 } : {}) };
 }
 
 export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv, at?: RunPlace, killNonce?: string): Promise<Prepared> {
@@ -262,6 +272,13 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   // One labeller for every box this process's tools make (box-N), its ids in a directory outside the recording, one file per label, that the next process numbers on from.
   // A supervised child's supervisor writes the tool boxes' receipts from the ids directory it owns: this process writes none.
   const ledger = boxLedger({ dir: env.BOX_IDS || join(place.root, 'box-ids.internal'), ...(recorder ? { recorder } : {}), ...(supervisedChild(env) ? { supervised: env.RECORD_GEN ? { gen: Number(env.RECORD_GEN) } : {} } : {}) });
+  // The host box the place started for this process (`HOST_BOX`), its label claimed FIRST, before any model call or tool box: the supervisor only reads it back. A
+  // malformed identity, or one a supervisor in another life claimed, refuses the process. So does one whose supervisor cannot read the run's labels (its place has
+  // no readRunFile and listRunFiles, so it numbers its boxes itself: HOST_LABELS is not `read`): a label claimed here would be a second labeller's.
+  if (env.HOST_BOX) {
+    if (env.HOST_LABELS !== 'read') throw new Error('HOST_BOX was handed over, but this run\'s supervisor cannot read the run\'s labels (its place has no readRunFile and listRunFiles, so it numbers its host boxes itself): claiming the box here would make two labellers; refused');
+    ledger.claimHost(parseHostBox(env.HOST_BOX), new Date().toISOString());
+  }
   const tapping = { cross, window, ledger, ...(env.RUN_LABEL ? { runLabel: env.RUN_LABEL } : {}), ...(recorder ? { recorder } : {}) };
   const boxes = provider ? (tapBox(provider, tapping) as BoxProvider) : undefined;
   // The demo's own providers, each tapped: a box a tool makes on one is on the recording by its label, with a receipt.
@@ -357,7 +374,7 @@ async function child(options: DemoOptions) {
     const line = JSON.stringify({ outcome: outcomeOf(result, storeShaOf(prepared.place), made, prepared.models) });
     console.log(prepared.redact ? prepared.redact(line) : line);
   } catch (error) {
-    console.log(JSON.stringify({ outcome: { status: 'error', generation: null, code: (error as { code?: string }).code ?? null, message: String((error as Error).message).slice(0, 400) } }));
+    console.log(errorOutcome(error, prepared?.redact));
   } finally {
     await prepared?.done();
   }
@@ -400,11 +417,10 @@ export async function destroyBoxes(spec: DemoSpec, runLabel: string, root: strin
   if (failed.length) throw new Error(`the run's boxes could not be destroyed: ${failed.join(', ')}`);
 }
 
-async function supervise(options: DemoOptions, values: ReturnType<typeof parseArgs<{ options: typeof FLAGS }>>['values']): Promise<DemoResult> {
+async function supervise(options: DemoOptions, values: ReturnType<typeof parseArgs<{ options: typeof FLAGS }>>['values'], sink: { redact?: (text: string) => string } = {}): Promise<DemoResult> {
   const { spec, job } = options;
   const live = values.live === true;
   if (options.providerExtensions && !options.providers) throw new Error(`${spec.name} passes providerExtensions with no providers: the hook would have nothing to hand its tools`);
-  if (options.providers && options.place) throw new Error(`${spec.name} has a place of its own and tool-made boxes (providers): their boxes would need one labeller, which they cannot share yet, so the run is refused rather than give two boxes one label`);
   if (live && !options.live) throw new Error(`--live: ${spec.name} supplies no live parts (no real models or services), so it runs on fakes only.`);
   // `browser: false` in demo.json: no browser is created, so no key or Chrome is asked for.
   const browser = spec.browser === false ? 'none' as const : chooseBrowser({ live, env: process.env, localChrome: values['local-chrome'] === true });
@@ -421,6 +437,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // What a recording must not hold, read before anything starts: a sign-in file that cannot be read fails the record here, not after a paid run.
   const tracked = values.record ? trackSecrets(process.env, spec) : undefined;
   const redact = tracked?.redact;
+  // demo()'s sinks redact with it too.
+  sink.redact = redact;
   const models: LiveModels = { ...(values.provider ? { provider: values.provider } : {}), ...(values.model ? { model: values.model } : {}), ...(values['eyes-model'] ? { eyesModel: values['eyes-model'] } : {}) };
   if (!live && Object.keys(models).length) throw new Error('--provider, --model and --eyes-model choose real models: they need --live');
   if (models.provider && !models.model) throw new Error('--provider needs --model (the model to use on that provider)');
@@ -512,6 +530,18 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   let reading: Promise<void> = Promise.resolve();
   const boxLabels = new Map<string, string>();
   const boxReceipted = new Set<string>();
+  // The run's ids as the supervisor reads them for a place's host boxes: the ids directory it owns (--box-ids), else the place's own reads of the run's files. A
+  // claimed label never changes, so it is read once. Every host box a read listed is kept (with its provider): one with no label when the run ends refuses the
+  // recording, even when the final read did not finish inside its bound.
+  // Read when the status is read, after the place exists.
+  const labelFilesOf = (): RunFiles | undefined => !(place?.readRunFile && place.listRunFiles) ? undefined : boxIds !== undefined
+    ? { readRunFile: async (path) => { try { return new Uint8Array(readFileSync(join(boxIds, path.slice(path.indexOf('/') + 1)))); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; } }, listRunFiles: async () => { try { return readdirSync(boxIds).sort(); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; } } }
+    : { readRunFile: (path) => place.readRunFile!(path), listRunFiles: (dir) => place.listRunFiles!(dir) };
+  const labelDir = 'box-ids.internal';
+  const homeBoxLabels = new Map<string, string>();
+  const homeBoxSeen = new Map<string, string>();
+  // A host box the place started whose label its process never claimed: the recording is refused, never finished without it (its time would be missing from the cost).
+  let unlabelled: { key: string; provider: string; why: string } | undefined;
   // The tool boxes' receipts (RECORDING.md 3.1: the supervisor writes every host line): the processes keep each box's end in
   // the ids directory this supervisor owns, and it writes each receipt once from there, at every tick, after each process
   // and at the end, with the process that made the box in its data. At the end a box no process ended is written as open.
@@ -572,20 +602,33 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         // The boxes the place made (a `HostBox` each, ended ones too): one `box.receipt` line per box when its `to` appears, or at the final read for one still open (`to`, `seconds` and `cost_usd` null). A box is its place in the
         // place's list (the place lists the boxes it started, in the order it started them, so equal provider, kind and start never make two boxes one), and it is `box-N` by first appearance, labelled when it first shows, before its
         // receipt; never the provider's id. `cost_usd` is seconds times the published per-second price, null when the box has none (the run's cost then reads unknown).
-        (Array.isArray(status?.boxes) ? status!.boxes as unknown[] : []).forEach((entry, index) => {
-          const label = labelOf(boxLabels, 'box', String(index));
+        // A place with the run-file reads shares the run's one labeller: each host box's label is read from the run's ids, where the run's process claimed it
+        // (`HOST_BOX`); a label not there yet (null) is read again at the next tick, and at the final read a host box with none refuses the recording (never claimed,
+        // or unreadable: a read that throws). FAIL CLOSED: never numbered on the side.
+        for (const [index, entry] of (Array.isArray(status?.boxes) ? status!.boxes as unknown[] : []).entries()) {
           const box = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : undefined;
-          if (!box || typeof box.provider !== 'string' || typeof box.kind !== 'string') return;
+          if (!box || typeof box.provider !== 'string' || typeof box.kind !== 'string') continue;
+          const key = String(index);
+          const labelFiles = labelFilesOf();
+          // A place with no run-file reads (and so no tool boxes beside it: that run is refused before it starts) is the run's only labeller: its boxes are numbered here.
+          let label = labelFiles ? homeBoxLabels.get(key) : labelOf(boxLabels, 'box', key);
+          if (label === undefined) {
+            homeBoxSeen.set(key, box.provider);
+            // A label that cannot be read is no label: at the final read it refuses the recording too, never a recording without that box's receipt.
+            try { label = await hostLabelIn(labelFiles!, labelDir, { provider: box.provider, key, run: runLabel }); } catch (error) { if (final) unlabelled ??= { key, provider: box.provider, why: `its label cannot be read (${messageOf(error, paths.root)})` }; continue; }
+            if (label === undefined) { if (final) unlabelled ??= { key, provider: box.provider, why: 'its child never claimed it' }; continue; }
+            homeBoxLabels.set(key, label);
+          }
           const at = (value: unknown) => (typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : Number.NaN);
           const from = at(box.from);
           const to = at(box.to);
           const ended = Number.isFinite(to);
-          if (!Number.isFinite(from) || (!ended && !final) || boxReceipted.has(label)) return;
+          if (!Number.isFinite(from) || (!ended && !final) || boxReceipted.has(label)) continue;
           boxReceipted.add(label);
           const seconds = ended ? Math.max(0, (to - from) / 1000) : null;
           const price = typeof box.usdPerSecond === 'number' && Number.isFinite(box.usdPerSecond) ? box.usdPerSecond : null;
           supervisor.host('box.receipt', { box: label, provider: box.provider, kind: box.kind, from: box.from, to: ended ? box.to : null, seconds, usd_per_second: price, cost_usd: price !== null && seconds !== null ? seconds * price : null, source: typeof box.source === 'string' ? box.source.slice(0, 240) : null, priced: box.priced ?? null });
-        });
+        }
       } catch { /* a reading never fails the run */ } finally { inflight = false; }
     });
     return reading;
@@ -615,6 +658,11 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
     // The follower's hold reads the place's clock allowance from here on (it was assigned before the place existed, so it was never seen).
     placeRef = place;
+    // A place of the demo's own that cannot let the supervisor read the run's labels (no readRunFile and listRunFiles) cannot share one numbering with the tools' boxes:
+    // refused, never two boxes with one label.
+    if (options.providers && options.place && !(place.readRunFile && place.listRunFiles)) {
+      throw new Error(`${spec.name} has a place of its own with no readRunFile and listRunFiles, and tool-made boxes (providers): the place's host boxes cannot take labels from the run's one labeller, so the run is refused rather than give two boxes one label`);
+    }
     const remaining = childPlansOf(plans);
     let runner: Runner | undefined;
     let previous: { runner: Runner; kind: 'process' | 'box' } | undefined;
@@ -636,7 +684,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       const token = place.token ? await place.token(gen) : undefined;
       // The supervisor's own nonce for this attempt: the process puts it in its kill request, and the supervisor honors only a request that carries it. The place knows nothing about it.
       const nonce = randomBytes(16).toString('hex');
-      const order = { gen, env: { ...base, CROSS_LOG: log, KILL_REQUEST: request, KILL_NONCE: nonce, RECORD_GEN: String(gen), RECORD_STARTED: startedText, PLAN: JSON.stringify(plan) }, ...(token !== undefined ? { stdin: token } : {}) };
+      const order = { gen, env: { ...base, ...(place.readRunFile && place.listRunFiles ? { HOST_LABELS: 'read' } : {}), CROSS_LOG: log, KILL_REQUEST: request, KILL_NONCE: nonce, RECORD_GEN: String(gen), RECORD_STARTED: startedText, PLAN: JSON.stringify(plan) }, ...(token !== undefined ? { stdin: token } : {}) };
       if (previous && !place.kills.includes(previous.kind)) throw new Error(`the ${place.name} place cannot lose its ${previous.kind}: this kill is not one it can make`);
       currentGen = gen;
       const recovered = previous ? await place.recover(previous.runner, previous.kind, order) : undefined;
@@ -753,6 +801,12 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     // The last read can add a box's priced receipt: the cap is checked after it.
     ledgerReceipts(true);
     await settled(readStatus(true));
+    // A run whose last process never completed (it refused its host box's claim, say) says so too: the box's missing label is that failure's, not a separate one.
+    const ended = processes.at(-1);
+    const cause = ended && ended.outcome?.status !== 'complete' ? ` (the run's last process did not complete: ${messageOf(processText(ended.outcome?.message ?? (ended.stderr || `exit ${ended.exit ?? ended.signal}`), redact), paths.root).slice(-400)})` : '';
+    if (unlabelled) throw new Error(`the recording is refused: host box ${unlabelled.key} on ${unlabelled.provider} has no label: ${unlabelled.why}${cause}`);
+    const unread = [...homeBoxSeen].find(([key]) => !homeBoxLabels.has(key));
+    if (unread) throw new Error(`the recording is refused: host box ${unread[0]} on ${unread[1]} has no label: the final read did not finish reading it inside its bound`);
     if (maxUsd !== null && meterKnown(recordDir) > maxUsd) overBudget = true;
     const processesStarted = processes.length;
     // The demo's result hook, reported by the process that delivered, shapes the result line and its blob; without one, the delivered record is the result.
@@ -796,6 +850,101 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
 }
 
 /** A message the supervisor writes about a failure of the place: an absolute path outside the run's directory is replaced by `<path>` (the run's own paths stay), then it is capped at 240 characters. The recorder's exact-value redaction runs on the line after. */
+/** Text the harness hands out at a SINK (an error's message, a returned result, the CLI's output), whatever produced it (a run process's
+ *  stderr or outcome, a tool's output, a provider's error): every tracked secret redacted (`redact`, the recorder's, when the run records), and
+ *  any line that still holds a credential's shape (the scanner's own `credentialIn`) withheld whole, with or without a recording. A machine path
+ *  is not a credential here: `messageOf` rewrites paths. Per line and per known shape: a key split across lines, or encoded, is not caught. */
+export function processText(text: string, redact?: (text: string) => string): string {
+  return (redact ? redact(text) : text).split('\n').map((line) => { const kind = credentialIn(line); return kind && kind !== 'machine path' ? '[a line withheld: it held a credential]' : line; }).join('\n');
+}
+/** Every string of a plain value (a result, a ledger) through `processText`, at the sink that returns or prints it; a value seen before (a cycle) is
+ *  cut to undefined. A value that is neither plain nor a string (the harness's own results hold none) is passed as it is. */
+export function handedOut<T>(value: T, redact?: (text: string) => string): T {
+  return walk(value, redact, new Set(), '', undefined, new Map()) as T;
+}
+
+/** The one walker for text handed out: a string through processText; null, undefined, a number, a boolean or a bigint as it is; an error through
+ *  handedOutError; an array or a plain object recursed (a value met again on its own path, a cycle, becomes undefined; one shared by two branches is walked in each). Anything else: kept as it is
+ *  when `withheld` is undefined (a result), else WITHHELD, its path named in `withheld` (inside an error, where a library's value can hold anything). */
+function walk(value: unknown, redact: ((text: string) => string) | undefined, seen: Set<unknown>, path: string, withheld: string[] | undefined, done: Map<unknown, unknown>): unknown {
+  if (typeof value === 'string') return processText(value, redact);
+  if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return value;
+  if (value instanceof Error) return handedOutError(value, redact, seen, done);
+  const plain = Array.isArray(value) || (typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype);
+  if (!plain) { if (!withheld) return value; withheld.push(path); return undefined; }
+  // `seen` holds the values on the path from the root to here: a value met again on its own path is a cycle, cut to undefined. `done` maps each value
+  // walked to its copy: a value shared by two branches (no cycle) is walked ONCE and its one copy stands in both (linear, never once per path).
+  if (seen.has(value)) return undefined;
+  if (done.has(value)) return done.get(value);
+  seen.add(value);
+  try {
+    let copy: unknown;
+    if (Array.isArray(value)) copy = value.map((item, index) => walk(item, redact, seen, `${path}[${index}]`, withheld, done));
+    else {
+      const entries: [string, unknown][] = [];
+      for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+        const before = withheld?.length ?? 0;
+        const walked = walk(item, redact, seen, path ? `${path}.${key}` : key, withheld, done);
+        // A withheld value is named, not left behind as undefined.
+        if (walked === undefined && (withheld?.length ?? 0) > before) continue;
+        entries.push([key, walked]);
+      }
+      copy = Object.fromEntries(entries);
+    }
+    done.set(value, copy);
+    return copy;
+  } finally { seen.delete(value); }
+}
+
+/** K4: an error handed out to a caller, as a NEW error of the same class (its prototype: `instanceof` holds), whose message and stack, its name and
+ *  code (read through the ORIGINAL, whose getters may be branded, as a DOMException's are, and kept as own properties), every value in its cause
+ *  chain, an AggregateError's `errors` and every own property pass the one walker: what Node prints for an uncaught error (util.inspect shows the
+ *  cause chain and the properties) and what a caller logs carry no secret. A value the walker withholds is named in `withheldProperties`. The copy
+ *  is not the original: its identity, non-enumerable and symbol properties are not carried. */
+export function handedOutError(error: Error, redact?: (text: string) => string, seen: Set<unknown> = new Set(), done: Map<unknown, unknown> = new Map()): Error | undefined {
+  // A cycle (the error met again on its own path, its cause chain looping) is cut to undefined.
+  if (seen.has(error)) return undefined;
+  if (done.has(error)) return done.get(error) as Error;
+  seen.add(error);
+  try { const copy = copyOf(error, redact, seen, done); done.set(error, copy); return copy; } finally { seen.delete(error); }
+}
+
+function copyOf(error: Error, redact: ((text: string) => string) | undefined, seen: Set<unknown>, done: Map<unknown, unknown>): Error {
+  // Own data properties, defined (never assigned): an inherited accessor with no setter (a DOMException's code) would refuse an assignment.
+  const own = (target: object, key: string, value: unknown, enumerable = false) => Object.defineProperty(target, key, { value, writable: true, configurable: true, enumerable });
+  // A NATIVE error given the original's prototype, so `instanceof` holds and a structured clone (a test runner, a worker, IPC) keeps its message and stack: an
+  // object made from the prototype alone is no error to a clone, which makes it {}. Its own stack, made here, is replaced or removed below.
+  const out = Object.setPrototypeOf(new Error(), Object.getPrototypeOf(error) as object) as Error & Record<string, unknown>;
+  const withheld: string[] = [];
+  own(out, 'message', processText(String(error.message), redact));
+  const name = processText(String(error.name), redact);
+  own(out, 'name', name);
+  if (error.stack === undefined) delete out.stack;
+  else {
+    // A stack whose header line held a key is withheld whole: its header is rebuilt from the name and the redacted message, so the class stays visible.
+    const stack = processText(String(error.stack), redact);
+    const rest = stack.indexOf('\n') === -1 ? '' : stack.slice(stack.indexOf('\n'));
+    own(out, 'stack', stack.startsWith('[a line withheld') ? `${name}: ${processText(String(error.message), redact).split('\n')[0]}${rest}` : stack);
+  }
+  // Each value through the walker; one it withholds is named in withheldProperties and NOT left behind as undefined.
+  const carry = (key: string, value: unknown, enumerable: boolean) => { const before = withheld.length; const walked = walk(value, redact, seen, key, withheld, done); if (walked === undefined && withheld.length > before) return; own(out, key, walked, enumerable); };
+  if ('code' in error) carry('code', (error as { code?: unknown }).code, true);
+  if ('cause' in error) carry('cause', error.cause, false);
+  if (error instanceof AggregateError) carry('errors', error.errors, false);
+  for (const [key, value] of Object.entries(error)) {
+    if (key === 'message' || key === 'stack' || key === 'cause' || key === 'name' || key === 'code' || key === 'errors') continue;
+    carry(key, value, true);
+  }
+  if (withheld.length) own(out, 'withheldProperties', withheld, true);
+  return out;
+}
+
+/** The SOURCE: a run process's error outcome line, as it prints it for its supervisor. Its message passes the process's OWN redaction (it has seen
+ *  sign-in tokens the supervisor may not hold) and the credential pass. */
+export function errorOutcome(error: unknown, redact?: (text: string) => string): string {
+  return JSON.stringify({ outcome: { status: 'error', generation: null, code: (error as { code?: string }).code ?? null, message: processText(String((error as Error).message), redact).slice(0, 400) } });
+}
+
 export function messageOf(error: unknown, root: string): string {
   const own = resolve(root);
   const text = String((error as { message?: unknown } | null)?.message ?? error);

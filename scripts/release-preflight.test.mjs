@@ -94,8 +94,8 @@ test('a failed TypeScript floor rerun replaces stale success evidence', async ()
 test('release plan binds the exact verified tarballs in dependency order', () => fixture(async root => {
   const plan = await preflight(root);
   assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/pi-git-remote', '@parcha/pi-agent-learn']);
-  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-pi-vision-${version}.tgz`, `parcha-pi-transport-${version}.tgz`, `parcha-pi-git-remote-${version}.tgz`, `parcha-pi-agent-learn-${version}.tgz`]);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/pi-durable-agent', '@parcha/pi-git-remote', '@parcha/pi-agent-learn']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-pi-vision-${version}.tgz`, `parcha-pi-transport-${version}.tgz`, `parcha-pi-durable-agent-${version}.tgz`, `parcha-pi-git-remote-${version}.tgz`, `parcha-pi-agent-learn-${version}.tgz`]);
   assert.ok(plan.packages.every(pkg => /^sha512-/.test(pkg.integrity) && /^[a-f0-9]{64}$/.test(pkg.sha256)));
 }));
 test('unlicensed source and inconsistent tags fail before publication', () => fixture(async root => {
@@ -213,7 +213,7 @@ test('Apache release preserves the approved root license and notices in every ar
   await recordPackages(root);
   const plan = await preflight(root);
   assert.equal(plan.license, 'Apache-2.0');
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/pi-git-remote', '@parcha/pi-agent-learn']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/pi-durable-agent', '@parcha/pi-git-remote', '@parcha/pi-agent-learn']);
   await writeFile(join(root, 'packages/pi-durable-disk/NOTICE'), `${notice}\nThird-party notice kept after the repository's.\n`);
   await recordPackages(root);
   assert.equal((await preflight(root)).packages.length, releasePackages.length, 'a published package may append third-party notices to the root NOTICE');
@@ -403,6 +403,14 @@ test('lifting pi-git-remote and pi-agent-learn after pi-transport keeps the plan
   const order = ['pi-vision', 'pi-transport', 'pi-git-remote', 'pi-agent-learn'];
   assert.ok(order.every(directory => at(directory) >= 0), `all four are in the plan: ${names.join(', ')}`);
   assert.deepEqual([...order].sort((x, y) => at(x) - at(y)), order, 'in map order, by index');
+}));
+
+test('the agent-home package is published: listed, not held, a release manifest at the workspace version, and in the plan after pi-transport', () => fixture(async root => {
+  assert.ok(releasePackages.includes('pi-durable-agent') && !heldPackages.includes('pi-durable-agent'), 'published from this checkout');
+  const workspace = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  checkManifest(repoManifest('pi-durable-agent'), 'pi-durable-agent', workspace.version, workspace.license);
+  const plan = (await preflight(root)).packages.map(pkg => pkg.name);
+  assert.ok(plan.indexOf('@parcha/pi-transport') >= 0 && plan.indexOf('@parcha/pi-durable-agent') > plan.indexOf('@parcha/pi-transport'), 'in the plan, after pi-transport, the package before it in the map');
 }));
 
 test('a release is refused while fragments remain or the changelog lacks the version', () => fixture(async root => {

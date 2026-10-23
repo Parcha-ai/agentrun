@@ -15,7 +15,7 @@ import { validateRecording } from '../scripts/recording/validate.mjs';
 import { costLabel, countersOf, counterFold } from '../apps/viewer/src/counters.ts';
 import { parseLines, validate as viewerValidate } from '../apps/viewer/src/format.ts';
 import { transportPanel } from '../apps/viewer/src/transport.ts';
-import { localBoxes, run } from './reference-demo-helpers.mjs';
+import { FIXTURE, localBoxes, run } from './reference-demo-helpers.mjs';
 
 const transport = (recording) => readEvents(recording).filter((line) => line.source === 'transport' && line.channel === 'live');
 const receipts = (recording) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === 'box.receipt').map((line) => line.data);
@@ -198,6 +198,391 @@ test('a box still open when the result hook throws gets its receipt all the same
   t.after(() => endLeft(result.dir, ids, 'box-2'));
   const kept = receipts(recording);
   assert.deepEqual(kept.map((receipt) => [receipt.box, receipt.to === null, receipt.seconds === null]), [['box-1', false, false], ['box-2', true, true]]);
+});
+
+// ---- H1: one labeller for a place's host boxes and the tools' boxes ---------------------------------------------------------------------------------
+// A place that hands its run's process the host box it started (HOST_BOX) and lets the supervisor read the run's files (readRunFile and listRunFiles, disk's K8 shape) shares
+// one numbering with the tools' boxes: the process claims the host box's label first, and the supervisor reads it back itself. Without those reads, providers beside the place
+// are refused; with them (H8) the refusal lifts.
+
+const { boxLedger: hostLedger, parseHostBox } = await import('../packages/harness/dist/boxes.js');
+
+test('a place that reports host boxes with no run-file reads, in a run with no providers, is the run\'s only labeller: its home box is box-1, with its receipt', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, {}, ['--json'], { DEMO_WITH_PLACE: 'reporting' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(receipts(recording).map((line) => [line.box, line.provider, line.kind, line.to]), [['box-1', 'home', 'host', null]]);
+});
+
+test('(3) a place with no run-file reads numbers its own boxes, so no HOST_BOX is ever claimed under it: one it hands over anyway refuses the process (two labellers), and no place label is written', { timeout: 300_000 }, async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-handing-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const dir = join(own, 'run');
+  const outcome = await run(t, {}, ['--json', '--dir', dir], { DEMO_WITH_PLACE: 'handing' }).then((done) => JSON.stringify(done.result.processes.at(-1)), (error) => String(error.message));
+  assert.match(outcome, /HOST_BOX was handed over, but this run's supervisor cannot read the run's labels/);
+  assert.deepEqual(Object.values(readIds(join(dir, 'box-ids.internal'))).filter((entry) => entry.owner === 'place'), [], 'no host box label was claimed');
+});
+
+test('FAIL CLOSED, no members: the same place beside providers is refused before the run: the lifted refusal needs the run-file reads', async (t) => {
+  await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'reporting' }), /readRunFile/);
+});
+
+test('H8: one run, two labellers lifted into one: the place\'s home box and the tools\' two boxes are box-1, box-2 and box-3 run-wide, each with one receipt, and the viewer\'s format check gives no note', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'labelled' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  const ids = readIds(join(result.dir, 'box-ids.internal'));
+  assert.deepEqual(Object.entries(ids).map(([label, entry]) => [label, entry.owner, entry.provider]), [['box-1', 'place', 'home'], ['box-2', 'tools', 'alpha'], ['box-3', 'tools', 'beta']]);
+  assert.deepEqual(answered(result.dir), { alpha: 'box-2', beta: 'box-3' });
+  assert.deepEqual(receipts(recording).map((receipt) => [receipt.box, receipt.provider]).sort(), [['box-1', 'home'], ['box-2', 'alpha'], ['box-3', 'beta']], 'one receipt each, by the one numbering');
+  const lines = parseLines(readFileSync(join(recording, 'events.jsonl'), 'utf8'));
+  const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
+  const blobs = new Set((existsSync(join(recording, 'blobs')) ? readdirSync(join(recording, 'blobs')) : []).map((name) => name.split('.')[0]));
+  assert.deepEqual(viewerValidate(manifest, lines, blobs), []);
+});
+
+test('H8 on the disk package\'s localPlace: demo() takes tool boxes beside a disk place of its own (each process pi-durable-disk run --app on the run\'s directory, the place\'s own run-file reads, no live disk): the tools\' two boxes are box-1 and box-2, one receipt each, and the viewer\'s format check gives no note', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'disk-local' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  const ids = readIds(join(result.dir, 'box-ids.internal'));
+  assert.deepEqual(Object.entries(ids).map(([label, entry]) => [label, entry.owner, entry.provider]), [['box-1', 'tools', 'alpha'], ['box-2', 'tools', 'beta']]);
+  assert.deepEqual(answered(result.dir), { alpha: 'box-1', beta: 'box-2' });
+  assert.deepEqual(receipts(recording).map((receipt) => [receipt.box, receipt.provider]).sort(), [['box-1', 'alpha'], ['box-2', 'beta']], 'one receipt each');
+  const lines = parseLines(readFileSync(join(recording, 'events.jsonl'), 'utf8'));
+  const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
+  const blobs = new Set((existsSync(join(recording, 'blobs')) ? readdirSync(join(recording, 'blobs')) : []).map((name) => name.split('.')[0]));
+  assert.deepEqual(viewerValidate(manifest, lines, blobs), []);
+});
+
+test('a host box\'s label is claimed by the run\'s process: the same again in the same supervisor life, refused in another or on another provider, and a malformed identity is refused', async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-host-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const dir = join(own, 'ids');
+  const from = new Date().toISOString();
+  assert.equal(hostLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-a' }, from), 'box-1');
+  assert.equal(hostLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-a' }, from), 'box-1', 'a process restarted in the same supervisor life gets the same label');
+  assert.throws(() => hostLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-b' }, from), /restarted/, 'another supervisor life would renumber: refused');
+  assert.throws(() => hostLedger({ dir }).claimHost({ provider: 'away', key: '0', run: 'life-a' }, from), /box-1 on home, not on away/, 'one key on another provider is not the same box: refused');
+  assert.equal(hostLedger({ dir }).claimHost({ provider: 'home', key: '1', run: 'life-a' }, from), 'box-2');
+  for (const bad of ['not json', '{}', '{"provider":"home","key":"x","run":"a"}', '{"provider":"","key":"0","run":"a"}', '{"provider":"home","key":"0"}']) assert.throws(() => parseHostBox(bad), /HOST_BOX/, bad);
+});
+
+test('(A) a host box key is claimed exclusively, before its label: a key another supervisor life claimed first refuses this one even before that life\'s label has landed, so two lives starting together never both label one box', async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-key-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const dir = join(own, 'ids');
+  const from = new Date().toISOString();
+  // Life b won key 0 a moment ago: its key file is there, its box-N label not yet (the window two lives starting together race in).
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'host-0.json'), JSON.stringify({ provider: 'home', key: '0', run: 'life-b' }));
+  assert.throws(() => hostLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-a' }, from), /restarted|another supervisor life/);
+  assert.deepEqual(Object.keys(readIds(dir)), [], 'life a claimed no label for that box');
+  // Life b's own process (restarted) gets its key and a label.
+  assert.equal(hostLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-b' }, from), 'box-1');
+});
+
+test('(A) a FORCED race: two processes of two supervisor lives claim host key 0 at one instant, 20 rounds: each round keeps exactly one claim, refuses the other, and leaves one key file and one place label', { timeout: 120_000 }, async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-race-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const { spawn } = await import('node:child_process');
+  const { readdirSync: list, writeFileSync } = await import('node:fs');
+  const boxes = new URL('../packages/harness/dist/boxes.js', import.meta.url).href;
+  // Each process spins at a barrier (a file that does not exist yet), then claims at once.
+  const worker = "const { boxLedger } = await import(process.argv[1]); const [dir, go, run] = process.argv.slice(2); const { existsSync } = await import('node:fs'); while (!existsSync(go)) {} try { console.log(JSON.stringify({ label: boxLedger({ dir }).claimHost({ provider: 'home', key: '0', run }, new Date().toISOString()) })); } catch (error) { console.log(JSON.stringify({ refused: String(error.message) })); }";
+  for (let round = 0; round < 20; round += 1) {
+    const dir = join(own, `ids-${round}`);
+    const go = join(own, `go-${round}`);
+    const claim = (life) => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e', worker, boxes, dir, go, life], { stdio: ['ignore', 'pipe', 'inherit'] });
+      let out = '';
+      child.stdout.on('data', (chunk) => { out += chunk; });
+      child.on('error', reject);
+      child.on('close', () => resolve(JSON.parse(out)));
+    });
+    const both = [claim('life-a'), claim('life-b')];
+    await new Promise((resolve) => { setTimeout(resolve, 200); });
+    writeFileSync(go, '');
+    const results = await Promise.all(both);
+    assert.equal(results.filter((result) => result.label).length, 1, `round ${round}: one claim kept (${JSON.stringify(results)})`);
+    assert.match(results.find((result) => result.refused)?.refused ?? '', /another supervisor life/, `round ${round}: the other refused`);
+    assert.deepEqual(list(dir).filter((name) => name.startsWith('host-')), ['host-0.json']);
+    assert.equal(Object.values(readIds(dir)).filter((entry) => entry.owner === 'place').length, 1, `round ${round}: one place label`);
+  }
+});
+
+test('(B) the supervisor reads only ITS life\'s label for a host box: a previous life\'s entry in a reused ids directory is no label, so a box this life never claimed is still refused at the final read', async () => {
+  const { hostLabelIn } = await import('../packages/harness/dist/boxes.js');
+  const entry = (run) => new TextEncoder().encode(JSON.stringify({ provider: 'home', owner: 'place', key: '0', run, kind: 'host' }));
+  const files = { listRunFiles: async () => ['box-1.json'], readRunFile: async () => entry('life-old') };
+  assert.equal(await hostLabelIn(files, 'box-ids.internal', { provider: 'home', key: '0', run: 'life-new' }), undefined, 'another life\'s label is not this box\'s');
+  assert.equal(await hostLabelIn(files, 'box-ids.internal', { provider: 'home', key: '0', run: 'life-old' }), 'box-1');
+});
+
+test('a won label is durable before it is used: after the winning link(2), in claimKey() and in claim(), the ids directory is fsynced, so a crash that keeps a synced line naming box-N never loses box-N.json (a fix: the next claim would take box-N again)', async (t) => {
+  const fs = (await import('node:fs')).default;
+  const { syncBuiltinESMExports } = await import('node:module');
+  const tmp = await mkdtemp(join(tmpdir(), 'box-ids-durable-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'box-ids.internal');
+  // The ledger's own calls, in order: each link(2) into the directory, and each fsync of the directory itself (a file's fsync is not one).
+  const events = [];
+  const opened = new Map();
+  const real = { openSync: fs.openSync, fsyncSync: fs.fsyncSync, linkSync: fs.linkSync };
+  fs.openSync = (path, ...rest) => { const fd = real.openSync(path, ...rest); opened.set(fd, String(path)); return fd; };
+  fs.fsyncSync = (fd) => { if (opened.get(fd) === dir) events.push('fsync the directory'); return real.fsyncSync(fd); };
+  fs.linkSync = (from, to) => { real.linkSync(from, to); if (!String(to).includes('.probe-')) events.push(`link ${String(to).slice(dir.length + 1)}`); };
+  syncBuiltinESMExports();
+  t.after(() => { Object.assign(fs, real); syncBuiltinESMExports(); });
+  const ledger = hostLedger({ dir });
+  events.push(`use ${ledger.claimHost({ provider: 'home', key: '0', run: 'life-1' }, new Date().toISOString())}`);
+  events.push(`use ${ledger.label('alpha', 'alpha-1')}`);
+  assert.deepEqual(events, [
+    'link host-0.json', 'fsync the directory',
+    'link box-1.json', 'fsync the directory', 'use box-1',
+    'link box-2.json', 'fsync the directory', 'use box-2',
+  ]);
+});
+
+test('a label whose directory entry cannot be made durable is never used: a failed fsync of the ids directory refuses the claim, by name, in claim() and in claimKey()', async (t) => {
+  const fs = (await import('node:fs')).default;
+  const { syncBuiltinESMExports } = await import('node:module');
+  const tmp = await mkdtemp(join(tmpdir(), 'box-ids-durable-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'box-ids.internal');
+  const opened = new Map();
+  const real = { openSync: fs.openSync, fsyncSync: fs.fsyncSync };
+  fs.openSync = (path, ...rest) => { const fd = real.openSync(path, ...rest); opened.set(fd, String(path)); return fd; };
+  fs.fsyncSync = (fd) => { if (/ids\.internal$/.test(opened.get(fd) ?? '')) throw Object.assign(new Error('EIO: i/o error, fsync'), { code: 'EIO' }); return real.fsyncSync(fd); };
+  syncBuiltinESMExports();
+  t.after(() => { Object.assign(fs, real); syncBuiltinESMExports(); });
+  assert.throws(() => hostLedger({ dir }).label('alpha', 'alpha-1'), /cannot be made durable \(EIO/);
+  // A host box's key that cannot be made durable refuses before its label is even linked.
+  const hostDir = join(tmp, 'host-ids.internal');
+  assert.throws(() => hostLedger({ dir: hostDir }).claimHost({ provider: 'home', key: '0', run: 'life-1' }, new Date().toISOString()), /cannot be made durable \(EIO/);
+  assert.deepEqual(readdirSync(hostDir).filter((name) => /^box-\d+\.json$/.test(name)), [], 'no label linked after a key that cannot be made durable');
+});
+
+test('a label\'s new receipt state is durable before it is relied on: after the rename(2) of box-N.json, in the ledger\'s open and the supervisor\'s mark, the ids directory is fsynced, so a crash never brings back a state that says a written receipt is unwritten (a fix: it would be written twice)', async (t) => {
+  const fs = (await import('node:fs')).default;
+  const { syncBuiltinESMExports } = await import('node:module');
+  const { markReceiptWritten } = await import('../packages/harness/dist/boxes.js');
+  const tmp = await mkdtemp(join(tmpdir(), 'box-ids-durable-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'box-ids.internal');
+  const ledger = hostLedger({ dir });
+  const label = ledger.label('alpha', 'alpha-1');
+  const events = [];
+  const opened = new Map();
+  const real = { openSync: fs.openSync, fsyncSync: fs.fsyncSync, renameSync: fs.renameSync };
+  fs.openSync = (path, ...rest) => { const fd = real.openSync(path, ...rest); opened.set(fd, String(path)); return fd; };
+  fs.fsyncSync = (fd) => { if (opened.get(fd) === dir) events.push('fsync the directory'); return real.fsyncSync(fd); };
+  fs.renameSync = (from, to) => { real.renameSync(from, to); events.push(`rename to ${String(to).slice(dir.length + 1)}`); };
+  syncBuiltinESMExports();
+  t.after(() => { Object.assign(fs, real); syncBuiltinESMExports(); });
+  ledger.open(label, { provider: 'alpha', kind: 'container', from: new Date().toISOString() });
+  events.push('rely on open');
+  const entry = JSON.parse(readFileSync(join(dir, `${label}.json`), 'utf8'));
+  markReceiptWritten(dir, label, entry);
+  events.push('rely on written');
+  assert.deepEqual(events, ['rename to box-1.json', 'fsync the directory', 'rely on open', 'rename to box-1.json', 'fsync the directory', 'rely on written']);
+  // A directory that cannot be fsynced refuses the new state by name.
+  fs.fsyncSync = (fd) => { if (opened.get(fd) === dir) throw Object.assign(new Error('EIO: i/o error, fsync'), { code: 'EIO' }); return real.fsyncSync(fd); };
+  syncBuiltinESMExports();
+  assert.throws(() => markReceiptWritten(dir, label, entry), /cannot be made durable \(EIO/);
+});
+
+test('a NEW ids directory is durable in its parent before the first label: when the ledger makes box-ids.internal/ (and any missing ancestor), each level it made is fsynced in its parent before the first claim\'s link', async (t) => {
+  const fs = (await import('node:fs')).default;
+  const { syncBuiltinESMExports } = await import('node:module');
+  const tmp = await mkdtemp(join(tmpdir(), 'box-ids-durable-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'run', 'box-ids.internal');
+  const events = [];
+  const opened = new Map();
+  const real = { openSync: fs.openSync, fsyncSync: fs.fsyncSync, linkSync: fs.linkSync, mkdirSync: fs.mkdirSync };
+  const named = (path) => (path === tmp ? 'the run\'s parent' : path === join(tmp, 'run') ? 'run' : path === dir ? 'box-ids.internal' : undefined);
+  fs.openSync = (path, ...rest) => { const fd = real.openSync(path, ...rest); opened.set(fd, String(path)); return fd; };
+  fs.fsyncSync = (fd) => { const name = named(opened.get(fd)); if (name) events.push(`fsync ${name}`); return real.fsyncSync(fd); };
+  fs.mkdirSync = (path, options) => { const made = real.mkdirSync(path, options); if (named(String(path))) events.push(`mkdir ${named(String(path))}`); return made; };
+  fs.linkSync = (from, to) => { real.linkSync(from, to); if (!String(to).includes('.probe-')) events.push(`link ${String(to).slice(dir.length + 1)}`); };
+  syncBuiltinESMExports();
+  t.after(() => { Object.assign(fs, real); syncBuiltinESMExports(); });
+  events.push(`use ${hostLedger({ dir }).label('alpha', 'alpha-1')}`);
+  // run/ and box-ids.internal/ were both made: each is durable in its parent (the run's parent, then run/) before the link.
+  assert.deepEqual(events, ['mkdir box-ids.internal', 'fsync the run\'s parent', 'fsync run', 'link box-1.json', 'fsync box-ids.internal', 'use box-1']);
+});
+
+test('a NEW ids directory whose parent could not be fsynced stays pending: the first claim is refused by name, and the retry (its mkdir finds the levels made) fsyncs each made level\'s parent BEFORE its first link', async (t) => {
+  const fs = (await import('node:fs')).default;
+  const { syncBuiltinESMExports } = await import('node:module');
+  const tmp = await mkdtemp(join(tmpdir(), 'box-ids-durable-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'run', 'box-ids.internal');
+  const events = [];
+  const opened = new Map();
+  let failParentOnce = true;
+  const real = { openSync: fs.openSync, fsyncSync: fs.fsyncSync, linkSync: fs.linkSync };
+  const named = (path) => (path === tmp ? 'the run\'s parent' : path === join(tmp, 'run') ? 'run' : path === dir ? 'box-ids.internal' : undefined);
+  fs.openSync = (path, ...rest) => { const fd = real.openSync(path, ...rest); opened.set(fd, String(path)); return fd; };
+  fs.fsyncSync = (fd) => {
+    const name = named(opened.get(fd));
+    if (name === 'the run\'s parent' && failParentOnce) { failParentOnce = false; throw Object.assign(new Error('EIO: i/o error, fsync'), { code: 'EIO' }); }
+    if (name) events.push(`fsync ${name}`);
+    return real.fsyncSync(fd);
+  };
+  fs.linkSync = (from, to) => { real.linkSync(from, to); if (!String(to).includes('.probe-')) events.push(`link ${String(to).slice(dir.length + 1)}`); };
+  syncBuiltinESMExports();
+  t.after(() => { Object.assign(fs, real); syncBuiltinESMExports(); });
+  const ledger = hostLedger({ dir });
+  assert.throws(() => ledger.label('alpha', 'alpha-1'), /cannot be made durable \(EIO/, 'the first claim is refused: run/ is not yet durable in its parent');
+  assert.equal(existsSync(join(dir, 'box-1.json')), false, 'nothing was linked');
+  events.length = 0;
+  events.push(`use ${ledger.label('alpha', 'alpha-1')}`);
+  // The retry's mkdir found both levels made; both are still pending, so both parents are fsynced before the link.
+  assert.deepEqual(events, ['fsync the run\'s parent', 'fsync run', 'link box-1.json', 'fsync box-ids.internal', 'use box-1']);
+});
+
+/** The ids directory's fsyncs, spied on: `fail(n)` says whether the nth fsync OF THE DIRECTORY (from 1, counted since the last `reset`) fails. */
+async function spyDirectoryFsync(t, dir) {
+  const fs = (await import('node:fs')).default;
+  const { syncBuiltinESMExports } = await import('node:module');
+  const spy = { events: [], seen: 0, fail: () => false, reset(fail) { this.seen = 0; this.fail = fail; } };
+  const opened = new Map();
+  const real = { openSync: fs.openSync, fsyncSync: fs.fsyncSync };
+  fs.openSync = (path, ...rest) => { const fd = real.openSync(path, ...rest); opened.set(fd, String(path)); return fd; };
+  fs.fsyncSync = (fd) => {
+    if (opened.get(fd) !== dir) return real.fsyncSync(fd);
+    spy.seen += 1;
+    if (spy.fail(spy.seen)) throw Object.assign(new Error('EIO: i/o error, fsync'), { code: 'EIO' });
+    spy.events.push('fsync the directory');
+    return real.fsyncSync(fd);
+  };
+  syncBuiltinESMExports();
+  t.after(() => { Object.assign(fs, real); syncBuiltinESMExports(); });
+  return spy;
+}
+
+const labelFiles = (dir) => readdirSync(dir).filter((name) => /^box-\d+\.json$/.test(name)).sort();
+
+test('REUSE (the tools\' label): a label refused because its directory could not be made durable is refused again on the retry that finds it, and once the fsync works the retry is made durable before its use', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'box-ids-durable-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'box-ids.internal');
+  const spy = await spyDirectoryFsync(t, dir);
+  const ledger = hostLedger({ dir });
+  spy.reset(() => true);
+  assert.throws(() => ledger.label('alpha', 'alpha-1'), /cannot be made durable/);
+  assert.deepEqual(labelFiles(dir), ['box-1.json'], 'the won file stays linked');
+  assert.throws(() => ledger.label('alpha', 'alpha-1'), /cannot be made durable/, 'the retry finds box-1 for alpha-1 and is refused too');
+  spy.reset(() => false);
+  spy.events.push(`use ${ledger.label('alpha', 'alpha-1')}`);
+  assert.deepEqual(spy.events, ['fsync the directory', 'use box-1']);
+});
+
+test('REUSE (the host key read back): a host key refused because its directory could not be made durable is refused again on the retry that reads it back, BEFORE any label is linked, and once the fsync works the retry is made durable before its use', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'box-ids-durable-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'box-ids.internal');
+  const spy = await spyDirectoryFsync(t, dir);
+  const ledger = hostLedger({ dir });
+  const host = { provider: 'home', key: '0', run: 'life-1' };
+  spy.reset(() => true);
+  assert.throws(() => ledger.claimHost(host, new Date().toISOString()), /cannot be made durable/);
+  assert.throws(() => ledger.claimHost(host, new Date().toISOString()), /cannot be made durable/, 'the retry reads host-0.json back and is refused');
+  assert.deepEqual(labelFiles(dir), [], 'refused at the key read back: no label was linked');
+  spy.reset(() => false);
+  spy.events.push(`use ${ledger.claimHost(host, new Date().toISOString())}`);
+  // The key read back is made durable, then the label is claimed and made durable, then used.
+  assert.deepEqual(spy.events, ['fsync the directory', 'fsync the directory', 'use box-1']);
+});
+
+test('REUSE (the host label): a restarted process of the same life that finds its host label is refused while the directory cannot be made durable, and once the fsync works it is made durable before its use', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'box-ids-durable-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'box-ids.internal');
+  const spy = await spyDirectoryFsync(t, dir);
+  const host = { provider: 'home', key: '0', run: 'life-1' };
+  assert.equal(hostLedger({ dir }).claimHost(host, new Date().toISOString()), 'box-1');
+  // The restart: its key read back is made durable (1st fsync); only the label reuse (2nd) fails.
+  spy.reset((n) => n === 2);
+  assert.throws(() => hostLedger({ dir }).claimHost(host, new Date().toISOString()), /cannot be made durable/, 'the host label reuse is made durable first');
+  spy.reset(() => false);
+  spy.events.length = 0;
+  spy.events.push(`use ${hostLedger({ dir }).claimHost(host, new Date().toISOString())}`);
+  assert.deepEqual(spy.events, ['fsync the directory', 'fsync the directory', 'use box-1']);
+});
+
+test('(C) HOST_BOX holds provider, key and run and nothing else: any other key (a box id, a credential) is refused by name, never carried silently, and no value is echoed', () => {
+  const secret = `sk-${'s'.repeat(12)}`;
+  assert.throws(() => parseHostBox(JSON.stringify({ provider: 'home', key: '0', run: 'a', id: 'sb-provider-box-id', token: secret })), (error) => {
+    assert.match(error.message, /HOST_BOX/);
+    assert.match(error.message, /\bid\b.*\btoken\b|\btoken\b.*\bid\b/);
+    assert.equal(error.message.includes(secret) || error.message.includes('sb-provider-box-id'), false, 'no value in the refusal');
+    return true;
+  });
+  assert.deepEqual(parseHostBox(JSON.stringify({ provider: 'home', key: '0', run: 'a' })), { provider: 'home', key: '0', run: 'a' });
+});
+
+test('FAIL CLOSED, a null: a host box the place started but no process claimed (every read answers null) refuses the recording at the final read: it is never finished without that box', { timeout: 300_000 }, async (t) => {
+  await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'unclaimed' }), /host box 0 on home has no label: its child never claimed it/);
+});
+
+test('FAIL CLOSED, a throw: a host box whose label the run-file reads cannot read refuses the recording at the final read too: a failed read is no label, never a recording without that box', { timeout: 300_000 }, async (t) => {
+  await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'unreadable' }), /host box 0 on home has no label: its label cannot be read \(the run files cannot be read here\)/);
+});
+
+test('a host box whose label read outlasts the supervisor\'s bound on the final read refuses the recording: a cut-off read is no label, never a recording without that box', { timeout: 300_000 }, async (t) => {
+  await assert.rejects(run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'slow' }), /host box 0 on home has no label: the final read did not finish reading it inside its bound/);
+});
+
+/** A run of the fixture with `env`, recorded (`--record`, as `run` does) or not: its result or its error. */
+async function plantedRun(t, env, record, argv) {
+  if (record) return run(t, {}, argv, env).then((done) => ({ result: done.result }), (error) => ({ error }));
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-demo-plain-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { writeFileSync } = await import('node:fs');
+  const file = join(tmp, 'demo.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference' }));
+  const before = { ...process.env };
+  Object.assign(process.env, { DEMO_SPEC: file, ...env });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in before)) delete process.env[name]; Object.assign(process.env, before); });
+  const { demo: fixtureDemo } = await import('@parcha/agentrun-harness');
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  return fixtureDemo({ ...options, argv: [...argv, '--dir', join(tmp, 'run')] }).then((result) => ({ result }), (error) => ({ error }));
+}
+
+const PLANTED_KEY = `sk-${'q'.repeat(8)}${'7'.repeat(26)}`;
+for (const record of [true, false]) {
+  test(`the final-read refusal names a failed process's own text with every credential-shaped line withheld, ${record ? 'with --record' : 'with no recording'}: a key the process printed to its stderr never reaches it, the rest of its text does`, { timeout: 300_000 }, async (t) => {
+    const refused = await plantedRun(t, { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'labelled', DEMO_STDERR_SECRET: PLANTED_KEY }, record, ['--json']);
+    assert.ok(refused.error, 'the run is refused');
+    assert.match(refused.error.message, /host box 0 on home has no label: its child never claimed it \(the run's last process did not complete/);
+    assert.equal(refused.error.message.includes(PLANTED_KEY), false, 'the key is not in the refusal');
+    assert.match(refused.error.message, /and a plain line after it/, 'the rest of the process\'s text is kept');
+  });
+}
+
+test('the final-read refusal redacts a value the run TRACKS (a declared key\'s value), with --record, though it has no credential shape: the recording\'s redaction applies there, not only the credential pass', { timeout: 300_000 }, async (t) => {
+  const tracked = `plainword${'x'.repeat(14)}`;
+  const spec = { keys: [{ env: 'DEMO_TRACKED_TOKEN', why: 'a value the run tracks', where: 'the test', required: false, for: 'live' }] };
+  const refused = await run(t, spec, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'labelled', DEMO_TRACKED_TOKEN: tracked, DEMO_STDERR_SECRET: tracked }).then(() => undefined, (error) => error);
+  assert.ok(refused, 'the run is refused');
+  assert.match(refused.message, /never claimed it \(the run's last process did not complete/);
+  assert.equal(refused.message.includes(tracked), false, 'the tracked value is not in the refusal');
+  assert.match(refused.message, /and a plain line after it/);
+});
+
+test('two supervisors on one run directory are two lives: the second, resuming the run, is refused at its host box\'s claim, never given the first one\'s label', { timeout: 300_000 }, async (t) => {
+  const own = await mkdtemp(join(tmpdir(), 'box-ids-lives-'));
+  t.after(() => rm(own, { recursive: true, force: true }));
+  const dir = join(own, 'run');
+  const first = await run(t, {}, ['--json', '--dir', dir], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'labelled' });
+  assert.equal(first.result.processes.at(-1).outcome.status, 'complete');
+  const life = readIds(join(dir, 'box-ids.internal'))['box-1'].run;
+  assert.match(life, /^[0-9a-f-]{36}$/, 'the first life\'s RUN_LABEL');
+  const second = await run(t, {}, ['--json', '--dir', dir], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'labelled' }).catch((error) => ({ error }));
+  const said = second.error ? String(second.error.message) : JSON.stringify(second.result.processes.at(-1));
+  assert.match(said, /restarted/, 'the second life is refused at its host box');
+  assert.equal(readIds(join(dir, 'box-ids.internal'))['box-1'].run, life, 'and box-1 is still the first life\'s');
 });
 
 // ---- the review of #833 ------------------------------------------------------------------------------------------------------------------------
