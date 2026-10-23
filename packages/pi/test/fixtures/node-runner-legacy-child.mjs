@@ -13,7 +13,7 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-work
 import { configure, createRegistry, defineExtension, defineTask, Harness, section } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { hostScope, NodeIndex } from '../../dist/durable/node.js';
-import { nodeRunner } from '../../dist/durable/node-runner.js';
+import { NodeDoc, nodeRunner } from '../../dist/durable/node-runner.js';
 import { RecordDoc, recordTool } from '../../dist/durable/record-tool.js';
 
 const [mode, file, counter] = process.argv.slice(2);
@@ -86,6 +86,6 @@ if (mode === 'legacy') {
     kind: 'decide', label: 'Verdict', executionPath: '/root/steps/0', system: ['Decide buy or pass.'], user: '{"claim":"x"}', schema: SCHEMA,
     step: { sessionId: SESSION, attempt: 0, earlierSessionIds: [] },
   });
-  say({ event: 'end', record, stored: (await harness.snapshot(RecordDoc, conversation, ctx)) ?? null });
+  say({ event: 'end', record, stored: (await harness.snapshot(RecordDoc, conversation, ctx)) ?? null, input: (await harness.snapshot(NodeDoc, conversation, ctx))?.input ?? null });
 }
 await harness.close(ctx);

@@ -16,6 +16,12 @@
       "index": 1
     }
   ],
+  "readmeInstall": {
+    "readme": "packages/pi-transport/README.md",
+    "heading": "A box",
+    "fence": "sh",
+    "index": 0
+  },
   "command": [
     "node",
     "box.mjs"

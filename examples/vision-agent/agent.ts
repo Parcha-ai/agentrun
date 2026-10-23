@@ -13,13 +13,13 @@ import type { Job } from '@parcha/agentrun-harness';
 const SKILLS = join(dirname(fileURLToPath(import.meta.resolve('@parcha/pi-vision'))), '..', 'skills');
 /** pi-vision's skills as the package ships them, each without its front matter, in name order. */
 export const skills = (): { name: string; text: string }[] => readdirSync(SKILLS, { withFileTypes: true })
-  .filter((entry) => entry.isDirectory() && existsSync(join(SKILLS, entry.name, 'SKILL.md'))).map((entry) => entry.name).sort()
+  .filter((entry) => entry.isDirectory() && existsSync(join(SKILLS, entry.name, 'SKILL.md'))).map((entry) => entry.name).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
   .map((name) => ({ name, text: readFileSync(join(SKILLS, name, 'SKILL.md'), 'utf8').replace(/^---[\s\S]*?---\n/, '') }));
 
 /** The report's shape, for a package whose skills do not yet include `report`. */
 const REPORT = `Write the report as \`report/index.html\`, one page with its pictures and clips beside it in \`report/\`: inline CSS, no script and no address outside the folder. The answer first, then one finding per point (its words, its picture or clip, its cites), then what you did not check. A cite is \`<a class="cite" href="../FILE#FRAGMENT" data-look="KEY">LABEL</a>\`: the file's own fragment, LABEL that number, KEY the look's key from its receipt (\`facts.key\`).`;
 
-export const INSTRUCTIONS = (skillList = skills()) => `Answer the user's question about the files in your workspace. The question is \`question\`; the files are \`files\`.
+export const instructionsOf = (skillList = skills()) => `Answer the user's question about the files in your workspace. The question is \`question\`; the files are \`files\`.
 
 You never see a picture or hear a sound yourself: you write code with the \`code\` tool. Its sandbox gives you \`tools.bash\` (a shell in your workspace, with ffmpeg, ffprobe, pdftoppm and pdftotext), \`vision.see\` (eyes that look at images, and at a video window with its sound when they take video), \`vision.judge\` (Jev: typed answers and boxes about images, cheap enough to ask of every frame or page) and \`vision.transcribe\` (what a recording says, word by word with its second). The skills below show how to use them for long videos, speech, finding a thing, checking a document, and the report: follow the ones the question needs, and combine them when it needs more than one.
 
@@ -61,14 +61,14 @@ export const workflowOf = (thinking: Thinking) => ({
   input: { schemaId: 'Input' },
   output: { schemaId: 'Answer', path: 'answer' },
   root: { node: 'chain', steps: [
-    { node: 'agent', label: 'vision-agent', out: 'Answer', as: 'answer', tools: ['code'], thinking, state: { question: '{question}', files: '{files}' }, instructions: INSTRUCTIONS() },
+    { node: 'agent', label: 'vision-agent', out: 'Answer', as: 'answer', tools: ['code'], thinking, state: { question: '{question}', files: '{files}' }, instructions: instructionsOf() },
   ] },
 } as const satisfies Workflow);
 export const workflow = workflowOf('medium');
 
 /** The flags that take a value: the host's `string` options (`demo.ts` in the harness declares them, and a test holds this list to it) and
  *  `--thinking`. The token after one is its value; every other flag is a switch and takes none. */
-const VALUE_FLAGS = new Set(['record', 'input', 'max-usd', 'cache', 'dir', 'provider', 'model', 'eyes-model', 'see-also', 'operator-kill', 'thinking']);
+const VALUE_FLAGS = new Set(['record', 'input', 'max-usd', 'cache', 'dir', 'box-ids', 'provider', 'model', 'eyes-model', 'see-also', 'operator-kill', 'thinking']);
 
 /** The positions of the arguments that are neither a flag nor a flag's value: the example folder among them. A folder after a switch
  *  (`--live examples/x`) is one; the token after `--max-usd` is not. */
@@ -134,6 +134,20 @@ export function thinkingOf(argv: readonly string[], env: NodeJS.ProcessEnv = pro
   const named = runInput(argv, env)?.thinking;
   if (named === undefined) return 'medium';
   return (THINKING as readonly unknown[]).includes(named) ? (named as Thinking) : undefined;
+}
+
+/** The command line's refusal of an input that names a file the run has no way to get, said before anything starts: a file is a bare
+ *  name, the example folder's own or, on fakes, one in DEMO_FILES_DIR; a run's child is the supervisor's, and the supervisor has checked. */
+export function filesRefusal(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (argv.includes('--child')) return undefined;
+  const input = runInput(argv, env);
+  const named = Array.isArray(input?.files) ? input.files.filter((file): file is string => typeof file === 'string') : [];
+  const example = typeof input?.example === 'string' ? (() => { try { return exampleAt(input.example as string); } catch { return undefined; } })() : undefined;
+  const live = argv.includes('--live');
+  const extra = !live && env.DEMO_FILES_DIR && existsSync(env.DEMO_FILES_DIR) ? readdirSync(env.DEMO_FILES_DIR) : [];
+  const have = new Set([...(example?.items.map(fileName) ?? []), ...extra]);
+  const missing = named.filter((file) => !have.has(file));
+  return missing.length ? `the input names ${missing.join(', ')}, which the run does not have: files are bare names, read from the example folder${live ? '' : ' or, on fakes, from DEMO_FILES_DIR'}.` : undefined;
 }
 
 /** The command line's refusal of a thinking level that is not low, medium or high, or that has no inline input to go in (the flag

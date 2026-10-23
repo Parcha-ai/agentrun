@@ -42,16 +42,18 @@ first release that runs there, whatever its Since says.
 
 The examples on `main` are written against `main`, and what npm has is the last published beta (`npm view
 @parcha/pi-durable-disk dist-tags`). The **Since** column is the first published version that has what the example imports:
-older than that, it stops at its first import. To run one from an install, in an empty directory on Linux, or on macOS from
-0.1.0-beta.14, with Node 22.19 or later:
+older than that, it stops at its first import. To run one from an install, in an empty directory on Linux or macOS, from
+0.1.0-beta.14 (0.1.0-beta.13's peers stop below pi 1.3, the version the line pins), with Node 22.19 or later:
 
 ```sh
 npm init -y && npm pkg set type=module
-npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
+npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 mkdir audit-across-crashes && cd audit-across-crashes
 # copy the example's files in (main.ts and any helper beside it, not its README or its test), from a checkout or from GitHub
 node main.ts
 ```
+
+pi 1.4 is not supported yet; a later release widens the range.
 
 `npm pkg set type=module` is what lets Node read the example's `import` lines without reparsing every file and printing a
 warning on each start. Run it from the directory that holds `node_modules`, or from one inside it. An example whose Since is

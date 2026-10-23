@@ -4,7 +4,8 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { EXPORTABLE_KINDS, projectForExport, readAgentHome, SECRET_KINDS } from "../dist/index.js";
-import { DEFINED_KINDS } from "../dist/kinds.js";
+import { DEFINED_KINDS, VaultDoc } from "../dist/kinds.js";
+import { openStore, readFamily } from "../dist/store.js";
 import { buildSignedInHome, checkExportClean, FIXTURE_HOST, PRACTICE_ORIGIN, SIGN_IN_MARKER, signedInHomeSkip } from "./fixtures/signed-in-home.mjs";
 import { scratch } from "./support.mjs";
 
@@ -49,10 +50,12 @@ test("the signed-in fixture holds its marker in both stores, and no projection o
   const state = await readAgentHome(home);
   assert.deepEqual(state.profiles.practice, { provider: "browserbase", ref: SIGN_IN_MARKER, state: "ready", allowedOrigins: [PRACTICE_ORIGIN] });
   const documents = {
-    "agent.identity": [state.identity], "agent.definition": [state.definition], "agent.source": state.source ? [state.source] : [], "agent.skills": Object.values(state.skills),
+    "agent.identity": [state.identity], "agent.definition": [state.definition], "agent.source": state.source ? [state.source] : [], "agent.skills": Object.values(state.skills), "agent.prompts": Object.values(state.prompts),
     "agent.aliases": Object.values(state.aliases), "agent.bindings": Object.values(state.bindings), "agent.runs": Object.values(state.runs),
     "agent.leases": Object.values(state.leases), "browser.profiles": Object.values(state.profiles),
+    "agent.vault": await (async () => { const store = await openStore(agentStore); try { return Object.values(await readFamily(store, VaultDoc)); } finally { await store.close(); } })(),
   };
+  assert.equal(documents["agent.vault"].length, 1, "the fixture saved a session");
   assert.deepEqual(Object.keys(documents).sort(), [...DEFINED_KINDS].sort(), "every kind is projected");
   const exported = Object.entries(documents).flatMap(([kind, values]) => values.map((value) => projectForExport(kind, value))).filter((value) => value !== undefined);
   const text = JSON.stringify(exported);

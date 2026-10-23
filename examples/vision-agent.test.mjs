@@ -12,7 +12,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { exampleAt, fileName, inputOf, INSTRUCTIONS, job, jobOf, skills, thinkingOf, thinkingRefusal } from './vision-agent/agent.ts';
+import { exampleAt, fileName, inputOf, instructionsOf, job, jobOf, skills, thinkingOf, thinkingRefusal } from './vision-agent/agent.ts';
 import { argvFor, options } from './vision-agent/run.ts';
 import { scriptFor } from './vision-agent/fakes.ts';
 import { jevKeyOf, jevOptionsOf, liveParts, missingKeys, namedModels, preflight } from './vision-agent/live.ts';
@@ -86,7 +86,7 @@ test('each example is a question, its files with their sources and checks, and a
 });
 
 test('the agent\'s instructions carry the question\'s place, the functions, the citation rule, the report, and every skill the package ships', () => {
-  const text = INSTRUCTIONS();
+  const text = instructionsOf();
   for (const word of ['`question`', '`files`', 'vision.see', 'vision.judge', 'vision.transcribe', '#page=N', '#t=', 'report/']) assert.ok(text.includes(word), word);
   for (const skill of skills()) assert.ok(text.includes(`The ${skill.name} skill:`) && text.includes(skill.text.slice(0, 200)), skill.name);
   assert.ok(skills().some((skill) => skill.name === 'look') && skills().some((skill) => skill.name === 'find'));
@@ -280,11 +280,11 @@ test('the report is report/index.html everywhere: the scripted lead writes and r
   assert.match(script, /report: "report\/index\.html" \}/);
   assert.match(script, /in report\/index\.html\./);
   assert.doesNotMatch(script, /report\.html/);
-  const withSkill = INSTRUCTIONS(skills());
+  const withSkill = instructionsOf(skills());
   assert.ok(skills().some((skill) => skill.name === 'report'), 'the package ships the report skill');
   assert.match(withSkill, /report\/index\.html/, 'the report skill names its entry');
   assert.doesNotMatch(withSkill, /report\.html/);
-  const without = INSTRUCTIONS([]);
+  const without = instructionsOf([]);
   assert.match(without, /Write the report as `report\/index\.html`/);
   assert.match(without, /\(`report\/index\.html`\)/);
   assert.doesNotMatch(without, /report\.html/);
@@ -497,6 +497,40 @@ test('a folder that cannot be placed is refused before anything starts, never ig
   assert.match(ran.stderr, /^one example folder at a time: .*document-check, .*video-chapters\n$/);
   assert.doesNotMatch(ran.stderr, /\n.+\n/, 'one line');
   assert.doesNotMatch(`${ran.stdout}${ran.stderr}`, /cost:|recording:|run directory:|stopped:/);
+  assert.deepEqual(readdirSync(dir), [], 'nothing was written');
+  assert.equal(existsSync(record), false);
+});
+
+const INPUT_NAMING = (...files) => JSON.stringify({ question: 'x', files });
+
+test('an input that names a file the run does not have is refused, naming it, before anything starts', async (t) => {
+  const { filesRefusal } = await import('./vision-agent/agent.ts');
+  const dir = await scratch(t);
+  const refusal = (args, env = {}) => filesRefusal(argvFor(args), env);
+  const missing = /^the input names mydoc\.pdf, which the run does not have: files are bare names, read from the example folder or, on fakes, from DEMO_FILES_DIR\.$/;
+  assert.match(refusal(['--input', INPUT_NAMING('mydoc.pdf')]), missing, 'no example folder and no DEMO_FILES_DIR');
+  writeFileSync(join(dir, 'ok.pdf'), 'x');
+  assert.match(refusal(['--input', INPUT_NAMING('ok.pdf', 'mydoc.pdf')], { DEMO_FILES_DIR: dir }), missing, 'a DEMO_FILES_DIR that lacks it');
+  assert.match(refusal(['--input', INPUT_NAMING('a.pdf', 'b.pdf')]), /^the input names a\.pdf, b\.pdf, which the run does not have: /, 'every file that is missing');
+  assert.match(refusal(['--live', '--input', INPUT_NAMING('mydoc.pdf')], { DEMO_FILES_DIR: dir }), /^the input names mydoc\.pdf, which the run does not have: files are bare names, read from the example folder\.$/, 'a live run reads no DEMO_FILES_DIR');
+  assert.match(refusal(['--input', INPUT_NAMING('/tmp/mydoc.pdf')]), /^the input names \/tmp\/mydoc\.pdf, /, 'a path is no bare name');
+  writeFileSync(join(dir, 'mydoc.pdf'), 'x');
+  assert.equal(refusal(['--input', INPUT_NAMING('mydoc.pdf')], { DEMO_FILES_DIR: dir }), undefined, 'a file in DEMO_FILES_DIR is the run\'s');
+  assert.equal(refusal(['examples/document-check'], {}), undefined, 'an example\'s own files are the run\'s');
+  assert.equal(refusal(['--live', 'examples/document-check'], {}), undefined);
+  assert.equal(refusal(['--input', INPUT_NAMING()], {}), undefined, 'an input with no files');
+  assert.equal(refusal(['--input', JSON.stringify({ question: 'x' })], {}), undefined, 'an input that names none');
+  assert.equal(refusal(['--input', 'q.json'], {}), undefined, 'an input it cannot read inline is not its to judge');
+  assert.equal(filesRefusal(['--child', '--live'], { INPUT: INPUT_NAMING('mydoc.pdf') }), undefined, 'the supervisor has checked');
+});
+
+test('the command line refuses an input that names a missing file in one line and leaves nothing: no model_error at the end of a run', async (t) => {
+  const dir = await scratch(t);
+  const record = join(dir, 'recording');
+  const ran = command(dir, ['--input', INPUT_NAMING('mydoc.pdf'), '--record', record], {});
+  assert.notEqual(ran.status, 0);
+  assert.match(ran.stderr, /^the input names mydoc\.pdf, which the run does not have: files are bare names, read from the example folder or, on fakes, from DEMO_FILES_DIR\.\n$/);
+  assert.doesNotMatch(`${ran.stdout}${ran.stderr}`, /model_error|cost:|recording:|run directory:|stopped:/);
   assert.deepEqual(readdirSync(dir), [], 'nothing was written');
   assert.equal(existsSync(record), false);
 });

@@ -348,6 +348,16 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 	};
 	const made = await provider.create(options.spec, context);
 	if (!made.ok) return err(new MoveError("prepare", `could not make the place's box: ${made.error.message}`));
+	// A home is where the runner lives: a box that keeps no program running between calls can never be one.
+	if (made.value.facts().liveProcesses === false) {
+		await made.value.destroy(context);
+		return err(
+			new MoveError(
+				"no_live_processes",
+				`a ${provider.name} box keeps no program running between calls, so the runner cannot live in it: use it for tools, never as the home`,
+			),
+		);
+	}
 	announce(made.value);
 	const host = options.host ?? "host";
 	const boxes: Box[] = [made.value];
@@ -809,6 +819,13 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 				const made = await provider.create(options.spec, context);
 				if (!made.ok)
 					throw new MoveError("prepare", `could not make a box in place of the lost one: ${made.error.message}`);
+				if (made.value.facts().liveProcesses === false) {
+					await made.value.destroy(context);
+					throw new MoveError(
+						"no_live_processes",
+						`a ${provider.name} box keeps no program running between calls`,
+					);
+				}
 				next = made.value;
 				boxes.push(next);
 				announce(next);

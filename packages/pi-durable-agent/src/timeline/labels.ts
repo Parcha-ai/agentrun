@@ -66,6 +66,10 @@ registerLabel("web_fetch", (a) => `Fetched ${where(str(a.url) ?? "a page")}`, {
   many: (n) => `Fetched ${n} pages`,
   subject: (input) => (input ? where(input) : undefined),
 });
+registerLabel("web_search", (a) => {
+  const query = str(a.query);
+  return query ? `Searched the web for "${cut(scrubUrls(query), 60)}"` : "Searched the web";
+}, { many: (n) => `Searched the web ${n} times`, subject: (input) => (input ? `"${cut(input, 40)}"` : undefined) });
 registerLabel(
   "browser_read",
   (_a, result) => {
@@ -83,7 +87,7 @@ registerLabel(
     if (goto) return `Opened ${where(goto)}`;
     const sent = obj(result?.details)?.sent;
     const requests = Array.isArray(sent)
-      ? sent.flatMap((request) => { const r = obj(request); return str(r?.method) && str(r?.url) ? `${r!.method} ${where(r!.url as string)}` : []; })
+      ? sent.flatMap((request) => { const r = obj(request); const [method, url] = [str(r?.method), str(r?.url)]; return method && url ? `${method} ${where(url)}` : []; })
       : [];
     return requests.length ? `Acted on the page (${requests.length} request${requests.length === 1 ? "" : "s"} sent: ${list(requests)})` : "Acted on the page";
   },

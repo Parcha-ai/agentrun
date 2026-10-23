@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.1.0-beta.23 (2026-10-22)
+
+- The README's install lines for the pi packages name `@1.3.0` (`@earendil-works/pi-ai`, `pi-codemode`, and the adapter's peers `pi-durable` and `chord`), and say pi 1.4 is not supported yet: the peers stop below 1.4.0, so an unpinned `npm install @earendil-works/pi-durable @earendil-works/chord` now ends in ERESOLVE. `pi install npm:@parcha/pi-vision@beta` works with pi 1.3 and 1.4.
+
+## 0.1.0-beta.21 (2026-10-21)
+
+- The report skill holds the summary to its findings: each sentence of the summary restates a finding from the evidence below it with no stronger word, so when a finding says most, part or all but one place the summary says the same, and "none", "all" or "gone" appear only where a finding says so. A caption says only what its own picture shows, in the same measure: a box that holds part water and part land is described that way, never as "completely filled" or "all".
+- The README's `pi install` line names the `beta` tag, as its Status section says to install the package, and says what the install adds to pi: the five skills (`find`, `look`, `report`, `transcribe`, `verify`) and no extension or tool.
+- The README follows a reader who arrives from npm: "Try it" says the demos live in the repository and gives the `git clone` line and that the build takes a few minutes, the run's printed report path is the file to open, the example list is all eight (`lake-mead` and `market-street` were missing, and `lake-mead` now commits a map key and an elevation record beside its images), and the code-mode excerpt names `@earendil-works/pi-codemode`, which it imports, as a package to install.
+
 ## 0.1.0-beta.19 (2026-10-20)
 
 - The `look` skill teaches a series of images of one scene over time: each place the question asks about is its own small box, never a region spanning several named places; a box that answers where something changed marks the change itself, as tight as that area, never the whole place or what did not change; each place's dates are read in order on its own crop, never bisected (a place that dries and refills hides its first change from a bisection) and never inferred from a whole-scene average; a place is dry or gone only when its crop shows none of it, as the eyes say and Jev confirms with a typed question for each crop and date, never from a pixel mask or threshold alone; and the place names come from the run's own files.

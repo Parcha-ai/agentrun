@@ -20,6 +20,9 @@ export class BrowserFailureError extends Error {
   constructor(readonly failure: BrowserFailure) { super(failure.message); }
 }
 
+/** A refusal, thrown: nothing was tried, and the same call would be refused again. */
+export const refusedError = (message: string): BrowserFailureError => new BrowserFailureError(browserFailure("refused", message));
+
 /** `verified: true` raises the run's Verified policy for one session; false or absent keeps the policy, which nothing
  *  here can lower. */
 export type Overrides = { verified?: boolean; geolocation?: Geo | null };
@@ -49,8 +52,8 @@ export interface CustodyPort<D extends BrowserDriver = BrowserDriver> {
   session(signal?: AbortSignal): Promise<AttachedSession<D>>;
   /** A rerun finds the session it launched. */
   relaunch(overrides: Overrides): Promise<AttachedSession<D>>;
-  /** No session, or one already released, is not an error. */
-  /** `ended`: the session was released, or is being released, before this call: by what and when (null while in flight). */
+  /** No session, or one already released, is not an error.
+   *  `ended`: the session was released, or is being released, before this call: by what and when (null while in flight). */
   release(): Promise<{ released: boolean; sessionId: string | null; ended?: { reason: ReleaseReason; at: string | null } }>;
   /** The lease tag of the conversation's attached live session, or null: what `browser_release` and `browser_relaunch` are checked against (the live view's driving gate) before they act. */
   current?(): Promise<string | null>;
@@ -152,6 +155,7 @@ export function newSessionRecord(input: { plane: string; tag: string; provider: 
       proxies, verified: spec.verified && honours.verified !== false,
       geolocation: proxies && honours.geolocation !== false && typeof spec.proxies === "object" ? spec.proxies.geolocation : null,
       region: honours.region === false ? null : spec.region ?? null, contextId: honours.context === false ? null : spec.contextId ?? null, profile: spec.profile?.name ?? null,
+      ...(spec.navigation?.allow?.length ? { navigationAllow: [...spec.navigation.allow] } : {}),
     },
     navigation: [], lastUrl: null, pendingEffect: null, spent: startSpent(input.at),
   };
@@ -175,12 +179,11 @@ export function moveRecord(record: SessionRecord, next: { state: LeaseState; res
 }
 
 export const PROFILE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
-const refused = (message: string): BrowserFailure => ({ ok: false, code: "refused", retryable: false, effect: "none", message });
 
 export function sessionSpec(config: BrowserConfig, tag: string, overrides: Overrides = {}): SessionSpec {
   const { policy } = config;
-  if (policy.profile && !PROFILE_NAME.test(policy.profile.name)) throw new BrowserFailureError(refused("browser profile: a profile name is 1 to 64 characters of letters, digits, dot, underscore and dash, starting with a letter or digit. No session was started."));
-  if (policy.profile && policy.contextId) throw new BrowserFailureError(refused("browser profile: a saved profile and a context id are two ways to ask for the same saved state; set one. No session was started."));
+  if (policy.profile && !PROFILE_NAME.test(policy.profile.name)) throw refusedError("browser profile: a profile name is 1 to 64 characters of letters, digits, dot, underscore and dash, starting with a letter or digit. No session was started.");
+  if (policy.profile && policy.contextId) throw refusedError("browser profile: a saved profile and a context id are two ways to ask for the same saved state; set one. No session was started.");
   const geolocation = overrides.geolocation === undefined ? policy.geolocation : overrides.geolocation;
   return {
     tag, maxLifetimeS: policy.sessionTimeoutS, idleTimeoutS: policy.idleReleaseS,
@@ -195,15 +198,30 @@ export function sessionSpec(config: BrowserConfig, tag: string, overrides: Overr
   };
 }
 
-export function profileRefusal(spec: SessionSpec, caps: ProviderCaps): BrowserFailure | null {
-  return spec.profile && !caps.profiles ? refused(`browser profile: this browser provider cannot keep a saved sign-in, so profile "${spec.profile.name}" cannot be used. No session was started.`) : null;
+/** A navigation policy is a restriction the host relies on, so a session it would not hold to is refused, never started without it.
+ *  No provider enforces a `block` list; an `allow` list only where the provider says it does (`caps.navigationAllow`). */
+/** `reused`, for a live session about to be used again: the allow list its provider applied at create. A provider fixes the list
+ *  then, so a session started with none, or with a wider one, does not hold to the list the policy sets now. */
+export function navigationRefusal(spec: Pick<SessionSpec, "navigation">, provider: Pick<BrowserProvider, "name" | "caps">, reused?: { applied?: readonly string[] }): BrowserFailure | null {
+  const allow = spec.navigation?.allow;
+  const unenforced = spec.navigation?.block?.length ? "navigation.block" : allow?.length && !provider.caps.navigationAllow ? "navigation.allow" : null;
+  if (unenforced) return browserFailure("refused", `browser navigation: this run's policy sets ${unenforced}, and the ${provider.name} browser provider cannot enforce it, so no session was started. Ask the person to remove it from the policy or to use a provider that enforces it.`);
+  const applied = reused?.applied;
+  if (reused && allow?.length && !(applied?.length && applied.every((site) => allow.includes(site)))) {
+    return browserFailure("refused", `browser navigation: this run's policy sets navigation.allow, and this browser session was started ${applied?.length ? "under a wider allow list" : "without one"}, which the ${provider.name} provider cannot change after it starts a session, so the session was not used. browser_relaunch starts one under the current policy.`);
+  }
+  return null;
 }
+
+export function profileRefusal(spec: SessionSpec, caps: ProviderCaps): BrowserFailure | null {
+  return spec.profile && !caps.profiles ? browserFailure("refused", `browser profile: this browser provider cannot keep a saved sign-in, so profile "${spec.profile.name}" cannot be used. No session was started.`) : null;
+}
+
+/** browser_relaunch on a provider whose session the host assigned: nothing to relaunch onto, and nothing released. */
+export const FIXED_SESSION_RELAUNCH: BrowserFailure = Object.freeze(browserFailure("refused", "browser_relaunch: this task's browser is the one session its host assigned it, and there is no other to relaunch onto. Nothing was relaunched and your session is unchanged; keep using it."));
 
 /** With proxies off a geolocation is refused up front: the session would browse from the provider's default place,
  *  silently. */
-/** browser_relaunch on a provider whose session the host assigned: nothing to relaunch onto, and nothing released. */
-export const FIXED_SESSION_RELAUNCH: BrowserFailure = Object.freeze({ ok: false, code: "refused", retryable: false, effect: "none", message: "browser_relaunch: this task's browser is the one session its host assigned it, and there is no other to relaunch onto. Nothing was relaunched and your session is unchanged; keep using it." });
-
 export function relaunchRefusal(policy: BrowserConfig["policy"], overrides: Overrides): BrowserFailure | null {
   if (!overrides.geolocation || policy.proxies) return null;
   return browserFailure("refused", "browser_relaunch: geolocation needs a proxy, and this run's browser policy has proxies off, so no session can browse from a chosen place. Nothing was relaunched and your session is unchanged; browser_relaunch can still change verified, with geolocation left out.");

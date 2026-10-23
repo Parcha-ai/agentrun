@@ -4,6 +4,7 @@ import type { Json, Recording } from './format.ts';
 import { bundledRecordings, fromUrl, openBundled } from './load.ts';
 import { extractChat } from './chat-extract.ts';
 import { drawMuse } from './chat-muse.ts';
+import { visualOf } from './chat-visual.ts';
 import { drawChat } from './chat-view.ts';
 
 async function chatMain(): Promise<void> {
@@ -28,7 +29,9 @@ async function chatMain(): Promise<void> {
     // The Muse layout (a phone chat over the same events) is opt-in: `chat.html?r=<id>&muse`. Without it a run reads as before.
     const muse = params.has('muse');
     const model = await extractChat(recording, readJson, { muse });
-    if (muse) drawMuse(root, model, recording); else drawChat(root, model, recording);
+    // The visual report of a browser run is opt-in on the Muse layout: `chat.html?r=<id>&muse&visual`.
+    const visual = muse && params.has('visual') ? await visualOf(recording) : undefined;
+    if (muse) drawMuse(root, model, recording, visual); else drawChat(root, model, recording);
   } catch (error) {
     const note = document.createElement('p');
     note.className = 'chat-error';

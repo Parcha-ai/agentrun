@@ -779,3 +779,41 @@ test("kernel: a session Kernel ended while the host was down (its idle timeout) 
   assert.equal(api.only("POST /browsers").length, 2);
   assert.equal(api.alive().length, 0);
 });
+
+test("a handoff gives the host the browsed page's URL and title scrubbed, as onSession does; the viewer's own URL stays whole", async (t) => {
+  const key = "planted-registered-key-7f3a9c";
+  const asks = [];
+  const handoff = { request: async (ask) => { asks.push(ask); return { interactionId: `int-${ask.requestId}` }; }, outcome: async () => "done" };
+  const extra = (backend) => ({
+    handoff, redact: { values: () => [key] },
+    // The page in use is a sign-in callback: its query carries a token and its title a registered key.
+    provider: () => ({ ...backend.provider, liveView: async (ref) => {
+      const view = await backend.provider.liveView(ref);
+      return view && { ...view, pages: view.pages.map((page) => ({ ...page, url: "https://example.test/callback?token=planted-handoff-token&next=1", title: `Account ${key}` })) };
+    } }),
+  });
+  const { root, ctx, settled } = await inProcess(t, extra, {}, ["browser_read", ["browser_request_handoff", ASK]]);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  await settled();
+  assert.equal(asks.length, 1, "the host was asked once");
+  const view = asks[0].liveView;
+  assert.ok(view, "the host got the live view");
+  assert.match(view.fullscreen, /token=/, "the viewer URL the person opens is not touched");
+  const shown = JSON.stringify(view.pages);
+  assert.equal(shown.includes("planted-handoff-token"), false, "a query value of the browsed page reached the host");
+  assert.equal(shown.includes(key), false, "a registered key in the page title reached the host");
+  assert.equal(view.pages[0].url, "https://example.test/callback?token=[redacted]&next=[redacted]");
+});
+
+test("the durable adapter refuses a session under a navigation policy its provider cannot enforce, naming the part, and starts no browser", async (t) => {
+  const durable = await import("@earendil-works/pi-durable");
+  const { backend, root, ctx, settled } = await inProcess(t, {}, { navigation: { block: ["evil.test"] } }, ["browser_read"]);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  await settled();
+  const [result] = [...(await root.entries({}, 50, undefined, ctx)).items].filter((entry) => durable.ToolResultEntry.is(entry)).map((entry) => entry.model[0]);
+  const text = result.content.map((part) => part.text).join("");
+  assert.equal(result.isError, true, text);
+  assert.match(text, /"code":"refused"/);
+  assert.match(text, /navigation\.block/);
+  assert.equal(backend.tally().creates, 0, "no browser was started without the policy");
+});

@@ -10,8 +10,8 @@ Your agent gets its own browser, and you can take over and hand it back.
 
 If the process dies, a pi-durable host recovers the session and does not repeat an action. See [For hosts](#for-hosts).
 
-Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=22.19.0`, pi 1.1 and 1.2 (the
-coding-agent entry also runs on pi 1.0.4). ESM only: the
+Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=22.19.0`, pi 1.1 to 1.3 (the range of its
+pi-durable and chord peers; the coding-agent entry also runs on pi 1.0.4). ESM only: the
 package has `import` entries and no `require` entry.
 
 ## Install
@@ -19,13 +19,14 @@ package has `import` entries and no `require` entry.
 ```sh
 pi install npm:@parcha/pi-browser@beta    # the pi coding agent's extension
 npm install @parcha/pi-browser@beta       # the library: providers, driver, durable adapter
+npm install @parcha/pi-browser@beta @earendil-works/pi-durable@1.3.0 @earendil-works/chord@1.3.0 @earendil-works/pi-ai@1.3.0   # a pi-durable host: its peers, pinned to 1.3.0 (unpinned, npm takes 1.4.0 and stops with ERESOLVE)
 ```
 
-`pi install` loads the extension. A Chrome starts on the model's first browser call, and not before.
+`pi install` loads the extension. A Chrome starts on the model's first browser call, and not before. pi 1.4 is not supported yet; a later release widens the range.
 
 ## Quick start
 
-A local Chrome, one page, one snapshot. It needs Chrome or Chromium; `CHROME_PATH` names it.
+A local Chrome, one page, one snapshot. It needs Chrome or Chromium; `CHROME_PATH` names it. As root or in a container, Chrome cannot start its sandbox: set `PI_BROWSER_NO_SANDBOX=1`, or pass `sandbox: false` beside `executablePath`, and run the container with `--init`, or a Chrome killed on cleanup stays a zombie.
 
 ```js
 import { mkdtemp, rm } from "node:fs/promises";
@@ -37,14 +38,15 @@ import { stagehandDriver } from "@parcha/pi-browser/driver/stagehand";
 const profileRoot = await mkdtemp(join(tmpdir(), "pi-browser-"));
 const provider = cdpProvider({ chrome: { executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome", profileRoot } });
 const signal = AbortSignal.timeout(60_000);
-const session = await provider.create({ tag: "quick-start", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, signal);
+let session;
 try {
+  session = await provider.create({ tag: "quick-start", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, signal);
   const driver = await stagehandDriver()(await provider.attach(session), signal);
   await driver.run({ code: `await page.goto(${JSON.stringify(process.argv[2] ?? "https://example.com")})` });
   console.log(await driver.snapshot());
   await driver.close();
 } finally {
-  await provider.release(session);
+  if (session) await provider.release(session);
   await rm(profileRoot, { recursive: true, force: true });
 }
 ```
@@ -95,6 +97,15 @@ The same tools run on three kinds of browser. You pick one when you set up the p
 | Local Chrome (`/providers/cdp`) | A Chrome the package starts and stops by exact pid, with its own profile directory and a free debugging port. It can also attach to a Chrome you already run, at a CDP endpoint. | Chrome or Chromium. No key. |
 | Browserbase (`/providers/browserbase`) | A Browserbase session, through its SDK. | `BROWSERBASE_API_KEY` and the `@browserbasehq/sdk` peer. |
 | Kernel (`/providers/kernel`) | A Kernel browser, through its REST API. | `KERNEL_API_KEY`. No SDK. |
+
+The local Chrome's options, in `cdpProvider({ chrome: { ... } })`:
+
+| Option | Meaning |
+|---|---|
+| `executablePath`, `profileRoot` | The Chrome to start, and the directory its profiles live under. Both are required. |
+| `headless` | `true` by default; `false` shows the window. |
+| `args` | Extra Chrome flags, added after the package's own. |
+| `sandbox` | Chrome's own sandbox, on unless `false`. When absent, `PI_BROWSER_NO_SANDBOX=1` turns it off. Turn it off only where Chrome cannot start its sandbox (root, a container, restricted user namespaces), and only for pages you trust. A Chrome that exits before it opens its debugging port fails the create with its last lines of stderr, and with this hint when it aborted or named the sandbox. |
 
 The pi extension picks one from a flag or an environment variable; see [For pi users](#for-pi-users). A host that wires the package itself passes the provider it wants; see [For hosts](#for-hosts). `examples/one-script-three-providers.mjs` runs one script on all three.
 
@@ -243,7 +254,8 @@ pi 1.0.4 or 1.1.x users: pin `@earendil-works/pi-codemode` to the same version a
 - `@parcha/pi-browser`: the host-neutral core. The model contract (tool names, descriptions, JSON schemas, effect and
   replay classes, the `browser` and `web` prompt sections), the typed failure envelope, the redactor, the screenshot
   budget, the repeat guard, evidence and decision-hook types, usage and prices, `find` (chunking and ranking a long page),
-  `browser_downloads`, the opt-in request observer, and the provider interface. It imports nothing outside Node's builtins.
+  `browser_downloads`, the opt-in request observer, and the provider interface. Outside Node's builtins it loads only
+  node-html-parser and node-html-markdown, on demand, for `browser_read`'s page text and frame scan.
 - `/durable`: the pi-durable adapter. `createBrowserExtension` is session custody in the run's own store (a create is
   committed before the provider is called, release is a durable task, reconcile runs at run open). `createWebExtension` is
   `web_fetch` and `web_search`.
@@ -255,8 +267,15 @@ pi 1.0.4 or 1.1.x users: pin `@earendil-works/pi-codemode` to the same version a
 - `/providers/browserbase`, `/providers/kernel`, `/providers/cdp`: where browsers come from. Browserbase through its SDK,
   with the credential-proxy dial and the connect-URL rewrite. Kernel through its REST API on the package's own HTTP agent.
   Any CDP endpoint, or a local Chrome the provider starts and kills by exact pid.
+- `/providers/chrome-args`: `chromeArgs()`, the arguments the cdp provider starts a local Chrome with, and `extensionOrigin()`,
+  the one Origin its DevTools socket allows (Stagehand's extension). A host that starts its own Chrome for Stagehand takes them
+  from here rather than copying Stagehand's `--remote-allow-origins=*`.
+- `/providers/assigned`: `assignedSessionProvider()`, over the one session a host assigned to the run. It never creates or
+  ends a browser: it hands that session to one custody at a time, and the host takes it back itself.
 - `/live-view`: a person sees and drives the local Chrome (the cdp provider) from your page, with nothing leaving the machine but the model. See
   [The live view of your own Chrome](#the-live-view-of-your-own-chrome).
+- `/recorder`: `frameRecorder()` screencasts each session over DevTools into a sink you pass, and `exportFrameTracks()`
+  makes a WebM per session from the recorded frames. See [Recording what the browsers show](#recording-what-the-browsers-show).
 - `/testing`: the shared test fake. A provider backend with a ledger of every call, a credential broker, an HTTP face so the
   ledger outlives a killed child process, a driver over in-memory pages, and sentinel credentials. A host's composition
   test and this package's crash matrix use the same one.
@@ -293,6 +312,10 @@ What it does with your machine and your data:
   that a crashed pi left running is closed when that session is next started, never adopted.
 - Stagehand's trace export is pointed at a closed loopback port, so nothing you browse goes to a third party.
 - `browser_relaunch` with `verified` or `geolocation` changes nothing on a local Chrome or on Kernel; they are Browserbase features.
+- A host that builds the extension with `policy: { actions: "deny" }` or `"ask"` asks for requests to be held, and the coding
+  agent has no request observer to hold them. So under either it starts no browser: every browser tool answers
+  `browser_unavailable`, naming the action policy, and `web_fetch` still works. Set `actions: "allow"` (or leave it out) to
+  browse, or use the pi-durable adapter (`/durable`), which holds requests under `deny` and `ask`.
 
 Providers and `web_fetch`:
 
@@ -370,6 +393,14 @@ after the extensions are installed and
 before anything resumes, it calls `handle.reconcile(harness, isActive, ctx)`, and every session a dead process left is bound,
 kept or released. The host wraps the tools (`handle.tools`) with its own policy: pause, call records, a result cap, media for
 the route.
+
+A policy's `navigation` is a restriction the host relies on, so a session that would not hold to it is never started. No
+provider enforces a `block` list today, so a policy with one refuses every session. An `allow` list is enforced only by a
+provider whose `caps.navigationAllow` is true (Browserbase, through `allowedDomains`); on any other provider the session is
+refused. Each refusal names the part of the policy and the provider. Both adapters behave the same.
+A provider applies an allow list only when it creates a session, so the durable adapter records it on the session. A live
+session used again under a policy whose `allow` list it was not started under (none, or a wider one) is refused the same way,
+and `browser_relaunch` starts one under the current policy.
 
 A host with its own provider implements `BrowserProvider`: `name`, `caps`, `create` (at most once, the tag stamped on the
 provider's side), `findByTag`, `status`, `attach`, `release`, and optionally `liveView`, `recordings`, `downloads`, `fetch`

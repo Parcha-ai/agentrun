@@ -4,7 +4,7 @@
 // custody releases at a failed launch, an orphan sweep or a conversation's end, and the session is the task's, not the
 // conversation's. The host takes it back itself, once, when the task's browser closes; after that the session's own
 // failure() answers every create. A second create while another custody holds it is a refusal: the run has one browser.
-import { BrowserFailureError } from "../core/custody.js";
+import { BrowserFailureError, refusedError } from "../core/custody.js";
 import { FAILURE_CODES, type BrowserFailure } from "../core/failures.js";
 import type { AttachTarget, BrowserProvider, ProviderCaps } from "../core/host.js";
 import type { LeaseRef, ResourceStatus } from "../core/lease.js";
@@ -20,7 +20,6 @@ export type AssignedSession = {
   failure?(): BrowserFailure | null;
 };
 
-const refused = (message: string) => new BrowserFailureError({ ok: false, code: "refused", retryable: false, effect: "none", message });
 
 /** A host session types a failure the model should read as an error carrying `failure`; the tool loop takes it as is. */
 function typed(error: unknown): unknown {
@@ -57,7 +56,7 @@ export function assignedSessionProvider(input: { name: string; session: Assigned
       // A session that can no longer be used says why (a sign-in it needs, the host took it back), never that it is open elsewhere.
       const ended = session.failure?.();
       if (ended) throw new BrowserFailureError(ended);
-      if (assignedCustody.heldBy !== null && assignedCustody.heldBy !== spec.tag) throw refused("This task has one browser, the website session assigned to it, and it is already open; keep using it.");
+      if (assignedCustody.heldBy !== null && assignedCustody.heldBy !== spec.tag) throw refusedError("This task has one browser, the website session assigned to it, and it is already open; keep using it.");
       assignedCustody.heldBy = spec.tag;
       assignedCustody.letGo.delete(spec.tag);
       return { id: session.id, tag: spec.tag };

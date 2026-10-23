@@ -27,8 +27,14 @@ export type UseOutcome = (typeof USE_OUTCOMES)[number];
 export const PRECONDITION_OPS = Object.freeze(["eq", "in", "exists", "gte", "lte"] as const);
 
 export const LIMITS = Object.freeze({
-  /** Revisions kept under one name; admission stops at the cap, never forgets a demoted digest. */
+  /** Revisions kept under one name. Only those live or restorable (trial, active, superseded) count toward it: when the
+   *  trial would hold more, admission moves its retired and demoted revisions to `refused`, and stops only when the live
+   *  ones fill it. */
   revisions: 32,
+  /** Digests of revisions a trial no longer holds (retired or demoted), kept so the same digest is not admitted again. When
+   *  full, the oldest leaves and may be tried again: a full list never refuses an admission. A trial that keeps any holds
+   *  only its live and restorable revisions beside them (at most `restorable` + 2), so it fits the file cap at both limits. */
+  refused: 128,
   /** The newest uses kept, in the order they were folded; thresholds never reach further back than twice `threshold`. */
   uses: 30,
   preconditions: 16,
@@ -76,6 +82,9 @@ export type Trial = {
   readonly revisions: readonly Revision[];
   /** Oldest first. */
   readonly uses: readonly Use[];
+  /** Digests of retired or demoted revisions moved out of `revisions` to make room, oldest first: not admitted again while
+   *  they are here (the newest `LIMITS.refused`). */
+  readonly refused?: readonly string[];
 };
 
 const Stamp = Type.String({ pattern: STAMP.source });
@@ -101,6 +110,7 @@ export const TrialSchema = Type.Object({
     when: Type.Optional(Type.Array(PreconditionSchema, { maxItems: LIMITS.preconditions })), description: Type.Optional(Type.String({ maxLength: CAPS.text })),
   }, exact), { minItems: 1, maxItems: LIMITS.revisions }),
   uses: Type.Array(Type.Object({ run: Run, sha256: Hash, outcome: Type.Union([Type.Literal("frozen"), Type.Literal("escalated"), Type.Literal("failed")]), at: Stamp }, exact), { maxItems: LIMITS.uses }),
+  refused: Type.Optional(Type.Array(Hash, { maxItems: LIMITS.refused })),
 }, exact);
 
 const checker = Compile(TrialSchema);
@@ -155,8 +165,15 @@ export function checkTrial(value: unknown): asserts value is Trial {
   }
   if (trial.status !== (live?.status ?? "demoted")) throw bad("the status is not that of the live revision");
   if (trial.revisions.filter((revision) => revision.status === "superseded").length > LIMITS.restorable) throw bad(`more than ${LIMITS.restorable} superseded revisions`);
+  const gone = new Set<string>();
+  if ((trial.refused?.length ?? 0) > 0 && trial.revisions.length > LIMITS.restorable + 2) throw bad("a trial that keeps refused digests holds only its live and restorable revisions");
+  for (const digest of trial.refused ?? []) {
+    if (seen.has(digest)) throw bad("a refused digest is a revision the trial holds");
+    if (gone.has(digest)) throw bad("a refused digest appears twice");
+    gone.add(digest);
+  }
   for (const use of trial.uses) {
-    if (!seen.has(use.sha256)) throw bad("a use names a revision the trial does not hold");
+    if (!seen.has(use.sha256) && !gone.has(use.sha256)) throw bad("a use names a revision the trial does not hold");
     if (!validStamp(use.at)) throw bad("a use's at is not a time");
   }
 }
@@ -186,6 +203,17 @@ export function pruneUses(trial: Trial, target: number): Trial {
   }
   for (let i = trial.uses.length - 1; i >= 0 && kept.size < target; i -= 1) kept.add(i);
   const indexes = [...kept].sort((a, b) => a - b);
+  return {
+    ...trial, uses: indexes.map((i) => trial.uses[i]!),
+    revisions: trial.revisions.map((r) => ({ ...r, after: indexes.filter((i) => i < r.after).length })),
+  };
+}
+
+/** The trial without the uses that name `digests`, each revision's `after` counting only the uses kept: a digest that leaves
+ *  `refused` takes them with it, since a use must name a revision the trial holds or refuses. */
+export function dropUsesOf(trial: Trial, digests: readonly string[]): Trial {
+  if (!digests.length || !trial.uses.some((use) => digests.includes(use.sha256))) return trial;
+  const indexes = trial.uses.map((use, i) => (digests.includes(use.sha256) ? -1 : i)).filter((i) => i >= 0);
   return {
     ...trial, uses: indexes.map((i) => trial.uses[i]!),
     revisions: trial.revisions.map((r) => ({ ...r, after: indexes.filter((i) => i < r.after).length })),

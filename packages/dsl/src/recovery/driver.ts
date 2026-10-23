@@ -6,6 +6,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import type { RouteNode, Workflow, WorkflowDeps, WorkflowNode } from "../workflow.js";
 import { desugarWorkflow, isItemFailure } from "../workflow.js";
+import { setLongTimeout, type LongTimer } from "../long-timer.js";
 import { chainStep, childrenOf, completedIteration, enclosingChains, enclosingIterations, isWithin, mapItemOf, nodeAt, topLevelCompletion } from "./execution-path.js";
 import { bindingDigests, LEDGER_FORMAT } from "./binding.js";
 import { canonicalHash as hash } from "./canonical-hash.js";
@@ -13,12 +14,12 @@ import { RecoveryError } from "./errors.js";
 import { gatewayIntentOf } from "./handoff-receipts.js";
 import { validateFrozenSnapshot, openedFrozenSnapshot, serializeFrozenSnapshot,
   frozenStepSessionId, frozenStepId, frozenEffectId, frozenEffectPath, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
+  failure, SHA256 as SHA,
   FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4, stateDelta, applyStateDelta, isItemOutcome,
   type FrozenSnapshot as Snapshot, type FrozenSnapshotV4, type ItemRecord, type MapEntry, type StateDelta,
   type PathFrame, type RouteDecision, type QuestionReceipts, type FrameTag, type StepRecord, type EscalationRow } from "./frozen-snapshot.js";
 import type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryNote, RecoveryParts, RecoveryStore } from "./store.js";
 
-const failure = (code: string, message: string) => new RecoveryError(message, code);
 
 /** The branch a route runs for its answer, as the interpreter takes it: the node's `unsure` branch when
  *  the answer's confidence is below `unsure.gte`, else the choice the answer names. */
@@ -178,7 +179,12 @@ export type RecoveryOptions = {
 /** What a host's effect adapter receives under the driver: the interpreter's parameters, `call`, which keeps each
  *  outside call the effect makes on its record as the call ends, and `effect`, the admitted effect: its journal id and
  *  the hash of its arguments, as the journal stores them and the same in every process of the run. A host that keeps
- *  what an outside call answered under them can settle an effect whose call was cut with `journal.complete`. */
+ *  what an outside call answered under them can settle an effect whose call was cut with `journal.complete`.
+ *
+ *  What the adapter returns is the effect's result, whatever its fields. An adapter that cannot know whether the outside
+ *  call happened throws: a `RecoveryError` with code `FROZEN_EFFECT_UNKNOWN`, its `cause` what it observed (kept for the
+ *  operator in the checkpoint's `unknownResponses`), or an `EffectOutcomeUnknownError`. The effect then stays unknown,
+ *  is never dispatched again, and the run resumes only once the host reconciles it, as after any call that throws. */
 export type RecoveryEffectParams = Parameters<NonNullable<WorkflowDeps["runEffect"]>>[0] & {
   call?: (record: unknown) => void;
   effect?: { id: string; argsHash: string };
@@ -232,8 +238,11 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
   const driver = options.key;
   const controller = new AbortController();
   let fatal: unknown;
-  /** A pause or cancel was applied: its commit still lands, and nothing after it. */
+  /** A pause or cancel was applied: its commit is still made, and no admission after it. */
   let stopping = false;
+  /** A commit the store refused after a pause or cancel was applied (the stop's own, say): the stop is not durable, the
+   *  journal still reads as it did, and the host hears it from `flush` and `close`. */
+  let refusedAfterStop: unknown;
   const journal: RecoveryJournal = await store.open(bound);
   /** Whether the store keeps parts beside the state: the keyed layout needs both reads. */
   const keyed = typeof journal.items === "function" && typeof journal.stateOf === "function";
@@ -276,7 +285,6 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     writtenStates.add(sha256);
     return value;
   };
-  const SHA = /^[a-f0-9]{64}$/;
   const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
   const validEntry = (entry: unknown): entry is MapEntry => isRecord(entry) && Number.isSafeInteger(entry.length) && (entry.length as number) >= 0
     && Number.isSafeInteger(entry.items) && (entry.items as number) >= 0 && typeof entry.base === "string" && SHA.test(entry.base);
@@ -515,11 +523,14 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
   let chain: Promise<unknown> = Promise.resolve();
   const persist = <T>(write: () => Promise<T>): Promise<T> => {
     const next = chain.then(() => { if (fatal && !stopping) throw fatal; return write(); });
-    chain = next.catch((error) => { if (!fatal) { fatal = error; controller.abort(error); } });
+    chain = next.catch((error) => {
+      if (!fatal) { fatal = error; controller.abort(error); }
+      else if (stopping && refusedAfterStop === undefined) refusedAfterStop = error;
+    });
     return next;
   };
-  /** Every commit the driver started has landed; a failed one is thrown. */
-  const flush = async () => { await chain; if (fatal && !stopping) throw fatal; };
+  /** Every commit the driver started has landed; a failed one is thrown, a pause's or a cancel's own commit included. */
+  const flush = async () => { await chain; if (refusedAfterStop !== undefined) throw refusedAfterStop; if (fatal && !stopping) throw fatal; };
   try {
     // A driver an earlier process bound, with no checkpoint, is a run killed between its binding and its first
     // checkpoint when the journal holds nothing else of it: it never started, and it starts now. One with effects and
@@ -530,7 +541,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     const known = [FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4];
     const found = (stored as { schema?: unknown } | null)?.schema;
     const version = typeof found === "string" ? /^agentrun\.frozen_run\.v(\d+)$/.exec(found)?.[1] : undefined;
-    if (version !== undefined && !known.includes(found as string) && Number(version) > 4) {
+    if (version !== undefined && Number(version) > 4) {
       throw Object.assign(new RecoveryError(`This run is stored as ${found as string}, newer than this build knows (${known.join(", ")}); open it with a build that knows it`, "RECOVERY_SCHEMA_NEWER"), { found, known });
     }
     // The keyed layout is sticky: a run stored in it stays in it. A run stored whole, or a new one, takes it when the
@@ -629,9 +640,8 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     if (requested?.action === "pause") { try { guard(); } catch { /* The pause is taken: its commit is queued. */ } }
     wake();
   };
-  const fileHashes = (names: string[]): Record<string, string> => reader.hashes(names);
   const verifyFiles = (files: Record<string, string>) => {
-    if (hash(fileHashes(Object.keys(files))) !== hash(files)) throw failure("FROZEN_ARTIFACT_INVALID", "Committed artifact bytes changed; effect will not be repeated");
+    if (hash(reader.hashes(Object.keys(files))) !== hash(files)) throw failure("FROZEN_ARTIFACT_INVALID", "Committed artifact bytes changed; effect will not be repeated");
   };
   /** An effect-level clock is set once and kept across resume: a poll window or an attempt deadline
    *  belongs to the outside world, so downtime counts against it, never against the run. */
@@ -739,7 +749,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       }
       const step = chainStep(at);
       if (step && (frame.chains[step.chain]?.index ?? -1) >= step.index) throw pathFault(at, "A chain step committed behind its chain's frontier");
-      if (node.node === "artifact" && node.path) keepFiles(fileHashes([node.path]), at);
+      if (node.node === "artifact" && node.path) keepFiles(reader.hashes([node.path]), at);
       frame.done.push(at);
       done.add(at);
       // A map that committed, alone or inside what committed, has its results in the state: what it had finished
@@ -810,8 +820,9 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       // The wait's clock is durable before the wait starts, so a process that dies inside it resumes the same wait.
       await flush();
       await new Promise<void>((resolve, reject) => {
-        const onAbort = () => { clearTimeout(wait); reject(controller.signal.reason); };
-        const wait = setTimeout(() => { controller.signal.removeEventListener("abort", onAbort); resolve(); }, Math.max(0, until - Date.now()));
+        const onAbort = () => { wait.clear(); reject(controller.signal.reason); };
+        // setLongTimeout: a wait past Node's 2^31-1 ms timer limit waits instead of firing at once.
+        const wait = setLongTimeout(() => { controller.signal.removeEventListener("abort", onAbort); resolve(); }, until - Date.now());
         controller.signal.addEventListener("abort", onAbort, { once: true });
       });
       guard();
@@ -1043,14 +1054,15 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         // A tool effect is admitted with the external call it makes, keyed as a continuation keys its own calls
         // (`gatewayIntentOf`: a fetch wrapper's call is the gateway tool it names and its arguments), so a continuation
         // that inherits it unknown refuses the same call.
-        const external = params.node.via === "tool" ? gatewayIntentOf(String((params.node as any).tool), params.input ?? {}) : undefined;
+        const external = params.node.via === "tool" ? gatewayIntentOf(String(params.node.tool), params.input ?? {}) : undefined;
         // From its admission the effect is in flight: a pause waits for it to complete and commit, so the admission is
         // never left without its dispatch.
         inFlight += 1;
+        let deadlineTimer: LongTimer | undefined;
         try {
           // The driver's state and the admission are one transaction.
           const admission = writeOf(id);
-          const admitted = await persist(() => journal.admit(id, String((params.node as any).label), argsHash, admission.state, driver, external, params.input ?? null, admission.parts, admission.owner));
+          const admitted = await persist(() => journal.admit(id, String(params.node.label), argsHash, admission.state, driver, external, params.input ?? null, admission.parts, admission.owner));
           if (admitted !== "new") throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id} before dispatch`);
           // What landed while the admission was being committed still counts: after a cancel, the caller's own
           // cancellation or the effect's deadline, the effect stays admitted and unknown and the adapter is never called.
@@ -1058,7 +1070,15 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           guard();
           if (params.signal.aborted) throw params.signal.reason;
           if (Date.now() >= deadline) throw failure("FROZEN_EFFECT_DEADLINE", "Effect exceeded its own deadline");
-          const signal = AbortSignal.any([params.signal, controller.signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]);
+          // The deadline is the clock the driver kept, so a fraction of a millisecond, or a delay past Node's 2^31-1 ms timer
+          // limit, waits out its time; it aborts with the TimeoutError AbortSignal.timeout gives, which a host reads as a deadline.
+          const timeout = new AbortController();
+          deadlineTimer = setLongTimeout(() => timeout.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), deadline - Date.now());
+          const signal = AbortSignal.any([params.signal, controller.signal, timeout.signal]);
+          // Clear the deadline timer the moment the effect is aborted (a cancel, a pause, or the deadline itself): a
+          // `runEffect` that ignores its signal and stays pending would otherwise leave this process alive until the
+          // deadline — hours or days out — because the `finally` runs only when the dispatch settles.
+          signal.addEventListener("abort", () => deadlineTimer?.clear(), { once: true });
           // A thrown/aborted call remains UNKNOWN, including transient failures: no blind retry. Each outside call the effect
           // makes is kept on its record as it ends, on the driver's commit chain, so a process killed mid-effect keeps the
           // calls it made and a commit that fails is the run's failure, which aborts the effect at once.
@@ -1066,31 +1086,36 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           const keep = (record: unknown) => { calls.push(record); const held = [...calls]; persist(() => journal.called(id, held)).catch(() => undefined); };
           let value: unknown;
           try { value = await run({ ...params, signal, call: keep, effect: { id, argsHash } }); }
+          catch (error) {
+            // The host's one signal that it cannot know the outcome: what it observed is kept for the operator, without
+            // certifying completion. Any other throw leaves the effect unknown too, with nothing observed.
+            if (error instanceof RecoveryError && error.code === "FROZEN_EFFECT_UNKNOWN") {
+              if (calls.length) await flush();
+              if (error.cause !== undefined) { (snapshot.unknownResponses ??= {})[id] = error.cause; await save(); await flush(); }
+              throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id}: the host reported an unknown outcome`);
+            }
+            throw error;
+          }
           finally { if (calls.length) await flush(); }
           if (signal.aborted) throw signal.reason;
-          const returned = value as { outcome?: unknown; effect_status?: unknown; details?: { outcome?: unknown; effect_status?: unknown } } | null;
-          if (returned?.outcome === "unknown" || returned?.effect_status === "unknown"
-            || returned?.details?.outcome === "unknown" || returned?.details?.effect_status === "unknown") {
-            (snapshot.unknownResponses ??= {})[id] = value;
-            await save(); // Preserve the observation without certifying completion.
-            await flush();
-            throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id}: tool returned an unknown outcome`);
-          }
-          const files = fileHashes(params.produces);
+          const files = reader.hashes(params.produces);
           // A tool effect's receipt names the external call it paid for (the tool and its arguments),
           // so a continuation that inherits the receipt can answer the same call from it. Any other
           // effect keeps its arguments beside its result.
-          const intent = params.node.via === "tool" ? { tool: String((params.node as any).tool), args: params.input } : undefined;
+          const intent = params.node.via === "tool" ? { tool: String(params.node.tool), args: params.input } : undefined;
           keepFiles(files, at);
           const completion = writeOf();
           await persist(() => journal.complete(id, { value, files, ...(intent ? { intent } : { args: params.input ?? null }) }, completion.state, completion.parts));
           return value;
-        } finally { settled(); }
+        } finally { deadlineTimer?.clear(); settled(); }
       };
     },
-    /** Every commit the driver started has landed; a failed one is thrown. */
+    /** Every commit the driver started has landed; a failed one is thrown, a pause's or a cancel's own commit included. */
     flush,
-    /** Let go of the run once every commit the driver started has landed. */
-    async close() { await chain; await journal.close(); },
+    /** Let go of the run once every commit the driver started has landed. A commit the store refused after a pause or
+     *  cancel is thrown once the journal is released: the stop is not durable, and the host must not take the run as
+     *  stopped. It is thrown even when a later stop's commit lands, since a later commit does not carry every record the
+     *  refused one held. A run's own failed commit is the run's failure and is not thrown again here. */
+    async close() { await chain; await journal.close(); if (refusedAfterStop !== undefined) throw refusedAfterStop; },
   };
 }

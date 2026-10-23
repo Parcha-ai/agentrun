@@ -1,10 +1,12 @@
 # @parcha/pi-durable-disk
 
-Run a [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) agent from a directory or a network disk, so any process or host can open the run and carry on where the last one released it.
+The agent is the workspace: its conversation and its files live together in one directory on a disk. Mount the disk on any Linux host or container, release it, and mount it somewhere else: the agent carries on where the last host released it.
 
-An agent's home and its runs live on the disk, not on a machine: the conversation, the agent's files and what it was waiting
-for are all in the run's directory, so a process is somewhere a run visits, not where it lives. This is a beta
-(`0.1.0-beta.N`): a change that breaks a caller is listed in [CHANGELOG.md](CHANGELOG.md) when it ships.
+On an [Archil](https://archil.com) disk, opening a run mounts its directory (`runs/<id>` of the disk) and takes an exclusive claim on it, and `release()` seals the
+run, gives up the claim and unmounts. On a plain directory of this machine (`localRun`) there is no mount: one machine, no disk,
+no key. It runs [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) agents, on Linux (macOS is for development;
+Windows is not supported). This is a beta (`0.1.0-beta.N`): a change that breaks a caller is listed in [CHANGELOG.md](CHANGELOG.md)
+when it ships.
 
 ## What it is
 
@@ -42,8 +44,10 @@ Archil is not supported: the package needs the disk to give an exclusive claim a
 On Linux with Node 22.19 or later (or on macOS [for development](docs/reference.md#on-macos)). In an empty directory:
 
 ```sh
-npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
+npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
+
+pi 1.4 is not supported yet; a later release widens the range.
 
 Save this as `pick-up.mts` (Node 22.19 or later runs the types away; `.mts` makes it an ES module whatever your
 `package.json` says). It is [examples/pick-up-a-run/main.ts](examples/pick-up-a-run/main.ts). It starts three processes, one after another, on
@@ -216,11 +220,11 @@ what it imports.
 ## Install
 
 ```sh
-npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
+npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
 
-`@earendil-works/pi-durable` and `@earendil-works/chord` are peer dependencies, `>=1.0.4 <1.4.0`. Node 22.19 or later;
-Linux, or macOS for development.
+`@earendil-works/pi-durable` and `@earendil-works/chord` are peer dependencies, `>=1.0.4 <1.4.0`: pi 1.4 is not supported yet; a
+later release widens the range. Node 22.19 or later; Linux, or macOS for development.
 
 From a checkout (this package is `packages/pi-durable-disk` of the repository; the root build compiles `dist/`):
 

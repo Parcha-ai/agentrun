@@ -8,6 +8,7 @@ import { Type } from "typebox";
 import { inspectWorkflow, WORKFLOW_NODE_KINDS, type AuthorHostAddendum, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import { canonicalHash } from "@parcha/agentrun-dsl/recovery";
 import { extensionStructuralLimits, WorkflowExtensionService } from "../extension-service.js";
+import { assertHostTools, SUBMIT_TOOL } from "../host-tools.js";
 import { modelJson } from "../presentation.js";
 import { WorkflowStore } from "../workflow-store.js";
 import { progressLines, WorkflowObservation } from "../workflow-view.js";
@@ -63,6 +64,9 @@ const answer = (value: unknown) => toolResult([{ type: "text", text: modelJson(v
 /** The tool, and the workflow task its runs are: install `extension` (it carries both) and list the tool's name in the
  *  agent definition. `workflow` reads and stops runs from the host's side. */
 export function createWorkflowTool(host: WorkflowToolHost): { extension: Extension; workflow: ReturnType<typeof createWorkflowExtension> } {
+  // The host's tools pass the check the coding-agent extension's do; the tool's own name and the node runner's submit are reserved.
+  const name = host.name ?? "agentrun";
+  assertHostTools(host.tools ?? [], { reserved: [name, SUBMIT_TOOL], executable: false });
   const names = (host.tools ?? []).map((tool) => tool.name);
   const checker = () => new WorkflowExtensionService({ allowedTools: names });
   /** Inspect's checks, after naming any tool the workflow uses (a call's, or an agent node's) that the host did not
@@ -102,7 +106,7 @@ export function createWorkflowTool(host: WorkflowToolHost): { extension: Extensi
   });
 
   const tool = defineTool({
-    name: host.name ?? "agentrun",
+    name,
     description: "Compose and run AgentRun workflows in this session. Describe lists the tools a workflow may use, as a call's tool or an agent node's tools, and the language; a workflow uses only the tools describe lists, which the host registers. Inspect validates a complete workflow and keeps it as this conversation's draft. Dry-run checks the draft on synthetic values (or the given input) with no model, Jev or tool call. Run starts the draft as a durable task of this conversation and answers with its outcome. Running the same draft on the same input again, after a restart too, reaches the same run and makes no effect twice; again: true starts a fresh run of them, which a later run then reaches. Save, load and list keep named definition revisions.",
     parameters: Type.Object({ ...workflowToolProperties(), again: Type.Optional(Type.Boolean({ description: "Run only: start a fresh run of the same draft and input instead of reaching the one already run." })) }) as unknown as ToolRegistration["parameters"],
     executionMode: "sequential",

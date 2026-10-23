@@ -164,17 +164,36 @@ function reportText(recording: Recording, sha: string): Promise<string | undefin
 
 const REPORT_DROPPED = 'script, base, meta[http-equiv], iframe, frame, frameset, object, embed, applet, portal';
 const REPORT_FLASH = '[data-chat-flash]{outline:2px solid #ff8700;outline-offset:4px;animation:chat-flash 1.6s ease-out}@keyframes chat-flash{0%{background-color:#ff870040}100%{background-color:transparent}}';
-/** The site's look over the agent's page, for presentation only (the recording is not changed): square corners, the
- *  site's dark palette in the report skill's own colour names, its type. A left border wider than the right one is
- *  drawn as the right one by reportSquare once the page has loaded. */
+/** The site's look over every agent's page, for presentation only (the recording is not changed): square corners and its
+ *  type. A left border wider than the right one is drawn as the right one by reportSquare once the page has loaded. */
 const REPORT_BASE = [
   '*,*::before,*::after{border-radius:0!important}',
-  ':root{color-scheme:dark!important;--bg:#080809!important;--fg:#f2f2f2!important;--mute:#a4a4ad!important;--card:#111113!important;--line:#2c2c30!important;--accent:#ff8700!important;--box:#b4a0ff!important}',
-  'html,body{background:#080809!important;color:#f2f2f2!important}',
   'body{font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif!important}',
   'h1,h2,h3{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace!important;font-weight:500!important}',
   'code,pre,kbd,samp{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace!important}',
 ].join('');
+/** The site's dark palette, in the report skill's own colour names: only over a page that declares it supports dark. Any
+ *  other page is drawn as its author wrote it, a light page in the dark pane. */
+const REPORT_DARK = [
+  ':root{color-scheme:dark!important;--bg:#080809!important;--fg:#f2f2f2!important;--mute:#a4a4ad!important;--card:#111113!important;--line:#2c2c30!important;--accent:#ff8700!important;--box:#b4a0ff!important}',
+  'html,body{background:#080809!important;color:#f2f2f2!important}',
+].join('');
+
+/** Whether a page declares it supports dark: its own color-scheme names `dark`, in a `meta name="color-scheme"`, the root
+ *  element's style, or a `:root` or `html` rule of its style elements (read with the browser's CSS parser). */
+export function reportDeclaresDark(doc: Document): boolean {
+  const dark = (value: string | null | undefined) => (value ?? '').toLowerCase().split(/\s+/).includes('dark');
+  if ([...doc.querySelectorAll('meta[name="color-scheme" i]')].some((meta) => dark(meta.getAttribute('content')))) return true;
+  if (dark(doc.documentElement.style.getPropertyValue('color-scheme'))) return true;
+  const root = (rules: CSSRuleList): boolean => [...rules].some((rule) => (rule instanceof CSSStyleRule
+    ? rule.selectorText.split(',').some((each) => [':root', 'html'].includes(each.trim().toLowerCase())) && dark(rule.style.getPropertyValue('color-scheme'))
+    : (rule instanceof CSSSupportsRule || (typeof CSSLayerBlockRule !== 'undefined' && rule instanceof CSSLayerBlockRule)) && root(rule.cssRules)));
+  return [...doc.querySelectorAll('style')].some((style) => {
+    const sheet = new CSSStyleSheet();
+    try { sheet.replaceSync(style.textContent ?? ''); } catch { return false; }
+    return root(sheet.cssRules);
+  });
+}
 
 /** The artifact's entry as a document that runs nothing and loads only its own files from the recording: every
  *  reference rewritten through `files`, every script and handler removed, a policy naming only the blobs' origins. */
@@ -243,7 +262,7 @@ export async function reportPage(artifact: ChatArtifact, recording: Recording, p
   const flash = doc.createElement('style');
   flash.textContent = REPORT_FLASH;
   const base = doc.createElement('style');
-  base.textContent = REPORT_BASE;
+  base.textContent = reportDeclaresDark(doc) ? REPORT_BASE + REPORT_DARK : REPORT_BASE;
   doc.head.prepend(policy);
   doc.head.append(flash, base);
   const looks = new Set([...doc.querySelectorAll('[data-look]')].map((node) => node.getAttribute('data-look')!).filter(Boolean));
@@ -328,12 +347,12 @@ function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording,
   return { scroller, cited };
 }
 
-/** The right side: the artifact when the run wrote one (the answer when it cannot be read), else the run's answer. A
- *  citation calls `open(href, look)`; `scrollToLook` scrolls to the first element citing that look (or the card a row
- *  cites, or an id) and flashes it; `cited` holds the looks and card ids the report cites once it is read. */
 /** Opens a citation: its address, the look it names, and the picture it names when it names no look. */
 export type ReportOpen = (href: string, look?: string, picture?: { blob: string; label?: string }) => void;
 
+/** The right side: the artifact when the run wrote one (the answer when it cannot be read), else the run's answer. A
+ *  citation calls `open(href, look)`; `scrollToLook` scrolls to the first element citing that look (or the card a row
+ *  cites, or an id) and flashes it; `cited` holds the looks and card ids the report cites once it is read. */
 export function drawReport(pane: HTMLElement, model: ChatModel, recording: Recording, open: ReportOpen): { scrollToLook(look: string): boolean; cited: Promise<Set<string>> } {
   pane.replaceChildren();
   const native = (none?: string) => {

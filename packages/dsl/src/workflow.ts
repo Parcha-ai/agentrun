@@ -605,9 +605,7 @@ export type ValidationIssue = { path: string; code: ValidationCode; message: str
 
 const pointerKey = (key: string): string => key.replace(/~/g, "~0").replace(/\//g, "~1");
 
-/** Set executeCode:false for untrusted author feedback: check syntax and mechanical contracts
- * without evaluating authored expressions or probing transforms. This is not execution admission;
- * trusted/default validation and runtime output checks remain authoritative. */
+/** The names `retry.on` accepts: a call's retry classes and the effect-failure codes. */
 const RETRY_ON_NAMES: readonly string[] = [...CALL_RETRY_CLASSES, ...EFFECT_FAILURE_CODES];
 
 /** Advice the validator gives without refusing: a shape that runs and costs more than it needs to. A map with no
@@ -637,7 +635,10 @@ function workflowWarnings(workflow: Workflow): string[] {
   return warnings;
 }
 
-/** Whether a workflow can run, checked without running it: `errors` refuse it, `warnings` advise and never refuse. */
+/** Whether a workflow can run, checked without running it: `errors` refuse it, `warnings` advise and never refuse.
+ *  Set `executeCode: false` for untrusted author feedback: check syntax and mechanical contracts without evaluating
+ *  authored expressions or probing transforms. That is not execution admission; trusted/default validation and runtime
+ *  output checks remain authoritative. */
 export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: boolean; input?: Record<string, unknown>; inputKeys?: string[]; probeContext?: { references?: Record<string, string>; references_parsed?: Record<string, { header: string[]; rows: string[][] }> } }): { ok: true; warnings?: string[] } | { ok: false; errors: string[]; issues: ValidationIssue[]; warnings?: string[] } {
   const bounded = workflowDocumentError(workflow);
   if (bounded) return { ok: false, errors: [bounded], issues: [{ path: "", code: "DOCUMENT_INVALID", message: bounded }] };
@@ -942,12 +943,12 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       const allowed = KIND_KEYS[(node as any).node];
       const extraneous = Object.keys(node).filter((key) => !allowed.has(key));
       if (extraneous.length) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${(node as any).label || (node as any).node}): unknown key(s) for a ${(node as any).node} node: ${extraneous.join(", ")}`);
-      // `$`-prefixed state keys are engine-owned (`$host`, `<as>$verify`): no node may write one. A label
-      // is the state key whenever `as` is omitted, so labels are held to the same rule.
-      if (typeof (node as any).as === "string" && (node as any).as.startsWith("$")) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${(node as any).label || (node as any).node}): "as" must not name an engine-owned "$" state key ("${(node as any).as}")`);
+      // State keys that hold a `$` are engine-owned (`$host`, and a typed question's `<as>$answers` and `<as>$verify`): no node
+      // may write one, wherever the `$` is. A label is the state key whenever `as` is omitted, so labels are held to the same rule.
+      if (typeof (node as any).as === "string" && holdsDollar((node as any).as)) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${(node as any).label || (node as any).node}): "as" must not name an engine-owned "$" state key ("${(node as any).as}")`);
       // Only an unaliased generative or code node writes under its label; every other label is a name, not a key.
       const labelIsKey = ((node as any).node === "agent" || (node as any).node === "decide" || (node as any).node === "extract" || (node as any).node === "code") && (node as any).as === undefined;
-      if (labelIsKey && typeof (node as any).label === "string" && (node as any).label.startsWith("$")) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${(node as any).label}): label must not begin with "$" — an unaliased ${(node as any).node} node writes under its label, and "$" keys are engine-owned`);
+      if (labelIsKey && typeof (node as any).label === "string" && holdsDollar((node as any).label)) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${(node as any).label}): label must not contain "$" — an unaliased ${(node as any).node} node writes under its label, and "$" keys are engine-owned`);
     }
     switch (node.node) {
       case "chain":
@@ -982,22 +983,22 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       case "decide":
       case "extract":
       case "report":
-        if (node.state !== undefined) checkStateMap(node.state, node.label, path);
+        checkStateMap(node.state, node.label, path);
         if (!node.instructions?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): instructions required`);
         if (node.node !== "report" && !Object.hasOwn(workflow.schemas, node.out)) fail("SCHEMA_UNKNOWN", ptrOf(path), `${path} (${node.label}): out schema "${node.out}" not in workflow.schemas`);
-        if ((node as any).thinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(String((node as any).thinking))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): thinking must be low|medium|high — thinking is never off`);
-        if ((node as any).tools !== undefined && (!Array.isArray((node as any).tools) || (node as any).tools.some((t: unknown) => typeof t !== "string" || !(t as string).trim()))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): tools must be a list of non-empty tool names when present (an empty list disables tools)`);
+        if (node.thinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(String(node.thinking))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): thinking must be low|medium|high — thinking is never off`);
+        if (node.tools !== undefined && (!Array.isArray(node.tools) || node.tools.some((t: unknown) => typeof t !== "string" || !(t as string).trim()))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): tools must be a list of non-empty tool names when present (an empty list disables tools)`);
         checkRequires(node, path);
         if ((node as any).tier !== undefined && !(MODEL_TIERS as readonly string[]).includes(String((node as any).tier))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): tier must be fast|default|strong`);
         if (node.node === "agent" && node.budget_usd !== undefined && !(typeof node.budget_usd === "number" && Number.isFinite(node.budget_usd) && node.budget_usd > 0)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): budget_usd must be a number of dollars greater than 0`);
         if (node.node === "agent" && node.context !== undefined && !(AGENT_CONTEXTS as readonly string[]).includes(String(node.context))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): context must be ${AGENT_CONTEXTS.join("|")}`);
-        if (node.node !== "report" && (node as any).verify !== undefined) {
-          const v = (node as any).verify as VerifyClause;
+        if (node.node !== "report" && node.verify !== undefined) {
+          const v = node.verify as VerifyClause;
           if (!v || typeof v !== "object" || typeof v.out !== "string") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): verify needs an out (a question schema id)`);
           else {
             const qs = checkQuestionSchema(v.out, node.label, path);
             if (qs && !Object.values(qs).some((q) => q.type === "noul")) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): verify.out "${v.out}" carries no yes/no question — a verifier decides by yes/no (a boolean named after a submission field verifies it; any other boolean is a requirement)`);
-            if (v.state !== undefined) checkStateMap(v.state, node.label, path, "verify.state");
+            checkStateMap(v.state, node.label, path, "verify.state");
             if (v.maxDrives !== undefined && (!Number.isInteger(v.maxDrives) || v.maxDrives < 1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): verify.maxDrives must be an integer >= 1`);
             if (v.override !== undefined && (typeof v.override?.below !== "number" || v.override.below <= 0 || v.override.below >= 1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): verify.override.below must be in (0, 1)`);
           }
@@ -1018,7 +1019,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         if (node.onItemFailure !== undefined && node.onItemFailure !== "stop" && node.onItemFailure !== "collect") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): onItemFailure must be "stop" or "collect"`);
         if (node.onItemFailure === "collect") {
           if (typeof node.failedAs !== "string" || !node.failedAs.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): onItemFailure "collect" needs failedAs, the state key the map writes its failed items under`);
-          else if (node.failedAs.startsWith("$")) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${node.label}): failedAs must not name an engine-owned "$" state key ("${node.failedAs}")`);
+          else if (holdsDollar(node.failedAs)) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${node.label}): failedAs must not name an engine-owned "$" state key ("${node.failedAs}")`);
           else if (node.failedAs === node.as) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): failedAs must differ from as: the map writes its results and its failed items under two keys`);
         } else if (node.failedAs !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${node.label}): failedAs is written only with onItemFailure "collect"`);
         if (containsReportNode(node.body)) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${node.label}): a report node cannot live inside a map body — the report is the workflow's ONE terminal rendering (a mapped copy lands in the item results, never at state.report_markdown)`);
@@ -2126,6 +2127,8 @@ const MAP_ITEM = Symbol("workflow.mapItem");
 type LocatedDeps = WorkflowDeps & { [EXECUTION_PATH]?: string; [SCOPED_EFFECTS]?: boolean; [MAP_ITEM]?: MapItem };
 /** The reserved state key host policy writes under. Engine-owned like every `$`-prefixed key: no node may name it. */
 export const HOST_STATE_KEY = "$host";
+/** Whether a state key is engine-owned: it holds a `$` (`$host`, `<as>$answers`, `<as>$verify`). No node may declare a write to one. */
+const holdsDollar = (key: string): boolean => key.includes("$");
 const hostStateOf = (state: Record<string, unknown>): Record<string, unknown> => {
   const host = state[HOST_STATE_KEY];
   return host && typeof host === "object" && !Array.isArray(host) ? host as Record<string, unknown> : {};
@@ -2357,7 +2360,7 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       if (deps.sop) deps.onEvent?.({ type: "sop.coverage", label: node.label, detail: { sections: sopSections.map((s) => ({ name: s, chars: sliceSop(deps.sop as string, s).length })), sliceChars: sopSlice.length, sopChars: (deps.sop as string).length } });
       assertNodeInputs(node, state);
       const promptState = node.state ? interpolateValue(node.state, state, node.label) : promptStateOf(state);
-      const verifier = node.node !== "report" && (node as any).verify ? compileVerifier(workflow, node as WorkflowNode & { verify: VerifyClause; as?: string; label: string; node: string }, state, deps) : null;
+      const verifier = node.node !== "report" && node.verify ? compileVerifier(workflow, node as WorkflowNode & { verify: VerifyClause; as?: string; label: string; node: string }, state, deps) : null;
       // Host policy: the adapter submits against the transport schema (the stage schema plus the host's
       // channels); the decoded domain value is what the stage schema, the verifier and the state see.
       const policy = deps.hostPolicy;
@@ -2402,9 +2405,9 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       system: [sopSlice, deps.skill, node.instructions, ...(policy?.systemBlocks && context ? policy.systemBlocks(context) : [])].filter(Boolean) as string[],
       user: JSON.stringify(promptState),
       schema: transportSchema,
-      ...((node as any).effort ? { effort: (node as any).effort } : {}),
-      ...((node as any).thinking ? { thinking: (node as any).thinking } : {}),
-      ...(Array.isArray((node as any).tools) ? { tools: (node as any).tools } : {}),
+      ...(node.effort ? { effort: node.effort } : {}),
+      ...(node.thinking ? { thinking: node.thinking } : {}),
+      ...(Array.isArray(node.tools) ? { tools: node.tools } : {}),
       });
       const decoded = decode(submission);
       const result = decoded.value as Record<string, unknown>;

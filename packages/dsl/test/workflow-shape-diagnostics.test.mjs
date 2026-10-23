@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createRequire } from 'node:module';
 import { Compile } from 'typebox/compile';
 import { workflowShapeErrors } from '../dist/workflow-shape.js';
+import { inspectWorkflow } from '@parcha/agentrun-dsl';
 
 // Fictional structural fixtures only; no adapters, inference or code execution.
 const schema = createRequire(import.meta.url)('../schema/workflow.schema.json');
@@ -62,4 +63,26 @@ test('diagnostics remain bounded and do not evaluate code or echo supplied argum
   assert(errors.length > 0 && errors.length <= 8);
   assert.doesNotMatch(errors.join('\n'), /PRIVATE_ARGUMENT_VALUE_SENTINEL|must never execute/);
   assert.match(errors[0], /\/root\/steps\/1:.*as/);
+});
+
+test('a route is diagnosed against the route variant it is: a judged route against the judged route, a route by value against its own', () => {
+  // The schema has two route variants, both with node "route"; a judged route asks a question, a route by value reads a state path.
+  const branches = { a: { body: { node: 'code', label: 'a', code: '(s) => s' } }, b: { body: { node: 'code', label: 'b', code: '(s) => s' } } };
+  const judgedMissingState = messages({ node: 'route', label: 'r', instructions: 'Which one?', branches });
+  assert.match(judgedMissingState, /state/);
+  assert.doesNotMatch(judgedMissingState, /valuePath/, 'a judged route is never told it needs a valuePath');
+  assert.equal(messages({ node: 'route', label: 'r', instructions: 'Which one?', state: { q: '{q}' }, branches }), '', 'a valid judged route has nothing to say');
+  assert.equal(messages({ node: 'route', label: 'r', valuePath: 'kind', otherwise: 'a', branches }), '', 'a valid route by value has nothing to say');
+  const byValueBadPath = messages({ node: 'route', label: 'r', valuePath: 7, otherwise: 'a', branches });
+  assert.match(byValueBadPath, /valuePath/);
+  assert.doesNotMatch(byValueBadPath, /instructions|required properties state/, 'a route by value is never told it needs a question');
+  // A tie (as many errors against each variant) goes to the variant first in the schema, the judged route: a bare route is
+  // asked for what a judged route needs.
+  assert.equal(messages({ node: 'route' }), 'workflow/root: must have required properties branches, instructions, label, state');
+  assert.equal(messages({ node: 'route', label: 'r' }), 'workflow/root: must have required properties branches, instructions, state');
+  // The same through inspectWorkflow, which an authoring agent reads: it names the judged route's missing state.
+  let inspected = '';
+  try { inspectWorkflow(workflow({ node: 'route', label: 'r', instructions: 'Which one?', branches })); } catch (error) { inspected = error.message; }
+  assert.match(inspected, /state/);
+  assert.doesNotMatch(inspected, /valuePath/);
 });
