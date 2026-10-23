@@ -115,3 +115,24 @@ describe("a framed launch's user", () => {
 		expect(said({ argv: ["true"], toolsUser: "a b" })).toMatch(/^toolsUser is a user name or a numeric uid/);
 	});
 });
+
+describe("a key-shaped name in env", () => {
+	const keyed = (name: string) => launchSpecError("named", { argv: ["true"], env: { [name]: VALUE } });
+
+	it.each(["KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "CREDENTIALS"])(
+		"is refused for the segment %s, wherever it stands in the name and in any case, naming the name and never its value",
+		(segment) => {
+			for (const name of [segment, `APP_${segment}`, `${segment}_ID`, `MY_${segment.toLowerCase()}_FILE`]) {
+				const refusal = keyed(name);
+				expect(refusal?.code, name).toBe("invalid");
+				expect(refusal?.message, name).toContain(`the environment name ${name} looks like a key`);
+				expect(refusal?.message, name).not.toContain(VALUE);
+			}
+		},
+	);
+
+	it("is not a name with such a word inside a segment: MONKEY, TOKENS, KEYBOARD, SECRETARY and PASSWORDS pass", () => {
+		for (const name of ["MONKEY", "TOKENS", "KEYBOARD", "SECRETARY", "PASSWORDS", "APP_TOKENS", "DONKEY_KONG"])
+			expect(keyed(name), name).toBeUndefined();
+	});
+});
