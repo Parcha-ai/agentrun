@@ -27,6 +27,15 @@ test("the store page is store.html: page.css, the graph drawer, then page.js; no
   assert.doesNotMatch(html, /<style|\sstyle=|\son[a-z]+=|https?:|\/\//i);
 });
 
+test("no left accent bar on what the store's page draws: its own rules use a tint, a glyph or a full border, never a border down one side", () => {
+  // The classes the store's page adds to page.css; the timeline it shares with an agent home's page keeps that page's rules.
+  const OWN = ["agents", "agent-tile", "revs", "revision", "rev-head", "rev-id", "rev-note", "rev-body", "diff", "line", "chip.add", "chip.del", "files li", "filters", "filter", "table.store", "rev", "unknown", "graph-box", "note", "ran", "summary", "pill.escalated", "pill.stopped", "pill.agentic", "pill.workflow", "pill.current", "pill.added", "pill.edited", "pill.removed"];
+  const rules = [...served("page.css").matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({ selector: selector.trim(), body }));
+  const own = rules.filter(({ selector }) => OWN.some((name) => new RegExp(`\\.${name.replace(".", "\\.")}(?![\\w-])`).test(selector)));
+  assert.ok(own.length >= 30, `the store page's rules were found (${own.length})`);
+  assert.deepEqual(own.filter(({ body }) => /border-left|inset/.test(body)).map(({ selector }) => selector), []);
+});
+
 test("the picker: each agent with its current revision's kind and its run count, a link to its page, and markup as text", async () => {
   const page = mount({ "api/store": { agents: AGENTS } }, "#/", { serve: STORE });
   await page.settle();
