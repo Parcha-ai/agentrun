@@ -12,6 +12,17 @@ export const jobInputAdjudicate = (job) => ({ name: job.name, website: job.websi
 /** The line a stage-2-only run's job text adds (eval-adjudicate.mjs --stage1-from): its stage 1 is an earlier pass's. */
 export const STAGE1_RECORDED = 'Stage 1 for this merchant was recorded in an earlier run. Do not record it again: call codes and judge every candidate.';
 
+/** The line a stage-1-only run's job text adds (eval-adjudicate.mjs --stage1-only, the labels): no candidate is judged. */
+export const STAGE1_ONLY = 'This run records stage 1 only: once it is recorded, codes gives no candidate, so answer with no codes.';
+
+/** A labels line (eval-adjudicate.mjs --stage1-only): the adjudicator's own code and the tiers it allows for a merchant,
+ *  from its stage 1, or no label for a site it could not judge, with the reason. */
+export function labelOf(merchantId, stage1) {
+  return stage1.unjudgeable
+    ? { merchant: merchantId, mcc: null, allowedTiers: null, unjudgeable: true, reason: stage1.unjudgeable }
+    : { merchant: merchantId, mcc: stage1.own.mcc, allowedTiers: stage1.risk.tiers, unjudgeable: false, reason: null };
+}
+
 export const jobTextAdjudicate = (job) => [
   'Judge this merchant, blind.',
   `Merchant: ${job.name}`,
