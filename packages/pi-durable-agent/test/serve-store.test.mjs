@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { serveStore } from "../dist/serve/index.js";
 import { AGENTS, BRIEF_GRAPH, BRIEF_WORKFLOW, buildSampleStore, fakeReader, fakeWorkflow, MCC_GRAPH_1, MCC_GRAPH_2, REVISIONS, RUN, RUNS } from "./fixtures/store-sample.mjs";
+import { all, assertInert, mount } from "./page-dom.mjs";
 import { request, scratch } from "./support.mjs";
 
 const CLI = fileURLToPath(new URL("../dist/serve/cli.js", import.meta.url));
@@ -289,6 +290,85 @@ test("a run with no cost recorded has no cost in the API, never a cost of 0", li
     assert.equal("costUsd" in listed, false);
     assert.equal("costUsd" in (await get(`/api/runs/${RUN.b002.id}`)).json.run, false);
     assert.equal((await get(`/api/runs/${RUN.b001.id}`)).json.run.costUsd, 0.312);
+  } finally {
+    await served.close();
+  }
+});
+
+/** The page's fetch, answered by the server at `url`, and a wait until every request it made has its answer drawn. */
+function serverFetch(url) {
+  const pending = new Set();
+  const fetch = (target) => {
+    const job = request(url, { target: `/${target}` }).then((res) => ({ ok: res.status < 300, status: res.status, text: async () => res.body }));
+    pending.add(job);
+    job.then(() => pending.delete(job), () => pending.delete(job));
+    return job;
+  };
+  const idle = async (page) => {
+    do {
+      await Promise.allSettled([...pending]);
+      await page.settle();
+    } while (pending.size);
+  };
+  return { fetch, idle };
+}
+
+test("the fixture store, rendered: the page over the server's own answers shows three agents, the hero's three revisions with B diffed against A and C a graph, and runs in every state", linux, async () => {
+  const { served } = await sample();
+  const classOf = (el) => el.getAttribute("class") ?? "";
+  const pills = (node) => all(node).filter((el) => classOf(el).startsWith("pill ")).map((el) => [classOf(el), el.textContent]);
+  const open = async (hash) => {
+    const server = serverFetch(served.url);
+    const page = mount({}, hash, { serve: "store", fetch: server.fetch });
+    await server.idle(page);
+    assertInert(page.app);
+    assert.doesNotMatch(page.app.textContent, /Could not read/, hash);
+    return page;
+  };
+  try {
+    const picker = await open("#/");
+    const tiles = all(picker.app).filter((el) => el.tagName === "A" && classOf(el) === "agent-tile");
+    assert.deepEqual(tiles.map((el) => [el.getAttribute("href"), pills(el)[0][1]]), [["#/agents/company-researcher", "workflow"], ["#/agents/inbox-triage", "agentic"], ["#/agents/mcc-classifier", "workflow"]]);
+    assert.ok(tiles[0].textContent.includes("3 revisions") && tiles[0].textContent.includes("6 runs") && tiles[1].textContent.includes("1 run"));
+
+    const hero = await open("#/agents/company-researcher");
+    const blocks = all(hero.app).filter((el) => classOf(el).startsWith("revision"));
+    assert.deepEqual(blocks.map((el) => [classOf(el), all(el).find((n) => classOf(n) === "note").textContent]), [["revision current", "The cheap one: a workflow"], ["revision", "Prompt B: every fact cited"], ["revision", "Prompt A: the first brief"]]);
+    assert.ok(blocks[0].textContent.includes(`Its parent ${REVISIONS.B.id.slice(0, 12)} is an agentic revision`));
+    assert.deepEqual(all(blocks[0]).filter((el) => el.tagName === "LI" && classOf(el).startsWith("node")).map((el) => el.querySelectorAll("b")[0].textContent), BRIEF_GRAPH.nodes.map((node) => node.label), "C's graph, as text without the drawer");
+    const lines = all(blocks[1]).filter((el) => classOf(el).startsWith("line ")).map((el) => [classOf(el).slice(5), el.textContent.slice(1)]);
+    assert.deepEqual(lines.filter(([op]) => op === "add").map(([, text]) => text), [REVISIONS.B.body.instructions.split("\n")[0], REVISIONS.B.body.instructions.split("\n")[2], REVISIONS.B.body.instructions.split("\n")[4]]);
+    assert.equal(lines.length, 7, "every line of A and B");
+    assert.ok(all(blocks[2]).some((el) => el.tagName === "PRE" && el.textContent === REVISIONS.A.body.instructions));
+    const rows = all(hero.app).filter((el) => el.tagName === "A" && classOf(el) === "run");
+    assert.deepEqual(rows.map((el) => [el.getAttribute("href").slice(-4), pills(el)[0][1]]), [["c002", "escalated"], ["c001", "completed"], ["b002", "completed"], ["b001", "completed"], ["a002", "failed"], ["a001", "completed"]]);
+    assert.deepEqual(pills(rows[0])[0], ["pill escalated", "escalated"], "escalated is its own state");
+    assert.ok(rows[2].textContent.includes("unknown") && !rows[2].textContent.includes("$0"), "a null cost reads unknown");
+
+    const filtered = await open(`#/agents/company-researcher?revision=${REVISIONS.B.id}`);
+    assert.equal(all(filtered.app).filter((el) => el.tagName === "A" && classOf(el) === "run").length, 2);
+
+    const mcc = await open("#/agents/mcc-classifier");
+    const [m2] = all(mcc.app).filter((el) => classOf(el).startsWith("revision"));
+    assert.deepEqual(all(m2).filter((el) => el.tagName === "LI" && classOf(el).startsWith("node")).map(classOf), ["node", "node", "node added", "node edited", "node added"]);
+    assert.ok(m2.textContent.includes("Format the answer (code)") && m2.textContent.includes("1 moved"));
+    assert.deepEqual(all(mcc.app).filter((el) => el.tagName === "A" && classOf(el) === "run").map((el) => pills(el)[0][1]), ["stopped", "completed", "missing", "completed"]);
+
+    const escalated = await open(`#/runs/${RUN.c002.id}`);
+    const fired = all(escalated.app).filter((el) => classOf(el) === "node fired");
+    assert.equal(fired.length, 1);
+    assert.ok(fired[0].textContent.includes("No public record") && fired[0].textContent.includes("stopped here"));
+    assert.ok(!pills(escalated.app).some(([cls]) => cls === "pill error"), "the escalation is never drawn as failed");
+    assert.match(escalated.app.textContent, /Escalated at No public record/);
+
+    const agentic = await open(`#/runs/${RUN.a001.id}`);
+    assert.deepEqual(pills(agentic.app).slice(0, 2), [["pill ok", "completed"], ["pill agentic", "agentic"]]);
+    assert.ok(all(agentic.app).some((el) => classOf(el) === "row answer"), "the timeline ends with the answer");
+    assert.ok(agentic.app.textContent.includes("$0.409") && agentic.app.textContent.includes("4 tool calls"));
+
+    const gone = await open(`#/runs/${RUN.e002.id}`);
+    assert.deepEqual(pills(gone.app)[0], ["pill missing", "missing"]);
+    assert.match(gone.app.textContent, /This run's directory is not in the store/);
   } finally {
     await served.close();
   }
