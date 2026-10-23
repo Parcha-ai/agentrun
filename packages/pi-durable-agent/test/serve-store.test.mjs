@@ -197,6 +197,49 @@ test("a copy of the fixture folder served through serveStore: its workflow runs 
   }
 });
 
+test("serving every route makes no file beside an ended run's store, read as an immutable file; a live run's store still reads, through its log", async () => {
+  const { root, ids, served, get } = await sample();
+  const before = files(root);
+  let live;
+  try {
+    const agents = (await get("/api/store")).json.agents.map((agent) => `/api/agents/${agent.id}`);
+    for (const target of ["/", "/api/store", "/api/runs", ...agents, ...Object.values(ids).map((id) => `/api/runs/${id}`)]) assert.equal((await get(target)).status, 200, target);
+    live = (await get(`/api/runs/${ids.t1}`)).json;
+  } finally {
+    await served.close();
+  }
+  const made = files(root).filter((file) => !before.some((was) => was.path === file.path)).map((file) => file.path);
+  assert.deepEqual(made, [`runs/${ids.t1}/store/run.sqlite-shm`, `runs/${ids.t1}/store/run.sqlite-wal`], "only the running run's store, which a writer may hold, is read through its log");
+  assert.deepEqual(files(root).filter((file) => before.some((was) => was.path === file.path)), before, "every file there before is byte-identical, its mtime unmoved");
+  assert.equal(live.run.state, "running");
+  assert.ok(live.rows.length > 0, "the live run's entries are read");
+});
+
+test("an agentic-only store whose runs have all ended: serving every route makes no file anywhere in its folder", async () => {
+  const root = path.join(await scratch(), "agentic");
+  const store = openStore(root);
+  const runs = [];
+  try {
+    const agent = store.createAgent({ id: "notes", name: "Notes" });
+    await store.commitRevision(agent.id, { kind: "agentic", instructions: "Take notes." }, { setCurrent: true });
+    for (const state of ["completed", "failed", "stopped"]) {
+      const started = await store.startRun({ agent: agent.id });
+      store.carryBack(started.runId, { state });
+      runs.push(started.runId);
+    }
+  } finally {
+    store.close();
+  }
+  const before = files(root);
+  const served = await serveStore({ dir: root });
+  try {
+    for (const target of ["/", "/api/store", "/api/runs", "/api/agents/notes", ...runs.map((id) => `/api/runs/${id}`)]) assert.equal((await request(served.url, { target })).status, 200, target);
+  } finally {
+    await served.close();
+  }
+  assert.deepEqual(files(root), before);
+});
+
 test("a workflow run its reader refuses (one in the keyed layout) is that refusal's one line beside the run's row; a run store that is no store is a plain 500", async () => {
   const dir = path.join(await scratch(), "keyed-agents");
   const store = openStore(dir);
