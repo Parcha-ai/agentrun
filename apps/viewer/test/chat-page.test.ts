@@ -630,9 +630,9 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.deepEqual(await value(`(() => { const b = doc('answer').querySelector('.src .jbox'); return [getComputedStyle(b).borderTopColor, getComputedStyle(b.querySelector('span')).color]; })()`),
       ['rgb(229, 81, 186)', 'rgb(242, 242, 242)'], 'a judge\'s box in its accent, its label in ink');
 
-    // Opened by its URL (?src=), the agent's page keeps the stylesheet it links and the one that imports; the site's palette
-    // is drawn over them.
-    assert.deepEqual(await value(`[getComputedStyle(art('srcsheet').getElementById('alarm')).letterSpacing, getComputedStyle(art('srcsheet').getElementById('alarm')).wordSpacing, getComputedStyle(art('srcsheet').body).backgroundColor]`), ['1px', '3px', 'rgb(8, 8, 9)']);
+    // Opened by its URL (?src=), the agent's page keeps the stylesheet it links and the one that imports. It declares no dark
+    // scheme, so its own background stands (the site's palette goes only over a page that declares dark).
+    assert.deepEqual(await value(`[getComputedStyle(art('srcsheet').getElementById('alarm')).letterSpacing, getComputedStyle(art('srcsheet').getElementById('alarm')).wordSpacing, getComputedStyle(art('srcsheet').body).backgroundColor]`), ['1px', '3px', 'rgb(16, 16, 18)']);
 
     // Opened by its URL (?src=), "How this ran" opens the same URL in the inspection viewer, in the header and the report.
     assert.deepEqual(await value(`[doc('srcpage').querySelector('a.how').getAttribute('href'), doc('srcpage').querySelector('.report a').getAttribute('href')]`),

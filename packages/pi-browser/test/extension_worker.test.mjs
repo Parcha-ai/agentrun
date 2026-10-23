@@ -8,7 +8,8 @@ const WAKE = `chrome-extension://${ID}/wake-service-worker.html`;
 const worker = (n) => ({ targetId: `worker-${n}`, type: "service_worker", url: `chrome-extension://${ID}/service-worker.js` });
 
 /** `listing`: "now" answers Target.getTargets at once, "never" never answers it, a number answers it that many ms late. */
-function browser({ workers = [worker(1)], wakeThatStarts = 1, replies = true, dropOnWake = false, listing = "now", wakeReplyAt = 0 } = {}) {
+/** `replyId`: the id the runtime's reply carries (default: the close's own). */
+function browser({ workers = [worker(1)], wakeThatStarts = 1, replies = true, replyId, dropOnWake = false, listing = "now", wakeReplyAt = 0 } = {}) {
   const state = { workers, wakes: 0, pages: new Set(), closedWorkers: [], held: true, firstCall: 0 };
   const handle = (method, params, { sessionId, emit, drop }) => {
     state.firstCall ||= Date.now();
@@ -22,7 +23,7 @@ function browser({ workers = [worker(1)], wakeThatStarts = 1, replies = true, dr
     if (method === "Runtime.evaluate") {
       const close = JSON.parse(JSON.parse(/__stagehandReceiveFromHost\((".*")\)/.exec(params.expression)[1]));
       if (close.method === "stagehand.close") state.held = false;
-      if (replies) emit("Runtime.bindingCalled", { name: "__stagehandSendToHost", payload: JSON.stringify({ jsonrpc: "2.0", id: close.id, result: { closed: true } }), executionContextId: 1 }, sessionId);
+      if (replies) emit("Runtime.bindingCalled", { name: "__stagehandSendToHost", payload: JSON.stringify({ jsonrpc: "2.0", id: replyId ?? close.id, result: { closed: true } }), executionContextId: 1 }, sessionId);
       return { result: { type: "boolean", value: true } };
     }
     if (method === "Target.closeTarget") {
@@ -55,6 +56,23 @@ test("a held runtime is released by its own close RPC, and its worker keeps runn
   const sent = cdp.calls.filter((call) => call.sessionId === "session-worker-1").map((call) => call.method);
   assert.deepEqual(sent, ["Runtime.enable", "Runtime.addBinding", "Runtime.evaluate"]);
   assert.ok(cdp.calls.some((call) => call.method === "Target.detachFromTarget" && call.params.sessionId === "session-worker-1"), "the reset's session is let go");
+});
+
+test("the runtime's reply to the close ends the wait at once, and a reply to another id does not", { timeout: 20_000 }, async (t) => {
+  const answered = browser();
+  const a = await fakeCdp(answered.handle);
+  t.after(() => a.close());
+  let started = Date.now();
+  assert.equal(await installedExtension(a.url, undefined, undefined, 8_000), ID);
+  const fast = Date.now() - started;
+  assert.ok(fast < 2_000, `the reply ended the wait: ${fast} ms of an 8,000 ms reply deadline`);
+  const other = browser({ replyId: 7 });
+  const b = await fakeCdp(other.handle);
+  t.after(() => b.close());
+  started = Date.now();
+  assert.equal(await installedExtension(b.url, undefined, undefined, 1_500), ID);
+  const waited = Date.now() - started;
+  assert.ok(waited >= 1_400, `a reply to another id is not the close's: the attach waited ${waited} ms of a 1,500 ms deadline`);
 });
 
 test("with no worker running nothing is held: the extension is woken until a worker is listed, a lost wake is sent again, and every wake page is closed", async (t) => {

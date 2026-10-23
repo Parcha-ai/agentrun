@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { BrowserFailureError } from "./custody.js";
+import { refusedError } from "./custody.js";
 import type { BrowserProvider, RemoteFile } from "./host.js";
 import type { LeaseRef } from "./lease.js";
 
@@ -56,7 +56,7 @@ async function readManifest(file: string): Promise<Manifest> {
   let parsed: Manifest | null = null;
   try { parsed = JSON.parse(raw) as Manifest; } catch {}
   if (parsed?.schema === "pi-browser.downloads.v1" && Array.isArray(parsed.files)) return parsed;
-  throw new BrowserFailureError({ ok: false, code: "refused", retryable: false, effect: "none", message: `${DOWNLOADS_MANIFEST} exists but is not a pi-browser downloads manifest; fix or move it, then call browser_downloads again.` });
+  throw refusedError(`${DOWNLOADS_MANIFEST} exists but is not a pi-browser downloads manifest; fix or move it, then call browser_downloads again.`);
 }
 
 /** Skips what the workspace already holds; one failing file is skipped with its reason. */

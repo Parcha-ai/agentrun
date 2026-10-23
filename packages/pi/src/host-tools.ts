@@ -5,6 +5,10 @@ import { Compile } from 'typebox/compile';
 /** The most tools a host may register. */
 const MAX_HOST_TOOLS = 100;
 
+/** The tool a workflow node delivers its result with (the runner's and the durable record tool's), so no host tool may
+ *  take its name. */
+export const SUBMIT_TOOL = 'submit';
+
 type HostToolLike = { name?: unknown; execute?: unknown; parameters?: unknown; resultSchema?: unknown } | null | undefined;
 
 /**
@@ -12,7 +16,7 @@ type HostToolLike = { name?: unknown; execute?: unknown; parameters?: unknown; r
  * is not blank, not in `reserved` and not repeated, and an object parameter schema (and result schema, when given) the
  * compiler takes. With `executable`, each tool also needs an `execute` function. Throws on the first problem.
  */
-export function checkHostTools(tools: unknown, options: { reserved: readonly string[]; executable: boolean }): void {
+export function assertHostTools(tools: unknown, options: { reserved: readonly string[]; executable: boolean }): void {
   if (!Array.isArray(tools) || tools.length > MAX_HOST_TOOLS) throw new Error(`Host must supply at most ${MAX_HOST_TOOLS} explicit tool definitions`);
   const names = new Set<string>();
   for (const tool of tools as HostToolLike[]) {

@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { RecoveryError } from "./errors.js";
 import { itemState as rebuildItemState, partialResults as readPartialResults, type PartialSlot, type Sha256, type StateDelta } from "./item-state.js";
 
-const failure = (code: string, message: string) => new RecoveryError(message, code);
+export const failure = (code: string, message: string) => new RecoveryError(message, code);
 
 export const FROZEN_SNAPSHOT_SCHEMA = "agentrun.frozen_run.v3";
 /** The keyed layout: what lies in a map item is kept in that item's record beside the state, and a state the driver
@@ -58,8 +58,6 @@ export type FrozenSnapshotV4 = Omit<FrozenSnapshot, "schema" | "pin"> & {
   maps: Record<string, MapEntry>;
 };
 
-/** Two values a state holds under one key are the same value. A key an item copied from its base holds the base's own
- *  object, or one with the same JSON. */
 /** A map item's state at `path`, rebuilt as the driver rebuilds it (`./item-state.ts`, which imports nothing): the
  *  `agentrun.states` value its `base` names, with the item's `set` and `unset` for that path applied, checked against
  *  that path's `sha256`. `item` is an `agentrun.items` value; `states` holds `agentrun.states` values by SHA-256. When
@@ -162,7 +160,7 @@ export type FrozenShape = { resolves: (path: string) => boolean };
 export const emptyPathFrame = (): PathFrame => ({ input: null, done: [], states: {}, chains: {}, loops: {}, routes: {}, inputs: {}, steps: {} });
 
 const record = (value: unknown): boolean => Boolean(value) && typeof value === "object" && !Array.isArray(value);
-const SHA256 = /^[a-f0-9]{64}$/;
+export const SHA256 = /^[a-f0-9]{64}$/;
 
 type Fields = Record<string, unknown>;
 /** `value` as an object whose fields can be read, or null. */

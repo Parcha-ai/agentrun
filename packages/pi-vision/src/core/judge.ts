@@ -14,7 +14,7 @@ import { citation, parseCitation } from "./fragments.js";
 import type { CallContext, CallSetup, ImageContent, Json, Usage } from "./host.js";
 import { fitImage, type FitLimits, type PixelSize } from "./image.js";
 import { JEV_IMAGE_BYTES, JEV_MAX_EDGE, JEV_MIN_EDGE, JEV_MODEL, JEV_REQUEST_BYTES } from "./limits.js";
-import { aboutMedium, AS_IS, gatherMedia, namesMedia, once, requestedAbout, throwMiss, type About, type MediaMiss, type MediaRequest } from "./media.js";
+import { aboutMedium, AS_IS, gatherMedia, namesMedia, singleFlight, requestedAbout, throwMiss, type About, type MediaMiss, type MediaRequest } from "./media.js";
 import { firstLine } from "./misses.js";
 import { base64Chars } from "./primitives.js";
 import { lookTiming } from "./timing.js";
@@ -54,16 +54,21 @@ const TYPES = ["choice", "noul", "score", "box"];
 const JEV_FIT: FitLimits = { maxWidth: JEV_MAX_EDGE, maxHeight: JEV_MAX_EDGE, maxBytes: base64Chars(JEV_IMAGE_BYTES), minEdge: JEV_MIN_EDGE, formats: ["image/png", "image/jpeg"], baseline: true };
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
+// A text judgment: no path, image, fragment or example, no box question, and a state that carries the text.
+const textJudgment = (r: Record<string, unknown>, questions: readonly unknown[]): boolean => {
+  const bare = [r.images, r.paths, r.fragments].every((v) => v === undefined || (Array.isArray(v) && v.length === 0)) && (r.examples === undefined || (object(r.examples) && Object.keys(r.examples).length === 0));
+  return bare && object(r.state) && Object.keys(r.state).length > 0 && questions.every((q) => object(q) && q.type !== "box" && q.image === undefined);
+};
+const questionOk = (q: unknown, count: number): boolean => object(q) && TYPES.includes(q.type as string) && (q.image === undefined || (Number.isInteger(q.image) && (q.image as number) >= 0 && (q.image as number) < count));
+const stateOk = (state: unknown): boolean => state === undefined || (object(state) && !("images" in state));
+const examplesOk = (examples: unknown, said: string): boolean => examples === undefined || (object(examples) && Object.keys(examples).every((ref) => said.includes(ref)));
+
 function checked(input: unknown): JudgeRequest {
   const r = (object(input) ? input : {}) as Record<string, unknown>;
   const count = (Array.isArray(r.images) ? r.images.length : 0) + (Array.isArray(r.paths) ? r.paths.length : 0);
   const questions = object(r.questions) ? Object.values(r.questions) : [];
   const said = JSON.stringify(r.questions ?? null);
-  // A text judgment: no path, image, fragment or example, no box question, and a state that carries the text.
-  const bare = [r.images, r.paths, r.fragments].every((v) => v === undefined || (Array.isArray(v) && v.length === 0)) && (r.examples === undefined || (object(r.examples) && Object.keys(r.examples).length === 0));
-  const text = bare && object(r.state) && Object.keys(r.state).length > 0 && questions.every((q) => object(q) && q.type !== "box" && q.image === undefined);
-  if (!(namesMedia(r) || text) || !questions.length || !questions.every((q) => object(q) && TYPES.includes(q.type as string) && (q.image === undefined || (Number.isInteger(q.image) && (q.image as number) >= 0 && (q.image as number) < count)))
-    || !(r.state === undefined || (object(r.state) && !("images" in r.state))) || !(r.examples === undefined || (object(r.examples) && Object.keys(r.examples).every((ref) => said.includes(ref))))) {
+  if (!((namesMedia(r) || textJudgment(r, questions)) && questions.length > 0 && questions.every((q) => questionOk(q, count)) && stateOk(r.state) && examplesOk(r.examples, said))) {
     throw new TypeError("vision.judge takes { questions: { [name]: { type: \"choice\" | \"noul\" | \"score\" | \"box\", instructions?, criteria?, image? } }, paths?, images?, fragments?, examples?: { [reference written in a question]: path or image block }, state?: an object without `images` } with at least one path or image, or, for a text judgment with none, a non-empty state and no box question");
   }
   return r as JudgeRequest;
@@ -131,7 +136,7 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
   }));
   // When this call's request to Jev began; none when the answer is read back.
   let startedAt: number | undefined;
-  const ask = async (): Promise<JevResult> => {
+  const sendRequest = async (): Promise<JevResult> => {
     const questions = Object.fromEntries(Object.entries(request.questions).map(([name, { image: _image, ...question }]) => [name, question]));
     const state = items.length ? { ...request.state, images: items.map((item, i) => ({ source: item.fragment, image: reference(i) })) } : { ...request.state };
     const assets = Object.fromEntries([...items.map((item, i) => [reference(i), item] as const), ...examples].map(([ref, item]) => [ref, { bytes: item.bytes, mime: item.mime }]));
@@ -139,10 +144,10 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
     const result = await jev.judge({ label: VISION_JUDGE.name, kind: "judge", state, questions, assets, model, ...(call.signal ? { signal: call.signal } : {}) });
     return { answers: result.answers, model: result.model ?? null, usage: result.usage ?? null, cost_usd: result.cost_usd ?? null };
   };
-  const { value: { result, readBack, receipt, costUsd }, shared } = await once(call, at.facts.key, async () => {
+  const { value: { result, readBack, receipt, costUsd }, shared } = await singleFlight(call, at.facts.key, async () => {
     let result: JevResult, readBack: boolean;
     try {
-      ({ answer: result, readBack } = await keptAnswer<JevResult>(call.memo, at.facts.key, ask));
+      ({ answer: result, readBack } = await keptAnswer<JevResult>(call.memo, at.facts.key, sendRequest));
     } catch (error) {
       if (call.signal?.aborted) throw error;
       // A request that threw may still have been billed: its price is not known, so none is filed. A request the port

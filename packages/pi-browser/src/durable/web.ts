@@ -1,14 +1,14 @@
 import type { JsonValue } from "@earendil-works/chord";
 import { defineExtension, defineTool, type ConversationId, type PromptSection, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { TSchema } from "typebox";
-import { WEB_TOOLS } from "./core/contract.js";
-import type { Decisions } from "./core/decisions.js";
-import type { EvidenceSink } from "./core/evidence.js";
-import type { FetchRequest, FetchResult, PriceTable, SearchRequest, SearchResult } from "./core/host.js";
-import { providerKeyValues } from "./core/session-control.js";
-import { toolUsage } from "./core/usage.js";
-import { createWebTools, type RenderedPage, type WebBackup, type WebOutcome, type WebToolsOptions } from "./core/web.js";
-import { forModel } from "./durable-result.js";
+import { WEB_TOOLS } from "../core/contract.js";
+import type { Decisions } from "../core/decisions.js";
+import type { EvidenceSink } from "../core/evidence.js";
+import type { FetchRequest, FetchResult, PriceTable, SearchRequest, SearchResult } from "../core/host.js";
+import { providerKeyValues } from "../core/session-control.js";
+import { toolUsage } from "../core/usage.js";
+import { createWebTools, type RenderedPage, type WebBackup, type WebOutcome, type WebToolsOptions } from "../core/web.js";
+import { forModel } from "./result.js";
 
 export type WebExtensionOptions = {
   providers: {

@@ -4,6 +4,7 @@ import { Agent, fetch as undiciFetch } from "undici";
 import dns from "node:dns/promises";
 import net from "node:net";
 import path from "node:path";
+import { refusedError } from "./core/custody.js";
 import type { EvidenceRecord, EvidenceSink } from "./core/evidence.js";
 import type { WebBackup } from "./core/web.js";
 
@@ -82,28 +83,28 @@ export function httpBackup(options: { lookup?: (host: string) => Promise<string[
       let target = new URL(url);
       for (let hop = 0; ; hop += 1) {
         const host = target.hostname.replace(/^\[|\]$/g, "");
-        if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) throw new Error(`refused: ${host} is not a public host`);
+        if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) throw refusedError(`refused: ${host} is not a public host`);
         const addresses = net.isIP(host) ? [host] : await lookup(host);
-        if (!addresses.length || addresses.some(isPrivateAddress)) throw new Error(`refused: ${host} is not a public host`);
+        if (!addresses.length || addresses.some(isPrivateAddress)) throw refusedError(`refused: ${host} is not a public host`);
         const dispatcher = new Agent({ connect: { lookup: pinnedLookup(addresses[0]) } });
         let res: Response | undefined;
         try {
           res = await request(target, { redirect: "manual", signal, dispatcher, headers: { accept: "text/html,text/plain;q=0.9,*/*;q=0.1", "user-agent": "pi-browser" } });
           if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
-            if (hop >= MAX_REDIRECTS) throw new Error("refused: too many redirects");
+            if (hop >= MAX_REDIRECTS) throw refusedError("refused: too many redirects");
             target = new URL(res.headers.get("location")!, target);
-            if (!/^https?:$/.test(target.protocol)) throw new Error("refused: a redirect left http(s)");
+            if (!/^https?:$/.test(target.protocol)) throw refusedError("refused: a redirect left http(s)");
             continue;
           }
           if (!res.ok) throw Object.assign(new Error(`the page answered ${res.status}`), { status: res.status });
           const type = res.headers.get("content-type") ?? "";
-          if (!/^(text\/|application\/(xhtml\+xml|json|xml))/i.test(type)) throw new Error(`refused: ${type || "an unknown content type"} is not text`);
+          if (!/^(text\/|application\/(xhtml\+xml|json|xml))/i.test(type)) throw refusedError(`refused: ${type || "an unknown content type"} is not text`);
           const chunks: Uint8Array[] = [];
           let size = 0;
           for (const reader = res.body!.getReader(); ; ) {
             const { done, value } = await reader.read();
             if (done) break;
-            if ((size += value.length) > MAX_BYTES) { await reader.cancel(); throw new Error("refused: the page is over 5 MiB"); }
+            if ((size += value.length) > MAX_BYTES) { await reader.cancel(); throw refusedError("refused: the page is over 5 MiB"); }
             chunks.push(value);
           }
           const text = Buffer.concat(chunks).toString("utf8");
