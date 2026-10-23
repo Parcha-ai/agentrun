@@ -26,7 +26,7 @@ import { sharpImages } from "@parcha/pi-vision/providers/sharp";
 import { sofficeProvider } from "@parcha/pi-vision/providers/soffice";
 import { unpdfProvider } from "@parcha/pi-vision/providers/unpdf";
 import {
-  LeakScan, SENTINELS, SENTINEL_EYES_KEY, SENTINEL_LINK_QUERY, SENTINEL_LINK_SIGNATURE, SENTINEL_LINK_TOKEN, SENTINEL_SIGNED_LINK,
+  LeakScan, SENTINEL_EYES_KEY, SENTINEL_LINK_QUERY, SENTINEL_LINK_SIGNATURE, SENTINEL_LINK_TOKEN, SENTINEL_SIGNED_LINK,
   docxBytes, fakeEyes, fixtureDir, letterPdf, limitViolations, pngBytes, signedLink, xlsxBytes,
 } from "@parcha/pi-vision/testing";
 import { ftyp } from "./support/images.mjs";

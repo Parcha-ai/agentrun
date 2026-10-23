@@ -4,12 +4,7 @@ import { stat } from "node:fs/promises";
 import { officeJsProvider } from "@parcha/pi-vision/providers/office-js";
 import { sofficeProvider } from "@parcha/pi-vision/providers/soffice";
 import { docxBytes, fixtureDir, odtBytes, pptxBytes, xlsxBytes } from "@parcha/pi-vision/testing";
-import { HEADER, jobRows, table, writeFiles } from "./support.mjs";
-
-const text = async (provider, file, call) => {
-  const out = await provider.text(file.source, {}, call);
-  return { bytes: out.pages.reduce((sum, page) => sum + Buffer.byteLength(page.text), 0), pixels: "-" };
-};
+import { HEADER, jobRows, table, text, writeFiles } from "./support.mjs";
 
 const cells = async (provider, file, call) => {
   const out = await provider.cells(file.source, {}, call);

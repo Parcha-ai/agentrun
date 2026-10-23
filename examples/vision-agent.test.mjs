@@ -501,6 +501,40 @@ test('a folder that cannot be placed is refused before anything starts, never ig
   assert.equal(existsSync(record), false);
 });
 
+const INPUT_NAMING = (...files) => JSON.stringify({ question: 'x', files });
+
+test('an input that names a file the run does not have is refused, naming it, before anything starts', async (t) => {
+  const { filesRefusal } = await import('./vision-agent/agent.ts');
+  const dir = await scratch(t);
+  const refusal = (args, env = {}) => filesRefusal(argvFor(args), env);
+  const missing = /^the input names mydoc\.pdf, which the run does not have: files are bare names, read from the example folder or, on fakes, from DEMO_FILES_DIR\.$/;
+  assert.match(refusal(['--input', INPUT_NAMING('mydoc.pdf')]), missing, 'no example folder and no DEMO_FILES_DIR');
+  writeFileSync(join(dir, 'ok.pdf'), 'x');
+  assert.match(refusal(['--input', INPUT_NAMING('ok.pdf', 'mydoc.pdf')], { DEMO_FILES_DIR: dir }), missing, 'a DEMO_FILES_DIR that lacks it');
+  assert.match(refusal(['--input', INPUT_NAMING('a.pdf', 'b.pdf')]), /^the input names a\.pdf, b\.pdf, which the run does not have: /, 'every file that is missing');
+  assert.match(refusal(['--live', '--input', INPUT_NAMING('mydoc.pdf')], { DEMO_FILES_DIR: dir }), /^the input names mydoc\.pdf, which the run does not have: files are bare names, read from the example folder\.$/, 'a live run reads no DEMO_FILES_DIR');
+  assert.match(refusal(['--input', INPUT_NAMING('/tmp/mydoc.pdf')]), /^the input names \/tmp\/mydoc\.pdf, /, 'a path is no bare name');
+  writeFileSync(join(dir, 'mydoc.pdf'), 'x');
+  assert.equal(refusal(['--input', INPUT_NAMING('mydoc.pdf')], { DEMO_FILES_DIR: dir }), undefined, 'a file in DEMO_FILES_DIR is the run\'s');
+  assert.equal(refusal(['examples/document-check'], {}), undefined, 'an example\'s own files are the run\'s');
+  assert.equal(refusal(['--live', 'examples/document-check'], {}), undefined);
+  assert.equal(refusal(['--input', INPUT_NAMING()], {}), undefined, 'an input with no files');
+  assert.equal(refusal(['--input', JSON.stringify({ question: 'x' })], {}), undefined, 'an input that names none');
+  assert.equal(refusal(['--input', 'q.json'], {}), undefined, 'an input it cannot read inline is not its to judge');
+  assert.equal(filesRefusal(['--child', '--live'], { INPUT: INPUT_NAMING('mydoc.pdf') }), undefined, 'the supervisor has checked');
+});
+
+test('the command line refuses an input that names a missing file in one line and leaves nothing: no model_error at the end of a run', async (t) => {
+  const dir = await scratch(t);
+  const record = join(dir, 'recording');
+  const ran = command(dir, ['--input', INPUT_NAMING('mydoc.pdf'), '--record', record], {});
+  assert.notEqual(ran.status, 0);
+  assert.match(ran.stderr, /^the input names mydoc\.pdf, which the run does not have: files are bare names, read from the example folder or, on fakes, from DEMO_FILES_DIR\.\n$/);
+  assert.doesNotMatch(`${ran.stdout}${ran.stderr}`, /model_error|cost:|recording:|run directory:|stopped:/);
+  assert.deepEqual(readdirSync(dir), [], 'nothing was written');
+  assert.equal(existsSync(record), false);
+});
+
 test('a folder outside examples/ that exists, and a partly made example, are refused in one line: no stack from the module\'s import, no raw ENOENT', async (t) => {
   const dir = await scratch(t);
   mkdirSync(join(dir, 'document-check'));

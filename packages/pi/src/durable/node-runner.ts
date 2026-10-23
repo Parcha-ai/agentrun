@@ -18,6 +18,7 @@ import {
 import type { Message } from "@earendil-works/pi-ai";
 import type { WorkflowDeps } from "@parcha/agentrun-dsl";
 import { canonicalSha256, runStopOf, type RecoveryNodeParams } from "@parcha/agentrun-dsl/recovery";
+import { SUBMIT_TOOL } from "../host-tools.js";
 import { nodeThinking } from "../thinking.js";
 import { closeNodeAttempt, runNodeAttempt, type NodeScope } from "./node.js";
 import { DELIVERY_ATTEMPTS, lintRecordRoot, submitFooter, type Disagreement, type RecordContract, type Reviewer } from "./record.js";
@@ -109,7 +110,7 @@ async function underStop<T>(signal: AbortSignal | undefined, work: () => Promise
   try { return await Promise.race([work(), stopped]); } finally { signal.removeEventListener("abort", onStop); }
 }
 const listed = <T>(value: unknown): value is readonly T[] => Array.isArray(value);
-const isSubmit = (tool: { name: string }) => tool.name === "submit";
+const isSubmit = (tool: { name: string }) => tool.name === SUBMIT_TOOL;
 
 /** The node runner over a host. Install `extension` in the registry before the Harness opens; `on` binds the runner
  *  to where its conversations live (`taskScope`, `hostScope`). */
@@ -209,7 +210,7 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
         const { agent, record } = await underStop(signal, async () => ({ agent: leveled(await host.agent(node), node), record: await host.record?.(node) ?? {} }));
         const label = record.label ?? `the ${node.label} record`;
         const offered = (listed<ToolRegistration>(agent.tools) ? agent.tools : listed<Extension>(agent.extensions) ? agent.extensions.flatMap((selected) => selected.tools ?? []) : [])
-          .map((offer) => offer.name).filter((name) => name !== "submit");
+          .map((offer) => offer.name).filter((name) => name !== SUBMIT_TOOL);
         const system = [...node.system, host.stance?.(node, { tools: offered })].filter(Boolean).join("\n\n");
         const input = inputOf(node.user);
         const reviewers: Reviewer[] = [

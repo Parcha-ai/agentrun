@@ -10,7 +10,7 @@ import { startLiveGrid } from "../examples/live-grid/live-grid.mjs";
 import { watchedProvider } from "../examples/live-grid/tiles.mjs";
 const FAUX_KEY = "not-a-key"; // a fake value, named so the source export's credential scan reads it as one
 
-async function startGrid(t) {
+async function startGrid(t, options = {}) {
   const root = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "live-grid-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const core = createFauxCore({ api: "faux-api", provider: "faux", models: [{ id: "faux-1", input: ["text"] }] });
@@ -21,7 +21,7 @@ async function startGrid(t) {
     models: [{ id: "faux-1", name: "faux-1", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 4096 }],
   });
   const model = modelRuntime.getModel("faux", "faux-1");
-  const grid = await startLiveGrid({ makeProvider: () => { throw new Error("no browser here"); }, models: { modelRuntime, parent: model, child: model }, maxChildren: 2, root: path.join(root, "work"), env: {} });
+  const grid = await startLiveGrid({ makeProvider: () => { throw new Error("no browser here"); }, models: { modelRuntime, parent: model, child: model }, maxChildren: 2, root: path.join(root, "work"), env: {}, ...options });
   t.after(() => grid.close());
   return grid;
 }
@@ -57,6 +57,15 @@ async function stream(url, headers, until) {
   controller.abort();
   return events;
 }
+
+const ipv6Loopback = Object.values(os.networkInterfaces()).flat().some((i) => i?.address === "::1");
+
+test("a grid on an IPv6 host gives a URL that parses and serves its page at it: the address is bracketed in the URL and in the Host it accepts", { skip: ipv6Loopback ? false : "no IPv6 loopback on this machine" }, async (t) => {
+  const grid = await startGrid(t, { host: "::1" });
+  assert.equal(new URL(grid.url).hostname, "[::1]");
+  const page = await request(grid.url);
+  assert.equal(page.status, 200, page.text);
+});
 
 test("only the grid's own page can read it, stream it or start a task: another origin, a rebound host name or a missing token is refused", async (t) => {
   const grid = await startGrid(t);

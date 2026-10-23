@@ -8,7 +8,7 @@ import * as entry from '@parcha/agentrun-harness';
 import { fakes, job } from './reference/job.ts';
 
 test('the entry exports the names another example builds on, and nothing else', () => {
-  assert.deepEqual(Object.keys(entry).sort(), ['BOX_CROSSINGS', 'JEV_LIST_PRICE', 'RUN_KEY', 'VisionLooks', 'chooseBrowser', 'codeOf', 'cost', 'crossings', 'demo', 'finishRecording', 'jevCost', 'keepLooks', 'killsOf', 'localHost', 'localPlace', 'maxUsdOf', 'openRecorder', 'openSupervisor', 'packageCommitRecorder', 'parseInput', 'placeAt', 'plansOf', 'priceJudge', 'redactorOf', 'run', 'runScrub', 'scanPlaced', 'scanSecretValues', 'shownShots', 'tapBox', 'tapFakes', 'tapHost']);
+  assert.deepEqual(Object.keys(entry).sort(), ['BOX_CROSSINGS', 'JEV_LIST_PRICE', 'RUN_KEY', 'VisionLooks', 'chooseBrowser', 'codeOf', 'cost', 'crossings', 'demo', 'finishRecording', 'handedOut', 'jevCost', 'keepLooks', 'killsOf', 'localHost', 'localPlace', 'maxUsdOf', 'openRecorder', 'openSupervisor', 'packageCommitRecorder', 'parseInput', 'placeAt', 'plansOf', 'priceJudge', 'processText', 'redactorOf', 'run', 'runScrub', 'scanPlaced', 'scanSecretValues', 'shownShots', 'tapBox', 'tapFakes', 'tapHost']);
   for (const name of ['tapBox', 'demo', 'crossings', 'tapFakes', 'tapHost', 'chooseBrowser', 'killsOf', 'maxUsdOf', 'parseInput', 'plansOf', 'run', 'cost', 'placeAt', 'localHost', 'openRecorder', 'openSupervisor', 'finishRecording', 'codeOf', 'packageCommitRecorder', 'redactorOf', 'runScrub', 'scanSecretValues', 'scanPlaced']) assert.equal(typeof entry[name], 'function', name);
 });
 

@@ -161,6 +161,14 @@ export function personOn(gates: DrivingGates, tag: string): DrivingGate | null {
   return null;
 }
 
+/** Why custody must not release a session on its own, or null: a session held for a person is theirs, and so is one a person drives or
+ *  watches through the live view. */
+export function keptReason(record: { state: string; tag: string }, gates: DrivingGates): "held" | "person_driving" | "viewing" | null {
+  if (record.state === "held") return "held";
+  const person = personOn(gates, record.tag);
+  return person && keptFor(person);
+}
+
 /** A session custody kept for a person is released one idle window after they leave: the gate is polled (setViewing and end
  *  announce nothing), and the moment nobody is on it `rearm` starts the idle window again. Stops once `alive` says the session
  *  is gone; the returned function stops it at once (a release, a close). */

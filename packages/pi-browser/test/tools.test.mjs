@@ -1602,3 +1602,31 @@ test("browser_read hands the page judge text with the run's registered values re
   assert.doesNotMatch(judged[0], /run-token|run-t/);
   assert.match(judged[0], /\[redacted\]/);
 });
+
+test("a live session reused later meets the navigation check as a new one does: a policy its provider cannot enforce refuses the call, and nothing browses under it", async (t) => {
+  // The host tightens the conversation's policy after the session was created (as a session saved before the check would be).
+  const tighten = async (_backend, { browser, harness, root }) => {
+    await harness.commit(async (tx) => { const config = await tx.doc(browser.docs.Config, root.id); config.policy = { ...config.policy, navigation: { block: ["evil.test"] } }; }, ctx);
+  };
+  const done = await session(t, [["snapshot"], ["browser_read"]], { between: { 1: tighten } });
+  assert.match(done.texts[1], /"code":"refused"/, `the reused session browsed: ${done.texts[1].slice(0, 120)}`);
+  assert.match(done.texts[1], /navigation\.block/);
+  assert.equal(done.backend.tally().creates, 1, "no new session was started either");
+});
+
+test("a reused session meets the navigation allow list the policy sets now: a session its provider started with no list, or a wider one, is refused, and one inside it is reused", async (t) => {
+  // Browserbase fixes allowedDomains when it creates a session: a list the host sets or narrows later never reaches it.
+  const allow = (list) => async (_backend, { browser, harness, root }) => {
+    await harness.commit(async (tx) => { const config = await tx.doc(browser.docs.Config, root.id); config.policy = { ...config.policy, navigation: { allow: list } }; }, ctx);
+  };
+  const enforcing = () => new FakeBackend({ start: START, pages: { [START]: ARTICLE }, caps: { navigationAllow: true } });
+  for (const [label, policy, now] of [["no list at create", {}, ["example.test"]], ["a wider list at create", { navigation: { allow: ["example.test", "evil.test"] } }, ["example.test"]]]) {
+    const done = await session(t, [["snapshot"], ["browser_read"]], { backend: enforcing(), policy, between: { 1: allow(now) } });
+    assert.match(done.texts[1], /"code":"refused"/, `${label}: the reused session browsed: ${done.texts[1].slice(0, 120)}`);
+    assert.match(done.texts[1], /navigation\.allow/, label);
+    assert.equal(done.backend.tally().creates, 1, `${label}: no new session was started either`);
+  }
+  const kept = await session(t, [["snapshot"], ["browser_read"]], { backend: enforcing(), policy: { navigation: { allow: ["example.test"] } }, between: { 1: allow(["example.test", "example.org"]) } });
+  assert.doesNotMatch(kept.texts[1], /"code":"refused"/, "a session whose list is inside the policy's was refused");
+  assert.equal(kept.backend.tally().creates, 1);
+});
