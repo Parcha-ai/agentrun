@@ -5,13 +5,18 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { graphDiff, workflowGraph } from "@parcha/agentrun-dsl/graph";
 import { durableDoc, readJournal } from "@parcha/agentrun-pi/durable";
 import { AgentHomeError } from "../dist/index.js";
-import { readWorkflowRun, runWorkflowRevision } from "../dist/workflow.js";
+import { readWorkflowRun, revisionGraph, runWorkflowRevision } from "../dist/workflow.js";
 import { bodyOf, ctx, hostFor, mapDoc, parallelDoc, runOf, TOOLS, workflowDoc } from "./workflow-support.mjs";
 
 const INPUT = { sku: "sku-1", amount: 10 };
 const runOn = (run, host, options = {}) => runWorkflowRevision({ harness: host.harness, workflows: host.workflows, context: ctx, run, input: INPUT, tools: TOOLS, ...options });
+/** Every file under `dir`, by its path relative to it. */
+const filesUnder = (dir) => readdirSync(dir, { recursive: true }).sort();
+/** Working means live: an ended run has no working node. */
+const noWorking = (view) => assert.deepEqual(Object.entries(view.status).filter(([, state]) => state === "working"), []);
 /** A promise and the function that resolves it. */
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 
@@ -28,6 +33,7 @@ test("a workflow revision runs to complete on a fresh run store; the summary nam
     const view = await readWorkflowRun(run);
     assert.deepEqual(view.status, { "/root": "done", "/root/steps/0": "done", "/root/steps/1": "done", "/root/steps/1/branches/fast/body": "done", "/root/steps/1/branches/slow/body": "not-run" });
     assert.equal(view.outcome, "completed");
+    noWorking(view);
     assert.deepEqual(view.output, outcome.output);
     assert.equal(view.escalatedAt, undefined);
     assert.deepEqual(view.graph.nodes.map((node) => node.label), ["chain", "stock", "by tier", "quote fast", "quote slow"]);
@@ -99,6 +105,7 @@ test("a gate that fires at a named node ends the run escalated: carry and summar
     assert.deepEqual(host.calls, { "stock.check": 1 });
     const view = await readWorkflowRun(run);
     assert.equal(view.outcome, "escalated");
+    noWorking(view);
     assert.deepEqual(view.escalatedAt, { path: "/root/steps/1", label: "too big" });
     assert.equal(view.status["/root/steps/1"], "escalated");
     assert.equal(view.status["/root/steps/2"], "not-run");
@@ -118,7 +125,10 @@ test("a run cancelled while it runs ends stopped, and one whose tool fails ends 
     // No node completed, failed or escalated: the summary still says how the run ended, since the store refuses an empty one.
     assert.deepEqual(carry, { state: "stopped", summary: "stopped before any node completed" });
     assert.equal(await (await cancel.promise), "marked");
-    assert.equal((await readWorkflowRun(stopped)).outcome, "stopped");
+    const view = await readWorkflowRun(stopped);
+    assert.equal(view.outcome, "stopped");
+    assert.equal(view.status["/root/steps/0"], "stopped", "the call the cancel interrupted reads stopped");
+    noWorking(view);
   } finally {
     await host.close();
   }
@@ -131,6 +141,7 @@ test("a run cancelled while it runs ends stopped, and one whose tool fails ends 
     assert.deepEqual(carry, { state: "failed", summary: "stock; failed at quote fast" });
     const view = await readWorkflowRun(failing);
     assert.equal(view.outcome, "failed");
+    noWorking(view);
     assert.deepEqual(view.status, { "/root": "failed", "/root/steps/0": "done", "/root/steps/1": "failed", "/root/steps/1/branches/fast/body": "failed", "/root/steps/1/branches/slow/body": "not-run" });
     assert.equal("output" in view, false);
   } finally {
@@ -181,6 +192,26 @@ test("a run in the keyed layout (a host that opts into layout v4) is not read he
   }
 });
 
+test("revisionGraph draws a workflow revision as the DSL does, and diffs it only against a workflow parent", async () => {
+  const before = bodyOf(workflowDoc()), after = bodyOf(workflowDoc({ gate: true }));
+  const graph = workflowGraph(after.workflow);
+  assert.deepEqual(await revisionGraph({ body: after }), { graph });
+  assert.deepEqual(await revisionGraph({ body: after }, { kind: "workflow", body: before }), { graph, diff: graphDiff(workflowGraph(before.workflow), graph) });
+  assert.deepEqual(await revisionGraph({ body: after }, { kind: "agentic", body: { instructions: "Answer.", tools: [], skills: {} } }), { graph });
+});
+
+test("reading an ended run makes no file in its directory, reads what a plain read does, and opens a path with a space and a #", async () => {
+  const run = await runOf({ under: "runs a#1" });
+  const host = await hostFor(run);
+  await runOn(run, host);
+  await host.close();
+  const files = filesUnder(run.dir);
+  const ended = await readWorkflowRun({ ...run, state: "completed" });
+  assert.deepEqual(filesUnder(run.dir), files, "the read made no file");
+  assert.equal(ended.outcome, "completed");
+  assert.deepEqual(await readWorkflowRun(run), ended, "a plain read gives the same view");
+});
+
 test("readWorkflowRun reads a run another process is running, and leaves the store file's bytes as they were", async () => {
   const run = await runOf();
   const proc = spawn(process.execPath, [fileURLToPath(new URL("./fixtures/workflow-live-child.mjs", import.meta.url))], { env: { ...process.env, RUN: JSON.stringify(run) }, stdio: ["pipe", "pipe", "pipe"] });
@@ -191,7 +222,7 @@ test("readWorkflowRun reads a run another process is running, and leaves the sto
   const exited = new Promise((resolve) => proc.on("close", resolve));
   await Promise.race([inCall.promise, exited]);
   assert.ok(out.includes("in-call\n"), `the child ran to its first call: ${err}`);
-  const live = await readWorkflowRun(run);
+  const live = await readWorkflowRun({ ...run, state: "running" });
   assert.equal(live.outcome, undefined, "the run has not ended");
   assert.equal(live.status["/root/steps/0"], "working");
   assert.equal(live.status["/root/steps/1/branches/fast/body"], "not-run");

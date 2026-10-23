@@ -1,5 +1,5 @@
 // The document store, held to the store contract by the conformance suite, over a pi-durable Harness on SQLite.
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -46,6 +46,24 @@ test('document store: two admissions of one effect asked for together write one 
   const completed = await Promise.allSettled([journal.complete('e1', { value: 'first' }, { n: 3 }), journal.complete('e1', { value: 'second' }, { n: 4 })]);
   assert.deepEqual(completed.map((outcome) => outcome.status), ['fulfilled', 'rejected']);
   await journal.close();
+});
+
+test('document store: with immutable, the readers open a store no process writes as an immutable file: the same view, and no file made beside it', async () => {
+  const directory = mkdtempSync(join(root, 'run a#b-'));
+  const file = join(directory, 'run.sqlite');
+  const harness = await open(file);
+  const journal = await documentStore(harness, 'run-1').open({ binding: 'binding-1', inputs: { workflow: 'digest-a' } });
+  await journal.save({ step: 'done' });
+  await journal.close();
+  await harness.close(ctx);
+  assert.equal(existsSync(`${file}-wal`), false, 'the closed store keeps no write-ahead log');
+  const files = readdirSync(directory).sort();
+  const view = readJournal(file, 'run-1', { immutable: true });
+  assert.deepEqual(view.state, { step: 'done' });
+  assert.equal(durableDoc(file, 'agentrun.driver', 'run-1', { immutable: true }).generation, 1);
+  assert.deepEqual(readdirSync(directory).sort(), files, 'an immutable read makes no file');
+  assert.deepEqual(readJournal(file, 'run-1'), view, 'a plain read gives the same view');
+  assert.equal(readJournal(join(directory, 'missing.sqlite'), 'run-1', { immutable: true }), undefined);
 });
 
 test('document store: the readers see a journal from the store file, wherever the host keeps it, without the Harness, as the last commit left it', async () => {
