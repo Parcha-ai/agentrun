@@ -507,9 +507,10 @@ describe("boxHost: a box found again by attach whose facts fail what the start n
     const provider = fake(modalLike({ facts: fd }));
     runs(provider);
     const hA = await host(provider).start(REF, TOKEN, { attempt: 1 });
-    provider.script.on({ op: "attach" }, { fail: "unknown" });
+    // The error Modal's attach returns when the workspace setup it repeats fails (its mkdir exits non-zero or its exec errs).
+    provider.script.on({ op: "attach" }, { fail: "unknown", message: "the workspace setup on attach failed" });
     const creates = provider.calls.filter((c) => c.op === "create").length;
-    await assert.rejects(host(provider).start(REF, TOKEN, { attempt: 1 }), code("CREATE_FAILED"));
+    await assert.rejects(host(provider).start(REF, TOKEN, { attempt: 1 }), (e: unknown) => code("CREATE_FAILED")(e) && /: unknown: the workspace setup on attach failed$/.test((e as Error).message));
     assert.equal(provider.calls.filter((c) => c.op === "create").length, creates, "nothing created");
     assert.equal(provider.calls.filter((c) => c.op === "destroy").length, 0, "nothing ended");
     assert.deepEqual(running(provider).map((b) => b.id), [hA.box]);
