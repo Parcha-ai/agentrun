@@ -8,6 +8,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
 import { projectForExport } from "../export.js";
 import { AGENT_STORE_FILE, ID_PATTERN, readState, runStoreIn } from "../home.js";
 import type { AgentDefinition, AgentIdentity, AgentSource, PromptVariant, RunRecord, SkillFile } from "../kinds.js";
@@ -18,11 +19,13 @@ import type { EntryLike } from "../timeline/index.js";
 const SCHEMA_VERSION = 1;
 const BUSY_MS = 5_000;
 
-/** A store opened read-only, with its schema version checked: SQLite may create its `-shm` and `-wal` files beside it, and
- *  a write through the handle fails. */
-export function openReadOnly(file: string): DatabaseSync {
+/** A store opened read-only, with its schema version checked; a write through the handle fails. The store of an `ended` run
+ *  with no `-wal` beside it is at rest and opens immutable, which creates no file beside it. Any other store may have a
+ *  writer, so it opens plainly and SQLite may create its `-shm` and `-wal` files to read through the log. */
+export function openReadOnly(file: string, { ended = false }: { ended?: boolean } = {}): DatabaseSync {
   if (!existsSync(file)) throw new AgentHomeError("missing", `${path.basename(file)} does not exist`);
-  const db = new DatabaseSync(file, { readOnly: true, timeout: BUSY_MS });
+  const atRest = ended && !existsSync(`${file}-wal`);
+  const db = new DatabaseSync(atRest ? `${pathToFileURL(file).href}?immutable=1` : file, { readOnly: true, timeout: BUSY_MS });
   try {
     const row = db.prepare("SELECT version FROM durable_schema WHERE singleton = 1").get() as { version?: unknown } | undefined;
     if (row?.version !== SCHEMA_VERSION) throw new AgentHomeError("format", `${path.basename(file)} is pi-durable schema ${String(row?.version)}; this version reads ${SCHEMA_VERSION}`);
@@ -124,15 +127,16 @@ export function agentReader(dir: string): () => Promise<AgentView> {
 
 /**
  * The entries of run `id`'s store, in the order pi committed them (every conversation's, so a subagent's rows nest under
- * its caller), or none when the home holds the run's index entry only. Whole records, read-only.
+ * its caller), or none when the home holds the run's index entry only. Whole records, read-only; `ended` says the run's
+ * index entry has an end.
  */
-export function readRunEntries(dir: string, id: string): EntryLike[] {
+export function readRunEntries(dir: string, id: string, ended: boolean): EntryLike[] {
   if (!ID_PATTERN.test(id)) throw new AgentHomeError("invalid", "the run id is not an id");
   const storePath = runStoreIn(path.join(path.resolve(dir), "runs", id));
   if (!existsSync(storePath)) return [];
   const home = realpathSync(dir);
   if (!realpathSync(storePath).startsWith(`${home}${path.sep}`)) throw new AgentHomeError("check", "the run's store is not inside the home");
-  const db = openReadOnly(storePath);
+  const db = openReadOnly(storePath, { ended });
   try {
     return (db.prepare("SELECT record FROM entries ORDER BY id").all() as { record: string }[]).map((row) => JSON.parse(row.record) as EntryLike);
   } finally {

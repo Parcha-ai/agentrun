@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { syncBuiltinESMExports as syncExports } from "node:module";
 import http from "node:http";
@@ -13,9 +14,10 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { AgentHomeError, readAgentHome, setAlias, setBindings, setPrompts, startRun } from "../dist/index.js";
-import { agentReader, openReadOnly, signature } from "../dist/serve/read.js";
+import { agentReader, openReadOnly, readRunEntries, signature } from "../dist/serve/read.js";
 import { serveHome } from "../dist/serve/index.js";
 import { main as serveMain } from "../dist/serve/command.js";
+import { buildSampleHome } from "./fixtures/serve-sample.mjs";
 import { buildSignedInHome, PRACTICE_ORIGIN, SIGN_IN_MARKER, signedInHomeSkip } from "./fixtures/signed-in-home.mjs";
 import { scratch } from "./support.mjs";
 
@@ -339,6 +341,106 @@ test("a run read while another process appends to it: every response is a whole 
     child.kill();
   }
 });
+
+/** Every entry of a run's store as a plain read-only connection sees it: the read an ended run's immutable open must match. */
+function plainEntries(storePath) {
+  const db = new DatabaseSync(storePath, { readOnly: true });
+  try {
+    return db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(row.record));
+  } finally {
+    db.close();
+  }
+}
+
+/** One more user entry, committed by a writer that stays open so the commit sits in the store's log, not its main file. */
+function holdInLog(storePath, id, text) {
+  const writer = new DatabaseSync(storePath, { timeout: 10_000 });
+  writer.exec("PRAGMA wal_autocheckpoint = 0");
+  writer.prepare("INSERT INTO entries (id, conversation_id, head, commit_seq, record) VALUES (?, 1, NULL, ?, ?)").run(id, id, JSON.stringify({ id, conversationId: 1, kind: "pi.user", model: [{ role: "user", content: text, timestamp: Date.UTC(2026, 9, 22, 15) }] }));
+  assert.equal(existsSync(`${storePath}-wal`), true, "the commit is in the log");
+  return writer;
+}
+
+const runStorePath = (home, id) => path.join(home.dir, "runs", id, "store", "run.sqlite");
+
+test("serving the sample home and reading every ended run creates no file in its runs, and each run's store is byte-identical", { timeout: 60_000 }, async () => {
+  const home = await buildSampleHome(await scratch());
+  const runsDir = path.join(home.dir, "runs");
+  const before = snapshot(runsDir);
+  const served = await serveHome(home);
+  try {
+    const runs = JSON.parse((await request(served.url, { target: "/api/runs" })).body);
+    const ended = runs.filter((run) => run.endedAt !== undefined).map((run) => run.id);
+    assert.deepEqual(ended.sort(), ["caterpillar", "habitat"]);
+    for (const id of ended) {
+      const res = await request(served.url, { target: `/api/runs/${id}` });
+      assert.equal(res.status, 200, res.body);
+      assert.ok(JSON.parse(res.body).rows.length > 0);
+    }
+  } finally {
+    await served.close();
+  }
+  assert.deepEqual(snapshot(runsDir), before, "no -shm or -wal beside an ended run's store, and no name, size or byte changed");
+});
+
+test("an ended run's immutable read gives the rows a plain read-only read gives", { timeout: 60_000 }, async () => {
+  const home = await buildSampleHome(await scratch());
+  for (const id of ["caterpillar", "habitat"]) {
+    const store = runStorePath(home, id);
+    const immutable = readRunEntries(home.dir, id, true);
+    assert.equal(hasSideFiles(store), false, "the read was the immutable one");
+    const plain = plainEntries(store);
+    assert.ok(plain.length > 0);
+    assert.deepEqual(immutable, plain, id);
+  }
+});
+
+test("an ended run with a log beside it is read through the log: the page has its latest commit", { timeout: 60_000 }, async () => {
+  const home = await buildSampleHome(await scratch());
+  const writer = holdInLog(runStorePath(home, "caterpillar"), 100, "a late commit");
+  const served = await serveHome(home);
+  try {
+    const { run, rows } = JSON.parse((await request(served.url, { target: "/api/runs/caterpillar" })).body);
+    assert.equal(run.live, false);
+    assert.ok(rows.some((row) => row.summary === "You: a late commit"), "the commit in the log is on the page");
+  } finally {
+    await served.close();
+    writer.close();
+  }
+});
+
+test("a live run is read through its log even when no log was seen at the check: a writer may open it right after", { timeout: 60_000 }, async () => {
+  const home = await buildSampleHome(await scratch());
+  const store = runStorePath(home, "powells");
+  const writer = holdInLog(store, 100, "a commit after the check");
+  const exists = fs.existsSync;
+  fs.existsSync = (file) => !String(file).endsWith("-wal") && exists(file);
+  syncExports();
+  try {
+    assert.equal(readRunEntries(home.dir, "powells", false).at(-1).model[0].content, "a commit after the check");
+  } finally {
+    fs.existsSync = exists;
+    syncExports();
+    writer.close();
+  }
+});
+
+test("a run store whose path holds a space and a \"#\" opens both ways, and the immutable open leaves no side file", { timeout: 60_000 }, async () => {
+  const home = await buildSampleHome(await scratch());
+  const odd = path.join(await scratch(), "a run #1", "run.sqlite");
+  mkdirSync(path.dirname(odd));
+  cpSync(runStorePath(home, "caterpillar"), odd);
+  for (const ended of [true, false]) {
+    const db = openReadOnly(odd, { ended });
+    try {
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM entries").get().n, plainEntries(runStorePath(home, "caterpillar")).length);
+    } finally {
+      db.close();
+    }
+    if (ended) assert.deepEqual(readdirSync(path.dirname(odd)), ["run.sqlite"], "immutable: no -shm, no -wal");
+  }
+});
+
 
 test("a foreign Host, another port, a POST and a path out of the home are all refused, and every answer carries the security headers", skip, async () => {
   const seeded = await seededHome();

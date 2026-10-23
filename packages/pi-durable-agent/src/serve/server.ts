@@ -90,7 +90,7 @@ export async function serveHome(home: { readonly dir: string }, options: ServeOp
         if (!ID_PATTERN.test(id)) return json(request, response, 400, { error: "the run id is not letters, digits, \".\", \"_\" or \"-\"" });
         const run = (await readAgent()).runs.find((candidate) => candidate.id === id);
         if (!run) return json(request, response, 404, { error: "no such run" });
-        return json(request, response, 200, { run, rows: timelineOf(readRunEntries(dir, id), { settled: !run.live }) });
+        return json(request, response, 200, { run, rows: timelineOf(readRunEntries(dir, id, run.endedAt !== undefined), { settled: !run.live }) });
       }
       return json(request, response, 404, { error: "not found" });
     } catch (error) {
