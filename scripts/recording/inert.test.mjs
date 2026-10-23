@@ -1,4 +1,4 @@
-// Draft 50, the blobs: a recording publishes only inert files. A blob's extension is on an allowlist (html and css only as the artifact's own files, svg never),
+// Draft 50, the blobs: a recording publishes only inert files. A blob's extension is on an allowlist (html, htm and css only as the artifact's own files, svg never),
 // every blob that is not media is scanned as text, and the scan knows the launch providers' key shapes and more of the machine's paths.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -7,12 +7,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { credentialIn } from '../../packages/harness/src/scan.ts';
+import { BLOB_EXTENSIONS, PAGE_EXTENSIONS, SHEET_EXTENSIONS, credentialIn } from '../../packages/harness/src/scan.ts';
+import { SHOWN_AS_DATA } from '../../apps/viewer/src/blobs.ts';
 import { moveImages } from '../../packages/harness/src/record.ts';
 import { readdirSync as readdirSyncOf } from 'node:fs';
 import { build } from '../../apps/viewer/build.mjs';
 import { gateProblems } from './gate.mjs';
-import { validateRecording } from './validate.mjs';
+import { blobNameProblem, validateRecording } from './validate.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -70,6 +71,18 @@ test('html and css are allowed only as the artifact\'s own pages and stylesheets
   const svg = '<svg xmlns="http://www.w3.org/2000/svg"/>';
   const withSvg = recording(t, { [named(page, 'html')]: page, [named(svg, 'svg')]: svg }, { artifact: { title: 'A report', entry: 'index.html', files: { 'index.html': sha(page), 'logo.svg': sha(svg) } } });
   assert.ok(problems(withSvg).some((each) => /logo.svg has the extension .svg/.test(each)), problems(withSvg).join(' | '));
+});
+
+test('a refused extension is told the allowlist the validator checks: every blob extension, then every page and sheet extension as the artifact\'s own', () => {
+  const said = blobNameProblem(`${'a'.repeat(64)}.svg`, new Set()) ?? '';
+  const [blobs, artifactOnly] = /\(([^;]*); (.*) only as the artifact's own files\)$/.exec(said)?.slice(1).map((list) => list.split(' ')) ?? [];
+  assert.deepEqual(blobs, [...BLOB_EXTENSIONS], said);
+  assert.deepEqual(artifactOnly, [...PAGE_EXTENSIONS, ...SHEET_EXTENSIONS], said);
+});
+
+test('the viewer publishes as data exactly the recording\'s blob allowlist and the style sheets, never a page (apps/viewer/src/blobs.ts cannot import scan.ts, so this pins the two)', () => {
+  assert.deepEqual([...SHOWN_AS_DATA].sort(), [...BLOB_EXTENSIONS, ...SHEET_EXTENSIONS].sort());
+  for (const page of PAGE_EXTENSIONS) assert.equal(SHOWN_AS_DATA.has(page), false, `.${page} is published as .txt`);
 });
 
 test('every blob that is not media is scanned as text: a key in a .vtt, .csv or .md, found by the validator and the gate, named or not by a line', (t) => {

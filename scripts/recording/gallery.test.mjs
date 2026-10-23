@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { GALLERY_LIMIT, RECORDING_LIMIT, VIEW_FLAGS, exampleFolders, galleryOf, packGallery, readLock, readTar, unpackGallery, writeTar } from './gallery.mjs';
+import { VIEW_FLAGS as VIEWER_FLAGS } from '../../apps/viewer/src/format.ts';
 
 const script = fileURLToPath(new URL('./gallery.mjs', import.meta.url));
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -281,7 +282,8 @@ test('a lock entry may name the words its list shows and the view its link opens
   const problems = (each) => readLock(JSON.stringify(lock(each))).problems ?? [];
   assert.deepEqual(readLock(JSON.stringify(lock({ title: 'Did my last payment go through?', view: ['muse'] }))).lock?.ids, [{ id: 'a', title: 'Did my last payment go through?', view: ['muse'] }], 'both read through');
   assert.deepEqual(readLock(JSON.stringify(lock({ title: 'Only a title' }))).lock?.ids, [{ id: 'a', title: 'Only a title' }], 'each is optional');
-  assert.deepEqual(VIEW_FLAGS, ['muse'], 'the allowlist is the viewer\'s: today muse alone');
+  assert.equal(VIEW_FLAGS, VIEWER_FLAGS, 'the allowlist is the viewer\'s own list, not a copy of it');
+  assert.deepEqual(VIEW_FLAGS, ['muse'], 'today muse alone');
   for (const [title, why] of [['', 'an empty title'], [' padded ', 'an untrimmed title'], ['x'.repeat(121), 'a title over 120 characters'], ['two\nlines', 'a control character'], ['next\u0085line', 'a C1 control character inside the title'], ['del\u007fete', 'DEL'], ['\u009fedge'.slice(0, 0) + 'ok\u009f', 'a C1 control character at the end'], [7, 'a title that is not a string']]) assert.match(problems({ title })[0] ?? '', /^a's title .* is not a trimmed string of 1 to 120 characters with no control character$/, why);
   assert.equal(problems({ title: 'x'.repeat(120) }).length, 0, 'a title of exactly 120 is fine');
   for (const [view, why] of [[[], 'an empty list'], [['visual'], 'a flag the viewer does not know'], [['muse', 'muse'], 'a duplicate'], ['muse', 'a string, not a list'], [[1], 'a flag that is not a string']]) assert.match(problems({ view })[0] ?? '', /^a's view .* is not a non-empty list of distinct flags from \["muse"\]$/, why);
