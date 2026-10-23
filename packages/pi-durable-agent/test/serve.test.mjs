@@ -477,7 +477,7 @@ test("a foreign Host, another port, a POST and a path out of the home are all re
     assert.equal((await request(served.url, { target: "/api/runs/none" })).status, 404);
     for (const target of ["//evil.example/api/agent", "//", "api/agent", "http://evil.example/api/agent", "*"]) assert.equal((await request(served.url, { target })).status, 400, `${target} is not a path`);
     assert.equal((await request(served.url, { target: "/../../etc/passwd" })).status, 404);
-    for (const target of ["/", "/page.css", "/page.js", "/api/agent", "/api/runs", "/api/runs/none", "/missing"]) {
+    for (const target of ["/", "/page.css", "/graph.js", "/page.js", "/api/agent", "/api/runs", "/api/runs/none", "/missing"]) {
       const res = await request(served.url, { target });
       assert.equal(res.headers["content-security-policy"], CSP, target);
       assert.equal(res.headers["x-content-type-options"], "nosniff");
@@ -487,6 +487,10 @@ test("a foreign Host, another port, a POST and a path out of the home are all re
     }
     assert.match((await request(served.url, { target: "/api/agent" })).headers["content-type"], /^application\/json; charset=utf-8$/);
     assert.match((await request(served.url, { target: "/" })).headers["content-type"], /^text\/html/);
+    for (const target of ["/graph.js", "/page.js"]) {
+      const res = await request(served.url, { target });
+      assert.deepEqual([res.status, res.headers["content-type"]], [200, "text/javascript; charset=utf-8"], target);
+    }
     const outside = Object.values(os.networkInterfaces()).flat().find((address) => address && address.family === "IPv4" && !address.internal);
     if (outside) {
       const refused = await new Promise((resolve) => {
@@ -656,7 +660,7 @@ test("the package says it has a bin and a ./serve entry, and the bin starts with
   assert.deepEqual(manifest.bin, { "pi-durable-agent": "./dist/serve/cli.js" });
   assert.deepEqual(manifest.exports["./serve"], { types: "./dist/serve/index.d.ts", default: "./dist/serve/index.js" });
   assert.ok(readFileSync(CLI, "utf8").startsWith("#!/usr/bin/env node\n"));
-  for (const file of ["page.html", "page.css", "page.js"]) assert.ok(existsSync(new URL(`../dist/serve/${file}`, import.meta.url)), `the build copies ${file}`);
+  for (const file of ["page.html", "page.css", "graph.js", "page.js"]) assert.ok(existsSync(new URL(`../dist/serve/${file}`, import.meta.url)), `the build copies ${file}`);
   assert.match(readFileSync(new URL("../dist/serve/page.html", import.meta.url), "utf8"), /<link rel="stylesheet" href="\/?page\.css">[\s\S]*<script src="\/?page\.js"[^>]*><\/script>/);
 });
 
