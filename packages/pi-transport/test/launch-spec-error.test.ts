@@ -178,3 +178,11 @@ describe("the C library's own unsecure variables (glibc's and musl's)", () => {
 		},
 	);
 });
+
+describe("a launch name", () => {
+	it("never starts with a dot: the spool's own entries (.lock.<name>, .stopped.<name>.<gen>) can never be a launch", () => {
+		for (const name of [".stopped.app.0011223344556677", ".lock.app", ".app", "."])
+			expect(launchSpecError(name, { argv: ["true"] })?.code, name).toBe("invalid");
+		expect(launchSpecError("app.stopped", { argv: ["true"] })).toBeUndefined();
+	});
+});

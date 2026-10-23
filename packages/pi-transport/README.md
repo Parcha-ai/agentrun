@@ -879,6 +879,10 @@ before it makes a box to launch in.
   - A stop whose first one died (past its deadline: that stop's grace, its hook's bound and 3 s) is taken over by the next stop.
   - A `launch` of the name while it is stopped waits for the stop's end, then starts anew, never beside the hook. Past
     the stop's deadline it is `failed` ("stop it again").
+  - What a stop returns, the second stop's included, is the state of the incarnation it stopped, as the launcher
+    recorded it before it released the name: never that launch of the name, and never text the program or its hook
+    printed. The record rests in the spool as `.stopped.<name>.<generation>` until a later reclaim of the name finds
+    it older than any stop that could wait for it.
 - Callers that meet are safe: several `launch` calls for one name start one program, a claim whose caller died before
   filling it is taken over after a minute, and a launch that ended is replaced by one caller only.
 - The program's output goes to `out.log` in the launcher's directory, bounded to its tail (`logMaxBytes`), also after

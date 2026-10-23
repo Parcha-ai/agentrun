@@ -3,7 +3,14 @@ import type { Context } from "@earendil-works/chord";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Box } from "../box/box.ts";
 import { finish } from "../box/files.ts";
-import { DIRECTORY_CHECK, LAUNCHER_SCRIPT, LAUNCHER_SHELL_NAMES, TOOLS_CHECK_MS } from "./launcher-script.ts";
+import {
+	DIRECTORY_CHECK,
+	LAUNCHER_SCRIPT,
+	LAUNCHER_SHELL_NAMES,
+	STATUS_BEGIN,
+	STATUS_END,
+	TOOLS_CHECK_MS,
+} from "./launcher-script.ts";
 
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -87,6 +94,8 @@ const DEFAULT_RESTART_INTERVAL_MS = 60_000;
 const DEFAULT_GRACE_MS = 5_000;
 /** A stop waits this long for the program at most, and its call to the box is given that much time and more. */
 const MAX_GRACE_MS = 10 * 60_000;
+/** A stop's record outlives any stop that waits for it (its grace, the hook at its longest, 3 s); then a reclaim removes it. */
+const STOP_RECORD_KEEP_MIN = Math.ceil((MAX_GRACE_MS + MAX_HOOK_MS + 3_000) / 60_000) + 1;
 /** A claimed directory nobody has filled for this long was abandoned by a caller that died or failed to upload. */
 const ABANDONED_CLAIM_S = 60;
 const DEFAULT_LOG_MAX_BYTES = 1024 * 1024;
@@ -246,6 +255,7 @@ export const RECLAIM_SCRIPT = checked(
 	'date +%s > "$L/at"',
 	// Under the lock no other caller is between removing the directory and making it again: one that is gone is looked at below.
 	'own_dir "$D" || [ $? = 4 ] || { rm -rf "$L"; exit 13; }',
+	`find "\x24{D%/*}" -maxdepth 1 -type f -name ".stopped.\x24{D##*/}.*" -mmin +${STOP_RECORD_KEEP_MIN} -exec rm -f {} + 2>/dev/null`,
 	`cur=$(sed -n "s/^GEN='\\(.*\\)'\\$/\\1/p" "$D/spec.sh" 2>/dev/null)`,
 	'if [ "$cur" != "$E" ]; then rm -rf "$L"; echo CHANGED; exit 0; fi',
 	'if [ -z "$E" ]; then',
@@ -928,9 +938,21 @@ export async function launchStop(
 			new LaunchError("failed", `the stop of ${name} did not finish (exit ${stopped.value.exitCode}): ${said}`),
 		);
 	}
-	const after = await launchStatus(box, name, context);
-	if (!after.ok) return after;
-	if (after.value === undefined)
-		return err(new LaunchError("failed", `the launch ${name} vanished while it was stopped`));
-	return ok(after.value);
+	// The stopped incarnation's own status, as the stop printed it before it released the name: never read again by name, which a
+	// launch of the name that waited for the stop may hold by then.
+	const block = lastStatusBlock(stopped.value.text);
+	const state = block === undefined ? undefined : parseState(block, current.value.directory);
+	if (state === undefined || state === "none")
+		return err(
+			new LaunchError("failed", `the stop of ${name} reported no state: ${stopped.value.text.trim().slice(0, 200)}`),
+		);
+	return ok(state);
+}
+
+/** The lines of the last status block the launcher printed (STATUS_BEGIN to STATUS_END): no other text is read as a status. */
+function lastStatusBlock(text: string): string | undefined {
+	const lines = text.split("\n");
+	const begin = lines.lastIndexOf(STATUS_BEGIN);
+	const end = begin < 0 ? -1 : lines.indexOf(STATUS_END, begin + 1);
+	return end < 0 ? undefined : lines.slice(begin + 1, end).join("\n");
 }
