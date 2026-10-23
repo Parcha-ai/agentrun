@@ -89,6 +89,13 @@ export interface HostDriver {
    * exists. A place tells each host box's runner which label to claim by it (`HOST_BOX`).
    */
   readonly provider?: string;
+  /**
+   * Optional: the name of the instance `handle` is for, the same for its fresh handle and an adopted one (dockerHost: the
+   * daemon and the container's name), or `undefined` for a handle that is not this driver's or names none. A place keys
+   * the boxes it started by it, so a box adopted again keeps its key. Two handles are one instance only when this names
+   * them both, equally: without it no two handles ever are.
+   */
+  instanceOf?(handle: HostHandle): string | undefined;
 }
 
 /** The control-plane calls the supervisor uses; an archil `Disk` satisfies it. */

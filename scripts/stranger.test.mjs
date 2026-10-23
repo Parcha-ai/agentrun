@@ -55,6 +55,32 @@ test('every spec in the repository is valid and every snippet it runs is in its 
   }
 });
 
+test("every spec's companions are its package's repository dependencies, transitively, and its install packs exactly those and the package", async () => {
+  const manifests = new Map();
+  for (const directory of await readdir(new URL('../packages/', import.meta.url))) {
+    const manifest = JSON.parse(await readFile(new URL(`../packages/${directory}/package.json`, import.meta.url), 'utf8'));
+    manifests.set(manifest.name, { directory, dependencies: Object.keys(manifest.dependencies ?? {}) });
+  }
+  const closure = (name, found = new Set()) => {
+    for (const dependency of manifests.get(name).dependencies) if (manifests.has(dependency) && !found.has(dependency)) closure(dependency, found.add(dependency));
+    return found;
+  };
+  for (const name of (await readdir(new URL('./stranger/', import.meta.url))).map(file => file.replace(/\.json$/, ''))) {
+    const spec = await loadSpec(name);
+    const companions = [...closure(spec.package)].sort();
+    assert.deepEqual([...(spec.companions ?? [])].sort(), companions, `${name}: companions`);
+    assert.deepEqual([...spec.install].sort(), [spec.package, ...companions].map(packageName => manifests.get(packageName).directory).sort(), `${name}: install`);
+  }
+});
+
+test("a README's install line keeps its own arguments, with this tree's companions after them, and must name the package", () => {
+  const line = 'npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@1.3.0\n';
+  const packed = new Map([['@parcha/pi-durable-agent', '/packs/agent.tgz']]);
+  assert.deepEqual(readmeInstallArgs(line, packed, ['/packs/dsl.tgz', '/packs/pi.tgz']),
+    ['install', '/packs/agent.tgz', '@earendil-works/pi-durable@1.3.0', '/packs/dsl.tgz', '/packs/pi.tgz']);
+  assert.throws(() => readmeInstallArgs('npm install @earendil-works/pi-durable@1.3.0\n', packed, ['/packs/dsl.tgz']), /does not install @parcha\/pi-durable-agent/);
+});
+
 test("a README's install line is installed as written, with this tree's packed package in its place", () => {
   const line = 'npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord\n';
   assert.deepEqual(readmeInstallArgs(line), ['install', '@parcha/pi-durable-disk@beta', '@earendil-works/pi-durable', '@earendil-works/pi-ai', '@earendil-works/chord']);
