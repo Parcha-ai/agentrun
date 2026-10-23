@@ -123,7 +123,7 @@ export function serveStore(store: { readonly dir: string }, options: ServeOption
 /** @internal `serveStore` with the workflow run reader given, for tests. */
 export async function serveStoreWith(store: { readonly dir: string }, options: ServeOptions, readRun: ReadWorkflowRun): Promise<ServeHandle> {
   const dir = path.resolve(store.dir);
-  if (!existsSync(path.join(dir, STORE_FILE))) throw new AgentHomeError("missing", `${path.basename(dir)} is not an agent store (no ${STORE_FILE})`);
+  if (!existsSync(path.join(dir, STORE_FILE))) throw new AgentHomeError("missing", `there is no ${STORE_FILE} in that folder`);
   checkPort(options.port ?? 0);
   return serveLocal(PAGES, async (pathname, query) => {
     const reader = openStoreReader(dir);

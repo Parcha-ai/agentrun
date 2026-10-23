@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { STORE_FILE } from "../agent-store.js";
+import { AGENT_STORE_FILE } from "../home.js";
 import { serveHome } from "./server.js";
 import { serveStore } from "./store.js";
 
@@ -31,6 +32,10 @@ export async function main(argv: readonly string[], io: { out: (line: string) =>
   if (!Number.isInteger(port) || port < 0 || port > 65_535) {
     io.err(`the port ${JSON.stringify(parsed.values.port)} is not 0 to 65535\n${USAGE}`);
     return 2;
+  }
+  if (!existsSync(path.join(dir, STORE_FILE)) && !existsSync(path.join(dir, AGENT_STORE_FILE))) {
+    io.err(`that folder is not an agent home or an agent store: it holds no ${AGENT_STORE_FILE} and no ${STORE_FILE}`);
+    return 1;
   }
   const stop = new AbortController();
   const interrupt = () => stop.abort();
