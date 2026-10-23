@@ -52,8 +52,9 @@ const EXCERPTS = [
   { heading: "An agent home on a disk", language: "js", index: 0 },
   { heading: "Prompt variants", language: "js", index: 0 },
   { heading: "Saved browser sessions: the vault", language: "js", index: 0 },
+  { heading: "Agents in a folder: the agent store", language: "js", index: 0 },
 ];
-const NOT_CODE = new Set(["", "text", "sh"]);
+const NOT_CODE = new Set(["", "text", "sh", "sql"]);
 const CODE = new Set(["js", "mjs", "ts", "mts", "javascript", "typescript"]);
 
 test("every code block in the README is the quickstart, a named excerpt that parses, or not code", () => {
