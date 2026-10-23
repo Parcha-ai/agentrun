@@ -199,6 +199,23 @@ test("a chain with an exit, a route with two branches and a map: one group per n
   assert.equal(groups(svg).filter((el) => stateOf(el).length || has(el, "new") || has(el, "edited")).length, 0, "no marks, no state");
 });
 
+test("every kind's card shows who works with a square inside it, never a bar down its edge", () => {
+  const kinds = ["agent", "decide", "extract", "report", "artifact", "judge", "pick", "sift", "route", "call", "code", "chain", "parallel", "map", "loop", "workflow"];
+  const { draw } = mount();
+  const svg = draw({ nodes: [node("/root", "chain"), ...kinds.map((kind, i) => node(`/root/steps/${i}`, kind, `A ${kind}`))], edges: [] });
+  const cards = groups(svg).filter((el) => has(el, "card"));
+  assert.equal(cards.length, kinds.length);
+  const who = new Set();
+  for (const card of cards) {
+    const [outline] = inside(card, "box");
+    const rects = all(card).filter((el) => el.tagName === "rect" && el !== outline);
+    assert.deepEqual(rects.map((el) => classes(el)), [["swatch"]], `${card.getAttribute("data-path")}: one swatch`);
+    assert.ok(!rects.some((el) => num(el, "x") === num(outline, "x") && num(el, "height") >= num(outline, "height")), "no rect runs down the card's left edge");
+    who.add(classes(card).find((name) => name.startsWith("who-")));
+  }
+  assert.deepEqual([...who].sort(), ["who-agent", "who-code", "who-control", "who-jev", "who-tool"], "a swatch for each who-works class");
+});
+
 test("a diff: NEW and EDITED tags on their nodes, the exit's beside its pill, the removed nodes listed as text, and a redraw clears them", () => {
   const { draw } = mount();
   const plain = all(draw(GRAPH)).length;
