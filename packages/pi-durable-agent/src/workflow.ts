@@ -85,22 +85,24 @@ export async function runWorkflowRevision(options: {
   const outcome = await (await options.workflows.start(options.harness, request, options.context, { background: true })).wait(options.context);
   const view = await readWorkflowRun(run);
   // The nodes that ran, chains (pure sequence) and the node the run escalated at (the ending names it) aside.
-  const ran = view.graph.nodes.filter((node) => node.kind !== "chain" && node.label !== view.escalatedAt && (view.status[node.path] === "done" || view.status[node.path] === "escalated")).map((node) => node.label);
-  return { outcome, carry: { state: stateOf(outcome), summary: [ran.join(", "), view.escalatedAt && `escalated at ${view.escalatedAt}`].filter(Boolean).join("; ") } };
+  const ran = view.graph.nodes.filter((node) => node.kind !== "chain" && node.path !== view.escalatedAt?.path && (view.status[node.path] === "done" || view.status[node.path] === "escalated")).map((node) => node.label);
+  return { outcome, carry: { state: stateOf(outcome), summary: [ran.join(", "), view.escalatedAt && `escalated at ${view.escalatedAt.label}`].filter(Boolean).join("; ") } };
 }
 
 /** A workflow run as its store shows it: the workflow's graph and each node's state; once the run ended, how it ended,
- *  the label of the node it escalated at, and the workflow's output when it completed. */
-export type WorkflowRunView = { graph: WorkflowGraph; status: Record<string, NodeState>; outcome?: RunState; escalatedAt?: string; output?: unknown };
+ *  the node it escalated at (its path in the graph and its label), and the workflow's output when it completed. */
+export type WorkflowRunView = { graph: WorkflowGraph; status: Record<string, NodeState>; outcome?: RunState; escalatedAt?: { path: string; label: string }; output?: unknown };
 
 /**
  * Reads a workflow run from its store file, read-only: it never writes, takes no lock and opens no Harness, so it reads
- * a run another process is running. The nodes' states come from the run's journal and its task's terminal result.
+ * a run another process is running. The nodes' states come from the run's journal and its task's terminal result. A run
+ * in the driver's keyed layout (a host's `layout: "v4"`) keeps its map items apart and is refused here as `format`.
  */
 export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "storePath" | "revision">): Promise<WorkflowRunView> {
-  const [{ nodeStatus, workflowGraph }, { durableDoc, readJournal }] = await Promise.all([import("@parcha/agentrun-dsl/graph"), import("@parcha/agentrun-pi/durable")]);
+  const [{ graphNodeOf, nodeStatus, workflowGraph }, { durableDoc, readJournal }] = await Promise.all([import("@parcha/agentrun-dsl/graph"), import("@parcha/agentrun-pi/durable")]);
   const graph = workflowGraph(run.revision.body.workflow);
-  // The run's task holds how it ended: its id is on the run's entry, its record in pi-durable's task table.
+  // The run's task holds how it ended: its id is on the run's entry, its record in pi-durable's task table. The task is
+  // read before the journal, so a task found terminal means the journal read after it is final.
   const task = durableDoc<{ task?: unknown }>(run.storePath, "agentrun.task", run.runId)?.task;
   let ended: { status?: string; result?: { status?: string; output?: unknown; escalation?: { executionPath?: unknown } } } | undefined;
   if (typeof task === "number") {
@@ -115,12 +117,15 @@ export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "sto
   }
   // A completed task holds the run's result (complete or escalated); an aborted one was cancelled; any other failed.
   const result = ended?.status === "completed" ? ended.result : undefined;
-  const status = nodeStatus(graph, { pin: (readJournal(run.storePath, run.runId)?.state as { pin?: object } | null)?.pin ?? {}, result: result ?? null });
-  const escalatedAt = [...graph.nodes].reverse().find((node) => status[node.path] === "escalated")?.label;
+  const state = readJournal(run.storePath, run.runId)?.state as { schema?: unknown; pin?: object } | null | undefined;
+  if (state?.schema === "agentrun.frozen_run.v4") throw new AgentHomeError("format", "a run in the keyed layout is not read here");
+  const status = nodeStatus(graph, { pin: state?.pin ?? {}, result: result ?? null });
+  const at = typeof result?.escalation?.executionPath === "string" ? graphNodeOf(graph, result.escalation.executionPath)?.path : undefined;
+  const fired = graph.nodes.find((node) => node.path === at);
   return {
     graph, status,
     ...(ended ? { outcome: result ? stateOf(result as Pick<WorkflowOutcome, "status">) : ended.status === "aborted" ? "stopped" as const : "failed" as const } : {}),
-    ...(escalatedAt ? { escalatedAt } : {}),
+    ...(fired ? { escalatedAt: { path: fired.path, label: fired.label } } : {}),
     ...(result?.status === "complete" ? { output: result.output } : {}),
   };
 }
