@@ -349,6 +349,64 @@ power-off, a freeze of the instance and its FUSE daemon, and a network partition
 power-off through the orphaned delegation, the freeze and the partition through the lease, the partitioned box stopped by
 the driver), and the thawed instance exited 75. A driver for another compute (a Kubernetes pod, another sandbox product) is the same three calls.
 
+`boxHost({ provider, spec, app, ... })`, from `@parcha/pi-durable-disk/box`, runs each instance in a box of a
+pi-transport provider (library only, like `daytonaHost`). Modal's VM is the first; `@parcha/pi-transport` is an optional
+peer this entry needs and the package's root does not.
+- **The box.** A start finds the box its attempt made (by three labels: `pi-durable-disk.disk`, `.run`, `.attempt`) or
+  creates one from `spec`, with `capabilities: ["fuse"]` added. `spec.maxLifetimeMs` is required, and `spec.env` and
+  label keys of transport's or boxHost's own (`agentrun-host-key` included) are refused.
+- **The box's key.** At every create, replacements included, boxHost mints `<run>/<index>/<16 random hex>` (the run and
+  the index from the start's `HOST_BOX`; the run's id and the attempt without one) and writes it as the box's one
+  `agentrun-host-key` label, as that label's only writer. The launch's `HOST_BOX` carries that key, so the runner binds
+  `host-<key>` for its own box. `box(handle).key` reports it, so the place's status entry carries it per box. The same
+  key is the same box across supervisor lives; neither a restarted index nor a retried attempt names two boxes.
+- **What it checks.** A box whose `facts().fuse` is not true, with no fd for the launcher's frame (`secretsVia` other
+  than `"fd"`), or that keeps no program running is destroyed before any upload or launch, and the start is
+  `UNSUPPORTED`. That refusal is remembered for the spec: later starts are refused at once, with no box made. Otherwise
+  ensureRunning, which restarts on every tick, would boot and destroy a VM each time. A launch the launcher answers
+  `unsupported`, `refused` or `unsafe` (a spool or launch directory another user could change, named by its path) is the
+  same remembered `UNSUPPORTED`, its box destroyed: each comes from the image or the box's layout, so a new box repeats it.
+- **The launch.** Into a fresh box it uploads `files`. Transport's launcher then keeps `pi-durable-disk run ... --app
+  <app> --run-as <runAs> --token-stdin` running AS ROOT, restarting it on failure but not after 0, 65, 70, 75 or 76.
+  - The instance mounts the disk itself, with no sudo.
+  - Every agent command runs as `runAs` (default `pda`, never root), through disk's own spawn, with no capabilities,
+    under no_new_privs.
+  - So the mount token's holders (the launcher, the instance and the FUSE daemon) are all root, and no command can
+    ptrace one, whether or not the kernel has Yama. The tools' user needs no sudo rule.
+  - The residual: the token sits in the archil daemon's environment (archil 0.8.42 takes it only from
+    `ARCHIL_MOUNT_TOKEN`; moving it off the environment needs a change in archil), readable only by root or a holder of
+    `CAP_SYS_PTRACE`, which the tools' user is denied (no capabilities, no_new_privs, no sudo or setuid/setcap helper).
+    Root in the box can still read it, so the image is trusted.
+  - The token is that launch's stdin: the launcher holds it in memory and replays it to each incarnation, and boxHost
+    keeps it for that one call.
+  - The environment is `PDA_HOLDER`, `env` and the start's own; the launcher adds the runtime's PATH, root's HOME and
+    LANG.
+- **Finding it again.** The box's facts, as its attach reads them now, decide first:
+  - a needed fact present and wrong (`fuse` false, `secretsVia` not `"fd"`, `liveProcesses` false, a GPU asked for and
+    measured none; a GPU's model name is never compared) ends the box through its handle, and only then is a
+    replacement made. A failed end makes nothing (`STOP_FAILED`);
+  - a needed fact absent (not measured) ends nothing and makes nothing: the start fails `CREATE_FAILED` for the next
+    one's. From the 5th start that finds the same box so, `UNSUPPORTED` names the box and the fact, until the box is
+    gone. An attach error also ends and makes nothing;
+  - a box without its `agentrun-host-key` label (made before the key) could never be recorded: ended and replaced, never
+    adopted or used.
+  Otherwise a box found with its launch running is adopted, with the key on its label. One whose launch ended or was lost is
+  destroyed and replaced, never relaunched. A launch is lost when its launcher is gone, and boxHost keeps no token to
+  start it again, so `status` reports a lost launch `failed`: the place takes over, and a new start mints a new token.
+- **The other calls.** `stop` drains the instance (`stopGraceMs`), runs the launcher's stop hook, then destroys the box.
+  `kill` destroys it at once. `box(handle)` is facts only: the provider, the box's key, the kind (`gpu`, else the
+  isolation), `from` (`facts().startedAt`, else when it was made) and `to`. There is no price.
+- **Errors** are `BoxHostError`: `INVALID_ARGUMENT`, `UNSUPPORTED`, `CREATE_FAILED`, `UPLOAD_FAILED`, `LAUNCH_FAILED`,
+  `START_TIMED_OUT` and `STOP_FAILED`, with the provider's or the launcher's error as `cause`.
+- **The image** must carry:
+  - the `runAs` user in passwd, with NO sudo rule and no setuid or setcap helper granting it privilege;
+  - EVERY setuid/setgid bit stripped and no file capabilities: transport's launcher refuses a start while the tools'
+    user can run such a helper, and a stock image ships su, mount, passwd and others setuid;
+  - `libcap2-bin` (`setcap` and `getcap`, which that check uses);
+  - util-linux `setpriv` (disk's spawn drops each command with it);
+  - `node` and this package's CLI on the runtime's PATH; otherwise, pass an absolute `command`.
+  It needs no `fusermount3`: root mounts, and the fuse fact means the device exists and root can open it.
+
 `dockerHost({ image })` (`supervise --host docker --image IMAGE`) runs each instance in a container of its own; one
 container is one incarnation.
 - **Start.** `docker create` named `pda-<run>-<disk key>-g<attempt>` (the disk key is 8 hex digits of the disk and region,

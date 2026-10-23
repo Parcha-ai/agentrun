@@ -70,7 +70,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-durable-disk --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
+      - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-durable-disk,@parcha/pi-transport --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's resolved versions
         if: always()
         uses: actions/upload-artifact@v4
@@ -92,7 +92,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/agentrun-pi,@parcha/pi-durable-disk --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
+      - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/agentrun-pi,@parcha/pi-durable-disk,@parcha/pi-transport --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's resolved versions
         if: always()
         uses: actions/upload-artifact@v4
