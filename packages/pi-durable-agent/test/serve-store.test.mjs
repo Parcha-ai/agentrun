@@ -47,6 +47,7 @@ test("the picker: /api/store lists each agent with its current revision's kind, 
       ["mcc-classifier", "MCC classifier", "workflow", 2, 4],
     ]);
     assert.equal(store.json.agents[0].current, REVISIONS.C.id);
+    assert.deepEqual(Object.keys(store.json.agents[0]).sort(), ["createdAt", "current", "currentKind", "description", "id", "name", "revisions", "runs"], "the row's own fields, no more");
     assert.equal(store.json.agents[0].description, AGENTS[0].description);
     assert.equal(reader.opened.length, 1);
     assert.notEqual(reader.opened[0], root, "the reader is opened on a copy of the index, not the store");

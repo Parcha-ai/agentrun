@@ -1,6 +1,7 @@
 // `serveStore`: the serve page over an agent store, a directory of many agents, each with immutable revisions and runs.
 // Everything is read through the store's reader, opened on a copy of the store's index (SQLite's backup, from a
-// read-only handle, as `serveHome` copies a home), and through read-only handles on the run stores; nothing is written.
+// read-only handle, as `serveHome` copies a home), through read-only handles on the agentic runs' stores, and by the
+// workflow views from a copy of a workflow run's store; nothing is written, and only the fields named here are sent.
 import { existsSync, realpathSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -53,11 +54,17 @@ const READER_MODULE = "../agent-store.js";
 const WORKFLOW_MODULE = "../workflow.js";
 const defaultReader = async (dir: string): Promise<StoreReader> => ((await import(READER_MODULE)) as { openStoreReader(dir: string): Promise<StoreReader> }).openStoreReader(dir);
 const defaultWorkflow = async (): Promise<WorkflowViews> => {
+  let module: Partial<Record<keyof WorkflowViews, unknown>>;
   try {
-    return (await import(WORKFLOW_MODULE)) as WorkflowViews;
+    module = (await import(WORKFLOW_MODULE)) as typeof module;
   } catch (error) {
     throw new AgentHomeError("missing", "this build of @parcha/pi-durable-agent has no workflow views", { cause: error });
   }
+  // A view this build lacks is a page that cannot draw that one thing, never a failed page.
+  const view = <K extends keyof WorkflowViews>(name: K): WorkflowViews[K] => (typeof module[name] === "function"
+    ? module[name] as WorkflowViews[K]
+    : (() => Promise.reject(new AgentHomeError("missing", `this build of @parcha/pi-durable-agent has no ${name}`))) as unknown as WorkflowViews[K]);
+  return { readWorkflowGraph: view("readWorkflowGraph"), diffWorkflowGraphs: view("diffWorkflowGraphs"), readWorkflowRun: view("readWorkflowRun") };
 };
 
 /** One read of the whole index: every agent, its revisions and their bodies (or why one could not be read), and every
@@ -252,6 +259,15 @@ async function drawable<T>(work: () => Promise<T>): Promise<{ value: T } | { una
   }
 }
 
+const optional = <K extends string>(key: K, value: unknown) => (value !== undefined ? { [key]: value } : {});
+/** An agent as the API gives it: the index's row, field by field. */
+const agentShown = (agent: AgentRow) => ({
+  id: agent.id, name: agent.name, ...optional("description", agent.description), createdAt: agent.createdAt, current: agent.current,
+  currentKind: agent.currentKind, runs: agent.runs, ...optional("missing", agent.missing),
+});
+/** A revision's row as the API gives it, without its body. */
+const revisionRowShown = (row: RevisionRow) => ({ id: row.id, agent: row.agent, parent: row.parent, createdAt: row.createdAt, ...optional("note", row.note), kind: row.kind, current: row.current });
+
 const byNewest = (a: RunRow, b: RunRow) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
 /** A run as the API gives it: the index's row, field by field. */
 const runShown = (run: RunRow): RunRow => ({
@@ -294,7 +310,8 @@ async function workflowRunOf(dir: string, storePath: string, run: RunRow, revisi
  *  agentic run's entries as the timeline, a workflow run's record from the workflow views. */
 async function runView(dir: string, view: StoreView, run: RunRow, workflow: () => Promise<WorkflowViews>) {
   const agent = view.agents.find((candidate) => candidate.id === run.agent);
-  const revision = (view.revisions.get(run.agent) ?? []).find((candidate) => candidate.id === run.revision) ?? null;
+  const row = (view.revisions.get(run.agent) ?? []).find((candidate) => candidate.id === run.revision);
+  const revision = row ? revisionRowShown(row) : null;
   const relative = view.runStores.get(run.id);
   const storePath = relative === undefined ? undefined : path.join(dir, relative);
   const stored = storePath !== undefined && existsSync(storePath);
@@ -321,7 +338,7 @@ async function revisionView(view: StoreView, agent: string, id: string, workflow
   const parent = rows.find((candidate) => candidate.id === row.parent) ?? null;
   const before = parent ? view.bodies.get(bodyKey(agent, parent.id)) : undefined;
   const parentBody = before instanceof AgentHomeError ? undefined : before;
-  const value = { revision: { ...row, body: shown(revision) }, parent };
+  const value = { revision: { ...revisionRowShown(row), body: shown(revision) }, parent: parent && revisionRowShown(parent) };
   if (row.kind !== "workflow") return { status: 200, value: { ...value, diff: parentBody?.kind === "agentic" ? agenticDiff(parentBody.id, shown(parentBody), shown(revision)) : null } };
   const graph = await drawable(async () => (await workflow()).readWorkflowGraph(revision.body.workflow));
   if ("unavailable" in graph) return { status: 200, value: { ...value, graph: null, diff: null, unavailable: graph.unavailable } };
@@ -375,7 +392,7 @@ export async function serveStore(store: { readonly dir: string }, options: Store
     }
     if (pathname === "/api/store") {
       const view = await read();
-      return { status: 200, value: { agents: view.agents.map((agent) => ({ ...agent, revisions: view.revisions.get(agent.id)?.length ?? 0 })) } };
+      return { status: 200, value: { agents: view.agents.map((agent) => ({ ...agentShown(agent), revisions: view.revisions.get(agent.id)?.length ?? 0 })) } };
     }
     const match = /^\/api\/agents\/([^/]+)(?:\/revisions\/([^/]+))?$/.exec(pathname);
     if (match) {
@@ -386,8 +403,8 @@ export async function serveStore(store: { readonly dir: string }, options: Store
       const agent = view.agents.find((candidate) => candidate.id === agentId);
       if (!agent) return notFound("agent");
       if (revisionId !== undefined) return revisionView(view, agentId, revisionId, workflow);
-      const revisions = (view.revisions.get(agentId) ?? []).map((row) => ({ ...row, runs: view.runs.filter((run) => run.agent === agentId && run.revision === row.id).length }));
-      return { status: 200, value: { agent: { ...agent, revisions: revisions.length }, revisions } };
+      const revisions = (view.revisions.get(agentId) ?? []).map((row) => ({ ...revisionRowShown(row), runs: view.runs.filter((run) => run.agent === agentId && run.revision === row.id).length }));
+      return { status: 200, value: { agent: { ...agentShown(agent), revisions: revisions.length }, revisions } };
     }
     return { status: 404, value: { error: "not found" } };
   }, "agent store", options);
