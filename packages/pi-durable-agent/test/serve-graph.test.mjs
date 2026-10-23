@@ -139,7 +139,7 @@ const box = (svg, path) => inside(group(svg, path), "box")[0];
 const centre = (rect) => num(rect, "x") + num(rect, "width") / 2;
 
 test("the script: a classic script with no HTML sink and no rounded corner, and page.html loads it before page.js", () => {
-  for (const sinkName of ["innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "createElement(", "eval(", "new Function", "setAttribute(\"style\"", ".style.", "javascript:"]) {
+  for (const sinkName of ["innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "createElement(", "eval(", "new Function", "setAttribute(\"style\"", ".style.cssText", "javascript:"]) {
     assert.equal(GRAPH_JS.includes(sinkName), false, `graph.js has no ${sinkName}`);
   }
   assert.doesNotThrow(() => new vm.Script(GRAPH_JS), "the script parses as a classic script");
@@ -189,6 +189,12 @@ test("a chain with an exit, a route with two branches and a map: one group per n
   assert.deepEqual(words(svg, "label"), ["Find the filings", "Kind of company", "Read the 10-K", "Is it registered", "Each officer", "Screen the officer", "Write the brief"]);
   assert.ok(words(group(svg, "/root/steps/2/branches/public/body"), "kind")[0].includes("http"), "a call names its transport");
   assert.ok(has(group(svg, "/root/steps/0"), "who-agent") && has(group(svg, `${PRIVATE}/steps/0`), "who-jev") && has(group(svg, "/root/steps/2/branches/public/body"), "who-tool"), "coloured by who works");
+  for (const path of CARDS) {
+    const [card, swatch, label] = [box(svg, path), inside(group(svg, path), "swatch")[0], inside(group(svg, path), "label")[0]];
+    assert.deepEqual([num(swatch, "width"), num(swatch, "height")], [8, 8], `${path}: who works is a small square, not a bar down the card's edge`);
+    assert.ok(num(swatch, "x") > num(card, "x") && num(swatch, "y") > num(card, "y") && num(swatch, "y") + 8 < num(card, "y") + num(card, "height"), "inside the card");
+    assert.ok(num(label, "x") > num(swatch, "x") + 8, "the label clears it");
+  }
   for (const el of groups(svg)) assert.ok(titleOf(el), `${el.getAttribute("data-path")} has a title`);
   assert.equal(groups(svg).filter((el) => stateOf(el).length || has(el, "new") || has(el, "edited")).length, 0, "no marks, no state");
 });
@@ -311,7 +317,7 @@ test("square corners: no rx or ry on any shape, and page.css rounds nothing", ()
   assert.doesNotMatch(PAGE_CSS, /(^|[{;\s])r[xy]\s*:/, "no rx or ry in the CSS");
 });
 
-test("drawn at its natural size: the width is the drawing's own, set as an attribute, shrunk to fit by CSS and never grown", () => {
+test("drawn at its natural size: the width is the drawing's own, set as an attribute, shrunk to fit down to 480 or its own width, never grown", () => {
   const { draw, svg } = mount();
   const sizeOf = (el) => {
     const [x, y, w, h] = el.getAttribute("viewBox").split(" ").map(Number);
@@ -328,11 +334,14 @@ test("drawn at its natural size: the width is the drawing's own, set as an attri
   assert.equal(full.w - right, left, "as wide as the drawing and its margin, no wider");
   assert.ok(full.h > 0 && Number.isInteger(full.w) && Number.isInteger(full.h));
   assert.equal(svg.getAttribute("style"), null, "no style attribute");
-  assert.deepEqual(svg.styles, {}, "and no style property");
+  assert.ok(full.w > 480);
+  assert.deepEqual(svg.styles, { "min-width": "480px" }, "a phone keeps it at least 480 wide, and its box scrolls it sideways");
 
   draw({ nodes: [node("/root", "agent", "Only")], edges: [] });
   const one = sizeOf(svg);
   assert.ok(one.w < full.w && one.h < full.h, "a smaller graph is a smaller svg: nothing is stretched to a fixed size");
+  assert.ok(one.w < 480);
+  assert.deepEqual(svg.styles, { "min-width": `${one.w}px` }, "a graph narrower than 480 is never held wider than it is");
   const removed = draw({ nodes: [node("/root", "agent", "Only")], edges: [] }, { diff: { added: [], edited: [], removed: Array.from({ length: 12 }, (_, i) => ({ label: `Removed step ${i}`, kind: "agent" })) } });
   const listed = sizeOf(removed);
   for (const text of inside(removed, "removed")) assert.ok(text.textContent.length * 11 * 0.6 <= listed.w, "the removed list wraps within the drawing");
@@ -343,6 +352,7 @@ test("drawn at its natural size: the width is the drawing's own, set as an attri
   assert.match(rule[1], /max-width:100%/);
   assert.match(rule[1], /height:auto/);
   assert.doesNotMatch(rule[1], /(^|;)\s*(min-)?width\s*:/, "no width but its own: it is never scaled up");
+  assert.match(PAGE_CSS, /\.graph-box\{overflow-x:auto\}/, "the box page.js puts it in scrolls it, never the page");
 
   for (const bad of [null, undefined, {}, { nodes: "x" }, { nodes: [{ path: 3 }] }, { nodes: [node("/elsewhere", "agent")] }]) {
     assert.doesNotThrow(() => draw(bad, { status: null, diff: { added: "x" } }), JSON.stringify(bad));
