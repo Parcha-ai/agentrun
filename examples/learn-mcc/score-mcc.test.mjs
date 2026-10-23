@@ -2,7 +2,8 @@
 // distance, a field the teacher lacks left out of the n, the reported-only fields, and the per-vertical summary.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { genericOf, groupOf, labelsOf, loadGroups, mccOf, riskOf, sameGroup, scoreMcc, summarizeMcc } from './score-mcc.mjs';
+import { join } from 'node:path';
+import { genericOf, groupOf, labelsOf, loadGroups, loadStage1Labels, mccOf, riskOf, sameGroup, scoreMcc, summarizeMcc } from './score-mcc.mjs';
 
 const groups = loadGroups();
 const merchant = (teacher, vertical = 'nutra') => ({ merchantId: 'm1', name: 'A Shop', website: 'https://shop.example', vertical, teacher });
@@ -226,4 +227,20 @@ test('C: the summary adds both-fields right over the labelled rows and the fallb
   const off = summarizeMcc([scoreMcc({ answer: { mcc: '5999' }, merchant: merchant({ mcc: '5999' }), groups })]);
   assert.equal('bothCorrect' in off.overall, false);
   assert.equal('labelFallback' in off.overall, false);
+});
+
+test('C: the labelling pass\'s own output loads and scores: a labelled merchant on both fields, an unjudgeable one on the code', () => {
+  // The pass's rehearsal file as it wrote it, its merchants renamed: the repository names no campaign merchant.
+  const rehearsal = loadStage1Labels(join(import.meta.dirname, 'fixtures', 'labels-stage1-rehearsal.jsonl'), groups);
+  assert.deepEqual(rehearsal, {
+    'grocer-one.example': { mcc: '5661', allowedTiers: ['low', 'medium'] },
+    'bakery-two.example': { mcc: '5462', allowedTiers: ['low'] },
+    'furniture-three.example': { unjudgeable: 'the site does not load' },
+  });
+  const job = (id, teacher) => ({ id, cik: id, name: id, website: `https://${id}`, teacher });
+  const score = (id, answer, teacher) => scoreMcc({ answer, merchant: job(id, teacher), groups, labels: rehearsal });
+  assert.deepEqual(['low', 'medium'].map((t) => score('bakery-two.example', { mcc: '5462', riskTier: t }, { mcc: '5812' }).correct), [true, false]);
+  assert.equal(score('grocer-one.example', { mcc: '5661', riskTier: 'medium' }, { mcc: '5411' }).correct, true, 'either of two adjacent tiers');
+  const fallback = score('furniture-three.example', { mcc: '5712', riskTier: 'high' }, { mcc: '5712' });
+  assert.deepEqual([fallback.against, fallback.labelFallback, fallback.mccCorrect, fallback.riskCorrect, fallback.correct], ['teacher', 'unjudgeable', true, null, true]);
 });
