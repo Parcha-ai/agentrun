@@ -457,6 +457,38 @@ by `tool_use_id`, never by time. A row is built from pi entries and events only:
 browser context id or a cookie, and every summary, preview and text (a person's own message excepted) keeps a URL's
 origin, path and query keys but drops its query values, fragment and userinfo. `registerLabel(tool, label)` adds the label of a host's own tool.
 
+## Agents in a folder: the agent store
+
+One folder holds many agents. Each agent has revisions, written once and never edited; each run says which revision it ran. **Copy
+the FOLDER** (never `store.sqlite` alone: a writer killed mid-write leaves a journal beside it) and every agent, revision and run comes
+with it.
+
+```
+my-agents/
+  store.sqlite          four plain tables: agents, revisions, skills, runs
+  runs/<run id>/        each run's own store and work directory
+```
+
+```js
+const store = openStore("my-agents");
+const agent = store.createAgent({ name: "Company researcher" });
+await store.commitRevision(agent.id, { kind: "agentic", instructions: "Research the company." }, { setCurrent: true });
+const run = await store.startRun({ agent: agent.id });          // pinned to the current revision
+store.carryBack(run.runId, { state: "completed", costUsd: 0.12, summary: "A housing charity" });
+```
+
+A revision is an agentic prompt or a workflow (`kind: "workflow"`, the DSL's JSON). Its id is the SHA-256 of the canonical JSON of
+`{ agent, parent, kind, body }`; the database refuses an `UPDATE` of a revision. The runs of every revision, in plain SQL:
+
+```sql
+SELECT runs.id, agents.name, revisions.id AS revision, revisions.kind, runs.state, runs.started_at, runs.cost_usd, runs.summary
+FROM runs JOIN revisions ON revisions.id = runs.revision_id JOIN agents ON agents.id = runs.agent_id
+ORDER BY runs.started_at DESC;
+```
+
+The tables are in `src/agent-store.ts`. `openStoreReader(folder)` opens the file read-only for a copy and writes nothing. The beta.24
+home API above is unchanged; `store.importHome(homeDir)` makes one agent with one agentic revision from a home.
+
 ## Library
 
 Three entry points: `@parcha/pi-durable-agent` (everything below but the timeline), `@parcha/pi-durable-agent/export`
@@ -496,6 +528,9 @@ exists to check them. [Errors](#errors) says what each code means.
 | `sessionVault(home, { hostKey, maxSessionCookieAgeMs?, runId?, access?, now? })` | The session vault: `capture`, `restore`, `forget`, `forgetAll`, `list` and `handedOut` ([Saved browser sessions](#saved-browser-sessions-the-vault)) | `invalid`: a host key that is not `{ id, wrap, unwrap }`, a cap that is not above 0 and at most 24 hours, an empty `runId`; its calls: a bad session key, origin, captured state or `capturedAt`. `key`: a host key that does not open the vault. `busy`: with `runId`, another live run holds the session's save lease. `format`: a key file or a saved session that does not read or decrypt, or a saved session whose row's origins or `capturedAt` were changed. A refused call writes nothing |
 | `localHostKey(id, bytes)` | A `HostKey` held in this process: 32 bytes, AES-256-GCM | `invalid`: an id that is not letters, digits, `.`, `_`, `:` or `-`, or not 32 bytes |
 | `VAULT_KEYS_FILE`, `MAX_SESSION_COOKIE_AGE_MS` | `vault.keys`, and 24 hours | |
+| `openStore(dir)` | The agent store in `dir`, created if missing: `createAgent({ name, description?, id? })`, `commitRevision(agent, revision, { setCurrent? })`, `setCurrent(agent, revision)`, `listAgents()`, `listRevisions(agent)`, `readRevision(id)`, `listRuns({ agent?, revision? })`, `startRun({ agent, revision? })`, `carryBack(runId, { state, costUsd?, summary? })`, `importHome(homeDir)`, `close()` ([above](#agents-in-a-folder-the-agent-store)) | `invalid`, `missing`, `exists`, `format`: a revision whose content does not match its id |
+| `openStoreReader(dir)` | The same reads on a read-only handle, plus `runStorePath(runId)`; it writes nothing | `missing`: no `store.sqlite` in `dir` |
+| `AgentStore`, `AgentStoreReader`, `STORE_FILE` | The two classes `openStore` and `openStoreReader` return, and `store.sqlite` | |
 | `AgentHomeError` | The one error class of this package ([Errors](#errors)) | |
 | `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)). Also from `@parcha/pi-durable-agent/export` | |
 
@@ -513,6 +548,7 @@ The types the package exports:
   `CapturedState`, `VaultCookie` and `VaultEntry`.
 - **Runs.** `RunPaths`, `RunStart`, `RunSeed` (plain data, so a host can carry it to the run's side), `CarryBack`,
   `ProfileStore` and `ProfileTarget` (the host's Harness, or any Session on the run store).
+- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `NewRevision`, `StartedRun`, `RunRow` and `RunState`.
 - **Packs.** `PackOptions`, `Skipped`, `HomeManifest` (the manifest's fields, in [Moving a home](#moving-a-home)),
   `ImportOptions`, `ImportReport`, and `HomeCheck` (`{ name, status, message, detail? }`, `status` being `ok`, `warn`
   or `fail`). `ImportStep` and `ImportOptions.inject` belong to this package's tests and are not part of its contract.

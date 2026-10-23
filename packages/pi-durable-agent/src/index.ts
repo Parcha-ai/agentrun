@@ -14,3 +14,7 @@ export { choosePrompt, LOOKUP_TEXT_MAX, type PromptChoice, type PromptJudge, typ
 export {
   type CapturedState, type HostKey, localHostKey, MAX_SESSION_COOKIE_AGE_MS, sessionVault, type SessionVault, type SessionVaultPort, VAULT_KEYS_FILE, type VaultCookie, type VaultEntry,
 } from "./vault.js";
+export {
+  type Agent, type AgenticBody, type AgentRow, AgentStore, AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, type RevisionKind, type RevisionRow, type RunRow,
+  type RunState, type StartedRun, STORE_FILE, type WorkflowBody,
+} from "./agent-store.js";
