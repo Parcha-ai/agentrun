@@ -54,6 +54,22 @@ test('a run that ends without reaching curate (past its deadline) leaves inFligh
   const ended = events.indexOf('end run-001 (ended without curate)');
   assert.ok(ended >= 0 && ended < events.indexOf('start run-001-a2'), events.join('\n'));
   assert.deepEqual(tracker.inFlight(), [], 'every run left at its end');
+  // The pass keeps the same events in <out>/tenure.jsonl, for the hold log a report reads.
+  const kept = (await readFile(join(out, 'tenure.jsonl'), 'utf8')).split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  assert.deepEqual(kept.map((e) => `${e.event} ${e.run}${e.why ? ` (${e.why})` : ''}`), events);
+  assert.ok(kept.filter((e) => e.event === 'start').every((e) => /^[0-9a-f]{40}$/.test(e.sha) && Number.isInteger(e.order)));
+});
+
+test('the scripted knobs a take rehearsal needs: a fixture page marked hang never answers; --run-deadline-ms takes a scripted pass only', async (t) => {
+  const { fixtureWeb } = await import('./scripted.mjs');
+  const fetch = fixtureWeb({ 'https://a.example/': { title: 'A', text: 'a', hang: true }, 'https://b.example/': { title: 'B', text: 'b' } });
+  assert.equal((await fetch('https://b.example/')).status, 200);
+  const raced = await Promise.race([fetch('https://a.example/').then(() => 'answered'), new Promise((resolve) => setTimeout(resolve, 200, 'still waiting'))]);
+  assert.equal(raced, 'still waiting');
+  const { spawnSync } = await import('node:child_process');
+  const r = spawnSync(process.execPath, [join(import.meta.dirname, 'runner.mjs'), '--set', 'mcc', '--live', '--cap-usd', '1', '--out', join(await scratch(t), 'never'), '--run-deadline-ms', '1000'], { encoding: 'utf8' });
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /--run-deadline-ms is a scripted rehearsal's: it takes --scripted/);
 });
 
 /** A stream in which every run the agent finishes saves a new revision (saveEvery), `n` merchants, `concurrency` in flight. */
