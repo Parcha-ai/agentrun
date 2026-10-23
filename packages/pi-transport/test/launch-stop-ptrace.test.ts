@@ -214,17 +214,27 @@ describe("a stop's beforeStop hook", () => {
 	it("runs AFTER the drain (the program had its SIGTERM) and BEFORE the kill, and the stop reports its exit in out.log", async () => {
 		const box = await aBox();
 		// The program notes its SIGTERM and keeps running (it ignores it), so only the final kill ends it.
-		const program = ["sh", "-c", "trap ': > got-term' TERM; : > ready; while :; do sleep 1; done"];
+		const program = [
+			"sh",
+			"-c",
+			"trap ': > got-term' TERM; echo $$ > prog.pid; : > ready; while :; do sleep 1; done",
+		];
+		// The hook says whether the drain came first, and whether the program was still alive: the kill comes after it.
 		const hook = [
 			"sh",
 			"-c",
-			"if [ -e got-term ]; then echo after-term > hook-ran; else echo before-term > hook-ran; fi",
+			'if [ -e got-term ]; then t=after-term; else t=before-term; fi; if kill -0 "$(cat prog.pid)" 2>/dev/null; then a=alive; else a=dead; fi; echo "$t $a" > hook-ran',
 		];
 		const started = getOrThrow(await launch(box, "hooked", { argv: program, beforeStop: { argv: hook } }, context));
 		await until("the program's start", () => fileIn(box, "ready"));
 		const stopped = getOrThrow(await launchStop(box, started.launch, { graceMs: 1_500 }, context));
 		expect(stopped.phase).toBe("stopped");
-		expect((await fileIn(box, "hook-ran"))?.trim()).toBe("after-term");
+		expect((await fileIn(box, "hook-ran"))?.trim()).toBe("after-term alive");
+		const pid = (await fileIn(box, "prog.pid"))?.trim();
+		const asked = getOrThrow(
+			await box.exec(["sh", "-c", `kill -0 ${pid} 2>/dev/null && echo alive || echo dead`], undefined, context),
+		);
+		expect(new TextDecoder().decode(getOrThrow(await finish(asked)).stdout).trim()).toBe("dead");
 		const log = await fileIn(box, `${started.directory}/out.log`);
 		expect(log).toContain("[launcher] beforeStop exited 0");
 		await box.destroy(context);

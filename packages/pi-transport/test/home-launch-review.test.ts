@@ -211,6 +211,41 @@ describe("stopping a launch", () => {
 	}, 60_000);
 });
 
+describe("starting a launch", () => {
+	it("gives every start call, a revive's too, more than the whole bound of the tools user's check it runs", async () => {
+		// The bound as the box runs it: the script's own line.
+		const bound = Number(/^TOOLS_CHECK_CENTIS=(\d+)$/m.exec(LAUNCHER_SCRIPT)?.[1] ?? 0) * 10;
+		expect(bound).toBeGreaterThan(0);
+		await withLocalBox(async (box) => {
+			const seen: (number | undefined)[] = [];
+			const watching: Box = {
+				id: box.id,
+				facts: () => box.facts(),
+				exec: (command, options, ctx) => {
+					if (command.join(" ").includes('launcher.sh" start ')) seen.push(options?.timeoutMs);
+					return box.exec(command, options, ctx);
+				},
+				upload: (files, ctx) => box.upload(files, ctx),
+				download: (paths, ctx) => box.download(paths, ctx),
+				status: (ctx) => box.status(ctx),
+				destroy: (ctx) => box.destroy(ctx),
+			};
+			const first = getOrThrow((await launch(watching, "begun", { argv: ["sleep", "300"] }, context)) as never) as {
+				directory: string;
+			};
+			// Both launcher processes die: the next launch of the name starts its supervisor again.
+			await sh(box, `D=${first.directory}; kill -s KILL $(cat $D/launcher.pid) $(cat $D/watch.pid)`);
+			await until("the launch to read lost", async () => {
+				const status = getOrThrow((await launchStatus(box, "begun", context)) as never) as { phase: string };
+				return status.phase === "lost" ? true : undefined;
+			});
+			getOrThrow((await launch(watching, "begun", { argv: ["sleep", "300"] }, context)) as never);
+			expect(seen).toHaveLength(2);
+			for (const timeoutMs of seen) expect(timeoutMs ?? 0).toBeGreaterThan(bound);
+		});
+	}, 120_000);
+});
+
 describe.skipIf(!HAS_PROC)("the launcher's own sections", () => {
 	const root = mkdtempSync(join(tmpdir(), "pi-transport-launcher-sections-"));
 	const dir = (name: string, spec: string): string => {
