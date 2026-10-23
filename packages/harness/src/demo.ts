@@ -32,7 +32,7 @@ import type { CodeModeOptions } from './code-mode.ts';
 import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
 import { boxLedger, hostLabelIn, ledgerBoxes, markReceiptWritten, parseHostBox, RUN_LABEL, supervisedChild, tapBox, type Boxes, type LedgerEntry, type RunFiles } from './boxes.ts';
 import { credentialIn } from './scan.ts';
-import { hostTap } from './host-tap.ts';
+import { HOST_KEY_LABEL, hostTap } from './host-tap.ts';
 import type { Recorder, Redact } from './record.ts';
 import { priceJudge } from './judge.ts';
 import { askToBeKilled, aroundOwnFiling, crossings, tapFakes, tapHost, tapLive, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
@@ -403,14 +403,19 @@ export function meterKnown(recordDir: string): number {
   return Object.values(folded.parts).reduce<number>((sum, part) => sum + (part ?? 0), 0) + (folded.parts.box === null ? folded.boxKnown : 0);
 }
 
-/** A run's boxes taken away with its machine: every box that carries the run's label, tool-made ones too, destroyed through the provider. A box that will not be destroyed is an error. */
-export async function destroyBoxes(spec: DemoSpec, runLabel: string, root: string, live = false): Promise<void> {
+/** A run's boxes taken away with its machine: every box that carries the run's label, tool-made ones too, destroyed through the provider. A box that will not be destroyed is an error.
+ *  A HOST box (one that carries a host key, `agentrun-host-key`) is ended THROUGH the supervisor's tap, so its `box.ended` is in the recording; the raw path ends only tool boxes. */
+export async function destroyBoxes(spec: DemoSpec, runLabel: string, root: string, live = false, tap?: { end(id: string, context: typeof ctx): Promise<{ ok: boolean; host: boolean }> }): Promise<void> {
   const provider = await boxProvider(effectiveBoxes(spec, live), { root });
   if (!provider) return;
   const listed = await provider.list({ [RUN_LABEL]: runLabel }, ctx);
   if (!listed.ok) throw listed.error;
   const failed: string[] = [];
   for (const ref of listed.value) {
+    if (tap && ref.labels?.[HOST_KEY_LABEL] !== undefined) {
+      const ended = await tap.end(ref.id, ctx);
+      if (ended.host) { if (!ended.ok) failed.push(ref.id); continue; }
+    }
     const found = await provider.attach(ref.id, ctx);
     const gone = found.ok && found.value ? await found.value.destroy(ctx) : found;
     if (!gone.ok) failed.push(ref.id);
@@ -540,7 +545,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     : { readRunFile: (path) => place.readRunFile!(path), listRunFiles: (dir) => place.listRunFiles!(dir) };
   const labelDir = 'box-ids.internal';
   // The place's host boxes through the supervisor's tap (H3): their lines are the supervisor's, held until each box's bound label is read.
-  const tap = hostTap({ line: (kind, data) => supervisor.host(kind, data), runLabelKey: RUN_LABEL, runLabel });
+  const tap = hostTap({ line: (kind, data) => supervisor.host(kind, data), runLabelKey: RUN_LABEL, runLabel, gen: () => currentGen });
   const homeBoxLabels = new Map<string, string>();
   const homeBoxSeen = new Map<string, string>();
   // A host box the place started whose label its process never claimed: the recording is refused, never finished without it (its time would be missing from the cost).
@@ -613,7 +618,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         for (const [index, entry] of (Array.isArray(status?.boxes) ? status!.boxes as unknown[] : []).entries()) {
           const box = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : undefined;
           if (!box || typeof box.provider !== 'string' || typeof box.kind !== 'string') continue;
-          const key = String(index);
+          // The box's key: the one its place reports per box (minted at its create by the place's host driver, Amendment 2), never a list index.
+          // A place that reports none (its host driver mints no key, and so adopts nothing) is keyed by its list's order, as before.
+          const key = typeof box.key === 'string' && box.key !== '' ? box.key : String(index);
           const labelFiles = labelFilesOf();
           // A place with no run-file reads (and so no tool boxes beside it: that run is refused before it starts) is the run's only labeller: its boxes are numbered here.
           let label = labelFiles ? homeBoxLabels.get(key) : labelOf(boxLabels, 'box', key);
@@ -662,11 +669,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   };
   // Metering: the recording's lines as they stand, folded; past the cap the supervisor stops the run.
   const meterTimer = maxUsd === null ? undefined : setInterval(() => { if (meterKnown(recordDir) > maxUsd) overBudget = true; }, 250);
-  // The place is let go once: before the final read when the run gets there, else when the supervisor gives up on it.
-  let released: Promise<void> | undefined;
-  const letGo = (): Promise<void> => (released ??= Promise.resolve(place?.release()));
   try {
-    place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile, hostTap: { provider: tap.provider, unheld: tap.unheld } }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
+    place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live, tap), requestFile, hostTap: { provider: tap.provider, unheld: tap.unheld } }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live, tap) } : {}) });
     // The follower's hold reads the place's clock allowance from here on (it was assigned before the place existed, so it was never seen).
     placeRef = place;
     // A place of the demo's own that cannot let the supervisor read the run's labels (no readRunFile and listRunFiles) cannot share one numbering with the tools' boxes:
@@ -810,9 +814,6 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     // What the run delivered and its store's hash come from the last runner's own report: nothing is read under the run's directory.
     const last = processes.at(-1)?.outcome;
     const delivered = last && last.status === 'complete' && 'record' in last ? { record: last.record } : null;
-    // The place lets the run go BEFORE the final read: a host box it ends only then (a host driver whose stop is at release) has its
-    // end, its `box.ended` and its receipt's `to`, in the recording, never after the recording is finished.
-    await letGo();
     // The last read can add a box's priced receipt: the cap is checked after it.
     ledgerReceipts(true);
     await settled(readStatus(true));
@@ -860,7 +861,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     clearInterval(following);
     if (meterTimer) clearInterval(meterTimer);
     // The backend and the scratch are closed whatever the place did: a place that failed to be made, or to be released, leaves neither open.
-    try { await letGo(); } finally {
+    try { await place?.release(); } finally {
       await served.close();
       if (!values.record && !values.dir && !options.keepRun) await rm(scratch, { recursive: true, force: true });
     }

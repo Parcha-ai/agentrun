@@ -6,7 +6,9 @@
 // The fixture place is `DEMO_WITH_PLACE=tapped` (examples/reference/demo-fixture.ts): a local box stands for the host box.
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { readEvents } from '../scripts/recording/fold.mjs';
 import { parseLines, validate as viewerValidate } from '../apps/viewer/src/format.ts';
@@ -29,6 +31,10 @@ test('H3: a host box made through the tapped provider is in the recording as the
   const life = ids['box-1'].run;
   assert.equal(pending[0], `${life}-1.json`);
   assert.deepEqual(JSON.parse(readFileSync(join(idsDir, 'pending', pending[0]), 'utf8')), { provider: 'local', key: '0', run: life });
+  // The box's key is the one its host driver minted at the create (Amendment 2): its runner claimed the label by it (HOST_BOX), the
+  // supervisor read the label by the place's status key, and the tap bound the box's lines by the key on its create's label. The lines
+  // below are there only because all three are the one key.
+  assert.match(ids['box-1'].key, new RegExp(`^${life.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/0/[0-9a-f]{16}$`), 'the minted key, never the window\'s index');
 
   const lines = hostBoxLines(recording);
   assert.deepEqual(lines.map((line) => [line.kind, line.data.box, line.data.gen]), [['box.created', 'box-1', 1], ['box.exec', 'box-1', 1], ['box.ended', 'box-1', 1]]);
@@ -63,7 +69,7 @@ test('H3: a host box made through the tapped provider is in the recording as the
 test('DETECTION: a label the run\'s process binds for a host box that already names another box in the recording (a crash\'s residue: a synced line kept, its label file lost) refuses the recording, naming the label', { timeout: 300_000 }, async (t) => {
   await assert.rejects(
     run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'tapped', DEMO_PLANT_BOX_LINE: '1' }),
-    /the recording is refused: the label box-1 the run's process bound for host box 0 already names another box in this recording/,
+    /the recording is refused: the label box-1 the run's process bound for host box \S+\/0\/[0-9a-f]{16} already names another box in this recording/,
   );
 });
 
@@ -74,11 +80,14 @@ test('DETECTION at the end: two box.created lines under one label, from any writ
   );
 });
 
-test('a host box the place keeps until it lets the run go still ends IN the recording: the supervisor lets the place go before its final read, so box.ended and the receipt\'s end are there', { timeout: 300_000 }, async (t) => {
-  const { result, recording } = await run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'tapped', DEMO_HOST_BOX_UNTIL_RELEASE: '1' });
+test('a host box the place ends only when it lets the run go stays OPEN in the recording: the recording is finished before the release (a release may delete the run tree), so the box has no box.ended and its one receipt has no end', { timeout: 300_000 }, async (t) => {
+  const mark = join(await mkdtemp(join(tmpdir(), 'release-mark-')), 'mark.json');
+  t.after(() => rm(dirname(mark), { recursive: true, force: true }));
+  const { result, recording } = await run(t, {}, ['--json'], { DEMO_PROVIDERS: '1', DEMO_WITH_PLACE: 'tapped', DEMO_HOST_BOX_UNTIL_RELEASE: '1', DEMO_RELEASE_MARK: mark });
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
-  const ended = hostBoxLines(recording).filter((line) => line.kind === 'box.ended');
-  assert.deepEqual(ended.map((line) => line.data), [{ gen: 1, box: 'box-1', provider: 'local', killed: false }]);
-  const receipt = receipts(recording).find((each) => each.box === 'box-1');
-  assert.ok(receipt.to !== null && typeof receipt.seconds === 'number', `the host box's receipt has its end: ${JSON.stringify(receipt)}`);
+  assert.deepEqual(JSON.parse(readFileSync(mark, 'utf8')), { manifestFirst: true }, 'the manifest is written before the place is let go');
+  assert.deepEqual(hostBoxLines(recording).filter((line) => line.kind === 'box.ended'), [], 'no box.ended: the box ended after the recording was finished');
+  const receipt = receipts(recording).filter((each) => each.box === 'box-1');
+  assert.equal(receipt.length, 1, 'one receipt for the box');
+  assert.deepEqual([receipt[0].to, receipt[0].seconds, receipt[0].cost_usd], [null, null, null], `the open box's receipt has no end: ${JSON.stringify(receipt[0])}`);
 });

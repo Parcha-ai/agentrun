@@ -4,6 +4,7 @@ import { browserbaseProvider } from "../dist/providers/browserbase.js";
 import { connectDialUrl } from "../dist/providers/browserbase-net.js";
 import { kernelProvider } from "../dist/providers/kernel.js";
 import { browserbaseHoldings, kernelHoldings, resetProviderHoldings } from "../dist/providers/shared.js";
+import { claimWriter, freeWriter } from "../dist/providers/profiles.js";
 import { fakeBrowserbase } from "./fixtures/fake-browserbase.mjs";
 import { fakeKernel } from "./fixtures/fake-kernel.mjs";
 
@@ -47,4 +48,12 @@ test("the Kernel provider's holdings are process-wide: a fresh provider finds th
   assert.equal(kernel.calls.length, before, "attach reads the held URL and asks Kernel nothing");
   await make().release(ref);
   assert.equal(kernelHoldings.cdpUrls.size, 0);
+});
+
+test("the reset also lets go of a profile's writer claim: a claim left by an earlier session does not refuse a later one", async () => {
+  await claimWriter("acct|shop", "shop", "ar-claim-1-1", "owner-a");
+  resetProviderHoldings();
+  // Without the reset clearing it, owner-a's claim refuses owner-b: one session at a time may save to a profile.
+  await claimWriter("acct|shop", "shop", "ar-claim-2-1", "owner-b");
+  freeWriter("ar-claim-2-1");
 });

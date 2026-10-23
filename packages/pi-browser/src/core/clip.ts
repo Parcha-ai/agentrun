@@ -1,6 +1,6 @@
 // A screenshot of a region: the page's own rectangle for a clip the model names, or for an element it names by snapshot ID or CSS
 // selector. Every refusal is typed and says why, before a capture is made.
-import { BrowserFailureError } from "./custody.js";
+import { refusedError } from "./custody.js";
 import type { Clip } from "./images.js";
 
 export type Target = { id?: string; selector?: string };
@@ -10,7 +10,7 @@ export type Located = { viewport: { width: number; height: number }; matches?: n
 export type Locate = (target?: Target) => Promise<Located>;
 export type Region = { clip: Clip; of: { id: string } | { selector: string } | null };
 
-const refuse = (message: string): never => { throw new BrowserFailureError({ ok: false, code: "refused", retryable: false, effect: "none", message: `screenshot: ${message} No capture was made.` }); };
+const refuse = (message: string): never => { throw refusedError(`screenshot: ${message} No capture was made.`); };
 const fits = (box: Clip, viewport: Located["viewport"]): boolean => box.x >= 0 && box.y >= 0 && box.x + box.width <= viewport.width + 0.5 && box.y + box.height <= viewport.height + 0.5;
 const shown = (box: Clip): string => `x ${round(box.x)}, y ${round(box.y)}, ${round(box.width)} wide, ${round(box.height)} high`;
 const round = (n: number): number => Math.round(n * 10) / 10;
