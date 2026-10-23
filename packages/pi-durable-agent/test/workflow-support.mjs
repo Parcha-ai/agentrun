@@ -71,10 +71,10 @@ export const mapDoc = () => ({
 export const bodyOf = (workflow = workflowDoc()) => ({ workflow, skills: {}, tools: [...TOOLS] });
 
 /** A run of an agent's workflow revision, in the shape `startRun` gives one, on a fresh store file. */
-export async function runOf({ body = bodyOf(), revision = "rev-a", runId = "run-1", agentId = "agent-1" } = {}) {
+export async function runOf({ body = bodyOf(), revision = "rev-a", runId = "run-1", agentId = "agent-1", under } = {}) {
   // Loaded here, not at the top: support.mjs registers test hooks, and a child process that runs a host loads this module.
-  const root = await (await import("./support.mjs")).scratch();
-  await mkdir(path.join(root, "store"));
+  const root = path.join(await (await import("./support.mjs")).scratch(), under ?? "");
+  await mkdir(path.join(root, "store"), { recursive: true });
   await mkdir(path.join(root, "work"));
   return { runId, dir: root, storePath: path.join(root, "store", "run.sqlite"), workspace: path.join(root, "work"), agentId, revision: { id: revision, kind: "workflow", body } };
 }

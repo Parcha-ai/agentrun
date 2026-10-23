@@ -2,13 +2,15 @@
 // agent loop. This module is the package's `./workflow` subpath alone; the root never imports it, and it loads
 // @parcha/agentrun-dsl and @parcha/agentrun-pi only inside the functions that need them, so a store with no workflow
 // revision never loads either.
+import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
 import type { Workflow } from "@parcha/agentrun-dsl";
-import type { NodeState, WorkflowGraph } from "@parcha/agentrun-dsl/graph";
+import type { GraphDiff, NodeState, WorkflowGraph } from "@parcha/agentrun-dsl/graph";
 import type { createWorkflowExtension, WorkflowCaller, WorkflowOutcome } from "@parcha/agentrun-pi/durable";
 import { AgentHomeError } from "./store.js";
 
-export type { NodeState, WorkflowGraph, WorkflowOutcome };
+export type { GraphDiff, NodeState, WorkflowGraph, WorkflowOutcome };
 
 /** A workflow revision's body, as a store keeps it: the workflow, the tools it may call, and its skills by path. */
 export type WorkflowBody = { workflow: Workflow; tools?: string[]; skills?: Record<string, string> };
@@ -66,12 +68,13 @@ type WorkflowStarter = Pick<ReturnType<typeof createWorkflowExtension>, "start">
 
 /**
  * Runs a workflow revision on its run's store as one durable workflow task, and waits for it. `harness` is open on
- * `run.storePath` with `workflows` (agentrun-pi's `createWorkflowExtension`, which holds the host's adapters) installed.
- * It refuses with no task when the workflow uses a tool not in `tools` or does not take `input`. The run's id is its key,
- * and the agent and the revision are bound beside the workflow, so the run reopened under another revision is refused
- * (`RUN_STORE_BINDING_MISMATCH`) and nothing runs. `carry` is what the store's `carryBack` takes: the state, and the
- * labels of the nodes that completed, in graph order (chains aside), then `failed at <label>` for each deepest node that
- * failed and `escalated at <label>` for the node a gate fired at.
+ * `run.storePath` with `workflows` (agentrun-pi's `createWorkflowExtension`, which holds the host's adapters)
+ * installed. It refuses with no task when the workflow uses a tool not in `tools` or does not take `input`. The run's
+ * id is its key, and the agent and the revision are bound beside the workflow, so the run reopened under another
+ * revision is refused (`RUN_STORE_BINDING_MISMATCH`) and nothing runs. `carry` is what the store's `carryBack` takes:
+ * the state, and the labels of the nodes that completed, in graph order (chains aside), then `failed at <label>` for
+ * each deepest node that failed and `escalated at <label>` for the node a gate fired at; with none of these, `<state>
+ * before any node completed`.
  */
 export async function runWorkflowRevision(options: {
   harness: WorkflowCaller;
@@ -98,29 +101,45 @@ export async function runWorkflowRevision(options: {
   const done = inState("done").filter((node) => node.kind !== "chain").map((node) => node.label);
   const failed = inState("failed").filter((node, _, all) => !all.some((other) => other.path.startsWith(`${node.path}/`))).map((node) => node.label);
   const summary = [done.join(", "), failed.length ? `failed at ${failed.join(", ")}` : "", view.escalatedAt ? `escalated at ${view.escalatedAt.label}` : ""];
-  return { outcome, carry: { state: stateOf(outcome), summary: summary.filter(Boolean).join("; ") } };
+  // The store refuses an empty summary: a run with none of the three still says how it ended.
+  const state = stateOf(outcome);
+  return { outcome, carry: { state, summary: summary.filter(Boolean).join("; ") || `${state} before any node completed` } };
 }
+
+/** A node's state in a run: the DSL's, and `stopped` for a node an ended run interrupted. */
+export type RunNodeState = NodeState | "stopped";
 
 /** A workflow run as its store shows it: the workflow's graph and each node's state; once the run ended, how it ended,
  *  the node it escalated at (its path in the graph and its label), and the workflow's output when it completed. */
-export type WorkflowRunView = { graph: WorkflowGraph; status: Record<string, NodeState>; outcome?: RunState; escalatedAt?: { path: string; label: string }; output?: unknown };
+export type WorkflowRunView = { graph: WorkflowGraph; status: Record<string, RunNodeState>; outcome?: RunState; escalatedAt?: { path: string; label: string }; output?: unknown };
+
+/** A workflow revision's graph, for a page, and, when its parent is a workflow revision too, what changed from it (the
+ *  DSL's `graphDiff`). An agentic parent, or none, gives no diff. */
+export async function revisionGraph(revision: { body: WorkflowBody }, parent?: { kind: string; body: unknown }): Promise<{ graph: WorkflowGraph; diff?: GraphDiff }> {
+  const { graphDiff, workflowGraph } = await import("@parcha/agentrun-dsl/graph");
+  const graph = workflowGraph(revision.body.workflow);
+  return parent?.kind === "workflow" ? { graph, diff: graphDiff(workflowGraph((parent.body as WorkflowBody).workflow), graph) } : { graph };
+}
 
 /**
  * Reads a workflow run from its store file, read-only: it never writes, takes no lock and opens no Harness, so it reads
- * a run another process is running. The nodes' states come from the run's journal and its task's terminal result; in a
- * failed run, every node still running at the end is drawn failed; with parallel branches, that can include branches
- * that were only interrupted. A run in the driver's keyed layout (a host's `layout: "v4"`) keeps its map items apart
- * and is refused here as `format`.
+ * a run another process is running. An ended run (`state`, the runs row's, not `running`) with no write-ahead log
+ * beside its store is opened as an immutable file, so the read makes no file in the run's directory. The nodes' states
+ * come from the run's journal and its task's terminal result. Working means live: an ended run's interrupted nodes read
+ * stopped; in a failed run, every node still running at the end is drawn failed; with parallel branches, that can
+ * include branches that were only interrupted. A run in the driver's keyed layout (a host's `layout: "v4"`) keeps its
+ * map items apart and is refused here as `format`.
  */
-export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "storePath" | "revision">): Promise<WorkflowRunView> {
+export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "storePath" | "revision"> & { state?: RunState | "running" }): Promise<WorkflowRunView> {
   const [{ graphNodeOf, nodeStatus, workflowGraph }, { durableDoc, readJournal }] = await Promise.all([import("@parcha/agentrun-dsl/graph"), import("@parcha/agentrun-pi/durable")]);
   const graph = workflowGraph(run.revision.body.workflow);
+  const immutable = run.state !== undefined && run.state !== "running" && !existsSync(`${run.storePath}-wal`);
   // The run's task holds how it ended: its id is on the run's entry, its record in pi-durable's task table. The task is
   // read before the journal, so a task found terminal means the journal read after it is final.
-  const task = durableDoc<{ task?: unknown }>(run.storePath, "agentrun.task", run.runId)?.task;
+  const task = durableDoc<{ task?: unknown }>(run.storePath, "agentrun.task", run.runId, { immutable })?.task;
   let ended: { status?: string; result?: { status?: string; output?: unknown; escalation?: { executionPath?: unknown } } } | undefined;
   if (typeof task === "number") {
-    const db = new DatabaseSync(run.storePath, { readOnly: true, timeout: 5000 });
+    const db = new DatabaseSync(immutable ? `${pathToFileURL(run.storePath).href}?immutable=1` : run.storePath, { readOnly: true, timeout: 5000 });
     try {
       const row = db.prepare("SELECT record FROM tasks WHERE id = ?").get(task) as { record: string } | undefined;
       const state = row && (JSON.parse(row.record) as { state?: { status?: string; outcome?: typeof ended } }).state;
@@ -131,13 +150,13 @@ export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "sto
   }
   // A completed task holds the run's result (complete or escalated); an aborted one was cancelled; any other failed.
   const result = ended?.status === "completed" ? ended.result : undefined;
-  const state = readJournal(run.storePath, run.runId)?.state as { schema?: unknown; pin?: object } | null | undefined;
+  const state = readJournal(run.storePath, run.runId, { immutable })?.state as { schema?: unknown; pin?: object } | null | undefined;
   if (state?.schema === "agentrun.frozen_run.v4") throw new AgentHomeError("format", "a run in the keyed layout is not read here");
-  const status = nodeStatus(graph, { pin: state?.pin ?? {}, result: result ?? null });
+  const status: Record<string, RunNodeState> = nodeStatus(graph, { pin: state?.pin ?? {}, result: result ?? null });
   const outcome = ended && (result ? stateOf(result as Pick<WorkflowOutcome, "status">) : ended.status === "aborted" ? "stopped" : "failed");
-  // The journal keeps no mark for a call that failed: a failed run leaves the nodes it was running `working`. They ran and
-  // never completed, so they read failed.
-  if (outcome === "failed") for (const node of graph.nodes) if (status[node.path] === "working") status[node.path] = "failed";
+  // An ended run leaves the nodes it was running `working`. They were interrupted: stopped, or failed in a failed run,
+  // since the journal keeps no mark for a call that failed.
+  if (outcome) for (const node of graph.nodes) if (status[node.path] === "working") status[node.path] = outcome === "failed" ? "failed" : "stopped";
   const at = typeof result?.escalation?.executionPath === "string" ? graphNodeOf(graph, result.escalation.executionPath)?.path : undefined;
   const fired = graph.nodes.find((node) => node.path === at);
   return {
