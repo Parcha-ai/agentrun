@@ -665,7 +665,189 @@
     );
   }
 
+  function decoded(part) {
+    try {
+      return decodeURIComponent(part);
+    } catch (e) {
+      return part;
+    }
+  }
+
+  function agentHref(agent) {
+    return "#/agents/" + encodeURIComponent(agent);
+  }
+  function revisionHref(agent, id) {
+    return agentHref(agent) + "/revisions/" + encodeURIComponent(id);
+  }
+  function runsHref(agent, revision) {
+    return agentHref(agent) + "?revision=" + encodeURIComponent(revision);
+  }
+  function revisionApi(agent, id) {
+    return "api/agents/" + encodeURIComponent(agent) + "/revisions/" + encodeURIComponent(id);
+  }
+
+  function stat(n, word) {
+    return el("div", { class: "stat" }, el("b", null, String(n || 0)), el("span", null, n === 1 ? word : word + "s"));
+  }
+
+  function agentHead(agent) {
+    var name = agent.name || agent.id || "Agent";
+    doc.title = name + " · agent store";
+    var facts = [el("span", { class: "id" }, agent.id || "")];
+    if (agent.createdAt) facts.push(el("span", null, "created " + when(agent.createdAt)));
+    if (agent.current) facts.push(el("span", null, "current ", el("a", { href: revisionHref(agent.id, agent.current) }, short(agent.current))));
+    return el(
+      "section",
+      { class: "card agent" },
+      kicker("Agent"),
+      el("h1", null, name),
+      el("p", { class: "facts" }, kindPill(agent.currentKind), agent.missing ? pill("missing") : null, facts),
+      agent.description ? el("p", { class: "lede" }, agent.description) : null,
+      el("div", { class: "stats" }, stat(agent.revisions, "revision"), stat(agent.runs, "run"))
+    );
+  }
+
+  var MARKS = { add: "+", del: "−", same: " " };
+  function diffLine(line) {
+    var op = MARKS[line && line.op] ? line.op : "same";
+    return el("div", { class: "line " + op }, el("span", { class: "mark", "aria-hidden": "true" }, MARKS[op]), el("span", { class: "text" }, line && line.text != null ? line.text : ""));
+  }
+
+  /** The tools as chips: the ones it kept, then the ones it added and removed against its parent. */
+  function toolChips(tools, change) {
+    var added = change && Array.isArray(change.added) ? change.added : [];
+    var removed = change && Array.isArray(change.removed) ? change.removed : [];
+    var chips = tools.filter(function (t) { return added.indexOf(t) < 0; }).map(function (t) { return el("span", { class: "chip" }, t); })
+      .concat(added.map(function (t) { return el("span", { class: "chip add", title: "added" }, "+" + t); }))
+      .concat(removed.map(function (t) { return el("span", { class: "chip del", title: "removed" }, "−" + t); }));
+    return chips.length ? el("p", { class: "chips" }, chips) : el("p", { class: "none" }, "No tools.");
+  }
+
+  /** The skills by path and sha256, each marked when its parent did not have it, had it with another sha256, or had a
+   *  skill this one dropped. */
+  function skillList(skills, change) {
+    var byPath = function (list) {
+      var out = {};
+      (change && Array.isArray(list) ? list : []).forEach(function (s) { if (s && typeof s.path === "string") out[s.path] = s; });
+      return out;
+    };
+    var added = byPath(change && change.added);
+    var removed = byPath(change && change.removed);
+    var changed = byPath(change && change.changed);
+    var paths = Object.keys(skills).concat(Object.keys(removed).filter(function (p) { return !Object.prototype.hasOwnProperty.call(skills, p); })).sort();
+    if (!paths.length) return el("p", { class: "none" }, "No skills.");
+    return el("ul", { class: "files" }, paths.map(function (p) {
+      if (changed[p]) return el("li", { class: "changed" }, el("span", { class: "path" }, p), el("span", { class: "meta" }, "sha256 " + short(changed[p].was) + " → " + short(changed[p].now)));
+      if (added[p]) return el("li", { class: "add" }, el("span", { class: "path" }, p), el("span", { class: "meta" }, "added · sha256 " + short(skills[p])));
+      if (removed[p]) return el("li", { class: "del" }, el("span", { class: "path" }, p), el("span", { class: "meta" }, "removed · sha256 " + short(removed[p].sha256)));
+      return el("li", null, el("span", { class: "path" }, p), el("span", { class: "meta" }, "sha256 " + short(skills[p])));
+    }));
+  }
+
+  function settingsLine(body, diff) {
+    var settings = [];
+    ["model", "thinking"].forEach(function (k) {
+      var change = diff && diff[k];
+      if (change) settings.push(el("span", null, k + " " + (change.was || "unset") + " → " + (change.now || "unset")));
+      else if (body[k]) settings.push(el("span", null, k + " " + body[k]));
+    });
+    return settings.length ? el("p", { class: "facts settings" }, settings) : null;
+  }
+
+  function agenticBody(detail) {
+    var body = detail.revision.body || {};
+    var diff = detail.diff && typeof detail.diff === "object" ? detail.diff : null;
+    var parent = detail.parent;
+    var prompt;
+    if (diff && Array.isArray(diff.prompt)) {
+      var count = function (op) { return diff.prompt.filter(function (l) { return l && l.op === op; }).length; };
+      prompt = [
+        el("h3", null, "Prompt, against ", el("span", { class: "id" }, short(diff.against))),
+        el("p", { class: "facts" }, el("span", { class: "size" }, "+" + count("add") + " −" + count("del") + " lines")),
+        el("div", { class: "diff", role: "group", "aria-label": "The prompt against its parent's" }, diff.prompt.map(diffLine)),
+      ];
+    } else {
+      prompt = [
+        el("h3", null, "Prompt"),
+        parent && parent.kind !== "agentic" ? el("p", { class: "none" }, "Its parent " + short(parent.id) + " is a " + parent.kind + " revision: it has no prompt to compare with.") : null,
+        el("pre", { class: "prompt" }, body.instructions || ""),
+      ];
+    }
+    return el(
+      "div",
+      { class: "rev-body" },
+      prompt,
+      settingsLine(body, diff),
+      el("div", { class: "split" }, el("div", null, el("h3", null, "Skills"), skillList(body.skills && typeof body.skills === "object" ? body.skills : {}, diff && diff.skills)), el("div", null, el("h3", null, "Tools"), toolChips(Array.isArray(body.tools) ? body.tools : [], diff && diff.tools)))
+    );
+  }
+
+  /** One revision: its id, kind, note, parent and runs, then what it is. `detail` is its api/agents/:id/revisions/:id,
+   *  or { error } when that could not be read. */
+  function revisionBlock(agentId, row, detail) {
+    var r = detail && detail.revision ? detail.revision : row;
+    var body;
+    if (!detail || detail.error) body = failed(detail ? detail.error : "no answer");
+    else if (r.kind === "workflow") body = el("p", { class: "none" }, "A workflow.");
+    else body = agenticBody(detail);
+    return el(
+      "article",
+      { class: "revision" + (r.current ? " current" : "") },
+      el("div", { class: "rev-head" }, el("a", { class: "rev-id", href: revisionHref(agentId, r.id), title: r.id }, short(r.id)), kindPill(r.kind), r.current ? pill("current") : null, r.note ? el("b", { class: "note" }, r.note) : null),
+      el(
+        "p",
+        { class: "facts" },
+        el("span", null, "created " + when(r.createdAt)),
+        r.parent ? el("span", null, "from ", el("a", { href: revisionHref(agentId, r.parent) }, short(r.parent))) : el("span", null, "the first revision"),
+        el("a", { href: runsHref(agentId, r.id) }, plural(row.runs || 0, "run"))
+      ),
+      body
+    );
+  }
+
+  function agentPage(agentId, filter, token) {
+    crumb([[agentId, agentHref(agentId)]]);
+    get("api/agents/" + encodeURIComponent(agentId))
+      .then(function (data) {
+        if (token !== view) return;
+        var agent = (data && data.agent) || { id: agentId };
+        var rows = data && Array.isArray(data.revisions) ? data.revisions : [];
+        crumb([[agent.name || agentId, agentHref(agentId)]]);
+        return Promise.all(rows.map(function (row) { return get(revisionApi(agentId, row.id)).catch(function (error) { return { error: error }; }); })).then(function (details) {
+          if (token !== view) return;
+          show([
+            agentHead(agent),
+            el("section", { class: "card revs" }, kicker("Revisions"), el("h2", null, plural(rows.length, "revision") + (rows.length > 1 ? ", newest first" : "")), rows.length ? rows.map(function (row, i) { return revisionBlock(agentId, row, details[i]); }) : el("p", { class: "none" }, "No revisions yet.")),
+          ]);
+        });
+      })
+      .catch(function (error) {
+        if (token === view) show(failed(error));
+      });
+  }
+
+  function revisionPage(agentId, id, token) {
+    crumb([[agentId, agentHref(agentId)], [short(id), revisionHref(agentId, id)]]);
+    Promise.all([get("api/agents/" + encodeURIComponent(agentId)), get(revisionApi(agentId, id))]).then(
+      function (both) {
+        if (token !== view) return;
+        var agent = (both[0] && both[0].agent) || { id: agentId };
+        var row = ((both[0] && both[0].revisions) || []).filter(function (r) { return r.id === id; })[0] || (both[1] && both[1].revision) || { id: id };
+        crumb([[agent.name || agentId, agentHref(agentId)], [short(id), revisionHref(agentId, id)]]);
+        doc.title = short(id) + " · " + (agent.name || agentId) + " · agent store";
+        show(el("section", { class: "card revs" }, kicker("Revision of " + (agent.name || agentId)), revisionBlock(agentId, row, both[1])));
+      },
+      function (error) {
+        if (token === view) show(failed(error));
+      }
+    );
+  }
+
   function storeRoute(hash, token) {
+    var m = /^#\/agents\/([^/?#]+)\/revisions\/([^/?#]+)$/.exec(hash);
+    if (m) return revisionPage(decoded(m[1]), decoded(m[2]), token);
+    m = /^#\/agents\/([^/?#]+)(?:\?revision=([^&#]*))?$/.exec(hash);
+    if (m) return agentPage(decoded(m[1]), m[2] ? decoded(m[2]) : null, token);
     picker(token);
   }
 

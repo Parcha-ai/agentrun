@@ -6,6 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
+import { ID_PATTERN } from "../home.js";
 import { AgentHomeError } from "../store.js";
 import { signature } from "./read.js";
 import { checkPort, type ServeHandle, serveLocal, type ServeOptions } from "./server.js";
@@ -52,12 +53,15 @@ const WORKFLOW_MODULE = "../workflow.js";
 const defaultReader = async (dir: string): Promise<StoreReader> => ((await import(READER_MODULE)) as { openStoreReader(dir: string): Promise<StoreReader> }).openStoreReader(dir);
 const defaultWorkflow = async (): Promise<WorkflowViews> => (await import(WORKFLOW_MODULE)) as WorkflowViews;
 
-/** One read of the whole index: every agent, its revisions, and every run. */
+/** One read of the whole index: every agent, its revisions and their bodies (or why one could not be read), and every
+ *  run. */
 export type StoreView = {
   agents: AgentRow[];
   revisions: Map<string, RevisionRow[]>;
+  bodies: Map<string, Revision | AgentHomeError>;
   runs: RunRow[];
 };
+const bodyKey = (agent: string, revision: string) => `${agent}/${revision}`;
 
 /** The store's index read from a copy: SQLite's backup copies it from a read-only connection into a private temporary
  *  directory, the reader reads the copy, and the directory is removed. */
@@ -74,8 +78,20 @@ async function snapshot(dir: string, openReader: (dir: string) => Promise<StoreR
     try {
       const agents = await reader.listAgents();
       const revisions = new Map<string, RevisionRow[]>();
-      for (const agent of agents) revisions.set(agent.id, await reader.listRevisions(agent.id));
-      return { agents, revisions, runs: await reader.listRuns() };
+      const bodies = new Map<string, Revision | AgentHomeError>();
+      for (const agent of agents) {
+        const rows = await reader.listRevisions(agent.id);
+        revisions.set(agent.id, rows);
+        for (const row of rows) {
+          // One revision that does not verify is that revision's error, not the store's.
+          const body = await reader.readRevision(agent.id, row.id).catch((error: unknown) => {
+            if (error instanceof AgentHomeError) return new AgentHomeError(error.code, error.message.split(scratch).join(path.basename(dir)));
+            throw error;
+          });
+          bodies.set(bodyKey(agent.id, row.id), body);
+        }
+      }
+      return { agents, revisions, bodies, runs: await reader.listRuns() };
     } finally {
       await reader.close?.();
     }
@@ -105,6 +121,98 @@ function storeReader(dir: string, openReader: (dir: string) => Promise<StoreRead
   };
 }
 
+export type DiffLine = { op: "same" | "add" | "del"; text: string };
+/** The most cells the line diff's table may have (rows times columns); past it the two texts are one removal and one
+ *  addition, still every line of each. */
+const MAX_CELLS = 4_000_000;
+const same = (text: string): DiffLine => ({ op: "same", text });
+const del = (text: string): DiffLine => ({ op: "del", text });
+const add = (text: string): DiffLine => ({ op: "add", text });
+
+/** `after` against `before`, line by line, as their longest common subsequence keeps them: each line of either text is in
+ *  the answer once and in its order, so no word is lost; a line both keep is `same`. */
+export function lineDiff(before: string, after: string): DiffLine[] {
+  const a = before.split("\n");
+  const b = after.split("\n");
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start += 1;
+  let [endA, endB] = [a.length, b.length];
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) [endA, endB] = [endA - 1, endB - 1];
+  const [x, y] = [a.slice(start, endA), b.slice(start, endB)];
+  const middle: DiffLine[] = [];
+  if (x.length * y.length > MAX_CELLS) middle.push(...x.map(del), ...y.map(add));
+  else {
+    const width = y.length + 1;
+    const common = new Uint32Array((x.length + 1) * width);
+    for (let i = x.length - 1; i >= 0; i -= 1) {
+      for (let j = y.length - 1; j >= 0; j -= 1) common[i * width + j] = x[i] === y[j] ? common[(i + 1) * width + j + 1]! + 1 : Math.max(common[(i + 1) * width + j]!, common[i * width + j + 1]!);
+    }
+    let [i, j] = [0, 0];
+    while (i < x.length && j < y.length) {
+      if (x[i] === y[j]) {
+        middle.push(same(x[i]!));
+        [i, j] = [i + 1, j + 1];
+      } else if (common[(i + 1) * width + j]! >= common[i * width + j + 1]!) middle.push(del(x[i++]!));
+      else middle.push(add(y[j++]!));
+    }
+    middle.push(...x.slice(i).map(del), ...y.slice(j).map(add));
+  }
+  return [...a.slice(0, start).map(same), ...middle, ...a.slice(endA).map(same)];
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const names = (value: unknown): string[] => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
+const shas = (value: unknown): Record<string, string> => (isRecord(value) ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {});
+const text = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+
+/** What the page shows of a revision's body: its prompt, skills (path to sha256), tools, model and thinking, or, for a
+ *  workflow, its skills and tools (its graph is drawn from the workflow). Nothing else of the body is sent. */
+function shown(revision: Revision): Record<string, unknown> {
+  const body = revision.body;
+  const common = { skills: shas(body.skills), tools: names(body.tools) };
+  if (revision.kind !== "agentic") return common;
+  const [model, thinking] = [text(body.model), text(body.thinking)];
+  return { instructions: text(body.instructions) ?? "", ...common, ...(model !== undefined ? { model } : {}), ...(thinking !== undefined ? { thinking } : {}) };
+}
+
+/** What changed from one agentic body to the next: the prompt as a line diff, tools and skills added and removed, a
+ *  skill whose sha256 changed, and the model and thinking when they did. */
+function agenticDiff(against: string, before: Record<string, unknown>, after: Record<string, unknown>) {
+  const [toolsBefore, toolsAfter] = [names(before.tools), names(after.tools)];
+  const [skillsBefore, skillsAfter] = [shas(before.skills), shas(after.skills)];
+  const paths = [...new Set([...Object.keys(skillsBefore), ...Object.keys(skillsAfter)])].sort();
+  const change = (field: string) => (before[field] !== after[field] ? { [field]: { was: text(before[field]) ?? null, now: text(after[field]) ?? null } } : {});
+  return {
+    against,
+    prompt: lineDiff(text(before.instructions) ?? "", text(after.instructions) ?? ""),
+    tools: { added: toolsAfter.filter((tool) => !toolsBefore.includes(tool)), removed: toolsBefore.filter((tool) => !toolsAfter.includes(tool)) },
+    skills: {
+      added: paths.filter((file) => !(file in skillsBefore)).map((file) => ({ path: file, sha256: skillsAfter[file]! })),
+      removed: paths.filter((file) => !(file in skillsAfter)).map((file) => ({ path: file, sha256: skillsBefore[file]! })),
+      changed: paths.filter((file) => file in skillsBefore && file in skillsAfter && skillsBefore[file] !== skillsAfter[file]).map((file) => ({ path: file, was: skillsBefore[file]!, now: skillsAfter[file]! })),
+    },
+    ...change("model"),
+    ...change("thinking"),
+  };
+}
+
+const badId = (what: string) => ({ status: 400, value: { error: `the ${what} id is not letters, digits, ".", "_" or "-"` } });
+const notFound = (what: string) => ({ status: 404, value: { error: `no such ${what}` } });
+
+/** One revision with what the page shows of its body, its parent's row, and what changed from its parent when both are
+ *  of one kind. */
+async function revisionView(view: StoreView, agent: string, id: string) {
+  const rows = view.revisions.get(agent) ?? [];
+  const row = rows.find((candidate) => candidate.id === id);
+  if (!row) return notFound("revision");
+  const revision = view.bodies.get(bodyKey(agent, id));
+  if (revision instanceof AgentHomeError || revision === undefined) throw revision ?? new AgentHomeError("missing", "the revision has no body");
+  const parent = rows.find((candidate) => candidate.id === row.parent) ?? null;
+  const before = parent ? view.bodies.get(bodyKey(agent, parent.id)) : undefined;
+  const diff = before && !(before instanceof AgentHomeError) && before.kind === row.kind && row.kind === "agentic" ? agenticDiff(before.id, shown(before), shown(revision)) : null;
+  return { status: 200, value: { revision: { ...row, body: shown(revision) }, parent, diff } };
+}
+
 const PAGE_FILES: Record<string, { file: string; type: string }> = {
   "/": { file: "store.html", type: "text/html; charset=utf-8" },
   "/page.css": { file: "page.css", type: "text/css; charset=utf-8" },
@@ -113,8 +221,9 @@ const PAGE_FILES: Record<string, { file: string; type: string }> = {
 };
 
 /**
- * Serve the agent store at `store.dir` on 127.0.0.1, as `serveHome` serves a home: `GET /` is the page, and
- * `GET /api/store` its agents.
+ * Serve the agent store at `store.dir` on 127.0.0.1, as `serveHome` serves a home: `GET /` is the page, `GET /api/store`
+ * its agents, `GET /api/agents/:id` one agent and its revisions, and `GET /api/agents/:id/revisions/:revision` one
+ * revision against its parent.
  */
 export async function serveStore(store: { readonly dir: string }, options: StoreServeOptions = {}): Promise<ServeHandle> {
   const dir = path.resolve(store.dir);
@@ -125,6 +234,18 @@ export async function serveStore(store: { readonly dir: string }, options: Store
     if (pathname === "/api/store") {
       const view = await read();
       return { status: 200, value: { agents: view.agents.map((agent) => ({ ...agent, revisions: view.revisions.get(agent.id)?.length ?? 0 })) } };
+    }
+    const match = /^\/api\/agents\/([^/]+)(?:\/revisions\/([^/]+))?$/.exec(pathname);
+    if (match) {
+      const [, agentId, revisionId] = match as unknown as [string, string, string | undefined];
+      if (!ID_PATTERN.test(agentId)) return badId("agent");
+      if (revisionId !== undefined && !ID_PATTERN.test(revisionId)) return badId("revision");
+      const view = await read();
+      const agent = view.agents.find((candidate) => candidate.id === agentId);
+      if (!agent) return notFound("agent");
+      if (revisionId !== undefined) return revisionView(view, agentId, revisionId);
+      const revisions = (view.revisions.get(agentId) ?? []).map((row) => ({ ...row, runs: view.runs.filter((run) => run.agent === agentId && run.revision === row.id).length }));
+      return { status: 200, value: { agent: { ...agent, revisions: revisions.length }, revisions } };
     }
     return { status: 404, value: { error: "not found" } };
   }, "agent store", options);

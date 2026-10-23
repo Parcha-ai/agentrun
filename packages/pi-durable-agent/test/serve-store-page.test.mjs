@@ -91,7 +91,7 @@ test("an agent page: its revisions newest first with the current one marked; an 
   const lines = all(blocks[0]).filter((el) => classOf(el).startsWith("line "));
   assert.deepEqual(lines.map((el) => [classOf(el), el.textContent]), [["line del", "−Line one."], ["line add", "+Line one, cited."], ["line same", ` Line two ${HOSTILE}`], ["line add", "+Line three."]], "every line of both, marked");
   assert.ok(blocks[0].textContent.includes("+2 −1"), "the diff's size");
-  const chips = all(blocks[0]).filter((el) => classOf(el).startsWith("chip"));
+  const chips = all(blocks[0]).filter((el) => /^chip( |$)/.test(classOf(el)));
   assert.deepEqual(chips.map((el) => [classOf(el), el.textContent]), [["chip", "web_fetch"], ["chip add", "+read"], ["chip del", "−write"]]);
   assert.ok(blocks[0].textContent.includes("thinking low → medium") && blocks[0].textContent.includes("model luna"));
   const skills = all(blocks[0]).filter((el) => el.tagName === "LI");
