@@ -32,3 +32,44 @@ test('anything outside the exception still blocks', () => {
 test('moderate and low entries never block', () => {
   assert.deepEqual(auditBlockers(audit({ glob: { severity: 'moderate', nodes: ['node_modules/glob'], via: [advisory('GHSA-aaaa-bbbb-cccc', 'moderate')] } }), before), { accepted: [], blocking: [] });
 });
+
+const stagehandZod = 'node_modules/@browserbasehq/stagehand/node_modules/zod';
+const dependent = (name, via) => ({ name, severity: 'high', isDirect: false, effects: [], nodes: [`node_modules/${name}`], via });
+const zodChain = (overrides = {}) => ({
+  zod: { name: 'zod', severity: 'high', isDirect: false, effects: ['@browserbasehq/stagehand'], nodes: [stagehandZod], via: [advisory('GHSA-mrhx-c7xc-m3w5', 'high')] },
+  '@browserbasehq/stagehand': dependent('@browserbasehq/stagehand', ['zod']),
+  '@parcha/pi-browser': dependent('@parcha/pi-browser', ['@browserbasehq/stagehand', 'zod']),
+  '@parcha/agentrun-harness': dependent('@parcha/agentrun-harness', ['@parcha/pi-browser']),
+  ...overrides,
+});
+const chainNames = ['zod', '@browserbasehq/stagehand', '@parcha/pi-browser', '@parcha/agentrun-harness'];
+const blocked = (vulnerabilities, now = before) => auditBlockers(audit(vulnerabilities), now).blocking.map(entry => entry.package).sort();
+
+test("stagehand's own zod, and each package vulnerable only through it, are accepted until 2026-11-06", () => {
+  assert.deepEqual(auditBlockers(audit(zodChain()), before), {
+    accepted: chainNames.map(name => ({ package: name, severity: 'high', advisories: ['GHSA-mrhx-c7xc-m3w5'], expires: '2026-11-06' })),
+    blocking: [],
+  });
+  assert.deepEqual(blocked(zodChain(), Date.parse('2026-11-06T00:00:00Z')), [...chainNames].sort(), 'an expired exception accepts nothing in the chain');
+});
+
+test('any other cause anywhere in the chain blocks every package it reaches', () => {
+  const other = advisory('GHSA-aaaa-bbbb-cccc', 'high');
+  const upFrom = name => chainNames.slice(chainNames.indexOf(name)).sort();
+  const cases = [
+    ['zod outside stagehand', zodChain({ zod: { ...zodChain().zod, nodes: [stagehandZod, 'node_modules/zod'] } }), upFrom('zod')],
+    ['another zod advisory', zodChain({ zod: { ...zodChain().zod, via: [advisory('GHSA-mrhx-c7xc-m3w5', 'high'), other] } }), upFrom('zod')],
+    ["stagehand's own advisory", zodChain({ '@browserbasehq/stagehand': dependent('@browserbasehq/stagehand', ['zod', other]) }), upFrom('@browserbasehq/stagehand')],
+    ['a moderate package in the chain', zodChain({ '@parcha/pi-browser': dependent('@parcha/pi-browser', ['@browserbasehq/stagehand', 'undici']),
+      undici: { name: 'undici', severity: 'moderate', isDirect: false, effects: [], nodes: ['node_modules/undici'], via: [advisory('GHSA-dddd-eeee-ffff', 'moderate')] } }), upFrom('@parcha/pi-browser')],
+    ['a cause the report does not list', zodChain({ '@parcha/agentrun-harness': dependent('@parcha/agentrun-harness', ['@parcha/pi-browser', 'missing']) }), upFrom('@parcha/agentrun-harness')],
+    ['a cycle', zodChain({ '@browserbasehq/stagehand': dependent('@browserbasehq/stagehand', ['zod', '@parcha/agentrun-harness']) }), upFrom('@browserbasehq/stagehand')],
+  ];
+  for (const [label, vulnerabilities, expected] of cases) assert.deepEqual(blocked(vulnerabilities), expected, label);
+});
+
+test('a package reached through two accepted exceptions carries both advisories and the earlier expiry', () => {
+  const both = { ...zodChain(), 'brace-expansion': braceExpansion(), '@parcha/agentrun-harness': dependent('@parcha/agentrun-harness', ['@parcha/pi-browser', 'brace-expansion']) };
+  assert.deepEqual(auditBlockers(audit(both), before).accepted.find(entry => entry.package === '@parcha/agentrun-harness'),
+    { package: '@parcha/agentrun-harness', severity: 'high', advisories: ['GHSA-mrhx-c7xc-m3w5', 'GHSA-q2hr-2g5m-vwhr', 'GHSA-qhr7-859c-m2p7', 'GHSA-6j4f-fj2g-mc7p'], expires: '2026-11-06' });
+});

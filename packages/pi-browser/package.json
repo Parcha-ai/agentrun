@@ -92,7 +92,7 @@
     "node-html-markdown": "^2.0.0",
     "node-html-parser": "^6.1.13",
     "undici": "^6.28.0",
-    "zod": "~4.4.3"
+    "zod": "~4.6.6"
   },
   "peerDependencies": {
     "@browserbasehq/sdk": ">=2.20.0 <3",
