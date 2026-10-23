@@ -9,5 +9,8 @@
     "@earendil-works/pi-ai": "1.1.0",
     "@earendil-works/pi-durable": "1.1.0",
     "disk": "1.7.0"
+  },
+  "overrides": {
+    "zod": "4.6.6"
   }
 }
