@@ -518,6 +518,16 @@ describe("modal boxes", () => {
 				});
 			});
 
+			it("attach joins a mixed box's models with ' + ' too (the panel joins its label with ', '), not only create", async () => {
+				await withRoot(async (root) => {
+					const { sdk, box, sandbox } = await gpuBox(root, ["NVIDIA H100 80GB HBM3"], "any:2");
+					sandbox.served = ["NVIDIA A100", "NVIDIA H100 80GB HBM3", "NVIDIA A100"];
+					const attached = unwrap(await provider(sdk).attach(box.id, context));
+					expect(attached?.facts().gpu).toBe("NVIDIA A100 + NVIDIA H100 80GB HBM3");
+					unwrap(await (attached as NonNullable<typeof attached>).destroy(context));
+				});
+			});
+
 			it("attach keeps the model measured at create when every try errs, and no security fact", async () => {
 				await withRoot(async (root) => {
 					const { sdk, box, sandbox } = await gpuBox(root, ["NVIDIA H200"]);
