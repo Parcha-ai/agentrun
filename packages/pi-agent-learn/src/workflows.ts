@@ -921,9 +921,11 @@ export type TrialTenure = {
   /** The main commit `run` was prepared from and its place in the order the host started runs, or undefined for a run the
    *  host does not know (no tenure applies to its revision). */
   readonly started: (run: string) => { readonly sha: string; readonly order: number } | undefined;
-  /** The runs the host has started that have not ENDED. It must exclude every run that has ended, however it ended
-   *  (reported, crashed, aborted, deadline-killed, infra-failed): a run that never reaches curate still leaves `inFlight()`
-   *  at its end, so a dead run cannot pin a hold. The package cannot see a crash; this is the host's contract. */
+  /** The runs the host has started whose curation has not committed. A run that reports stays in it until the `curate`
+   *  call that takes it has returned: curate takes reported runs in the order of their branch names, not the order they
+   *  started, so a run still queued for curation keeps the trial's tenure. Every run that ENDED without reaching curate,
+   *  however it ended (crashed, aborted, deadline-killed, infra-failed), leaves it at its end, so a dead run cannot pin a
+   *  hold. The package cannot see either; this is the host's contract. */
   readonly inFlight: () => readonly string[];
 };
 
@@ -935,12 +937,15 @@ async function tenureHold(tenure: TrialTenure, input: AdmitWorkflowInput, name: 
   if (live?.status !== "trial" || incoming === undefined || incoming === live.sha256) return undefined;
   const self = tenure.started(run);
   if (!self) return undefined;
+  // A read that fails is no tenure decision: it throws, curate stops, and the run is curated again later.
   const liveAt = async (sha: string) => {
+    const text = await input.read(trialPath(name), sha);
+    if (text === undefined) return false;
     try {
-      const text = await input.read(trialPath(name), sha);
-      return text !== undefined && currentRevision(parseTrial(text, name))?.sha256 === live.sha256;
-    } catch {
-      return false;
+      return currentRevision(parseTrial(text, name))?.sha256 === live.sha256;
+    } catch (error) {
+      if (error instanceof LearnError) return false;
+      throw error;
     }
   };
   const short = live.sha256.slice(0, 12);
