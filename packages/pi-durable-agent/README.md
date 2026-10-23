@@ -457,6 +457,48 @@ by `tool_use_id`, never by time. A row is built from pi entries and events only:
 browser context id or a cookie, and every summary, preview and text (a person's own message excepted) keeps a URL's
 origin, path and query keys but drops its query values, fragment and userinfo. `registerLabel(tool, label)` adds the label of a host's own tool.
 
+## Agents in a folder: the agent store
+
+One folder holds many agents. An agent has revisions, written once and never edited; a run says which revision it ran. **Copy the
+FOLDER** (never `store.sqlite` alone: a writer killed mid-write leaves a journal beside it) and every agent, revision and run comes
+with it. The agents are rows in `store.sqlite`, not one home each; the beta.24 home API above is unchanged, and `store.importHome(dir)`
+turns a home into an agent.
+
+```
+my-agents/store.sqlite       agents, revisions, skills, runs
+my-agents/runs/<run id>/     each run's own store and work directory
+```
+
+```sql
+CREATE TABLE agents    (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, created_at TEXT NOT NULL, current_revision TEXT REFERENCES revisions(id));
+CREATE TABLE revisions (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), parent_id TEXT REFERENCES revisions(id),
+                        kind TEXT NOT NULL CHECK (kind IN ('agentic', 'workflow')), body_json TEXT NOT NULL, note TEXT, created_at TEXT NOT NULL);
+CREATE TABLE skills    (sha256 TEXT PRIMARY KEY, content TEXT NOT NULL);
+CREATE TABLE runs      (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), revision_id TEXT NOT NULL REFERENCES revisions(id),
+                        state TEXT NOT NULL CHECK (state IN ('running', 'completed', 'failed', 'stopped', 'escalated')),
+                        started_at TEXT NOT NULL, ended_at TEXT, cost_usd REAL, summary TEXT);
+```
+
+```js
+const store = openStore("my-agents");
+const agent = store.createAgent({ name: "Company researcher" });
+await store.commitRevision(agent.id, { kind: "agentic", instructions: "Research the company." });                        // A
+await store.commitRevision(agent.id, { kind: "agentic", instructions: "Research the company; cite sources." });         // B
+await store.commitRevision(agent.id, { kind: "workflow", workflow }, { setCurrent: true });                              // C: the DSL's JSON
+const run = await store.startRun({ agent: agent.id });                  // pinned to the current revision; { revision } picks another
+store.carryBack(run.runId, { state: "completed", costUsd: 0.12, summary: "A housing charity" });
+```
+
+A revision's id is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; the database refuses an `UPDATE` of one. Every
+run of every revision is one join:
+
+```sql
+SELECT runs.id, agents.name, revisions.id AS revision, revisions.kind, runs.state, runs.started_at, runs.cost_usd, runs.summary
+FROM runs JOIN revisions ON revisions.id = runs.revision_id JOIN agents ON agents.id = runs.agent_id ORDER BY runs.started_at DESC;
+```
+
+A workflow revision whose call nodes name a tool that is not a `tool` call passes the commit check on purpose: whether it runs is the host's to decide. `openStoreReader(folder)` reads `store.sqlite` in place, read-only: it writes nothing and makes no copy. On a store a run was stopped in the middle of writing, it says so in one line and changes no file; open the store once with write access to roll the write back.
+
 ## A workflow revision
 
 A revision of an agent can be a DSL workflow instead of a prompt. Its run executes the workflow with agentrun-pi's
@@ -510,6 +552,9 @@ exists to check them. [Errors](#errors) says what each code means.
 | `sessionVault(home, { hostKey, maxSessionCookieAgeMs?, runId?, access?, now? })` | The session vault: `capture`, `restore`, `forget`, `forgetAll`, `list` and `handedOut` ([Saved browser sessions](#saved-browser-sessions-the-vault)) | `invalid`: a host key that is not `{ id, wrap, unwrap }`, a cap that is not above 0 and at most 24 hours, an empty `runId`; its calls: a bad session key, origin, captured state or `capturedAt`. `key`: a host key that does not open the vault. `busy`: with `runId`, another live run holds the session's save lease. `format`: a key file or a saved session that does not read or decrypt, or a saved session whose row's origins or `capturedAt` were changed. A refused call writes nothing |
 | `localHostKey(id, bytes)` | A `HostKey` held in this process: 32 bytes, AES-256-GCM | `invalid`: an id that is not letters, digits, `.`, `_`, `:` or `-`, or not 32 bytes |
 | `VAULT_KEYS_FILE`, `MAX_SESSION_COOKIE_AGE_MS` | `vault.keys`, and 24 hours | |
+| `openStore(dir)` | The agent store in `dir`, created if missing: `createAgent({ name, description?, id? })`, `commitRevision(agent, revision, { setCurrent? })`, `setCurrent(agent, revision)`, `listAgents()`, `listRevisions(agent)`, `readRevision(id)`, `listRuns({ agent?, revision? })`, `startRun({ agent, revision? })`, `carryBack(runId, { state, costUsd?, summary? })`, `importHome(homeDir)`, `close()` ([above](#agents-in-a-folder-the-agent-store)) | `invalid`, `missing`, `exists`, `format`: a revision whose content does not match its id |
+| `openStoreReader(dir)` | The same reads on a read-only handle (`store.sqlite` in place, no copy), plus `runStorePath(runId)`; it writes nothing | `missing`: no `store.sqlite` in `dir`; `busy`: a store with an unfinished write; `format`: a store a newer version wrote |
+| `AgentStore`, `AgentStoreReader`, `STORE_FILE` | The two classes `openStore` and `openStoreReader` return, and `store.sqlite` | |
 | `AgentHomeError` | The one error class of this package ([Errors](#errors)) | |
 | `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)). Also from `@parcha/pi-durable-agent/export` | |
 
@@ -527,6 +572,7 @@ The types the package exports:
   `CapturedState`, `VaultCookie` and `VaultEntry`.
 - **Runs.** `RunPaths`, `RunStart`, `RunSeed` (plain data, so a host can carry it to the run's side), `CarryBack`,
   `ProfileStore` and `ProfileTarget` (the host's Harness, or any Session on the run store).
+- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `NewRevision`, `StartedRun`, `RunRow` and `RunState`.
 - **Packs.** `PackOptions`, `Skipped`, `HomeManifest` (the manifest's fields, in [Moving a home](#moving-a-home)),
   `ImportOptions`, `ImportReport`, and `HomeCheck` (`{ name, status, message, detail? }`, `status` being `ok`, `warn`
   or `fail`). `ImportStep` and `ImportOptions.inject` belong to this package's tests and are not part of its contract.
