@@ -16,7 +16,7 @@ import { Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { defineDocFamily } from '@earendil-works/pi-durable';
-import { carryBack, readAgentHome, setPrompts, startRun } from '@parcha/pi-durable-agent';
+import { carryBack, homeRevision, readAgentHome, setPrompts, startRun } from '@parcha/pi-durable-agent';
 import { archilEnv } from '@parcha/pi-durable-disk';
 import { frameRecorder } from '@parcha/pi-browser/recorder';
 import { fakeCdp, jpeg as fakeJpeg } from '../../../packages/pi-browser/test/fixtures/fake-cdp.mjs';
@@ -405,6 +405,55 @@ test('a Kernel run keeps no sign-in: no Browserbase context is made and no profi
   await harness.close(ctx);
   await carryBack(home, one.run, { outcome: 'completed' });
   assert.deepEqual((await readAgentHome(home)).profiles, {}, 'no sign-in kept');
+});
+
+test('a Kernel run with AGENT_CHROME_PROFILE=shared neither reads nor changes a ready shared Chrome profile that is in the store: its bytes are the same after the run', async (t) => {
+  const { home } = await agentHome(t);
+  // The profile a local Chrome run leaves in the home: ready, shared.
+  const first = await started(home, 'run-1');
+  const local = { ...CHROME_ENV, AGENT_CHROME_PROFILE: 'shared', AGENT_LIVE_VIEW_MODULE: pathToFileURL(join(first.run.dir, 'none.mjs')).href };
+  const chrome = await createAgent(first.where, local, { makeContext: async () => assert.fail('a local Chrome makes no Browserbase context') });
+  const opened = await open(t, first.run, chrome.options);
+  await opened.root(ctx, chrome.options.root);
+  await opened.close(ctx);
+  await carryBack(home, first.run, { outcome: 'completed' });
+  const ready = (await readAgentHome(home)).profiles[CHROME_PROFILE];
+  assert.deepEqual(ready, { provider: 'chrome', ref: `chrome/${CHROME_PROFILE}`, state: 'ready' });
+  const bytes = JSON.stringify(ready);
+  // What a run costs the home's revision with nothing of a profile in it: it starts and it carries back (a control run that opens no browser).
+  const c0 = await homeRevision(home);
+  const control = await started(home, 'run-0');
+  await carryBack(home, control.run, { outcome: 'completed' });
+  const costOfARun = (await homeRevision(home)) - c0;
+  assert.ok(costOfARun > 0);
+  const r0 = await homeRevision(home);
+
+  // A Kernel run with the same setting: the agent asks for a sign-in, which on a run that holds a profile edits it.
+  const two = await started(home, 'run-2');
+  const kernel = { ...ENV, AGENT_BROWSER: 'kernel', KERNEL_API_KEY: 'k', BROWSERBASE_API_KEY: '', AGENT_CHROME_PROFILE: 'shared' };
+  const agent = await createAgent(two.where, kernel, { makeContext: async () => assert.fail('a Kernel run makes no Browserbase context') });
+  const faux = fauxProvider({ models: [{ id: 'scripted' }] });
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall('request_sign_in', { site: 'https://the-internet.herokuapp.com/login', reason: 'The secure page needs a sign-in.' }, { id: 'ask' })], { stopReason: 'toolUse' }),
+    fauxAssistantMessage([fauxText('Waiting for the person.')], { stopReason: 'stop' }),
+  ]);
+  agent.options.models.setProvider(faux.provider);
+  const harness = await Harness.open(await openNodeSqliteStorage(two.run.storePath), { models: agent.options.models, registry: agent.options.registry, onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx).catch(() => {}));
+  // Every read of a profile document through the run's harness is noted, from the first call on.
+  const reads = [];
+  const snapshot = harness.snapshot.bind(harness);
+  harness.snapshot = (family, key, context) => (reads.push(key), snapshot(family, key, context));
+  await agent.options.beforeResume({ harness, context: ctx });
+  const root = await harness.root(ctx, { ...agent.options.root, agent: { ...agent.options.root.agent, model: { provider: faux.provider.id, modelId: 'scripted' } } });
+  assert.equal((await (await root.submit({ type: 'input', content: 'Log in and report.', requestId: 'ask-1' }, ctx)).wait(ctx)).status, 'done');
+  assert.equal(agent.frames.held, true, 'the sign-in was asked');
+  await harness.close(ctx);
+  await carryBack(home, two.run, { outcome: 'completed' });
+
+  assert.deepEqual(reads.filter((key) => key === CHROME_PROFILE), [], 'the shared profile was not read');
+  assert.equal(JSON.stringify((await readAgentHome(home)).profiles[CHROME_PROFILE]), bytes, 'its bytes are the same');
+  assert.equal((await homeRevision(home)) - r0, costOfARun, 'the home\'s revision moved by what a run costs and by nothing the profile caused');
 });
 
 test('the agent\'s Chrome profile is owner-only, in the home and outside every run\'s work/; only the lease holder, or the first run, opens it', async (t) => {
