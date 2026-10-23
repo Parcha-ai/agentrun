@@ -14,7 +14,7 @@
   "dependencies": {
     "@parcha/agentrun-dsl": "0.1.0-beta.25",
     "@parcha/agentrun-jev": "0.1.0-beta.25",
-    "zod": "4.6.5"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "22.20.4",

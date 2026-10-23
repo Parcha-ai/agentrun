@@ -57,7 +57,7 @@ npm install --ignore-scripts @parcha/agentrun-dsl@beta
 node --input-type=module -e 'import { runTriageDemo } from "@parcha/agentrun-dsl/demo"; console.log((await runTriageDemo("billing")).result.output)'
 ```
 
-This prints `{ queue: 'billing', priority: 'normal' }` without a model or key. The core brings only TypeBox; Jev and Pi remain optional. For TypeScript with Zod, install `zod@4.6.5` and add `typescript@5.9.3` plus `@types/node@22` as development dependencies, with `"strict": true`, `"module": "NodeNext"`, and `"moduleResolution": "NodeNext"` in your compiler configuration.
+This prints `{ queue: 'billing', priority: 'normal' }` without a model or key. The core brings only TypeBox; Jev and Pi remain optional. For TypeScript with Zod, install `zod@4.6.7` and add `typescript@5.9.3` plus `@types/node@22` as development dependencies, with `"strict": true`, `"module": "NodeNext"`, and `"moduleResolution": "NodeNext"` in your compiler configuration.
 
 ## Define the contracts
 

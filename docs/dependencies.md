@@ -246,7 +246,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | xml-naming | 0.3.0 | MIT | harness, pi-durable-disk, serve | no | 1 |
 | yaml | 2.9.0 | ISC | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
 | zod | 4.4.3 | MIT | harness, pi-browser | no | 2 |
-| zod | 4.6.5 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| zod | 4.6.7 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 
 ## Vendored code
 
