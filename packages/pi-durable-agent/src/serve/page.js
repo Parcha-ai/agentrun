@@ -881,7 +881,7 @@
     return el(
       "article",
       { class: "revision" + (r.current ? " current" : "") },
-      el("div", { class: "rev-head" }, el("a", { class: "rev-id", href: revisionHref(agentId, r.id), title: r.id }, short(r.id)), kindPill(r.kind), r.current ? pill("current") : null, r.note ? el("b", { class: "note" }, r.note) : null),
+      el("div", { class: "rev-head" }, el("a", { class: "rev-id", href: revisionHref(agentId, r.id), title: r.id }, short(r.id)), kindPill(r.kind), r.current ? pill("current") : null, r.note ? el("b", { class: "rev-note" }, r.note) : null),
       el(
         "p",
         { class: "facts" },

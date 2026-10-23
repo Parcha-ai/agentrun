@@ -333,7 +333,7 @@ test("the fixture store, rendered: the page over the server's own answers shows 
 
     const hero = await open("#/agents/company-researcher");
     const blocks = all(hero.app).filter((el) => classOf(el).startsWith("revision"));
-    assert.deepEqual(blocks.map((el) => [classOf(el), all(el).find((n) => classOf(n) === "note").textContent]), [["revision current", "The cheap one: a workflow"], ["revision", "Prompt B: every fact cited"], ["revision", "Prompt A: the first brief"]]);
+    assert.deepEqual(blocks.map((el) => [classOf(el), all(el).find((n) => classOf(n) === "rev-note").textContent]), [["revision current", "The cheap one: a workflow"], ["revision", "Prompt B: every fact cited"], ["revision", "Prompt A: the first brief"]]);
     assert.ok(blocks[0].textContent.includes(`Its parent ${REVISIONS.B.id.slice(0, 12)} is an agentic revision`));
     assert.deepEqual(all(blocks[0]).filter((el) => el.tagName === "LI" && classOf(el).startsWith("node")).map((el) => el.querySelectorAll("b")[0].textContent), BRIEF_GRAPH.nodes.map((node) => node.label), "C's graph, as text without the drawer");
     const lines = all(blocks[1]).filter((el) => classOf(el).startsWith("line ")).map((el) => [classOf(el).slice(5), el.textContent.slice(1)]);

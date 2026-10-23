@@ -181,7 +181,7 @@ pre.bad{border-color:var(--red);color:var(--red)}
 .rev-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin-bottom:2px}
 .rev-head .rev-id{font:600 15px var(--mono);color:var(--ink);text-decoration:none}
 .rev-head .rev-id:hover,.revision.current .rev-head .rev-id{color:var(--accent)}
-.rev-head .note{font-weight:500;overflow-wrap:anywhere}
+.rev-head .rev-note{font-weight:500;overflow-wrap:anywhere}
 .rev-body h3 .id{text-transform:none;letter-spacing:0;color:var(--ink)}
 .diff{border:1px solid var(--line);background:var(--panel2);font:12.5px/1.6 var(--mono);margin:0 0 8px;padding:6px 0;max-height:420px;overflow:auto}
 .diff .line{display:flex;gap:10px;padding:0 12px;white-space:pre-wrap;overflow-wrap:anywhere}
