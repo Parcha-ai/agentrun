@@ -108,7 +108,7 @@ test("a gate that fires at a named node ends the run escalated: carry and summar
   }
 });
 
-test("a run cancelled while it runs ends stopped, and one whose tool fails ends failed", async () => {
+test("a run cancelled while it runs ends stopped, and one whose tool fails ends failed, the summary naming the call", async () => {
   const stopped = await runOf();
   const cancel = deferred();
   const host = await hostFor(stopped, { onCall: (tool) => { if (tool === "stock.check") cancel.resolve(host.workflows.stop(host.harness, stopped.runId, "cancel", ctx)); } });
@@ -126,9 +126,11 @@ test("a run cancelled while it runs ends stopped, and one whose tool fails ends 
   try {
     const { outcome, carry } = await runOn(failing, down);
     assert.equal(outcome.status, "refused");
-    assert.equal(carry.state, "failed");
+    // The failing call ran: the summary names it after the nodes that completed, as an escalation is named.
+    assert.deepEqual(carry, { state: "failed", summary: "stock; failed at quote fast" });
     const view = await readWorkflowRun(failing);
     assert.equal(view.outcome, "failed");
+    assert.deepEqual(view.status, { "/root": "failed", "/root/steps/0": "done", "/root/steps/1": "failed", "/root/steps/1/branches/fast/body": "failed", "/root/steps/1/branches/slow/body": "not-run" });
     assert.equal("output" in view, false);
   } finally {
     await down.close();
