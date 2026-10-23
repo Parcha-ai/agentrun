@@ -41,6 +41,13 @@ test("checkWorkflowBody refuses a body that is not one, and a call node whose to
   await assert.rejects(checkWorkflowBody({ workflow: workflowDoc() }), invalidAs(/call node at \/root\/steps\/0 uses a tool/, ["stock.check"]));
 });
 
+test("checkWorkflowBody refuses what the durable runner refuses before any step: two nodes on one label", async () => {
+  const twice = workflowDoc();
+  twice.root.steps[1].label = "Private label";
+  twice.root.steps[0].label = "Private label";
+  await assert.rejects(checkWorkflowBody(bodyOf(twice)), invalidAs(/two nodes with one label/, ["Private label"]));
+});
+
 /** The modules the static import closure of the built `entry` reaches: the package's own files and the bare specifiers. */
 function staticImports(entry) {
   const seen = new Set(), bare = new Set();
