@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-<!-- The serve page: page.js fills #app from the server's API; page.css and page.js are served beside it, and nothing is inline. -->
+<!-- The serve page: page.js fills #app from the server's API and draws workflow graphs with graph.js; page.css, graph.js and page.js are served beside it, and nothing is inline. -->
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -17,6 +17,7 @@
 </header>
 <main id="app"><p class="loading">Reading the agent home…</p></main>
 <footer class="foot">@parcha/pi-durable-agent serve: the agent home's own SQLite files, read on this machine.</footer>
+<script src="/graph.js"></script>
 <script src="/page.js"></script>
 </body>
 </html>

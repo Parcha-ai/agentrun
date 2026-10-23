@@ -1,7 +1,7 @@
 /* The serve page's look: agentrun.ai's tokens, light and dark (the system's, or the reader's choice on <html data-theme>), square corners everywhere. Nothing is loaded from the network. */
-:root{color-scheme:light;--bg:#f6f5f2;--panel:#ffffff;--panel2:#f0eee9;--line:#dcd9d1;--ink:#151517;--muted:#5d5d67;--faint:#8b8b94;--accent:#c45f00;--accent-soft:rgba(196,95,0,.14);--purple:#5b44c9;--green:#2c7a54;--green-soft:rgba(44,122,84,.16);--red:#bf3a2b;--dot:#d8d4cb;--mono:"JetBrains Mono",ui-monospace,"SF Mono","Cascadia Mono",Menlo,Consolas,monospace;--sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#080809;--panel:#111113;--panel2:#18181b;--line:#2c2c30;--ink:#f2f2f2;--muted:#a4a4ad;--faint:#6f6f79;--accent:#ff8700;--accent-soft:rgba(255,135,0,.16);--purple:#b4a0ff;--green:#8ec9ac;--green-soft:rgba(142,201,172,.16);--red:#ff7a6b;--dot:#2a2a2f}}
-:root[data-theme="dark"]{color-scheme:dark;--bg:#080809;--panel:#111113;--panel2:#18181b;--line:#2c2c30;--ink:#f2f2f2;--muted:#a4a4ad;--faint:#6f6f79;--accent:#ff8700;--accent-soft:rgba(255,135,0,.16);--purple:#b4a0ff;--green:#8ec9ac;--green-soft:rgba(142,201,172,.16);--red:#ff7a6b;--dot:#2a2a2f}
+:root{color-scheme:light;--bg:#f6f5f2;--panel:#ffffff;--panel2:#f0eee9;--line:#dcd9d1;--ink:#151517;--muted:#5d5d67;--faint:#8b8b94;--accent:#c45f00;--accent-soft:rgba(196,95,0,.14);--purple:#5b44c9;--green:#2c7a54;--green-soft:rgba(44,122,84,.16);--red:#bf3a2b;--red-soft:rgba(191,58,43,.12);--jev:#c93a9d;--tool:#1f6fb2;--exit:#5b44c9;--exit-soft:rgba(91,68,201,.12);--dot:#d8d4cb;--mono:"JetBrains Mono",ui-monospace,"SF Mono","Cascadia Mono",Menlo,Consolas,monospace;--sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#080809;--panel:#111113;--panel2:#18181b;--line:#2c2c30;--ink:#f2f2f2;--muted:#a4a4ad;--faint:#6f6f79;--accent:#ff8700;--accent-soft:rgba(255,135,0,.16);--purple:#b4a0ff;--green:#8ec9ac;--green-soft:rgba(142,201,172,.16);--red:#ff7a6b;--red-soft:rgba(255,122,107,.16);--jev:#e551ba;--tool:#5aaef0;--exit:#b4a0ff;--exit-soft:rgba(180,160,255,.16);--dot:#2a2a2f}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#080809;--panel:#111113;--panel2:#18181b;--line:#2c2c30;--ink:#f2f2f2;--muted:#a4a4ad;--faint:#6f6f79;--accent:#ff8700;--accent-soft:rgba(255,135,0,.16);--purple:#b4a0ff;--green:#8ec9ac;--green-soft:rgba(142,201,172,.16);--red:#ff7a6b;--red-soft:rgba(255,122,107,.16);--jev:#e551ba;--tool:#5aaef0;--exit:#b4a0ff;--exit-soft:rgba(180,160,255,.16);--dot:#2a2a2f}
 *,*::before,*::after{box-sizing:border-box;border-radius:0!important}
 html{background:var(--bg)}
 body{margin:0;min-height:100vh;background-color:var(--bg);background-image:radial-gradient(var(--dot) 1px,transparent 1px);background-size:22px 22px;color:var(--ink);font:15px/1.65 var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
@@ -146,3 +146,31 @@ pre.bad{border-color:var(--red);color:var(--red)}
 .panel.error{border:1px solid var(--red);color:var(--red);background:var(--panel);padding:14px 18px}
 .foot{max-width:1180px;margin:0 auto;padding:0 16px 40px;font:11.5px var(--mono);color:var(--faint)}
 @media (max-width:560px){.brand .sub{display:none}.top{gap:10px}.call>summary .tool{display:none}.call>summary b{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}.row.think>summary .gist{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}}
+/* The workflow graph graph.js draws: its own size, shrunk to fit and never grown. The stripe's colour says who works (the agent, Jev, a tool, code, control); a tag or a word says what a diff or a run did, never a colour alone. */
+svg.wf{display:block;max-width:100%;height:auto;margin:0 auto}
+.wf .wire{fill:none;stroke:var(--line);stroke-width:1.5}
+.wf .exit-wire{stroke:var(--exit)}
+.wf .branch.taken{stroke:var(--ink);stroke-width:2.5}
+.wf .frame{fill:none;stroke:var(--faint);stroke-dasharray:4 3}
+.wf .box{fill:var(--panel);stroke:var(--line);stroke-width:1.2}
+.wf .swatch{fill:var(--faint)}
+.wf .who-agent .swatch{fill:var(--accent)}.wf .who-jev .swatch{fill:var(--jev)}.wf .who-tool .swatch{fill:var(--tool)}.wf .who-control .swatch{fill:var(--ink)}
+.wf .label{font:500 12.5px var(--mono);fill:var(--ink)}
+.wf .kind{font:10.5px var(--mono);fill:var(--muted)}
+.wf .branch-name{font:500 10.5px var(--mono);fill:var(--muted)}
+.wf .branch-name.taken{fill:var(--ink)}
+.wf .exit-box{fill:var(--exit-soft);stroke:var(--exit);stroke-width:1}
+.wf .exit-text{font:10.5px var(--mono);fill:var(--ink)}
+.wf .tag-box{fill:var(--ink)}
+.wf .tag{font:600 9px var(--mono);letter-spacing:.06em;fill:var(--bg)}
+.wf .state{font:600 9px var(--mono);letter-spacing:.06em;fill:var(--muted)}
+.wf .removed{font:11px var(--mono);fill:var(--muted)}
+.wf .new>.box,.wf .new>.exit-box{stroke:var(--ink);stroke-width:2.4}
+.wf .edited>.box,.wf .edited>.exit-box{stroke:var(--ink);stroke-width:1.6;stroke-dasharray:4 2}
+.wf .done>.box{fill:var(--green-soft);stroke:var(--green)}.wf .done>.exit-box{fill:var(--panel);stroke:var(--line)}.wf .done>.state{fill:var(--green)}
+.wf .working>.box,.wf .working>.exit-box{stroke:var(--accent);stroke-width:2.4}.wf .working>.state{fill:var(--accent)}
+.wf .failed>.box,.wf .failed>.exit-box{fill:var(--red-soft);stroke:var(--red);stroke-width:2}.wf .failed>.state{fill:var(--red)}
+.wf .escalated>.box{fill:var(--exit-soft);stroke:var(--exit);stroke-width:2;stroke-dasharray:6 3}.wf .escalated>.state{fill:var(--exit)}
+.wf .escalated>.exit-box{fill:var(--exit);stroke:var(--exit);stroke-width:2}.wf .escalated>.exit-text{fill:var(--bg);font-weight:600}
+.wf .not-run,.wf .skipped{opacity:.4}
+.wf .skipped>.box{stroke-dasharray:2 3}

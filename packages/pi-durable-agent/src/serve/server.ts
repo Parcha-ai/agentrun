@@ -27,6 +27,7 @@ const SECURITY = { "content-security-policy": CSP, "x-content-type-options": "no
 const PAGE_FILES: Record<string, { file: string; type: string }> = {
   "/": { file: "page.html", type: "text/html; charset=utf-8" },
   "/page.css": { file: "page.css", type: "text/css; charset=utf-8" },
+  "/graph.js": { file: "graph.js", type: "text/javascript; charset=utf-8" },
   "/page.js": { file: "page.js", type: "text/javascript; charset=utf-8" },
 };
 

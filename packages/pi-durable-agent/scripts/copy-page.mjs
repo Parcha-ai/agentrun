@@ -7,4 +7,4 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const from = join(root, "src", "serve");
 const to = join(root, "dist", "serve");
 mkdirSync(to, { recursive: true });
-for (const name of readdirSync(from).filter((file) => /^page\.(html|css|js)$/.test(file))) copyFileSync(join(from, name), join(to, name));
+for (const name of readdirSync(from).filter((file) => /^(page\.(html|css|js)|graph\.js)$/.test(file))) copyFileSync(join(from, name), join(to, name));
