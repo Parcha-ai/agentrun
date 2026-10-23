@@ -1,6 +1,8 @@
 // The page `pi-durable-agent serve` shows, as a classic script: it reads the server's api/agent, api/runs and
 // api/runs/:id, routes by the hash, and draws the agent card, how a run's prompt is picked, the runs, and one run's
-// timeline; a live run is read again every 2 s. It needs no inline script or style: the CSP allows only this origin's.
+// timeline; a live run is read again every 2 s. On an agent store (<html data-serve="store">) it reads api/store and
+// the store's routes instead and draws the agent picker, an agent's revisions and runs, and one run. It needs no inline
+// script or style: the CSP allows only this origin's.
 (function () {
   "use strict";
   // Every string from the API is data: run text comes from web pages. It reaches the page only as text nodes and as
@@ -13,6 +15,8 @@
   var view = 0;
   var runsNode = null;
   var said = 0;
+  var STORE = doc.documentElement.getAttribute("data-serve") === "store";
+  var WHAT = STORE ? "agent store" : "agent home";
 
   var SAFE_ATTRS = { class: 1, href: 1, title: 1, id: 1, role: 1, type: 1, open: 1, target: 1, rel: 1, tabindex: 1, datetime: 1 };
 
@@ -205,7 +209,7 @@
   }
 
   function failed(error) {
-    return el("section", { class: "panel error", role: "alert" }, el("b", null, "Could not read the agent home. "), String((error && error.message) || error));
+    return el("section", { class: "panel error", role: "alert" }, el("b", null, "Could not read the " + WHAT + ". "), String((error && error.message) || error));
   }
 
   // ---- the agent ---------------------------------------------------------------------------------------------------------
@@ -618,10 +622,57 @@
     open.forEach(function (i) { if (all[i]) all[i].open = true; });
   }
 
+  // ---- an agent store ------------------------------------------------------------------------------------------------
+  function plural(n, word) {
+    return n + " " + word + (n === 1 ? "" : "s");
+  }
+
+  function kindPill(kind) {
+    return kind === "agentic" || kind === "workflow" ? pill(kind) : null;
+  }
+
+  function agentTile(agent) {
+    return el(
+      "a",
+      { class: "agent-tile", href: "#/agents/" + encodeURIComponent(agent.id) },
+      el("span", { class: "head" }, el("b", null, agent.name || agent.id), kindPill(agent.currentKind), agent.missing ? pill("missing") : null),
+      agent.description ? el("span", { class: "lede" }, agent.description) : null,
+      el("span", { class: "facts" }, agent.currentKind ? null : el("span", null, "no revision yet"), el("span", null, plural(agent.revisions || 0, "revision")), el("span", null, plural(agent.runs || 0, "run")), el("span", { class: "id" }, agent.id))
+    );
+  }
+
+  function picker(token) {
+    crumb([]);
+    doc.title = "Agent store";
+    get("api/store").then(
+      function (data) {
+        if (token !== view) return;
+        var agents = data && Array.isArray(data.agents) ? data.agents : [];
+        show(
+          el(
+            "section",
+            { class: "card picker" },
+            kicker("Agent store"),
+            el("h1", null, plural(agents.length, "agent")),
+            el("p", { class: "lede" }, "Every agent in this folder, with its revisions and its runs: copy the folder and they all come with it."),
+            agents.length ? el("div", { class: "agents" }, agents.map(agentTile)) : el("p", { class: "none" }, "No agents in this store yet.")
+          )
+        );
+      },
+      function (error) {
+        if (token === view) show(failed(error));
+      }
+    );
+  }
+
+  function storeRoute(hash, token) {
+    picker(token);
+  }
+
   // ---- routing ------------------------------------------------------------------------------------------------------------
   function crumb(parts) {
     clear(crumbs);
-    add(crumbs, el("a", { href: "#/" }, "Home"));
+    add(crumbs, el("a", { href: "#/" }, STORE ? "Agents" : "Home"));
     parts.forEach(function (p) {
       add(crumbs, el("span", { class: "sep", "aria-hidden": "true" }, "/"));
       add(crumbs, el("a", { href: p[1] }, p[0]));
@@ -642,6 +693,7 @@
     timer = null;
     var token = view;
     var hash = window.location.hash || "#/";
+    if (STORE) return storeRoute(hash, token);
     var m = /^#\/runs\/([^/?#]+)$/.exec(hash);
     if (m) {
       var id;

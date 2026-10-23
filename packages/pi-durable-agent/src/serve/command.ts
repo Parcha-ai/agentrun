@@ -1,9 +1,12 @@
-// `pi-durable-agent serve <dir> [--port n]`: print the address of a local page over the agent home in <dir>, and keep
-// serving it until interrupted. It opens no browser and writes nothing to the home.
+// `pi-durable-agent serve <dir> [--port n]`: print the address of a local page over the agent store or the agent home in
+// <dir>, and keep serving it until interrupted. It opens no browser and writes nothing to the directory.
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { parseArgs } from "node:util";
 import { serveHome } from "./server.js";
+import { serveStore, STORE_FILE } from "./store.js";
 
-const USAGE = "usage: pi-durable-agent serve <dir> [--port <n>]\n  Serves the agent home in <dir> read-only on 127.0.0.1 and prints its address. It opens nothing.";
+const USAGE = "usage: pi-durable-agent serve <dir> [--port <n>]\n  Serves the agent store or agent home in <dir> read-only on 127.0.0.1 and prints its address. It opens nothing.";
 
 /** Run the command; returns the exit code once the server has stopped. */
 export async function main(argv: readonly string[], io: { out: (line: string) => void; err: (line: string) => void; signal?: AbortSignal } = { out: console.log, err: console.error }): Promise<number> {
@@ -40,7 +43,8 @@ export async function main(argv: readonly string[], io: { out: (line: string) =>
     else stop.signal.addEventListener("abort", () => resolve(), { once: true });
   });
   try {
-    const served = await serveHome({ dir }, { port, signal: stop.signal });
+    const serve = existsSync(path.join(dir, STORE_FILE)) ? serveStore : serveHome;
+    const served = await serve({ dir }, { port, signal: stop.signal });
     if (!stop.signal.aborted) io.out(served.url);
     await stopped;
     await served.close();
