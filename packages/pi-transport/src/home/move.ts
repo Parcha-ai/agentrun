@@ -54,7 +54,9 @@ export type MoveStep = "prepare" | "drain" | "seal" | "ship" | "take" | "resume"
  * `take`: the lease could not be written and could not be read back; the source stays sealed until a host recovers
  * the session; the copy shipped to the target is deleted, unless the lease names the target's own place. `resume`:
  * after the take, the target did not resume; the session is the target's, and a host recovers
- * it from the lease.
+ * it from the lease. `replay`: a recovery found commits shipped after its checkpoint and could not replay them (the log
+ * could not be read, a commit did not apply, the replayed copy could not be sealed); nothing was restored, no box was
+ * made, and the host's log keeps every shipped commit, so a later recovery can replay them.
  */
 export type MoveErrorCode =
 	| "no_runtime"
@@ -67,7 +69,8 @@ export type MoveErrorCode =
 	| "lost"
 	| "take"
 	| "resume"
-	| "no_checkpoint";
+	| "no_checkpoint"
+	| "replay";
 
 /** A move that did not complete, and where it stopped. Returned, never thrown. */
 export class MoveError extends Error {
@@ -591,7 +594,11 @@ async function restoreHome(
 	}
 	// The commits the runner shipped after the checkpoint are applied to a copy of its store on the host, through the
 	// store's own Storage and before any Harness opens it: the session then has the admissions it made since.
-	const replay = await replayedStore(vault, session, checkpoint, context);
+	// A replay that failed is never "nothing to replay": restoring the checkpoint alone would drop those commits from the
+	// log for good. The recovery stops before a box is made, and the log keeps them.
+	const replayed = await replayedStore(vault, session, checkpoint, context);
+	if (!replayed.ok) return err(replayed.error);
+	const replay = replayed.value;
 	try {
 		const made = await options.replace(gone, context);
 		if (!made.ok) return made;
@@ -609,34 +616,59 @@ type Replayed = {
 	readonly count: number;
 };
 
-/** A copy of the checkpoint's store with the shipped commits since applied, or `undefined` when there are none to apply. */
+/**
+ * A copy of the checkpoint's store with the commits shipped since applied: `undefined` only when the log holds none after
+ * the checkpoint. Commits that are there and cannot be replayed are an error (`replay`), never "none": the log could not be
+ * read, a commit did not apply (even after some did), or the copy could not be sealed. The copy is removed then.
+ */
 async function replayedStore(
 	vault: CheckpointVault,
 	session: string,
 	checkpoint: Checkpoint,
 	context: Context,
-): Promise<Replayed | undefined> {
-	const log = await vault.readLog(session, checkpoint.seal.head, context);
-	if (!log.ok || log.value.entries.length === 0) return undefined;
+): Promise<Result<Replayed | undefined, MoveError>> {
+	const from = checkpoint.seal.head;
+	const log = await vault.readLog(session, from, context);
+	if (!log.ok)
+		return err(
+			new MoveError("replay", `the commits shipped after the checkpoint could not be read: ${log.error.message}`),
+		);
+	const entries = log.value.entries;
+	if (entries.length === 0) return ok(undefined);
 	const file = `${checkpoint.storeFile}.replay-${randomUUID()}`;
 	try {
 		copyFileSync(checkpoint.storeFile, file);
-		const applied = await replayCommits(file, checkpoint.seal.head, log.value.entries, context);
-		// An error leaves the commits before it applied: the store is a whole prefix of the session's.
-		const to = applied.ok ? applied.value.to : applied.error.applied;
-		if (to < checkpoint.seal.head) {
+		const applied = await replayCommits(file, from, entries, context);
+		if (!applied.ok) {
 			rmSync(file, { force: true });
-			return undefined;
+			const done = applied.error.applied - from + 1;
+			return err(
+				new MoveError(
+					"replay",
+					`commit ${applied.error.applied + 1}, shipped after the checkpoint, did not apply (${done} of ${entries.length} did): ${applied.error.message}`,
+				),
+			);
 		}
 		const seal = await sealStore(file, context);
 		if (!seal.ok) {
 			rmSync(file, { force: true });
-			return undefined;
+			return err(
+				new MoveError(
+					"replay",
+					`the store with the shipped commits replayed could not be sealed: ${seal.error.message}`,
+				),
+			);
 		}
-		return { file, seal: seal.value, from: checkpoint.seal.head, to, count: to - checkpoint.seal.head + 1 };
-	} catch {
+		const to = applied.value.to;
+		return ok({ file, seal: seal.value, from, to, count: to - from + 1 });
+	} catch (cause) {
 		rmSync(file, { force: true });
-		return undefined;
+		return err(
+			new MoveError(
+				"replay",
+				`the commits shipped after the checkpoint could not be replayed: ${cause instanceof Error ? cause.message : String(cause)}`,
+			),
+		);
 	}
 }
 

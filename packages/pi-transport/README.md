@@ -574,7 +574,9 @@ on a copy on the host and before any Harness opens it), seals the result, and gi
 seal. The order's `move` says `replayed: { from, to }` and `head: to + 1`; the notice says the history was brought up to
 date. So a call the lost box admitted after the checkpoint is in the history the new box opens, and is settled by pi's
 recovery, not run again. A log that does not start where the checkpoint ends is not used: the restore is the checkpoint, as
-before.
+before. A run that is there and cannot be replayed is never taken for no run: when the log cannot be read, a commit does not
+apply (even after some did) or the replayed store cannot be sealed, `recoverHome` fails with `replay` before it makes a box,
+and the log keeps every shipped commit, so a later recovery can replay them.
 
 A session that never rests (a workflow job) never takes a checkpoint, and its commits are all in the host's log from the first.
 `recoverHome({ ..., restoreFromLog: true })` restores it from that log alone when no checkpoint checks out: an empty store
@@ -583,7 +585,7 @@ seal, and a notice that says no checkpoint existed and no file came back. It nee
 `no_checkpoint`), and it is off by default: a host that needs the files keeps the error. The result has `restored` undefined and
 `replayed { from: 1, to, count }`.
 
-A model call paid between two checkpoints is not paid twice: `boxRunner` serves every runner it starts with one `serveModels` server (pass your own as `server`, and give it to `pullCheckpoint({ answers })`), so a replacement runner finds the answers already kept. A restore that did not replay every shipped commit drops the rest from the host's log (`dropLogAbove`), so a runner at the new epoch is not told the host holds commits it no longer has. A request can carry a `key` and a `position` (the store's
+A model call paid between two checkpoints is not paid twice: `boxRunner` serves every runner it starts with one `serveModels` server (pass your own as `server`, and give it to `pullCheckpoint({ answers })`), so a replacement runner finds the answers already kept. A restore drops the commits it could not reach, those beyond a break in the log, from the host's log (`dropLogAbove`), so a runner at the new epoch is not told the host holds commits it no longer has. A request can carry a `key` and a `position` (the store's
 next sequence number; `proxyModels({ keyOf })` makes them, the key must not change across a restore). `serveModels`
 keeps a completed answer by its key, not for `keepMs`, until `covered(head)`: a repeat from a rebuilt runner gets the
 kept frames (or joins the call still streaming) and `server.paid` does not move. A failure is not kept, so a retry
