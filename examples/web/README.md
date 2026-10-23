@@ -47,6 +47,7 @@ default.
 | Flag | Default | What |
 | --- | --- | --- |
 | `--home DIR` | `examples/web/.data/agent-home` | The agent home. |
+| `--agent DIR` | `examples/web/agent` | The agent a new home is made from: its `agent.json` and `skills/`. When the home keeps prompt variants (`setPrompts`; `agents/company-research/edit-prompts.mjs` saves its `prompts.json`), the server picks each run's prompt before the run starts with @parcha/pi-durable-agent's `choosePrompt`: Jev on the person's first message, then, when no overlay's option meets its threshold, one lookup (a Browserbase web search with `BROWSERBASE_API_KEY`, and Wikipedia's summary) and Jev again, else the generic prompt. `startRun` records the choice, and `prompt.json` beside the run says how it was made and keeps the guide: the base prompt and that variant as they were then, which the run's instructions get on every launch, whatever the home's variants are by then (agent/select.ts). Jev goes through the model gateway's `/typesafe` on its key, or to TypeSafe on `TYPESAFE_API_KEY`. |
 | `--start "CMD ARGS"` | `$AGENT_RUN_LAUNCHER`, else `agent/start-run.mjs` | Starts or wakes a run: the server runs `CMD ARGS <home>/runs/<id>` and keeps the child process. The command stays in the foreground as the run's instance and exits when the run ends or parks. The string is split on spaces, with no shell. The server passes its environment through untouched, so use a launcher script when a key must not sit in it. |
 | `--host ADDR` | `127.0.0.1` | The address to bind. Anything but loopback prints a warning: the server has no sign-in. |
 | `--port N` | `8787` | The port. |
@@ -186,8 +187,10 @@ The layout it writes:
 another id, a run's own directory as its files, a path of the frames layout (`frames/frames.jsonl`,
 `frames/blobs/<sha256>.jpg`), a file path that is absolute, has a `.` or `..` segment, names a dotfile, or names a file
 and a directory at once, and two runs whose paths collide (ids `a` and `a.json`); every summary and run is written with
-`live: false`, no live view, no saved sign-in it started with and no frames. It writes the new replay beside its
-directory and swaps it in, so a write that fails leaves the replay that was there whole. `pack-page.mjs` writes `index.html` (its Content-Security-Policy as a meta tag, since a
+`live: false`, no live view, no saved sign-in it started with and no frames. Every run's rows, text files, summary and
+run record go through the recording's own rules (`agent/redact.ts`): the browser profile's id the store holds is
+`[redacted]`, a browser session's id the label a recording gives it (`session-` and 12 hex digits of its hash), any
+`token=` value `[redacted]`, every `liveView` null. It writes the new replay beside its directory and swaps it in, so a write that fails leaves the replay that was there whole. `pack-page.mjs` writes `index.html` (its Content-Security-Policy as a meta tag, since a
 static host sets no headers), `replay.js`, `run-page.js`, `source.js`, `app.css` and `timeline/`; the page reads the
 replay from the `replay-data` meta tag's address, `./data/` unless `--data` says otherwise. So:
 

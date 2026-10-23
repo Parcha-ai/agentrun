@@ -3,9 +3,10 @@
 // conversation is created the way the serve door creates it, after the app's `beforeResume`.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { chmod, cp, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -15,14 +16,15 @@ import { Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { defineDocFamily } from '@earendil-works/pi-durable';
-import { carryBack, readAgentHome, startRun } from '@parcha/pi-durable-agent';
+import { carryBack, readAgentHome, setPrompts, startRun } from '@parcha/pi-durable-agent';
 import { archilEnv } from '@parcha/pi-durable-disk';
 import { frameRecorder } from '@parcha/pi-browser/recorder';
 import { fakeCdp, jpeg as fakeJpeg } from '../../../packages/pi-browser/test/fixtures/fake-cdp.mjs';
-import { browserOptions, createAgent, liveOf, NO_LOCAL_VIEW, PROFILE, promptOf, signInAsked, signInSite, toolsOf } from './app.ts';
-import { CHROME_PROFILE, chromeArgs, chromeProfileFor, startChrome } from './chrome.ts';
+import { browserOptions, createAgent, liveOf, LOCAL_DOWNLOADS, NO_LOCAL_VIEW, PROFILE, promptOf, signInAsked, signInSite, toolsOf } from './app.ts';
+import { CHROME_PROFILE, chromeArgs, chromeProfileFor, listsBrowser, startChrome } from './chrome.ts';
 import { frameStore } from './frames.ts';
 import { ensureAgentHome } from './home.mjs';
+import { promptForRun } from './select.ts';
 
 const ENV = { BROWSERBASE_API_KEY: 'unused', AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9/v1', AGENT_MODEL: 'test-model' };
 
@@ -33,8 +35,8 @@ async function agentHome(t) {
 }
 
 /** Run `runId` started in `home`, as pi-durable-disk hands it to the app. */
-async function started(home, runId) {
-  const run = await startRun(home, { runId, host: 'test' });
+async function started(home, runId, prompt) {
+  const run = await startRun(home, { runId, host: 'test', ...(prompt ? { prompt } : {}) });
   return { run, where: { ref: { disk: 'local', region: 'local', id: runId }, root: run.dir, work: run.workspace, store: dirname(run.storePath) } };
 }
 
@@ -51,7 +53,7 @@ test('the home is made from agent.json and the skills: the definition names no m
   const { tmp, home } = await agentHome(t);
   const state = await readAgentHome(home);
   assert.equal(state.identity.id, 'site-reporter');
-  assert.deepEqual(Object.keys(state.skills).sort(), ['sign-in/SKILL.md', 'site-report/SKILL.md']);
+  assert.deepEqual(Object.keys(state.skills).sort(), ['memory/SKILL.md', 'sign-in/SKILL.md', 'site-report/SKILL.md']);
   const prompt = promptOf(state);
   assert.ok(prompt.indexOf('<skill name="sign-in">') < prompt.indexOf('<skill name="site-report">'), 'skills follow the definition order');
   assert.equal((await stat(home.dir)).mode & 0o777, 0o700, 'the home holds sign-ins: owner only');
@@ -63,6 +65,46 @@ test('the home is made from agent.json and the skills: the definition names no m
   await assert.rejects(ensureAgentHome(join(tmp, 'other'), agentDir), /fields it does not keep: model/);
   assert.throws(() => toolsOf({ tools: ['read', 'bash'] }, { coding: [{ name: 'read' }] }), /names the tool bash/);
   assert.throws(() => promptOf({ definition: { ...state.definition, skills: ['missing'] }, skills: {} }), /no missing\/SKILL\.md/);
+});
+
+test('a run the host chose a prompt for: its instructions, then its guide, then the skills', () => {
+  const state = { definition: { instructions: 'You are Desk.', skills: ['brief'] }, skills: { 'brief/SKILL.md': { content: 'Write brief.md.' } } };
+  assert.equal(promptOf(state, 'Research it.\n\nStart at EDGAR.'), 'You are Desk.\n\nResearch it.\n\nStart at EDGAR.\n\nYour skills follow. Use the one that fits the step you are on.\n\n<skill name="brief">\nWrite brief.md.\n</skill>');
+  assert.equal(promptOf(state), 'You are Desk.\n\nYour skills follow. Use the one that fits the step you are on.\n\n<skill name="brief">\nWrite brief.md.\n</skill>', 'a run with no chosen prompt gets none');
+});
+
+test('the skills, the definition and the host\'s download line name no site: no address, domain or path of one, so no example in them reads as a step the run took', async () => {
+  const skills = (await readdir(join(import.meta.dirname, 'skills'))).map((name) => `skills/${name}/SKILL.md`);
+  const texts = [...(await Promise.all(['agent.json', ...skills].map(async (file) => [file, await readFile(join(import.meta.dirname, file), 'utf8')]))), ['LOCAL_DOWNLOADS', LOCAL_DOWNLOADS]];
+  for (const [file, text] of texts) {
+    for (const [what, pattern] of [['an address', /[a-z]+:\/\//i], ['a domain', /\b[a-z0-9-]+\.(?:com|org|net|io|dev|app|ai|co|edu|gov)\b/i], ['a site path', /(?<![\w./])\/[a-z][\w-]*/i]]) {
+      assert.doesNotMatch(text, pattern, `${file} names ${what}`);
+    }
+  }
+});
+
+test('a run is launched again with the guide it started with, though its variant is gone and the base edited since', async (t) => {
+  const { home } = await agentHome(t);
+  const variants = [
+    { id: 'kind', role: 'question', label: 'Kind', text: 'What kind of organisation is it?', criteria: { public: 'listed', other: 'anything else' } },
+    { id: 'base', role: 'base', label: 'Base', text: 'Research it.' },
+    { id: 'public', role: 'overlay', label: 'Public company', text: 'Start at EDGAR.', when: { question: 'kind', option: 'public', threshold: 0.8 } },
+    { id: 'generic', role: 'generic', label: 'Not sure', text: 'Start at its own site.' },
+  ];
+  await setPrompts(home, variants);
+  const judge = async () => ({ answers: { kind: { type: 'choice', choice: 'public', probabilities: { public: 1, other: 0 }, confidence: 1 } } });
+  const chosen = await promptForRun({ stored: (await readAgentHome(home)).prompts, input: 'Caterpillar Inc.', judge, lookup: async () => null });
+  // As the server starts it: the choice on the run's entry, and prompt.json beside it.
+  const one = await started(home, 'run-1', chosen.prompt);
+  await writeFile(join(one.run.dir, 'prompt.json'), JSON.stringify(chosen.record));
+  const guide = 'Research it.\n\nStart at EDGAR.';
+  assert.ok((await createAgent(one.where, ENV, { makeContext: async () => 'ctx-1' })).options.root.agent.instructions.includes(`\n\n${guide}\n\n`));
+
+  // While it sleeps, the person edits the base and the overlay and saves the overlay under another id.
+  await setPrompts(home, variants.map((v) => (v.id === 'base' ? { ...v, text: 'Research it twice.' } : v.id === 'public' ? { ...v, id: 'listed', text: 'Start at the filings twice.' } : v)));
+  const { options } = await createAgent(one.where, ENV, { makeContext: async () => 'ctx-1' });
+  assert.ok(options.root.agent.instructions.includes(`\n\n${guide}\n\n`), 'the guide it started with');
+  assert.doesNotMatch(options.root.agent.instructions, /twice/);
 });
 
 test('run 1 makes the browser profile once, the root conversation carries it, and carryBack gives it to run 2, which makes none', async (t) => {
@@ -130,6 +172,49 @@ test('thinking is never off, and the model and the key come from the host', asyn
   await assert.rejects(createAgent(where, { ...ENV, AGENT_THINKING: 'off' }), /thinking is never off/);
   await assert.rejects(createAgent(where, { ...ENV, AGENT_MODEL: '' }), /AGENT_MODEL/);
   await assert.rejects(createAgent(where, { ...ENV, BROWSERBASE_API_KEY: '' }), /BROWSERBASE_API_KEY/);
+});
+
+test('the model\'s API: OpenAI Responses by default; an Anthropic model over the Messages API at the endpoint\'s root, with pi-ai\'s own entry and price, thinking adaptive and summarized at the effort asked', async (t) => {
+  const { home } = await agentHome(t);
+  const { where } = await started(home, 'run-1');
+  const responses = await createAgent(where, ENV, { makeContext: async () => 'ctx-1' });
+  assert.equal(responses.options.models.getModel('agent-model', 'test-model').api, 'openai-responses');
+  await assert.rejects(createAgent(where, { ...ENV, AGENT_MODEL_API: 'chat' }), /AGENT_MODEL_API is openai-responses or anthropic-messages/);
+  await assert.rejects(createAgent(where, { ...ENV, AGENT_MODEL_API: 'anthropic-messages', AGENT_MODEL: 'no-such-claude' }), /pi-ai has no Anthropic model no-such-claude/);
+
+  // A gateway that records what it is asked and answers one short message, as the Messages API streams it.
+  const asked = [];
+  const gateway = createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      asked.push({ path: req.url, key: req.headers['x-api-key'], body: JSON.parse(body) });
+      const events = [
+        ['message_start', { type: 'message_start', message: { id: 'm1', type: 'message', role: 'assistant', model: 'claude-sonnet-5-5', content: [], stop_reason: null, usage: { input_tokens: 3, output_tokens: 1 } } }],
+        ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
+        ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } }],
+        ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+        ['message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } }],
+        ['message_stop', { type: 'message_stop' }],
+      ];
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join(''));
+    });
+  });
+  await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+  const env = { ...ENV, AGENT_MODEL_API: 'anthropic-messages', AGENT_MODEL: 'claude-sonnet-5-5', AGENT_MODEL_BASE_URL: `http://127.0.0.1:${gateway.address().port}/v1`, AGENT_MODEL_API_KEY: 'gw-key', AGENT_THINKING: 'high' };
+  const { options } = await createAgent(where, env, { makeContext: async () => 'ctx-1' });
+  const model = options.models.getModel('agent-model', 'claude-sonnet-5-5');
+  assert.deepEqual([model.api, model.baseUrl, model.cost.input, model.cost.output], ['anthropic-messages', `http://127.0.0.1:${gateway.address().port}`, 2, 10], 'the root, and pi-ai\'s own price');
+  assert.equal(options.root.agent.thinkingLevel, 'high');
+  const answer = await options.models.completeSimple(model, { messages: [{ role: 'user', content: 'hi', timestamp: Date.now() }] }, { reasoning: 'high' });
+  assert.equal(answer.content.find((part) => part.type === 'text')?.text, 'ok');
+  const [request] = asked;
+  assert.deepEqual([new URL(request.path, 'http://gateway').pathname, request.key], ['/v1/messages', 'gw-key']);
+  assert.deepEqual([request.body.model, request.body.thinking?.type, request.body.thinking?.display, request.body.output_config?.effort], ['claude-sonnet-5-5', 'adaptive', 'summarized', 'high']);
+  const priced = await createAgent(where, { ...env, AGENT_MODEL_PRICE: '1,5,0.1,1.25' }, { makeContext: async () => 'ctx-1' });
+  assert.equal(priced.options.models.getModel('agent-model', 'claude-sonnet-5-5').cost.output, 5, 'AGENT_MODEL_PRICE still names the price when set');
 });
 
 test('live.json shows the live view while the session is open and nothing once it is released', () => {
@@ -348,6 +433,17 @@ test('on a local Chrome without a live view: live.json says so, the root has no 
   assert.deepEqual((await readAgentHome(home)).profiles[CHROME_PROFILE], { provider: 'chrome', ref: `chrome/${CHROME_PROFILE}`, state: 'ready' });
 });
 
+test('only a run on a local Chrome is told where a download lands; a Browserbase run, whose clicks save on Browserbase\'s machine, is not', async (t) => {
+  const { home } = await agentHome(t);
+  const one = await started(home, 'run-1');
+  const local = { ...CHROME_ENV, AGENT_CHROME_PROFILE: 'shared', AGENT_LIVE_VIEW_MODULE: pathToFileURL(join(one.run.dir, 'none.mjs')).href };
+  const onChrome = (await createAgent(one.where, local, { makeContext: async () => assert.fail('no context') })).options.root.agent.instructions;
+  assert.ok(onChrome.includes(LOCAL_DOWNLOADS));
+  const onBrowserbase = (await createAgent((await started(home, 'run-2')).where, ENV, { makeContext: async () => 'ctx-1' })).options.root.agent.instructions;
+  assert.doesNotMatch(onBrowserbase, /downloads\//, 'no folder a download would land in');
+  assert.match(onBrowserbase, /download it only when your instructions say where a download lands/);
+});
+
 test('on a local Chrome with a live view: its viewer is mounted on a loopback port of the run, named in live-host.json, at /live/<run id> on the page\'s origin', async (t) => {
   const { home } = await agentHome(t);
   const one = await started(home, 'run-1');
@@ -394,4 +490,52 @@ test('a stop while the run\'s Chrome starts ends that Chrome by its pid, and the
   const ended = await new Promise((resolve) => launcher.once('exit', (code, signal) => resolve(code ?? signal)));
   assert.equal(ended, 1, 'the launcher exits on its own, after its cleanup');
   assert.throws(() => process.kill(chrome, 0), { code: 'ESRCH' }, 'the Chrome it was starting is gone');
+});
+
+test('an agent that lists web_fetch and no browser tool: Browserbase\'s fetch and search, no browser, the receipt filed, the key and project id redacted', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'web-pages-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const agentDir = join(tmp, 'agent');
+  await mkdir(agentDir);
+  const definition = { id: 'desk', version: 1, name: 'Desk', description: 'Researches one company.', instructions: 'Research it.', skills: [], tools: ['read', 'write', 'web_fetch', 'web_search'] };
+  await writeFile(join(agentDir, 'agent.json'), JSON.stringify(definition));
+  const home = await ensureAgentHome(join(tmp, 'home'), agentDir);
+  assert.equal(listsBrowser(definition), false);
+  assert.equal(listsBrowser((await readAgentHome(await ensureAgentHome(join(tmp, 'wren')))).definition), true, 'Wren lists the browser');
+
+  const key = 'bb_live_0123456789abcdef', project = '01234567-89ab-cdef-0123-456789abcdef';
+  const env = { AGENT_MODEL_BASE_URL: ENV.AGENT_MODEL_BASE_URL, AGENT_MODEL: ENV.AGENT_MODEL, BROWSERBASE_API_KEY: key, BROWSERBASE_PROJECT_ID: project };
+  const fetched = [], searched = [];
+  const fetcher = {
+    fetch: async (request) => (fetched.push(request), { finalUrl: request.url, statusCode: 200, contentType: 'text/markdown', content: `# Acme\nAcme makes anvils. Project ${project}, key ${key}.` }),
+    search: async (request) => (searched.push(request), { results: [{ url: 'https://acme.example/', title: 'Acme' }] }),
+  };
+  const one = await started(home, 'run-1');
+  const { options } = await createAgent(one.where, env, { fetcher, makeContext: async () => assert.fail('no browser profile is made') });
+  assert.deepEqual(options.root.agent.tools.map((tool) => tool.name), ['read', 'write', 'web_fetch', 'web_search']);
+  assert.equal(existsSync(join(one.where.root, 'live.json')), false, 'no browser, so no live view');
+
+  const faux = fauxProvider({ models: [{ id: 'scripted' }] });
+  faux.setResponses([
+    () => fauxAssistantMessage([fauxToolCall('web_search', { query: 'Acme anvils' }, { id: 'call-1' })], { stopReason: 'toolUse' }),
+    () => fauxAssistantMessage([fauxToolCall('web_fetch', { url: 'https://acme.example/' }, { id: 'call-2' })], { stopReason: 'toolUse' }),
+    () => fauxAssistantMessage([fauxText('Acme makes anvils.')], { stopReason: 'stop' }),
+  ]);
+  options.models.setProvider(faux.provider);
+  const harness = await open(t, one.run, options, { env: true });
+  const root = await harness.root(ctx, { ...options.root, agent: { ...options.root.agent, model: { provider: faux.provider.id, modelId: 'scripted' } } });
+  assert.equal((await (await root.submit({ type: 'input', content: 'Research Acme.', requestId: 'ask-1' }, ctx)).wait(ctx)).status, 'done');
+
+  assert.equal(searched[0].query, 'Acme anvils');
+  assert.equal(fetched[0].url, 'https://acme.example/');
+  const results = (await root.entries({}, 20, undefined, ctx)).items.filter((entry) => entry.kind === 'pi.tool-result').map((entry) => entry.model[0].content.map((part) => part.text).join(''));
+  const page = results.find((text) => text.includes('Acme makes anvils'));
+  assert.ok(page, 'the fetched page reaches the model');
+  assert.match(page, /evidence: evidence\/web\//, 'the read is filed in the workspace');
+  for (const text of results) for (const value of [key, project]) assert.equal(text.includes(value), false, 'no tool result holds the key or the project id');
+  const filed = await readdir(join(one.run.workspace, 'evidence', 'web'));
+  assert.ok(filed.some((name) => name.startsWith('web_fetch-')));
+  for (const name of filed) for (const value of [key, project]) assert.equal((await readFile(join(one.run.workspace, 'evidence', 'web', name), 'utf8')).includes(value), false, 'no receipt holds them either');
+
+  await assert.rejects(createAgent((await started(home, 'run-2')).where, { ...env, BROWSERBASE_API_KEY: '' }), /names the tool web_fetch, which this host does not have/, 'without a key the web tools are not listed');
 });
