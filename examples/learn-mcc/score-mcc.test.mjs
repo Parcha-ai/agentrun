@@ -188,6 +188,14 @@ test('C: an unjudgeable or unlabelled merchant falls back to the swarm teacher o
   assert.equal(scoreMcc({ answer: { mcc: '5712', riskTier: 'low' }, merchant: row('m1', { mcc: '5712' }), groups, labels }).labelFallback, null);
 });
 
+test('C: the label is found by the truth row\'s merchantId, or by the runner job\'s id or cik', () => {
+  const job = (key) => ({ ...key, name: 'm1 shop', website: 'https://m1.example', teacher: { mcc: '5712' } });
+  for (const key of [{ merchantId: 'm1' }, { id: 'm1', cik: 'm1' }, { cik: 'm1' }]) {
+    const r = scoreMcc({ answer: { mcc: '5712', riskTier: 'low' }, merchant: job(key), groups, labels });
+    assert.deepEqual([r.against, r.correct], ['stage1', true], JSON.stringify(key));
+  }
+});
+
 test('with no labels every score is what it was: no new field, the same values', () => {
   const inputs = [
     [{ mcc: '5999', riskTier: 'medium', flags: ['subscription'], siteStatus: 'live', confidence: 0.7 }, { mcc: '5999', riskTier: 'Medium', flags: ['subscription'] }],

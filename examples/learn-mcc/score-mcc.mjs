@@ -132,7 +132,9 @@ export function scoreMcc({ answer, merchant, groups = defaultGroups(), labels })
     correct: mccCorrect,
   };
   if (labels === undefined) return base;
-  const label = Object.hasOwn(labels, merchant.merchantId) ? labels[merchant.merchantId] : null;
+  // A truth row names the merchant `merchantId`; the runner's job names it `id` (and `cik`, the same domain).
+  const key = merchant.merchantId ?? merchant.id ?? merchant.cik;
+  const label = Object.hasOwn(labels, key) ? labels[key] : null;
   const swarm = { mccSwarm: mccTeacher, mccSwarmCorrect: mccCorrect };
   if (label === null || label.unjudgeable) return { ...base, riskTeacher: null, riskCorrect: null, riskDistance: null, ...swarm, labelFallback: label === null ? 'unlabelled' : 'unjudgeable' };
   const truth = label.mcc;
