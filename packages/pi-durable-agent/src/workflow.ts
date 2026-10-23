@@ -70,7 +70,8 @@ type WorkflowStarter = Pick<ReturnType<typeof createWorkflowExtension>, "start">
  * It refuses with no task when the workflow uses a tool not in `tools` or does not take `input`. The run's id is its key,
  * and the agent and the revision are bound beside the workflow, so the run reopened under another revision is refused
  * (`RUN_STORE_BINDING_MISMATCH`) and nothing runs. `carry` is what the store's `carryBack` takes: the state, and the
- * labels of the nodes that ran, in graph order (chains aside), ending `escalated at <label>` when a gate fired.
+ * labels of the nodes that completed, in graph order (chains aside), then `failed at <label>` for each deepest node that
+ * failed and `escalated at <label>` for the node a gate fired at.
  */
 export async function runWorkflowRevision(options: {
   harness: WorkflowCaller;
@@ -91,9 +92,13 @@ export async function runWorkflowRevision(options: {
   const request = { key: run.runId, workflow, input, bind: { agent: run.agentId, revision: run.revision.id } };
   const outcome = await (await options.workflows.start(options.harness, request, options.context, { background: true })).wait(options.context);
   const view = await readWorkflowRun(run);
-  // The nodes that ran, chains (pure sequence) and the node the run escalated at (the ending names it) aside.
-  const ran = view.graph.nodes.filter((node) => node.kind !== "chain" && node.path !== view.escalatedAt?.path && (view.status[node.path] === "done" || view.status[node.path] === "escalated")).map((node) => node.label);
-  return { outcome, carry: { state: stateOf(outcome), summary: [ran.join(", "), view.escalatedAt && `escalated at ${view.escalatedAt.label}`].filter(Boolean).join("; ") } };
+  // The nodes that completed (chains, pure sequence, aside), then each deepest node that failed (a container failed only
+  // through a node in it is not named again), then the node the run escalated at.
+  const inState = (state: NodeState) => view.graph.nodes.filter((node) => view.status[node.path] === state);
+  const done = inState("done").filter((node) => node.kind !== "chain").map((node) => node.label);
+  const failed = inState("failed").filter((node, _, all) => !all.some((other) => other.path.startsWith(`${node.path}/`))).map((node) => node.label);
+  const summary = [done.join(", "), failed.length ? `failed at ${failed.join(", ")}` : "", view.escalatedAt ? `escalated at ${view.escalatedAt.label}` : ""];
+  return { outcome, carry: { state: stateOf(outcome), summary: summary.filter(Boolean).join("; ") } };
 }
 
 /** A workflow run as its store shows it: the workflow's graph and each node's state; once the run ended, how it ended,
@@ -102,8 +107,9 @@ export type WorkflowRunView = { graph: WorkflowGraph; status: Record<string, Nod
 
 /**
  * Reads a workflow run from its store file, read-only: it never writes, takes no lock and opens no Harness, so it reads
- * a run another process is running. The nodes' states come from the run's journal and its task's terminal result. A run
- * in the driver's keyed layout (a host's `layout: "v4"`) keeps its map items apart and is refused here as `format`.
+ * a run another process is running. The nodes' states come from the run's journal and its task's terminal result; in a
+ * run that failed, the nodes it was still running read `failed`. A run in the driver's keyed layout (a host's
+ * `layout: "v4"`) keeps its map items apart and is refused here as `format`.
  */
 export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "storePath" | "revision">): Promise<WorkflowRunView> {
   const [{ graphNodeOf, nodeStatus, workflowGraph }, { durableDoc, readJournal }] = await Promise.all([import("@parcha/agentrun-dsl/graph"), import("@parcha/agentrun-pi/durable")]);
@@ -127,11 +133,15 @@ export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "sto
   const state = readJournal(run.storePath, run.runId)?.state as { schema?: unknown; pin?: object } | null | undefined;
   if (state?.schema === "agentrun.frozen_run.v4") throw new AgentHomeError("format", "a run in the keyed layout is not read here");
   const status = nodeStatus(graph, { pin: state?.pin ?? {}, result: result ?? null });
+  const outcome = ended && (result ? stateOf(result as Pick<WorkflowOutcome, "status">) : ended.status === "aborted" ? "stopped" : "failed");
+  // The journal keeps no mark for a call that failed: a failed run leaves the nodes it was running `working`. They ran and
+  // never completed, so they read failed.
+  if (outcome === "failed") for (const node of graph.nodes) if (status[node.path] === "working") status[node.path] = "failed";
   const at = typeof result?.escalation?.executionPath === "string" ? graphNodeOf(graph, result.escalation.executionPath)?.path : undefined;
   const fired = graph.nodes.find((node) => node.path === at);
   return {
     graph, status,
-    ...(ended ? { outcome: result ? stateOf(result as Pick<WorkflowOutcome, "status">) : ended.status === "aborted" ? "stopped" as const : "failed" as const } : {}),
+    ...(outcome ? { outcome } : {}),
     ...(fired ? { escalatedAt: { path: fired.path, label: fired.label } } : {}),
     ...(result?.status === "complete" ? { output: result.output } : {}),
   };
