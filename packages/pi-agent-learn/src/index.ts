@@ -34,5 +34,5 @@ export {
   type CollectWorkflowsOptions, type Files, type FoundWorkflow, inboxWorkflowFiles, MAX_RUN_USES, MAX_RUN_WORKFLOWS, parseRunUses, readTrialIn, readSessionUses, readUses,
   type ReadSessionUsesOptions, type ReadUses, type ReadUsesOptions, renderSkill, type RepoAt, type RunUse, type RunUses, seedWorkflows, type SeededWorkflows, sessionEntries, type SeedWorkflowsOptions,
   schemaDescription, schemaWhen, settleWorkflowUses, type Settled, type SettledDecision, type SettleOptions, type SkippedWorkflow, usesSettler, type UsesSettlerOptions, usesSource,
-  workflowAdmitter, type WorkflowAdmitterOptions, workflowsToTry,
+  type TrialTenure, workflowAdmitter, type WorkflowAdmitterOptions, workflowsToTry,
 } from "./workflows.js";

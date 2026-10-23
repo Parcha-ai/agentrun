@@ -904,13 +904,56 @@ export type WorkflowAdmitterOptions = {
    *  `schemaDescription`, so no text from the run reaches a later prompt. */
   readonly describe?: (workflow: unknown) => string;
   readonly now?: () => Date;
+  /** A live trial's tenure while runs are in flight (`TrialTenure`). Default: none, and a newcomer replaces a trial at once. */
+  readonly tenure?: TrialTenure;
 };
+
+/**
+ * Where the host's runs started, for a trial's tenure: with runs in flight side by side, a run that saves a new revision
+ * may report back before the runs that ran the live trial do, and its revision would retire the trial before their uses
+ * count. With a tenure, a new revision does not replace the live TRIAL when the run that saved it started before the trial
+ * was live (it never saw the trial), or while a run that started with the trial live, and before it, is still in flight.
+ * A champion is never held. Each hold ends as the runs that started before the saving run report back, so a trial no run
+ * uses cannot keep its name; with no run in flight nothing is held.
+ */
+export type TrialTenure = {
+  /** The main commit `run` was prepared from and its place in the order the host started runs, or undefined for a run the
+   *  host does not know (no tenure applies to its revision). */
+  readonly started: (run: string) => { readonly sha: string; readonly order: number } | undefined;
+  /** The runs the host has started and not yet handed to curate. */
+  readonly inFlight: () => readonly string[];
+};
+
+/** Why `tenure` holds the revision `run` saved for `name` against main's live trial, or undefined. */
+async function tenureHold(tenure: TrialTenure, input: AdmitWorkflowInput, name: string, trialText: string, run: string): Promise<string | undefined> {
+  const live = currentRevision(parseTrial(trialText, name));
+  const latest = input.workflow.records?.latest;
+  const incoming = typeof latest === "string" && /^[0-9a-f]{64}\n$/.test(latest) ? latest.slice(0, 64) : undefined;
+  if (live?.status !== "trial" || incoming === undefined || incoming === live.sha256) return undefined;
+  const self = tenure.started(run);
+  if (!self) return undefined;
+  const liveAt = async (sha: string) => {
+    try {
+      const text = await input.read(trialPath(name), sha);
+      return text !== undefined && currentRevision(parseTrial(text, name))?.sha256 === live.sha256;
+    } catch {
+      return false;
+    }
+  };
+  const short = live.sha256.slice(0, 12);
+  if (!(await liveAt(self.sha))) return `the run that saved it started before the live trial ${short} was, so it does not replace that trial`;
+  for (const other of tenure.inFlight()) {
+    const at = other === run ? undefined : tenure.started(other);
+    if (at && at.order < self.order && (await liveAt(at.sha))) return `the live trial ${short} keeps its tenure: a run that started with it, before the run that saved this one, is still in flight`;
+  }
+  return undefined;
+}
 
 /**
  * The curator's `admitWorkflow` port, over `admitInDir`: it copies main's `trial.json` and skill for the name into a scratch
  * directory, validates the run's records through the DSL's store there, saves the revision the run ended on, and writes the
  * skill (from `describe` of its document, unless the caller hands over a `description`) and `trial.json`. `admitted` carries every path changed, text or
- * null, for the one commit. A workflow with code in it, or one with no trial to describe, is `held`; a name pi cannot load, a
+ * null, for the one commit. A workflow with code in it, one with no trial to describe, and one a `tenure` holds are `held`; a name pi cannot load, a
  * record the store refuses, a demoted revision and the limits are `refused`. The curator's judgments of the `untrusted` text
  * have already been made when the port is called, so the flag changes nothing here.
  */
@@ -921,6 +964,22 @@ export function workflowAdmitter(options: WorkflowAdmitterOptions = {}): AdmitWo
       return { status: "refused", reason: "a workflow name is lowercase letters and digits in words joined by single hyphens, so pi can load it as a skill" };
     }
     const name = workflow.name;
+    // A live trial's tenure (`options.tenure`): only with the option, and only over a trial.json that parses (one that does
+    // not is admitInDir's to judge, as without it).
+    if (options.tenure) {
+      const held = await input.read(trialPath(name), input.main);
+      let parses = held !== undefined;
+      if (parses) {
+        try {
+          parseTrial(held!, name);
+        } catch (error) {
+          if (!(error instanceof LearnError)) throw error;
+          parses = false;
+        }
+      }
+      const tenure = parses && await tenureHold(options.tenure, input, name, held!, workflow.run);
+      if (tenure) return { status: "held", reason: tenure };
+    }
     const result = await staged(options.tmpRoot, input, async () => [trialPath(name), skillPath(name)], (dir) => admitInDir({
       dir, runId: workflow.run, name, records: workflow.records,
       description: workflow.description ?? options.describe ?? schemaDescription,
