@@ -147,7 +147,7 @@
     add(g, [svgEl("rect", { x: x, y: y, width: w, height: 13, class: "tag-box" }), svgEl("text", { x: x + w / 2, y: y + 9.5, class: "tag", "text-anchor": "middle" }, word)]);
   }
 
-  /** A card: a stripe coloured by who works, the label, the kind (and a call's transport), the state's word, the diff's
+  /** A card: a square coloured by who works, the label, the kind (and a call's transport), the state's word, the diff's
    *  tag on its top edge. */
   function card(ctx, g, node, x, y) {
     var look = ctx.look(node.path);
@@ -155,9 +155,9 @@
     var kind = node.kind + (node.via ? " · " + node.via : "");
     add(g, [
       svgEl("rect", { x: x, y: y, width: W, height: H, class: "box" }),
-      svgEl("rect", { x: x, y: y, width: 4, height: H, class: "swatch" }),
-      svgEl("text", { x: x + 14, y: y + 17, class: "label" }, clip(node.label, fits(W - 24, LABEL))),
-      svgEl("text", { x: x + 14, y: y + 31, class: "kind" }, clip(kind, fits(W - 24 - (word ? wide(word, TAG) + 8 : 0), SMALL))),
+      svgEl("rect", { x: x + 10, y: y + 9, width: 8, height: 8, class: "swatch" }),
+      svgEl("text", { x: x + 24, y: y + 17, class: "label" }, clip(node.label, fits(W - 34, LABEL))),
+      svgEl("text", { x: x + 24, y: y + 31, class: "kind" }, clip(kind, fits(W - 34 - (word ? wide(word, TAG) + 8 : 0), SMALL))),
       word ? svgEl("text", { x: x + W - 10, y: y + 31, class: "state", "text-anchor": "end" }, word) : null,
     ]);
     if (look.tag) tag(g, x + W - tagWidth(look.tag), y - 7, look.tag);
@@ -307,10 +307,12 @@
     return frameBox(ctx, node, kids[0].node);
   }
 
+  // On a phone the graph keeps readable labels at 480px and its .graph-box scrolls it; a smaller graph is never grown.
   function size(svg, w, h) {
     svg.setAttribute("viewBox", "0 0 " + w + " " + h);
     svg.setAttribute("width", String(w));
     svg.setAttribute("height", String(h));
+    svg.style.setProperty("min-width", Math.min(w, 480) + "px");
   }
 
   /** Draws `graph` (workflowGraph's output) into `svg` at its natural size, which CSS shrinks to fit and never grows;
