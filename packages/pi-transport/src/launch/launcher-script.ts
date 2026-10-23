@@ -656,10 +656,10 @@ const GROUP_LIVE = [
 /**
  * `own_dir PATH`: whether PATH is a directory only the launcher's uid can change, from ONE listing of PATH itself (a symbolic
  * link is never followed): a directory, owned by `id -u`, with no group- or other-write bit. 0 when it is, 4 when nothing is
- * there, 13 and a line `UNSAFE <why>` when it is not. A path that is there and could not be listed is listed again (another
- * caller may have removed and made it again in between), and one never listed is unsafe. `own_dirs` asks it of $D's parent
- * (the spool) and then of $D. Every script that uses the spool or a launch directory asks first, the launcher's own
- * included: a `mkdir -p` that succeeded proves nothing.
+ * there, 13 and a line `UNSAFE <why>` when it is not. A path that is there and did not list (another caller may have removed
+ * and made it again in between) is listed again, at most three times in all; one that never lists is unsafe. `own_dirs`
+ * asks it of $D's parent (the spool) and then of $D. Every script that uses the spool or a launch directory asks first, the
+ * launcher's own included: a `mkdir -p` that succeeded proves nothing.
  */
 export const DIRECTORY_CHECK = [
 	"own_dir() {",
@@ -667,6 +667,7 @@ export const DIRECTORY_CHECK = [
 	'    sd=$(ls -ldn "$1" 2>/dev/null | awk \'NR == 1 { print $1 " " $3 }\')',
 	'    [ -z "$sd" ] || break',
 	'    [ -e "$1" ] || [ -L "$1" ] || return 4',
+	'    [ "$sn" = 3 ] || sleep 0.1 2>/dev/null || sleep 1',
 	"  done",
 	"  sm=\x24{sd%% *}",
 	'  case "$sm" in',
