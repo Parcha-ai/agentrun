@@ -281,3 +281,15 @@ test("a workflow run when the DSL peer is not installed: the run's row and the w
     await served.close();
   }
 });
+
+test("a run with no cost recorded has no cost in the API, never a cost of 0", linux, async () => {
+  const { served, get } = await sample();
+  try {
+    const listed = (await get("/api/runs?agent=company-researcher")).json.find((run) => run.id === RUN.b002.id);
+    assert.equal("costUsd" in listed, false);
+    assert.equal("costUsd" in (await get(`/api/runs/${RUN.b002.id}`)).json.run, false);
+    assert.equal((await get(`/api/runs/${RUN.b001.id}`)).json.run.costUsd, 0.312);
+  } finally {
+    await served.close();
+  }
+});

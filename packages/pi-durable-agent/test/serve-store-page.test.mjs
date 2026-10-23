@@ -322,3 +322,21 @@ test("a workflow run's page when the graph cannot be read here says what to inst
   assert.match(page.app.textContent, /install @parcha\/agentrun-dsl to see this workflow's graph/);
   assert.deepEqual(pills(page.app)[0], ["pill escalated", "escalated"]);
 });
+
+test("a run with no cost reads unknown, in the runs table and on its page, never $0; a cost of 0 is $0.000; a running run says what it spent so far", async () => {
+  const runs = [runRow("run-a", REV_B, "completed", { endedAt: "2026-10-22T11:05:00.000Z" }), runRow("run-b", REV_B, "completed", { endedAt: "2026-10-22T11:05:00.000Z", costUsd: 0 }), runRow("run-c", REV_B, "completed", { costUsd: 0.25 })];
+  const page = mount(agentApi({ "api/runs?agent=company-researcher": runs }), "#/agents/company-researcher", { serve: STORE });
+  await page.settle();
+  const costs = all(page.app).filter((el) => classOf(el).startsWith("c cost")).map((el) => [classOf(el), el.textContent]);
+  assert.deepEqual(costs.slice(1), [["c cost unknown", "unknown"], ["c cost", "$0.000"], ["c cost", "$0.250"]], "after the header");
+  const ended = mount({ "api/runs/run-a": { ...AGENTIC_RUN, run: runs[0], rows: TIMELINE.filter((r) => r.kind !== "usage") } }, "#/runs/run-a", { serve: STORE });
+  await ended.settle();
+  const head = all(ended.app).find((el) => classOf(el) === "card run-head");
+  assert.ok(head.textContent.includes("cost unknown") && !head.textContent.includes("$0"), "an ended run with no cost");
+  const live = mount({ "api/runs/run-5": { ...AGENTIC_RUN, run: RUNS[0], rows: TIMELINE } }, "#/runs/run-5", { serve: STORE });
+  await live.settle();
+  assert.ok(all(live.app).find((el) => classOf(el) === "card run-head").textContent.includes("$0.200 so far"));
+  const workflow = mount({ "api/runs/run-9": { ...WORKFLOW_RUN, run: { ...WORKFLOW_RUN.run, costUsd: undefined } } }, "#/runs/run-9", { serve: STORE });
+  await workflow.settle();
+  assert.ok(all(workflow.app).find((el) => classOf(el) === "card run-head").textContent.includes("cost unknown"));
+});
