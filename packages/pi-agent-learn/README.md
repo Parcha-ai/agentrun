@@ -445,6 +445,19 @@ and `trial.json` are at the commit, whose live revision is a trial or active and
 on the input: active first, then by name, at most 8. The file stays under the curator's cap at every limit: 32 revisions (or
 the live and restorable ones beside 128 refused digests), 30 uses, 16 checks of at most 1,536 characters printed.
 
+**Tenure.** With runs in flight side by side, a run that saves a new revision can report back before the runs that ran the
+live trial do, and its revision would retire the trial before their uses count. `workflowAdmitter({ tenure })` takes where
+the host's runs started (`started(run)`: the main commit each was prepared from and its place in the start order) and which
+are still in flight (`inFlight()`: every run started whose curation has not committed; a run that reports stays in it until
+the `curate` call that takes it returns, since curate takes reported runs by branch name, not start order, and a run that
+crashed, was aborted or deadline-killed, or failed on its infrastructure leaves it at its end without reaching curate).
+A history read that fails throws, so curate stops and the run is curated again later. The option is
+opt-in: without it nothing changes. A new revision is then `held`, and the live trial kept, when the run that saved it
+started before the trial was live (it never saw the trial), or while a run that started with the trial live, and before
+it, is still in flight. A champion is never held. Each hold ends as the runs that started before the saving run report
+back, so a trial no run uses cannot keep its name, and with no run in flight nothing is held. A held revision is not kept:
+a later run may save it again.
+
 **Serving.** The host can run a saved workflow itself, before the agent says anything, so a run a proven workflow finishes
 costs no agent turn. `planServing` picks what to serve for the run: the live revision when it is active; while it is on
 trial, the revision it superseded, the last one proven (a canary), read from the repository at `sha` and checked against its
