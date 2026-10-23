@@ -51,7 +51,13 @@ export type StoreServeOptions = ServeOptions & {
 const READER_MODULE = "../agent-store.js";
 const WORKFLOW_MODULE = "../workflow.js";
 const defaultReader = async (dir: string): Promise<StoreReader> => ((await import(READER_MODULE)) as { openStoreReader(dir: string): Promise<StoreReader> }).openStoreReader(dir);
-const defaultWorkflow = async (): Promise<WorkflowViews> => (await import(WORKFLOW_MODULE)) as WorkflowViews;
+const defaultWorkflow = async (): Promise<WorkflowViews> => {
+  try {
+    return (await import(WORKFLOW_MODULE)) as WorkflowViews;
+  } catch (error) {
+    throw new AgentHomeError("missing", "this build of @parcha/pi-durable-agent has no workflow views", { cause: error });
+  }
+};
 
 /** One read of the whole index: every agent, its revisions and their bodies (or why one could not be read), and every
  *  run. */
@@ -196,12 +202,48 @@ function agenticDiff(against: string, before: Record<string, unknown>, after: Re
   };
 }
 
+/** A graph as the page draws it: each node's path, kind, label, transport and change check, and each edge's ends and
+ *  kind, as strings; nothing else of what the workflow views give. */
+function graphShown(graph: unknown): { nodes: Record<string, string>[]; edges: Record<string, string>[] } {
+  const g = isRecord(graph) ? graph : {};
+  const strings = (item: Record<string, unknown>, keys: string[]) => Object.fromEntries(keys.filter((key) => typeof item[key] === "string").map((key) => [key, item[key] as string]));
+  const items = (value: unknown, required: string[], keys: string[]) => (Array.isArray(value) ? value : []).filter(isRecord).filter((item) => required.every((key) => typeof item[key] === "string")).map((item) => strings(item, keys));
+  return { nodes: items(g.nodes, ["path", "kind", "label"], ["path", "kind", "label", "via", "changeCheck"]), edges: items(g.edges, ["from", "to", "kind"], ["from", "to", "kind"]) };
+}
+
+/** graphDiff's answer as the drawer's marks: `added` the added nodes' paths, `edited` the changed and rewritten ones' (in
+ *  the newer graph), `removed` the removed nodes by label and kind; and the paths of the nodes that moved. */
+function marksOf(diff: unknown) {
+  const d = isRecord(diff) ? diff : {};
+  const list = (key: string) => (Array.isArray(d[key]) ? d[key] : []).filter(isRecord);
+  const paths = (key: string, field: string) => list(key).map((item) => item[field]).filter((value): value is string => typeof value === "string");
+  return {
+    marks: {
+      added: paths("added", "path"),
+      edited: [...new Set([...paths("changed", "next"), ...paths("rewritten", "next")])],
+      removed: list("removed").filter((item) => typeof item.label === "string" && typeof item.kind === "string").map((item) => ({ label: item.label as string, kind: item.kind as string })),
+    },
+    moved: paths("moved", "next"),
+  };
+}
+
+/** A workflow view, or the words for why it cannot be drawn here (the DSL peer is not installed, say), never a failure
+ *  of the page. */
+async function drawable<T>(work: () => Promise<T>): Promise<{ value: T } | { unavailable: string }> {
+  try {
+    return { value: await work() };
+  } catch (error) {
+    if (error instanceof AgentHomeError) return { unavailable: error.message };
+    throw error;
+  }
+}
+
 const badId = (what: string) => ({ status: 400, value: { error: `the ${what} id is not letters, digits, ".", "_" or "-"` } });
 const notFound = (what: string) => ({ status: 404, value: { error: `no such ${what}` } });
 
 /** One revision with what the page shows of its body, its parent's row, and what changed from its parent when both are
- *  of one kind. */
-async function revisionView(view: StoreView, agent: string, id: string) {
+ *  of one kind: for a workflow, its graph and graphDiff's marks against its parent's. */
+async function revisionView(view: StoreView, agent: string, id: string, workflow: () => Promise<WorkflowViews>) {
   const rows = view.revisions.get(agent) ?? [];
   const row = rows.find((candidate) => candidate.id === id);
   if (!row) return notFound("revision");
@@ -209,8 +251,18 @@ async function revisionView(view: StoreView, agent: string, id: string) {
   if (revision instanceof AgentHomeError || revision === undefined) throw revision ?? new AgentHomeError("missing", "the revision has no body");
   const parent = rows.find((candidate) => candidate.id === row.parent) ?? null;
   const before = parent ? view.bodies.get(bodyKey(agent, parent.id)) : undefined;
-  const diff = before && !(before instanceof AgentHomeError) && before.kind === row.kind && row.kind === "agentic" ? agenticDiff(before.id, shown(before), shown(revision)) : null;
-  return { status: 200, value: { revision: { ...row, body: shown(revision) }, parent, diff } };
+  const parentBody = before instanceof AgentHomeError ? undefined : before;
+  const value = { revision: { ...row, body: shown(revision) }, parent };
+  if (row.kind !== "workflow") return { status: 200, value: { ...value, diff: parentBody?.kind === "agentic" ? agenticDiff(parentBody.id, shown(parentBody), shown(revision)) : null } };
+  const graph = await drawable(async () => (await workflow()).readWorkflowGraph(revision.body.workflow));
+  if ("unavailable" in graph) return { status: 200, value: { ...value, graph: null, diff: null, unavailable: graph.unavailable } };
+  const diff = parentBody?.kind === "workflow"
+    ? await drawable(async () => {
+      const views = await workflow();
+      return { against: parentBody.id, ...marksOf(await views.diffWorkflowGraphs(await views.readWorkflowGraph(parentBody.body.workflow), graph.value)) };
+    })
+    : undefined;
+  return { status: 200, value: { ...value, graph: graphShown(graph.value), diff: diff && "value" in diff ? diff.value : null } };
 }
 
 const PAGE_FILES: Record<string, { file: string; type: string }> = {
@@ -230,6 +282,8 @@ export async function serveStore(store: { readonly dir: string }, options: Store
   if (!existsSync(path.join(dir, STORE_FILE))) throw new AgentHomeError("missing", `${path.basename(dir)} is not an agent store (no ${STORE_FILE})`);
   checkPort(options.port ?? 0);
   const read = storeReader(dir, options.openReader ?? defaultReader);
+  let views: Promise<WorkflowViews> | undefined;
+  const workflow = () => (views ??= options.workflow ? Promise.resolve(options.workflow) : defaultWorkflow());
   return serveLocal(PAGE_FILES, async (pathname) => {
     if (pathname === "/api/store") {
       const view = await read();
@@ -243,7 +297,7 @@ export async function serveStore(store: { readonly dir: string }, options: Store
       const view = await read();
       const agent = view.agents.find((candidate) => candidate.id === agentId);
       if (!agent) return notFound("agent");
-      if (revisionId !== undefined) return revisionView(view, agentId, revisionId);
+      if (revisionId !== undefined) return revisionView(view, agentId, revisionId, workflow);
       const revisions = (view.revisions.get(agentId) ?? []).map((row) => ({ ...row, runs: view.runs.filter((run) => run.agent === agentId && run.revision === row.id).length }));
       return { status: 200, value: { agent: { ...agent, revisions: revisions.length }, revisions } };
     }

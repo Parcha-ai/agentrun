@@ -16,6 +16,7 @@
   var runsNode = null;
   var said = 0;
   var STORE = doc.documentElement.getAttribute("data-serve") === "store";
+  var drawing = [];
   var WHAT = STORE ? "agent store" : "agent home";
 
   var SAFE_ATTRS = { class: 1, href: 1, title: 1, id: 1, role: 1, type: 1, open: 1, target: 1, rel: 1, tabindex: 1, datetime: 1 };
@@ -67,6 +68,10 @@
   function show(node) {
     clear(app);
     add(app, node);
+    // A graph is drawn once its svg is in the page, where the drawer can measure it.
+    var due = drawing;
+    drawing = [];
+    due.forEach(function (draw) { draw(); });
   }
 
   // ---- formatting ------------------------------------------------------------------------------------------------------
@@ -782,13 +787,96 @@
     );
   }
 
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var NODE_STATES = { done: "ok", working: "running", failed: "error", "not-run": "idle", escalated: "escalated" };
+
+  function nodeState(state) {
+    return pill(NODE_STATES[state] || "idle", state);
+  }
+
+  /** The graph's nodes as text, indented by how deep each is, with the marks the drawer would draw: added and edited
+   *  nodes, each node's state in a run, the node an escalation stopped at, and the removed nodes by name. */
+  function nodeList(graph, marks) {
+    var nodes = graph && Array.isArray(graph.nodes) ? graph.nodes.filter(function (n) { return n && typeof n.path === "string"; }) : [];
+    var diff = (marks && marks.diff) || {};
+    var status = (marks && marks.status) || {};
+    var added = Array.isArray(diff.added) ? diff.added : [];
+    var edited = Array.isArray(diff.edited) ? diff.edited : [];
+    var removed = Array.isArray(diff.removed) ? diff.removed : [];
+    var list = el("ol", { class: "nodes" }, nodes.map(function (n) {
+      var mark = added.indexOf(n.path) >= 0 ? "added" : edited.indexOf(n.path) >= 0 ? "edited" : null;
+      var state = Object.prototype.hasOwnProperty.call(status, n.path) ? status[n.path] : null;
+      var fired = marks && marks.fired === n.path;
+      var item = el("li", { class: ["node", mark, fired ? "fired" : null].filter(Boolean).join(" "), title: n.path }, el("span", { class: "word" }, n.kind || ""), el("b", null, n.label || n.kind || ""), mark ? pill(mark) : null, state ? nodeState(state) : null, fired ? el("span", { class: "word fired" }, "stopped here") : null);
+      var depth = nodes.filter(function (m) { return m.path !== n.path && n.path.indexOf(m.path + "/") === 0; }).length;
+      item.style.setProperty("--depth", String(depth));
+      return item;
+    }));
+    return [
+      list,
+      removed.length ? el("p", { class: "chips removed" }, el("span", { class: "word" }, "removed"), removed.map(function (r) { return el("span", { class: "chip del" }, (r && r.label) + " (" + (r && r.kind) + ")"); })) : null,
+    ];
+  }
+
+  /** A workflow's graph: drawn by graph.js's window.drawWorkflowGraph into an svg once the svg is in the page, or, when
+   *  the drawer is not loaded or cannot draw it, its nodes as text. */
+  function graphBox(graph, marks, label) {
+    var box = el("div", { class: "graph" });
+    if (typeof window.drawWorkflowGraph !== "function") {
+      add(box, nodeList(graph, marks));
+      return box;
+    }
+    var svg = doc.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "workflow-graph");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", label);
+    box.appendChild(svg);
+    drawing.push(function () {
+      try {
+        window.drawWorkflowGraph(svg, graph, marks);
+      } catch (e) {
+        clear(box);
+        add(box, nodeList(graph, marks));
+      }
+    });
+    return box;
+  }
+
+  function diffLegend(diff) {
+    var m = diff.marks || {};
+    var n = function (list) { return Array.isArray(list) ? list.length : 0; };
+    return el(
+      "p",
+      { class: "facts legend" },
+      pill("added", "+" + n(m.added) + " added"),
+      pill("edited", n(m.edited) + " edited"),
+      pill("removed", n(m.removed) + " removed"),
+      n(diff.moved) ? el("span", null, n(diff.moved) + " moved") : null
+    );
+  }
+
+  function workflowBody(detail) {
+    var body = detail.revision.body || {};
+    var diff = detail.diff && typeof detail.diff === "object" && detail.diff.marks ? detail.diff : null;
+    var parent = detail.parent;
+    return el(
+      "div",
+      { class: "rev-body" },
+      el("h3", null, diff ? ["Workflow, against ", el("span", { class: "id" }, short(diff.against))] : "Workflow"),
+      diff ? diffLegend(diff) : null,
+      !diff && parent && parent.kind !== "workflow" ? el("p", { class: "none" }, "Its parent " + short(parent.id) + " is an agentic revision: this revision runs a workflow in place of a prompt.") : null,
+      detail.unavailable ? el("p", { class: "note" }, detail.unavailable) : graphBox(detail.graph, diff ? { diff: diff.marks } : {}, "The workflow's graph"),
+      el("div", { class: "split" }, el("div", null, el("h3", null, "Skills"), skillList(body.skills && typeof body.skills === "object" ? body.skills : {}, null)), el("div", null, el("h3", null, "Tools"), toolChips(Array.isArray(body.tools) ? body.tools : [], null)))
+    );
+  }
+
   /** One revision: its id, kind, note, parent and runs, then what it is. `detail` is its api/agents/:id/revisions/:id,
    *  or { error } when that could not be read. */
   function revisionBlock(agentId, row, detail) {
     var r = detail && detail.revision ? detail.revision : row;
     var body;
     if (!detail || detail.error) body = failed(detail ? detail.error : "no answer");
-    else if (r.kind === "workflow") body = el("p", { class: "none" }, "A workflow.");
+    else if (r.kind === "workflow") body = workflowBody(detail);
     else body = agenticBody(detail);
     return el(
       "article",
@@ -871,6 +959,7 @@
 
   function route() {
     view += 1;
+    drawing = [];
     if (timer) clearTimeout(timer);
     timer = null;
     var token = view;

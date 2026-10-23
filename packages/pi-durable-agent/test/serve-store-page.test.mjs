@@ -7,6 +7,8 @@ import { all, assertInert, mount, served } from "./page-dom.mjs";
 const HOSTILE = '<img src=x onerror="alert(1)"><script>alert(2)</script>';
 const STORE = "store";
 const classOf = (el) => el.getAttribute("class") ?? "";
+/** A value made in the page's realm, as this realm's plain data. */
+const plain = (value) => JSON.parse(JSON.stringify(value));
 const pills = (node) => all(node).filter((el) => classOf(el).startsWith("pill ")).map((el) => [classOf(el), el.textContent]);
 
 const AGENTS = [
@@ -134,8 +136,8 @@ test("a workflow revision: its graph drawn by window.drawWorkflowGraph into an s
   assert.equal(drawn.length, 2, "one graph per workflow revision");
   assert.deepEqual(drawn.map((d) => [d.svg.tagName, d.svg.namespaceURI, d.svg.getAttribute("class")]), [["svg", "http://www.w3.org/2000/svg", "workflow-graph"], ["svg", "http://www.w3.org/2000/svg", "workflow-graph"]]);
   assert.ok(drawn.every((d) => d.attached), "drawn once the svg is in the page");
-  assert.deepEqual([drawn[0].graph, drawn[0].marks], [GRAPH_2, { diff: MARKS }]);
-  assert.deepEqual([drawn[1].graph, drawn[1].marks], [GRAPH_1, {}], "a revision with no parent has no badges");
+  assert.deepEqual(plain([drawn[0].graph, drawn[0].marks]), [GRAPH_2, { diff: MARKS }]);
+  assert.deepEqual(plain([drawn[1].graph, drawn[1].marks]), [GRAPH_1, {}], "a revision with no parent has no badges");
   const blocks = all(page.app).filter((el) => classOf(el).startsWith("revision"));
   assert.ok(blocks[0].textContent.includes("+2 added") && blocks[0].textContent.includes("1 edited") && blocks[0].textContent.includes("1 removed") && blocks[0].textContent.includes("1 moved"));
   assert.ok(blocks[0].textContent.includes("Workflow, against 111111111111"));
