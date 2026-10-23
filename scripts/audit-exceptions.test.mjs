@@ -60,8 +60,12 @@ test('any other cause anywhere in the chain blocks every package it reaches', ()
     ['zod outside stagehand', zodChain({ zod: { ...zodChain().zod, nodes: [stagehandZod, 'node_modules/zod'] } }), upFrom('zod')],
     ['another zod advisory', zodChain({ zod: { ...zodChain().zod, via: [advisory('GHSA-mrhx-c7xc-m3w5', 'high'), other] } }), upFrom('zod')],
     ["stagehand's own advisory", zodChain({ '@browserbasehq/stagehand': dependent('@browserbasehq/stagehand', ['zod', other]) }), upFrom('@browserbasehq/stagehand')],
-    ['a moderate package in the chain', zodChain({ '@parcha/pi-browser': dependent('@parcha/pi-browser', ['@browserbasehq/stagehand', 'undici']),
-      undici: { name: 'undici', severity: 'moderate', isDirect: false, effects: [], nodes: ['node_modules/undici'], via: [advisory('GHSA-dddd-eeee-ffff', 'moderate')] } }), upFrom('@parcha/pi-browser')],
+    ['another high package in the chain', zodChain({ '@parcha/pi-browser': dependent('@parcha/pi-browser', ['@browserbasehq/stagehand', 'undici']),
+      undici: { name: 'undici', severity: 'high', isDirect: false, effects: [], nodes: ['node_modules/undici'], via: [advisory('GHSA-dddd-eeee-ffff', 'high')] } }), [...upFrom('@parcha/pi-browser'), 'undici'].sort()],
+    ['an advisory of its own below high (the moderate allowance is only for causes named by package)', zodChain({ '@browserbasehq/stagehand': dependent('@browserbasehq/stagehand', ['zod', advisory('GHSA-gggg-hhhh-jjjj', 'low')]) }), upFrom('@browserbasehq/stagehand')],
+    ['an advisory of its own without a severity', zodChain({ '@browserbasehq/stagehand': dependent('@browserbasehq/stagehand', ['zod', { url: 'https://github.com/advisories/GHSA-kkkk-mmmm-nnnn' }]) }), upFrom('@browserbasehq/stagehand')],
+    ['a high entry whose causes are all below high (a report that does not add up)', zodChain({ '@parcha/agentrun-harness': dependent('@parcha/agentrun-harness', ['undici']),
+      undici: { name: 'undici', severity: 'moderate', isDirect: false, effects: [], nodes: ['node_modules/undici'], via: [advisory('GHSA-dddd-eeee-ffff', 'moderate')] } }), upFrom('@parcha/agentrun-harness')],
     ['a cause the report does not list', zodChain({ '@parcha/agentrun-harness': dependent('@parcha/agentrun-harness', ['@parcha/pi-browser', 'missing']) }), upFrom('@parcha/agentrun-harness')],
     ['a cycle', zodChain({ '@browserbasehq/stagehand': dependent('@browserbasehq/stagehand', ['zod', '@parcha/agentrun-harness']) }), upFrom('@browserbasehq/stagehand')],
   ];
@@ -72,4 +76,20 @@ test('a package reached through two accepted exceptions carries both advisories 
   const both = { ...zodChain(), 'brace-expansion': braceExpansion(), '@parcha/agentrun-harness': dependent('@parcha/agentrun-harness', ['@parcha/pi-browser', 'brace-expansion']) };
   assert.deepEqual(auditBlockers(audit(both), before).accepted.find(entry => entry.package === '@parcha/agentrun-harness'),
     { package: '@parcha/agentrun-harness', severity: 'high', advisories: ['GHSA-mrhx-c7xc-m3w5', 'GHSA-q2hr-2g5m-vwhr', 'GHSA-qhr7-859c-m2p7', 'GHSA-6j4f-fj2g-mc7p'], expires: '2026-11-06' });
+});
+
+test('a moderate or low package beside the accepted chain blocks nothing, and is never accepted or merged into it', () => {
+  // As main's consumer has it: undici's moderate advisories reach pi-browser and the harness through other packages.
+  const moderate = (name, via) => ({ ...dependent(name, via), severity: 'moderate' });
+  const vulnerabilities = zodChain({
+    '@parcha/pi-browser': dependent('@parcha/pi-browser', ['@browserbasehq/stagehand', '@earendil-works/pi-coding-agent']),
+    '@parcha/agentrun-harness': dependent('@parcha/agentrun-harness', ['@parcha/agentrun-pi', '@parcha/pi-browser']),
+    '@earendil-works/pi-coding-agent': moderate('@earendil-works/pi-coding-agent', ['undici']),
+    '@parcha/agentrun-pi': moderate('@parcha/agentrun-pi', ['@earendil-works/pi-coding-agent']),
+    undici: { name: 'undici', severity: 'moderate', isDirect: false, effects: [], nodes: ['node_modules/undici'], via: [advisory('GHSA-dddd-eeee-ffff', 'moderate')] },
+  });
+  assert.deepEqual(auditBlockers(audit(vulnerabilities), before), {
+    accepted: chainNames.map(name => ({ package: name, severity: 'high', advisories: ['GHSA-mrhx-c7xc-m3w5'], expires: '2026-11-06' })),
+    blocking: [],
+  });
 });

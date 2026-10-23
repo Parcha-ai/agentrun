@@ -31,10 +31,12 @@ function accepts(exception, name, entry, now) {
   return entry.via?.length > 0 && entry.via.every(via => exception.advisories.includes(advisoryId(via)));
 }
 
-// Splits high and critical audit entries into those an exception accepts and those that block. An entry whose every
-// cause is another entry (npm audit names a package there, not an advisory) is vulnerable only through those: it is
-// accepted when each of them is, with their advisories and the earliest expiry. Any other cause anywhere below it (an
-// advisory of its own, a package no exception accepts, one the report does not list, a cycle) blocks it.
+const blocks = severity => severity === 'high' || severity === 'critical';
+
+// Splits high and critical audit entries into those an exception accepts and those that block. An entry that no exception
+// names is accepted when every high or critical package it names as a cause is, with their advisories and the earliest
+// expiry. A package the report lists as moderate or low blocks nothing, as on its own, and is never accepted. Anything
+// else below it (an advisory of its own, a package no exception accepts, one the report does not list, a cycle) blocks it.
 export function auditBlockers(audit, now = Date.now(), exceptions = AUDIT_EXCEPTIONS) {
   const entries = audit.vulnerabilities ?? {};
   const verdicts = new Map();
@@ -46,9 +48,13 @@ export function auditBlockers(audit, now = Date.now(), exceptions = AUDIT_EXCEPT
     const exception = exceptions.find(candidate => accepts(candidate, name, entry, now));
     if (exception) result = { advisories: entry.via.map(advisoryId), expires: exception.expires };
     else if (entry.via?.length > 0) {
-      // A cause named by package is accepted when that package is; an advisory of the entry's own never is.
-      const causes = entry.via.map(via => (typeof via === 'string' ? verdict(via, new Set([...path, name])) : null));
-      if (causes.every(Boolean)) result = { advisories: [...new Set(causes.flatMap(cause => cause.advisories))], expires: causes.map(cause => cause.expires).sort()[0] };
+      // A cause named by package is accepted when that package is, and an advisory of the entry's own never is. A package
+      // the report lists below high is left out; one it does not list counts as high. An advisory of the entry's own
+      // always counts, whatever its severity.
+      const causes = entry.via
+        .filter(via => typeof via !== 'string' || blocks(entries[via]?.severity ?? 'high'))
+        .map(via => (typeof via === 'string' ? verdict(via, new Set([...path, name])) : null));
+      if (causes.length > 0 && causes.every(Boolean)) result = { advisories: [...new Set(causes.flatMap(cause => cause.advisories))], expires: causes.map(cause => cause.expires).sort()[0] };
     }
     verdicts.set(name, result);
     return result;
@@ -56,7 +62,7 @@ export function auditBlockers(audit, now = Date.now(), exceptions = AUDIT_EXCEPT
   const accepted = [];
   const blocking = [];
   for (const [name, entry] of Object.entries(entries)) {
-    if (entry.severity !== 'high' && entry.severity !== 'critical') continue;
+    if (!blocks(entry.severity)) continue;
     const found = verdict(name, new Set());
     if (found) accepted.push({ package: name, severity: entry.severity, ...found });
     else blocking.push({ package: name, severity: entry.severity });
