@@ -9,7 +9,9 @@
 //     attach to pda's own sleep succeeds (the control: the refusals come from the uid separation, not a blanket ban);
 //   - no sudo, no setuid/setgid file, no file capability; the run's mount is fuse.archil with nosuid,nodev; the launcher
 //     exported PI_TRANSPORT_TOOLS_USER/UID; the instance holds no PI_TRANSPORT_SECRETS_FD; ptrace_scope as found;
-//   - `find` exits 0 on every mount the launcher's tools check scans, the archil mount included;
+//   - the launcher's own two walks (setuid files; file capabilities through getcap) exit 0 on every mount its tools check
+//     scans: each without nosuid whose filesystem type is not on pi-transport's pseudo list (PSEUDO_FSTYPES, compared
+//     with the launcher's before anything is spent), with -ignore_readdir_race where this find runs it;
 //   - the token at rest: a scan as root of /root, /home, /etc, /var, /tmp and /run (binary files too) and the journal,
 //     with the token and a planted non-secret canary on the scanner's stdin. Each tree's canary must be found (a vacuous
 //     scan fails); the token's count must be 0. Only counts are printed.
@@ -20,8 +22,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { modalBoxes, type ModalSdk } from "@parcha/pi-transport/box/modal";
 import { boxHost } from "../../src/box-host.ts";
 import { findDelegations, removeMountToken, type ControlApi, type RunRef } from "../../src/claim.ts";
@@ -39,6 +42,11 @@ const APP_MODULE = `${PACKAGE_DIR}/test/fixtures/e2e-app.ts`;
 const CLI = `${PACKAGE_DIR}/dist/cli.js`;
 /** Each incarnation stops after this long, marks the run done and exits 0: long enough that A is killed before. */
 const RUN_MS = 180_000;
+/** The kernel's pseudo filesystems pi-transport's tools check (V4) does not walk: its tools_mounts list, word for word. */
+const PSEUDO_FSTYPES = "proc sysfs cgroup cgroup2 devpts mqueue securityfs debugfs tracefs bpf pstore configfs fusectl binfmt_misc efivarfs";
+/** The same list in the launcher this run hands its boxes (pi-transport's built module), or undefined if it has none. */
+const launcherPseudoFstypes = () =>
+  /split\("([a-z0-9_ ]+)", names, " "\)/.exec(readFileSync(fileURLToPath(new URL("launcher-script.js", import.meta.resolve("@parcha/pi-transport/launch"))), "utf8"))?.[1];
 /** disk's own confinement of an agent command under --run-as (src/env.ts), as pda. */
 const AS_TOOL = `setpriv --reuid=${PDA_ID} --regid=${PDA_ID} --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs --`;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -135,7 +143,10 @@ refused() {
 }
 control=$(as_pda "timeout 2 strace -e trace=none -p $tool" | grep -oE 'attached|Operation not permitted' | head -1)
 mountline=$(awk -v mp="${MOUNT_ROOT}/runs/${run}" '$5==mp{print $6" "$(NF-2)}' /proc/$inst/mountinfo 2>/dev/null | head -1)
-finds=""; while read -r mp; do find "$mp" -xdev -type f -perm /6000 >/dev/null 2>&1; finds="$finds$mp=$? "; done < <(awk '{print $5}' /proc/self/mountinfo | grep -vE '^/(proc|sys|dev)(/|$)')
+# The mounts the launcher's tools check walks (its tools_mounts, by filesystem type), each with its own two walks. A mount
+# point is kept as mountinfo writes it (\040 for a space) in the record, and decoded only for find.
+race=""; [ "$(find / -maxdepth 0 -xdev -ignore_readdir_race -print 2>/dev/null)" = "/" ] && race=-ignore_readdir_race
+finds=""; while IFS= read -r mp; do m=$(printf '%b' "$mp"); find "$m" -xdev $race \( -perm -4000 -user 0 -o -perm -2000 -group 0 \) -type f -print >/dev/null 2>&1; s=$?; find "$m" -xdev $race -type f -perm /111 -exec getcap {} + >/dev/null 2>&1; c=$?; finds="$finds$mp=$s/$c "; done < <(awk -v list="${PSEUDO_FSTYPES}" 'BEGIN { n = split(list, names, " "); for (i = 1; i <= n; i++) pseudo[names[i]] = 1 } $6 !~ /(^|,)nosuid(,|$)/ { for (i = 7; i <= NF && $i != "-"; i++); if (i < NF && !($(i + 1) in pseudo)) print $5 }' /proc/self/mountinfo | sort -u)
 cat <<EOF
 {"pids":{"instance":"$inst","launcher":"$launcher","archil":"$archild","tool":"$tool"},
  "launcherArgv0":"$(tr '\0' '\n' < /proc/$launcher/cmdline 2>/dev/null | head -1)",
@@ -149,6 +160,7 @@ cat <<EOF
  "setuidFiles":$(find / -xdev -type f -perm /6000 2>/dev/null | wc -l),
  "fileCaps":$(find / -xdev -type f -print0 2>/dev/null | xargs -0 -r getcap 2>/dev/null | wc -l),
  "runMount":"$mountline",
+ "findRace":"$race",
  "findExits":"$finds"}
 EOF
 `;
@@ -205,6 +217,8 @@ after(async () => {
 });
 
 test("boxHost on Modal's VM: root instance with toolsUser pda, conditions 4 and 5 live, kill A and resume on B with every acknowledged tick", { skip: !LIVE, timeout: 25 * 60_000 }, async () => {
+  // Before anything is spent: the probe walks exactly what the launcher walks.
+  assert.equal(launcherPseudoFstypes(), PSEUDO_FSTYPES, "the probe's pseudo filesystem list is the launcher's tools_mounts list");
   const { ModalClient } = (await import("modal" as string)) as { ModalClient: new () => Modal };
   const modal = new ModalClient();
   const stamp = Date.now().toString(36);
@@ -334,7 +348,9 @@ test("boxHost on Modal's VM: root instance with toolsUser pda, conditions 4 and 
   assert.doesNotMatch(probe.instanceTransportVars, /PI_TRANSPORT_SECRETS_FD/, "the instance dropped the secrets descriptor's name");
   assert.equal(probe.toolsUid, String(PDA_ID));
   assert.match(probe.runMount, /^\S*\bnosuid\b\S*\bnodev\b\S* fuse\.archil$|^\S*\bnodev\b\S*\bnosuid\b\S* fuse\.archil$/, `the run's mount: ${probe.runMount}`);
-  for (const pair of String(probe.findExits).trim().split(/\s+/)) assert.match(pair, /=0$/, `find misfires on a scanned mount: ${pair}`);
+  const walked = String(probe.findExits).trim().split(/\s+/).filter(Boolean);
+  assert.ok(walked.length > 0, "the probe walked the launcher's mounts (an empty walk proves nothing)");
+  for (const pair of walked) assert.match(pair, /=0\/0$/, `the launcher's walk misfires on a mount it scans (setuid/getcap exits): ${pair}`);
   // The token at rest: every canary found, the token nowhere.
   for (const tree of ["/root", "/home", "/etc", "/var", "/tmp", "/run"]) {
     assert.ok(scan[tree].canary >= 1, `the scan of ${tree} found its canary (not vacuous): ${JSON.stringify(scan[tree])}`);
