@@ -93,7 +93,7 @@ test('a restore does not take back what the lost branch spent: a decision paid a
   assert.equal(fold(processes).cost, 1, 'and so does the viewer');
 });
 
-test('a box.receipt is the place\'s box: its cost_usd is a part once per box label, and a receipt with none makes the cost unknown, in the example\'s cost and, once the viewer\'s fold has the rule, in the viewer\'s', (t) => {
+test('a box.receipt is the place\'s box: its cost_usd is a part once per box label, and a receipt with none makes the cost unknown, in the example\'s cost and in the viewer\'s', () => {
   const base = clone(recordings['midstream-kill']);
   const priced = cost(base).usd;
   assert.notEqual(priced, null, 'the fixture is priced');
@@ -102,8 +102,7 @@ test('a box.receipt is the place\'s box: its cost_usd is a part once per box lab
   assert.equal(cost(both).usd, priced + 0.25, 'a priced receipt adds its cost');
   assert.equal(cost([...both, receipt('box-1', 0.25, 2)]).usd, priced + 0.25, 'once per box label');
   assert.equal(cost([...both, receipt('box-2', null, 2)]).usd, null, 'an unpriced box makes the cost unknown');
-  // The viewer's fold agrees once it has the rule (R11's); until then this half waits, so the example's rule is not held back by it.
-  if (fold(both).cost === priced) { t.diagnostic('the viewer\'s fold does not count box.receipt yet: the equality half is skipped'); return; }
+  // The viewer's fold agrees.
   for (const lines of [both, [...both, receipt('box-1', 0.25, 2)], [...both, receipt('box-2', null, 2)], [...both, receipt('box-2', 0.5, 2)]]) assert.equal(fold(lines).cost, cost(lines).usd);
 });
 
