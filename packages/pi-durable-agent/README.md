@@ -470,6 +470,7 @@ steps; the root never imports it, and only these functions load `@parcha/agentru
    `outcome` and a `carry`, `{ state, summary }`, for the store's `carryBack`.
 3. `readWorkflowRun(run)` reads the run back for a page, read-only: the workflow's graph, each node's state, and, once
    the run ended, how it ended, where it escalated and its output.
+4. `revisionGraph(revision, parent?)` draws a revision's graph, and what changed from a parent that is a workflow too.
 
 ## Library
 
@@ -566,10 +567,12 @@ It loads `@parcha/agentrun-dsl` and `@parcha/agentrun-pi` only when one of its f
 |---|---|
 | `checkWorkflowBody(body)` | Refuses, as `invalid`, a workflow revision's body a store must not commit, naming the node's path and never a value from the body |
 | `runWorkflowRevision(options)` | Runs the revision's workflow as one durable workflow task on the run's store and waits: `{ outcome, carry }`. A workflow that uses a tool the host does not register, or does not take the input, is refused with no task; the run reopened under another revision is refused (`RUN_STORE_BINDING_MISMATCH`) |
-| `readWorkflowRun(run)` | The run as its store shows it, read-only: no write, no lock, no Harness. A run in the driver's keyed layout is refused as `format` |
+| `readWorkflowRun(run)` | The run as its store shows it, read-only: no write, no lock, no Harness. With `run.state` (the runs row's) ended and no write-ahead log beside the store, it opens the store as an immutable file and makes no file in the run's directory. Working means live: an ended run's interrupted nodes read `stopped`, or `failed` when the run failed. A run in the driver's keyed layout is refused as `format` |
+| `revisionGraph(revision, parent?)` | The revision's graph (the DSL's `workflowGraph`), and the DSL's `graphDiff` from its parent when the parent is a workflow revision; an agentic parent, or none, gives no diff |
 
 Its types: `WorkflowBody`, `WorkflowRunStart` (the part of a store's started run it reads), `WorkflowRunView`,
-`RunState`, and the DSL's `WorkflowGraph`, `NodeState` and `WorkflowOutcome`.
+`RunState`, `RunNodeState` (the DSL's `NodeState` and `stopped`), and the DSL's `WorkflowGraph`, `GraphDiff`, `NodeState`
+and `WorkflowOutcome`.
 
 ### Errors
 
