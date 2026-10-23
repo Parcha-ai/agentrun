@@ -12,11 +12,12 @@
 // A stage-2-only pass (--stage1-from <an earlier pass's dir>) judges a later arm's codes: it reuses that pass's stage 1
 // (the same sample, salt and adjudicator home, or it is refused), carries over every merchant with no new code and every
 // unjudgeable one, and runs the rest with stage 1 recorded; only the codes the earlier pass never judged are merged into
-// stage2.json, and the earlier codes judged again go to rejudged.json.
+// stage2.json. Its runs are shown only those new codes (the protocol's rule for a later arm: each run knew every shown
+// code was new); --show all shows the merchant's whole list and writes the earlier codes judged again to rejudged.json.
 //   node examples/learn-classify/eval-adjudicate.mjs --out <dir> --pass-id <id> --sample <adjudication.json>
 //       --candidates <candidates.json> --commitments <commitments.json> --order-salt <file>
 //       (--scripted | --live --cap-usd <usd>) [--run-cap-usd <usd>] [--data <dir>] [--concurrency <n>] [--jobs <n>]
-//       [--model claude-opus-5-5] [--thinking high] [--stage1-from <earlier pass dir> [--show all|new]]
+//       [--model claude-opus-5-5] [--thinking high] [--stage1-from <earlier pass dir> [--show new|all]]
 import { AGENT_STORE_FILE, carryBack, createAgentHome, openAgentHome, runPaths } from '@parcha/pi-durable-agent';
 import { recordingLines } from '@parcha/agentrun-pi/durable';
 import { createHash } from 'node:crypto';
@@ -100,10 +101,10 @@ function earlierPass(dir, jobs, candidates) {
  * merchant without a stage 1 is judged; one judged before is never judged again under that pass id. `files` names the
  * sample, candidates, commitments and order-salt files, and the protocol (PROTOCOL unless named), whose sha256 meta.json
  * pins; the sample's commitments file must hold one commitment per sample row, by order. With `stage1From` (an earlier
- * pass's dir) the pass is stage-2-only; `show` is the candidates such a run is given: 'all' of the merchant's (the
- * earlier codes judged again beside the new ones) or only the 'new' ones.
+ * pass's dir) the pass is stage-2-only; `show` is the candidates such a run is given: only the 'new' ones (the
+ * protocol's rule), or 'all' of the merchant's, the earlier codes judged again beside them.
  */
-export async function runAdjudication({ out, parts, passId, files, concurrency = 1, jobs, capUsd, runCapUsd, stage1From, show = 'all', log = () => {} }) {
+export async function runAdjudication({ out, parts, passId, files, concurrency = 1, jobs, capUsd, runCapUsd, stage1From, show = 'new', log = () => {} }) {
   if (parts.set !== SETS.adjudicate) throw new Error('an adjudication pass takes the adjudicate set');
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(passId ?? '')) throw new Error('passId is a plain name');
   for (const key of ['sample', 'candidates', 'commitments', 'orderSalt']) if (!files?.[key] || !existsSync(files[key])) throw new Error(`the pass needs the ${key} file`);
@@ -265,11 +266,11 @@ export async function runAdjudication({ out, parts, passId, files, concurrency =
   await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, pending.length)) }, worker));
   if (stoppedBy) log(`stopped: ${stoppedBy}`);
   const again = Object.values(rejudged).flatMap((codes) => Object.values(codes));
-  const consistency = earlier ? { rejudged: again.length, same: again.filter((v) => v.earlier === v.now).length } : undefined;
+  const consistency = earlier && show === 'all' ? { rejudged: again.length, same: again.filter((v) => v.earlier === v.now).length } : undefined;
   return { judged, failed, ungrounded, spentUsd: spent, stoppedBy, seedSha: meta.seedSha, pins, runCapUsd: runCap, ...(earlier ? { carried: jobsAll.length - jobsAll.filter((j) => earlier.newCodes[j.merchantId].length).length, consistency } : {}) };
 }
 
-const USAGE = 'usage: node examples/learn-classify/eval-adjudicate.mjs --out <dir> --pass-id <id> --sample <adjudication.json> --candidates <candidates.json> --commitments <commitments.json> --order-salt <file> (--scripted | --live --cap-usd <usd>) [--run-cap-usd <usd>] [--data <dir>] [--concurrency <n>] [--jobs <n>] [--model claude-opus-5-5] [--thinking high] [--stage1-from <earlier pass dir> [--show all|new]]';
+const USAGE = 'usage: node examples/learn-classify/eval-adjudicate.mjs --out <dir> --pass-id <id> --sample <adjudication.json> --candidates <candidates.json> --commitments <commitments.json> --order-salt <file> (--scripted | --live --cap-usd <usd>) [--run-cap-usd <usd>] [--data <dir>] [--concurrency <n>] [--jobs <n>] [--model claude-opus-5-5] [--thinking high] [--stage1-from <earlier pass dir> [--show new|all]]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -293,7 +294,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const required = ['out', 'pass-id', 'sample', 'candidates', 'commitments', 'order-salt'];
   if (required.some((k) => !values[k]) || values.live === values.scripted || (values.live && values['cap-usd'] === undefined)) { console.error(USAGE); process.exit(2); }
   if (values.thinking === 'off') { console.error('--thinking off is not allowed: every model call thinks'); process.exit(2); }
-  if (values.show !== undefined && (!values['stage1-from'] || !['all', 'new'].includes(values.show))) { console.error(`--show is all or new, with --stage1-from\n${USAGE}`); process.exit(2); }
+  if (values.show !== undefined && (!values['stage1-from'] || !['all', 'new'].includes(values.show))) { console.error(`--show is new or all, with --stage1-from\n${USAGE}`); process.exit(2); }
   try {
     const data = values.data ? { data: resolve(values.data) } : {};
     const parts = values.live
@@ -303,9 +304,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       out: values.out, parts, passId: values['pass-id'],
       files: { sample: resolve(values.sample), candidates: resolve(values.candidates), commitments: resolve(values.commitments), orderSalt: resolve(values['order-salt']) },
       concurrency: number('concurrency', true) ?? 1, jobs: number('jobs', true), capUsd: number('cap-usd'), runCapUsd: number('run-cap-usd'),
-      ...(values['stage1-from'] ? { stage1From: resolve(values['stage1-from']), show: values.show ?? 'all' } : {}), log: (line) => console.log(line),
+      ...(values['stage1-from'] ? { stage1From: resolve(values['stage1-from']), show: values.show ?? 'new' } : {}), log: (line) => console.log(line),
     });
-    console.log(JSON.stringify({ judged: result.judged.length, failed: result.failed, ungroundedAfterRerun: result.ungrounded.length, spentUsd: Number(result.spentUsd.toFixed(4)), stoppedBy: result.stoppedBy, ...(result.consistency ? { carried: result.carried, consistency: result.consistency } : {}) }));
+    console.log(JSON.stringify({ judged: result.judged.length, failed: result.failed, ungroundedAfterRerun: result.ungrounded.length, spentUsd: Number(result.spentUsd.toFixed(4)), stoppedBy: result.stoppedBy, ...(result.carried !== undefined ? { carried: result.carried, ...(result.consistency ? { consistency: result.consistency } : {}) } : {}) }));
     if (result.stoppedBy) process.exitCode = 3;
   } catch (error) {
     console.error(`learn-classify adjudication failed: ${error.stack ?? error}`);

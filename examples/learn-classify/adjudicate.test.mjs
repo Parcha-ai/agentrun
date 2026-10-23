@@ -231,31 +231,30 @@ test('a stage-2-only pass judges a later arm\'s new codes on the earlier stage 1
   assert.deepEqual(Object.keys(stage2['adj-001'].codes).sort(), ['5411', '5499', '5999']);
   assert.deepEqual(stage2['adj-001'].codes['5499'], before.stage2['adj-001'].codes['5499'], 'an earlier judgment stands');
   assert.equal(stage2['adj-001'].codes['5411'].acceptable, false);
-  // The earlier codes, shown again beside the new one, were judged again: a consistency check, never merged.
-  assert.deepEqual(json(join(pass, 'rejudged.json'))['adj-001'], { 5499: { earlier: true, now: true }, 5999: { earlier: false, now: false } });
-  assert.deepEqual(result.consistency, { rejudged: 4, same: 4 });
+  // The protocol's rule: a run is shown only the codes not judged yet, so nothing is judged again.
+  assert.ok(!existsSync(join(pass, 'rejudged.json')));
+  assert.equal(result.consistency, undefined);
   const manifest = readFileSync(join(pass, 'manifest.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
   assert.deepEqual(manifest.map((l) => [l.merchantId, l.stage2Only, l.newCodes]), [['adj-001', true, ['5411']], ['adj-003', true, ['5999']], ['adj-003', true, ['5999']]]);
-  // The run was told stage 1 is recorded; site refused and named it; codes answered without it.
+  // The run was told stage 1 is recorded; site refused and named it; codes gave the new code alone.
   const events = readFileSync(join(pass, manifest[0].recording, 'events.jsonl'), 'utf8');
   assert.ok(events.includes(JSON.stringify(STAGE1_RECORDED).slice(1, -1)));
   assert.match(events, /Stage 1 is already recorded for this merchant: own code 5499/);
-  assert.ok(events.includes('"candidates":[{'));
+  assert.match(events, /"candidates":\[\{"code":"5411","title":"[^"]*"\}\]/);
   const meta = json(join(pass, 'meta.json'));
   assert.equal(meta.pins.stage1From.sha256, sha256(readFileSync(join(r1, 'stage1.json'))));
-  assert.deepEqual(meta.stage1From, { passId: 'r1', protocol: sha256(readFileSync(PROTOCOL)), show: 'all' });
+  assert.deepEqual(meta.stage1From, { passId: 'r1', protocol: sha256(readFileSync(PROTOCOL)), show: 'new' });
   // unblind scores the later arm on the merged files: STRICT from stage 1 alone, ACCEPTABLE from the new judgment.
   const scored = unblind({ items: given.sample.map((merchant) => ({ merchant, answer: { mcc: later.rows.find((r) => r.merchantId === merchant.merchantId).mccAnswer, riskTier: 'low' } })), stage1, stage2 });
   assert.deepEqual(scored.learner.map((r) => [r.merchantId, r.mccStrictRight, r.mccAdjRight]), [['adj-001', false, false], ['adj-002', true, true], ['adj-003', false, false]]);
-  // Shown only the new codes: a run sees the new code alone, and nothing is judged again.
-  await runAdjudication({ out, parts, passId: 'r1-a3-new', files, stage1From: r1, show: 'new' });
-  const only = join(out, 'adjudication', 'r1-a3-new');
-  assert.ok(!existsSync(join(only, 'rejudged.json')));
-  assert.deepEqual(Object.keys(json(join(only, 'stage2.json'))['adj-001'].codes).sort(), ['5411', '5499', '5999']);
-  const first = readFileSync(join(only, 'manifest.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))[0];
-  assert.match(readFileSync(join(only, first.recording, 'events.jsonl'), 'utf8'), /"candidates":\[\{"code":"5411","title":"[^"]*"\}\]/);
+  // With --show all (named, never the default) a run sees the whole list; the earlier codes judged again are kept apart.
+  const all = await runAdjudication({ out, parts, passId: 'r1-a3-all', files, stage1From: r1, show: 'all' });
+  const both = join(out, 'adjudication', 'r1-a3-all');
+  assert.deepEqual(json(join(both, 'stage2.json'))['adj-001'], stage2['adj-001'], 'the earlier judgments are never overwritten');
+  assert.deepEqual(json(join(both, 'rejudged.json'))['adj-001'], { 5499: { earlier: true, now: true }, 5999: { earlier: false, now: false } });
+  assert.deepEqual(all.consistency, { rejudged: 4, same: 4 });
   // Refused: resumed with the other candidates shown; an earlier pass with another salt; candidates that drop a judged code.
-  await assert.rejects(runAdjudication({ out, parts, passId: 'r1-a3', files, stage1From: r1, show: 'new' }), /pinned with other inputs \(show\)/);
+  await assert.rejects(runAdjudication({ out, parts, passId: 'r1-a3', files, stage1From: r1, show: 'all' }), /pinned with other inputs \(show\)/);
   writeFileSync(files.orderSalt, `${SALT}-moved\n`);
   await assert.rejects(runAdjudication({ out, parts, passId: 'r1-a3-salt', files, stage1From: r1 }), /pinned with another orderSalt/);
   writeFileSync(files.orderSalt, `${SALT}\n`);
