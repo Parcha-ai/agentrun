@@ -99,7 +99,7 @@ const group = (svg, path) => {
 const inside = (el, cls) => all(el).filter((kid) => has(kid, cls));
 const words = (el, cls) => inside(el, cls).map((kid) => kid.textContent);
 const titleOf = (el) => el.childNodes.find((kid) => kid.tagName === "title")?.textContent;
-const STATES = ["done", "working", "failed", "escalated", "not-run", "skipped"];
+const STATES = ["done", "working", "failed", "escalated", "not-run", "stopped", "skipped"];
 const stateOf = (el) => classes(el).filter((name) => STATES.includes(name));
 
 const node = (path, kind, label = kind, via) => ({ path, kind, label, ...(via ? { via } : {}) });
@@ -271,6 +271,19 @@ test("a run's state: one class per node, the fired exit escalated though its sta
   assert.deepEqual(words(group(failed, "/root/steps/3"), "state"), ["working"]);
   for (const el of groups(failed)) assert.deepEqual(classes(el).filter((name) => /onclick|constructor|"/.test(name)), [], "no class from a state's text");
   for (const el of [...groups(svg), ...groups(failed)]) assert.ok(!(has(el, "escalated") && has(el, "failed")), "escalated is never failed");
+});
+
+test("a stopped node: its own class and the word stopped, drawn neutral, never as failed, escalated or working", () => {
+  const { draw } = mount();
+  const svg = draw(GRAPH, { status: { "/root": "stopped", "/root/steps/0": "stopped", "/root/steps/1": "not-run" } });
+  const stopped = group(svg, "/root/steps/0");
+  assert.deepEqual(stateOf(stopped), ["stopped"]);
+  assert.deepEqual(words(stopped, "state"), ["stopped"], "a word beside it, as every state has");
+  assert.match(titleOf(stopped), /stopped/);
+  const rule = (selector) => PAGE_CSS.match(new RegExp(`${selector.replace(/[.>]/g, "\\$&")}[^{]*\\{([^}]*)\\}`))?.[1] ?? "";
+  assert.match(rule(".wf .stopped>.box"), /stroke:var\(--muted\)/, "a neutral line");
+  assert.match(rule(".wf .stopped>.state"), /fill:var\(--muted\)/);
+  assert.doesNotMatch(rule(".wf .stopped>.box") + rule(".wf .stopped>.state"), /--red|--exit|--accent|--green/);
 });
 
 test("a container on the escalation's path: escalated with a light look of its own, the exit that fired inside it filled", () => {
