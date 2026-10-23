@@ -242,6 +242,32 @@ test("the agent view holds only what an export may carry, is read from a snapsho
   }
 });
 
+test("the server snapshots the agent store once for requests that change nothing, and again after a change", skip, async () => {
+  const seeded = await seededHome();
+  const tmp = await scratch();
+  const kept = process.env.TMPDIR;
+  process.env.TMPDIR = tmp;
+  const made = [];
+  const mkdtemp = fsp.mkdtemp;
+  fsp.mkdtemp = (...args) => (String(args[0]).endsWith("pi-durable-agent-serve-") && made.push(1), mkdtemp(...args));
+  syncExports();
+  const served = await serveHome(seeded.home);
+  try {
+    for (const target of ["/api/agent", "/api/runs", "/api/runs/holder", "/api/runs/holder", "/api/agent"]) assert.equal((await request(served.url, { target })).status, 200, target);
+    assert.equal(made.length, 1, "five requests, one snapshot");
+    await startRun(seeded.home, { runId: "another", host: "h" });
+    const runs = JSON.parse((await request(served.url, { target: "/api/runs" })).body);
+    assert.ok(runs.some((run) => run.id === "another"), "a change to the home is served");
+    assert.equal(made.length, 2);
+  } finally {
+    await served.close();
+    fsp.mkdtemp = mkdtemp;
+    syncExports();
+    if (kept === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = kept;
+  }
+});
+
 test("what says a store changed: its size and mtime, and its log's", async () => {
   const dir = await scratch();
   const file = path.join(dir, "store.sqlite");
