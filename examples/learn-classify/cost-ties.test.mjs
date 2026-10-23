@@ -109,3 +109,10 @@ test('the stream\'s gate carries the option to every challenger comparison; --co
   assert.equal(r.status, 2, r.stderr);
   assert.match(r.stderr, /--cost-on-ties reads a challenger's comparison: it takes --challenge-on-hold/);
 });
+
+test('equal cost is never 25% cheaper, not even at zero: a Pareto-equal challenger that costs the same holds', async (t) => {
+  for (const usd of [0, 0.05]) {
+    const line = await compare(t, { [CAND]: right(usd), [SERV]: right(usd) });
+    assert.deepEqual([line.promote, line.decidedBy], [false, 'correctness'], `$${usd}`);
+  }
+});
