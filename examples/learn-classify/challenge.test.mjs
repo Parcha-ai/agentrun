@@ -106,6 +106,16 @@ test('only a receipted CHAMPION is challenged: a hold against a receipted trial 
   assert.equal(asked.length, 0);
 });
 
+test('the holds the spent budget left uncompared are counted on the gate, beside what the comparisons did and cost', async (t) => {
+  const s = await setup(t);
+  const gate = asyncGate({ bank: bankOfN(6), runOne: async () => scored(true), dir: join(s.root, 'gate'), concurrency: 2 });
+  const admit = receiptHoldsTrial(base, s.receipts, { gate, capUsd: 0 });
+  for (let i = 0; i < 2; i++) assert.match((await admit(s.input)).reason, /challenge budget of \$0 is spent/);
+  assert.deepEqual(gate.challengeTally(), { compared: 0, won: 0, held: 0, costUsd: 0, uncompared: 2 });
+  await admit({ ...s.input, workflow: { ...s.input.workflow, run: 'run-021' } });
+  assert.equal(asyncGate({ bank: bankOfN(6), runOne: async () => scored(true), dir: join(s.root, 'gate') }).challengeTally().uncompared, 3, 'the count is on disk: a resumed pass keeps it');
+});
+
 test('flags off: the hold answers exactly as before and asks nothing', async (t) => {
   const s = await setup(t);
   const off = await receiptHoldsTrial(base, s.receipts)(s.input);
@@ -145,8 +155,11 @@ test('a scripted stream: the champion escalates, the agent saves a fix without a
   const seq = ['m-001', 'm-003', 'm-006', 'm-005', 'm-010', 'm-003', 'm-005', 'm-010', 'm-001', 'm-003', 'm-005', 'm-007', 'm-010', 'm-003'];
   const list = seq.map((id, i) => ({ id, epoch: seq.slice(0, i).filter((x) => x === id).length + 1 }));
   const out = join(root, 'out');
-  const { rows } = await runLoop({ out, parts, split: 'train', list, record: false, gateWaitAtEnd: true });
+  const lines = [];
+  const { rows, challenge } = await runLoop({ out, parts, split: 'train', list, record: false, gateWaitAtEnd: true, log: (line) => lines.push(line) });
   assert.equal(rows.length, seq.length);
+  assert.deepEqual(challenge, { compared: 2, won: 1, held: 1, costUsd: 0, uncompared: 0, capUsd: 40 });
+  assert.ok(lines.some((l) => /^learn-classify: challenge on hold: 2 compared \(1 won, 1 held\), \$0\.00 of the \$40\.00 budget; 0 held uncompared/.test(l)), lines.slice(-3).join('\n'));
   const verdicts = readFileSync(join(out, 'gate', 'verdicts.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((v) => v.challenger);
   const won = verdicts.find((v) => v.candidate === d1);
   const tied = verdicts.find((v) => v.candidate === d2);
