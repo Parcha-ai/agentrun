@@ -759,12 +759,13 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 				if (isNotFound(cause) || classify(cause) === "invalid") return ok(undefined);
 				return err(boxError(`could not look up box ${id}`, cause));
 			}
-			// A host that died between the create call and the workspace setup left a box with no workspace. A live sandbox is always
-			// handed back: its handle is how the caller ends it, so neither this setup nor the read below may fail the attach, except
-			// for the caller's own cancel.
+			// A host that died between the create call and the workspace setup left a box with no workspace, so the setup runs again. If it
+			// fails the attach is an ERROR, never an ok handle on a box that may have no workspace: the box keeps running and nothing is
+			// ended or created, and the caller fails this start and tries again. The caller's own cancel is an abort. (A facts READ
+			// below never fails the attach: a live sandbox is handed back, and the caller ends it through the handle.)
 			const prepared = await box.prepare(context);
 			if (context.abortSignal?.aborted) return err(new BoxError("aborted", "the call was aborted"));
-			void prepared;
+			if (!prepared.ok) return prepared;
 			const read = await box.measureForAttach(wantsFuse, tagMeasured, context);
 			return read.ok ? ok(box) : read;
 		},
