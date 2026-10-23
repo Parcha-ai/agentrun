@@ -31,6 +31,23 @@ export class BoxError extends Error {
 	}
 }
 
+/**
+ * What a box may reach. `open` is the provider's own default. `none` blocks all traffic. An allowlist names the only
+ * destinations: a domain (`api.example.com`), a wildcard domain (`*.example.com`) or an IPv4 CIDR (`10.0.0.0/8`).
+ */
+export type BoxNetwork = "open" | "none" | { readonly allow: readonly string[] };
+
+/** A port to reach from outside the box. A bare number is `https`: TLS, reached by an `https` URL. `tcp` is a raw socket. */
+export type BoxPort = number | { readonly port: number; readonly kind: "https" | "tcp" };
+
+/** Where an exposed port is reached, from `Box.endpoint`. Never a provider's id for the box. */
+export type BoxEndpoint =
+	| { readonly kind: "https"; readonly url: string }
+	| { readonly kind: "tcp"; readonly host: string; readonly port: number };
+
+/** Something a box can be asked to have. A provider that cannot give it refuses the spec with `unsupported`. */
+export type BoxCapability = "fuse";
+
 /** What a provider needs to create a box. A provider documents the fields it ignores. */
 export type BoxSpec = {
 	/** Image the box starts from, in the provider's own naming. */
@@ -59,6 +76,12 @@ export type BoxSpec = {
 	 * names one is refused with `invalid`. A host that wants every box of a provider asks `list` with no labels.
 	 */
 	readonly labels?: Readonly<Record<string, string>>;
+	/** What the box may reach. Absent means the provider's default, which `BoxFacts.network` then says. */
+	readonly network?: BoxNetwork;
+	/** Ports to reach from outside. A provider that cannot expose a port refuses the spec with `unsupported`. */
+	readonly ports?: readonly BoxPort[];
+	/** What the box must have. `fuse`: the device exists and root in the box can open it; a FUSE mount there is root's. */
+	readonly capabilities?: readonly BoxCapability[];
 };
 
 /** What a box is and can do, as its provider reports it. Fixed for the life of the box. */
@@ -72,6 +95,38 @@ export type BoxFacts = {
 	/** Absolute directory programs start in. */
 	readonly workspace: string;
 	readonly maxLifetimeMs: number | null;
+	/**
+	 * What the box may reach: `open`, `none`, or `allowlist` (the list itself is not repeated here). Absent means
+	 * unknown: a caller that needs `none` or an allowlist must refuse the box.
+	 */
+	readonly network?: "open" | "none" | "allowlist";
+	/**
+	 * The ports the spec asked to reach from outside, each with the kind of address `Box.endpoint` gives; `[]` when the
+	 * provider made the box with none. Absent means unknown, not none: a caller that must be sure no port is exposed
+	 * must refuse the box.
+	 */
+	readonly ports?: readonly { readonly port: number; readonly kind: "https" | "tcp" }[];
+	/**
+	 * The size of the filesystem the workspace is on, in whole GiB as the box reports it. Absent means unknown, also when the box
+	 * reports a size no disk has (over 1 PiB: gVisor's filesystem says 2^63 bytes).
+	 */
+	readonly diskGb?: number;
+	/**
+	 * When the box began to run, as an ISO 8601 UTC time (a provider that queues gives the moment it was asked). Absent
+	 * means unknown: a receipt falls back to the time the create call answered.
+	 */
+	readonly startedAt?: string;
+	/**
+	 * `true` only when the spec asked for `fuse` and `/dev/fuse` was checked to be a character device that root in the box can
+	 * open; a FUSE mount there is root's (no user who is not root is promised the device).
+	 * Absent means `false`: a caller that needs FUSE must refuse the box.
+	 */
+	readonly fuse?: boolean;
+	/**
+	 * `kernel.yama.ptrace_scope` as read in the box (a box without the setting reads 0). Absent means unknown: a caller
+	 * that chooses a box must not assume 1 or more. A launcher that measures the setting itself at the start does not need it.
+	 */
+	readonly ptraceScope?: 0 | 1 | 2 | 3;
 	/** The kind of snapshot `Box.snapshot` takes, or `null` when the box has none. */
 	readonly snapshot: "disk" | "memory" | null;
 	/**
@@ -163,6 +218,8 @@ export interface Box {
 	 * with `exec`. A provider leaves it undefined.
 	 */
 	readonly launcher?: BoxLauncher;
+	/** Where `facts().ports` reaches the box from outside. Only on boxes whose provider can expose a port. */
+	endpoint?(port: number, context: Context): Promise<Result<BoxEndpoint, BoxError>>;
 }
 
 /** The launcher's three calls, done natively by a box (`Box.launcher`), with the same answers as the launcher in a box. */

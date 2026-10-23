@@ -95,6 +95,28 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
 - `gpu: "T4"` works on the default sandbox only; a GPU with `isolation: "vm"` is refused with `invalid`.
 - A `snapshot` and any `isolation` but `gvisor` or `vm` are refused with `unsupported`; a label key that is `pi-transport` or starts
   with `pi-transport.` is refused with `invalid`; every box carries `pi-transport=1` as its own tag. No other field of the spec is ignored.
+- `network: "none"` blocks all traffic from the box. `network: { allow: ["api.example.com", "*.example.com", "10.0.0.0/8"] }`
+  allows only those domains and IPv4 CIDRs. A malformed entry, an empty list, or `ports` on a box with `network: "none"` is
+  refused with `invalid`. The default is open.
+- `ports: [8080, { port: 5432, kind: "tcp" }]` exposes ports: a bare number is TLS (`https`), `tcp` is a raw socket.
+  `facts().ports` names each port and its kind, and `await box.endpoint(8080, context)` returns the address (an `https` URL, or a
+  `tcp` host and port), never Modal's id for the sandbox.
+- `capabilities: ["fuse"]` starts a VM (`isolation: "vm"` is implied) and checks, as root in the box, that `/dev/fuse` is a character
+  device that root can open (a VM's is `crw-------`, root-only, and that is enough: a FUSE mount there is root's, and nothing widens
+  the device for other users). `facts().fuse` is `true` only after that check; a box that fails it is ended and the create fails,
+  naming what is missing. It does not prove a given FUSE program mounts, only that the device is there for root. `fuse` with
+  `isolation: "gvisor"` is refused with `unsupported`, and with a `gpu` with `invalid`.
+- **Attach never fails a live sandbox and never ends it.** A box found again by `attach` is always handed back, and the caller ends it
+  through the handle if its facts do not fit. The facts are read in the box again (a failed read is tried three times, with a pause).
+  A read that answers gives the facts as measured, so a box with no usable FUSE reads `fuse: false`. If every try errs, the handle
+  keeps the hardware the create measured (the disk, whether FUSE works), which is kept in a tag set through Modal's API: nothing
+  inside the box can write it. A security fact (the Yama setting, the network, the ports) is never taken from a tag on a read error: it is
+  left out, unknown. A box made before the tag existed has nothing measured to fall back on: if every try errs, the attach is an error (the box keeps running; try
+  again), never a guess given as measured. The workspace setup `attach` repeats can fail too, and then the attach is an error as well (never an ok handle
+  on a box that may have no workspace); nothing is ended or created. `attach` returns `undefined` for a box that does not exist or has ended.
+- `facts()` also reports what the box has, read in it: `diskGb` (the workspace's filesystem, whole GiB; left out when unreadable or over 1 PiB, which is what gVisor's filesystem claims), `ptraceScope`
+  (`kernel.yama.ptrace_scope`; a box without the file reads 0; `null` when it could not be read) and `startedAt` (an ISO 8601 UTC
+  time; for Modal, the moment it was asked to start).
 - `maxLifetimeMs` is Modal's own timeout, rounded up to whole seconds and capped at 24 hours. Modal ends the box when
   it passes, whatever happens to the host.
 - The live suite spends money and runs only when asked. It needs `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in the
@@ -103,6 +125,15 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
   provider's own variable picks the ones that run). It names its Modal app and labels from `PI_TRANSPORT_LIVE_PREFIX`
   and `PI_TRANSPORT_LIVE_LABELS`, and `PI_TRANSPORT_LIVE_MODAL_KINDS` (`sandbox,vm,gpu`; default `sandbox,vm`) picks
   the kinds.
+
+The new facts are optional, and an absent one never grants anything: `readFacts(facts)` reads them the way that fails closed. `fuse`
+absent is `false`; `network` absent is unknown (a caller that needs `none` or an allowlist must refuse the box); `ports` absent is
+unknown, not none (a caller that must be sure no port is exposed must refuse; `noPortExposed` is true only for a list that is
+empty); `ptraceScope` absent is unknown (do not assume 1 or more); `diskGb` and `startedAt` absent are unknown (a receipt falls back to
+the time the create call answered). Only Modal reports all of them and can restrict a network to an allowlist, expose ports or give
+`fuse`. Docker takes `network: "none"` (`--network none`), reports `ports: []` and refuses the rest; local reports `network: "open"`
+and `startedAt`, Daytona `diskGb` and `startedAt`, the Archil exec box `startedAt`, and the three refuse everything but `open` as
+`unsupported`.
 
 `localBoxes` gives a program a fixed `PATH` (`/usr/local/bin:/usr/bin:/bin`, or the `path` option), a private `HOME`
 and `TMPDIR`, and the spec's `env`. A detached watchdog ends a box when its lifetime has passed. On Linux, `destroy`
