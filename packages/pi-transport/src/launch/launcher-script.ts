@@ -28,6 +28,7 @@ ISOLATION=
 HOOK=0
 HOOK_TENTHS=300
 @@PTRACE_FILE@@
+@@MOUNTINFO_FILE@@
 @@TOOLS_CHECK@@
 if [ -r "$D/spec.sh" ]; then . "$D/spec.sh"; fi
 # A framed launch's stdin and secrets (base64), read from this process's stdin: in memory only, never a file, an
@@ -468,6 +469,34 @@ verify_tools() {
   case "$said" in REFUSED*) return 12 ;; *) return 10 ;; esac
 }
 
+# The mounts V4 walks, one mount point per line, chosen by FILESYSTEM TYPE (the field after the ' - ' that ends mountinfo's optional
+# fields), never by mount point: every mount that honours setuid bits and file capabilities (no nosuid) EXCEPT the kernel's own
+# pseudo filesystems below. Each of those holds no file anyone could have placed there and no file a program could run with
+# rights it is not given, and their entries come and go while a walk reads them (a process's /proc entry ends mid-walk), so a walk
+# of them can only fail. The list is CLOSED: a type not on it, however unknown (ext4, xfs, btrfs, overlay, tmpfs, devtmpfs, 9p, fuse),
+# is walked, so a setuid file can never hide on a filesystem the launcher did not name.
+#   proc          the process table: entries are processes, and they end mid-walk
+#   sysfs         the kernel's device and driver attributes: generated, no user files
+#   cgroup        cgroup v1 control files: generated
+#   cgroup2       cgroup v2 control files: generated
+#   devpts        pseudo-terminal nodes: generated device nodes
+#   mqueue        POSIX message queues: kernel objects, not files a user can place
+#   securityfs    security modules' control files: generated
+#   debugfs       the kernel's debug files: generated
+#   tracefs       the tracing files: generated
+#   bpf           pinned eBPF objects: kernel objects
+#   pstore        crash-log records the kernel wrote: not executable files
+#   configfs      the kernel's configuration objects: generated
+#   fusectl       the fuse control files: generated
+#   binfmt_misc   binary-format registrations: generated
+#   efivarfs      firmware variables: generated, and some reads of them are refused
+tools_mounts() {
+  awk '
+    BEGIN { n = split("proc sysfs cgroup cgroup2 devpts mqueue securityfs debugfs tracefs bpf pstore configfs fusectl binfmt_misc efivarfs", names, " "); for (i = 1; i <= n; i++) pseudo[names[i]] = 1 }
+    $6 !~ /(^|,)nosuid(,|$)/ { for (i = 7; i <= NF && $i != "-"; i++); if (i < NF && !($(i + 1) in pseudo)) print $5 }
+  ' "$MOUNTINFO_FILE"
+}
+
 # The bounded half of verify_tools, in a process of its own (tools-check): V3 and V4. It prints REFUSED or UNSUPPORTED and why,
 # or CHECKED.
 tools_check() {
@@ -493,7 +522,7 @@ tools_check() {
   # answers only when its tools answer, and an empty answer is never a clean box.
   gc=$(command -v getcap 2>/dev/null)
   [ -n "$gc" ] || { echo "UNSUPPORTED this box has no getcap to measure file capabilities"; return; }
-  [ -r /proc/self/mountinfo ] || { echo "UNSUPPORTED this box has no /proc/self/mountinfo to list its mounts"; return; }
+  [ -r "$MOUNTINFO_FILE" ] || { echo "UNSUPPORTED this box has no $MOUNTINFO_FILE to list its mounts"; return; }
   # The controls: find and getcap must each report a probe planted to be found, or a silent one (an error, a missing feature, a
   # broken binary) would read as a box with nothing in it. The probe is INERT: an empty file, root's, mode 4700 (only root may
   # run it, and empty it runs nothing), with cap_net_raw (which grants nothing on an empty file), in this launch's directory,
@@ -509,6 +538,12 @@ tools_check() {
   [ "$(find "$probe" -xdev \( -perm -4000 -user 0 -o -perm -2000 -group 0 \) -type f -print 2>/dev/null)" = "$probe" ] || { echo "UNSUPPORTED this box's find does not find a planted setuid root file"; return; }
   if ! command -v setcap >/dev/null 2>&1 || ! setcap cap_net_raw+ep "$probe" >/dev/null 2>&1; then echo "UNSUPPORTED this box cannot plant a file capability to check its getcap (setcap)"; return; fi
   case "$(find "$probe" -xdev -type f -perm /111 -exec "$gc" {} + 2>/dev/null)" in "$probe "*) ;; *) echo "UNSUPPORTED this box's getcap does not report a planted file capability"; return ;; esac
+  # A walk reads a directory that others change: an entry that ends between the read and the stat is an error to a find that
+  # does not ignore it. -ignore_readdir_race (GNU find) makes that the one case it ignores, and nothing else: permission and I/O
+  # errors still fail it. It is used only where the control RUNS it, never by what find says: a find that takes it finds the probe
+  # with it, one that does not (busybox) fails and keeps today's strict walk, where a vanished entry stays UNSUPPORTED.
+  race=
+  [ "$(find "$probe" -xdev -ignore_readdir_race -type f -print 2>/dev/null)" = "$probe" ] && race=-ignore_readdir_race
   rm -f "$probe"
   [ ! -e "$probe" ] || { echo "UNSUPPORTED the check cannot remove its probe"; return; }
   # Only now does anything run as the tools user.
@@ -519,7 +554,7 @@ tools_check() {
   # The tools user's test must answer for a file that user can run (its shell): a switch that never runs the test would read every
   # file as one it cannot run.
   $as sh -c 'test -x "$1"' sh "$(command -v sh)" 2>/dev/null || { echo "UNSUPPORTED this box cannot test a file as the tools user $t_name"; return; }
-  awk '$6 !~ /(^|,)nosuid(,|$)/ { print $5 }' /proc/self/mountinfo | sort -u > "$D/tools.mounts"
+  tools_mounts | sort -u > "$D/tools.mounts"
   [ -s "$D/tools.mounts" ] || { echo "UNSUPPORTED the check found no mount to walk"; return; }
   : > "$D/tools.s"
   : > "$D/tools.c"
@@ -527,8 +562,8 @@ tools_check() {
   while IFS= read -r m; do
     m=$(printf '%b' "$m")
     [ -e "$m" ] || { echo "UNSUPPORTED a mount point the check cannot open: $m"; return; }
-    find "$m" -xdev \( -perm -4000 -user 0 -o -perm -2000 -group 0 \) -type f -print 2> "$D/tools.err" >> "$D/tools.s" || { echo "UNSUPPORTED the check could not walk $m: $(head -1 "$D/tools.err" | cut -c1-160)"; return; }
-    find "$m" -xdev -type f -perm /111 -exec "$gc" {} + 2> "$D/tools.err" >> "$D/tools.c" || { echo "UNSUPPORTED the check could not walk $m: $(head -1 "$D/tools.err" | cut -c1-160)"; return; }
+    find "$m" -xdev $race \( -perm -4000 -user 0 -o -perm -2000 -group 0 \) -type f -print 2> "$D/tools.err" >> "$D/tools.s" || { echo "UNSUPPORTED the check could not walk $m: $(head -1 "$D/tools.err" | cut -c1-160)"; return; }
+    find "$m" -xdev $race -type f -perm /111 -exec "$gc" {} + 2> "$D/tools.err" >> "$D/tools.c" || { echo "UNSUPPORTED the check could not walk $m: $(head -1 "$D/tools.err" | cut -c1-160)"; return; }
   done < "$D/tools.mounts"
   found_s=$(sort -u "$D/tools.s" | while IFS= read -r f; do if $as sh -c 'test -x "$1"' sh "$f" 2>/dev/null; then printf '%s\n' "$f"; fi; done | head -5 | tr '\n' ' ')
   # A getcap line whose file the check cannot tell (cap_runnable) is never passed over: the check cannot answer.
@@ -762,6 +797,8 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 	"HOOK",
 	"HOOK_TENTHS",
 	"PTRACE_FILE",
+	"MOUNTINFO_FILE",
+	"race",
 	"PROC",
 	"FSEC",
 	"FIN",
@@ -854,6 +891,9 @@ export const TOOLS_CHECK_MS = 60_000;
 /** The bound of the tools user's check, in centiseconds: a script-level constant like PTRACE_FILE_LINE, which no environment can change. */
 export const TOOLS_CHECK_LINE = `TOOLS_CHECK_CENTIS=${TOOLS_CHECK_MS / 10}`;
 
+/** The one line that names the kernel's mount table: a script-level constant like PTRACE_FILE_LINE, which no environment can change. */
+export const MOUNTINFO_FILE_LINE = "MOUNTINFO_FILE=/proc/self/mountinfo";
+
 /** The supervisor the host uploads to a box: POSIX `sh`, with the programs named in the file's header. */
 export const LAUNCHER_SCRIPT = SCRIPT_TEMPLATE.replace("@@GROUP_LIVE@@", () =>
 	GROUP_LIVE.replace("@@PROC@@", () => PROC_LINE),
@@ -861,5 +901,6 @@ export const LAUNCHER_SCRIPT = SCRIPT_TEMPLATE.replace("@@GROUP_LIVE@@", () =>
 	.replace("@@DIRECTORY_CHECK@@", () => DIRECTORY_CHECK)
 	.replace("@@CAP_LINE@@", () => CAP_LINE_CHECK)
 	.replace("@@PTRACE_FILE@@", () => PTRACE_FILE_LINE)
+	.replace("@@MOUNTINFO_FILE@@", () => MOUNTINFO_FILE_LINE)
 	.replace("@@TOOLS_CHECK@@", () => TOOLS_CHECK_LINE)
 	.replace("@@UNSET@@", () => `unset ${LAUNCHER_SHELL_NAMES.join(" ")}`);
