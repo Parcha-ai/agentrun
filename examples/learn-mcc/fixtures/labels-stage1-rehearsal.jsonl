@@ -1,0 +1,3 @@
+{"merchant":"grocer-one.example","mcc":"5661","allowedTiers":["low","medium"],"unjudgeable":false,"reason":null}
+{"merchant":"bakery-two.example","mcc":"5462","allowedTiers":["low"],"unjudgeable":false,"reason":null}
+{"merchant":"furniture-three.example","mcc":null,"allowedTiers":null,"unjudgeable":true,"reason":"the site does not load"}
