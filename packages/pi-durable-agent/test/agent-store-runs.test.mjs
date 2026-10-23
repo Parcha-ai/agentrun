@@ -7,15 +7,15 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { AgentHomeError, openStore, openStoreReader } from "../dist/index.js";
-import { openStoreChecking } from "../dist/agent-store.js";
 import { scratch } from "./support.mjs";
+import { TOOLS, workflowDoc } from "./workflow-support.mjs";
 
 const refused = (code) => (error) => error instanceof AgentHomeError && error.code === code;
 /** The refusal carries no value: nothing of the input (an id, a path, a skill's text) is in its message. */
 const valueFree = (...values) => (error) => values.every((value) => !String(error.message).includes(value));
 const A = { kind: "agentic", instructions: "Research the company.", skills: { "read/SKILL.md": "Read the site.\n" }, tools: ["read"] };
 const B = { kind: "agentic", instructions: "Research the company; cite sources.", skills: { "cite/SKILL.md": "Cite.\n" }, tools: ["read", "cite"] };
-const WF = { kind: "workflow", workflow: { id: "wf", nodes: [] }, tools: [] };
+const WF = { kind: "workflow", workflow: workflowDoc(), tools: [...TOOLS] };
 const runs = (dir) => {
   const db = new DatabaseSync(path.join(dir, "store.sqlite"), { readOnly: true });
   try { return db.prepare("SELECT * FROM runs ORDER BY started_at, id").all(); } finally { db.close(); }
@@ -94,7 +94,7 @@ test("the join never shows a run whose agent and revision disagree", async () =>
 
 test("a workflow revision's run returns its body, the workflow inside revision.body, and its row names the kind", async () => {
   const dir = await scratch();
-  const store = openStoreChecking(dir, () => undefined);
+  const store = openStore(dir);
   const agent = await store.createAgent({ name: "Flow" });
   const wf = await store.commitRevision(agent.id, WF, { setCurrent: true });
   const run = await store.startRun({ agent: agent.id });
@@ -272,4 +272,31 @@ test("the reader's readAgent is one agent with every revision and its body, newe
   assert.throws(() => tampered.readAgent(agent.id), refused("format"));
   assert.throws(() => tampered.readRevision(a.id), refused("format"));
   tampered.close();
+});
+
+test("the tables refuse what the store never writes: a run with a state outside the set (CHECK) and a run of an unknown agent or revision (foreign_keys = ON)", async () => {
+  const { store, agent, a } = await aStore();
+  const insert = (id, agentId, revisionId, state) => store.db.prepare("INSERT INTO runs (id, agent_id, revision_id, state, started_at) VALUES (?, ?, ?, ?, ?)").run(id, agentId, revisionId, state, "2026-10-23T00:00:00.000Z");
+  assert.throws(() => insert("raw-1", agent.id, a.id, "done"), /CHECK constraint failed/);
+  assert.throws(() => insert("raw-2", "no-such-agent", a.id, "running"), /FOREIGN KEY constraint failed/);
+  assert.throws(() => insert("raw-3", agent.id, "no-such-revision", "running"), /FOREIGN KEY constraint failed/);
+  assert.equal(insert("raw-4", agent.id, a.id, "running").changes, 1, "the same insert with a good state and known ids lands");
+  await store.close();
+});
+
+test("readRun on a later revision of an agent with several revisions names THAT revision's note and kind, not the first one's", async () => {
+  const dir = await scratch();
+  const store = openStore(dir);
+  const agent = store.createAgent({ name: "Three" });
+  const one = await store.commitRevision(agent.id, { ...A, note: "first" }, { setCurrent: true });
+  const two = await store.commitRevision(agent.id, { ...WF, note: "second" });
+  const three = await store.commitRevision(agent.id, { ...B, note: "third" });
+  const onTwo = await store.startRun({ agent: agent.id, revision: two.id });
+  const onThree = await store.startRun({ agent: agent.id, revision: three.id });
+  const reader = openStoreReader(dir);
+  assert.deepEqual([reader.readRun(onTwo.runId).revision, reader.readRun(onTwo.runId).note, reader.readRun(onTwo.runId).kind], [two.id, "second", "workflow"]);
+  assert.deepEqual([reader.readRun(onThree.runId).revision, reader.readRun(onThree.runId).note, reader.readRun(onThree.runId).kind], [three.id, "third", "agentic"]);
+  assert.notEqual(one.id, two.id);
+  reader.close();
+  await store.close();
 });

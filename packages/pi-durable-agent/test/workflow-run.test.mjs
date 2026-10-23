@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -210,6 +210,25 @@ test("reading an ended run makes no file in its directory, reads what a plain re
   assert.deepEqual(filesUnder(run.dir), files, "the read made no file");
   assert.equal(ended.outcome, "completed");
   assert.deepEqual(await readWorkflowRun(run), ended, "a plain read gives the same view");
+});
+
+test("a running run is read plain even with no write-ahead log beside its store, so the read leaves one there", async () => {
+  const run = await runOf();
+  const host = await hostFor(run);
+  await runOn(run, host);
+  await host.close();
+  assert.equal(existsSync(`${run.storePath}-wal`), false, "the closed store keeps no write-ahead log");
+  await readWorkflowRun({ ...run, state: "running" });
+  assert.equal(existsSync(`${run.storePath}-wal`), true, "the read opened the store plain");
+});
+
+test("an ended run whose last commits are still in the write-ahead log of a writer still open is read plain: its outcome and output", async () => {
+  const run = await runOf();
+  const host = await hostFor(run, { storage: { walAutoCheckpointPages: 0 } });
+  await runOn(run, host);
+  const view = await readWorkflowRun({ ...run, state: "completed" });
+  await host.close();
+  assert.deepEqual([view.outcome, view.output], ["completed", { price: 21 }]);
 });
 
 test("readWorkflowRun reads a run another process is running, and leaves the store file's bytes as they were", async () => {

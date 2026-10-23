@@ -6,14 +6,14 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { AgentHomeError, createAgentHome, openStore, openStoreReader } from "../dist/index.js";
-import { openStoreChecking } from "../dist/agent-store.js";
 import { DEFINITION, scratch } from "./support.mjs";
+import { TOOLS, workflowDoc } from "./workflow-support.mjs";
 
 const refused = (code, pattern) => (error) => error instanceof AgentHomeError && error.code === code && (!pattern || pattern.test(error.message));
 const A = { kind: "agentic", instructions: "Research the company.", skills: { "read/SKILL.md": "Read the site." }, tools: ["read"] };
 const B = { ...A, instructions: "Research the company; cite sources." };
 const MSG = 'this store has an unfinished write from a run that stopped; open it once with write access to roll it back, for example: sqlite3 store.sqlite "PRAGMA integrity_check"';
-const WF = { kind: "workflow", workflow: { id: "wf", nodes: [] }, tools: [] };
+const WF = { kind: "workflow", workflow: workflowDoc(), tools: [...TOOLS] };
 
 test("a revision's id is the hash of {agent, parent, kind, body}: the same four are one revision, going back is a new one, two agents with the same first body get two ids", async () => {
   const store = openStore(await scratch());
@@ -80,16 +80,14 @@ test("the skills are content-addressed, and the input is checked before anything
   store.close();
 });
 
-test("a workflow revision is checked before a write, a refusal writes nothing, and an agentic commit never calls the check", async () => {
+test("a workflow revision is checked by the real workflow check before a write, and a refusal writes nothing", async () => {
   const dir = await scratch();
-  const calls = [];
-  const store = openStoreChecking(dir, async (body) => { calls.push(body); if (body.workflow.id === "bad") throw new AgentHomeError("invalid", "the workflow is not valid"); });
+  const store = openStore(dir);
   const agent = store.createAgent({ name: "W" });
   await store.commitRevision(agent.id, A);
-  assert.deepEqual(calls, []);
   const wf = await store.commitRevision(agent.id, WF);
-  assert.deepEqual([calls.length, wf.kind], [1, "workflow"]);
-  await assert.rejects(store.commitRevision(agent.id, { ...WF, workflow: { id: "bad", nodes: [] } }), refused("invalid", /not valid/));
+  assert.equal(wf.kind, "workflow");
+  await assert.rejects(store.commitRevision(agent.id, { ...WF, workflow: { v: 2, name: "bad" } }), refused("invalid", /not valid/));
   assert.equal(store.listRevisions(agent.id).length, 2, "the refused check wrote nothing");
   store.close();
 });

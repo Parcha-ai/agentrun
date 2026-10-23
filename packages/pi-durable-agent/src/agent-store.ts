@@ -280,25 +280,25 @@ async function loadCheck(body: unknown): Promise<unknown> {
   return ((await import("./workflow.js")) as { checkWorkflowBody(body: unknown): Promise<unknown> }).checkWorkflowBody(body);
 }
 
-/** @internal `openStore` with the workflow check given, for tests. */
-export function openStoreChecking(dir: string, check: (body: unknown) => Promise<unknown>): AgentStore {
+/** Open (and create) the agent store in `dir`. */
+export function openStore(dir: string): AgentStore {
   const resolved = path.resolve(dir);
   mkdirSync(resolved, { recursive: true });
   const db = new DatabaseSync(path.join(resolved, STORE_FILE), { timeout: 5_000 });
   try {
-  // A rollback journal, not WAL: `cp` of store.sqlite alone is a whole copy. The file is written rarely (an agent, a revision, a run's start and end).
-  db.exec("PRAGMA journal_mode = DELETE");
-  db.exec("PRAGMA synchronous = FULL");
-  db.exec("PRAGMA foreign_keys = ON");
-  checkVersion(db);
-  db.exec(SCHEMA);
-  db.exec(`PRAGMA user_version = ${STORE_VERSION}`);
-  } catch (error) { db.close(); throw error; }
-  return new AgentStore(resolved, db, check);
+    // A rollback journal, not WAL: `cp` of store.sqlite alone is a whole copy. The file is written rarely (an agent, a revision, a run's start and end).
+    db.exec("PRAGMA journal_mode = DELETE");
+    db.exec("PRAGMA synchronous = FULL");
+    db.exec("PRAGMA foreign_keys = ON");
+    checkVersion(db);
+    db.exec(SCHEMA);
+    db.exec(`PRAGMA user_version = ${STORE_VERSION}`);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+  return new AgentStore(resolved, db, loadCheck);
 }
-
-/** Open (and create) the agent store in `dir`. */
-export const openStore = (dir: string): AgentStore => openStoreChecking(dir, loadCheck);
 
 /** Reads `store.sqlite` in place, read-only: it writes nothing and makes no copy. */
 export function openStoreReader(dir: string): AgentStoreReader {
