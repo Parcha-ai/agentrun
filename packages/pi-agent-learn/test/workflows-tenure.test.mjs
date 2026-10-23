@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { WorkflowStore } from "@parcha/agentrun-pi/workflows";
 import { local, openRepo } from "@parcha/pi-git-remote";
-import { collectWorkflows, curate, proposeLearning, readTrial, seedWorkflows, usesSource, workflowAdmitter, workflowsToTry } from "../dist/index.js";
+import { collectWorkflows, curate, proposeLearning, readTrial, seedWorkflows, usesSettler, usesSource, workflowAdmitter, workflowsToTry } from "../dist/index.js";
 import { agentRepo, scratch } from "./support.mjs";
 import { runStoreWith, workDirWith, workflowDoc } from "./workflow-support.mjs";
 
@@ -27,6 +27,8 @@ async function host(t, { tenure = true, startedAt } = {}) {
   const started = new Map();
   const inFlight = new Set();
   let order = 0;
+  // Two clean uses promote, whatever this build's default.
+  const settleUses = usesSettler({ thresholds: { promoteAfter: 2 } });
   const admitWorkflow = workflowAdmitter(tenure ? { tenure: { started: (run) => startedAt?.(run) ?? started.get(run), inFlight: () => [...inFlight] } } : {});
   const start = async (id) => {
     const sha = await curator.resolve("main");
@@ -47,7 +49,7 @@ async function host(t, { tenure = true, startedAt } = {}) {
   /** The run reports and curate takes it; it leaves `inFlight()` once that curate has returned. */
   const report = async (run, what) => {
     const { digest, proposed } = await propose(run, what);
-    const curated = proposed ? (await curate({ repo: curator, judge, admitWorkflow })).runs.find((r) => r.run === run.id) : undefined;
+    const curated = proposed ? (await curate({ repo: curator, judge, admitWorkflow, settleUses })).runs.find((r) => r.run === run.id) : undefined;
     inFlight.delete(run.id);
     return { digest, curated, trial: await readTrial(curator, NAME, "main") };
   };
@@ -59,7 +61,7 @@ async function host(t, { tenure = true, startedAt } = {}) {
       out.push(await propose(run, what));
       if (early) inFlight.delete(run.id);
     }
-    const report = await curate({ repo: curator, judge, admitWorkflow });
+    const report = await curate({ repo: curator, judge, admitWorkflow, settleUses });
     for (const [run] of list) inFlight.delete(run.id);
     return { digests: out.map((o) => o.digest), report, trial: await readTrial(curator, NAME, "main") };
   };
