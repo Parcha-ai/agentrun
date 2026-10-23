@@ -20,6 +20,16 @@ export { finishRecording } from './record.ts';
 export { codeOf } from './record.ts';
 /** The store export the recorder reads the run's commits through; it throws if this build of the package lacks it. */
 export { packageCommitRecorder } from './record-store.ts';
+/** A recorder's redaction of exact secret values: each one, raw and as a JSON string holds it, becomes `[redacted]`. */
+export { redactorOf } from './secrets.ts';
+/** The scrub of the machine a run is on (#733): its user name, its home (`~`) and the run's directories `DIR`, `RECORD_DIR` and `HOME` (`<run>`). */
+export { runScrub } from './secrets.ts';
+/** The record-time scan of a finished recording: every file, text and bytes alike, holds none of the values; it throws naming the key and the file. */
+export { scanRecording as scanSecretValues } from './secrets.ts';
+/** The scan of what a viewer following the run could already have fetched (`events.jsonl` as placed, and every blob). */
+export { scanPlaced } from './secrets.ts';
+/** A secret value and the name a finding reports it by. */
+export type { Secret } from './secrets.ts';
 
 /** The cost of the run a recording's lines record, for the manifest: `usd` is the sum of the priced parts, and null while any part is unknown (never 0). */
 export { cost } from './fold.ts';
@@ -36,7 +46,7 @@ export type { RunPlace, Host, LocalHost, Fakes, StatusEvent, BrowserPlane, Rerun
 export type { Recorder, Supervisor, Header } from './record.ts';
 
 /** The reference entry as a demo's platform: a demo's `run.ts` is its spec, its job, its fakes and this call. It reads the standard flags (`--live`, `--kill`, `--record`, `--input`, `--max-usd`, `--local-chrome`, `--dir`, `--json`) and runs the spec's kills through a supervisor. */
-export { demo } from './demo.ts';
+export { demo, handedOut, processText } from './demo.ts';
 /** What the entry acts on in a demo's `demo.json`: its `kills`, `expectedCost`, `input` and `boxes`. */
 export type { DemoSpec, KillSpec, CrossingKill, StormKill, BoxSpec } from './demo-spec.ts';
 export type { ToolContext } from './host.ts';
@@ -48,7 +58,7 @@ export { crossings, tapFakes, tapHost } from './crossings.ts';
 export type { Cross } from './crossings.ts';
 /** The box provider the entry hands a demo, with its crossings (`transport.box.exec`: a box command in flight) and transport box lines built in. */
 export { tapBox, BOX_CROSSINGS } from './boxes.ts';
-export type { Boxes } from './boxes.ts';
+export type { Boxes, HostBox, RunFiles } from './boxes.ts';
 
 /** The judge seam: Jev's public list price for every demo, with no cap (`--max-usd` is the run's dollar stop, and TypeSafe rate-limits). */
 export { priceJudge, jevCost, JEV_LIST_PRICE } from './judge.ts';

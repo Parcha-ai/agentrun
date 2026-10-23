@@ -3,6 +3,7 @@ import type { Message } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { fakeEyes, fakeTranscriptionFetch } from '@parcha/pi-vision/testing';
 import { openAiTranscriber } from '@parcha/pi-vision/transcribers';
 import { demo } from '@parcha/agentrun-harness';
@@ -200,5 +201,72 @@ const reportFiles = (dir: string, base = '', out: Record<string, Uint8Array> = {
   return out;
 };
 const withReport = (chosen: typeof job): typeof job => (process.env.DEMO_REPORT ? { ...chosen, files: { ...chosen.files, ...reportFiles(process.env.DEMO_REPORT) } } : chosen);
-export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withReport(withProviders ?? withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job), fakes: { ...scriptedHeld, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}), ...(providers ? { providers } : {}), ...(providerExtensions ? { providerExtensions } : {}), ...(process.env.DEMO_RESULT_THROWS ? { result: () => { throw new Error('the result hook failed'); } } : {}), ...(process.env.DEMO_WITH_PLACE ? { place: () => { throw new Error('the place is never asked for'); } } : {}) };
+// And a place of the demo's own beside its tools' boxes (`DEMO_WITH_PLACE`). `labelled` is the local place that also starts a home box (it reports one in `status()`), hands the run's
+// process its identity (`HOST_BOX`), which that process claims first, and lets the supervisor read the run's files (`readRunFile` and `listRunFiles`, disk's K8 shape, here over
+// its own root): the supervisor reads the label itself. `unclaimed` reports the home box and has the reads but never hands it over, so no process claims it. `unreadable` hands it
+// over but its reads fail; `slow` hands it over but its reads answer only after 40 s, past the supervisor's bound on a read. `reporting` reports the home box with no reads and no
+// handover; `handing` hands it over with no reads. `disk-local` is the disk package's own `localPlace` (each process `pi-durable-disk run --app` with the harness's
+// child app, on the run's directory), with its own run-file reads and no host box. Any other value is the local place, which has neither.
+// And a run process that prints a credential-shaped line to its stderr and dies at once (`DEMO_STDERR_SECRET`, in the run's process only): the final-read
+// refusal, which names a failed process's own text, must never carry it.
+if (process.env.DEMO_STDERR_SECRET && process.env.DEMO_ENTRY) { process.stderr.write(`the tool printed token ${process.env.DEMO_STDERR_SECRET}\nand a plain line after it\n`); process.exit(3); }
+
+const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: string; root: string }; self: string; requestFile: (attempt: number) => string }) => {
+  const { localPlace } = await import('@parcha/agentrun-harness');
+  const { readFile, readdir } = await import('node:fs/promises');
+  const inner = localPlace({ self: context.self, paths: context.paths as never, requestFile: context.requestFile });
+  const mode = process.env.DEMO_WITH_PLACE;
+  if (mode === 'disk-local') {
+    const { localPlace: diskLocalPlace } = await import('@parcha/pi-durable-disk');
+    return diskLocalPlace({ app: fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app')) })({ ...context, paths: context.paths as never });
+  }
+  const from = new Date().toISOString();
+  const status = async () => ({ boxes: [{ provider: 'home', kind: 'host', from, to: null }] });
+  if (mode === 'reporting') return { ...inner, status };
+  // `start-fails` refuses to start a process, with DEMO_START_FAILS_TEXT as its error (a provider's error carries its command's stderr).
+  if (mode === 'start-fails') return { ...inner, start: async () => { throw new Error(process.env.DEMO_START_FAILS_TEXT ?? 'the place could not start the process'); } };
+  // `start-fails-cause` throws pi-transport's own BoxError, whose CAUSE (a library's original error) holds DEMO_START_FAILS_TEXT; `start-fails-property`
+  // throws an error carrying it in a string property of its own (`stderr`).
+  if (mode === 'start-fails-cause') {
+    const { BoxError } = await import('@parcha/pi-transport');
+    return { ...inner, start: async () => { throw new BoxError('unknown', 'the box could not start', new Error(process.env.DEMO_START_FAILS_TEXT ?? 'the library failed')); } };
+  }
+  // Error shapes a library hands over, each thrown from start with DEMO_START_FAILS_TEXT inside: an error in a nested array (`nested`), a Map as the
+  // cause (`map-cause`), a DOMException (`timeout`, as AbortSignal.timeout throws), a cyclic plain object (`cyclic`) and a cause cycle (`cause-cycle`).
+  const text = process.env.DEMO_START_FAILS_TEXT ?? '';
+  const shapes: Record<string, () => unknown> = {
+    'start-fails-nested': () => Object.assign(new Error('the place could not start the process'), { code: 'START_FAILED', errors: [new Error(text)] }),
+    'start-fails-map-cause': () => new Error('the place could not start the process', { cause: new Map([['stderr', text]]) }),
+    'start-fails-timeout': () => new DOMException(text, 'TimeoutError'),
+    'start-fails-cyclic': () => { const details: Record<string, unknown> = { text }; details.self = details; return Object.assign(new Error('the place could not start the process'), { code: 'START_FAILED', details }); },
+    'start-fails-cause-cycle': () => { const a = new Error(`first ${text}`); const b = new Error(`second ${text}`, { cause: a }); Object.defineProperty(a, 'cause', { value: b, configurable: true }); return a; },
+  };
+  if (mode && shapes[mode]) return { ...inner, start: async () => { throw shapes[mode]!(); } };
+  // `capture-exit` is the local place, handing the run's process a token only it holds (DEMO_CHILD_ONLY_TOKEN, from DEMO_CHILD_ONLY: the supervisor
+  // never tracks it) and keeping each process's exit as the place read it, before any sink, in DEMO_CAPTURE_FILE.
+  if (mode === 'capture-exit') return { ...inner, start: async (order: Parameters<typeof inner.start>[0]) => {
+    const runner = await inner.start({ ...order, env: { ...order.env, ...(process.env.DEMO_CHILD_ONLY ? { DEMO_CHILD_ONLY_TOKEN: process.env.DEMO_CHILD_ONLY } : {}) } });
+    return { ...runner, exited: runner.exited.then((exit) => { if (process.env.DEMO_CAPTURE_FILE) writeFileSync(process.env.DEMO_CAPTURE_FILE, JSON.stringify(exit)); return exit; }) };
+  } };
+  if (mode === 'start-fails-property') return { ...inner, start: async () => { throw Object.assign(new Error('the place could not start the process'), { code: 'START_FAILED', stderr: process.env.DEMO_START_FAILS_TEXT ?? '' }); } };
+  // `handing` hands its home box over but has no reads: its supervisor numbers the box itself, so the process must refuse to claim it (two labellers).
+  if (mode === 'handing') return { ...inner, status, start: (order: Parameters<typeof inner.start>[0]) => inner.start({ ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ provider: 'home', key: '0', run: order.env.RUN_LABEL }) } }) };
+  if (mode !== 'labelled' && mode !== 'unclaimed' && mode !== 'unreadable' && mode !== 'slow') return inner;
+  const handOver = (order: Parameters<typeof inner.start>[0]) => (mode !== 'unclaimed' ? { ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ provider: 'home', key: '0', run: order.env.RUN_LABEL }) } } : order);
+  // K8's answers over this place's own root: a missing file is null, a missing directory lists nothing.
+  const gate = async () => {
+    if (mode === 'unreadable') throw new Error('the run files cannot be read here');
+    if (mode === 'slow') await new Promise((resolve) => { setTimeout(resolve, 40_000).unref(); });
+  };
+  const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
+  return {
+    ...inner,
+    start: (order: Parameters<typeof inner.start>[0]) => inner.start(handOver(order)),
+    status,
+    readRunFile: async (path: string) => { await gate(); try { return new Uint8Array(await readFile(join(context.paths.root, path))); } catch (error) { if (missing(error)) return null; throw error; } },
+    listRunFiles: async (dir: string) => { await gate(); try { return (await readdir(join(context.paths.root, dir))).sort(); } catch (error) { if (missing(error)) return []; throw error; } },
+  };
+} : undefined;
+
+export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withReport(withProviders ?? withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job), fakes: { ...scriptedHeld, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}), ...(providers ? { providers } : {}), ...(providerExtensions ? { providerExtensions } : {}), ...(process.env.DEMO_RESULT_THROWS ? { result: () => { throw new Error(process.env.DEMO_RESULT_THROWS_TEXT ?? 'the result hook failed'); } } : {}), ...(withPlace ? { place: withPlace } : {}) };
 if (process.argv.includes('--child')) await demo(options);

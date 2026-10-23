@@ -44,9 +44,13 @@ export type ToolBindings = Record<string, string>;
 export type AgentSource = { sha: string; refreshedAt: string };
 /** `agent.runs`, keyed by run id. `path` is relative to the agent home; `sha` is the home's `agent.source` when the run
  *  started, so it names the skills the run's workspace got; `prompt` is the variant the host chose for it, and why. */
-export type RunRecord = { path: string; host: string; startedAt: string; sha?: string; prompt?: { id: string; reason: string }; endedAt?: string; outcome?: string; finalAnswer?: JsonValue; cost?: number };
+export type RunRecord = { path: string; host: string; startedAt: string; sha?: string; prompt?: { id: string; reason: string; confidence?: number }; endedAt?: string; outcome?: string; finalAnswer?: JsonValue; cost?: number };
 /** The most characters a run's prompt `reason` has. */
 export const MAX_REASON = 2_000;
+/** `agent.vault`, keyed by session key: one saved browser session, as ciphertext. In clear: what kind it is, the origins
+ *  it was captured for, when, and the provider's name; `keyId` names its item key in `vault.keys`, `iv` and `ciphertext`
+ *  (AES-256-GCM, the tag at the end) are base64. */
+export type VaultRecord = { kind: "cdp" | "provider-context"; origins: string[]; capturedAt: string; provider?: string; keyId: string; iv: string; ciphertext: string; alg: "A256GCM"; v: 1 };
 /** `agent.leases`, keyed by profile key: the one run that may save that profile back. */
 export type ProfileLease = { runId: string; expiresAt: string };
 /** `browser.profiles`, keyed by profile key, in the agent store and in each run store. `ref` is the provider's saved
@@ -79,6 +83,7 @@ export const BindingsDoc = family("agent.bindings");
 export const RunsDoc = family("agent.runs");
 export const LeasesDoc = family("agent.leases");
 export const ProfilesDoc = family("browser.profiles");
+export const VaultDoc = family("agent.vault");
 
 /** JSON with sorted keys: one text for one value. */
 export function canonical(value: unknown): string {

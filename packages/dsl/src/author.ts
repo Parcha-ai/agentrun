@@ -257,6 +257,8 @@ export function applyHostOutputTypes(candidate: Workflow, host: AuthorHostAddend
     if (node.node === "parallel") return { ...node, branches: (node.branches || []).map(visit) };
     if (node.node === "map" || node.node === "loop") return { ...node, body: visit(node.body) };
     if (node.node === "route") return { ...node, branches: Object.fromEntries(Object.entries(node.branches || {}).map(([name, branch]) => [name, { ...branch, body: visit(branch?.body) }])) };
+    // Unlike desugarWorkflow, this does not descend into a child workflow: a child may not hold an artifact node
+    // (validateWorkflow rejects it, see containsReportNode), so there is nothing for the prose-type rewrite to reach there.
     return node;
   };
   return { ...candidate, root: visit(candidate.root) };

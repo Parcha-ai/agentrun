@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
+import { BrowserFailureError } from "./custody.js";
 import type { Decisions, PageVerdict, WallClass } from "./decisions.js";
 import { defaultInline, type EvidenceRecord, type EvidenceSink } from "./evidence.js";
-import { classifyBrowserError, transportFactOf, type BrowserFailure } from "./failures.js";
+import { browserFailure, classifyBrowserError, transportFactOf, type BrowserFailure, type Next } from "./failures.js";
 import { createRepeatGuard } from "./guard.js";
 import { LIST_PRICES, type FetchRequest, type FetchResult, type PriceTable, type SearchRequest, type SearchResult } from "./host.js";
 import { createRedactor, scrubFetchedUrl, scrubPageUrl } from "./redact.js";
@@ -55,8 +56,7 @@ export type WebToolsOptions = {
   pdf?: { text(bytes: Uint8Array, url: string, signal: AbortSignal): Promise<string | null>; maxBytes?: number; timeoutMs?: number };
 };
 
-export type Next = { action: "drive_page" | "other_source" | "browser_relaunch"; note: string };
-export type WebFailure = BrowserFailure & { wall?: WallClass; next?: Next };
+export type WebFailure = BrowserFailure & { wall?: WallClass };
 export type WebOutcome = { text: string; isError: boolean; details: Record<string, unknown>; usd: number };
 
 /** What a call the run cancelled answers, wherever it was cancelled. */
@@ -108,6 +108,8 @@ export function createWebTools(options: WebToolsOptions): WebTools {
   const fail = (failure: WebFailure): WebOutcome => ({ text: JSON.stringify(failure, (_k, v) => (typeof v === "string" ? redact(v) : v)), isError: true, details: { code: failure.code }, usd: 0 });
 
   const failureOf = (error: unknown, tool: string, signal?: AbortSignal): WebFailure => {
+    // A typed failure (a backup that refuses a private host, a non-text page or one over its size) is told as it is.
+    if (error instanceof BrowserFailureError && !signal?.aborted) return error.failure;
     const base = classifyBrowserError(error, false, { aborted: signal?.aborted === true, redact });
     const status = transportFactOf(error).status;
     if (base.code === "aborted") return { ...base, message: ABORTED.message };
@@ -140,7 +142,7 @@ export function createWebTools(options: WebToolsOptions): WebTools {
     if (refused) return fail(refused);
     let parsed: URL | null = null;
     try { parsed = new URL(url); } catch {}
-    if (!parsed || !/^https?:$/.test(parsed.protocol) || parsed.username || parsed.password) return fail({ ok: false, code: "refused", retryable: false, effect: "none", message: "web_fetch needs an absolute http(s) URL with no credentials in it." });
+    if (!parsed || !/^https?:$/.test(parsed.protocol) || parsed.username || parsed.password) return fail(browserFailure("refused", "web_fetch needs an absolute http(s) URL with no credentials in it."));
 
     let usd = 0;
     let guardLine: string | undefined;
@@ -252,7 +254,7 @@ export function createWebTools(options: WebToolsOptions): WebTools {
     }
 
     if (signal?.aborted || primary?.code === "aborted") return { ...fail(ABORTED), usd };
-    const base: WebFailure = primary ?? { ok: false, code: "refused", retryable: false, effect: "none", message: "No source can fetch pages in this run." };
+    const base: WebFailure = primary ?? browserFailure("refused", "No source can fetch pages in this run.");
     const others = tried.filter((name) => name !== primaryVia);
     const final: WebFailure = { ...base, message: `${base.message}${others.length ? ` Also tried: ${others.join(", ")}.` : ""}${base.next ? "" : " Drive the page with run and snapshot in a live session, or try a different URL."}` };
     await file({ args: { url: redact(url), via: primaryVia }, status: "failed", facts: { via: primaryVia } }, redact(`${final.message}\n${final.detail ?? ""}`));
@@ -267,7 +269,7 @@ export function createWebTools(options: WebToolsOptions): WebTools {
     const guard = guardOf(conversation);
     const refused = guard.check("web_search", guardArgs);
     if (refused) return fail(refused);
-    if (!query || !options.search) return fail({ ok: false, code: "refused", retryable: false, effect: "none", message: query ? "No search provider is configured for this run." : "web_search needs a query." });
+    if (!query || !options.search) return fail(browserFailure("refused", query ? "No search provider is configured for this run." : "web_search needs a query."));
     try {
       const { results } = await options.search({ query, n }, signal);
       guard.note("web_search", guardArgs, null);

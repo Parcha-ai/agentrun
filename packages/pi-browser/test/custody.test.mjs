@@ -804,3 +804,16 @@ test("a handoff gives the host the browsed page's URL and title scrubbed, as onS
   assert.equal(shown.includes(key), false, "a registered key in the page title reached the host");
   assert.equal(view.pages[0].url, "https://example.test/callback?token=[redacted]&next=[redacted]");
 });
+
+test("the durable adapter refuses a session under a navigation policy its provider cannot enforce, naming the part, and starts no browser", async (t) => {
+  const durable = await import("@earendil-works/pi-durable");
+  const { backend, root, ctx, settled } = await inProcess(t, {}, { navigation: { block: ["evil.test"] } }, ["browser_read"]);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  await settled();
+  const [result] = [...(await root.entries({}, 50, undefined, ctx)).items].filter((entry) => durable.ToolResultEntry.is(entry)).map((entry) => entry.model[0]);
+  const text = result.content.map((part) => part.text).join("");
+  assert.equal(result.isError, true, text);
+  assert.match(text, /"code":"refused"/);
+  assert.match(text, /navigation\.block/);
+  assert.equal(backend.tally().creates, 0, "no browser was started without the policy");
+});
