@@ -432,13 +432,28 @@
       if (parent) (inside[parent] = inside[parent] || []).push(row);
       else if (!(row.kind === "tool_result" && row.tool_use_id && uses[row.tool_use_id])) top.push(row);
     });
+    var order = new Map();
+    rows.forEach(function (row, index) { order.set(row, index); });
+    var lead = function (row) { return row.kind === "subagent_started" ? 0 : row.kind === "subagent_completed" ? 2 : 1; };
+    // Every row under a call, at any depth, in log order: a nested call's own nested calls included.
+    var within = function (id, seen) {
+      if (seen[id]) return [];
+      seen[id] = true;
+      var direct = inside[id] || [];
+      var found = direct.slice();
+      direct.forEach(function (row) {
+        if (row.kind === "tool_use" && row.tool_use_id) found = found.concat(within(row.tool_use_id, seen));
+      });
+      return found.sort(function (a, b) { return order.get(a) - order.get(b); });
+    };
     var groups = [];
     top.forEach(function (row) {
       if (row.kind !== "tool_use" || !row.tool_use_id) {
         groups.push({ type: "row", row: row });
         return;
       }
-      var call = { use: row, result: results[row.tool_use_id], inner: groupRows(inside[row.tool_use_id] || []) };
+      var under = within(row.tool_use_id, Object.create(null)).sort(function (a, b) { return lead(a) - lead(b); });
+      var call = { use: row, result: results[row.tool_use_id], inner: groupRows(under) };
       var last = groups[groups.length - 1];
       if (last && last.type === "calls" && row.round !== undefined && last.round === row.round && last.conv === row.conversation_id) last.calls.push(call);
       else groups.push({ type: "calls", round: row.round, conv: row.conversation_id, rounds: 1, calls: [call] });
@@ -567,7 +582,8 @@
     );
   }
 
-  function runView(id, token) {
+  /** `live` is set when the page already shows this run live: a failed refresh then keeps it and tries again. */
+  function runView(id, token, live) {
     crumb([["Run", "#/runs/" + encodeURIComponent(id)]]);
     get("api/runs/" + encodeURIComponent(id)).then(
       function (data) {
@@ -580,10 +596,12 @@
         show([runHead(run, rows), timeline(rows)]);
         reopen(open);
         if (y) window.scrollTo(0, y);
-        if (run.live) later(token, 2000, function () { runView(id, token); });
+        if (run.live) later(token, 2000, function () { runView(id, token, true); });
       },
       function (error) {
-        if (token === view) show(failed(error));
+        if (token !== view) return;
+        if (live) later(token, 2000, function () { runView(id, token, true); });
+        else show(failed(error));
       }
     );
   }

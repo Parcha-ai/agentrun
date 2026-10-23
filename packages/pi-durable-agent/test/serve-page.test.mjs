@@ -307,3 +307,46 @@ test("a live run refreshes every 2 s until the reader leaves it; a missing run s
   page.theme.click();
   assert.deepEqual([page.theme.textContent, page.root.getAttribute("data-theme")], ["auto", null]);
 });
+
+test("a subagent's own subagent: the grandchild's call and its result sit inside the calls that spawned it", async () => {
+  const id = encodeURIComponent(RUN.id);
+  const rows = [
+    row(0, "user_message", { text: "Go" }),
+    row(1, "tool_use", { tool_name: "task", tool_use_id: "sub1", round: 1, summary: "Spawned sub1" }),
+    row(2, "subagent_started", { tool_use_id: "sub1", agent_label: "sub1", summary: "started" }),
+    row(3, "tool_use", { tool_name: "task", tool_use_id: "sub2", parent_tool_use_id: "sub1", round: 1, summary: "Spawned sub2" }),
+    row(4, "subagent_started", { tool_use_id: "sub2", agent_label: "sub2", summary: "started" }),
+    row(5, "tool_use", { tool_name: "read", tool_use_id: "k1", parent_tool_use_id: "sub2", round: 1, summary: "Read k1.md", tool_input_preview: "k1.md" }),
+    row(6, "tool_result", { tool_name: "read", tool_use_id: "k1", parent_tool_use_id: "sub2", tool_status: "success", tool_result_preview: "K1-RESULT", tool_result_size_bytes: 9 }),
+    row(7, "subagent_completed", { tool_use_id: "sub2", agent_label: "sub2", summary: "done" }),
+    row(8, "tool_result", { tool_name: "task", tool_use_id: "sub2", parent_tool_use_id: "sub1", tool_status: "success", tool_result_preview: "sub2 said", tool_result_size_bytes: 9 }),
+    row(9, "subagent_completed", { tool_use_id: "sub1", agent_label: "sub1", summary: "done" }),
+    row(10, "tool_result", { tool_name: "task", tool_use_id: "sub1", tool_status: "success", tool_result_preview: "sub1 said", tool_result_size_bytes: 9 }),
+  ];
+  const page = mount({ [`api/runs/${id}`]: { run: RUN, rows } }, `#/runs/${id}`);
+  await page.settle();
+  const text = page.app.textContent;
+  assert.ok(text.includes("Read k1.md") && text.includes("K1-RESULT"), "the grandchild's read and its result are on the page");
+  const calls = all(page.app).filter((el) => el.tagName === "DETAILS" && el.getAttribute("class")?.startsWith("call"));
+  const named = (summary) => calls.find((el) => el.childNodes[0].textContent.includes(summary));
+  assert.ok(all(named("Spawned sub2")).includes(named("Read k1.md")), "k1 sits inside sub2");
+  assert.ok(all(named("Spawned sub1")).includes(named("Spawned sub2")), "sub2 sits inside sub1");
+  assert.equal(calls.length, 3, "each call once");
+});
+
+test("a live run whose refresh fails keeps its timeline and retries; a later answer restores the refresh", async () => {
+  const id = encodeURIComponent(LIVE.id);
+  const api = { [`api/runs/${id}`]: { run: LIVE, rows: ROWS.slice(0, 2) } };
+  const page = mount(api, `#/runs/${id}`);
+  await page.settle();
+  api[`api/runs/${id}`] = [503, { error: "busy" }];
+  await page.tick();
+  assert.equal(page.fetched.length, 2);
+  assert.ok(page.app.textContent.includes("refreshing every 2 s"), "the timeline stays");
+  assert.equal(page.timers.size, 1, "and it tries again");
+  api[`api/runs/${id}`] = { run: LIVE, rows: [...ROWS.slice(0, 2), ROWS[9]] };
+  await page.tick();
+  assert.equal(page.fetched.length, 3);
+  assert.ok(page.app.textContent.includes("$0.440 so far"), "the next answer is drawn");
+  assert.deepEqual([...page.timers.values()].map((t) => t.ms), [2000], "and the refresh goes on");
+});
