@@ -16,8 +16,9 @@ export type DecisionRule =
   /** pick: the chosen option names an item by its position, or none. */
   | { kind: "pick"; options: string[]; none: string | null }
   /** route: the chosen branch, or the unsure branch when the choice's confidence is below `gte`. The chosen
-   *  branch names one of `branches`; `unsure`, when set, judges its confidence against `gte`. */
-  | { kind: "route"; branches: string[]; unsure: { gte: number; branch: string } | null }
+   *  branch names one of `branches`; `unsure`, when set, judges its confidence against `gte`. `branches` is
+   *  absent on a rule recorded before it was added, and such a rule skips the branch-membership check. */
+  | { kind: "route"; branches?: string[]; unsure: { gte: number; branch: string } | null }
   /** sift: an item of this request is kept when its `keep` measure meets `gte`; every item without a keep
    *  rule. `items` counts this request's items; the action names them by their position in the request. */
   | { kind: "sift"; items: number; ids: string[]; keep: { id: string; measure: "confidence" | "value"; gte: number } | null }
@@ -92,8 +93,10 @@ export function rederiveDecision(receipt: Pick<DecisionReceipt, "rule" | "answer
       const answer = answers.branch;
       if (!answer || typeof answer !== "object") return null;
       const branch = answer.choice;
-      // The chosen branch must name one of the route's branches; an out-of-set choice is malformed.
-      if (typeof branch !== "string" || !rule.branches.includes(branch)) return null;
+      // The chosen branch must be a string; when the rule carries `branches` (recorded since this check was
+      // added) it must name one of them. A rule recorded before `branches` skips the membership check, so an
+      // older route receipt re-derives as it did before, never throwing on a missing field.
+      if (typeof branch !== "string" || (rule.branches && !rule.branches.includes(branch))) return null;
       // When unsure is set, judging SURE/UNSURE needs a finite numeric confidence. A missing or non-numeric
       // confidence must not compare false and re-derive as SURE (a fail-open onto the chosen branch).
       if (rule.unsure && !(typeof answer.confidence === "number" && Number.isFinite(answer.confidence))) return null;

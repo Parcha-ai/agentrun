@@ -604,3 +604,15 @@ test('a route whose choice names no branch decided nothing: no fail-open on an o
   // A valid branch still re-derives.
   assert.deepEqual(rederiveDecision({ rule, answers: { branch: choice(['a', 'b'], 'b', 0.9) }, questions: {} }), { branch: 'b', taken: 'b', unsure: false });
 });
+
+test('a route rule recorded before branches re-derives as before: the branch check is skipped, never throws', () => {
+  // branches is optional on the route rule: a route receipt stored before it was added has no branches, and
+  // pi's durable rows re-derive such a rule. The membership check must be skipped there, not throw on a
+  // missing field (a TypeError is the very fail-open-to-crash #980 removes).
+  const old = { kind: 'route', unsure: null };
+  assert.deepEqual(rederiveDecision({ rule: old, answers: { branch: choice(['a', 'b'], 'a', 0.9) }, questions: {} }), { branch: 'a', taken: 'a', unsure: false }, 'sure, no branches');
+  const oldUnsure = { kind: 'route', unsure: { branch: 'b', gte: 0.8 } };
+  assert.deepEqual(rederiveDecision({ rule: oldUnsure, answers: { branch: choice(['a', 'b'], 'a', 0.3) }, questions: {} }), { branch: 'a', taken: 'b', unsure: true }, 'unsure, no branches');
+  // The present-answer and confidence guards still apply to an old-shape rule.
+  assert.equal(rederiveDecision({ rule: oldUnsure, answers: { branch: { type: 'choice', choice: 'a', probabilities: { a: 1 } } }, questions: {} }), null, 'old shape, missing confidence under unsure');
+});
