@@ -2,14 +2,13 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { BrowserFailureError } from "../core/custody.js";
+import { refusedError } from "../core/custody.js";
 import { withLock } from "../core/downloads.js";
+import { profileHoldings } from "./shared.js";
 
-type Writer = { tag: string; owner: string; running?: (signal: AbortSignal) => Promise<boolean>; settle?: () => Promise<void> };
-const writers = new Map<string, Writer>();
+const writers = profileHoldings.writers;
 const WAIT_MS = 20_000;
 const PROBE_MS = 2_000;
-const refusal = (message: string) => new BrowserFailureError({ ok: false, code: "refused", retryable: false, effect: "none", message });
 
 /** True when `work` finishes within `ms`; false at the deadline; rejects when `signal` aborts, leaving `work` to finish alone. */
 async function waitFor(work: Promise<void>, signal: AbortSignal | undefined, ms: number): Promise<boolean> {
@@ -32,12 +31,12 @@ export async function claimWriter(key: string, name: string, tag: string, owner:
     const held = writers.get(key);
     if (!held || held.tag === tag) { writers.set(key, { tag, owner }); return; }
     if (held.running && !(await held.running(AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(PROBE_MS)])).catch(() => true))) {
-      if (held.settle && !(await waitFor(held.settle(), signal, end - Date.now()))) throw refusal(`browser profile "${name}": the session that was saving to it is still ending. Try again in a moment. No session was started.`);
+      if (held.settle && !(await waitFor(held.settle(), signal, end - Date.now()))) throw refusedError(`browser profile "${name}": the session that was saving to it is still ending. Try again in a moment. No session was started.`);
       if (writers.get(key) === held) writers.delete(key);
       continue;
     }
-    if (held.owner !== owner) throw refusal(`browser profile "${name}": one session at a time may save to a profile, and another session is saving to it now. Wait for it to end, or start without saving. No session was started.`);
-    if (Date.now() > end) throw refusal(`browser profile "${name}": the session that was saving to it is still ending. Try again in a moment. No session was started.`);
+    if (held.owner !== owner) throw refusedError(`browser profile "${name}": one session at a time may save to a profile, and another session is saving to it now. Wait for it to end, or start without saving. No session was started.`);
+    if (Date.now() > end) throw refusedError(`browser profile "${name}": the session that was saving to it is still ending. Try again in a moment. No session was started.`);
     signal?.throwIfAborted();
     await new Promise((resolve) => setTimeout(resolve, 100));
   }

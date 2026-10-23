@@ -20,7 +20,7 @@ export type HomeCheck = {
  *  `busy` past the wait, a `format` this version does not read, a home whose cache or revision is `stale` for the one
  *  asked, a pack that is `too_large`, or a pack or import that failed a `check` (`checks` says which). */
 export class AgentHomeError extends Error {
-  readonly code: "invalid" | "exists" | "missing" | "busy" | "format" | "stale" | "too_large" | "check";
+  readonly code: "invalid" | "exists" | "missing" | "busy" | "format" | "stale" | "too_large" | "check" | "key";
   /** The checks behind a `check` refusal, all of them, the failed ones with status `fail`. */
   readonly checks?: HomeCheck[];
   constructor(code: AgentHomeError["code"], message: string, options?: ErrorOptions & { checks?: HomeCheck[] }) {

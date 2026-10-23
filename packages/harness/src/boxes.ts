@@ -17,7 +17,7 @@
 // `priced` null), so the run's cost reads unknown, never 0. The provider ids go only to the ledger's file, outside the recording.
 import { randomBytes } from 'node:crypto';
 import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Box, BoxProvider } from '@parcha/pi-transport';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import type { Cross, EffectWindow } from './crossings.ts';
@@ -38,7 +38,8 @@ const boxError = (message: string) => Object.assign(new Error(message), { name: 
 
 /** A box's line in the run's ids directory (format v1): a tool's box by its provider id, with its receipt state. */
 export type LedgerEntry = {
-  provider: string; owner: 'tools'; id: string; kind?: string; from?: string;
+  /** `tools`: a box a tool made, by its provider id. `place`: a host box the place started, by its key (its start index) in one supervisor life (`run`). */
+  provider: string; owner: 'tools' | 'place'; id?: string; key?: string; run?: string; kind?: string; from?: string;
   /** `ended`: a supervised run's process is done with the box, and the supervisor writes its receipt from this file. */
   receipt?: 'open' | 'written' | 'ended';
   /** A supervised run's: when the box ended (null when its process left it open), and the process that made it. */
@@ -46,6 +47,12 @@ export type LedgerEntry = {
 };
 
 const LABEL_FILE = /^box-(\d+)\.json$/;
+/** A label file's entry as format v1 has it: a tool's box by its id, or a place's host box by its key and supervisor life. */
+const validEntry = (entry: unknown): entry is LedgerEntry => {
+  const e = entry as Partial<LedgerEntry> | null;
+  if (e === null || typeof e !== 'object' || typeof e.provider !== 'string') return false;
+  return e.owner === 'tools' ? typeof e.id === 'string' : e.owner === 'place' && typeof e.key === 'string' && typeof e.run === 'string';
+};
 /** A refusal of the ids directory's own: passed on as it is, never wrapped as a write failure. */
 class Refusal extends Error {}
 const refused = (what: string, error: unknown) => new Refusal(`${what} (${(error as Error).message}): refused, so no box label is given twice`);
@@ -74,10 +81,24 @@ function labelStore(dir: string) {
       if (number === undefined) continue;
       let entry: LedgerEntry;
       try { entry = JSON.parse(readFileSync(join(dir, name), 'utf8')) as LedgerEntry; } catch (error) { throw refused(`the box ids file ${join(dir, name)} cannot be read`, error); }
-      if (entry === null || typeof entry !== 'object' || typeof entry.provider !== 'string' || entry.owner !== 'tools' || typeof entry.id !== 'string') throw new Refusal(`the box ids file ${join(dir, name)} cannot be read (not a format v1 entry): refused, so no box label is given twice`);
+      if (!validEntry(entry)) throw new Refusal(`the box ids file ${join(dir, name)} cannot be read (not a format v1 entry): refused, so no box label is given twice`);
       out.set(`box-${number}`, entry);
     }
     return out;
+  };
+  /** A won link(2), or a rename(2), is an entry of the DIRECTORY, which the file's own fsync does not make durable: the directory is fsynced before
+   *  the claim or the new state is used, so a crash that keeps a synced line naming the label never loses its file (the next claim would take the label again). */
+  const syncDirectory = (path: string) => {
+    try { const fd = openSync(path, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } } catch (error) {
+      throw new Refusal(`the box ids directory ${dir} cannot be made durable (${(error as Error).message}): a claim it might lose is never used`);
+    }
+  };
+  const durable = () => syncDirectory(dir);
+  /** The levels this ledger's mkdir made (box-ids.internal/ and any missing ancestor), top first, each durable only once its PARENT is
+   *  fsynced: until then they stay here, so a claim after a failed fsync syncs them again (its mkdir finds them made). */
+  let unsynced: string[] = [];
+  const syncParents = () => {
+    while (unsynced.length) { syncDirectory(dirname(unsynced[0]!)); unsynced = unsynced.slice(1); }
   };
   /** The disk must give an exclusive link: a second link to one name fails with EEXIST. */
   const probe = () => {
@@ -99,7 +120,13 @@ function labelStore(dir: string) {
   const ensure = () => {
     if (ready) return;
     // `recursive`: a directory already there (a disk place makes it before the runner starts) is used as it is; the local place has none made, so it is made here.
-    try { mkdirSync(dir, { recursive: true }); probe(); } catch (error) {
+    try {
+      const made = mkdirSync(dir, { recursive: true });
+      // The levels made, from the first (an ancestor, or the directory itself) down to the directory.
+      if (made !== undefined) { const levels = [dir]; while (levels[0] !== made && dirname(levels[0]!) !== levels[0]) levels.unshift(dirname(levels[0]!)); unsynced = levels; }
+      syncParents();
+      probe();
+    } catch (error) {
       const unusable = cannotTakeFiles(error);
       if (unusable) throw unusable;
       const file = (error as NodeJS.ErrnoException).code === 'EEXIST' ? aFile() : undefined;
@@ -113,21 +140,48 @@ function labelStore(dir: string) {
   };
   return {
     list,
+    /** The directory made durable, for a label or key handed out again (idempotent: one fsync). */
+    sync: durable,
     claim(entry: LedgerEntry): string {
       ensure();
       let from: string;
       try { from = temp(entry); } catch (error) { throw cannotTakeFiles(error) ?? new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`); }
       try {
         for (let n = Math.max(0, ...[...list().keys()].map((label) => Number(label.slice(4)))) + 1; ; n += 1) {
-          try { linkSync(from, join(dir, `box-${n}.json`)); return `box-${n}`; } catch (error) {
+          try { linkSync(from, join(dir, `box-${n}.json`)); } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`);
+            continue;
           }
+          durable();
+          return `box-${n}`;
         }
       } finally { rmSync(from, { force: true }); }
     },
+    /** A new receipt state by rename(2), durable before it is relied on: a crash that kept the rename only in memory would bring back a
+     *  state that says a written receipt is unwritten, and the receipt would be written twice. */
     rewrite(label: string, entry: LedgerEntry) {
       ensure();
       renameSync(temp(entry), join(dir, `${label}.json`));
+      durable();
+    },
+    /** A name claimed exclusively by link(2), as a label is: `won`, or the value its winner wrote. */
+    claimKey(name: string, value: unknown): { won: true } | { won: false; held: unknown } {
+      ensure();
+      let from: string;
+      try { from = temp(value); } catch (error) { throw cannotTakeFiles(error) ?? new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`); }
+      try {
+        let won = true;
+        try { linkSync(from, join(dir, name)); } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new Error(`the box ids directory ${dir} cannot be written (${(error as Error).message})`);
+          won = false;
+        }
+        if (won) { durable(); return { won: true }; }
+        let held: unknown;
+        try { held = JSON.parse(readFileSync(join(dir, name), 'utf8')); } catch (error) { throw refused(`the host key file ${join(dir, name)} cannot be read`, error); }
+        // A key read back may be one this life won and could not make durable: durable now, or refused again.
+        durable();
+        return { won: false, held };
+      } finally { rmSync(from, { force: true }); }
     },
   };
 }
@@ -135,18 +189,63 @@ function labelStore(dir: string) {
 /** The same store in this process's memory, for a ledger with no directory (a tap's own). */
 function memoryStore() {
   const entries = new Map<string, LedgerEntry>();
+  const keys = new Map<string, unknown>();
   return {
     list: () => new Map(entries),
+    sync() { /* nothing on a disk */ },
     claim(entry: LedgerEntry) { const label = `box-${entries.size + 1}`; entries.set(label, { ...entry }); return label; },
     rewrite(label: string, entry: LedgerEntry) { entries.set(label, { ...entry }); },
+    claimKey(name: string, value: unknown): { won: true } | { won: false; held: unknown } { if (keys.has(name)) return { won: false, held: keys.get(name) }; keys.set(name, value); return { won: true }; },
   };
 }
 
 /** One labeller for a run's tool boxes: `box-N` across every process of the run, each label a file of its own in `dir` (outside the recording), claimed exclusively. The
  *  directory is read at its first use, never before: a run on a disk not yet mounted has nothing to read. Without a directory the labels live only in this process. Receipts: a box `open`ed here is `end`ed or, at `finish`, written as still open; its state is kept in its file, so a process that
  *  starts after one was killed writes the receipt of each box that process left open (`recover`). */
+/** A host box's identity as a place hands it to its run's process (`HOST_BOX`, JSON): its provider, its key (the place's start index) and the
+ *  supervisor life that started it (`run`, the run's RUN_LABEL). */
+export type HostBox = { provider: string; key: string; run: string };
+
+/** A host box's identity as a place hands it over (`HOST_BOX`), checked before it is claimed: a malformed one is refused, never guessed. */
+export function parseHostBox(text: string): HostBox {
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { throw new Error('HOST_BOX is not JSON: refused'); }
+  const box = value as Partial<HostBox> | null;
+  // Nothing but its three fields: a box id or a credential a place put there would sit in the process's environment, where its tools can read it.
+  const extra = box !== null && typeof box === 'object' && !Array.isArray(box) ? Object.keys(box).filter((name) => name !== 'provider' && name !== 'key' && name !== 'run') : [];
+  if (extra.length) throw new Error(`HOST_BOX holds ${extra.map((name) => (/^[A-Za-z0-9._-]{1,40}$/.test(name) ? name : 'an unnamed key')).join(', ')} beyond provider, key and run: refused, so no box id or credential reaches the process's environment`);
+  if (!box || typeof box.provider !== 'string' || !box.provider || typeof box.key !== 'string' || !/^\d+$/.test(box.key) || typeof box.run !== 'string' || !box.run) {
+    throw new Error('HOST_BOX must be { provider, key (a start index), run (the supervisor life) }: refused');
+  }
+  return { provider: box.provider, key: box.key, run: box.run };
+}
+
+/** A run's files as a place lets its supervisor read them, in disk's K8 shape: a file's bytes (`null` when it is not there) and the names
+ *  directly under a directory (none when it is not there), both relative to the run's root. */
+export type RunFiles = { readRunFile(path: string): Promise<Uint8Array | null>; listRunFiles(dir: string): Promise<string[]> };
+
+/** The label the run's process claimed for host box `key` on `provider` in this supervisor life (`run`), read from the run's ids directory
+ *  through `files`: the supervisor parses the label files itself, the place only reads bytes. `undefined` when it has not landed (or only
+ *  another life's is there); a file it cannot parse refuses. */
+export async function hostLabelIn(files: RunFiles, dir: string, box: { provider: string; key: string; run: string }): Promise<string | undefined> {
+  for (const name of await files.listRunFiles(dir)) {
+    const number = LABEL_FILE.exec(name)?.[1];
+    if (number === undefined) continue;
+    const bytes = await files.readRunFile(`${dir}/${name}`);
+    if (bytes === null) continue;
+    let entry: unknown;
+    try { entry = JSON.parse(Buffer.from(bytes).toString('utf8')); } catch { throw new Error(`the box ids file ${name} cannot be read (not JSON)`); }
+    if (!validEntry(entry)) throw new Error(`the box ids file ${name} cannot be read (not a format v1 entry)`);
+    // Only this supervisor life's: another life's entry (a reused directory) is no label for this box.
+    if (entry.owner === 'place' && entry.key === box.key && entry.provider === box.provider && entry.run === box.run) return `box-${number}`;
+  }
+  return undefined;
+}
+
 export type BoxLedger = {
   label(provider: string, id: string): string;
+  /** The label of the host box the place started (`HOST_BOX`), claimed by this process before anything else: the same label again in the same supervisor life, refused in another. */
+  claimHost(box: HostBox, from: string): string;
   open(label: string, receipt: { provider: string; kind: string; from: string }): void;
   end(label: string): void;
   /** Every receipt of a box still open: written when the process is done with the run. */
@@ -197,9 +296,25 @@ export function boxLedger(options: { dir?: string; recorder?: Recorder; supervis
     try { store.rewrite(label, { ...entry, receipt: 'written' }); } catch { /* the receipt is written; only a failed save lets a later process write it again */ }
   };
   return {
+    claimHost(box, from) {
+      // The box's KEY is claimed exclusively first (one file per key, by link(2), as a label is), so two lives starting together never both label it.
+      const key = store.claimKey(`host-${box.key}.json`, { provider: box.provider, key: box.key, run: box.run });
+      const mine = (run: string) => [...store.list()].find(([, entry]) => entry.owner === 'place' && entry.key === box.key && entry.run === run)?.[0];
+      if (!key.won) {
+        const held = key.held as Partial<HostBox> | null;
+        if (held?.run !== box.run) throw new Error(`the host box ${box.key} was claimed by another supervisor life: a supervisor restarted mid-run, or two started on one run, would label one box twice; refused (re-take the run, do not resume it)`);
+        if (held.provider !== box.provider) throw new Error(`the host box ${box.key} already has ${mine(box.run) ?? 'its key'} on ${held.provider}, not on ${box.provider}: refused, so no box label is given twice`);
+      }
+      // The key is this life's: the label it already claimed (a restarted process), else a new one.
+      // A label handed out again (a restarted process) is made durable first, as a new one is.
+      const had = mine(box.run);
+      if (had !== undefined) { store.sync(); return had; }
+      return store.claim({ provider: box.provider, owner: 'place', key: box.key, run: box.run, kind: 'host', from });
+    },
     label(provider, id) {
       const had = [...store.list()].find(([, entry]) => entry.owner === 'tools' && entry.provider === provider && entry.id === id)?.[0];
-      return had ?? store.claim({ provider, owner: 'tools', id });
+      if (had !== undefined) { store.sync(); return had; }
+      return store.claim({ provider, owner: 'tools', id });
     },
     open(label, made) {
       const entry = store.list().get(label);
