@@ -7,11 +7,12 @@ import { ID_PATTERN } from "../home.js";
 import { AgentHomeError } from "../store.js";
 import { timelineOf } from "../timeline/index.js";
 import { checkInside, readEntriesAt } from "./read.js";
+import type { readWorkflowRun as ReadRun } from "../workflow.js";
 import { checkPort, type ServeHandle, serveLocal, type ServeOptions } from "./server.js";
 
-/** Reads a workflow run's record from its own store: ./workflow's, imported only when a workflow run is shown. */
-export type ReadWorkflowRun = (run: { runId: string; storePath: string; revision: Revision }) => Promise<unknown>;
-const readWorkflowRun: ReadWorkflowRun = async (run) => ((await import("../workflow.js")) as unknown as { readWorkflowRun: ReadWorkflowRun }).readWorkflowRun(run);
+/** ./workflow's readWorkflowRun, imported only when a workflow run is shown. */
+export type ReadWorkflowRun = typeof ReadRun;
+const readWorkflowRun: ReadWorkflowRun = async (run) => (await import("../workflow.js")).readWorkflowRun(run);
 
 export type DiffLine = { op: "same" | "add" | "del"; text: string };
 
@@ -85,8 +86,8 @@ async function runView(dir: string, reader: AgentStoreReader, run: RunRow, readR
   checkInside(dir, storePath, "store");
   if (revision.kind === "agentic") return { ...value, rows: timelineOf(readEntriesAt(dir, storePath, "store"), { settled: run.state !== "running" }) };
   try {
-    const record = (await readRun({ runId: run.id, storePath, revision })) as Record<string, unknown>;
-    return { ...value, workflow: { graph: record.graph, status: record.status, outcome: record.outcome, escalatedAt: record.escalatedAt, output: record.output } };
+    // The store keeps a workflow as the JSON checkWorkflowBody passed at its commit; ./workflow types it as the DSL's Workflow.
+    return { ...value, workflow: await readRun({ runId: run.id, storePath, revision: revision as unknown as Parameters<ReadWorkflowRun>[0]["revision"] }) };
   } catch (error) {
     if (error instanceof AgentHomeError) return { ...value, refused: error.message };
     throw error;

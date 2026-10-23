@@ -221,7 +221,7 @@ test("a store a writer was killed in mid-transaction: the picker and an agent pa
   assert.deepEqual(hashes(), before, "store.sqlite and its journal are byte-identical");
 });
 
-test("the bin serves the store's page for a folder holding a store.sqlite, drawing a workflow with the DSL it loads on demand", { timeout: 60_000 }, async (t) => {
+test("the bin serves the store's page for a folder holding a store.sqlite, drawing a workflow and reading a workflow run with what it loads on demand", { timeout: 60_000 }, async (t) => {
   const { root, revisions } = await buildSampleStore(await scratch());
   const child = spawn(process.execPath, [CLI, "serve", root], { stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => child.kill());
@@ -234,6 +234,8 @@ test("the bin serves the store's page for a folder holding a store.sqlite, drawi
   assert.equal(JSON.parse((await request(url, { target: "/api/store" })).body).agents.length, 3);
   const mcc = JSON.parse((await request(url, { target: "/api/agents/mcc-classifier" })).body);
   assert.deepEqual(mcc.revisions[0].diff, { against: revisions.M1.id, added: ["/root/steps/1", "/root/steps/3"], edited: ["/root/steps/2"], removed: [{ label: "Format the answer", kind: "call" }] });
+  const run = JSON.parse((await request(url, { target: `/api/runs/${RUN.c2}` })).body);
+  assert.deepEqual(run.workflow.graph.nodes.map((node) => node.label), ["chain", "Read the site", "Jev: public or private", "Check the filing", "No public record"], "./workflow's own readWorkflowRun reads the run");
   child.kill("SIGINT");
   assert.equal(await new Promise((resolve) => child.once("exit", (code) => resolve(code))), 0);
 });
