@@ -39,6 +39,21 @@ export function workflowDoc({ gate = false } = {}) {
 
 export const TOOLS = ["stock.check", "prices.quote", "prices.slow_quote"];
 
+/** A workflow that asks both quote tools at once, in a parallel. */
+export const parallelDoc = () => {
+  const quote = (label, tool, as) => ({ node: "call", label, via: "tool", tool, args: { sku: "{sku}" }, out: "Quote", as, deadline_s: 20 });
+  return {
+    v: 2, name: "two-quotes",
+    schemas: {
+      In: { type: "object", additionalProperties: false, required: ["sku"], properties: { sku: { type: "string" } } },
+      Quote: { type: "object", required: ["price"], properties: { price: { type: "number" } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Quote", path: "fast" },
+    root: { node: "chain", steps: [{ node: "parallel", label: "both", branches: [quote("quote fast", "prices.quote", "fast"), quote("quote slow", "prices.slow_quote", "slow")] }] },
+  };
+};
+
 /** A workflow that maps `stock.check` over the input's `skus`, one at a time. */
 export const mapDoc = () => ({
   v: 2, name: "each-stock",
@@ -67,17 +82,20 @@ export async function runOf({ body = bodyOf(), revision = "rev-a", runId = "run-
 /**
  * The host's part for a run: the DSL's workflow extension with fake tools that count their calls, on a Harness open on
  * the run's store file. `onCall(tool, count)` runs after a tool answers, before its result is committed; the tool `fail`
- * names throws instead. `layout` is the driver's layout the host asks for.
+ * names throws instead. `effect`, when given, answers every call in their place. `layout` is the driver's layout the host
+ * asks for.
  */
-export async function hostFor(run, { tier = "fast", onCall, fail, layout } = {}) {
+export async function hostFor(run, { tier = "fast", onCall, fail, effect, layout } = {}) {
   const calls = {};
   const answers = { "stock.check": () => ({ tier }), "prices.quote": () => ({ price: 21 }), "prices.slow_quote": () => ({ price: 34 }) };
   const workflows = createWorkflowExtension({
     options: () => ({ files: workspaceFiles(run.workspace), ...(layout ? { layout } : {}) }),
     run: () => ({
       adapters: {
-        runEffect: async ({ node }) => {
+        runEffect: async (params) => {
+          const { node } = params;
           calls[node.tool] = (calls[node.tool] ?? 0) + 1;
+          if (effect) return effect(params);
           if (node.tool === fail) throw new Error("the tool is down");
           const answer = answers[node.tool]();
           await onCall?.(node.tool, calls[node.tool]);

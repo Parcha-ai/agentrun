@@ -108,8 +108,9 @@ export type WorkflowRunView = { graph: WorkflowGraph; status: Record<string, Nod
 /**
  * Reads a workflow run from its store file, read-only: it never writes, takes no lock and opens no Harness, so it reads
  * a run another process is running. The nodes' states come from the run's journal and its task's terminal result; in a
- * run that failed, the nodes it was still running read `failed`. A run in the driver's keyed layout (a host's
- * `layout: "v4"`) keeps its map items apart and is refused here as `format`.
+ * failed run, every node still running at the end is drawn failed; with parallel branches, that can include branches
+ * that were only interrupted. A run in the driver's keyed layout (a host's `layout: "v4"`) keeps its map items apart
+ * and is refused here as `format`.
  */
 export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "storePath" | "revision">): Promise<WorkflowRunView> {
   const [{ graphNodeOf, nodeStatus, workflowGraph }, { durableDoc, readJournal }] = await Promise.all([import("@parcha/agentrun-dsl/graph"), import("@parcha/agentrun-pi/durable")]);
