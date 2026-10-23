@@ -286,7 +286,7 @@ test("the fixture store, rendered from the server's own answers: three agents, t
     const server = serverFetch(served.url);
     const page = mount({}, hash, { serve: "store", fetch: server.fetch });
     await server.idle(page);
-    assertInert(page.app);
+    assertInert(page.app, all(page.app).filter((el) => el.namespaceURI === "http://www.w3.org/2000/svg"));
     assert.doesNotMatch(page.app.textContent, /Could not read/, hash);
     return page;
   };
@@ -297,7 +297,7 @@ test("the fixture store, rendered from the server's own answers: three agents, t
     const hero = await open("#/agents/company-researcher");
     const blocks = all(hero.app).filter((el) => el.tagName === "ARTICLE");
     assert.deepEqual(blocks.map((el) => [classOf(el), all(el).find((n) => classOf(n) === "rev-note").textContent]), [["revision current", "The cheap one: a workflow"], ["revision", "Prompt B: every fact cited"], ["revision", "Prompt A: the first brief"]]);
-    assert.deepEqual(all(blocks[0]).filter((el) => el.tagName === "LI" && classOf(el).startsWith("node")).map((el) => el.querySelectorAll("b")[0].textContent), ["chain", "Read the site", "Jev: public or private", "Check the filing", "No public record"]);
+    assert.deepEqual(all(blocks[0]).filter((el) => el.getAttribute("data-path") !== null).map((el) => el.getAttribute("data-path")).sort(), workflowGraph(BRIEF_WORKFLOW).nodes.map((node) => node.path).sort(), "C's graph, drawn by graph.js");
     assert.equal(all(blocks[1]).filter((el) => classOf(el).startsWith("line ")).length, 7, "every line of A and B");
     const rows = all(hero.app).filter((el) => el.tagName === "A" && classOf(el) === "run");
     assert.deepEqual(rows.map((el) => pills(el)[0]), [["pill escalated", "escalated"], ["pill ok", "completed"], ["pill ok", "completed"], ["pill ok", "completed"], ["pill error", "failed"], ["pill ok", "completed"]]);
@@ -307,8 +307,8 @@ test("the fixture store, rendered from the server's own answers: three agents, t
     assert.ok(all(mcc.app).filter((el) => el.tagName === "A" && classOf(el) === "run")[2].textContent.includes("its directory is gone"));
 
     const escalated = await open(`#/runs/${RUN.c2}`);
-    const fired = all(escalated.app).filter((el) => classOf(el) === "node fired");
-    assert.ok(fired.length === 1 && fired[0].textContent.includes("No public record") && fired[0].textContent.includes("stopped here"));
+    const fired = all(escalated.app).filter((el) => classOf(el).split(" ").includes("fired"));
+    assert.ok(fired.length === 1 && fired[0].getAttribute("data-path") === PRIVATE && classOf(fired[0]).split(" ").includes("escalated") && fired[0].textContent.includes("No public record"));
     assert.ok(!pills(escalated.app).some(([cls]) => cls === "pill error"), "never drawn as failed");
 
     const answered = await open(`#/runs/${RUN.c1}`);

@@ -16,7 +16,6 @@
   var runsNode = null;
   var said = 0;
   var STORE = doc.documentElement.getAttribute("data-serve") === "store";
-  var drawing = [];
   var WHAT = STORE ? "agent store" : "agent home";
 
   var SAFE_ATTRS = { class: 1, href: 1, title: 1, id: 1, role: 1, type: 1, open: 1, target: 1, rel: 1, tabindex: 1, datetime: 1 };
@@ -68,10 +67,6 @@
   function show(node) {
     clear(app);
     add(app, node);
-    // A graph is drawn once its svg is in the page, where the drawer can measure it.
-    var due = drawing;
-    drawing = [];
-    due.forEach(function (draw) { draw(); });
   }
 
   // ---- formatting ------------------------------------------------------------------------------------------------------
@@ -682,7 +677,6 @@
   // ---- an agent: its revisions and its runs ----------------------------------------------------------------------------
   var MARKS = { add: "+", del: "−", same: " " };
   var SVG_NS = "http://www.w3.org/2000/svg";
-  var NODE_STATES = { done: "ok", working: "running", failed: "error", "not-run": "idle", escalated: "escalated" };
 
   /** The tools as chips: the ones it kept, then the ones it added and removed against its parent. */
   function toolChips(tools, change) {
@@ -743,37 +737,13 @@
     );
   }
 
-  /** The graph's nodes as text, indented by depth, with the marks the drawer would draw. */
-  function nodeList(graph, marks) {
-    var nodes = (graph && graph.nodes) || [];
-    var diff = marks.diff || {};
-    var status = marks.status || {};
-    return el("ol", { class: "nodes" }, nodes.map(function (n) {
-      var mark = (diff.added || []).indexOf(n.path) >= 0 ? "added" : (diff.edited || []).indexOf(n.path) >= 0 ? "edited" : null;
-      var state = Object.prototype.hasOwnProperty.call(status, n.path) ? status[n.path] : null;
-      var fired = marks.fired === n.path;
-      var item = el("li", { class: ["node", mark, fired ? "fired" : null].filter(Boolean).join(" "), title: n.path }, el("span", { class: "word" }, n.kind), el("b", null, n.label), mark ? pill(mark) : null, state ? pill(NODE_STATES[state] || "idle", state) : null, fired ? el("span", { class: "word fired" }, "stopped here") : null);
-      item.style.setProperty("--depth", String(nodes.filter(function (m) { return n.path.indexOf(m.path + "/") === 0; }).length));
-      return item;
-    }));
-  }
-
-  /** A workflow's graph in a .graph-box: drawn by graph.js once its svg is in the page, or listed as text without it. */
+  /** A workflow's graph, drawn by graph.js into an svg in a .graph-box. */
   function graphBox(graph, marks) {
-    var box = el("div", { class: "graph-box" });
-    var removed = (marks.diff && marks.diff.removed) || [];
-    if (typeof window.drawWorkflowGraph !== "function") {
-      add(box, [nodeList(graph, marks), removed.length ? el("p", { class: "chips removed" }, el("span", { class: "word" }, "removed"), removed.map(function (r) { return el("span", { class: "chip del" }, r.label + " (" + r.kind + ")"); })) : null]);
-      return box;
-    }
     var svg = doc.createElementNS(SVG_NS, "svg");
     svg.setAttribute("role", "img");
     svg.setAttribute("aria-label", "The workflow's graph");
-    box.appendChild(svg);
-    drawing.push(function () {
-      window.drawWorkflowGraph(svg, graph, marks);
-    });
-    return box;
+    window.drawWorkflowGraph(svg, graph, marks);
+    return el("div", { class: "graph-box" }, svg);
   }
 
   function workflowBody(r) {
@@ -976,7 +946,6 @@
 
   function route() {
     view += 1;
-    drawing = [];
     if (timer) clearTimeout(timer);
     timer = null;
     var token = view;

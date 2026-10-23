@@ -95,7 +95,8 @@ Element.prototype.insertAdjacentHTML = sink("insertAdjacentHTML");
 export const all = (node) => node.childNodes.flatMap((kid) => (kid instanceof Element ? [kid, ...all(kid)] : []));
 
 /** The page's document and window, its fetch answering from `api` (path to body, or [status, body]) or `options.fetch`,
- *  and timers run by hand. `options.serve` is the page's <html data-serve>; `options.window` adds to its window. */
+ *  and timers run by hand. `options.serve` is the page's <html data-serve>: the store's page loads graph.js before
+ *  page.js, as store.html does. `options.window` adds to its window after graph.js. */
 export function mount(api, hash = "#/", options = {}) {
   const byId = {};
   const documentElement = new Element("html");
@@ -126,7 +127,6 @@ export function mount(api, hash = "#/", options = {}) {
     scrollTo() {},
     localStorage: { getItem: (k) => stored.get(k) ?? null, setItem: (k, v) => stored.set(k, String(v)) },
     addEventListener: (type, fn) => type === "hashchange" && hashListeners.push(fn),
-    ...options.window,
   };
   const fetch = options.fetch ? async (path) => (fetched.push(path), options.fetch(path)) : async (path) => {
     fetched.push(path);
@@ -142,6 +142,8 @@ export function mount(api, hash = "#/", options = {}) {
     setTimeout: (fn, ms) => (timers.set(next, { fn, ms }), next++),
     clearTimeout: (id) => timers.delete(id),
   });
+  if (options.serve === "store") vm.runInContext(served("graph.js"), context, { filename: "graph.js" });
+  Object.assign(window, options.window);
   vm.runInContext(served("page.js"), context, { filename: "page.js" });
   const settle = async () => {
     for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));

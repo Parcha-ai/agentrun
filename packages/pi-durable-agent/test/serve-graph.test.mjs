@@ -369,7 +369,7 @@ test("drawn at its natural size: the width is the drawing's own, set as an attri
   assert.match(rule[1], /max-width:100%/);
   assert.match(rule[1], /height:auto/);
   assert.doesNotMatch(rule[1], /(^|;)\s*(min-)?width\s*:/, "no width but its own: it is never scaled up");
-  assert.match(PAGE_CSS, /\.graph-box\{overflow-x:auto\}/, "the box page.js puts it in scrolls it, never the page");
+  assert.match(PAGE_CSS, /\.graph-box\{overflow-x:auto[;}]/, "the box page.js puts it in scrolls it, never the page");
 
   for (const bad of [null, undefined, {}, { nodes: "x" }, { nodes: [{ path: 3 }] }, { nodes: [node("/elsewhere", "agent")] }]) {
     assert.doesNotThrow(() => draw(bad, { status: null, diff: { added: "x" } }), JSON.stringify(bad));

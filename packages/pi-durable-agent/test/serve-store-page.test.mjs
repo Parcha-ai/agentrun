@@ -98,30 +98,34 @@ const GRAPH_2 = { nodes: [node("/root", "chain", "chain"), node("/root/steps/0",
 const MCC_1 = revision("1", { kind: "workflow", note: "First cut", body: { tools: ["web.fetch"], skills: {} }, graph: GRAPH_1 });
 const MCC_2 = revision("2", { kind: "workflow", current: true, note: "Marketplaces", parent: MCC_1.id, parentKind: "workflow", body: { tools: ["web.fetch"], skills: {} }, graph: GRAPH_2, diff: { against: MCC_1.id, added: ["/root/steps/1", "/root/steps/3"], edited: ["/root/steps/2"], removed: [{ label: `Format the answer ${HOSTILE}`, kind: "call" }] } });
 const mccApi = (revisions = [MCC_2, MCC_1]) => ({ "api/agents/mcc-classifier": { agent: { id: "mcc-classifier", name: "MCC classifier", createdAt: "2026-10-20T08:00:00.000Z", current: MCC_2.id, currentKind: "workflow", runs: 0 }, revisions }, "api/runs?agent=mcc-classifier": [] });
-const topOf = (node) => (node.parentNode ? topOf(node.parentNode) : node);
+const SVG = "http://www.w3.org/2000/svg";
+const MARKS = ["new", "edited", "done", "working", "failed", "escalated", "not-run", "fired"];
+/** What graph.js drew: each node's path and the marks on it (a diff's tag, a run's state, the fired exit), by path. */
+const drawnNodes = (node) => all(node).filter((el) => el.getAttribute("data-path") !== null).map((el) => [el.getAttribute("data-path"), classOf(el).split(" ").filter((name) => MARKS.includes(name)).join(" ")]).sort(([a], [b]) => (a < b ? -1 : 1));
+/** graph.js's own svg, whose shapes its own test checks; the page's inert check is for what page.js makes. */
+const svgParts = (page) => all(page.app).filter((el) => el.namespaceURI === SVG);
 
-test("a workflow revision: its graph drawn by window.drawWorkflowGraph in a .graph-box, once in the page, with graphDiff's marks; a first one has none", async () => {
+test("a workflow revision: its graph given to window.drawWorkflowGraph in an svg in a .graph-box, with graphDiff's marks; a first one has none", async () => {
   const drawn = [];
-  const drawWorkflowGraph = (svg, graph, marks) => drawn.push({ svg, graph, marks, box: classOf(svg.parentNode), inPage: topOf(svg).tagName === "BODY" });
+  const drawWorkflowGraph = (svg, graph, marks) => drawn.push({ svg, graph, marks });
   const page = mount(mccApi(), "#/agents/mcc-classifier", { serve: STORE, window: { drawWorkflowGraph } });
   await page.settle();
   assertInert(page.app, drawn.map((d) => d.svg));
-  assert.deepEqual(drawn.map((d) => [d.svg.tagName, d.svg.namespaceURI, d.box, d.inPage]), [["svg", "http://www.w3.org/2000/svg", "graph-box", true], ["svg", "http://www.w3.org/2000/svg", "graph-box", true]]);
+  assert.deepEqual(drawn.map((d) => [d.svg.tagName, d.svg.namespaceURI, classOf(d.svg.parentNode)]), [["svg", SVG, "graph-box"], ["svg", SVG, "graph-box"]]);
   assert.deepEqual(plain([drawn[0].graph, drawn[0].marks]), [GRAPH_2, { diff: { added: ["/root/steps/1", "/root/steps/3"], edited: ["/root/steps/2"], removed: [{ label: `Format the answer ${HOSTILE}`, kind: "call" }] } }]);
   assert.deepEqual(plain([drawn[1].graph, drawn[1].marks]), [GRAPH_1, {}], "a first revision has no diff");
   const [m2] = revisionsOf(page);
   assert.ok(m2.textContent.includes("Workflow, against 111111111111") && m2.textContent.includes("+2 added") && m2.textContent.includes("1 edited") && m2.textContent.includes("1 removed"));
 });
 
-test("a workflow revision without the drawer: its nodes as text with the same marks and the removed ones named; one whose parent is agentic says so", async () => {
+test("a workflow revision drawn by graph.js: the added nodes tagged new, the edited one edited, the removed one named, labels as text; one whose parent is agentic says so", async () => {
   const page = mount(mccApi(), "#/agents/mcc-classifier", { serve: STORE });
   await page.settle();
-  assertInert(page.app);
-  const [m2] = revisionsOf(page);
-  const items = all(m2).filter((el) => el.tagName === "LI" && classOf(el).startsWith("node"));
-  assert.deepEqual(items.map((el) => [classOf(el), el.styles["--depth"]]), [["node", "0"], ["node", "1"], ["node added", "1"], ["node edited", "1"], ["node added", "1"]]);
-  assert.ok(items[2].textContent.includes(`Is it a marketplace ${HOSTILE}`));
-  assert.ok(m2.textContent.includes(`Format the answer ${HOSTILE} (call)`));
+  assertInert(page.app, svgParts(page));
+  const [m2, m1] = revisionsOf(page);
+  assert.deepEqual(drawnNodes(m2), [["/root", ""], ["/root/steps/0", ""], ["/root/steps/1", "new"], ["/root/steps/2", "edited"], ["/root/steps/3", "new"]]);
+  assert.ok(m2.textContent.includes(`Is it a marketplace ${HOSTILE}`) && m2.textContent.includes(`Format the answer ${HOSTILE} (call)`), "a label and the removed node, as text");
+  assert.ok(drawnNodes(m1).every(([, marks]) => marks === ""), "a first revision has no tags");
   const afterAgentic = mount(mccApi([{ ...MCC_2, parentKind: "agentic", diff: null }]), "#/agents/mcc-classifier", { serve: STORE });
   await afterAgentic.settle();
   assert.match(afterAgentic.app.textContent, /Its parent 111111111111 is an agentic revision: this revision runs a workflow in place of a prompt\./);
@@ -234,11 +238,11 @@ test("a workflow run's page: the graph with each node's state, the branch it too
   assert.ok(!pills(page.app).some(([cls]) => cls === "pill error"));
 });
 
-test("a completed workflow run's page shows its answer as text; without the drawer each node is listed with its state, the escalation's node marked", async () => {
+test("a completed workflow run's page shows its answer as text; an escalated one's graph has each node's state, the fired exit and the containers on its path escalated", async () => {
   const completed = { ...WORKFLOW_RUN, run: { ...WORKFLOW_RUN.run, state: "completed" }, workflow: { graph: BRIEF, status: { "/root": "done", [PUBLIC]: "done", [PRIVATE]: "not-run" }, outcome: "completed", output: { brief: `Filed ${HOSTILE}` } } };
   const page = mount({ "api/runs/run-9": completed }, "#/runs/run-9", { serve: STORE });
   await page.settle();
-  assertInert(page.app);
+  assertInert(page.app, svgParts(page));
   assert.deepEqual(all(page.app).filter((el) => classOf(el) === "row answer").map((el) => el.textContent), [`Answer${JSON.stringify({ brief: `Filed ${HOSTILE}` })}`], "anything but a string as compact JSON");
   const text = mount({ "api/runs/run-9": { ...completed, workflow: { ...completed.workflow, output: `Filed ${HOSTILE}` } } }, "#/runs/run-9", { serve: STORE });
   await text.settle();
@@ -246,15 +250,9 @@ test("a completed workflow run's page shows its answer as text; without the draw
 
   const escalated = mount({ "api/runs/run-9": WORKFLOW_RUN }, "#/runs/run-9", { serve: STORE });
   await escalated.settle();
-  const items = all(escalated.app).filter((el) => el.tagName === "LI" && classOf(el).startsWith("node"));
-  assert.deepEqual(items.map((el) => [classOf(el), pills(el)]), [
-    ["node", [["pill escalated", "escalated"]]],
-    ["node", [["pill ok", "done"]]],
-    ["node", [["pill escalated", "escalated"]]],
-    ["node", [["pill idle", "not-run"]]],
-    ["node fired", [["pill escalated", "escalated"]]],
-  ]);
-  assert.ok(items[4].textContent.includes("stopped here"));
+  assertInert(escalated.app, svgParts(escalated));
+  assert.deepEqual(drawnNodes(escalated.app), [["/root", "escalated"], ["/root/steps/0", "done"], ["/root/steps/1", "escalated"], [PUBLIC, "not-run"], [PRIVATE, "escalated fired"]].sort(([a], [b]) => (a < b ? -1 : 1)));
+  assert.ok(escalated.app.textContent.includes(`No public record ${HOSTILE}`));
 });
 
 test("a workflow run its reader refuses shows that one line in place of the graph, with the run's row still shown", async () => {
