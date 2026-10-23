@@ -900,6 +900,12 @@
     return pill(Object.prototype.hasOwnProperty.call(RUN_STATES, state) ? RUN_STATES[state] : "ended", state || "ended");
   }
 
+  /** A recorded cost in dollars; a run with none recorded reads unknown, never $0. */
+  function cost(n, kind) {
+    var known = usd(n);
+    return el("span", { class: kind + (known ? "" : " unknown") }, known || (kind === "c cost" ? "unknown" : "cost unknown"));
+  }
+
   function storeRunRow(run) {
     return el(
       "a",
@@ -907,7 +913,7 @@
       el("span", { class: "c when" }, el("b", null, when(run.startedAt)), el("small", null, ago(run.startedAt))),
       el("span", { class: "c state" }, runState(run.state)),
       el("span", { class: "c rev" }, el("span", { class: "rev-id" }, short(run.revision)), " ", el("span", { class: "word" }, run.kind || "")),
-      el("span", { class: "c cost" }, usd(run.costUsd)),
+      cost(run.costUsd, "c cost"),
       el("span", { class: "c reason" }, run.summary ? clip(run.summary, 160) : ""),
       el("span", { class: "c id" }, run.id)
     );
@@ -1031,8 +1037,8 @@
     var facts = [el("span", null, "started " + when(run.startedAt))];
     if (run.endedAt) facts.push(el("span", null, "took " + took(run.startedAt, run.endedAt)));
     var spent = rows.filter(function (r) { return r.kind === "usage" && r.usage && typeof r.usage.usd === "number"; }).pop();
-    if (usd(run.costUsd)) facts.push(el("span", null, usd(run.costUsd)));
-    else if (spent) facts.push(el("span", null, usd(spent.usage.usd) + " so far"));
+    if (!usd(run.costUsd) && spent && run.state === "running") facts.push(el("span", null, usd(spent.usage.usd) + " so far"));
+    else facts.push(cost(run.costUsd, "cost"));
     if (run.kind !== "workflow") {
       var calls = rows.filter(function (r) { return r.kind === "tool_use"; }).length;
       facts.push(el("span", null, calls + (calls === 1 ? " tool call" : " tool calls")));

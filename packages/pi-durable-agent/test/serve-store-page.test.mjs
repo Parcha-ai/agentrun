@@ -328,7 +328,7 @@ test("a run with no cost reads unknown, in the runs table and on its page, never
   const page = mount(agentApi({ "api/runs?agent=company-researcher": runs }), "#/agents/company-researcher", { serve: STORE });
   await page.settle();
   const costs = all(page.app).filter((el) => classOf(el).startsWith("c cost")).map((el) => [classOf(el), el.textContent]);
-  assert.deepEqual(costs.slice(1), [["c cost unknown", "unknown"], ["c cost", "$0.000"], ["c cost", "$0.250"]], "after the header");
+  assert.deepEqual(costs, [["c cost unknown", "unknown"], ["c cost", "$0.000"], ["c cost", "$0.250"]]);
   const ended = mount({ "api/runs/run-a": { ...AGENTIC_RUN, run: runs[0], rows: TIMELINE.filter((r) => r.kind !== "usage") } }, "#/runs/run-a", { serve: STORE });
   await ended.settle();
   const head = all(ended.app).find((el) => classOf(el) === "card run-head");

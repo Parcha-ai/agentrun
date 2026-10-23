@@ -100,6 +100,7 @@ pre{margin:0 0 8px;padding:12px 14px;background:var(--panel2);border:1px solid v
 .table.plain .run{grid-template-columns:150px 112px 80px minmax(0,1fr)}
 .table.plain .run .cost{text-align:left}
 .table.store .run{grid-template-columns:150px 112px 160px 72px minmax(0,1fr) 120px}
+.unknown{color:var(--faint)}
 .run .rev{font:12px var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .run .rev .rev-id{color:var(--ink)}
 .filters{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px}
