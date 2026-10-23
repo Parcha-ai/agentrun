@@ -84,7 +84,7 @@ rm -f node.tar.xz
 curl -fsSLo archil.deb ${ARCHIL_URL}
 echo "${ARCHIL_SHA256}  archil.deb" | sha256sum -c - >/dev/null
 sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null
-sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libfuse2t64 fuse3 /tmp/archil.deb >/dev/null
+sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates libfuse2t64 fuse3 /tmp/archil.deb >/dev/null
 rm -f archil.deb
 # The run user: whatever account has host A's uid, or a new one.
 getent group ${gid} >/dev/null || sudo -n groupadd --gid ${gid} pda

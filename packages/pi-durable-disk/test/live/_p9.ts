@@ -242,7 +242,7 @@ step node
 curl -fsSLo archil.deb ${ARCHIL_URL}
 echo "${ARCHIL_SHA256}  archil.deb" | sha256sum -c - >/dev/null
 sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null
-sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libfuse2t64 fuse3 /tmp/archil.deb >/dev/null
+sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates libfuse2t64 fuse3 /tmp/archil.deb >/dev/null
 rm -f archil.deb
 step archil
 id pda >/dev/null 2>&1 || { sudo -n groupadd --gid ${PDA_ID} pda && sudo -n useradd --uid ${PDA_ID} --gid ${PDA_ID} --create-home --shell /bin/bash pda; }
@@ -316,7 +316,7 @@ export function snapshotDockerfile(commit: string, options: { readonly demo?: bo
     `FROM ${SNAPSHOT_BASE}`,
     "USER root",
     `RUN set -eu; cd /tmp; curl -fsSLo node.tar.xz ${NODE_URL}; echo "${NODE_SHA256}  node.tar.xz" | sha256sum -c -; install -d -m 0755 /opt/node24; tar -xJf node.tar.xz -C /opt/node24 --strip-components=1; chmod -R a+rX /opt/node24; rm -f node.tar.xz`,
-    `RUN set -eu; cd /tmp; curl -fsSLo archil.deb ${ARCHIL_URL}; echo "${ARCHIL_SHA256}  archil.deb" | sha256sum -c -; apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libfuse2t64 fuse3 /tmp/archil.deb; rm -rf /var/lib/apt/lists/* /tmp/archil.deb`,
+    `RUN set -eu; cd /tmp; curl -fsSLo archil.deb ${ARCHIL_URL}; echo "${ARCHIL_SHA256}  archil.deb" | sha256sum -c -; apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates libfuse2t64 fuse3 /tmp/archil.deb; rm -rf /var/lib/apt/lists/* /tmp/archil.deb`,
     `RUN groupadd --gid ${PDA_ID} pda && useradd --uid ${PDA_ID} --gid ${PDA_ID} --create-home --shell /bin/bash pda`,
     `RUN set -eu; install -d -m 0755 ${PACKAGE_DIR}; curl -fsSLo ${PACKAGE_DIR}/package.json https://raw.githubusercontent.com/Parcha-ai/agentrun/${commit}/packages/pi-durable-disk/package.json; curl -fsSLo ${ARCHIL_WRAPPER} https://raw.githubusercontent.com/Parcha-ai/agentrun/${commit}/packages/pi-durable-disk/bin/archil-scoped; env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root ${PACKAGE_INSTALL.join(" ")} --prefix ${PACKAGE_DIR}; ${DEPS_HASH} ${PACKAGE_DIR}/package.json > ${DEPS_STAMP}; ${dropCache}chown -R root:root ${PACKAGE_DIR}; chmod -R a+rX,go-w ${PACKAGE_DIR}`,
     ...(options.demo ? [demoClosureRun(commit)] : []),

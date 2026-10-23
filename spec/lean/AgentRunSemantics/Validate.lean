@@ -108,8 +108,9 @@ def Node.declaredAs : Node → Option String
 
 mutual
 /-- `declaredWrites` exactly as `workflow.ts` computes it: a report's `report_markdown`,
-otherwise the node's `as`; no descent into map bodies or child workflows. It ignores
-labels, `<as>$answers`, `<as>$verify` and code patches. -/
+otherwise the node's `as`, or an unaliased agent's, decide's or extract's label; no descent
+into map bodies or child workflows. It ignores `<as>$answers`, `<as>$verify` and code
+patches, whose keys are known only when the code runs (finding F2). -/
 def declaredWrites : Node → List String
   | .report .. => ["report_markdown"]
   | .map _ _ _ as _ _ fa => (if as.isEmpty then [] else [as]) ++ (match fa with
@@ -121,6 +122,9 @@ def declaredWrites : Node → List String
   | .route _ _ branches _ as _ | .routeValue _ _ branches _ as _ => (match as with
       | some k => if k.isEmpty then [] else [k]
       | none => []) ++ declaredWritesNamed branches
+  | .gen _ label _ as _ _ _ => match as with
+    | some k => if k.isEmpty then (if label.isEmpty then [] else [label]) else [k]
+    | none => if label.isEmpty then [] else [label]
   | n => match n.declaredAs with
     | some k => if k.isEmpty then [] else [k]
     | none => []

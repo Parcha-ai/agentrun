@@ -33,8 +33,8 @@ const writeReceipt = () => writeFile(join(receiptDir, 'verification.json'), JSON
 await writeReceipt();
 const temporary = await mkdtemp(join(tmpdir(), 'agentrun-package-check-'));
 /** The pins for a leg that names its own pi version: every @earendil-works package the lockfile holds is pinned to it, by name. */
-function piLeg({ held }, version) {
-  return { overrides: Object.fromEntries([...held.keys()].map(name => [name, version])), held: new Map([...held.keys()].map(name => [name, new Set([version])])) };
+function piLeg({ overrides, held }, version) {
+  return { overrides: { ...(overrides.zod ? { zod: overrides.zod } : {}), ...Object.fromEntries([...held.keys()].map(name => [name, version])) }, held: new Map([...held.keys()].map(name => [name, new Set([version])])) };
 }
 async function run(command, args, cwd = root, allowFailure = false, commandEnv = env) {
   try { return { ...(await exec(command, args, { cwd, env: commandEnv, maxBuffer: 16 * 1024 * 1024, timeout: 180_000 })), exitCode: 0 }; }
