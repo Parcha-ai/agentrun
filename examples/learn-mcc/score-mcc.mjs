@@ -62,13 +62,50 @@ export const riskOf = (value) => (typeof value === 'string' && RISK_TIERS.includ
 const flagSet = (flags) => (Array.isArray(flags) ? [...new Set(flags.filter((f) => typeof f === 'string'))].sort() : null);
 
 /**
+ * The stage-1 labels (proposal C) by merchant, from the pinned labels file: one line per merchant,
+ * `{ merchant, mcc, allowedTiers, unjudgeable: false, reason: null }` or `{ merchant, mcc: null, allowedTiers: null,
+ * unjudgeable: true, reason }`. The code is the adjudicator's own as recorded (a brand code stays one; scoring compares
+ * it as its generic). A label is `{ mcc, allowedTiers }` (the tiers in rubric order) or `{ unjudgeable }`. A code not
+ * in the code table, tiers that are not one or two adjacent ones, or a merchant labelled twice is refused.
+ */
+export function labelsOf(lines, groups = defaultGroups()) {
+  const labels = {};
+  for (const line of lines) {
+    const id = line?.merchant;
+    if (typeof id !== 'string' || !id) throw new Error('a label line needs its merchant');
+    if (Object.hasOwn(labels, id)) throw new Error(`${id} is labelled twice`);
+    if (line.unjudgeable === true) {
+      labels[id] = { unjudgeable: typeof line.reason === 'string' && line.reason ? line.reason : 'unjudgeable' };
+      continue;
+    }
+    if (line.unjudgeable !== false) throw new Error(`${id}: unjudgeable must be true or false`);
+    const mcc = typeof line.mcc === 'string' && /^\d{4}$/.test(line.mcc) ? line.mcc : null;
+    if (mcc === null || groups.codes[mcc] === undefined) throw new Error(`${id}: the label's code is not a code in the table`);
+    const tiers = Array.isArray(line.allowedTiers) ? line.allowedTiers.map(riskOf) : [];
+    const at = [...new Set(tiers.map((t) => RISK_TIERS.indexOf(t)))].sort();
+    if (!tiers.length || tiers.length > 2 || tiers.includes(null) || at.length !== tiers.length || (at.length === 2 && at[1] - at[0] !== 1)) throw new Error(`${id}: the label's tiers must be one tier, or two next to each other`);
+    labels[id] = { mcc, allowedTiers: at.map((i) => RISK_TIERS[i]) };
+  }
+  return labels;
+}
+
+/** labelsOf over a labels-stage1.jsonl file. */
+export const loadStage1Labels = (path, groups = defaultGroups()) => labelsOf(readFileSync(path, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l)), groups);
+
+/**
  * One answer against the teacher block of its merchant row (`merchant.teacher`: { mcc, riskTier, flags }). Per field the
  * answer, the teacher's, right or wrong; a field the teacher has no value for is null, never wrong, and leaves the n.
  * The exact code is compared after genericOf on both sides; `brandMapped` says a brand code was mapped on either side.
  * `riskDistance` is the ordinal distance, 0 to 2. `correct` is the exact code. Reported, never scored: `mccKnown` (the
  * answer is in the code table), the flags and their Jaccard overlap with the teacher's, siteStatus, confidence.
+ *
+ * With `labels` (labelsOf; proposal C) the truth is the merchant's stage-1 label, on both fields: `against` 'stage1',
+ * `mccTeacher` the label's code, `riskTeacher` its allowed tiers (an array), `riskCorrect` the tier being one of them,
+ * `riskDistance` the distance to the nearest, and `correct` the code AND the tier. A merchant with no label, or an
+ * unjudgeable one, is scored against the swarm teacher on the code alone and says why in `labelFallback`. Either way
+ * `mccSwarm` and `mccSwarmCorrect` report the swarm's code beside, deciding nothing. Without `labels` nothing changes.
  */
-export function scoreMcc({ answer, merchant, groups = defaultGroups() }) {
+export function scoreMcc({ answer, merchant, groups = defaultGroups(), labels }) {
   // A call without the merchant row would score every field null and look like a row with no teacher label.
   if (merchant === null || typeof merchant !== 'object') throw new Error('scoreMcc takes { answer, merchant, groups }: the merchant row, its teacher block at merchant.teacher');
   const teacher = merchant.teacher ?? null;
@@ -81,7 +118,7 @@ export function scoreMcc({ answer, merchant, groups = defaultGroups() }) {
   const flagsAnswer = flagSet(answer?.flags);
   const flagsTeacher = flagSet(teacher?.flags);
   const union = flagsAnswer && flagsTeacher ? new Set([...flagsAnswer, ...flagsTeacher]).size : 0;
-  return {
+  const base = {
     against: 'teacher',
     mccAnswer, mccTeacher, mccCorrect, brandMapped,
     mccKnown: mccAnswer !== null && groups.codes[mccAnswer] !== undefined,
@@ -96,12 +133,32 @@ export function scoreMcc({ answer, merchant, groups = defaultGroups() }) {
     confidence: typeof answer?.confidence === 'number' ? answer.confidence : null,
     correct: mccCorrect,
   };
+  if (labels === undefined) return base;
+  // A truth row names the merchant `merchantId`; the runner's job names it `id` (and `cik`, the same domain).
+  const key = merchant.merchantId ?? merchant.id ?? merchant.cik;
+  const label = Object.hasOwn(labels, key) ? labels[key] : null;
+  const swarm = { mccSwarm: mccTeacher, mccSwarmCorrect: mccCorrect };
+  if (label === null || label.unjudgeable) return { ...base, riskTeacher: null, riskCorrect: null, riskDistance: null, ...swarm, labelFallback: label === null ? 'unlabelled' : 'unjudgeable' };
+  const truth = label.mcc;
+  const codeRight = genericOf(mccAnswer, groups) === genericOf(truth, groups);
+  const tierRight = riskAnswer !== null && label.allowedTiers.includes(riskAnswer);
+  return {
+    ...base,
+    against: 'stage1',
+    mccTeacher: truth, mccCorrect: codeRight,
+    brandMapped: genericOf(mccAnswer, groups) !== mccAnswer || genericOf(truth, groups) !== truth,
+    mccGroupTeacher: groupOf(truth, groups), mccGroupCorrect: sameGroup(mccAnswer, truth, groups),
+    riskTeacher: label.allowedTiers, riskCorrect: tierRight,
+    riskDistance: riskAnswer === null ? null : Math.min(...label.allowedTiers.map((t) => Math.abs(RISK_TIERS.indexOf(t) - RISK_TIERS.indexOf(riskAnswer)))),
+    correct: codeRight && tierRight,
+    ...swarm, labelFallback: null,
+  };
 }
 
 const FIELDS = ['mccCorrect', 'mccGroupCorrect', 'riskCorrect'];
 const mean = (values) => (values.length ? values.reduce((a, b) => a + b, 0) / values.length : null);
 
-function tally(rows) {
+function tally(rows, stage1) {
   const out = { n: rows.length };
   for (const field of FIELDS) {
     const scored = rows.filter((r) => typeof r[field] === 'boolean');
@@ -120,6 +177,12 @@ function tally(rows) {
   const costs = rows.map((r) => r.costUsd).filter((c) => typeof c === 'number');
   out.costPerJobUsd = mean(costs);
   out.costUnknown = rows.length - costs.length;
+  if (stage1) {
+    const labelled = rows.filter((r) => r.against === 'stage1');
+    const k = labelled.filter((r) => r.correct === true).length;
+    out.bothCorrect = { k, n: labelled.length, rate: labelled.length ? k / labelled.length : null };
+    out.labelFallback = rows.filter((r) => r.labelFallback).length;
+  }
   return out;
 }
 
@@ -129,18 +192,21 @@ function tally(rows) {
  * rows whose exact code was judged on a T&E brand's generic code (printed under the table). Intervals come from
  * lanes/C1/ci.py (`wilson K N`, and `paired` for arm against arm), not from here. `teacherGroupShare` is the share of
  * teacher codes in each ISO group: 5700-7299 spans restaurants, pharmacies, direct marketing, crypto, lodging and
- * dating, so a group holding most of them makes group agreement a weak signal, and the share shows it.
+ * dating, so a group holding most of them makes group agreement a weak signal, and the share shows it. Rows scored with
+ * stage-1 labels add `bothCorrect` (code and tier right, over the labelled rows) and `labelFallback` (the rows scored
+ * on the swarm's code alone).
  */
 export function summarizeMcc(rows) {
+  const stage1 = rows.some((r) => 'labelFallback' in r);
   const byVertical = {};
   for (const row of rows) (byVertical[row.stratum ?? row.vertical ?? 'unknown'] ??= []).push(row);
   const groups = {};
   for (const row of rows) if (row.mccGroupTeacher) groups[row.mccGroupTeacher] = (groups[row.mccGroupTeacher] ?? 0) + 1;
   const withGroup = Object.values(groups).reduce((a, b) => a + b, 0);
   return {
-    against: 'teacher',
-    overall: tally(rows),
-    byVertical: Object.fromEntries(Object.entries(byVertical).sort(([a], [b]) => a.localeCompare(b)).map(([v, list]) => [v, tally(list)])),
+    against: stage1 ? 'stage1' : 'teacher',
+    overall: tally(rows, stage1),
+    byVertical: Object.fromEntries(Object.entries(byVertical).sort(([a], [b]) => a.localeCompare(b)).map(([v, list]) => [v, tally(list, stage1)])),
     teacherGroupShare: Object.fromEntries(Object.entries(groups).sort(([, a], [, b]) => b - a).map(([g, k]) => [g, k / withGroup])),
   };
 }

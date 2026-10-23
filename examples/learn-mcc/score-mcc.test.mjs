@@ -2,7 +2,7 @@
 // distance, a field the teacher lacks left out of the n, the reported-only fields, and the per-vertical summary.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { genericOf, groupOf, loadGroups, mccOf, riskOf, sameGroup, scoreMcc, summarizeMcc } from './score-mcc.mjs';
+import { genericOf, groupOf, labelsOf, loadGroups, mccOf, riskOf, sameGroup, scoreMcc, summarizeMcc } from './score-mcc.mjs';
 
 const groups = loadGroups();
 const merchant = (teacher, vertical = 'nutra') => ({ merchantId: 'm1', name: 'A Shop', website: 'https://shop.example', vertical, teacher });
@@ -137,4 +137,93 @@ test('the summary counts each field over the rows that score it, per vertical, w
   const seed = { ...scoreMcc({ answer: { mcc: '5999' }, merchant: merchant({ mcc: '5999', riskTier: null, flags: null }, null), groups }), vertical: null, stratum: 'seed' };
   assert.deepEqual(Object.keys(summarizeMcc([seed]).byVertical), ['seed'], 'a seed merchant is counted under its stratum, not as unknown');
   assert.equal(seed.flagsJaccard, null, 'the swarm gives its flags as prose, so there is no list to compare');
+});
+
+// Proposal C: the stage-1 teacher. The truth per merchant is the adjudicator's stage-1 MCC and its allowed tiers; a
+// merchant with no label falls back to the swarm teacher on the code alone.
+const judged = (merchant, mcc, allowedTiers) => ({ merchant, mcc, allowedTiers, unjudgeable: false, reason: null });
+const LABEL_LINES = [
+  judged('m1', '5712', ['low']),
+  judged('m2', '5499', ['medium', 'high']),
+  judged('m3', '3504', ['medium']),
+  { merchant: 'm4', mcc: null, allowedTiers: null, unjudgeable: true, reason: 'the site is behind a bot wall' },
+];
+const labels = labelsOf(LABEL_LINES);
+const row = (merchantId, teacher) => ({ merchantId, name: `${merchantId} shop`, website: `https://${merchantId}.example`, stratum: 'nutra', teacher });
+
+test('stage-1 labels: the code and the allowed tiers per merchant, an unjudgeable one kept as such, a bad line refused', () => {
+  assert.deepEqual(labels, { m1: { mcc: '5712', allowedTiers: ['low'] }, m2: { mcc: '5499', allowedTiers: ['medium', 'high'] }, m3: { mcc: '3504', allowedTiers: ['medium'] }, m4: { unjudgeable: 'the site is behind a bot wall' } });
+  assert.throws(() => labelsOf([LABEL_LINES[0], LABEL_LINES[0]]), /m1 is labelled twice/);
+  assert.throws(() => labelsOf([judged('x', '12', ['low'])]), /x: the label's code/);
+  assert.throws(() => labelsOf([judged('x', 5999, ['low'])]), /x: the label's code/, 'the pinned file writes the code as a string');
+  assert.throws(() => labelsOf([judged('x', '5999', ['low', 'high'])]), /x: the label's tiers/);
+  assert.throws(() => labelsOf([judged('x', '5999', [])]), /x: the label's tiers/);
+  assert.throws(() => labelsOf([{ ...judged('x', '5999', ['low']), unjudgeable: 'no' }]), /x: unjudgeable must be true or false/);
+  assert.throws(() => labelsOf([{ merchantId: 'x', mcc: '5999', allowedTiers: ['low'], unjudgeable: false }]), /needs its merchant/);
+  assert.deepEqual(labelsOf([judged('y', '5499', ['high', 'medium'])]), { y: { mcc: '5499', allowedTiers: ['medium', 'high'] } }, 'tiers in rubric order');
+});
+
+test('C: a right code with an allowed tier is right; a right code with a disallowed tier is WRONG', () => {
+  const right = scoreMcc({ answer: { mcc: '5712', riskTier: 'low' }, merchant: row('m1', { mcc: '5719' }), groups, labels });
+  assert.deepEqual([right.against, right.mccTeacher, right.mccCorrect, right.riskTeacher, right.riskCorrect, right.riskDistance, right.correct], ['stage1', '5712', true, ['low'], true, 0, true]);
+  const wrongTier = scoreMcc({ answer: { mcc: '5712', riskTier: 'high' }, merchant: row('m1', { mcc: '5712' }), groups, labels });
+  assert.deepEqual([wrongTier.mccCorrect, wrongTier.riskCorrect, wrongTier.riskDistance, wrongTier.correct], [true, false, 2, false]);
+  const either = scoreMcc({ answer: { mcc: '5499', riskTier: 'high' }, merchant: row('m2', { mcc: '5499' }), groups, labels });
+  assert.deepEqual([either.riskCorrect, either.correct], [true, true], 'either allowed tier is right');
+  const below = scoreMcc({ answer: { mcc: '5499', riskTier: 'low' }, merchant: row('m2', { mcc: '5499' }), groups, labels });
+  assert.deepEqual([below.riskCorrect, below.riskDistance, below.correct], [false, 1, false], 'the distance is to the nearest allowed tier');
+  const wrongCode = scoreMcc({ answer: { mcc: '5719', riskTier: 'low' }, merchant: row('m1', { mcc: '5719' }), groups, labels });
+  assert.deepEqual([wrongCode.mccCorrect, wrongCode.riskCorrect, wrongCode.correct, wrongCode.mccSwarm, wrongCode.mccSwarmCorrect], [false, true, false, '5719', true], 'the swarm\'s code is reported beside and decides nothing');
+});
+
+test('C: the T&E brand rule holds against the stage-1 code; no answer is wrong on both parts', () => {
+  const brand = scoreMcc({ answer: { mcc: '7011', riskTier: 'medium' }, merchant: row('m3', { mcc: '7011' }), groups, labels });
+  assert.deepEqual([brand.mccCorrect, brand.brandMapped, brand.correct], [true, true, true]);
+  const none = scoreMcc({ answer: null, merchant: row('m1', { mcc: '5712' }), groups, labels });
+  assert.deepEqual([none.mccAnswer, none.mccCorrect, none.riskCorrect, none.riskDistance, none.correct], [null, false, false, null, false]);
+});
+
+test('C: an unjudgeable or unlabelled merchant falls back to the swarm teacher on the code alone, and is flagged', () => {
+  const unjudgeable = scoreMcc({ answer: { mcc: '5999', riskTier: 'low' }, merchant: row('m4', { mcc: '5999', riskTier: null }), groups, labels });
+  assert.deepEqual([unjudgeable.against, unjudgeable.labelFallback, unjudgeable.mccTeacher, unjudgeable.mccCorrect, unjudgeable.riskCorrect, unjudgeable.correct], ['teacher', 'unjudgeable', '5999', true, null, true]);
+  const unlabelled = scoreMcc({ answer: { mcc: '5411', riskTier: 'low' }, merchant: row('m9', { mcc: '5999' }), groups, labels });
+  assert.deepEqual([unlabelled.against, unlabelled.labelFallback, unlabelled.mccCorrect, unlabelled.riskCorrect, unlabelled.correct], ['teacher', 'unlabelled', false, null, false]);
+  assert.equal(scoreMcc({ answer: { mcc: '5712', riskTier: 'low' }, merchant: row('m1', { mcc: '5712' }), groups, labels }).labelFallback, null);
+});
+
+test('C: the label is found by the truth row\'s merchantId, or by the runner job\'s id or cik', () => {
+  const job = (key) => ({ ...key, name: 'm1 shop', website: 'https://m1.example', teacher: { mcc: '5712' } });
+  for (const key of [{ merchantId: 'm1' }, { id: 'm1', cik: 'm1' }, { cik: 'm1' }]) {
+    const r = scoreMcc({ answer: { mcc: '5712', riskTier: 'low' }, merchant: job(key), groups, labels });
+    assert.deepEqual([r.against, r.correct], ['stage1', true], JSON.stringify(key));
+  }
+});
+
+test('with no labels every score is what it was: no new field, the same values', () => {
+  const inputs = [
+    [{ mcc: '5999', riskTier: 'medium', flags: ['subscription'], siteStatus: 'live', confidence: 0.7 }, { mcc: '5999', riskTier: 'Medium', flags: ['subscription'] }],
+    [{ mcc: '7011', riskTier: 'low' }, { mcc: '3504', riskTier: null, flags: null }],
+    [null, { mcc: '5999' }],
+  ];
+  for (const [answer, teacher] of inputs) {
+    const off = scoreMcc({ answer, merchant: merchant(teacher), groups });
+    assert.deepEqual(Object.keys(off), ['against', 'mccAnswer', 'mccTeacher', 'mccCorrect', 'brandMapped', 'mccKnown', 'mccGroupAnswer', 'mccGroupTeacher', 'mccGroupCorrect', 'riskAnswer', 'riskTeacher', 'riskCorrect', 'riskDistance', 'flagsAnswer', 'flagsTeacher', 'flagsJaccard', 'siteStatus', 'confidence', 'correct']);
+    assert.equal(JSON.stringify(scoreMcc({ answer, merchant: merchant(teacher), groups, labels: undefined })), JSON.stringify(off));
+    assert.equal(off.against, 'teacher');
+  }
+});
+
+test('C: the summary adds both-fields right over the labelled rows and the fallback count; without labels it adds nothing', () => {
+  const scored = [
+    scoreMcc({ answer: { mcc: '5712', riskTier: 'low' }, merchant: row('m1', { mcc: '5712' }), groups, labels }),
+    scoreMcc({ answer: { mcc: '5712', riskTier: 'high' }, merchant: row('m1', { mcc: '5712' }), groups, labels }),
+    scoreMcc({ answer: { mcc: '5999', riskTier: 'low' }, merchant: row('m4', { mcc: '5999' }), groups, labels }),
+  ].map((r) => ({ ...r, stratum: 'nutra' }));
+  const s = summarizeMcc(scored);
+  assert.deepEqual(s.overall.bothCorrect, { k: 1, n: 2, rate: 0.5 });
+  assert.equal(s.overall.labelFallback, 1);
+  assert.deepEqual(s.overall.riskCorrect, { k: 1, n: 2, rate: 0.5 });
+  const off = summarizeMcc([scoreMcc({ answer: { mcc: '5999' }, merchant: merchant({ mcc: '5999' }), groups })]);
+  assert.equal('bothCorrect' in off.overall, false);
+  assert.equal('labelFallback' in off.overall, false);
 });
