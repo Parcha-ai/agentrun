@@ -238,6 +238,15 @@ async function drawable<T>(work: () => Promise<T>): Promise<{ value: T } | { una
   }
 }
 
+const byNewest = (a: RunRow, b: RunRow) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+/** A run as the API gives it: the index's row, field by field. */
+const runShown = (run: RunRow): RunRow => ({
+  id: run.id, agent: run.agent, revision: run.revision, kind: run.kind, state: run.state, startedAt: run.startedAt,
+  ...(run.endedAt !== undefined ? { endedAt: run.endedAt } : {}),
+  ...(typeof run.costUsd === "number" ? { costUsd: run.costUsd } : {}),
+  ...(run.summary !== undefined ? { summary: run.summary } : {}),
+});
+
 const badId = (what: string) => ({ status: 400, value: { error: `the ${what} id is not letters, digits, ".", "_" or "-"` } });
 const notFound = (what: string) => ({ status: 404, value: { error: `no such ${what}` } });
 
@@ -274,8 +283,8 @@ const PAGE_FILES: Record<string, { file: string; type: string }> = {
 
 /**
  * Serve the agent store at `store.dir` on 127.0.0.1, as `serveHome` serves a home: `GET /` is the page, `GET /api/store`
- * its agents, `GET /api/agents/:id` one agent and its revisions, and `GET /api/agents/:id/revisions/:revision` one
- * revision against its parent.
+ * its agents, `GET /api/agents/:id` one agent and its revisions, `GET /api/agents/:id/revisions/:revision` one revision
+ * against its parent, and `GET /api/runs?agent=&revision=` the runs, newest first.
  */
 export async function serveStore(store: { readonly dir: string }, options: StoreServeOptions = {}): Promise<ServeHandle> {
   const dir = path.resolve(store.dir);
@@ -284,7 +293,18 @@ export async function serveStore(store: { readonly dir: string }, options: Store
   const read = storeReader(dir, options.openReader ?? defaultReader);
   let views: Promise<WorkflowViews> | undefined;
   const workflow = () => (views ??= options.workflow ? Promise.resolve(options.workflow) : defaultWorkflow());
-  return serveLocal(PAGE_FILES, async (pathname) => {
+  return serveLocal(PAGE_FILES, async (pathname, query) => {
+    if (pathname === "/api/runs") {
+      const filter: { agent?: string; revision?: string } = {};
+      for (const key of ["agent", "revision"] as const) {
+        const value = query.get(key);
+        if (value === null) continue;
+        if (!ID_PATTERN.test(value)) return badId(key);
+        filter[key] = value;
+      }
+      const runs = (await read()).runs.filter((run) => (filter.agent === undefined || run.agent === filter.agent) && (filter.revision === undefined || run.revision === filter.revision));
+      return { status: 200, value: [...runs].sort(byNewest).map(runShown) };
+    }
     if (pathname === "/api/store") {
       const view = await read();
       return { status: 200, value: { agents: view.agents.map((agent) => ({ ...agent, revisions: view.revisions.get(agent.id)?.length ?? 0 })) } };

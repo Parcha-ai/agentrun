@@ -893,20 +893,93 @@
     );
   }
 
+  var RUN_STATES = { running: "live", completed: "ok", failed: "error", stopped: "stopped", escalated: "escalated", missing: "missing" };
+  /** A run's state as its own word and class: escalated (a gate stopped it for a person) and missing (its directory is
+   *  gone) are never drawn as failed. */
+  function runState(state) {
+    return pill(Object.prototype.hasOwnProperty.call(RUN_STATES, state) ? RUN_STATES[state] : "ended", state || "ended");
+  }
+
+  function storeRunRow(run) {
+    return el(
+      "a",
+      { class: "run", href: "#/runs/" + encodeURIComponent(run.id) },
+      el("span", { class: "c when" }, el("b", null, when(run.startedAt)), el("small", null, ago(run.startedAt))),
+      el("span", { class: "c state" }, runState(run.state)),
+      el("span", { class: "c rev" }, el("span", { class: "rev-id" }, short(run.revision)), " ", el("span", { class: "word" }, run.kind || "")),
+      el("span", { class: "c cost" }, usd(run.costUsd)),
+      el("span", { class: "c reason" }, run.summary ? clip(run.summary, 160) : ""),
+      el("span", { class: "c id" }, run.id)
+    );
+  }
+
+  function runsApi(agentId, filter) {
+    return "api/runs?agent=" + encodeURIComponent(agentId) + (filter ? "&revision=" + encodeURIComponent(filter) : "");
+  }
+
+  /** The agent's runs across its revisions, with links that filter them by revision; `runs` is the API's answer, or
+   *  { error } when it could not be read. */
+  function storeRuns(agentId, rows, runs, filter) {
+    var filters = [el("a", { class: "filter" + (filter ? "" : " on"), href: agentHref(agentId), "aria-current": filter ? null : "true" }, "All revisions")].concat(
+      rows.map(function (r) {
+        return el("a", { class: "filter" + (filter === r.id ? " on" : ""), href: runsHref(agentId, r.id), "aria-current": filter === r.id ? "true" : null }, el("span", { class: "rev-id" }, short(r.id)), " ", el("span", { class: "word" }, r.kind));
+      })
+    );
+    var list = Array.isArray(runs) ? runs : [];
+    return el(
+      "section",
+      { class: "card runs" },
+      kicker("Runs"),
+      el("h2", null, plural(list.length, "run") + (filter ? " of " + short(filter) : "")),
+      el("nav", { class: "filters", "aria-label": "Runs of one revision" }, filters),
+      runs && runs.error
+        ? failed(runs.error)
+        : list.length
+          ? el("div", { class: "table store", role: "table" }, el("div", { class: "run head", role: "row" }, ["Started", "State", "Revision", "Cost", "Summary", "Run"].map(function (h) { return el("span", { class: "c" }, h); })), list.map(storeRunRow))
+          : el("p", { class: "none" }, filter ? "No runs of this revision yet." : "No runs yet.")
+    );
+  }
+
+  function running(runs) {
+    return Array.isArray(runs) && runs.some(function (r) { return r && r.state === "running"; });
+  }
+
+  /** While one of them is running, the runs are read again every 5 s, and only the runs. */
+  function pollRuns(agentId, rows, filter, token) {
+    later(token, 5000, function () {
+      get(runsApi(agentId, filter)).then(
+        function (runs) {
+          if (token !== view) return;
+          var next = storeRuns(agentId, rows, runs, filter);
+          if (runsNode && runsNode.parentNode === app) app.replaceChild(next, runsNode);
+          runsNode = next;
+          if (running(runs)) pollRuns(agentId, rows, filter, token);
+        },
+        function () {
+          if (token === view) pollRuns(agentId, rows, filter, token);
+        }
+      );
+    });
+  }
+
   function agentPage(agentId, filter, token) {
     crumb([[agentId, agentHref(agentId)]]);
-    get("api/agents/" + encodeURIComponent(agentId))
-      .then(function (data) {
+    Promise.all([get("api/agents/" + encodeURIComponent(agentId)), get(runsApi(agentId, filter)).catch(function (error) { return { error: error }; })])
+      .then(function (both) {
         if (token !== view) return;
+        var data = both[0];
         var agent = (data && data.agent) || { id: agentId };
         var rows = data && Array.isArray(data.revisions) ? data.revisions : [];
         crumb([[agent.name || agentId, agentHref(agentId)]]);
         return Promise.all(rows.map(function (row) { return get(revisionApi(agentId, row.id)).catch(function (error) { return { error: error }; }); })).then(function (details) {
           if (token !== view) return;
+          runsNode = storeRuns(agentId, rows, both[1], filter);
           show([
             agentHead(agent),
+            runsNode,
             el("section", { class: "card revs" }, kicker("Revisions"), el("h2", null, plural(rows.length, "revision") + (rows.length > 1 ? ", newest first" : "")), rows.length ? rows.map(function (row, i) { return revisionBlock(agentId, row, details[i]); }) : el("p", { class: "none" }, "No revisions yet.")),
           ]);
+          if (running(both[1])) pollRuns(agentId, rows, filter, token);
         });
       })
       .catch(function (error) {
@@ -916,14 +989,17 @@
 
   function revisionPage(agentId, id, token) {
     crumb([[agentId, agentHref(agentId)], [short(id), revisionHref(agentId, id)]]);
-    Promise.all([get("api/agents/" + encodeURIComponent(agentId)), get(revisionApi(agentId, id))]).then(
-      function (both) {
+    Promise.all([get("api/agents/" + encodeURIComponent(agentId)), get(revisionApi(agentId, id)), get(runsApi(agentId, id)).catch(function (error) { return { error: error }; })]).then(
+      function (got) {
         if (token !== view) return;
-        var agent = (both[0] && both[0].agent) || { id: agentId };
-        var row = ((both[0] && both[0].revisions) || []).filter(function (r) { return r.id === id; })[0] || (both[1] && both[1].revision) || { id: id };
+        var agent = (got[0] && got[0].agent) || { id: agentId };
+        var rows = (got[0] && got[0].revisions) || [];
+        var row = rows.filter(function (r) { return r.id === id; })[0] || (got[1] && got[1].revision) || { id: id };
         crumb([[agent.name || agentId, agentHref(agentId)], [short(id), revisionHref(agentId, id)]]);
         doc.title = short(id) + " · " + (agent.name || agentId) + " · agent store";
-        show(el("section", { class: "card revs" }, kicker("Revision of " + (agent.name || agentId)), revisionBlock(agentId, row, both[1])));
+        runsNode = storeRuns(agentId, rows, got[2], id);
+        show([el("section", { class: "card revs" }, kicker("Revision of " + (agent.name || agentId)), revisionBlock(agentId, row, got[1])), runsNode]);
+        if (running(got[2])) pollRuns(agentId, rows, id, token);
       },
       function (error) {
         if (token === view) show(failed(error));
