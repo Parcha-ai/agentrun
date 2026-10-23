@@ -1,5 +1,5 @@
 import { LearnError } from "./errors.js";
-import { currentRevision, LIMITS, type Precondition, pruneUses, type Revision, type Trial, type Use } from "./trial.js";
+import { currentRevision, dropUsesOf, LIMITS, type Precondition, pruneUses, type Revision, type Trial, type Use } from "./trial.js";
 
 /** Promote a trial after this many clean uses in a row; demote after this many failed or escalated ones in a row. */
 export const PROMOTION_DEFAULTS = Object.freeze({ promoteAfter: 3, demoteAfter: 2 });
@@ -127,7 +127,8 @@ const gone = (revision: Revision) => revision.status === "retired" || revision.s
  * that; an older one is retired. A digest the trial already holds changes nothing, and a demoted one, or one the trial keeps
  * only as a refusal, is refused: only a changed document, a new digest, can be tried under the name again. Only the live
  * and restorable revisions count toward `LIMITS.revisions`: when the trial would hold more, its oldest retired and demoted
- * revisions move to `refused`, and admission stops only when the live ones fill the limit or `refused` is full.
+ * revisions move to `refused`, and admission stops only when the live ones fill the limit. A full `refused` keeps its newest
+ * `LIMITS.refused` digests: the oldest leaves, with any kept use that names it, and can be tried again.
  */
 export function admitRevision(trial: Trial | undefined, input: AdmitRevision): Admission {
   const held = trial?.revisions.find((r) => r.sha256 === input.sha256);
@@ -150,10 +151,11 @@ export function admitRevision(trial: Trial | undefined, input: AdmitRevision): A
   // `revisions` and keep only their digests in `refused`; a trial that keeps refusals stays that compact from then on.
   const compact = (trial?.refused?.length ?? 0) > 0 || revisions.length + 1 > LIMITS.revisions;
   const moved = compact ? revisions.filter(gone) : [];
-  const refused = [...(trial?.refused ?? []), ...moved.map((r) => r.sha256)];
-  if (refused.length > LIMITS.refused) return { status: "refused", reason: "limit", detail: `${input.name} already keeps ${LIMITS.refused} refused digests` };
+  const all = [...(trial?.refused ?? []), ...moved.map((r) => r.sha256)];
+  const refused = all.slice(Math.max(0, all.length - LIMITS.refused));
   const kept = moved.length ? revisions.filter((r) => !moved.includes(r)) : revisions;
-  return { status: "admitted", trial: { name: input.name, status: "trial", when: input.when, revisions: [...kept, fresh], uses: trial?.uses ?? [], ...(refused.length ? { refused } : {}) } };
+  const admitted: Trial = { name: input.name, status: "trial", when: input.when, revisions: [...kept, fresh], uses: trial?.uses ?? [], ...(refused.length ? { refused } : {}) };
+  return { status: "admitted", trial: dropUsesOf(admitted, all.slice(0, all.length - refused.length)) };
 }
 
 export type IgnoredUse = { readonly use: Use; readonly reason: "unknown_revision" | "author" | "duplicate" | "same_run" };
