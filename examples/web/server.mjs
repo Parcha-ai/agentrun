@@ -6,12 +6,12 @@
 // pass --host.
 // Routes follow Grep's: GET /runs, GET /runs/{id}, GET /runs/{id}/timeline (SSE while live, JSON when released),
 // GET /runs/{id}/files[/{path}], POST /runs, POST /runs/{id}/messages, POST /runs/{id}/stop, GET /search?q=; and GET
-// /agent (the agent and its saved sign-ins, never their refs) and GET /runs/{id}/frames[/{sha256}.jpg] (what the run's
-// browser showed, for the page's replay player).
+// /agent (the agent, its saved sign-ins, never their refs, and its memory files) and GET /runs/{id}/frames[/{sha256}.jpg]
+// (what the run's browser showed, for the page's replay player).
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { lstat, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { lstat, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
 import { basename, dirname, extname, join, resolve } from "node:path";
@@ -19,8 +19,11 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { AGENT_STORE_FILE, carryBack, readAgentHome, startRun } from "@parcha/pi-durable-agent";
+import { browserbaseProvider } from "@parcha/pi-browser/providers/browserbase";
 import { timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { ensureAgentHome } from "./agent/home.mjs";
+import { finishHandOff, handOffMemory, readMemory } from "./agent/memory.ts";
+import { judgeOf, lookups, PROMPT_FILE, promptForRun, searchLookup, wikipediaLookup } from "./agent/select.ts";
 import { costOf, lastRow, RUN_ID, stateOf } from "./page/source.js";
 import { readRunEntries } from "./replay.mjs";
 
@@ -124,9 +127,11 @@ function doorOf(record) {
 /**
  * `home` is an agent home (`ensureAgentHome`); `watchMs` is how often a run this server started is checked for its answer.
  * `origin` is the address people open the page at (default: the address it binds), which a local Chrome's live view
- * allows to frame it and checks its WebSockets against.
+ * allows to frame it and checks its WebSockets against. With `prompting` ({ judge, lookup }: Jev and the lookup,
+ * agent/select.ts) and prompt variants in the home, each run's prompt is chosen before it starts (`choosePrompt`):
+ * `startRun` records it, and `prompt.json` beside the run says how.
  */
-export async function startServer({ home, host = "127.0.0.1", port = 0, start = [], allowHosts = [], watchMs = 2_000, origin }) {
+export async function startServer({ home, host = "127.0.0.1", port = 0, start = [], allowHosts = [], watchMs = 2_000, origin, prompting }) {
   const root = join(home.dir, "runs");
   const children = new Map();
   const exits = new Map();
@@ -263,12 +268,13 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     }
   }
 
-  /** What a live run is doing, the way its page shows it: working, waiting for the person, or idle. */
+  /** What a live run is doing, the way its page shows it: working, waiting for the person, or idle, from the door's rows
+   *  and whether a turn of the agent is running, as the page reads them. The door's busy says only that it is doing
+   *  something (letting go of its browser, for one); it is the state only when the rows cannot be read. */
   async function doorState(door) {
     const busy = await fetch(new URL("/status", door), { signal: AbortSignal.timeout(800) }).then((r) => r.json()).then((s) => s.busy?.kind ?? null, () => null);
-    if (busy !== "idle") return { busy, state: busy === "busy" ? "working" : null, rows: null };
     const live = await doorRows(door).catch(() => null);
-    return { busy, state: live ? stateOf(live.rows, live.working, true) : null, rows: live?.rows ?? null };
+    return { busy, state: live ? stateOf(live.rows, live.working, true) : busy === "busy" ? "working" : null, rows: live?.rows ?? null };
   }
 
   async function summary(run) {
@@ -315,7 +321,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   async function agentInfo() {
     const state = await homeState();
     const own = (record, key) => (Object.hasOwn(record, key) ? record[key] : undefined);
-    return { name: state.definition.name, signIns: Object.entries(state.profiles).map(([key, profile]) => signInOf(key, profile, own(state.leases, key), state.runs)) };
+    return { name: state.definition.name, signIns: Object.entries(state.profiles).map(([key, profile]) => signInOf(key, profile, own(state.leases, key), state.runs)), memory: await readMemory(home.dir) };
   }
 
   /** The saved sign-ins a run started with (web.json, written when it was started): ready, and the run's to use. */
@@ -391,7 +397,8 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       if (run.index.endedAt) return void (children.get(id) === child && child.kill("SIGTERM"));
       const door = doorOf(run.record);
       const live = door ? await doorState(door).catch(() => null) : null;
-      if (live?.state !== "idle" || !answerOf(live.rows)) continue;
+      // A door that is busy (a message taken and its turn not begun, for one) is never released.
+      if (live?.busy !== "idle" || live.state !== "idle" || !answerOf(live.rows)) continue;
       if (children.get(id) === child) child.kill("SIGTERM");
       return;
     }
@@ -408,9 +415,12 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     const answer = answerOf(rows);
     if (!answer) return;
     const cost = costOf(rows);
-    await carryBack(home, { runId: id }, { outcome: "completed", finalAnswer: clip(answer.text ?? answer.summary ?? "", 2_000), ...(cost == null ? {} : { cost }) });
+    const back = await carryBack(home, { runId: id }, { outcome: "completed", finalAnswer: clip(answer.text ?? answer.summary ?? "", 2_000), ...(cost == null ? {} : { cost }) });
     carried.add(id);
     reread();
+    // The run's memory goes home with its sign-in, from the run that owns the sign-in only; a copy that fails or a stop
+    // before it is finished by the next server (memory.ts).
+    await handOffMemory(home.dir, run.work, back);
   }
 
   /**
@@ -465,9 +475,17 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     if (typeof content !== "string" || !content.trim()) throw new HttpError(400, "content must be a non-empty string");
     if (!start.length) throw new HttpError(501, "this server has no --start command, so it cannot start a run");
     const id = `r${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`;
-    const { profiles } = await homeState();
-    const run = await startRun(home, { runId: id, host: HOST });
+    const state = await homeState();
+    const { profiles } = state;
+    // Before the run exists: Jev on the input, a lookup when it is unsure, and the variant it gets (null: no variants).
+    const chosen = prompting ? await promptForRun({ stored: state.prompts, input: content.trim(), judge: prompting.judge, lookup: prompting.lookup }) : null;
+    const run = await startRun(home, { runId: id, host: HOST, ...(chosen ? { prompt: chosen.prompt } : {}) });
     reread();
+    if (chosen) {
+      const file = join(run.dir, PROMPT_FILE);
+      await writeFile(`${file}.tmp`, `${JSON.stringify(chosen.record, null, 2)}\n`, { mode: 0o600 });
+      await rename(`${file}.tmp`, file);
+    }
     // The saved sign-ins this run starts with: ready ones it holds the save lease for (the others reach it without a ref).
     const signedIn = run.leases.filter((key) => profiles[key]?.state === "ready").map((key) => ({ key, provider: profiles[key].provider, sites: signInOf(key, profiles[key], null, {}).sites }));
     await writeFile(join(run.dir, "web.json"), JSON.stringify({ title: clip(content.trim().replace(/\s+/g, " "), 80), createdAt: new Date().toISOString(), signedIn }));
@@ -706,7 +724,9 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   await new Promise((resolve, reject) => (server.once("error", reject), server.listen(port, host, resolve)));
   const address = server.address();
   if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...allowHosts].map((h) => `${h.toLowerCase()}:${address.port}`));
-  // A run released before this server last stopped, and never carried back, is carried back now.
+  // The memory a run carried back before this server last stopped still owed the home, then each run released and never
+  // carried back.
+  await finishHandOff(home.dir).catch((error) => console.error(`memory: ${error.message}`));
   for (const [id, entry] of Object.entries((await homeState()).runs)) if (!entry.endedAt) track(id, settle(id));
 
   const url = `http://${host.includes(":") ? `[${host}]` : host}:${address.port}`;
@@ -738,14 +758,19 @@ async function main() {
       host: { type: "string", default: "127.0.0.1" },
       port: { type: "string", default: "8787" },
       start: { type: "string", default: process.env.AGENT_RUN_LAUNCHER ?? "" },
+      agent: { type: "string", default: join(HERE, "agent") },
       "allow-host": { type: "string", multiple: true, default: [] },
       origin: { type: "string" },
     },
   });
-  const home = await ensureAgentHome(values.home);
+  // The agent a new home is made from (agent.json and skills/). A home that keeps prompt variants gets each run's chosen
+  // by Jev, with a Browserbase web search (on a key) and Wikipedia's summary as the lookup.
+  const home = await ensureAgentHome(values.home, resolve(values.agent));
+  const search = process.env.BROWSERBASE_API_KEY ? browserbaseProvider({ env: process.env }) : null;
+  const prompting = { judge: judgeOf(process.env), lookup: lookups(...(search ? [searchLookup((request, signal) => search.search(request, signal))] : []), wikipediaLookup()) };
   const launcher = join(HERE, "agent", "start-run.mjs");
   const start = values.start.trim() ? values.start.split(/\s+/).filter(Boolean) : existsSync(launcher) ? [process.execPath, launcher] : [];
-  const server = await startServer({ home, host: values.host, port: Number(values.port), start, allowHosts: values["allow-host"], ...(values.origin ? { origin: values.origin } : {}) });
+  const server = await startServer({ home, host: values.host, port: Number(values.port), start, allowHosts: values["allow-host"], prompting, ...(values.origin ? { origin: values.origin } : {}) });
   if (!isLoopback(values.host)) console.error(`warning: ${values.host} is not loopback. This server has no sign-in: anyone who can reach it can read the runs' files and start agents.`);
   console.log(`runs app on ${server.url}/ (agent home ${home.dir})`);
   const stop = () => server.close().then(() => process.exit(0));

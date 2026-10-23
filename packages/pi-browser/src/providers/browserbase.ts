@@ -74,7 +74,9 @@ export const setDownloadBehavior = (url: string, options: { downloadPath?: strin
 
 export type BrowserbaseProvider = BrowserProvider & { readonly name: "browserbase" };
 
-const CAPS: ProviderCaps = { timeoutModel: "wall-clock", maxLifetimeS: 21_600, survivesDisconnect: true, releaseIsAsync: true, profiles: true, extension: "uploaded-per-launch", settings: { proxies: true, verified: true, geolocation: true, region: true, context: true } };
+const CAPS: ProviderCaps = { timeoutModel: "wall-clock", maxLifetimeS: 21_600, survivesDisconnect: true, releaseIsAsync: true, profiles: true, extension: "uploaded-per-launch", settings: { proxies: true, verified: true, geolocation: true, region: true, context: true },
+  // A session is created with `allowedDomains` from the policy's allow list, which Browserbase enforces.
+  navigationAllow: true };
 const notFound = (e: unknown): boolean => (e as { status?: number } | null)?.status === 404;
 /** One signal for whichever of these there is (a store may call `make` without its limit). */
 const stopWhen = (...signals: Array<AbortSignal | undefined>): AbortSignal | undefined => { const some = signals.filter((s): s is AbortSignal => s !== undefined); return some.length > 1 ? AbortSignal.any(some) : some[0]; };
@@ -141,8 +143,7 @@ export function browserbaseProvider(options: BrowserbaseOptions = {}): Browserba
     applyBrowserbaseNoProxy(env);
     const mod: { default: BrowserbaseConstructor; Browserbase: BrowserbaseConstructor } = await import(["@browserbasehq", "sdk"].join("/"));
     const Browserbase = mod.default ?? mod.Browserbase;
-    const fetch = await directFetch();
-    return new Browserbase({ apiKey, baseURL: baseUrl, ...(fetch ? { fetch } : {}) });
+    return new Browserbase({ apiKey, baseURL: baseUrl, fetch: await directFetch() });
   })());
 
   const extension = (): Promise<string> => options.extensionId
@@ -310,7 +311,7 @@ export function browserbaseProvider(options: BrowserbaseOptions = {}): Browserba
         const rec = (await client()).sessions.recording?.downloads;
         const found = (await rec?.list(ref.id))?.downloads?.find((d) => String(d.pageId) === id && d.status === "COMPLETED" && d.downloadUrl);
         if (!found?.downloadUrl) throw new Error(`no rendered recording ${id} for session ${ref.id}`);
-        const response = await ((await directFetch()) ?? fetch)(found.downloadUrl);
+        const response = await (await directFetch())(found.downloadUrl);
         if (!response.ok || !response.body) throw new Error(`recording download answered ${response.status}`);
         return response.body as ReadableStream<Uint8Array>;
       },

@@ -4,14 +4,9 @@ import { pdfiumProvider } from "@parcha/pi-vision/providers/pdfium";
 import { popplerProvider } from "@parcha/pi-vision/providers/poppler";
 import { unpdfProvider } from "@parcha/pi-vision/providers/unpdf";
 import { fixtureDir, letterPdf, mixedPdf, scanPdf, textPdf } from "@parcha/pi-vision/testing";
-import { HEADER, jobRows, sharpFactory, table, writeFiles } from "./support.mjs";
+import { HEADER, jobRows, sharpFactory, table, text, writeFiles } from "./support.mjs";
 
 const DPI = 150;
-
-const text = async (provider, file, call) => {
-  const out = await provider.text(file.source, {}, call);
-  return { bytes: out.pages.reduce((sum, page) => sum + Buffer.byteLength(page.text), 0), pixels: "-" };
-};
 
 const render = async (provider, file, call) => {
   const out = await provider.render(file.source, { page: file.page, dpi: DPI }, call);

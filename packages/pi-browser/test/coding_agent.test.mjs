@@ -995,3 +995,44 @@ test("the coding agent's handoff wait leaves no abort listener behind on the ses
   assert.equal(getEventListeners(life.signal, "abort").length, before);
   await custody.close("close");
 });
+
+test("an action policy that holds requests (deny or ask) is not silently dropped: the coding agent cannot hold them, so it starts no browser and says why", async (t) => {
+  for (const actions of ["deny", "ask"]) {
+    const backend = fake();
+    const agent = await startAgent(t, { extension: extensionOf(backend, { policy: { actions } }) });
+    const [snap] = await agent.run(turn(["snapshot"]));
+    assert.equal(snap.isError, true, `${actions}: ${snap.text}`);
+    const answer = failure(snap.text);
+    assert.equal(answer.code, "browser_unavailable", `${actions}: ${snap.text}`);
+    assert.match(answer.message, /action policy/);
+    assert.equal(backend.tally().creates, 0, `${actions}: no browser is started that would send requests unheld`);
+  }
+  // The control: `allow` holds nothing, so the browser serves as before.
+  const backend = fake();
+  const agent = await startAgent(t, { extension: extensionOf(backend, { policy: { actions: "allow" } }) });
+  const [snap] = await agent.run(turn(["snapshot"]));
+  assert.equal(snap.isError, false, snap.text);
+});
+
+test("a navigation policy the provider cannot enforce refuses the session, naming the part and the provider; an allow list the provider enforces browses", async (t) => {
+  const cases = [
+    { policy: { navigation: { block: ["evil.test"] } }, caps: { navigationAllow: true }, part: /navigation\.block/ },
+    { policy: { navigation: { allow: ["example.test"] } }, caps: {}, part: /navigation\.allow/ },
+  ];
+  for (const { policy, caps, part } of cases) {
+    const backend = fake({ name: "nav-fake", caps });
+    const agent = await startAgent(t, { extension: extensionOf(backend, { policy }) });
+    const [snap] = await agent.run(turn(["snapshot"]));
+    assert.equal(snap.isError, true, `${JSON.stringify(policy)}: ${snap.text}`);
+    const answer = failure(snap.text);
+    assert.equal(answer.code, "refused");
+    assert.match(answer.message, part);
+    assert.match(answer.message, /nav-fake/, "the refusal names the provider");
+    assert.equal(backend.tally().creates, 0, "no session browses without the policy");
+  }
+  // A provider that declares it enforces an allow list browses under one.
+  const backend = fake({ caps: { navigationAllow: true } });
+  const agent = await startAgent(t, { extension: extensionOf(backend, { policy: { navigation: { allow: ["example.test"] } } }) });
+  const [snap] = await agent.run(turn(["snapshot"]));
+  assert.equal(snap.isError, false, snap.text);
+});

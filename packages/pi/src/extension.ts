@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { Compile } from 'typebox/compile';
-import { checkHostTools } from './host-tools.js';
+import { assertHostTools, SUBMIT_TOOL } from './host-tools.js';
 import { Text } from '@earendil-works/pi-tui';
 import {
   createReadToolDefinition, createBashToolDefinition, createEditToolDefinition, createWriteToolDefinition,
@@ -36,6 +36,8 @@ const constructors = {
   write: createWriteToolDefinition, grep: createGrepToolDefinition, find: createFindToolDefinition, ls: createLsToolDefinition,
 };
 const mutatingTools = new Set(['bash', 'edit', 'write']);
+/** The extension's own tool's name, which a host tool may not take. */
+const toolName = 'agentrun';
 const help = 'Describe a task: /agentrun <what you want done>\nTry support triage: /agentrun triage (fictional, no model calls)\nInspect: /agentrun · Change input: /agentrun input\nSave: /agentrun save <name> · Load: /agentrun load <name>\nLibrary: /agentrun list · History: /agentrun history\nRun: /agentrun run · Dry run: /agentrun dry-run · SOP text: /agentrun sop <file> · Setup: /agentrun status\nStop: /agentrun stop (closing the inspector does not stop a run)\nOther examples: /agentrun demo | demo empty | demo live';
 const textResult = (text: string, details: unknown = {}) => ({ content: [{ type: 'text' as const, text: safe(text) }], details });
 function singleTextInput(workflow: unknown): string | undefined {
@@ -121,7 +123,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
   const toolSet = (ctx: ExtensionContext, trusted = false): PiToolDefinition[] => {
     if (configuration.hostTools) {
       const supplied = configuration.hostTools(ctx);
-      checkHostTools(supplied, { reserved: ['agentrun', 'submit'], executable: true });
+      assertHostTools(supplied, { reserved: [toolName, SUBMIT_TOOL], executable: true });
       return supplied.map(tool => ({ ...tool, parameters: structuredClone(tool.parameters), ...(tool.resultSchema ? { resultSchema: structuredClone(tool.resultSchema) } : {}) }));
     }
     const active = new Set(pi.getActiveTools());
@@ -426,7 +428,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
   };
 
   pi.registerTool({
-    name: 'agentrun', label: 'AgentRun workflow',
+    name: toolName, label: 'AgentRun workflow',
     description: `Use the ${AUTHOR_SKILL_NAME} skill to compose workflows.` + ' Describe lists available tools and their schemas. Inspect or run an AgentRun DSL workflow in this Pi session. First inspect to show its graph. Dry-run checks the inspected workflow on synthetic values (or the given input) with no model, Jev or tool call; code runs only with the user command /agentrun dry-run --trusted. Agent nodes capture the active Pi model when execution starts. Code needs the user command /agentrun run --trusted for each run. ' + (configuration.hostTools
       ? 'Only the explicit host-configured tools are available, including during trusted runs. Outer permission hooks are not inherited. '
       : 'Enabled read-only Pi built-ins are available to declared steps. Shell/write/edit need the trusted command for each run; custom extension tools and permission hooks are not inherited. The search and support_demo tools use fictional supplied sources only. ') + 'Save stores a named procedure revision, not its input or permission. Load preflights current host capabilities. A run this session left interrupted or failed resumes from its journal when its draft, input, SOP and tools are unchanged; any other run starts new. Scripted demos stay scripted on rerun.',

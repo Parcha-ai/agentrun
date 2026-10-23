@@ -4,12 +4,14 @@ import { lstat, mkdir, mkdtemp, open, readdir, readFile, readlink, rm, stat, sym
 import os from "node:os";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
-import { BrowserFailureError, PROFILE_NAME } from "../core/custody.js";
+import { BrowserFailureError, PROFILE_NAME, refusedError } from "../core/custody.js";
+import { browserFailure } from "../core/failures.js";
 import type { AttachTarget, BrowserProvider, ProviderCaps, RemoteFile, SavedProfile } from "../core/host.js";
 import type { LeaseRef, ResourceStatus } from "../core/lease.js";
 import { cdpCall } from "./cdp-call.js";
 import { chromeTail, openChromeStderr, watchChromeStderr } from "./chrome-stderr.js";
 import { claimWriter, freeWriter, noteWriter } from "./profiles.js";
+import { chromeArgs } from "./chrome-args.js";
 
 export type CdpOptions =
   /** An existing browser: `http://host:port` or a `ws://` debugger URL. Release leaves it running. */
@@ -21,36 +23,6 @@ export type CdpOptions =
      *  Chrome cannot start its sandbox (root, a container, confined user namespaces), never because a run is in CI. */
     sandbox?: boolean;
   } };
-
-/** Stagehand 4.1.0's DEFAULT_CHROME_FLAGS (packages/sdk-ts/src/browser/localBrowser.ts, MIT, see NOTICE). Without them
- *  Stagehand.create takes about 24 s on a local Chrome instead of under 100 ms. */
-const CHROME_FLAGS: readonly string[] = [
-  "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider,CalculateNativeWinOcclusion,InterestFeedContentSuggestions,CertificateTransparencyComponentUpdater,AutofillServerCommunication,PrivacySandboxSettings4,RenderDocument",
-  "--disable-component-extensions-with-background-pages",
-  "--disable-background-networking",
-  "--disable-component-update",
-  "--disable-client-side-phishing-detection",
-  "--disable-sync",
-  "--metrics-recording-only",
-  "--disable-default-apps",
-  "--mute-audio",
-  "--no-default-browser-check",
-  "--no-first-run",
-  "--disable-backgrounding-occluded-windows",
-  "--disable-renderer-backgrounding",
-  "--disable-background-timer-throttling",
-  "--disable-ipc-flooding-protection",
-  "--password-store=basic",
-  "--use-mock-keychain",
-  "--force-fieldtrials=*BackgroundTracing/default/",
-  "--disable-hang-monitor",
-  "--disable-prompt-on-repost",
-  "--disable-domain-reliability",
-  "--propagate-iph-for-testing",
-  "--enable-unsafe-extension-debugging",
-  "--remote-allow-origins=*",
-  "--enable-features=WebMCPTesting,DevToolsWebMCPSupport",
-];
 
 const CAPS: ProviderCaps = { timeoutModel: "wall-clock", maxLifetimeS: 86_400, survivesDisconnect: true, releaseIsAsync: false, profiles: false, extension: "loaded-locally", settings: { proxies: false, verified: false, geolocation: false, region: false, context: false } };
 const downloadsDir = (profileRoot: string, tag: string) => path.join(profileDir(profileRoot, tag) + ".downloads");
@@ -131,7 +103,6 @@ const profileDir = (root: string, tag: string): string => {
   return path.join(root, tag);
 };
 const savedDir = (root: string, name: string): string => path.join(root, ".profiles", name);
-const refusal = (message: string) => new BrowserFailureError({ ok: false, code: "refused", retryable: false, effect: "none", message });
 
 /** A copy of a profile another Chrome is writing: that Chrome renames, truncates and deletes its journals and temp files
  *  all the time. A file gone by the time it is reached is skipped. `fs.cp` fails the whole copy on it, and `fs.copyFile`
@@ -162,7 +133,7 @@ export async function copyProfile(from: string, to: string, signal?: AbortSignal
 /** A saved profile lives in `.profiles/<name>`, which no lease tag can name. Saving, the lease's own directory is a link to
  *  it, so release removes the link and never the profile; not saving, it is a copy that leaves the profile as it was. */
 async function prepareProfile(root: string, dir: string, profile: SavedProfile, tag: string, owner: string, signal: AbortSignal, remove: RemoveDir): Promise<void> {
-  if (!PROFILE_NAME.test(profile.name)) throw refusal("browser profile: a profile name is 1 to 64 characters of letters, digits, dot, underscore and dash, starting with a letter or digit. No session was started.");
+  if (!PROFILE_NAME.test(profile.name)) throw refusedError("browser profile: a profile name is 1 to 64 characters of letters, digits, dot, underscore and dash, starting with a letter or digit. No session was started.");
   const saved = savedDir(root, profile.name);
   await rm(dir, { recursive: true, force: true });
   if (!profile.save) {
@@ -179,7 +150,7 @@ async function prepareProfile(root: string, dir: string, profile: SavedProfile, 
   await claimWriter(`${path.resolve(root)}|${profile.name}`, profile.name, tag, owner, signal);
   try {
     const lock = await readlink(path.join(saved, "SingletonLock")).then((value) => /^(.*)-(\d+)$/.exec(value), () => null);
-    if (lock && lock[1] === os.hostname() && alive(Number(lock[2]))) throw refusal(`browser profile "${profile.name}": a Chrome process (${lock[2]}) is using this profile. No session was started.`);
+    if (lock && lock[1] === os.hostname() && alive(Number(lock[2]))) throw refusedError(`browser profile "${profile.name}": a Chrome process (${lock[2]}) is using this profile. No session was started.`);
     await mkdir(path.join(saved, "Default"), { recursive: true });
     await symlink(path.resolve(saved), dir, "dir");
   } catch (error) { freeWriter(tag); throw error; }
@@ -350,8 +321,7 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
         let child: ChildProcess;
         try {
           child = spawn(executablePath, [
-            ...CHROME_FLAGS, ...(sandbox ? [] : ["--no-sandbox"]), ...(headless ? ["--headless=new"] : []), "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1", `--user-data-dir=${dir}`,
-            `--window-size=${spec.viewport.width},${spec.viewport.height}`, ...args, "about:blank",
+            ...chromeArgs({ userDataDir: dir, viewport: spec.viewport, headless, sandbox }), ...args, "about:blank",
           ], { stdio: ["ignore", "ignore", stderrFd ?? "ignore"], detached: true, ...(tmp ? { env: { ...process.env, TMPDIR: tmp } } : {}) });
         } catch (error) {
           // A spawn that throws (an argument with a null byte) starts no child, so nothing else will remove what this start made.
@@ -372,7 +342,7 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
           const tail = chromeTail(tmp);
           const message = `Chrome exited before it opened its debugging port (${signal ?? code})${tail ? `\nChrome said:\n${tail.split("\n").map((line) => `  ${line}`).join("\n")}` : ""}`;
           failed = sandbox && (signal === "SIGABRT" || /sandbox/i.test(tail))
-            ? new BrowserFailureError({ ok: false, code: "browser_unavailable", retryable: false, effect: "none", message: `${message}\n${SANDBOX_HINT}` })
+            ? new BrowserFailureError(browserFailure("browser_unavailable", `${message}\n${SANDBOX_HINT}`))
             : new Error(message);
         });
         if (child.pid === undefined) {

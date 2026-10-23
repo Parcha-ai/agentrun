@@ -15,7 +15,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { carryBack, durableProfileStore, readAgentHome, startRun } from "@parcha/pi-durable-agent";
+import { carryBack, durableProfileStore, readAgentHome, setPrompts, startRun } from "@parcha/pi-durable-agent";
 import { foldCalls, groupTimeline } from "@parcha/pi-durable-agent/timeline";
 import { PROFILE } from "./agent/app.ts";
 import { ensureAgentHome } from "./agent/home.mjs";
@@ -69,7 +69,7 @@ test("runs are the agent home's, listed newest first, with agent, status, times 
   const at = (hours) => new Date(Date.now() - hours * 3_600_000).toISOString();
   const oldEnd = at(29);
   await makeRun(home, "old", { status: "done", entries: [user(1, "old one"), assistant(2, [text("ok")])], meta: { createdAt: at(30) }, updatedAt: oldEnd });
-  await makeRun(home, "newest", { status: "sleeping", entries: transcript, meta: { title: "Newest run", agent: "Site reporter", createdAt: at(1) } });
+  await makeRun(home, "newest", { status: "sleeping", entries: transcript, meta: { title: "Newest run", agent: "Wren", createdAt: at(1) } });
   await makeRun(home, "middle", { status: "failed", meta: { createdAt: at(5) } });
   await makeRun(home, "broken", { meta: { createdAt: at(100) } });
   writeFileSync(join(root, "broken", "run.json"), "not json");
@@ -77,7 +77,7 @@ test("runs are the agent home's, listed newest first, with agent, status, times 
   mkdirSync(join(root, ".hidden"));
   mkdirSync(join(root, "unindexed"));
   const { runs } = await json("/runs");
-  assert.deepEqual(runs.slice(0, 3).map((r) => [r.id, r.status, r.title, r.agent]), [["newest", "sleeping", "Newest run", "Site reporter"], ["middle", "failed", "middle", "Site reporter"], ["old", "done", "old one", "Site reporter"]]);
+  assert.deepEqual(runs.slice(0, 3).map((r) => [r.id, r.status, r.title, r.agent]), [["newest", "sleeping", "Newest run", "Wren"], ["middle", "failed", "middle", "Wren"], ["old", "done", "old one", "Wren"]]);
   assert.equal(runs.length, 4, "the broken run is listed as unknown; a stray file, a dot directory and a directory the runs index does not name are not runs");
   assert.equal((await get("/runs/unindexed")).status, 404);
   assert.equal(runs.find((r) => r.id === "broken").status, "unknown");
@@ -209,12 +209,14 @@ test("a live run that ended on a successful tool result is waiting; one that is 
     working: await fakeDoor({ snapshot: ended, run: true, hold: false }),
     answered: await fakeDoor({ snapshot: [...ended, assistant(4, [text("Done.")])] }),
     failed: await fakeDoor({ snapshot: [...ended.slice(0, 2), result(3, "c1", "submit_form", "boom", true)] }),
+    // Busy with no turn of the agent's: the instance letting go of its browser after the answer.
+    releasing: await fakeDoor({ snapshot: [...ended, assistant(4, [text("Done.")])], busy: true }),
   };
   t.after(() => Promise.all(Object.values(doors).map((d) => d.close())));
   for (const [id, door] of Object.entries(doors)) await makeRun(home, id, { status: "running", door: door.url });
   const states = {};
   for (const id of Object.keys(doors)) states[id] = (await liveRows(get, id)).state;
-  assert.deepEqual(states, { ended: "waiting", working: "working", answered: "idle", failed: "idle" });
+  assert.deepEqual(states, { ended: "waiting", working: "working", answered: "idle", failed: "idle", releasing: "idle" });
   const listed = Object.fromEntries((await (await get("/runs")).json()).runs.map((r) => [r.id, r.state]));
   assert.deepEqual(listed, states, "the history shows each live run in the state its page shows");
 });
@@ -434,7 +436,7 @@ setInterval(() => {}, 1000);
   const pid = server.children.get(id).pid;
   assert.ok(existsSync(join(root, id, "web.json")));
   const summary = await json(`/runs/${id}`);
-  assert.deepEqual([summary.title, summary.agent, summary.live], ["Do the thing", "Site reporter", true]);
+  assert.deepEqual([summary.title, summary.agent, summary.live], ["Do the thing", "Wren", true]);
 
   await makeRun(home, "asleep", { status: "sleeping", entries: transcript });
   assert.equal((await post("/runs/asleep/messages", { content: "wake up" })).status, 200);
@@ -444,6 +446,49 @@ setInterval(() => {}, 1000);
   await server.close();
   assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "the run's process is gone");
   assert.doesNotThrow(() => process.kill(bystander.pid, 0), "a process that is not a run is left alone");
+});
+
+test("a home with prompt variants: each new run's prompt is chosen before it starts, recorded on its entry and in prompt.json; a home without any asks nobody", async (t) => {
+  const door = await fakeDoor();
+  t.after(() => door.close());
+  const dir = await mkdtemp(join(tmpdir(), "web-prompt-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const script = join(dir, "start.mjs");
+  writeFileSync(script, `import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const [door, dir] = process.argv.slice(2);
+mkdirSync(join(dir, "work"), { recursive: true });
+writeFileSync(join(dir, "run.json"), JSON.stringify({ run: "x", status: "running", generation: 1, sealedSeq: null, wakeAt: null, holder: { driver: "local", host: "h", bootId: null, pid: process.pid, since: new Date().toISOString(), serve: door }, heartbeatAt: new Date().toISOString(), updatedAt: new Date().toISOString(), detail: null }));
+process.on("SIGTERM", () => process.exit(0));
+setInterval(() => {}, 1000);
+`);
+  const asked = [];
+  const answers = [{ choice: "nonprofit", probabilities: { public: 0.1, nonprofit: 0.53, other: 0.37 }, confidence: 0.41 }, { choice: "nonprofit", probabilities: { public: 0, nonprofit: 0.95, other: 0.05 }, confidence: 0.95 }];
+  const judge = async (params) => (asked.push(params.state), { answers: { kind: { type: "choice", ...answers.shift() } }, model: "jev-test", cost_usd: 0.00002 });
+  const sources = [{ via: "wikipedia", url: "https://en.wikipedia.org/wiki/Habitat_for_Humanity", title: "Habitat for Humanity" }];
+  const { home, root, post } = await app(t, { start: [process.execPath, script, door.url], prompting: { judge, lookup: async () => ({ text: "A housing charity.", sources }) } });
+
+  const plain = await (await post("/runs", { content: "Do the thing" })).json();
+  assert.equal(existsSync(join(root, plain.id, "prompt.json")), false, "a home with no variants writes no prompt.json");
+  assert.deepEqual([asked.length, (await readAgentHome(home)).runs[plain.id].prompt], [0, undefined], "and asks Jev nothing");
+  // The plain run's message has reached the door before the next run is posted: each message goes out when its run's start command has written run.json, so on a slow first start the second run's message would otherwise arrive first.
+  for (let i = 0; i < 100 && door.submits.length < 1; i++) await new Promise((r) => setTimeout(r, 100));
+
+  await setPrompts(home, [
+    { id: "kind", role: "question", label: "Kind", text: "What kind of organisation is it?", criteria: { public: "listed", nonprofit: "charity", other: "anything else" } },
+    { id: "base", role: "base", label: "Base", text: "Research it." },
+    { id: "public", role: "overlay", label: "Public company", text: "Start at EDGAR.", when: { question: "kind", option: "public", threshold: 0.8 } },
+    { id: "nonprofit", role: "overlay", label: "Non-profit", text: "Start at the 990s.", when: { question: "kind", option: "nonprofit", threshold: 0.8 } },
+    { id: "generic", role: "generic", label: "Not sure", text: "Start at its own site." },
+  ]);
+  const { id } = await (await post("/runs", { content: "  Habitat " })).json();
+  const record = JSON.parse(readFileSync(join(root, id, "prompt.json"), "utf8"));
+  assert.deepEqual([record.version, record.question, record.input, record.variant, record.instructions, record.passes.length, record.lookup.used, record.lookup.sources], [1, "kind", "Habitat", "nonprofit", "Research it.\n\nStart at the 990s.", 2, true, sources]);
+  assert.deepEqual(asked, [{ input: "Habitat" }, { input: "Habitat", lookup: "A housing charity." }], "Jev was asked about the first message, then with what the lookup read");
+  assert.deepEqual((await readAgentHome(home)).runs[id].prompt, { id: "nonprofit", reason: record.reason }, "startRun recorded the choice on the run's entry");
+  assert.equal(statSync(join(root, id, "prompt.json")).mode & 0o777, 0o600);
+  for (let i = 0; i < 100 && door.submits.length < 2; i++) await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(door.submits.map((s) => s.content), ["Do the thing", "  Habitat "], "the run still gets the message as it was sent");
 });
 
 /**
@@ -531,6 +576,9 @@ test("a run that answered is released and carried back once, with the sign-in it
   // while that message is still on its way and the delivery starts the run again.
   for (let i = 0; i < 100 && answered.submits.length < 1; i++) await new Promise((r) => setTimeout(r, 50));
   assert.deepEqual(answered.submits.map((s) => s.content), ["Log in to the practice site and save notes.md"]);
+  // The person said how they want things done; the agent kept it in its memory.
+  mkdirSync(join(home.dir, run.path, "work", "memory"));
+  writeFileSync(join(home.dir, run.path, "work", "memory", "preferences.md"), "- Bills as PDF, newest first\n");
   answered.busy = false;
   for (let i = 0; i < 100 && server.children.has(id); i++) await new Promise((r) => setTimeout(r, 50));
   assert.ok(!server.children.has(id), "the run that answered was released");
@@ -540,6 +588,10 @@ test("a run that answered is released and carried back once, with the sign-in it
   assert.deepEqual([state.runs[id].outcome, state.runs[id].finalAnswer, state.runs[id].cost], ["completed", "Here is the late answer.", 0.06]);
   assert.equal(readFileSync(join(home.dir, run.path, "origin.txt"), "utf8"), server.url, "the run is told the page's origin, for a local Chrome's viewer");
   assert.equal(state.profiles[PROFILE].ref, "ctx-signed-in", "the sign-in went back to the agent home");
+  // The memory goes home right after the carry back's commit.
+  for (let i = 0; i < 100 && !existsSync(join(home.dir, "memory", "preferences.md")); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(readFileSync(join(home.dir, "memory", "preferences.md"), "utf8"), "- Bills as PDF, newest first\n", "and its memory with it");
+  assert.deepEqual((await (await fetch(`${server.url}/agent`)).json()).memory, [{ name: "preferences.md", text: "- Bills as PDF, newest first\n" }]);
 
   // Carried back, the run is finished: a message is refused with a code, and the run is never woken.
   const refused = await post(`/runs/${id}/messages`, { content: "one more?" });
@@ -556,6 +608,36 @@ test("a run that answered is released and carried back once, with the sign-in it
   await new Promise((r) => setTimeout(r, 500));
   assert.ok(server.children.has(second.id), "a run waiting for the person keeps its browser and its process");
   assert.equal((await readAgentHome(home)).runs[second.id].endedAt, undefined);
+});
+
+test("a run carried back whose memory did not reach the home has it copied by the next server", async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), "web-hand-off-"));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const home = await ensureAgentHome(join(tmp, "home"));
+  // Released before the server started: signed in, its answer in its store, a note in its memory.
+  const dir = await makeRun(home, "r1", { status: "sleeping" });
+  const store = join(dir, "store", "run.sqlite");
+  await signInRun(store, { [PROFILE]: { ref: "ctx-1" } });
+  const db = new DatabaseSync(store);
+  const insert = db.prepare("INSERT INTO entries (id, conversation_id, head, commit_seq, record) VALUES (?, ?, NULL, ?, ?)");
+  for (const entry of transcript) insert.run(entry.id, entry.conversationId, entry.id, JSON.stringify(entry));
+  db.close();
+  mkdirSync(join(dir, "work", "memory"), { recursive: true });
+  writeFileSync(join(dir, "work", "memory", "preferences.md"), "- Bills as PDF, newest first\n");
+  // The copy fails: the home holds a folder where the file goes.
+  mkdirSync(join(home.dir, "memory", "preferences.md"), { recursive: true });
+
+  const first = await startServer({ home });
+  await first.close();
+  const state = await readAgentHome(home);
+  assert.deepEqual([state.runs.r1.outcome, state.profiles[PROFILE].ref], ["completed", "ctx-1"], "carried back, its sign-in home");
+  assert.ok(statSync(join(home.dir, "memory", "preferences.md")).isDirectory(), "its memory is not");
+
+  rmSync(join(home.dir, "memory", "preferences.md"), { recursive: true });
+  const second = await startServer({ home });
+  t.after(() => second.close());
+  assert.equal(readFileSync(join(home.dir, "memory", "preferences.md"), "utf8"), "- Bills as PDF, newest first\n");
+  assert.deepEqual((await (await fetch(`${second.url}/agent`)).json()).memory, [{ name: "preferences.md", text: "- Bills as PDF, newest first\n" }]);
 });
 
 test("a message that comes while a run that answered is being carried back waits for it and is refused; the run is never started again", async (t) => {
@@ -695,8 +777,9 @@ test("GET /agent: the saved sign-ins, their sites and when they last worked, nev
   t.after(() => waiting.close());
   const dir = await mkdtemp(join(tmpdir(), "web-signins-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  process.env.FAKE_DOOR = waiting.url;
-  const { home, root, get, post, json } = await app(t, { start: [process.execPath, fakeInstance(dir)] });
+  const instance = fakeInstance(dir);
+  instance.next({ door: waiting.url });
+  const { home, root, get, post, json } = await app(t, { start: instance.start });
   const first = await startRun(home, { runId: "first", host: "test" });
   await signInRun(first.storePath, {
     [PROFILE]: { ref: "ctx-secret-ref", allowedOrigins: ["https://the-internet.herokuapp.com", "not an origin", "https://x.example/path"], startUrl: "https://the-internet.herokuapp.com/login", verifiedAt: "2026-10-16T05:58:00.000Z" },
@@ -707,11 +790,12 @@ test("GET /agent: the saved sign-ins, their sites and when they last worked, nev
   const body = await (await get("/agent")).text();
   assert.ok(!/ctx-secret-ref|ctx-plain-ref|\/login/.test(body), "no ref and no start address");
   assert.deepEqual(JSON.parse(body), {
-    name: "Site reporter",
+    name: "Wren",
     signIns: [
       { key: PROFILE, provider: "browserbase", state: "ready", sites: ["https://the-internet.herokuapp.com"], verifiedAt: "2026-10-16T05:58:00.000Z", heldBy: null },
       { key: "plain", provider: "browserbase", state: "ready", sites: [], verifiedAt: null, heldBy: null },
     ],
+    memory: [],
   });
 
   const { id } = await (await post("/runs", { content: "Log in again" })).json();
