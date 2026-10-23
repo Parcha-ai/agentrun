@@ -15,7 +15,7 @@ import { committedRoutes, documentStore, durableDoc, readJournal } from '@parcha
 const root = mkdtempSync(join(tmpdir(), 'agentrun-document-store-'));
 after(() => rmSync(root, { recursive: true, force: true }));
 
-const open = async (file) => Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: {} }, ctx);
+const open = async (file, storage) => Harness.open(await openNodeSqliteStorage(file, storage), { registry: createRegistry(), models: {} }, ctx);
 
 // Each journal opens as successive processes of one run would: the suite's opens share one Harness, and the file
 // tests below reopen the file itself.
@@ -64,6 +64,18 @@ test('document store: with immutable, the readers open a store no process writes
   assert.deepEqual(readdirSync(directory).sort(), files, 'an immutable read makes no file');
   assert.deepEqual(readJournal(file, 'run-1'), view, 'a plain read gives the same view');
   assert.equal(readJournal(join(directory, 'missing.sqlite'), 'run-1', { immutable: true }), undefined);
+});
+
+test('document store: with no option, the readers see commits that are only in the write-ahead log of a writer still open', async () => {
+  const file = join(mkdtempSync(join(root, 'run-')), 'run.sqlite');
+  const harness = await open(file, { walAutoCheckpointPages: 0 });
+  const journal = await documentStore(harness, 'run-1').open({ binding: 'binding-1', inputs: { workflow: 'digest-a' } });
+  await journal.save({ step: 'done' });
+  await journal.close();
+  assert.equal(existsSync(`${file}-wal`), true);
+  assert.deepEqual(readJournal(file, 'run-1')?.state, { step: 'done' });
+  assert.equal(durableDoc(file, 'agentrun.driver', 'run-1')?.generation, 1);
+  await harness.close(ctx);
 });
 
 test('document store: the readers see a journal from the store file, wherever the host keeps it, without the Harness, as the last commit left it', async () => {
