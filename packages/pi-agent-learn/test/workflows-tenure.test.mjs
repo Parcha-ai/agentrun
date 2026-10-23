@@ -160,6 +160,27 @@ test("a history read that fails is no tenure decision: curate stops and the run 
   assert.deepEqual(again.runs.map((r) => r.run), ["run-03"], "the run was left for the next curate");
 }, { timeout: 300_000 });
 
+test("no lockout: a run in flight that started AFTER the saving run does not hold its save; that revision goes on trial", async (t) => {
+  const h = await host(t);
+  const { digest: trial } = await h.report(await h.start("run-01"), { save: workflowDoc() });
+  const r2 = await h.start("run-02");
+  await h.start("run-03"); // started after run-02, with the trial live, and still in flight
+  const second = await h.report(r2, { input: ESCALATES, save: workflowDoc({ limit: 200 }) });
+  assert.deepEqual([statusOf(second.trial, trial), statusOf(second.trial, second.digest)], ["retired", "trial"], heldWhy(second.curated));
+}, { timeout: 300_000 });
+
+test("a champion is never held: a run's save goes on trial over the champion while an earlier run is in flight, and the champion stays restorable", async (t) => {
+  const h = await host(t);
+  const { digest: champion } = await h.report(await h.start("run-01"), { save: workflowDoc() });
+  await h.report(await h.start("run-02"), { input: CLEAN });
+  const promoted = await h.report(await h.start("run-03"), { input: CLEAN });
+  assert.equal(statusOf(promoted.trial, champion), "active", "the champion");
+  await h.start("run-a"); // starts first and stays in flight
+  const rB = await h.start("run-b");
+  const saved = await h.report(rB, { input: CLEAN, save: workflowDoc({ limit: 200 }) });
+  assert.deepEqual([statusOf(saved.trial, champion), statusOf(saved.trial, saved.digest)], ["superseded", "trial"], heldWhy(saved.curated));
+}, { timeout: 300_000 });
+
 test("with no run in flight nothing is held: a run that ran the trial and saved a fix replaces it, as without a tenure", async (t) => {
   for (const tenure of [true, false]) {
     const h = await host(t, { tenure });
