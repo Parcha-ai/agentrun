@@ -59,7 +59,17 @@ export function isWriter(tag: string): boolean {
 
 /** Context ids are not secrets, and Browserbase has no way to look a context up by name, so the name to id map is the host's.
  *  `resolve` returns the name's context, calling `make` only when there is none, and no two callers may both make one. */
-export type ProfileStore = { resolve(key: string, make: (signal: AbortSignal) => Promise<string>): Promise<string> };
+export type ProfileStore = {
+  resolve(key: string, make: (signal: AbortSignal) => Promise<string>): Promise<string>;
+  /** True when the store writes the ids it holds to a clear file (the default one does). A session vault refuses a provider whose store does. */
+  readonly clear?: boolean;
+};
+
+/** Context ids kept in this process only: for a host that moves them into its own vault, so none lands on disk. */
+export function memoryProfileStore(): ProfileStore {
+  const ids = new Map<string, Promise<string>>();
+  return { clear: false, resolve: (key, make) => { let known = ids.get(key); if (!known) { known = make(AbortSignal.timeout(20_000)); ids.set(key, known); known.catch(() => ids.delete(key)); } return known; } };
+}
 
 const SCHEMA = "pi-browser.profiles.v1";
 type ProfilesFile = { schema: typeof SCHEMA; contexts: Record<string, string> };
@@ -88,6 +98,7 @@ export function fileProfileStore(file: string = defaultProfilesFile(), options: 
   // to run past the lock that protects it.
   const makeLimitMs = options.makeLimitMs ?? 20_000;
   return {
+    clear: true,
     async resolve(key, make) {
       await mkdir(path.dirname(file), { recursive: true });
       return withLock(`${file}.lock`, async () => {
