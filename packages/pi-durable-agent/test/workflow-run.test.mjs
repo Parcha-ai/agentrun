@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { durableDoc, readJournal } from "@parcha/agentrun-pi/durable";
 import { AgentHomeError } from "../dist/index.js";
 import { readWorkflowRun, runWorkflowRevision } from "../dist/workflow.js";
-import { bodyOf, ctx, hostFor, mapDoc, runOf, TOOLS, workflowDoc } from "./workflow-support.mjs";
+import { bodyOf, ctx, hostFor, mapDoc, parallelDoc, runOf, TOOLS, workflowDoc } from "./workflow-support.mjs";
 
 const INPUT = { sku: "sku-1", amount: 10 };
 const runOn = (run, host, options = {}) => runWorkflowRevision({ harness: host.harness, workflows: host.workflows, context: ctx, run, input: INPUT, tools: TOOLS, ...options });
@@ -108,7 +108,7 @@ test("a gate that fires at a named node ends the run escalated: carry and summar
   }
 });
 
-test("a run cancelled while it runs ends stopped, and one whose tool fails ends failed", async () => {
+test("a run cancelled while it runs ends stopped, and one whose tool fails ends failed, the summary naming the call", async () => {
   const stopped = await runOf();
   const cancel = deferred();
   const host = await hostFor(stopped, { onCall: (tool) => { if (tool === "stock.check") cancel.resolve(host.workflows.stop(host.harness, stopped.runId, "cancel", ctx)); } });
@@ -126,12 +126,44 @@ test("a run cancelled while it runs ends stopped, and one whose tool fails ends 
   try {
     const { outcome, carry } = await runOn(failing, down);
     assert.equal(outcome.status, "refused");
-    assert.equal(carry.state, "failed");
+    // The failing call ran: the summary names it after the nodes that completed, as an escalation is named.
+    assert.deepEqual(carry, { state: "failed", summary: "stock; failed at quote fast" });
     const view = await readWorkflowRun(failing);
     assert.equal(view.outcome, "failed");
+    assert.deepEqual(view.status, { "/root": "failed", "/root/steps/0": "done", "/root/steps/1": "failed", "/root/steps/1/branches/fast/body": "failed", "/root/steps/1/branches/slow/body": "not-run" });
     assert.equal("output" in view, false);
   } finally {
     await down.close();
+  }
+});
+
+test("the known limit: in a failed run, a parallel branch only interrupted by the other's failure is drawn failed too", async () => {
+  const run = await runOf({ body: { workflow: parallelDoc(), skills: {}, tools: TOOLS } });
+  const inFlight = deferred();
+  const host = await hostFor(run, {
+    effect: async ({ node, signal }) => {
+      if (node.tool === "prices.slow_quote") {
+        // In flight until the run stops it, when the other call fails.
+        inFlight.resolve();
+        return new Promise((_, reject) => {
+          const stop = () => reject(signal.reason ?? new Error("stopped"));
+          if (signal.aborted) stop(); else signal.addEventListener("abort", stop, { once: true });
+          setTimeout(() => reject(new Error("the run never stopped this call")), 5000).unref();
+        });
+      }
+      await inFlight.promise;
+      throw new Error("the tool is down");
+    },
+  });
+  try {
+    const { outcome, carry } = await runOn(run, host, { input: { sku: "sku-1" } });
+    assert.equal(outcome.status, "refused");
+    assert.deepEqual(carry, { state: "failed", summary: "failed at quote fast, quote slow" });
+    const view = await readWorkflowRun(run);
+    assert.equal(view.outcome, "failed");
+    assert.deepEqual(view.status, { "/root": "failed", "/root/steps/0": "failed", "/root/steps/0/branches/0": "failed", "/root/steps/0/branches/1": "failed" });
+  } finally {
+    await host.close();
   }
 });
 
