@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en" data-serve="store">
+<!-- The serve page on an agent store: page.js fills #app from the server's API, and graph.js, when the package has it, draws a workflow's graph; nothing is inline. -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>Agent store</title>
+<link rel="stylesheet" href="/page.css">
+</head>
+<body>
+<header class="top">
+<a class="brand" href="#/"><span class="mark" aria-hidden="true"></span><span>agent store</span><span class="sub">pi-durable-agent</span></a>
+<nav class="crumbs" id="crumbs" aria-label="Where you are"></nav>
+<button class="theme" id="theme" type="button" title="Light, dark or the system's">auto</button>
+</header>
+<main id="app"><p class="loading">Reading the agent store…</p></main>
+<footer class="foot">@parcha/pi-durable-agent serve: the agent store's own SQLite files, read on this machine.</footer>
+<script src="/graph.js"></script>
+<script src="/page.js"></script>
+</body>
+</html>
