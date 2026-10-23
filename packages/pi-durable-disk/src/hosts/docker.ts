@@ -188,7 +188,7 @@ export function containerStatus(state: DockerState): HostStatus {
 
 export type ContainerInfo = { status: HostStatus; state: string; exitCode: number | null; oomKilled: boolean; error: string; startedAt: string | null; finishedAt: string | null };
 
-export function dockerHost(opts: DockerHostOptions = {}): HostDriver & Required<Pick<HostDriver, "kill" | "kills">> & {
+export function dockerHost(opts: DockerHostOptions = {}): HostDriver & Required<Pick<HostDriver, "kill" | "kills" | "instanceOf">> & {
   readonly fleet: string;
   readonly mountRoot: string;
   describe(handle: HostHandle): Promise<ContainerInfo | null>;
@@ -340,6 +340,7 @@ export function dockerHost(opts: DockerHostOptions = {}): HostDriver & Required<
     fleet,
     mountRoot,
     kills: "box",
+    instanceOf: (h) => (h.driver === "docker" && typeof h.daemon === "string" && typeof h.name === "string" ? `docker\0${h.daemon}\0${h.name}` : undefined),
 
     async start(ref, token, attemptInfo?: StartAttempt) {
       runPath(ref.id);

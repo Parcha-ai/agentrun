@@ -323,7 +323,7 @@ function lastJson<T>(text: string): T | null {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pick<HostDriver, "kill" | "kills">> & { readonly fleet: string; readonly mountRoot: string } {
+export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pick<HostDriver, "kill" | "kills" | "instanceOf">> & { readonly fleet: string; readonly mountRoot: string } {
   const client = opts.client;
   const fleet = opts.fleet ?? "pda";
   const prefix = opts.namePrefix ?? "pda-";
@@ -409,6 +409,7 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pic
     mountRoot,
     kills: "box",
     provider: "daytona",
+    instanceOf: (h) => (h.driver === "daytona" && typeof h.sandboxId === "string" ? `daytona\0${h.sandboxId}` : undefined),
 
     async start(ref: RunRef, mountToken: string, attempt?: StartAttempt): Promise<HostHandle> {
       runPath(ref.id);
