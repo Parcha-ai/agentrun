@@ -96,7 +96,7 @@ export type CurateItem = {
   readonly candidate?: number;
   /** The learning made, kept or touched. */
   readonly id?: string;
-  /** The existing learning a duplicate, supersede or hold refers to. */
+  /** The other learning the item refers to: for a duplicate or a hold, the existing one; for a superseded one, the learning that replaced it. */
   readonly of?: string;
   readonly workflow?: string;
   readonly reason: string;
