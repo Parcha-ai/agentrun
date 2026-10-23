@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPS, groupTimeline, registerLabel, renderText, timelineOf, timelineReducer } from "../dist/timeline/index.js";
+import { CAPS, foldLabel, groupTimeline, registerLabel, renderText, timelineOf, timelineReducer } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
 
 const GREP_FIELDS = [
@@ -510,4 +510,21 @@ test("a tool result carries the round of its call, and a result with no call id 
   assert.deepEqual([paired.tool_use_id, paired.round], ["c1", use.round]);
   assert.deepEqual([orphan.tool_use_id, orphan.round], [null, undefined]);
   assert.equal("round" in orphan, false, "an absent round is not a key");
+});
+
+test("web_search reads as a search, in the past tense: the query scrubbed and cut, no query said plainly, and a run of them is one line", () => {
+  const rows = timelineOf([
+    assistant([call("s1", "web_search", { query: "acme anvils" }), call("s2", "web_search", { query: `see https://x.example/a?token=SECRET9 for ${"details ".repeat(20)}` }), call("s3", "web_search", {})], 0),
+    result("s1", "web_search", "3 results", 1), result("s2", "web_search", "3 results", 1), result("s3", "web_search", "3 results", 1),
+  ]);
+  const [one, two, none] = rows.filter((row) => row.kind === "tool_use").map((row) => row.summary);
+  assert.equal(one, 'Searched the web for "acme anvils"');
+  assert.match(two, /^Searched the web for "see https:\/\/x\.example\/a\?token=… for details details/);
+  assert.doesNotMatch(two, /SECRET9/);
+  assert.ok(two.length <= "Searched the web for \"\"".length + 60, "the query is cut to 60 characters");
+  assert.equal(none, "Searched the web");
+  assert.equal(rows.filter((row) => row.kind === "tool_result").map((row) => row.summary).join("|"), `${one}: ok|${two}: ok|${none}: ok`);
+  const [first] = text(rows).split("\n");
+  assert.match(first, /^\S+\s+Searched the web 3 times: "acme anvils", "see https:\/\/x\.example\/a\?token=… for d\.\.\."\s+3 ok$/);
+  assert.equal(foldLabel("web_search", [{ input: "a", output: null }]), 'Searched the web 1 times: "a"');
 });

@@ -120,7 +120,8 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
   keeps the hardware the create measured (the disk, whether FUSE works), which is kept in a tag set through Modal's API: nothing
   inside the box can write it. A security fact (the Yama setting, the network, the ports) is never taken from a tag on a read error: it is
   left out, unknown. A box made before the tag existed has nothing measured to fall back on: if every try errs, the attach is an error (the box keeps running; try
-  again), never a guess given as measured. `attach` returns `undefined` for a box that does not exist or has ended.
+  again), never a guess given as measured. The workspace setup `attach` repeats can fail too, and then the attach is an error as well (never an ok handle
+  on a box that may have no workspace); nothing is ended or created. `attach` returns `undefined` for a box that does not exist or has ended.
 - `facts()` also reports what the box has, read in it: `diskGb` (the workspace's filesystem, whole GiB; left out when unreadable or over 1 PiB, which is what gVisor's filesystem claims), `ptraceScope`
   (`kernel.yama.ptrace_scope`; a box without the file reads 0; `null` when it could not be read) and `startedAt` (an ISO 8601 UTC
   time; for Modal, the moment it was asked to start).
@@ -811,7 +812,7 @@ same names.
 import { launch, launchState, launchStop } from "@parcha/pi-transport/launch";
 
 const started = await launch(box, "runner", { argv: ["node", "runner.js"], env: { APP_MODE: "home" } }, BACKGROUND_CONTEXT);
-if (!started.ok) throw started.error; // a LaunchError: invalid, unsupported, refused, box, timeout or failed
+if (!started.ok) throw started.error; // a LaunchError: invalid, unsupported, refused, unsafe, box, timeout or failed
 const handle = started.value.launch; // { v: 1, name: "runner" }: JSON, no secret
 const state = await launchState(box, handle, BACKGROUND_CONTEXT); // read from a file in the box
 await launchStop(box, handle, { graceMs: 5_000 }, BACKGROUND_CONTEXT);
@@ -847,12 +848,24 @@ before it makes a box to launch in.
   filling it is taken over after a minute, and a launch that ended is replaced by one caller only.
 - The program's output goes to `out.log` in the launcher's directory, bounded to its tail (`logMaxBytes`), also after
   the program has exited. The launcher holds no pipe to the host.
+- The launcher keeps its files in a spool, `.pi-transport-launch` in the box's `TMPDIR` (or `/tmp`), one directory per
+  launch. The spool and each launch directory must be the launcher's uid's alone: a directory, never a symbolic link
+  (read without following it), owned by that uid, with no group- or other-write bit. Every directory above the spool,
+  up to `/`, must be root's or that uid's, never a symbolic link, with no group- or other-write bit unless it has the
+  sticky bit (as `/tmp` does): else another user could rename the spool away and put another in its place. `TMPDIR` is
+  read as the directory it names (`pwd -P`). Every call checks all of them before it uses them, a spool that already
+  existed like a new one, and the launcher checks them again before it starts a process from them (a restart, its
+  watchdog, the tools user's check) and before a stop's hook. A failed check is `unsafe`, naming the directory and why,
+  and nothing runs from it. A local box makes its own directories (its `home`, `tmp` and `pids`) mode 700.
 - The program's environment is PATH, HOME, LANG (`C.UTF-8`), `PI_TRANSPORT_INCARNATION` (its incarnation) and `env`.
   Nothing of the box runtime's own environment reaches it unless `inheritEnv` names it (default `false`): the
   incarnation unsets every other exported name, and a name the shell cannot unset refuses the incarnation (exit 126).
 - `env` is plain settings kept in a file of the box. Never put a secret in it: a key-shaped name (a `_`-separated
   segment KEY, TOKEN, SECRET, PASSWORD, PASSWD, CREDENTIAL or CREDENTIALS) is refused by name, as are PATH, HOME, LANG
-  and the names the launcher sets.
+  and the names the launcher sets. So are the shell's, the loader's (`LD_*`) and every variable the C library itself strips
+  in secure mode (glibc's `UNSECURE_ENVVARS`: `GCONV_PATH`, `GLIBC_TUNABLES`, `LOCPATH`, `NLSPATH` and the rest, and musl's
+  `MUSL_LOCPATH`; `TMPDIR` excepted), in `env` and `inheritEnv`: `env` is exported before a root launcher drops to `user`, so they would act on
+  that switch. The launcher clears them at every exec that starts its shell, and reads only `/proc`.
 - A box may launch natively (`Box.launcher`, a test's fake box): the three calls then use it, read on every call. A
   provider leaves it undefined.
 - `stdin` (bytes, at most 64 KiB; disk's mount token) is written to EVERY incarnation's stdin and then closed. `secrets`
@@ -881,16 +894,23 @@ before it makes a box to launch in.
   0). It is the user that program runs everything it does not trust as: the user disk's `--run-as` names. A launch with
   `stdin` or `secrets` runs its program as root only with one, and then needs no ptrace scope: a process of the tools
   user cannot attach to a root one without `CAP_SYS_PTRACE`. The launcher checks it in the box, before it reads the frame,
-  in at most 60 s:
+  in at most 60 s (the start's call to the box, a revive's too, is given that and its usual 30 s on top):
   - it exists, is not root and has not the root group (else `invalid`);
   - where the box has `sudo`, `sudo -l -U`, run with no environment but PATH, answers exactly its sentence for a user who
     may run nothing (else `refused`, with sudo's first line);
-  - on every mount without `nosuid`, it can run no setuid or setgid root file and no file with capabilities. Each file is
-    found as root and tested as the tools user, so a directory it can pass through but not list hides nothing. Else the
-    launch is `refused`, naming up to five; a box without `getcap` is `unsupported`.
+  - on every mount without `nosuid`, it can run no setuid or setgid root file and no file with capabilities. The mounts
+    are chosen by filesystem type from the mount table, never by mount point: the kernel's own pseudo filesystems (`proc`,
+    `sysfs`, `cgroup`, `cgroup2`, `devpts`, `mqueue`, `securityfs`, `debugfs`, `tracefs`, `bpf`, `pstore`, `configfs`,
+    `fusectl`, `binfmt_misc`, `efivarfs`) are skipped, and every other type, an unknown one, `tmpfs` and `devtmpfs`
+    included, is walked. Each file is found as root and tested as the tools user, so a directory it can pass through but
+    not list hides nothing. Else the launch is `refused`, naming up to five; a box without `getcap` is `unsupported`. A
+    walk ignores an entry that ends mid-walk only where `find` takes `-ignore_readdir_race` (the control runs it); on a
+    `find` without it (busybox's) that stays `unsupported`, and every other `find` error is `unsupported` on every `find`.
   - the check fails closed: `find` and `getcap` must each report a probe it plants (empty, root's, in the launch's own
     root-only directory, removed before anything runs as the tools user), the tools user's test must pass on its own
-    shell, and a walk that fails on a mount, or finds no mount to walk, is `unsupported`. The image needs `getcap` and
+    shell, and a walk that fails on a mount, or finds no mount to walk, is `unsupported`, as is a getcap line that
+    names no file (a line is read to its file whatever its form: several capability groups, `path = caps`, a path
+    with spaces). The image needs `getcap` and
     `setcap` (Debian's `libcap2-bin`).
   The program gets `PI_TRANSPORT_TOOLS_USER` and `PI_TRANSPORT_TOOLS_UID`; the state reports `toolsUser: { name, uid }`.
 - What `toolsUser` means is the HOST'S guarantee: the program runs everything it does not trust as that user, with no
@@ -908,9 +928,8 @@ before it makes a box to launch in.
   program is gone, and nothing restarts by itself: the host calls `launch` again, and the old state and output are
   still there.
 
-The box needs `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `tail`, `date`, `sleep` and `id`, and for a launch with `stdin` or
-`secrets` a builtin `printf` and `base64`. It is tested on Debian (dash) and
-Alpine (BusyBox).
+The box needs `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `tail`, `date`, `sleep`, `id` and `ls`, and for a launch with
+`stdin` or `secrets` a builtin `printf` and `base64`. It is tested on Debian (dash) and Alpine (BusyBox).
 
 `probeAcknowledgedWrites(box)` in `@parcha/pi-transport/testing` checks that a write a program was told was durable
 survives that program's death: a writer appends ten records, each followed by an `fsync`, then it is killed and a second

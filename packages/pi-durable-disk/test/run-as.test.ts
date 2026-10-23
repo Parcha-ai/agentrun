@@ -281,6 +281,8 @@ test("under --run-as the root instance refuses an --app the agent's commands cou
     ["a read-only mount covered by a writable one at the same point", [rw, appRo, { point: "/opt/pda/app", ro: false, dev: "0:60", root: "/" }], "/opt/pda/app/app.mjs", docker, /uid 1000/],
     ["a read-only mount elsewhere", [rw, { point: "/usr", ro: true, dev: "0:51", root: "/" }, { point: "/opt/pda/ap", ro: true, dev: "8:1", root: "/data/u/app" }], "/opt/pda/app/app.mjs", docker, /uid 1000/],
     ["the run's root, read-only or not", [rw, { point: "/mnt/archil/runs/r1", ro: true, dev: "0:70", root: "/" }], "/mnt/archil/runs/r1/work/app.mjs", base, /inside the run/],
+    // The data root itself mounted read-only: the walk meets the mount AT the root, and the root is still refused.
+    ["the data root itself mounted read-only", [rw, { point: "/mnt/archil", ro: true, dev: "0:80", root: "/", fstype: "ext4" }], "/mnt/archil/apps/app.mjs", { ...base, "/mnt/archil/apps": dir(), "/mnt/archil/apps/app.mjs": file() }, /inside the run/],
     // Read-only at the app's mount point does not make its source read-only: the same source mounted writable anywhere
     // in the instance's table (the same device, an overlapping root) takes the exemption away, even where only root
     // could reach that mount.
@@ -341,6 +343,9 @@ test("under --run-as the root instance refuses an --app the agent's commands cou
   try {
     writeFileSync(join(mine, "app.mjs"), "export default {};\n");
     assert.match(appWritableReason(join(mine, "app.mjs"), "/mnt/archil/runs/r1") ?? "", /uid|writable/);
+    // The default file system resolves a linked data root: a link here to /usr as the root puts /usr/bin/true inside it.
+    symlinkSync("/usr", join(mine, "root"));
+    assert.match(appWritableReason("/usr/bin/true", join(mine, "root")) ?? "", /inside the run's data root \/usr\b/, "a linked data root, by its real path");
     symlinkSync("/usr/bin/true", join(mine, "true"));
     symlinkSync("/usr/bin", join(mine, "bin"));
     assert.match(appWritableReason(join(mine, "true"), "/mnt/archil/runs/r1") ?? "", /uid|writable/, "a link here to root's binary");

@@ -83,6 +83,28 @@ describe("a Modal box and T3's launch frame", () => {
 		await box.destroy(context);
 	});
 
+	it("still reports secretsVia fd on an attach whose read errs every time, so the facts come from the tag's fallback", async () => {
+		const { box, sdk } = await aBox();
+		const sandbox = sdk.sandboxList[0];
+		if (sandbox === undefined) throw new Error("no sandbox");
+		const exec = sandbox.exec.bind(sandbox);
+		let asked = 0;
+		sandbox.exec = async (command, params) => {
+			if (command[0] === "sh" && command[2]?.includes("ptrace_scope")) {
+				asked++;
+				throw new Error("the connection went away");
+			}
+			return exec(command, params);
+		};
+		const attached = getOrThrow(await modalBoxes(sdk, { appName: "a" }).attach(box.id, context));
+		// The read erred on every try, so the tag's measured hardware answered (no Yama setting, network or ports): the provider
+		// constant is still there, or a caller that needs it would fail every start after a transient error.
+		expect(asked).toBeGreaterThan(1);
+		expect(attached?.facts().secretsVia).toBe("fd");
+		expect(attached?.facts()).not.toHaveProperty("ptraceScope");
+		sandbox.exec = exec;
+	});
+
 	it("carries stdin and secrets to every incarnation, and they rest nowhere but the program's pipes", async () => {
 		const { box, sdk, root } = await aBox();
 		const token = `tok-${randomBytes(12).toString("hex")}`;

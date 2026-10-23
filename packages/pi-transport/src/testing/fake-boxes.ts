@@ -460,12 +460,22 @@ const BUILT_INS: [ProgramMatch, Program][] = [
 	],
 ];
 
-const LAUNCH_CODES: ReadonlySet<string> = new Set(["invalid", "box", "timeout", "failed", "unsupported", "refused"]);
+/** Every LaunchErrorCode: a code the launcher adds fails to compile here until it is listed. */
+const LAUNCH_CODES = {
+	invalid: true,
+	box: true,
+	timeout: true,
+	failed: true,
+	unsupported: true,
+	refused: true,
+	unsafe: true,
+} as const satisfies Record<LaunchErrorCode, true>;
 
 /** A launcher call's failure, as the launcher defines it: a `LaunchError` carried inside a scripted result, or a box error by its code. */
 function launchError(error: BoxError): LaunchError {
 	if (error.cause instanceof LaunchError) return error.cause;
-	if (LAUNCH_CODES.has(error.code)) return new LaunchError(error.code as LaunchErrorCode, error.message, error);
+	if (Object.hasOwn(LAUNCH_CODES, error.code))
+		return new LaunchError(error.code as LaunchErrorCode, error.message, error);
 	return new LaunchError("box", error.message, error);
 }
 

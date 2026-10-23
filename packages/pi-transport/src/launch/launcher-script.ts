@@ -1,8 +1,8 @@
 /**
  * The supervisor the host uploads to a box: POSIX `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `date`, `kill`, `sleep`, `id`,
- * and for a framed launch `base64` and a builtin `printf`. It holds no pipe to the host and keeps every fact in files of its
- * own directory, except a framed launch's stdin and secrets, which live only in its processes' memory. It uses no parameter expansion with braces, so
- * that this file can hold it as a raw string.
+ * `ls`, and for a framed launch `base64` and a builtin `printf`. It holds no pipe to the host and keeps every fact in files
+ * of its own directory, except a framed launch's stdin and secrets, which live only in its processes' memory. It uses no
+ * parameter expansion with braces, so that this file can hold it as a raw string.
  */
 const SCRIPT_TEMPLATE = String.raw`@@UNSET@@
 MODE=$1
@@ -28,6 +28,7 @@ ISOLATION=
 HOOK=0
 HOOK_TENTHS=300
 @@PTRACE_FILE@@
+@@MOUNTINFO_FILE@@
 @@TOOLS_CHECK@@
 if [ -r "$D/spec.sh" ]; then . "$D/spec.sh"; fi
 # A framed launch's stdin and secrets (base64), read from this process's stdin: in memory only, never a file, an
@@ -59,14 +60,17 @@ alive() {
 # A signal to a process group. dash wants "--" before a negative pid and BusyBox refuses it, so try both.
 gkill() { kill -s "$1" -- "-$2" 2>/dev/null || kill -s "$1" "-$2" 2>/dev/null; }
 @@GROUP_LIVE@@
+@@DIRECTORY_CHECK@@
+@@CAP_LINE@@
 rd() { cat "$D/$1" 2>/dev/null; }
 wr() { printf '%s\n' "$2" > "$D/$1.$$" && mv "$D/$1.$$" "$D/$1"; }
 current_gen() { sed -n "s/^GEN='\(.*\)'\$/\1/p" "$D/spec.sh" 2>/dev/null; }
 MYGEN=$GEN
 stale() { [ "$(current_gen)" != "$MYGEN" ]; }
-detach() { ( $SETSID sh "$SELF" "$@" </dev/null >/dev/null 2>&1 & ); }
+# Every process started from $SELF reads this directory again: none starts unless it and the spool are still the launcher's own.
+detach() { own_dirs || exit 13; ( $SETSID sh "$SELF" "$@" </dev/null >/dev/null 2>&1 & ); }
 # The same, with this process's frame on the new process's stdin (a pipe from the builtin printf: no argv holds it).
-detach_framed() { ( send_frame | $SETSID sh "$SELF" "$@" >/dev/null 2>&1 & ); }
+detach_framed() { own_dirs || exit 13; ( send_frame | $SETSID sh "$SELF" "$@" >/dev/null 2>&1 & ); }
 
 # An exclusive section: mkdir is atomic. Every section is a few file operations, so a holder that has not let go after 15 s
 # died inside one, and its lock is broken. A section never exits while it holds the lock.
@@ -187,6 +191,8 @@ start_one() {
 
 end_incarnation() {
   n=$1
+  # The process ids it signals and the restart it decides are read from the directory: only from one still the launcher's own.
+  own_dirs || exit 13
   if [ -e "$D/stop.req" ] || stale; then exit 0; fi
   code=$(rd exit.$n)
   pid=$(rd pid.$n)
@@ -438,6 +444,7 @@ verify_tools() {
   if [ "$t_uid" = 0 ]; then echo "INVALID the tools user $t_name is root (uid 0)"; return 8; fi
   if [ "$t_gid" = 0 ]; then echo "INVALID the tools user $t_name has the root group (gid 0)"; return 8; fi
   wr tools "$t_name $t_uid $t_gid"
+  own_dirs || return 13
   rm -f "$D/tools.check"
   if [ -n "$SETSID" ]; then $SETSID sh "$SELF" tools-check "$D" </dev/null > "$D/tools.check" 2>/dev/null & else sh "$SELF" tools-check "$D" </dev/null > "$D/tools.check" 2>/dev/null & fi
   cp=$!
@@ -446,13 +453,13 @@ verify_tools() {
   if alive "$cp"; then
     if [ -n "$SETSID" ]; then gkill KILL "$cp"; else kill -s KILL "$cp" 2>/dev/null; fi
     wait "$cp" 2>/dev/null
-    rm -f "$D/tools" "$D/tools.probe" "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.err"
+    rm -f "$D/tools" "$D/tools.probe" "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.cs" "$D/tools.err"
     echo "UNSUPPORTED the check of the tools user $t_name did not finish in $(( TOOLS_CHECK_CENTIS / 100 )) s"
     return 10
   fi
   wait "$cp" 2>/dev/null
   # A check that died (killed, crashed) left its probe and its scratch files: they go, whatever it answered.
-  rm -f "$D/tools.probe" "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.err"
+  rm -f "$D/tools.probe" "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.cs" "$D/tools.err"
   said=$(grep -E '^(REFUSED|UNSUPPORTED) ' "$D/tools.check" 2>/dev/null | head -1)
   if [ -z "$said" ] && ! grep -qx CHECKED "$D/tools.check" 2>/dev/null; then said="UNSUPPORTED the check of the tools user $t_name ended without an answer"; fi
   rm -f "$D/tools.check"
@@ -460,6 +467,34 @@ verify_tools() {
   rm -f "$D/tools"
   echo "$said"
   case "$said" in REFUSED*) return 12 ;; *) return 10 ;; esac
+}
+
+# The mounts V4 walks, one mount point per line, chosen by FILESYSTEM TYPE (the field after the ' - ' that ends mountinfo's optional
+# fields), never by mount point: every mount that honours setuid bits and file capabilities (no nosuid) EXCEPT the kernel's own
+# pseudo filesystems below. Each of those holds no file anyone could have placed there and no file a program could run with
+# rights it is not given, and their entries come and go while a walk reads them (a process's /proc entry ends mid-walk), so a walk
+# of them can only fail. The list is CLOSED: a type not on it, however unknown (ext4, xfs, btrfs, overlay, tmpfs, devtmpfs, 9p, fuse),
+# is walked, so a setuid file can never hide on a filesystem the launcher did not name.
+#   proc          the process table: entries are processes, and they end mid-walk
+#   sysfs         the kernel's device and driver attributes: generated, no user files
+#   cgroup        cgroup v1 control files: generated
+#   cgroup2       cgroup v2 control files: generated
+#   devpts        pseudo-terminal nodes: generated device nodes
+#   mqueue        POSIX message queues: kernel objects, not files a user can place
+#   securityfs    security modules' control files: generated
+#   debugfs       the kernel's debug files: generated
+#   tracefs       the tracing files: generated
+#   bpf           pinned eBPF objects: kernel objects
+#   pstore        crash-log records the kernel wrote: not executable files
+#   configfs      the kernel's configuration objects: generated
+#   fusectl       the fuse control files: generated
+#   binfmt_misc   binary-format registrations: generated
+#   efivarfs      firmware variables: generated, and some reads of them are refused
+tools_mounts() {
+  awk '
+    BEGIN { n = split("proc sysfs cgroup cgroup2 devpts mqueue securityfs debugfs tracefs bpf pstore configfs fusectl binfmt_misc efivarfs", names, " "); for (i = 1; i <= n; i++) pseudo[names[i]] = 1 }
+    $6 !~ /(^|,)nosuid(,|$)/ { for (i = 7; i <= NF && $i != "-"; i++); if (i < NF && !($(i + 1) in pseudo)) print $5 }
+  ' "$MOUNTINFO_FILE"
 }
 
 # The bounded half of verify_tools, in a process of its own (tools-check): V3 and V4. It prints REFUSED or UNSUPPORTED and why,
@@ -487,7 +522,7 @@ tools_check() {
   # answers only when its tools answer, and an empty answer is never a clean box.
   gc=$(command -v getcap 2>/dev/null)
   [ -n "$gc" ] || { echo "UNSUPPORTED this box has no getcap to measure file capabilities"; return; }
-  [ -r /proc/self/mountinfo ] || { echo "UNSUPPORTED this box has no /proc/self/mountinfo to list its mounts"; return; }
+  [ -r "$MOUNTINFO_FILE" ] || { echo "UNSUPPORTED this box has no $MOUNTINFO_FILE to list its mounts"; return; }
   # The controls: find and getcap must each report a probe planted to be found, or a silent one (an error, a missing feature, a
   # broken binary) would read as a box with nothing in it. The probe is INERT: an empty file, root's, mode 4700 (only root may
   # run it, and empty it runs nothing), with cap_net_raw (which grants nothing on an empty file), in this launch's directory,
@@ -503,6 +538,12 @@ tools_check() {
   [ "$(find "$probe" -xdev \( -perm -4000 -user 0 -o -perm -2000 -group 0 \) -type f -print 2>/dev/null)" = "$probe" ] || { echo "UNSUPPORTED this box's find does not find a planted setuid root file"; return; }
   if ! command -v setcap >/dev/null 2>&1 || ! setcap cap_net_raw+ep "$probe" >/dev/null 2>&1; then echo "UNSUPPORTED this box cannot plant a file capability to check its getcap (setcap)"; return; fi
   case "$(find "$probe" -xdev -type f -perm /111 -exec "$gc" {} + 2>/dev/null)" in "$probe "*) ;; *) echo "UNSUPPORTED this box's getcap does not report a planted file capability"; return ;; esac
+  # A walk reads a directory that others change: an entry that ends between the read and the stat is an error to a find that
+  # does not ignore it. -ignore_readdir_race (GNU find) makes that the one case it ignores, and nothing else: permission and I/O
+  # errors still fail it. It is used only where the control RUNS it, never by what find says: a find that takes it finds the probe
+  # with it, one that does not (busybox) fails and keeps today's strict walk, where a vanished entry stays UNSUPPORTED.
+  race=
+  [ "$(find "$probe" -xdev -ignore_readdir_race -type f -print 2>/dev/null)" = "$probe" ] && race=-ignore_readdir_race
   rm -f "$probe"
   [ ! -e "$probe" ] || { echo "UNSUPPORTED the check cannot remove its probe"; return; }
   # Only now does anything run as the tools user.
@@ -513,7 +554,7 @@ tools_check() {
   # The tools user's test must answer for a file that user can run (its shell): a switch that never runs the test would read every
   # file as one it cannot run.
   $as sh -c 'test -x "$1"' sh "$(command -v sh)" 2>/dev/null || { echo "UNSUPPORTED this box cannot test a file as the tools user $t_name"; return; }
-  awk '$6 !~ /(^|,)nosuid(,|$)/ { print $5 }' /proc/self/mountinfo | sort -u > "$D/tools.mounts"
+  tools_mounts | sort -u > "$D/tools.mounts"
   [ -s "$D/tools.mounts" ] || { echo "UNSUPPORTED the check found no mount to walk"; return; }
   : > "$D/tools.s"
   : > "$D/tools.c"
@@ -521,13 +562,23 @@ tools_check() {
   while IFS= read -r m; do
     m=$(printf '%b' "$m")
     [ -e "$m" ] || { echo "UNSUPPORTED a mount point the check cannot open: $m"; return; }
-    find "$m" -xdev \( -perm -4000 -user 0 -o -perm -2000 -group 0 \) -type f -print 2> "$D/tools.err" >> "$D/tools.s" || { echo "UNSUPPORTED the check could not walk $m: $(head -1 "$D/tools.err" | cut -c1-160)"; return; }
-    find "$m" -xdev -type f -perm /111 -exec "$gc" {} + 2> "$D/tools.err" >> "$D/tools.c" || { echo "UNSUPPORTED the check could not walk $m: $(head -1 "$D/tools.err" | cut -c1-160)"; return; }
+    find "$m" -xdev $race \( -perm -4000 -user 0 -o -perm -2000 -group 0 \) -type f -print 2> "$D/tools.err" >> "$D/tools.s" || { echo "UNSUPPORTED the check could not walk $m: $(head -1 "$D/tools.err" | cut -c1-160)"; return; }
+    find "$m" -xdev $race -type f -perm /111 -exec "$gc" {} + 2> "$D/tools.err" >> "$D/tools.c" || { echo "UNSUPPORTED the check could not walk $m: $(head -1 "$D/tools.err" | cut -c1-160)"; return; }
   done < "$D/tools.mounts"
   found_s=$(sort -u "$D/tools.s" | while IFS= read -r f; do if $as sh -c 'test -x "$1"' sh "$f" 2>/dev/null; then printf '%s\n' "$f"; fi; done | head -5 | tr '\n' ' ')
-  # getcap prints "path caps" (or "path = caps"): the path is all but the last field.
-  found_c=$(sort -u "$D/tools.c" | while IFS= read -r f; do p=$(printf '%s\n' "$f" | sed 's/ [^ ]*$//; s/ =$//'); if $as sh -c 'test -x "$1"' sh "$p" 2>/dev/null; then printf '%s; ' "$f"; fi; done | cut -d';' -f1-5)
-  rm -f "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.err"
+  # A getcap line whose file the check cannot tell (cap_runnable) is never passed over: the check cannot answer.
+  sort -u "$D/tools.c" > "$D/tools.cs"
+  found_c=
+  nc=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    cap_runnable "$f"
+    case $? in
+      0) if [ "$nc" -lt 5 ]; then found_c="$found_c$f; "; fi; nc=$(( nc + 1 )) ;;
+      2) rm -f "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.cs" "$D/tools.err"; echo "UNSUPPORTED the check cannot tell which file a getcap line names: $(printf '%s\n' "$f" | cut -c1-160)"; return ;;
+    esac
+  done < "$D/tools.cs"
+  rm -f "$D/tools.mounts" "$D/tools.s" "$D/tools.c" "$D/tools.cs" "$D/tools.err"
   if [ -n "$found_s" ]; then echo "REFUSED the tools user $t_name can run a setuid or setgid root file: $found_s"; return; fi
   if [ -n "$found_c" ]; then echo "REFUSED the tools user $t_name can run a file with capabilities: $found_c"; return; fi
   echo CHECKED
@@ -557,6 +608,7 @@ start_launch() {
 # one past its bound is killed (137). Its exit goes to out.log; it never fails the stop.
 run_hook() {
   [ "$HOOK" = 1 ] || return 0
+  own_dirs || exit 13
   if [ -n "$SETSID" ]; then $SETSID sh "$SELF" hook "$D" </dev/null >> "$D/out.log" 2>&1 & else sh "$SELF" hook "$D" </dev/null >> "$D/out.log" 2>&1 & fi
   hp=$!
   wr hook.pid "$hp"
@@ -616,13 +668,13 @@ esac
  * Whether a process of group $1 that is not a zombie is left. A killed process whose parent has gone stays a zombie where the
  * box's init does not reap orphans (a Modal VM): it still answers signal 0 and still belongs to its group. Built from shell
  * builtins only (a fork per process is seconds on a host with thousands), and only once the cheap group probe says
- * something is there. PROC is /proc; a test points it at a directory of its own. The text lives in an ordinary string because
+ * something is there. PROC is /proc, from PROC_LINE: a test copy of the script points it at a directory of its own, and no
+ * environment can. The text lives in an ordinary string because
  * it holds a dollar sign and a brace, which a template literal would take for its own.
  */
 const GROUP_LIVE = [
-	"# Whether a process of group $1 that is not a zombie is left (shell builtins only; PROC is /proc, a test's own in a test).",
-	"PROC=/proc",
-	'if [ -n "$PI_TRANSPORT_PROC" ]; then PROC=$PI_TRANSPORT_PROC; fi',
+	"# Whether a process of group $1 that is not a zombie is left (shell builtins only; PROC is /proc, a test copy's own in one).",
+	"@@PROC@@",
 	"group_live() {",
 	"  g=$1",
 	'  gkill 0 "$g" || [ "$PROC" != /proc ] || return 1',
@@ -644,6 +696,75 @@ const GROUP_LIVE = [
 	"    esac",
 	"  fi",
 	"  echo $(( $(date +%s) * 100 ))",
+	"}",
+].join("\n");
+
+/**
+ * `own_dir PATH`: whether PATH is a directory only the launcher's uid can change, from ONE listing of PATH itself (a symbolic
+ * link is never followed): a directory, owned by `id -u`, with no group- or other-write bit. 0 when it is, 4 when nothing is
+ * there, 13 and a line `UNSAFE <why>` when it is not. A path that is there and did not list (another caller may have removed
+ * and made it again in between) is listed again, at most three times in all; one that never lists is unsafe.
+ * `own_above PATH`: every directory above PATH, up to /, is root's or the launcher's uid's, never a symbolic link, with no
+ * group- or other-write bit unless it has the sticky bit (where only an entry's owner may rename it away): else another user
+ * could rename the spool away and put another in its place between a check and a use. 0, or 13 and a line `UNSAFE <why>`
+ * naming the directory. `own_spool` asks both of the spool; `own_dirs` asks it of $D's parent (the spool), then own_dir of
+ * $D. Every script that uses the spool or a launch directory asks first, the launcher's own included: a `mkdir -p` that
+ * succeeded proves nothing.
+ */
+export const DIRECTORY_CHECK = [
+	"own_dir() {",
+	"  for sn in 1 2 3; do",
+	'    sd=$(ls -ldn "$1" 2>/dev/null | awk \'NR == 1 { print $1 " " $3 }\')',
+	'    [ -z "$sd" ] || break',
+	'    [ -e "$1" ] || [ -L "$1" ] || return 4',
+	'    [ "$sn" = 3 ] || sleep 0.1 2>/dev/null || sleep 1',
+	"  done",
+	"  sm=\x24{sd%% *}",
+	'  case "$sm" in',
+	'    "") echo "UNSAFE $1 cannot be listed"; return 13 ;;',
+	'    l*) echo "UNSAFE $1 is a symbolic link, not a directory of the launcher\'s own"; return 13 ;;',
+	"    d*) ;;",
+	'    *) echo "UNSAFE $1 is not a directory"; return 13 ;;',
+	"  esac",
+	'  [ "\x24{sd#* }" = "$(id -u)" ] || { echo "UNSAFE $1 belongs to uid \x24{sd#* }, not to the launcher\'s uid $(id -u)"; return 13; }',
+	'  case "$sm" in d????-??-*) ;; *) echo "UNSAFE $1 can be written by its group or by other users ($sm)"; return 13 ;; esac',
+	"}",
+	"own_above() {",
+	'  case "$1" in /*) ;; *) echo "UNSAFE $1 is not an absolute path"; return 13 ;; esac',
+	"  sp=$1",
+	'  while [ "$sp" != / ]; do',
+	"    sp=\x24{sp%/*}",
+	'    [ -n "$sp" ] || sp=/',
+	'    sd=$(ls -ldn "$sp" 2>/dev/null | awk \'NR == 1 { print $1 " " $3 }\')',
+	"    sm=\x24{sd%% *}",
+	'    case "$sm" in d*) ;; *) echo "UNSAFE $sp, above the spool, is not a directory (a symbolic link or another file)"; return 13 ;; esac',
+	'    [ "\x24{sd#* }" = 0 ] || [ "\x24{sd#* }" = "$(id -u)" ] || { echo "UNSAFE $sp, above the spool, belongs to uid \x24{sd#* }: neither root nor the launcher\'s uid $(id -u)"; return 13; }',
+	'    case "$sm" in ?????????[tT]*|d????-??-*) ;; *) echo "UNSAFE $sp, above the spool, can be written by its group or by other users and has no sticky bit ($sm)"; return 13 ;; esac',
+	"  done",
+	"}",
+	'own_spool() { own_dir "$1" && own_above "$1"; }',
+	'own_dirs() { own_spool "\x24{D%/*}" && own_dir "$D"; }',
+].join("\n");
+
+/**
+ * `cap_runnable LINE`: whether the getcap line LINE names a file the tools user can run (as the tools check's `$as` runs a test).
+ * getcap prints "path caps", where caps may be several space-separated groups, or the older "path = caps", and a path may hold
+ * spaces: so each candidate path is LINE with one more trailing field cut, from the longest down, and every candidate that is a
+ * file is tested. 0 when one is a file that user can run, 1 when candidates are files and none is, 2 when no candidate is a file
+ * (a line the check did not read, or a file gone since): the caller then cannot answer, and says so.
+ */
+export const CAP_LINE_CHECK = [
+	"cap_runnable() {",
+	"  cn=$1",
+	"  cf=0",
+	"  while :; do",
+	'    case "$cn" in *" "*) cn=\x24{cn% *} ;; *) break ;; esac',
+	'    [ -f "$cn" ] || continue',
+	"    cf=1",
+	'    if $as sh -c \'test -x "$1"\' sh "$cn" 2>/dev/null; then return 0; fi',
+	"  done",
+	'  [ "$cf" = 1 ] || return 2',
+	"  return 1",
 	"}",
 ].join("\n");
 
@@ -676,6 +797,8 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 	"HOOK",
 	"HOOK_TENTHS",
 	"PTRACE_FILE",
+	"MOUNTINFO_FILE",
+	"race",
 	"PROC",
 	"FSEC",
 	"FIN",
@@ -747,16 +870,37 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 	"bound",
 	"dl",
 	"left",
+	"sd",
+	"sm",
+	"sn",
+	"sp",
+	"cn",
+	"cf",
+	"nc",
 ];
 
 /** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */
 export const PTRACE_FILE_LINE = "PTRACE_FILE=/proc/sys/kernel/yama/ptrace_scope";
 
-/** The bound of the tools user's check, in centiseconds (60 s): a script-level constant like PTRACE_FILE_LINE, which no environment can change. */
-export const TOOLS_CHECK_LINE = "TOOLS_CHECK_CENTIS=6000";
+/** The one line that names the process table the launcher reads (group_live, centis): a script-level constant like PTRACE_FILE_LINE. */
+export const PROC_LINE = "PROC=/proc";
+
+/** How long the tools user's check may take in the box (60 s). A start's call to the box is given this and more. */
+export const TOOLS_CHECK_MS = 60_000;
+
+/** The bound of the tools user's check, in centiseconds: a script-level constant like PTRACE_FILE_LINE, which no environment can change. */
+export const TOOLS_CHECK_LINE = `TOOLS_CHECK_CENTIS=${TOOLS_CHECK_MS / 10}`;
+
+/** The one line that names the kernel's mount table: a script-level constant like PTRACE_FILE_LINE, which no environment can change. */
+export const MOUNTINFO_FILE_LINE = "MOUNTINFO_FILE=/proc/self/mountinfo";
 
 /** The supervisor the host uploads to a box: POSIX `sh`, with the programs named in the file's header. */
-export const LAUNCHER_SCRIPT = SCRIPT_TEMPLATE.replace("@@GROUP_LIVE@@", () => GROUP_LIVE)
+export const LAUNCHER_SCRIPT = SCRIPT_TEMPLATE.replace("@@GROUP_LIVE@@", () =>
+	GROUP_LIVE.replace("@@PROC@@", () => PROC_LINE),
+)
+	.replace("@@DIRECTORY_CHECK@@", () => DIRECTORY_CHECK)
+	.replace("@@CAP_LINE@@", () => CAP_LINE_CHECK)
 	.replace("@@PTRACE_FILE@@", () => PTRACE_FILE_LINE)
+	.replace("@@MOUNTINFO_FILE@@", () => MOUNTINFO_FILE_LINE)
 	.replace("@@TOOLS_CHECK@@", () => TOOLS_CHECK_LINE)
 	.replace("@@UNSET@@", () => `unset ${LAUNCHER_SHELL_NAMES.join(" ")}`);
