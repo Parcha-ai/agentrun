@@ -39,6 +39,19 @@ export function workflowDoc({ gate = false } = {}) {
 
 export const TOOLS = ["stock.check", "prices.quote", "prices.slow_quote"];
 
+/** A workflow that maps `stock.check` over the input's `skus`, one at a time. */
+export const mapDoc = () => ({
+  v: 2, name: "each-stock",
+  schemas: {
+    In: { type: "object", additionalProperties: false, required: ["skus"], properties: { skus: { type: "array", maxItems: 5, items: { type: "string" } } } },
+    Stock: { type: "object", required: ["tier"], properties: { tier: { enum: ["fast", "slow"] } } },
+    Hits: { type: "array", items: { type: "object" } },
+  },
+  input: { schemaId: "In" },
+  output: { schemaId: "Hits", path: "hits" },
+  root: { node: "chain", steps: [{ node: "map", label: "each", itemsPath: "skus", as: "hits", maxConcurrency: 1, body: { node: "call", label: "per item", via: "tool", tool: "stock.check", args: { sku: "{item}" }, out: "Stock", as: "stock", deadline_s: 20 } }] },
+});
+
 /** A workflow revision's body, as a store holds it. */
 export const bodyOf = (workflow = workflowDoc()) => ({ workflow, skills: {}, tools: [...TOOLS] });
 
@@ -54,13 +67,13 @@ export async function runOf({ body = bodyOf(), revision = "rev-a", runId = "run-
 /**
  * The host's part for a run: the DSL's workflow extension with fake tools that count their calls, on a Harness open on
  * the run's store file. `onCall(tool, count)` runs after a tool answers, before its result is committed; the tool `fail`
- * names throws instead.
+ * names throws instead. `layout` is the driver's layout the host asks for.
  */
-export async function hostFor(run, { tier = "fast", onCall, fail } = {}) {
+export async function hostFor(run, { tier = "fast", onCall, fail, layout } = {}) {
   const calls = {};
   const answers = { "stock.check": () => ({ tier }), "prices.quote": () => ({ price: 21 }), "prices.slow_quote": () => ({ price: 34 }) };
   const workflows = createWorkflowExtension({
-    options: () => ({ files: workspaceFiles(run.workspace) }),
+    options: () => ({ files: workspaceFiles(run.workspace), ...(layout ? { layout } : {}) }),
     run: () => ({
       adapters: {
         runEffect: async ({ node }) => {

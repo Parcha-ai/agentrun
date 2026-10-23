@@ -6,8 +6,9 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { durableDoc, readJournal } from "@parcha/agentrun-pi/durable";
+import { AgentHomeError } from "../dist/index.js";
 import { readWorkflowRun, runWorkflowRevision } from "../dist/workflow.js";
-import { bodyOf, ctx, hostFor, runOf, TOOLS, workflowDoc } from "./workflow-support.mjs";
+import { bodyOf, ctx, hostFor, mapDoc, runOf, TOOLS, workflowDoc } from "./workflow-support.mjs";
 
 const INPUT = { sku: "sku-1", amount: 10 };
 const runOn = (run, host, options = {}) => runWorkflowRevision({ harness: host.harness, workflows: host.workflows, context: ctx, run, input: INPUT, tools: TOOLS, ...options });
@@ -98,7 +99,7 @@ test("a gate that fires at a named node ends the run escalated: carry and summar
     assert.deepEqual(host.calls, { "stock.check": 1 });
     const view = await readWorkflowRun(run);
     assert.equal(view.outcome, "escalated");
-    assert.equal(view.escalatedAt, "too big");
+    assert.deepEqual(view.escalatedAt, { path: "/root/steps/1", label: "too big" });
     assert.equal(view.status["/root/steps/1"], "escalated");
     assert.equal(view.status["/root/steps/2"], "not-run");
     assert.equal("output" in view, false);
@@ -131,6 +132,19 @@ test("a run cancelled while it runs ends stopped, and one whose tool fails ends 
     assert.equal("output" in view, false);
   } finally {
     await down.close();
+  }
+});
+
+test("a run in the keyed layout (a host that opts into layout v4) is not read here: readWorkflowRun and the summary refuse as format", async () => {
+  const run = await runOf({ body: { workflow: mapDoc(), skills: {}, tools: ["stock.check"] } });
+  const host = await hostFor(run, { layout: "v4" });
+  const keyed = (error) => error instanceof AgentHomeError && error.code === "format" && /keyed layout/.test(error.message);
+  try {
+    await assert.rejects(runOn(run, host, { input: { skus: ["a", "b"] }, tools: ["stock.check"] }), keyed);
+    assert.deepEqual(host.calls, { "stock.check": 2 }, "the run itself ran");
+    await assert.rejects(readWorkflowRun(run), keyed);
+  } finally {
+    await host.close();
   }
 });
 
