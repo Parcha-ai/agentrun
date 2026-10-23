@@ -141,7 +141,7 @@ async function prepareIn(store: Store, { runId, now, host, leaseMs, wanted, prom
  *  `.agents/skills/` in `workDir`. Safe to run again on a half-written directory: the skills are written again and the
  *  store is replaced, written beside its place and renamed in last, so a store that is there is a whole one. A seed
  *  that hands a profile's `ref` to a run that does not lease it is refused, and nothing is written. */
-export async function seedRun(dir: { storePath: string; workDir: string }, seed: RunSeed): Promise<void> {
+export async function seedRun(dir: { storePath: string; workDir: string }, seed: Pick<RunSeed, "runId" | "profiles" | "leases" | "skills">): Promise<void> {
   for (const [key, profile] of Object.entries(seed.profiles)) {
     if (profile.ref && !seed.leases.includes(key)) throw invalid(`the seed gives the run ${seed.runId} the sign-in of ${key}, which it does not lease`);
   }
