@@ -10,20 +10,20 @@ const classOf = (el) => el.getAttribute("class") ?? "";
 /** A value made in the page's realm, as this realm's plain data. */
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const pills = (node) => all(node).filter((el) => classOf(el).startsWith("pill ")).map((el) => [classOf(el), el.textContent]);
+const revisionsOf = (page) => all(page.app).filter((el) => el.tagName === "ARTICLE");
+const runRows = (page) => all(page.app).filter((el) => el.tagName === "A" && classOf(el) === "run");
 
 const AGENTS = [
-  { id: "company-researcher", name: `Company researcher ${HOSTILE}`, description: `Writes a brief ${HOSTILE}`, createdAt: "2026-10-21T09:00:00.000Z", current: "c".repeat(64), currentKind: "workflow", runs: 6, revisions: 3 },
-  { id: "inbox-triage", name: "Inbox triage", createdAt: "2026-10-22T07:00:00.000Z", current: "t".repeat(64), currentKind: "agentic", runs: 1, revisions: 1 },
-  { id: "new-agent", name: "New agent", createdAt: "2026-10-23T07:00:00.000Z", current: null, currentKind: null, runs: 0, revisions: 0 },
-  { id: "gone-agent", name: "Gone agent", createdAt: "2026-10-19T07:00:00.000Z", current: "g".repeat(64), currentKind: "agentic", runs: 2, revisions: 1, missing: true },
+  { id: "company-researcher", name: `Company researcher ${HOSTILE}`, description: `Writes a brief ${HOSTILE}`, createdAt: "2026-10-21T09:00:00.000Z", current: "c".repeat(64), currentKind: "workflow", runs: 6 },
+  { id: "inbox-triage", name: "Inbox triage", createdAt: "2026-10-22T07:00:00.000Z", current: "t".repeat(64), currentKind: "agentic", runs: 1 },
+  { id: "new-agent", name: "New agent", createdAt: "2026-10-23T07:00:00.000Z", current: null, currentKind: null, runs: 0 },
 ];
 
-test("the store page is store.html: page.css and the graph drawer then page.js, nothing inline, nothing from the network", () => {
+test("the store page is store.html: page.css, the graph drawer, then page.js; nothing inline, nothing from the network", () => {
   const html = served("store.html");
   const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
   assert.deepEqual(scripts.map(([, attrs, body]) => [attrs, body]), [[' src="/graph.js"', ""], [' src="/page.js"', ""]]);
-  assert.match(html, /<html lang="en" data-serve="store">/);
-  assert.match(html, /<link rel="stylesheet" href="\/page\.css">[\s\S]*<main id="app">[\s\S]*<script src="\/graph\.js"><\/script>\n<script src="\/page\.js"><\/script>\n<\/body>/);
+  assert.match(html, /<html lang="en" data-serve="store">[\s\S]*<link rel="stylesheet" href="\/page\.css">[\s\S]*<main id="app">/);
   assert.doesNotMatch(html, /<style|\sstyle=|\son[a-z]+=|https?:|\/\//i);
 });
 
@@ -33,191 +33,125 @@ test("the picker: each agent with its current revision's kind and its run count,
   assertInert(page.app);
   assert.deepEqual(page.fetched, ["api/store"]);
   const tiles = all(page.app).filter((el) => el.tagName === "A" && classOf(el) === "agent-tile");
-  assert.deepEqual(tiles.map((el) => el.getAttribute("href")), ["#/agents/company-researcher", "#/agents/inbox-triage", "#/agents/new-agent", "#/agents/gone-agent"]);
-  assert.ok(tiles[0].textContent.includes(`Company researcher ${HOSTILE}`) && tiles[0].textContent.includes(`Writes a brief ${HOSTILE}`));
-  assert.ok(tiles[0].textContent.includes("6 runs") && tiles[0].textContent.includes("3 revisions"));
-  assert.ok(tiles[1].textContent.includes("1 run") && !tiles[1].textContent.includes("1 runs") && tiles[1].textContent.includes("1 revision"), "one is named in the singular");
+  assert.deepEqual(tiles.map((el) => [el.getAttribute("href"), pills(el)]), [["#/agents/company-researcher", [["pill workflow", "workflow"]]], ["#/agents/inbox-triage", [["pill agentic", "agentic"]]], ["#/agents/new-agent", []]]);
+  assert.ok(tiles[0].textContent.includes(`Company researcher ${HOSTILE}`) && tiles[0].textContent.includes(`Writes a brief ${HOSTILE}`) && tiles[0].textContent.includes("6 runs"));
+  assert.ok(tiles[1].textContent.includes("1 run") && !tiles[1].textContent.includes("1 runs"), "one is named in the singular");
   assert.ok(tiles[2].textContent.includes("no revision yet"));
-  assert.deepEqual(pills(page.app), [["pill workflow", "workflow"], ["pill agentic", "agentic"], ["pill agentic", "agentic"], ["pill missing", "missing"]]);
-  assert.match(page.app.textContent, /4 agents/);
+  assert.equal(all(page.app).find((el) => el.tagName === "H1").textContent, "3 agents");
   assert.equal(page.document.title, "Agent store");
-  assert.match(all(page.app).find((el) => el.tagName === "H1").textContent, /4 agents/);
-});
 
-test("an empty store says so, and a store that cannot be read says why", async () => {
   const empty = mount({ "api/store": { agents: [] } }, "#/", { serve: STORE });
   await empty.settle();
   assert.match(empty.app.textContent, /No agents in this store yet\./);
-  const broken = mount({ "api/store": [500, { error: "the agent store could not be read" }] }, "#/", { serve: STORE });
-  await broken.settle();
-  assert.match(broken.app.textContent, /Could not read the agent store\. 500 the agent store could not be read/);
+  const busy = mount({ "api/store": [500, { error: "this store has an unfinished write from a run that stopped" }] }, "#/", { serve: STORE });
+  await busy.settle();
+  assert.match(busy.app.textContent, /Could not read the agent store\. 500 this store has an unfinished write from a run that stopped/);
 });
 
-const rev = (id, fields) => ({ id: id.repeat(64), agent: "company-researcher", parent: null, createdAt: "2026-10-21T09:00:00.000Z", kind: "agentic", current: false, runs: 0, ...fields });
-const REV_A = rev("a", { note: `Prompt A ${HOSTILE}`, runs: 2 });
-const REV_B = rev("b", { parent: REV_A.id, createdAt: "2026-10-22T10:00:00.000Z", note: "Prompt B", current: true, runs: 1 });
-const AGENT_PAGE = {
-  agent: { ...AGENTS[0], current: REV_B.id, currentKind: "agentic", revisions: 2, runs: 3 },
-  revisions: [REV_B, REV_A],
-};
-const DETAIL_A = { revision: { ...REV_A, body: { instructions: `Line one.\nLine two ${HOSTILE}`, skills: { "brief/SKILL.md": "1".repeat(64) }, tools: ["web_fetch"], model: "luna", thinking: "low" } }, parent: null, diff: null };
-const DETAIL_B = {
-  revision: { ...REV_B, body: { instructions: `Line one, cited.\nLine two ${HOSTILE}\nLine three.`, skills: { "brief/SKILL.md": "2".repeat(64), "cite/SKILL.md": "3".repeat(64) }, tools: ["web_fetch", "read"], model: "luna", thinking: "medium" } },
-  parent: REV_A,
+const revision = (id, fields) => ({ id: id.repeat(64), kind: "agentic", current: false, createdAt: "2026-10-21T09:00:00.000Z", parent: null, parentKind: null, diff: null, ...fields });
+const REV_A = revision("a", { note: `Prompt A ${HOSTILE}`, body: { instructions: `Line one.\nLine two ${HOSTILE}`, tools: ["web_fetch", "write"], skills: { "brief/SKILL.md": "1".repeat(64) }, model: "luna", thinking: "low" } });
+const REV_B = revision("b", {
+  current: true, note: "Prompt B", createdAt: "2026-10-22T10:00:00.000Z", parent: REV_A.id, parentKind: "agentic",
+  body: { instructions: `Line one, cited.\nLine two ${HOSTILE}\nLine three.`, tools: ["web_fetch", "read"], skills: { "brief/SKILL.md": "2".repeat(64), "cite/SKILL.md": "3".repeat(64) }, model: "luna", thinking: "medium", prompts: { public: { role: "overlay", text: "Start at the filings." } } },
   diff: {
     against: REV_A.id,
     prompt: [{ op: "del", text: "Line one." }, { op: "add", text: "Line one, cited." }, { op: "same", text: `Line two ${HOSTILE}` }, { op: "add", text: "Line three." }],
     tools: { added: ["read"], removed: ["write"] },
-    skills: { added: [{ path: "cite/SKILL.md", sha256: "3".repeat(64) }], removed: [], changed: [{ path: "brief/SKILL.md", was: "1".repeat(64), now: "2".repeat(64) }] },
+    skills: { added: ["cite/SKILL.md"], removed: [], changed: ["brief/SKILL.md"] },
     thinking: { was: "low", now: "medium" },
   },
-};
-const agentApi = (extra = {}) => ({
-  "api/agents/company-researcher": AGENT_PAGE,
-  [`api/agents/company-researcher/revisions/${REV_A.id}`]: DETAIL_A,
-  [`api/agents/company-researcher/revisions/${REV_B.id}`]: DETAIL_B,
-  ...extra,
 });
+const run = (id, rev, state, fields = {}) => ({ id, agent: "company-researcher", revision: rev.id, kind: rev.kind, state, startedAt: "2026-10-22T11:00:00.000Z", gone: false, ...fields });
+const RUNS = [
+  run("run-5", REV_B, "running", { startedAt: "2026-10-23T05:00:00.000Z" }),
+  run("run-4", REV_B, "escalated", { startedAt: "2026-10-23T04:00:00.000Z", endedAt: "2026-10-23T04:01:00.000Z", costUsd: 0.018, summary: `escalated at No public record ${HOSTILE}` }),
+  run("run-3", REV_B, "completed", { startedAt: "2026-10-22T12:00:00.000Z", endedAt: "2026-10-22T12:04:00.000Z", costUsd: 0.312, summary: "Caterpillar builds machinery." }),
+  run("run-2", REV_A, "failed", { endedAt: "2026-10-22T11:03:00.000Z", costUsd: 0, summary: "403 on the investor page" }),
+  run("run-1", REV_A, "stopped", { startedAt: "2026-10-21T10:00:00.000Z", endedAt: "2026-10-21T10:01:00.000Z", gone: true, summary: "never shown" }),
+];
+const AGENT = { agent: { ...AGENTS[0], current: REV_B.id, currentKind: "agentic", runs: 5 }, revisions: [REV_B, REV_A] };
+const agentApi = (extra = {}) => ({ "api/agents/company-researcher": AGENT, "api/runs?agent=company-researcher": RUNS, ...extra });
 
-test("an agent page: its revisions newest first with the current one marked; an agentic one's prompt with a line diff against its parent, and what else changed", async () => {
+test("an agent page: its revisions newest first, the current one marked, an agentic one's prompt diffed line by line against its parent with what else changed", async () => {
   const page = mount(agentApi(), "#/agents/company-researcher", { serve: STORE });
   await page.settle();
   assertInert(page.app);
-  assert.deepEqual(page.fetched.slice(0, 1), ["api/agents/company-researcher"]);
-  assert.deepEqual(page.fetched.filter((p) => p.includes("/revisions/")), [`api/agents/company-researcher/revisions/${REV_B.id}`, `api/agents/company-researcher/revisions/${REV_A.id}`], "each revision, newest first");
+  assert.deepEqual(page.fetched.slice(0, 2), ["api/agents/company-researcher", "api/runs?agent=company-researcher"]);
   assert.equal(page.document.title, `Company researcher ${HOSTILE} · agent store`);
-  const blocks = all(page.app).filter((el) => classOf(el).startsWith("revision"));
-  assert.deepEqual(blocks.map(classOf), ["revision current", "revision"], "newest first; the current one is marked");
-  assert.ok(blocks[0].textContent.includes("current") && blocks[0].textContent.includes("bbbbbbbbbbbb") && blocks[0].textContent.includes("from aaaaaaaaaaaa"));
-  assert.ok(blocks[1].textContent.includes(`Prompt A ${HOSTILE}`) && blocks[1].textContent.includes("2 runs"));
-  const lines = all(blocks[0]).filter((el) => classOf(el).startsWith("line "));
+  const [b, a] = revisionsOf(page);
+  assert.deepEqual([classOf(b), classOf(a)], ["revision current", "revision"]);
+  assert.ok(b.textContent.includes("bbbbbbbbbbbb") && b.textContent.includes("current") && b.textContent.includes("from aaaaaaaaaaaa") && a.textContent.includes(`Prompt A ${HOSTILE}`));
+  const lines = all(b).filter((el) => classOf(el).startsWith("line "));
   assert.deepEqual(lines.map((el) => [classOf(el), el.textContent]), [["line del", "−Line one."], ["line add", "+Line one, cited."], ["line same", ` Line two ${HOSTILE}`], ["line add", "+Line three."]], "every line of both, marked");
-  assert.ok(blocks[0].textContent.includes("+2 −1"), "the diff's size");
-  const chips = all(blocks[0]).filter((el) => /^chip( |$)/.test(classOf(el)));
+  assert.ok(b.textContent.includes("+2 −1 lines"));
+  const chips = all(b).filter((el) => /^chip( |$)/.test(classOf(el)));
   assert.deepEqual(chips.map((el) => [classOf(el), el.textContent]), [["chip", "web_fetch"], ["chip add", "+read"], ["chip del", "−write"]]);
-  assert.ok(blocks[0].textContent.includes("thinking low → medium") && blocks[0].textContent.includes("model luna"));
-  const skills = all(blocks[0]).filter((el) => el.tagName === "LI");
-  assert.deepEqual(skills.map(classOf), ["changed", "add"], "skills by path: a changed sha and an added file");
-  assert.ok(skills[0].textContent.includes("111111111111 → 222222222222"));
-  assert.ok(all(blocks[1]).some((el) => el.tagName === "PRE" && el.textContent === DETAIL_A.revision.body.instructions), "a revision with no parent shows its prompt whole");
-  const links = all(blocks[0]).filter((el) => el.tagName === "A").map((el) => el.getAttribute("href"));
-  assert.ok(links.includes(`#/agents/company-researcher/revisions/${REV_B.id}`) && links.includes(`#/agents/company-researcher/revisions/${REV_A.id}`));
+  assert.ok(b.textContent.includes("thinking low → medium") && b.textContent.includes("model luna"));
+  assert.deepEqual(all(b).filter((el) => el.tagName === "LI").map((el) => [classOf(el), el.textContent]), [["changed", "brief/SKILL.mdchanged · sha256 222222222222"], ["add", "cite/SKILL.mdadded · sha256 333333333333"]]);
+  assert.ok(b.textContent.includes("1 prompt variant") && b.textContent.includes("public: Start at the filings."), "prompt variants, when there are any");
+  assert.ok(all(a).some((el) => el.tagName === "PRE" && el.textContent === REV_A.body.instructions), "a first revision shows its prompt whole");
 });
 
-test("one revision's own page: the same block, by itself", async () => {
-  const page = mount(agentApi(), `#/agents/company-researcher/revisions/${REV_B.id}`, { serve: STORE });
-  await page.settle();
-  assertInert(page.app);
-  assert.deepEqual(page.fetched.slice(0, 2), ["api/agents/company-researcher", `api/agents/company-researcher/revisions/${REV_B.id}`]);
-  assert.equal(all(page.app).filter((el) => classOf(el).startsWith("revision")).length, 1);
-  assert.match(page.app.textContent, /\+Line one, cited\./);
-});
-
-const wrev = (id, fields) => rev(id, { agent: "mcc-classifier", kind: "workflow", ...fields });
-const REV_M1 = wrev("1", { note: "First cut", runs: 2 });
-const REV_M2 = wrev("2", { parent: REV_M1.id, createdAt: "2026-10-22T15:00:00.000Z", current: true, note: "Marketplaces", runs: 2 });
 const node = (path, kind, label) => ({ path, kind, label });
-const GRAPH_1 = { nodes: [node("/root", "chain", "chain"), node("/root/steps/0", "call", "Read the site"), node("/root/steps/1", "pick", "Pick the MCC"), node("/root/steps/2", "code", "Format the answer")], edges: [{ from: "/root", to: "/root/steps/0", kind: "next" }] };
-const GRAPH_2 = { nodes: [node("/root", "chain", "chain"), node("/root/steps/0", "call", "Read the site"), node("/root/steps/1", "decide", `Jev: a marketplace? ${HOSTILE}`), node("/root/steps/2", "pick", "Pick the MCC"), node("/root/steps/3", "report", "Answer")], edges: [{ from: "/root", to: "/root/steps/0", kind: "next" }] };
-const MARKS = { added: ["/root/steps/1", "/root/steps/3"], edited: ["/root/steps/2"], removed: [{ label: `Format the answer ${HOSTILE}`, kind: "code" }] };
-const workflowApi = (m2 = {}) => ({
-  "api/agents/mcc-classifier": { agent: { id: "mcc-classifier", name: "MCC classifier", current: REV_M2.id, currentKind: "workflow", revisions: 2, runs: 4 }, revisions: [REV_M2, REV_M1] },
-  [`api/agents/mcc-classifier/revisions/${REV_M2.id}`]: { revision: { ...REV_M2, body: { skills: {}, tools: ["web_fetch"] } }, parent: REV_M1, diff: { against: REV_M1.id, marks: MARKS, moved: ["/root/steps/2"] }, graph: GRAPH_2, ...m2 },
-  [`api/agents/mcc-classifier/revisions/${REV_M1.id}`]: { revision: { ...REV_M1, body: { skills: {}, tools: ["web_fetch"] } }, parent: null, diff: null, graph: GRAPH_1 },
-});
+const GRAPH_1 = { nodes: [node("/root", "chain", "chain"), node("/root/steps/0", "call", "Read the site"), node("/root/steps/1", "call", "Pick the MCC"), node("/root/steps/2", "call", "Format the answer")], edges: [] };
+const GRAPH_2 = { nodes: [node("/root", "chain", "chain"), node("/root/steps/0", "call", "Read the site"), node("/root/steps/1", "call", `Is it a marketplace ${HOSTILE}`), node("/root/steps/2", "call", "Pick the MCC"), node("/root/steps/3", "call", "Answer")], edges: [] };
+const MCC_1 = revision("1", { kind: "workflow", note: "First cut", body: { tools: ["web.fetch"], skills: {} }, graph: GRAPH_1 });
+const MCC_2 = revision("2", { kind: "workflow", current: true, note: "Marketplaces", parent: MCC_1.id, parentKind: "workflow", body: { tools: ["web.fetch"], skills: {} }, graph: GRAPH_2, diff: { against: MCC_1.id, added: ["/root/steps/1", "/root/steps/3"], edited: ["/root/steps/2"], removed: [{ label: `Format the answer ${HOSTILE}`, kind: "call" }] } });
+const mccApi = (revisions = [MCC_2, MCC_1]) => ({ "api/agents/mcc-classifier": { agent: { id: "mcc-classifier", name: "MCC classifier", createdAt: "2026-10-20T08:00:00.000Z", current: MCC_2.id, currentKind: "workflow", runs: 0 }, revisions }, "api/runs?agent=mcc-classifier": [] });
+const topOf = (node) => (node.parentNode ? topOf(node.parentNode) : node);
 
-test("a workflow revision: its graph drawn by window.drawWorkflowGraph into an svg of the page's own, with graphDiff's badges as marks.diff", async () => {
+test("a workflow revision: its graph drawn by window.drawWorkflowGraph in a .graph-box, once in the page, with graphDiff's marks; a first one has none", async () => {
   const drawn = [];
-  const top = (node) => (node.parentNode ? top(node.parentNode) : node);
-  const drawWorkflowGraph = (svg, graph, marks) => drawn.push({ svg, graph, marks, attached: top(svg).tagName === "BODY" });
-  const page = mount(workflowApi(), "#/agents/mcc-classifier", { serve: STORE, window: { drawWorkflowGraph } });
+  const drawWorkflowGraph = (svg, graph, marks) => drawn.push({ svg, graph, marks, box: classOf(svg.parentNode), inPage: topOf(svg).tagName === "BODY" });
+  const page = mount(mccApi(), "#/agents/mcc-classifier", { serve: STORE, window: { drawWorkflowGraph } });
   await page.settle();
   assertInert(page.app, drawn.map((d) => d.svg));
-  assert.equal(drawn.length, 2, "one graph per workflow revision");
-  assert.deepEqual(drawn.map((d) => [d.svg.tagName, d.svg.namespaceURI, d.svg.getAttribute("class")]), [["svg", "http://www.w3.org/2000/svg", "workflow-graph"], ["svg", "http://www.w3.org/2000/svg", "workflow-graph"]]);
-  assert.ok(drawn.every((d) => d.attached), "drawn once the svg is in the page");
-  assert.deepEqual(plain([drawn[0].graph, drawn[0].marks]), [GRAPH_2, { diff: MARKS }]);
-  assert.deepEqual(plain([drawn[1].graph, drawn[1].marks]), [GRAPH_1, {}], "a revision with no parent has no badges");
-  const blocks = all(page.app).filter((el) => classOf(el).startsWith("revision"));
-  assert.ok(blocks[0].textContent.includes("+2 added") && blocks[0].textContent.includes("1 edited") && blocks[0].textContent.includes("1 removed") && blocks[0].textContent.includes("1 moved"));
-  assert.ok(blocks[0].textContent.includes("Workflow, against 111111111111"));
+  assert.deepEqual(drawn.map((d) => [d.svg.tagName, d.svg.namespaceURI, d.box, d.inPage]), [["svg", "http://www.w3.org/2000/svg", "graph-box", true], ["svg", "http://www.w3.org/2000/svg", "graph-box", true]]);
+  assert.deepEqual(plain([drawn[0].graph, drawn[0].marks]), [GRAPH_2, { diff: { added: ["/root/steps/1", "/root/steps/3"], edited: ["/root/steps/2"], removed: [{ label: `Format the answer ${HOSTILE}`, kind: "call" }] } }]);
+  assert.deepEqual(plain([drawn[1].graph, drawn[1].marks]), [GRAPH_1, {}], "a first revision has no diff");
+  const [m2] = revisionsOf(page);
+  assert.ok(m2.textContent.includes("Workflow, against 111111111111") && m2.textContent.includes("+2 added") && m2.textContent.includes("1 edited") && m2.textContent.includes("1 removed"));
 });
 
-test("a workflow revision without the graph drawer: its nodes as a text list with the same badges, the removed ones named", async () => {
-  const page = mount(workflowApi(), "#/agents/mcc-classifier", { serve: STORE });
+test("a workflow revision without the drawer: its nodes as text with the same marks and the removed ones named; one whose parent is agentic says so", async () => {
+  const page = mount(mccApi(), "#/agents/mcc-classifier", { serve: STORE });
   await page.settle();
   assertInert(page.app);
-  const [m2] = all(page.app).filter((el) => classOf(el).startsWith("revision"));
+  const [m2] = revisionsOf(page);
   const items = all(m2).filter((el) => el.tagName === "LI" && classOf(el).startsWith("node"));
   assert.deepEqual(items.map((el) => [classOf(el), el.styles["--depth"]]), [["node", "0"], ["node", "1"], ["node added", "1"], ["node edited", "1"], ["node added", "1"]]);
-  assert.ok(items[2].textContent.includes(`Jev: a marketplace? ${HOSTILE}`) && items[2].textContent.includes("decide"));
-  assert.deepEqual(pills(items[2]), [["pill added", "added"]]);
-  assert.deepEqual(pills(items[3]), [["pill edited", "edited"]]);
-  assert.ok(m2.textContent.includes(`Format the answer ${HOSTILE} (code)`), "a removed node is named");
+  assert.ok(items[2].textContent.includes(`Is it a marketplace ${HOSTILE}`));
+  assert.ok(m2.textContent.includes(`Format the answer ${HOSTILE} (call)`));
+  const afterAgentic = mount(mccApi([{ ...MCC_2, parentKind: "agentic", diff: null }]), "#/agents/mcc-classifier", { serve: STORE });
+  await afterAgentic.settle();
+  assert.match(afterAgentic.app.textContent, /Its parent 111111111111 is an agentic revision: this revision runs a workflow in place of a prompt\./);
 });
 
-test("a workflow revision whose graph cannot be drawn here says what to install, and one whose parent is agentic says so", async () => {
-  const page = mount(workflowApi({ graph: null, diff: null, unavailable: "install @parcha/agentrun-dsl to see this workflow's graph" }), "#/agents/mcc-classifier", { serve: STORE });
+test("the runs: one table across the agent's revisions, escalated a state of its own, a missing cost unknown and a gone directory said in words", async () => {
+  const page = mount(agentApi(), "#/agents/company-researcher", { serve: STORE });
   await page.settle();
-  assertInert(page.app);
-  const [m2] = all(page.app).filter((el) => classOf(el).startsWith("revision"));
-  assert.ok(m2.textContent.includes("install @parcha/agentrun-dsl to see this workflow's graph"));
-  assert.equal(all(m2).filter((el) => el.tagName === "LI" && classOf(el).startsWith("node")).length, 0);
-
-  const agentic = mount(workflowApi({ parent: { ...REV_M1, kind: "agentic" }, diff: null }), "#/agents/mcc-classifier", { serve: STORE });
-  await agentic.settle();
-  const [first] = all(agentic.app).filter((el) => classOf(el).startsWith("revision"));
-  assert.ok(first.textContent.includes("Its parent 111111111111 is an agentic revision"));
-});
-
-const runRow = (id, revision, state, fields = {}) => ({ id, agent: "company-researcher", revision: revision.id, kind: revision.kind, state, startedAt: "2026-10-22T11:00:00.000Z", ...fields });
-const RUNS = [
-  runRow("run-5", REV_B, "running", { startedAt: "2026-10-23T05:00:00.000Z" }),
-  runRow("run-4", REV_B, "escalated", { startedAt: "2026-10-23T04:00:00.000Z", endedAt: "2026-10-23T04:01:00.000Z", costUsd: 0.018, summary: `escalated at No public record ${HOSTILE}` }),
-  runRow("run-3", REV_B, "completed", { startedAt: "2026-10-22T12:00:00.000Z", endedAt: "2026-10-22T12:04:00.000Z", costUsd: 0.312, summary: "Caterpillar builds machinery." }),
-  runRow("run-2", REV_A, "failed", { endedAt: "2026-10-22T11:03:00.000Z", costUsd: 0.221, summary: "403 on the investor page" }),
-  runRow("run-1", REV_A, "stopped", { startedAt: "2026-10-21T10:00:00.000Z", endedAt: "2026-10-21T10:01:00.000Z", costUsd: 0.01 }),
-  runRow("run-0", REV_A, "missing", { startedAt: "2026-10-20T10:00:00.000Z", costUsd: 0.02 }),
-];
-
-test("the runs: one table across the agent's revisions (revision and kind, state, cost, summary, started), escalated and missing each a state of its own", async () => {
-  const page = mount(agentApi({ "api/runs?agent=company-researcher": RUNS }), "#/agents/company-researcher", { serve: STORE });
-  await page.settle();
-  assertInert(page.app);
-  assert.deepEqual(page.fetched.slice(0, 2), ["api/agents/company-researcher", "api/runs?agent=company-researcher"]);
-  const rows = all(page.app).filter((el) => el.tagName === "A" && classOf(el) === "run");
+  const rows = runRows(page);
   assert.deepEqual(rows.map((el) => el.getAttribute("href")), RUNS.map((r) => `#/runs/${r.id}`));
-  assert.deepEqual(rows.map((el) => pills(el)[0]), [["pill live", "running"], ["pill escalated", "escalated"], ["pill ok", "completed"], ["pill error", "failed"], ["pill stopped", "stopped"], ["pill missing", "missing"]], "escalated is never drawn as failed");
-  assert.ok(rows[1].textContent.includes("bbbbbbbbbbbb") && rows[1].textContent.includes("agentic") && rows[1].textContent.includes("$0.018") && rows[1].textContent.includes(`escalated at No public record ${HOSTILE}`));
-  assert.ok(rows[1].textContent.includes(new Date("2026-10-23T04:00:00.000Z").getFullYear() + "-"), "when it started");
+  assert.deepEqual(rows.map((el) => pills(el)[0]), [["pill live", "running"], ["pill escalated", "escalated"], ["pill ok", "completed"], ["pill error", "failed"], ["pill stopped", "stopped"]], "escalated is never drawn as failed");
+  assert.deepEqual(rows.map((el) => all(el).find((c) => classOf(c).startsWith("c cost")).textContent), ["unknown", "$0.018", "$0.312", "$0.000", "unknown"], "a missing cost is unknown, never $0; a recorded 0 is $0.000");
+  assert.ok(rows[1].textContent.includes("bbbbbbbbbbbb") && rows[1].textContent.includes("agentic") && rows[1].textContent.includes(`escalated at No public record ${HOSTILE}`));
+  assert.ok(rows[4].textContent.includes("its directory is gone") && !rows[4].textContent.includes("never shown"));
   const filters = all(page.app).filter((el) => el.tagName === "A" && classOf(el).startsWith("filter"));
   assert.deepEqual(filters.map((el) => [el.getAttribute("href"), classOf(el), el.textContent]), [
     ["#/agents/company-researcher", "filter on", "All revisions"],
     [`#/agents/company-researcher?revision=${REV_B.id}`, "filter", "bbbbbbbbbbbb agentic"],
     [`#/agents/company-researcher?revision=${REV_A.id}`, "filter", "aaaaaaaaaaaa agentic"],
   ]);
-  assert.deepEqual([...page.timers.values()].map((t) => t.ms), [5000], "a running run: the runs are read again every 5 s");
-  await page.tick();
-  assert.equal(page.fetched.filter((p) => p === "api/runs?agent=company-researcher").length, 2);
-  assert.equal(page.fetched.filter((p) => p === "api/agents/company-researcher").length, 1, "only the runs");
 });
 
 test("the runs filtered by a revision: the filter is in the hash, so a reload keeps it, and the API is asked for that revision's runs", async () => {
-  const filtered = RUNS.filter((r) => r.revision === REV_A.id);
-  const page = mount(agentApi({ [`api/runs?agent=company-researcher&revision=${REV_A.id}`]: filtered }), `#/agents/company-researcher?revision=${REV_A.id}`, { serve: STORE });
+  const api = agentApi({ [`api/runs?agent=company-researcher&revision=${REV_A.id}`]: RUNS.slice(3) });
+  const page = mount(api, `#/agents/company-researcher?revision=${REV_A.id}`, { serve: STORE });
   await page.settle();
   assert.deepEqual(page.fetched.slice(0, 2), ["api/agents/company-researcher", `api/runs?agent=company-researcher&revision=${REV_A.id}`]);
-  assert.equal(all(page.app).filter((el) => el.tagName === "A" && classOf(el) === "run").length, 3);
-  const on = all(page.app).filter((el) => classOf(el) === "filter on");
-  assert.deepEqual(on.map((el) => [el.getAttribute("href"), el.getAttribute("aria-current")]), [[`#/agents/company-researcher?revision=${REV_A.id}`, "true"]]);
-  assert.match(page.app.textContent, /3 runs of aaaaaaaaaaaa/);
-  assert.equal(page.timers.size, 0, "nothing is running, so nothing polls");
-  const reloaded = mount(agentApi({ [`api/runs?agent=company-researcher&revision=${REV_A.id}`]: filtered }), `#/agents/company-researcher?revision=${REV_A.id}`, { serve: STORE });
-  await reloaded.settle();
-  assert.equal(all(reloaded.app).filter((el) => el.tagName === "A" && classOf(el) === "run").length, 3, "the same three after a reload");
-  const revisionPage = mount(agentApi({ [`api/runs?agent=company-researcher&revision=${REV_A.id}`]: filtered }), `#/agents/company-researcher/revisions/${REV_A.id}`, { serve: STORE });
-  await revisionPage.settle();
-  assert.equal(all(revisionPage.app).filter((el) => el.tagName === "A" && classOf(el) === "run").length, 3, "a revision's own page shows its runs");
+  assert.equal(runRows(page).length, 2);
+  assert.deepEqual(all(page.app).filter((el) => classOf(el) === "filter on").map((el) => [el.getAttribute("href"), el.getAttribute("aria-current")]), [[`#/agents/company-researcher?revision=${REV_A.id}`, "true"]]);
+  assert.match(page.app.textContent, /2 runs of aaaaaaaaaaaa/);
 });
 
 const row = (seq, kind, fields = {}) => ({ id: `1:${seq}`, kind, seq, summary: null, text: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, conversation_id: 1, ...fields });
@@ -230,133 +164,105 @@ const TIMELINE = [
   row(5, "usage", { usage: { usd: 0.2, requests: 2 } }),
   row(6, "final_answer", { text: "**Done**: wrote `brief.md`." }),
 ];
-const AGENTIC_RUN = { run: RUNS[2], agent: { id: "company-researcher", name: `Company researcher ${HOSTILE}` }, revision: REV_B, rows: TIMELINE, stored: true };
+const AGENTIC_RUN = { run: RUNS[2], agent: `Company researcher ${HOSTILE}`, note: "Prompt B", rows: TIMELINE };
 
-test("an agentic run's page: its state, revision, agent and summary, then the timeline exactly as an agent home's run draws it", async () => {
+test("an agentic run's page: its state, cost, agent, revision and summary, then the timeline as an agent home's run draws it", async () => {
   const page = mount({ "api/runs/run-3": AGENTIC_RUN }, "#/runs/run-3", { serve: STORE });
   await page.settle();
   assertInert(page.app);
-  assert.deepEqual(page.fetched, ["api/runs/run-3"]);
   const head = all(page.app).find((el) => classOf(el) === "card run-head");
-  assert.deepEqual(pills(head).slice(0, 2), [["pill ok", "completed"], ["pill agentic", "agentic"]]);
-  assert.ok(head.textContent.includes("Caterpillar builds machinery.") && head.textContent.includes("took 4m 00s") && head.textContent.includes(`Company researcher ${HOSTILE}`));
-  const hrefs = all(head).filter((el) => el.tagName === "A").map((el) => el.getAttribute("href"));
-  assert.deepEqual(hrefs, ["#/agents/company-researcher", `#/agents/company-researcher/revisions/${REV_B.id}`]);
-  const calls = all(page.app).filter((el) => el.tagName === "DETAILS" && classOf(el).startsWith("call"));
-  assert.deepEqual(calls.map(classOf), ["call many ok", "call ok", "call ok"], "the two one-call web_fetch rounds fold, as an agent home's page folds them");
-  assert.ok(page.app.textContent.includes(`Fetched a.example ${HOSTILE} and 1 more`));
+  assert.deepEqual(pills(head), [["pill ok", "completed"], ["pill agentic", "agentic"]]);
+  assert.ok(head.textContent.includes("Caterpillar builds machinery.") && head.textContent.includes("took 4m 00s") && head.textContent.includes("$0.312") && head.textContent.includes("2 tool calls") && head.textContent.includes("bbbbbbbbbbbb"));
+  assert.deepEqual(all(head).filter((el) => el.tagName === "A").map((el) => [el.getAttribute("href"), el.textContent]), [["#/agents/company-researcher", `Company researcher ${HOSTILE}`]]);
+  assert.deepEqual(all(page.app).filter((el) => el.tagName === "DETAILS" && classOf(el).startsWith("call")).map(classOf), ["call many ok", "call ok", "call ok"], "the two one-call rounds fold, as a home's page folds them");
   assert.ok(all(page.app).some((el) => el.tagName === "B" && el.textContent === "Done"));
-  assert.deepEqual(all(page.document.getElementById("crumbs")).filter((el) => el.tagName === "A").map((el) => el.textContent), ["Agents", `Company researcher ${HOSTILE}`, "bbbbbbbbbbbb", "Run"]);
+  assert.deepEqual(all(page.document.getElementById("crumbs")).filter((el) => el.tagName === "A").map((el) => el.textContent), ["Agents", `Company researcher ${HOSTILE}`, "Run"]);
   assert.equal(page.timers.size, 0);
+
+  const noCost = mount({ "api/runs/run-1": { ...AGENTIC_RUN, run: { ...RUNS[4], gone: undefined }, gone: true } }, "#/runs/run-1", { serve: STORE });
+  await noCost.settle();
+  assert.match(noCost.app.textContent, /cost unknown/);
+  assert.match(noCost.app.textContent, /This run's directory is gone from the store's runs folder: only its row is left\./);
+  assert.equal(all(noCost.app).filter((el) => classOf(el) === "card timeline").length, 0);
 });
 
-test("a running agentic run's page is read again every 2 s until the reader leaves it, and a run whose directory is gone says so", async () => {
-  const live = { ...AGENTIC_RUN, run: RUNS[0], rows: TIMELINE.slice(0, 2) };
-  const page = mount({ "api/runs/run-5": live, "api/store": { agents: AGENTS } }, "#/runs/run-5", { serve: STORE });
+test("a running run's page is read again every 2 s, says what it spent so far, and keeps itself through a failed refresh", async () => {
+  const api = { "api/runs/run-5": { ...AGENTIC_RUN, run: RUNS[0] } };
+  const page = mount(api, "#/runs/run-5", { serve: STORE });
   await page.settle();
+  assert.ok(page.app.textContent.includes("refreshing every 2 s") && page.app.textContent.includes("$0.200 so far"));
   assert.deepEqual([...page.timers.values()].map((t) => t.ms), [2000]);
-  assert.ok(page.app.textContent.includes("refreshing every 2 s"));
+  api["api/runs/run-5"] = [503, { error: "busy" }];
   await page.tick();
-  assert.deepEqual(page.fetched, ["api/runs/run-5", "api/runs/run-5"]);
+  assert.ok(page.app.textContent.includes("refreshing every 2 s") && !page.app.textContent.includes("Could not read"), "the run stays");
+  assert.deepEqual([...page.timers.values()].map((t) => t.ms), [2000], "and it tries again");
+  api["api/runs/run-5"] = { ...AGENTIC_RUN, run: { ...RUNS[0], state: "completed", costUsd: 0.3 } };
+  await page.tick();
+  assert.ok(page.app.textContent.includes("$0.300") && page.timers.size === 0, "a finished run is not read again");
   await page.go("#/");
-  assert.equal(page.timers.size, 0);
-  const gone = mount({ "api/runs/run-0": { ...AGENTIC_RUN, run: RUNS[5], rows: [], stored: false } }, "#/runs/run-0", { serve: STORE });
-  await gone.settle();
-  assert.deepEqual(pills(gone.app)[0], ["pill missing", "missing"]);
-  assert.match(gone.app.textContent, /This run's directory is not in the store/);
+  const first = mount({ "api/runs/run-5": [503, { error: "busy" }] }, "#/runs/run-5", { serve: STORE });
+  await first.settle();
+  assert.match(first.app.textContent, /Could not read the agent store\. 503 busy/, "a first read that fails says why");
 });
 
 const PRIVATE = "/root/steps/1/branches/private/body";
+const PUBLIC = "/root/steps/1/branches/public/body";
 const BRIEF = {
-  nodes: [node("/root", "chain", "chain"), node("/root/steps/0", "call", "Read the site"), node("/root/steps/1", "route", "Jev: public or private"), node("/root/steps/1/branches/public/body", "call", "Check the filing"), node(PRIVATE, "escalate", `No public record ${HOSTILE}`), node("/root/steps/2", "code", "Answer")],
-  edges: [{ from: "/root", to: "/root/steps/0", kind: "next" }, { from: "/root/steps/0", to: "/root/steps/1", kind: "next" }, { from: "/root/steps/1", to: "/root/steps/1/branches/public/body", kind: "route" }, { from: "/root/steps/1", to: PRIVATE, kind: "route" }, { from: "/root/steps/1", to: "/root/steps/2", kind: "next" }],
+  nodes: [node("/root", "chain", "chain"), node("/root/steps/0", "call", "Read the site"), node("/root/steps/1", "route", "Jev: public or private"), node(PUBLIC, "call", "Check the filing"), node(PRIVATE, "escalate", `No public record ${HOSTILE}`)],
+  edges: [{ from: "/root", to: "/root/steps/0", kind: "next" }, { from: "/root/steps/0", to: "/root/steps/1", kind: "next" }, { from: "/root/steps/1", to: PUBLIC, kind: "route" }, { from: "/root/steps/1", to: PRIVATE, kind: "route" }],
 };
-const ESCALATED_STATUS = { "/root": "escalated", "/root/steps/0": "done", "/root/steps/1": "escalated", "/root/steps/1/branches/public/body": "not-run", [PRIVATE]: "escalated", "/root/steps/2": "not-run" };
-const REV_C = rev("c", { kind: "workflow", parent: REV_B.id, current: true, note: "The cheap one" });
+const ESCALATED = { "/root": "escalated", "/root/steps/0": "done", "/root/steps/1": "escalated", [PUBLIC]: "not-run", [PRIVATE]: "escalated" };
+const REV_C = revision("c", { kind: "workflow" });
 const WORKFLOW_RUN = {
-  run: runRow("run-9", REV_C, "escalated", { startedAt: "2026-10-23T05:10:00.000Z", endedAt: "2026-10-23T05:11:00.000Z", costUsd: 0.018, summary: `escalated at No public record ${HOSTILE}` }),
-  agent: { id: "company-researcher", name: "Company researcher" },
-  revision: REV_C,
-  stored: true,
-  workflow: { graph: BRIEF, status: ESCALATED_STATUS, outcome: "escalated", escalatedAt: { path: PRIVATE, label: `No public record ${HOSTILE}` } },
+  run: run("run-9", REV_C, "escalated", { startedAt: "2026-10-23T05:10:00.000Z", endedAt: "2026-10-23T05:11:00.000Z", costUsd: 0.018, summary: `escalated at No public record ${HOSTILE}` }),
+  agent: "Company researcher",
+  note: "The cheap one",
+  workflow: { graph: BRIEF, status: ESCALATED, outcome: "escalated", escalatedAt: { path: PRIVATE, label: `No public record ${HOSTILE}` } },
 };
 
-test("a workflow run's page: the graph with the run's node states as marks.status and the escalation as marks.fired, drawn as escalated, never failed", async () => {
+test("a workflow run's page: the graph with each node's state, the branch it took and the node an escalation stopped at, drawn as escalated, never failed, and no answer", async () => {
   const drawn = [];
   const page = mount({ "api/runs/run-9": WORKFLOW_RUN }, "#/runs/run-9", { serve: STORE, window: { drawWorkflowGraph: (svg, graph, marks) => drawn.push({ svg, graph, marks }) } });
   await page.settle();
   assertInert(page.app, drawn.map((d) => d.svg));
-  assert.equal(drawn.length, 1);
-  assert.deepEqual(plain(drawn[0].marks), { status: ESCALATED_STATUS, fired: PRIVATE, taken: [PRIVATE] }, "the route branch it took is marked taken, the one it did not is not");
-  assert.deepEqual(plain(drawn[0].graph), BRIEF);
+  assert.deepEqual(plain([drawn[0].graph, drawn[0].marks]), [BRIEF, { status: ESCALATED, taken: [PRIVATE], fired: PRIVATE }]);
   const head = all(page.app).find((el) => classOf(el) === "card run-head");
-  assert.deepEqual(pills(head).slice(0, 2), [["pill escalated", "escalated"], ["pill workflow", "workflow"]]);
-  assert.ok(head.textContent.includes("$0.018") && head.textContent.includes(`escalated at No public record ${HOSTILE}`) && !head.textContent.includes("tool call"));
-  assert.match(page.app.textContent, new RegExp(`Escalated at No public record`));
-  assert.ok(!pills(page.app).some(([cls]) => cls === "pill error"), "nothing escalated is drawn as failed");
+  assert.deepEqual(pills(head), [["pill escalated", "escalated"], ["pill workflow", "workflow"]]);
+  assert.ok(head.textContent.includes("$0.018") && !head.textContent.includes("tool call"));
+  assert.match(page.app.textContent, /Escalated at No public record/);
+  assert.equal(all(page.app).filter((el) => classOf(el) === "row answer").length, 0, "an escalated run has no answer");
+  assert.ok(!pills(page.app).some(([cls]) => cls === "pill error"));
 });
 
-test("a workflow run's page without the drawer: the nodes as text with each one's state, the escalation marked where it stopped", async () => {
-  const page = mount({ "api/runs/run-9": WORKFLOW_RUN }, "#/runs/run-9", { serve: STORE });
+test("a completed workflow run's page shows its answer as text; without the drawer each node is listed with its state, the escalation's node marked", async () => {
+  const completed = { ...WORKFLOW_RUN, run: { ...WORKFLOW_RUN.run, state: "completed" }, workflow: { graph: BRIEF, status: { "/root": "done", [PUBLIC]: "done", [PRIVATE]: "not-run" }, outcome: "completed", output: { brief: `Filed ${HOSTILE}` } } };
+  const page = mount({ "api/runs/run-9": completed }, "#/runs/run-9", { serve: STORE });
   await page.settle();
   assertInert(page.app);
-  const items = all(page.app).filter((el) => el.tagName === "LI" && classOf(el).startsWith("node"));
+  assert.deepEqual(all(page.app).filter((el) => classOf(el) === "row answer").map((el) => el.textContent), [`Answer${JSON.stringify({ brief: `Filed ${HOSTILE}` })}`], "anything but a string as compact JSON");
+  const text = mount({ "api/runs/run-9": { ...completed, workflow: { ...completed.workflow, output: `Filed ${HOSTILE}` } } }, "#/runs/run-9", { serve: STORE });
+  await text.settle();
+  assert.ok(all(text.app).some((el) => el.tagName === "PRE" && el.textContent === `Filed ${HOSTILE}`), "a string as written");
+
+  const escalated = mount({ "api/runs/run-9": WORKFLOW_RUN }, "#/runs/run-9", { serve: STORE });
+  await escalated.settle();
+  const items = all(escalated.app).filter((el) => el.tagName === "LI" && classOf(el).startsWith("node"));
   assert.deepEqual(items.map((el) => [classOf(el), pills(el)]), [
     ["node", [["pill escalated", "escalated"]]],
     ["node", [["pill ok", "done"]]],
     ["node", [["pill escalated", "escalated"]]],
     ["node", [["pill idle", "not-run"]]],
     ["node fired", [["pill escalated", "escalated"]]],
-    ["node", [["pill idle", "not-run"]]],
   ]);
-  assert.ok(items[4].textContent.includes(`No public record ${HOSTILE}`) && items[4].textContent.includes("stopped here"));
-  assert.ok(!pills(page.app).some(([cls]) => cls === "pill error"));
-  const completed = { ...WORKFLOW_RUN, run: { ...WORKFLOW_RUN.run, state: "completed", summary: "Read the site → Answer" }, workflow: { graph: BRIEF, status: { "/root": "done" }, outcome: "completed" } };
-  const done = mount({ "api/runs/run-9": completed }, "#/runs/run-9", { serve: STORE });
-  await done.settle();
-  assert.equal(all(done.app).filter((el) => classOf(el) === "node fired").length, 0);
-  assert.match(done.app.textContent, /The path it took/);
+  assert.ok(items[4].textContent.includes("stopped here"));
 });
 
-test("a workflow run's page when the graph cannot be read here says what to install, with the run's row still shown", async () => {
-  const page = mount({ "api/runs/run-9": { ...WORKFLOW_RUN, workflow: null, unavailable: "install @parcha/agentrun-dsl to see this workflow's graph" } }, "#/runs/run-9", { serve: STORE });
+test("a workflow run its reader refuses shows that one line in place of the graph, with the run's row still shown", async () => {
+  const refused = { ...WORKFLOW_RUN, workflow: undefined, refused: "a run in the keyed layout is not read here" };
+  const page = mount({ "api/runs/run-9": refused }, "#/runs/run-9", { serve: STORE });
   await page.settle();
   assertInert(page.app);
-  assert.match(page.app.textContent, /install @parcha\/agentrun-dsl to see this workflow's graph/);
+  assert.deepEqual(all(page.app).filter((el) => classOf(el) === "note").map((el) => el.textContent), ["a run in the keyed layout is not read here"]);
   assert.deepEqual(pills(page.app)[0], ["pill escalated", "escalated"]);
-});
-
-test("a run with no cost reads unknown, in the runs table and on its page, never $0; a cost of 0 is $0.000; a running run says what it spent so far", async () => {
-  const runs = [runRow("run-a", REV_B, "completed", { endedAt: "2026-10-22T11:05:00.000Z" }), runRow("run-b", REV_B, "completed", { endedAt: "2026-10-22T11:05:00.000Z", costUsd: 0 }), runRow("run-c", REV_B, "completed", { costUsd: 0.25 })];
-  const page = mount(agentApi({ "api/runs?agent=company-researcher": runs }), "#/agents/company-researcher", { serve: STORE });
-  await page.settle();
-  const costs = all(page.app).filter((el) => classOf(el).startsWith("c cost")).map((el) => [classOf(el), el.textContent]);
-  assert.deepEqual(costs, [["c cost unknown", "unknown"], ["c cost", "$0.000"], ["c cost", "$0.250"]]);
-  const ended = mount({ "api/runs/run-a": { ...AGENTIC_RUN, run: runs[0], rows: TIMELINE.filter((r) => r.kind !== "usage") } }, "#/runs/run-a", { serve: STORE });
-  await ended.settle();
-  const head = all(ended.app).find((el) => classOf(el) === "card run-head");
-  assert.ok(head.textContent.includes("cost unknown") && !head.textContent.includes("$0"), "an ended run with no cost");
-  const live = mount({ "api/runs/run-5": { ...AGENTIC_RUN, run: RUNS[0], rows: TIMELINE } }, "#/runs/run-5", { serve: STORE });
-  await live.settle();
-  assert.ok(all(live.app).find((el) => classOf(el) === "card run-head").textContent.includes("$0.200 so far"));
-  const workflow = mount({ "api/runs/run-9": { ...WORKFLOW_RUN, run: { ...WORKFLOW_RUN.run, costUsd: undefined } } }, "#/runs/run-9", { serve: STORE });
-  await workflow.settle();
-  assert.ok(all(workflow.app).find((el) => classOf(el) === "card run-head").textContent.includes("cost unknown"));
-});
-
-test("a running store run whose refresh fails keeps what it shows and tries again, as an agent home's live run does", async () => {
-  const api = { "api/runs/run-5": { ...AGENTIC_RUN, run: RUNS[0], rows: TIMELINE.slice(0, 2) } };
-  const page = mount(api, "#/runs/run-5", { serve: STORE });
-  await page.settle();
-  api["api/runs/run-5"] = [503, { error: "busy" }];
-  await page.tick();
-  assert.equal(page.fetched.length, 2);
-  assert.ok(page.app.textContent.includes("refreshing every 2 s") && !page.app.textContent.includes("Could not read"), "the run stays");
-  assert.deepEqual([...page.timers.values()].map((t) => t.ms), [2000], "and it tries again");
-  api["api/runs/run-5"] = { ...AGENTIC_RUN, run: { ...RUNS[0], state: "completed", costUsd: 0.3 }, rows: TIMELINE };
-  await page.tick();
-  assert.ok(page.app.textContent.includes("$0.300") && page.timers.size === 0, "the next answer is drawn, and a finished run is not read again");
-  const first = mount({ "api/runs/run-5": [503, { error: "busy" }] }, "#/runs/run-5", { serve: STORE });
-  await first.settle();
-  assert.match(first.app.textContent, /Could not read the agent store\. 503 busy/, "a first read that fails says why");
+  assert.ok(page.app.textContent.includes("$0.018") && page.app.textContent.includes(`escalated at No public record ${HOSTILE}`));
 });
