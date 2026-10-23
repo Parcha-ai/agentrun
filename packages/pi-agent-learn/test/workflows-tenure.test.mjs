@@ -46,7 +46,10 @@ async function host(t, { tenure = true } = {}) {
     inFlight.delete(run.id);
     return { digest, curated, trial: await readTrial(curator, NAME, "main") };
   };
-  return { start, report, curator };
+  /** The run ends without a report (it crashed): no use is folded, and it leaves `inFlight()` unless `keep` says the host
+   *  broke its contract. */
+  const crash = (run, { keep = false } = {}) => { if (!keep) inFlight.delete(run.id); };
+  return { start, report, crash, curator };
 }
 const statusOf = (trial, digest) => trial.revisions.find((r) => r.sha256 === digest)?.status;
 const heldWhy = (curated) => (curated?.held ?? []).map((h) => h.reason).join(" | ");
@@ -88,6 +91,24 @@ test("a trial no run uses cannot keep its name: once the runs that started befor
   await h.report(r2);
   const fourth = await h.report(r4, { save: workflowDoc({ limit: 300 }) });
   assert.deepEqual([statusOf(fourth.trial, trial), statusOf(fourth.trial, fourth.digest)], ["retired", "trial"], heldWhy(fourth.curated));
+}, { timeout: 300_000 });
+
+test("a run that ends without a report releases the hold at its end: a trial whose only earlier run in flight crashed yields to the next save", async (t) => {
+  for (const keep of [false, true]) {
+    const h = await host(t);
+    const { digest: trial } = await h.report(await h.start("run-01"), { save: workflowDoc() });
+    const [r2, r3, r4] = [await h.start("run-02"), await h.start("run-03"), await h.start("run-04")];
+    assert.match(heldWhy((await h.report(r3, { save: workflowDoc({ limit: 200 }) })).curated), /keeps its tenure/, "run-02 is in flight");
+    h.crash(r2, { keep });
+    const fourth = await h.report(r4, { save: workflowDoc({ limit: 300 }) });
+    if (!keep) {
+      assert.deepEqual([statusOf(fourth.trial, trial), statusOf(fourth.trial, fourth.digest)], ["retired", "trial"], heldWhy(fourth.curated));
+      assert.equal(fourth.trial.uses.length, 0, "the crashed run folded no use");
+    } else {
+      // The contract matters: a host that keeps a dead run in flight pins the hold.
+      assert.match(heldWhy(fourth.curated), /keeps its tenure/);
+    }
+  }
 }, { timeout: 300_000 });
 
 test("with no run in flight nothing is held: a run that ran the trial and saved a fix replaces it, as without a tenure", async (t) => {

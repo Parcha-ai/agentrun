@@ -392,7 +392,9 @@ the live and restorable ones beside 128 refused digests), 30 uses, 16 checks of 
 **Tenure.** With runs in flight side by side, a run that saves a new revision can report back before the runs that ran the
 live trial do, and its revision would retire the trial before their uses count. `workflowAdmitter({ tenure })` takes where
 the host's runs started (`started(run)`: the main commit each was prepared from and its place in the start order) and which
-are still in flight (`inFlight()`). A new revision is then `held`, and the live trial kept, when the run that saved it
+are still in flight (`inFlight()`: every run started that has not ended, however it ended, so a run that crashed, was
+aborted or deadline-killed, or failed on its infrastructure leaves it at its end without reaching curate). The option is
+opt-in: without it nothing changes. A new revision is then `held`, and the live trial kept, when the run that saved it
 started before the trial was live (it never saw the trial), or while a run that started with the trial live, and before
 it, is still in flight. A champion is never held. Each hold ends as the runs that started before the saving run report
 back, so a trial no run uses cannot keep its name, and with no run in flight nothing is held. A held revision is not kept:
