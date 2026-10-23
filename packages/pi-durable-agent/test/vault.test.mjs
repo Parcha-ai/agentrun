@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import assert from "node:assert/strict";
-import { createDecipheriv } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { cpSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -437,4 +437,58 @@ test("a provider context that records its own origins keeps them: sealed with it
     await assert.rejects(vault.capture({ sessionKey: "bad", origins: [A], state: { ...context, origins } }), refused("invalid", /the provider context's origins/), JSON.stringify(origins).slice(0, 60));
   }
   assert.equal((await vault.list()).some((entry) => entry.sessionKey === "bad"), false);
+});
+
+/** Seal `edit(plaintext)` into `sessionKey`'s row under its own item key, as only a holder of the host key could, with the
+ *  row's clear origins set to the sealed `capturedFor`: a row no capture would write. */
+async function resealed(h, sessionKey, hostKeyBytes, edit) {
+  const open = (key, sealed, aad) => {
+    const decipher = createDecipheriv("aes-256-gcm", key, sealed.subarray(0, 12)).setAAD(Buffer.from(aad));
+    decipher.setAuthTag(sealed.subarray(sealed.length - 16));
+    return Buffer.concat([decipher.update(sealed.subarray(12, sealed.length - 16)), decipher.final()]);
+  };
+  const keys = keysOf(h);
+  const record = await rowOf(h, sessionKey);
+  const agentId = h.identity.id;
+  const homeKey = open(hostKeyBytes, Buffer.from(keys.homeKey.wrapped, "base64"), `host-key|${keys.hostKeyId}|home-key|${agentId}|${keys.homeKey.id}`);
+  const itemKey = open(homeKey, Buffer.from(keys.items[record.keyId], "base64"), `item-key|${agentId}|${keys.homeKey.id}|${record.keyId}`);
+  const aad = `vault|v1|${agentId}|${sessionKey}|${record.keyId}|${record.kind}`;
+  const plain = edit(JSON.parse(open(itemKey, Buffer.concat([Buffer.from(record.iv, "base64"), Buffer.from(record.ciphertext, "base64")]), aad).toString("utf8")));
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", itemKey, iv).setAAD(Buffer.from(aad));
+  const ciphertext = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(plain))), cipher.final(), cipher.getAuthTag()]);
+  await writeRow(h, sessionKey, { ...record, origins: plain.capturedFor, iv: iv.toString("base64"), ciphertext: ciphertext.toString("base64") });
+}
+
+test("a provider context whose own origins go beyond the capture's is refused, naming the fault and no origin or id, and nothing is written; one within them is kept", async () => {
+  const h = await home();
+  const vault = sessionVault(h, { hostKey: KEY, now: NOW });
+  const context = (origins) => ({ kind: "provider-context", capturedAt: new Date(T0).toISOString(), provider: "kernel", contextId: marker("wide"), origins });
+  for (const [origins, recorded] of [[[A], [A, B]], [[A], [B]], [[A, B], [OTHER, A, B]]]) {
+    await assert.rejects(vault.capture({ sessionKey: "wide", origins, state: context(recorded) }), (error) => {
+      assert.ok(refused("invalid")(error), String(error));
+      assert.equal(error.message, "the provider context's origins go beyond the capture's");
+      for (const text of [...recorded, marker("wide")]) assert.ok(!`${error.message}\n${error.stack}`.includes(text), `the error does not carry ${text}`);
+      return true;
+    });
+  }
+  assert.deepEqual(await vault.list(), []);
+  assert.equal(existsSync(path.join(h.dir, VAULT_KEYS_FILE)), false, "no key was made either");
+  for (const [origins, recorded] of [[[A], [A]], [[A, B], [A, B]], [[A, B], [B]]]) {
+    await vault.capture({ sessionKey: "within", origins, state: context(recorded) });
+    assert.deepEqual(await vault.restore({ sessionKey: "within", origins }), context(recorded), JSON.stringify([origins, recorded]));
+  }
+  assert.equal(await vault.restore({ sessionKey: "within", origins: [B] }), null, "captured for A and B, it needs both named, whatever it records");
+});
+
+test("a sealed provider context whose own origins go beyond the ones it was captured for never comes back to a request that does not name them all", async () => {
+  const h = await home();
+  const vault = sessionVault(h, { hostKey: KEY, now: NOW });
+  const context = { kind: "provider-context", capturedAt: new Date(T0).toISOString(), provider: "browserbase", contextId: marker("crafted"), origins: [A, B] };
+  await vault.capture({ sessionKey: "crafted", origins: [A, B], state: context });
+  await resealed(h, "crafted", Buffer.alloc(32, 1), (plain) => ({ ...plain, capturedFor: [A] }));
+  assert.deepEqual((await vault.list()).map((entry) => entry.origins), [[A]], "the row says A alone");
+  assert.equal(await vault.restore({ sessionKey: "crafted", origins: [A] }), null, "A alone would get B's sign-in");
+  assert.deepEqual(vault.handedOut(), []);
+  assert.deepEqual(await vault.restore({ sessionKey: "crafted", origins: [A, B] }), context, "a request that names every origin it holds gets it");
 });
