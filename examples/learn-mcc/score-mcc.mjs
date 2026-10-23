@@ -62,24 +62,26 @@ export const riskOf = (value) => (typeof value === 'string' && RISK_TIERS.includ
 const flagSet = (flags) => (Array.isArray(flags) ? [...new Set(flags.filter((f) => typeof f === 'string'))].sort() : null);
 
 /**
- * The stage-1 labels (proposal C) by merchant: each line is the adjudicator's stage-1 record with its `merchantId`,
- * `{ merchantId, own: { mcc }, risk: { tiers } }` or `{ merchantId, unjudgeable }`. A label is `{ mcc, allowedTiers }`
- * (the tiers in rubric order) or `{ unjudgeable }`. A code not in the code table, tiers that are not one or two adjacent
- * ones, or a merchant labelled twice is refused.
+ * The stage-1 labels (proposal C) by merchant, from the pinned labels file: one line per merchant,
+ * `{ merchant, mcc, allowedTiers, unjudgeable: false, reason: null }` or `{ merchant, mcc: null, allowedTiers: null,
+ * unjudgeable: true, reason }`. The code is the adjudicator's own as recorded (a brand code stays one; scoring compares
+ * it as its generic). A label is `{ mcc, allowedTiers }` (the tiers in rubric order) or `{ unjudgeable }`. A code not
+ * in the code table, tiers that are not one or two adjacent ones, or a merchant labelled twice is refused.
  */
 export function labelsOf(lines, groups = defaultGroups()) {
   const labels = {};
   for (const line of lines) {
-    const id = line?.merchantId;
-    if (typeof id !== 'string' || !id) throw new Error('a label line needs its merchantId');
+    const id = line?.merchant;
+    if (typeof id !== 'string' || !id) throw new Error('a label line needs its merchant');
     if (Object.hasOwn(labels, id)) throw new Error(`${id} is labelled twice`);
-    if (typeof line.unjudgeable === 'string' && line.unjudgeable) {
-      labels[id] = { unjudgeable: line.unjudgeable };
+    if (line.unjudgeable === true) {
+      labels[id] = { unjudgeable: typeof line.reason === 'string' && line.reason ? line.reason : 'unjudgeable' };
       continue;
     }
-    const mcc = mccOf(line.own?.mcc);
+    if (line.unjudgeable !== false) throw new Error(`${id}: unjudgeable must be true or false`);
+    const mcc = typeof line.mcc === 'string' && /^\d{4}$/.test(line.mcc) ? line.mcc : null;
     if (mcc === null || groups.codes[mcc] === undefined) throw new Error(`${id}: the label's code is not a code in the table`);
-    const tiers = Array.isArray(line.risk?.tiers) ? line.risk.tiers.map(riskOf) : [];
+    const tiers = Array.isArray(line.allowedTiers) ? line.allowedTiers.map(riskOf) : [];
     const at = [...new Set(tiers.map((t) => RISK_TIERS.indexOf(t)))].sort();
     if (!tiers.length || tiers.length > 2 || tiers.includes(null) || at.length !== tiers.length || (at.length === 2 && at[1] - at[0] !== 1)) throw new Error(`${id}: the label's tiers must be one tier, or two next to each other`);
     labels[id] = { mcc, allowedTiers: at.map((i) => RISK_TIERS[i]) };

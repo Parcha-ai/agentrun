@@ -141,12 +141,12 @@ test('the summary counts each field over the rows that score it, per vertical, w
 
 // Proposal C: the stage-1 teacher. The truth per merchant is the adjudicator's stage-1 MCC and its allowed tiers; a
 // merchant with no label falls back to the swarm teacher on the code alone.
-const EV = [{ url: 'https://shop.example/', quote: 'We sell kitchen tables.' }];
+const judged = (merchant, mcc, allowedTiers) => ({ merchant, mcc, allowedTiers, unjudgeable: false, reason: null });
 const LABEL_LINES = [
-  { merchantId: 'm1', own: { mcc: '5712', evidence: EV }, risk: { tiers: ['low'], evidence: EV } },
-  { merchantId: 'm2', own: { mcc: '5499', evidence: EV }, risk: { tiers: ['medium', 'high'], evidence: EV } },
-  { merchantId: 'm3', own: { mcc: '3504', evidence: EV }, risk: { tiers: ['medium'], evidence: EV } },
-  { merchantId: 'm4', unjudgeable: 'the site is behind a bot wall' },
+  judged('m1', '5712', ['low']),
+  judged('m2', '5499', ['medium', 'high']),
+  judged('m3', '3504', ['medium']),
+  { merchant: 'm4', mcc: null, allowedTiers: null, unjudgeable: true, reason: 'the site is behind a bot wall' },
 ];
 const labels = labelsOf(LABEL_LINES);
 const row = (merchantId, teacher) => ({ merchantId, name: `${merchantId} shop`, website: `https://${merchantId}.example`, stratum: 'nutra', teacher });
@@ -154,10 +154,13 @@ const row = (merchantId, teacher) => ({ merchantId, name: `${merchantId} shop`, 
 test('stage-1 labels: the code and the allowed tiers per merchant, an unjudgeable one kept as such, a bad line refused', () => {
   assert.deepEqual(labels, { m1: { mcc: '5712', allowedTiers: ['low'] }, m2: { mcc: '5499', allowedTiers: ['medium', 'high'] }, m3: { mcc: '3504', allowedTiers: ['medium'] }, m4: { unjudgeable: 'the site is behind a bot wall' } });
   assert.throws(() => labelsOf([LABEL_LINES[0], LABEL_LINES[0]]), /m1 is labelled twice/);
-  assert.throws(() => labelsOf([{ merchantId: 'x', own: { mcc: '12' }, risk: { tiers: ['low'] } }]), /x: the label's code/);
-  assert.throws(() => labelsOf([{ merchantId: 'x', own: { mcc: '5999' }, risk: { tiers: ['low', 'high'] } }]), /x: the label's tiers/);
-  assert.throws(() => labelsOf([{ merchantId: 'x', own: { mcc: '5999' }, risk: { tiers: [] } }]), /x: the label's tiers/);
-  assert.throws(() => labelsOf([{ own: { mcc: '5999' }, risk: { tiers: ['low'] } }]), /merchantId/);
+  assert.throws(() => labelsOf([judged('x', '12', ['low'])]), /x: the label's code/);
+  assert.throws(() => labelsOf([judged('x', 5999, ['low'])]), /x: the label's code/, 'the pinned file writes the code as a string');
+  assert.throws(() => labelsOf([judged('x', '5999', ['low', 'high'])]), /x: the label's tiers/);
+  assert.throws(() => labelsOf([judged('x', '5999', [])]), /x: the label's tiers/);
+  assert.throws(() => labelsOf([{ ...judged('x', '5999', ['low']), unjudgeable: 'no' }]), /x: unjudgeable must be true or false/);
+  assert.throws(() => labelsOf([{ merchantId: 'x', mcc: '5999', allowedTiers: ['low'], unjudgeable: false }]), /needs its merchant/);
+  assert.deepEqual(labelsOf([judged('y', '5499', ['high', 'medium'])]), { y: { mcc: '5499', allowedTiers: ['medium', 'high'] } }, 'tiers in rubric order');
 });
 
 test('C: a right code with an allowed tier is right; a right code with a disallowed tier is WRONG', () => {
