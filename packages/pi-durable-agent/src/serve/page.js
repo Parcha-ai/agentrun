@@ -1007,6 +1007,22 @@
     );
   }
 
+  /** A workflow run: its graph with each node's state as marks.status and, when an escalation stopped it, that node as
+   *  marks.fired. */
+  function workflowRunCard(data) {
+    var w = data.workflow && typeof data.workflow === "object" ? data.workflow : null;
+    var at = w && w.escalatedAt && typeof w.escalatedAt.path === "string" ? w.escalatedAt : null;
+    var marks = { status: (w && w.status) || {} };
+    if (at) marks.fired = at.path;
+    return el(
+      "section",
+      { class: "card workflow-run" },
+      kicker("Workflow"),
+      el("h2", null, at ? "Escalated at " + (at.label || at.path) : "The path it took"),
+      data.unavailable ? el("p", { class: "note" }, data.unavailable) : w ? graphBox(w.graph, marks, "The workflow's graph, with the path this run took") : el("p", { class: "none" }, "No record of the path it took.")
+    );
+  }
+
   /** A store run's head: its state, when it ran and what it cost, its agent and revision, and its summary. */
   function storeRunHead(data, rows) {
     var run = data.run;
@@ -1054,7 +1070,8 @@
         var rows = data && Array.isArray(data.rows) ? data.rows : [];
         var open = openCalls();
         var y = window.scrollY || 0;
-        show([storeRunHead(data, rows), timeline(rows)]);
+        if (run.kind === "workflow") show([storeRunHead(data, rows), data.stored === false ? null : workflowRunCard(data)]);
+        else show([storeRunHead(data, rows), timeline(rows)]);
         reopen(open);
         if (y) window.scrollTo(0, y);
         if (run.state === "running") later(token, 2000, function () { storeRunPage(id, token); });

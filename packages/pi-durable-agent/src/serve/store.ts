@@ -1,7 +1,7 @@
 // `serveStore`: the serve page over an agent store, a directory of many agents, each with immutable revisions and runs.
 // Everything is read through the store's reader, opened on a copy of the store's index (SQLite's backup, from a
 // read-only handle, as `serveHome` copies a home), and through read-only handles on the run stores; nothing is written.
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,7 +9,7 @@ import { backup, DatabaseSync } from "node:sqlite";
 import { ID_PATTERN } from "../home.js";
 import { AgentHomeError } from "../store.js";
 import { timelineOf } from "../timeline/index.js";
-import { readEntriesAt, signature } from "./read.js";
+import { openReadOnly, readEntriesAt, signature } from "./read.js";
 import { checkPort, type ServeHandle, serveLocal, type ServeOptions } from "./server.js";
 
 /** The store's index, beside its agents' homes. */
@@ -261,16 +261,50 @@ const runShown = (run: RunRow): RunRow => ({
   ...(run.summary !== undefined ? { summary: run.summary } : {}),
 });
 
-/** One run: its row, its agent's id and name, its revision's row, whether its store is there, and its store's entries as
- *  the timeline (an agentic run). */
-function runView(dir: string, view: StoreView, run: RunRow) {
+/** A workflow run's record as the page draws it: its graph, each node's state, its outcome and where an escalation
+ *  stopped it, as strings. */
+function workflowRunShown(record: unknown) {
+  const r = isRecord(record) ? record : {};
+  const status = isRecord(r.status) ? Object.fromEntries(Object.entries(r.status).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
+  const at = isRecord(r.escalatedAt) && typeof r.escalatedAt.path === "string" && typeof r.escalatedAt.label === "string" ? { path: r.escalatedAt.path, label: r.escalatedAt.label } : undefined;
+  return { graph: graphShown(r.graph), status, ...(typeof r.outcome === "string" ? { outcome: r.outcome } : {}), ...(at ? { escalatedAt: at } : {}) };
+}
+
+/** The workflow views' record of a workflow run, read from a copy of its store that SQLite's backup takes from a
+ *  read-only handle into a private temporary directory, removed after: the views open the copy, never the run's store. */
+async function workflowRunOf(dir: string, storePath: string, run: RunRow, revision: Revision, workflow: () => Promise<WorkflowViews>) {
+  if (!realpathSync(storePath).startsWith(`${realpathSync(dir)}${path.sep}`)) throw new AgentHomeError("check", "the run's store is not inside the store");
+  const scratch = await mkdtemp(path.join(tmpdir(), "pi-durable-agent-serve-"));
+  try {
+    const copy = path.join(scratch, path.basename(storePath));
+    const source = openReadOnly(storePath);
+    try {
+      await backup(source, copy);
+    } finally {
+      source.close();
+    }
+    const record = await drawable(async () => workflowRunShown(await (await workflow()).readWorkflowRun({ runId: run.id, storePath: copy, revision: { body: { workflow: revision.body.workflow } } })));
+    return "unavailable" in record ? { unavailable: record.unavailable.split(scratch).join("the run's store") } : record;
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+/** One run: its row, its agent's id and name, its revision's row, whether its store is there, and what it did: an
+ *  agentic run's entries as the timeline, a workflow run's record from the workflow views. */
+async function runView(dir: string, view: StoreView, run: RunRow, workflow: () => Promise<WorkflowViews>) {
   const agent = view.agents.find((candidate) => candidate.id === run.agent);
   const revision = (view.revisions.get(run.agent) ?? []).find((candidate) => candidate.id === run.revision) ?? null;
   const relative = view.runStores.get(run.id);
   const storePath = relative === undefined ? undefined : path.join(dir, relative);
   const stored = storePath !== undefined && existsSync(storePath);
   const value = { run: runShown(run), agent: { id: run.agent, name: agent?.name ?? run.agent }, revision, stored };
-  return { status: 200, value: { ...value, rows: stored ? timelineOf(readEntriesAt(dir, storePath, "store"), { settled: run.state !== "running" }) : [] } };
+  if (run.kind !== "workflow") return { status: 200, value: { ...value, rows: stored ? timelineOf(readEntriesAt(dir, storePath, "store"), { settled: run.state !== "running" }) : [] } };
+  if (!stored) return { status: 200, value: { ...value, workflow: null } };
+  const body = view.bodies.get(bodyKey(run.agent, run.revision));
+  if (body === undefined || body instanceof AgentHomeError) throw body ?? new AgentHomeError("missing", "the run's revision is not in the store");
+  const record = await workflowRunOf(dir, storePath, run, body, workflow);
+  return { status: 200, value: "unavailable" in record ? { ...value, workflow: null, unavailable: record.unavailable } : { ...value, workflow: record.value } };
 }
 
 const badId = (what: string) => ({ status: 400, value: { error: `the ${what} id is not letters, digits, ".", "_" or "-"` } });
@@ -337,7 +371,7 @@ export async function serveStore(store: { readonly dir: string }, options: Store
       if (!ID_PATTERN.test(id)) return badId("run");
       const view = await read();
       const found = view.runs.find((candidate) => candidate.id === id);
-      return found ? runView(dir, view, found) : notFound("run");
+      return found ? runView(dir, view, found, workflow) : notFound("run");
     }
     if (pathname === "/api/store") {
       const view = await read();
