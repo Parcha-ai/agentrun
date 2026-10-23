@@ -146,7 +146,7 @@ pre.bad{border-color:var(--red);color:var(--red)}
 .panel.error{border:1px solid var(--red);color:var(--red);background:var(--panel);padding:14px 18px}
 .foot{max-width:1180px;margin:0 auto;padding:0 16px 40px;font:11.5px var(--mono);color:var(--faint)}
 @media (max-width:560px){.brand .sub{display:none}.top{gap:10px}.call>summary .tool{display:none}.call>summary b{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}.row.think>summary .gist{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}}
-/* The workflow graph graph.js draws: its own size, shrunk to fit and never grown. The stripe's colour says who works (the agent, Jev, a tool, code, control); a tag or a word says what a diff or a run did, never a colour alone. */
+/* The workflow graph graph.js draws, at its own size: shrunk to fit, never grown. A stripe's colour says who works; a tag or a word, never a colour alone, says what a diff or a run did. */
 svg.wf{display:block;max-width:100%;height:auto;margin:0 auto}
 .wf .wire{fill:none;stroke:var(--line);stroke-width:1.5}
 .wf .exit-wire{stroke:var(--exit)}
@@ -158,7 +158,6 @@ svg.wf{display:block;max-width:100%;height:auto;margin:0 auto}
 .wf .label{font:500 12.5px var(--mono);fill:var(--ink)}
 .wf .kind{font:10.5px var(--mono);fill:var(--muted)}
 .wf .branch-name{font:500 10.5px var(--mono);fill:var(--muted)}
-.wf .branch-name.taken{fill:var(--ink)}
 .wf .exit-box{fill:var(--exit-soft);stroke:var(--exit);stroke-width:1}
 .wf .exit-text{font:10.5px var(--mono);fill:var(--ink)}
 .wf .tag-box{fill:var(--ink)}
@@ -170,7 +169,6 @@ svg.wf{display:block;max-width:100%;height:auto;margin:0 auto}
 .wf .done>.box{fill:var(--green-soft);stroke:var(--green)}.wf .done>.exit-box{fill:var(--panel);stroke:var(--line)}.wf .done>.state{fill:var(--green)}
 .wf .working>.box,.wf .working>.exit-box{stroke:var(--accent);stroke-width:2.4}.wf .working>.state{fill:var(--accent)}
 .wf .failed>.box,.wf .failed>.exit-box{fill:var(--red-soft);stroke:var(--red);stroke-width:2}.wf .failed>.state{fill:var(--red)}
-.wf .escalated>.box{fill:var(--exit-soft);stroke:var(--exit);stroke-width:2;stroke-dasharray:6 3}.wf .escalated>.state{fill:var(--exit)}
-.wf .escalated>.exit-box{fill:var(--exit);stroke:var(--exit);stroke-width:2}.wf .escalated>.exit-text{fill:var(--bg);font-weight:600}
-.wf .not-run,.wf .skipped{opacity:.4}
-.wf .skipped>.box{stroke-dasharray:2 3}
+.wf .escalated>.box,.wf .escalated>.exit-box{stroke:var(--exit);stroke-width:2}.wf .escalated>.state{fill:var(--exit)}
+.wf .fired>.exit-box{fill:var(--exit)}.wf .fired>.exit-text{fill:var(--bg);font-weight:600}
+.wf .not-run{opacity:.4}

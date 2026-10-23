@@ -6,8 +6,7 @@
 (function () {
   "use strict";
   // Every label, branch name and transport is data from a workflow document. It reaches the drawing only as text nodes;
-  // every attribute is a number, a fixed word or a node's path, set one by one, and a state names a class only through
-  // STATES.
+  // every attribute is a number, a fixed word or a node's path, set one by one, and a state is a class only if STATES has it.
   var doc = document;
   var NS = "http://www.w3.org/2000/svg";
   var PAD = 16;
@@ -35,10 +34,7 @@
     call: "tool", code: "code", escalate: "exit",
     chain: "control", parallel: "control", map: "control", loop: "control", workflow: "control",
   };
-  var STATES = { done: "done", working: "working", failed: "failed", escalated: "escalated", "not-run": "not-run", skipped: "skipped" };
-  // The states a word names: on a card all but not-run, which its fade shows; on an exit only those that are news.
-  var CARD_WORDS = { done: 1, working: 1, failed: 1, escalated: 1, skipped: 1 };
-  var EXIT_WORDS = { working: 1, failed: 1, escalated: 1 };
+  var STATES = { done: 1, working: 1, failed: 1, escalated: 1, "not-run": 1 };
 
   function own(object, key) {
     return object != null && Object.prototype.hasOwnProperty.call(object, key);
@@ -47,15 +43,13 @@
   /** An SVG element: attributes set one by one, then children as nodes or text. */
   function svgEl(tag, attrs) {
     var node = doc.createElementNS(NS, tag);
-    for (var name in attrs) {
-      if (own(attrs, name) && attrs[name] != null && attrs[name] !== false) node.setAttribute(name, String(attrs[name]));
-    }
+    for (var name in attrs) if (own(attrs, name)) node.setAttribute(name, String(attrs[name]));
     for (var i = 2; i < arguments.length; i++) add(node, arguments[i]);
     return node;
   }
 
   function add(node, kid) {
-    if (kid == null || kid === false) return;
+    if (kid == null) return;
     if (Array.isArray(kid)) {
       for (var i = 0; i < kid.length; i++) add(node, kid[i]);
       return;
@@ -63,33 +57,24 @@
     node.appendChild(typeof kid === "object" ? kid : doc.createTextNode(String(kid)));
   }
 
-  function clear(node) {
-    while (node.firstChild) node.removeChild(node.firstChild);
-  }
-
   function clip(text, max) {
-    text = String(text == null ? "" : text);
-    return text.length > max ? text.slice(0, Math.max(0, max - 1)) + "…" : text;
+    return text.length > max ? text.slice(0, max - 1) + "…" : text;
   }
   function fits(width, advance) {
-    return Math.max(1, Math.floor(width / advance));
+    return Math.max(2, Math.floor(width / advance));
   }
   function wide(text, advance) {
-    return Math.ceil(String(text).length * advance);
+    return Math.ceil(text.length * advance);
   }
   function wire(x1, y1, x2, y2, kind) {
-    return svgEl("line", { x1: x1, y1: y1, x2: x2, y2: y2, class: "wire" + (kind ? " " + kind : "") });
+    return svgEl("line", { x1: x1, y1: y1, x2: x2, y2: y2, class: kind ? "wire " + kind : "wire" });
   }
   function setOf(list) {
     var out = {};
-    if (Array.isArray(list)) list.forEach(function (path) { if (typeof path === "string") out[path] = true; });
+    if (Array.isArray(list)) list.forEach(function (path) { out[path] = true; });
     return out;
   }
-  function unpointer(segment) {
-    return segment.replace(/~1/g, "/").replace(/~0/g, "~");
-  }
 
-  // ---- the tree the paths describe ---------------------------------------------------------------------------------------
   /** Each node's children by its path: a chain's steps in order, a route's branches with their names, a parallel's
    *  branches, a map's or a loop's body, a child workflow's root. A path counts only under a parent of the kind that has it. */
   function treeOf(nodes) {
@@ -108,7 +93,7 @@
         kid.order = Number(m[2]);
       } else if ((m = /^(.*)\/branches\/([^/]*)\/body$/.exec(node.path)) && kindAt(m[1]) === "route") {
         parent = m[1];
-        kid.name = unpointer(m[2]);
+        kid.name = m[2].replace(/~1/g, "/").replace(/~0/g, "~");
       } else if ((m = /^(.*)\/branches\/(\d+)$/.exec(node.path)) && kindAt(m[1]) === "parallel") {
         parent = m[1];
         kid.order = Number(m[2]);
@@ -120,58 +105,59 @@
     return { byPath: byPath, kids: kids };
   }
 
-  // ---- marks -------------------------------------------------------------------------------------------------------------
-  /** A node's diff tag and run state. The fired exit is escalated whatever its state says: the record holds no mark for it. */
+  /** A node's diff tag and run state. The fired exit is escalated whatever its state says (the run's record holds no mark
+   *  for it); every other escalated node is a container on the escalation's path. */
   function looks(marks) {
-    var diff = marks && marks.diff && typeof marks.diff === "object" ? marks.diff : {};
-    var status = marks && marks.status && typeof marks.status === "object" ? marks.status : {};
+    var diff = marks && marks.diff || {};
+    var status = marks && marks.status || {};
     var added = setOf(diff.added);
     var edited = setOf(diff.edited);
-    var fired = marks && typeof marks.fired === "string" ? marks.fired : null;
+    var fired = marks && marks.fired;
     return function (path) {
-      var said = own(status, path) && typeof status[path] === "string" && own(STATES, status[path]) ? STATES[status[path]] : "";
-      return { tag: own(added, path) ? "NEW" : own(edited, path) ? "EDITED" : "", state: path === fired ? "escalated" : said };
+      var state = path === fired ? "escalated" : own(status, path) && own(STATES, status[path]) ? status[path] : "";
+      return { tag: own(added, path) ? "NEW" : own(edited, path) ? "EDITED" : "", state: state, fired: path === fired };
     };
   }
 
-  function titleOf(node, look) {
-    var text = node.label + " (" + node.kind + (node.via ? " via " + node.via : "") + ")";
-    if (look.state) text += ": " + (look.state === "not-run" ? "not run" : look.state);
-    if (look.tag) text += (look.state ? ", " : ": ") + look.tag.toLowerCase();
-    return text;
-  }
-
-  /** A node's group: its own shapes only, so a state's class never reaches the nodes drawn inside it. */
+  /** A node's group holds its own shapes only, so a state's class never reaches the nodes drawn inside it. */
   function group(ctx, node, shape) {
     var look = ctx.look(node.path);
-    var who = own(WHO, node.kind) ? WHO[node.kind] : "code";
-    var cls = "node " + shape + " who-" + who + (look.state ? " " + look.state : "") + (look.tag === "NEW" ? " new" : look.tag === "EDITED" ? " edited" : "");
-    var g = svgEl("g", { class: cls, "data-path": node.path }, svgEl("title", null, titleOf(node, look)));
+    var title = node.label + " (" + node.kind + (node.via ? " via " + node.via : "") + ")";
+    if (look.state) title += ": " + look.state.replace("-", " ");
+    if (look.tag) title += (look.state ? ", " : ": ") + look.tag.toLowerCase();
+    var cls = "node " + shape + " who-" + (own(WHO, node.kind) ? WHO[node.kind] : "code");
+    if (look.state) cls += " " + look.state;
+    if (look.fired) cls += " fired";
+    if (look.tag) cls += " " + look.tag.toLowerCase();
+    var g = svgEl("g", { class: cls, "data-path": node.path }, svgEl("title", null, title));
     ctx.svg.appendChild(g);
     return g;
   }
 
-  function tagWidth(tag) {
-    return wide(tag, TAG) + 10;
+  /** The word a state shows beside its node; not-run shows none, its fade does. */
+  function wordOf(look) {
+    return look.state === "not-run" ? "" : look.state;
+  }
+
+  function tagWidth(word) {
+    return wide(word, TAG) + 10;
   }
   function tag(g, x, y, word) {
     var w = tagWidth(word);
     add(g, [svgEl("rect", { x: x, y: y, width: w, height: 13, class: "tag-box" }), svgEl("text", { x: x + w / 2, y: y + 9.5, class: "tag", "text-anchor": "middle" }, word)]);
   }
 
-  // ---- shapes ------------------------------------------------------------------------------------------------------------
-  /** A card: a stripe coloured by who works, the label, the kind (and a call's transport), a state's word, a diff's tag on
-   *  its top edge. */
+  /** A card: a stripe coloured by who works, the label, the kind (and a call's transport), the state's word, the diff's
+   *  tag on its top edge. */
   function card(ctx, g, node, x, y) {
     var look = ctx.look(node.path);
-    var word = look.state && CARD_WORDS[look.state] ? look.state : "";
+    var word = wordOf(look);
     var kind = node.kind + (node.via ? " · " + node.via : "");
-    var room = W - 24 - (word ? wide(word, TAG) + 8 : 0);
     add(g, [
       svgEl("rect", { x: x, y: y, width: W, height: H, class: "box" }),
       svgEl("rect", { x: x, y: y, width: 4, height: H, class: "swatch" }),
       svgEl("text", { x: x + 14, y: y + 17, class: "label" }, clip(node.label, fits(W - 24, LABEL))),
-      svgEl("text", { x: x + 14, y: y + 31, class: "kind" }, clip(kind, fits(room, SMALL))),
+      svgEl("text", { x: x + 14, y: y + 31, class: "kind" }, clip(kind, fits(W - 24 - (word ? wide(word, TAG) + 8 : 0), SMALL))),
       word ? svgEl("text", { x: x + W - 10, y: y + 31, class: "state", "text-anchor": "end" }, word) : null,
     ]);
     if (look.tag) tag(g, x + W - tagWidth(look.tag), y - 7, look.tag);
@@ -181,16 +167,15 @@
     return { w: W, h: H, cx: W / 2, place: function (x, y) { card(ctx, group(ctx, node, "card"), node, x, y); } };
   }
 
-  /** An exit: a pill off the spine at x, then its tag and its state's word. Alone (not a chain's step) it draws its own
-   *  piece of spine. */
+  /** An exit: a pill off the spine at x, then its tag and its state's word. Not a chain's step, it draws its own piece of
+   *  spine. */
   function exitRow(ctx, node, alone) {
     var look = ctx.look(node.path);
+    var word = wordOf(look);
     var text = clip(node.label === node.kind ? "exit" : "exit: " + node.label, 40);
     var pill = wide(text, SMALL) + 16;
-    var word = look.state && EXIT_WORDS[look.state] ? look.state : "";
-    var right = TICK + pill + (look.tag ? 6 + tagWidth(look.tag) : 0) + (word ? 6 + wide(word, TAG) : 0);
     return {
-      w: right, h: ROW, cx: 0, exit: true,
+      w: TICK + pill + (look.tag ? 6 + tagWidth(look.tag) : 0) + (word ? 6 + wide(word, TAG) : 0), h: ROW, cx: 0, exit: true,
       place: function (x, y) {
         var g = group(ctx, node, "exit");
         var mid = y + ROW / 2;
@@ -210,8 +195,8 @@
     };
   }
 
-  /** A chain: its steps down one spine. The spine runs from each step's bottom to the next card's top, through the rows of
-   *  the exits between them. */
+  /** A chain: its steps down one spine, which runs from each card's bottom to the next card's top through the exits'
+   *  rows between them. */
   function chainBox(ctx, node, kids) {
     var parts = kids.map(function (kid) { return kid.node.kind === "escalate" ? exitRow(ctx, kid.node, false) : layout(ctx, kid.node); });
     var left = W / 2;
@@ -275,12 +260,11 @@
         branches.forEach(function (branch, i) {
           var c = o + branch.c;
           var path = branch.kid.node.path;
-          var taken = own(ctx.taken, path) ? " taken" : "";
-          g.appendChild(svgEl("line", { x1: c, y1: bus, x2: c, y2: y + top, class: "wire branch" + taken, "data-to": path }));
+          g.appendChild(svgEl("line", { x1: c, y1: bus, x2: c, y2: y + top, class: own(ctx.taken, path) ? "wire branch taken" : "wire branch", "data-to": path }));
           if (branch.kid.name !== null) {
             var room = (i < last ? branches[i + 1].c - 6 : branch.x + branch.box.w) - branch.c - 12;
             var name = clip(branch.kid.name, fits(room, SMALL));
-            var text = svgEl("text", { x: c + 6, y: bus + 15, class: "branch-name" + taken }, name);
+            var text = svgEl("text", { x: c + 6, y: bus + 15, class: "branch-name" }, name);
             g.appendChild(name === branch.kid.name ? text : svgEl("g", null, svgEl("title", null, branch.kid.name), text));
           }
           g.appendChild(wire(c, y + top + branch.box.h, c, join));
@@ -312,31 +296,15 @@
     };
   }
 
-  /** A node laid out: its size, the x of the spine it hangs on (cx), and place(x, y) to draw it there. */
+  /** A node laid out: its size, the x of the spine it hangs on (cx), and place(x, y) to draw it there. Only a chain, a
+   *  route, a parallel, a map, a loop or a workflow has kids. */
   function layout(ctx, node) {
     var kids = own(ctx.kids, node.path) ? ctx.kids[node.path] : [];
     if (node.kind === "escalate") return exitRow(ctx, node, true);
     if (!kids.length) return leaf(ctx, node);
     if (node.kind === "chain") return chainBox(ctx, node, kids);
     if (node.kind === "route" || node.kind === "parallel") return fanBox(ctx, node, kids);
-    if (node.kind === "map" || node.kind === "loop" || node.kind === "workflow") return frameBox(ctx, node, kids[0].node);
-    return leaf(ctx, node);
-  }
-
-  /** The removed nodes as lines of text that fit `width`, the first starting "Removed:". */
-  function removedLines(items, width) {
-    var max = fits(width, NOTE);
-    var lines = [];
-    var line = "Removed:";
-    items.forEach(function (item, i) {
-      var piece = clip(item, max - 1) + (i < items.length - 1 ? "," : "");
-      if ((line + " " + piece).length > max) {
-        lines.push(line);
-        line = piece;
-      } else line += " " + piece;
-    });
-    lines.push(line);
-    return lines;
+    return frameBox(ctx, node, kids[0].node);
   }
 
   function size(svg, w, h) {
@@ -348,9 +316,9 @@
   /** Draws `graph` (workflowGraph's output) into `svg` at its natural size, which CSS shrinks to fit and never grows;
    *  `marks` are optional: { diff: { added, edited, removed }, status, fired, taken }. Drawing again clears the last. */
   window.drawWorkflowGraph = function (svg, graph, marks) {
-    clear(svg);
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
     var cls = svg.getAttribute("class") || "";
-    if (!/(^|\s)wf(\s|$)/.test(cls)) svg.setAttribute("class", (cls ? cls + " " : "") + "wf");
+    if (!/(^|\s)wf(\s|$)/.test(cls)) svg.setAttribute("class", cls ? cls + " wf" : "wf");
     var nodes = (graph && Array.isArray(graph.nodes) ? graph.nodes : [])
       .filter(function (n) { return n && typeof n.path === "string" && typeof n.kind === "string"; })
       .map(function (n) { return { path: n.path, kind: n.kind, label: String(n.label == null ? n.kind : n.label), via: typeof n.via === "string" ? n.via : "" }; });
@@ -362,17 +330,16 @@
     var ctx = { svg: svg, kids: tree.kids, look: looks(marks), taken: setOf(marks && marks.taken) };
     var drawn = layout(ctx, tree.byPath["/root"]);
     drawn.place(PAD, PAD);
+    var w = drawn.w;
+    var h = drawn.h;
 
     var removed = marks && marks.diff && Array.isArray(marks.diff.removed) ? marks.diff.removed : [];
     var items = removed.filter(function (r) { return r && typeof r === "object"; }).map(function (r) { return String(r.label) + " (" + String(r.kind) + ")"; });
-    var w = drawn.w;
-    var h = drawn.h;
     if (items.length) {
-      var lines = removedLines(items, Math.max(drawn.w, 300));
-      var top = PAD + drawn.h + 22;
+      var lines = ["Removed:"].concat(items.map(function (item) { return clip(item, fits(Math.max(w, 300), NOTE)); }));
       var list = svgEl("g", { class: "removed-list" }, svgEl("title", null, "Removed: " + items.join(", ")));
       lines.forEach(function (line, i) {
-        list.appendChild(svgEl("text", { x: PAD, y: top + 11 + i * LINE, class: "removed" }, line));
+        list.appendChild(svgEl("text", { x: PAD, y: PAD + h + 33 + i * LINE, class: "removed" }, line));
         w = Math.max(w, wide(line, NOTE));
       });
       svg.appendChild(list);
