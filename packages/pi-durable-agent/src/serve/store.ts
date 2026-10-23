@@ -16,25 +16,34 @@ const readWorkflowRun: ReadWorkflowRun = async (run) => (await import("../workfl
 
 export type DiffLine = { op: "same" | "add" | "del"; text: string };
 
+/** The most line pairs the diff compares (the table's cells) once the lines both texts share at their start and end are
+ *  set aside; past it the texts are not diffed. */
+const MAX_CELLS = 1_000_000;
+
 /** `after` against `before`, line by line, as their longest common subsequence keeps them: every line of both texts is in
- *  the answer once and in its order, so no word is lost. */
-export function lineDiff(before: string, after: string): DiffLine[] {
+ *  the answer once and in its order, so no word is lost. `null` when too many lines differ to compare. */
+export function lineDiff(before: string, after: string): DiffLine[] | null {
   const [a, b] = [before.split("\n"), after.split("\n")];
-  // common[i][j]: how many lines a[i..] and b[j..] have in common.
-  const common = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
-  for (let i = a.length - 1; i >= 0; i -= 1) {
-    for (let j = b.length - 1; j >= 0; j -= 1) common[i]![j] = a[i] === b[j] ? common[i + 1]![j + 1]! + 1 : Math.max(common[i + 1]![j]!, common[i]![j + 1]!);
+  let [start, end] = [0, 0];
+  while (start < a.length && start < b.length && a[start] === b[start]) start += 1;
+  while (end < a.length - start && end < b.length - start && a[a.length - 1 - end] === b[b.length - 1 - end]) end += 1;
+  const [x, y] = [a.slice(start, a.length - end), b.slice(start, b.length - end)];
+  if (x.length * y.length > MAX_CELLS) return null;
+  // common[i][j]: how many lines x[i..] and y[j..] have in common.
+  const common = Array.from({ length: x.length + 1 }, () => new Array<number>(y.length + 1).fill(0));
+  for (let i = x.length - 1; i >= 0; i -= 1) {
+    for (let j = y.length - 1; j >= 0; j -= 1) common[i]![j] = x[i] === y[j] ? common[i + 1]![j + 1]! + 1 : Math.max(common[i + 1]![j]!, common[i]![j + 1]!);
   }
-  const lines: DiffLine[] = [];
+  const lines: DiffLine[] = a.slice(0, start).map((text) => ({ op: "same", text }));
   let [i, j] = [0, 0];
-  while (i < a.length || j < b.length) {
-    if (i < a.length && j < b.length && a[i] === b[j]) {
-      lines.push({ op: "same", text: a[i]! });
+  while (i < x.length || j < y.length) {
+    if (i < x.length && j < y.length && x[i] === y[j]) {
+      lines.push({ op: "same", text: x[i]! });
       [i, j] = [i + 1, j + 1];
-    } else if (j === b.length || (i < a.length && common[i + 1]![j]! >= common[i]![j + 1]!)) lines.push({ op: "del", text: a[i++]! });
-    else lines.push({ op: "add", text: b[j++]! });
+    } else if (j === y.length || (i < x.length && common[i + 1]![j]! >= common[i]![j + 1]!)) lines.push({ op: "del", text: x[i++]! });
+    else lines.push({ op: "add", text: y[j++]! });
   }
-  return lines;
+  return [...lines, ...a.slice(a.length - end).map((text): DiffLine => ({ op: "same", text }))];
 }
 
 type AgenticFields = Record<string, unknown> & { instructions: string; tools: string[]; skills: Record<string, string> };

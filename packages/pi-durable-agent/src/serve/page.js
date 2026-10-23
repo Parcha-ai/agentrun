@@ -721,7 +721,7 @@
     return el(
       "div",
       { class: "rev-body" },
-      diff
+      diff && diff.prompt
         ? [
             el("h3", null, "Prompt, against ", el("span", { class: "id" }, short(diff.against))),
             el("p", { class: "facts" }, "+" + count("add") + " −" + count("del") + " lines"),
@@ -730,7 +730,12 @@
               return el("div", { class: "line " + op }, el("span", { class: "mark", "aria-hidden": "true" }, MARKS[op]), el("span", { class: "text" }, line.text));
             })),
           ]
-        : [el("h3", null, "Prompt"), r.parentKind === "workflow" ? el("p", { class: "none" }, "Its parent " + short(r.parent) + " is a workflow revision: it has no prompt to compare with.") : null, el("pre", { class: "prompt" }, body.instructions || "")],
+        : [
+            el("h3", null, "Prompt"),
+            diff ? el("p", { class: "note" }, "The prompt is too long to diff line by line.") : null,
+            r.parentKind === "workflow" ? el("p", { class: "none" }, "Its parent " + short(r.parent) + " is a workflow revision: it has no prompt to compare with.") : null,
+            el("pre", { class: "prompt" }, body.instructions || ""),
+          ],
       settings.length ? el("p", { class: "facts" }, settings) : null,
       prompts.length ? el("details", { class: "fold" }, el("summary", null, plural(prompts.length, "prompt variant")), prompts.map(function (id) { return el("pre", null, id + ": " + ((body.prompts[id] || {}).text || "")); })) : null,
       toolsAndSkills(body, diff)
