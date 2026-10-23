@@ -34,7 +34,7 @@
     call: "tool", code: "code", escalate: "exit",
     chain: "control", parallel: "control", map: "control", loop: "control", workflow: "control",
   };
-  var STATES = { done: 1, working: 1, failed: 1, escalated: 1, "not-run": 1 };
+  var STATES = { done: 1, working: 1, failed: 1, escalated: 1, stopped: 1, "not-run": 1 };
 
   function own(object, key) {
     return object != null && Object.prototype.hasOwnProperty.call(object, key);

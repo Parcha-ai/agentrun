@@ -222,5 +222,6 @@ svg.wf{display:block;max-width:100%;height:auto;margin:0 auto}
 .wf .working>.box,.wf .working>.exit-box{stroke:var(--accent);stroke-width:2.4}.wf .working>.state{fill:var(--accent)}
 .wf .failed>.box,.wf .failed>.exit-box{fill:var(--red-soft);stroke:var(--red);stroke-width:2}.wf .failed>.state{fill:var(--red)}
 .wf .escalated>.box,.wf .escalated>.exit-box{stroke:var(--exit);stroke-width:2}.wf .escalated>.state{fill:var(--exit)}
+.wf .stopped>.box,.wf .stopped>.exit-box{stroke:var(--muted);stroke-width:1.6}.wf .stopped>.state{fill:var(--muted)}
 .wf .fired>.exit-box{fill:var(--exit)}.wf .fired>.exit-text{fill:var(--bg);font-weight:600}
 .wf .not-run{opacity:.4}
