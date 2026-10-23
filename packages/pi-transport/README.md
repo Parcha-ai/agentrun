@@ -773,7 +773,7 @@ same names.
 import { launch, launchState, launchStop } from "@parcha/pi-transport/launch";
 
 const started = await launch(box, "runner", { argv: ["node", "runner.js"], env: { APP_MODE: "home" } }, BACKGROUND_CONTEXT);
-if (!started.ok) throw started.error; // a LaunchError: invalid, unsupported, refused, box, timeout or failed
+if (!started.ok) throw started.error; // a LaunchError: invalid, unsupported, refused, unsafe, box, timeout or failed
 const handle = started.value.launch; // { v: 1, name: "runner" }: JSON, no secret
 const state = await launchState(box, handle, BACKGROUND_CONTEXT); // read from a file in the box
 await launchStop(box, handle, { graceMs: 5_000 }, BACKGROUND_CONTEXT);
@@ -809,6 +809,12 @@ before it makes a box to launch in.
   filling it is taken over after a minute, and a launch that ended is replaced by one caller only.
 - The program's output goes to `out.log` in the launcher's directory, bounded to its tail (`logMaxBytes`), also after
   the program has exited. The launcher holds no pipe to the host.
+- The launcher keeps its files in a spool, `.pi-transport-launch` in the box's `TMPDIR` (or `/tmp`), one directory per
+  launch. The spool and each launch directory must be the launcher's uid's alone: a directory, never a symbolic link
+  (read without following it), owned by that uid, with no group- or other-write bit. Every call checks both before it
+  uses them, a spool that already existed like a new one, and the launcher checks them again before it starts a process
+  from them (a restart, its watchdog, the tools user's check) and before a stop's hook. A failed check is `unsafe`,
+  naming the directory and why, and nothing runs from it.
 - The program's environment is PATH, HOME, LANG (`C.UTF-8`), `PI_TRANSPORT_INCARNATION` (its incarnation) and `env`.
   Nothing of the box runtime's own environment reaches it unless `inheritEnv` names it (default `false`): the
   incarnation unsets every other exported name, and a name the shell cannot unset refuses the incarnation (exit 126).
@@ -870,9 +876,8 @@ before it makes a box to launch in.
   program is gone, and nothing restarts by itself: the host calls `launch` again, and the old state and output are
   still there.
 
-The box needs `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `tail`, `date`, `sleep` and `id`, and for a launch with `stdin` or
-`secrets` a builtin `printf` and `base64`. It is tested on Debian (dash) and
-Alpine (BusyBox).
+The box needs `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `tail`, `date`, `sleep`, `id` and `ls`, and for a launch with
+`stdin` or `secrets` a builtin `printf` and `base64`. It is tested on Debian (dash) and Alpine (BusyBox).
 
 `probeAcknowledgedWrites(box)` in `@parcha/pi-transport/testing` checks that a write a program was told was durable
 survives that program's death: a writer appends ten records, each followed by an `fsync`, then it is killed and a second

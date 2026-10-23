@@ -51,7 +51,9 @@ async function start(
 	box: Box,
 	options: { script?: string; spec?: string; dirMode?: string; before?: (dir: string) => string } = {},
 ): Promise<{ exitCode: number; out: string; dir: string; ms: number }> {
-	const dir = `/tmp/tc-${randomBytes(4).toString("hex")}`;
+	// Its parent stands for the spool: root's, with no group or other write (the launcher refuses one), and 0755, so a launch
+	// directory a case opens to the tools user (dirMode 755) is within that user's reach.
+	const dir = `/opt/pi-transport-tc/tc-${randomBytes(4).toString("hex")}`;
 	const spec =
 		options.spec ?? "GEN='g1'\nFRAMED=1\nTOOLS='pda'\nISOLATION='none'\nrun_program() {\n  exec sleep 300\n}\n";
 	getOrThrow(
@@ -162,6 +164,20 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 				expect(ran.exitCode, ran.out).toBe(0);
 				expect(await exists(box, `${ran.dir}/tools.probe`)).toBe(false);
 			});
+		});
+
+		it("checks the launch directory before the check runs from it: one any user can write refuses (13), and no check ran", async () => {
+			// A setuid root file the check refuses (12): a check that ran would say so before the directory's refusal.
+			await withBox(
+				"cp /bin/true /usr/local/bin/rootbin && chown root:root /usr/local/bin/rootbin && chmod 4755 /usr/local/bin/rootbin",
+				async (box) => {
+					const ran = await start(box, { dirMode: "777" });
+					expect(ran.exitCode, ran.out).toBe(13);
+					expect(ran.out).toMatch(/^UNSAFE \S+ can be written by its group or by other users/m);
+					expect(ran.out).not.toContain("REFUSED");
+					expect(await exists(box, `${ran.dir}/launcher.pid`)).toBe(false);
+				},
+			);
 		});
 
 		it("gives a check that is killed (no answer) unsupported, never accepted", async () => {

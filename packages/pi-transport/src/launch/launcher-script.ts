@@ -1,8 +1,8 @@
 /**
  * The supervisor the host uploads to a box: POSIX `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `date`, `kill`, `sleep`, `id`,
- * and for a framed launch `base64` and a builtin `printf`. It holds no pipe to the host and keeps every fact in files of its
- * own directory, except a framed launch's stdin and secrets, which live only in its processes' memory. It uses no parameter expansion with braces, so
- * that this file can hold it as a raw string.
+ * `ls`, and for a framed launch `base64` and a builtin `printf`. It holds no pipe to the host and keeps every fact in files
+ * of its own directory, except a framed launch's stdin and secrets, which live only in its processes' memory. It uses no
+ * parameter expansion with braces, so that this file can hold it as a raw string.
  */
 const SCRIPT_TEMPLATE = String.raw`@@UNSET@@
 MODE=$1
@@ -59,14 +59,16 @@ alive() {
 # A signal to a process group. dash wants "--" before a negative pid and BusyBox refuses it, so try both.
 gkill() { kill -s "$1" -- "-$2" 2>/dev/null || kill -s "$1" "-$2" 2>/dev/null; }
 @@GROUP_LIVE@@
+@@DIRECTORY_CHECK@@
 rd() { cat "$D/$1" 2>/dev/null; }
 wr() { printf '%s\n' "$2" > "$D/$1.$$" && mv "$D/$1.$$" "$D/$1"; }
 current_gen() { sed -n "s/^GEN='\(.*\)'\$/\1/p" "$D/spec.sh" 2>/dev/null; }
 MYGEN=$GEN
 stale() { [ "$(current_gen)" != "$MYGEN" ]; }
-detach() { ( $SETSID sh "$SELF" "$@" </dev/null >/dev/null 2>&1 & ); }
+# Every process started from $SELF reads this directory again: none starts unless it and the spool are still the launcher's own.
+detach() { own_dirs || exit 13; ( $SETSID sh "$SELF" "$@" </dev/null >/dev/null 2>&1 & ); }
 # The same, with this process's frame on the new process's stdin (a pipe from the builtin printf: no argv holds it).
-detach_framed() { ( send_frame | $SETSID sh "$SELF" "$@" >/dev/null 2>&1 & ); }
+detach_framed() { own_dirs || exit 13; ( send_frame | $SETSID sh "$SELF" "$@" >/dev/null 2>&1 & ); }
 
 # An exclusive section: mkdir is atomic. Every section is a few file operations, so a holder that has not let go after 15 s
 # died inside one, and its lock is broken. A section never exits while it holds the lock.
@@ -187,6 +189,8 @@ start_one() {
 
 end_incarnation() {
   n=$1
+  # The process ids it signals and the restart it decides are read from the directory: only from one still the launcher's own.
+  own_dirs || exit 13
   if [ -e "$D/stop.req" ] || stale; then exit 0; fi
   code=$(rd exit.$n)
   pid=$(rd pid.$n)
@@ -438,6 +442,7 @@ verify_tools() {
   if [ "$t_uid" = 0 ]; then echo "INVALID the tools user $t_name is root (uid 0)"; return 8; fi
   if [ "$t_gid" = 0 ]; then echo "INVALID the tools user $t_name has the root group (gid 0)"; return 8; fi
   wr tools "$t_name $t_uid $t_gid"
+  own_dirs || return 13
   rm -f "$D/tools.check"
   if [ -n "$SETSID" ]; then $SETSID sh "$SELF" tools-check "$D" </dev/null > "$D/tools.check" 2>/dev/null & else sh "$SELF" tools-check "$D" </dev/null > "$D/tools.check" 2>/dev/null & fi
   cp=$!
@@ -557,6 +562,7 @@ start_launch() {
 # one past its bound is killed (137). Its exit goes to out.log; it never fails the stop.
 run_hook() {
   [ "$HOOK" = 1 ] || return 0
+  own_dirs || exit 13
   if [ -n "$SETSID" ]; then $SETSID sh "$SELF" hook "$D" </dev/null >> "$D/out.log" 2>&1 & else sh "$SELF" hook "$D" </dev/null >> "$D/out.log" 2>&1 & fi
   hp=$!
   wr hook.pid "$hp"
@@ -645,6 +651,34 @@ const GROUP_LIVE = [
 	"  fi",
 	"  echo $(( $(date +%s) * 100 ))",
 	"}",
+].join("\n");
+
+/**
+ * `own_dir PATH`: whether PATH is a directory only the launcher's uid can change, from ONE listing of PATH itself (a symbolic
+ * link is never followed): a directory, owned by `id -u`, with no group- or other-write bit. 0 when it is, 4 when nothing is
+ * there, 13 and a line `UNSAFE <why>` when it is not. A path that is there and could not be listed is listed again (another
+ * caller may have removed and made it again in between), and one never listed is unsafe. `own_dirs` asks it of $D's parent
+ * (the spool) and then of $D. Every script that uses the spool or a launch directory asks first, the launcher's own
+ * included: a `mkdir -p` that succeeded proves nothing.
+ */
+export const DIRECTORY_CHECK = [
+	"own_dir() {",
+	"  for sn in 1 2 3; do",
+	'    sd=$(ls -ldn "$1" 2>/dev/null | awk \'NR == 1 { print $1 " " $3 }\')',
+	'    [ -z "$sd" ] || break',
+	'    [ -e "$1" ] || [ -L "$1" ] || return 4',
+	"  done",
+	"  sm=\x24{sd%% *}",
+	'  case "$sm" in',
+	'    "") echo "UNSAFE $1 cannot be listed"; return 13 ;;',
+	'    l*) echo "UNSAFE $1 is a symbolic link, not a directory of the launcher\'s own"; return 13 ;;',
+	"    d*) ;;",
+	'    *) echo "UNSAFE $1 is not a directory"; return 13 ;;',
+	"  esac",
+	'  [ "\x24{sd#* }" = "$(id -u)" ] || { echo "UNSAFE $1 belongs to uid \x24{sd#* }, not to the launcher\'s uid $(id -u)"; return 13; }',
+	'  case "$sm" in d????-??-*) ;; *) echo "UNSAFE $1 can be written by its group or by other users ($sm)"; return 13 ;; esac',
+	"}",
+	'own_dirs() { own_dir "\x24{D%/*}" && own_dir "$D"; }',
 ].join("\n");
 
 /**
@@ -747,6 +781,9 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 	"bound",
 	"dl",
 	"left",
+	"sd",
+	"sm",
+	"sn",
 ];
 
 /** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */
@@ -757,6 +794,7 @@ export const TOOLS_CHECK_LINE = "TOOLS_CHECK_CENTIS=6000";
 
 /** The supervisor the host uploads to a box: POSIX `sh`, with the programs named in the file's header. */
 export const LAUNCHER_SCRIPT = SCRIPT_TEMPLATE.replace("@@GROUP_LIVE@@", () => GROUP_LIVE)
+	.replace("@@DIRECTORY_CHECK@@", () => DIRECTORY_CHECK)
 	.replace("@@PTRACE_FILE@@", () => PTRACE_FILE_LINE)
 	.replace("@@TOOLS_CHECK@@", () => TOOLS_CHECK_LINE)
 	.replace("@@UNSET@@", () => `unset ${LAUNCHER_SHELL_NAMES.join(" ")}`);
