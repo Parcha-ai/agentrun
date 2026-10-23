@@ -77,6 +77,25 @@ test('the run: an unjudgeable site gets no candidates and takes an empty verdict
   assert.deepEqual(run.record({ codes: [] }), { stage1: { unjudgeable: 'the domain is parked' }, stage2: { codes: {} } });
 });
 
+test('stage 2 only: a recorded stage 1 starts the run; site refuses and names it; codes answers at once; record carries it', async () => {
+  const given = { own: { mcc: '5411', evidence: EV }, risk: { tiers: ['low'], evidence: EV } };
+  const candidates = candidatesOf({ merchantId: 'm3', codes: ['5411', '5499'], salt: SALT, groups });
+  const run = adjudicatorRun({ candidates, groups, stage1: given });
+  const [site, codes] = run.tools;
+  const refused = (await site.run({ own: { mcc: '5499', evidence: EV }, risk: { tiers: ['high'], evidence: EV } })).refused;
+  assert.equal(refused, 'Stage 1 is already recorded for this merchant: own code 5411 (Grocery Stores and Supermarkets), tiers low. Call codes.');
+  assert.deepEqual(run.problems({ codes: [] }), ['call codes first']);
+  assert.deepEqual((await codes.run({})).candidates, candidates, 'no site call first');
+  const verdict = { codes: candidates.map((c) => ({ code: c.code, acceptable: c.code === '5411', evidence: EV })) };
+  assert.deepEqual(run.problems(verdict), []);
+  assert.deepEqual(run.record(verdict).stage1, given, 'the given stage 1, untouched by the refused site call');
+  assert.throws(() => adjudicatorRun({ candidates, groups, stage1: { unjudgeable: 'parked' } }), /no stage 2 to run/);
+  assert.throws(() => adjudicatorRun({ candidates, groups, stage1: { own: { mcc: '1234', evidence: EV }, risk: given.risk } }), /from mcc_codes/);
+  assert.throws(() => adjudicatorRun({ candidates, groups, stage1: { own: given.own, risk: { tiers: ['low', 'high'], evidence: EV } } }), /next to each other/);
+  const fresh = adjudicatorRun({ candidates, groups });
+  assert.match((await fresh.tools[1].run({})).refused, /Record stage 1 with site first/, 'without a recorded stage 1 the run is the usual one');
+});
+
 test('unblind: a side is right on the code when its code was judged acceptable, on the tier when its tier is allowed', () => {
   const items = [
     { merchant: merchant('a', { mcc: '5999', riskTier: null }), answer: { mcc: '5499', riskTier: 'high' } },

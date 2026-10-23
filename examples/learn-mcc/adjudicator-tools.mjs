@@ -2,9 +2,7 @@
 // merchant's name and website. Two host tools and an answer. `site` records stage 1 (the adjudicator's own code and the
 // tiers the risk rubric allows, from the site alone). `codes` gives the candidate codes and refuses until stage 1 is
 // recorded. `verdict`, the answer, judges every candidate acceptable or not. Blindness is in the code: no candidate
-// reaches the run before its own judgment does, and no candidate says whose it is. The runner is
-// examples/learn-classify/eval-adjudicate.mjs: it writes stage1.json, stage2.json and manifest.jsonl under
-// <out>/adjudication/<passId>/.
+// reaches the run before its own judgment does, and no candidate says whose it is. ADJUDICATION-RUN.md names the runner.
 import { allowedTiers } from './adjudication.mjs';
 import { MAX_QUOTE, RISK_TIERS } from './answer.mjs';
 import { mccOf } from './score-mcc.mjs';
@@ -29,9 +27,19 @@ const evidenceProblem = (evidence, what) => (Array.isArray(evidence) && evidence
  * the code tables (score-mcc's loadGroups). Returns the two host tools, the answer tool (`answer`: description and
  * parameters, as answerMcc gives them), `problems(verdict)` (empty when the answer can be recorded), and
  * `record(verdict)`, the run's stage 1 and stage 2 as unblind reads them.
+ *
+ * Stage 2 only: `stage1`, an earlier run's recorded stage 1 for this merchant, starts the run with it recorded. `site`
+ * then refuses and says what is recorded (the own code with its title, the tiers), the context the earlier run had when
+ * it judged stage 2, and `codes` answers at once. An unjudgeable stage 1 has nothing to judge in stage 2 and is refused.
  */
-export function adjudicatorRun({ candidates, groups }) {
-  let stage1 = null;
+export function adjudicatorRun({ candidates, groups, stage1: recorded = null }) {
+  if (recorded !== null) {
+    if (recorded.unjudgeable) throw new Error('a merchant whose stage 1 was unjudgeable has no stage 2 to run');
+    const own = mccOf(recorded.own?.mcc);
+    if (own === null || groups.codes[own] === undefined || evidenceProblem(recorded.own.evidence, 'own')) throw new Error('the recorded stage 1 needs its own code, from mcc_codes, with evidence');
+    allowedTiers(recorded.risk, 'the recorded stage 1');
+  }
+  let stage1 = recorded;
   let shown = false;
   const site = {
     name: 'site',
@@ -46,6 +54,7 @@ export function adjudicatorRun({ candidates, groups }) {
     },
     resultSchema: STEP_RESULT,
     run: async (args = {}) => {
+      if (stage1 && recorded) return { refused: `Stage 1 is already recorded for this merchant: own code ${stage1.own.mcc} (${groups.codes[stage1.own.mcc]}), tiers ${stage1.risk.tiers.join(' and ')}. Call codes.` };
       if (stage1) return { refused: 'Stage 1 is already recorded for this merchant.' };
       if (args.unjudgeable) {
         if (args.own || args.risk) return { refused: 'unjudgeable goes alone: no own code and no risk with it.' };
