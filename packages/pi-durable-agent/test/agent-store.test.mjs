@@ -1,6 +1,6 @@
 // The agent store: one folder, store.sqlite (four plain tables, the truth) and runs/<run id>/. Real stores in temp dirs.
 import assert from "node:assert/strict";
-import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -74,7 +74,7 @@ test("the skills are content-addressed, and the input is checked before anything
   const r = await store.commitRevision(agent.id, A);
   assert.match(r.body.skills["read/SKILL.md"], /^[0-9a-f]{64}$/);
   await assert.rejects(store.commitRevision(agent.id, { ...A, skills: { "../x": "no" } }), refused("invalid", /skill path/));
-  await assert.rejects(store.commitRevision(agent.id, { kind: "agentic", instructions: "" }), refused("invalid", /instructions/));
+  await assert.rejects(store.commitRevision(agent.id, { kind: "agentic", instructions: 3 }), refused("invalid", /instructions/));
   await assert.rejects(store.commitRevision(agent.id, { kind: "other" }), refused("invalid"));
   assert.equal(store.listRevisions(agent.id).length, 1);
   store.close();
@@ -261,4 +261,61 @@ test("a store with a hot journal: openStoreReader says so in one named error and
   const reader = openStoreReader(dir);
   assert.deepEqual(reader.listAgents().map((a) => a.id), [agent.id]);
   reader.close();
+});
+
+test("startRun takes no run id: the store mints every id, so two overlapping starts are two runs with their files intact", async () => {
+  const dir = await scratch();
+  const store = openStore(dir);
+  const agent = store.createAgent({ name: "Racer" });
+  await store.commitRevision(agent.id, A, { setCurrent: true });
+  await assert.rejects(store.startRun({ agent: agent.id, runId: "mine" }), refused("invalid", /no run id/));
+  assert.equal(store.listRuns().length, 0, "the refused call wrote no row");
+  assert.equal(existsSync(path.join(dir, "runs", "mine")), false);
+  const runs = await Promise.all(Array.from({ length: 4 }, () => store.startRun({ agent: agent.id })));
+  assert.equal(new Set(runs.map((r) => r.runId)).size, 4, "the minted ids are unique");
+  for (const run of runs) assert.equal(existsSync(run.storePath), true, "every run's store is intact");
+  assert.equal(store.listRuns().length, 4);
+  store.close();
+});
+
+test("importHome takes a valid beta.24 home with empty instructions", async () => {
+  const store = openStore(await scratch());
+  const home = await createAgentHome(path.join(await scratch(), "home"), { definition: { ...DEFINITION, instructions: "" } });
+  const agent = await store.importHome(home.dir);
+  assert.equal(store.readRevision(agent.current).body.instructions, "");
+  store.close();
+});
+
+test("importHome is all or nothing: a failure after the agent row leaves the store unchanged, and a retry succeeds", async () => {
+  const dir = await scratch();
+  const store = openStore(dir);
+  const home = await createAgentHome(path.join(await scratch(), "home"), { definition: DEFINITION, skills: { "cite/SKILL.md": "Cite every claim." } });
+  const raw = new DatabaseSync(path.join(dir, "store.sqlite"));
+  raw.exec("CREATE TRIGGER fail_revisions BEFORE INSERT ON revisions BEGIN SELECT RAISE(ABORT, 'injected'); END");
+  await assert.rejects(store.importHome(home.dir));
+  const count = (table) => raw.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n;
+  assert.deepEqual(["agents", "revisions", "skills", "runs"].map(count), [0, 0, 0, 0], "no agent, revision or skill row was left");
+  assert.deepEqual(store.listAgents(), []);
+  raw.exec("DROP TRIGGER fail_revisions");
+  raw.close();
+  const agent = await store.importHome(home.dir);
+  assert.equal(store.listRevisions(agent.id).length, 1);
+  assert.notEqual(store.readRevision(agent.current), undefined);
+  store.close();
+});
+
+test("a failing open closes its handle: a newer version and a file that is no database leave nothing open", () => {
+  const openOn = (file) => readdirSync("/proc/self/fd").filter((fd) => { try { return readlinkSync(`/proc/self/fd/${fd}`).startsWith(file); } catch { return false; } }).length;
+  return (async () => {
+    const dir = await scratch();
+    openStore(dir).close();
+    const file = path.join(dir, "store.sqlite");
+    const db = new DatabaseSync(file); db.exec("PRAGMA user_version = 2"); db.close();
+    for (let i = 0; i < 3; i++) assert.throws(() => openStore(dir), refused("format"));
+    assert.equal(openOn(file), 0, "the version refusal left no handle");
+    const bad = await scratch();
+    writeFileSync(path.join(bad, "store.sqlite"), "this is not a database, ".repeat(200));
+    for (let i = 0; i < 3; i++) assert.throws(() => openStore(bad));
+    assert.equal(openOn(path.join(bad, "store.sqlite")), 0, "the unreadable file left no handle");
+  })();
 });

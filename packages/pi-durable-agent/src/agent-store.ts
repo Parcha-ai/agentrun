@@ -98,7 +98,7 @@ function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: 
   const tools = input.tools ?? [];
   if (!Array.isArray(tools) || !tools.every((t) => typeof t === "string" && t !== "") || new Set(tools).size !== tools.length) throw invalid("the tools are not a list of distinct non-empty names");
   if (input.kind === "agentic") {
-    if (typeof input.instructions !== "string" || input.instructions === "") throw invalid("an agentic revision needs instructions (its prompt)");
+    if (typeof input.instructions !== "string") throw invalid("an agentic revision needs instructions (its prompt, possibly empty)");
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) throw invalid(`the ${field} is not a non-empty string`);
     return { body: { instructions: input.instructions, skills, tools: [...tools], ...(input.model !== undefined ? { model: input.model } : {}), ...(input.thinking !== undefined ? { thinking: input.thinking } : {}), ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}) }, texts };
   }
@@ -145,7 +145,9 @@ export class AgentStore extends AgentStoreReader {
     try { const result = work(); this.db.exec("COMMIT"); return result; } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
 
-  createAgent(input: { name: string; description?: string; id?: string }): Agent {
+  createAgent(input: { name: string; description?: string; id?: string }): Agent { return this.insertAgent(input); }
+
+  private insertAgent(input: { name: string; description?: string; id?: string }): Agent {
     if (typeof input?.name !== "string" || input.name.trim() === "") throw invalid("the agent needs a name");
     if (input.description !== undefined && typeof input.description !== "string") throw invalid("the description is not text");
     const agent: Agent = { id: input.id === undefined ? uuidv7() : checkId(input.id, "agent"), name: input.name, ...(input.description !== undefined ? { description: input.description } : {}), createdAt: new Date().toISOString(), current: null };
@@ -160,7 +162,12 @@ export class AgentStore extends AgentStoreReader {
     const { body, texts } = bodyOf(input);
     if (input.note !== undefined && (typeof input.note !== "string" || input.note.length > 2_000)) throw invalid("the note is not text of at most 2000 characters");
     if (input.kind === "workflow") await this.check(body); // item 2's check, before a write: a refusal writes nothing
-    return this.tx(() => {
+    return this.tx(() => this.writeRevision(agent, input, body, texts, options));
+  }
+
+  /** The rows of a new revision, inside the caller's transaction. */
+  private writeRevision(agent: string, input: NewRevision, body: AgenticBody | WorkflowBody, texts: Map<string, string>, options: { setCurrent?: boolean }): Revision {
+    {
       const row = this.db.prepare("SELECT current_revision FROM agents WHERE id = ?").get(agent) as { current_revision: string | null } | undefined;
       if (!row) throw new AgentHomeError("missing", "there is no such agent");
       const parent = row.current_revision; // always the agent's current revision, which setCurrent only sets to its own: the parent is the agent's own by construction
@@ -176,7 +183,7 @@ export class AgentStore extends AgentStoreReader {
       }
       if (options.setCurrent) this.db.prepare("UPDATE agents SET current_revision = ? WHERE id = ?").run(id, agent);
       return revision;
-    });
+    }
   }
 
   setCurrent(agent: string, revision: string): void {
@@ -185,9 +192,10 @@ export class AgentStore extends AgentStoreReader {
   }
 
   /** Start a run pinned to `revision` (default: the agent's current one): the run's directory is seeded in pi-durable-disk's layout, then its row goes in as `running`. */
-  async startRun(input: { agent: string; revision?: string; runId?: string }): Promise<StartedRun> {
+  async startRun(input: { agent: string; revision?: string }): Promise<StartedRun> {
     const agent = checkId(input?.agent, "agent");
-    const runId = input.runId === undefined ? uuidv7() : checkId(input.runId, "run");
+    if ("runId" in input) throw invalid("startRun takes no run id: the store mints it");
+    const runId = uuidv7();
     const revisionId = input.revision ?? (this.db.prepare("SELECT current_revision FROM agents WHERE id = ?").get(agent) as { current_revision: string | null } | undefined)?.current_revision;
     if (!revisionId) throw invalid("the agent has no current revision: name one");
     const revision = this.readRevision(revisionId);
@@ -198,7 +206,6 @@ export class AgentStore extends AgentStoreReader {
       return [file, text];
     }));
     const dir = path.join(this.dir, "runs", runId);
-    if (existsSync(dir)) throw new AgentHomeError("exists", "that run already exists");
     const run: StartedRun = { runId, dir, storePath: runStoreIn(dir), workspace: path.join(dir, "work"), agentId: agent, revision };
     // The directory first, then the row: a seed that fails throws and nothing is written; a hard kill between the two leaves a directory no query shows.
     try {
@@ -223,15 +230,20 @@ export class AgentStore extends AgentStoreReader {
   /** A beta.24 agent home becomes one agent with one agentic revision (its definition and skills). Its run directories are not copied. */
   async importHome(homeDir: string): Promise<Agent> {
     const state = await readAgentHome(await openAgentHome(homeDir));
-    const known = this.listAgents().find((a) => a.id === state.identity.id);
-    if (known) return known; // already imported: the same home twice changes nothing
-    const agent = this.createAgent({ id: state.identity.id, name: state.identity.name, ...(state.definition.description ? { description: state.definition.description } : {}) });
-    await this.commitRevision(agent.id, {
+    const input: NewRevision = {
       kind: "agentic", instructions: state.definition.instructions, tools: state.definition.tools,
       skills: Object.fromEntries(Object.entries(state.skills).map(([file, skill]) => [file, skill.content])),
       ...(Object.keys(state.prompts).length ? { prompts: state.prompts } : {}), note: "imported from an agent home",
-    }, { setCurrent: true });
-    return this.listAgents().find((a) => a.id === agent.id)!;
+    };
+    const { body, texts } = bodyOf(input); // checked before any write
+    // One transaction: the agent, its skills and its revision all land, or none does.
+    return this.tx(() => {
+      const known = this.listAgents().find((a) => a.id === state.identity.id);
+      if (known) return known; // already imported: the same home twice changes nothing
+      const agent = this.insertAgent({ id: state.identity.id, name: state.identity.name, ...(state.definition.description ? { description: state.definition.description } : {}) });
+      this.writeRevision(agent.id, input, body, texts, { setCurrent: true });
+      return this.listAgents().find((a) => a.id === agent.id)!;
+    });
   }
 }
 
@@ -245,6 +257,7 @@ export function openStoreChecking(dir: string, check: (body: unknown) => Promise
   const resolved = path.resolve(dir);
   mkdirSync(resolved, { recursive: true });
   const db = new DatabaseSync(path.join(resolved, STORE_FILE), { timeout: 5_000 });
+  try {
   // A rollback journal, not WAL: `cp` of store.sqlite alone is a whole copy. The file is written rarely (an agent, a revision, a run's start and end).
   db.exec("PRAGMA journal_mode = DELETE");
   db.exec("PRAGMA synchronous = FULL");
@@ -252,6 +265,7 @@ export function openStoreChecking(dir: string, check: (body: unknown) => Promise
   checkVersion(db);
   db.exec(SCHEMA);
   db.exec(`PRAGMA user_version = ${STORE_VERSION}`);
+  } catch (error) { db.close(); throw error; }
   return new AgentStore(resolved, db, check);
 }
 
