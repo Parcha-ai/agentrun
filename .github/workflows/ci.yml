@@ -2,6 +2,7 @@ name: Package checks
 
 on:
   push:
+    branches: [main]
   pull_request:
   merge_group:
 
