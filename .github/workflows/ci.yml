@@ -33,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: ${{ matrix.shard == 'checks' && 0 || 1 }}
+          fetch-depth: ${{ matrix.shard == 'checks' && '0' || '1' }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
