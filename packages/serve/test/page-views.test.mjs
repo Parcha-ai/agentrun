@@ -229,7 +229,7 @@ test("an agent's page: Edit, a run form on its revisions, and Make current on ea
   assert.deepEqual(api.calls.slice(before + 1).map((c) => c.path), ["api/agents/calc", "api/runs?agent=calc"], "the page is read again");
 });
 
-test("start a run: its input, on the current revision unless another is picked, POSTed to the agent's runs, a workflow's as a JSON object; then the run's page", async () => {
+test("start a run: its input, on the revision the form shows picked (the current one unless another is), always named, POSTed to the agent's runs, a workflow's as a JSON object; then the run's page", async () => {
   const answers = { "api/agents/calc": AGENT_PAGE, "api/runs?agent=calc": [], "POST v2/agents/calc/runs": [202, { ...LIVE, status: "queued" }] };
   const { page, api } = open("#/agents/calc", answers);
   await page.settle();
@@ -239,7 +239,7 @@ test("start a run: its input, on the current revision unless another is picked, 
   find(page, "TEXTAREA", "input").value = "What is six times seven?";
   buttonNamed(page, "Start run").click();
   await page.settle();
-  assert.deepEqual(api.writes(), [["POST", "v2/agents/calc/runs", { input: { content: "What is six times seven?" } }]]);
+  assert.deepEqual(api.writes(), [["POST", "v2/agents/calc/runs", { input: { content: "What is six times seven?" }, revision: REV_B }]], "the current revision is named too, so one committed in another tab does not change what runs");
   assert.equal(page.window.location.hash, "#/runs/run-9");
   find(page, "SELECT", "revision").value = REV_A;
   buttonNamed(page, "Start run").click();
@@ -260,7 +260,7 @@ test("start a run: its input, on the current revision unless another is picked, 
   find(wf.page, "TEXTAREA", "input").value = '{"name": "Caterpillar", "website": "caterpillar.com"}';
   buttonNamed(wf.page, "Start run").click();
   await wf.page.settle();
-  assert.deepEqual(wf.api.writes(), [["POST", "v2/agents/brief/runs", { input: { name: "Caterpillar", website: "caterpillar.com" } }]]);
+  assert.deepEqual(wf.api.writes(), [["POST", "v2/agents/brief/runs", { input: { name: "Caterpillar", website: "caterpillar.com" }, revision: "c".repeat(64) }]]);
   assert.equal(wf.page.window.location.hash, "#/runs/run-w");
 });
 

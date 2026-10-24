@@ -207,7 +207,8 @@
           }
           if (!body.input || typeof body.input !== "object" || Array.isArray(body.input)) return say(out, new Error("A workflow's input is a JSON object its input schema takes."));
         }
-        if (chosen && !chosen.current) body.revision = chosen.id;
+        // Named even when it is the current one: a revision made current elsewhere since the page drew must not change what runs.
+        if (chosen) body.revision = chosen.id;
         start.disabled = true;
         say(out, null);
         v2("POST", "agents/" + enc(agent.id) + "/runs", body).then(
