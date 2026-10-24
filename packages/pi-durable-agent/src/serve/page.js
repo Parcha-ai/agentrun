@@ -646,7 +646,7 @@
 
   function picker(token) {
     crumb([]);
-    doc.title = "Agent store";
+    titled(null);
     get("api/store").then(
       function (data) {
         if (token !== view) return;
@@ -829,7 +829,7 @@
         var revisions = both[0].revisions || [];
         var current = revisions.filter(function (revision) { return revision.current; })[0];
         crumb([[agent.name, agentHref(agentId)]]);
-        doc.title = agent.name + " · agent store";
+        titled(agent.name);
         show([
           el(
             "section",
@@ -903,7 +903,7 @@
         if (token !== view) return;
         var run = data.run;
         crumb([[data.agent, agentHref(run.agent)], ["Run", "#/runs/" + encodeURIComponent(id)]]);
-        doc.title = "Run " + short(run.id) + " · " + data.agent + " · agent store";
+        titled("Run " + short(run.id) + " · " + data.agent);
         var rows = Array.isArray(data.rows) ? data.rows : [];
         var open = openCalls();
         var y = window.scrollY || 0;
@@ -941,6 +941,12 @@
   }
 
   // ---- routing ------------------------------------------------------------------------------------------------------------
+  /** The tab's title: what the view shows, then the store page's name, or the host's when it gives one. */
+  function titled(what) {
+    var name = host && host.name;
+    doc.title = what ? what + " · " + (name || "agent store") : name || "Agent store";
+  }
+
   function crumb(parts) {
     clear(crumbs);
     add(crumbs, el("a", { href: "#/" }, STORE ? "Agents" : "Home"));
@@ -1006,13 +1012,13 @@
   // ---- a host's script ------------------------------------------------------------------------------------------------
   // A server of another package may serve the store's page with a script of its own, loaded before this one, that sets
   // window.agentStoreHost. Given this page's parts (`route` among them, which draws the address's view again) it answers
-  // { route(hash, token): true when it drew that view itself; agent(agent, revisions) and revision(agent, revision):
-  // what it adds to the agent card and to a revision's head }.
+  // { name: the page's name in the tab's title; route(hash, token): true when it drew that view itself;
+  // agent(agent, revisions) and revision(agent, revision): what it adds to the agent card and to a revision's head }.
   var host = STORE && typeof window.agentStoreHost === "function"
     ? window.agentStoreHost({
         el: el, show: show, crumb: crumb, get: get, failed: failed, later: later, live: function (token) { return token === view; },
         kicker: kicker, pill: pill, kindPill: kindPill, when: when, ago: ago, took: took, usd: usd, cost: cost, clip: clip, short: short, plural: plural,
-        agentHref: agentHref, timeline: timeline, storeRunPage: storeRunPage, openCalls: openCalls, reopen: reopen, route: route,
+        agentHref: agentHref, timeline: timeline, storeRunPage: storeRunPage, openCalls: openCalls, reopen: reopen, route: route, titled: titled,
       }) || null
     : null;
 

@@ -56,11 +56,13 @@ function recordingHost() {
   const host = (kit) => {
     seen.kits.push(kit);
     return {
+      name: "My server",
       route(hash, token) {
         seen.hashes.push(hash);
         seen.tokens.push(token);
         if (hash !== "#/mine") return false;
         kit.crumb([["Mine", "#/mine"]]);
+        kit.titled("Mine");
         kit.show(kit.el("section", { class: "card mine" }, kit.kicker("Mine"), kit.el("p", null, kit.plural(2, "run"))));
         return true;
       },
@@ -76,10 +78,11 @@ test("a host takes the routes it draws itself, with this page's parts: page.js f
   const page = mount(API, "#/mine", { serve: "store", window: { agentStoreHost: host } });
   await page.settle();
   assert.equal(seen.kits.length, 1, "the host is made once");
-  for (const name of ["el", "show", "crumb", "get", "failed", "later", "live", "kicker", "pill", "kindPill", "when", "ago", "took", "usd", "cost", "clip", "short", "plural", "agentHref", "timeline", "storeRunPage", "openCalls", "reopen", "route"]) assert.equal(typeof seen.kits[0][name], "function", name);
+  for (const name of ["el", "show", "crumb", "get", "failed", "later", "live", "kicker", "pill", "kindPill", "when", "ago", "took", "usd", "cost", "clip", "short", "plural", "agentHref", "timeline", "storeRunPage", "openCalls", "reopen", "route", "titled"]) assert.equal(typeof seen.kits[0][name], "function", name);
   assert.deepEqual(page.fetched, []);
   assert.equal(all(page.app).filter((el) => classOf(el) === "card mine").length, 1);
   assert.match(page.app.textContent, /2 runs/);
+  assert.equal(page.document.title, "Mine · My server", "the host's own view, under the host's name");
   assert.deepEqual(all(page.document.getElementById("crumbs")).filter((el) => el.tagName === "A").map((el) => el.textContent), ["Agents", "Mine"]);
   assert.equal(seen.kits[0].live(seen.tokens[0]), true, "the view's token is live while it is shown");
 
@@ -88,6 +91,7 @@ test("a host takes the routes it draws itself, with this page's parts: page.js f
   assert.equal(seen.kits[0].live(seen.tokens[0]), false, "and not once another view is");
   assert.deepEqual(page.fetched, ["api/store"], "page.js drew the picker");
   assert.match(page.app.textContent, /0 agents/);
+  assert.equal(page.document.title, "My server", "page.js's own views take the host's name");
 });
 
 test("a host adds to the agent card and to each revision's head, given the agent; without a host the agent page is drawn as before", async () => {
@@ -96,6 +100,7 @@ test("a host adds to the agent card and to each revision's head, given the agent
   await page.settle();
   const card = all(page.app).find((el) => classOf(el) === "card agent");
   assert.equal(all(card).find((el) => classOf(el) === "host-agent").textContent, "calc has 2");
+  assert.equal(page.document.title, "Calc · My server");
   const heads = all(page.app).filter((el) => classOf(el) === "rev-head");
   assert.deepEqual(heads.map((head) => all(head).filter((el) => classOf(el) === "host-revision").map((el) => el.textContent)), [[], ["calc:aaaaaaaaaaaa"]]);
 
@@ -104,6 +109,7 @@ test("a host adds to the agent card and to each revision's head, given the agent
   assertInert(plain.app);
   assert.equal(all(plain.app).filter((el) => /^host-/.test(classOf(el))).length, 0);
   assert.equal(plain.app.textContent, page.app.textContent.replace("calc has 2", "").replace("calc:aaaaaaaaaaaa", ""));
+  assert.equal(plain.document.title, "Calc · agent store");
 });
 
 test("an agent home's page takes no host: the script is the store page's only", async () => {
