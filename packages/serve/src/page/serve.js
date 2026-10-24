@@ -97,7 +97,10 @@
       node.addEventListener("click", onClick);
       return node;
     }
-    function statusPill(status) {
+    /** A run's status; /v2 says "failed" for a run that ended escalated, and its error's code says which, so it is drawn
+     *  escalated, as the store's page draws it, never failed. */
+    function statusPill(status, error) {
+      if (status === "failed" && error && error.code === "escalated") return kit.pill("escalated", "escalated");
       return kit.pill(STATUS_CLASS[status] || "ended", String(status || "").replace("_", " "));
     }
 
@@ -114,7 +117,7 @@
         "a",
         { class: "run", href: "#/runs/" + enc(run.run_id) },
         el("span", { class: "c when" }, el("b", null, kit.when(run.created_at)), el("small", null, kit.ago(run.created_at))),
-        el("span", { class: "c state" }, statusPill(run.status)),
+        el("span", { class: "c state" }, statusPill(run.status, run.error)),
         el("span", { class: "c agent" }, names[run.agent_id] || run.agent_id),
         el("span", { class: "c rev" }, el("span", { class: "rev-id" }, kit.short(run.revision)), " ", el("span", { class: "word" }, run.kind || "")),
         kit.cost(run.cost && run.cost.usd, "c cost"),
@@ -423,7 +426,7 @@
           { class: "card run-head" },
           kit.kicker("Run"),
           el("h1", { class: "id" }, run.run_id),
-          el("p", { class: "facts" }, statusPill(page.status), el("span", null, "started " + kit.when(run.created_at)), spent === null ? null : el("span", null, kit.usd(spent) + " so far"), el("span", null, calls + (calls === 1 ? " tool call" : " tool calls")), el("span", { class: "live-note" }, "live")),
+          el("p", { class: "facts" }, statusPill(page.status, run.error), el("span", null, "started " + kit.when(run.created_at)), spent === null ? null : el("span", null, kit.usd(spent) + " so far"), el("span", null, calls + (calls === 1 ? " tool call" : " tool calls")), el("span", { class: "live-note" }, "live")),
           el("p", { class: "facts ran" }, el("span", { class: "word" }, "agent"), el("a", { href: kit.agentHref(run.agent_id) }, agentName), run.revision ? [el("span", { class: "word" }, "revision"), el("span", { class: "rev-id" }, kit.short(run.revision))] : null, run.kind ? kit.kindPill(run.kind) : null)
         );
         var open = kit.openCalls();
@@ -439,8 +442,13 @@
             if (!kit.live(token) || controller.signal.aborted) return;
             apply(page);
             if (page.final) return kit.storeRunPage(run.run_id, token);
-            if (!page.unchanged) draw(page);
-            next(page.next_after, page.has_more ? 0 : LONG_POLL_MS);
+            // A timeline page carries no error: a run that turns failed is read once more, for an escalation's code.
+            var why = page.status === "failed" && run.status !== "failed" ? v2("GET", "runs/" + enc(run.run_id)).then(function (view) { run = view; }, function () {}) : null;
+            Promise.resolve(why).then(function () {
+              if (!kit.live(token) || controller.signal.aborted) return;
+              if (!page.unchanged) draw(page);
+              next(page.next_after, page.has_more ? 0 : LONG_POLL_MS);
+            });
           },
           function () {
             if (kit.live(token) && !controller.signal.aborted) kit.later(token, 2000, function () { next(after, 0); });

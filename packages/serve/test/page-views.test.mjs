@@ -55,7 +55,7 @@ function stub(answers) {
     return { ok: status < 300, status, text: async () => JSON.stringify(data) };
   };
   const push = (page) => (waiting.length ? waiting.shift()(page) : queued.push(page));
-  return { fetch, calls, push, writes: () => calls.filter((c) => c.method !== "GET").map((c) => [c.method, c.path, plain(c.body)]) };
+  return { fetch, calls, push, answer: (more) => Object.assign(answers, more), writes: () => calls.filter((c) => c.method !== "GET").map((c) => [c.method, c.path, plain(c.body)]) };
 }
 
 function open(hash, answers) {
@@ -66,6 +66,7 @@ function open(hash, answers) {
 const find = (page, tag, name) => all(page.app).find((el) => el.tagName === tag && el.name === name);
 const buttonNamed = (page, text) => all(page.app).find((el) => el.tagName === "BUTTON" && el.textContent === text);
 const problemText = (page) => all(page.app).filter((el) => classOf(el) === "problem").map((el) => el.textContent);
+const pillsOf = (page, cardClass) => all(all(page.app).find((el) => classOf(el) === cardClass)).filter((el) => classOf(el).startsWith("pill ")).map((el) => [classOf(el), el.textContent]);
 
 test("every run: newest first across the agents, with its agent, revision, kind, state, cost and start; a row opens the run, and markup is text", async () => {
   const { page, api } = open("#/runs", { "v2/runs?limit=100": { runs: RUNS, next_cursor: null }, "api/store": { agents: AGENTS } });
@@ -326,6 +327,29 @@ test("a live run's view drops the run's own start and end rows, as its stored vi
   assert.ok(!timeline.textContent.includes("Run started") && !timeline.textContent.includes("Run finished"));
   assert.ok(timeline.textContent.includes("Waiting for you: Which region?") && timeline.textContent.includes("Retrying in 5 s: overloaded"), "every other phase row stays");
   assert.equal(all(shown.app).find((el) => classOf(el) === "question").textContent, "Which region?");
+});
+
+test("a run that ended escalated is drawn escalated, never failed: /v2 says failed with error.code escalated, in All runs and in the live header", async () => {
+  const escalated = { error: { code: "escalated", message: "Escalated at No public record" } };
+  const list = open("#/runs", { "v2/runs?limit=100": { runs: [{ ...RUNS[1], run_id: "run-e", status: "failed", ...escalated }, RUNS[2]], next_cursor: null }, "api/store": { agents: AGENTS } });
+  await list.page.settle();
+  const statePills = all(list.page.app).filter((el) => classOf(el) === "c state").map((cell) => all(cell).filter((el) => classOf(el).startsWith("pill ")).map((el) => [classOf(el), el.textContent])[0]);
+  assert.deepEqual(statePills, [["pill escalated", "escalated"], ["pill error", "failed"]], "a plain failure stays failed");
+
+  const ended = open("#/runs/run-9", { "v2/runs/run-9": { ...LIVE, status: "failed", state: "idle", ...escalated }, "v2/runs/run-9/timeline": page({ reset: true, status: "failed", state: "idle" }), "api/store": { agents: AGENTS } });
+  await ended.page.settle();
+  assert.deepEqual(pillsOf(ended.page, "card run-head")[0], ["pill escalated", "escalated"]);
+
+  const live = open("#/runs/run-9", { "v2/runs/run-9": LIVE, "v2/runs/run-9/timeline": page({ reset: true }), "api/store": { agents: AGENTS } });
+  await live.page.settle();
+  assert.deepEqual(pillsOf(live.page, "card run-head")[0], ["pill live", "working"]);
+  live.api.calls.length = 0;
+  const answers = { "v2/runs/run-9": { ...LIVE, status: "failed", state: "idle", ...escalated } };
+  live.api.answer(answers);
+  live.api.push(page({ status: "failed", state: "idle", next_after: 20 }));
+  await live.page.settle();
+  assert.ok(live.api.calls.some((c) => c.path === "v2/runs/run-9"), "a run that turns failed is read again for its error");
+  assert.deepEqual(pillsOf(live.page, "card run-head")[0], ["pill escalated", "escalated"]);
 });
 
 test("leaving a live run aborts its long poll; a run this server never ran, or a final one, is the store's own run page", async () => {

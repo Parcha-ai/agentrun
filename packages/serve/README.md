@@ -108,7 +108,8 @@ data directory, with this server's own views beside it:
 - **Agents**: each agent with its current revision's kind and its runs; an agent's revisions, newest first, an agentic
   one's prompt diffed against its parent's and a workflow's graph; its runs, filtered by revision.
 - **All runs**: every run of every agent, newest first, with its agent, revision, kind, state, cost and start, filtered by
-  agent and by state. A row opens the run.
+  agent and by state. A row opens the run. A run `/v2` reports as `failed` with `error.code` `escalated` reads escalated,
+  here and on its live page, as the store's page draws it.
 - **New agent** and **Edit**: a name, a description, a prompt or a workflow's JSON, for a prompt a model
   (`provider/model-id`, or none for the server's own) and a thinking level, and the tools capabilities list. Creating sends `POST /v2/agents`; an edit starts from the
   current definition, keeps the agent's name and description, and sends `PUT /v2/agents/{id}/definition` with
