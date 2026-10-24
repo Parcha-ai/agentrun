@@ -13,8 +13,6 @@ const lock = {
   [`node_modules/${scope}/pi-ai`]: { version: '1.1.0' },
   [`node_modules/${scope}/chord`]: { version: '1.0.4' },
   'node_modules/typebox': { version: '1.0.0' },
-  'node_modules/zod': { version: '4.6.6' },
-  'node_modules/stagehand/node_modules/zod': { version: '4.4.3' },
 };
 const codingAgent = `node_modules/${scope}/pi-coding-agent`;
 const key = name => `${scope}/${name}`;
@@ -36,7 +34,6 @@ test('a pinned dependency carries its own pins beside its version', () => {
 test('npm 10 gives every package with @earendil-works dependencies its own top-level entry', () => {
   const { overrides } = buildOverrides(lock, 10);
   assert.deepEqual(overrides, {
-    zod: '4.6.6',
     [key('pi-agent-core')]: '1.1.0',
     [key('pi-ai')]: '1.1.0',
     [`${key('pi-coding-agent')}@1.1.0`]: { [key('pi-agent-core')]: { '.': '1.1.0', [key('pi-ai')]: { '.': '1.1.0' } }, [key('chord')]: { '.': '1.1.0' } },
@@ -47,7 +44,6 @@ test('npm 10 gives every package with @earendil-works dependencies its own top-l
 test('npm 11 pins a package that another one depends on through its parent only', () => {
   const { overrides } = buildOverrides(lock, 11);
   assert.deepEqual(overrides, {
-    zod: '4.6.6',
     [key('pi-agent-core')]: '1.1.0',
     [key('pi-ai')]: '1.1.0',
     [`${key('pi-coding-agent')}@1.1.0`]: { [key('pi-agent-core')]: { '.': '1.1.0', [key('pi-ai')]: { '.': '1.1.0' } }, [key('chord')]: { '.': '1.1.0' } },
@@ -136,4 +132,14 @@ test('with nothing nested, npm 11 pins a package that another one depends on thr
 test('with nothing nested, a package two levels below a direct dependency is still pinned by name', () => {
   // The package check's consumer reaches pi-ai first through the durable package; telemetry sits one edge below it.
   for (const major of [10, 11]) assert.equal(buildOverrides(flatLock, major).overrides[key('pi-telemetry')], '1.1.0');
+});
+
+test("the consumer's pins name only @earendil-works packages: a dependency's own copy of anything else installs as a user gets it", () => {
+  // Stagehand pins its own zod below a patched root zod. A pin by name would lift that copy in the package check's
+  // consumer alone, so its audit would pass while every user of the published packages installs the nested copy.
+  const withZod = { ...lock, 'node_modules/zod': { version: '4.6.7' }, 'node_modules/@browserbasehq/stagehand/node_modules/zod': { version: '4.4.3' } };
+  for (const major of [10, 11]) {
+    const names = Object.keys(buildOverrides(withZod, major).overrides).map(key => key.slice(0, key.indexOf('@', 1) > 0 ? key.indexOf('@', 1) : undefined));
+    assert.deepEqual(names.filter(name => !name.startsWith(`${scope}/`)), [], `npm ${major}`);
+  }
 });

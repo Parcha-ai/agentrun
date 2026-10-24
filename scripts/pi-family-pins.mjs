@@ -1,6 +1,5 @@
 // Pins for the package check's consumer: every @earendil-works edge resolves at the version the repository lockfile holds
 // for its parent, and the consumer's own lockfile is checked against the versions the repository holds.
-// Every consumer also uses the root Zod version, including copies below dependencies with narrower ranges.
 import assert from 'node:assert/strict';
 
 export const isUpstream = name => name.startsWith('@earendil-works/');
@@ -66,8 +65,7 @@ export function buildOverrides(lock, npmMajor) {
     const versions = held.get(target);
     if (versions?.size === 1) byName[target] = [...versions][0];
   }
-  const zod = lock['node_modules/zod']?.version;
-  return { overrides: { ...byName, ...overrides, ...(zod ? { zod } : {}) }, held };
+  return { overrides: { ...byName, ...overrides }, held };
 }
 
 /** The consumer lockfile's @earendil-works entries at a version, or of a name, that `held` does not hold. */
