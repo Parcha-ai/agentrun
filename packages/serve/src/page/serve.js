@@ -5,7 +5,6 @@
 // token. Values from the API reach the page as text nodes and input values only.
 (function () {
   "use strict";
-  var doc = document;
   var STATUSES = ["queued", "working", "input_required", "completed", "failed", "cancelled"];
   var STATUS_CLASS = { queued: "live", working: "live", input_required: "escalated", completed: "ok", failed: "error", cancelled: "stopped" };
   var LONG_POLL_MS = 25000;
@@ -34,9 +33,10 @@
     var following = null;
 
     /** A /v2 call, JSON both ways. A refusal throws its status and message, with the fields it names. */
-    function v2(method, path, body, signal) {
+    function v2(method, path, body, signal, extra) {
       var headers = { accept: "application/json" };
       if (body !== undefined) headers["content-type"] = "application/json";
+      for (var name in extra) if (Object.prototype.hasOwnProperty.call(extra, name)) headers[name] = extra[name];
       return fetch("v2/" + path, { method: method, headers: headers, body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store", credentials: "same-origin", signal: signal }).then(function (res) {
         return res.text().then(function (text) {
           var data = null;
@@ -122,7 +122,7 @@
 
     function allRuns(filter, token) {
       kit.crumb([["All runs", "#/runs"]]);
-      doc.title = "All runs · agent store";
+      kit.titled("All runs");
       var query = "runs?limit=100" + (filter.agent ? "&agent=" + enc(filter.agent) : "") + (filter.status ? "&status=" + enc(filter.status) : "");
       Promise.all([v2("GET", query), kit.get("api/store")]).then(
         function (both) {
@@ -243,14 +243,14 @@
     function agentForm(agentId, token) {
       var home = agentId ? kit.agentHref(agentId) : "#/";
       kit.crumb(agentId ? [[agentId, home], ["Edit", "#/agents/" + enc(agentId) + "/edit"]] : [["New agent", "#/new"]]);
-      doc.title = (agentId ? "New revision" : "New agent") + " · agent store";
+      kit.titled(agentId ? "New revision" : "New agent");
       Promise.all([v2("GET", "capabilities"), agentId ? v2("GET", "agents/" + enc(agentId)) : null]).then(
         function (both) {
           if (!kit.live(token)) return;
           var current = both[1];
           var definition = (current && current.definition) || {};
           if (agentId) kit.crumb([[definition.name || agentId, home], ["Edit", "#/agents/" + enc(agentId) + "/edit"]]);
-          kit.show(agentCard(agentId, definition, (both[0] && both[0].tools) || []));
+          kit.show(agentCard(agentId, definition, (both[0] && both[0].tools) || [], current && current.home_etag));
         },
         function (error) {
           if (kit.live(token)) kit.show(kit.failed(error));
@@ -258,7 +258,8 @@
       );
     }
 
-    function agentCard(agentId, definition, offered) {
+    /** `etag` is the agent's as the form read it: the edit commits only onto that revision (412 when another came first). */
+    function agentCard(agentId, definition, offered, etag) {
       var kind = definition.workflow ? "workflow" : "agentic";
       // The store keeps an agent's name and description from its creation: an edit neither shows nor sends them.
       var name = agentId ? null : textInput("name", "", "Company researcher");
@@ -314,11 +315,11 @@
         if (note && note.value.trim()) body.note = note.value.trim();
         save.disabled = true;
         say(out, null);
-        (agentId ? v2("PUT", "agents/" + enc(agentId) + "/definition", body) : v2("POST", "agents", body)).then(
+        (agentId ? v2("PUT", "agents/" + enc(agentId) + "/definition", body, undefined, etag ? { "if-match": etag } : null) : v2("POST", "agents", body)).then(
           function (agent) { window.location.hash = kit.agentHref(agentId || agent.agent_id); },
           function (error) {
             save.disabled = false;
-            say(out, error);
+            say(out, error.status === 412 ? new Error("The agent has a newer revision than the one this form started from: open Edit again to start from it.") : error);
           }
         );
       });
@@ -366,7 +367,7 @@
       following = controller;
       var agentName = names[run.agent_id] || run.agent_id;
       kit.crumb([[agentName, kit.agentHref(run.agent_id)], ["Run", "#/runs/" + enc(run.run_id)]]);
-      doc.title = "Run " + kit.short(run.run_id) + " · " + agentName + " · agent store";
+      kit.titled("Run " + kit.short(run.run_id) + " · " + agentName);
       // The answer box is made once, so a redraw keeps what is typed in it.
       var question = el("p", { class: "question" });
       var answer = textArea("answer", "", 3, "Your answer");
@@ -447,6 +448,6 @@
       return false;
     }
 
-    return { route: route, agent: agentActions, revision: revisionActions };
+    return { name: "AgentRun Server", route: route, agent: agentActions, revision: revisionActions };
   };
 })();

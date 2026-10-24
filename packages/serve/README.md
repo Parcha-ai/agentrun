@@ -101,7 +101,7 @@ browser sign-ins (`sign_ins: false`).
 
 ## The page
 
-Open the link the server prints, once, in a browser on this machine. The page at `/` is
+Open the link the server prints, once, in a browser. The page at `/`, AgentRun Server, is
 [`@parcha/pi-durable-agent`](../pi-durable-agent/README.md#looking-at-a-store)'s store page over the agent store in the
 data directory, with this server's own views beside it:
 
@@ -111,8 +111,9 @@ data directory, with this server's own views beside it:
   agent and by state. A row opens the run.
 - **New agent** and **Edit**: a name, a description, a prompt or a workflow's JSON, a model (`provider/model-id`, or
   none for the server's own) and the tools capabilities list. Creating sends `POST /v2/agents`; an edit starts from the
-  current definition, keeps the agent's name and description, and sends `PUT /v2/agents/{id}/definition`, which
-  commits a revision and makes it current. **Make current** on an older revision sends `POST /v2/agents/{id}/current`.
+  current definition, keeps the agent's name and description, and sends `PUT /v2/agents/{id}/definition` with
+  `If-Match` set to the revision it started from, which commits a revision and makes it current (or answers 412 when
+  another revision came first). **Make current** on an older revision sends `POST /v2/agents/{id}/current`.
 - **Start a run**: an input (for a workflow revision, a JSON object its input schema takes), on the current revision or
   another one, sent to `POST /v2/agents/{id}/runs`. A run the page opens while it is not final follows
   `GET /v2/runs/{id}/timeline` with a long poll; while it waits on `ask_person`, an answer box sends

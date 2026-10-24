@@ -1,6 +1,7 @@
 // serve.js on the store's page, offline: graph.js, serve.js and page.js run on pi-durable-agent's small test DOM over a
 // stub of the /v2 routes the page calls (every run, an agent's definition, a new agent or revision, the current revision,
-// a new run, a run's timeline and its messages) and of the store's /api. Names and texts carry markup, which arrives as text.
+// a new run, a run's timeline and its messages), in the shapes agentrun-serve answers, and of the store's /api. Names and
+// texts carry markup, which arrives as text.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -16,14 +17,20 @@ const AGENTS = [
   { id: "calc", name: `Calc ${HOSTILE}`, createdAt: "2026-10-21T09:00:00.000Z", current: REV_B, currentKind: "agentic", runs: 2 },
   { id: "brief", name: "Brief", createdAt: "2026-10-22T09:00:00.000Z", current: "c".repeat(64), currentKind: "workflow", runs: 1 },
 ];
+/** A run as GET /v2/runs lists it. */
+const summary = (run_id, agent_id, revision, kind, status, state, created_at, ended_at, usd) => ({ run_id, agent_id, agent_version: 1, revision, kind, sha: null, status, state, title: `Input of ${run_id}`, created_at, ended_at, cost: { usd, basis: "estimate", charge_state: null, cap_usd: null } });
 const RUNS = [
-  { run_id: "run-3", agent_id: "brief", revision: "c".repeat(64), kind: "workflow", status: "input_required", state: "waiting", created_at: "2026-10-23T05:00:00.000Z", ended_at: null, cost: { usd: null } },
-  { run_id: "run-2", agent_id: "calc", revision: REV_B, kind: "agentic", status: "completed", state: "idle", created_at: "2026-10-23T04:00:00.000Z", ended_at: "2026-10-23T04:01:00.000Z", cost: { usd: 0.312 } },
-  { run_id: "run-1", agent_id: "calc", revision: REV_A, kind: "agentic", status: "failed", state: "idle", created_at: "2026-10-22T04:00:00.000Z", ended_at: "2026-10-22T04:01:00.000Z", cost: { usd: 0.02 } },
+  summary("run-3", "brief", "c".repeat(64), "workflow", "input_required", "waiting", "2026-10-23T05:00:00.000Z", null, null),
+  summary("run-2", "calc", REV_B, "agentic", "completed", "idle", "2026-10-23T04:00:00.000Z", "2026-10-23T04:01:00.000Z", 0.312),
+  summary("run-1", "calc", REV_A, "agentic", "failed", "idle", "2026-10-22T04:00:00.000Z", "2026-10-22T04:01:00.000Z", 0.00014),
 ];
 const revision = (id, current, note) => ({ id, kind: "agentic", current, createdAt: "2026-10-22T10:00:00.000Z", note, parent: null, parentKind: null, diff: null, body: { instructions: "Answer.", tools: ["read"], skills: {} } });
 const AGENT_PAGE = { agent: { id: "calc", name: `Calc ${HOSTILE}`, createdAt: "2026-10-21T09:00:00.000Z", current: REV_B }, revisions: [revision(REV_B, true, "Cites"), revision(REV_A, false, `First ${HOSTILE}`)] };
-const CAPABILITIES = { contract: "agentrun.v2/0", tools: ["read", "write", "edit", "ask_person"] };
+/** A run as GET /v2/runs/{id} answers it while it works. */
+const LIVE = { ...summary("run-9", "calc", REV_B, "agentic", "working", "working", "2026-10-23T06:00:00.000Z", null, 0.01), updated_at: "2026-10-23T06:00:01.000Z", result: null, error: null, poll_after_ms: 1000 };
+const CAPABILITIES = { backend: "local", contract: "agentrun.v2/0", features: { agents: { create: true, list: true, update: true, revisions: true } }, tools: ["read", "write", "edit", "ask_person"] };
+/** An agent as GET /v2/agents/{id} answers it: the current revision's definition, numbered, and the revision as its ETag. */
+const agentView = (id, revision, definition) => ({ agent_id: id, definition: { id, version: 2, ...definition, skills: [] }, kind: definition.workflow ? "workflow" : "agentic", revision, revisions: 2, source: null, skills: [], sign_ins: [], runs: { count: 0, live: 0 }, region: "local", home_etag: `"${revision}"`, created_at: "2026-10-21T09:00:00.000Z", updated_at: "2026-10-22T10:00:00.000Z" });
 
 /** A stub of the routes: `answers` maps "METHOD path" (or a path for a GET) to a body, [status, body] or a function of
  *  the parsed body; every call is kept in `calls`. A timeline long poll waits for `push`, and an abort ends it. */
@@ -73,8 +80,9 @@ test("every run: newest first across the agents, with its agent, revision, kind,
   assert.deepEqual(done.slice(1), [["c state", "completed"], ["c agent", `Calc ${HOSTILE}`], ["c rev", "bbbbbbbbbbbb agentic"], ["c cost", "$0.312"], ["c id", "run-2"]]);
   assert.match(done[0][1], /^2026-10-2\d \d\d:\d\d/);
   assert.deepEqual(all(rows[2]).filter((el) => classOf(el).startsWith("pill ")).map(classOf), ["pill error"]);
-  assert.equal(failed[1][1], "failed");
+  assert.deepEqual(failed.slice(1, 2).concat(failed.slice(4, 5)), [["c state", "failed"], ["c cost", "$0.00014"]], "a run under a tenth of a cent is not free");
   assert.equal(all(page.app).find((el) => el.tagName === "H1").textContent, "3 runs");
+  assert.equal(page.document.title, "All runs · AgentRun Server");
   assert.deepEqual(all(page.document.getElementById("crumbs")).filter((el) => el.tagName === "A").map((el) => el.textContent), ["Agents", "All runs"]);
   const filters = all(page.app).filter((el) => el.tagName === "A" && classOf(el).startsWith("filter"));
   assert.deepEqual(filters.map((el) => [el.textContent, el.getAttribute("href"), classOf(el)]).slice(0, 4), [["All agents", "#/runs", "filter on"], [`Calc ${HOSTILE}`, "#/runs?agent=calc", "filter"], ["Brief", "#/runs?agent=brief", "filter"], ["Any state", "#/runs", "filter on"]]);
@@ -104,7 +112,7 @@ test("every run, filtered by agent and state in the hash, so a reload keeps them
 });
 
 test("a new agent: name, description, a prompt, a model and the tools capabilities offer, sent to POST /v2/agents as JSON; then its page", async () => {
-  const { page, api } = open("#/new", { "v2/capabilities": CAPABILITIES, "POST v2/agents": [201, { agent_id: "researcher" }] });
+  const { page, api } = open("#/new", { "v2/capabilities": CAPABILITIES, "POST v2/agents": [201, agentView("researcher", REV_A, { name: "Researcher", instructions: "Research one company.", tools: ["read"] })] });
   await page.settle();
   assert.deepEqual(all(page.app).filter((el) => el.tagName === "INPUT" && el.getAttribute("type") === "checkbox").map((el) => [el.value, el.checked]), [["read", false], ["write", false], ["edit", false], ["ask_person", false]]);
   find(page, "INPUT", "name").value = "  Researcher ";
@@ -162,7 +170,12 @@ test("a new workflow agent: the workflow's JSON in place of a prompt and a model
 
 test("edit: the form is the current definition, a tool the server does not bind still checked; saving PUTs it to .../definition with a note, never the name or description the store keeps", async () => {
   const definition = { name: `Calc ${HOSTILE}`, description: "Adds.", instructions: "Answer.", model: "openai/gpt-5", tools: ["read", "web_fetch"] };
-  const { page, api } = open("#/agents/calc/edit", { "v2/capabilities": CAPABILITIES, "v2/agents/calc": { agent_id: "calc", definition }, "PUT v2/agents/calc/definition": { agent_id: "calc" } });
+  let stale = false;
+  const { page, api } = open("#/agents/calc/edit", {
+    "v2/capabilities": CAPABILITIES,
+    "v2/agents/calc": agentView("calc", REV_B, definition),
+    "PUT v2/agents/calc/definition": () => (stale ? [412, { error: { code: "precondition_failed", message: `If-Match is "${REV_B}", and the agent's current revision is "${REV_A}"` } }] : agentView("calc", REV_A, definition)),
+  });
   await page.settle();
   assert.equal(find(page, "INPUT", "name"), undefined);
   assert.equal(find(page, "INPUT", "description"), undefined);
@@ -179,13 +192,19 @@ test("edit: the form is the current definition, a tool the server does not bind 
   boxes[4].checked = false;
   buttonNamed(page, "Commit revision").click();
   await page.settle();
-  assert.deepEqual(api.writes(), [["PUT", "v2/agents/calc/definition", { definition: { tools: ["read"], instructions: "Answer, and show the sum.", model: "openai/gpt-5" }, note: "Shows its work" }]]);
+  assert.deepEqual(api.writes(), [["PUT", "v2/agents/calc/definition", { definition: { tools: ["read"], instructions: "Answer, and show the sum.", model: "openai/gpt-5" }, note: "Shows its work" }]], "no id, version or skills: the server numbers the revision and carries the skill files over");
+  assert.equal(api.calls.at(-1).headers["if-match"], `"${REV_B}"`, "the edit commits onto the revision the form read");
   assert.equal(page.window.location.hash, "#/agents/calc");
+  stale = true;
+  buttonNamed(page, "Commit revision").click();
+  await page.settle();
+  assert.deepEqual(problemText(page), ["The agent has a newer revision than the one this form started from: open Edit again to start from it."]);
 
-  const flow = open("#/agents/brief/edit", { "v2/capabilities": CAPABILITIES, "v2/agents/brief": { agent_id: "brief", definition: { name: "Brief", workflow: { name: "brief", steps: [] }, tools: [] } } });
+  const flow = open("#/agents/brief/edit", { "v2/capabilities": { ...CAPABILITIES, tools: undefined }, "v2/agents/brief": agentView("brief", "c".repeat(64), { name: "Brief", workflow: { name: "brief", steps: [] }, tools: [] }) });
   await flow.page.settle();
   assert.equal(buttonNamed(flow.page, "Workflow").getAttribute("aria-pressed"), "true");
   assert.equal(find(flow.page, "TEXTAREA", "workflow").value, JSON.stringify({ name: "brief", steps: [] }, null, 2));
+  assert.match(flow.page.app.textContent, /This server binds no tools\./, "capabilities without a tools list offers none");
 });
 
 test("an agent's page: Edit, a run form on its revisions, and Make current on each revision that is not; it posts {revision} and the page is read again", async () => {
@@ -206,7 +225,7 @@ test("an agent's page: Edit, a run form on its revisions, and Make current on ea
 });
 
 test("start a run: its input, on the current revision unless another is picked, POSTed to the agent's runs, a workflow's as a JSON object; then the run's page", async () => {
-  const answers = { "api/agents/calc": AGENT_PAGE, "api/runs?agent=calc": [], "POST v2/agents/calc/runs": [202, { run_id: "run-9", status: "queued" }] };
+  const answers = { "api/agents/calc": AGENT_PAGE, "api/runs?agent=calc": [], "POST v2/agents/calc/runs": [202, { ...LIVE, status: "queued" }] };
   const { page, api } = open("#/agents/calc", answers);
   await page.settle();
   buttonNamed(page, "Start run").click();
@@ -223,7 +242,7 @@ test("start a run: its input, on the current revision unless another is picked, 
   assert.deepEqual(api.writes().at(-1), ["POST", "v2/agents/calc/runs", { input: { content: "What is six times seven?" }, revision: REV_A }]);
 
   const flow = { agent: { ...AGENT_PAGE.agent, id: "brief" }, revisions: [{ ...revision("c".repeat(64), true, "A workflow"), kind: "workflow", graph: { nodes: [], edges: [] } }] };
-  const wf = open("#/agents/brief", { "api/agents/brief": flow, "api/runs?agent=brief": [], "POST v2/agents/brief/runs": [202, { run_id: "run-w" }] });
+  const wf = open("#/agents/brief", { "api/agents/brief": flow, "api/runs?agent=brief": [], "POST v2/agents/brief/runs": [202, { ...LIVE, run_id: "run-w", agent_id: "brief", kind: "workflow", status: "queued" }] });
   await wf.page.settle();
   find(wf.page, "TEXTAREA", "input").value = "Caterpillar";
   buttonNamed(wf.page, "Start run").click();
@@ -242,7 +261,6 @@ test("start a run: its input, on the current revision unless another is picked, 
 
 const row = (seq, kind, fields = {}) => ({ id: `r${seq}`, seq, kind, summary: fields.summary ?? kind, conversation_id: "c", ...fields });
 const page = (fields) => ({ status: "working", state: "working", reset: false, rows: [], drop: [], next_after: 10, unchanged: false, has_more: false, final: false, cost: { usd: 0.01 }, ...fields });
-const LIVE = { run_id: "run-9", agent_id: "calc", revision: REV_B, kind: "agentic", status: "working", state: "working", created_at: "2026-10-23T06:00:00.000Z" };
 
 test("a live run follows /v2's timeline with a long poll, an answer box while it waits on ask_person, and the store's page once it is final", async () => {
   const stored = { run: { id: "run-9", agent: "calc", revision: REV_B, kind: "agentic", state: "completed", startedAt: LIVE.created_at, endedAt: "2026-10-23T06:01:00.000Z", costUsd: 0.03, summary: "Asked, then answered." }, agent: "Calc", note: "Cites", rows: [row(0, "user_message", { text: "Pick a region" }), row(5, "final_answer", { text: "Using eu." })] };
