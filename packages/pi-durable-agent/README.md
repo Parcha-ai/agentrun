@@ -563,7 +563,9 @@ steps; the root never imports it, and only these functions load `@parcha/agentru
    what the durable runner refuses before any step, and that `tools` lists every tool a call node uses.
 2. To run it, open a Harness on the run's `storePath` with agentrun-pi's `createWorkflowExtension` installed (it holds
    your tools), and call `runWorkflowRevision({ harness, workflows, context, run, input, tools })`. It returns the DSL's
-   `outcome` and a `carry`, `{ state, summary }`, for the store's `carryBack`.
+   `outcome` and a `carry`, `{ state, summary }`, for the store's `carryBack`. Inside a `pi-durable-disk run`, whose
+   process holds the store file until it exits, call `startWorkflowRevision` (the same options) in the app, and
+   `workflowCarry(run, outcome)` on the host after the run releases and its process exits.
 3. `readWorkflowRun(run)` reads the run back for a page, read-only: the workflow's graph, each node's state, and, once
    the run ended, how it ended, where it escalated and its output.
 4. `revisionGraph(revision, parent?)` draws a revision's graph, and what changed from a parent that is a workflow too.
@@ -677,7 +679,9 @@ It loads `@parcha/agentrun-dsl` and `@parcha/agentrun-pi` only when one of its f
 | Export | Does |
 |---|---|
 | `checkWorkflowBody(body)` | Refuses, as `invalid`, a workflow revision's body a store must not commit, naming the node's path and never a value from the body |
-| `runWorkflowRevision(options)` | Runs the revision's workflow as one durable workflow task on the run's store and waits: `{ outcome, carry }`. A workflow that uses a tool the host does not register, or does not take the input, is refused with no task; the run reopened under another revision is refused (`RUN_STORE_BINDING_MISMATCH`) |
+| `runWorkflowRevision(options)` | Runs the revision's workflow as one durable workflow task on the run's store and waits: `{ outcome, carry }`, `startWorkflowRevision` then `workflowCarry` |
+| `startWorkflowRevision(options)` | The first half: starts the run's workflow task and waits for its `outcome`, reading no file. A workflow that uses a tool the host does not register, or does not take the input, is refused with no task; the run reopened under another revision is refused (`RUN_STORE_BINDING_MISMATCH`); reopened as itself it resumes, or answers how it ended |
+| `workflowCarry(run, outcome)` | The second half: `{ state, summary }` for the store's `carryBack`, read with `readWorkflowRun`. It fails while another connection holds the store file exclusively, as a `pi-durable-disk run` process does until it exits |
 | `readWorkflowRun(run)` | The run as its store shows it, read-only: no write, no lock, no Harness. With `run.state` (the runs row's) ended and no write-ahead log beside the store, it opens the store as an immutable file and makes no file in the run's directory. Working means live: an ended run's interrupted nodes read `stopped`, or `failed` when the run failed. A run in the driver's keyed layout is refused as `format` |
 | `revisionGraph(revision, parent?)` | The revision's graph (the DSL's `workflowGraph`), and the DSL's `graphDiff` from its parent when the parent is a workflow revision; an agentic parent, or none, gives no diff |
 
