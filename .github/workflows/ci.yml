@@ -15,8 +15,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 22.19 = the supported floor, 22.23 = release toolchain, 24.21 = the active LTS line.
-        node: ['22.19.0', '22.23.2', '24.21.0']
+        # 22.19 = the supported floor, 22.23 = release toolchain, 24.22 = the active LTS line.
+        node: ['22.19.0', '22.23.4', '24.22.1']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,7 +43,7 @@ jobs:
       - run: npm run test:examples
       - run: npm run test:viewer
       - run: node scripts/verify-packages.mjs
-      - if: matrix.node == '22.23.2'
+      - if: matrix.node == '22.23.4'
         run: npm run verify:source
       - if: matrix.node == '22.19.0'
         run: node scripts/check-typescript-floor.mjs
@@ -68,7 +68,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '22.23.4'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
@@ -91,7 +91,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '22.23.4'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
@@ -119,7 +119,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '22.23.4'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
@@ -153,7 +153,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '22.23.4'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
@@ -171,7 +171,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '22.23.4'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
@@ -201,7 +201,7 @@ jobs:
           pdftoppm -v
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '22.23.4'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
@@ -219,7 +219,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '22.23.4'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
@@ -242,7 +242,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '22.23.4'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
@@ -263,7 +263,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '22.23.4'
           cache: npm
       - uses: actions/cache@v4
         with:
@@ -300,7 +300,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '22.23.4'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
@@ -323,7 +323,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '22.23.4'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
@@ -369,7 +369,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '22.23.4'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
@@ -466,7 +466,7 @@ jobs:
         run: lake exe conformance
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '22.23.4'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - name: Build the TypeScript packages
