@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.0-beta.26 (2026-10-24)
+
+- Pin the Docker image, planned-move example and live-test sandbox setup to Archil client 0.10.0, with SHA-256 checks for each downloaded package. The client verifies server certificates against the operating system trust store and rejects certificates from the compromised eMudhra intermediate authorities. Linux hosts need client 0.10.0 or later and the operating system CA bundle installed (`ca-certificates` on Debian/Ubuntu); rebuild Docker images and sandbox snapshots to use the new client.
+- Archil's latest SDK: the package depends on the `disk` SDK 1.9.0 (was 1.7.0). The SDK calls the claim, lease and supervisor make are the same in 1.9.0, which adds disk branches and sandbox mounts. The client verbs the package runs take the same arguments in client 0.10.0, whose `mount` adds `--kernel-read-ahead-kb`. A host that installs `disk` itself installs 1.9.0, so npm keeps one copy.
+
 ## 0.1.0-beta.25 (2026-10-23)
 
 - `archilPlace({ unheld })` takes a hook that runs in each start's window while nobody holds the run: after ensureRunning's revoke and start mark and after the run's directories are made, before the driver starts anything, once per start. It gets the start's `attempt` and, when the place hands labels over, exactly the `HOST_BOX` that start carries (`start.box`). It also gets the run's own files: `read`, `list`, and `put(path, text)`, which creates a file the run user owns (0644, parents 0755) and refuses a path already there with `EXISTS`. What it returns is added to that start's environment. It needs `ensure.create` and a control that lists. New types `UnheldHook`, `UnheldRun` and `UnheldStart`, and new `unheldTimeoutMs` (default 30 s).

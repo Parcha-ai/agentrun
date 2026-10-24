@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.0-beta.26 (2026-10-24)
+
+- Security: pi-browser requires undici 6.29.1 or later (`^6.29.1`, from `^6.28.0`), the release that fixes GHSA-xjj6-f33q-929c.
+- Security: pi-browser's own zod moves from ~4.4.3 to ~4.6.6, the release that fixes GHSA-mrhx-c7xc-m3w5 (a high-severity memory exhaustion while validating large arrays). The copy of zod that `@browserbasehq/stagehand` pins for itself (4.4.3 in every Stagehand release so far) is outside pi-browser's control until Stagehand ships a fixed release; the package gate accepts that one nested copy until 2026-11-06.
+
 ## 0.1.0-beta.24 (2026-10-22)
 
 - `@parcha/pi-browser`: a new entry, `@parcha/pi-browser/providers/chrome-args`, exports `chromeArgs()` (the local Chrome's flags, with `--remote-allow-origins` narrowed to the one extension Origin) and `extensionOrigin()`, for a host that starts its own Chrome for Stagehand and should not copy the list. The README names the action-policy refusal under the pi coding agent.
