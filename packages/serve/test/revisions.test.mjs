@@ -128,3 +128,33 @@ test("a workflow agent: its definition carries the workflow, its kind is workflo
   assert.equal((await api("POST", "/agents", flowAgent("bad", { v: 2, name: "bad" }))).body.error.fields[0].field, "definition.workflow");
   assert.equal((await api("GET", "/agents/bad")).status, 404, "a refused workflow makes no agent");
 });
+
+test("two PUTs that read the same ETag race: the store compares If-Match inside the commit, so exactly one lands and the other is 412", async (t) => {
+  const { api, port, token } = await serve(t);
+  const { request } = await import("node:http");
+  /** A PUT whose headers go first, so the server reads the agent and checks If-Match; its body follows on `send()`. */
+  const held = (path, etag, body) => {
+    const text = JSON.stringify(body);
+    const req = request({ host: "127.0.0.1", port, method: "PUT", path: `/v2${path}`, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "content-length": Buffer.byteLength(text), "if-match": etag } });
+    const answer = new Promise((resolve, reject) => {
+      req.once("response", (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk)).on("end", () => resolve({ status: res.statusCode, body: JSON.parse(data) }));
+      });
+      req.once("error", reject);
+    });
+    req.flushHeaders();
+    return { send: () => req.end(text), answer };
+  };
+  for (let i = 0; i < 3; i++) {
+    const created = (await api("POST", "/agents", agent(`raced-${i}`))).body;
+    const puts = ["One.", "Two."].map((instructions) => held(`/agents/raced-${i}/definition`, created.home_etag, { definition: { instructions } }));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    for (const put of puts) put.send();
+    const answers = await Promise.all(puts.map((put) => put.answer));
+    assert.deepEqual(answers.map((a) => a.status).sort(), [200, 412], JSON.stringify(answers.map((a) => a.body)));
+    assert.equal(answers.find((a) => a.status === 412).body.error.code, "precondition_failed");
+    const revisions = (await api("GET", `/agents/raced-${i}/revisions`)).body.revisions;
+    assert.deepEqual(revisions.map((r) => r.parent), [created.revision, null], "one edit landed, on the revision both read");
+  }
+});

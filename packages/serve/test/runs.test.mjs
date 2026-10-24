@@ -176,3 +176,15 @@ test("after a restart the runs are read from the agent home: status, result and 
   assert.deepEqual(page.rows.map((r) => r.kind), before.rows.map((r) => r.kind));
   assert.equal(JSON.parse(await readFile(join(data, "runs", run_id, "serve.json"), "utf8")).title, "What is six times seven?");
 });
+
+test("a run's process never sees the server's token, by name or by value; model keys and the AGENT_MODEL variables still reach it", async (t) => {
+  const token = `ar_test_${"t".repeat(40)}`;
+  const names = ["AGENTRUN_TOKEN", "TOKEN_COPY", "OPENAI_API_KEY", "AGENT_MODEL_PRICE"];
+  const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  t.after(() => { for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : (process.env[name] = value); });
+  Object.assign(process.env, { AGENTRUN_TOKEN: token, TOKEN_COPY: token, OPENAI_API_KEY: "fake-test-key", AGENT_MODEL_PRICE: "0" });
+  const { api } = await serve(t, { token });
+  const { run_id } = await startRun(api, "env", "Which variables do you see?");
+  await follow(api, run_id, ["completed"]);
+  assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "AGENTRUN_TOKEN unset; TOKEN_COPY unset; OPENAI_API_KEY set; AGENT_MODEL_PRICE set");
+});

@@ -97,8 +97,10 @@ from:
 
 A run whose model cannot be reached here (no model for the revision or for a tier its workflow's nodes name, a model
 pi-ai does not know, no key for its provider) is refused before it starts, `409 agent_not_runnable`, saying which. A run
-thinks at its `effort` (`low`, `medium`, `high`), else at its agentic revision's `thinking` (`low` to `max`), else at the
-host's `AGENT_THINKING`, else at medium; it is never off, and a model node that names its own thinking level keeps it.
+needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
+workflow of fast nodes runs with `AGENT_MODEL_FAST` and no `AGENT_MODEL`. A run thinks at its `effort` (`low`, `medium`,
+`high`), else at its agentic revision's `thinking` (`low` to `max`), else at the host's `AGENT_THINKING`, else at medium;
+it is never off, and a model node that names its own thinking level keeps it.
 
 ## What it serves
 
@@ -106,7 +108,7 @@ host's `AGENT_THINKING`, else at medium; it is never off, and a model node that 
 | --- | --- |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get; `models`, where models come from and the model of each tier. |
 | `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `tools`, `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name. The ETag (`home_etag`) is the current revision's id. |
-| `PUT /agents/{id}/definition` | The same body: a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`. |
+| `PUT /agents/{id}/definition` | The same body: a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. The agent's runs, newest first. |
@@ -219,6 +221,8 @@ million tokens) to price the faux usage; unpriced, every run's estimate is $0. T
   data; everything it shows comes through those routes. It loads nothing from the network, and its CSP allows this
   origin only.
 - Each run's door listens on loopback and takes only the server's door token.
+- A run's process gets the server's environment (model keys and the `AGENT_MODEL` variables among it) without the
+  server's token: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, and no variable whose value is the token.
 - Files are served from `work/` only. A path with an empty, `.` or `..` segment, a backslash or a NUL is
   `400 invalid_file_path`; a segment that starts with `.` (the run's skills under `.agents/`) is
   `403 system_file_forbidden`; a symlink on the way is `404`. Every answer is `nosniff`, and HTML carries a CSP with

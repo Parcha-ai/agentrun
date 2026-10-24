@@ -180,7 +180,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}) };
   const caps = capabilities(env);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -507,7 +507,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const match = req.headers["if-match"];
         if (match !== undefined && match !== etagOf(entry)) throw new ApiError("precondition_failed", `If-Match is ${match}, and the agent's current revision is ${etagOf(entry)}`);
         const body = await bodyOf(req);
-        const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false }));
+        // The check above is a fast path; the store compares If-Match again inside the commit, so of two edits that read
+        // the same revision exactly one lands.
+        const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false }), match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null });
         return send(res, 200, agentView(edited), { etag: etagOf(edited) });
       }
       case "listRevisions": {

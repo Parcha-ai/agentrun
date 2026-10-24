@@ -95,25 +95,27 @@ export type FauxHelpers = {
   toolCall: typeof import("@earendil-works/pi-ai").fauxToolCall;
 };
 
-/** The models for a run, and its model of each tier it asks for: an agentic revision's `ref` (or the default) is its
- *  `default`. The faux module's replies, the gateway in the environment, or pi-ai's providers. */
+/** The models for a run, and its model of each tier it uses and of no other: an agentic revision's `ref` (or the
+ *  default) is its `default`, and a workflow's tiers are the ones its nodes name. The faux module's replies, the gateway
+ *  in the environment, or pi-ai's providers. */
 export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined, tiers: readonly Tier[] = ["default"]) {
   const ai = await import("@earendil-works/pi-ai");
   const { createModels, createProvider } = await import("@earendil-works/pi-ai/models");
   const faux = env[FAUX_ENV];
   const byTier = new Map<Tier, ModelRef>();
-  for (const tier of new Set<Tier>(["default", ...tiers])) {
+  for (const tier of new Set(tiers)) {
     const chosen = await chooseModel(env, tier === "default" ? ref : undefined, tier);
     if ("why" in chosen) throw new Error(chosen.why);
     byTier.set(tier, chosen.model);
   }
-  const model = byTier.get("default")!;
+  const model = byTier.get("default");
   if (!faux && !env.AGENT_MODEL_BASE_URL) {
     const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
     return { models: builtinModels(), model, byTier };
   }
   const ids = [...new Set([...byTier.values()].map((m) => m.modelId))];
   const models = createModels();
+  if (!ids.length) return { models, model, byTier };
   if (faux) {
     const mod = (await import(pathToFileURL(faux).href)) as { default?: unknown; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } };
     if (typeof mod.default !== "function") throw new Error(`the faux module ${faux} has no default export function`);

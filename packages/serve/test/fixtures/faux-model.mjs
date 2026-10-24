@@ -29,6 +29,11 @@ export default function reply(context, faux) {
     if (users.length === 1 && !answered) return faux.message(faux.toolCall("ask_person", { question: "Which region should I use?" }), { stopReason: "toolUse" });
     return faux.message(JSON.stringify({ region: users.length === 1 ? "us" : last.trim() }));
   }
+  // The run's process says which of these it sees: the server's token must not reach it, the rest must.
+  if (first.includes("Which variables do you see?")) {
+    const seen = (name) => `${name} ${process.env[name] ? "set" : "unset"}`;
+    return faux.message(["AGENTRUN_TOKEN", "TOKEN_COPY", "OPENAI_API_KEY", "AGENT_MODEL_PRICE"].map(seen).join("; "));
+  }
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
   if (first.includes("Write the report")) {
     if (answered) return faux.message("I wrote report.md.");

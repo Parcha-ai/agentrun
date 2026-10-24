@@ -19,6 +19,7 @@ export function storeError(error: unknown, field = "definition"): never {
   if (sqliteBusy(error) || (error instanceof AgentHomeError && error.code === "busy")) throw new ApiError("home_busy", "the agent store is busy with another write; try again", { retry_after_ms: 500 });
   if (error instanceof AgentHomeError && error.code === "invalid") throw invalid([{ field, reason: "invalid", message: error.message }]);
   if (error instanceof AgentHomeError && error.code === "missing") throw new ApiError("not_found", error.message);
+  if (error instanceof AgentHomeError && error.code === "stale") throw new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
   throw error;
 }
 
@@ -91,8 +92,11 @@ export class Agents {
 
   /** An edit: a new revision of the agent, its parent the current one, made current. Without `skills` the current
    *  revision's skill files carry over. An edit that is the current revision writes nothing, so a PUT sent twice makes
-   *  one revision. The store keeps an agent's id, name and description from its creation. */
-  async commit(entry: AgentEntry, { definition, skills, note }: DefinitionBody): Promise<AgentEntry> {
+   *  one revision. The store keeps an agent's id, name and description from its creation. `ifCurrent` (from If-Match)
+   *  is the current revision the caller read, null for none: the store compares it in the commit's own transaction. */
+  async commit(read: AgentEntry, { definition, skills, note }: DefinitionBody, { ifCurrent }: { ifCurrent?: string | null } = {}): Promise<AgentEntry> {
+    const entry = this.get(read.agent.id) ?? read;
+    if (ifCurrent !== undefined && (entry.revision?.id ?? null) !== ifCurrent) storeError(new AgentHomeError("stale", "the agent's current revision is not the one the commit expects"));
     const { agent } = entry;
     const kept = [
       ...(definition.id !== undefined && definition.id !== agent.id ? [{ field: "definition.id", reason: "not_an_option", message: `definition.id is ${agent.id}, the agent's id` }] : []),
@@ -114,7 +118,7 @@ export class Agents {
     }
     this.checkVersion(definition, entry.revisions + 1);
     await this.checked(revision);
-    await this.store.commitRevision(agent.id, revision, { setCurrent: true }).catch((error) => storeError(error));
+    await this.store.commitRevision(agent.id, revision, { setCurrent: true, ...(ifCurrent !== undefined ? { ifCurrent } : {}) }).catch((error) => storeError(error));
     return this.get(agent.id)!;
   }
 

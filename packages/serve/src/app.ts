@@ -95,7 +95,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     import("@parcha/pi-durable-agent/workflow"),
   ]);
   const nodes = nodeRunner({
-    agent: (node) => ({ model: byTier.get((node.tier as Tier | undefined) ?? "default") ?? model, thinkingLevel, extensions: [CodingTools], tools: (node.tools ?? []).flatMap((name) => (NODE_TOOLS as readonly string[]).includes(name) && fileTools.has(name) ? [fileTools.get(name)!] : []) }) as never,
+    agent: (node) => ({ model: byTier.get((node.tier as Tier | undefined) ?? "default")!, thinkingLevel, extensions: [CodingTools], tools: (node.tools ?? []).flatMap((name) => (NODE_TOOLS as readonly string[]).includes(name) && fileTools.has(name) ? [fileTools.get(name)!] : []) }) as never,
   });
   const workflows = createWorkflowExtension({
     options: () => ({ files: workspaceFiles(where.work) }),

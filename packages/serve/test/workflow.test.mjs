@@ -1,6 +1,7 @@
 // A workflow revision's run: the workflow runs in the run's process on the DSL's durable runner, its model nodes on the
 // run's model, and the run is read from its store once its process has exited.
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
@@ -103,4 +104,32 @@ test("an escalated workflow run is failed on /v2 with error escalated and its su
   const read = client(again.baseUrl, again.token);
   assert.deepEqual((await read("GET", "/runs")).body.runs.map((r) => [r.status, r.error]), [["failed", escalated]], "read from the store's row");
   assert.deepEqual((await read("GET", `/runs/${started.run_id}`)).body.error, escalated);
+});
+
+test("a run loads only the tiers its revision uses: a fast-only workflow runs on AGENT_MODEL_FAST with no AGENT_MODEL", async (t) => {
+  const { runModels } = await import("../dist/model.js");
+  const gateway = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_FAST: "m-fast" };
+  const fast = await runModels(gateway, undefined, ["fast"]);
+  assert.deepEqual([...fast.byTier], [["fast", { provider: "agent-model", modelId: "m-fast" }]]);
+  await assert.rejects(runModels(gateway, undefined, ["default"]), /no default/);
+  const saved = Object.fromEntries(["AGENT_MODEL_BASE_URL", "AGENT_MODEL_FAST", "AGENT_MODEL"].map((name) => [name, process.env[name]]));
+  t.after(() => { for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : (process.env[name] = value); });
+  delete process.env.AGENT_MODEL;
+  Object.assign(process.env, gateway);
+  const { api, data } = await serve(t, { faux: undefined });
+  const flow = answerFlow();
+  flow.root.steps[0].tier = "fast";
+  assert.equal((await api("POST", "/agents", flowAgent("fast-only", flow))).status, 201);
+  const started = await api("POST", "/agents/fast-only/runs", { input: { question: "What is six times seven?" } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  assert.equal((await api("POST", "/agents", flowAgent("default-too"))).status, 201);
+  assert.match((await api("POST", "/agents/default-too/runs", { input: { question: "x" } })).body.error.message, /no default/, "a default-tier node still needs AGENT_MODEL");
+  // The run's process loaded its app (no default asked for) and opened the run.
+  const log = join(data, "runs", started.body.run_id, "process.log");
+  for (let i = 0; !(await readFile(log, "utf8").catch(() => "")).includes('"event":"running"'); i++) {
+    assert.ok(i < 200, `the run's process opened the run: ${await readFile(log, "utf8").catch(() => "")}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await api("POST", `/runs/${started.body.run_id}/cancel`);
+  await follow(api, started.body.run_id, ["cancelled", "failed"]);
 });
