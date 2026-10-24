@@ -765,11 +765,11 @@
     );
   }
 
-  function revisionBlock(r) {
+  function revisionBlock(r, agent) {
     return el(
       "article",
       { class: "revision" + (r.current ? " current" : "") },
-      el("div", { class: "rev-head" }, el("b", { class: "rev-id", title: r.id }, short(r.id)), kindPill(r.kind), r.current ? pill("current") : null, r.note ? el("b", { class: "rev-note" }, r.note) : null),
+      el("div", { class: "rev-head" }, el("b", { class: "rev-id", title: r.id }, short(r.id)), kindPill(r.kind), r.current ? pill("current") : null, r.note ? el("b", { class: "rev-note" }, r.note) : null, host && host.revision ? host.revision(agent, r) : null),
       el("p", { class: "facts" }, el("span", null, "created " + when(r.createdAt)), el("span", null, r.parent ? "from " + short(r.parent) : "the first revision")),
       r.kind === "workflow" ? workflowBody(r) : agenticBody(r)
     );
@@ -834,10 +834,11 @@
             kicker("Agent"),
             el("h1", null, agent.name),
             el("p", { class: "facts" }, kindPill(current && current.kind), el("span", { class: "id" }, agent.id), el("span", null, "created " + when(agent.createdAt)), agent.current ? el("span", null, "current " + short(agent.current)) : null),
-            agent.description ? el("p", { class: "lede" }, agent.description) : null
+            agent.description ? el("p", { class: "lede" }, agent.description) : null,
+            host && host.agent ? host.agent(agent, revisions) : null
           ),
           runsCard(agentId, revisions, both[1], filter),
-          el("section", { class: "card revs" }, kicker("Revisions"), el("h2", null, plural(revisions.length, "revision") + (revisions.length > 1 ? ", newest first" : "")), revisions.length ? revisions.map(revisionBlock) : el("p", { class: "none" }, "No revisions yet.")),
+          el("section", { class: "card revs" }, kicker("Revisions"), el("h2", null, plural(revisions.length, "revision") + (revisions.length > 1 ? ", newest first" : "")), revisions.length ? revisions.map(function (r) { return revisionBlock(r, agent); }) : el("p", { class: "none" }, "No revisions yet.")),
         ]);
       },
       function (error) {
@@ -920,6 +921,7 @@
   }
 
   function storeRoute(hash, token) {
+    if (host && host.route && host.route(hash, token)) return;
     var m = /^#\/runs\/([^/?#]+)$/.exec(hash);
     if (m) return storeRunPage(decoded(m[1]), token);
     m = /^#\/agents\/([^/?#]+)(?:\?revision=([^&#]*))?$/.exec(hash);
@@ -997,6 +999,19 @@
       }
     });
   }
+
+  // ---- a host's script ------------------------------------------------------------------------------------------------
+  // A server of another package may serve the store's page with a script of its own, loaded before this one, that sets
+  // window.agentStoreHost. Given this page's parts (`route` among them, which draws the address's view again) it answers
+  // { route(hash, token): true when it drew that view itself; agent(agent, revisions) and revision(agent, revision):
+  // what it adds to the agent card and to a revision's head }.
+  var host = STORE && typeof window.agentStoreHost === "function"
+    ? window.agentStoreHost({
+        el: el, show: show, crumb: crumb, get: get, failed: failed, later: later, live: function (token) { return token === view; },
+        kicker: kicker, pill: pill, kindPill: kindPill, when: when, ago: ago, took: took, usd: usd, cost: cost, clip: clip, short: short, plural: plural,
+        agentHref: agentHref, timeline: timeline, storeRunPage: storeRunPage, openCalls: openCalls, reopen: reopen, route: route,
+      }) || null
+    : null;
 
   window.addEventListener("hashchange", route);
   route();
