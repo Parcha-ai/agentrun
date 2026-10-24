@@ -141,8 +141,27 @@ test("the bin prints the page's link once, with the token, beside the base URL a
     if (/\?token=.*\n/.test(out)) break;
   }
   const lines = out.trim().split("\n");
-  const key = lines.find((line) => line.startsWith("AGENTRUN_API_KEY=")).slice("AGENTRUN_API_KEY=".length);
+  const prefix = "AGENTRUN_API_KEY=";
+  const key = lines.find((line) => line.startsWith(prefix)).slice(prefix.length);
   const links = lines.filter((line) => line.includes("?token="));
   assert.equal(links.length, 1);
   assert.match(links[0], new RegExp(`^Open http://127\\.0\\.0\\.1:\\d+/\\?token=${key}$`));
+});
+
+test("with AGENTRUN_TOKEN and --listen 0.0.0.0, the bin requires that token, prints a loopback link and never prints the token", { timeout: 20_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const token = `env_${"0123456789abcdef".repeat(3)}`;
+  const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--listen", "0.0.0.0", "--port", "0"], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, AGENTRUN_TOKEN: token } });
+  t.after(() => child.kill("SIGTERM"));
+  let out = "";
+  for await (const chunk of child.stdout) {
+    out += chunk;
+    if (/\?token=.*\n/.test(out)) break;
+  }
+  assert.equal(out.includes(token), false, "the token from the environment is never printed");
+  const [, port] = /^Open http:\/\/127\.0\.0\.1:(\d+)\/\?token=\$AGENTRUN_TOKEN$/m.exec(out) ?? [];
+  assert.ok(port, out);
+  assert.match(out, /listening on 0\.0\.0\.0/);
+  assert.equal((await call(Number(port), { path: "/v2/agents", headers: { host: "agents.example.com", authorization: `Bearer ${token}` } })).status, 200);
+  assert.equal((await call(Number(port), { path: "/v2/agents", headers: { host: "agents.example.com" } })).status, 401);
 });

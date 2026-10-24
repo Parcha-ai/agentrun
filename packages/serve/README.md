@@ -1,6 +1,6 @@
 # @parcha/agentrun-serve
 
-The Agentrun v2 API on your own machine. `agentrun-serve` serves the same `/v2` contract (`agentrun.v2/0`) as the hosted
+AgentRun Server: the Agentrun v2 API on your own machine, or in one container. `agentrun-serve` serves the same `/v2` contract (`agentrun.v2/0`) as the hosted
 API, over one agent store of [`@parcha/pi-durable-agent`](../pi-durable-agent/README.md) in a directory: many agents,
 each with revisions written once (an agentic prompt, or an agentrun-dsl workflow), and every run pinned to the revision
 it ran. Each run is a [`@parcha/pi-durable-disk`](../pi-durable-disk/README.md) run directory beside the store. An SDK
@@ -49,10 +49,33 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 
 | Flag | Default | What |
 | --- | --- | --- |
-| `--data DIR` | `~/.local/share/agentrun/agents` | The agent store (`DIR/store.sqlite`) and its runs (`DIR/runs/<id>/`). The token is `DIR/.token`, mode 0600, made once and kept. |
-| `--port N` | `7340` | The port on 127.0.0.1. `0` is any free port. |
+| `--data DIR` | `~/.local/share/agentrun/agents` | The agent store (`DIR/store.sqlite`) and its runs (`DIR/runs/<id>/`). The token is `DIR/.token`, mode 0600, made once and kept, unless `AGENTRUN_TOKEN` gives it. |
+| `--listen ADDR` | `127.0.0.1` | The address to listen on. On any other, every `Host` name is served and the token is the only lock: put TLS in front of it. |
+| `--port N` | `7340` | The port. `0` is any free port. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
+
+`AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
+place: a token from the environment stays out of the logs.
+
+## In a container
+
+`packages/serve/docker/Dockerfile` builds one image of the server and the open packages it runs. Everything it keeps is
+under `/data`: the agent store, the runs and the token. From a checkout:
+
+```sh
+export AGENT_MODEL=anthropic/<model-id> ANTHROPIC_API_KEY=...
+docker compose -f packages/serve/docker/compose.yaml up --build -d
+docker compose -f packages/serve/docker/compose.yaml logs agentrun
+```
+
+The log ends with the `Open` line. Compose publishes the port on this machine's loopback only (`127.0.0.1:7340`), and
+the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, and
+every route but `GET /v2/capabilities` still needs the token.
+
+`render.yaml` at the repository's root is a Render blueprint for the same image: one web service with a 1 GB disk at
+`/data`. Render generates `AGENTRUN_TOKEN`; read it in the service's Environment tab and open
+`https://<service>.onrender.com/?token=<the token>`. Set `AGENT_MODEL` and the provider's key there too.
 
 ## Models
 
@@ -187,9 +210,10 @@ million tokens) to price the faux usage; unpriced, every run's estimate is $0. T
 
 ## Safety
 
-- It binds 127.0.0.1 only, and refuses a request whose `Host` is not a loopback name (DNS rebinding). It sends no CORS
-  headers, so a page on another origin cannot read an answer.
-- Every route but `GET /capabilities` needs `Authorization: Bearer <DIR/.token>`, compared in constant time, or the
+- It binds 127.0.0.1 by default, and there refuses a request whose `Host` is not a loopback name (DNS rebinding). On
+  another address (`--listen`, the container's `0.0.0.0`) it serves every `Host` name, and the token is its only lock.
+  It sends no CORS headers, so a page on another origin cannot read an answer.
+- Every route but `GET /capabilities` needs `Authorization: Bearer <the token>`, compared in constant time, or the
   page's cookie under the rules of [the page](#the-page). The page's own files (its HTML, scripts and styles) hold no
   data; everything it shows comes through those routes. It loads nothing from the network, and its CSP allows this
   origin only.

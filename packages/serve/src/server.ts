@@ -38,7 +38,11 @@ const INLINE = new Set(["text/plain; charset=utf-8", "text/markdown; charset=utf
 export type ServeOptions = {
   /** The data directory: the agent store (`store.sqlite`) and its runs (`runs/<id>/`). */
   data: string;
+  /** The address to listen on (default 127.0.0.1). On any other address every `Host` name is served and the token is
+   *  the only lock: put TLS in front of it. */
   host?: string;
+  /** The token to require in place of the one `DIR/.token` keeps: 32 characters or more, no whitespace. */
+  token?: string;
   /** Default 7340; 0 is any free port. */
   port?: number;
   /** A faux model module (no key, no network): see the README. */
@@ -51,7 +55,8 @@ export type ServeOptions = {
   carryBackRetry?: CarryBackRetry;
 };
 
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string; close(): Promise<void> };
+/** `tokenFile` is null when `options.token` gave the token. */
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; close(): Promise<void> };
 
 const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
 
@@ -167,8 +172,9 @@ function integerParam(value: string | null, name: string, max: number): number {
 export async function startServe(options: ServeOptions): Promise<Serve> {
   const data = resolve(options.data);
   await mkdir(data, { recursive: true, mode: 0o700 });
-  const tokenFile = join(data, TOKEN_FILE);
-  const token = await tokenIn(tokenFile);
+  if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
+  const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
+  const token = options.token ?? (await tokenIn(tokenFile!));
   const doorTokenFile = join(data, DOOR_TOKEN_FILE);
   const doorToken = await tokenIn(doorTokenFile);
   const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}) };
@@ -193,7 +199,6 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         await rename(`${keptFile}.partial`, keptFile);
       }));
   const host = options.host ?? "127.0.0.1";
-  if (!isLoopback(host)) throw new Error(`agentrun-serve binds loopback only; ${host} is not loopback`);
   // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
 
@@ -603,7 +608,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     } catch {
       return fail(new ApiError("bad_request", "the request target is not a URL"));
     }
-    // A Host that is not a loopback name is a page that rebound a name of its own to this address.
+    // On loopback, a Host that is not a loopback name is a page that rebound a name of its own to this address.
     if (names && !names.has(String(req.headers.host ?? "").toLowerCase())) return fail(new ApiError("forbidden", "unexpected Host header"));
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
@@ -614,8 +619,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const port = options.port ?? DEFAULT_PORT;
   await new Promise<void>((done, reject) => (server.once("error", reject), server.listen(port, host, () => done())));
   const address = server.address() as AddressInfo;
-  names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...(options.allowHosts ?? [])].map((h) => `${h.toLowerCase()}:${address.port}`));
-  const url = `http://${host.includes(":") ? `[${host}]` : host}:${address.port}`;
+  if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...(options.allowHosts ?? [])].map((h) => `${h.toLowerCase()}:${address.port}`));
+  // An address of every interface is reached on this machine at its loopback one.
+  const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+  const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
   return {
     url,
     baseUrl: `${url}/v2`,

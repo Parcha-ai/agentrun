@@ -85,6 +85,33 @@ test("a Host that is not a loopback name is refused, and no answer carries a COR
   assert.equal(preflight.headers.get("access-control-allow-origin"), null);
 });
 
+test("on an address that is not loopback every Host name is served, and every route but capabilities still needs the token", async (t) => {
+  const { port, token, url } = await serve(t, { host: "0.0.0.0" });
+  assert.equal(url, `http://127.0.0.1:${port}`, "an address of every interface is shown as loopback");
+  const { request } = await import("node:http");
+  const get = (path, headers = {}) =>
+    new Promise((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, path, headers: { host: "agents.example.com", ...headers } }, (res) => (res.resume(), resolve(res.statusCode)));
+      req.once("error", reject).end();
+    });
+  assert.equal(await get("/v2/capabilities"), 200);
+  assert.equal(await get("/v2/agents"), 401);
+  assert.equal(await get("/v2/agents", { authorization: `Bearer ${token}` }), 200);
+});
+
+test("a token given in place of the data directory's is the one required, and no .token is written; a short one is refused", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const token = `given_${createHash("sha256").update("a token").digest("hex")}`;
+  const given = await serve(t, { data, token });
+  assert.equal(given.token, token);
+  assert.equal(given.tokenFile, null);
+  assert.equal((await given.api("GET", "/agents")).status, 200);
+  assert.equal((await client(given.baseUrl, "wrong")("GET", "/agents")).status, 401);
+  await assert.rejects(stat(join(data, ".token")), { code: "ENOENT" });
+  await assert.rejects(startServe({ data: join(data, "other"), port: 0, token: "too short" }), /32 characters or more/);
+  await assert.rejects(startServe({ data: join(data, "other"), port: 0, token: `${token} spaced` }), /no whitespace/);
+});
+
 test("an agent is created from a definition and skills, read back with its ETag, and listed newest first, page by page", async (t) => {
   const { api, data } = await serve(t);
   const created = await api("POST", "/agents", { ...agent("reporter", { description: "Writes reports.", skills: ["cite"], model: "faux/faux-1", thinking: "high" }), skills: { "cite/SKILL.md": "# Cite\n" } });
