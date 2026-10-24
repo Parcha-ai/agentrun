@@ -62,7 +62,7 @@ If publication stops partway, resume from the same tag and archive bytes. The wo
 
 If the visibility wait expires, check the exact version in the registry before retrying; it may already be published. Resume only after confirming its bytes match the verified archive. Do not change the version or start a separate publication to work around the delay.
 
-Once publication passes, the workflow's `image` job builds AgentRun Server's container from the same tag (`packages/serve/docker/Dockerfile`, for linux/amd64 and linux/arm64) and pushes `ghcr.io/parcha-ai/agentrun-server:<tag>` and `:beta`, with an SBOM and a build provenance attestation. GitHub's registry creates a new package private: after the first push, a maintainer makes it public once, in the package's settings.
+Once publication passes, the workflow's `image` job builds AgentRun Server's container from the same tag (`packages/serve/docker/Dockerfile`, for linux/amd64 and linux/arm64) and pushes `ghcr.io/parcha-ai/agentrun-server:<tag>` and `:beta`, with an SBOM and max provenance, which buildx stores with the image. GitHub's registry creates a new package private: after the first push, a maintainer makes it public once, in the package's settings.
 
 The release is complete only when every published archive matches the release plan and the fresh registry installation passes. Confirm the `beta-release-<run ID>` artifact contains the release plan, archives, and `published-all.json` with `status: passed` and `cleanRegistryInstall: true`.
 
