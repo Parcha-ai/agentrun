@@ -27,9 +27,11 @@ It prints where it listens and the token:
 agentrun-serve on http://127.0.0.1:7340/v2 (agent store in ~/.local/share/agentrun/agents)
 AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2
 AGENTRUN_API_KEY=ar_local_...
+Open http://127.0.0.1:7340/?token=ar_local_...
 ```
 
-Export those two lines and make an agent, start a run, and read its timeline until a page says `final`:
+The last line opens [the page](#the-page). For a client, export the two lines before it, then make an agent, start a
+run, and read its timeline until a page says `final`:
 
 ```sh
 H="authorization: Bearer $AGENTRUN_API_KEY"
@@ -97,6 +99,31 @@ Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` an
 feature, and capabilities declare each one false. No run waits out `input_wait_s` here (`null`), and runs carry no
 browser sign-ins (`sign_ins: false`).
 
+## The page
+
+Open the link the server prints, once, in a browser on this machine. The page at `/` is
+[`@parcha/pi-durable-agent`](../pi-durable-agent/README.md#looking-at-a-store)'s store page over the agent store in the
+data directory, with this server's own views beside it:
+
+- **Agents**: each agent with its current revision's kind and its runs; an agent's revisions, newest first, an agentic
+  one's prompt diffed against its parent's and a workflow's graph; its runs, filtered by revision.
+- **All runs**: every run of every agent, newest first, with its agent, revision, kind, state, cost and start, filtered by
+  agent and by state. A row opens the run.
+- **New agent** and **Edit**: a name, a description, a prompt or a workflow's JSON, a model (`provider/model-id`, or
+  none for the server's own) and the tools capabilities list. Creating sends `POST /v2/agents`; an edit starts from the
+  current definition and sends `PUT /v2/agents/{id}/definition`, which commits a revision and makes it current.
+  **Make current** on an older revision sends `POST /v2/agents/{id}/current`.
+- **Start a run**: an input, on the current revision or another one, sent to `POST /v2/agents/{id}/runs`. A run the page
+  opens while it is not final follows `GET /v2/runs/{id}/timeline` with a long poll; while it waits on `ask_person`, an
+  answer box sends `POST /v2/runs/{id}/messages`. Once it is final, the page reads it from the store.
+
+The link sets a cookie (`HttpOnly`, `SameSite=Strict`, `Path=/`, and `Secure` when `X-Forwarded-Proto` says https)
+and sends the browser to the same address without the token. The cookie's value is derived from the token, never the
+token itself, and it lasts until the browser closes. Without it, `/` is a page that says to open the link. The page's
+data (`/api/*` and `/v2`) takes the cookie in place of `Authorization: Bearer`: for a `GET`, and for any other method
+only when the request's `Origin` is the page's own origin and its body is `application/json`. A request that sends an
+`Authorization` header is checked on that header alone.
+
 ## A run's life
 
 1. `POST /agents/{id}/runs` starts the run in the store (`startRun`, which pins the revision and seeds
@@ -158,7 +185,10 @@ million tokens) to price the faux usage; unpriced, every run's estimate is $0. T
 
 - It binds 127.0.0.1 only, and refuses a request whose `Host` is not a loopback name (DNS rebinding). It sends no CORS
   headers, so a page on another origin cannot read an answer.
-- Every route but `GET /capabilities` needs `Authorization: Bearer <DIR/.token>`, compared in constant time.
+- Every route but `GET /capabilities` needs `Authorization: Bearer <DIR/.token>`, compared in constant time, or the
+  page's cookie under the rules of [the page](#the-page). The page's own files (its HTML, scripts and styles) hold no
+  data; everything it shows comes through those routes. It loads nothing from the network, and its CSP allows this
+  origin only.
 - Each run's door listens on loopback and takes only the server's door token.
 - Files are served from `work/` only. A path with an empty, `.` or `..` segment, a backslash or a NUL is
   `400 invalid_file_path`; a segment that starts with `.` (the run's skills under `.agents/`) is

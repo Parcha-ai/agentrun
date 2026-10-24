@@ -1,0 +1,6 @@
+---
+packages: @parcha/pi-durable-agent, @parcha/agentrun-serve
+kind: feature
+---
+`agentrun-serve` serves a page at `/` for the person who holds its token: the agent store's page from `@parcha/pi-durable-agent` (agents, revisions with the prompt diff and the workflow graph, runs, a run's timeline) plus every run across agents, forms that create an agent, commit a revision, make a revision current and start a run through `/v2`, and a live run followed until it is final, with an answer box while it waits on `ask_person`. The server prints one more line, `Open` and the page's address with `?token=` and its token; opening it sets an `HttpOnly`, `SameSite=Strict` cookie that stands in for the Bearer header (a write only from the page's own origin with a JSON body).
+`@parcha/pi-durable-agent/serve` exports what another server needs to serve the store's page: `storeApi(store)`, the read-only JSON behind its `/api/*` paths, and `STORE_PAGE_FILES`, its files. The page takes a script loaded before `page.js` that sets `window.agentStoreHost`; `pi-durable-agent serve` loads none and is unchanged.

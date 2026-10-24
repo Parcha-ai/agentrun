@@ -46,6 +46,7 @@ const serve = await startServe({ data, port, ...(values.faux ? { faux: values.fa
 console.log(`agentrun-serve on ${serve.baseUrl} (agent store in ${data})`);
 console.log(`AGENTRUN_BASE_URL=${serve.baseUrl}`);
 console.log(`AGENTRUN_API_KEY=${serve.token}`);
+console.log(`Open ${serve.url}/?token=${serve.token}`);
 const stop = () => void serve.close().then(() => process.exit(0));
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
