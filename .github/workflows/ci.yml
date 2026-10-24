@@ -75,29 +75,21 @@ jobs:
           if-no-files-found: ignore
 
   verify:
-    # The required checks keep their names: verify (<node>) passes when every test shard on that Node passed. It reads the
-    # shards' conclusions itself so a red 24.21 shard does not fail verify (22.x), as it did not when verify was one job.
+    # The required checks keep their names: verify (<node>) passes when every test shard passed. It reads `needs`, not
+    # the jobs API, so an API error cannot fail a required check. A red 24.21 shard now fails verify (22.x) too.
     name: verify (${{ matrix.node }})
     needs: test
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      actions: read
     strategy:
-      fail-fast: false
       matrix:
         node: ['22.19.0', '22.23.2', '24.21.0']
     steps:
-      - name: Every shard on this Node passed
+      - name: Every test shard passed
         env:
-          GH_TOKEN: ${{ github.token }}
-          NODE_LEG: ${{ matrix.node }}
-        run: |
-          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" \
-            --jq ".jobs[] | select(.name | startswith(\"test ($NODE_LEG, \")) | \"\(.conclusion) \(.name)\"" | tee "$RUNNER_TEMP/shards"
-          test "$(wc -l < "$RUNNER_TEMP/shards")" -eq 7
-          if grep -v '^success ' "$RUNNER_TEMP/shards"; then exit 1; fi
+          RESULT: ${{ needs.test.result }}
+        run: test "$RESULT" = success
 
   pi-durable-disk-pi-floor:
     # @parcha/pi-durable-disk's peers accept the pi family from 1.0.4, while the workspace develops against 1.1.0. Its
