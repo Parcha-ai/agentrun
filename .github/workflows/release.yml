@@ -26,6 +26,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      actions: read
     env:
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
@@ -46,8 +47,28 @@ jobs:
           node-version: '22.23.2'
       - name: Install OIDC-capable npm
         run: npm install --global npm@11.21.0 --ignore-scripts
+      - name: The tagged commit passed CI on main
+        # The merge queue ran every suite on this tree and ci.yml ran again on the commit when it reached main. The release
+        # trusts that run instead of running the suites a third time: a run on this commit that is missing, still running or not
+        # green stops the release here. The checks below build the archives the release publishes, and still run.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if green="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&branch=main&per_page=20" --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')"; then break; fi
+            [ "$attempt" -lt 3 ] || { echo 'could not read the CI runs of this commit' >&2; exit 1; }
+            sleep 15
+          done
+          if [ "$green" -lt 1 ]; then
+            echo "::error::ci.yml has no successful push run on main for $GITHUB_SHA; wait for it to finish green, then dispatch again"
+            exit 1
+          fi
+          echo "ci.yml passed on main for $GITHUB_SHA"
       - run: npm ci --ignore-scripts
-      - run: npm run check
+      - run: npm run build
+      - run: node scripts/generate-author-contract.mjs --check
       - run: node scripts/check-typescript-floor.mjs
       - run: node scripts/generate-schema.mjs --check
       - run: npm run export:source
@@ -65,22 +86,39 @@ jobs:
           # does not apply to a command substitution in a for-list, so a failed import there would run the loop zero times and pass.
           packages="$(node --input-type=module -e "import { releasePackages } from './scripts/release-preflight.mjs'; console.log(releasePackages.join(' '))")"
           [ -n "$packages" ] || { echo 'empty publish set' >&2; exit 1; }
-          for package in $packages; do
-            if node scripts/verify-published.mjs --package "$package" --allow-absent; then
-              echo "Verified existing $package@$version; resuming without republishing."
-              continue
-            else
-              status=$?
-              if [ "$status" -ne 3 ]; then exit "$status"; fi
-            fi
-            # Exit 3 means an authoritative registry 404. Unknown failures and
-            # mismatched published bytes stop the release; they never publish.
-            archive="$(node -p 'JSON.parse(require("node:fs").readFileSync(".release/release-plan.json", "utf8")).packages.find(entry => entry.directory === process.argv[1]).filename' "$package")"
-            # Published as latest: npm's package page shows the README of the publish that carried the latest tag, and moving
-            # latest later with dist-tag carries no README. A maintainer moves beta to the same version afterwards.
-            npm publish ".release/packages/$archive" --ignore-scripts --access public --tag latest --provenance --registry=https://registry.npmjs.org/
-            node scripts/verify-published.mjs --package "$package"
-          done
+          # The publish set in dependency layers (release-preflight.mjs's `releaseLayers`), one layer per line. Each layer is published,
+          # then every package of it waits for the registry and is verified at once; a failure there stops the release before the
+          # next layer, so no package is published before the packages it depends on are verified.
+          layers="$(node --input-type=module -e "import { releaseLayers } from './scripts/release-preflight.mjs'; for (const layer of releaseLayers(process.argv[1].split(' '))) console.log(layer.join(' '))" "$packages")"
+          [ -n "$layers" ] || { echo 'empty layer set' >&2; exit 1; }
+          while read -r layer; do
+            published=()
+            for package in $layer; do
+              if node scripts/verify-published.mjs --package "$package" --allow-absent; then
+                echo "Verified existing $package@$version; resuming without republishing."
+                continue
+              else
+                status=$?
+                if [ "$status" -ne 3 ]; then exit "$status"; fi
+              fi
+              # Exit 3 means an authoritative registry 404. Unknown failures and
+              # mismatched published bytes stop the release; they never publish.
+              archive="$(node -p 'JSON.parse(require("node:fs").readFileSync(".release/release-plan.json", "utf8")).packages.find(entry => entry.directory === process.argv[1]).filename' "$package")"
+              # Published as latest: npm's package page shows the README of the publish that carried the latest tag, and moving
+              # latest later with dist-tag carries no README. A maintainer moves beta to the same version afterwards.
+              npm publish ".release/packages/$archive" --ignore-scripts --access public --tag latest --provenance --registry=https://registry.npmjs.org/
+              published+=("$package")
+            done
+            # Each verification writes its own receipt (.release/published-<package>.json), so they run side by side.
+            pids=()
+            for package in "${published[@]}"; do
+              node scripts/verify-published.mjs --package "$package" &
+              pids+=("$!")
+            done
+            failed=0
+            for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
+            [ "$failed" -eq 0 ] || { echo "a package of the layer '$layer' failed verification; later layers were not published" >&2; exit 1; }
+          done <<< "$layers"
       - name: Verify a fresh installation from the registry
         run: node scripts/verify-published.mjs --package all
       - name: Retain exact release archives and evidence

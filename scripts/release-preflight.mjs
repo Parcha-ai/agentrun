@@ -28,6 +28,26 @@ const isHeld = directory => JSON.parse(readFileSync(join(here, '..', 'packages',
 export const heldPackages = listedPackages.filter(isHeld);
 /** What a release publishes, in order: the listed packages that are not held. */
 export const releasePackages = listedPackages.filter(directory => !heldPackages.includes(directory));
+/**
+ * `directories` (a publish set) in dependency layers, each in the set's order: a package sits one layer after the deepest package of the
+ * set it names in its dependencies, peers or optional dependencies. The release publishes a layer, then waits for the registry on all
+ * of it at once, so no package is published before the packages it depends on are verified.
+ */
+export function releaseLayers(directories, root = join(here, '..')) {
+  const manifests = Object.fromEntries(directories.map(directory => [directory, JSON.parse(readFileSync(join(root, 'packages', directory, 'package.json'), 'utf8'))]));
+  const byName = Object.fromEntries(directories.map(directory => [manifests[directory].name, directory]));
+  const depth = {};
+  const visit = (directory, path) => {
+    if (directory in depth) return depth[directory];
+    assert.ok(!path.includes(directory), `release packages depend on each other in a cycle: ${[...path, directory].join(' -> ')}`);
+    const { dependencies, peerDependencies, optionalDependencies } = manifests[directory];
+    const inner = Object.keys({ ...dependencies, ...peerDependencies, ...optionalDependencies }).map(name => byName[name]).filter(Boolean);
+    return (depth[directory] = inner.length ? 1 + Math.max(...inner.map(next => visit(next, [...path, directory]))) : 0);
+  };
+  const layers = [];
+  for (const directory of directories) (layers[visit(directory, [])] ??= []).push(directory);
+  return layers;
+}
 const repository = 'git+https://github.com/Parcha-ai/agentrun.git';
 const digest = (bytes, algorithm = 'sha256') => createHash(algorithm).update(bytes).digest(algorithm === 'sha512' ? 'base64' : 'hex');
 const json = async path => JSON.parse(await readFile(path, 'utf8'));
