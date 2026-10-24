@@ -24,7 +24,7 @@ Applications using `@parcha/pi-browser` need Zod 4.6.6 or later for every instal
 }
 ```
 
-Merge these entries with the application's other dependencies and overrides, then reinstall with npm 11. `npm ls zod --all` must show only patched versions. npm applies overrides from the application root; a library's own override does not control its consumers. The workspace and packaged-consumer verification use the same Zod pin.
+Merge these entries with the application's other dependencies and overrides, then reinstall with npm 11. `npm ls zod --all` must show only patched versions. npm applies overrides from the application root; a library's own override does not control its consumers. The workspace's own install uses the same override. The package check's consumer does not: it audits what an application gets without one.
 
 ## Admit a workflow before running it
 
