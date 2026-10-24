@@ -233,7 +233,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | typebox | 1.3.7 | MIT | dsl, harness, jev, pi, pi-agent-learn, pi-durable-agent, serve | no | 1 |
 | undici-types | 5.26.5 | MIT | harness, pi-browser | no | 1 |
 | undici-types | 6.21.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| undici | 6.29.0 | MIT | harness, pi-browser | no | 1 |
+| undici | 6.29.1 | MIT | harness, pi-browser | no | 1 |
 | undici | 8.10.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | unpdf | 1.8.1 | MIT | harness, pi-vision | no | 1 |
 | uuid | 11.1.1 | MIT | harness, pi-durable-disk, serve | no | 1 |
