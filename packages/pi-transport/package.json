@@ -45,6 +45,12 @@
       "import": "./dist/home/index.js",
       "default": "./dist/home/index.js"
     },
+    "./launch": {
+      "source": "./src/launch/index.ts",
+      "types": "./dist/launch/index.d.ts",
+      "import": "./dist/launch/index.js",
+      "default": "./dist/launch/index.js"
+    },
     "./place": {
       "source": "./src/place/index.ts",
       "types": "./dist/place/index.d.ts",
