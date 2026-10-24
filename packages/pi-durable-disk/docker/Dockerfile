@@ -14,7 +14,7 @@
 # Pinned: the Node base by digest (a multi-arch index), the archil client 0.10.0 by sha256 per architecture, the
 # runtime dependencies by docker/runtime/package-lock.json. No secret is in any layer: the mount token reaches a
 # container only after `docker create`, as a file the entrypoint removes before the instance starts.
-FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
+FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
 
 ARG ARCHIL_VERSION=0.10.0-1792692895
 ARG ARCHIL_SHA256_AMD64=7d75f7b94d64952a939570dc79d0996c914696be176b45e9fed51a45c15ad0ba
