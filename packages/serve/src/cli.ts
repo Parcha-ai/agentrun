@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// agentrun-serve: the Agentrun v2 API on this machine, over the agent homes in a data directory.
+// agentrun-serve: the Agentrun v2 API on this machine, over the agent store in a data directory.
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -7,13 +7,15 @@ import { DEFAULT_PORT, startServe } from "./server.js";
 
 const USAGE = `usage: agentrun-serve [--data DIR] [--port N] [--faux MODULE] [--allow-host NAME ...]
 
-  --data DIR        the agent homes (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
+  --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --port N          the port on 127.0.0.1 (default ${DEFAULT_PORT}; 0 is any free port)
   --faux MODULE     answer every model request from MODULE's default export: no key, no network
   --allow-host NAME another Host name to accept (repeatable)
 
-Without --faux, a run's model is the OpenAI Responses endpoint in AGENT_MODEL_BASE_URL and AGENT_MODEL
-(AGENT_MODEL_API_KEY when it needs a key).`;
+Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
+to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
+keys from the environment, or, with AGENT_MODEL_BASE_URL, by that one OpenAI Responses gateway (AGENT_MODEL_API_KEY when
+it needs a key).`;
 
 let values;
 try {
@@ -41,7 +43,7 @@ if (!Number.isInteger(port) || port < 0 || port > 65_535) {
 }
 const data = values.data ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "agentrun", "agents");
 const serve = await startServe({ data, port, ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"] });
-console.log(`agentrun-serve on ${serve.baseUrl} (agent homes in ${data})`);
+console.log(`agentrun-serve on ${serve.baseUrl} (agent store in ${data})`);
 console.log(`AGENTRUN_BASE_URL=${serve.baseUrl}`);
 console.log(`AGENTRUN_API_KEY=${serve.token}`);
 const stop = () => void serve.close().then(() => process.exit(0));

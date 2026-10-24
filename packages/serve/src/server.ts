@@ -1,4 +1,5 @@
-// The /v2 API over agent homes in a data directory: the contract agentrun.v2/0, served on loopback with a bearer token.
+// The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
+// token.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { chmod, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
@@ -6,12 +7,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { agentView, Agents, etagOf, type AgentEntry } from "./agents.js";
-import { BOUND_TOOLS } from "./app.js";
+import type { Revision } from "@parcha/pi-durable-agent";
+import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agents.js";
+import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import { ApiError, invalid, unsupported } from "./errors.js";
-import { EFFORTS, FAUX_ENV, modelSource } from "./model.js";
-import { type CarryBackRetry, type Run, Runs } from "./runs.js";
-import { checkAgentCreate, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json } from "./validate.js";
+import { chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, nodeTiers, THINKING_LEVELS } from "./model.js";
+import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
+import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 
 export const CONTRACT = "agentrun.v2/0";
 export const DEFAULT_PORT = 7340;
@@ -33,7 +35,7 @@ const TYPES: Record<string, string> = {
 const INLINE = new Set(["text/plain; charset=utf-8", "text/markdown; charset=utf-8", "text/csv; charset=utf-8", "application/json", "application/x-ndjson", "image/png", "image/jpeg", "image/gif", "image/webp", "text/html; charset=utf-8"]);
 
 export type ServeOptions = {
-  /** The directory of agent homes. */
+  /** The data directory: the agent store (`store.sqlite`) and its runs (`runs/<id>/`). */
   data: string;
   host?: string;
   /** Default 7340; 0 is any free port. */
@@ -43,7 +45,7 @@ export type ServeOptions = {
   /** Extra `Host` names to accept besides the loopback ones. */
   allowHosts?: string[];
   drainTimeout?: string;
-  /** The waits between carry backs that found the home held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
+  /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
   carryBackRetry?: CarryBackRetry;
 };
@@ -66,8 +68,6 @@ async function tokenIn(file: string): Promise<string> {
 }
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
-const stable = (value: unknown): string =>
-  Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
 type Route = { method: string; pattern: RegExp; name: string; capability?: string };
 const ROUTES: Route[] = [
@@ -75,11 +75,14 @@ const ROUTES: Route[] = [
   { method: "POST", pattern: /^\/agents$/, name: "createAgent" },
   { method: "GET", pattern: /^\/agents$/, name: "listAgents" },
   { method: "GET", pattern: /^\/agents\/([^/]+)$/, name: "getAgent" },
-  { method: "PUT", pattern: /^\/agents\/([^/]+)\/definition$/, name: "updateDefinition", capability: "agents.update" },
+  { method: "PUT", pattern: /^\/agents\/([^/]+)\/definition$/, name: "updateDefinition" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/revisions$/, name: "listRevisions" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/current$/, name: "setCurrent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/runs$/, name: "createRun" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/runs$/, name: "listRuns" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/home$/, name: "exportHome", capability: "home.export" },
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/home$/, name: "importHome", capability: "home.import" },
+  { method: "GET", pattern: /^\/runs$/, name: "listAllRuns" },
   { method: "GET", pattern: /^\/runs\/([^/]+)$/, name: "getRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/timeline$/, name: "getTimeline" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/messages$/, name: "sendMessage" },
@@ -102,17 +105,24 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env) {
     contract: CONTRACT,
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     runtimes: ["pi-durable-disk"],
-    ...(models ? { models } : {}),
+    models,
+    /** The tools an agentic revision may name. */
+    tools: [...BOUND_TOOLS],
+    /** What a workflow revision's run gets: each model node runs on the model of its tier (`models.fast`,
+     *  `models.default`, `models.strong`) with the file tools it names; a node that names no thinking level thinks at
+     *  the run's effort, or medium. */
+    workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS] },
     features: {
-      agents: { create: true, list: true, update: false },
+      agents: { create: true, list: true, update: true, revisions: true },
       home: { export: false, import: false, check: false },
-      runs: { stop: true, cancel: true, kill: false },
+      runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"] },
       messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false },
-      timeline: { long_poll: true, sse: true, live_rows: true },
+      timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: false, read: true, range: false, during_run: true },
       quotes: false,
       usage: { basis: "estimate", meters: ["tokens"] },
       efforts: [...EFFORTS],
+      thinking: [...THINKING_LEVELS],
       browser: "none",
       sign_ins: false,
       vault: false,
@@ -183,8 +193,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       }));
   const host = options.host ?? "127.0.0.1";
   if (!isLoopback(host)) throw new Error(`agentrun-serve binds loopback only; ${host} is not loopback`);
-  // Runs an earlier server left: supervised again, or carried back when they already ended.
-  void agents.list().then((entries) => runs.recover(entries)).catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
+  // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
+  void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
@@ -209,8 +219,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     return value;
   }
 
-  async function needAgent(id: string): Promise<AgentEntry> {
-    const entry = ID.test(id) ? await agents.get(id) : null;
+  function needAgent(id: string): AgentEntry {
+    const entry = ID.test(id) ? agents.get(id) : null;
     if (!entry) throw new ApiError("not_found", `no agent ${id}`);
     return entry;
   }
@@ -252,43 +262,83 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
   // ---- runs -----------------------------------------------------------------------------------------------------------
 
-  /** What keeps the agent from running here, checked before anything starts. */
-  function runnable(entry: AgentEntry): void {
-    const { definition, skills } = entry.state;
-    const unbound = definition.tools.filter((name) => !(BOUND_TOOLS as readonly string[]).includes(name));
-    const why = !caps.models
-      ? "No model is bound: start agentrun-serve with --faux MODULE, or set AGENT_MODEL_BASE_URL and AGENT_MODEL."
-      : definition.workflow
-        ? "agentrun-serve runs agents, not workflows: this definition has a workflow."
-        : unbound.length
-          ? `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; this definition also names ${unbound.join(", ")}.`
-          : definition.skills.filter((name) => !Object.hasOwn(skills, `${name}/SKILL.md`)).map((name) => `The definition names the skill ${name}, and the home has no ${name}/SKILL.md.`)[0];
-    if (why) throw new ApiError("agent_not_runnable", why, { details: { unbound } });
+  /** What keeps `revision` from running here, checked before anything starts: tools this host does not bind, workflow
+   *  adapters it does not give, and a model it cannot reach. */
+  async function runnable(revision: Revision): Promise<void> {
+    if (revision.kind === "agentic") {
+      const unbound = revision.body.tools.filter((name) => !(BOUND_TOOLS as readonly string[]).includes(name));
+      if (unbound.length) throw new ApiError("agent_not_runnable", `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; this revision also names ${unbound.join(", ")}.`, { details: { unbound } });
+      const chosen = await chooseModel(env, revision.body.model);
+      if ("why" in chosen) throw new ApiError("agent_not_runnable", chosen.why, { details: { unbound: [] } });
+      return;
+    }
+    const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
+    const { requires } = inspectWorkflow(revision.body.workflow);
+    const adapters = requires.adapters.filter((name) => !(WORKFLOW_ADAPTERS as readonly string[]).includes(name));
+    const unbound = requires.tools.filter((name) => !(NODE_TOOLS as readonly string[]).includes(name));
+    const why = adapters.length || requires.executableCode
+      ? `agentrun-serve runs a workflow's model nodes (agent, decide, extract, report); this workflow also needs ${[...adapters, ...(requires.executableCode ? ["code"] : [])].join(", ")}.`
+      : unbound.length
+        ? `A workflow's model nodes get the tools ${NODE_TOOLS.join(", ")} here; this workflow also names ${unbound.join(", ")}.`
+        : undefined;
+    if (why) throw new ApiError("agent_not_runnable", why, { details: { adapters, unbound, code: requires.executableCode } });
+    for (const tier of nodeTiers(revision.body.workflow)) {
+      const chosen = await chooseModel(env, undefined, tier);
+      if ("why" in chosen) throw new ApiError("agent_not_runnable", chosen.why, { details: { adapters: [], unbound: [], code: false, tier } });
+    }
+  }
+
+  /** A run's input: an agentic run's `{content: string}`, a workflow run's what its workflow's input schema takes. */
+  async function inputIssuesOf(revision: Revision, input: Json) {
+    if (revision.kind === "agentic") return inputIssues(input, DEFAULT_INPUT_SCHEMA as Json);
+    const { validateWorkflow } = await import("@parcha/agentrun-dsl");
+    const checked = validateWorkflow(revision.body.workflow, { executeCode: false, input });
+    return checked.ok ? [] : checked.issues.map((i) => ({ field: `input${i.path ? ` at ${i.path}` : ""}`, reason: "invalid", message: `the workflow does not take this input: ${i.code}${i.path ? ` at ${i.path}` : ""}` }));
   }
 
   async function createRun(req: IncomingMessage, agentId: string) {
-    const entry = await needAgent(agentId);
+    const entry = needAgent(agentId);
     const body = await bodyOf(req);
     return idempotent(req, `/agents/${agentId}/runs`, body, async () => {
-      const issues = Object.keys(body).filter((k) => !["input", "file_ids", "effort", "max_cost_usd", "quote_id"].includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
+      const issues = Object.keys(body).filter((k) => !["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id"].includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
       if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
+      if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
       if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
       if (body.max_cost_usd !== undefined && !(typeof body.max_cost_usd === "number" && body.max_cost_usd > 0)) issues.push({ field: "max_cost_usd", reason: "wrong_type", message: "max_cost_usd is a number above 0" });
       if (body.file_ids !== undefined && !Array.isArray(body.file_ids)) issues.push({ field: "file_ids", reason: "wrong_type", message: "file_ids is a list of file ids" });
       if (issues.length) throw invalid(issues);
       if (body.quote_id !== undefined) throw unsupported("quotes", "This server has no billing, so it takes no quotes.");
       if (Array.isArray(body.file_ids) && body.file_ids.length) throw unsupported("files.upload", "This server takes no uploads, so a run names no files.");
+      const pinned = typeof body.revision === "string" ? agents.revision(entry.agent.id, body.revision) : entry.revision && { revision: entry.revision, version: entry.version };
+      if (!pinned) throw invalid([{ field: "revision", reason: "not_an_option", message: typeof body.revision === "string" ? `${body.revision} is not a revision of the agent ${entry.agent.id}` : `the agent ${entry.agent.id} has no current revision` }]);
+      const { revision, version } = pinned;
+      if (revision.kind === "workflow" && body.max_cost_usd !== undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "A workflow run's spend is not capped here: its cost shows once it ends." }]);
       const input = body.input as Json;
-      const schema = entry.state.definition.input_schema ?? DEFAULT_INPUT_SCHEMA;
-      const wrong = inputIssues(input, schema as Json);
+      const wrong = await inputIssuesOf(revision, input);
       if (wrong.length) throw invalid(wrong);
-      runnable(entry);
-      const content = entry.state.definition.input_schema ? (typeof input.content === "string" && Object.keys(input).length === 1 ? input.content : JSON.stringify(input)) : (input.content as string);
+      await runnable(revision);
       const title = typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
-      const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : entry.state.definition.max_cost_usd;
-      const run = await runs.create(entry, { content, title, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}) });
+      const run = await runs.create(entry, revision, version, { input, title, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}) });
       return { status: 202, body: await runs.view(run), headers: { location: `/v2/runs/${run.id}` } };
     });
+  }
+
+  /** A page of runs from the store, newest first: `agent`, `revision` and `status` narrow it. */
+  async function runsPage(url: URL, filter: { agent?: string; revision?: string }) {
+    const limit = limitOf(url.searchParams.get("limit"));
+    const offset = cursorOf(url.searchParams.get("cursor"));
+    const status = url.searchParams.get("status");
+    if (status !== null && !(STATUSES as readonly string[]).includes(status)) throw new ApiError("bad_request", `status is one of ${STATUSES.join(", ")}`);
+    for (const [key, value] of Object.entries(filter)) if (value !== undefined && !ID.test(value)) throw new ApiError("bad_request", `${key} is an id`);
+    let rows = agents.store.listRuns(filter);
+    if (status !== null) {
+      const statuses = await Promise.all(rows.map((row) => runs.statusOfRow(row)));
+      rows = rows.filter((_, i) => statuses[i] === (status as Status));
+    }
+    const versions = new Map<string, number>();
+    for (const agent of new Set(rows.slice(offset, offset + limit).map((row) => row.agent))) for (const r of agents.revisions(agent)) versions.set(r.id, r.version);
+    const page = await Promise.all(rows.slice(offset, offset + limit).map((row) => runs.summaryOfRow(row, versions)));
+    return { runs: page, next_cursor: nextCursor(offset + limit, rows.length) };
   }
 
   async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, run: Run): Promise<void> {
@@ -388,16 +438,15 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (!["meter", "agent", "key", "day", "region"].includes(group)) throw new ApiError("bad_request", "group_by is meter, agent, key, day or region");
     const lines = new Map<string, number | null>();
     let total: number | null = 0;
-    for (const entry of await agents.list()) {
-      for (const run of await runs.of(entry)) {
-        const at = Date.parse(run.meta.created_at);
-        if (!(at >= from && at < to)) continue;
-        const usd = runs.cost(run).usd;
-        const key = group === "agent" ? run.agentId : group === "day" ? run.meta.created_at.slice(0, 10) : group === "meter" ? "tokens" : "local";
-        const before = lines.has(key) ? lines.get(key)! : 0;
-        lines.set(key, before === null || usd === null ? null : before + usd);
-        total = total === null || usd === null ? null : total + usd;
-      }
+    for (const row of agents.store.listRuns()) {
+      const at = Date.parse(row.startedAt);
+      if (!(at >= from && at < to)) continue;
+      const live = row.state === "running" ? await runs.get(row.id) : null;
+      const usd = live ? runs.cost(live).usd : (row.costUsd ?? null);
+      const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
+      const before = lines.has(key) ? lines.get(key)! : 0;
+      lines.set(key, before === null || usd === null ? null : before + usd);
+      total = total === null || usd === null ? null : total + usd;
     }
     const round = (v: number | null) => (v === null ? null : Math.round(v * 1e6) / 1e6);
     return {
@@ -418,7 +467,6 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
     if (found.capability) {
       const off: Record<string, string> = {
-        "agents.update": "This server does not update a definition yet.",
         "home.export": "This server does not export a home yet.",
         "home.import": "This server does not import a home yet.",
         "runs.kill": "This server does not kill a run's process yet.",
@@ -433,34 +481,59 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       case "createAgent": {
         const body = await bodyOf(req);
         const answer = await idempotent(req, "/agents", body, async () => {
-          const { definition, skills } = checkAgentCreate(body);
-          const entry = await agents.create(definition, skills);
-          return { status: 201, body: agentView(entry), headers: { location: `/v2/agents/${entry.home.identity.id}`, etag: etagOf(entry) } };
+          const entry = await agents.create(checkDefinitionBody(body));
+          return { status: 201, body: agentView(entry), headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "listAgents": {
         const limit = limitOf(url.searchParams.get("limit"));
         const offset = cursorOf(url.searchParams.get("cursor"));
-        const all = await agents.list();
+        const all = agents.list();
         return send(res, 200, { agents: all.slice(offset, offset + limit).map((entry) => agentView(entry)), next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "getAgent": {
-        const entry = await needAgent(id);
+        const entry = needAgent(id);
         return send(res, 200, agentView(entry), { etag: etagOf(entry) });
+      }
+      case "updateDefinition": {
+        const entry = needAgent(id);
+        const match = req.headers["if-match"];
+        if (match !== undefined && match !== etagOf(entry)) throw new ApiError("precondition_failed", `If-Match is ${match}, and the agent's current revision is ${etagOf(entry)}`);
+        const body = await bodyOf(req);
+        const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false }));
+        return send(res, 200, agentView(edited), { etag: etagOf(edited) });
+      }
+      case "listRevisions": {
+        const entry = needAgent(id);
+        const limit = limitOf(url.searchParams.get("limit"));
+        const offset = cursorOf(url.searchParams.get("cursor"));
+        const all = agents.revisions(id);
+        const page = all.slice(offset, offset + limit).map((row) => revisionView(entry.agent, row, agents.store.readRevision(row.id)));
+        return send(res, 200, { revisions: page, next_cursor: nextCursor(offset + limit, all.length) });
+      }
+      case "setCurrent": {
+        const entry = needAgent(id);
+        const body = await bodyOf(req);
+        const extra = Object.keys(body).filter((k) => k !== "revision");
+        if (extra.length) throw invalid(extra.map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` })));
+        const revision = body.revision;
+        if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
+        if (!agents.revision(id, revision)) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
+        const moved = agents.setCurrent(entry, revision);
+        return send(res, 200, agentView(moved), { etag: etagOf(moved) });
       }
       case "createRun": {
         const answer = await createRun(req, id);
         return send(res, answer.status, answer.body, answer.headers);
       }
-      case "listRuns": {
-        const entry = await needAgent(id);
-        const limit = limitOf(url.searchParams.get("limit"));
-        const offset = cursorOf(url.searchParams.get("cursor"));
-        const status = url.searchParams.get("status");
-        if (status !== null && !["queued", "working", "input_required", "completed", "failed", "cancelled"].includes(status)) throw new ApiError("bad_request", "status is one of the six run statuses");
-        const all = (await Promise.all((await runs.of(entry)).map((run) => runs.summary(run)))).filter((s) => status === null || s.status === status).sort((a, b) => b.created_at.localeCompare(a.created_at) || b.run_id.localeCompare(a.run_id));
-        return send(res, 200, { runs: all.slice(offset, offset + limit), next_cursor: nextCursor(offset + limit, all.length) });
+      case "listRuns":
+        needAgent(id);
+        return send(res, 200, await runsPage(url, { agent: id }));
+      case "listAllRuns": {
+        const agent = url.searchParams.get("agent") ?? undefined;
+        const revision = url.searchParams.get("revision") ?? undefined;
+        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }));
       }
       case "getRun":
         return send(res, 200, await runs.view(await needRun(id)));
@@ -468,6 +541,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         return timeline(req, res, url, await needRun(id));
       case "sendMessage": {
         const run = await needRun(id);
+        if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
         const body = await bodyOf(req);
         const answer = await idempotent(req, `/runs/${id}/messages`, body, async () => {
           const extra = Object.keys(body).filter((k) => k !== "content");
@@ -549,6 +623,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     async close() {
       await runs.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));
+      agents.close();
     },
   };
 }

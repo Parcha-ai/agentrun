@@ -17,6 +17,13 @@ export default function reply(context, faux) {
   const users = context.messages.filter((m) => m.role === "user").map(textOf);
   const [first = "", last = ""] = [users[0], users.at(-1)];
   const answered = context.messages.at(-1)?.role === "toolResult";
+  // A workflow's model node: it delivers its record through `submit`, slowly when its input says so.
+  if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"))) {
+    if (answered) return faux.message("Submitted.");
+    const submit = faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
+    const ms = first.includes("Take your time") ? 60_000 : first.includes("Answer soon") ? 1_500 : 0;
+    return ms ? slow(faux, ms, "").then((m) => (m.stopReason === "aborted" ? m : submit)) : submit;
+  }
   // Asks the person through ask_person; for an agent without it the call fails, and the reply goes on without asking.
   if (first.includes("Pick a region")) {
     if (users.length === 1 && !answered) return faux.message(faux.toolCall("ask_person", { question: "Which region should I use?" }), { stopReason: "toolUse" });

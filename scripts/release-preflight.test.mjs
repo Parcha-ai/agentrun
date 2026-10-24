@@ -260,7 +260,7 @@ test('the root README\'s status column says published exactly for the packages a
 });
 
 test('publication order is dependency order, fixed by the release map and not by directory listing', () => {
-  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'harness'], 'dsl before jev and pi, the packages that depend on none of them after, then serve (@parcha/agentrun-serve), which depends on pi-durable-disk and pi-durable-agent, and the reference host, which depends on dsl, pi, pi-browser, pi-durable-disk and pi-vision, last');
+  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'harness'], 'dsl before jev and pi, the packages that depend on none of them after, then serve (@parcha/agentrun-serve), which depends on dsl, pi, pi-durable-disk and pi-durable-agent, and the reference host, which depends on dsl, pi, pi-browser, pi-durable-disk and pi-vision, last');
   const names = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));
   for (const directory of listedPackages) {
     for (const dependency of Object.keys(repoManifest(directory).dependencies ?? {})) {

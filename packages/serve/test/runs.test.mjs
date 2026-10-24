@@ -3,18 +3,19 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { readAgentHome } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
-import { client, FAUX, follow, scratch, serve, startRun } from "./support.mjs";
+import { client, FAUX, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test("a run starts queued, its timeline follows it to completed and final, and the runs index and the home record it", async (t) => {
+test("a run starts queued, its timeline follows it to completed and final, and the runs index and the store record it", async (t) => {
   const { api, data } = await serve(t);
   const started = await startRun(api, "calc", "What is six times seven?");
-  const etag = (await api("GET", "/agents/calc")).headers.get("etag");
-  assert.match(etag, /^"\d+"$/, "the home's revision");
-  assert.deepEqual([started.status, started.state, started.result, started.agent_version], ["queued", "working", null, 1]);
+  const agent = await api("GET", "/agents/calc");
+  const etag = agent.headers.get("etag");
+  assert.equal(etag, `"${agent.body.revision}"`, "the current revision");
+  assert.deepEqual([started.status, started.state, started.result, started.agent_version, started.revision, started.kind], ["queued", "working", null, 1, agent.body.revision, "agentic"]);
+  assert.equal(storeRun(data, started.run_id).state, "running");
   const { rows, pages, last } = await follow(api, started.run_id, ["completed"]);
   assert.equal(pages[0].reset, true);
   assert.equal(last.final, true);
@@ -25,18 +26,17 @@ test("a run starts queued, its timeline follows it to completed and final, and t
   assert.equal(run.status, "completed");
   assert.equal(run.state, "idle");
   assert.equal(run.result.final_answer, "The answer is 42.");
-  assert.equal(run.result.output, null, "no output_schema, no output");
+  assert.equal(run.result.output, null, "an agentic run's answer is text, not an output");
   assert.equal(run.cost.basis, "estimate");
   assert.equal(typeof run.ended_at, "string");
   const index = (await api("GET", "/agents/calc/runs")).body.runs;
   assert.deepEqual(index.map((r) => [r.run_id, r.status]), [[started.run_id, "completed"]]);
   const carried = await api("GET", "/agents/calc");
-  assert.notEqual(carried.headers.get("etag"), etag, "the carry back is a write, so the revision moved");
-  assert.equal(carried.headers.get("etag"), carried.body.home_etag);
+  assert.equal(carried.headers.get("etag"), etag, "a run is no edit: the current revision stays");
   assert.deepEqual(carried.body.runs, { count: 1, live: 0 });
-  const home = await readAgentHome({ dir: join(data, "calc") });
-  assert.equal(home.runs[started.run_id].outcome, "completed");
-  assert.equal(home.runs[started.run_id].finalAnswer, "The answer is 42.");
+  const row = storeRun(data, started.run_id);
+  assert.deepEqual([row.state, row.summary, row.revision, row.kind], ["completed", "The answer is 42.", agent.body.revision, "agentic"]);
+  assert.equal(typeof row.costUsd, "number");
   const after = await api("POST", `/runs/${started.run_id}/messages`, { content: "again" });
   assert.equal(after.status, 409);
   assert.equal(after.body.error.code, "not_continuable");
@@ -72,7 +72,7 @@ test("ask_person makes the run input_required and waiting; a message answers it 
   assert.equal(answer.body.mode, "answer");
   const done = await follow(api, run_id, ["completed"], { after: waiting.after });
   assert.equal(done.pages.filter((p) => p.reset).length, 0);
-  assert.deepEqual((await api("GET", `/runs/${run_id}`)).body.result, { output: null, final_answer: '{"region":"EU"}' }, "no output_schema, no output");
+  assert.deepEqual((await api("GET", `/runs/${run_id}`)).body.result, { output: null, final_answer: '{"region":"EU"}' });
 });
 
 test("stop ends the turn and leaves the run input_required and idle; a message then is a follow-up and the run goes on", async (t) => {
@@ -94,13 +94,14 @@ test("stop ends the turn and leaves the run input_required and idle; a message t
 });
 
 test("cancel ends a working run cancelled once its process has exited; a second cancel says it already ended", async (t) => {
-  const { api } = await serve(t);
+  const { api, data } = await serve(t);
   const { run_id } = await startRun(api, "slow", "Take your time.");
   const cancel = await api("POST", `/runs/${run_id}/cancel`);
   assert.equal(cancel.status, 202);
   assert.deepEqual([cancel.body.cancel_requested, cancel.body.already_terminal], [true, false]);
   const { last } = await follow(api, run_id, ["cancelled"]);
   assert.equal(last.final, true);
+  assert.equal(storeRun(data, run_id).state, "stopped", "v2's cancelled is the store's stopped");
   const again = await api("POST", `/runs/${run_id}/cancel`);
   assert.deepEqual([again.body.cancel_requested, again.body.already_terminal, again.body.status], [false, true, "cancelled"]);
   assert.equal((await api("POST", `/runs/${run_id}/messages`, { content: "x" })).body.error.code, "not_continuable");
@@ -114,24 +115,6 @@ test("a model failure ends the run failed with run_failed", async (t) => {
   assert.equal(run.error.code, "run_failed");
   assert.match(run.error.message, /failed on purpose/);
   assert.equal(run.result, null);
-});
-
-test("with an output_schema the output is the final answer parsed as a JSON object; an answer that misses the schema ends output_invalid", async (t) => {
-  const { api } = await serve(t);
-  const schema = { output_schema: { type: "object", properties: { answer: { type: "number" } }, required: ["answer"] } };
-  const typed = await startRun(api, "typed", "Answer as JSON.", schema);
-  await follow(api, typed.run_id, ["completed"]);
-  assert.deepEqual((await api("GET", `/runs/${typed.run_id}`)).body.result.output, { answer: 42 });
-  for (const content of ["Answer wrongly as JSON.", "What is six times seven?"]) {
-    const run = (await api("POST", "/agents/typed/runs", { input: { content } })).body;
-    await follow(api, run.run_id, ["failed"]);
-    const failed = (await api("GET", `/runs/${run.run_id}`)).body;
-    assert.equal(failed.error.code, "output_invalid", content);
-    assert.equal(failed.result, null);
-  }
-  const untyped = await startRun(api, "untyped", "Answer as JSON.");
-  await follow(api, untyped.run_id, ["completed"]);
-  assert.equal((await api("GET", `/runs/${untyped.run_id}`)).body.result.output, null, "no output_schema, no output");
 });
 
 test("ask_person reaches only an agent that names it: one that does not goes on without asking", async (t) => {
@@ -191,5 +174,5 @@ test("after a restart the runs are read from the agent home: status, result and 
   assert.equal(page.reset, true);
   assert.equal(page.final, true);
   assert.deepEqual(page.rows.map((r) => r.kind), before.rows.map((r) => r.kind));
-  assert.equal(JSON.parse(await readFile(join(data, "calc", "runs", run_id, "serve.json"), "utf8")).title, "What is six times seven?");
+  assert.equal(JSON.parse(await readFile(join(data, "runs", run_id, "serve.json"), "utf8")).title, "What is six times seven?");
 });

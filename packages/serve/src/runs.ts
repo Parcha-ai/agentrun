@@ -1,33 +1,39 @@
-// Runs: each one a child process (`pi-durable-disk run` on `<home>/runs/<id>` with serve's app), read live through the
-// door it serves on loopback, and read from its store, read-only, once its claim is released. A run that answered is
-// sent SIGTERM; once its process has exited it is carried back to its agent home (`carryBack`), and it is finished.
+// Runs: each one a child process (`pi-durable-disk run` on `<data>/runs/<id>` with serve's app), pinned to a revision in
+// the agent store. An agentic run is read live through the door its process serves on loopback; a workflow run is
+// working while its process lives. Once the process has exited the run is read from its store, read-only, and carried
+// back to the agent store (`carryBack`), and it is finished. A run whose process went before the run ended is opened
+// again on its directory, and resumes from its store.
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, openSync } from "node:fs";
-import { open as openFile, readFile, stat } from "node:fs/promises";
+import { open as openFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AgentHomeError, carryBack, startRun } from "@parcha/pi-durable-agent";
+import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
-import { type AgentEntry, type Agents, homeError } from "./agents.js";
-import { readJson, writeWhole } from "./files.js";
+import { type AgentEntry, type Agents, sqliteBusy, storeError } from "./agents.js";
+import { readJson, RUN_META, writeWhole } from "./files.js";
 import { ASK_TOOL } from "./app.js";
 import { ApiError } from "./errors.js";
 import { EFFORT_ENV, FAUX_ENV } from "./model.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
-import { isObject, type Json, outputIssues } from "./validate.js";
+import { isObject, type Json } from "./validate.js";
 
 export type Status = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
+export const STATUSES: readonly Status[] = ["queued", "working", "input_required", "completed", "failed", "cancelled"];
+type Ended = Exclude<RunState, "running">;
 const TERMINAL = new Set<Status>(["completed", "failed", "cancelled"]);
 const RELEASED = new Set(["sleeping", "paused", "done", "failed"]);
 const LEASE_MS = 90_000;
-const HOST = "agentrun-serve";
-const META = "serve.json";
 /** The run process's stderr, beside run.json: a file, so the process outlives a server that stops without stopping it. */
 const PROCESS_LOG = "process.log";
 const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
+/** How often one server opens a run again whose process went before the run ended, before it fails the run. */
+const MAX_RELAUNCHES = 3;
+/** How a run ended in the store, as its status: the store's `stopped` is v2's `cancelled`. */
+const STATUS_OF: Record<Ended, Status> = { completed: "completed", failed: "failed", escalated: "failed", stopped: "cancelled" };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const alive = (pid: number) => {
@@ -38,46 +44,65 @@ const alive = (pid: number) => {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 };
-/** Waits between carry backs that found the home busy: each attempt itself waits 5 s for the home's lock. */
+/** Waits between carry backs that found the store busy: each attempt itself waits 5 s for the store's lock. */
 const CARRY_BACK_RETRIES_MS = [500, 1_000, 2_000, 4_000, 8_000];
 /** How long a run's process may live on after it released the run before its store is read anyway: the process holds the
  *  store's exclusive lock until it exits. */
 const EXIT_AFTER_RELEASE_MS = 30_000;
 /** How many 500 ms ticks in a row a live run's record is unreadable before the server says so. */
 const UNREADABLE_TICKS = 10;
-/** SQLITE_BUSY or SQLITE_LOCKED: another connection holds the database. */
-const sqliteBusy = (error: unknown) => isObject(error) && error.code === "ERR_SQLITE_ERROR" && typeof error.errcode === "number" && [5, 6].includes(error.errcode & 0xff);
 const warn = (runId: string, text: string) => void process.stderr.write(`agentrun-serve: run ${runId}: ${text}\n`);
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const isLoopback = (host: string) => host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
+const holderPid = (record: Json | null) => (isObject(record?.holder) && Number.isSafeInteger(record.holder.pid) ? (record.holder.pid as number) : undefined);
+type WorkflowEnding = { status: "complete" | "escalated" | "refused" | "stopped"; code?: string; message?: string };
+/** How a workflow run's workflow ended, as its app wrote it in the run's final status: absent until it ended. */
+function workflowEnding(record: Json | null): WorkflowEnding | undefined {
+  const detail = isObject(record?.detail) ? record.detail : undefined;
+  if (!RELEASED.has(String(record?.status)) || !["complete", "escalated", "refused", "stopped"].includes(String(detail?.workflow))) return undefined;
+  return { status: detail!.workflow as WorkflowEnding["status"], ...(typeof detail!.code === "string" ? { code: detail!.code } : {}), ...(typeof detail!.message === "string" ? { message: detail!.message } : {}) };
+}
 
 type RunMeta = {
   title: string;
   created_at: string;
-  agent_version: number;
+  /** The run's input: an agentic run's first message is its `content`, a workflow run's input is the whole of it. */
+  input?: Json;
   effort?: string;
   max_cost_usd?: number;
-  /** The definition's `output_schema` when the run started: its final answer is then its output, as a JSON object. */
-  output_schema?: Json;
   error?: { code: string; message: string };
+  /** A workflow run's output, once it completed. */
+  output?: unknown;
 };
 type RunError = { code: string; message: string; retryable: boolean };
+
+/** An ended run's error from its row and serve.json: an escalated workflow says so (`escalated`, with its summary), a
+ *  failed run keeps its own. */
+const errorOfRow = (row: RunRow, meta: Partial<RunMeta> | null): RunError =>
+  row.state === "escalated"
+    ? { code: "escalated", message: row.summary ?? meta?.error?.message ?? "The workflow escalated.", retryable: false }
+    : { code: meta?.error?.code ?? "run_failed", message: meta?.error?.message ?? row.summary ?? "The run failed.", retryable: false };
 
 /** One run as this server holds it. */
 export type Run = {
   id: string;
   agentId: string;
+  kind: RevisionKind;
+  revision: string;
+  /** The revision's number among its agent's. */
+  version: number;
   dir: string;
   meta: RunMeta;
   log: RowLog;
   /** The run's rows as they come in (before the log names them), with each `ask_person` answer's waiting row. */
   rows: TimelineEvent[];
-  /** The whole text of the run's newest assistant message: a row's text is cut at 2000 characters, an output is not. */
+  /** The whole text of the run's newest assistant message: a row's text is cut at 2000 characters, an answer is not. */
   answerText?: string;
   child?: ChildProcess;
   /** The pid of a run process an earlier server started that still serves the run: supervised by its run.json. */
   orphan?: number;
   feed?: AbortController;
+  /** An agentic run's turn is running; a workflow run's process serves. */
   working: boolean;
   /** Messages this server sent the run that its rows do not show yet. */
   submitted: number;
@@ -88,6 +113,9 @@ export type Run = {
   endedAt?: string;
   outcome?: Status;
   error?: RunError;
+  /** The cost the store recorded when it carried the run back. */
+  costUsd?: number;
+  relaunches: number;
   settled: boolean;
   settling?: Promise<void>;
   updatedAt: string;
@@ -112,19 +140,6 @@ export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
   return out;
 }
 
-/** A final answer as a run's output: the answer's text (or one fenced block of it) parsed as a JSON object. */
-export function outputOf(answer: string | null | undefined): Json | undefined {
-  if (!answer) return undefined;
-  const text = answer.trim();
-  const fenced = /^```(?:json)?\s*\n([\s\S]*?)\n?```$/.exec(text);
-  try {
-    const value: unknown = JSON.parse(fenced ? fenced[1]! : text);
-    return isObject(value) ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /** Notes the whole text of the newest assistant message in `entries` (pi's stored entries). */
 function noteAnswer(run: Run, entries: readonly unknown[]): void {
   for (const value of entries) {
@@ -147,6 +162,7 @@ const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind ==
 export function statusOf(run: Run): { status: Status; state: State } {
   if (run.outcome) return { status: run.outcome, state: "idle" };
   if (run.finishing) return { status: run.finishing, state: "idle" };
+  if (run.kind === "workflow") return { status: run.working ? "working" : "queued", state: "working" };
   const users = usersOf(run.rows);
   if (!users) return { status: "queued", state: "working" };
   if (run.submitted > 0) return { status: "working", state: "working" };
@@ -156,7 +172,7 @@ export function statusOf(run: Run): { status: Status; state: State } {
   return { status: "working", state: "idle" };
 }
 
-/** The waits between carry backs that found the home busy, and a hook called at each such refusal. */
+/** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
 export type RunsOptions = { agents: Agents; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry };
 
@@ -183,59 +199,65 @@ export class Runs {
   private closing = false;
   constructor(private readonly options: RunsOptions) {}
 
+  private get store() {
+    return this.options.agents.store;
+  }
+
   // ---- reading --------------------------------------------------------------------------------------------------------
 
-  /** Run `id`, read from its agent home the first time this process sees it. */
+  /** Run `id`, read from the agent store the first time this process sees it. */
   async get(id: string): Promise<Run | null> {
     const known = this.runs.get(id);
     if (known) return known;
-    const entry = await this.options.agents.ownerOf(id);
-    if (!entry) return null;
-    return this.adopt(entry, id);
+    const row = this.store.readRun(id);
+    return row ? this.adopt(row) : null;
   }
 
   /** One Run per run id, however many requests ask for it at once. */
-  private adopt(entry: AgentEntry, id: string): Promise<Run> {
-    const known = this.runs.get(id);
+  private adopt(row: RunRow): Promise<Run> {
+    const known = this.runs.get(row.id);
     if (known) return Promise.resolve(known);
-    let pending = this.adopting.get(id);
+    let pending = this.adopting.get(row.id);
     if (!pending) {
-      pending = this.load(entry, id).finally(() => this.adopting.delete(id));
-      this.adopting.set(id, pending);
+      pending = this.load(row).finally(() => this.adopting.delete(row.id));
+      this.adopting.set(row.id, pending);
     }
     return pending;
   }
 
-  private async load(entry: AgentEntry, id: string): Promise<Run> {
-    const index = entry.state.runs[id]!;
-    const dir = join(entry.home.dir, index.path);
-    const stored = (await readJson(join(dir, META))) as Partial<RunMeta> | null;
+  private async load(row: RunRow): Promise<Run> {
+    const dir = join(this.options.agents.dir, "runs", row.id);
+    const stored = (await readJson(join(dir, RUN_META))) as Partial<RunMeta> | null;
     const meta: RunMeta = {
       title: typeof stored?.title === "string" ? stored.title : "",
-      created_at: typeof stored?.created_at === "string" ? stored.created_at : index.startedAt,
-      agent_version: typeof stored?.agent_version === "number" ? stored.agent_version : entry.state.definition.version,
+      created_at: typeof stored?.created_at === "string" ? stored.created_at : row.startedAt,
+      ...(isObject(stored?.input) ? { input: stored.input } : {}),
       ...(typeof stored?.effort === "string" ? { effort: stored.effort } : {}),
       ...(typeof stored?.max_cost_usd === "number" ? { max_cost_usd: stored.max_cost_usd } : {}),
-      ...(isObject(stored?.output_schema) ? { output_schema: stored.output_schema } : {}),
       ...(stored?.error ? { error: stored.error } : {}),
+      ...(stored && "output" in stored ? { output: stored.output } : {}),
     };
-    const run = this.blank(id, entry.home.identity.id, dir, meta);
-    this.runs.set(id, run);
+    const run = this.blank(row, dir, meta, this.options.agents.revisions(row.agent).find((r) => r.id === row.revision)?.version ?? 0);
+    this.runs.set(row.id, run);
     const record = await this.record(run);
     // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
-    if (index.endedAt || !this.doorOf(record)) await this.storeWhenFree(run);
-    if (index.endedAt) {
-      run.outcome = (["completed", "failed", "cancelled"].includes(String(index.outcome)) ? index.outcome : "completed") as Status;
-      run.endedAt = index.endedAt;
-      if (run.outcome === "failed") run.error = { code: meta.error?.code ?? "run_failed", message: meta.error?.message ?? "The run failed.", retryable: false };
+    if (row.state !== "running" || !this.doorOf(record)) await this.storeWhenFree(run);
+    if (row.state !== "running") {
+      run.outcome = STATUS_OF[row.state];
+      run.endedAt = row.endedAt;
+      if (row.costUsd !== undefined) run.costUsd = row.costUsd;
+      if (run.outcome === "failed") run.error = errorOfRow(row, meta);
       run.settled = true;
     } else if (record && this.doorOf(record)) this.adoptProcess(run, record);
     this.refresh(run);
     return run;
   }
 
-  private blank(id: string, agentId: string, dir: string, meta: RunMeta): Run {
-    return { id, agentId, dir, meta, log: new RowLog(this.clock), rows: [], working: false, submitted: 0, stopped: false, cancel: false, settled: false, updatedAt: meta.created_at };
+  private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number): Run {
+    return {
+      id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
+      working: false, submitted: 0, stopped: false, cancel: false, relaunches: 0, settled: false, updatedAt: meta.created_at,
+    };
   }
 
   private record(run: Run): Promise<Json | null> {
@@ -250,16 +272,23 @@ export class Runs {
     return url?.protocol === "http:" && isLoopback(url.hostname) ? url.origin : undefined;
   }
 
-  /** The run's rows from its store, opened read-only; only once its claim is released. */
+  private storeFile(run: Run): string {
+    return join(run.dir, "store", "run.sqlite");
+  }
+
+  /** The run's rows from its store, opened read-only; only once its claim is released. An agentic run's rows are its
+   *  root conversation's; a workflow run's are its model nodes'. */
   private async readStore(run: Run): Promise<void> {
-    const file = join(run.dir, "store", "run.sqlite");
+    const file = this.storeFile(run);
     if (!(await stat(file).catch(() => null))) return;
     const { DatabaseSync } = await import("node:sqlite");
     const entries: Json[] = [];
     const db = new DatabaseSync(file, { readOnly: true });
     try {
-      const conversation = (db.prepare("SELECT MIN(conversation_id) AS id FROM entries").get() as { id?: number } | undefined)?.id;
-      if (conversation != null) for (const row of db.prepare("SELECT record FROM entries WHERE conversation_id = ? ORDER BY id").iterate(conversation)) entries.push(JSON.parse(String((row as { record: string }).record)) as Json);
+      const rows = run.kind === "workflow"
+        ? db.prepare("SELECT record FROM entries ORDER BY id").iterate()
+        : db.prepare("SELECT record FROM entries WHERE conversation_id = (SELECT MIN(conversation_id) FROM entries) ORDER BY id").iterate();
+      for (const row of rows) entries.push(JSON.parse(String((row as { record: string }).record)) as Json);
     } finally {
       db.close();
     }
@@ -281,22 +310,17 @@ export class Runs {
     return Boolean(run.child || run.orphan);
   }
 
-  /** How the run ends, from its rows: over its cap, a model error, or an answer (checked against an output_schema).
-   *  Undefined while it works, or when it stopped, waits or parked. */
+  /** How an agentic run ends, from its rows: over its cap, a model error, or an answer. Undefined while it works, or
+   *  when it stopped, waits or parked. A workflow run ends when its workflow does. */
   private decide(run: Run): { outcome: Status; error?: RunError; abort?: boolean } | undefined {
+    if (run.kind === "workflow") return undefined;
     const cap = run.meta.max_cost_usd;
     const cost = costOf(run.rows);
     if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: "spend_cap_reached", message: `The run cost $${cost.toFixed(4)}, over its cap of $${cap}.`, retryable: false } };
     if (run.working || run.submitted > 0) return undefined;
     const last = meaningful(run.rows);
     if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: last.text ?? last.summary ?? "The run failed.", retryable: false } };
-    const answer = run.stopped ? undefined : answerOf(run.rows);
-    if (!answer) return undefined;
-    const schema = run.meta.output_schema;
-    const output = schema ? outputOf(run.answerText ?? answer.text) : undefined;
-    const issues = schema ? (output ? outputIssues(output, schema) : [{ message: "the final answer is not a JSON object" }]) : [];
-    if (!issues.length) return { outcome: "completed" };
-    return { outcome: "failed", error: { code: "output_invalid", message: `The run's final answer is not an output its agent's output_schema takes: ${issues.map((i) => i.message).join("; ")}.`, retryable: false } };
+    return !run.stopped && answerOf(run.rows) ? { outcome: "completed" } : undefined;
   }
 
   /** Records the run's status as a change when it moves, and lets go of a live run that answered, failed or is over its cap. */
@@ -326,7 +350,7 @@ export class Runs {
   /** Supervise a run process an earlier server started: follow its door, and settle the run once its run.json says it
    *  let go (released, or its lease lapsed) or the process is gone. */
   private adoptProcess(run: Run, record: Json): void {
-    const pid = isObject(record.holder) && Number.isSafeInteger(record.holder.pid) ? (record.holder.pid as number) : undefined;
+    const pid = holderPid(record);
     if (!pid) return;
     run.orphan = pid;
     this.connect(run);
@@ -355,15 +379,13 @@ export class Runs {
     timer.unref();
   }
 
-  /** At start: every run of every agent that is not carried back is read, supervised when its process lives, and
-   *  carried back when it already ended. Nothing is woken. */
-  async recover(entries: AgentEntry[]): Promise<void> {
-    for (const entry of entries) {
-      for (const [id, index] of Object.entries(entry.state.runs)) {
-        if (index.endedAt) continue;
-        const run = await this.adopt(entry, id).catch((error: Error) => (warn(id, `not recovered: ${error.message}; the next start tries again`), null));
-        if (run && !this.live(run) && !run.outcome) await this.settle(run, null, false);
-      }
+  /** At start: every run the store says is running is read, supervised when its process lives, carried back when it
+   *  already ended, and opened again when its process went before it ended. */
+  async recover(): Promise<void> {
+    for (const row of this.store.listRuns()) {
+      if (row.state !== "running") continue;
+      const run = await this.adopt(row).catch((error: Error) => (warn(row.id, `not recovered: ${error.message}; the next start tries again`), null));
+      if (run && !this.live(run) && !run.outcome) await this.settle(run, null, false);
     }
   }
 
@@ -379,7 +401,8 @@ export class Runs {
     return { authorization: `Bearer ${this.options.doorToken}`, ...(json ? { "content-type": "application/json" } : {}) };
   }
 
-  /** Follow the door's events into the run's rows, again after each drop while the process lives. */
+  /** Follow the door's events into an agentic run's rows, again after each drop while the process lives. A workflow
+   *  run is only watched: the door's events are a root conversation's, and a workflow run has none. */
   private connect(run: Run): void {
     if (run.feed) return;
     const abort = new AbortController();
@@ -387,9 +410,14 @@ export class Runs {
     void (async () => {
       while (!abort.signal.aborted) {
         const door = this.doorOf(await this.record(run));
-        if (door) await this.follow(run, door, abort.signal).catch(() => undefined);
+        if (door && run.kind === "workflow") {
+          if (!run.working && !run.outcome) {
+            run.working = true;
+            this.refresh(run);
+          }
+        } else if (door) await this.follow(run, door, abort.signal).catch(() => undefined);
         if (abort.signal.aborted || (!this.live(run) && !this.doorOf(await this.record(run)))) break;
-        await sleep(200);
+        await sleep(run.kind === "workflow" ? 500 : 200);
       }
       if (run.feed === abort) run.feed = undefined;
     })();
@@ -448,14 +476,16 @@ export class Runs {
 
   private finished(run: Run): ApiError {
     const status = run.cancel ? "cancelled" : statusOf(run).status;
-    const why = status === "completed" ? "This run is finished: its sign-ins went back to its agent." : `This run ${status === "failed" ? "failed" : "was cancelled"}.`;
+    const why = status === "completed" ? "This run is finished." : `This run ${status === "failed" ? "failed" : "was cancelled"}.`;
     return new ApiError("not_continuable", `${why} Start a new run of the agent.`, {
       next_action: { type: "request", method: "POST", path: `/agents/${run.agentId}/runs`, caller_supplies: ["input", "Idempotency-Key"] },
     });
   }
 
-  /** Abort the turn running now through the door, when there is one; never wakes the run. */
+  /** Abort an agentic run's turn running now through the door, when there is one; never wakes the run. A workflow run
+   *  has no turn: the door's abort would give it a root conversation. */
   private async abortTurn(run: Run): Promise<void> {
+    if (run.kind === "workflow") return;
     const door = this.doorOf(await this.record(run));
     if (door) await fetch(new URL("/abort", door), { method: "POST", headers: this.headers(true), body: "{}", signal: AbortSignal.timeout(5_000) }).catch(() => undefined);
   }
@@ -481,9 +511,11 @@ export class Runs {
     if (run.child || this.closing || run.cancel) return;
     const env: NodeJS.ProcessEnv = { ...process.env, ...(this.options.faux ? { [FAUX_ENV]: this.options.faux } : {}), ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}) };
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
+    // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
+    const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? "30s");
     const child = spawn(process.execPath, [
       "--no-warnings=ExperimentalWarning", this.cli, "run", "--dir", run.dir, "--app", this.app,
-      "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", this.options.drainTimeout ?? "30s",
+      "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
     ], { stdio: ["ignore", "ignore", log], env });
     closeSync(log);
     run.child = child;
@@ -495,8 +527,21 @@ export class Runs {
     this.connect(run);
   }
 
-  /** After the run's process exited: its rows from its released store, then, when it is over, its carry back. One at
-   *  a time per run, and none once the run has its outcome. */
+  /** Opens the run again on its directory after its process went before the run ended: it resumes from its store. An
+   *  agentic run whose first message never landed gets it again, under the same request id. */
+  private relaunch(run: Run): void {
+    run.relaunches++;
+    warn(run.id, `its process went before the run ended; opening it again (${run.relaunches} of ${MAX_RELAUNCHES})`);
+    this.launch(run);
+    const first = run.meta.input?.content;
+    if (run.kind !== "agentic" || usersOf(run.rows) > 0 || typeof first !== "string") return;
+    run.submitted = 1;
+    this.refresh(run);
+    void this.submit(run, first, "followUp", `first-${run.id}`).catch((error: Error) => warn(run.id, `its first message did not land again: ${error.message}`));
+  }
+
+  /** After the run's process exited, or was found gone: its rows from its released store, then, when it is over, its
+   *  carry back. One at a time per run, and none once the run has its outcome. */
   private settle(run: Run, code: number | null, exited: boolean): Promise<void> {
     run.settling = (run.settling ?? Promise.resolve())
       .then(() => (run.outcome ? undefined : this.settleOnce(run, code, exited)))
@@ -504,49 +549,78 @@ export class Runs {
     return run.settling;
   }
 
-  /** `exited`: the process this server supervised exited; without a release that fails the run. */
+  /** `exited`: the process this server supervised exited. Exiting on an error before it released fails the run; going
+   *  any other way before the run ended (killed, or found gone at a start) opens it again. */
   private async settleOnce(run: Run, code: number | null, exited: boolean): Promise<void> {
     run.feed?.abort();
     run.feed = undefined;
     run.working = false;
     const record = await this.record(run);
     const released = RELEASED.has(String(record?.status));
-    if (released) await this.storeWhenFree(run);
-    let outcome: Status | undefined;
-    if (run.cancel) outcome = "cancelled";
-    else if (run.finishing) outcome = run.finishing;
-    else if (exited && !released) {
-      outcome = "failed";
-      run.error = { code: "run_failed", message: `The run's process exited (${code ?? "signal"}) without releasing the run: ${await lastLogLine(run)}`, retryable: false };
-    } else if (!this.doorOf(record)) {
+    const pid = holderPid(record);
+    // A process that is gone serves no door, whatever its last heartbeat says.
+    const gone = !this.live(run) && !(pid !== undefined && pid !== process.pid && alive(pid) && this.doorOf(record));
+    if (released || gone) await this.storeWhenFree(run);
+    let ended: { outcome: Status; state?: Ended; summary?: string } | undefined;
+    // A workflow run carries back how its workflow ended, through workflowCarry; cancelled before that, it stopped.
+    if (run.cancel) ended = run.kind === "workflow" ? await this.workflowEnd(run, workflowEnding(record) ?? { status: "stopped" }) : { outcome: "cancelled" };
+    else if (run.finishing) ended = { outcome: run.finishing };
+    else if (exited && !released && code !== null && code !== 0) {
+      run.error = { code: "run_failed", message: `The run's process exited (${code}) without releasing the run: ${await lastLogLine(run)}`, retryable: false };
+      ended = { outcome: "failed" };
+    } else if (!gone && this.doorOf(record)) ended = undefined;
+    else if (run.kind === "workflow") ended = await this.workflowEnd(run, workflowEnding(record));
+    else {
       const end = this.decide(run);
       if (end?.error) run.error = end.error;
-      outcome = end?.outcome;
+      ended = end && { outcome: end.outcome };
     }
-    if (!outcome) return this.refresh(run);
-    const entry = await this.agentWhenFree(run.agentId, run.id);
+    if (!ended) {
+      // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
+      const stalled = run.kind === "workflow" || statusOf(run).status !== "input_required";
+      if (!gone || !stalled || this.closing) return this.refresh(run);
+      if (run.relaunches < MAX_RELAUNCHES) return this.relaunch(run);
+      run.error = { code: "run_failed", message: `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
+      ended = { outcome: "failed" };
+    }
+    await this.carryBack(run, ended.outcome, ended.state, ended.summary);
+  }
+
+  /** A workflow run's carry back, `workflowCarry` of @parcha/pi-durable-agent/workflow on its released store, and its
+   *  output when it completed; undefined while its workflow has not ended. */
+  private async workflowEnd(run: Run, ending: WorkflowEnding | undefined): Promise<{ outcome: Status; state: Ended; summary: string } | undefined> {
+    if (!ending) return undefined;
+    const { readWorkflowRun, workflowCarry } = await import("@parcha/pi-durable-agent/workflow");
+    const revision = this.store.readRevision(run.revision) as Extract<Revision, { kind: "workflow" }>;
+    const at = { runId: run.id, storePath: this.storeFile(run), revision };
+    const { state, summary } = await workflowCarry(at, ending);
+    if (state === "completed") run.meta.output = (await readWorkflowRun(at)).output ?? null;
+    else if (state === "escalated") run.error = { code: "escalated", message: summary, retryable: false };
+    else if (state === "failed") run.error = { code: "run_failed", message: `The workflow failed: ${summary}.`, retryable: false };
+    return { outcome: STATUS_OF[state], state, summary };
+  }
+
+  /** Ends the run in the agent store, once: how it ended, its cost and a line for the list. A store held by another
+   *  writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
+  private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
     const answer = answerOf(run.rows);
     const cost = costOf(run.rows);
+    const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message };
-    await writeWhole(join(run.dir, META), `${JSON.stringify(run.meta)}\n`);
-    if (entry) {
-      // A home held by another writer is tried again with backoff; past the last try the run stays unsettled, and the
-      // next start carries it back.
-      for (let attempt = 0; ; attempt++) {
-        try {
-          await carryBack(entry.home, { runId: run.id }, {
-            outcome,
-            ...(outcome === "completed" && answer ? { finalAnswer: clip(answer.text ?? answer.summary ?? "", 2000) } : {}),
-            ...(cost === null ? {} : { cost }),
-          });
-          break;
-        } catch (error) {
-          if (!(error instanceof AgentHomeError && error.code === "busy") || !(await this.retryBusy(run.id, attempt, "its agent home"))) throw error;
-        }
+    await writeWhole(join(run.dir, RUN_META), `${JSON.stringify(run.meta)}\n`);
+    const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        this.store.carryBack(run.id, ending);
+        break;
+      } catch (error) {
+        if (error instanceof AgentHomeError && error.code === "exists") break;
+        if (!sqliteBusy(error) || !(await this.retryBusy(run.id, attempt, "the agent store"))) throw error;
       }
-      this.options.agents.forget(run.agentId);
-      run.endedAt = (await this.options.agents.get(run.agentId))?.state.runs[run.id]?.endedAt ?? run.endedAt ?? new Date().toISOString();
     }
+    const row = this.store.readRun(run.id);
+    run.endedAt = row?.endedAt ?? run.endedAt ?? new Date().toISOString();
+    if (row?.costUsd !== undefined) run.costUsd = row.costUsd;
     run.outcome = outcome;
     run.finishing = undefined;
     run.settled = true;
@@ -575,44 +649,31 @@ export class Runs {
     }
   }
 
-  /** The agent, read again while another writer holds its home, within the carry back's retries. */
-  private async agentWhenFree(id: string, runId = id): Promise<AgentEntry | null> {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        return await this.options.agents.get(id);
-      } catch (error) {
-        if (!(error instanceof ApiError && error.code === "home_busy") || !(await this.retryBusy(runId, attempt, "its agent home"))) throw error;
-      }
-    }
-  }
-
   // ---- acting ---------------------------------------------------------------------------------------------------------
 
-  /** Start a run of `entry` with its first message: `startRun` in the home, then its process, then the message. */
-  async create(entry: AgentEntry, options: { content: string; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
-    const outputSchema = entry.state.definition.output_schema;
-    const id = `${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`;
-    const started = await startRun(entry.home, { runId: id, host: HOST }).catch(homeError);
-    this.options.agents.forget(entry.home.identity.id);
+  /** Start a run of `revision` (number `version`) of `entry`'s agent: `startRun` in the store, then its process, then an
+   *  agentic run's first message, `input.content`. */
+  async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+    const started = await this.store.startRun({ agent: entry.agent.id, revision: revision.id }).catch((error) => storeError(error, "revision"));
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
       created_at: new Date().toISOString(),
-      agent_version: entry.state.definition.version,
+      input: options.input,
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
-      ...(outputSchema ? { output_schema: outputSchema } : {}),
     };
-    await writeWhole(join(started.dir, META), `${JSON.stringify(meta)}\n`);
-    const run = this.blank(id, entry.home.identity.id, started.dir, meta);
-    this.runs.set(id, run);
-    run.submitted = 1;
+    await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
+    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version);
+    this.runs.set(run.id, run);
+    if (revision.kind === "agentic") run.submitted = 1;
     this.refresh(run);
     this.launch(run);
-    void this.submit(run, options.content, "followUp", `first-${id}`).catch((error: Error) => {
+    if (revision.kind === "workflow") return run;
+    void this.submit(run, options.input.content as string, "followUp", `first-${run.id}`).catch((error: Error) => {
       run.submitted = 0;
       run.error = { code: "run_failed", message: error.message, retryable: false };
       if (this.live(run)) this.finish(run, "failed");
-      else if (!run.cancel) void this.settle(run, null, true);
+      else if (!run.cancel) void this.settle(run, 1, true);
     });
     return run;
   }
@@ -622,7 +683,7 @@ export class Runs {
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
   }
 
-  /** One message, its mode chosen by the run's state (the contract's table). */
+  /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     const { status, state } = statusOf(run);
     if (TERMINAL.has(status)) throw this.finished(run);
@@ -641,10 +702,10 @@ export class Runs {
     return { mode, messageId };
   }
 
-  /** Abort the turn that is running; the run stays open, `input_required` and idle. */
+  /** Abort the turn that is running; the run stays open, `input_required` and idle. A workflow run has no turn to stop. */
   async stop(run: Run): Promise<boolean> {
     const { status, state } = statusOf(run);
-    if (!this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
+    if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
     // Set before the abort: the turn's end can arrive before the door answers, and must not read as an answer.
     run.stopped = true;
     const answer = await this.toDoor(run, "/abort", {}).catch(() => null);
@@ -686,39 +747,33 @@ export class Runs {
     for (const run of this.runs.values()) run.feed?.abort();
   }
 
-  /** Every run of `entry`, in its runs index. */
-  async of(entry: AgentEntry): Promise<Run[]> {
-    const ids = Object.keys(entry.state.runs);
-    return (await Promise.all(ids.map((id) => this.runs.get(id) ?? this.adopt(entry, id).catch(() => null)))).filter((run): run is Run => run !== null);
-  }
-
   // ---- views ------------------------------------------------------------------------------------------------------------
 
   cost(run: Run) {
-    return { usd: costOf(run.rows), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
+    return { usd: costOf(run.rows) ?? run.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
   }
 
   /** `Run`, as the contract shows it. */
   async view(run: Run) {
     const { status, state } = statusOf(run);
-    const entry = await this.options.agents.get(run.agentId);
-    const index = entry?.state.runs[run.id];
+    const row = TERMINAL.has(status) ? this.store.readRun(run.id) : undefined;
     const answer = answerOf(run.rows);
-    const finalAnswer = answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : typeof index?.finalAnswer === "string" ? index.finalAnswer : null;
-    const output = run.meta.output_schema ? (outputOf(finalAnswer) ?? null) : null;
+    const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : (row?.summary ?? null);
     return {
       run_id: run.id,
       agent_id: run.agentId,
-      agent_version: run.meta.agent_version,
-      sha: index?.sha ?? null,
+      agent_version: run.version,
+      revision: run.revision,
+      kind: run.kind,
+      sha: null,
       status,
       state,
       title: run.meta.title,
       ...(run.meta.effort ? { effort: run.meta.effort } : {}),
       created_at: run.meta.created_at,
       updated_at: run.updatedAt,
-      ended_at: TERMINAL.has(status) ? (index?.endedAt ?? run.endedAt ?? run.updatedAt) : null,
-      result: status === "completed" ? { output, final_answer: finalAnswer } : null,
+      ended_at: TERMINAL.has(status) ? (row?.endedAt ?? run.endedAt ?? run.updatedAt) : null,
+      result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       cost: this.cost(run),
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,
@@ -726,8 +781,30 @@ export class Runs {
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, sha, status, state, title, created_at, ended_at, cost } = await this.view(run);
-    return { run_id, agent_id, agent_version, sha, status, state, title, created_at, ended_at, cost };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost };
+  }
+
+  /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
+  async statusOfRow(row: RunRow): Promise<Status> {
+    if (row.state !== "running") return STATUS_OF[row.state];
+    const run = await this.get(row.id);
+    return run ? statusOf(run).status : "queued";
+  }
+
+  /** A run's summary for a list. An ended run this server holds no Run for is read from its row and its serve.json alone,
+   *  not its store; `versions` numbers its agent's revisions. */
+  async summaryOfRow(row: RunRow, versions: Map<string, number>): Promise<Awaited<ReturnType<Runs["summary"]>>> {
+    const known = this.runs.get(row.id) ?? (row.state === "running" ? await this.get(row.id) : null);
+    if (known) return this.summary(known);
+    const meta = (await readJson(join(this.options.agents.dir, "runs", row.id, RUN_META))) as Partial<RunMeta> | null;
+    return {
+      run_id: row.id, agent_id: row.agent, agent_version: versions.get(row.revision) ?? 0, revision: row.revision, kind: row.kind, sha: null,
+      status: STATUS_OF[row.state as Ended], state: "idle" as State, title: typeof meta?.title === "string" ? meta.title : "",
+      created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
+      error: STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null,
+      cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
+    };
   }
 
   /** The timeline from change `after`, held up to `waitMs` for a change when there is none. */
