@@ -89,8 +89,11 @@
     var s = Math.round(ms / 1000);
     return s < 60 ? s + "s" : s < 3600 ? Math.floor(s / 60) + "m " + pad(s % 60) + "s" : Math.floor(s / 3600) + "h " + pad(Math.floor((s % 3600) / 60)) + "m";
   }
+  /** Dollars: under a cent, two significant digits, so a run that cost $0.00014 does not read as free. */
   function usd(n) {
-    return typeof n === "number" && isFinite(n) ? "$" + n.toFixed(n < 1 ? 3 : 2) : "";
+    if (typeof n !== "number" || !isFinite(n)) return "";
+    if (n === 0) return "$0";
+    return "$" + n.toFixed(n < 0.01 ? Math.min(20, 1 - Math.floor(Math.log10(n))) : n < 1 ? 3 : 2);
   }
   function bytes(n) {
     if (typeof n !== "number") return "";
