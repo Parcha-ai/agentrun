@@ -22,7 +22,9 @@ jobs:
     # names them; `rest` takes every workspace no other shard names, `examples-<n>` every third example file). `checks`
     # keeps the generated-file, package and source checks and the version-specific steps.
     name: test (${{ matrix.node }}, ${{ matrix.shard }})
-    runs-on: ubuntu-latest
+    # Merge-queue candidates run on Blacksmith, where a shard measured about 3x faster; pull requests, forks included, stay
+    # on GitHub's runners.
+    runs-on: ${{ github.event_name == 'merge_group' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
