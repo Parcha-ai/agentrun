@@ -194,6 +194,125 @@ describe("a stop's result", () => {
 		}
 	}, 120_000);
 
+	it("is, for a stop that waited for another and slept through its end while a launch of the name took the directory, its own generation's record, and leaves the new one alone", async () => {
+		// A mkdir that notes the waiting stop's (the one given 4 tenths) first take of a lock in its wait loop, from a subshell of its
+		// own shell, and, once told to, each take of a lock by a stop; and a sleep that, once that stop is in its wait loop, holds its
+		// next poll, once, until the test's word.
+		const shims = mkdtempSync(join(root, "shims-"));
+		const hold = join(shims, "hold");
+		mkdirSync(hold);
+		const real = (tool: string) => spawnSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).stdout.trim();
+		writeFileSync(
+			join(shims, "mkdir"),
+			[
+				"#!/bin/sh",
+				'case "$*" in',
+				"*/mutex)",
+				'  p=$(tr "\\000" " " < /proc/$PPID/cmdline)',
+				'  if [ -e "HOLD/logging" ]; then case "$p" in *" stop "*) echo "$*" >> "HOLD/locks" ;; esac; fi',
+				'  if [ -e "HOLD/armed" ] && [ "$(printf "%s\\n" "$p" | cut -d" " -f3,5)" = "stop 4" ]; then',
+				'    gp=$(cut -d" " -f4 /proc/$PPID/stat)',
+				'    if [ "$(tr "\\000" " " < /proc/$gp/cmdline | cut -d" " -f3)" = stop ]; then : > "HOLD/looping"; fi',
+				"  fi ;;",
+				"esac",
+				'exec MKDIR "$@"',
+			]
+				.join("\n")
+				.replaceAll("HOLD", hold)
+				.replaceAll("MKDIR", real("mkdir")),
+			{ mode: 0o755 },
+		);
+		writeFileSync(
+			join(shims, "sleep"),
+			[
+				"#!/bin/sh",
+				'[ -e "HOLD/looping" ] || exec SLEEP "$@"',
+				'SLEEP "$@" || exit $?',
+				'p=$(tr "\\000" " " < /proc/$PPID/cmdline)',
+				'[ "$(printf "%s\\n" "$p" | cut -d" " -f3,5)" = "stop 4" ] || exit 0',
+				// The stop's own shell, never a subshell of it (a lock's wait).
+				'gp=$(cut -d" " -f4 /proc/$PPID/stat)',
+				'[ "$(tr "\\000" " " < /proc/$gp/cmdline | cut -d" " -f3)" != stop ] || exit 0',
+				'MKDIR "HOLD/taken" 2>/dev/null || exit 0',
+				': > "HOLD/holding"',
+				'while [ ! -e "HOLD/release" ]; do SLEEP 0.05; done',
+			]
+				.join("\n")
+				.replaceAll("HOLD", hold)
+				.replaceAll("SLEEP", real("sleep"))
+				.replaceAll("MKDIR", real("mkdir")),
+			{ mode: 0o755 },
+		);
+		const box = await aBox(`${shims}:/usr/local/bin:/usr/bin:/bin`);
+		try {
+			// The first stop's hook ends at the test's word, once the waiting stop is held.
+			const first = getOrThrow(
+				await launch(
+					box,
+					"slept",
+					{
+						argv: ["sh", "-c", "exec sleep 300"],
+						restart: false,
+						beforeStop: {
+							argv: ["sh", "-c", ": > hook-began; while [ ! -e hook-go ]; do sleep 0.05; done"],
+							timeoutMs: 30_000,
+						},
+					},
+					context,
+				),
+			);
+			const firstGen = genOf(first.directory);
+			const owner = launchStop(box, first.launch, { graceMs: 300 }, context);
+			await until("the hook", () => fileIn(box, "hook-began"));
+			writeFileSync(join(hold, "armed"), "");
+			const waiter = launchStop(box, first.launch, { graceMs: 400 }, context);
+			// Held in a poll of its wait loop, with no lock, while the first stop ends and a launch of the name takes the directory.
+			await until("the waiting stop asleep in its wait", async () =>
+				existsSync(join(hold, "holding")) ? true : undefined,
+			);
+			expect(
+				getOrThrow(await finish(getOrThrow(await box.exec(["sh", "-c", ": > hook-go"], undefined, context))))
+					.exitCode,
+			).toBe(0);
+			const stoppedFirst = getOrThrow(await owner);
+			expect(stoppedFirst).toMatchObject({ phase: "stopped", launcherAlive: false });
+			const successor = getOrThrow(await launch(box, "slept", { argv: ["sh", "-c", "exec sleep 300"] }, context));
+			expect(["starting", "running"]).toContain(successor.phase);
+			const successorGen = genOf(first.directory);
+			expect(successorGen).not.toBe(firstGen);
+			// A second past the first stop's state: a stop of the later launch from here on answers a later `since` than the first's.
+			await until("a second past the first stop", async () =>
+				Date.now() >= stoppedFirst.since + 1_000 ? true : undefined,
+			);
+			writeFileSync(join(hold, "logging"), "");
+			writeFileSync(join(hold, "release"), "");
+			const waited = getOrThrow(await waiter);
+			const spool = first.directory.slice(0, first.directory.lastIndexOf("/"));
+			// The waiting stop answers the first launch as the first stop recorded it (the state the first stop returned); the launch
+			// that took the directory runs on, untouched; and the first generation's record is still the first launch's.
+			expect({
+				answer: waited,
+				successor: getOrThrow(await launchState(box, { v: 1, name: "slept" }, context)),
+				locked: existsSync(join(hold, "locks")) ? readFileSync(join(hold, "locks"), "utf8") : "",
+				recordOfSuccessor: existsSync(join(spool, `.stopped.slept.${successorGen}`)),
+				firstRecordIsFirst: readFileSync(join(spool, `.stopped.slept.${firstGen}`), "utf8").includes(
+					`GEN ${firstGen}\n`,
+				),
+			}).toMatchObject({
+				answer: stoppedFirst,
+				successor: { phase: "running", launcherAlive: true },
+				locked: "",
+				recordOfSuccessor: false,
+				firstRecordIsFirst: true,
+			});
+			expect(waited).toEqual(stoppedFirst);
+			getOrThrow(await launchStop(box, { v: 1, name: "slept" }, { graceMs: 300 }, context));
+		} finally {
+			writeFileSync(join(hold, "release"), "");
+			await box.destroy(context);
+		}
+	}, 120_000);
+
 	it("is, for a stop whose script starts only after a launch of the name took the directory, the launch it was for, and leaves the new one alone", async () => {
 		// A mkdir that, once armed, notes each take of a launch's lock by a stop.
 		const shims = mkdtempSync(join(root, "shims-"));
