@@ -1,5 +1,17 @@
-.git
+# What AgentRun Server's image build sees (packages/serve/docker/Dockerfile): an allowlist. Everything is out but the
+# workspace's manifests, its packages, the build scripts and the two example files agentrun-pi's build reads.
+*
+!package.json
+!package-lock.json
+!tsconfig.base.json
+!packages/
+!scripts/
+!examples/typed-research.ts
+!examples/typed-research-fixtures.ts
+# Out wherever they are, even inside the allowed folders: secrets, installed dependencies and build output.
+**/.env
+**/.env.*
+**/.npmrc
 **/node_modules
 **/dist
-**/.tsbuildinfo
-.release
+**/*.tsbuildinfo
