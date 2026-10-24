@@ -192,8 +192,16 @@
       var out = el("div");
       var start = button("Start run", "", function () {
         if (!/\S/.test(input.value)) return say(out, new Error("Write the run's input first."));
+        var chosen = revisions.filter(function (r) { return r.id === pick.value; })[0] || revisions.filter(function (r) { return r.current; })[0];
         var body = { input: { content: input.value } };
-        var chosen = revisions.filter(function (r) { return r.id === pick.value; })[0];
+        if (chosen && chosen.kind === "workflow") {
+          try {
+            body.input = JSON.parse(input.value);
+          } catch (e) {
+            return say(out, new Error("A workflow's input is a JSON object its input schema takes: " + e.message));
+          }
+          if (!body.input || typeof body.input !== "object" || Array.isArray(body.input)) return say(out, new Error("A workflow's input is a JSON object its input schema takes."));
+        }
         if (chosen && !chosen.current) body.revision = chosen.id;
         start.disabled = true;
         say(out, null);
@@ -205,7 +213,7 @@
           }
         );
       });
-      return el("div", { class: "run-form" }, el("h3", null, "Start a run"), field("Input", input), el("div", { class: "actions" }, field("Revision", pick), start), out);
+      return el("div", { class: "run-form" }, el("h3", null, "Start a run"), field("Input", input, "For a workflow revision, a JSON object its input schema takes."), el("div", { class: "actions" }, field("Revision", pick), start), out);
     }
 
     function agentActions(agent, revisions) {
@@ -252,8 +260,9 @@
 
     function agentCard(agentId, definition, offered) {
       var kind = definition.workflow ? "workflow" : "agentic";
-      var name = textInput("name", definition.name, "Company researcher");
-      var description = textInput("description", definition.description, "What it does, in one line");
+      // The store keeps an agent's name and description from its creation: an edit neither shows nor sends them.
+      var name = agentId ? null : textInput("name", "", "Company researcher");
+      var description = agentId ? null : textInput("description", "", "What it does, in one line");
       var prompt = textArea("instructions", definition.instructions, 10, "You research one company and write a short brief about it.");
       var workflow = textArea("workflow", definition.workflow ? JSON.stringify(definition.workflow, null, 2) : "", 16, "{ \"name\": \"...\", \"steps\": [] }", true);
       var model = textInput("model", definition.model, "provider/model-id");
@@ -285,8 +294,12 @@
       setKind(kind);
       var out = el("div");
       var save = button(agentId ? "Commit revision" : "Create agent", "", function () {
-        var definitionOut = { name: name.value.trim(), tools: tools.filter(function (t) { return t.box.checked; }).map(function (t) { return t.box.value; }) };
-        if (description.value.trim()) definitionOut.description = description.value.trim();
+        var definitionOut = { tools: tools.filter(function (t) { return t.box.checked; }).map(function (t) { return t.box.value; }) };
+        if (name) {
+          if (!name.value.trim()) return say(out, new Error("The agent needs a name."));
+          definitionOut.name = name.value.trim();
+          if (description.value.trim()) definitionOut.description = description.value.trim();
+        }
         if (kind === "workflow") {
           try {
             definitionOut.workflow = JSON.parse(workflow.value);
@@ -297,7 +310,6 @@
           definitionOut.instructions = prompt.value;
           if (model.value.trim()) definitionOut.model = model.value.trim();
         }
-        if (!definitionOut.name) return say(out, new Error("The agent needs a name."));
         var body = { definition: definitionOut };
         if (note && note.value.trim()) body.note = note.value.trim();
         save.disabled = true;
@@ -315,8 +327,8 @@
         { class: "card agent-form" },
         kit.kicker(agentId ? "New revision" : "New agent"),
         el("h1", null, agentId ? definition.name || agentId : "A new agent"),
-        agentId ? el("p", { class: "lede" }, "Saving commits a new revision from what is below and makes it current. The revisions before it stay as they were.") : null,
-        el("div", { class: "pair" }, field("Name", name), field("Description", description)),
+        agentId ? el("p", { class: "lede" }, (definition.description ? definition.description + " " : "") + "Saving commits a new revision from what is below and makes it current. The revisions before it stay as they were.") : null,
+        name ? el("div", { class: "pair" }, field("Name", name), field("Description", description)) : null,
         el("div", { class: "field" }, el("span", { class: "word" }, "Runs"), el("div", { class: "seg", role: "group", "aria-label": "What it runs" }, kinds.agentic, kinds.workflow)),
         promptField,
         modelField,

@@ -160,11 +160,14 @@ test("a new workflow agent: the workflow's JSON in place of a prompt and a model
   assert.equal(page.window.location.hash, "#/agents/flow");
 });
 
-test("edit: the form is the current definition, a tool the server does not bind still checked, and saving PUTs it to .../definition with a note", async () => {
+test("edit: the form is the current definition, a tool the server does not bind still checked; saving PUTs it to .../definition with a note, never the name or description the store keeps", async () => {
   const definition = { name: `Calc ${HOSTILE}`, description: "Adds.", instructions: "Answer.", model: "openai/gpt-5", tools: ["read", "web_fetch"] };
   const { page, api } = open("#/agents/calc/edit", { "v2/capabilities": CAPABILITIES, "v2/agents/calc": { agent_id: "calc", definition }, "PUT v2/agents/calc/definition": { agent_id: "calc" } });
   await page.settle();
-  assert.equal(find(page, "INPUT", "name").value, `Calc ${HOSTILE}`);
+  assert.equal(find(page, "INPUT", "name"), undefined);
+  assert.equal(find(page, "INPUT", "description"), undefined);
+  assert.equal(all(page.app).find((el) => el.tagName === "H1").textContent, `Calc ${HOSTILE}`);
+  assert.match(all(page.app).find((el) => classOf(el) === "lede").textContent, /^Adds\. Saving commits a new revision/);
   assert.equal(find(page, "TEXTAREA", "instructions").value, "Answer.");
   assert.equal(find(page, "INPUT", "model").value, "openai/gpt-5");
   const boxes = all(page.app).filter((el) => el.getAttribute("type") === "checkbox");
@@ -176,7 +179,7 @@ test("edit: the form is the current definition, a tool the server does not bind 
   boxes[4].checked = false;
   buttonNamed(page, "Commit revision").click();
   await page.settle();
-  assert.deepEqual(api.writes(), [["PUT", "v2/agents/calc/definition", { definition: { name: `Calc ${HOSTILE}`, tools: ["read"], description: "Adds.", instructions: "Answer, and show the sum.", model: "openai/gpt-5" }, note: "Shows its work" }]]);
+  assert.deepEqual(api.writes(), [["PUT", "v2/agents/calc/definition", { definition: { tools: ["read"], instructions: "Answer, and show the sum.", model: "openai/gpt-5" }, note: "Shows its work" }]]);
   assert.equal(page.window.location.hash, "#/agents/calc");
 
   const flow = open("#/agents/brief/edit", { "v2/capabilities": CAPABILITIES, "v2/agents/brief": { agent_id: "brief", definition: { name: "Brief", workflow: { name: "brief", steps: [] }, tools: [] } } });
@@ -202,7 +205,7 @@ test("an agent's page: Edit, a run form on its revisions, and Make current on ea
   assert.deepEqual(api.calls.slice(before + 1).map((c) => c.path), ["api/agents/calc", "api/runs?agent=calc"], "the page is read again");
 });
 
-test("start a run: its input, on the current revision unless another is picked, POSTed to the agent's runs; then the run's page", async () => {
+test("start a run: its input, on the current revision unless another is picked, POSTed to the agent's runs, a workflow's as a JSON object; then the run's page", async () => {
   const answers = { "api/agents/calc": AGENT_PAGE, "api/runs?agent=calc": [], "POST v2/agents/calc/runs": [202, { run_id: "run-9", status: "queued" }] };
   const { page, api } = open("#/agents/calc", answers);
   await page.settle();
@@ -218,6 +221,23 @@ test("start a run: its input, on the current revision unless another is picked, 
   buttonNamed(page, "Start run").click();
   await page.settle();
   assert.deepEqual(api.writes().at(-1), ["POST", "v2/agents/calc/runs", { input: { content: "What is six times seven?" }, revision: REV_A }]);
+
+  const flow = { agent: { ...AGENT_PAGE.agent, id: "brief" }, revisions: [{ ...revision("c".repeat(64), true, "A workflow"), kind: "workflow", graph: { nodes: [], edges: [] } }] };
+  const wf = open("#/agents/brief", { "api/agents/brief": flow, "api/runs?agent=brief": [], "POST v2/agents/brief/runs": [202, { run_id: "run-w" }] });
+  await wf.page.settle();
+  find(wf.page, "TEXTAREA", "input").value = "Caterpillar";
+  buttonNamed(wf.page, "Start run").click();
+  await wf.page.settle();
+  assert.match(problemText(wf.page)[0], /^A workflow's input is a JSON object its input schema takes/);
+  find(wf.page, "TEXTAREA", "input").value = "[1]";
+  buttonNamed(wf.page, "Start run").click();
+  await wf.page.settle();
+  assert.deepEqual(wf.api.writes(), [], "nothing is sent for input that is not an object");
+  find(wf.page, "TEXTAREA", "input").value = '{"name": "Caterpillar", "website": "caterpillar.com"}';
+  buttonNamed(wf.page, "Start run").click();
+  await wf.page.settle();
+  assert.deepEqual(wf.api.writes(), [["POST", "v2/agents/brief/runs", { input: { name: "Caterpillar", website: "caterpillar.com" } }]]);
+  assert.equal(wf.page.window.location.hash, "#/runs/run-w");
 });
 
 const row = (seq, kind, fields = {}) => ({ id: `r${seq}`, seq, kind, summary: fields.summary ?? kind, conversation_id: "c", ...fields });
