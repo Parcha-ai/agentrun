@@ -8,6 +8,8 @@
   var STATUSES = ["queued", "working", "input_required", "completed", "failed", "cancelled"];
   var STATUS_CLASS = { queued: "live", working: "live", input_required: "escalated", completed: "ok", failed: "error", cancelled: "stopped" };
   var LONG_POLL_MS = 25000;
+  /** The run's own start and end rows, which only a live timeline has: the stored one, and the server, count them as quiet. */
+  var QUIET = /:run:(start|end)(~\d+)?$/;
 
   function enc(part) {
     return encodeURIComponent(part);
@@ -250,7 +252,7 @@
           var current = both[1];
           var definition = (current && current.definition) || {};
           if (agentId) kit.crumb([[definition.name || agentId, home], ["Edit", "#/agents/" + enc(agentId) + "/edit"]]);
-          kit.show(agentCard(agentId, definition, (both[0] && both[0].tools) || [], current && current.home_etag));
+          kit.show(agentCard(agentId, definition, both[0] || {}, current && current.home_etag));
         },
         function (error) {
           if (kit.live(token)) kit.show(kit.failed(error));
@@ -259,7 +261,9 @@
     }
 
     /** `etag` is the agent's as the form read it: the edit commits only onto that revision (412 when another came first). */
-    function agentCard(agentId, definition, offered, etag) {
+    function agentCard(agentId, definition, caps, etag) {
+      var offered = caps.tools || [];
+      var levels = (caps.features && caps.features.thinking) || [];
       var kind = definition.workflow ? "workflow" : "agentic";
       // The store keeps an agent's name and description from its creation: an edit neither shows nor sends them.
       var name = agentId ? null : textInput("name", "", "Company researcher");
@@ -267,6 +271,16 @@
       var prompt = textArea("instructions", definition.instructions, 10, "You research one company and write a short brief about it.");
       var workflow = textArea("workflow", definition.workflow ? JSON.stringify(definition.workflow, null, 2) : "", 16, "{ \"name\": \"...\", \"steps\": [] }", true);
       var model = textInput("model", definition.model, "provider/model-id");
+      var thinking = el("select");
+      thinking.name = "thinking";
+      [""].concat(levels, definition.thinking && levels.indexOf(definition.thinking) < 0 ? [definition.thinking] : []).forEach(function (level) {
+        var option = el("option");
+        option.value = level;
+        option.textContent = level || "the run's effort";
+        option.selected = level === (definition.thinking || "");
+        thinking.appendChild(option);
+      });
+      thinking.value = definition.thinking || "";
       var note = agentId ? textInput("note", "", "What this revision changes") : null;
       var had = Array.isArray(definition.tools) ? definition.tools : [];
       var tools = offered.concat(had.filter(function (tool) { return offered.indexOf(tool) < 0; })).map(function (tool) {
@@ -279,12 +293,14 @@
       });
       var promptField = field("Prompt", prompt, "The agent's instructions: what it reads first on every run.");
       var modelField = field("Model", model, "Optional: provider/model-id. Empty runs the server's own model.");
+      var thinkingField = field("Thinking", thinking, "How hard the model thinks on every run; never off.");
       var workflowField = field("Workflow", workflow, "The workflow as JSON, the way the DSL writes it.");
       var kinds = {};
       var setKind = function (next) {
         kind = next;
         promptField.hidden = next !== "agentic";
         modelField.hidden = next !== "agentic";
+        thinkingField.hidden = next !== "agentic";
         workflowField.hidden = next !== "workflow";
         Object.keys(kinds).forEach(function (k) { kinds[k].setAttribute("aria-pressed", String(k === next)); });
       };
@@ -310,6 +326,7 @@
         } else {
           definitionOut.instructions = prompt.value;
           if (model.value.trim()) definitionOut.model = model.value.trim();
+          if (thinking.value) definitionOut.thinking = thinking.value;
         }
         var body = { definition: definitionOut };
         if (note && note.value.trim()) body.note = note.value.trim();
@@ -332,7 +349,7 @@
         name ? el("div", { class: "pair" }, field("Name", name), field("Description", description)) : null,
         el("div", { class: "field" }, el("span", { class: "word" }, "Runs"), el("div", { class: "seg", role: "group", "aria-label": "What it runs" }, kinds.agentic, kinds.workflow)),
         promptField,
-        modelField,
+        el("div", { class: "pair" }, modelField, thinkingField),
         workflowField,
         el("div", { class: "field" }, el("span", { class: "word" }, "Tools"), tools.length ? el("div", { class: "tools" }, tools.map(function (t) { return t.label; })) : el("p", { class: "none" }, "This server binds no tools.")),
         note ? field("Note", note, "Optional: a line the revision keeps.") : null,
@@ -395,7 +412,7 @@
         (page.rows || []).forEach(function (row) { rows[row.id] = row; });
       }
       function draw(page) {
-        var list = Object.keys(rows).map(function (id) { return rows[id]; });
+        var list = Object.keys(rows).map(function (id) { return rows[id]; }).filter(function (row) { return !QUIET.test(row.id); });
         var waiting = page.status === "input_required" && page.state === "waiting";
         var asked = list.filter(function (row) { return row.kind === "waiting"; }).pop();
         question.textContent = (asked && (asked.text || asked.summary)) || "The agent is waiting for you.";

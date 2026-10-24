@@ -109,15 +109,16 @@ data directory, with this server's own views beside it:
   one's prompt diffed against its parent's and a workflow's graph; its runs, filtered by revision.
 - **All runs**: every run of every agent, newest first, with its agent, revision, kind, state, cost and start, filtered by
   agent and by state. A row opens the run.
-- **New agent** and **Edit**: a name, a description, a prompt or a workflow's JSON, a model (`provider/model-id`, or
-  none for the server's own) and the tools capabilities list. Creating sends `POST /v2/agents`; an edit starts from the
+- **New agent** and **Edit**: a name, a description, a prompt or a workflow's JSON, for a prompt a model
+  (`provider/model-id`, or none for the server's own) and a thinking level, and the tools capabilities list. Creating sends `POST /v2/agents`; an edit starts from the
   current definition, keeps the agent's name and description, and sends `PUT /v2/agents/{id}/definition` with
   `If-Match` set to the revision it started from, which commits a revision and makes it current (or answers 412 when
   another revision came first). **Make current** on an older revision sends `POST /v2/agents/{id}/current`.
 - **Start a run**: an input (for a workflow revision, a JSON object its input schema takes), on the current revision or
   another one, sent to `POST /v2/agents/{id}/runs`. A run the page opens while it is not final follows
   `GET /v2/runs/{id}/timeline` with a long poll; while it waits on `ask_person`, an answer box sends
-  `POST /v2/runs/{id}/messages`. Once it is final, the page reads it from the store.
+  `POST /v2/runs/{id}/messages`. The live view leaves out the run's own start and end rows, as the stored view does.
+  Once it is final, the page reads it from the store.
 
 The link sets a cookie (`HttpOnly`, `SameSite=Strict`, `Path=/`, and `Secure` when `X-Forwarded-Proto` says https)
 and sends the browser to the same address without the token. The cookie's value is derived from the token, never the

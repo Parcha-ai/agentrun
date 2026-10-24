@@ -28,7 +28,7 @@ const revision = (id, current, note) => ({ id, kind: "agentic", current, created
 const AGENT_PAGE = { agent: { id: "calc", name: `Calc ${HOSTILE}`, createdAt: "2026-10-21T09:00:00.000Z", current: REV_B }, revisions: [revision(REV_B, true, "Cites"), revision(REV_A, false, `First ${HOSTILE}`)] };
 /** A run as GET /v2/runs/{id} answers it while it works. */
 const LIVE = { ...summary("run-9", "calc", REV_B, "agentic", "working", "working", "2026-10-23T06:00:00.000Z", null, 0.01), updated_at: "2026-10-23T06:00:01.000Z", result: null, error: null, poll_after_ms: 1000 };
-const CAPABILITIES = { backend: "local", contract: "agentrun.v2/0", features: { agents: { create: true, list: true, update: true, revisions: true } }, tools: ["read", "write", "edit", "ask_person"] };
+const CAPABILITIES = { backend: "local", contract: "agentrun.v2/0", features: { agents: { create: true, list: true, update: true, revisions: true }, thinking: ["low", "medium", "high", "xhigh", "max"] }, tools: ["read", "write", "edit", "ask_person"] };
 /** An agent as GET /v2/agents/{id} answers it: the current revision's definition, numbered, and the revision as its ETag. */
 const agentView = (id, revision, definition) => ({ agent_id: id, definition: { id, version: 2, ...definition, skills: [] }, kind: definition.workflow ? "workflow" : "agentic", revision, revisions: 2, source: null, skills: [], sign_ins: [], runs: { count: 0, live: 0 }, region: "local", home_etag: `"${revision}"`, created_at: "2026-10-21T09:00:00.000Z", updated_at: "2026-10-22T10:00:00.000Z" });
 
@@ -119,6 +119,9 @@ test("a new agent: name, description, a prompt, a model and the tools capabiliti
   find(page, "INPUT", "description").value = "Writes briefs.";
   find(page, "TEXTAREA", "instructions").value = "Research one company.";
   find(page, "INPUT", "model").value = " openai/gpt-5 ";
+  const thinking = find(page, "SELECT", "thinking");
+  assert.deepEqual(all(thinking).map((el) => [el.value, el.textContent]), [["", "the run's effort"], ["low", "low"], ["medium", "medium"], ["high", "high"], ["xhigh", "xhigh"], ["max", "max"]], "the levels capabilities offer, never off");
+  thinking.value = "high";
   const boxes = all(page.app).filter((el) => el.getAttribute("type") === "checkbox");
   boxes[0].checked = true;
   boxes[3].checked = true;
@@ -130,7 +133,7 @@ test("a new agent: name, description, a prompt, a model and the tools capabiliti
   find(page, "INPUT", "name").value = "  Researcher ";
   buttonNamed(page, "Create agent").click();
   await page.settle();
-  assert.deepEqual(api.writes(), [["POST", "v2/agents", { definition: { name: "Researcher", tools: ["read", "ask_person"], description: "Writes briefs.", instructions: "Research one company.", model: "openai/gpt-5" } }]]);
+  assert.deepEqual(api.writes(), [["POST", "v2/agents", { definition: { name: "Researcher", tools: ["read", "ask_person"], description: "Writes briefs.", instructions: "Research one company.", model: "openai/gpt-5", thinking: "high" } }]]);
   const sent = api.calls.at(-1);
   assert.equal(sent.headers["content-type"], "application/json");
   assert.equal(page.window.location.hash, "#/agents/researcher");
@@ -148,7 +151,7 @@ test("a new workflow agent: the workflow's JSON in place of a prompt and a model
   const hidden = () => fields.filter((el) => el.hidden).map((el) => el.childNodes[0].textContent);
   assert.deepEqual(hidden(), ["Workflow"]);
   workflow.click();
-  assert.deepEqual(hidden(), ["Prompt", "Model"]);
+  assert.deepEqual(hidden(), ["Prompt", "Model", "Thinking"], "a workflow revision keeps no model or thinking level");
   assert.equal(workflow.getAttribute("aria-pressed"), "true");
   find(page, "INPUT", "name").value = "Flow";
   find(page, "TEXTAREA", "workflow").value = "{ not json";
@@ -169,7 +172,7 @@ test("a new workflow agent: the workflow's JSON in place of a prompt and a model
 });
 
 test("edit: the form is the current definition, a tool the server does not bind still checked; saving PUTs it to .../definition with a note, never the name or description the store keeps", async () => {
-  const definition = { name: `Calc ${HOSTILE}`, description: "Adds.", instructions: "Answer.", model: "openai/gpt-5", tools: ["read", "web_fetch"] };
+  const definition = { name: `Calc ${HOSTILE}`, description: "Adds.", instructions: "Answer.", model: "openai/gpt-5", thinking: "low", tools: ["read", "web_fetch"] };
   let stale = false;
   const { page, api } = open("#/agents/calc/edit", {
     "v2/capabilities": CAPABILITIES,
@@ -183,6 +186,7 @@ test("edit: the form is the current definition, a tool the server does not bind 
   assert.match(all(page.app).find((el) => classOf(el) === "lede").textContent, /^Adds\. Saving commits a new revision/);
   assert.equal(find(page, "TEXTAREA", "instructions").value, "Answer.");
   assert.equal(find(page, "INPUT", "model").value, "openai/gpt-5");
+  assert.equal(find(page, "SELECT", "thinking").value, "low", "an edit keeps the revision's thinking level");
   const boxes = all(page.app).filter((el) => el.getAttribute("type") === "checkbox");
   assert.deepEqual(boxes.map((el) => [el.value, el.checked]), [["read", true], ["write", false], ["edit", false], ["ask_person", false], ["web_fetch", true]]);
   assert.equal(classOf(boxes[4].parentNode), "unbound");
@@ -192,7 +196,7 @@ test("edit: the form is the current definition, a tool the server does not bind 
   boxes[4].checked = false;
   buttonNamed(page, "Commit revision").click();
   await page.settle();
-  assert.deepEqual(api.writes(), [["PUT", "v2/agents/calc/definition", { definition: { tools: ["read"], instructions: "Answer, and show the sum.", model: "openai/gpt-5" }, note: "Shows its work" }]], "no id, version or skills: the server numbers the revision and carries the skill files over");
+  assert.deepEqual(api.writes(), [["PUT", "v2/agents/calc/definition", { definition: { tools: ["read"], instructions: "Answer, and show the sum.", model: "openai/gpt-5", thinking: "low" }, note: "Shows its work" }]], "no id, version or skills: the server numbers the revision and carries the skill files over");
   assert.equal(api.calls.at(-1).headers["if-match"], `"${REV_B}"`, "the edit commits onto the revision the form read");
   assert.equal(page.window.location.hash, "#/agents/calc");
   stale = true;
@@ -303,6 +307,25 @@ test("a live run follows /v2's timeline with a long poll, an answer box while it
   await shown.settle();
   assert.equal(api.calls.at(-1).path, "api/runs/run-9", "a final run is the store's own page");
   assert.ok(all(shown.app).find((el) => classOf(el) === "card run-head").textContent.includes("Asked, then answered."));
+});
+
+test("a live run's view drops the run's own start and end rows, as its stored view has none: a waiting run shows its question, not \"Run finished\"", async () => {
+  const quiet = [
+    row(0, "phase", { id: "c1:run:start", summary: "Run started" }),
+    row(1, "user_message", { text: "Pick a region" }),
+    row(2, "tool_use", { tool_name: "ask_person", tool_use_id: "t1", summary: "Asked you: Which region?" }),
+    row(3, "tool_result", { tool_name: "ask_person", tool_use_id: "t1", tool_status: "success" }),
+    row(4, "phase", { id: "c1:run:end", summary: "Run finished" }),
+    row(5, "waiting", { summary: "Waiting for you: Which region?", text: "Which region?" }),
+    row(6, "phase", { id: "c1:run:end~2", summary: "Run finished" }),
+    row(7, "phase", { summary: "Retrying in 5 s: overloaded" }),
+  ];
+  const { page: shown } = open("#/runs/run-9", { "v2/runs/run-9": { ...LIVE, status: "input_required", state: "waiting" }, "v2/runs/run-9/timeline": page({ reset: true, status: "input_required", state: "waiting", rows: quiet }), "api/store": { agents: AGENTS } });
+  await shown.settle();
+  const timeline = all(shown.app).find((el) => classOf(el) === "card timeline");
+  assert.ok(!timeline.textContent.includes("Run started") && !timeline.textContent.includes("Run finished"));
+  assert.ok(timeline.textContent.includes("Waiting for you: Which region?") && timeline.textContent.includes("Retrying in 5 s: overloaded"), "every other phase row stays");
+  assert.equal(all(shown.app).find((el) => classOf(el) === "question").textContent, "Which region?");
 });
 
 test("leaving a live run aborts its long poll; a run this server never ran, or a final one, is the store's own run page", async () => {
