@@ -104,10 +104,13 @@ export type ChatSource = { href: string; /** The other addresses a look over sev
   /** A look over several addresses: each address with the picture shown for it, when it filed one for each. */
   pictures?: { href: string; sha: string }[]; takeaway: string; decisions: ChatDecision[]; media: string[]; regions: { label: string; href: string }[]; item?: string; decisive?: boolean };
 
+/** A value drawn as a table: its columns, and each row's cells in plain form, one for each column. */
+export type ChatTable = { columns: string[]; rows: string[][] };
+
 /** One row of the run's answer, each cite resolved to the look (and its card) that made it. A cite with no look can
  *  name its own blob (a kept picture), opened at its fragment, and say what it is (`label`). `note`: the row's own
- *  explanation of its value. */
-export type ChatRow = { label: string; text: string; note?: string; cites: { href: string; look?: string; item?: string; blob?: string; label?: string }[] };
+ *  explanation of its value. `table`: the value as a table, when it is one (`text` keeps its plain form). */
+export type ChatRow = { label: string; text: string; note?: string; table?: ChatTable; cites: { href: string; look?: string; item?: string; blob?: string; label?: string }[] };
 
 /** The agent's own artifact (manifest.artifact, draft 41): its entry and every file by its SHA-256. */
 export type ChatArtifact = NonNullable<Manifest['artifact']>;

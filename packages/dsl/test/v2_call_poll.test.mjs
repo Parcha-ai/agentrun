@@ -3,7 +3,7 @@
 // validator resolves poll paths inside the declared result shape and admits the `in` predicate.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { runWorkflow, validateWorkflow, dryRunWorkflow } from "../dist/index.js";
+import { runWorkflow, validateWorkflow, dryRunWorkflow, EffectFailure } from "../dist/index.js";
 
 const SCHEMAS = {
   Plan: { type: "object", required: ["request_id"], properties: { request_id: { type: "string" } } },
@@ -70,9 +70,7 @@ test("runner: the poll deadline bounds the whole wait and reads as a timeout", a
   const events = [];
   const started = Date.now();
   await assert.rejects(
-    // 0.3 s, not 0.2: with 0.2 the fifth check lands on 800 ms, where `elapsed + interval` meets the deadline exactly and a
-    // millisecond's rounding decides which of two deadline paths ends the poll.
-    runWorkflow(wf([planNode, statusCall({ deadline_s: 1 }, poll({ deadline_s: 1, interval_s: 0.3 })), assemble]), { question: "q" }, {
+    runWorkflow(wf([planNode, statusCall({ deadline_s: 1 }, poll({ deadline_s: 1, interval_s: 0.2 })), assemble]), { question: "q" }, {
       runNode: async () => ({ request_id: "req-1" }),
       onEvent: (e) => events.push(e),
       runEffect: async () => { calls++; return { status: "IN_PROGRESS" }; },
@@ -114,4 +112,165 @@ test("runner: a check that starts near the poll deadline is cut at the poll dead
   const wall = Date.now() - started;
   assert.equal(calls, 2);
   assert.ok(wall < 4000, `cut at the poll deadline (${wall}ms)`);
+});
+
+// A slow runner wakes a timer late. This holds every timer of exactly `ms` until `heldMs`, so only
+// the wait of that length is late; the caller restores the real setTimeout.
+const holdTimer = (ms, heldMs) => {
+  const real = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, delay, ...args) => real(fn, delay === ms ? heldMs : delay, ...args);
+  return () => { globalThis.setTimeout = real; };
+};
+
+// One poll timeout reads one way, wherever the deadline lands: the same message with the check
+// count, and one effect.poll per check, the last settling "deadline".
+const pollSettlements = (events) => events.filter((e) => e.type === "effect.poll").map((e) => [e.detail.iteration, e.detail.settled]);
+
+test("runner: a poll wait that wakes past the poll deadline gives up with the counted message and one deadline event", async () => {
+  // poll deadline 1s, interval 0.2s: the first check settles nothing, and its 200 ms wait is held
+  // until 1.2s, past the poll deadline. The poll gives up as its own deadline check does.
+  let calls = 0;
+  const events = [];
+  const restore = holdTimer(200, 1200);
+  let error;
+  try {
+    error = await runWorkflow(wf([planNode, statusCall({ deadline_s: 1 }, poll({ deadline_s: 1, interval_s: 0.2 })), assemble]), { question: "q" }, {
+      runNode: async () => ({ request_id: "req-1" }),
+      onEvent: (e) => events.push(e),
+      runEffect: async () => { calls += 1; return { status: "IN_PROGRESS" }; },
+    }).then(() => undefined, (reason) => reason);
+  } finally { restore(); }
+  assert.match(String(error), /poll exceeded its 1s deadline after 1 check\(s\)/);
+  assert.equal(calls, 1);
+  assert.deepEqual(pollSettlements(events), [[1, "deadline"]]);
+});
+
+test("runner: a retry wait that wakes past the poll deadline gives up with the counted message and one deadline event", async () => {
+  // The first check fails with a retryable 5xx, and its 300 ms backoff is held until 1.3s, past the
+  // poll deadline, so its retry never starts.
+  let calls = 0;
+  const events = [];
+  const restore = holdTimer(300, 1300);
+  let error;
+  try {
+    error = await runWorkflow(wf([planNode, statusCall({ deadline_s: 1, retry: { attempts: 2, backoff_s: 0.3, on: ["http_5xx"] } }, poll({ deadline_s: 1, interval_s: 0.2 })), assemble]), { question: "q" }, {
+      runNode: async () => ({ request_id: "req-1" }),
+      onEvent: (e) => events.push(e),
+      runEffect: async () => { calls += 1; throw new EffectFailure("jobs.status answered 503", "http_5xx"); },
+    }).then(() => undefined, (reason) => reason);
+  } finally { restore(); }
+  assert.match(String(error), /poll exceeded its 1s deadline after 1 check\(s\)/);
+  assert.equal(calls, 1);
+  assert.deepEqual(pollSettlements(events), [[1, "deadline"]]);
+});
+
+test("runner: a check cut by the poll deadline gives up with the counted message and one deadline event", async () => {
+  // poll deadline 1s, node deadline 1s, interval 0.1s: the second check starts with about 0.9s of the
+  // poll left and never answers, so the poll deadline cuts it before its own 1s node deadline.
+  let calls = 0;
+  const events = [];
+  const error = await runWorkflow(wf([planNode, statusCall({ deadline_s: 1 }, poll({ deadline_s: 1, interval_s: 0.1 })), assemble]), { question: "q" }, {
+    runNode: async () => ({ request_id: "req-1" }),
+    onEvent: (e) => events.push(e),
+    runEffect: ({ signal }) => { calls += 1; if (calls === 1) return Promise.resolve({ status: "IN_PROGRESS" }); return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")))); },
+  }).then(() => undefined, (reason) => reason);
+  assert.match(String(error), /poll exceeded its 1s deadline after 2 check\(s\)/);
+  assert.equal(calls, 2);
+  assert.deepEqual(pollSettlements(events), [[1, null], [2, "deadline"]]);
+});
+
+test("runner: under a recovery driver, a check cut by the poll deadline keeps its text without a count and sends no deadline event", async () => {
+  // The recovery path does not change: its loop runs no deadline check of its own, reports a check
+  // that does not settle before the driver's wait, and the cut keeps the text without a count.
+  let calls = 0;
+  const events = [];
+  const startedAt = Date.now();
+  const recovery = { resume: async () => undefined, commit: async () => {}, pollStartedAt: () => startedAt, wait: async () => {} };
+  const error = await runWorkflow(wf([planNode, statusCall({ deadline_s: 1 }, poll({ deadline_s: 1, interval_s: 0.1 })), assemble]), { question: "q" }, {
+    recovery,
+    runNode: async () => ({ request_id: "req-1" }),
+    onEvent: (e) => events.push(e),
+    runEffect: ({ signal }) => { calls += 1; if (calls === 1) return Promise.resolve({ status: "IN_PROGRESS" }); return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")))); },
+  }).then(() => undefined, (reason) => reason);
+  assert.match(String(error), /poll exceeded its 1s deadline$/);
+  assert.equal(calls, 2);
+  assert.deepEqual(pollSettlements(events), [[1, null]]);
+});
+
+test("runner: a deadline that passes after a wait ends in time, before the next check's effect, counts that check", async () => {
+  // poll deadline 1s, interval 0.1s: the first check's wait ends in time, then the host's onEvent for
+  // its null event holds the thread until the poll deadline has passed. The deadline stops check 2
+  // before its effect begins; check 2 is counted, and it is the one that settles "deadline".
+  let calls = 0;
+  const events = [];
+  let firstAttemptAt;
+  const error = await runWorkflow(wf([planNode, statusCall({ deadline_s: 1 }, poll({ deadline_s: 1, interval_s: 0.1 })), assemble]), { question: "q" }, {
+    runNode: async () => ({ request_id: "req-1" }),
+    onEvent: (e) => {
+      events.push(e);
+      if (e.type === "effect.attempt") firstAttemptAt ??= Date.now();
+      if (e.type === "effect.poll" && e.detail.iteration === 1 && e.detail.settled === null) while (Date.now() <= firstAttemptAt + 1000) { /* hold the thread past the poll deadline */ }
+    },
+    runEffect: async () => { calls += 1; return { status: "IN_PROGRESS" }; },
+  }).then(() => undefined, (reason) => reason);
+  assert.match(String(error), /poll exceeded its 1s deadline after 2 check\(s\)/);
+  assert.equal(calls, 1);
+  assert.deepEqual(pollSettlements(events), [[1, null], [2, "deadline"]]);
+});
+
+test("runner: a cancel during the interval wait still reports the finished check", async () => {
+  // interval 2s: the first check settles nothing, and the host cancels the run 100 ms into its wait.
+  // The run rejects with the host's reason, and the finished check still sends its one event.
+  let calls = 0;
+  const events = [];
+  const controller = new AbortController();
+  const reason = new Error("the host cancelled the run");
+  const error = await runWorkflow(wf([planNode, statusCall({}, poll({ interval_s: 2 })), assemble]), { question: "q" }, {
+    signal: controller.signal,
+    runNode: async () => ({ request_id: "req-1" }),
+    onEvent: (e) => { events.push(e); if (e.type === "effect.attempt") setTimeout(() => controller.abort(reason), 100); },
+    runEffect: async () => { calls += 1; return { status: "IN_PROGRESS" }; },
+  }).then(() => undefined, (rejection) => rejection);
+  assert.equal(error, reason);
+  assert.equal(calls, 1);
+  assert.deepEqual(pollSettlements(events), [[1, null]]);
+});
+
+test("runner: a check whose tool fails ends the poll with that error and no deadline event", async () => {
+  // The second check's tool throws. Only a poll timeout settles "deadline"; any other failure of a
+  // check ends the poll with its own error, and the poll events stop at the first check's null.
+  let calls = 0;
+  const events = [];
+  const broke = new EffectFailure("the tool broke", null);
+  const error = await runWorkflow(wf([planNode, statusCall(), assemble]), { question: "q" }, {
+    runNode: async () => ({ request_id: "req-1" }),
+    onEvent: (e) => events.push(e),
+    runEffect: async () => { calls += 1; if (calls === 2) throw broke; return { status: "IN_PROGRESS" }; },
+  }).then(() => undefined, (rejection) => rejection);
+  assert.equal(error, broke);
+  assert.equal(calls, 2);
+  assert.deepEqual(pollSettlements(events), [[1, null]]);
+});
+
+test("runner: a cancel during a check's effect ends the poll with the host's reason and no deadline event", async () => {
+  // The host cancels the run 50 ms into the second check's effect, which rejects when its signal
+  // aborts. The run rejects with the host's reason, and no check settles "deadline".
+  let calls = 0;
+  const events = [];
+  const controller = new AbortController();
+  const reason = new Error("the host cancelled the run");
+  const error = await runWorkflow(wf([planNode, statusCall(), assemble]), { question: "q" }, {
+    signal: controller.signal,
+    runNode: async () => ({ request_id: "req-1" }),
+    onEvent: (e) => events.push(e),
+    runEffect: ({ signal }) => {
+      calls += 1;
+      if (calls === 1) return Promise.resolve({ status: "IN_PROGRESS" });
+      setTimeout(() => controller.abort(reason), 50);
+      return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+    },
+  }).then(() => undefined, (rejection) => rejection);
+  assert.equal(error, reason);
+  assert.equal(calls, 2);
+  assert.deepEqual(pollSettlements(events), [[1, null]]);
 });

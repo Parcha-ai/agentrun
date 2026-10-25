@@ -56,7 +56,7 @@ export type BoxSpec = {
 	readonly snapshot?: string;
 	readonly cpus?: number;
 	readonly memoryMb?: number;
-	/** GPU model in the provider's own naming, for example `T4` or `H100`. */
+	/** GPU model in the provider's own naming, for example `T4` or `H100`. The request: `BoxFacts.gpu` says what was served. */
 	readonly gpu?: string;
 	readonly region?: string;
 	/** The separation the box must have. A provider that cannot give it refuses the spec with `unsupported`. */
@@ -91,6 +91,11 @@ export type BoxFacts = {
 	readonly isolation: "none" | "container" | "gvisor" | "vm";
 	readonly cpus: number | null;
 	readonly memoryMb: number | null;
+	/**
+	 * The GPU the box has, `null` when it has none. Modal reads the model served from the box (`nvidia-smi`), which may differ from
+	 * the request (a bare `H100` may be served an H200): one name for identical cards, every model for a mixed box (joined by ` + `, so a label that joins the provider, the GPU and the isolation with `, ` stays unambiguous). A provider that
+	 * does not read it from the box repeats the request, and its documentation says so (Docker does).
+	 */
 	readonly gpu: string | null;
 	/** Absolute directory programs start in. */
 	readonly workspace: string;
