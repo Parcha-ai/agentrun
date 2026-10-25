@@ -524,6 +524,20 @@ test('with only OPENROUTER_API_KEY set, /agentrun run asks Jev through OpenRoute
   }));
 });
 
+test('with both Jev keys set, /agentrun run asks Jev through TypeSafe with the TypeSafe key', async () => {
+  await withEnv({ OPENROUTER_API_KEY: routerKey, TYPESAFE_API_KEY: 'fake-test-key', TYPESAFE_BASE_URL: undefined }, () => withJevFetch(async sent => {
+    const app = await harness({ withModel: false, extensionOptions: { hostTools: () => [] } });
+    try {
+      await app.tool({ action: 'inspect', workflow: judgeWorkflow(), input: { evidence: 'A source passage.' } });
+      await app.command('run');
+      assert.equal(sent.length, 1, 'one Jev request was sent');
+      assert.equal(sent[0].url, 'https://api.typesafe.ai/v1/systemone');
+      assert.equal(sent[0].authorization, 'Bearer fake-test-key');
+      assert.equal(app.messages.at(-1).details.status, 'complete');
+    } finally { await app.shutdown(); }
+  }));
+});
+
 test('with only OPENROUTER_API_KEY set, /agentrun demo live reaches Jev through OpenRouter instead of refusing', async () => {
   await withEnv({ OPENROUTER_API_KEY: routerKey, TYPESAFE_API_KEY: undefined }, () => withJevFetch(async () => {
     const app = await harness();
@@ -554,8 +568,9 @@ test('/agentrun status says which provider Jev uses', async () => {
     try { await app.command('status'); return app.messages.at(-1).content.split('\n').find(line => line.startsWith('Jev:')); }
     finally { await app.shutdown(); }
   });
-  assert.match(await statusLine({ OPENROUTER_API_KEY: routerKey, TYPESAFE_API_KEY: undefined }), /^Jev: .*OpenRouter/);
-  assert.match(await statusLine({ OPENROUTER_API_KEY: routerKey, TYPESAFE_API_KEY: 'fake-test-key' }), /^Jev: .*TypeSafe/);
+  assert.match(await statusLine({ OPENROUTER_API_KEY: routerKey, TYPESAFE_API_KEY: undefined }), /^Jev: .*via OpenRouter/);
+  assert.match(await statusLine({ OPENROUTER_API_KEY: routerKey, TYPESAFE_API_KEY: 'fake-test-key' }), /^Jev: .*via TypeSafe/);
+  assert.match(await statusLine({ OPENROUTER_API_KEY: undefined, TYPESAFE_API_KEY: 'fake-test-key' }), /^Jev: .*via TypeSafe/);
   const none = await statusLine({ OPENROUTER_API_KEY: undefined, TYPESAFE_API_KEY: undefined });
   assert.match(none, /not configured/); assert.match(none, /TYPESAFE_API_KEY/); assert.match(none, /OPENROUTER_API_KEY/);
 });
