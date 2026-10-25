@@ -640,7 +640,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     // An allowlist such as --tools read,grep leaves this tool out, and Pi then disables it without a word.
     const active = pi.getActiveTools();
     if (!active.includes(toolName)) pi.sendMessage({ customType: 'agentrun', display: true, details: {},
-      content: safe(`The agentrun tool is not active, so workflows cannot run in this session. Start Pi with: pi --tools ${[...active, toolName].join(',')}`) });
+      content: safe(`The agentrun tool is not active, so Pi's model cannot call AgentRun workflows in this session. /agentrun still works. To let the model use the tool, start Pi with: pi --tools ${[...active, toolName].join(',')}`) });
   });
   pi.on('session_tree', async (_event, ctx) => { await closeSession(); await state(ctx); });
   pi.registerEntryRenderer<WorkflowSessionSnapshot>('agentrun:snapshot', (entry, options) => {
