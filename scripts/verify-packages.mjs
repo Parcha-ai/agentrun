@@ -275,6 +275,7 @@ import * as visionTesting from '@parcha/pi-vision/testing';
 import * as transport from '@parcha/pi-transport';
 import * as transportHands from '@parcha/pi-transport/hands';
 import * as transportHome from '@parcha/pi-transport/home';
+import * as transportLaunch from '@parcha/pi-transport/launch';
 import * as transportTesting from '@parcha/pi-transport/testing';
 import * as piDurable from '@parcha/agentrun-pi/durable';
 import * as piWorkflows from '@parcha/agentrun-pi/workflows';
@@ -321,7 +322,7 @@ assert.equal(typeof archil.openDurableRun,'function'); assert.equal(typeof archi
 assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserAgent.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
 assert.deepEqual(Object.keys(vision.READ_MEDIA_PARAMETERS),['ask','from_s','to_s','page','char_offset']); assert.equal(vision.resolveLimits(undefined).image.maxWidth,2000); assert.equal(vision.citation('a.pdf',{page:{from:3,to:3}}),'a.pdf#page=3'); assert.equal(typeof visionDurable.createVisionExtension,'function');
 assert.equal((await visionTesting.fakeEyes().see({parts:[],ask:'q'},new AbortController().signal)).text,'fake answer');
-assert.equal(typeof transport.parseTransportConfig,'function'); assert.equal(typeof transportHome.moveWorkspace,'function'); assert.equal(typeof transportHome.sealStore,'function'); assert.equal(typeof transportTesting.createBoxConformance,'function');
+assert.equal(typeof transport.parseTransportConfig,'function'); assert.equal(typeof transportLaunch.launch,'function'); assert.equal(typeof transportLaunch.launchState,'function'); assert.equal(typeof transportLaunch.launchStop,'function'); assert.equal(transportHome.launch,transportLaunch.launch); assert.equal(typeof transportHome.moveWorkspace,'function'); assert.equal(typeof transportHome.sealStore,'function'); assert.equal(typeof transportTesting.createBoxConformance,'function');
 for (const name of ${JSON.stringify(boxProviders)}) assert.equal(typeof (await import('@parcha/pi-transport/box/'+name))[${JSON.stringify(Object.fromEntries(boxProviders.map(name => [name, boxFactory(name)])))}[name]],'function',name);
 assert.equal(typeof transportHands.boxEnv,'function');
 assert.equal(typeof transportHands.transport,'function'); assert.equal(typeof transport.TransportError,'function');
