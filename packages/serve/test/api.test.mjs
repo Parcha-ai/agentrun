@@ -22,7 +22,9 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.deepEqual(body.features.agents, { create: true, list: true, update: true, revisions: true });
   assert.equal(body.features.messages.steer_workflow_runs, false);
   assert.equal(body.features.timeline.live_workflow_rows, false);
-  assert.deepEqual(body.tools, ["read", "write", "edit", "ask_person"], "the tools an agentic revision may name");
+  assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes]), [["read", true, true], ["write", true, true], ["edit", true, true], ["ask_person", true, false]], "the table, in order: what a revision may name, and what a workflow's model node may");
+  assert.ok(body.tools.every((t) => typeof t.summary === "string" && t.summary && !("missing" in t)));
+  assert.deepEqual(body.workflows.node_tools, ["read", "write", "edit"]);
   assert.deepEqual(body.workflows, { nodes: ["agent", "decide", "extract", "report"], node_tools: ["read", "write", "edit"], adapters: ["runNode"] });
   assert.deepEqual(body.features.thinking, ["low", "medium", "high", "xhigh", "max"]);
   assert.equal(body.features.files.upload, false);
@@ -246,4 +248,13 @@ test("a run thinks at its effort, else its revision's thinking level, else the h
   assert.equal(thinkingOf({ AGENT_THINKING: "max" }, undefined), "max");
   assert.equal(thinkingOf({}, undefined), "medium");
   assert.equal(thinkingOf({ AGENT_THINKING: "off" }, "off"), "medium");
+});
+
+test("the tool table is closed: a name outside it is refused by name, and a tool's missing variables are named, never their values", async () => {
+  const { toolRefusal, toolsView, TOOLS } = await import("../dist/tools.js");
+  assert.ok(Object.isFrozen(TOOLS));
+  assert.equal(toolRefusal(["read", "ask_person"], {}), undefined);
+  assert.deepEqual(toolRefusal(["read", "bash", "constructor"], {}).unbound, ["bash", "constructor"], "nothing outside the table, not even a name every object has");
+  assert.deepEqual(toolRefusal(["ask_person"], {}, true).unbound, ["ask_person"], "a workflow's model node cannot ask the person");
+  assert.deepEqual(toolsView({}).map((t) => t.name), ["read", "write", "edit", "ask_person"]);
 });

@@ -13,7 +13,7 @@ import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type Run
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { type AgentEntry, type Agents, sqliteBusy, storeError } from "./agents.js";
 import { readJson, RUN_META, writeWhole } from "./files.js";
-import { ASK_TOOL } from "./app.js";
+import { ASK_TOOL } from "./tools.js";
 import { ApiError } from "./errors.js";
 import { EFFORT_ENV, FAUX_ENV } from "./model.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";

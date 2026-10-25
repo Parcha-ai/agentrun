@@ -102,6 +102,24 @@ workflow of fast nodes runs with `AGENT_MODEL_FAST` and no `AGENT_MODEL`. A run 
 `high`), else at its agentic revision's `thinking` (`low` to `max`), else at the host's `AGENT_THINKING`, else at medium;
 it is never off, and a model node that names its own thinking level keeps it.
 
+## Tools
+
+A revision names its tools from one closed table (`src/tools.ts`): each name is how the run's process binds it and the
+variables of this server's environment it needs. Nothing outside the table can be named, and no tool is loaded from
+anywhere else. `GET /capabilities` lists every one in `tools`, `available: true` or `false` with the variables it is
+`missing` (their names, never their values), and `nodes` for whether a workflow's model node may name it. A run of a
+revision that names a tool outside the table, or one whose variables are not set, is refused before it starts (`409
+agent_not_runnable`, with `details.unbound` and `details.missing`).
+
+| Tool | What it does | Needs | A workflow node may name it |
+| --- | --- | --- | --- |
+| `read` | Read a file in the run's `work/` | nothing | yes |
+| `write` | Write a file in the run's `work/` | nothing | yes |
+| `edit` | Edit a file in the run's `work/` | nothing | yes |
+| `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no |
+
+There is no `bash`: a run gets no shell (see [Safety](#safety)).
+
 ## What it serves
 
 | Route | Here |
