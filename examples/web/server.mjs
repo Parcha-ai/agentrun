@@ -15,6 +15,7 @@ import { lstat, readdir, readFile, rename, stat, writeFile } from "node:fs/promi
 import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
 import { basename, dirname, extname, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -147,9 +148,16 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   // Read in one pass (it takes the home's lock for a moment), and again only when agent.sqlite has changed: the history
   // asks often. Every write closes the store, so the change is in the file itself.
   let homeRead = null;
+  // The home is read again whenever its store's head commit moves. A file's mtime and size are no signature: the store keeps
+  // its size across a commit, and two writes inside one tick of the filesystem's clock leave the mtime as it was.
   async function homeState() {
-    const st = await stat(join(home.dir, AGENT_STORE_FILE));
-    const sig = `${st.mtimeMs}:${st.size}`;
+    const store = new DatabaseSync(join(home.dir, AGENT_STORE_FILE), { readOnly: true, timeout: 5_000 });
+    let sig;
+    try {
+      sig = String(store.prepare("SELECT next_seq FROM durable_metadata WHERE singleton = 1").get()?.next_seq);
+    } finally {
+      store.close();
+    }
     if (homeRead?.sig !== sig) homeRead = { sig, state: readAgentHome(home) };
     return homeRead.state.catch((error) => ((homeRead = null), Promise.reject(error)));
   }

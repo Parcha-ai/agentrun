@@ -2,7 +2,7 @@
 // store shaped like pi's entries table, work files). No network, no key, no model. Expected rows and headers are written
 // by hand from the fixtures, not read back from the code.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
@@ -329,6 +329,21 @@ test("httpSource reads a long text file cut short to show it, and whole to downl
   const whole = await source.file("r1", "big.txt", { download: true });
   assert.equal(whole.headers.get("x-truncated"), null);
   assert.equal((await whole.arrayBuffer()).byteLength, 600 * 1024);
+});
+
+test("a run the store gained in the same tick of the file clock as the server's last read is still found", async (t) => {
+  const { home, json, get } = await app(t);
+  // The server read the home as it started. A commit inside the same clock tick leaves the store's mtime as it was, and
+  // its size does not move: put the mtime back to show the server a write that changed neither.
+  const store = join(home.dir, "agent.sqlite");
+  const before = statSync(store, { bigint: true });
+  await makeRun(home, "r1", { status: "done", files: { "notes.md": "# Notes" } });
+  assert.equal(statSync(store, { bigint: true }).size, before.size, "the store keeps its size across the run's commit");
+  const ns = before.mtimeNs;
+  execFileSync("touch", ["-m", "-d", `@${ns / 1_000_000_000n}.${String(ns % 1_000_000_000n).padStart(9, "0")}`, store]);
+  assert.equal(statSync(store, { bigint: true }).mtimeNs, ns, "the store's mtime is the one the server read");
+  assert.equal((await get("/runs/r1")).status, 200);
+  assert.deepEqual((await json("/runs/r1/files")).files.map((f) => f.path), ["notes.md"]);
 });
 
 test("search finds file contents, file names and a finished run's transcript, and skips dotfiles", async (t) => {
