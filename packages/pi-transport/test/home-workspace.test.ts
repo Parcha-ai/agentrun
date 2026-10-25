@@ -117,11 +117,15 @@ describe("moveWorkspace on local boxes", () => {
 		expect(existsSync(dst)).toBe(false);
 	});
 
-	it("refuses a socket by name", async () => {
+	it("refuses a socket by name", async (test) => {
 		const { from, to, src, dst } = await pair();
 		mkdirSync(src);
+		const socket = join(src, "live.sock");
+		// A unix socket's path holds at most 103 bytes on macOS and 107 on Linux; a longer one binds cut short, outside the tree.
+		const bytes = Buffer.byteLength(socket);
+		test.skip(bytes > 103, `the socket's path is ${bytes} bytes, more than a unix socket holds: a shorter TMPDIR runs this`);
 		const server = createServer();
-		await new Promise<void>((resolve) => server.listen(join(src, "live.sock"), resolve));
+		await new Promise<void>((resolve) => server.listen(socket, resolve));
 		try {
 			const moved = await moveWorkspace(from, to, { fromRoot: src, toRoot: dst }, context);
 			expect(moved.ok ? "" : moved.error.code).toBe("unsupported_entry");
