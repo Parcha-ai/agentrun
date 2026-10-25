@@ -64,8 +64,9 @@ export type NodeAttempt = {
   digest: string;
   /** The agent the attempt's conversation is created with: model, thinking, extensions, tools, instructions. */
   agent: AgentChange;
-  /** The node's input: the conversation's one user turn. */
-  user: string;
+  /** The node's input: the conversation's one user turn, a string or its parts. A resumed attempt keeps what it was
+   *  first submitted with: pi answers its request id with that submission. */
+  user: InputSubmissionDraft["content"];
   /** Written in the commit that creates the conversation: the documents the conversation's tools and sections read. */
   init?(tx: Tx, conversationId: ConversationId): void | Promise<void>;
   /** Run in the commit that finds the conversation an earlier process created, with its index entry as stored (an
