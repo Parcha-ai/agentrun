@@ -118,9 +118,15 @@ test("through a gateway a revision's provider/model-id is sent whole (OpenRouter
   const own = entries("gpt-4o").find((entry) => entry.provider === "cloudflare-ai-gateway").cost;
   assert.deepEqual((await costOf({}, ["default"], "cloudflare-ai-gateway/gpt-4o")).default, own);
   assert.deepEqual((await costOf({ AGENT_MODEL_GATEWAY_IDS: "bare" }, ["default"], "cloudflare-ai-gateway/gpt-4o")).default, own);
-  // A host model set whole, as OpenRouter names it, is priced as its vendor's entry when the catalog has no entry for the whole id.
-  const vendor = entries("gpt-4o").find((entry) => entry.provider === "openai").cost;
-  if (!entries("openai/gpt-4o").length) assert.deepEqual((await costOf({ AGENT_MODEL: "openai/gpt-4o" })).default, vendor);
+  // The host's own model goes as it is set, bare or not; only the exact value "bare" changes a revision's.
+  assert.equal(await sent({ AGENT_MODEL_GATEWAY_IDS: "bare", AGENT_MODEL: "openai/gpt-4o" }, undefined), "openai/gpt-4o");
+  for (const value of ["whole", "1", "BARE", "true"]) assert.equal(await sent({ AGENT_MODEL_GATEWAY_IDS: value }, "openai/gpt-4o"), "openai/gpt-4o", value);
+  // A host model set whole, as OpenRouter names it, that the catalog lists only bare: priced as that vendor's entry.
+  const ids = new Set(builtinModels().getModels().map((model) => model.id));
+  const bare = builtinModels().getModels().find((model) => total(model.cost) > 0 && !ids.has(`${model.provider}/${model.id}`) && total(model.cost) !== total(highest(model.id)));
+  assert.ok(bare, "the catalog has a model listed only bare whose provider prices it below the highest");
+  const vendorCost = entries(bare.id).find((entry) => entry.provider === bare.provider).cost;
+  assert.deepEqual((await costOf({ AGENT_MODEL: `${bare.provider}/${bare.id}` })).default, vendorCost, `${bare.provider}/${bare.id}`);
 });
 
 test("max_cost_usd applies to a gateway model the catalog prices: the run stops with spend_cap_reached; an id the catalog does not know is still $0 and never reaches its cap", async (t) => {
