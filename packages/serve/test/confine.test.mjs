@@ -41,6 +41,10 @@ test("read, write and edit reach nothing outside work/: the tokens, the store, a
   await other.done();
   const secret = join(data, "runs", other.runId, "work", "secret.txt");
   await writeFile(secret, "another run's secret");
+  // And a secret in that run's tmp/, the one place besides work/ a run may read: its own, not another's.
+  const otherTmp = join(data, "runs", other.runId, "tmp", "secret.txt");
+  await mkdir(join(otherTmp, ".."), { recursive: true });
+  await writeFile(otherTmp, "another run's temporary secret");
   const outside = join(data, "..", "outside.txt");
   const go = join(data, "..", "go");
   const before = { token: await readFile(join(data, ".token"), "utf8"), door: await readFile(join(data, ".door-token"), "utf8") };
@@ -52,17 +56,22 @@ test("read, write and edit reach nothing outside work/: the tokens, the store, a
     ["read", { path: "../../../store.sqlite" }],
     ["read", { path: `../../${other.runId}/work/secret.txt` }],
     ["read", { path: secret }],
+    ["read", { path: `../../${other.runId}/tmp/secret.txt` }],
     ["read", { path: "/proc/self/environ" }],
     ["read", { path: "/proc/1/environ" }],
     ["read", { path: "link-to-token" }],
     ["write", { path: "../../../evil.txt", content: "evil" }],
     ["write", { path: outside, content: "evil" }],
+    ["write", { path: "../tmp/written.txt", content: "evil" }],
     ["edit", { path: "../../../store.sqlite", edits: [{ oldText: "CREATE TABLE", newText: "CREATE TABLX" }] }],
   ];
-  const control = [["write", { path: "inside.txt", content: "inside" }], ["read", { path: "inside.txt" }]];
+  const control = [["write", { path: "inside.txt", content: "inside" }], ["read", { path: "inside.txt" }], ["read", { path: "../tmp/note.txt" }]];
   const run = await probed(api, data, "probe", [{ wait: go }, ...[...attempts, ...control].map(([tool, args]) => ({ tool, args }))]);
   // A link in the run's own work/ to the data directory's token, made before any call.
   await symlink(join(data, ".token"), join(data, "runs", run.runId, "work", "link-to-token"));
+  // A file in the run's own tmp/, which its reads may reach (where a command's spilled output would be).
+  await mkdir(join(data, "runs", run.runId, "tmp"), { recursive: true });
+  await writeFile(join(data, "runs", run.runId, "tmp", "note.txt"), "note");
   await writeFile(go, "");
   const said = await run.done();
   assert.equal(said.length, attempts.length + control.length);
@@ -71,13 +80,15 @@ test("read, write and edit reach nothing outside work/: the tokens, the store, a
     assert.equal(said[i].error, true, `${tool} ${args.path} is refused`);
     assert.match(said[i].text, OUTSIDE, `${tool} ${args.path}`);
   });
-  assert.deepEqual(said.slice(attempts.length).map((a) => [a.tool, a.error, a.text]), [["write", false, "Successfully wrote to inside.txt"], ["read", false, "inside"]], "the same run reads and writes inside work/");
+  assert.deepEqual(said.slice(attempts.length).map((a) => [a.tool, a.error, a.text]), [["write", false, "Successfully wrote to inside.txt"], ["read", false, "inside"], ["read", false, "note"]], "the same run reads and writes inside work/, and reads its own tmp/");
   assert.equal(await readFile(join(data, "runs", run.runId, "work", "inside.txt"), "utf8"), "inside");
   // Nothing outside changed, and nothing was made there.
   assert.deepEqual({ token: await readFile(join(data, ".token"), "utf8"), door: await readFile(join(data, ".door-token"), "utf8") }, before);
   assert.equal(await readFile(secret, "utf8"), "another run's secret");
   assert.equal(await exists(join(data, "evil.txt")), false);
   assert.equal(await exists(outside), false);
+  assert.equal(await exists(join(data, "runs", run.runId, "tmp", "written.txt")), false);
+  assert.equal(await readFile(otherTmp, "utf8"), "another run's temporary secret");
   const store = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
   t.after(() => store.close());
   assert.equal(store.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
