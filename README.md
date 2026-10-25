@@ -12,10 +12,10 @@ revision you can go back to), run it on a real model, and open any run of any ag
    docker logs agentrun | grep Open
    ```
 
-   With the key in your environment (`export OPENROUTER_API_KEY=...`), `-e OPENROUTER_API_KEY` passes it on and it never
-   sits on the command line. Open the link it prints. The volume `agentrun` keeps every agent and run. A provider's own
-   key works the same way (`-e AGENT_MODEL=anthropic/claude-sonnet-5-5 -e ANTHROPIC_API_KEY`), and any OpenAI Responses
-   gateway through `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`.
+   With the key in your environment, `-e OPENROUTER_API_KEY` passes it on and it never sits on the command line. A credit
+   limit on the key caps what your agents can spend. Open the link it prints; the volume `agentrun` keeps every agent and
+   run. For a provider's own key, pass `-e AGENT_MODEL=anthropic/claude-sonnet-5-5 -e ANTHROPIC_API_KEY` instead; any
+   OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`.
 
 2. **About $7 a month**: deploy it to Render in one click: a Starter instance with a 1 GB disk, always on, with a URL. Each run takes its own memory, so its 512 MB holds a few runs at a time. Render's free instance works for a try, but it has no disk, so it loses every run when it sleeps or restarts.
 
