@@ -91,7 +91,12 @@ from:
   `provider/model-id` is sent as `model-id`, and `AGENT_MODEL`, `AGENT_MODEL_FAST` and `AGENT_MODEL_STRONG` are sent as
   they are. `AGENT_MODEL_API_KEY` is its key when it needs one. `AGENT_MODEL_PRICE` is `input,output,cacheRead[,cacheWrite]`
   in USD per million tokens, so a run's cost estimate has a price; `AGENT_MODEL_FAST_PRICE` and `AGENT_MODEL_STRONG_PRICE`
-  price their tier's model, and default to it.
+  price their tier's model, and default to it. With no price set, a model id pi-ai's catalog knows (`gpt-6-luna`, say)
+  takes the catalog's list price, and any other is priced at $0. A revision's `provider/model-id` takes that provider's
+  entry when it is paid; a bare id, a provider the catalog does not list for it, or one it lists at $0 takes the highest
+  price any provider lists (one entry's whole price, the most input plus output; a $0 entry never wins over a paid one),
+  as the gateway does not say whose model answers. A run's `max_cost_usd` therefore now stops a gateway run on such a model with
+  `spend_cap_reached`; at $0 it never did.
 - Otherwise pi-ai's providers serve them, each with its key from the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
   ...), and its catalog prices the run. The `AGENT_MODEL` variables are then `provider/model-id` too.
 
