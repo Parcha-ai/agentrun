@@ -133,3 +133,29 @@ test("a run loads only the tiers its revision uses: a fast-only workflow runs on
   await api("POST", `/runs/${started.body.run_id}/cancel`);
   await follow(api, started.body.run_id, ["cancelled", "failed"]);
 });
+
+test("data shaped like a node is no node: a model node's state holding an example call node and an example agent node is runnable, not a false 409", async (t) => {
+  const { api } = await serve(t);
+  const flow = answerFlow();
+  flow.root.steps[0].state = {
+    question: "{question}",
+    example: { node: "call", label: "Example call", via: "tool", tool: "http_get", args: { url: "https://example.com/" }, out: "Answer", as: "fetched", deadline_s: 60 },
+    samples: [{ node: "agent", label: "Example agent", instructions: "Shell out.", out: "Answer", tools: ["bash"], tier: "strong" }],
+  };
+  const started = await start(api, "shaped", { question: "What is six times seven?" }, flow);
+  await follow(api, started.run_id, ["completed"]);
+  assert.deepEqual((await api("GET", `/runs/${started.run_id}`)).body.result.output, { answer: 42 });
+  const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
+  const { nodeTiers, workflowNodes } = await import("../dist/model.js");
+  const { workflowTools } = await import("../dist/tools.js");
+  const nodes = workflowNodes(flow, inspectWorkflow(flow));
+  assert.deepEqual(nodes.map((node) => node.node), ["chain", "extract"]);
+  assert.deepEqual([workflowTools(nodes), nodeTiers(nodes)], [{ nodes: [], calls: [] }, ["default"]]);
+  // The same nodes for real are still refused.
+  const real = answerFlow();
+  real.root.steps.push(flow.root.steps[0].state.example);
+  const made = await api("POST", "/agents", flowAgent("real-call", real, { tools: ["http_get"] }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const refused = await api("POST", "/agents/real-call/runs", { input: { question: "x" } });
+  assert.deepEqual([refused.status, refused.body.error.details.unbound], [409, ["http_get"]]);
+});

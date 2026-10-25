@@ -12,7 +12,7 @@ import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agen
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { NODE_TOOLS, toolRefusal, toolsView, workflowTools } from "./tools.js";
 import { ApiError, invalid, unsupported } from "./errors.js";
-import { chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, nodeTiers, THINKING_LEVELS } from "./model.js";
+import { chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, nodeTiers, THINKING_LEVELS, workflowNodes } from "./model.js";
 import { answerPage } from "./page.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
@@ -286,15 +286,17 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       return;
     }
     const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
-    const { requires } = inspectWorkflow(revision.body.workflow);
+    const inspection = inspectWorkflow(revision.body.workflow);
+    const { requires } = inspection;
+    const nodes = workflowNodes(revision.body.workflow, inspection);
     const adapters = requires.adapters.filter((name) => !(WORKFLOW_ADAPTERS as readonly string[]).includes(name));
-    const named = workflowTools(revision.body.workflow);
+    const named = workflowTools(nodes);
     const refusal = adapters.length || requires.executableCode ? undefined : (toolRefusal(named.nodes, env, "nodes") ?? toolRefusal(named.calls, env, "calls"));
     const why = adapters.length || requires.executableCode
       ? `agentrun-serve runs a workflow's model nodes (agent, decide, extract, report) and its tool calls; this workflow also needs ${[...adapters, ...(requires.executableCode ? ["code"] : [])].join(", ")}.`
       : refusal?.message;
     if (why) throw new ApiError("agent_not_runnable", why, { details: { adapters, unbound: refusal?.unbound ?? [], missing: refusal?.missing ?? {}, code: requires.executableCode } });
-    for (const tier of nodeTiers(revision.body.workflow)) {
+    for (const tier of nodeTiers(nodes)) {
       const chosen = await chooseModel(env, undefined, tier);
       if ("why" in chosen) throw new ApiError("agent_not_runnable", chosen.why, { details: { adapters: [], unbound: [], code: false, tier } });
     }

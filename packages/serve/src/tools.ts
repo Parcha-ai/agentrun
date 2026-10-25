@@ -163,20 +163,16 @@ export const BOUND_TOOLS: readonly string[] = Object.keys(TOOLS);
 export const NODE_TOOLS: readonly string[] = BOUND_TOOLS.filter((name) => TOOLS[name]!.nodes);
 export const CALL_TOOLS: readonly string[] = BOUND_TOOLS.filter((name) => TOOLS[name]!.effect !== undefined);
 
-/** The tools a workflow names: on its model nodes (`tools`), and on its `call` nodes `via: "tool"` (`tool`). */
-export function workflowTools(workflow: unknown): { nodes: string[]; calls: string[] } {
-  const nodes = new Set<string>();
+/** The tools a workflow names (`nodes` from workflowNodes): on its model nodes (`tools`), and on its `call` nodes
+ *  `via: "tool"` (`tool`). */
+export function workflowTools(nodes: readonly Record<string, unknown>[]): { nodes: string[]; calls: string[] } {
+  const named = new Set<string>();
   const calls = new Set<string>();
-  const visit = (value: unknown): void => {
-    if (Array.isArray(value)) return value.forEach(visit);
-    if (typeof value !== "object" || value === null) return;
-    const node = value as Record<string, unknown>;
+  for (const node of nodes) {
     if (node.node === "call" && node.via === "tool" && typeof node.tool === "string") calls.add(node.tool);
-    else if (typeof node.node === "string" && Array.isArray(node.tools)) for (const name of node.tools) if (typeof name === "string") nodes.add(name);
-    Object.values(node).forEach(visit);
-  };
-  visit((workflow as { root?: unknown } | null)?.root);
-  return { nodes: [...nodes], calls: [...calls] };
+    else if (Array.isArray(node.tools)) for (const name of node.tools) if (typeof name === "string") named.add(name);
+  }
+  return { nodes: [...named], calls: [...calls] };
 }
 
 /** The table's entry for `name`, or undefined for a name it does not hold. */
