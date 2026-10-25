@@ -242,6 +242,24 @@ test("a key of 8 characters or more in the run's environment is refused at the l
   assert.ok(!JSON.stringify(learned.body).includes(secret));
 });
 
+test("a key of 8 characters or more the server holds now refuses a lesson at a dry run and at Learn (422), never echoed, though the run's process never had it", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const secret = "rotated-secret-0123456789";
+  const file = join(await scratch(t), "key.txt");
+  await writeFile(file, `${secret}\n`);
+  const first = await serve(t, { data });
+  const runId = await ran(first.api, "rotated", `Learn what ${file} holds.`, { tools: ["learn"] });
+  await first.close();
+  setEnv(t, "LEARN_ROTATED_API_KEY", secret);
+  const { api } = await serve(t, { data });
+  for (const body of [{ run_id: runId, dry_run: true }, { run_id: runId }]) {
+    const answer = await api("POST", "/agents/rotated/learn", body);
+    assert.deepEqual([answer.status, answer.body.error.code, answer.body.error.fields.map((f) => f.reason)], [422, "input_invalid", ["secret_value"]], JSON.stringify(body));
+    assert.ok(!JSON.stringify(answer.body).includes(secret), "the refusal never repeats the value");
+  }
+  assert.equal((await api("GET", "/agents/rotated/revisions")).body.revisions.length, 1, "nothing committed");
+});
+
 test("a lesson the guard refuses is 422 naming the rule, never the value, and commits nothing", async (t) => {
   const { api, token } = await serve(t);
   const file = join(await scratch(t), "key.txt");
