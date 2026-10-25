@@ -7,8 +7,8 @@ import type { DaytonaClient, SandboxInfo } from "@parcha/pi-durable-disk";
 
 const NODE_URL = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz";
 const NODE_SHA256 = "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6";
-const ARCHIL_URL = "https://s3.amazonaws.com/archil-client/pkg/archil_0.8.42-1790378297_amd64.deb";
-const ARCHIL_SHA256 = "ee593dde01f1c2cbd4ff9cba7852aa87b45f58b97dc328e66e03ced98d9c60d3";
+const ARCHIL_URL = "https://s3.amazonaws.com/archil-client/pkg/archil_0.10.0-1792692895_amd64.deb";
+const ARCHIL_SHA256 = "7d75f7b94d64952a939570dc79d0996c914696be176b45e9fed51a45c15ad0ba";
 
 /** Where things go in the box. */
 export const BOX = {
@@ -84,7 +84,7 @@ rm -f node.tar.xz
 curl -fsSLo archil.deb ${ARCHIL_URL}
 echo "${ARCHIL_SHA256}  archil.deb" | sha256sum -c - >/dev/null
 sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null
-sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libfuse2t64 fuse3 /tmp/archil.deb >/dev/null
+sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates libfuse2t64 fuse3 /tmp/archil.deb >/dev/null
 rm -f archil.deb
 # The run user: whatever account has host A's uid, or a new one.
 getent group ${gid} >/dev/null || sudo -n groupadd --gid ${gid} pda

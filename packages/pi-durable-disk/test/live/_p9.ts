@@ -209,8 +209,8 @@ export const PDA_ID = 1500;
 export const APP_OUT = "/var/tmp/pda-out";
 export const NODE_URL = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz";
 export const NODE_SHA256 = "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6";
-export const ARCHIL_URL = "https://s3.amazonaws.com/archil-client/pkg/archil_0.8.42-1790378297_amd64.deb";
-export const ARCHIL_SHA256 = "ee593dde01f1c2cbd4ff9cba7852aa87b45f58b97dc328e66e03ced98d9c60d3";
+export const ARCHIL_URL = "https://s3.amazonaws.com/archil-client/pkg/archil_0.10.0-1792692895_amd64.deb";
+export const ARCHIL_SHA256 = "7d75f7b94d64952a939570dc79d0996c914696be176b45e9fed51a45c15ad0ba";
 const REPO = new URL("../../", import.meta.url).pathname;
 
 /** This checkout's working tree (no node_modules, .git or .tmp) as a gzipped tar. */
@@ -242,7 +242,7 @@ step node
 curl -fsSLo archil.deb ${ARCHIL_URL}
 echo "${ARCHIL_SHA256}  archil.deb" | sha256sum -c - >/dev/null
 sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null
-sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libfuse2t64 fuse3 /tmp/archil.deb >/dev/null
+sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates libfuse2t64 fuse3 /tmp/archil.deb >/dev/null
 rm -f archil.deb
 step archil
 id pda >/dev/null 2>&1 || { sudo -n groupadd --gid ${PDA_ID} pda && sudo -n useradd --uid ${PDA_ID} --gid ${PDA_ID} --create-home --shell /bin/bash pda; }
@@ -273,7 +273,7 @@ export async function sh(client: DaytonaClient, box: SandboxInfo, script: string
   return r.result;
 }
 
-/** Install the pinned runtime (Node 24.21.0, archil 0.8.42, both sha256-checked), the package, the run user and sudoers. */
+/** Install the pinned runtime (Node 24.21.0, archil 0.10.0, both sha256-checked), the package, the run user and sudoers. */
 export async function prepareBox(client: DaytonaClient, box: SandboxInfo): Promise<{ ms: number; steps: Record<string, number>; versions: Record<string, string> }> {
   const t0 = performance.now();
   await client.upload(box, "/tmp/pda-pkg.tar.gz", packageTarball());
@@ -316,7 +316,7 @@ export function snapshotDockerfile(commit: string, options: { readonly demo?: bo
     `FROM ${SNAPSHOT_BASE}`,
     "USER root",
     `RUN set -eu; cd /tmp; curl -fsSLo node.tar.xz ${NODE_URL}; echo "${NODE_SHA256}  node.tar.xz" | sha256sum -c -; install -d -m 0755 /opt/node24; tar -xJf node.tar.xz -C /opt/node24 --strip-components=1; chmod -R a+rX /opt/node24; rm -f node.tar.xz`,
-    `RUN set -eu; cd /tmp; curl -fsSLo archil.deb ${ARCHIL_URL}; echo "${ARCHIL_SHA256}  archil.deb" | sha256sum -c -; apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libfuse2t64 fuse3 /tmp/archil.deb; rm -rf /var/lib/apt/lists/* /tmp/archil.deb`,
+    `RUN set -eu; cd /tmp; curl -fsSLo archil.deb ${ARCHIL_URL}; echo "${ARCHIL_SHA256}  archil.deb" | sha256sum -c -; apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates libfuse2t64 fuse3 /tmp/archil.deb; rm -rf /var/lib/apt/lists/* /tmp/archil.deb`,
     `RUN groupadd --gid ${PDA_ID} pda && useradd --uid ${PDA_ID} --gid ${PDA_ID} --create-home --shell /bin/bash pda`,
     `RUN set -eu; install -d -m 0755 ${PACKAGE_DIR}; curl -fsSLo ${PACKAGE_DIR}/package.json https://raw.githubusercontent.com/Parcha-ai/agentrun/${commit}/packages/pi-durable-disk/package.json; curl -fsSLo ${ARCHIL_WRAPPER} https://raw.githubusercontent.com/Parcha-ai/agentrun/${commit}/packages/pi-durable-disk/bin/archil-scoped; env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root ${PACKAGE_INSTALL.join(" ")} --prefix ${PACKAGE_DIR}; ${DEPS_HASH} ${PACKAGE_DIR}/package.json > ${DEPS_STAMP}; ${dropCache}chown -R root:root ${PACKAGE_DIR}; chmod -R a+rX,go-w ${PACKAGE_DIR}`,
     ...(options.demo ? [demoClosureRun(commit)] : []),

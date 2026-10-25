@@ -1,0 +1,48 @@
+{
+  "description": "Validation rejects a parallel whose branches are two unaliased agents with one label: each writes under that label.",
+  "workflow": {
+    "v": 2,
+    "name": "parallel-same-label",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "parallel",
+      "label": "p",
+      "branches": [
+        {
+          "node": "agent",
+          "label": "look",
+          "instructions": "Do it.",
+          "out": "V"
+        },
+        {
+          "node": "agent",
+          "label": "look",
+          "instructions": "Do it again.",
+          "out": "V"
+        }
+      ]
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {},
+  "expected": {
+    "valid": false
+  }
+}

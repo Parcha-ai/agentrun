@@ -66,34 +66,59 @@ const stateOf = (outcome: Pick<WorkflowOutcome, "status">): RunState =>
 
 type WorkflowStarter = Pick<ReturnType<typeof createWorkflowExtension>, "start">;
 
-/**
- * Runs a workflow revision on its run's store as one durable workflow task, and waits for it. `harness` is open on
- * `run.storePath` with `workflows` (agentrun-pi's `createWorkflowExtension`, which holds the host's adapters)
- * installed. It refuses with no task when the workflow uses a tool not in `tools` or does not take `input`. The run's
- * id is its key, and the agent and the revision are bound beside the workflow, so the run reopened under another
- * revision is refused (`RUN_STORE_BINDING_MISMATCH`) and nothing runs. `carry` is what the store's `carryBack` takes:
- * the state, and the labels of the nodes that completed, in graph order (chains aside), then `failed at <label>` for
- * each deepest node that failed and `escalated at <label>` for the node a gate fired at; with none of these, `<state>
- * before any node completed`.
- */
-export async function runWorkflowRevision(options: {
+type RunOptions = {
   harness: WorkflowCaller;
   workflows: WorkflowStarter;
   context: Parameters<WorkflowStarter["start"]>[2];
   run: WorkflowRunStart;
   input: Record<string, unknown>;
   tools: readonly string[];
-}): Promise<{ outcome: WorkflowOutcome; carry: { state: RunState; summary: string } }> {
+};
+
+/** The two refusals `startWorkflowRevision` makes before any task: no task, so no journal for `workflowCarry` to read. */
+const BEFORE_ANY_TASK = new Set(["TOOL_NOT_REGISTERED", "INPUT_NOT_TAKEN"]);
+
+/**
+ * Runs a workflow revision on its run's store as one durable workflow task, and waits for it: `startWorkflowRevision`,
+ * then `workflowCarry`. `harness` is open on `run.storePath` with `workflows` (agentrun-pi's `createWorkflowExtension`,
+ * which holds the host's adapters) installed, and `carry` is what the store's `carryBack` takes. `workflowCarry` reads
+ * the store file, so a host whose process holds that file exclusively (a `pi-durable-disk run`) calls the two halves
+ * itself: the first in the run's process, the second once that process has released the run and exited.
+ */
+export async function runWorkflowRevision(options: RunOptions): Promise<{ outcome: WorkflowOutcome; carry: { state: RunState; summary: string } }> {
+  const outcome = await startWorkflowRevision(options);
+  return { outcome, carry: await workflowCarry(options.run, outcome) };
+}
+
+/**
+ * Starts a workflow revision's run as one durable workflow task and waits for its outcome. It refuses with no task when
+ * the workflow uses a tool not in `tools` or does not take `input`. The run's id is its key, and the agent and the
+ * revision are bound beside the workflow, so the run reopened under another revision is refused
+ * (`RUN_STORE_BINDING_MISMATCH`) and nothing runs; reopened as itself, it resumes, or answers its outcome when it ended.
+ * It does not read the store file.
+ */
+export async function startWorkflowRevision(options: RunOptions): Promise<WorkflowOutcome> {
   const { run, input } = options;
   const workflow = run.revision.body.workflow;
   const { inspectWorkflow, validateWorkflow } = await import("@parcha/agentrun-dsl");
-  const refuse = (code: string, message: string) => ({ outcome: { status: "refused" as const, code, message }, carry: { state: "failed" as const, summary: `refused: ${message}` } });
+  const refuse = (code: string, message: string) => ({ status: "refused" as const, code, message });
   const unregistered = inspectWorkflow(workflow).requires.tools.filter((tool) => !options.tools.includes(tool));
   if (unregistered.length) return refuse("TOOL_NOT_REGISTERED", `the workflow uses ${unregistered.length} tool(s) this host does not register`);
   const fits = validateWorkflow(workflow, { executeCode: false, input });
   if (!fits.ok) return refuse("INPUT_NOT_TAKEN", `the workflow does not take this input: ${fits.issues[0]?.code ?? "invalid"} at ${fits.issues[0]?.path || "its root"}`);
   const request = { key: run.runId, workflow, input, bind: { agent: run.agentId, revision: run.revision.id } };
-  const outcome = await (await options.workflows.start(options.harness, request, options.context, { background: true })).wait(options.context);
+  return (await options.workflows.start(options.harness, request, options.context, { background: true })).wait(options.context);
+}
+
+/**
+ * What the store's `carryBack` takes for a run whose workflow ended in `outcome` (its `status`, and a refusal's `code`
+ * and `message`): the state, and the labels of the nodes that completed, in graph order (chains aside), then `failed at
+ * <label>` for each deepest node that failed and `escalated at <label>` for the node a gate fired at; with none of
+ * these, `<state> before any node completed`. A refusal before any task is `refused: <message>`. It reads the run with
+ * `readWorkflowRun`, so no other connection may hold the store file exclusively: call it once the run is released.
+ */
+export async function workflowCarry(run: Pick<WorkflowRunStart, "runId" | "storePath" | "revision">, outcome: Pick<WorkflowOutcome, "status"> & { code?: string; message?: string }): Promise<{ state: RunState; summary: string }> {
+  if (outcome.status === "refused" && outcome.code !== undefined && BEFORE_ANY_TASK.has(outcome.code)) return { state: "failed", summary: `refused: ${outcome.message ?? outcome.code}` };
   const view = await readWorkflowRun(run);
   // The nodes that completed (chains, pure sequence, aside), then each deepest node that failed (a container failed only
   // through a node in it is not named again), then the node the run escalated at.
@@ -103,7 +128,7 @@ export async function runWorkflowRevision(options: {
   const summary = [done.join(", "), failed.length ? `failed at ${failed.join(", ")}` : "", view.escalatedAt ? `escalated at ${view.escalatedAt.label}` : ""];
   // The store refuses an empty summary: a run with none of the three still says how it ended.
   const state = stateOf(outcome);
-  return { outcome, carry: { state, summary: summary.filter(Boolean).join("; ") || `${state} before any node completed` } };
+  return { state, summary: summary.filter(Boolean).join("; ") || `${state} before any node completed` };
 }
 
 /** A node's state in a run: the DSL's, and `stopped` for a node an ended run interrupted. */

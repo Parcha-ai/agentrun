@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { reconcileEffects } from '../packages/harness/dist/assemble.js';
-import { classesOf, CLASSES, cutBrowserAction, cutInEffectWindow, isReduced, killAnywhere, planNext, progress, random, render } from './reference/kill-anywhere.ts';
+import { balancedBrowserSession, classesOf, CLASSES, cutBrowserAction, cutInEffectWindow, isReduced, killAnywhere, planNext, progress, random, render } from './reference/kill-anywhere.ts';
 
 const failed = (ledger) => ledger.checks.filter((check) => !check.ok).map((check) => ({ check: check.name, detail: check.detail }));
 
@@ -55,6 +55,21 @@ test('a page action that errored is printed with the kill behind it and the ask 
   const lines = render({ seed: 1, kills: [], processes: 1, browserCalls: [], runInterrupted: [2, 5], gates: [], covered: [], final: { status: 'complete', generation: 1, record: null }, ms: 0, checks: [],
     counted: { committedTurns: [], toolResults: [{ tool: 'run', error: true }], requests: {}, effects: {}, judge: {}, browser: { 'page.run': 2 }, receipts: [] }, reference: {} }).join('\n');
   assert.match(lines, /page\.run +x2; 1 errored run result committed \(kill 2, 5\)/);
+});
+
+test('the browser session balance accepts a skipped page only when no session or page operation was made', () => {
+  const cases = [
+    { name: 'one session released', browser: { create: 1, release: 1, 'page.run': 1 }, reduced: false, ok: true },
+    { name: 'no session for the reduced answer', browser: { findByTag: 5 }, reduced: true, ok: true },
+    { name: 'no session for a full answer', browser: {}, reduced: false, ok: false },
+    { name: 'a leaked session', browser: { create: 1 }, reduced: true, ok: false },
+    { name: 'two sessions', browser: { create: 2, release: 2 }, reduced: true, ok: false },
+    { name: 'a page action without a session', browser: { 'page.run': 1 }, reduced: true, ok: false },
+    { name: 'a page read without a session', browser: { 'page.read': 1 }, reduced: true, ok: false },
+    { name: 'a snapshot without a session', browser: { 'page.snapshot': 1 }, reduced: true, ok: false },
+    { name: 'a release without a create', browser: { release: 1 }, reduced: true, ok: false },
+  ];
+  for (const row of cases) assert.equal(balancedBrowserSession(row.browser, row.reduced), row.ok, row.name);
 });
 
 test('the same seed draws the same first kill, and another seed draws another; every ledger check and gate passes on both runs', { timeout: 300_000 }, async () => {

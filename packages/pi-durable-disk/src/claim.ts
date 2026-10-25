@@ -12,7 +12,7 @@ import { ClaimError, EXIT_DATAERR, FencedError, HeldError, ownWriteFenced } from
 
 export type RunRef = { disk: string; region: string; id: string };
 
-/** The control-plane calls the claim uses; an archil `Disk` (SDK `disk` 1.7.0) satisfies it. Supervisor side only. */
+/** The control-plane calls the claim uses; an archil `Disk` (SDK `disk` 1.9.0) satisfies it. Supervisor side only. */
 export interface ControlApi {
   putObject(key: string, body: string, options: { uid: number; gid: number; mode: number }): Promise<unknown>;
   addUser(user: { type: "token"; nickname: string; ttl: string; oneUse: boolean }): Promise<{ identifier?: string; token?: string }>;
