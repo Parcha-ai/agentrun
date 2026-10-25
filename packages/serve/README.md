@@ -203,14 +203,14 @@ A completed agentic run's `result` is `{output: null, final_answer}`; a complete
 An agentic run may name `max_cost_usd` (a workflow run may not: `422`). The cap is checked in the run's own process
 before each model request, the agent's and a compaction's alike: what the run has spent so far plus the request's worst
 case must stay within it, or the request is not sent and the run ends `failed` with `spend_cap_reached`. The worst
-case is the request's input tokens at the higher of the model's input and cache-write prices, plus its max output
-tokens at the model's output price. The max output tokens are the ones the request sends (the model's, clamped to what
-its context window leaves); the input tokens are pi-ai's estimate: the tokens the last response reported, plus about
-one token per 3.5 characters after it. So a request costs more than its worst case only when its input was
-underestimated or the provider reports more output tokens than it was asked for. Spent so far is read from the run's
-store each time its process starts, so it survives a restart, plus each response since; a request in flight holds its
-worst case until it answers. A model priced at $0 (a gateway id pi-ai's catalog does not know, with no
-`AGENT_MODEL_PRICE`) never reaches a cap.
+case is the request's input tokens at the input price plus its max output tokens at the output price, the max output
+tokens being the ones the request sends (the model's, clamped to what its context window leaves). The input is priced
+at the higher of the model's input and cache-write prices, since the provider may bill any of it as a cache write. The
+input tokens are pi-ai's estimate (`estimateContextTokens`: the tokens the last response reported, plus about one token
+per 3.5 characters after it), which may run low on code or non-English text; the server's check after each response
+catches what it misses. Spent so far is read from the run's store each time its process starts, so it survives a
+restart, plus each response since; a request in flight holds its worst case until it answers. A model priced at $0 (a
+gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`) never reaches a cap.
 
 The server also checks the run's cost after each response, as a backstop, and stops a run whose cost passed its cap.
 Either way the run keeps the answer it paid for: a run the cap stopped has `result: {output: null, final_answer}`, the

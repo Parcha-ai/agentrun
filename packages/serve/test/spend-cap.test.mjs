@@ -87,6 +87,20 @@ test("spent so far counts the run's earlier requests: a request that fits alone 
   assert.equal(run.cost.usd, first, "only the ask was paid for");
 });
 
+test("a request the cap refuses never reaches the model: the run's second request, its input alone over the cap, is not made", async (t) => {
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls });
+  const { api } = await serve(t, { faux: new URL("./fixtures/faux-recorded.mjs", import.meta.url).pathname });
+  // The ask is small and cheap; the answer's 20,000 characters (about 5,700 tokens at $100 per million) pass $0.2 alone.
+  const run = await start(api, "region", "Pick a region.", { max_cost_usd: 0.2 }, { tools: ["ask_person"] });
+  await follow(api, run.run_id, ["input_required"]);
+  assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "eu ".repeat(6_666) })).body.mode, "answer");
+  const view = await ended(api, run.run_id);
+  assert.deepEqual([view.status, view.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(view));
+  const made = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(made, [{ users: 1 }], "the model was called for the ask and never for the answer");
+});
+
 test("spent so far survives a restart of the run's process: it is read back from the run's store", async (t) => {
   const { api, data, runId, first } = await asked(t);
   const pid = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).holder.pid;
