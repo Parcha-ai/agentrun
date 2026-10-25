@@ -49,23 +49,11 @@ jobs:
         run: npm install --global npm@11.21.0 --ignore-scripts
       - name: The tagged commit passed CI on main
         # The merge queue ran every suite on this tree and ci.yml ran again on the commit when it reached main. The release
-        # trusts that run instead of running the suites a third time: a run on this commit that is missing, still running or not
-        # green stops the release here. The checks below build the archives the release publishes, and still run.
+        # trusts that run's verify gates instead of running the suites a third time; scripts/release-ci-gate.mjs stops the release
+        # unless they all passed. The checks below build the archives the release publishes, and still run.
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            if green="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&branch=main&per_page=20" --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')"; then break; fi
-            [ "$attempt" -lt 3 ] || { echo 'could not read the CI runs of this commit' >&2; exit 1; }
-            sleep 15
-          done
-          if [ "$green" -lt 1 ]; then
-            echo "::error::ci.yml has no successful push run on main for $GITHUB_SHA; wait for it to finish green, then dispatch again"
-            exit 1
-          fi
-          echo "ci.yml passed on main for $GITHUB_SHA"
+        run: node scripts/release-ci-gate.mjs
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: node scripts/generate-author-contract.mjs --check
