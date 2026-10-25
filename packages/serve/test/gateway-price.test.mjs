@@ -36,6 +36,21 @@ test("a gateway model the catalog knows takes its list price; a set price wins; 
   assert.deepEqual(own.fast, luna);
 });
 
+test("a tier's own price wins for its model over the shared AGENT_MODEL_PRICE and over the catalog; a tier without one takes the shared price", async () => {
+  // Three distinct models, so each tier's price goes with its own model (a model two tiers share takes the default's).
+  const env = {
+    AGENT_MODEL: "not-a-catalog-default", AGENT_MODEL_FAST: "gpt-6-luna", AGENT_MODEL_STRONG: "not-a-catalog-strong",
+    AGENT_MODEL_PRICE: "3,6", AGENT_MODEL_FAST_PRICE: "0.5,1.5,0.05", AGENT_MODEL_STRONG_PRICE: "9,18,0.9,11",
+  };
+  const prices = await costOf(env, ["default", "fast", "strong"]);
+  assert.deepEqual(prices.default, { input: 3, output: 6, cacheRead: 0, cacheWrite: 3 }, "the default tier takes AGENT_MODEL_PRICE");
+  assert.deepEqual(prices.fast, { input: 0.5, output: 1.5, cacheRead: 0.05, cacheWrite: 0.5 }, "AGENT_MODEL_FAST_PRICE wins over AGENT_MODEL_PRICE");
+  assert.notDeepEqual(prices.fast, highest("gpt-6-luna"), "and over the catalog's list price for the fast model");
+  assert.deepEqual(prices.strong, { input: 9, output: 18, cacheRead: 0.9, cacheWrite: 11 }, "AGENT_MODEL_STRONG_PRICE wins over AGENT_MODEL_PRICE");
+  const shared = await costOf({ ...env, AGENT_MODEL_STRONG_PRICE: "" }, ["strong"]);
+  assert.deepEqual(shared.strong, { input: 3, output: 6, cacheRead: 0, cacheWrite: 3 }, "a tier with no price of its own takes AGENT_MODEL_PRICE");
+});
+
 test("an id several providers price: the ref's own provider's paid entry when the catalog lists one, else the highest whole entry, never a $0 one over a paid one", async () => {
   for (const id of ["gpt-4o", "deepseek-v4-pro"]) {
     assert.ok(new Set(entries(id).map(({ cost }) => total(cost))).size > 1, `the catalog prices ${id} differently by provider`);
