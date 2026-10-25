@@ -14,11 +14,11 @@ import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@pa
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { readJson, RUN_META } from "./files.js";
 import { nodeTiers, runModels, type Tier, thinkingOf } from "./model.js";
-import { CodingTools, type ToolBinding, type ToolHost, toolOf } from "./tools.js";
+import { CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { isObject, skillNames } from "./validate.js";
 
-/** The workflow adapters this host gives a run: model nodes only. */
-export const WORKFLOW_ADAPTERS = ["runNode"] as const;
+/** The workflow adapters this host gives a run: model nodes, and calls `via: "tool"` to the table's tools. */
+export const WORKFLOW_ADAPTERS = ["runNode", "runEffect"] as const;
 
 /** The revision's instructions, then each skill's `<name>/SKILL.md` from the run's workspace, by name. */
 export async function promptOf(instructions: string, skillFiles: Iterable<string>, work: string): Promise<string> {
@@ -91,7 +91,13 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     import("@parcha/pi-durable-agent/workflow"),
   ]);
   const nodeTools = new Map<string, ToolBinding>();
-  for (const name of inspectWorkflow(revision.body.workflow).requires.tools) nodeTools.set(name, await bind(name, true));
+  for (const name of workflowTools(revision.body.workflow).nodes) nodeTools.set(name, await bind(name, true));
+  /** A call node `via: "tool"`: the table's tool by name, its interpolated args in, what its `out` schema checks out. */
+  const runEffect = async ({ node, input, signal }: { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal }) => {
+    const effect = node.via === "tool" && node.tool ? toolOf(node.tool)?.effect : undefined;
+    if (!effect) throw new Error(`call node "${node.label}": agentrun-serve runs no tool ${node.tool ?? `via ${node.via}`}`);
+    return effect(input, { signal, env: process.env });
+  };
   /** A model node's agent: its tier's model, the tools it names, and the extensions they come from. */
   const nodeAgent = (node: { tier?: string; tools?: string[] }) => {
     const bindings = (node.tools ?? []).flatMap((name) => nodeTools.get(name) ?? []);
@@ -100,13 +106,13 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const nodes = nodeRunner({ agent: (node) => nodeAgent(node) as never });
   const workflows = createWorkflowExtension({
     options: () => ({ files: workspaceFiles(where.work) }),
-    run: ({ runtime, context }) => ({ adapters: { runNode: nodes.on(taskScope(runtime), context).runNode }, durableNodes: true }),
+    run: ({ runtime, context }) => ({ adapters: { runNode: nodes.on(taskScope(runtime), context).runNode, runEffect: runEffect as never }, durableNodes: true }),
   });
   registry.install(nodes.extension as unknown as Extension);
   registry.install(workflows.extension as unknown as Extension);
   const onOpen = async (durable: DurableRun) => {
     const started = { runId: run.id, storePath: join(where.store, RUN_STORE_FILE), agentId: run.agent, revision: revision as Extract<Revision, { kind: "workflow" }> };
-    const outcome = await startWorkflowRevision({ harness: durable.harness as never, workflows, context: BACKGROUND_CONTEXT, run: started, input, tools: [...nodeTools.keys()] });
+    const outcome = await startWorkflowRevision({ harness: durable.harness as never, workflows, context: BACKGROUND_CONTEXT, run: started, input, tools: inspectWorkflow(revision.body.workflow).requires.tools });
     await letGo(durable.harness);
     await durable.setStatus(outcome.status === "complete" ? "done" : "failed", { workflow: outcome.status, ...(outcome.status === "refused" ? { code: outcome.code, message: outcome.message.slice(0, 500) } : {}) });
     await durable.release();

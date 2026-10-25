@@ -10,7 +10,7 @@ import { pipeline } from "node:stream/promises";
 import type { Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
-import { NODE_TOOLS, toolRefusal, toolsView } from "./tools.js";
+import { NODE_TOOLS, toolRefusal, toolsView, workflowTools } from "./tools.js";
 import { ApiError, invalid, unsupported } from "./errors.js";
 import { chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, nodeTiers, THINKING_LEVELS } from "./model.js";
 import { answerPage } from "./page.js";
@@ -51,6 +51,9 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
    *  backend), in place of Browserbase's. */
   fauxBrowser?: string;
+  /** With `faux` only: a module whose default export gives `fetch_page` its `{ lookup, fetchImpl }` (the tests' fake
+   *  network), in place of the system's resolver and undici. */
+  fauxWeb?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
   allowHosts?: string[];
   drainTimeout?: string;
@@ -184,7 +187,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}) };
   const caps = capabilities(env);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -285,9 +288,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
     const { requires } = inspectWorkflow(revision.body.workflow);
     const adapters = requires.adapters.filter((name) => !(WORKFLOW_ADAPTERS as readonly string[]).includes(name));
-    const refusal = adapters.length || requires.executableCode ? undefined : toolRefusal(requires.tools, env, true);
+    const named = workflowTools(revision.body.workflow);
+    const refusal = adapters.length || requires.executableCode ? undefined : (toolRefusal(named.nodes, env, "nodes") ?? toolRefusal(named.calls, env, "calls"));
     const why = adapters.length || requires.executableCode
-      ? `agentrun-serve runs a workflow's model nodes (agent, decide, extract, report); this workflow also needs ${[...adapters, ...(requires.executableCode ? ["code"] : [])].join(", ")}.`
+      ? `agentrun-serve runs a workflow's model nodes (agent, decide, extract, report) and its tool calls; this workflow also needs ${[...adapters, ...(requires.executableCode ? ["code"] : [])].join(", ")}.`
       : refusal?.message;
     if (why) throw new ApiError("agent_not_runnable", why, { details: { adapters, unbound: refusal?.unbound ?? [], missing: refusal?.missing ?? {}, code: requires.executableCode } });
     for (const tier of nodeTiers(revision.body.workflow)) {

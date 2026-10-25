@@ -107,19 +107,31 @@ it is never off, and a model node that names its own thinking level keeps it.
 A revision names its tools from one closed table (`src/tools.ts`): each name is how the run's process binds it and the
 variables of this server's environment it needs. Nothing outside the table can be named, and no tool is loaded from
 anywhere else. `GET /capabilities` lists every one in `tools`, `available: true` or `false` with the variables it is
-`missing` (their names, never their values), and `nodes` for whether a workflow's model node may name it. A run of a
+`missing` (their names, never their values), `nodes` for whether a workflow's model node may name it, and `calls` for
+whether a workflow's `call` node `via: "tool"` may run it. A run of a
 revision that names a tool outside the table, or one whose variables are not set, is refused before it starts (`409
 agent_not_runnable`, with `details.unbound` and `details.missing`).
 
-| Tool | What it does | Needs | A workflow node may name it |
+| Tool | What it does | Needs | A workflow's model node may name it, a call node run it |
 | --- | --- | --- | --- |
-| `read` | Read a file in the run's `work/` | nothing | yes |
-| `write` | Write a file in the run's `work/` | nothing | yes |
-| `edit` | Edit a file in the run's `work/` | nothing | yes |
-| `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no |
-| `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes |
+| `read` | Read a file in the run's `work/` | nothing | yes, no |
+| `write` | Write a file in the run's `work/` | nothing | yes, no |
+| `edit` | Edit a file in the run's `work/` | nothing | yes, no |
+| `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
+| `fetch_page` | Fetch one web page from a public host: `{url}` in, a Page out, `{ok, url, status, title, text, links, refused?, error?}` | nothing | yes, yes |
+| `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
 
 There is no `bash`: a run gets no shell (see [Safety](#safety)).
+
+`fetch_page` reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is resolved,
+every address it resolves to is checked, and the connection is dialled at the address checked, so a loopback, private,
+link-local, carrier-grade or metadata address (`127.0.0.1`, `10.x`, `169.254.169.254`, `fc00::`, `::ffff:127.0.0.1`
+and the like), a name such as `localhost`, a public name that resolves to one of them and a redirect to one are all
+refused, as is any scheme but http(s). A body is at most 5 MiB, a fetch at most 30 s, the text is cut at 60,000
+characters and the links at 200, absolute http(s) only. A refusal or a failure is a Page with `ok: false` and `refused`
+or `error`, never a thrown error: an agent reads why, and a workflow can branch on it. An agent gets the Page as JSON
+text; a workflow's `call` node `via: "tool", tool: "fetch_page"` gets it as its output (`args: {url}`, `out` a schema of
+that shape). A call node naming a tool the table cannot run that way is refused before the run starts (`409`).
 
 The `browser` tool runs Browserbase sessions, never a Chrome on this machine. The keys come from the server's
 environment and reach the run's process as the rest of it does. A session's custody (its lease, its tag, what it was
@@ -230,9 +242,10 @@ export default function reply(context, faux) {
 }
 ```
 
-`startServe({ faux, fauxBrowser })` (the tests', not the CLI's) also names a module whose default export gives the
-`browser` tool's `{ provider, driver }` in place of Browserbase's: the tests pass pi-browser's fake backend
-(`test/fixtures/faux-browser.mjs`). It is honored only with `faux`.
+`startServe({ faux, fauxBrowser, fauxWeb })` (the tests', not the CLI's) also names modules whose default exports give
+the `browser` tool's `{ provider, driver }` in place of Browserbase's (pi-browser's fake backend,
+`test/fixtures/faux-browser.mjs`), and `fetch_page`'s `{ lookup, fetchImpl }` in place of the system's resolver and
+undici (a table of names and pages, `test/fixtures/faux-web.mjs`). Each is honored only with `faux`.
 
 `faux.message`, `faux.text`, `faux.thinking` and `faux.toolCall` are pi-ai's faux helpers; `faux.signal` is aborted when
 the turn is stopped. A workflow's model node offers the `submit` tool (in its system message's `toolsAdded`), and
@@ -242,6 +255,8 @@ million tokens) to price the faux usage; unpriced, every run's estimate is $0. T
 
 ## Safety
 
+- `fetch_page` dials public addresses only, each hop checked and pinned (see [Tools](#tools)): a run cannot reach this
+  machine, its network or a cloud's metadata address through it.
 - A `browser` session runs at Browserbase, not on this machine: a page the model opens is reached from Browserbase's
   network, so what the model may reach there is the operator's choice of keys and project. Its downloads and uploads stay
   in the run's `work/`.

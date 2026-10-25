@@ -23,7 +23,7 @@ test("capabilities list browser with the variables it is missing (names only), a
   withEnv(t, { BROWSERBASE_PROJECT_ID: "fake-project" });
   const { api, baseUrl } = await serve(t);
   const caps = (await client(baseUrl)("GET", "/capabilities")).body;
-  assert.deepEqual(caps.tools.find((tool) => tool.name === "browser"), { name: "browser", summary: caps.tools.find((tool) => tool.name === "browser").summary, nodes: true, available: false, missing: ["BROWSERBASE_API_KEY"] });
+  assert.deepEqual(caps.tools.find((tool) => tool.name === "browser"), { name: "browser", summary: caps.tools.find((tool) => tool.name === "browser").summary, nodes: true, calls: false, available: false, missing: ["BROWSERBASE_API_KEY"] });
   assert.ok(caps.workflows.node_tools.includes("browser"));
   assert.ok(!JSON.stringify(caps).includes("fake-project"), "no value of a variable is shown");
   assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);

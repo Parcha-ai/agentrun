@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import { ArchilCodingTools, type AppContext } from "@parcha/pi-durable-disk";
+import { FETCH_PAGE_TOOL, fetchOptions, fetchPage, fetchPageTool } from "./fetch-page.js";
 import { FAUX_ENV } from "./model.js";
 
 export const ASK_TOOL = "ask_person";
@@ -64,6 +65,9 @@ export type ToolEntry = {
   nodes: boolean;
   /** What the name stands for, bound in the run's process once. */
   bind(host: ToolHost): Promise<ToolBinding>;
+  /** What a workflow's `call` node `via: "tool"` naming it runs: its interpolated `args` in, the value its `out` schema
+   *  checks out. Absent, no call node may name it. */
+  effect?(args: Record<string, unknown>, run: { signal: AbortSignal; env: NodeJS.ProcessEnv }): Promise<unknown>;
 };
 
 const fileTool = (name: string, summary: string): ToolEntry => ({
@@ -139,12 +143,41 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
       return { tools: [askPerson as ToolRegistration], extensions: [person] };
     },
   },
+  [FETCH_PAGE_TOOL]: {
+    summary: "Fetch one public web page: { ok, url, status, title, text, links }; a private or local address, or a scheme other than http(s), is refused.",
+    needs: [],
+    nodes: true,
+    bind: async (host) => {
+      const tool = fetchPageTool(() => fetchOptions(host.env, FAUX_ENV)) as unknown as ToolRegistration;
+      const extension = defineExtension({ name: "fetch-page", tools: [tool] });
+      host.install(extension);
+      return { tools: [tool], extensions: [extension] };
+    },
+    effect: async (args, run) => fetchPage(args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), signal: run.signal }),
+  },
   browser: browserTool,
 });
 
-/** Every name a revision may name, and those a workflow's model node may. */
+/** Every name a revision may name, those a workflow's model node may, and those a workflow's call node may run. */
 export const BOUND_TOOLS: readonly string[] = Object.keys(TOOLS);
 export const NODE_TOOLS: readonly string[] = BOUND_TOOLS.filter((name) => TOOLS[name]!.nodes);
+export const CALL_TOOLS: readonly string[] = BOUND_TOOLS.filter((name) => TOOLS[name]!.effect !== undefined);
+
+/** The tools a workflow names: on its model nodes (`tools`), and on its `call` nodes `via: "tool"` (`tool`). */
+export function workflowTools(workflow: unknown): { nodes: string[]; calls: string[] } {
+  const nodes = new Set<string>();
+  const calls = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) return value.forEach(visit);
+    if (typeof value !== "object" || value === null) return;
+    const node = value as Record<string, unknown>;
+    if (node.node === "call" && node.via === "tool" && typeof node.tool === "string") calls.add(node.tool);
+    else if (typeof node.node === "string" && Array.isArray(node.tools)) for (const name of node.tools) if (typeof name === "string") nodes.add(name);
+    Object.values(node).forEach(visit);
+  };
+  visit((workflow as { root?: unknown } | null)?.root);
+  return { nodes: [...nodes], calls: [...calls] };
+}
 
 /** The table's entry for `name`, or undefined for a name it does not hold. */
 export const toolOf = (name: string): ToolEntry | undefined => (Object.hasOwn(TOOLS, name) ? TOOLS[name] : undefined);
@@ -154,12 +187,12 @@ export const missingEnv = (entry: ToolEntry, env: NodeJS.ProcessEnv): string[] =
 
 /** What keeps `names` from being bound here: names outside the table (or, for a workflow's model nodes, that a node may
  *  not name), and the variables each tool in it needs that `env` does not set. Undefined when nothing does. */
-export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, nodes = false): { message: string; unbound: string[]; missing: Record<string, string[]> } | undefined {
-  const allowed = nodes ? NODE_TOOLS : BOUND_TOOLS;
+export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, where: "agent" | "nodes" | "calls" = "agent"): { message: string; unbound: string[]; missing: Record<string, string[]> } | undefined {
+  const allowed = where === "nodes" ? NODE_TOOLS : where === "calls" ? CALL_TOOLS : BOUND_TOOLS;
   const unbound = names.filter((name) => !allowed.includes(name));
   if (unbound.length) {
-    const where = nodes ? "A workflow's model nodes get the tools" : "agentrun-serve binds the tools";
-    return { message: `${where} ${allowed.join(", ")}; this ${nodes ? "workflow" : "revision"} also names ${unbound.join(", ")}.`, unbound, missing: {} };
+    const said = { agent: "agentrun-serve binds the tools", nodes: "A workflow's model nodes get the tools", calls: "A workflow's call nodes run the tools" }[where];
+    return { message: `${said} ${allowed.join(", ")}; this ${where === "agent" ? "revision" : "workflow"} also ${where === "calls" ? "calls" : "names"} ${unbound.join(", ")}.`, unbound, missing: {} };
   }
   const missing = Object.fromEntries(names.map((name) => [name, missingEnv(TOOLS[name]!, env)] as const).filter(([, vars]) => vars.length));
   const lacking = Object.entries(missing);
@@ -172,5 +205,5 @@ export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, no
 export const toolsView = (env: NodeJS.ProcessEnv) =>
   Object.entries(TOOLS).map(([name, entry]) => {
     const missing = missingEnv(entry, env);
-    return { name, summary: entry.summary, nodes: entry.nodes, available: missing.length === 0, ...(missing.length ? { missing } : {}) };
+    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, available: missing.length === 0, ...(missing.length ? { missing } : {}) };
   });
