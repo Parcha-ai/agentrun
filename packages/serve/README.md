@@ -127,11 +127,12 @@ There is no `bash`: a run gets no shell (see [Safety](#safety)).
 every address it resolves to is checked, and the connection is dialled at the address checked, so a loopback, private,
 link-local, carrier-grade or metadata address (`127.0.0.1`, `10.x`, `169.254.169.254`, `fc00::`, `::ffff:127.0.0.1`
 and the like), a name such as `localhost`, a public name that resolves to one of them and a redirect to one are all
-refused, as is any scheme but http(s). A body is at most 5 MiB, a fetch at most 30 s, the text is cut at 60,000
-characters and the links at 200, absolute http(s) only. A refusal or a failure is a Page with `ok: false` and `refused`
-or `error`, never a thrown error: an agent reads why, and a workflow can branch on it. An agent gets the Page as JSON
-text; a workflow's `call` node `via: "tool", tool: "fetch_page"` gets it as its output (`args: {url}`, `out` a schema of
-that shape). A call node naming a tool the table cannot run that way is refused before the run starts (`409`).
+refused, as is any scheme but http(s). A URL on a port other than 80 or 443 is refused before the guard is asked. A
+body is at most 5 MiB, a fetch at most 30 s, the text is cut at 60,000 characters and the links at 200, absolute
+http(s) only. A refusal or a failure is a Page with `ok: false` and `refused` or `error`, never a thrown error: an agent
+reads why, and a workflow can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via: "tool",
+tool: "fetch_page"` gets it as its output (`args: {url}`, `out` a schema of that shape). A call node naming a tool the
+table cannot run that way is refused before the run starts (`409`).
 
 The `browser` tool runs Browserbase sessions, never a Chrome on this machine. The keys come from the server's
 environment and reach the run's process as the rest of it does. A session's custody (its lease, its tag, what it was

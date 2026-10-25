@@ -1,7 +1,8 @@
 // fetch_page: one web page from a public host, as a Page: { ok, url, status, title, text, links, refused?, error? }.
 // The fetch is pi-browser's public-host guard (publicFetch): every redirect hop resolved, checked and dialled at the
-// address checked, http(s) only, a byte cap and a timeout. A refusal or a failure is a Page with ok false, never a
-// throw, so an agent reads why and a workflow can branch on it.
+// address checked, http(s) only, a byte cap and a timeout. Before it, a URL on a port other than 80 or 443 is refused
+// here as well. A refusal or a failure is a Page with ok false, never a throw, so an agent reads why and a workflow can
+// branch on it.
 import { pathToFileURL } from "node:url";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-durable";
@@ -24,6 +25,8 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 export async function fetchPage(url: unknown, options: Omit<PublicFetchOptions, "maxBytes"> = {}): Promise<Page> {
   const failed = (fields: Partial<Page> & ({ refused: string } | { error: string })): Page => ({ ok: false, url: typeof url === "string" ? url : "", status: 0, title: "", text: "", links: [], ...fields });
   if (typeof url !== "string" || !URL.canParse(url)) return failed({ error: "url is not an absolute URL" });
+  const { port } = new URL(url);
+  if (port && port !== "80" && port !== "443") return failed({ refused: `refused: port ${port} is not 80 or 443` });
   const { BrowserFailureError, publicFetch, readPage } = await import("@parcha/pi-browser");
   try {
     const signal = AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), ...(options.signal ? [options.signal] : [])]);
@@ -48,7 +51,7 @@ export async function fetchOptions(env: NodeJS.ProcessEnv, fauxEnv: string): Pro
 export const fetchPageTool = (options: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal">>) =>
   defineTool({
     name: FETCH_PAGE_TOOL,
-    description: "Fetch one web page from a public host and read it. Answers JSON: ok, the final url, the HTTP status, the page's title, its readable text (cut at 60,000 characters) and the absolute links it holds. A private or local address, a scheme other than http(s), or a page that is not text is refused (ok false, with refused saying why).",
+    description: "Fetch one web page from a public host and read it. Answers JSON: ok, the final url, the HTTP status, the page's title, its readable text (cut at 60,000 characters) and the absolute links it holds. A private or local address, a port other than 80 or 443, a scheme other than http(s), or a page that is not text is refused (ok false, with refused saying why).",
     parameters: {
       type: "object",
       additionalProperties: false,

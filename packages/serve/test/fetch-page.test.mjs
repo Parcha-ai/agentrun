@@ -15,7 +15,10 @@ const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 /** Every target that must be refused, and whether a first hop is dialled before the refusal (a redirect's). */
 const HOSTILE = [
   ["http://127.0.0.1:9421/v1/models", false],
+  ["http://127.0.0.1/", false],
   ["http://localhost:8080/", false],
+  ["http://localhost/", false],
+  ["http://public.example:8080/", false],
   ["http://app.localhost/", false],
   ["http://169.254.169.254/latest/meta-data/", false],
   ["http://10.0.0.1/", false],
@@ -56,6 +59,8 @@ test("the tool refuses every private, local and non-http(s) target before it is 
   assert.deepEqual(net.dialled, ["http://public.example/"]);
   assert.deepEqual(await fetchPage("http://public.example/notes.txt", network()), { ok: true, url: "http://public.example/notes.txt", status: 200, title: "", text: "Plain notes.", links: [] });
   assert.match((await fetchPage("http://public.example/image.png", network())).refused, /image\/png is not text/);
+  assert.equal((await fetchPage("http://public.example:8080/", network())).refused, "refused: port 8080 is not 80 or 443", "a public host on another port");
+  for (const url of ["http://public.example:80/", "http://public.example:443/", "https://public.example:443/"]) assert.notEqual((await fetchPage(url, network())).refused?.startsWith("refused: port"), true, url);
   assert.deepEqual(await fetchPage("http://public.example/missing", network()), { ok: false, url: "http://public.example/missing", status: 404, title: "", text: "", links: [], error: "the page answered 404" });
   assert.deepEqual(await fetchPage("not a url", network()), { ok: false, url: "not a url", status: 0, title: "", text: "", links: [], error: "url is not an absolute URL" });
   assert.match((await fetchPage("http://nowhere.example/", network())).error, /ENOTFOUND/);
