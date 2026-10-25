@@ -935,8 +935,8 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
       c.leaving.clear();
       // A session whose driver was let go and not yet replaced still has its observer attached: close both kinds.
       await Promise.all(c.held.tags().map((tag) => c.held.detach(tag)));
-      // A store that failed runs no release task again, so what this process still holds is released at the provider
-      //. Over a healthy store it is kept, for the next run to resume or reconcile.
+      // A store that failed runs no release task again, so what this process still holds is released at the provider.
+      // Over a healthy store it is kept, for the next run to resume or reconcile.
       if (c.failed || (c.ending?.closing && await settleWithin(c.ending.failed, FAILED_END_MS, false))) await releaseDirectly(c, [...c.owned.keys()]);
       c.owned.clear();
     },

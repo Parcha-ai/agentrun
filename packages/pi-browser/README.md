@@ -254,8 +254,10 @@ pi 1.0.4 or 1.1.x users: pin `@earendil-works/pi-codemode` to the same version a
 - `@parcha/pi-browser`: the host-neutral core. The model contract (tool names, descriptions, JSON schemas, effect and
   replay classes, the `browser` and `web` prompt sections), the typed failure envelope, the redactor, the screenshot
   budget, the repeat guard, evidence and decision-hook types, usage and prices, `find` (chunking and ranking a long page),
-  `browser_downloads`, the opt-in request observer, and the provider interface. Outside Node's builtins it loads only
-  node-html-parser and node-html-markdown, on demand, for `browser_read`'s page text and frame scan.
+  `browser_downloads`, the opt-in request observer, and the provider interface. The public-host guard under the coding
+  agent's HTTP backup is here too: `publicFetch(url, { lookup?, fetchImpl?, signal?, maxBytes? })` and
+  `readPage(html, url)`, with `isPrivateAddress` and `pinnedLookup`. Outside Node's builtins and undici it loads only
+  node-html-parser and node-html-markdown, on demand, for `browser_read`'s page text and frame scan and for `readPage`.
 - `/durable`: the pi-durable adapter. `createBrowserExtension` is session custody in the run's own store (a create is
   committed before the provider is called, release is a durable task, reconcile runs at run open). `createWebExtension` is
   `web_fetch` and `web_search`.
@@ -320,8 +322,9 @@ What it does with your machine and your data:
 
 Providers and `web_fetch`:
 
-- Without a fetch service, `web_fetch` reads public hosts only. It refuses loopback, private and link-local addresses at every
-  redirect hop, anything over 5 MiB, and non-text, and it sends no cookies or credentials.
+- Without a fetch service, `web_fetch` reads public hosts only. It refuses loopback, private, link-local and other
+  special-purpose addresses and any port but 80 and 443 at every redirect hop, anything over 5 MiB, and non-text, and it
+  sends no cookies or credentials. The call's signal bounds every hop, its name lookup included.
 - A PDF the fetch service will not convert to markdown (Browserbase answers HTTP 400) is fetched once more as the raw file.
   The coding agent has no PDF text extractor, so `web_fetch` says the URL is a PDF and that `format: "raw"` returns its
   bytes, base64-encoded. A host with an extractor passes `pdf: { text(bytes, url, signal) }` to `createWebExtension`; the text
