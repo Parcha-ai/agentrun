@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...] [--max-runs N]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
@@ -13,6 +13,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
   --port N          the port (default ${DEFAULT_PORT}; 0 is any free port)
   --faux MODULE     answer every model request from MODULE's default export: no key, no network
   --allow-host NAME another Host name to accept (repeatable)
+  --max-runs N      the most runs at once (default AGENTRUN_MAX_RUNS, else from this host's memory: (memory - 128 MiB)
+                    / 72 MiB, at least 1); over it a new run is 429
 
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
@@ -29,6 +31,7 @@ try {
       port: { type: "string" },
       faux: { type: "string" },
       "allow-host": { type: "string", multiple: true, default: [] },
+      "max-runs": { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
   }));
@@ -58,7 +61,7 @@ const data = values.data ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".
 const given = process.env.AGENTRUN_TOKEN || undefined;
 let serve: Serve;
 try {
-  serve = await startServe({ data, port, ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"] });
+  serve = await startServe({ data, port, ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"], ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}) });
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);
   process.exit(1);

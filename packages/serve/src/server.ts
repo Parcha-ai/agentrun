@@ -12,6 +12,7 @@ import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agen
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import { ApiError, invalid, unsupported } from "./errors.js";
 import { chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, nodeTiers, THINKING_LEVELS } from "./model.js";
+import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
 import { answerPage } from "./page.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
@@ -50,6 +51,12 @@ export type ServeOptions = {
   /** Extra `Host` names to accept besides the loopback ones. */
   allowHosts?: string[];
   drainTimeout?: string;
+  /** The most runs at once (default: AGENTRUN_MAX_RUNS, else from this host's memory: host.ts); over it, 429. */
+  maxRuns?: number;
+  /** Free disk under the data directory below which GET /v2/health fails (default 64 MiB, or AGENTRUN_MIN_FREE_MB). */
+  minFreeBytes?: number;
+  /** How often a carry back the store refused is tried again while the server lives (default 30 s). */
+  settleRetryMs?: number;
   /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
   carryBackRetry?: CarryBackRetry;
@@ -78,6 +85,7 @@ const digest = (text: string) => createHash("sha256").update(text).digest();
 type Route = { method: string; pattern: RegExp; name: string; capability?: string };
 const ROUTES: Route[] = [
   { method: "GET", pattern: /^\/capabilities$/, name: "capabilities" },
+  { method: "GET", pattern: /^\/health$/, name: "health" },
   { method: "POST", pattern: /^\/agents$/, name: "createAgent" },
   { method: "GET", pattern: /^\/agents$/, name: "listAgents" },
   { method: "GET", pattern: /^\/agents\/([^/]+)$/, name: "getAgent" },
@@ -104,7 +112,7 @@ const ROUTES: Route[] = [
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
-export function capabilities(env: NodeJS.ProcessEnv = process.env) {
+export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = maxRunsOf(env)) {
   const models = modelSource(env);
   return {
     backend: "local",
@@ -140,7 +148,7 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env) {
       max_upload_bytes: null,
       max_files_per_run: 0,
       max_message_chars: MAX_MESSAGE,
-      max_concurrent_runs: null,
+      max_concurrent_runs: maxRuns,
       timeline_max_wait_ms: MAX_WAIT_MS,
       timeline_page_rows: PAGE_ROWS,
       idempotency_ttl_s: IDEMPOTENCY_TTL_S,
@@ -178,9 +186,13 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const doorTokenFile = join(data, DOOR_TOKEN_FILE);
   const doorToken = await tokenIn(doorTokenFile);
   const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}) };
-  const caps = capabilities(env);
+  const maxRuns = maxRunsOf(process.env, options.maxRuns);
+  const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
+  if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
+  const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
+  const caps = capabilities(env, maxRuns);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -470,6 +482,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
     if (found.name === "capabilities") return send(res, 200, caps);
+    if (found.name === "health") {
+      const health = await healthOf(data, minFreeBytes);
+      return send(res, health.status === "ok" ? 200 : 503, health);
+    }
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
     if (found.capability) {
       const off: Record<string, string> = {
