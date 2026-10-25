@@ -501,8 +501,10 @@ const routerKey = 'fake-router-key';
 const withJevFetch = async run => {
   const sent = [], realFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
-    sent.push({ url: String(url), authorization: init?.headers?.Authorization, body: JSON.parse(init.body) });
-    return new Response(JSON.stringify({ answers: { supported: { type: 'noul', noul: 0.9 } }, usage: { input_tokens: 10, output_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    const body = JSON.parse(init.body);
+    sent.push({ url: String(url), authorization: init?.headers?.Authorization, body });
+    const answers = Object.fromEntries(Object.keys(body.questions).map(id => [id, { type: 'noul', noul: 0.9 }]));
+    return new Response(JSON.stringify({ answers, usage: { input_tokens: 10, output_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   try { return await run(sent); } finally { globalThis.fetch = realFetch; }
 };
@@ -539,12 +541,22 @@ test('with both Jev keys set, /agentrun run asks Jev through TypeSafe with the T
 });
 
 test('with only OPENROUTER_API_KEY set, /agentrun demo live reaches Jev through OpenRouter instead of refusing', async () => {
-  await withEnv({ OPENROUTER_API_KEY: routerKey, TYPESAFE_API_KEY: undefined }, () => withJevFetch(async () => {
-    const app = await harness();
+  const question = 'Can non-developers edit documentation in the repository?';
+  const source = { id: 'editor-trial', text: 'A fictional editor trial.' };
+  const finding = { question, answer: 'Some can, with a browser editor.', sources: [source] };
+  const report = { answer: 'Possibly, with a browser editor.', findings: [finding] };
+  await withEnv({ OPENROUTER_API_KEY: routerKey, TYPESAFE_API_KEY: undefined }, () => withJevFetch(async sent => {
+    const app = await harness({ responses: [{ questions: [question] }, finding, report].map(value => fauxAssistantMessage(fauxToolCall('submit', { value }))) });
     try {
       await app.command('demo live');
       assert.doesNotMatch(app.messages.map(message => message.content).join('\n'), /requires .*configuration/);
-      assert.ok(app.messages.at(-1).details.status, 'the live demo ran and reported');
+      assert.ok(sent.length > 0, 'the evidence screen asked Jev');
+      for (const request of sent) {
+        assert.equal(request.url, 'https://openrouter.ai/api/v1/systemone');
+        assert.equal(request.authorization, `Bearer ${routerKey}`);
+      }
+      assert.equal(app.messages.at(-1).details.status, 'complete', JSON.stringify(app.messages.at(-1).details));
+      assert.deepEqual(app.messages.at(-1).details.output, report);
     } finally { await app.shutdown(); }
   }));
 });
