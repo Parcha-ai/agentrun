@@ -622,6 +622,32 @@ export function registerLaunchSuite(label: string, withBox: WithBox): void {
 	);
 
 	each(
+		"a reclaim of a name removes that name's stop records older than any waiting stop's bound, and keeps the rest",
+		async (box) => {
+			const spool = await spoolOf(box);
+			unwrap(await launch(box, "kept", { argv: ["sh", "-c", "exit 0"], restart: false }, context));
+			await waitPhase(box, "kept", "exited");
+			// Twenty minutes old, with touch -t and date -d @ as both images' tools take them; and one written just now.
+			const old = '$(date -d "@$(( $(date +%s) - 1200 ))" +%Y%m%d%H%M.%S)';
+			const planted = await sh(
+				box,
+				`cd "${spool}" && : > .stopped.kept.old && touch -t ${old} .stopped.kept.old && : > .stopped.kept.fresh && : > .stopped.other.old && touch -t ${old} .stopped.other.old && ls -A`,
+			);
+			expect(
+				planted.text
+					.split("\n")
+					.filter((name) => name.startsWith(".stopped."))
+					.sort(),
+			).toEqual([".stopped.kept.fresh", ".stopped.kept.old", ".stopped.other.old"]);
+			expect(unwrap(await launch(box, "kept", program("exec sleep 300"), context)).phase).toBe("running");
+			const left = (await sh(box, `ls -A "${spool}"`)).text
+				.split("\n")
+				.filter((name) => name.startsWith(".stopped."));
+			expect(left.sort()).toEqual([".stopped.kept.fresh", ".stopped.other.old"]);
+		},
+	);
+
+	each(
 		"a launch directory replaced between two calls is refused at the second, and nothing runs from it",
 		async (box) => {
 			const started = unwrap(await launch(box, "moved", program(recording("exec sleep 300")), context));

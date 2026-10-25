@@ -1,9 +1,16 @@
 {
   "package": "@parcha/pi-durable-agent",
   "install": [
+    "dsl",
+    "jev",
+    "pi",
     "pi-durable-agent"
   ],
-  "companions": [],
+  "companions": [
+    "@parcha/agentrun-dsl",
+    "@parcha/agentrun-jev",
+    "@parcha/agentrun-pi"
+  ],
   "peers": [
     "@earendil-works/chord",
     "@earendil-works/pi-durable",
@@ -26,6 +33,8 @@
   },
   "command": [
     "node",
+    "--import",
+    "data:text/javascript,import{register}from\"node:module\";register(\"data:text/javascript,export async function resolve(s,c,n){if(s.startsWith('@parcha/agentrun-dsl')||s.startsWith('@parcha/agentrun-pi'))throw new Error('the home API loaded '+s);return n(s,c)}\")",
     "quickstart.mjs"
   ],
   "expect": {

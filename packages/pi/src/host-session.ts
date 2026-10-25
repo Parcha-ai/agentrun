@@ -3,17 +3,18 @@ import { SUBMIT_TOOL } from './host-tools.js';
 import { createPiRunner, type PiRunner } from './runner.js';
 import { workflowToolContext } from './tool-context.js';
 import type { PiHostContext, PiHostRunnerOptions, PiModel, PiSessionFactory } from './types.js';
+import { OperatorError } from './operator-error.js';
 
 export const PI_MODEL_SETUP_MESSAGE = 'AgentRun requires an active Pi model. Use /login to connect a provider, then /model to select it. Try /agentrun demo without model access.';
 
 function selectedModel(context: PiHostContext): PiModel {
   const model = context.model;
-  if (!model) throw new Error(PI_MODEL_SETUP_MESSAGE);
+  if (!model) throw new OperatorError(PI_MODEL_SETUP_MESSAGE);
   if (!context.modelRegistry || typeof context.modelRegistry.streamSimple !== 'function' || typeof context.modelRegistry.getAll !== 'function') {
-    throw new Error('AgentRun requires the host public model registry');
+    throw new OperatorError('AgentRun requires the host public model registry');
   }
   if (!context.modelRegistry.getAll().some(known => known.id === model.id && known.provider === model.provider && known.api === model.api)) {
-    throw new Error(PI_MODEL_SETUP_MESSAGE);
+    throw new OperatorError(PI_MODEL_SETUP_MESSAGE);
   }
   return model;
 }

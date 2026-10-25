@@ -2,7 +2,7 @@
 
 **Experimental.** The API changes without notice between releases.
 
-A pi agent's tool calls go to Daytona and Modal sandboxes, and Jev places each one on the sandbox that fits it.
+A pi agent's tool calls go to Daytona and Modal sandboxes, and Jev places each one on the sandbox that fits it. [Jev](https://docs.typesafe.ai/) is TypeSafe's typed-decision model: it answers a question about a step with a choice and a probability, and writes no prose.
 
 Tool calls can also run as serverless calls on an Archil disk (`archilExecBoxes`).
 
@@ -47,6 +47,25 @@ no Docker, in a directory on this machine.
 ```ts
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { finish } from "@parcha/pi-transport";
+import { localBoxes } from "@parcha/pi-transport/box/local";
+
+const provider = localBoxes({ root: "./boxes" });
+const created = await provider.create({ maxLifetimeMs: 10 * 60_000 }, BACKGROUND_CONTEXT);
+if (!created.ok) throw created.error;
+const box = created.value;
+
+const started = await box.exec(["uname", "-a"], undefined, BACKGROUND_CONTEXT);
+if (!started.ok) throw started.error;
+const done = await finish(started.value);
+if (done.ok) console.log(done.value.exitCode, new TextDecoder().decode(done.value.stdout));
+await box.destroy(BACKGROUND_CONTEXT);
+```
+
+That needs no key and no daemon: a box here is a directory under `./boxes`. The same calls on Docker, which runs a container per box and needs a Docker daemon:
+
+```ts
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { finish } from "@parcha/pi-transport";
 import { dockerBoxes } from "@parcha/pi-transport/box/docker";
 
 const provider = dockerBoxes();
@@ -55,9 +74,13 @@ if (!created.ok) throw created.error;
 const box = created.value;
 
 const started = await box.exec(["uname", "-a"], undefined, BACKGROUND_CONTEXT);
-if (started.ok) console.log(await finish(started.value));
+if (!started.ok) throw started.error;
+const done = await finish(started.value);
+if (done.ok) console.log(done.value.exitCode, new TextDecoder().decode(done.value.stdout));
 await box.destroy(BACKGROUND_CONTEXT);
 ```
+
+The examples are ES modules: save them as `.mjs` (or set `"type": "module"`); the `transport()` example below has TypeScript types, so save that one as `.mts` (Node runs it as it is). Install the peers, `@earendil-works/chord` and `@earendil-works/pi-durable`, beside `@parcha/pi-transport`. Node 22.19 or later.
 
 Expected failures are returned as `Result` values with a `BoxError` and a code. Every box has a maximum lifetime
 that its provider enforces with no call from the host, so a host that dies does not leave boxes behind. A program in
@@ -83,6 +106,7 @@ snapshot could not be created in the test organization), so treat it as untested
 client is typed structurally (`ModalSdk`); the `ModalClient` of the `modal` package, version 0.11.0, fits it.
 
 ```ts
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ModalClient } from "modal";
 import { modalBoxes } from "@parcha/pi-transport/box/modal";
 
@@ -196,8 +220,10 @@ checks that none is left.
 `edit` and `bash` tools run in the box, while the session, its store and its model calls stay with the host.
 
 ```ts
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { boxEnv } from "@parcha/pi-transport/hands";
 
+// `box` is a box made as in "A box" above, before its destroy.
 const env = boxEnv(box);
 const written = await env.writeFile("notes/a.txt", "hello", BACKGROUND_CONTEXT);
 const ran = await env.exec("wc -c notes/a.txt", { timeout: 10 }, BACKGROUND_CONTEXT);
@@ -249,13 +275,39 @@ Not covered by hands: MCP servers, code mode and model calls stay with the Harne
 conversation's tools in the environment the block's `hands` names.
 
 ```ts
-import { Harness } from "@earendil-works/pi-durable";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { TranscriptContext } from "@earendil-works/pi-ai";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { parseTransportConfig } from "@parcha/pi-transport";
-import { dockerBoxes } from "@parcha/pi-transport/box/docker";
+import { localBoxes } from "@parcha/pi-transport/box/local";
 import { transport } from "@parcha/pi-transport/hands";
 
+// The model is scripted, so this costs nothing: it runs `hostname` with pi's bash tool, then prints the result.
+const faux = fauxProvider();
+const models = createModels();
+models.setProvider(faux.provider);
+faux.setResponses([
+	fauxAssistantMessage(fauxToolCall("bash", { command: "hostname" }), { stopReason: "toolUse" }),
+	(transcript: TranscriptContext) => {
+		const result = transcript.messages.at(-1);
+		if (result?.role === "toolResult") {
+			console.log(result.content.map((part) => (part.type === "text" ? part.text : "")).join("").trim());
+		}
+		return fauxAssistantMessage("Done.");
+	},
+]);
+const registry = createRegistry();
+registry.install(CodingTools);
+const storage = new MemoryStorage();
+
 const config = parseTransportConfig({
-	environments: { sandbox: { provider: "docker", maxLifetime: "6h" } },
+	environments: { sandbox: { provider: "local", maxLifetime: "6h" } },
 	hands: "sandbox",
 });
 if (!config.ok) throw config.error;
@@ -263,10 +315,22 @@ if (!config.ok) throw config.error;
 // The transport is the Harness's `env`, so it is built first and reaches the Harness through this binding.
 let harness: Harness;
 const hands = transport(config.value, {
-	providers: { docker: dockerBoxes() },
+	// For Docker: `provider: "docker"` above, and `docker: dockerBoxes()` here.
+	providers: { local: localBoxes({ root: join(mkdtempSync(join(tmpdir(), "pi-transport-")), "boxes") }) },
 	commit: (change, context) => harness.commit(change, context),
 });
 harness = await Harness.open(storage, { models, registry, env: hands.env }, BACKGROUND_CONTEXT);
+
+const model = { provider: "faux", modelId: faux.getModel().id };
+const conversation = await harness.createConversation(
+	{ ownership: { kind: "ownerless" }, agent: { model } },
+	BACKGROUND_CONTEXT,
+);
+await (await conversation.submit({ type: "input", content: "run hostname" }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+
+// The session is over: end its boxes (`release()` leaves them running for a host that opens the session again).
+await hands.destroy(BACKGROUND_CONTEXT);
+await harness.close(BACKGROUND_CONTEXT);
 ```
 
 - **A box is created at the first file operation or command, not before.** pi asks for a conversation's environment
@@ -301,10 +365,11 @@ host did not pass, `hands: "auto"`, and `expose`.
 over the exec's input and be set in the box by the environment's launcher. It will never be in `BoxSpec.env`, which
 a provider may store and return, and never in a command line.
 
-`examples/01-hands.ts` runs one scripted session whose tools go where a config file says:
+The repository's `examples/01-hands.ts` runs one scripted session whose tools go where a config file says. It is not in the
+npm package; from a checkout, in `packages/pi-transport`:
 
 ```sh
-node --experimental-strip-types examples/01-hands.ts examples/hands.docker.json 'hostname; pwd'
+node --experimental-strip-types examples/01-hands.ts examples/hands.local.json 'hostname; pwd'
 ```
 
 ## Moving a home: a store and a workspace
@@ -353,6 +418,7 @@ A session can live in a box too: it moves between boxes, and comes back from a k
 nothing by itself. A host gives it orders, in its own process today and over a link later:
 
 ```ts
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openHome } from "@parcha/pi-transport/home";
 
 const home = await openHome({ app, session, store, workspace, where, models });
@@ -663,9 +729,14 @@ against Jev, replays in its tests offline.
 timer: the epoch changes only when a host takes, so a slow home is never taken over because a clock ran out.
 
 ```ts
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { dirStore, leaseIn } from "@parcha/pi-transport/home";
 
-const lease = leaseIn(dirStore("/shared/leases"));
+// Any directory on a file system with hard links; hosts that share leases share this directory.
+const lease = leaseIn(dirStore(mkdtempSync(join(tmpdir(), "leases-"))));
 const taken = await lease.take("session-1", { environment: "gpu", provider: "modal", box: "sb-1", host: "h1" }, 0, undefined, BACKGROUND_CONTEXT);
 ```
 
@@ -770,7 +841,10 @@ outlives the call, the `exec` and the host process. The launcher is `@parcha/pi-
 same names.
 
 ```ts
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { launch, launchState, launchStop } from "@parcha/pi-transport/launch";
+
+// `box` is a box made as in "A box" above.
 
 const started = await launch(box, "runner", { argv: ["node", "runner.js"], env: { APP_MODE: "home" } }, BACKGROUND_CONTEXT);
 if (!started.ok) throw started.error; // a LaunchError: invalid, unsupported, refused, unsafe, box, timeout or failed
@@ -805,6 +879,15 @@ before it makes a box to launch in.
   - A stop whose first one died (past its deadline: that stop's grace, its hook's bound and 3 s) is taken over by the next stop.
   - A `launch` of the name while it is stopped waits for the stop's end, then starts anew, never beside the hook. Past
     the stop's deadline it is `failed` ("stop it again").
+  - What a stop returns, the second stop's included, is the state of the incarnation it stopped, as the launcher
+    recorded it before it released the name: never that launch of the name, and never text the program or its hook
+    printed. The record rests in the spool as `.stopped.<name>.<generation>` until a later reclaim of the name finds
+    it older than any stop that could wait for it.
+  - A stop is for the launch the call found: one whose script reaches the box only after that launch has ended and
+    another of the name took the directory returns the launch it was for, from that record (or is `invalid`, as for a
+    launch that does not exist, when there is none), and leaves the new one alone. This holds only when the host and the
+    launch's `launcher.sh` are both of this version: a stop from a host that passes no generation, or for a launch an
+    older `launcher.sh` runs, behaves as before, so a late stop can still act on a later launch of the name.
 - Callers that meet are safe: several `launch` calls for one name start one program, a claim whose caller died before
   filling it is taken over after a minute, and a launch that ended is replaced by one caller only.
 - The program's output goes to `out.log` in the launcher's directory, bounded to its tail (`logMaxBytes`), also after
