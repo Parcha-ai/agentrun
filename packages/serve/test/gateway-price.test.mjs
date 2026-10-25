@@ -2,13 +2,12 @@
 // price pi-ai's catalog gives that model id, else $0. No network: runModels only builds the models, and the run below
 // talks to a Responses endpoint on loopback.
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { calculateCost } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { runModels } from "../dist/model.js";
-import { agent, follow, serve } from "./support.mjs";
+import { agent, follow, responsesEndpoint, serve } from "./support.mjs";
 
 const GATEWAY = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9" };
 const costOf = async (env, tiers = ["default"], ref = undefined) => {
@@ -81,31 +80,7 @@ test("an id several providers price: the ref's own provider's paid entry when th
   assert.deepEqual((await costOf({ AGENT_MODEL: mixed })).default, highest(mixed), mixed);
 });
 
-/** An OpenAI Responses endpoint on loopback: every turn answers `text` and reports `tokens` input and output tokens. */
-async function responsesEndpoint(t, text, tokens) {
-  const asked = [];
-  const server = createServer((req, res) => {
-    asked.push(`${req.method} ${req.url}`);
-    req.resume();
-    req.on("end", () => {
-      const item = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] };
-      res.writeHead(200, { "content-type": "text/event-stream" });
-      for (const event of [
-        { type: "response.created", response: { id: "resp_1", status: "in_progress", output: [] } },
-        { type: "response.output_item.added", output_index: 0, item: { ...item, content: [] } },
-        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: text },
-        { type: "response.output_item.done", output_index: 0, item },
-        { type: "response.completed", response: { id: "resp_1", status: "completed", output: [item], usage: { input_tokens: tokens, output_tokens: tokens, total_tokens: 2 * tokens } } },
-      ]) res.write(`data: ${JSON.stringify(event)}\n\n`);
-      res.end();
-    });
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { url: `http://127.0.0.1:${server.address().port}`, asked };
-}
-
-test("max_cost_usd applies to a gateway model the catalog prices: the run stops with spend_cap_reached; an id the catalog does not know is still $0 and never reaches its cap", async (t) => {
+test("max_cost_usd applies to a gateway model the catalog prices: its response passes the cap and the run stops with spend_cap_reached; an id the catalog does not know is still $0 and never reaches its cap", async (t) => {
   const tokens = 1_000_000;
   const endpoint = await responsesEndpoint(t, "42", tokens);
   const names = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_PRICE", "AGENT_MODEL_API_KEY"];
@@ -116,7 +91,9 @@ test("max_cost_usd applies to a gateway model the catalog prices: the run stops 
   const { api } = await serve(t, { faux: undefined });
   const run = async (id, model) => {
     assert.equal((await api("POST", "/agents", agent(id, { model }))).status, 201);
-    const started = await api("POST", `/agents/${id}/runs`, { input: { content: "What is six times seven?" }, max_cost_usd: 0.01 });
+    // gpt-4o's worst case for one request (32k output tokens at its list price) is under $1; the endpoint's million
+    // tokens each way cost far more.
+    const started = await api("POST", `/agents/${id}/runs`, { input: { content: "What is six times seven?" }, max_cost_usd: 1 });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     await follow(api, started.body.run_id, ["completed", "failed"]);
     return (await api("GET", `/runs/${started.body.run_id}`)).body;

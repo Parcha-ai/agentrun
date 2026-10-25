@@ -118,16 +118,17 @@ it is never off, and a model node that names its own thinking level keeps it.
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. The agent's runs, newest first. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it. A failed run's summary carries its `error`. |
-| `GET /runs/{id}` | The run: its revision, kind, status, state, result, error and cost (`basis: estimate`). |
+| `GET /runs/{id}` | The run: its revision, kind, status, state, result, error and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). |
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop. A finished run is `409 not_continuable`; a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
-| `GET /usage` | The runs' cost estimates, by meter, agent, day or region. |
+| `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run whose cost is unknown adds $0, so no total or line is ever null. |
 
 Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the
 feature, and capabilities declare each one false. No run waits out `input_wait_s` here (`null`), and runs carry no
-browser sign-ins (`sign_ins: false`).
+browser sign-ins (`sign_ins: false`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
+above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap)).
 
 ## The page
 
@@ -172,7 +173,7 @@ only when the request's `Origin` is the page's own origin and its body is `appli
      that names it is not runnable here. The run is `queued` until its first message shows; while the process runs, the
      timeline comes from its door's events through `@parcha/pi-durable-agent/timeline`. Once the run is idle and its
      newest row is the agent's answer, the server sends the process SIGTERM. A model error ends it `failed`
-     (`run_failed`), and a run whose cost estimate passes its `max_cost_usd` ends `failed` (`spend_cap_reached`).
+     (`run_failed`), and a run its `max_cost_usd` stops ends `failed` (`spend_cap_reached`, [below](#spend-cap)).
    - A workflow revision runs on agentrun-pi's durable workflow task, started by `startWorkflowRevision` of
      `@parcha/pi-durable-agent/workflow` (keyed by the run's id): its model nodes (`agent`, `decide`, `extract`,
      `report`) on the run's model, with the file tools each node names. A workflow that needs a tool call, a judge or
@@ -196,6 +197,24 @@ the answer is sent, so a retry after a restart gets the first answer.
 
 A completed agentic run's `result` is `{output: null, final_answer}`; a completed workflow run's is
 `{output: <the workflow's output>, final_answer: null}`.
+
+## Spend cap
+
+An agentic run may name `max_cost_usd` (a workflow run may not: `422`). The cap is checked in the run's own process
+before each model request, the agent's and a compaction's alike: what the run has spent so far plus the request's worst
+case must stay within it, or the request is not sent and the run ends `failed` with `spend_cap_reached`. The worst
+case is the request's input tokens at the higher of the model's input and cache-write prices, plus its max output
+tokens at the model's output price. The max output tokens are the ones the request sends (the model's, clamped to what
+its context window leaves); the input tokens are pi-ai's estimate: the tokens the last response reported, plus about
+one token per 3.5 characters after it. So a request costs more than its worst case only when its input was
+underestimated or the provider reports more output tokens than it was asked for. Spent so far is read from the run's
+store each time its process starts, so it survives a restart, plus each response since; a request in flight holds its
+worst case until it answers. A model priced at $0 (a gateway id pi-ai's catalog does not know, with no
+`AGENT_MODEL_PRICE`) never reaches a cap.
+
+The server also checks the run's cost after each response, as a backstop, and stops a run whose cost passed its cap.
+Either way the run keeps the answer it paid for: a run the cap stopped has `result: {output: null, final_answer}`, the
+newest answer it received, beside its `error`; one stopped before any answer has `result: null`.
 
 ## The faux model
 
