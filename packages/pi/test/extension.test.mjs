@@ -199,7 +199,8 @@ test('native extension has one workflow tool and a task-first command without ad
     assert.deepEqual(described.details.tools.map(tool => tool.name), ['search', 'support_demo_lookup', 'support_demo_handoff', 'read']);
     assert.ok(described.details.tools.every(tool => tool.parameters));
     assert.deepEqual(described.details.limits, { deadlineMs: 600000, modelRequests: 50, judgeCalls: 100, toolAttempts: 100,
-      nodeMaxTurns: 8, nodeMaxSubmissions: 3, nodeTimeoutMs: 120000 });
+      nodeMaxTurns: 40, nodeMaxSubmissions: 3, nodeTimeoutMs: 120000 });
+    assert.deepEqual(described.details.nodeTurnDefaults, { readOnly: 20, other: 8 });
     assert.equal(app.calls.length, 0);
   } finally { await app.shutdown(); }
 });

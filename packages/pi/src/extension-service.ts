@@ -27,6 +27,8 @@ export interface ExtensionServiceOptions {
   allowedTools?: readonly string[];
   rubricSections?: Record<string, string>;
   limits?: Partial<ExtensionServiceLimits>;
+  /** The most turns a host lets a node ask for with max_turns; a node that asks for more is refused at inspection. */
+  nodeTurnCap?: number | null;
 }
 export interface PreparedWorkflow {
   digest: string;
@@ -83,7 +85,9 @@ class AdapterDiagnosticError extends Error {
     this.name = 'AdapterDiagnosticError';
   }
 }
-async function withAdapterDiagnostic<T>(stage: string, run: () => Promise<T>): Promise<T> {
+/** `toolNames` are the names the node could call: a turn limit's last tool call is shown only when it is one of them,
+ *  so the diagnostic never copies text an error carries. */
+async function withAdapterDiagnostic<T>(stage: string, run: () => Promise<T>, toolNames?: ReadonlySet<string>): Promise<T> {
   try { return await run(); }
   catch (error) {
     let diagnostic: ExtensionRunReport['error'];
@@ -109,7 +113,14 @@ async function withAdapterDiagnostic<T>(stage: string, run: () => Promise<T>): P
       switch (error.reason) {
         case 'model_error': diagnostic = { code: 'model_response_failed', message: 'The model session reported a response failure before an accepted submission. Provider details are omitted.' }; break;
         case 'timeout': diagnostic = { code: 'pi_timeout', message: 'The Pi node deadline expired before an accepted submission. Check slow tools or increase the host node timeout.' }; break;
-        case 'turn_limit': diagnostic = { code: 'pi_turn_limit', message: 'The Pi node reached its turn limit before an accepted submission. Simplify the task or increase the host node turn limit.' }; break;
+        case 'turn_limit': {
+          // Counts and a tool name are shown only when they are what they claim to be: never an error's own text.
+          const count = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+          const used = count(error.turns), limit = count(error.maxTurns);
+          const tool = typeof error.lastTool === 'string' && toolNames?.has(error.lastTool) ? error.lastTool : undefined;
+          const progress = used === undefined ? 'reached its turn limit' : `used ${used}${limit === undefined ? '' : ` of ${limit}`} turns`;
+          diagnostic = { code: 'pi_turn_limit', message: `The Pi node ${progress} before an accepted submission${tool === undefined ? '' : ` (last tool call: ${tool})`}. It is not tried again. Raise the node's max_turns within this host's cap (/agentrun limits shows it), or narrow the task.` }; break;
+        }
         case 'submission_limit': diagnostic = { code: 'pi_submission_limit', message: 'The Pi node exhausted its submission attempts. Correct schema or review rejections before retrying.' }; break;
         case 'no_submission': diagnostic = { code: 'pi_no_submission', message: 'The Pi node ended without an accepted submission. The model must call submit with a result that passes the schema and review.' }; break;
         case 'aborted': diagnostic = { code: 'pi_aborted', message: 'The Pi node was cancelled before an accepted submission. Check any effects already started before retrying.' }; break;
@@ -247,6 +258,7 @@ export class WorkflowExtensionService {
   private readonly allowedTools: ReadonlySet<string>;
   private readonly rubricSections: Record<string, string>;
   private readonly limits: ExtensionServiceLimits;
+  private readonly nodeTurnCap: number | null;
   private current?: PreparedWorkflow;
   private lastReport?: ExtensionRunReport;
   private disposed = false;
@@ -256,6 +268,7 @@ export class WorkflowExtensionService {
     const tools = options.allowedTools ?? [];
     if (!Array.isArray(tools) || tools.length > 100 || tools.some(tool => typeof tool !== 'string' || !tool.trim() || tool.length > 200)) throw new ExtensionServiceError('configuration', 'Provide at most 100 registered tool names.');
     this.allowedTools = new Set(tools);
+    this.nodeTurnCap = options.nodeTurnCap ?? null;
     this.rubricSections = freeze(snapshot(options.rubricSections ?? {}));
     if (Object.entries(this.rubricSections).some(([name, text]) => !name.trim() || typeof text !== 'string' || !text.trim())) throw new ExtensionServiceError('configuration', 'Rubric sections require nonempty names and text.');
     // A field given as undefined is an omitted one: it keeps its default.
@@ -281,6 +294,7 @@ export class WorkflowExtensionService {
       if (node.node === 'map' && (node.maxConcurrency ?? 4) > extensionStructuralLimits.maxMapConcurrency) errors.push('Map concurrency must not exceed 8.');
       if (node.node === 'parallel' && node.branches.length > extensionStructuralLimits.maxParallelBranches) errors.push('Parallel nodes must not exceed 8 branches.');
       if (Array.isArray(node.tools) && node.tools.some((name: string) => !this.allowedTools.has(name))) errors.push('Agent tools must be explicitly registered by the host.');
+      if (node.node === 'agent' && typeof node.max_turns === 'number' && this.nodeTurnCap !== null && node.max_turns > this.nodeTurnCap) errors.push(`Node "${String(node.label).slice(0, 200)}" asks max_turns ${node.max_turns}, above this host's cap of ${this.nodeTurnCap} turns.`);
     }
     if (errors.length) throw new ExtensionServiceError('admission', errors.slice(0, 8).join(' '));
 
@@ -407,7 +421,7 @@ export class WorkflowExtensionService {
       ...(options.deps.recovery ? { recovery: options.deps.recovery } : {}),
       ...(options.deps.maxQuestionsPerRequest !== undefined ? { maxQuestionsPerRequest: options.deps.maxQuestionsPerRequest } : {}),
       ...(options.deps.maxStateBytesPerRequest !== undefined ? { maxStateBytesPerRequest: options.deps.maxStateBytesPerRequest } : {}),
-      ...(options.deps.runNode ? { runNode: params => dispatch('agent', params.signal, () => withAdapterDiagnostic(params.label, () => options.deps.runNode!({ ...params, tools: params.tools ?? [...this.allowedTools] })), true) } : {}),
+      ...(options.deps.runNode ? { runNode: params => dispatch('agent', params.signal, () => withAdapterDiagnostic(params.label, () => options.deps.runNode!({ ...params, tools: params.tools ?? [...this.allowedTools] }), new Set([...(params.tools ?? this.allowedTools), 'submit'])), true) } : {}),
       ...(options.deps.runJudge ? { runJudge: params => dispatch('judge', params.signal, () => withAdapterDiagnostic(params.label, () => options.deps.runJudge!(params)), true) } : {}),
       ...(options.deps.runEffect ? { runEffect: params => dispatch('tool', params.signal, () => {
         if (params.node.via !== 'tool' || !this.allowedTools.has(params.node.tool!)) throw new ExtensionServiceError('admission', 'Effect is not a registered host tool.');

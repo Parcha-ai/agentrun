@@ -84,6 +84,7 @@ Loading starts with empty input and does not execute. A save retains the definit
 | `/agentrun list` | List saved revisions. |
 | `/agentrun history` | Inspect retained run receipts on this Pi branch. |
 | `/agentrun status` | Check skill discovery, active Pi selection, and Jev configuration without making provider calls. |
+| `/agentrun limits` | Show the limits in force, and the turn limit of each node that runs in a Pi session (agent, decide, extract, report) in the current workflow and where it comes from. Makes no model call. |
 | `/agentrun stop` | Request cancellation of the running workflow. |
 
 A progress widget shows active steps and the number finished. Results distinguish completion, escalation, failure, and interruption. Decision records show supplied evidence, criteria, answer, and route, not hidden reasoning or proof of correctness.
@@ -184,6 +185,8 @@ All options are optional; the default export retains ordinary Pi setup. `hostToo
 
 Hosts may supply `runtimeLimits` to lower a finite limit or explicitly disable it with `null`: `deadlineMs`, `modelRequests`, `judgeCalls`, `toolAttempts`, `nodeMaxTurns`, `nodeMaxSubmissions`, and `nodeTimeoutMs`. Omitted values keep existing finite defaults. Disabling all seven removes extension inference/time admission caps while preserving operator cancellation, schema validation, graph structure, concurrency, and trace/data guards. This is host configuration; neither a workflow nor an author tool argument can change it. Tool-specific timeouts and provider limits are separate host/tool contracts.
 
+A node's turns are bounded per attempt. `nodeMaxTurns` (default 40) is the most any node gets and the cap on what a node may ask for. A node that names no `max_turns` gets 20 turns when it can only read (no `bash`, `edit` or `write` among its tools, and the host supplies no `hostTools`), and 8 otherwise, never above the cap. An agent node's `max_turns` sets its own limit within the cap; inspection refuses a node that asks for more, naming the cap. A node that reaches its turn limit is not tried again: the run fails with `pi_turn_limit`, which says how many turns the node used of its limit and its last tool call. `describe` reports the two defaults as `nodeTurnDefaults`.
+
 Trace retention is **not an execution budget**. A run keeps recent sanitized events
 within a bounded in-memory report and continues when that retention fills. The
 report's `trace` counts received, retained, dropped and rejected events/bytes;
@@ -224,7 +227,7 @@ For a standalone application, `createPiRunner(options)` accepts a configured SDK
 
 LLM `instructions` are literal text. Refer to "the text field in the JSON input" and declare `requires: ["text"]`; `{text}` inside instructions stays literal. An optional node `state` map scopes the JSON user message. Placeholder substitution applies to designated fields such as `state` and `call.args`.
 
-The child model delivers `{value: result}` through its `submit` tool. Schema and review rejections return feedback to the same session. Exhausting a turn, submission, timeout, or cancellation limit throws `PiRunError`; a rejected draft is never returned as success. A host can explicitly pass `null` for runner `maxTurns`, `maxSubmissions`, or `timeoutMs` to disable that limit. Omission keeps the default; external cancellation still interrupts unlimited runs.
+The child model delivers `{value: result}` through its `submit` tool. Schema and review rejections return feedback to the same session. Exhausting a turn, submission, timeout, or cancellation limit throws `PiRunError`; a rejected draft is never returned as success. A node's `maxTurns` (an agent node's `max_turns`) sets its turn limit within the runner's `maxTurns`, which caps it; a node that asks for more is refused. A turn limit's `PiRunError` carries `turns`, `maxTurns` and the last tool's name (`lastTool`), and is marked `final`, so a recovery driver gives it no second attempt. A host can explicitly pass `null` for runner `maxTurns`, `maxSubmissions`, or `timeoutMs` to disable that limit. Omission keeps the default; external cancellation still interrupts unlimited runs.
 
 ## SDK: retain candidates and check fixed fixtures
 
