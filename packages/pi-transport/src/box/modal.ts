@@ -236,7 +236,7 @@ const validPorts = (value: unknown): NonNullable<BoxFacts["ports"]> =>
 function parseFacts(
 	text: string | undefined,
 	measuredText?: string,
-): { facts: BoxFacts; wantsFuse: boolean; measured: boolean } | undefined {
+): { facts: BoxFacts; wantsFuse: boolean; wantsGpu: boolean; measured: boolean } | undefined {
 	if (text === undefined) return undefined;
 	try {
 		const facts = JSON.parse(text) as Record<string, unknown> | null;
@@ -256,13 +256,14 @@ function parseFacts(
 		// were facts has neither, and they stay absent (unknown), never read as open or as none.
 		const { wantsFuse, diskGb: _disk, fuse: _fuse, ptraceScope: _ptrace, network, ports, startedAt, ...rest } = facts;
 		// What the create measured: the hardware only. No tag, or one that does not parse, gives the fail-closed values (fuse false, no disk).
-		let measured: { diskGb?: number; fuse?: boolean } = {};
+		let measured: { diskGb?: number; fuse?: boolean; gpu?: string } = {};
 		try {
 			const read = JSON.parse(measuredText ?? "null") as Record<string, unknown> | null;
 			if (read !== null && typeof read === "object") {
 				measured = {
 					...(typeof read.diskGb === "number" && read.diskGb >= 0 ? { diskGb: read.diskGb } : {}),
 					...(typeof read.fuse === "boolean" ? { fuse: read.fuse } : {}),
+					...(typeof read.gpu === "string" && read.gpu !== "" ? { gpu: read.gpu } : {}),
 				};
 			}
 		} catch {
@@ -270,14 +271,19 @@ function parseFacts(
 		}
 		return {
 			wantsFuse: wantsFuse === true,
+			// The spec asked for a GPU (the facts tag holds the request).
+			wantsGpu: typeof facts.gpu === "string",
 			// Whether the create's measured facts are in the tag: an ok attach carries only MEASURED facts.
-			measured: measured.fuse !== undefined,
+			// A box that asked for a GPU needs the model it was measured with too.
+			measured: measured.fuse !== undefined && (typeof facts.gpu !== "string" || measured.gpu !== undefined),
 			facts: {
 				...rest,
 				// What an exec carries is a property of Modal, not of the box: a box made before it was reported has it too.
 				secretsVia: "fd",
 				fuse: false,
 				...measured,
+				// The facts tag holds the REQUEST for the GPU; the fact is the model measured at create, or null.
+				gpu: typeof facts.gpu === "string" ? (measured.gpu ?? null) : null,
 				...(NETWORKS.some((n) => n === network) ? { network } : {}),
 				...(Array.isArray(ports) ? { ports: validPorts(ports) } : {}),
 				...(typeof startedAt === "string" ? { startedAt } : {}),
@@ -491,48 +497,56 @@ class ModalBox implements Box {
 	 * Read what the box has (`PROBE`) into its facts. A box that was asked for `fuse` and cannot give it is an error that
 	 * names what is missing; any other box whose read fails keeps unmeasured facts (`null`, `false`).
 	 */
-	async measure(wantsFuse: boolean, context: Context): Promise<Result<void, BoxError>> {
+	async measure(wantsFuse: boolean, wantsGpu: boolean, context: Context): Promise<Result<void, BoxError>> {
 		// A cancelled call is the caller's answer, never an optional read that did not matter.
 		const cancelled = (): Result<void, BoxError> | undefined =>
 			context.abortSignal?.aborted ? err(new BoxError("aborted", "the call was aborted")) : undefined;
+		// A box that asked for FUSE or a GPU must have it read: any failure to read is an error, not a fact left out.
+		const required = wantsFuse || wantsGpu;
 		const fail = (message: string): Result<void, BoxError> =>
-			cancelled() ?? (wantsFuse ? err(new BoxError("unknown", message)) : ok(undefined));
+			cancelled() ?? (required ? err(new BoxError("unknown", message)) : ok(undefined));
 		try {
 			const process = await this.#sandbox.exec(
-				["sh", "-c", PROBE, "sh", this.#facts.workspace, wantsFuse ? "fuse" : "-"],
+				["sh", "-c", PROBE, "sh", this.#facts.workspace, wantsFuse ? "fuse" : "-", wantsGpu ? "gpu" : "-"],
 				{
 					mode: "binary",
 					timeoutMs: SETUP_TIMEOUT_MS,
 				},
 			);
 			const finished = await finish(this.#adapt(process, SETUP_TIMEOUT_MS, context));
-			if (!finished.ok) return wantsFuse ? err(finished.error) : (cancelled() ?? ok(undefined));
+			if (!finished.ok) return required ? err(finished.error) : (cancelled() ?? ok(undefined));
 			if (finished.value.exitCode !== 0)
 				return fail(`could not read what the box has: ${finished.value.stderr.trim()}`);
 			const reading = parseProbe(new TextDecoder().decode(finished.value.stdout));
 			if (wantsFuse && !reading.fuse) {
 				return fail(`the box asked for fuse and lacks ${reading.fuseMissing.join(" and ")}`);
 			}
+			// The model served, not the one asked for: a bare `H100` may be served an H200. None is no GPU: the box must not be used as if it had one.
+			if (wantsGpu && reading.gpus.length === 0) {
+				return fail(`the box asked for the GPU ${this.#facts.gpu} and nvidia-smi names none in it`);
+			}
 			this.#facts = {
 				...this.#facts,
+				...(wantsGpu ? { gpu: reading.gpus.join(" + ") } : {}),
 				...(reading.diskGb === undefined ? {} : { diskGb: reading.diskGb }),
 				...(reading.ptraceScope === undefined ? {} : { ptraceScope: reading.ptraceScope }),
 				fuse: wantsFuse && reading.fuse,
 			};
 			return ok(undefined);
 		} catch (cause) {
-			return cancelled() ?? (wantsFuse ? err(boxError("could not read what the box has", cause)) : ok(undefined));
+			return cancelled() ?? (required ? err(boxError("could not read what the box has", cause)) : ok(undefined));
 		}
 	}
 
 	/** One run of the probe: what the box printed, or why it did not answer. A cancelled call is reported as `aborted`. */
 	async #runProbe(
 		wantsFuse: boolean,
+		wantsGpu: boolean,
 		context: Context,
 	): Promise<{ ok: true; reading: ReturnType<typeof parseProbe> } | { ok: false; error: BoxError }> {
 		try {
 			const process = await this.#sandbox.exec(
-				["sh", "-c", PROBE, "sh", this.#facts.workspace, wantsFuse ? "fuse" : "-"],
+				["sh", "-c", PROBE, "sh", this.#facts.workspace, wantsFuse ? "fuse" : "-", wantsGpu ? "gpu" : "-"],
 				{ mode: "binary", timeoutMs: SETUP_TIMEOUT_MS },
 			);
 			const finished = await finish(this.#adapt(process, SETUP_TIMEOUT_MS, context));
@@ -556,9 +570,14 @@ class ModalBox implements Box {
 	 * tag from before that has none, and the attach is an error) and every security fact is left out (unknown): the Yama setting, the
 	 * network and the ports are never taken from a tag on a read error. A cancelled call is the one error.
 	 */
-	async measureForAttach(wantsFuse: boolean, tagMeasured: boolean, context: Context): Promise<Result<void, BoxError>> {
+	async measureForAttach(
+		wantsFuse: boolean,
+		wantsGpu: boolean,
+		tagMeasured: boolean,
+		context: Context,
+	): Promise<Result<void, BoxError>> {
 		for (let attempt = 0; attempt < ATTACH_PROBE_TRIES; attempt++) {
-			const read = await this.#runProbe(wantsFuse, context);
+			const read = await this.#runProbe(wantsFuse, wantsGpu, context);
 			if (context.abortSignal?.aborted) return err(new BoxError("aborted", "the call was aborted"));
 			if (read.ok) {
 				const { reading } = read;
@@ -567,6 +586,8 @@ class ModalBox implements Box {
 					...(reading.diskGb === undefined ? {} : { diskGb: reading.diskGb }),
 					...(reading.ptraceScope === undefined ? {} : { ptraceScope: reading.ptraceScope }),
 					fuse: wantsFuse && reading.fuse,
+					// A read that answers is definitive: no card named is `null`, and the caller ends the box through the handle.
+					...(wantsGpu ? { gpu: reading.gpus.length === 0 ? null : reading.gpus.join(" + ") } : {}),
 				};
 				return ok(undefined);
 			}
@@ -594,10 +615,14 @@ class ModalBox implements Box {
 		if (this.#sandbox.setTags === undefined) return;
 		try {
 			const tags = await this.#sandbox.getTags();
-			const { diskGb, fuse } = this.#facts;
+			const { diskGb, fuse, gpu } = this.#facts;
 			await this.#sandbox.setTags({
 				...tags,
-				[MEASURED_TAG]: JSON.stringify({ ...(diskGb === undefined ? {} : { diskGb }), fuse: fuse === true }),
+				[MEASURED_TAG]: JSON.stringify({
+					...(diskGb === undefined ? {} : { diskGb }),
+					fuse: fuse === true,
+					...(typeof gpu === "string" ? { gpu } : {}),
+				}),
 			});
 		} catch {
 			// The tag is a fallback for a later attach; a box without it reads fail-closed there.
@@ -769,7 +794,8 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 			const box = new ModalBox(sandbox, facts);
 			// A sandbox exists from here on: a call the caller gave up on, or one that cannot finish, ends it.
 			let made = context.abortSignal?.aborted ? aborted<void>() : await box.prepare(context);
-			if (made.ok && !context.abortSignal?.aborted) made = await box.measure(wantsFuse, context);
+			if (made.ok && !context.abortSignal?.aborted)
+				made = await box.measure(wantsFuse, spec.gpu !== undefined, context);
 			if (made.ok && !context.abortSignal?.aborted) await box.recordMeasured();
 			if (!made.ok || context.abortSignal?.aborted) {
 				await box.destroy();
@@ -782,6 +808,7 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 			let box: ModalBox;
 			let wantsFuse = false;
 			let tagMeasured = false;
+			let wantsGpu = false;
 			try {
 				const sandbox = await sdk.sandboxes.fromId(id);
 				if ((await sandbox.poll()) !== null) return ok(undefined);
@@ -791,6 +818,7 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 				box = new ModalBox(sandbox, found.facts);
 				wantsFuse = found.wantsFuse;
 				tagMeasured = found.measured;
+				wantsGpu = found.wantsGpu;
 			} catch (cause) {
 				if (isNotFound(cause) || classify(cause) === "invalid") return ok(undefined);
 				return err(boxError(`could not look up box ${id}`, cause));
@@ -802,7 +830,7 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 			const prepared = await box.prepare(context);
 			if (context.abortSignal?.aborted) return err(new BoxError("aborted", "the call was aborted"));
 			if (!prepared.ok) return prepared;
-			const read = await box.measureForAttach(wantsFuse, tagMeasured, context);
+			const read = await box.measureForAttach(wantsFuse, wantsGpu, tagMeasured, context);
 			return read.ok ? ok(box) : read;
 		},
 
