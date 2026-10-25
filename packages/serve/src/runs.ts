@@ -280,7 +280,8 @@ export class Runs {
     return url?.protocol === "http:" && isLoopback(url.hostname) ? url.origin : undefined;
   }
 
-  private storeFile(run: Run): string {
+  /** The run's own store, which its process holds until it exits. */
+  storeFile(run: Run): string {
     return join(run.dir, "store", "run.sqlite");
   }
 
@@ -760,6 +761,12 @@ export class Runs {
   }
 
   // ---- views ------------------------------------------------------------------------------------------------------------
+
+  /** The run's status, and whether it is final: ended and carried back, so nothing about it changes any more. */
+  ended(run: Run): { status: Status; final: boolean } {
+    const { status } = statusOf(run);
+    return { status, final: TERMINAL.has(status) && run.settled };
+  }
 
   cost(run: Run) {
     return { usd: costOf(run.rows) ?? run.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };

@@ -1,4 +1,7 @@
 // A faux model for the tests and the conformance scenarios: replies chosen from the conversation, no key, no network.
+import { readFileSync } from "node:fs";
+
+const RATE_LIMIT = "The state registry rate-limits at 1 request a second.";
 const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
 
 /** Resolves after `ms`, or as an aborted reply as soon as the turn is stopped. */
@@ -47,6 +50,15 @@ export default function reply(context, faux) {
   }
   if (browse) return results === 0 ? faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" }) : faux.message(`Seen: ${textOf(context.messages.at(-1))}`);
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
+  // Notes one lesson with `learn`: "Learn what <file> holds." notes the file's text, "Learn this case:" the input itself.
+  const holds = /^Learn what (\S+) holds\.$/.exec(first);
+  if (first.includes("Learn the rate limit") || holds || first.startsWith("Learn this case:")) {
+    if (answered) return faux.message(textOf(context.messages.at(-1)));
+    const text = holds ? `The registry key is ${readFileSync(holds[1], "utf8").trim()}.` : first.startsWith("Learn this case:") ? `Remember: ${first}` : RATE_LIMIT;
+    return faux.message(faux.toolCall("learn", { type: "lesson", text }), { stopReason: "toolUse" });
+  }
+  // Says whether what an earlier run learned is in its prompt.
+  if (first.includes("What did earlier runs learn?")) return faux.message(JSON.stringify(context.messages.filter((m) => m.role === "system")).includes(RATE_LIMIT) ? `I know: ${RATE_LIMIT}` : "Nothing yet.");
   if (first.includes("Write the report")) {
     if (answered) return faux.message("I wrote report.md.");
     return faux.message(faux.toolCall("write", { path: "report.md", content: "# Report\n\nThe answer is 42.\n" }), { stopReason: "toolUse" });

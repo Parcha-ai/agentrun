@@ -120,6 +120,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
 | `fetch_page` | Fetch one web page from a public host: `{url}` in, a Page out, `{ok, url, status, title, text, links, refused?, error?}` | nothing | yes, yes |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
+| `learn` | Note a general lesson for later runs of the agent ([Learning](#learning)) | nothing | no, no |
 
 There is no `bash`: a run gets no shell (see [Safety](#safety)).
 
@@ -148,6 +149,7 @@ page it reads is filed under the run's `work/evidence/`. There is no recording a
 | `PUT /agents/{id}/definition` | The same body: a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
+| `POST /agents/{id}/learn` | `{run_id, dry_run?, base?}`: what a completed run of the agent learned becomes its next revision, current; `201 {revision, note, learned}`. `dry_run` previews it and commits nothing (`200 {learned: [{path, text}], base}`); `base` commits only while that preview's revision is current (else `412`). See [Learning](#learning). |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. The agent's runs, newest first. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it. A failed run's summary carries its `error`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error and cost (`basis: estimate`). |
@@ -260,6 +262,40 @@ delivers its record by calling it. A module may also export `cost` (`{input, out
 million tokens) to price the faux usage; unpriced, every run's estimate is $0. The tests' module is
 `test/fixtures/faux-model.mjs`.
 
+## Learning
+
+An agentic revision that lists `learn` in `tools` gives its runs the `learn` tool of
+[`@parcha/pi-agent-learn`](../pi-agent-learn/README.md): the agent notes a general lesson, fact or correction while it
+works, at no cost, and the note waits in the run's own store (`runs/<id>/store/run.sqlite`). Each call is checked by
+pi-agent-learn's guard first, with this host's secrets (the values of the variables whose names end in `_KEY`, `_TOKEN`,
+`_SECRET` or `_PASSWORD`) and the run's input, so the model can restate a refused note at once. A run is not seeded from
+a git repository: what earlier runs learned reaches it as its revision's skills.
+
+`POST /agents/{id}/learn` with `{"run_id": "<run>"}` reads what the run noted from its store once the run is final
+(`readCandidates`), guards it again with the server's own tokens among the secrets, and commits a revision whose parent is
+the agent's current one: the current definition and skill files, plus one skill per lesson, `learned-<12 hex>/SKILL.md`
+(the skill `learned-<12 hex>`, a name pi's skill rule takes, so a home exported to pi keeps it), where the 12 hex digits
+are pi-agent-learn's `learningId` of the run and the text. The skill's text says the lesson's type and run, then the
+lesson. The note is `learned from run <run_id>`, the revision is made current, as an edit's is, and the answer is
+`201 {"revision": "<id>", "note": "learned from run <run_id>", "learned": ["learned-<12 hex>/SKILL.md", ...]}` with the
+agent's new ETag. An `Idempotency-Key` replays it. The current revision is compared again inside the commit, so a Learn
+that races an edit is `412 precondition_failed`.
+
+A person sees what Learn commits before it does: `{"run_id": "<run>", "dry_run": true}` makes every check and runs the
+guard, commits nothing, and answers `200 {"learned": [{"path": "learned-<12 hex>/SKILL.md", "text": "<the whole
+file>"}], "base": "<the current revision>"}`. A Learn that passes that `base` commits exactly those files, and is `412
+precondition_failed` when the agent's current revision has moved since; preview again.
+
+- `409 not_learnable`: the run is another agent's, ran a revision that does not list `learn`, is not final, did not
+  complete, learned nothing (`the run learned nothing`), or learned only what the current revision holds already; or the
+  agent's current revision is a workflow.
+- `422 input_invalid`: a body that is not `{run_id, dry_run?, base?}`, or a lesson the guard refuses. Each field names the guard's rule
+  (`secret_value`, `secret_shape`, `case_data`, ...) and where, never the value.
+- `404 not_found`: no such agent or run.
+
+Only lessons, facts and corrections are learned: a `used` mark needs a seed, and a `workflow` note a saved workflow,
+and a run here has neither. Capabilities say `features.learn: true`.
+
 ## Safety
 
 - `fetch_page` dials public addresses only, each hop checked and pinned (see [Tools](#tools)): a run cannot reach this
@@ -285,7 +321,7 @@ million tokens) to price the faux usage; unpriced, every run's estimate is $0. T
 ## Test
 
 ```sh
-npm run build -w @parcha/agentrun-dsl -w @parcha/agentrun-pi -w @parcha/pi-durable-disk -w @parcha/pi-durable-agent -w @parcha/agentrun-serve
+npm run build -w @parcha/agentrun-dsl -w @parcha/agentrun-pi -w @parcha/pi-durable-disk -w @parcha/pi-durable-agent -w @parcha/pi-git-remote -w @parcha/pi-agent-learn -w @parcha/agentrun-serve
 npm test -w @parcha/agentrun-serve
 ```
 

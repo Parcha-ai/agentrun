@@ -12,6 +12,7 @@ import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agen
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { NODE_TOOLS, toolRefusal, toolsView, workflowTools } from "./tools.js";
 import { ApiError, invalid, unsupported } from "./errors.js";
+import { learnFrom, secretsOf } from "./learn.js";
 import { chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, nodeTiers, THINKING_LEVELS } from "./model.js";
 import { answerPage } from "./page.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
@@ -93,6 +94,7 @@ const ROUTES: Route[] = [
   { method: "POST", pattern: /^\/agents\/([^/]+)\/current$/, name: "setCurrent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/runs$/, name: "createRun" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/runs$/, name: "listRuns" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learn$/, name: "learn" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/home$/, name: "exportHome", capability: "home.export" },
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/home$/, name: "importHome", capability: "home.import" },
   { method: "GET", pattern: /^\/runs$/, name: "listAllRuns" },
@@ -127,6 +129,8 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env) {
     workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS] },
     features: {
       agents: { create: true, list: true, update: true, revisions: true },
+      /** `POST /agents/{id}/learn`: a completed run of a revision that lists `learn` commits the agent's next revision, or `dry_run` previews it. */
+      learn: true,
       home: { export: false, import: false, check: false },
       runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"] },
       messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false },
@@ -189,6 +193,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const agents = new Agents(data);
   const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}) });
   const expected = digest(`Bearer ${token}`);
+  // The guard refuses a learning that holds one: the run's process holds neither token.
+  const secrets = secretsOf(env, [token, doorToken]);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
@@ -539,6 +545,21 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       }
       case "createRun": {
         const answer = await createRun(req, id);
+        return send(res, answer.status, answer.body, answer.headers);
+      }
+      case "learn": {
+        const entry = needAgent(id);
+        const body = await bodyOf(req);
+        const answer = await idempotent(req, `/agents/${id}/learn`, body, async () => {
+          const issues = Object.keys(body).filter((k) => !["run_id", "dry_run", "base"].includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
+          if (typeof body.run_id !== "string" || !ID.test(body.run_id)) issues.push({ field: "run_id", reason: body.run_id === undefined ? "missing" : "wrong_type", message: "run_id is the id of a run of this agent" });
+          if (body.dry_run !== undefined && typeof body.dry_run !== "boolean") issues.push({ field: "dry_run", reason: "wrong_type", message: "dry_run is true or false" });
+          if (body.base !== undefined && (typeof body.base !== "string" || !ID.test(body.base))) issues.push({ field: "base", reason: "wrong_type", message: "base is the revision a dry run answered" });
+          if (issues.length) throw invalid(issues);
+          const done = await learnFrom(agents, runs, entry, await needRun(body.run_id as string), secrets, { dryRun: body.dry_run === true, ...(typeof body.base === "string" ? { base: body.base } : {}) });
+          if ("preview" in done) return { status: 200, body: done.preview };
+          return { status: 201, body: { revision: done.entry.revision!.id, note: done.note, learned: done.learned }, headers: { etag: etagOf(done.entry) } };
+        });
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "listRuns":
