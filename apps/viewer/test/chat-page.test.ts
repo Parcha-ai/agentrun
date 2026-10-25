@@ -910,12 +910,14 @@ const LISTED: { ref: string; summary?: string; kind: string; urgent: boolean; re
 })), { ref: 'A-7', kind: 'defect', urgent: false, reviewed: false, tags: [], owner: 'nobody yet' }];
 /** The agent's words: a lead-in, then a pipe table, a line after it, a rule, a table whose separator is short a column,
  *  a table with a line of more cells than its header, a header whose first line has more cells than it (no row) with a
- *  table after it, and a table with an escaped pipe in its header, then a line of prose with a pipe in it. */
+ *  table after it, and a table with an escaped pipe in its header, then a line of prose with a pipe in it, and a table
+ *  whose header alone is long. */
+const LONG_HEAD = 'The reports still open after thirty days, by the team that owns each one';
 const WORDS = ['Here is what I sorted:', '| ref | what | kind | urgent | reviewed | tags |', '| :--- | :--- | --- | ---: | :---: | --- |',
   ...LISTED.slice(0, 6).map((each) => `| **${each.ref}** | ${each.summary} | \`${each.kind}\` | ${each.urgent} | ${each.reviewed} | ${each.tags.join(', ')} |`),
   'That is the list.', '', '---', '', '| a | b |\n| --- |\n| 1 | 2 |', '', '| p | q |', '|---|---|', '| 1 | 2 |', '| 3 | 4 | EXTRA-CELL-WORDS |',
   '', '| HEADER-ONLY-WORDS | h2 |', '|---|---|', '| 5 | 6 | MORE-THAN-HEADER |', '| r | s |', '|---|---|', '| 7 | 8 |',
-  '', '| one \\| two | three |', '|---|---|', '| x | y |', 'Then prose with a pipe: use a | b here.'].join('\n');
+  '', '| one \\| two | three |', '|---|---|', '| x | y |', 'Then prose with a pipe: use a | b here.', '', `| ${LONG_HEAD} | n |`, '|---|---|', '| parser | 4 |'].join('\n');
 const SORTING = '**Sorting the list**\n\n| kind | count |\n|---|---|\n| defect | 4 |\n| feature | 3 |';
 
 /** A run that answers with LISTED and writes pipe tables in its thinking and its words. */
@@ -993,12 +995,13 @@ test('in Chrome: an answer that is a list of flat records and a pipe table in th
         words: ['HEADER-ONLY-WORDS', 'MORE-THAN-HEADER'].filter((each) => outside.textContent.includes(each)) }; })()`), { empty: 0, words: ['HEADER-ONLY-WORDS', 'MORE-THAN-HEADER'] });
     // The agent's words: the lead-in, the table, the line after it, and what is no table as it was written.
     assert.deepEqual(await value(`[...doc('wide').querySelector('.said-text').children].map((n) => n.querySelector('table') ? 'table' : n.textContent)`),
-      ['Here is what I sorted:', 'table', 'That is the list.', '---', '| a | b |\n| --- |\n| 1 | 2 |', 'table', '| 3 | 4 | EXTRA-CELL-WORDS |', '| HEADER-ONLY-WORDS | h2 |\n|---|---|\n| 5 | 6 | MORE-THAN-HEADER |', 'table', 'table', 'Then prose with a pipe: use a | b here.']);
+      ['Here is what I sorted:', 'table', 'That is the list.', '---', '| a | b |\n| --- |\n| 1 | 2 |', 'table', '| 3 | 4 | EXTRA-CELL-WORDS |', '| HEADER-ONLY-WORDS | h2 |\n|---|---|\n| 5 | 6 | MORE-THAN-HEADER |', 'table', 'table', 'Then prose with a pipe: use a | b here.', 'table']);
     assert.deepEqual(await value(`tables('wide', '.said-text')`), [
       { head: ['ref', 'what', 'kind', 'urgent', 'reviewed', 'tags'], rows: LISTED.slice(0, 6).map((each) => [each.ref, each.summary!.replaceAll('`', '').replaceAll('**', ''), each.kind, String(each.urgent), String(each.reviewed), each.tags.join(', ')]) },
       { head: ['p', 'q'], rows: [['1', '2']] },
       { head: ['r', 's'], rows: [['7', '8']] },
       { head: ['one | two', 'three'], rows: [['x', 'y']] },
+      { head: [LONG_HEAD, 'n'], rows: [['parser', '4']] },
     ]);
     assert.deepEqual(await value(`[[...doc('wide').querySelectorAll('.said-text td:first-child strong')].map((n) => n.textContent), [...doc('wide').querySelectorAll('.said-text td code')].length]`),
       [LISTED.slice(0, 6).map((each) => each.ref), 12], 'a cell of the agent\'s table keeps the inline marks the page draws');
@@ -1012,6 +1015,10 @@ test('in Chrome: an answer that is a list of flat records and a pipe table in th
     assert.deepEqual(await value(`flat('phone')`), { page: 0, panes: [0, 0] }, 'at 390 neither the page nor a pane scrolls sideways');
     assert.deepEqual(await value(`[boxes('phone', '.report'), boxes('phone', '.said-text')[0]]`),
       [[{ scrolls: true, overflow: 'auto', inside: true }], { scrolls: true, overflow: 'auto', inside: true }], 'a wide table scrolls inside its own box, on the screen');
+    // A header counts toward its column's length: a header longer than the box wraps, so a table of short cells under it fits.
+    assert.deepEqual(await value(`(() => { const box = [...doc('phone').querySelectorAll('.said-text .table-box')].at(-1); const range = doc('phone').createRange();
+      range.selectNodeContents(box.querySelector('th')); return { scrolls: box.scrollWidth > box.clientWidth, lines: range.getClientRects().length > 1 }; })()`),
+      { scrolls: false, lines: true }, 'a long header wraps over its short cells at 390, and its table fits its box');
     assert.equal(await value(`square('phone')`), true, 'square corners');
   } finally {
     await page.close();
