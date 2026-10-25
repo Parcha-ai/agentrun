@@ -217,3 +217,21 @@ test("runner: a deadline that passes after a wait ends in time, before the next 
   assert.equal(calls, 1);
   assert.deepEqual(pollSettlements(events), [[1, null], [2, "deadline"]]);
 });
+
+test("runner: a cancel during the interval wait still reports the finished check", async () => {
+  // interval 2s: the first check settles nothing, and the host cancels the run 100 ms into its wait.
+  // The run rejects with the host's reason, and the finished check still sends its one event.
+  let calls = 0;
+  const events = [];
+  const controller = new AbortController();
+  const reason = new Error("the host cancelled the run");
+  const error = await runWorkflow(wf([planNode, statusCall({}, poll({ interval_s: 2 })), assemble]), { question: "q" }, {
+    signal: controller.signal,
+    runNode: async () => ({ request_id: "req-1" }),
+    onEvent: (e) => { events.push(e); if (e.type === "effect.attempt") setTimeout(() => controller.abort(reason), 100); },
+    runEffect: async () => { calls += 1; return { status: "IN_PROGRESS" }; },
+  }).then(() => undefined, (rejection) => rejection);
+  assert.equal(error, reason);
+  assert.equal(calls, 1);
+  assert.deepEqual(pollSettlements(events), [[1, null]]);
+});
