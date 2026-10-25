@@ -317,3 +317,17 @@ test("a failing open closes its handle: a newer version and a file that is no da
     assert.equal(openOn(path.join(bad, "store.sqlite")), 0, "the unreadable file left no handle");
   })();
 });
+
+test("ifCurrent makes a commit a compare-and-swap: a stale expected current is refused (stale) inside the write and writes nothing", async () => {
+  const store = openStore(await scratch());
+  const agent = store.createAgent({ name: "Guarded" });
+  const first = await store.commitRevision(agent.id, A, { setCurrent: true, ifCurrent: null });
+  const second = await store.commitRevision(agent.id, B, { setCurrent: true, ifCurrent: first.id });
+  assert.equal(second.parent, first.id);
+  const before = store.listRevisions(agent.id);
+  await assert.rejects(store.commitRevision(agent.id, { ...A, instructions: "A third." }, { setCurrent: true, ifCurrent: first.id }), refused("stale"));
+  await assert.rejects(store.commitRevision(agent.id, { ...A, instructions: "A third." }, { setCurrent: true, ifCurrent: null }), refused("stale"), "null expects no current revision");
+  assert.deepEqual(store.listRevisions(agent.id), before, "no revision written and the current one unchanged");
+  await assert.rejects(store.commitRevision(agent.id, A, { ifCurrent: 7 }), refused("invalid"));
+  store.close();
+});
