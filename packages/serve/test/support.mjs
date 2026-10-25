@@ -97,3 +97,12 @@ export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000
   const rows = [...view.values()].sort((a, b) => a.seq - b.seq);
   return { rows, pages, after, last: pages.at(-1) };
 }
+
+/** Sets `vars` in this process's environment, which a server's runs inherit, for test `t`; the rest of `names` unset. */
+export function withEnv(t, vars, names = Object.keys(vars)) {
+  const all = [...new Set([...names, ...Object.keys(vars)])];
+  const saved = Object.fromEntries(all.map((name) => [name, process.env[name]]));
+  t.after(() => { for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : (process.env[name] = value); });
+  for (const name of all) delete process.env[name];
+  Object.assign(process.env, vars);
+}

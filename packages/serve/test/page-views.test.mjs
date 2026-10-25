@@ -140,6 +140,24 @@ test("a new agent: name, description, a prompt, a model and the tools capabiliti
   assert.equal(page.window.location.hash, "#/agents/researcher");
 });
 
+test("a saved agent the host cannot run yet: the form says what it lacks, each warning as text, and links the agent instead of leaving", async () => {
+  const warning = { field: "definition.model", reason: "not_set_up_here", message: `pi-ai finds no key for openai ${HOSTILE}` };
+  const { page } = open("#/new", { "v2/capabilities": CAPABILITIES, "POST v2/agents": [201, { ...agentView("keyless", REV_A, { name: "Keyless", instructions: "Answer.", model: "openai/gpt-5", tools: [] }), warnings: [warning] }] });
+  await page.settle();
+  find(page, "INPUT", "name").value = "Keyless";
+  find(page, "TEXTAREA", "instructions").value = "Answer.";
+  buttonNamed(page, "Create agent").click();
+  await page.settle();
+  assert.equal(page.window.location.hash, "#/new", "the form stays, so the warning is read");
+  const notice = all(page.app).find((el) => classOf(el) === "notice");
+  assert.ok(notice, "a notice");
+  assert.match(notice.textContent, /Saved\. It does not run on this host until it has what these name:/);
+  assert.ok(notice.textContent.includes(`definition.model: pi-ai finds no key for openai ${HOSTILE}`));
+  const link = all(notice).find((el) => el.tagName === "A");
+  assert.equal(link.getAttribute("href"), "#/agents/keyless");
+  assertInert(notice);
+});
+
 test("a new workflow agent: the workflow's JSON in place of a prompt and a model; JSON that does not parse, and the server's refusal with its fields, are said", async () => {
   const { page, api } = open("#/new", {
     "v2/capabilities": CAPABILITIES,
