@@ -15,7 +15,7 @@ import { supportTriageWorkflow, supportTriageInputs, scriptedSupportTriageDeps }
 import { tempCwd } from './fixtures/temp-cwd.mjs';
 
 // The file Pi lists for the author skill's command: a model that reads it has loaded the skill by itself.
-const AUTHOR_SKILL_FILE = '/home/user/.pi/npm/node_modules/@parcha/agentrun-pi/dist/skills/author/SKILL.md';
+const AUTHOR_SKILL_FILE = '/skills/agentrun-author/SKILL.md';
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; };
 const waitUntil = async predicate => { while (!predicate()) await new Promise(resolve => setImmediate(resolve)); };
 const resultSchema = { type: 'object', additionalProperties: false, required: ['content'], properties: { content: { type: 'string' } } };
@@ -1428,7 +1428,7 @@ test('reading any other file does not engage the session', async () => {
   const app = await harness({ withModel: false });
   try {
     await prompted(app, 'Is the answer supported by the files?');
-    await app.events.get('tool_call')?.({ type: 'tool_call', toolCallId: 'r1', toolName: 'read', input: { path: '/home/user/.pi/npm/node_modules/@parcha/agentrun-pi/dist/skills/author/references/language.md' } }, app.ctx);
+    await app.events.get('tool_call')?.({ type: 'tool_call', toolCallId: 'r1', toolName: 'read', input: { path: '/skills/agentrun-author/references/language.md' } }, app.ctx);
     await app.events.get('tool_call')?.({ type: 'tool_call', toolCallId: 'r2', toolName: 'grep', input: { path: AUTHOR_SKILL_FILE, pattern: 'x' } }, app.ctx);
     await ended(app, 'Done.');
     assert.equal(stamps(app).length, 0);

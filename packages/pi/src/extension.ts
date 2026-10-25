@@ -650,7 +650,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
   pi.on('session_before_fork', () => { engaged = false; return closeSession(true); });
   pi.on('before_agent_start', event => {
     turnRuns = [];
-    if (event.prompt.includes(`<skill name="${AUTHOR_SKILL_NAME}"`)) engaged = true;
+    // From Pi 1.2 the event is a union: a run started by a user prompt carries `prompt`, one started by a custom message does not.
+    if ('prompt' in event && typeof event.prompt === 'string' && event.prompt.includes(`<skill name="${AUTHOR_SKILL_NAME}"`)) engaged = true;
   });
   // A model can load the author skill by itself, by reading the file Pi lists for the skill's command.
   pi.on('tool_call', (event, ctx) => {
