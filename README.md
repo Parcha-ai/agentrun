@@ -1,5 +1,35 @@
 # AgentRun
 
+**AgentRun Server** runs your agents and keeps everything they do. Create an agent, change it (every change is a
+revision you can go back to), run it on a real model, and open any run of any agent from one page. It is one container
+and one folder of data, built from the open packages in this repository.
+
+```sh
+git clone --branch main --single-branch https://github.com/Parcha-ai/agentrun.git && cd agentrun
+export AGENT_MODEL=anthropic/claude-sonnet-5-5 ANTHROPIC_API_KEY=...   # or openai/gpt-5-mini with OPENAI_API_KEY
+docker compose -f packages/serve/docker/compose.yaml up --build -d
+docker compose -f packages/serve/docker/compose.yaml logs agentrun | grep Open
+```
+
+Open the link it prints, on this machine. Then:
+
+1. **New agent**: a name and a prompt, or a workflow. **Create agent**.
+2. **Start a run** on the agent's page. The page follows it until it is done, and asks you if the agent asks.
+3. **All runs** lists every run of every agent, and opens any of them.
+
+For more to look at, seed the showcase: three agents, their revisions, and 29 runs, among them one agent's three
+revisions side by side, from a plain prompt to a workflow that gives the same answers for far less:
+
+```sh
+docker compose -f packages/serve/docker/compose.yaml exec agentrun \
+  node examples/agentrun-server/showcase.mjs --token-file /data/.token --runs
+```
+
+[AgentRun Server](packages/serve/README.md) has the API, the models, what a run may reach, and the container.
+[The showcase](examples/agentrun-server/README.md) has the agents.
+
+## The packages
+
 Open-source packages for your pi agent. Install the ones you need.
 
 This repository holds the AgentRun harness: the workflow DSL and the pi extensions around it.
