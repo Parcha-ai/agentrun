@@ -136,8 +136,9 @@ that shape). A call node naming a tool the table cannot run that way is refused 
 The `browser` tool runs Browserbase sessions, never a Chrome on this machine. The keys come from the server's
 environment and reach the run's process as the rest of it does. A session's custody (its lease, its tag, what it was
 doing) is kept in the run's own store, so a run opened again on its directory reconciles the sessions it held. Each
-page it reads is filed under the run's `work/evidence/`. There is no recording and no live view. When the run is let go
-(its work done, or a SIGTERM) the sessions it still holds are released at Browserbase.
+page it reads is filed under the run's `work/evidence/`, each read in a file of its own (`0001-browser_read.md`, ...),
+reads at once included. There is no recording and no live view. When the run is let go (its work done, or a SIGTERM)
+the sessions it still holds are released at Browserbase.
 
 ## What it serves
 

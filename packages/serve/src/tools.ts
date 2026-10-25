@@ -78,21 +78,32 @@ const fileTool = (name: string, summary: string): ToolEntry => ({
 });
 
 /** Where the browser files what it reads: `work/evidence/`, so the run's files show it and the agent can read it back. A
- *  text body follows one line of the read's facts; a capture's bytes go beside its facts. */
-const evidenceIn = (work: string) => ({
-  file: async (label: string, record: { tool: string; facts: Record<string, unknown>; body: string | Uint8Array; ext?: string }) => {
-    const name = `${Date.now().toString(36)}-${record.tool}`;
-    await mkdir(join(work, "evidence"), { recursive: true });
-    const facts = JSON.stringify({ label, tool: record.tool, ...record.facts });
-    if (typeof record.body === "string") {
-      await writeFile(join(work, "evidence", `${name}.md`), `${facts}\n\n${record.body}`);
-      return { path: `evidence/${name}.md`, bodyLine: 3 };
-    }
-    await writeFile(join(work, "evidence", `${name}.${record.ext ?? "bin"}`), record.body);
-    await writeFile(join(work, "evidence", `${name}.json`), `${facts}\n`);
-    return { path: `evidence/${name}.json`, bodyPath: `evidence/${name}.${record.ext ?? "bin"}` };
-  },
-});
+ *  text body follows one line of the read's facts; a capture's bytes go beside its facts. Each read takes the next free
+ *  number, reserved by an exclusive create, so reads at once (parallel nodes, one turn's calls) and the reads of a later
+ *  process never overwrite one another. */
+export const evidenceIn = (work: string) => {
+  let seq = 0;
+  return {
+    file: async (label: string, record: { tool: string; facts: Record<string, unknown>; body: string | Uint8Array; ext?: string }) => {
+      const dir = join(work, "evidence");
+      await mkdir(dir, { recursive: true });
+      const facts = JSON.stringify({ label, tool: record.tool, ...record.facts });
+      const text = typeof record.body === "string";
+      for (;;) {
+        const name = `${String(++seq).padStart(4, "0")}-${record.tool}`;
+        try {
+          await writeFile(join(dir, text ? `${name}.md` : `${name}.json`), text ? `${facts}\n\n${record.body}` : `${facts}\n`, { flag: "wx" });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+          throw error;
+        }
+        if (text) return { path: `evidence/${name}.md`, bodyLine: 3 };
+        await writeFile(join(dir, `${name}.${record.ext ?? "bin"}`), record.body);
+        return { path: `evidence/${name}.json`, bodyPath: `evidence/${name}.${record.ext ?? "bin"}` };
+      }
+    },
+  };
+};
 
 /** A Browserbase browser driven through Stagehand, on pi-browser's durable adapter: its sessions' custody lives in the
  *  run's own store. No recording and no live view; a session the run still holds is released when the run is let go. */
