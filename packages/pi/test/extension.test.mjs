@@ -1406,3 +1406,18 @@ test('/agentrun limits shows the limits in force and asks no model', async () =>
     assert.match(shown, /node turns/i); assert.match(shown, /\b8\b/);
   } finally { await app.shutdown(); }
 });
+
+test('a node that reaches its turn limit makes one attempt, and the run fails saying so', async () => {
+  // The tester's three runs each spent two fresh sessions of 8 turns: the second attempt had the same prompt and the
+  // same limit, and never helped. A turn limit now ends the step after one session.
+  const cwd = await turnCwd();
+  const app = await harness({ cwd, extensionOptions: hostTurnOptions, responses: turnScript(null, 'corpus_search') });
+  try {
+    await app.tool({ action: 'inspect', workflow: turnWorkflow({ tools: ['corpus_search'] }) });
+    const result = await app.tool({ action: 'run' });
+    assert.equal(result.details.status, 'failed');
+    assert.equal(result.details.error.code, 'pi_turn_limit');
+    assert.equal(app.calls.length, 8, 'one session of 8 turns');
+    assert.match(result.details.error.message, /not tried again/);
+  } finally { await app.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
