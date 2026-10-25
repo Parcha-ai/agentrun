@@ -1323,3 +1323,86 @@ test('in an interactive session /agentrun dry-run returns at once, as /agentrun 
     assert.equal(app.calls.length, 0);
   } finally { await app.shutdown(); }
 });
+
+// Node turn limits. A first-run tester's read-only research node (search a package, cite three files) failed three
+// times at the fixed 8-turn limit, with no way for a Pi user to raise it and no word of how far the node got.
+// A node's session reads until it has `reads` tool results in its own transcript, then submits; with `reads` null it
+// never submits. Each attempt is a fresh session, so a second attempt starts its count again.
+const turnScript = (reads, tool = 'read', calls = 40) => Array.from({ length: calls }, () => transcript => {
+  const results = transcript.messages.filter(message => message.role === 'toolResult').length;
+  return fauxAssistantMessage(reads !== null && results >= reads
+    ? fauxToolCall('submit', { value: { content: 'found' } })
+    : tool === 'read' ? fauxToolCall('read', { path: 'note.txt' }) : fauxToolCall(tool, { query: 'cancellation' }));
+});
+// A host tool: the extension cannot tell whether it changes anything, so its node is not read-only.
+const hostTurnOptions = { hostTools: () => [hostTool(async () => corpusResult('A passage.'))] };
+const turnWorkflow = (extra = {}) => { const definition = workflow(); Object.assign(definition.root, extra); return definition; };
+const turnCwd = async () => { const cwd = await mkdtemp(join(tmpdir(), 'agentrun-turns-')); await writeFile(join(cwd, 'note.txt'), 'A note.'); return cwd; };
+
+test('a read-only node gets more than 8 turns by default', async () => {
+  const cwd = await turnCwd();
+  const app = await harness({ cwd, responses: turnScript(11) });
+  try {
+    await app.tool({ action: 'inspect', workflow: turnWorkflow({ tools: ['read'] }) });
+    const result = await app.tool({ action: 'run' });
+    assert.equal(result.details.status, 'complete', JSON.stringify(result.details.error));
+    assert.equal(app.calls.length, 12);
+  } finally { await app.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('a node that is not read-only and names no max_turns keeps the 8-turn default', async () => {
+  const cwd = await turnCwd();
+  const app = await harness({ cwd, extensionOptions: hostTurnOptions, responses: turnScript(11, 'corpus_search') });
+  try {
+    await app.tool({ action: 'inspect', workflow: turnWorkflow({ tools: ['corpus_search'] }) });
+    const result = await app.tool({ action: 'run' });
+    assert.equal(result.details.status, 'failed');
+    assert.equal(result.details.error.code, 'pi_turn_limit');
+  } finally { await app.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+test("a node's max_turns raises its turn limit within the host cap", async () => {
+  const cwd = await turnCwd();
+  const app = await harness({ cwd, extensionOptions: hostTurnOptions, responses: turnScript(11, 'corpus_search') });
+  try {
+    await app.tool({ action: 'inspect', workflow: turnWorkflow({ tools: ['corpus_search'], max_turns: 12 }) });
+    const result = await app.tool({ action: 'run' });
+    assert.equal(result.details.status, 'complete', JSON.stringify(result.details.error));
+    assert.equal(app.calls.length, 12);
+  } finally { await app.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+test("a node's max_turns above the host cap is refused at inspection, naming the cap", async () => {
+  const app = await harness({ withModel: false });
+  try {
+    await assert.rejects(app.tool({ action: 'inspect', workflow: turnWorkflow({ max_turns: 1000 }) }), error => {
+      assert.match(error.message, /read-note/); assert.match(error.message, /max_turns 1000/); assert.match(error.message, /cap of \d+ turns/);
+      return true;
+    });
+    assert.equal(app.calls.length, 0);
+  } finally { await app.shutdown(); }
+});
+
+test('pi_turn_limit says how far the node got: its turns and its last tool call', async () => {
+  const cwd = await turnCwd();
+  const app = await harness({ cwd, extensionOptions: hostTurnOptions, responses: turnScript(null, 'corpus_search') });
+  try {
+    await app.tool({ action: 'inspect', workflow: turnWorkflow({ tools: ['corpus_search'] }) });
+    const result = await app.tool({ action: 'run' });
+    assert.equal(result.details.status, 'failed');
+    assert.equal(result.details.error.code, 'pi_turn_limit');
+    assert.match(result.details.error.message, /8 of 8 turns/);
+    assert.match(result.details.error.message, /last tool call: corpus_search/);
+  } finally { await app.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('/agentrun limits shows the limits in force and asks no model', async () => {
+  const app = await harness();
+  try {
+    await app.command('limits');
+    assert.equal(app.prompts.length, 0, 'not sent to the author as a task');
+    assert.equal(app.calls.length, 0);
+    const shown = app.messages.at(-1)?.content ?? '';
+    assert.match(shown, /node turns/i); assert.match(shown, /\b8\b/);
+  } finally { await app.shutdown(); }
+});
