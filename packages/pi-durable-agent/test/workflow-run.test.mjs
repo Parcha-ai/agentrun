@@ -3,12 +3,13 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { graphDiff, workflowGraph } from "@parcha/agentrun-dsl/graph";
 import { durableDoc, readJournal } from "@parcha/agentrun-pi/durable";
 import { AgentHomeError } from "../dist/index.js";
-import { readWorkflowRun, revisionGraph, runWorkflowRevision } from "../dist/workflow.js";
+import { readWorkflowRun, revisionGraph, runWorkflowRevision, startWorkflowRevision, workflowCarry } from "../dist/workflow.js";
 import { bodyOf, ctx, hostFor, mapDoc, parallelDoc, runOf, TOOLS, workflowDoc } from "./workflow-support.mjs";
 
 const INPUT = { sku: "sku-1", amount: 10 };
@@ -255,4 +256,27 @@ test("readWorkflowRun reads a run another process is running, and leaves the sto
   assert.equal((await readWorkflowRun(run)).outcome, "completed");
   assert.equal(bytes(), before);
   assert.deepEqual(files(), listed);
+});
+
+test("in two halves: startWorkflowRevision ends with the outcome, and workflowCarry reads the run only once no one holds its store", async () => {
+  const run = await runOf();
+  const host = await hostFor(run);
+  let outcome;
+  try {
+    outcome = await startWorkflowRevision({ harness: host.harness, workflows: host.workflows, context: ctx, run, input: INPUT, tools: TOOLS });
+  } finally {
+    await host.close();
+  }
+  assert.equal(outcome.status, "complete");
+  // Held as a pi-durable-disk run's process holds its store until it exits: no second connection reads it.
+  const held = new DatabaseSync(run.storePath, { timeout: 0 });
+  held.exec("PRAGMA locking_mode = EXCLUSIVE");
+  held.exec("BEGIN EXCLUSIVE");
+  held.exec("COMMIT");
+  try {
+    await assert.rejects(workflowCarry(run, outcome));
+  } finally {
+    held.close();
+  }
+  assert.deepEqual(await workflowCarry(run, outcome), { state: "completed", summary: "stock, by tier, quote fast" });
 });

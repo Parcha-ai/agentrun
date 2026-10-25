@@ -160,7 +160,7 @@ test("the runs: one table across the agent's revisions, escalated a state of its
   const rows = runRows(page);
   assert.deepEqual(rows.map((el) => el.getAttribute("href")), RUNS.map((r) => `#/runs/${r.id}`));
   assert.deepEqual(rows.map((el) => pills(el)[0]), [["pill live", "running"], ["pill escalated", "escalated"], ["pill ok", "completed"], ["pill error", "failed"], ["pill stopped", "stopped"]], "escalated is never drawn as failed");
-  assert.deepEqual(rows.map((el) => all(el).find((c) => classOf(c).startsWith("c cost")).textContent), ["unknown", "$0.018", "$0.312", "$0.000", "unknown"], "a missing cost is unknown, never $0; a recorded 0 is $0.000");
+  assert.deepEqual(rows.map((el) => all(el).find((c) => classOf(c).startsWith("c cost")).textContent), ["unknown", "$0.018", "$0.312", "$0", "unknown"], "a missing cost is unknown, never $0; a recorded 0 is $0");
   assert.ok(rows[1].textContent.includes("bbbbbbbbbbbb") && rows[1].textContent.includes("agentic") && rows[1].textContent.includes(`escalated at No public record ${HOSTILE}`));
   assert.ok(rows[4].textContent.includes("its directory is gone") && !rows[4].textContent.includes("never shown"));
   const filters = all(page.app).filter((el) => el.tagName === "A" && classOf(el).startsWith("filter"));
@@ -169,6 +169,13 @@ test("the runs: one table across the agent's revisions, escalated a state of its
     [`#/agents/company-researcher?revision=${REV_B.id}`, "filter", "bbbbbbbbbbbb agentic"],
     [`#/agents/company-researcher?revision=${REV_A.id}`, "filter", "aaaaaaaaaaaa agentic"],
   ]);
+});
+
+test("a cost under a cent keeps two significant digits, so a run that cost $0.00014 never reads as free beside one that cost $0.016", async () => {
+  const cheap = [run("run-w", REV_B, "completed", { costUsd: 0.00014 }), run("run-m", REV_B, "completed", { costUsd: 0.0011 }), run("run-a", REV_B, "completed", { costUsd: 0.016 }), run("run-b", REV_B, "completed", { costUsd: 1.5 })];
+  const page = mount(agentApi({ "api/runs?agent=company-researcher": cheap }), "#/agents/company-researcher", { serve: STORE });
+  await page.settle();
+  assert.deepEqual(runRows(page).map((el) => all(el).find((c) => classOf(c).startsWith("c cost")).textContent), ["$0.00014", "$0.0011", "$0.016", "$1.50"]);
 });
 
 test("the runs filtered by a revision: the filter is in the hash, so a reload keeps it, and the API is asked for that revision's runs", async () => {

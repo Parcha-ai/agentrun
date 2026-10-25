@@ -2,12 +2,13 @@
 // store's reader on store.sqlite in place, read-only, does its reads and closes it: nothing is copied, cached or written.
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { type AgentStoreReader, openStoreReader, type Revision, STORE_FILE } from "../agent-store.js";
 import { ID_PATTERN } from "../home.js";
 import { AgentHomeError } from "../store.js";
 import { timelineOf } from "../timeline/index.js";
 import { checkInside, readEntriesAt } from "./read.js";
-import { type ServeHandle, serveLocal, type ServeOptions } from "./server.js";
+import { type Api, failure, type ServeHandle, serveLocal, type ServeOptions } from "./server.js";
 
 export type DiffLine = { op: "same" | "add" | "del"; text: string };
 
@@ -109,39 +110,61 @@ const PAGES = {
   "/graph.js": { file: "graph.js", type: "text/javascript; charset=utf-8" },
 };
 
+/** The store page's files by the path the page asks for each: the page at "/", its stylesheet and its two scripts. */
+export const STORE_PAGE_FILES: Readonly<Record<string, { path: string; type: string }>> = Object.fromEntries(
+  Object.entries(PAGES).map(([route, { file, type }]) => [route, { path: fileURLToPath(new URL(file, import.meta.url)), type }]),
+);
+
 /**
- * Serve the agent store at `store.dir` on 127.0.0.1, as `serveHome` serves a home: `GET /` is the page, `GET /api/store`
- * the agents, `GET /api/agents/:id` one agent and its revisions, `GET /api/runs?agent=&revision=` the runs newest first,
- * and `GET /api/runs/:id` one run.
+ * The read-only JSON behind the store page, over the agent store at `store.dir`: `/api/store` the agents,
+ * `/api/agents/:id` one agent and its revisions, `/api/runs?agent=&revision=` the runs newest first, and `/api/runs/:id`
+ * one run. A read that fails is an answer too: its status and the words for it.
+ */
+export function storeApi(store: { readonly dir: string }): Api {
+  const dir = path.resolve(store.dir);
+  const answer = async (reader: AgentStoreReader, pathname: string, query: URLSearchParams) => {
+    if (pathname === "/api/store") return { status: 200, value: { agents: reader.listAgents() } };
+    if (pathname === "/api/runs") {
+      const [agent, revision] = [query.get("agent") ?? undefined, query.get("revision") ?? undefined];
+      if ([agent, revision].some((id) => id !== undefined && !ID_PATTERN.test(id))) return badId;
+      return { status: 200, value: reader.listRuns({ agent, revision }).map((run) => ({ ...run, gone: !existsSync(reader.runStorePath(run.id)) })) };
+    }
+    const [, route, id] = /^\/api\/(agents|runs)\/([^/]+)$/.exec(pathname) ?? [];
+    if (id === undefined) return notFound("page");
+    if (!ID_PATTERN.test(id)) return badId;
+    if (route === "agents") {
+      const found = reader.readAgent(id);
+      if (!found) return notFound("agent");
+      // A revision's parent is its own agent's, so it is in the same list.
+      const byId = new Map(found.revisions.map((revision) => [revision.id, revision]));
+      const revisions = [];
+      for (const revision of found.revisions) revisions.push(await revisionView(revision, revision.parent === null ? undefined : byId.get(revision.parent)));
+      return { status: 200, value: { agent: found.agent, revisions } };
+    }
+    const run = reader.readRun(id);
+    return run ? { status: 200, value: await runView(dir, reader, run) } : notFound("run");
+  };
+  return async (pathname, query) => {
+    try {
+      const reader = openStoreReader(dir);
+      try {
+        return await answer(reader, pathname, query);
+      } finally {
+        reader.close();
+      }
+    } catch (error) {
+      const { status, message } = failure(error, "agent store");
+      return { status, value: { error: message } };
+    }
+  };
+}
+
+/**
+ * Serve the agent store at `store.dir` on 127.0.0.1, as `serveHome` serves a home: `GET /` is the page and every other
+ * path `storeApi`'s.
  */
 export async function serveStore(store: { readonly dir: string }, options: ServeOptions = {}): Promise<ServeHandle> {
   const dir = path.resolve(store.dir);
   if (!existsSync(path.join(dir, STORE_FILE))) throw new AgentHomeError("missing", `there is no ${STORE_FILE} in that folder`);
-  return serveLocal(PAGES, async (pathname, query) => {
-    const reader = openStoreReader(dir);
-    try {
-      if (pathname === "/api/store") return { status: 200, value: { agents: reader.listAgents() } };
-      if (pathname === "/api/runs") {
-        const [agent, revision] = [query.get("agent") ?? undefined, query.get("revision") ?? undefined];
-        if ([agent, revision].some((id) => id !== undefined && !ID_PATTERN.test(id))) return badId;
-        return { status: 200, value: reader.listRuns({ agent, revision }).map((run) => ({ ...run, gone: !existsSync(reader.runStorePath(run.id)) })) };
-      }
-      const [, route, id] = /^\/api\/(agents|runs)\/([^/]+)$/.exec(pathname) ?? [];
-      if (id === undefined) return notFound("page");
-      if (!ID_PATTERN.test(id)) return badId;
-      if (route === "agents") {
-        const found = reader.readAgent(id);
-        if (!found) return notFound("agent");
-        // A revision's parent is its own agent's, so it is in the same list.
-        const byId = new Map(found.revisions.map((revision) => [revision.id, revision]));
-        const revisions = [];
-        for (const revision of found.revisions) revisions.push(await revisionView(revision, revision.parent === null ? undefined : byId.get(revision.parent)));
-        return { status: 200, value: { agent: found.agent, revisions } };
-      }
-      const run = reader.readRun(id);
-      return run ? { status: 200, value: await runView(dir, reader, run) } : notFound("run");
-    } finally {
-      reader.close();
-    }
-  }, "agent store", options);
+  return serveLocal(PAGES, storeApi({ dir }), "agent store", options);
 }

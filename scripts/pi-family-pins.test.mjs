@@ -133,3 +133,13 @@ test('with nothing nested, a package two levels below a direct dependency is sti
   // The package check's consumer reaches pi-ai first through the durable package; telemetry sits one edge below it.
   for (const major of [10, 11]) assert.equal(buildOverrides(flatLock, major).overrides[key('pi-telemetry')], '1.1.0');
 });
+
+test("the consumer's pins name only @earendil-works packages: a dependency's own copy of anything else installs as a user gets it", () => {
+  // Stagehand pins its own zod below a patched root zod. A pin by name would lift that copy in the package check's
+  // consumer alone, so its audit would pass while every user of the published packages installs the nested copy.
+  const withZod = { ...lock, 'node_modules/zod': { version: '4.6.7' }, 'node_modules/@browserbasehq/stagehand/node_modules/zod': { version: '4.4.3' } };
+  for (const major of [10, 11]) {
+    const names = Object.keys(buildOverrides(withZod, major).overrides).map(key => key.slice(0, key.indexOf('@', 1) > 0 ? key.indexOf('@', 1) : undefined));
+    assert.deepEqual(names.filter(name => !name.startsWith(`${scope}/`)), [], `npm ${major}`);
+  }
+});

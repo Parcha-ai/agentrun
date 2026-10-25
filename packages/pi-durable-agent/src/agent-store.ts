@@ -184,9 +184,10 @@ export class AgentStore extends AgentStoreReader {
     return agent;
   }
 
-  /** A new revision of `agent`, its parent the agent's current revision (none: null). The same agent, parent, kind and body is the same revision and writes nothing. */
-  async commitRevision(agent: string, input: NewRevision, options: { setCurrent?: boolean } = {}): Promise<Revision> {
+  /** A new revision of `agent`, its parent the agent's current revision (none: null). The same agent, parent, kind and body is the same revision and writes nothing. With `ifCurrent` (the current revision the caller read, null for none) the commit is a compare-and-swap: another current is refused (`stale`) inside the same transaction, and nothing is written. */
+  async commitRevision(agent: string, input: NewRevision, options: { setCurrent?: boolean; ifCurrent?: string | null } = {}): Promise<Revision> {
     checkId(agent, "agent");
+    if (options.ifCurrent !== undefined && options.ifCurrent !== null) checkId(options.ifCurrent, "revision");
     const { body, texts } = bodyOf(input);
     if (input.note !== undefined && (typeof input.note !== "string" || input.note.length > 2_000)) throw invalid("the note is not text of at most 2000 characters");
     if (input.kind === "workflow") await this.check(body); // item 2's check, before a write: a refusal writes nothing
@@ -194,10 +195,11 @@ export class AgentStore extends AgentStoreReader {
   }
 
   /** The rows of a new revision, inside the caller's transaction. */
-  private writeRevision(agent: string, input: NewRevision, body: AgenticBody | WorkflowBody, texts: Map<string, string>, options: { setCurrent?: boolean }): Revision {
+  private writeRevision(agent: string, input: NewRevision, body: AgenticBody | WorkflowBody, texts: Map<string, string>, options: { setCurrent?: boolean; ifCurrent?: string | null }): Revision {
     {
       const row = this.db.prepare("SELECT current_revision FROM agents WHERE id = ?").get(agent) as { current_revision: string | null } | undefined;
       if (!row) throw new AgentHomeError("missing", "there is no such agent");
+      if (options.ifCurrent !== undefined && row.current_revision !== options.ifCurrent) throw new AgentHomeError("stale", "the agent's current revision is not the one the commit expects");
       const parent = row.current_revision; // always the agent's current revision, which setCurrent only sets to its own: the parent is the agent's own by construction
       if (parent !== null && !this.db.prepare("SELECT 1 FROM revisions WHERE id = ? AND agent_id = ?").get(parent, agent)) throw invalid("the parent is not a revision of that agent");
       const id = revisionHash({ agent, parent, kind: input.kind, body });

@@ -30,6 +30,7 @@ import { showWorkflowInspector } from './workflow-inspector.js';
 import { authoringReferences, describeTools, dryRunDraft, formatDryRun, inspectCandidate, workflowToolParameters, type WorkflowDryRun } from './workflow-tool.js';
 import { supportTriageWorkflow, supportTriageInputs, supportTriageTools, scriptedSupportTriageDeps } from './triage-demo.js';
 import { restoreWorkflowSession, workflowRunHistory, type WorkflowSessionSnapshot } from './workflow-session.js';
+import { OperatorError } from './operator-error.js';
 
 const constructors = {
   read: createReadToolDefinition, bash: createBashToolDefinition, edit: createEditToolDefinition,
@@ -179,7 +180,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     pi.sendMessage({ customType: 'agentrun', content: safe(content), display: true, details });
   };
   const commandError = (s: Session, error: unknown) => {
-    const message = error instanceof Error && (error instanceof WorkflowStoreError || error.name === 'ExtensionServiceError' || /^(No workflow|Inspect a workflow|A workflow|Cannot inspect|Workflow|Code|Executable|Unsupported|Invalid workflow|AgentRun requires|AgentRun authoring|The active Pi|Saved workflow|SOP|The SOP|Use \/agentrun sop)/.test(error.message))
+    // What may reach the operator is decided by the error's type, never by its text.
+    const message = error instanceof Error && (error instanceof WorkflowStoreError || error.name === 'ExtensionServiceError' || error instanceof OperatorError)
       ? error.message.slice(0, 2000) : 'AgentRun could not complete this operation. Use /agentrun status to check setup and /agentrun to inspect the workflow. No fallback was selected.';
     show(s, message);
   };
@@ -188,9 +190,9 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     ctx.ui.setStatus('agentrun', line ? safe(line).slice(0, 140) : undefined);
   };
   const inspect = (ctx: ExtensionContext, s: Session, workflow?: unknown, input?: Record<string, unknown>) => {
-    if (s.busy && (workflow !== undefined || input !== undefined)) throw new Error('A workflow is running. Stop it before changing its definition or input.');
+    if (s.busy && (workflow !== undefined || input !== undefined)) throw new OperatorError('A workflow is running. Stop it before changing its definition or input.');
     const candidate = workflow === undefined ? s.draft : workflow;
-    if (candidate === undefined) throw new Error('No workflow yet. Describe a task with /agentrun <task>.');
+    if (candidate === undefined) throw new OperatorError('No workflow yet. Describe a task with /agentrun <task>.');
     // Include active tools available only with operator trust, without granting that trust.
     // Execution rechecks the actual per-run permissions and captures implementations.
     const checker = new WorkflowExtensionService({ allowedTools: toolSet(ctx, true).map(tool => tool.name), limits: serviceLimits });
@@ -221,7 +223,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     const countTool = () => {
       signal.throwIfAborted();
       toolCalls++;
-      if (limits.toolAttempts !== null && toolCalls > limits.toolAttempts) throw new Error('Workflow tool-call limit reached');
+      if (limits.toolAttempts !== null && toolCalls > limits.toolAttempts) throw new OperatorError('Workflow tool-call limit reached');
       configuration.onToolAttempt?.();
       signal.throwIfAborted();
     };
@@ -237,7 +239,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         streamSimple: (model, transcript, options) => {
           signal.throwIfAborted();
           modelCalls++;
-          if (limits.modelRequests !== null && modelCalls > limits.modelRequests) throw new Error('Workflow model-request limit reached');
+          if (limits.modelRequests !== null && modelCalls > limits.modelRequests) throw new OperatorError('Workflow model-request limit reached');
           return ctx.modelRegistry.streamSimple(model as Parameters<typeof ctx.modelRegistry.streamSimple>[0],
             transcript as Parameters<typeof ctx.modelRegistry.streamSimple>[1], { ...options, reasoning: options?.reasoning === 'off' ? undefined : options?.reasoning, signal: options?.signal ? AbortSignal.any([signal, options.signal]) : signal });
         },
@@ -255,22 +257,22 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         if (typeof judge !== 'function') throw new Error('Host judge factory must return a runner');
       } else {
         try { judge = createJevRunner({ signal, maxAttempts: 1 }); }
-        catch { throw new Error('AgentRun requires TypeSafe configuration for this workflow. Set TYPESAFE_API_KEY and, for a gateway, TYPESAFE_BASE_URL before running.'); }
+        catch { throw new OperatorError('AgentRun requires TypeSafe configuration for this workflow. Set TYPESAFE_API_KEY and, for a gateway, TYPESAFE_BASE_URL before running.'); }
       }
     }
     return {
       runNode: request => {
-        if (!runner) throw new Error('Workflow agent adapter was not admitted');
+        if (!runner) throw new OperatorError('Workflow agent adapter was not admitted');
         return runner(request);
       },
       runJudge: request => {
-        if (!judge) throw new Error('Workflow Jev adapter was not admitted');
+        if (!judge) throw new OperatorError('Workflow Jev adapter was not admitted');
         return judge(request);
       },
       runEffect: async ({ node, input, signal: effectSignal }) => {
         countTool();
         const tool = tools.find(tool => tool.name === node.tool);
-        if (!tool || node.via !== 'tool') throw new Error('Workflow requested an unavailable tool');
+        if (!tool || node.via !== 'tool') throw new OperatorError('Workflow requested an unavailable tool');
         let result;
         try { result = await tool.execute('agentrun-effect', input, effectSignal, undefined, workflowToolContext(ctx)); }
         catch (error) {
@@ -290,19 +292,19 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     if (configuration.sop) sop = { text: configuration.sop, sha256: sopDigest(configuration.sop) };
     else if (s.sop) {
       const read = await readSopFile(ctx.cwd, s.sop.file);
-      if (read.sha256 !== s.sop.sha256) throw new Error(`SOP file ${s.sop.file} changed since it was supplied. Run /agentrun sop ${s.sop.file} again to use the new text.`);
+      if (read.sha256 !== s.sop.sha256) throw new OperatorError(`SOP file ${s.sop.file} changed since it was supplied. Run /agentrun sop ${s.sop.file} again to use the new text.`);
       sop = read;
-    } else throw new Error(`Workflow requires SOP text for ${needed.map(name => `"${name}"`).join(', ')}. Supply it with /agentrun sop <file>.`);
+    } else throw new OperatorError(`Workflow requires SOP text for ${needed.map(name => `"${name}"`).join(', ')}. Supply it with /agentrun sop <file>.`);
     const missing = missingSopSections(sop.text, needed);
-    if (missing.length) throw new Error(`SOP text has no "## <section>" heading for ${missing.map(name => `"${name}"`).join(', ')}.`);
+    if (missing.length) throw new OperatorError(`SOP text has no "## <section>" heading for ${missing.map(name => `"${name}"`).join(', ')}.`);
     return sop;
   };
   const execute = async (ctx: ExtensionContext, s: Session, input: Record<string, unknown>, options: {
     signal?: AbortSignal; trusted?: boolean; modelResult?: boolean;
     update?: (result: ReturnType<typeof textResult>) => void;
   } = {}) => {
-    if (s.busy) throw new Error('A workflow is already running. Use /agentrun stop first.');
-    if (!s.draft) throw new Error('Inspect a workflow first. Try /agentrun demo, or describe a task with /agentrun <task>.');
+    if (s.busy) throw new OperatorError('A workflow is already running. Use /agentrun stop first.');
+    if (!s.draft) throw new OperatorError('Inspect a workflow first. Try /agentrun demo, or describe a task with /agentrun <task>.');
     const scripted = s.demo !== undefined;
     s.busy = true; s.controller = new AbortController();
     const signals = [s.controller.signal, options.signal, ctx.signal].filter((v): v is AbortSignal => !!v);
@@ -398,7 +400,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
   /** The inspected draft on synthetic values, or `input`: nothing is paid, and the session's run is untouched. Code runs
    *  only when the user's command trusts this dry run. */
   const dryRun = async (ctx: ExtensionContext, s: Session, input: Record<string, unknown> | undefined, trusted: boolean, signal?: AbortSignal): Promise<WorkflowDryRun> => {
-    if (!s.draft) throw new Error('Inspect a workflow first. Try /agentrun demo, or describe a task with /agentrun <task>.');
+    if (!s.draft) throw new OperatorError('Inspect a workflow first. Try /agentrun demo, or describe a task with /agentrun <task>.');
     const draft = s.draft;
     // /agentrun stop, the tool call's own abort and the session's end each stop it, from before its first await on.
     const controller = new AbortController();
@@ -414,7 +416,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     } finally { if (s.dryRun === controller) s.dryRun = undefined; }
   };
   const launch = async (ctx: ExtensionContext, s: Session, input: Record<string, unknown>, trusted = false) => {
-    if (s.busy) throw new Error('A workflow is already running. Use /agentrun stop first.');
+    if (s.busy) throw new OperatorError('A workflow is already running. Use /agentrun stop first.');
     // Capture host selection and permission before yielding the interactive command loop.
     const runContext = { ...ctx, model: ctx.model, thinkingLevel: ctx.thinkingLevel ?? pi.getThinkingLevel() };
     const pending = execute(runContext, s, structuredClone(input), { trusted })
@@ -431,7 +433,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     name: toolName, label: 'AgentRun workflow',
     description: `Use the ${AUTHOR_SKILL_NAME} skill to compose workflows.` + ' Describe lists available tools and their schemas. Inspect or run an AgentRun DSL workflow in this Pi session. First inspect to show its graph. Dry-run checks the inspected workflow on synthetic values (or the given input) with no model, Jev or tool call; code runs only with the user command /agentrun dry-run --trusted. Agent nodes capture the active Pi model when execution starts. Code needs the user command /agentrun run --trusted for each run. ' + (configuration.hostTools
       ? 'Only the explicit host-configured tools are available, including during trusted runs. Outer permission hooks are not inherited. '
-      : 'Enabled read-only Pi built-ins are available to declared steps. Shell/write/edit need the trusted command for each run; custom extension tools and permission hooks are not inherited. The search and support_demo tools use fictional supplied sources only. ') + 'Save stores a named procedure revision, not its input or permission. Load preflights current host capabilities. Run always restarts; there is no checkpoint resume. Scripted demos stay scripted on rerun.',
+      : 'Enabled read-only Pi built-ins are available to declared steps. Shell/write/edit need the trusted command for each run; custom extension tools and permission hooks are not inherited. The search and support_demo tools use fictional supplied sources only. ') + 'Save stores a named procedure revision, not its input or permission. Load preflights current host capabilities. A run this session left interrupted or failed resumes from its journal when its draft, input, SOP and tools are unchanged; any other run starts new. Scripted demos stay scripted on rerun.',
     parameters: workflowToolParameters(),
     executionMode: 'sequential',
     renderResult(result, options) {
@@ -446,8 +448,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       const s = await state(ctx);
       const store = new WorkflowStore(ctx.cwd);
       if (args.action === 'save') {
-        if (s.busy) throw new Error('A workflow is running. Save after it stops.');
-        if (!s.draft) throw new Error('No workflow to save. Inspect a workflow first.');
+        if (s.busy) throw new OperatorError('A workflow is running. Save after it stops.');
+        if (!s.draft) throw new OperatorError('No workflow to save. Inspect a workflow first.');
         const saved = await store.save(args.name ?? '', s.draft); s.savedName = saved.name; persist(s);
         return textResult(`Saved ${saved.name} · ${saved.digest.slice(0, 12)}. Input and execution permission are not saved.\nLoad this revision: /agentrun load ${saved.name} ${saved.digest}${s.demo ? '\nScripted demo adapters are not saved. Loading this definition uses live adapters.' : ''}`, saved);
       }
@@ -513,8 +515,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         } else if (!command || command === 'inspect') {
           show(s, s.draft ? formatWorkflowView(view(ctx, s)) : help);
         } else if (/^save(?:\s|$)/.test(command)) {
-          if (s.busy) throw new Error('A workflow is running. Save after it stops.');
-          if (!s.draft) throw new Error('No workflow to save. Inspect a workflow first.');
+          if (s.busy) throw new OperatorError('A workflow is running. Save after it stops.');
+          if (!s.draft) throw new OperatorError('No workflow to save. Inspect a workflow first.');
           const saved = await new WorkflowStore(ctx.cwd).save(command.slice(4).trim(), s.draft); s.savedName = saved.name; persist(s);
           show(s, `Saved ${saved.name} · ${saved.digest.slice(0, 12)}. Input and execution permission are not saved.\nReuse: /agentrun load ${saved.name}\nLoad this revision: /agentrun load ${saved.name} ${saved.digest}${s.demo ? '\nScripted demo adapters are not saved. Loading this definition uses live adapters.' : ''}`, saved);
         } else if (/^load(?:\s|$)/.test(command)) {
@@ -545,24 +547,24 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         } else if (/^sop(?:\s|$)/.test(command)) {
           const file = raw.trim().slice(3).trim();
           if (!file) { show(s, configuration.sop ? 'SOP text comes from the host.' : s.sop ? `SOP: ${s.sop.file} (${s.sop.sha256.slice(0, 12)}). Supply another with /agentrun sop <file>.` : 'No SOP supplied. Use /agentrun sop <file> for a workflow that names sopSection.'); return; }
-          if (s.busy) throw new Error('A workflow is running. Stop it before changing its SOP.');
-          if (configuration.sop) throw new Error('SOP text comes from the host; /agentrun sop is not used.');
+          if (s.busy) throw new OperatorError('A workflow is running. Stop it before changing its SOP.');
+          if (configuration.sop) throw new OperatorError('SOP text comes from the host; /agentrun sop is not used.');
           const read = await readSopFile(ctx.cwd, file);
           const needed = s.draft ? inspectWorkflow(s.draft).requires.sopSections : [];
           const missing = missingSopSections(read.text, needed);
-          if (missing.length) throw new Error(`SOP text has no "## <section>" heading for ${missing.map(name => `"${name}"`).join(', ')}. Nothing was changed.`);
+          if (missing.length) throw new OperatorError(`SOP text has no "## <section>" heading for ${missing.map(name => `"${name}"`).join(', ')}. Nothing was changed.`);
           s.sop = { file: read.file, sha256: read.sha256 }; persist(s);
           show(s, `SOP set: ${read.file} (${read.text.length} characters). ${needed.length ? `Covers ${needed.map(name => `"${name}"`).join(', ')}.` : 'The current workflow names no section.'}`);
         } else if (/^input(?:\s|$)/.test(command)) {
-          if (!s.draft) throw new Error('No workflow yet. Load or describe a procedure first.');
-          if (s.busy) throw new Error('A workflow is running. Stop it before changing its input.');
+          if (!s.draft) throw new OperatorError('No workflow yet. Load or describe a procedure first.');
+          if (s.busy) throw new OperatorError('A workflow is running. Stop it before changing its input.');
           let supplied = raw.slice(5).trim();
           if (!supplied && ctx.hasUI) supplied = await ctx.ui.input('New workflow input', 'Describe the new case in plain language, or paste a JSON object.') ?? '';
           if (!supplied) { show(s, 'Use /agentrun input <describe the new case>, or ask Pi to use new input. Nothing was run.'); return; }
           if (supplied.startsWith('{')) {
             let input: unknown;
-            try { input = JSON.parse(supplied); } catch { throw new Error('Workflow input must be valid JSON, or describe it in plain language.'); }
-            if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Workflow input must be an object.');
+            try { input = JSON.parse(supplied); } catch { throw new OperatorError('Workflow input must be valid JSON, or describe it in plain language.'); }
+            if (!input || typeof input !== 'object' || Array.isArray(input)) throw new OperatorError('Workflow input must be an object.');
             inspect(ctx, s, undefined, input as Record<string, unknown>);
             show(s, `Input updated. Nothing was run.\n\n${formatWorkflowView(view(ctx, s))}`);
           } else {
@@ -608,11 +610,11 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         } else if (commandLike || command.startsWith('-')) {
           show(s, `Unknown AgentRun command: ${raw}\n\n${help}`);
         } else {
-          if (s.busy) throw new Error('A workflow is running. Stop it before starting another.');
+          if (s.busy) throw new OperatorError('A workflow is running. Stop it before starting another.');
           if (!pi.getCommands().some(item => item.name === `skill:${AUTHOR_SKILL_NAME}` && item.source === 'skill')) {
-            throw new Error('AgentRun authoring skill is unavailable. Enable package skills, then /reload. Run /agentrun status to check discovery.');
+            throw new OperatorError('AgentRun authoring skill is unavailable. Enable package skills, then /reload. Run /agentrun status to check discovery.');
           }
-          if (!readiness(ctx, s).pi) throw new Error(PI_MODEL_SETUP_MESSAGE);
+          if (!readiness(ctx, s).pi) throw new OperatorError(PI_MODEL_SETUP_MESSAGE);
           pi.sendUserMessage(`/skill:${AUTHOR_SKILL_NAME} ${raw}`, { expandPromptTemplates: true });
         }
       } catch (error) {

@@ -45,7 +45,7 @@ export type Answer = { status: number; value: unknown };
 export type Api = (pathname: string, query: URLSearchParams) => Promise<Answer>;
 
 /** The status and the words for a read that failed: what the home or store is, never where it is on the disk. */
-function failure(error: unknown, what: string): { status: number; message: string } {
+export function failure(error: unknown, what: string): { status: number; message: string } {
   if (error instanceof AgentHomeError) return { status: error.code === "missing" ? 404 : 500, message: error.message };
   return { status: 500, message: `the ${what} could not be read` };
 }

@@ -103,7 +103,9 @@ export const all = (node) => node.childNodes.flatMap((kid) => (kid instanceof El
 
 /** The page's document and window, its fetch answering from `api` (path to body, or [status, body]) or `options.fetch`,
  *  and timers run by hand. `options.serve` is the page's <html data-serve>: the store's page loads graph.js before
- *  page.js, as store.html does. `options.window` adds to its window after graph.js. */
+ *  page.js, as store.html does. `options.window` adds to its window after graph.js, and `options.scripts` ([name,
+ *  source] pairs) run after that, before page.js, as a host's page loads its own. `options.fetch` gets the request's
+ *  path and init. */
 export function mount(api, hash = "#/", options = {}) {
   const byId = {};
   const documentElement = new Element("html");
@@ -135,7 +137,7 @@ export function mount(api, hash = "#/", options = {}) {
     localStorage: { getItem: (k) => stored.get(k) ?? null, setItem: (k, v) => stored.set(k, String(v)) },
     addEventListener: (type, fn) => type === "hashchange" && hashListeners.push(fn),
   };
-  const fetch = options.fetch ? async (path) => (fetched.push(path), options.fetch(path)) : async (path) => {
+  const fetch = options.fetch ? async (path, init) => (fetched.push(path), options.fetch(path, init)) : async (path) => {
     fetched.push(path);
     const answer = api[path];
     const [status, data] = answer === undefined ? [404, { error: "NOT_FOUND", message: `no ${path}` }] : Array.isArray(answer) && typeof answer[0] === "number" ? answer : [200, answer];
@@ -146,11 +148,13 @@ export function mount(api, hash = "#/", options = {}) {
     document,
     fetch,
     URL,
+    AbortController,
     setTimeout: (fn, ms) => (timers.set(next, { fn, ms }), next++),
     clearTimeout: (id) => timers.delete(id),
   });
   if (options.serve === "store") vm.runInContext(served("graph.js"), context, { filename: "graph.js" });
   Object.assign(window, options.window);
+  for (const [filename, source] of options.scripts ?? []) vm.runInContext(source, context, { filename });
   vm.runInContext(served("page.js"), context, { filename: "page.js" });
   const settle = async () => {
     for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
@@ -169,7 +173,7 @@ export function mount(api, hash = "#/", options = {}) {
     for (const [, { fn }] of due) fn();
     await settle();
   };
-  return { app: byId.app, root: documentElement, theme: byId.theme, document, fetched, timers, settle, nav, go, tick };
+  return { app: byId.app, root: documentElement, theme: byId.theme, document, window, fetched, timers, settle, nav, go, tick };
 }
 
 /** Every element under `node`, and the checks that hold for any data: no element or attribute the data could name. */
