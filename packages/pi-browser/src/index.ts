@@ -13,7 +13,6 @@ export * from "./core/guard.js";
 export * from "./core/host.js";
 export * from "./core/images.js";
 export * from "./core/lease.js";
-export { isPrivateAddress, pinnedLookup, PUBLIC_MAX_BYTES, publicFetch, readPage, type PublicAnswer, type PublicFetchOptions } from "./core/public-fetch.js";
 export * from "./core/receipts.js";
 export * from "./core/redact.js";
 export * from "./core/sites.js";

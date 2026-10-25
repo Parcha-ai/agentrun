@@ -1,7 +1,10 @@
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
+import { Agent, fetch as undiciFetch } from "undici";
+import dns from "node:dns/promises";
+import net from "node:net";
 import path from "node:path";
-import { publicFetch } from "./core/public-fetch.js";
+import { refusedError } from "./core/custody.js";
 import type { EvidenceRecord, EvidenceSink } from "./core/evidence.js";
 import type { WebBackup } from "./core/web.js";
 
@@ -48,19 +51,73 @@ export function fileEvidenceSink(root: string, relativeTo: string): EvidenceSink
   };
 }
 
-export { isPrivateAddress, pinnedLookup } from "./core/public-fetch.js";
+const V4_PRIVATE: ReadonlyArray<readonly [number, number]> = [[0x0a000000, 8], [0x64400000, 10], [0x7f000000, 8], [0xa9fe0000, 16], [0xac100000, 12], [0xc0a80000, 16], [0x00000000, 8], [0xe0000000, 4]];
+const v4 = (ip: string) => ip.split(".").reduce((n, octet) => n * 256 + Number(octet), 0);
+/** Loopback, private, link-local, carrier-grade and multicast addresses, v4 and v6, v4-mapped included. */
+export function isPrivateAddress(ip: string): boolean {
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip)?.[1];
+  if (mapped) return isPrivateAddress(mapped);
+  if (net.isIPv4(ip)) return V4_PRIVATE.some(([base, bits]) => Math.floor(v4(ip) / 2 ** (32 - bits)) === Math.floor(base / 2 ** (32 - bits)));
+  if (net.isIPv6(ip)) return /^(::1?|f[cd][0-9a-f]{2}:|fe[89ab][0-9a-f]:|ff[0-9a-f]{2}:)/i.test(ip) || ip === "::";
+  return true;
+}
+
+const MAX_BYTES = 5 * 1024 * 1024;
+const MAX_REDIRECTS = 5;
+
+/** Answers `address` for any name: the address a request was checked against is the one it connects to. */
+export const pinnedLookup = (address: string) => (_host: string, options: { all?: boolean }, callback: (...args: any[]) => void): void => {
+  const family = net.isIPv6(address) ? 6 : 4;
+  if (options?.all) callback(null, [{ address, family }]);
+  else callback(null, address, family);
+};
 
 /** Public hosts only, so a page-steered agent never reaches the owner's private network: each redirect hop is resolved
  *  once, checked and dialled at that address. No cookies or credentials; at most 5 MiB. */
 export function httpBackup(options: { lookup?: (host: string) => Promise<string[]>; fetchImpl?: (url: URL, init: Record<string, unknown>) => Promise<Response> } = {}): WebBackup {
+  const lookup = options.lookup ?? (async (host: string) => (await dns.lookup(host, { all: true })).map((a) => a.address));
+  const request = options.fetchImpl ?? ((url, init) => undiciFetch(url, init as never) as unknown as Promise<Response>);
   return {
     name: "http",
     async fetch(url, signal) {
-      const answer = await publicFetch(url, { ...options, ...(signal ? { signal } : {}) });
-      if (answer.status < 200 || answer.status >= 300) throw Object.assign(new Error(`the page answered ${answer.status}`), { status: answer.status });
-      if (!/html/i.test(answer.contentType)) return answer.body!;
-      const { NodeHtmlMarkdown } = await import("node-html-markdown");
-      return NodeHtmlMarkdown.translate(answer.body!, { keepDataImages: false });
+      let target = new URL(url);
+      for (let hop = 0; ; hop += 1) {
+        const host = target.hostname.replace(/^\[|\]$/g, "");
+        if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) throw refusedError(`refused: ${host} is not a public host`);
+        const addresses = net.isIP(host) ? [host] : await lookup(host);
+        if (!addresses.length || addresses.some(isPrivateAddress)) throw refusedError(`refused: ${host} is not a public host`);
+        const dispatcher = new Agent({ connect: { lookup: pinnedLookup(addresses[0]) } });
+        let res: Response | undefined;
+        try {
+          res = await request(target, { redirect: "manual", signal, dispatcher, headers: { accept: "text/html,text/plain;q=0.9,*/*;q=0.1", "user-agent": "pi-browser" } });
+          if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
+            if (hop >= MAX_REDIRECTS) throw refusedError("refused: too many redirects");
+            target = new URL(res.headers.get("location")!, target);
+            if (!/^https?:$/.test(target.protocol)) throw refusedError("refused: a redirect left http(s)");
+            continue;
+          }
+          if (!res.ok) throw Object.assign(new Error(`the page answered ${res.status}`), { status: res.status });
+          const type = res.headers.get("content-type") ?? "";
+          if (!/^(text\/|application\/(xhtml\+xml|json|xml))/i.test(type)) throw refusedError(`refused: ${type || "an unknown content type"} is not text`);
+          const chunks: Uint8Array[] = [];
+          let size = 0;
+          for (const reader = res.body!.getReader(); ; ) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if ((size += value.length) > MAX_BYTES) { await reader.cancel(); throw refusedError("refused: the page is over 5 MiB"); }
+            chunks.push(value);
+          }
+          const text = Buffer.concat(chunks).toString("utf8");
+          if (!/html/i.test(type)) return text;
+          const { NodeHtmlMarkdown } = await import("node-html-markdown");
+          return NodeHtmlMarkdown.translate(text, { keepDataImages: false });
+        } finally {
+          // A reply refused unread (not text, an error status, a redirect) still holds its connection: close() waits
+          // for it.
+          await res?.body?.cancel().catch(() => undefined);
+          await dispatcher.close().catch(() => undefined);
+        }
+      }
     },
   };
 }
