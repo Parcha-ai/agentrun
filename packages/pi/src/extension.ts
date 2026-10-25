@@ -223,18 +223,23 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
   };
   // A node is read-only when the host supplies no tools of its own and the node can use none of bash, edit or write.
   const readOnly = (tools: readonly string[]) => !configuration.hostTools && !tools.some(name => mutatingTools.has(name));
+  /** The turns a node that names no max_turns gets: the default for its tools within the cap, or none without a cap. */
+  const defaultTurns = (isReadOnly: boolean) => limits.nodeMaxTurns === null ? null
+    : Math.min(isReadOnly ? nodeTurnDefaults.readOnly : nodeTurnDefaults.other, limits.nodeMaxTurns);
   /** A node's turn limit and where it comes from: its max_turns, else the default for its tools, within the cap. */
   const nodeTurns = (maxTurns: number | undefined, tools: readonly string[]): { turns: number | null; source: string } => {
     if (maxTurns !== undefined) return { turns: maxTurns, source: 'its max_turns' };
     if (limits.nodeMaxTurns === null) return { turns: null, source: 'no host limit' };
-    const fallback = readOnly(tools) ? nodeTurnDefaults.readOnly : nodeTurnDefaults.other;
-    return { turns: Math.min(fallback, limits.nodeMaxTurns), source: readOnly(tools) ? 'the read-only default' : 'the default' };
+    return { turns: defaultTurns(readOnly(tools)), source: readOnly(tools) ? 'the read-only default' : 'the default' };
   };
   const formatLimits = (ctx: ExtensionContext, s: Session) => {
     const count = (value: number | null, unit: string) => value === null ? `no ${unit} limit` : `${value} ${unit}`;
+    const readTurns = defaultTurns(true), otherTurns = defaultTurns(false);
+    const unnamed = otherTurns === null ? 'has no turn limit' : readTurns === otherTurns ? `gets ${otherTurns}`
+      : `gets ${readTurns} when it can only read (no bash, edit or write, and no host tools), else ${otherTurns}`;
     const lines = ['AgentRun limits in force',
       `Workflow: ${limits.deadlineMs === null ? 'no deadline' : `${limits.deadlineMs / 1000}-second deadline`} · ${count(limits.modelRequests, 'model requests')} · ${count(limits.judgeCalls, 'Jev calls')} · ${count(limits.toolAttempts, 'tool attempts')}`,
-      `Node turns: ${limits.nodeMaxTurns === null ? 'no host cap' : `up to ${limits.nodeMaxTurns} per attempt (this host's cap)`}; a node that names no max_turns gets ${nodeTurnDefaults.readOnly} when it can only read (no bash, edit or write, and no host tools), else ${nodeTurnDefaults.other}. A node's max_turns sets its own, within the cap. A node that reaches its turn limit is not tried again.`,
+      `Node turns: ${limits.nodeMaxTurns === null ? 'no host cap' : `up to ${limits.nodeMaxTurns} per attempt (this host's cap)`}; a node that names no max_turns ${unnamed}. A node's max_turns sets its own${limits.nodeMaxTurns === null ? '' : ', within the cap'}. A node that reaches its turn limit is not tried again.`,
       `Node submissions: ${count(limits.nodeMaxSubmissions, 'submissions')} · node timeout: ${limits.nodeTimeoutMs === null ? 'none' : `${limits.nodeTimeoutMs / 1000} s`}`];
     const agents = s.draft ? inspectWorkflow(s.draft).nodes.map(entry => entry.path.split('/').slice(1).reduce<any>((item, key) => item?.[key.replace(/~1/g, '/').replace(/~0/g, '~')], s.draft))
       .filter(node => node && ['agent', 'decide', 'extract', 'report'].includes(node.node)) : [];
