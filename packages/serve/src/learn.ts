@@ -16,7 +16,8 @@ export const LEARN_TOOL = "learn";
 export const LEARNED = "learned";
 /** The variables whose values are this host's secrets, which no learning may hold. */
 const SECRET_NAME = /(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD)$/i;
-/** The guard cannot match a shorter secret without false hits, and refuses everything while it is given one. */
+/** A value under 8 characters is not checked: one that short would match ordinary words (8 is pi-browser's redaction
+ *  floor too), and the guard refuses every write while it is given one. */
 const MIN_SECRET = 8;
 
 /** The values of `env`'s keys, tokens, secrets and passwords, and `more`. */

@@ -272,7 +272,8 @@ An agentic revision that lists `learn` in `tools` gives its runs the `learn` too
 [`@parcha/pi-agent-learn`](../pi-agent-learn/README.md): the agent notes a general lesson, fact or correction while it
 works, at no cost, and the note waits in the run's own store (`runs/<id>/store/run.sqlite`). Each call is checked by
 pi-agent-learn's guard first, with this host's secrets (the values of the variables whose names end in `_KEY`, `_TOKEN`,
-`_SECRET` or `_PASSWORD`) and the run's input, so the model can restate a refused note at once. A run is not seeded from
+`_SECRET` or `_PASSWORD`; a value under 8 characters is not checked) and the run's input, so the model can restate a
+refused note at once. A run is not seeded from
 a git repository: what earlier runs learned reaches it as its revision's skills.
 
 `POST /agents/{id}/learn` with `{"run_id": "<run>"}` reads what the run noted from its store once the run is final
@@ -285,7 +286,8 @@ lesson. The note is `learned from run <run_id>`, the revision is made current, a
 agent's new ETag. An `Idempotency-Key` replays it. The current revision is compared again inside the commit, so a Learn
 that races an edit is `412 precondition_failed`.
 
-A person sees what Learn commits before it does: `{"run_id": "<run>", "dry_run": true}` makes every check and runs the
+A learned skill enters the instructions of every later run of the agent, so the preview is the person's check before it
+does: `{"run_id": "<run>", "dry_run": true}` makes every check and runs the
 guard, commits nothing, and answers `200 {"learned": [{"path": "learned-<12 hex>/SKILL.md", "text": "<the whole
 file>"}], "base": "<the current revision>"}`. A Learn that passes that `base` commits exactly those files, and is `412
 precondition_failed` when the agent's current revision has moved since; preview again.
