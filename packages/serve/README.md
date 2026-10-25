@@ -72,8 +72,8 @@ docker run -d --name agentrun -p 127.0.0.1:7340:7340 -v agentrun:/data \
 docker logs agentrun | grep Open
 ```
 
-On another port, publish it and say so, so the printed link names it: `-p 127.0.0.1:8080:7340
--e AGENTRUN_PUBLIC_URL=http://127.0.0.1:8080`.
+On another port, publish it there and pass the address you open, so the printed link names it:
+`-p 127.0.0.1:<port>:7340 -e AGENTRUN_PUBLIC_URL=<that address>`.
 
 `packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs. Everything it keeps is
 under `/data`: the agent store, the runs and the token. From a checkout, with compose:
