@@ -11,7 +11,7 @@ test("the files a run wrote are listed and served raw; dot segments, .. and syml
   await follow(api, run_id, ["completed"]).catch(async (error) => {
     throw new Error(`${error.message}: ${JSON.stringify((await api("GET", `/runs/${run_id}`)).body)}`);
   });
-  const work = join(data, "writer", "runs", run_id, "work");
+  const work = join(data, "runs", run_id, "work");
   await writeFile(join(work, "page.html"), "<script>alert(1)</script>");
   await mkdir(join(work, "sub"));
   await writeFile(join(work, "sub", "a b.txt"), "spaced");

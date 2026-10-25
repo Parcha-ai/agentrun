@@ -249,9 +249,19 @@ test('recording.carry.failed: a tick that fails is retried, a final failure refu
   writeFileSync(file, JSON.stringify({ name: 'reference' }));
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
   const failed = (recording) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === 'recording.carry.failed');
-  // A tick that fails once: a line, no refusal, and the final call brings everything home.
+  // A tick that fails once: a line, no refusal, and the final call brings everything home. Ticks are the only non-final carries, so the child is held
+  // (a step that waits on a file) until the first one has happened: a child that finishes inside one tick would have no tick to fail.
   const tick = join(tmp, 'tick');
-  const retried = await demo({ ...options, argv: ['--json', '--record', tick], place: boxed(join(tmp, 'b1'), { failOn: ({ final, calls }) => (!final && calls === 1 ? 'CARRY_FAILED' : undefined) }) });
+  const released = join(tmp, 'tick-released');
+  let retried;
+  process.env.DEMO_LINGER_UNTIL = released;
+  try {
+    const { options: held } = await import(`${FIXTURE}?options=held-${Date.now()}`);
+    let ticked = false;
+    retried = await demo({ ...held, argv: ['--json', '--record', tick], place: boxed(join(tmp, 'b1'), { failOn: ({ final }) => { if (final || ticked) return undefined; ticked = true; writeFileSync(released, ''); return 'CARRY_FAILED'; } }) });
+  } finally {
+    delete process.env.DEMO_LINGER_UNTIL;
+  }
   assert.equal(retried.processes.at(-1).outcome.status, 'complete');
   assert.deepEqual(failed(tick).map((line) => [line.data.gen, line.data.code, 'lost' in line.data]), [[1, 'CARRY_FAILED', false]]);
   assert.ok(!failed(tick)[0].data.message.includes(tmp) && failed(tick)[0].data.message.includes('<path>'), 'paths in the message are <path>');
@@ -300,7 +310,10 @@ test('RECORD_STARTED gives a fresh recording directory its clock (an existing on
   const lines = names.flatMap((name) => readFileSync(join(dir, '.spool', name), 'utf8').split('\n').filter(Boolean)).map((entry) => JSON.parse(entry));
   assert.deepEqual(lines.map((line) => line.data.index).sort(), [0, 1, 2, 3, 4, 5, 6, 7]);
   assert.ok(names.every((name) => statSync(join(dir, '.spool', name)).size <= 600), 'each segment is small');
-  // A second process counts the first as one process, not one per segment.
+  // A second process counts the first as one process, not one per segment. A stream is named for its process's pid and the
+  // millisecond it opened; a second process never shares both, so this one, in the same process, opens in a later millisecond.
+  const firstOpened = Number(/^live-\d+-(\d+)\./.exec(names[0])[1]);
+  while (Date.now() <= firstOpened) await new Promise((resolve) => setTimeout(resolve, 1));
   const second = openRecorder({ dir, segmentBytes: 300 });
   second.live('workflow', 'x', { index: 'second' });
   await second.detach();

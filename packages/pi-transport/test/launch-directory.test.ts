@@ -54,6 +54,25 @@ function lsMissing(failures: number): string {
 	return `${bin}:${env.PATH}`;
 }
 
+/**
+ * A PATH whose `ls` answers nothing (an exit 2) until 150 ms after its first call, then is the real one: its first call starts the
+ * clock in the background. The background job's output goes to /dev/null, or the caller's `$(ls ...)` would wait for it.
+ */
+function lsReadyAfterFirstCall(): string {
+	const real = spawnSync("sh", ["-c", "command -v ls"], { env, encoding: "utf8" }).stdout.trim();
+	const bin = mkdtempSync(join(root, "ls-"));
+	writeFileSync(
+		join(bin, "ls"),
+		`#!/bin/sh
+if [ ! -e "${bin}/started" ]; then : > "${bin}/started"; (sleep 0.15; touch "${bin}/ready") >/dev/null 2>&1 & fi
+[ -e "${bin}/ready" ] || exit 2
+exec ${real} "$@"
+`,
+	);
+	chmodSync(join(bin, "ls"), 0o755);
+	return `${bin}:${env.PATH}`;
+}
+
 describe("the launcher's directory check", () => {
 	it.skipIf(uid === 0)("refuses a directory another uid owns: / is root's", () => {
 		expect(ownDir("/")).toEqual({ status: 13, out: `UNSAFE / belongs to uid 0, not to the launcher's uid ${uid}` });
@@ -76,6 +95,13 @@ describe("the launcher's directory check", () => {
 		expect(ownDir(dir, lsMissing(1))).toEqual({ status: 0, out: "" });
 		chmodSync(dir, 0o777);
 		expect(ownDir(dir, lsMissing(1)).status).toBe(13);
+	});
+
+	it("waits between its listings: a directory that lists only 150 ms after the first try is read on a later one, not refused", () => {
+		const dir = join(root, "slow-to-list");
+		mkdirSync(dir);
+		chmodSync(dir, 0o700);
+		expect(ownDir(dir, lsReadyAfterFirstCall())).toEqual({ status: 0, out: "" });
 	});
 
 	it("fails closed where a path is there and never lists: unsafe, never nothing there", () => {

@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fold } from './changes.mjs';
-import { checkManifest, checkReleaseAudit, checkReleaseDispatch, heldPackages, listedPackages, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
+import { checkManifest, checkReleaseAudit, checkReleaseDispatch, heldPackages, listedPackages, releaseLayers, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
 const version = '0.1.0-beta.1';
@@ -260,7 +260,7 @@ test('the root README\'s status column says published exactly for the packages a
 });
 
 test('publication order is dependency order, fixed by the release map and not by directory listing', () => {
-  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'harness'], 'dsl before jev and pi, the packages that depend on none of them after, then serve (@parcha/agentrun-serve), which depends on pi-durable-disk and pi-durable-agent, and the reference host, which depends on dsl, pi, pi-browser, pi-durable-disk and pi-vision, last');
+  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'harness'], 'dsl before jev and pi, the packages that depend on none of them after, then serve (@parcha/agentrun-serve), which depends on dsl, pi, pi-durable-disk and pi-durable-agent, and the reference host, which depends on dsl, pi, pi-browser, pi-durable-disk and pi-vision, last');
   const names = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));
   for (const directory of listedPackages) {
     for (const dependency of Object.keys(repoManifest(directory).dependencies ?? {})) {
@@ -284,9 +284,9 @@ test('a workspace package that is neither private nor in the release map fails t
 const publishStep = () => {
   const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   const start = workflow.indexOf('set -euo pipefail', workflow.indexOf('Publish exact verified archives in dependency order'));
-  const end = workflow.indexOf('for package in $packages; do');
-  assert.ok(start > 0 && end > start, 'the publish step reads its packages into a variable before looping');
-  return `${workflow.slice(start, end)}echo "would publish: $packages"\n`;
+  const end = workflow.indexOf('while read -r layer; do');
+  assert.ok(start > 0 && end > start, 'the publish step reads its packages and layers into variables before looping');
+  return `${workflow.slice(start, end)}echo "would publish: $packages"\necho "$layers" | sed 's/^/layer: /'\n`;
 };
 const runPublishStep = async (preflightModule) => {
   const run = cwd => exec('bash', ['-c', publishStep()], { cwd, env: { ...process.env, RELEASE_TAG: `v${version}` } }).then(out => ({ status: 0, ...out }), error => ({ status: error.code, stdout: error.stdout ?? '', stderr: error.stderr ?? '' }));
@@ -301,13 +301,15 @@ const runPublishStep = async (preflightModule) => {
 
 test('the release workflow reads the publish set into a variable, so a failed read fails the step instead of publishing nothing', async () => {
   const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /packages="\$\(node --input-type=module -e "import \{ releasePackages \} from '\.\/scripts\/release-preflight\.mjs'; console\.log\(releasePackages\.join\(' '\)\)"\)"\n\s+\[ -n "\$packages" \] \|\| \{ echo 'empty publish set' >&2; exit 1; \}\n\s+for package in \$packages; do/);
+  assert.match(workflow, /packages="\$\(node --input-type=module -e "import \{ releasePackages \} from '\.\/scripts\/release-preflight\.mjs'; console\.log\(releasePackages\.join\(' '\)\)"\)"\n\s+\[ -n "\$packages" \] \|\| \{ echo 'empty publish set' >&2; exit 1; \}\n/);
+  assert.match(workflow, /layers="\$\(node --input-type=module -e "import \{ releaseLayers \} from[^\n]*"\$packages"\)"\n\s+\[ -n "\$layers" \] \|\| \{ echo 'empty layer set' >&2; exit 1; \}\n\s+while read -r layer; do/);
   assert.doesNotMatch(workflow, /for package in \$\(/, 'errexit does not apply to a command substitution in a for-list');
   for (const name of listedPackages) assert.doesNotMatch(workflow, new RegExp(`for package in [^\\n]*\\b${name}\\b`), `${name} is not hard-coded in the publish loop`);
   // Run for real: the repository's own module prints the publish set; a module that throws, or prints nothing, stops the step before the loop.
   const ok = await runPublishStep(null);
   assert.equal(ok.status, 0, ok.stderr);
   assert.match(ok.stdout, new RegExp(`would publish: ${releasePackages.join(' ')}\\n`));
+  assert.deepEqual(ok.stdout.split('\n').filter(line => line.startsWith('layer: ')).map(line => line.slice('layer: '.length).split(' ')), releaseLayers(releasePackages), 'the step publishes the layers releaseLayers gives');
   const thrown = await runPublishStep("throw new Error('the import failed');\n");
   assert.notEqual(thrown.status, 0, 'an import that throws fails the step');
   assert.doesNotMatch(thrown.stdout, /would publish/);
@@ -315,6 +317,28 @@ test('the release workflow reads the publish set into a variable, so a failed re
   assert.notEqual(empty.status, 0, 'an empty publish set fails the step');
   assert.match(empty.stderr, /empty publish set/);
   assert.doesNotMatch(empty.stdout, /would publish/);
+});
+
+test('the publish set goes out in dependency layers: every package after the packages of the set it depends on, and a cycle is refused', async () => {
+  const layers = releaseLayers(releasePackages);
+  assert.deepEqual(layers.flat().sort(), [...releasePackages].sort(), 'every package is in exactly one layer');
+  const layerOf = Object.fromEntries(layers.flatMap((layer, index) => layer.map(directory => [directory, index])));
+  const byName = Object.fromEntries(Object.entries(releasePackageNames).map(([directory, name]) => [name, directory]));
+  for (const directory of releasePackages) {
+    const manifest = JSON.parse(readFileSync(new URL(`../packages/${directory}/package.json`, import.meta.url), 'utf8'));
+    for (const name of Object.keys({ ...manifest.dependencies, ...manifest.peerDependencies, ...manifest.optionalDependencies })) {
+      if (byName[name] && releasePackages.includes(byName[name])) assert.ok(layerOf[byName[name]] < layerOf[directory], `${directory} is published after ${byName[name]}`);
+    }
+  }
+  assert.ok(layers.length < releasePackages.length, 'packages that do not depend on each other share a layer');
+  const root = await mkdtemp(join(tmpdir(), 'agentrun-layers-'));
+  try {
+    for (const [directory, depends] of [['a', '@x/b'], ['b', '@x/a']]) {
+      await mkdir(join(root, 'packages', directory), { recursive: true });
+      await writeFile(join(root, 'packages', directory, 'package.json'), JSON.stringify({ name: `@x/${directory}`, dependencies: { [depends]: '1.0.0' } }));
+    }
+    assert.throws(() => releaseLayers(['a', 'b'], root), /in a cycle: a -> b -> a/);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test('the held and published sets come from the tree being checked, not from the checkout the script runs in', () => fixture(async root => {
