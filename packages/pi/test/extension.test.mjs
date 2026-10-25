@@ -1434,3 +1434,45 @@ test('reading any other file does not engage the session', async () => {
     assert.equal(stamps(app).length, 0);
   } finally { await app.shutdown(); }
 });
+
+test('the host notice counts direct tool calls as such, so a run whose agent read files does not read as no tool calls', async () => {
+  const app = await harness({ responses: [fauxAssistantMessage(fauxToolCall('submit', { value: { content: 'cedar' } }))] });
+  try {
+    await prompted(app, SKILL_PROMPT);
+    await app.tool({ action: 'inspect', workflow: workflow() });
+    await app.tool({ action: 'run' });
+    await ended(app);
+    assert.match(stamps(app)[0].content, /0 direct tool calls/);
+    assert.doesNotMatch(stamps(app)[0].content, /(^|[^t] )0 tool calls/);
+  } finally { await app.shutdown(); }
+});
+
+test('the notice of a resumed run says its counts cover this attempt only', async () => {
+  const tool = hostTool(async () => corpusResult('never'));
+  const app = await harness({ withModel: false, extensionOptions: { hostTools: () => [tool] } });
+  try {
+    await prompted(app, SKILL_PROMPT);
+    await app.tool({ action: 'inspect', workflow: toolWorkflow('corpus_search', { query: 123 }) });
+    assert.equal((await app.tool({ action: 'run' })).details.status, 'failed');
+    await ended(app);
+    await prompted(app, 'Run it again.');
+    assert.equal((await app.tool({ action: 'run' })).details.status, 'failed');
+    await ended(app);
+    assert.doesNotMatch(stamps(app)[0].content, /this attempt/i, 'a first attempt has nothing earlier');
+    assert.match(stamps(app)[1].content, /resumed.*this attempt only/i);
+  } finally { await app.shutdown(); }
+});
+
+test('the notice of a scripted run says no model or Jev service was called', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    await app.command('demo');
+    await prompted(app, 'Run the demo.');
+    const replay = await app.tool({ action: 'run' });
+    assert.equal(replay.details.mode, 'scripted');
+    await ended(app);
+    assert.match(stamps(app)[0].content, /scripted/i);
+    assert.match(stamps(app)[0].content, /no model or Jev (service )?call/i);
+    assert.doesNotMatch(stamps(app)[0].content, /\d+ Jev decisions?/, 'scripted counts are not Jev decisions');
+  } finally { await app.shutdown(); }
+});
