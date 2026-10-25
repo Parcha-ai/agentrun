@@ -306,7 +306,7 @@ test("a live run follows /v2's timeline with a long poll, an answer box while it
   assert.ok(!shown.app.textContent.includes("Waiting for you"), "a dropped row is gone");
   api.push(page({ status: "completed", state: "idle", rows: [row(5, "final_answer", { text: "Using eu." })], next_after: 40, final: true }));
   await shown.settle();
-  assert.deepEqual(api.calls.slice(-2).map((c) => c.path), ["api/runs/run-9", "api/agents/calc"], "a final run is the store's own page, which reads whether its revision learns");
+  assert.equal(api.calls.at(-1).path, "api/runs/run-9", "a final run is the store's own page");
   assert.ok(all(shown.app).find((el) => classOf(el) === "card run-head").textContent.includes("Asked, then answered."));
 });
 
@@ -365,7 +365,7 @@ test("leaving a live run aborts its long poll; a run this server never ran, or a
 
   const final = open("#/runs/run-9", { "v2/runs/run-9": { ...LIVE, status: "completed" }, "v2/runs/run-9/timeline": page({ final: true, status: "completed" }), "api/store": { agents: AGENTS }, "api/runs/run-9": { ...stored, run: { ...stored.run, id: "run-9" } } });
   await final.page.settle();
-  assert.deepEqual(final.api.calls.map((c) => c.path), ["v2/runs/run-9", "v2/runs/run-9/timeline", "api/store", "api/runs/run-9", "api/agents/calc"]);
+  assert.deepEqual(final.api.calls.map((c) => c.path), ["v2/runs/run-9", "v2/runs/run-9/timeline", "api/store", "api/runs/run-9"]);
 });
 
 /** Revisions and runs shaped like the MCC classifier's A, B and C: two prompts and a workflow, eight runs each. */
@@ -415,53 +415,6 @@ test("compare revisions: one row per revision, newest first, with its runs, comp
   const on = all(filtered.page.app).filter((el) => el.tagName === "A" && classOf(el) === "cmp on");
   assert.deepEqual(on.map((el) => [el.getAttribute("href"), el.getAttribute("aria-current")]), [[`#/agents/mcc?revision=${"b".repeat(64)}`, "true"]]);
   assert.ok(api.calls.length > 0);
-});
-
-test("learn from this run: a completed run whose revision names the learn tool gets the button; it POSTs the run to /learn as JSON, disabled in flight, and says what it committed or why not", async () => {
-  const learnRev = { ...revision(REV_B, true, "Learns"), body: { instructions: "Answer.", tools: ["read", "learn"], skills: {} } };
-  const agentPage = { agent: AGENT_PAGE.agent, revisions: [learnRev, revision(REV_A, false, "First")] };
-  const stored = (id, state, rev = REV_B) => ({ run: { id, agent: "calc", revision: rev, kind: "agentic", state, startedAt: "2026-10-23T06:00:00.000Z", endedAt: "2026-10-23T06:01:00.000Z", costUsd: 0.01 }, agent: "Calc", note: "Learns", rows: [] });
-  let release;
-  const answers = {
-    "api/agents/calc": agentPage,
-    "api/store": { agents: AGENTS },
-    "v2/runs/run-1": [404, { error: { code: "not_found", message: "no run run-1" } }],
-    "api/runs/run-1": stored("run-1", "completed"),
-    "POST v2/agents/calc/learn": () => new Promise((resolve) => (release = resolve)),
-  };
-  const { page: shown, api } = open("#/runs/run-1", answers);
-  await shown.settle();
-  const learn = buttonNamed(shown, "Learn from this run");
-  assert.ok(learn, "the button is on the run's head");
-  assert.ok(all(all(shown.app).find((el) => classOf(el) === "card run-head")).includes(learn));
-  learn.click();
-  await shown.settle();
-  assert.equal(learn.disabled, true, "disabled while the request is in flight");
-  assert.deepEqual(api.writes(), [["POST", "v2/agents/calc/learn", { run_id: "run-1" }]]);
-  assert.equal(api.calls.at(-1).headers["content-type"], "application/json");
-  release([201, { revision: "e".repeat(64), note: `Learned from run-1 ${HOSTILE}`, learned: [".agents/skills/mcc/SKILL.md", ".agents/skills/mcc/notes.md"] }]);
-  await shown.settle();
-  const said = all(shown.app).find((el) => classOf(el) === "learned");
-  assert.equal(said.textContent, "Committed revision eeeeeeeeeeee with 2 learned files. Open it");
-  assert.deepEqual(all(said).filter((el) => el.tagName === "A").map((el) => el.getAttribute("href")), [`#/agents/calc?revision=${"e".repeat(64)}`]);
-
-  for (const [status, code, message] of [[409, "not_continuable", "this run's revision is no longer current"], [422, "input_invalid", `run_id is not a completed run ${HOSTILE}`]]) {
-    const refused = open("#/runs/run-1", { ...answers, "POST v2/agents/calc/learn": [status, { error: { code, message } }] });
-    await refused.page.settle();
-    buttonNamed(refused.page, "Learn from this run").click();
-    await refused.page.settle();
-    assert.deepEqual(problemText(refused.page), [`${status} ${message}`]);
-    assert.equal(buttonNamed(refused.page, "Learn from this run").disabled, false, "the button is back for another try");
-  }
-
-  for (const [why, extra] of [
-    ["a failed run", { "api/runs/run-1": stored("run-1", "failed") }],
-    ["a revision without the learn tool", { "api/runs/run-1": stored("run-1", "completed", REV_A) }],
-  ]) {
-    const none = open("#/runs/run-1", { ...answers, ...extra });
-    await none.page.settle();
-    assert.equal(buttonNamed(none.page, "Learn from this run"), undefined, why);
-  }
 });
 
 test("a tool this server's environment cannot bind is shown unbound in the form, naming the variables it needs", async () => {

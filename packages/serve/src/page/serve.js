@@ -334,39 +334,6 @@
       return el("section", { class: "card compare" }, kit.kicker("Compare revisions"), el("h2", null, "Runs and cost by revision"), body);
     }
 
-    // ---- a stored run: learn from it ------------------------------------------------------------------------------------
-    /** On a completed run whose revision names the learn tool: commit what the run learned as a new revision. */
-    function runActions(data) {
-      var run = data.run;
-      if (run.state !== "completed") return null;
-      var box = el("div", { class: "learn" });
-      kit.get("api/agents/" + enc(run.agent)).then(
-        function (found) {
-          var revision = ((found && found.revisions) || []).filter(function (r) { return r.id === run.revision; })[0];
-          if (((revision && revision.body && revision.body.tools) || []).indexOf("learn") < 0) return;
-          var out = el("div");
-          var learn = button("Learn from this run", "quiet", function () {
-            learn.disabled = true;
-            say(out, null);
-            v2("POST", "agents/" + enc(run.agent) + "/learn", { run_id: run.id }).then(
-              function (made) {
-                var files = (made && made.learned) || [];
-                out.appendChild(el("p", { class: "learned" }, "Committed revision " + kit.short(made.revision) + " with " + kit.plural(files.length, "learned file") + ". ", el("a", { href: kit.agentHref(run.agent) + "?revision=" + enc(made.revision) }, "Open it")));
-              },
-              function (error) {
-                learn.disabled = false;
-                say(out, error);
-              }
-            );
-          });
-          box.appendChild(el("div", { class: "actions" }, learn));
-          box.appendChild(out);
-        },
-        function () {}
-      );
-      return box;
-    }
-
     /** The picker of a store with no agent: what to do next. */
     function emptyStore() {
       return el(
@@ -612,6 +579,6 @@
       return false;
     }
 
-    return { name: "AgentRun Server", route: route, agent: agentActions, revision: revisionActions, cards: compareCard, run: runActions, empty: emptyStore };
+    return { name: "AgentRun Server", route: route, agent: agentActions, revision: revisionActions, cards: compareCard, empty: emptyStore };
   };
 })();
