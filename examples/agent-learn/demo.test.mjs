@@ -395,7 +395,10 @@ test('a made-up learning id on a new note is dropped and the note proposed; a us
   assert.match(repeated, /^Not noted: it repeats data from this case\./, 'the text holds the issue number 4821');
   assert.equal(out.run1.proposal.status, 'proposed');
   const inbox = gitRead(out.bare, ['show', `${out.run1.proposal.sha}:inbox/run-1.md`]).toString('utf8');
-  assert.doesNotMatch(inbox, /4821/, 'neither the refused note nor the dropped id reaches git');
+  // The seed line holds a commit sha, which is random hex and can itself contain 4821.
+  const seed = /^seed: ([0-9a-f]{40})$/m.exec(inbox);
+  assert.ok(seed, 'the inbox names its seed commit');
+  assert.doesNotMatch(inbox.replace(seed[0], 'seed: <sha>'), /4821/, 'neither the refused note nor the dropped id reaches git');
   assert.match(lines.join('\n'), /^ {3}learn\(correction L-a4821c9e530b\) -> \[noted 1\]$/m);
   assert.match(out.run2.learned.join('\n'), /correction: In this project an issue whose body has a stack trace/);
 });

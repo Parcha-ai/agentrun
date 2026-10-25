@@ -13,7 +13,7 @@ import { hasVersionSection, loadFragments, unreleasedSection } from './changes.m
 
 const exec = promisify(execFile);
 // The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev and pi, which use it), the
-// packages that depend on none of them after, serve (@parcha/agentrun-serve), which uses pi-durable-disk and pi-durable-agent, and the reference host
+// packages after them that depend on none of them or, as pi-durable-agent's ./workflow subpath does, on dsl and pi alone, serve (@parcha/agentrun-serve), which uses dsl, pi, pi-durable-disk and pi-durable-agent, and the reference host
 // (@parcha/agentrun-harness), which uses dsl, pi, pi-browser, pi-durable-disk and pi-vision, last. This list is the gate for a new package: a workspace package that is not private and not
 // named here fails the preflight, so a package is never published (or half-released, on a missing trusted publisher) by accident.
 export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser', 'pi-vision': '@parcha/pi-vision', 'pi-transport': '@parcha/pi-transport', 'pi-durable-agent': '@parcha/pi-durable-agent', serve: '@parcha/agentrun-serve', 'pi-git-remote': '@parcha/pi-git-remote', 'pi-agent-learn': '@parcha/pi-agent-learn', harness: '@parcha/agentrun-harness' };
@@ -28,6 +28,26 @@ const isHeld = directory => JSON.parse(readFileSync(join(here, '..', 'packages',
 export const heldPackages = listedPackages.filter(isHeld);
 /** What a release publishes, in order: the listed packages that are not held. */
 export const releasePackages = listedPackages.filter(directory => !heldPackages.includes(directory));
+/**
+ * `directories` (a publish set) in dependency layers, each in the set's order: a package sits one layer after the deepest package of the
+ * set it names in its dependencies, peers or optional dependencies. The release publishes a layer, then waits for the registry on all
+ * of it at once, so no package is published before the packages it depends on are verified.
+ */
+export function releaseLayers(directories, root = join(here, '..')) {
+  const manifests = Object.fromEntries(directories.map(directory => [directory, JSON.parse(readFileSync(join(root, 'packages', directory, 'package.json'), 'utf8'))]));
+  const byName = Object.fromEntries(directories.map(directory => [manifests[directory].name, directory]));
+  const depth = {};
+  const visit = (directory, path) => {
+    if (directory in depth) return depth[directory];
+    assert.ok(!path.includes(directory), `release packages depend on each other in a cycle: ${[...path, directory].join(' -> ')}`);
+    const { dependencies, peerDependencies, optionalDependencies } = manifests[directory];
+    const inner = Object.keys({ ...dependencies, ...peerDependencies, ...optionalDependencies }).map(name => byName[name]).filter(Boolean);
+    return (depth[directory] = inner.length ? 1 + Math.max(...inner.map(next => visit(next, [...path, directory]))) : 0);
+  };
+  const layers = [];
+  for (const directory of directories) (layers[visit(directory, [])] ??= []).push(directory);
+  return layers;
+}
 const repository = 'git+https://github.com/Parcha-ai/agentrun.git';
 const digest = (bytes, algorithm = 'sha256') => createHash(algorithm).update(bytes).digest(algorithm === 'sha512' ? 'base64' : 'hex');
 const json = async path => JSON.parse(await readFile(path, 'utf8'));

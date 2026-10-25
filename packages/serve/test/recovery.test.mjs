@@ -6,9 +6,8 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { readAgentHome } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch } from "./support.mjs";
+import { agent, client, FAUX, flowAgent, follow, scratch, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -34,19 +33,19 @@ async function serverProcess(data) {
 }
 
 /** Start a run of a new agent in a server process, wait until it is working, then kill the server with SIGKILL. */
-async function crashMidRun(t, content) {
+async function crashMidRun(t, content, { create = agent("calc"), input = { content } } = {}) {
   const data = join(await scratch(t), "agents");
   const first = await serverProcess(data);
   t.after(() => first.child.kill("SIGKILL"));
-  assert.equal((await first.api("POST", "/agents", agent("calc"))).status, 201);
-  const { body: run } = await first.api("POST", "/agents/calc/runs", { input: { content } });
+  assert.equal((await first.api("POST", "/agents", create)).status, 201);
+  const { body: run } = await first.api("POST", `/agents/${create.definition.id}/runs`, { input });
   for (let i = 0; (await first.api("GET", `/runs/${run.run_id}`)).body.state !== "working" || (await first.api("GET", `/runs/${run.run_id}`)).body.status !== "working"; i++) {
     assert.ok(i < 200, "the run starts working");
     await sleep(50);
   }
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
-  const record = JSON.parse(await readFile(join(data, "calc", "runs", run.run_id, "run.json"), "utf8"));
+  const record = JSON.parse(await readFile(join(data, "runs", run.run_id, "run.json"), "utf8"));
   assert.ok(alive(record.holder.pid), "the run's process outlived its server");
   t.after(() => alive(record.holder.pid) && process.kill(record.holder.pid, "SIGKILL"));
   return { data, runId: run.run_id, pid: record.holder.pid };
@@ -60,7 +59,41 @@ test("a run whose server crashed is supervised by the next one: it answers, is l
   const { last } = await follow(api, runId, ["completed"]);
   assert.equal(last.final, true);
   assert.equal(alive(pid), false, "the run's process was let go");
-  assert.equal((await readAgentHome({ dir: join(data, "calc") })).runs[runId].outcome, "completed");
+  assert.equal(storeRun(data, runId).state, "completed");
+});
+
+/** Kill the run's own process the way a crash does, and wait until it is gone. */
+async function killRun(pid) {
+  if (alive(pid)) process.kill(pid, "SIGKILL");
+  for (let i = 0; alive(pid); i++) {
+    assert.ok(i < 200, "the run's process dies on SIGKILL");
+    await sleep(50);
+  }
+}
+
+test("a run whose process died with its server is relaunched on its directory by the next one, resumes, and completes", async (t) => {
+  const { data, runId, pid } = await crashMidRun(t, "Answer soon.");
+  await killRun(pid);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  const { last } = await follow(api, runId, ["completed"]);
+  assert.equal(last.final, true);
+  assert.equal((await api("GET", `/runs/${runId}`)).body.result.final_answer, "Soon.");
+  assert.equal(storeRun(data, runId).state, "completed");
+  assert.ok(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).generation >= 2, "opened again on its directory");
+});
+
+test("a workflow run whose process died with its server is relaunched by the next one and completes from its journal", async (t) => {
+  const { data, runId, pid } = await crashMidRun(t, undefined, { create: flowAgent("flow"), input: { question: "Answer soon." } });
+  await killRun(pid);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  const { last } = await follow(api, runId, ["completed"]);
+  assert.equal(last.final, true);
+  assert.deepEqual((await api("GET", `/runs/${runId}`)).body.result.output, { answer: 42 });
+  assert.equal(storeRun(data, runId).state, "completed");
 });
 
 test("a run released but not carried back when its server stopped is carried back when the next one starts", async (t) => {
@@ -71,7 +104,7 @@ test("a run released but not carried back when its server stopped is carried bac
     assert.ok(i < 200, "the run's process exits on SIGTERM");
     await sleep(50);
   }
-  assert.equal((await readAgentHome({ dir: join(data, "calc") })).runs[runId].endedAt, undefined, "nobody carried it back yet");
+  assert.equal(storeRun(data, runId).state, "running", "nobody carried it back yet");
   const next = await startServe({ data, port: 0, faux: FAUX });
   t.after(() => next.close());
   const api = client(next.baseUrl, next.token);
@@ -79,7 +112,7 @@ test("a run released but not carried back when its server stopped is carried bac
     throw new Error(`${error.message}: ${JSON.stringify((await api("GET", `/runs/${runId}`)).body.error)}`);
   });
   assert.equal(last.final, true);
-  assert.equal((await readAgentHome({ dir: join(data, "calc") })).runs[runId].outcome, "completed");
+  assert.equal(storeRun(data, runId).state, "completed");
 });
 
 test("a run store still locked when the next server reads it is read again once free, so the run still ends final", async (t) => {
@@ -91,7 +124,7 @@ test("a run store still locked when the next server reads it is read again once 
     await sleep(50);
   }
   // Another holder keeps the run's store locked across the next server's start, as the run's own process does until it exits.
-  const store = new DatabaseSync(join(data, "calc", "runs", runId, "store", "run.sqlite"), { timeout: 0 });
+  const store = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { timeout: 0 });
   store.exec("PRAGMA locking_mode = EXCLUSIVE");
   store.exec("BEGIN EXCLUSIVE");
   store.exec("COMMIT");
@@ -104,7 +137,7 @@ test("a run store still locked when the next server reads it is read again once 
   const api = client(next.baseUrl, next.token);
   const { last } = await follow(api, runId, ["completed"]);
   assert.equal(last.final, true);
-  assert.equal((await readAgentHome({ dir: join(data, "calc") })).runs[runId].outcome, "completed");
+  assert.equal(storeRun(data, runId).state, "completed");
 });
 
 /** A run that answered and released, shown to the next server as still running under a stand-in process that stays
@@ -118,7 +151,7 @@ async function adoptedStandIn(t) {
     assert.ok(i < 200, "the run's process exits on SIGTERM");
     await sleep(50);
   }
-  const file = join(data, "calc", "runs", runId, "run.json");
+  const file = join(data, "runs", runId, "run.json");
   const released = JSON.parse(await readFile(file, "utf8"));
   const standIn = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
   t.after(() => standIn.kill("SIGKILL"));
@@ -149,7 +182,7 @@ test("an adopted run that released is read only once its process has exited, so 
   const { data, runId, standIn, release } = await adoptedStandIn(t);
   let busy = 0;
   const api = await adopting(t, data, runId, { carryBackRetry: { delaysMs: Array(20).fill(50), onBusy: () => busy++ } });
-  const store = new DatabaseSync(join(data, "calc", "runs", runId, "store", "run.sqlite"), { timeout: 0 });
+  const store = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { timeout: 0 });
   store.exec("PRAGMA locking_mode = EXCLUSIVE");
   store.exec("BEGIN EXCLUSIVE");
   store.exec("COMMIT");
@@ -161,7 +194,7 @@ test("an adopted run that released is read only once its process has exited, so 
   standIn.kill("SIGKILL");
   const { last } = await follow(api, runId, ["completed"]);
   assert.equal(last.final, true);
-  assert.equal((await readAgentHome({ dir: join(data, "calc") })).runs[runId].outcome, "completed");
+  assert.equal(storeRun(data, runId).state, "completed");
 });
 
 test("a run record read half written neither crashes the server nor settles the run: it is read again", async (t) => {
@@ -174,7 +207,7 @@ test("a run record read half written neither crashes the server nor settles the 
   standIn.kill("SIGKILL");
   const { last } = await follow(api, runId, ["completed"]);
   assert.equal(last.final, true);
-  assert.equal((await readAgentHome({ dir: join(data, "calc") })).runs[runId].outcome, "completed");
+  assert.equal(storeRun(data, runId).state, "completed");
 });
 
 test("unreadable reads scattered between readable ones never add up to the limit", async (t) => {
@@ -260,7 +293,7 @@ test("Idempotency-Key answers outlive a restart for the retention capabilities s
   assert.equal((await api("GET", "/capabilities")).body.limits.idempotency_ttl_s, 86_400);
 });
 
-test("a carry back that finds the home busy is tried again until it lands, so the run still ends final", async (t) => {
+test("a carry back that finds the store busy is tried again until it lands, so the run still ends final", async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   let busy;
@@ -271,22 +304,20 @@ test("a carry back that finds the home busy is tried again until it lands, so th
   assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
   const go = join(dir, "go");
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: `Answer once ${go} exists.` } });
-  // Once the run's process has read its home and works: before that, it needs the home's lock itself.
+  // Once the run's process has read its revision and works: before that, it reads the store itself.
   for (let i = 0; (await api("GET", `/runs/${run.run_id}`)).body.state !== "working" || (await api("GET", `/runs/${run.run_id}`)).body.status !== "working"; i++) {
     assert.ok(i < 400, "the run starts working");
     await sleep(50);
   }
-  // Another writer holds the home's lock; the run answers; the carry back is refused; then the writer lets go.
-  const lock = new DatabaseSync(join(data, "calc", "owner.lock"), { timeout: 0 });
-  lock.exec("PRAGMA locking_mode = EXCLUSIVE");
+  // Another writer holds the store; the run answers; the carry back is refused; then the writer lets go.
+  const lock = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
   lock.exec("BEGIN EXCLUSIVE");
-  lock.exec("COMMIT");
   await writeFile(go, "");
   assert.equal(await refused, run.run_id);
   lock.close();
   const { last } = await follow(api, run.run_id, ["completed"]);
   assert.equal(last.final, true);
-  assert.equal((await readAgentHome({ dir: join(data, "calc") })).runs[run.run_id].outcome, "completed");
+  assert.equal(storeRun(data, run.run_id).state, "completed");
 });
 
 test("one failed save of the kept keys neither fails its create nor stops the saves after it", async (t) => {
