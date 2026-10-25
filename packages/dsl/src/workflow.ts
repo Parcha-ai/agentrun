@@ -1794,7 +1794,13 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
         await deps.recovery.wait(node, node.poll.interval_s * 1000, undefined, executionPath(deps));
         continue;
       }
-      await sleep(node.poll.interval_s * 1000, deps.signal);
+      try {
+        await sleep(node.poll.interval_s * 1000, deps.signal);
+      } catch (error) {
+        // A cancel during the wait still reports the check that finished, as null.
+        deps.onEvent?.({ type: "effect.poll", label: node.label, detail: { iteration, settled: null, elapsed_ms: elapsedMs } });
+        throw error;
+      }
       // A wait that wakes late, at or past the poll deadline, ends the poll before another check.
       if (Date.now() >= pollUntilMs) {
         pollDeadline(iteration, elapsedMs);
