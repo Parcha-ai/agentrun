@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import { getDisk, type Disk } from "disk";
@@ -151,10 +151,17 @@ async function waitFor<T>(what: string, fn: () => Promise<T | null | undefined |
   }
 }
 
-/** Stop an instance through a driver for its host and close its ledger rows. */
+/**
+ * Stop an instance through a driver for its host and close its ledger rows. A driver stops only a unit its own prefix
+ * names, so the driver gets the tag the instance was started under, from its unit `pda-p8-<tag>-<run id>-<stamp>`.
+ */
 async function stopInstance(h: HostHandle, how = "driver stop"): Promise<void> {
   const host = h.host === "host-b" ? "host-b" : "host-a";
-  await driver(host, String(h.mountpoint).replace(/\/runs\/[^/]+$/, ""), "stop").stop(h);
+  const unit = String(h.unit);
+  const mountpoint = String(h.mountpoint);
+  const at = unit.indexOf(`-${basename(mountpoint)}-`);
+  assert.ok(unit.startsWith("pda-p8-") && at > "pda-p8-".length, `unit ${unit} names no tag before its run`);
+  await driver(host, mountpoint.replace(/\/runs\/[^/]+$/, ""), unit.slice("pda-p8-".length, at)).stop(h);
   ledger.unitGone(`${h.unit}.service`, how);
   if (!archilMounts().includes(String(h.mountpoint))) ledger.unmounted(String(h.mountpoint), "released by the instance or the driver");
   const i = handles.indexOf(h);

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.26 (2026-10-24)
+
+- An empty write, append or upload no longer waits on a stdin end that `docker exec -i` can lose. `boxEnv`'s `writeFile` and `appendFile` with no bytes, `uploadByExec` of an empty file and `moveFile` of a sealed file of no bytes now read their input from `/dev/null` in the box (`exec </dev/null;` in front of the script) and send nothing over the exec's stdin. Before, one empty call in about 2,700 on Docker never got its end of input, the box's `cat` waited for it, and the call ended at the operation timeout as an `unknown` file error. A non-empty write is unchanged. This sits in `boxEnv`, so it covers every provider with an exec stdin.
+- The README's first example is a local box that needs no key and no Docker daemon (the Docker one follows it), prints its output as text, and every snippet that uses `BACKGROUND_CONTEXT` imports it. The `transport()` example runs by itself on a scripted model and a local box, the ownership example uses a temporary directory, and the README says what Jev is and that the examples are ES modules with the pi peers installed.
+
 ## 0.1.0-beta.23 (2026-10-22)
 
 - `archilExecBoxes({ client, disk })` (`@parcha/pi-transport/box/archil-exec`): boxes that are directories of an agent's
