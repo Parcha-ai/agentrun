@@ -667,7 +667,7 @@
                     el("span", { class: "facts" }, agent.currentKind ? null : el("span", null, "no revision yet"), el("span", null, plural(agent.runs || 0, "run")), el("span", { class: "id" }, agent.id))
                   );
                 }))
-              : el("p", { class: "none" }, "No agents in this store yet.")
+              : host && host.empty ? host.empty() : el("p", { class: "none" }, "No agents in this store yet.")
           )
         );
       },
@@ -1016,7 +1016,8 @@
   // window.agentStoreHost. Given this page's parts (`route` among them, which draws the address's view again) it answers
   // { name: the page's name in the tab's title; route(hash, token): true when it drew that view itself;
   // agent(agent, revisions) and revision(agent, revision): what it adds to the agent card and to a revision's head;
-  // cards(agent, revisions, filter): cards between the agent card and its runs; run(data): what it adds to a stored run's head }.
+  // cards(agent, revisions, filter): cards between the agent card and its runs; run(data): what it adds to a stored run's head;
+  // empty(): what the picker shows when the store holds no agent }.
   var host = STORE && typeof window.agentStoreHost === "function"
     ? window.agentStoreHost({
         el: el, show: show, crumb: crumb, get: get, failed: failed, later: later, live: function (token) { return token === view; },

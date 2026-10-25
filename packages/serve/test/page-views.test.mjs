@@ -473,3 +473,21 @@ test("a tool this server's environment cannot bind is shown unbound in the form,
   assert.equal(box.parentNode.getAttribute("title"), "This server's environment does not set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID");
   assert.equal(classOf(all(page.app).find((el) => el.getAttribute("type") === "checkbox" && el.value === "read").parentNode), "", "a tool it binds is plain");
 });
+
+test("an empty store says what to do: make a new agent, or seed the showcase with the exact command in a code block; a store with agents shows its agents", async () => {
+  const empty = open("#/", { "api/store": { agents: [] } });
+  await empty.page.settle();
+  assertInert(empty.page.app);
+  const block = all(empty.page.app).find((el) => classOf(el) === "empty-store");
+  assert.equal(block.textContent, "No agents yet. New agentor seed the showcase:docker compose -f packages/serve/docker/compose.yaml exec agentrun node examples/agentrun-server/showcase.mjs --token-file /data/.token --runs");
+  assert.deepEqual(all(block).filter((el) => el.tagName === "A").map((el) => [el.textContent, el.getAttribute("href")]), [["New agent", "#/new"]]);
+  const code = all(block).find((el) => el.tagName === "CODE");
+  assert.equal(code.parentNode.tagName, "PRE");
+  assert.equal(code.textContent, "docker compose -f packages/serve/docker/compose.yaml exec agentrun node examples/agentrun-server/showcase.mjs --token-file /data/.token --runs");
+  assert.ok(!empty.page.app.textContent.includes("No agents in this store yet."));
+
+  const full = open("#/", { "api/store": { agents: AGENTS } });
+  await full.page.settle();
+  assert.equal(all(full.page.app).filter((el) => classOf(el) === "empty-store").length, 0);
+  assert.equal(all(full.page.app).filter((el) => classOf(el) === "agent-tile").length, 2);
+});

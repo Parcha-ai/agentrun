@@ -8,6 +8,8 @@
   var STATUSES = ["queued", "working", "input_required", "completed", "failed", "cancelled"];
   var STATUS_CLASS = { queued: "live", working: "live", input_required: "escalated", completed: "ok", failed: "error", cancelled: "stopped" };
   var LONG_POLL_MS = 25000;
+  /** What seeds the showcase agents and their runs into the server the compose file starts. */
+  var SHOWCASE = "docker compose -f packages/serve/docker/compose.yaml exec agentrun node examples/agentrun-server/showcase.mjs --token-file /data/.token --runs";
   /** The run's own start and end rows, which only a live timeline has: the stored one, and the server, count them as quiet. */
   var QUIET = /:run:(start|end)(~\d+)?$/;
 
@@ -348,6 +350,17 @@
       return box;
     }
 
+    /** The picker of a store with no agent: what to do next. */
+    function emptyStore() {
+      return el(
+        "div",
+        { class: "empty-store" },
+        el("p", null, "No agents yet. ", el("a", { class: "btn", href: "#/new" }, "New agent")),
+        el("p", { class: "none" }, "or seed the showcase:"),
+        el("pre", null, el("code", null, SHOWCASE))
+      );
+    }
+
     /** A new agent, or a new revision of `agentId` prefilled from its current one. */
     function agentForm(agentId, token) {
       var home = agentId ? kit.agentHref(agentId) : "#/";
@@ -582,6 +595,6 @@
       return false;
     }
 
-    return { name: "AgentRun Server", route: route, agent: agentActions, revision: revisionActions, cards: compareCard, run: runActions };
+    return { name: "AgentRun Server", route: route, agent: agentActions, revision: revisionActions, cards: compareCard, run: runActions, empty: emptyStore };
   };
 })();

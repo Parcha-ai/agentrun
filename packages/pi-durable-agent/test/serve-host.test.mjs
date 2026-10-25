@@ -70,6 +70,7 @@ function recordingHost() {
       revision: (agent, revision) => (revision.current ? null : kit.el("span", { class: "host-revision" }, `${agent.id}:${kit.short(revision.id)}`)),
       cards: (agent, revisions, filter) => kit.el("section", { class: "card host-card" }, `${agent.id}: ${revisions.length} revisions, filter ${filter ?? "none"}`),
       run: (data) => kit.el("p", { class: "host-run" }, `${data.run.id} ${data.run.state}`),
+      empty: () => kit.el("p", { class: "host-empty" }, "Nothing here: make one"),
     };
   };
   return { seen, host };
@@ -93,6 +94,8 @@ test("a host takes the routes it draws itself, with this page's parts: page.js f
   assert.equal(seen.kits[0].live(seen.tokens[0]), false, "and not once another view is");
   assert.deepEqual(page.fetched, ["api/store"], "page.js drew the picker");
   assert.match(page.app.textContent, /0 agents/);
+  assert.equal(all(page.app).find((el) => classOf(el) === "host-empty").textContent, "Nothing here: make one", "an empty store says what the host says");
+  assert.ok(!page.app.textContent.includes("No agents in this store yet."));
   assert.equal(page.document.title, "My server", "page.js's own views take the host's name");
 });
 

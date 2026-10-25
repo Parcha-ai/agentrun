@@ -55,6 +55,9 @@ a.cmp.on{background:var(--accent-soft)}
 .cmp .rev .rev-note{font-family:var(--sans);color:var(--muted);overflow-wrap:anywhere}
 .cmp .empty{grid-column:2/-1;color:var(--faint)}
 .learn .actions{margin-top:12px}
+.empty-store{margin-top:18px}
+.empty-store>p:first-child{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;font-size:16px}
+.empty-store pre{margin-top:6px;user-select:all}
 .learned{margin:10px 0 0;font:13px var(--mono)}
 .run .agent{font:13px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (max-width:860px){

@@ -167,8 +167,9 @@ Open the link the server prints, once, in a browser. The page at `/`, AgentRun S
 [`@parcha/pi-durable-agent`](../pi-durable-agent/README.md#looking-at-a-store)'s store page over the agent store in the
 data directory, with this server's own views beside it:
 
-- **Agents**: each agent with its current revision's kind and its runs; an agent's revisions, newest first, an agentic
-  one's prompt diffed against its parent's and a workflow's graph; its runs, filtered by revision.
+- **Agents**: each agent with its current revision's kind and its runs (a store with no agent says to make one, or
+  gives the command that seeds the showcase); an agent's revisions, newest first, an agentic one's prompt diffed
+  against its parent's and a workflow's graph; its runs, filtered by revision.
 - **All runs**: every run of every agent, newest first, with its agent, revision, kind, state, cost and start, filtered by
   agent and by state. A row opens the run. A run `/v2` reports as `failed` with `error.code` `escalated` reads escalated,
   here and on its live page, as the store's page draws it.
