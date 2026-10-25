@@ -135,6 +135,28 @@ export function createBoxConformance(options: BoxConformanceOptions): BoxConform
 				}),
 		},
 		{
+			name: "facts that say what the box may reach, which ports it exposes, its disk, when it started and whether FUSE works are well formed when present",
+			run: () =>
+				withBox(async (box) => {
+					const { network, ports, diskGb, startedAt, fuse, ptraceScope } = box.facts();
+					assertions.ok(
+						network === undefined || ["open", "none", "allowlist"].includes(network),
+						"network is open, none or allowlist",
+					);
+					assertions.ok(ports === undefined || Array.isArray(ports), "ports is a list");
+					assertions.ok(
+						diskGb === undefined || (Number.isInteger(diskGb) && diskGb >= 0),
+						"diskGb is a whole number",
+					);
+					assertions.ok(
+						startedAt === undefined || new Date(startedAt).toISOString() === startedAt,
+						"startedAt is an ISO 8601 UTC time",
+					);
+					assertions.ok(fuse === undefined || typeof fuse === "boolean", "fuse is a boolean");
+					assertions.ok(ptraceScope === undefined || [0, 1, 2, 3].includes(ptraceScope), "ptraceScope is 0 to 3");
+				}),
+		},
+		{
 			name: "exec passes arguments to the program unparsed",
 			run: () =>
 				withBox(async (box) => {

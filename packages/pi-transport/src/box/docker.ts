@@ -16,6 +16,7 @@ import {
 } from "./box.ts";
 import { adaptChild } from "./child.ts";
 import { downloadByExec, finish, uploadByExec } from "./files.ts";
+import { parseNetwork, refuseNetworkFields } from "./network.ts";
 
 const DEFAULT_IMAGE = "debian:bookworm-slim";
 const DEFAULT_WORKSPACE = "/workspace";
@@ -178,6 +179,9 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			if (spec.isolation !== undefined && spec.isolation !== "container") {
 				return err(new BoxError("unsupported", `a docker box is a container, the spec asks for ${spec.isolation}`));
 			}
+			const refused = refuseNetworkFields(spec, "docker", true);
+			if (refused !== undefined) return err(refused);
+			const network = parseNetwork(spec.network) as { kind: "open" | "none" };
 			const facts: BoxFacts = {
 				provider: "docker",
 				isolation: "container",
@@ -189,11 +193,16 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 				snapshot: null,
 				bulk: "stream",
 				secretsVia: "fd",
+				network: network.kind === "none" ? "none" : "open",
+				// No port is published: the box is made without one.
+				ports: [],
+				startedAt: new Date().toISOString(),
 			};
 			const args = ["run", "--detach", "--init", "--rm", "--workdir", facts.workspace];
 			args.push("--label", `${BOX_LABEL}=1`, "--label", `${FACTS_LABEL}=${JSON.stringify(facts)}`);
 			for (const [key, value] of Object.entries(spec.labels ?? {})) args.push("--label", `${key}=${value}`);
 			for (const [key, value] of Object.entries(spec.env ?? {})) args.push("--env", `${key}=${value}`);
+			if (network.kind === "none") args.push("--network", "none");
 			if (spec.cpus !== undefined) args.push("--cpus", String(spec.cpus));
 			if (spec.memoryMb !== undefined) args.push("--memory", `${spec.memoryMb}m`);
 			if (spec.gpu !== undefined) args.push("--gpus", "all");

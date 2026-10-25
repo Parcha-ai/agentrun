@@ -1,11 +1,15 @@
 export {
 	type Box,
+	type BoxCapability,
+	type BoxEndpoint,
 	BoxError,
 	type BoxErrorCode,
 	type BoxExecOptions,
 	type BoxFacts,
 	type BoxFile,
 	type BoxLauncher,
+	type BoxNetwork,
+	type BoxPort,
 	type BoxProcess,
 	type BoxProvider,
 	type BoxRef,
@@ -33,6 +37,7 @@ export {
 	type TransportConfigInput,
 	TransportConfigSchema,
 } from "./config.ts";
+export { type FactsReading, readFacts } from "./facts.ts";
 export { isPlacementRecord, PlacementsDoc, writePlacement } from "./place/log.ts";
 export {
 	type EnvironmentFacts,

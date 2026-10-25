@@ -15,6 +15,8 @@ class FakeSandbox implements ModalSandbox {
 	readonly execs: { command: string[]; params: ExecParams }[] = [];
 	readonly writes: number[] = [];
 	exitCode: number | null = null;
+	/** What the box's probe of its own disk, Yama setting and FUSE prints (the real script reads this host's /proc). */
+	probeOutput = "disk=104857600\nptrace=1\nfuse_dev=1\n";
 	#children = new Set<ChildProcess>();
 
 	constructor(sandboxId: string, params: ModalCreateParams) {
@@ -25,7 +27,9 @@ class FakeSandbox implements ModalSandbox {
 	async exec(command: string[], params: ExecParams): Promise<ModalProcess> {
 		if (this.exitCode !== null) throw new Error("the sandbox has been terminated");
 		this.execs.push({ command, params });
-		const child = spawn(command[0] ?? "", command.slice(1), {
+		const probed = command[0] === "sh" && command[2]?.includes("ptrace_scope");
+		const [program, ...rest] = probed ? ["printf", "%s", this.probeOutput] : command;
+		const child = spawn(program ?? "", rest, {
 			cwd: params.workdir,
 			env: { PATH: process.env.PATH ?? "", ...this.params.env },
 			stdio: ["pipe", "pipe", "pipe"],
@@ -55,6 +59,16 @@ class FakeSandbox implements ModalSandbox {
 		};
 	}
 
+	async tunnels() {
+		const ports = [...(this.params.encryptedPorts ?? []), ...(this.params.unencryptedPorts ?? [])];
+		return Object.fromEntries(
+			ports.map((port) => [
+				port,
+				{ url: `https://fake-${port}.modal.test`, tcpSocket: [`fake-${port}.modal.test`, 40_000 + port] as const },
+			]),
+		);
+	}
+
 	async poll(): Promise<number | null> {
 		return this.exitCode;
 	}
@@ -63,6 +77,10 @@ class FakeSandbox implements ModalSandbox {
 		for (const child of this.#children) child.kill("SIGKILL");
 		this.exitCode ??= 0;
 		return this.exitCode;
+	}
+
+	async setTags(tags: Record<string, string>): Promise<void> {
+		this.params.tags = { ...tags };
 	}
 
 	async getTags(): Promise<Record<string, string>> {
@@ -79,6 +97,8 @@ export class FakeModal implements ModalSdk {
 		fromId: async (id) => ({ id }),
 	};
 	readonly fail: { create?: Error; fromId?: Error } = {};
+	/** Overrides what each new sandbox's probe prints. */
+	probeOutput: string | undefined;
 
 	readonly apps: ModalSdk["apps"] = {
 		fromName: async (name) => {
@@ -91,6 +111,7 @@ export class FakeModal implements ModalSdk {
 		create: async (_app, _image, params) => {
 			if (this.fail.create) throw this.fail.create;
 			const sandbox = new FakeSandbox(`sb-${this.sandboxList.length + 1}`, params);
+			if (this.probeOutput !== undefined) sandbox.probeOutput = this.probeOutput;
 			this.sandboxList.push(sandbox);
 			return sandbox;
 		},
