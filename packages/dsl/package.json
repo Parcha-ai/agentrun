@@ -20,6 +20,10 @@
       "types": "./dist/demo.d.ts",
       "import": "./dist/demo.js"
     },
+    "./author-references": {
+      "types": "./dist/author-references.d.ts",
+      "import": "./dist/author-references.js"
+    },
     "./recovery": {
       "types": "./dist/recovery/index.d.ts",
       "import": "./dist/recovery/index.js"
