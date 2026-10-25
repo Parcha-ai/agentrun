@@ -44,11 +44,15 @@ const help = 'Describe a task: /agentrun <what you want done>\nTry support triag
 /** What a result says when it ends no run, and the label on what the host says about a turn. */
 const NO_RUN = 'no workflow ran';
 const STAMP_LABEL = 'AgentRun host notice (not written by the model):';
+/** A workflow's name is written by the model, so the host prints it only when it is a plain name; any other is "a workflow".
+ *  A name with a line break in it would otherwise add a line that reads as the host's own. */
+const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._:()/-]{0,79}$/;
+const plainName = (name: unknown): string => typeof name === 'string' && PLAIN_NAME.test(name) ? name : 'a workflow';
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 type TurnRun = { id: string; status: string; name: string; calls: { agent: number; judge: number; tool: number }; scripted: boolean; resumed: boolean };
 const stampText = (runs: TurnRun[]): string => runs.length === 0
   ? `${STAMP_LABEL} ${NO_RUN} in this turn. A result, verification or support the model reports for this turn came from its own work, not from a workflow.`
-  : runs.map(run => `${STAMP_LABEL} receipt ${run.id}, ${run.status}, ${run.name}; ` + (run.scripted
+  : runs.map(run => `${STAMP_LABEL} receipt ${run.id}, ${run.status}, ${plainName(run.name)}; ` + (run.scripted
     ? 'scripted adapters: no model or Jev call was made.'
     : `${plural(run.calls.agent, 'model step')}, ${plural(run.calls.judge, 'Jev decision')}, ${plural(run.calls.tool, 'direct tool call')}${run.resumed ? ' (resumed run: these counts cover this attempt only)' : ''}.`)).join('\n');
 const textResult = (text: string, details: unknown = {}) => ({ content: [{ type: 'text' as const, text: safe(text) }], details });
@@ -549,7 +553,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         } else if (/^history(?:\s|$)/.test(command)) {
           const history = workflowRunHistory(ctx.sessionManager.getBranch());
           if (!history.length) { show(s, 'No retained runs on this Pi session branch yet.'); return; }
-          const labels = history.map((run, index) => `${index + 1}. ${inspectWorkflow(run.workflow).name} · ${run.report?.status ?? 'interrupted'} · ${run.createdAt}`);
+          const labels = history.map((run, index) => `${index + 1}. ${plainName(inspectWorkflow(run.workflow).name)} · ${run.report?.status ?? 'interrupted'} · ${run.createdAt}`);
           let index = Number(command.slice(7).trim()) - 1;
           if (command === 'history' && ctx.mode === 'tui') {
             const selected = await ctx.ui.select('Retained runs on this session branch', labels);
@@ -682,6 +686,6 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     if (!snapshot.report && !snapshot.running) return undefined;
     return new Text(safe(options.expanded ? formatWorkflowView(workflowView(snapshot.workflow, {
       input: snapshot.input, report: snapshot.report, observation: snapshot.observation, mode: snapshot.demo ? 'scripted' : 'live adapters',
-    })) : `AgentRun receipt · ${snapshot.report?.status ?? 'interrupted'} · ${inspectWorkflow(snapshot.workflow).name}`), 0, 0);
+    })) : `AgentRun receipt · ${snapshot.report?.status ?? 'interrupted'} · ${plainName(inspectWorkflow(snapshot.workflow).name)}`), 0, 0);
   });
 }
