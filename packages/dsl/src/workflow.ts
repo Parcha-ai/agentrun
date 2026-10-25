@@ -1642,7 +1642,13 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
   const validator = Compile(schema as never);
   const attempts = Math.max(1, node.retry?.attempts ?? 1);
   const retryOn = new Set<string>(node.retry?.on ?? ["timeout", "http_5xx", "http_429", "connection", "exit"]);
-  const executeOnce = async (budgetUntilMs?: number): Promise<unknown> => {
+  // A poll timeout reads one way wherever its deadline lands: the loop's own check, the start of an
+  // attempt after a late wait, or an attempt the poll budget cuts. `check` counts the checks started,
+  // including a last check that the deadline stops before its effect begins; a recovery run passes
+  // none and keeps the text without a count.
+  let pollTimeout: EffectFailure | undefined;
+  const pollExceeded = (check?: number) => (pollTimeout = new EffectFailure(`call node "${node.label}" poll exceeded its ${node.poll?.deadline_s}s deadline${check === undefined ? "" : ` after ${check} check(s)`}`, "timeout"));
+  const executeOnce = async (budgetUntilMs?: number, check?: number): Promise<unknown> => {
     let result: unknown;
     let lastError: unknown;
     let failed = false;
@@ -1652,7 +1658,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
       // A durable receipt can be retrieved after expiry. The recovery adapter checks
       // the original deadline before any NEW admission; it never extends the poll.
       // Expired receipt reads receive the node deadline so asynchronous store IO can finish.
-      if (remainingMs <= 0 && !deps.recovery) throw new EffectFailure(`call node "${node.label}" poll exceeded its ${node.poll?.deadline_s}s deadline`, "timeout");
+      if (remainingMs <= 0 && !deps.recovery) throw pollExceeded(check);
       const controller = new AbortController();
       const attemptMs = Math.max(1, Math.min(node.deadline_s * 1000, remainingMs <= 0 && deps.recovery ? Infinity : remainingMs));
       const attemptDeadlineMs = performance.now() + attemptMs;
@@ -1724,7 +1730,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
         lastError = error instanceof EffectOutcomeUnknownError ? error
           : deps.signal?.aborted ? deps.signal.reason ?? new Error("workflow aborted")
           : controller.signal.aborted && !(error instanceof EffectFailure) && !(error instanceof EffectDeadlineExceededError)
-          ? new EffectFailure(cutByPoll ? `call node "${node.label}" poll exceeded its ${node.poll?.deadline_s}s deadline` : `call node "${node.label}" exceeded its ${node.deadline_s}s deadline`, "timeout")
+          ? (cutByPoll ? pollExceeded(check) : new EffectFailure(`call node "${node.label}" exceeded its ${node.deadline_s}s deadline`, "timeout"))
           : error;
         const retryClass = lastError instanceof EffectFailure ? lastError.retryClass : null;
         // The row's `code` is closed: an EffectFailure's code when it is one of EFFECT_FAILURE_CODES, else
@@ -1758,8 +1764,17 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
   } else {
     const startedAt = deps.recovery?.pollStartedAt(node, undefined, executionPath(deps)) ?? Date.now();
     const pollUntilMs = startedAt + node.poll.deadline_s * 1000;
+    // Each check sends one effect.poll. Outside a recovery run, a check that does not settle reports
+    // null only once its wait ends inside the poll deadline, so a poll timeout, wherever it lands,
+    // ends with one "deadline" event for the last check started.
+    const pollDeadline = (iteration: number, elapsedMs: number) => deps.onEvent?.({ type: "effect.poll", label: node.label, detail: { iteration, settled: "deadline", elapsed_ms: elapsedMs } });
     for (let iteration = 1; ; iteration += 1) {
-      result = await executeOnce(pollUntilMs);
+      try {
+        result = await executeOnce(pollUntilMs, deps.recovery ? undefined : iteration);
+      } catch (error) {
+        if (!deps.recovery && error === pollTimeout) pollDeadline(iteration, Date.now() - startedAt);
+        throw error;
+      }
       if (!validator.Check(result)) throw invalid(result);
       const elapsedMs = Date.now() - startedAt;
       if (node.poll.fail_when && predicateMatches(node.poll.fail_when, result)) {
@@ -1771,12 +1786,27 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
         break;
       }
       if (!deps.recovery && elapsedMs + node.poll.interval_s * 1000 > node.poll.deadline_s * 1000) {
-        deps.onEvent?.({ type: "effect.poll", label: node.label, detail: { iteration, settled: "deadline", elapsed_ms: elapsedMs } });
-        throw new EffectFailure(`call node "${node.label}" poll exceeded its ${node.poll.deadline_s}s deadline after ${iteration} check(s)`, "timeout");
+        pollDeadline(iteration, elapsedMs);
+        throw pollExceeded(iteration);
+      }
+      if (deps.recovery) {
+        deps.onEvent?.({ type: "effect.poll", label: node.label, detail: { iteration, settled: null, elapsed_ms: elapsedMs } });
+        await deps.recovery.wait(node, node.poll.interval_s * 1000, undefined, executionPath(deps));
+        continue;
+      }
+      try {
+        await sleep(node.poll.interval_s * 1000, deps.signal);
+      } catch (error) {
+        // A cancel during the wait still reports the check that finished, as null.
+        deps.onEvent?.({ type: "effect.poll", label: node.label, detail: { iteration, settled: null, elapsed_ms: elapsedMs } });
+        throw error;
+      }
+      // A wait that wakes late, at or past the poll deadline, ends the poll before another check.
+      if (Date.now() >= pollUntilMs) {
+        pollDeadline(iteration, elapsedMs);
+        throw pollExceeded(iteration);
       }
       deps.onEvent?.({ type: "effect.poll", label: node.label, detail: { iteration, settled: null, elapsed_ms: elapsedMs } });
-      if (deps.recovery) await deps.recovery.wait(node, node.poll.interval_s * 1000, undefined, executionPath(deps));
-      else await sleep(node.poll.interval_s * 1000, deps.signal);
     }
   }
   if (!validator.Check(result)) {
