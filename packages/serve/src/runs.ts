@@ -13,7 +13,8 @@ import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type Run
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { type AgentEntry, type Agents, sqliteBusy, storeError } from "./agents.js";
 import { readJson, RUN_META, writeWhole } from "./files.js";
-import { ASK_TOOL } from "./app.js";
+import { FAUX_WEB_ENV } from "./fetch-page.js";
+import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
 import { ApiError } from "./errors.js";
 import { EFFORT_ENV, FAUX_ENV } from "./model.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
@@ -175,7 +176,7 @@ export function statusOf(run: Run): { status: Status; state: State } {
 /** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
 /** `token` is the server's own: no run's process sees it. */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry };
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry };
 
 /** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
  *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
@@ -516,7 +517,11 @@ export class Runs {
 
   private launch(run: Run): void {
     if (run.child || this.closing || run.cancel) return;
-    const env: NodeJS.ProcessEnv = { ...childEnv(process.env, this.options.token), ...(this.options.faux ? { [FAUX_ENV]: this.options.faux } : {}), ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}) };
+    const env: NodeJS.ProcessEnv = {
+      ...childEnv(process.env, this.options.token),
+      ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}) } : {}),
+      ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
+    };
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? "30s");

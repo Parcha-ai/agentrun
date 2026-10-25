@@ -42,7 +42,7 @@ test("a workflow needing a tool call, a judge or code is not runnable here (409)
   const refused = await api("POST", "/agents/caller/runs", { input: { question: "x" } });
   assert.equal(refused.status, 409);
   assert.equal(refused.body.error.code, "agent_not_runnable");
-  assert.deepEqual(refused.body.error.details.adapters, ["runEffect"]);
+  assert.deepEqual(refused.body.error.details.unbound, ["stock.check"], "a call to a tool outside the table");
   assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);
   const wrong = await api("POST", "/agents/flow/runs", { input: { content: "no question" } });
   assert.equal(wrong.status, 422);

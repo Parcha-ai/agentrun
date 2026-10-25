@@ -9,7 +9,8 @@ import { extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agents.js";
-import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
+import { WORKFLOW_ADAPTERS } from "./app.js";
+import { NODE_TOOLS, toolRefusal, toolsView, workflowTools } from "./tools.js";
 import { ApiError, invalid, unsupported } from "./errors.js";
 import { chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, nodeTiers, THINKING_LEVELS } from "./model.js";
 import { answerPage } from "./page.js";
@@ -47,6 +48,12 @@ export type ServeOptions = {
   port?: number;
   /** A faux model module (no key, no network): see the README. */
   faux?: string;
+  /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
+   *  backend), in place of Browserbase's. */
+  fauxBrowser?: string;
+  /** With `faux` only: a module whose default export gives `fetch_page` its `{ lookup, fetchImpl }` (the tests' fake
+   *  network), in place of the system's resolver and undici. */
+  fauxWeb?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
   allowHosts?: string[];
   drainTimeout?: string;
@@ -112,11 +119,11 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env) {
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     runtimes: ["pi-durable-disk"],
     models,
-    /** The tools an agentic revision may name. */
-    tools: [...BOUND_TOOLS],
+    /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing. */
+    tools: toolsView(env),
     /** What a workflow revision's run gets: each model node runs on the model of its tier (`models.fast`,
-     *  `models.default`, `models.strong`) with the file tools it names; a node that names no thinking level thinks at
-     *  the run's effort, or medium. */
+     *  `models.default`, `models.strong`) with the tools it names of `node_tools`; a node that names no thinking level
+     *  thinks at the run's effort, or medium. */
     workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS] },
     features: {
       agents: { create: true, list: true, update: true, revisions: true },
@@ -180,7 +187,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}) };
   const caps = capabilities(env);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -272,8 +279,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
    *  adapters it does not give, and a model it cannot reach. */
   async function runnable(revision: Revision): Promise<void> {
     if (revision.kind === "agentic") {
-      const unbound = revision.body.tools.filter((name) => !(BOUND_TOOLS as readonly string[]).includes(name));
-      if (unbound.length) throw new ApiError("agent_not_runnable", `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; this revision also names ${unbound.join(", ")}.`, { details: { unbound } });
+      const refusal = toolRefusal(revision.body.tools, env);
+      if (refusal) throw new ApiError("agent_not_runnable", refusal.message, { details: { unbound: refusal.unbound, missing: refusal.missing } });
       const chosen = await chooseModel(env, revision.body.model);
       if ("why" in chosen) throw new ApiError("agent_not_runnable", chosen.why, { details: { unbound: [] } });
       return;
@@ -281,13 +288,12 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
     const { requires } = inspectWorkflow(revision.body.workflow);
     const adapters = requires.adapters.filter((name) => !(WORKFLOW_ADAPTERS as readonly string[]).includes(name));
-    const unbound = requires.tools.filter((name) => !(NODE_TOOLS as readonly string[]).includes(name));
+    const named = workflowTools(revision.body.workflow);
+    const refusal = adapters.length || requires.executableCode ? undefined : (toolRefusal(named.nodes, env, "nodes") ?? toolRefusal(named.calls, env, "calls"));
     const why = adapters.length || requires.executableCode
-      ? `agentrun-serve runs a workflow's model nodes (agent, decide, extract, report); this workflow also needs ${[...adapters, ...(requires.executableCode ? ["code"] : [])].join(", ")}.`
-      : unbound.length
-        ? `A workflow's model nodes get the tools ${NODE_TOOLS.join(", ")} here; this workflow also names ${unbound.join(", ")}.`
-        : undefined;
-    if (why) throw new ApiError("agent_not_runnable", why, { details: { adapters, unbound, code: requires.executableCode } });
+      ? `agentrun-serve runs a workflow's model nodes (agent, decide, extract, report) and its tool calls; this workflow also needs ${[...adapters, ...(requires.executableCode ? ["code"] : [])].join(", ")}.`
+      : refusal?.message;
+    if (why) throw new ApiError("agent_not_runnable", why, { details: { adapters, unbound: refusal?.unbound ?? [], missing: refusal?.missing ?? {}, code: requires.executableCode } });
     for (const tier of nodeTiers(revision.body.workflow)) {
       const chosen = await chooseModel(env, undefined, tier);
       if ("why" in chosen) throw new ApiError("agent_not_runnable", chosen.why, { details: { adapters: [], unbound: [], code: false, tier } });

@@ -102,6 +102,43 @@ workflow of fast nodes runs with `AGENT_MODEL_FAST` and no `AGENT_MODEL`. A run 
 `high`), else at its agentic revision's `thinking` (`low` to `max`), else at the host's `AGENT_THINKING`, else at medium;
 it is never off, and a model node that names its own thinking level keeps it.
 
+## Tools
+
+A revision names its tools from one closed table (`src/tools.ts`): each name is how the run's process binds it and the
+variables of this server's environment it needs. Nothing outside the table can be named, and no tool is loaded from
+anywhere else. `GET /capabilities` lists every one in `tools`, `available: true` or `false` with the variables it is
+`missing` (their names, never their values), `nodes` for whether a workflow's model node may name it, and `calls` for
+whether a workflow's `call` node `via: "tool"` may run it. A run of a
+revision that names a tool outside the table, or one whose variables are not set, is refused before it starts (`409
+agent_not_runnable`, with `details.unbound` and `details.missing`).
+
+| Tool | What it does | Needs | A workflow's model node may name it, a call node run it |
+| --- | --- | --- | --- |
+| `read` | Read a file in the run's `work/` | nothing | yes, no |
+| `write` | Write a file in the run's `work/` | nothing | yes, no |
+| `edit` | Edit a file in the run's `work/` | nothing | yes, no |
+| `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
+| `fetch_page` | Fetch one web page from a public host: `{url}` in, a Page out, `{ok, url, status, title, text, links, refused?, error?}` | nothing | yes, yes |
+| `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
+
+There is no `bash`: a run gets no shell (see [Safety](#safety)).
+
+`fetch_page` reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is resolved,
+every address it resolves to is checked, and the connection is dialled at the address checked, so a loopback, private,
+link-local, carrier-grade or metadata address (`127.0.0.1`, `10.x`, `169.254.169.254`, `fc00::`, `::ffff:127.0.0.1`
+and the like), a name such as `localhost`, a public name that resolves to one of them and a redirect to one are all
+refused, as is any scheme but http(s). A body is at most 5 MiB, a fetch at most 30 s, the text is cut at 60,000
+characters and the links at 200, absolute http(s) only. A refusal or a failure is a Page with `ok: false` and `refused`
+or `error`, never a thrown error: an agent reads why, and a workflow can branch on it. An agent gets the Page as JSON
+text; a workflow's `call` node `via: "tool", tool: "fetch_page"` gets it as its output (`args: {url}`, `out` a schema of
+that shape). A call node naming a tool the table cannot run that way is refused before the run starts (`409`).
+
+The `browser` tool runs Browserbase sessions, never a Chrome on this machine. The keys come from the server's
+environment and reach the run's process as the rest of it does. A session's custody (its lease, its tag, what it was
+doing) is kept in the run's own store, so a run opened again on its directory reconciles the sessions it held. Each
+page it reads is filed under the run's `work/evidence/`. There is no recording and no live view. When the run is let go
+(its work done, or a SIGTERM) the sessions it still holds are released at Browserbase.
+
 ## What it serves
 
 | Route | Here |
@@ -205,6 +242,11 @@ export default function reply(context, faux) {
 }
 ```
 
+`startServe({ faux, fauxBrowser, fauxWeb })` (the tests', not the CLI's) also names modules whose default exports give
+the `browser` tool's `{ provider, driver }` in place of Browserbase's (pi-browser's fake backend,
+`test/fixtures/faux-browser.mjs`), and `fetch_page`'s `{ lookup, fetchImpl }` in place of the system's resolver and
+undici (a table of names and pages, `test/fixtures/faux-web.mjs`). Each is honored only with `faux`.
+
 `faux.message`, `faux.text`, `faux.thinking` and `faux.toolCall` are pi-ai's faux helpers; `faux.signal` is aborted when
 the turn is stopped. A workflow's model node offers the `submit` tool (in its system message's `toolsAdded`), and
 delivers its record by calling it. A module may also export `cost` (`{input, output, cacheRead, cacheWrite}` in USD per
@@ -213,6 +255,11 @@ million tokens) to price the faux usage; unpriced, every run's estimate is $0. T
 
 ## Safety
 
+- `fetch_page` dials public addresses only, each hop checked and pinned (see [Tools](#tools)): a run cannot reach this
+  machine, its network or a cloud's metadata address through it.
+- A `browser` session runs at Browserbase, not on this machine: a page the model opens is reached from Browserbase's
+  network, so what the model may reach there is the operator's choice of keys and project. Its downloads and uploads stay
+  in the run's `work/`.
 - It binds 127.0.0.1 by default, and there refuses a request whose `Host` is not a loopback name (DNS rebinding). On
   another address (`--listen`, the container's `0.0.0.0`) it serves every `Host` name, and the token is its only lock.
   It sends no CORS headers, so a page on another origin cannot read an answer.
@@ -223,6 +270,16 @@ million tokens) to price the faux usage; unpriced, every run's estimate is $0. T
 - Each run's door listens on loopback and takes only the server's door token.
 - A run's process gets the server's environment (model keys and the `AGENT_MODEL` variables among it) without the
   server's token: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, and no variable whose value is the token.
+- A run's file tools (`read`, `write`, `edit`) reach its own `work/`, and two places of its own beside it: `read` also
+  reaches the run's `tmp/` (next to `work/`, where a command's spilled output would go), and a write may also land in a
+  temporary directory the run's environment made for a tool (`createTempDir`). Every other path, a link inside `work/`
+  included, is resolved and refused (`outside the workspace`), so a run reads neither the server's token, the door
+  token, `store.sqlite`, another run's files (its `work/` or its `tmp/`) nor `/proc`, and writes nowhere else. This is
+  pi-durable-disk's confinement inside the run's process, not an operating-system boundary: the run and the server
+  share a user (one uid in the container), so the confinement holds only because the run has no shell.
+- No path offers a shell. `bash` is not bound: a revision that names it is not runnable here (`409`), and a model that
+  calls it anyway, as an agent or as a workflow's model node, is answered that the tool is not available and runs
+  nothing. There is no sandbox box in this phase, so shell stays off.
 - Files are served from `work/` only. A path with an empty, `.` or `..` segment, a backslash or a NUL is
   `400 invalid_file_path`; a segment that starts with `.` (the run's skills under `.agents/`) is
   `403 system_file_forbidden`; a symlink on the way is `404`. Every answer is `nosniff`, and HTML carries a CSP with

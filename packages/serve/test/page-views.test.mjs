@@ -28,7 +28,7 @@ const revision = (id, current, note) => ({ id, kind: "agentic", current, created
 const AGENT_PAGE = { agent: { id: "calc", name: `Calc ${HOSTILE}`, createdAt: "2026-10-21T09:00:00.000Z", current: REV_B }, revisions: [revision(REV_B, true, "Cites"), revision(REV_A, false, `First ${HOSTILE}`)] };
 /** A run as GET /v2/runs/{id} answers it while it works. */
 const LIVE = { ...summary("run-9", "calc", REV_B, "agentic", "working", "working", "2026-10-23T06:00:00.000Z", null, 0.01), updated_at: "2026-10-23T06:00:01.000Z", result: null, error: null, poll_after_ms: 1000 };
-const CAPABILITIES = { backend: "local", contract: "agentrun.v2/0", features: { agents: { create: true, list: true, update: true, revisions: true }, thinking: ["low", "medium", "high", "xhigh", "max"] }, tools: ["read", "write", "edit", "ask_person"] };
+const CAPABILITIES = { backend: "local", contract: "agentrun.v2/0", features: { agents: { create: true, list: true, update: true, revisions: true }, thinking: ["low", "medium", "high", "xhigh", "max"] }, tools: ["read", "write", "edit", "ask_person"].map((name) => ({ name, summary: "", nodes: name !== "ask_person", available: true })) };
 /** An agent as GET /v2/agents/{id} answers it: the current revision's definition, numbered, and the revision as its ETag. */
 const agentView = (id, revision, definition) => ({ agent_id: id, definition: { id, version: 2, ...definition, skills: [] }, kind: definition.workflow ? "workflow" : "agentic", revision, revisions: 2, source: null, skills: [], sign_ins: [], runs: { count: 0, live: 0 }, region: "local", home_etag: `"${revision}"`, created_at: "2026-10-21T09:00:00.000Z", updated_at: "2026-10-22T10:00:00.000Z" });
 
@@ -366,4 +366,14 @@ test("leaving a live run aborts its long poll; a run this server never ran, or a
   const final = open("#/runs/run-9", { "v2/runs/run-9": { ...LIVE, status: "completed" }, "v2/runs/run-9/timeline": page({ final: true, status: "completed" }), "api/store": { agents: AGENTS }, "api/runs/run-9": { ...stored, run: { ...stored.run, id: "run-9" } } });
   await final.page.settle();
   assert.deepEqual(final.api.calls.map((c) => c.path), ["v2/runs/run-9", "v2/runs/run-9/timeline", "api/store", "api/runs/run-9"]);
+});
+
+test("a tool this server's environment cannot bind is shown unbound in the form, naming the variables it needs", async () => {
+  const capabilities = { ...CAPABILITIES, tools: [...CAPABILITIES.tools, { name: "browser", summary: "", nodes: true, available: false, missing: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"] }] };
+  const { page } = open("#/new", { "v2/capabilities": capabilities });
+  await page.settle();
+  const box = all(page.app).find((el) => el.getAttribute("type") === "checkbox" && el.value === "browser");
+  assert.equal(classOf(box.parentNode), "unbound");
+  assert.equal(box.parentNode.getAttribute("title"), "This server's environment does not set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID");
+  assert.equal(classOf(all(page.app).find((el) => el.getAttribute("type") === "checkbox" && el.value === "read").parentNode), "", "a tool it binds is plain");
 });
