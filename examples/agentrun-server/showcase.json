@@ -405,6 +405,30 @@
           }
         }
       ]
+    },
+    {
+      "revisions": [
+        {
+          "definition": {
+            "id": "utility-bills",
+            "name": "Utility bills",
+            "description": "Signs in to a practice utility site in a real browser and lists the bills.",
+            "instructions": "You use a real browser to read a customer's bills.\nOpen https://parcha-ai.github.io/pi-browser-fixtures/utility/signin.html. It is Marrow Creek Utilities, a practice site: its sign-in page prints a practice account (an email and a password) that is public, not a real one. Sign in with it.\nThen open the bills page and read every monthly bill.\nAnswer with one line per bill, oldest first, as `YYYY-MM: $amount due`, then a last line `Total: $sum`. Say which page you read them on.",
+            "tools": [
+              "browser"
+            ]
+          },
+          "note": "Sign in and list the bills"
+        }
+      ],
+      "runs": [
+        {
+          "revision": 0,
+          "input": {
+            "content": "List the bills on the practice account."
+          }
+        }
+      ]
     }
   ]
 }

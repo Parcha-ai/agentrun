@@ -66,11 +66,19 @@ async function finished(runId) {
 }
 
 const agents = showcase.agents.filter((agent) => !values.only || agent.revisions[0].definition.id === values.only);
+// A tool this server's environment cannot bind (the browser's keys unset, say) leaves that agent's runs out, said why.
+const { data: capabilities } = await api("GET", "/capabilities");
+const unbound = new Map((capabilities.tools ?? []).filter((tool) => typeof tool === "object" && !tool.available).map((tool) => [tool.name, tool.missing ?? []]));
 const jobs = [];
 for (const agent of agents) {
   const revisions = await seedAgent(agent);
   if (!values.runs) continue;
   const id = agent.revisions[0].definition.id;
+  const missing = [...new Set(agent.revisions.flatMap((revision) => revision.definition.tools ?? []))].filter((tool) => unbound.has(tool));
+  if (missing.length) {
+    console.log(`${id}: runs left out: this server cannot bind ${missing.map((tool) => `${tool} (needs ${unbound.get(tool).join(", ")})`).join(", ")}`);
+    continue;
+  }
   for (const run of agent.runs) jobs.push({ id, note: agent.revisions[run.revision].note, revision: revisions[run.revision].revision, input: run.input });
 }
 
