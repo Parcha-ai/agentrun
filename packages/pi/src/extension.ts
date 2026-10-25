@@ -20,7 +20,8 @@ import { demoInput, demoSearchTool, demoWorkflow, scriptedDemoDeps } from './dem
 import { cleanText as safe, formatRunReport, modelJson } from './presentation.js';
 import { ToolInputValidationError, toolInputProblems } from './tool-input-error.js';
 import { mkdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import type { Workflow } from '@parcha/agentrun-dsl';
 import { RecoveryError, fileStore, openRecovery, withRecovery, type JournalRecord, type RecoveryDriver } from '@parcha/agentrun-dsl/recovery';
 import { readSopFile, missingSopSections, sopDigest, type SopText } from './sop.js';
@@ -650,6 +651,13 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
   pi.on('before_agent_start', event => {
     turnRuns = [];
     if (event.prompt.includes(`<skill name="${AUTHOR_SKILL_NAME}"`)) engaged = true;
+  });
+  // A model can load the author skill by itself, by reading the file Pi lists for the skill's command.
+  pi.on('tool_call', (event, ctx) => {
+    if (engaged || event.toolName !== 'read') return;
+    const path = (event.input as { path?: unknown }).path;
+    const skill = pi.getCommands().find(item => item.name === `skill:${AUTHOR_SKILL_NAME}` && item.source === 'skill')?.sourceInfo?.path;
+    if (typeof path === 'string' && skill && resolve(ctx.cwd, path.replace(/^~(?=\/|$)/, homedir())) === resolve(skill)) engaged = true;
   });
   pi.on('agent_end', () => {
     if (!engaged) return;
