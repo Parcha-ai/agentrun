@@ -519,6 +519,11 @@ const strays: string[] = [];
 async function seededAcquire(id: string, mountRoot: string, seed: (mp: string) => void) {
   const mp = `${mountRoot}/runs/${id}`;
   seed(mp);
+  // Leftovers are an earlier incarnation's, so they predate this process: acquire refuses entries written since it
+  // started as its own (MOUNTPOINT_WRITTEN). Dated as root, since a root-owned mount root's seeds are root's.
+  const before = String(Math.floor(performance.timeOrigin / 1000) - 60);
+  const dated = spawnSync("sudo", ["-n", "find", mp, "-mindepth", "1", "-exec", "touch", "-h", "-d", `@${before}`, "{}", "+"]);
+  assert.equal(dated.status, 0, `dating the seeded entries failed: ${String(dated.stderr).trim().slice(0, 200)}`);
   const { value: claim, lines } = await stderrLines(() => claimAt(id, mountRoot, `stray-${id.slice(-6)}`));
   if (claim.stray) strays.push(claim.stray.to);
   const seen = readdirSync(claim.root).sort();

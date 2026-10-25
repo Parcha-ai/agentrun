@@ -460,4 +460,21 @@ describe("a stop in progress", () => {
 		expect(await fileIn(box, `${started.directory}/stop.done`)).toBeDefined();
 		await box.destroy(context);
 	});
+
+	it("ends at once when the watchdog it killed held the output's trim lock: it never waits out a lock a dead process left", async () => {
+		const box = await aBox();
+		const started = getOrThrow(await launch(box, "trimmed", { argv: ["sleep", "300"] }, context));
+		// What a watchdog killed inside its trim of the output leaves: the trim lock, held by nobody.
+		const planted = getOrThrow(
+			await box.exec(["sh", "-c", 'mkdir "$1/trim"', "sh", started.directory], undefined, context),
+		);
+		expect(getOrThrow(await finish(planted)).exitCode).toBe(0);
+		const began = Date.now();
+		const stopped = getOrThrow(await launchStop(box, started.launch, { graceMs: 300 }, context));
+		const took = Date.now() - began;
+		expect(stopped.phase).toBe("stopped");
+		// The launcher breaks a lock only after 15 s: a stop that waited for this one would take that long.
+		expect(took).toBeLessThan(10_000);
+		await box.destroy(context);
+	});
 });

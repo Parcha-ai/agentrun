@@ -61,6 +61,7 @@ gkill() { kill -s "$1" -- "-$2" 2>/dev/null || kill -s "$1" "-$2" 2>/dev/null; }
 @@GROUP_LIVE@@
 @@DIRECTORY_CHECK@@
 @@CAP_LINE@@
+@@STOP_STATUS@@
 rd() { cat "$D/$1" 2>/dev/null; }
 wr() { printf '%s\n' "$2" > "$D/$1.$$" && mv "$D/$1.$$" "$D/$1"; }
 current_gen() { sed -n "s/^GEN='\(.*\)'\$/\1/p" "$D/spec.sh" 2>/dev/null; }
@@ -280,9 +281,31 @@ watch() {
 # ONE stop owns a launch's stop, claimed under the lock by the first: it drains, runs the hook (once per launch), kills and
 # writes the last state, then stop.done. Its deadline is its drain, the hook at its longest, and 3 s. A later or concurrent
 # stop never kills while the owner is within it (stop_wait).
+# A stop is for the launch its caller read ($2, that launch's generation; empty from an older caller): from here on its
+# generation is that one, never the spec this script happened to read. Before any kill, write or lock, a $D that holds another
+# generation, or none, means that launch has ended and a later one may hold the name: nothing is stopped then.
+stop_for() {
+  if [ -n "$2" ]; then
+    MYGEN=$2
+    if stale; then stop_gone; return; fi
+  fi
+  stopit "$1"
+}
+
+# The launch this stop is for, once it has ended: as its own stop recorded it; or, with no record, a line that it ended and
+# exit 4, which launchStop reads as a launch that does not exist (invalid), never another launch's state.
+stop_gone() {
+  rec=$(record_path "$MYGEN")
+  if [ -r "$rec" ]; then cat "$rec"; return 0; fi
+  echo "the launch this stop was for has ended, and another launch of the name holds the name now"
+  exit 4
+}
+
 stopit() {
   tenths=$1
   lock
+  # The same, under the lock: a launch of the name may have taken $D since.
+  if stale; then unlock; stop_gone; return; fi
   wr stop.req 1
   n=$(rd starts)
   [ -n "$n" ] || n=0
@@ -309,48 +332,61 @@ stopit() {
   stop_end
 }
 
-# The end of a stop: what is left of the program's group killed, the launcher's processes ended, the last state, stop.done.
+# The end of a stop: what is left of the program's group killed, the launcher's processes ended, the last state. Then its
+# status, recorded under this launch's generation BEFORE done and stop.done release the name (a launch of the name that waited
+# may wipe $D at once after), and printed from memory, never read again.
 stop_end() {
   if own_group "$pid" "$(rd ticks.$n)"; then gkill KILL "$pid"; fi
   for f in launcher watch; do
     p=$(rd $f.pid)
     if alive "$p" "$(rd $f.ticks)"; then kill -s KILL "$p" 2>/dev/null; fi
   done
+  # Nothing but this stop trims the output now: a trim lock left is a killed watchdog's, never waited out (15 s).
+  rmdir "$D/trim" 2>/dev/null
   case "$before" in
     exited|gave_up|stopped) ;;
     *) write_state stopped "" "$(rd lastexit)" ;;
   esac
   trim_log
+  final=$(status_block)
+  rec=$(record_path "$MYGEN")
+  printf '%s\n' "$final" > "$rec.$$" && mv "$rec.$$" "$rec"
   : > "$D/done"
   : > "$D/stop.done"
-  cat "$D/state"
+  printf '%s\n' "$final"
 }
 
 # A stop that did not claim the launch waits for the owner's end, within its own bound ($1 tenths of drain, the hook at its
-# longest, 3 s: what the host waits for it), and reports the state as it then stands. Past the owner's deadline, the owner
-# died: this stop takes the stop over, once (it moves the deadline under the lock), and ends it.
+# longest, 3 s: what the host waits for it). Past the owner's deadline, the owner died: this stop takes the stop over, once
+# (it moves the deadline under the lock), and ends it. Once the stop has ended, a launch of the name may already hold $D
+# (stale: another generation, or none yet), so what this stop reports is then its own generation's record; while $D is still
+# this launch's, the status as it stands (stopping, past its bound).
 stop_wait() {
   bound=$(( $(centis) + $1 * 10 + HOOK_TENTHS * 10 + 300 ))
-  while [ ! -e "$D/stop.done" ]; do
-    lock
-    dl=$(rd stop.deadline)
-    [ -n "$dl" ] || dl=0
-    if [ ! -e "$D/stop.done" ] && [ "$(centis)" -gt "$dl" ]; then
-      wr stop.deadline $(( $(centis) + 300 ))
-      unlock
-      hp=$(rd hook.pid)
-      if [ -n "$hp" ] && alive "$hp" "$(rd hook.ticks)"; then
-        if [ -n "$SETSID" ]; then gkill KILL "$hp"; else kill -s KILL "$hp" 2>/dev/null; fi
-      fi
-      before=$(rd state | sed -n 's/.*"phase":"\([a-z_]*\)".*/\1/p')
-      stop_end
-      return
-    fi
-    unlock
+  while [ ! -e "$D/stop.done" ] && ! stale; do
+    # In a subshell: a lock that finds $D gone (a launch of the name is wiping it) ends only the subshell.
+    seen=$(lock; if [ -e "$D/stop.done" ] || stale; then echo ended; else dl=$(rd stop.deadline); [ -n "$dl" ] || dl=0; if [ "$(centis)" -gt "$dl" ]; then wr stop.deadline $(( $(centis) + 300 )); echo take; else echo wait; fi; fi; unlock)
+    case "$seen" in
+      take)
+        hp=$(rd hook.pid)
+        if [ -n "$hp" ] && alive "$hp" "$(rd hook.ticks)"; then
+          if [ -n "$SETSID" ]; then gkill KILL "$hp"; else kill -s KILL "$hp" 2>/dev/null; fi
+        fi
+        before=$(rd state | sed -n 's/.*"phase":"\([a-z_]*\)".*/\1/p')
+        stop_end
+        return ;;
+      wait) ;;
+      *) break ;;
+    esac
     if [ "$(centis)" -gt "$bound" ]; then break; fi
     sleep $STEP
   done
-  cat "$D/state"
+  if ! stale; then
+    final=$(status_block)
+    # Read while $D was still this launch's: a wipe never brings this generation back.
+    if ! stale; then printf '%s\n' "$final"; return; fi
+  fi
+  stop_gone
 }
 
 status() {
@@ -620,7 +656,7 @@ case "$MODE" in
   supervise) if [ "$FRAMED" = 1 ]; then read_frame || exit 7; fi; supervise ;;
   watch) watch ;;
   start) start_launch ;;
-  stop) stopit "$3" ;;
+  stop) stop_for "$3" "$4" ;;
   status) status ;;
   ptrace-check) ptrace_check "$PTRACE_FILE" "$3" ;;
   tools-check) tools_check ;;
@@ -733,6 +769,20 @@ export const CAP_LINE_CHECK = [
 	"}",
 ].join("\n");
 
+/** The first and the last line of the status block a stop prints and records: launchStop parses the last such block, nothing else. */
+export const STATUS_BEGIN = "PI-TRANSPORT-STATUS/1";
+export const STATUS_END = "PI-TRANSPORT-STATUS/1 END";
+
+/**
+ * `status_block`: this launch's status (status's own lines, less a stop's progress) between STATUS_BEGIN and STATUS_END.
+ * `record_path GEN`: where a stop records that block for the launch of generation GEN, beside $D in the spool and never in it,
+ * since a launch of the name that waited for the stop may wipe $D: `.stopped.<name>.<GEN>`, a name no launch can have.
+ */
+const STOP_STATUS = [
+	`status_block() { echo '${STATUS_BEGIN}'; status | sed '/^STOP /d'; echo '${STATUS_END}'; }`,
+	'record_path() { printf \'%s/.stopped.%s.%s\\n\' "\x24{D%/*}" "\x24{D##*/}" "$1"; }',
+].join("\n");
+
 /**
  * Every name the launcher's shell assigns: the script's own, the spec's (spec.sh) and the program's wrapper's (run_program),
  * temporaries included. The program's settings (`env`) and `inheritEnv` refuse each of them, so a program can never assign one;
@@ -840,6 +890,9 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 	"cn",
 	"cf",
 	"nc",
+	"final",
+	"rec",
+	"seen",
 ];
 
 /** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */
@@ -860,6 +913,7 @@ export const LAUNCHER_SCRIPT = SCRIPT_TEMPLATE.replace("@@GROUP_LIVE@@", () =>
 )
 	.replace("@@DIRECTORY_CHECK@@", () => DIRECTORY_CHECK)
 	.replace("@@CAP_LINE@@", () => CAP_LINE_CHECK)
+	.replace("@@STOP_STATUS@@", () => STOP_STATUS)
 	.replace("@@PTRACE_FILE@@", () => PTRACE_FILE_LINE)
 	.replace("@@TOOLS_CHECK@@", () => TOOLS_CHECK_LINE)
 	.replace("@@UNSET@@", () => `unset ${LAUNCHER_SHELL_NAMES.join(" ")}`);

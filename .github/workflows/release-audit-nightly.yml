@@ -1,0 +1,35 @@
+name: Release audit nightly
+
+# The release's package verification (scripts/verify-packages.mjs: the packed packages in a clean consumer, and the
+# consumer's production audit) on main's tip every night. npm audit reads the live advisory database, so a new high or
+# critical advisory turns this run red the morning after it is published, not in the middle of a release.
+on:
+  schedule:
+    - cron: '41 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-packages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: node scripts/verify-packages.mjs
+      - name: Keep the audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-audit-${{ github.run_id }}
+          path: .release/
+          include-hidden-files: true
+          if-no-files-found: ignore

@@ -17,10 +17,22 @@ export default function reply(context, faux) {
   const users = context.messages.filter((m) => m.role === "user").map(textOf);
   const [first = "", last = ""] = [users[0], users.at(-1)];
   const answered = context.messages.at(-1)?.role === "toolResult";
+  // A workflow's model node: it delivers its record through `submit`, slowly when its input says so.
+  if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"))) {
+    if (answered) return faux.message("Submitted.");
+    const submit = faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
+    const ms = first.includes("Take your time") ? 60_000 : first.includes("Answer soon") ? 1_500 : 0;
+    return ms ? slow(faux, ms, "").then((m) => (m.stopReason === "aborted" ? m : submit)) : submit;
+  }
   // Asks the person through ask_person; for an agent without it the call fails, and the reply goes on without asking.
   if (first.includes("Pick a region")) {
     if (users.length === 1 && !answered) return faux.message(faux.toolCall("ask_person", { question: "Which region should I use?" }), { stopReason: "toolUse" });
     return faux.message(JSON.stringify({ region: users.length === 1 ? "us" : last.trim() }));
+  }
+  // The run's process says which of these it sees: the server's token must not reach it, the rest must.
+  if (first.includes("Which variables do you see?")) {
+    const seen = (name) => `${name} ${process.env[name] ? "set" : "unset"}`;
+    return faux.message(["AGENTRUN_TOKEN", "TOKEN_COPY", "OPENAI_API_KEY", "AGENT_MODEL_PRICE"].map(seen).join("; "));
   }
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
   if (first.includes("Write the report")) {

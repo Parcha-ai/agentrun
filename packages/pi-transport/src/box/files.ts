@@ -2,6 +2,8 @@ import type { Context } from "@earendil-works/chord";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import { type Box, BoxError, type BoxFile, type BoxProcess } from "./box.ts";
 
+/** No bytes to send: the script reads /dev/null, never an exec stdin whose end `docker exec -i` can lose. */
+const EMPTY_INPUT = "exec </dev/null; ";
 const WRITE_SCRIPT = 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1" && { [ -z "$2" ] || chmod "$2" "$1"; }';
 const READ_SCRIPT = '[ -e "$1" ] || exit 3; [ -d "$1" ] && exit 4; exec cat -- "$1"';
 const EXIT_NOT_FOUND = 3;
@@ -55,7 +57,11 @@ export async function uploadByExec(
 ): Promise<Result<void, BoxError>> {
 	for (const file of files) {
 		const mode = file.mode === undefined ? "" : file.mode.toString(8);
-		const started = await box.exec(["sh", "-c", WRITE_SCRIPT, "sh", file.path, mode], undefined, context);
+		const started = await box.exec(
+			["sh", "-c", (file.bytes.length === 0 ? EMPTY_INPUT : "") + WRITE_SCRIPT, "sh", file.path, mode],
+			undefined,
+			context,
+		);
 		if (!started.ok) return started;
 		const finished = await finish(started.value, file.bytes);
 		if (!finished.ok) return finished;
