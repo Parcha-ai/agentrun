@@ -183,6 +183,12 @@ data directory, with this server's own views beside it:
   `GET /v2/runs/{id}/timeline` with a long poll; while it waits on `ask_person`, an answer box sends
   `POST /v2/runs/{id}/messages`. The live view leaves out the run's own start and end rows, as the stored view does.
   Once it is final, the page reads it from the store.
+- **Compare revisions**: on an agent's page, one row per revision, newest first: its runs, how many completed, failed
+  or escalated, their total cost, the cost per completed run (every run's cost over the completed ones, the cheapest
+  marked) and the median time of those that ended. It reads the store's runs of the agent; a row filters the runs to
+  its revision.
+- **Learn from this run**: on a completed run whose revision names the `learn` tool, a button sends
+  `POST /v2/agents/{id}/learn {run_id}` and says which revision it committed, with how many learned files.
 
 The link sets a cookie (`HttpOnly`, `SameSite=Strict`, `Path=/`, and `Secure` when `X-Forwarded-Proto` says https)
 and sends the browser to the same address without the token. The cookie's value is derived from the token, never the

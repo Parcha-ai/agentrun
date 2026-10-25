@@ -245,6 +245,109 @@
       return make;
     }
 
+    // ---- an agent's revisions, compared ------------------------------------------------------------------------------
+    function duration(ms) {
+      var s = Math.round(ms / 1000);
+      var two = function (n) { return (n < 10 ? "0" : "") + n; };
+      return s < 60 ? s + "s" : s < 3600 ? Math.floor(s / 60) + "m " + two(s % 60) + "s" : Math.floor(s / 3600) + "h " + two(Math.floor((s % 3600) / 60)) + "m";
+    }
+
+    /** One revision's runs in numbers: how many, how many completed, failed or escalated, what they cost in all and per
+     *  completed run (every run's cost over the completed ones), and the median time of those that ended. */
+    function revisionStats(runs) {
+      var costed = runs.filter(function (r) { return typeof r.costUsd === "number"; });
+      var completed = runs.filter(function (r) { return r.state === "completed"; }).length;
+      var total = costed.length ? costed.reduce(function (sum, r) { return sum + r.costUsd; }, 0) : null;
+      var times = runs.filter(function (r) { return r.endedAt; }).map(function (r) { return Date.parse(r.endedAt) - Date.parse(r.startedAt); }).filter(function (ms) { return ms >= 0; }).sort(function (a, b) { return a - b; });
+      var mid = Math.floor(times.length / 2);
+      return {
+        runs: runs.length,
+        completed: completed,
+        failed: runs.filter(function (r) { return r.state === "failed" || r.state === "escalated"; }).length,
+        total: total,
+        perCompleted: total !== null && completed ? total / completed : null,
+        median: times.length ? (times.length % 2 ? times[mid] : (times[mid - 1] + times[mid]) / 2) : null,
+      };
+    }
+
+    /** The agent's revisions side by side, read from every run of the agent whatever the filter; a row filters the runs
+     *  to its revision, as the revision chips do. */
+    function compareCard(agent, revisions, filter) {
+      var body = el("div", null, el("p", { class: "loading" }, "Reading the runs…"));
+      kit.get("api/runs?agent=" + enc(agent.id)).then(
+        function (runs) {
+          var stats = revisions.map(function (r) { return revisionStats((runs || []).filter(function (run) { return run.revision === r.id; })); });
+          var priced = stats.filter(function (s) { return s.perCompleted !== null; }).map(function (s) { return s.perCompleted; });
+          var cheapest = priced.length ? Math.min.apply(null, priced) : null;
+          var cell = function (kind, label, value) { return el("span", { class: "c " + kind, "data-label": label }, value); };
+          while (body.firstChild) body.removeChild(body.firstChild);
+          body.appendChild(el(
+            "div",
+            { class: "table compare", role: "table" },
+            el("div", { class: "cmp head", role: "row" }, ["Revision", "Runs", "Completed", "Failed or escalated", "Total", "Per completed", "Median time"].map(function (h) { return el("span", { class: "c" }, h); })),
+            revisions.map(function (r, i) {
+              var s = stats[i];
+              var on = filter === r.id;
+              var rev = el("span", { class: "c rev" }, el("span", { class: "rev-id" }, kit.short(r.id)), " ", el("span", { class: "word" }, r.kind), r.current ? [" ", kit.pill("current")] : null, r.note ? [" ", el("span", { class: "rev-note" }, kit.clip(r.note, 80))] : null);
+              return el(
+                "a",
+                { class: "cmp" + (on ? " on" : ""), href: kit.agentHref(agent.id) + "?revision=" + enc(r.id), "aria-current": on ? "true" : null },
+                rev,
+                s.runs
+                  ? [
+                      cell("n", "runs", String(s.runs)),
+                      cell("done", "completed", String(s.completed)),
+                      cell("bad", "failed or escalated", String(s.failed)),
+                      s.total === null ? el("span", { class: "c total unknown", "data-label": "total" }, "unknown") : cell("total", "total", kit.usd(s.total)),
+                      cell("per", "per completed", s.perCompleted === null ? "–" : [kit.usd(s.perCompleted), s.perCompleted === cheapest ? [" ", kit.pill("ok", "cheapest")] : null]),
+                      cell("time", "median", s.median === null ? "–" : duration(s.median)),
+                    ]
+                  : el("span", { class: "c empty" }, "no runs")
+              );
+            })
+          ));
+        },
+        function (error) {
+          while (body.firstChild) body.removeChild(body.firstChild);
+          body.appendChild(kit.failed(error));
+        }
+      );
+      return el("section", { class: "card compare" }, kit.kicker("Compare revisions"), el("h2", null, "Runs and cost by revision"), body);
+    }
+
+    // ---- a stored run: learn from it ------------------------------------------------------------------------------------
+    /** On a completed run whose revision names the learn tool: commit what the run learned as a new revision. */
+    function runActions(data) {
+      var run = data.run;
+      if (run.state !== "completed") return null;
+      var box = el("div", { class: "learn" });
+      kit.get("api/agents/" + enc(run.agent)).then(
+        function (found) {
+          var revision = ((found && found.revisions) || []).filter(function (r) { return r.id === run.revision; })[0];
+          if (((revision && revision.body && revision.body.tools) || []).indexOf("learn") < 0) return;
+          var out = el("div");
+          var learn = button("Learn from this run", "quiet", function () {
+            learn.disabled = true;
+            say(out, null);
+            v2("POST", "agents/" + enc(run.agent) + "/learn", { run_id: run.id }).then(
+              function (made) {
+                var files = (made && made.learned) || [];
+                out.appendChild(el("p", { class: "learned" }, "Committed revision " + kit.short(made.revision) + " with " + kit.plural(files.length, "learned file") + ". ", el("a", { href: kit.agentHref(run.agent) + "?revision=" + enc(made.revision) }, "Open it")));
+              },
+              function (error) {
+                learn.disabled = false;
+                say(out, error);
+              }
+            );
+          });
+          box.appendChild(el("div", { class: "actions" }, learn));
+          box.appendChild(out);
+        },
+        function () {}
+      );
+      return box;
+    }
+
     /** A new agent, or a new revision of `agentId` prefilled from its current one. */
     function agentForm(agentId, token) {
       var home = agentId ? kit.agentHref(agentId) : "#/";
@@ -479,6 +582,6 @@
       return false;
     }
 
-    return { name: "AgentRun Server", route: route, agent: agentActions, revision: revisionActions };
+    return { name: "AgentRun Server", route: route, agent: agentActions, revision: revisionActions, cards: compareCard, run: runActions };
   };
 })();

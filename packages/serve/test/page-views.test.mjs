@@ -50,7 +50,7 @@ function stub(answers) {
         init.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
       });
     }
-    if (typeof answer === "function") answer = answer(body);
+    if (typeof answer === "function") answer = await answer(body);
     const [status, data] = answer === undefined ? [404, { error: { code: "not_found", message: `no route ${path}` } }] : Array.isArray(answer) && typeof answer[0] === "number" ? answer : [200, answer];
     return { ok: status < 300, status, text: async () => JSON.stringify(data) };
   };
@@ -226,7 +226,7 @@ test("an agent's page: Edit, a run form on its revisions, and Make current on ea
   all(heads[1]).find((el) => el.tagName === "BUTTON").click();
   await page.settle();
   assert.deepEqual(api.writes(), [["POST", "v2/agents/calc/current", { revision: REV_A }]]);
-  assert.deepEqual(api.calls.slice(before + 1).map((c) => c.path), ["api/agents/calc", "api/runs?agent=calc"], "the page is read again");
+  assert.deepEqual(api.calls.slice(before + 1).map((c) => c.path), ["api/agents/calc", "api/runs?agent=calc", "api/runs?agent=calc"], "the page is read again, its comparison of revisions too");
 });
 
 test("start a run: its input, on the revision the form shows picked (the current one unless another is), always named, POSTed to the agent's runs, a workflow's as a JSON object; then the run's page", async () => {
@@ -306,7 +306,7 @@ test("a live run follows /v2's timeline with a long poll, an answer box while it
   assert.ok(!shown.app.textContent.includes("Waiting for you"), "a dropped row is gone");
   api.push(page({ status: "completed", state: "idle", rows: [row(5, "final_answer", { text: "Using eu." })], next_after: 40, final: true }));
   await shown.settle();
-  assert.equal(api.calls.at(-1).path, "api/runs/run-9", "a final run is the store's own page");
+  assert.deepEqual(api.calls.slice(-2).map((c) => c.path), ["api/runs/run-9", "api/agents/calc"], "a final run is the store's own page, which reads whether its revision learns");
   assert.ok(all(shown.app).find((el) => classOf(el) === "card run-head").textContent.includes("Asked, then answered."));
 });
 
@@ -365,7 +365,103 @@ test("leaving a live run aborts its long poll; a run this server never ran, or a
 
   const final = open("#/runs/run-9", { "v2/runs/run-9": { ...LIVE, status: "completed" }, "v2/runs/run-9/timeline": page({ final: true, status: "completed" }), "api/store": { agents: AGENTS }, "api/runs/run-9": { ...stored, run: { ...stored.run, id: "run-9" } } });
   await final.page.settle();
-  assert.deepEqual(final.api.calls.map((c) => c.path), ["v2/runs/run-9", "v2/runs/run-9/timeline", "api/store", "api/runs/run-9"]);
+  assert.deepEqual(final.api.calls.map((c) => c.path), ["v2/runs/run-9", "v2/runs/run-9/timeline", "api/store", "api/runs/run-9", "api/agents/calc"]);
+});
+
+/** Revisions and runs shaped like the MCC classifier's A, B and C: two prompts and a workflow, eight runs each. */
+const MCC = (() => {
+  const rev = (letter, kind, note, current, createdAt, tools = ["read"]) => ({ ...revision(letter.repeat(64), current, note), kind, createdAt, body: { tools, skills: {}, ...(kind === "agentic" ? { instructions: "Pick the MCC." } : {}) }, ...(kind === "workflow" ? { graph: { nodes: [], edges: [] } } : {}) });
+  const revisions = [
+    rev("d", "agentic", "Prompt D: not run yet", false, "2026-10-23T16:53:00.000Z"),
+    rev("c", "workflow", "The cheap one: read the home page, one fast model step", true, "2026-10-23T16:52:00.000Z"),
+    rev("b", "agentic", "Prompt B: a rubric", false, "2026-10-23T16:51:00.000Z"),
+    rev("a", "agentic", "Prompt A: the plain instructions", false, "2026-10-23T16:50:00.000Z"),
+  ];
+  const runs = [];
+  const add = (letter, costs, seconds, states) =>
+    costs.forEach((cost, i) => {
+      const startedAt = new Date(Date.UTC(2026, 9, 23, 17, letter.charCodeAt(0) - 96, i * 2)).toISOString();
+      runs.push({ id: `${letter}${i}`, agent: "mcc", revision: letter.repeat(64), kind: letter === "c" ? "workflow" : "agentic", state: states[i] ?? "completed", startedAt, endedAt: new Date(Date.parse(startedAt) + seconds[i] * 1000).toISOString(), costUsd: cost, gone: false });
+    });
+  add("a", Array(8).fill(0.107 / 8), [60, 61, 59, 60, 62, 58, 60, 60], { 3: "failed" });
+  add("b", Array(8).fill(0.182 / 8), [90, 91, 89, 90, 92, 88, 90, 90], {});
+  add("c", Array(8).fill(0.0011 / 8), [2, 3, 2, 2, 1, 2, 2, 2], { 5: "escalated" });
+  return { agent: { id: "mcc", name: "MCC classifier", createdAt: "2026-10-23T16:50:00.000Z", current: "c".repeat(64) }, revisions, runs: runs.reverse() };
+})();
+
+test("compare revisions: one row per revision, newest first, with its runs, completed, failed or escalated, total cost, cost per completed run and median time; the cheapest per completed run is marked, and a row filters the runs", async () => {
+  const answers = { "api/agents/mcc": { agent: MCC.agent, revisions: MCC.revisions }, "api/runs?agent=mcc": MCC.runs, [`api/runs?agent=mcc&revision=${"b".repeat(64)}`]: MCC.runs.filter((r) => r.revision === "b".repeat(64)) };
+  const { page: shown, api } = open("#/agents/mcc", answers);
+  await shown.settle();
+  const sections = all(shown.app).filter((el) => el.tagName === "SECTION").map(classOf);
+  assert.deepEqual(sections, ["card agent", "card compare", "card runs", "card revs"]);
+  const card = all(shown.app).find((el) => classOf(el) === "card compare");
+  assertInert(card);
+  const rows = all(card).filter((el) => el.tagName === "A" && classOf(el).startsWith("cmp"));
+  assert.deepEqual(rows.map((el) => el.getAttribute("href")), ["d", "c", "b", "a"].map((l) => `#/agents/mcc?revision=${l.repeat(64)}`));
+  const cells = (el) => all(el).filter((c) => /^c /.test(classOf(c))).map((c) => c.textContent);
+  assert.deepEqual(rows.map(cells), [
+    ["dddddddddddd agentic Prompt D: not run yet", "no runs"],
+    ["cccccccccccc workflow current The cheap one: read the home page, one fast model step", "8", "7", "1", "$0.0011", "$0.00016 cheapest", "2s"],
+    ["bbbbbbbbbbbb agentic Prompt B: a rubric", "8", "8", "0", "$0.182", "$0.023", "1m 30s"],
+    ["aaaaaaaaaaaa agentic Prompt A: the plain instructions", "8", "7", "1", "$0.107", "$0.015", "1m 00s"],
+  ]);
+  assert.deepEqual(rows.map((el) => all(el).filter((c) => classOf(c) === "pill ok").map((c) => c.textContent)), [[], ["cheapest"], [], []], "the cheapest cost per completed run");
+  assert.deepEqual(rows.map(classOf), ["cmp", "cmp", "cmp", "cmp"]);
+
+  const filtered = open(`#/agents/mcc?revision=${"b".repeat(64)}`, answers);
+  await filtered.page.settle();
+  assert.ok(filtered.api.calls.some((c) => c.path === "api/runs?agent=mcc"), "the comparison reads every run of the agent, whatever the filter");
+  const on = all(filtered.page.app).filter((el) => el.tagName === "A" && classOf(el) === "cmp on");
+  assert.deepEqual(on.map((el) => [el.getAttribute("href"), el.getAttribute("aria-current")]), [[`#/agents/mcc?revision=${"b".repeat(64)}`, "true"]]);
+  assert.ok(api.calls.length > 0);
+});
+
+test("learn from this run: a completed run whose revision names the learn tool gets the button; it POSTs the run to /learn as JSON, disabled in flight, and says what it committed or why not", async () => {
+  const learnRev = { ...revision(REV_B, true, "Learns"), body: { instructions: "Answer.", tools: ["read", "learn"], skills: {} } };
+  const agentPage = { agent: AGENT_PAGE.agent, revisions: [learnRev, revision(REV_A, false, "First")] };
+  const stored = (id, state, rev = REV_B) => ({ run: { id, agent: "calc", revision: rev, kind: "agentic", state, startedAt: "2026-10-23T06:00:00.000Z", endedAt: "2026-10-23T06:01:00.000Z", costUsd: 0.01 }, agent: "Calc", note: "Learns", rows: [] });
+  let release;
+  const answers = {
+    "api/agents/calc": agentPage,
+    "api/store": { agents: AGENTS },
+    "v2/runs/run-1": [404, { error: { code: "not_found", message: "no run run-1" } }],
+    "api/runs/run-1": stored("run-1", "completed"),
+    "POST v2/agents/calc/learn": () => new Promise((resolve) => (release = resolve)),
+  };
+  const { page: shown, api } = open("#/runs/run-1", answers);
+  await shown.settle();
+  const learn = buttonNamed(shown, "Learn from this run");
+  assert.ok(learn, "the button is on the run's head");
+  assert.ok(all(all(shown.app).find((el) => classOf(el) === "card run-head")).includes(learn));
+  learn.click();
+  await shown.settle();
+  assert.equal(learn.disabled, true, "disabled while the request is in flight");
+  assert.deepEqual(api.writes(), [["POST", "v2/agents/calc/learn", { run_id: "run-1" }]]);
+  assert.equal(api.calls.at(-1).headers["content-type"], "application/json");
+  release([201, { revision: "e".repeat(64), note: `Learned from run-1 ${HOSTILE}`, learned: [".agents/skills/mcc/SKILL.md", ".agents/skills/mcc/notes.md"] }]);
+  await shown.settle();
+  const said = all(shown.app).find((el) => classOf(el) === "learned");
+  assert.equal(said.textContent, "Committed revision eeeeeeeeeeee with 2 learned files. Open it");
+  assert.deepEqual(all(said).filter((el) => el.tagName === "A").map((el) => el.getAttribute("href")), [`#/agents/calc?revision=${"e".repeat(64)}`]);
+
+  for (const [status, code, message] of [[409, "not_continuable", "this run's revision is no longer current"], [422, "input_invalid", `run_id is not a completed run ${HOSTILE}`]]) {
+    const refused = open("#/runs/run-1", { ...answers, "POST v2/agents/calc/learn": [status, { error: { code, message } }] });
+    await refused.page.settle();
+    buttonNamed(refused.page, "Learn from this run").click();
+    await refused.page.settle();
+    assert.deepEqual(problemText(refused.page), [`${status} ${message}`]);
+    assert.equal(buttonNamed(refused.page, "Learn from this run").disabled, false, "the button is back for another try");
+  }
+
+  for (const [why, extra] of [
+    ["a failed run", { "api/runs/run-1": stored("run-1", "failed") }],
+    ["a revision without the learn tool", { "api/runs/run-1": stored("run-1", "completed", REV_A) }],
+  ]) {
+    const none = open("#/runs/run-1", { ...answers, ...extra });
+    await none.page.settle();
+    assert.equal(buttonNamed(none.page, "Learn from this run"), undefined, why);
+  }
 });
 
 test("a tool this server's environment cannot bind is shown unbound in the form, naming the variables it needs", async () => {
