@@ -7,13 +7,14 @@ revision you can go back to), run it on a real model, and open any run of any ag
 
    ```sh
    docker run -d --name agentrun -p 127.0.0.1:7340:7340 -v agentrun:/data \
-     -e AGENT_MODEL=anthropic/claude-sonnet-5-5 -e ANTHROPIC_API_KEY=... \
+     -e AGENT_MODEL=anthropic/claude-sonnet-5-5 -e ANTHROPIC_API_KEY \
      ghcr.io/parcha-ai/agentrun-server:beta
    docker logs agentrun | grep Open
    ```
 
-   Open the link it prints. The volume `agentrun` keeps every agent and run. For OpenRouter, pass
-   `-e AGENT_MODEL=openrouter/<its model id> -e OPENROUTER_API_KEY=...` instead; any OpenAI Responses gateway works through
+   With the key in your environment, `-e ANTHROPIC_API_KEY` passes it on and it never sits on the command line. Open the
+   link it prints. The volume `agentrun` keeps every agent and run. For OpenRouter, pass
+   `-e AGENT_MODEL=openrouter/<its model id> -e OPENROUTER_API_KEY` instead; any OpenAI Responses gateway works through
    `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`.
 
 2. **About $7 a month**: deploy it to Render in one click: a Starter instance with a 1 GB disk, always on, with a URL. Each run takes its own memory, so its 512 MB holds a few runs at a time. Render's free instance works for a try, but it has no disk, so it loses every run when it sleeps or restarts.
