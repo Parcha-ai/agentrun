@@ -70,9 +70,7 @@ test("runner: the poll deadline bounds the whole wait and reads as a timeout", a
   const events = [];
   const started = Date.now();
   await assert.rejects(
-    // 0.3 s, not 0.2: with 0.2 the fifth check lands on 800 ms, where `elapsed + interval` meets the deadline exactly and a
-    // millisecond's rounding decides which of two deadline paths ends the poll.
-    runWorkflow(wf([planNode, statusCall({ deadline_s: 1 }, poll({ deadline_s: 1, interval_s: 0.3 })), assemble]), { question: "q" }, {
+    runWorkflow(wf([planNode, statusCall({ deadline_s: 1 }, poll({ deadline_s: 1, interval_s: 0.2 })), assemble]), { question: "q" }, {
       runNode: async () => ({ request_id: "req-1" }),
       onEvent: (e) => events.push(e),
       runEffect: async () => { calls++; return { status: "IN_PROGRESS" }; },
