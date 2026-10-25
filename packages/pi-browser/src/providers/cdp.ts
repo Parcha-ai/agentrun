@@ -1,14 +1,17 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { createReadStream, createWriteStream, readFileSync } from "node:fs";
+import { closeSync, createReadStream, createWriteStream, readFileSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, readdir, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
-import { BrowserFailureError, PROFILE_NAME } from "../core/custody.js";
+import { BrowserFailureError, PROFILE_NAME, refusedError } from "../core/custody.js";
+import { browserFailure } from "../core/failures.js";
 import type { AttachTarget, BrowserProvider, ProviderCaps, RemoteFile, SavedProfile } from "../core/host.js";
 import type { LeaseRef, ResourceStatus } from "../core/lease.js";
 import { cdpCall } from "./cdp-call.js";
+import { chromeTail, openChromeStderr, watchChromeStderr } from "./chrome-stderr.js";
 import { claimWriter, freeWriter, noteWriter } from "./profiles.js";
+import { chromeArgs } from "./chrome-args.js";
 
 export type CdpOptions =
   /** An existing browser: `http://host:port` or a `ws://` debugger URL. Release leaves it running. */
@@ -20,36 +23,6 @@ export type CdpOptions =
      *  Chrome cannot start its sandbox (root, a container, confined user namespaces), never because a run is in CI. */
     sandbox?: boolean;
   } };
-
-/** Stagehand 4.1.0's DEFAULT_CHROME_FLAGS (packages/sdk-ts/src/browser/localBrowser.ts, MIT, see NOTICE). Without them
- *  Stagehand.create takes about 24 s on a local Chrome instead of under 100 ms. */
-const CHROME_FLAGS: readonly string[] = [
-  "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider,CalculateNativeWinOcclusion,InterestFeedContentSuggestions,CertificateTransparencyComponentUpdater,AutofillServerCommunication,PrivacySandboxSettings4,RenderDocument",
-  "--disable-component-extensions-with-background-pages",
-  "--disable-background-networking",
-  "--disable-component-update",
-  "--disable-client-side-phishing-detection",
-  "--disable-sync",
-  "--metrics-recording-only",
-  "--disable-default-apps",
-  "--mute-audio",
-  "--no-default-browser-check",
-  "--no-first-run",
-  "--disable-backgrounding-occluded-windows",
-  "--disable-renderer-backgrounding",
-  "--disable-background-timer-throttling",
-  "--disable-ipc-flooding-protection",
-  "--password-store=basic",
-  "--use-mock-keychain",
-  "--force-fieldtrials=*BackgroundTracing/default/",
-  "--disable-hang-monitor",
-  "--disable-prompt-on-repost",
-  "--disable-domain-reliability",
-  "--propagate-iph-for-testing",
-  "--enable-unsafe-extension-debugging",
-  "--remote-allow-origins=*",
-  "--enable-features=WebMCPTesting,DevToolsWebMCPSupport",
-];
 
 const CAPS: ProviderCaps = { timeoutModel: "wall-clock", maxLifetimeS: 86_400, survivesDisconnect: true, releaseIsAsync: false, profiles: false, extension: "loaded-locally", settings: { proxies: false, verified: false, geolocation: false, region: false, context: false } };
 const downloadsDir = (profileRoot: string, tag: string) => path.join(profileDir(profileRoot, tag) + ".downloads");
@@ -130,7 +103,6 @@ const profileDir = (root: string, tag: string): string => {
   return path.join(root, tag);
 };
 const savedDir = (root: string, name: string): string => path.join(root, ".profiles", name);
-const refusal = (message: string) => new BrowserFailureError({ ok: false, code: "refused", retryable: false, effect: "none", message });
 
 /** A copy of a profile another Chrome is writing: that Chrome renames, truncates and deletes its journals and temp files
  *  all the time. A file gone by the time it is reached is skipped. `fs.cp` fails the whole copy on it, and `fs.copyFile`
@@ -148,7 +120,12 @@ export async function copyProfile(from: string, to: string, signal?: AbortSignal
     try {
       if (entry.isDirectory()) await copyProfile(source, target, signal);
       else if (entry.isSymbolicLink()) await symlink(await readlink(source), target);
-      else if (entry.isFile()) await pipeline(createReadStream(source), createWriteStream(target, { mode: (await stat(source)).mode & 0o777 }), signal ? { signal } : {});
+      else if (entry.isFile()) {
+        // The mode is read before either stream exists: a stream made first and left waiting on this await has nobody listening for its error if the file is gone
+        // by then, and a failed open with no listener is an unhandled 'error' event that ends the process. Inside pipeline, a failure of either stream is the pipeline's.
+        const mode = (await stat(source)).mode & 0o777;
+        await pipeline(createReadStream(source), createWriteStream(target, { mode }), signal ? { signal } : {});
+      }
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT" || signal?.aborted) throw error; }
   }
 }
@@ -156,7 +133,7 @@ export async function copyProfile(from: string, to: string, signal?: AbortSignal
 /** A saved profile lives in `.profiles/<name>`, which no lease tag can name. Saving, the lease's own directory is a link to
  *  it, so release removes the link and never the profile; not saving, it is a copy that leaves the profile as it was. */
 async function prepareProfile(root: string, dir: string, profile: SavedProfile, tag: string, owner: string, signal: AbortSignal, remove: RemoveDir): Promise<void> {
-  if (!PROFILE_NAME.test(profile.name)) throw refusal("browser profile: a profile name is 1 to 64 characters of letters, digits, dot, underscore and dash, starting with a letter or digit. No session was started.");
+  if (!PROFILE_NAME.test(profile.name)) throw refusedError("browser profile: a profile name is 1 to 64 characters of letters, digits, dot, underscore and dash, starting with a letter or digit. No session was started.");
   const saved = savedDir(root, profile.name);
   await rm(dir, { recursive: true, force: true });
   if (!profile.save) {
@@ -173,7 +150,7 @@ async function prepareProfile(root: string, dir: string, profile: SavedProfile, 
   await claimWriter(`${path.resolve(root)}|${profile.name}`, profile.name, tag, owner, signal);
   try {
     const lock = await readlink(path.join(saved, "SingletonLock")).then((value) => /^(.*)-(\d+)$/.exec(value), () => null);
-    if (lock && lock[1] === os.hostname() && alive(Number(lock[2]))) throw refusal(`browser profile "${profile.name}": a Chrome process (${lock[2]}) is using this profile. No session was started.`);
+    if (lock && lock[1] === os.hostname() && alive(Number(lock[2]))) throw refusedError(`browser profile "${profile.name}": a Chrome process (${lock[2]}) is using this profile. No session was started.`);
     await mkdir(path.join(saved, "Default"), { recursive: true });
     await symlink(path.resolve(saved), dir, "dir");
   } catch (error) { freeWriter(tag); throw error; }
@@ -187,10 +164,14 @@ async function prepareProfile(root: string, dir: string, profile: SavedProfile, 
  *  made on Windows, where Chrome's temp directory is not TMPDIR. */
 const TMP_MARKER = ".pib-tmpdir";
 const TMP_OWNER = ".pib-owner";
+/** A saved lease's own record of its private TMPDIR, `<profileRoot>/.profiles/.leases/<tag>` (no profile name starts with a dot): the profile's marker is
+ *  shared by every lease that runs on the saved profile (a replacement for a crashed browser overwrites it) and a restarted provider has no map, so this is
+ *  the one place a later release finds it. A copied profile is the lease's own, and its marker is not shared. */
+const leaseRecord = (root: string, tag: string): string => path.join(root, ".profiles", ".leases", tag);
 const TMP_NAME = /^pib-[A-Za-z0-9]{6}$/;
 const SOCKET_PATH_MAX = 107;
 const SOCKET_PATH_TAIL = "/.org.chromium.Chromium.XXXXXX/SingletonSocket".length;
-async function makePrivateTmp(tag: string, profile: string, remove: RemoveDir): Promise<string | null> {
+async function makePrivateTmp(tag: string, profile: string, record: string | null, remove: RemoveDir): Promise<string | null> {
   if (process.platform === "win32") return null;
   const base = os.tmpdir();
   if (Buffer.byteLength(path.join(base, "pib-XXXXXX")) + SOCKET_PATH_TAIL > SOCKET_PATH_MAX) return null;
@@ -198,7 +179,12 @@ async function makePrivateTmp(tag: string, profile: string, remove: RemoveDir): 
   try {
     await writeFile(path.join(dir, TMP_OWNER), tag);
     await writeFile(path.join(profile, TMP_MARKER), dir);
+    if (record) {
+      await mkdir(path.dirname(record), { recursive: true });
+      await writeFile(record, dir);
+    }
   } catch (error) {
+    if (record) await rm(record, { force: true }).catch(() => undefined);
     // The directory is not recorded anywhere yet, so a setup that fails here removes it, and names it if it cannot.
     const left = await removeTree(dir, remove);
     throw left ? new ProfileNotRemovedError([dir], left.error, error) : error;
@@ -207,10 +193,18 @@ async function makePrivateTmp(tag: string, profile: string, remove: RemoveDir): 
 }
 /** The private directory the profile names, when it is one this provider made for this tag. */
 async function ownedTmp(profile: string, tag: string): Promise<string | null> {
-  const named = (await readFile(path.join(profile, TMP_MARKER), "utf8").catch(() => "")).trim();
+  return ownedBy((await readFile(path.join(profile, TMP_MARKER), "utf8").catch(() => "")).trim(), tag);
+}
+/** The private directory this lease's own record names, when it is one this provider made for this tag. */
+async function recordedTmp(root: string, tag: string): Promise<string | null> {
+  return ownedBy((await readFile(leaseRecord(root, tag), "utf8").catch(() => "")).trim(), tag);
+}
+async function ownedBy(named: string, tag: string): Promise<string | null> {
   if (!named || !path.isAbsolute(named) || !TMP_NAME.test(path.basename(named))) return null;
   return (await readFile(path.join(named, TMP_OWNER), "utf8").catch(() => null)) === tag ? named : null;
 }
+const SANDBOX_HINT = "On a system that cannot start Chrome's sandbox (root, a container, restricted user namespaces), set sandbox: false or PI_BROWSER_NO_SANDBOX=1.";
+
 /** Signal 0 only asks; EPERM means the process exists under another user. */
 const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; } };
 
@@ -278,6 +272,11 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
   /** The private TMPDIR of each lease this provider started, by tag: the profile's marker is the only record a restarted process has, and a profile
    *  that something else removed first takes it along. */
   const privateTmps = new Map<string, string>();
+  /** A lease whose private TMPDIR is gone (or never made) keeps neither its map entry nor its record. */
+  const forgetTmp = async (root: string, tag: string): Promise<void> => {
+    privateTmps.delete(tag);
+    await rm(leaseRecord(root, tag), { force: true }).catch(() => undefined);
+  };
   /** A spawned Chrome whose handle we hold is ours (a handle cannot name a recycled pid); after a restart, only while
    *  the browser on the recorded port reports that pid. */
   const isOurs = async ({ pid, port }: { pid: number; port: number }): Promise<boolean> => {
@@ -287,7 +286,7 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
   };
   return {
     name: "cdp",
-    caps: { ...CAPS, profiles: "chrome" in options },
+    caps: { ...CAPS, profiles: "chrome" in options, ...("endpoint" in options ? { sharedBrowser: true } : {}) },
     ...(downloads ? { downloads } : {}),
 
     async create(spec, signal) {
@@ -316,26 +315,40 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
         await writeFile(prefsFile, JSON.stringify({ ...prefs, ...keeping, download: { ...prefs.download, default_directory: downloadsDir(profileRoot, spec.tag), prompt_for_download: false }, savefile: { ...prefs.savefile, default_directory: downloadsDir(profileRoot, spec.tag) } }));
         // A file left by an earlier Chrome on this profile names a browser that is not this one.
         await rm(path.join(dir, "DevToolsActivePort"), { force: true });
-        const tmp = await makePrivateTmp(spec.tag, dir, remove);
+        const tmp = await makePrivateTmp(spec.tag, dir, spec.profile?.save ? leaseRecord(profileRoot, spec.tag) : null, remove);
         if (tmp) privateTmps.set(spec.tag, tmp);
-        const child = spawn(executablePath, [
-          ...CHROME_FLAGS, ...(sandbox ? [] : ["--no-sandbox"]), ...(headless ? ["--headless=new"] : []), "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1", `--user-data-dir=${dir}`,
-          `--window-size=${spec.viewport.width},${spec.viewport.height}`, ...args, "about:blank",
-        ], { stdio: "ignore", detached: true, ...(tmp ? { env: { ...process.env, TMPDIR: tmp } } : {}) });
+        const stderrFd = openChromeStderr(tmp);
+        let child: ChildProcess;
+        try {
+          child = spawn(executablePath, [
+            ...chromeArgs({ userDataDir: dir, viewport: spec.viewport, headless, sandbox }), ...args, "about:blank",
+          ], { stdio: ["ignore", "ignore", stderrFd ?? "ignore"], detached: true, ...(tmp ? { env: { ...process.env, TMPDIR: tmp } } : {}) });
+        } catch (error) {
+          // A spawn that throws (an argument with a null byte) starts no child, so nothing else will remove what this start made.
+          const left = await removeAll([dir, downloadsDir(profileRoot, spec.tag), ...(tmp ? [tmp] : [])], remove);
+          await forgetTmp(profileRoot, spec.tag);
+          throw left ? new ProfileNotRemovedError(left.dirs, left.error, error) : error;
+        } finally {
+          // The parent's copy is closed whether or not spawn threw.
+          if (stderrFd !== null) closeSync(stderrFd);
+        }
         // A Chrome that cannot start emits `error`, which unhandled would end the host: it rejects create instead.
         let failed: Error | null = null;
         child.once("error", (error) => { failed = error; });
         child.once("exit", (code, signal) => {
-          // A Chrome that cannot start its sandbox aborts (SIGABRT) before it opens a port: the signal is the fact, never
-          // Chrome's words.
-          failed ??= sandbox && signal === "SIGABRT"
-            ? new BrowserFailureError({ ok: false, code: "browser_unavailable", retryable: false, effect: "none", message: `Chrome exited before it opened its debugging port (SIGABRT); on a system that cannot start Chrome's sandbox (root, a container, restricted user namespaces) start it with sandbox: false or PI_BROWSER_NO_SANDBOX=1` })
-            : new Error(`Chrome exited before it opened its debugging port (${signal ?? code})`);
+          // Whatever Chrome said goes into the failure. The sandbox hint goes with it when the sandbox is on and either Chrome
+          // aborted before it opened a port (SIGABRT, how some builds fail it) or its own words name the sandbox (others exit 1).
+          if (failed) return;
+          const tail = chromeTail(tmp);
+          const message = `Chrome exited before it opened its debugging port (${signal ?? code})${tail ? `\nChrome said:\n${tail.split("\n").map((line) => `  ${line}`).join("\n")}` : ""}`;
+          failed = sandbox && (signal === "SIGABRT" || /sandbox/i.test(tail))
+            ? new BrowserFailureError(browserFailure("browser_unavailable", `${message}\n${SANDBOX_HINT}`))
+            : new Error(message);
         });
         if (child.pid === undefined) {
           await sleep(0);
           const left = await removeAll([dir, downloadsDir(profileRoot, spec.tag), ...(tmp ? [tmp] : [])], remove);
-          privateTmps.delete(spec.tag);
+          await forgetTmp(profileRoot, spec.tag);
           const why = failed ?? new Error("Chrome could not be started");
           throw left ? new ProfileNotRemovedError(left.dirs, left.error, why) : why;
         }
@@ -350,6 +363,7 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
             if (own && (await answeringPath(own.port)) === own.path) {
               const pid = child.pid;
               noteWriter(spec.tag, () => isOurs({ pid, port: own.port }));
+              watchChromeStderr(tmp, pid);
               return { id: `local:${pid}:${own.port}:${spec.tag}`, tag: spec.tag };
             }
             if (Date.now() > deadline) throw new Error("Chrome did not open its debugging port");
@@ -389,6 +403,8 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
       if (!own || own.port !== local.port) throw new Error("this lease's profile records a different browser than the one its id names");
       const url = await debuggerUrl(`http://127.0.0.1:${local.port}`);
       if (new URL(url).pathname !== own.path) throw new Error(`the browser on port ${local.port} is not the browser this lease's profile records`);
+      // A Chrome this host did not start outlived the host that did: its stderr file is bounded here too.
+      watchChromeStderr(privateTmps.get(local.tag) ?? await recordedTmp(options.chrome.profileRoot, local.tag) ?? await ownedTmp(profileDir(options.chrome.profileRoot, local.tag), local.tag), local.pid);
       return { sdkCdpUrl: url };
     },
 
@@ -410,9 +426,10 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
             // A saved lease's directory is a link to the profile the live browser runs on, so that browser is another lease's (a replacement
             // for a crashed one): this lease's own link and private TMPDIR are still its to remove, and nothing the browser holds is.
             freeWriter(local.tag);
-            const mine = privateTmps.get(local.tag);
+            // Not the profile's marker, which the replacement has overwritten: the lease's own record names its directory, also after a restart.
+            const mine = privateTmps.get(local.tag) ?? await recordedTmp(options.chrome.profileRoot, local.tag);
             const left = await removeAll([dir, ...(mine ? [mine] : [])], remove);
-            if (!mine || !left?.dirs.includes(mine)) privateTmps.delete(local.tag);
+            if (!mine || !left?.dirs.includes(mine)) await forgetTmp(options.chrome.profileRoot, local.tag);
             if (left) throw new ProfileNotRemovedError(left.dirs, left.error);
             return;
           }
@@ -436,14 +453,14 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
       if (!("endpoint" in options) && SAFE_TAG.test(local.tag)) {
         const dir = profileDir(options.chrome.profileRoot, local.tag);
         const socketDir = await singletonDir(dir);
-        const tmp = privateTmps.get(local.tag) ?? await ownedTmp(dir, local.tag);
+        const tmp = privateTmps.get(local.tag) ?? await recordedTmp(options.chrome.profileRoot, local.tag) ?? await ownedTmp(dir, local.tag);
         // All are always tried, the profile first named: the profile's link and marker are the only places the other directories' names are read, so
         // they are reported here with the profile's, not left for a later release to miss.
         const extras = [...new Set([...(socketDir ? [socketDir] : []), ...(tmp ? [tmp] : []), ...(extrasLeft.get(local.tag) ?? [])])];
         const left = await removeAll([dir, ...extras], remove);
         const stuck = extras.filter((extra) => left?.dirs.includes(extra));
         if (stuck.length > 0) extrasLeft.set(local.tag, stuck); else extrasLeft.delete(local.tag);
-        if (!tmp || !stuck.includes(tmp)) privateTmps.delete(local.tag);
+        if (!tmp || !stuck.includes(tmp)) await forgetTmp(options.chrome.profileRoot, local.tag);
         if (left) throw new ProfileNotRemovedError(left.dirs, left.error);
       }
     },

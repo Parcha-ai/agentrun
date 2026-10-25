@@ -10,56 +10,19 @@ import type { MissCode } from "./contract.js";
 import { visionContext, type VisionBinaryReader, type VisionEnv, type VisionFileInfo } from "./env.js";
 import { fileLook, fileTold, keptAnswer, lookKey, type Filing, type LookRecord } from "./evidence.js";
 import { formatFragment } from "./fragments.js";
-import { DESCRIBE_ASK, type ImageSize, type MediaDetails } from "./guard.js";
-import type { CallContext, CallSetup, ImageContent, ReadArgs, TextContent, ToolResult } from "./host.js";
-import type { ImageProcessor } from "./image.js";
+import { DESCRIBE_ASK, type MediaDetails } from "./guard.js";
+import type { CallContext, CallSetup, ReadArgs, ToolResult } from "./host.js";
 import type { Kind } from "./kinds.js";
 import { SOURCE_BYTES_IN_PROCESS, type Limits } from "./limits.js";
 import { firstLine, linkSafe, MISS_ACTION, refusal, reportMiss } from "./misses.js";
 import { pathSafe } from "./paths.js";
+import { sha256Hex } from "./primitives.js";
 import { lookTiming } from "./timing.js";
 import { PACKAGE_KINDS } from "./readers.js";
-import type { Fit } from "./plan.js";
-import type { Provider, ProviderSource } from "./provider.js";
+import type { ProviderSource } from "./provider.js";
+import type { KindRequest, KindResult, ReadKinds, SniffOutcome } from "./kind-reader.js";
 
-/** A source's kind from its first bytes and its name (`sniffKind`'s answer, kinds.ts), or why the two disagree. */
-type SniffOutcome =
-  | { readonly ok: true; readonly kind: Kind; readonly mimeType: string | null; readonly signature?: string }
-  | { readonly ok: false; readonly code: "unsupported"; readonly reason: string };
-
-/** What a kind's reader is asked: the source in the environment, the path as the model wrote it, and the arguments.
- *  `source.path` is a private copy of the bytes that were hashed, and `data` those bytes, for a source the process
- *  holds; a larger source is read where it is. A reader never opens the model's own path. */
-export type KindRequest = {
-  readonly source: ProviderSource; readonly data?: Uint8Array; readonly name: string; readonly mimeType: string; readonly width?: number; readonly height?: number;
-  readonly ask?: string; readonly page?: number; readonly fromS?: number; readonly toS?: number;
-};
-/** What a kind's reader works with: the environment; the limits its images must meet (the lead's, with the eyes' image
- *  limits when the lead takes no images, and the eyes' video limits for a video when the eyes take video and the lead
- *  does not); where kept derivations go, named by the source's hash and their parameters
- *  (absent: nothing is kept); a directory removed when the read ends; and the image processor and providers. */
-export type KindContext = {
-  readonly env: VisionEnv; readonly signal: AbortSignal | undefined; readonly limits: Limits; readonly deriveDir?: string; readonly tempDir: string;
-  readonly images?: ImageProcessor; readonly providers: readonly Provider[];
-};
-/** A kind's answer: what the model reads (a document's whole `text`, page-marked, is paged here after the first text
- *  block), a miss with its cause and any text that still came back, or a refusal of the arguments in one line. */
-export type KindResult =
-  | { readonly content: readonly (TextContent | ImageContent)[]; readonly text?: string; readonly media?: MediaDetails; readonly fit?: Fit;
-      /** What a document read as text says of itself in the result's `details.document`: where its text is kept, who extracted it, its page or pages. */
-      readonly document?: Readonly<Record<string, unknown>> }
-  | { readonly miss: MissCode; readonly reason: string; readonly text?: string }
-  | { readonly refusal: string };
-/** The reader of one kind: a request in, the content or the miss out. */
-export type KindReader = (request: KindRequest, context: KindContext) => Promise<KindResult>;
-
-/** The package's own kind wiring: the kind of a file's first bytes, an image header's pixels, and a reader per kind. */
-export type ReadKinds = {
-  readonly sniff: (head: Uint8Array, path: string) => SniffOutcome;
-  readonly sizeOf: ImageSize;
-  readonly readers: Readonly<Partial<Record<Kind, KindReader>>>;
-};
-
+export type { KindContext, KindReader, KindRequest, KindResult, ReadKinds } from "./kind-reader.js";
 
 /** Bytes a kind is decided from: a header's first megabyte holds its pixel size behind any metadata. */
 const HEAD_BYTES = 1024 * 1024;
@@ -237,7 +200,7 @@ async function readRecording(scheme: string, id: string, handle: string, raw: Re
   if (!source?.look) return refusal(`${handle} names a browser session's recording, and this run has no recording reviewer to answer a question about it.`);
   const ask = asked(args);
   const window = fromS !== undefined || toS !== undefined ? ` (${fromS ?? 0}s\u2013${toS !== undefined ? `${toS}s` : "end"})` : "";
-  const sha256 = createHash("sha256").update(handle).digest("hex");
+  const sha256 = sha256Hex(handle);
   const fragment = window ? formatFragment({ t: { from: fromS ?? 0, ...(toS !== undefined ? { to: toS } : {}) } }) : "";
   // When this call's request to the source began; none when the answer is read back.
   let startedAt: number | undefined;
@@ -265,6 +228,54 @@ async function readRecording(scheme: string, id: string, handle: string, raw: Re
   }
 }
 
+function selectorRefusal(name: string, kind: Kind, paged: boolean, args: ReadArgs, { fromS, toS, page }: { readonly fromS: number | undefined; readonly toS: number | undefined; readonly page: number | undefined }): string | undefined {
+  const windowed = fromS !== undefined || toS !== undefined;
+  if (windowed && kind !== "video") return `from_s/to_s apply to video files only; ${name} is not a video. Read it without a window.`;
+  if (page !== undefined && !paged) return `page applies to PDF files and office documents only; ${name} is neither. Read it without a page.`;
+  if (windowed && [fromS, toS].some((v) => v !== undefined && !Number.isFinite(v))) return `from_s/to_s must be numbers of seconds (got from_s=${args.from_s}, to_s=${args.to_s}).`;
+  if (windowed && toS !== undefined && toS <= Math.max(0, fromS ?? 0)) return `Cannot read ${name}: to_s (${toS}) must be greater than from_s (${Math.max(0, fromS ?? 0)}).`;
+  if (page !== undefined && !(Number.isInteger(page) && page >= 1)) return `Cannot read ${name}: page must be an integer of 1 or more (got ${args.page}).`;
+  return undefined;
+}
+
+async function withTempDir<T>(env: VisionEnv, signal: AbortSignal | undefined, use: (dir: string) => Promise<T>): Promise<T> {
+  const temp = await env.createTempDir("pi-vision-read-", visionContext(signal));
+  if (!temp.ok) throw temp.error;
+  try {
+    return await use(temp.value);
+  } finally {
+    // Removed with a context of its own: pi's environments refuse every operation, a removal too, once the call is cancelled.
+    await env.remove(temp.value, { recursive: true, force: true }, visionContext());
+  }
+}
+
+function readerLimits(setup: CallSetup, kind: Kind): { readonly limits: Limits; readonly clipOrFrames: boolean } {
+  // The media a reader makes are fitted for the model that will see them: the lead, or the eyes when the lead takes no
+  // images. A video the lead cannot take as video is planned as eyes that take video take it, the file or a window of
+  // it as one clip with its sound, whatever images the lead takes; frames are for eyes that take none. A lead that
+  // takes images is given its own frames when no such clip can be made, a file or window over the eyes' inline budget
+  // among them; a lead that takes no images is given the miss. A source read where it is keeps no derivation.
+  const eyes = setup.eyes;
+  const clipForEyes = eyes?.accepts.video === true && !setup.limits.video.native;
+  const eyesVideo = clipForEyes ? { video: { ...eyes.limits.video, native: true }, requestBytes: eyes.limits.requestBytes } : {};
+  const clipOrFrames = kind === "video" && clipForEyes && setup.limits.image.native;
+  const limits = !setup.limits.image.native && eyes?.accepts.image
+    ? { ...setup.limits, image: { ...eyes.limits.image, native: false }, ...eyesVideo }
+    : clipOrFrames ? { ...setup.limits, ...eyesVideo } : setup.limits;
+  return { limits, clipOrFrames };
+}
+
+async function runReader(read: (budget: Limits) => Promise<KindResult>, limits: Limits, retry: Limits | undefined, signal: AbortSignal | undefined): Promise<KindResult> {
+  try {
+    const result = await read(limits);
+    return retry && "miss" in result ? await read(retry) : result;
+  } catch (error) {
+    // A reader that throws on a file it cannot parse gives the model the cause, never a lost call.
+    if (signal?.aborted) throw error;
+    return { miss: "unreadable", reason: firstLine(error) };
+  }
+}
+
 /** The media half of `read`: the result for a file the model looks at or that needs decoding, or a recording by handle;
  *  null when the path reads as plain text (or is not a file), for the host's own read. */
 export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext, setup: CallSetup, kinds: ReadKinds = PACKAGE_KINDS): Promise<ToolResult | null> {
@@ -284,12 +295,8 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
   const paged = kind === "pdf" || kind === "office";
   const args = withoutStrictDefaults(raw, { windowed: kind === "video", paged });
   const [fromS, toS, page] = [num(args.from_s), num(args.to_s), num(args.page)];
-  const windowed = fromS !== undefined || toS !== undefined;
-  if (windowed && kind !== "video") return refusal(`from_s/to_s apply to video files only; ${name} is not a video. Read it without a window.`);
-  if (page !== undefined && !paged) return refusal(`page applies to PDF files and office documents only; ${name} is neither. Read it without a page.`);
-  if (windowed && [fromS, toS].some((v) => v !== undefined && !Number.isFinite(v))) return refusal(`from_s/to_s must be numbers of seconds (got from_s=${args.from_s}, to_s=${args.to_s}).`);
-  if (windowed && toS !== undefined && toS <= Math.max(0, fromS ?? 0)) return refusal(`Cannot read ${name}: to_s (${toS}) must be greater than from_s (${Math.max(0, fromS ?? 0)}).`);
-  if (page !== undefined && !(Number.isInteger(page) && page >= 1)) return refusal(`Cannot read ${name}: page must be an integer of 1 or more (got ${args.page}).`);
+  const refused = selectorRefusal(name, kind, paged, args, { fromS, toS, page });
+  if (refused) return refusal(refused);
   const allowed = setup.allow?.({ path: name, kind, tool: "read" }) ?? true;
   if (allowed !== true) return missResult(filing, name, kind, await streamed(), "refused", allowed, args);
   const reader = kinds.readers[kind];
@@ -306,44 +313,18 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
   const size = data ? data.length : probe.size;
   const pixels = kind === "image" ? kinds.sizeOf(data ? data.subarray(0, HEAD_BYTES) : probe.head) : null;
   let hashed: Promise<string> | undefined;
-  const sha256 = () => (hashed ??= data ? Promise.resolve(createHash("sha256").update(data).digest("hex")) : streamed());
+  const sha256 = () => (hashed ??= data ? Promise.resolve(sha256Hex(data)) : streamed());
   const ask = asked(args);
-  const temp = await env.createTempDir("pi-vision-read-", ctx);
-  if (!temp.ok) throw temp.error;
-  let result: KindResult;
-  let source: ProviderSource;
-  let changed = false;
-  try {
-    source = { path: data ? `${temp.value}/source${extensionOf(name)}` : name, kind, bytes: size, sha256: await sha256() };
+  const { result, source, changed } = await withTempDir(env, call.signal, async (tempDir) => {
+    const source: ProviderSource = { path: data ? `${tempDir}/source${extensionOf(name)}` : name, kind, bytes: size, sha256: await sha256() };
     const request: KindRequest = { source, ...(data ? { data } : {}), name, mimeType: sniffed.mimeType ?? "application/octet-stream", ...(pixels ? { width: pixels.width, height: pixels.height } : {}), ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), ...(fromS !== undefined ? { fromS: Math.max(0, fromS) } : {}), ...(toS !== undefined ? { toS } : {}) };
-    // The media a reader makes are fitted for the model that will see them: the lead, or the eyes when the lead takes no
-    // images. A video the lead cannot take as video is planned as eyes that take video take it, the file or a window of
-    // it as one clip with its sound, whatever images the lead takes; frames are for eyes that take none. A lead that
-    // takes images is given its own frames when no such clip can be made, a file or window over the eyes' inline budget
-    // among them; a lead that takes no images is given the miss. A source read where it is keeps no derivation.
-    const eyes = setup.eyes;
-    const clipForEyes = eyes?.accepts.video === true && !setup.limits.video.native;
-    const eyesVideo = clipForEyes ? { video: { ...eyes.limits.video, native: true }, requestBytes: eyes.limits.requestBytes } : {};
-    const clipOrFrames = kind === "video" && clipForEyes && setup.limits.image.native;
-    const limits = !setup.limits.image.native && eyes?.accepts.image
-      ? { ...setup.limits, image: { ...eyes.limits.image, native: false }, ...eyesVideo }
-      : clipOrFrames ? { ...setup.limits, ...eyesVideo } : setup.limits;
+    const { limits, clipOrFrames } = readerLimits(setup, kind);
     const readerEnv = data ? holding(env, source.path, data, probe.mtimeMs) : env;
-    const readWith = (budget: Limits) => reader(request, { env: readerEnv, signal: call.signal, limits: budget, ...(data ? { deriveDir: setup.scope.deriveDir } : {}), tempDir: temp.value, images: setup.images, providers: setup.providers });
-    try {
-      result = await readWith(limits);
-      if (clipOrFrames && "miss" in result) result = await readWith(setup.limits);
-    } catch (error) {
-      // A reader that throws on a file it cannot parse gives the model the cause, never a lost call.
-      if (call.signal?.aborted) throw error;
-      result = { miss: "unreadable", reason: firstLine(error) };
-    }
-    if (!data) {
-      const after = await env.fileInfo(name, ctx);
-      changed = !after.ok || after.value.size !== probe.size || after.value.mtimeMs !== probe.mtimeMs;
-    }
-    // Removed with a context of its own: pi's environments refuse every operation, a removal too, once the call is cancelled.
-  } finally { await env.remove(temp.value, { recursive: true, force: true }, visionContext()); }
+    const readWith = (budget: Limits) => reader(request, { env: readerEnv, signal: call.signal, limits: budget, ...(data ? { deriveDir: setup.scope.deriveDir } : {}), tempDir, images: setup.images, providers: setup.providers });
+    const result = await runReader(readWith, limits, clipOrFrames ? setup.limits : undefined, call.signal);
+    const after = data ? undefined : await env.fileInfo(name, ctx);
+    return { result, source, changed: after !== undefined && (!after.ok || after.value.size !== probe.size || after.value.mtimeMs !== probe.mtimeMs) };
+  });
   // A source that changed while it was read has no hash that names what was read: nothing is filed under the old one.
   if (changed) return missResult({ ...filing, evidence: NO_RECEIPT }, name, kind, source.sha256, "unreadable", CHANGED, args);
   if ("refusal" in result) return refusal(result.refusal);

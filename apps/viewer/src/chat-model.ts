@@ -1,0 +1,146 @@
+// The chat + report view's model of one run, made from a recording's own events by chat-extract.ts and drawn by
+// chat-view.ts and chat-report.ts. The same code for every run: nothing is typed by hand, per recording, or borrowed.
+
+import type { Manifest } from './format.ts';
+
+/** One entry of a recorded conversation: a message as recorded, the run's own thinking, or one tool call. */
+export type ChatItem =
+  | { kind: 'user'; id: string; text: string; t?: number }
+  /** A message the workflow's runner added to a conversation one of its nodes holds, or one the creator of an owned conversation
+   *  wrote into it (a fork's opening, written by the tool that made it): `by` names that tool. Never a person's. */
+  | { kind: 'host'; id: string; text: string; t?: number; by?: string }
+  | { kind: 'assistant'; id: string; text: string; t?: number }
+  /** A planned move of the run between hosts, at the host's `handoff` line: read from fields only (never the handoff's prose, never a process id). `lead`: after what, on
+   *  which host it left ("after the 5th charge on host-1 (daytona)"); `text`: where it went, or that it reopened where it was ("Moved to host-2 (daytona) from the same disk;
+   *  the conversation goes on"). */
+  | { kind: 'move'; id: string; t: number; lead: string; text: string }
+  /** `redacted`: the provider withheld the thought; it keeps no text. */
+  | { kind: 'thinking'; id: string; text: string; redacted?: true; t?: number }
+  | {
+    kind: 'tool';
+    id: string;
+    /** The tool's name as recorded ("read", "code", "submit"). */
+    tool: string;
+    /** The tool and its arguments in plain form: "read notes.pdf#page=2". */
+    title: string;
+    /** Its one argument in full (a command, a script) when the title does not show it whole, shown where the card opens. */
+    detail?: string;
+    /** The step only ran a command or a script: one string argument, no look made, no picture in its result. */
+    plumbing?: true;
+    /** The result's first line; empty when the result had no words. */
+    takeaway: string;
+    /** Images in the result, by SHA-256. */
+    media: string[];
+    /** The result said it failed. */
+    failed?: boolean;
+    /** The tool is a judge (its verb is "judge"): drawn with the judge's accent. */
+    judge?: true;
+    /** The browser the step drove, from the recording's `frame` lines (never from the tool's name): its frames in order, and the
+     *  holds the run handed the browser over for. A step that holds frames or a hold is drawn as a browser card and is never plumbing. */
+    browser?: ChatBrowser;
+    /** The looks made inside this call (their keys), so a cite of one finds its card. */
+    looks: string[];
+    /** The model calls made inside this call, in the order they ended: each its own card under this one. */
+    calls: ChatCall[];
+    /** The conversations this call made (forks; the threads' ids), drawn under its card. */
+    forks?: string[];
+    t0?: number;
+    t1?: number;
+  };
+
+/** What a step showed of its browser: `frames` (each a recorded `frame` line: its time, its image's SHA-256 and its size), and the
+ *  `holds` that began during the step. A hold is the browser handed over: from the session row that says held (t0) to the row that
+ *  says it is not (t1, none while the run ends held), with the condition the run asked and, once answered, its outcome
+ *  (done, cancelled or expired). Nothing records who acted during a hold, so none is named. */
+export type ChatBrowser = {
+  /** The host the browser was on at the step's last frame (from the session rows' last address), when the rows say. */
+  site?: string;
+  frames: { t: number; blob: string; w: number; h: number }[];
+  holds: { t0: number; t1?: number; condition: string; outcome?: string }[];
+};
+
+/** A model call made inside a tool call (a vision look, a Jev decision, speech to text). `label` is its name, its
+ *  scores and what it drew ("Jev judge · 0.87 · box drawn"), the same on its card and its span; `raw` is its output
+ *  as recorded; `look` its key when it was a look, for its picture and regions. */
+export type ChatCall = { id: string; name: string; label: string; raw: string; look?: string; model?: string; judge?: true;
+  /** What a look asked, when it asked in words (not a typed request). */
+  ask?: string;
+  /** The first sentence of a look's answer in words that says something: a lead-in line ending in a colon, a heading
+   *  and a list marker left out. */
+  said?: string; t0?: number; t1?: number };
+
+/** One recorded conversation: an agent node's, named by its node; a run of one conversation has one thread. Its first
+ *  user entry is the prompt the host composed from the node's input, so it is not an item. */
+export type ChatThread = { id: string; label: string; items: ChatItem[]; t0?: number; t1?: number;
+  /** The item it is drawn under: the call that made it, else the item of the entry it was forked at. */
+  under?: string };
+
+/** A span on the session timeline, from the events: a workflow node, an LLM call, a tool call, or a model call made
+ *  inside a tool (a vision look, a Jev decision, speech to text). A span with no t1 is a point: the event that
+ *  recorded it carries one time only. */
+export type ChatSpan = {
+  id: string;
+  actor: 'node' | 'llm' | 'tool' | 'inner';
+  /** The lane: the actor's kind and name, as "LLM gpt-6-luna", "tool read", "vision.judge". */
+  lane: string;
+  /** The lane it nests under (an inner call's tool), when it has one. */
+  parentLane?: string;
+  label: string;
+  t0: number;
+  t1?: number;
+  /** The chat entry or thread the span belongs to, to scroll to. */
+  item?: string;
+  /** A judge's call (its tool's verb is "judge"), drawn with the judge's accent. */
+  judge?: true;
+};
+
+/** One typed decision a look's answer carries (a Jev call): a yes-or-no with its score, or a choice. */
+export type ChatDecision = { name: string; kind: 'noul'; score: number } | { name: string; kind: 'choice'; choice: string };
+
+/** What a look read, by its key: the address it read, what it found, its decisions, its images and the regions it
+ *  boxed. `decisive`: the look the run's answer cites (or, in a call none of whose looks is cited, the one scored
+ *  highest), the one whose frame opens first. */
+export type ChatSource = { href: string; /** The other addresses a look over several read, in order. */ more?: string[];
+  /** A look over several addresses: each address with the picture shown for it, when it filed one for each. */
+  pictures?: { href: string; sha: string }[]; takeaway: string; decisions: ChatDecision[]; media: string[]; regions: { label: string; href: string }[]; item?: string; decisive?: boolean };
+
+/** A value drawn as a table: its columns, and each row's cells in plain form, one for each column. */
+export type ChatTable = { columns: string[]; rows: string[][] };
+
+/** One row of the run's answer, each cite resolved to the look (and its card) that made it. A cite with no look can
+ *  name its own blob (a kept picture), opened at its fragment, and say what it is (`label`). `note`: the row's own
+ *  explanation of its value. `table`: the value as a table, when it is one (`text` keeps its plain form). */
+export type ChatRow = { label: string; text: string; note?: string; table?: ChatTable; cites: { href: string; look?: string; item?: string; blob?: string; label?: string }[] };
+
+/** The agent's own artifact (manifest.artifact, draft 41): its entry and every file by its SHA-256. */
+export type ChatArtifact = NonNullable<Manifest['artifact']>;
+
+/** The run's input as given: a string input as its text; a record as its `question` (the person's words), its
+ *  `files`, and its other fields in plain form. */
+export type ChatInput = { text?: string; question?: string; files?: string[]; fields?: { name: string; value: string }[] };
+
+export type ChatModel = {
+  /** The artifact's title, else the first line of the input's question, else the recording's title. */
+  title: string;
+  input?: ChatInput;
+  /** In the order they began; the first is open, the rest are folded threads. */
+  threads: ChatThread[];
+  /** Move cards with no conversation to stand in (a run that moved before it recorded any chat): drawn in the run's own timeline after the conversations. */
+  moves?: Extract<ChatItem, { kind: 'move' }>[];
+  /** With `inOrder`, the recording has no times: each span sits at its line's position in the file. */
+  spans: ChatSpan[];
+  inOrder?: true;
+  sources: Record<string, ChatSource>;
+  /** cited: the run's cited result. record: a submitted result record, one row per field, a field of evidence paths
+   *  as cites. text: no result, the run's final assistant text. */
+  answer?: { title: string; rows: ChatRow[]; from: 'cited' | 'record' | 'text' };
+  artifact?: ChatArtifact;
+  durationMs?: number;
+  answeredAt?: number;
+  /** The agent the header names: its name (the host's `reference.label`, else the recording's task) and its state from the events:
+   *  done (the manifest names a result), waiting (the run ends held), else working. */
+  agent?: { name: string; status: 'working' | 'waiting' | 'done' };
+  /** The times the run waited for a person to sign in, from the browser's own sign-in document (`browser.profiles`): asked when the profile
+   *  gains the address it signs in to (t0), signed in when it is verified (t1; none when the run ends waiting). `site` is that address's host. */
+  waits?: { t0: number; t1?: number; site: string; /** The profile was already signed in when the run first read it: a sign-in the run found there, not one it waited for. */ remembered?: true }[];
+};

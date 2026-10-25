@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.26 (2026-10-24)
+
+- An empty write, append or upload no longer waits on a stdin end that `docker exec -i` can lose. `boxEnv`'s `writeFile` and `appendFile` with no bytes, `uploadByExec` of an empty file and `moveFile` of a sealed file of no bytes now read their input from `/dev/null` in the box (`exec </dev/null;` in front of the script) and send nothing over the exec's stdin. Before, one empty call in about 2,700 on Docker never got its end of input, the box's `cat` waited for it, and the call ended at the operation timeout as an `unknown` file error. A non-empty write is unchanged. This sits in `boxEnv`, so it covers every provider with an exec stdin.
+- The README's first example is a local box that needs no key and no Docker daemon (the Docker one follows it), prints its output as text, and every snippet that uses `BACKGROUND_CONTEXT` imports it. The `transport()` example runs by itself on a scripted model and a local box, the ownership example uses a temporary directory, and the README says what Jev is and that the examples are ES modules with the pi peers installed.
+
+## 0.1.0-beta.23 (2026-10-22)
+
+- `archilExecBoxes({ client, disk })` (`@parcha/pi-transport/box/archil-exec`): boxes that are directories of an agent's
+  Archil work disk, each `exec` one serverless Archil call (about 100 ms warm, measured in us-east-1). The SDK is the
+  host's (`Archil` and a disk from the `disk` package), not a dependency. The limits are stated, not hidden: `BoxFacts` gains
+  optional `maxExecMs` (300 000: a longer `timeoutMs` is `invalid`) and `liveProcesses` (`false`: no stdin, output after
+  the call, no program kept between calls). A box with `liveProcesses` false is never a home: the box place refuses it with
+  `MoveError` code `no_live_processes`. Every exec checks out the box's directory with a queue, so a second process on the
+  same box waits instead of losing a write; a box's record is a file outside the directory, so `destroy` ends the box at once
+  even while a command runs. The conformance suite takes `withoutLiveProcesses: "<why>"` and leaves out the live-program and stdin cases,
+  with one case in their place that carries the reason, and `withoutEnv: "<why>"` for a box that has no env: Archil's exec carries only the command, so a spec with an env is refused with `unsupported` (the record and every call's command carry none) and a `boxEnv` per-call env on such a box is refused. A box billed per call gets a receipt with `calls` and `usd_per_call`
+  in place of `usd_per_second` (`BoxPrice` takes `usdPerCall`; RECORDING.md draft 40). The live suite
+  (`PI_TRANSPORT_LIVE_ARCHIL=1`) makes its own disk in aws-us-east-1 and deletes it.
+- The README gives an install line, in "A box": the package with its pi peers pinned at 1.3.0 (`@earendil-works/pi-durable`,
+  `@earendil-works/pi-ai`, `@earendil-works/chord`). pi 1.4.0 is npm's latest and outside the package's peer range, so an
+  install that names the peers without a version stops with ERESOLVE; pi 1.4 is not supported yet, and a later release
+  widens the range.
+
+## 0.1.0-beta.21 (2026-10-21)
+
+- `@parcha/pi-transport` is on npm under the beta tag: the guide and the harness README give the install line, `npm install @parcha/pi-transport@beta`, and a demo that declares `boxes` without it installed says to run that line, no longer that the package is not on npm.
+- The package's npm description now names what it does: a pi agent's tools on this machine, in Docker, or in a Daytona or Modal sandbox, behind one `Box` interface, with Jev placing each step. It no longer says the session moves.
+
+## 0.1.0-beta.20 (2026-10-20)
+
 ### Added
 
 - A box the hands environment found lost answers `exec` with the provider's `BoxError` (code `gone`) as the `ExecutionError`'s `cause`; the code stays `unknown`, as pi has no `gone` code.
@@ -126,3 +156,5 @@
   the lease at the next epoch. A job that never rests takes no checkpoint, so before this its whole-box loss was `no_checkpoint`. It needs
   a log whole from commit 1, is off by default, and the model is told that no checkpoint existed and no file came back.
   `restoreNotice(undefined, ...)` makes that text.
+- `@parcha/pi-transport` is published: its manifest no longer says `"private": true`, so a release publishes it after `@parcha/pi-vision` and before the reference host. The package is unchanged; the box interface, the `local` and `docker` providers, the home movers and the conformance suite are what they were in the repository.
+- The README's first screen says what the example shows: a pi agent's tool calls go to Daytona and Modal sandboxes, and Jev places each one on the sandbox that fits it. The API (`boxEnv`, `transport()`) and the providers table follow it, and the transport config section moves under the tools in a box, where it belongs. The root README, `AGENTS.md` and a new short section of `docs/guide.md` ("Run an agent's tools where each step needs them", with a keyless example on local boxes) say the same, with all four providers.

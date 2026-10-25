@@ -77,6 +77,7 @@ test("dry run STANDS DOWN (ok + skipped) on generator-unsupported constructs lik
   const result = await dryRunWorkflow(workflow);
   assert.equal(result.ok, true);
   assert.ok(result.skipped.some((s) => /pattern/.test(s)));
+  assert.equal(result.status, "not_run");
 });
 
 test("an escalate tripping on synthetic values is a stand-down, not a rejection", async () => {
@@ -91,6 +92,7 @@ test("an escalate tripping on synthetic values is a stand-down, not a rejection"
   const result = await dryRunWorkflow(workflow);
   assert.equal(result.ok, true);
   assert.ok(result.skipped.some((s) => /escalated:always_fires/.test(s)));
+  assert.equal(result.status, "not_run");
 });
 
 test("dry run executes a map over a generated list and assembles its results", async () => {
@@ -153,6 +155,7 @@ test("an exclusive bound beyond float ±1 resolution stands the gate down instea
   const result = await dryRunWorkflow(workflow);
   assert.equal(result.ok, true);
   assert.ok(result.skipped.some((s) => /exclusiveMinimum beyond float step/.test(s)));
+  assert.equal(result.status, "not_run");
 });
 
 test("narrow two-sided numeric intervals take the midpoint instead of clamping across a bound", () => {
@@ -190,5 +193,5 @@ test("dry run passes a report-terminal workflow with zero special-casing (the st
       { node: "report", label: "write-up", instructions: "render" },
     ] },
   };
-  assert.deepEqual(await dryRunWorkflow(workflow), { ok: true });
+  assert.deepEqual(await dryRunWorkflow(workflow), { ok: true, status: "passed" });
 });

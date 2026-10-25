@@ -10,7 +10,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-// @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { citeStop } from '../src/cite.ts';
 import { parseLines, validate, type Json, type Line } from '../src/format.ts';
@@ -38,7 +37,6 @@ const end = lines.length;
 const stateAt = (p: number, run: Line[] = lines): VisionState => reduceTo(visionPanel, run, p);
 const viewAt = (p: number, context: Partial<ViewContext> = {}, run: Line[] = lines) => visionPanel.view(stateAt(p, run), { t: run[p - 1]?.t ?? 0, json, ...context });
 const killAt = lines.findIndex((line) => line.kind === 'kill');
-const restartAt = lines.findIndex((line, at) => at > killAt && line.kind === 'process.started');
 const receiptOf = (look: Json) => (look as { receipt: string }).receipt;
 /** The panel's meters against the counters the program folded from its own store and wrote into the result. */
 const agrees = (meters: ReturnType<typeof visionMeters>, result: Json) => {
@@ -109,6 +107,21 @@ test('live lines show what is in flight and change no count but the observed pos
   assert.match(inFlight, /reading scans\.pdf p\.3/);
   assert.match(inFlight, /reading photos\/photo-003\.png/);
   assert.doesNotMatch(text(viewAt(end)), /In flight/, 'nothing is in flight at the end');
+});
+
+test('a look only live lines tell of is listed, never "not looked at": a native one as the lead\'s own, and once the run delivered as never filed', () => {
+  const look: Line = { channel: 'live', source: 'vision', kind: 'LookEvent', t: 5, seq: 1, gen: 1, data: { conversationId: '1', tool: 'read', source: 'filing.png', fragment: '', receipt: 'evidence/look-1.json',
+    record: { tool: 'look', args: { path: 'filing.png', native: true }, status: 'ok', facts: { key: 'k-filing' }, body: 'shown to the model natively' } } };
+  const result: Line = { channel: 'live', source: 'host', kind: 'result', t: 9, seq: 2, data: { gen: 1, blob: RESULT, title: 'The record' } };
+  const going = text(visionPanel.view(reduceTo(visionPanel, [look], 1), { t: 5 }));
+  assert.doesNotMatch(going, /have not looked/);
+  assert.match(going, /In flight \(live lines\) the lead looked at filing\.png itself, not filed yet/);
+  const ended = text(visionPanel.view(reduceTo(visionPanel, [look, result], 2), { t: 9 }));
+  assert.match(ended, /Told by live lines only the lead looked at filing\.png itself, never filed in the store/);
+  assert.match(ended, /looks paid\s+not measured/, 'and nothing is counted from it');
+  const eyes = { ...look, data: { ...look.data as object, record: { tool: 'look', args: { path: 'filing.png' }, status: 'ok', facts: { key: 'k-eyes' } } } } as Line;
+  assert.match(text(visionPanel.view(reduceTo(visionPanel, [eyes], 1), { t: 5 })), /the eyes answered for filing\.png, not filed yet/);
+  assert.match(text(visionPanel.view(reduceTo(visionPanel, [], 0), { t: 0 })), /The eyes have not looked at anything yet\./, 'with no line about a look, the panel still says so');
 });
 
 test('a citation opens its receipt and moves its lane: the page with the line\'s box, the film window, the photo', () => {

@@ -253,11 +253,11 @@ export function createGuard(overrides?: Partial<Caps>): Guard {
     if (files.length > caps.files) add("too_many", `${files.length} files; the cap is ${caps.files}`);
     else {
       for (const [file, content] of files) {
-        const name = scan(file, false);
-        if (hasCaseValue(authoredName(file))) name.push(CASE_DATA);
-        // A name that holds a secret or a hidden character is never echoed back.
-        const echo = name.length ? {} : { path: file };
-        for (const hit of name) add(hit.reason, hit.detail, { ...echo, field: "path" });
+        const pathHits = scan(file, false);
+        if (hasCaseValue(authoredName(file))) pathHits.push(CASE_DATA);
+        // A path that holds a secret or a hidden character is never echoed back.
+        const echo = pathHits.length ? {} : { path: file };
+        for (const hit of pathHits) add(hit.reason, hit.detail, { ...echo, field: "path" });
         const allowed = allowance(input.role, file, input.runId, caps);
         if ("reason" in allowed) add(allowed.reason, allowed.detail, echo);
         if (content === null) continue;

@@ -14,8 +14,9 @@ import { citation, parseCitation } from "./fragments.js";
 import type { CallContext, CallSetup, ImageContent, Json, Usage } from "./host.js";
 import { fitImage, type FitLimits, type PixelSize } from "./image.js";
 import { JEV_IMAGE_BYTES, JEV_MAX_EDGE, JEV_MIN_EDGE, JEV_MODEL, JEV_REQUEST_BYTES } from "./limits.js";
-import { aboutMedium, AS_IS, gatherMedia, namesMedia, once, requestedAbout, throwMiss, type About, type MediaMiss, type MediaRequest } from "./media.js";
+import { aboutMedium, AS_IS, gatherMedia, namesMedia, singleFlight, requestedAbout, throwMiss, type About, type MediaMiss, type MediaRequest } from "./media.js";
 import { firstLine } from "./misses.js";
+import { base64Chars } from "./primitives.js";
 import { lookTiming } from "./timing.js";
 import type { CodeGlobal } from "./see.js";
 
@@ -50,19 +51,24 @@ export type JevPort = {
 
 const TYPES = ["choice", "noul", "score", "box"];
 /** Jev's limits as a fit: PNG or baseline JPEG, upright, each side 280 to 1,568 px, a file under 16 MiB. */
-const JEV_FIT: FitLimits = { maxWidth: JEV_MAX_EDGE, maxHeight: JEV_MAX_EDGE, maxBytes: Math.ceil(JEV_IMAGE_BYTES / 3) * 4, minEdge: JEV_MIN_EDGE, formats: ["image/png", "image/jpeg"], baseline: true };
+const JEV_FIT: FitLimits = { maxWidth: JEV_MAX_EDGE, maxHeight: JEV_MAX_EDGE, maxBytes: base64Chars(JEV_IMAGE_BYTES), minEdge: JEV_MIN_EDGE, formats: ["image/png", "image/jpeg"], baseline: true };
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+// A text judgment: no path, image, fragment or example, no box question, and a state that carries the text.
+const textJudgment = (r: Record<string, unknown>, questions: readonly unknown[]): boolean => {
+  const bare = [r.images, r.paths, r.fragments].every((v) => v === undefined || (Array.isArray(v) && v.length === 0)) && (r.examples === undefined || (object(r.examples) && Object.keys(r.examples).length === 0));
+  return bare && object(r.state) && Object.keys(r.state).length > 0 && questions.every((q) => object(q) && q.type !== "box" && q.image === undefined);
+};
+const questionOk = (q: unknown, count: number): boolean => object(q) && TYPES.includes(q.type as string) && (q.image === undefined || (Number.isInteger(q.image) && (q.image as number) >= 0 && (q.image as number) < count));
+const stateOk = (state: unknown): boolean => state === undefined || (object(state) && !("images" in state));
+const examplesOk = (examples: unknown, said: string): boolean => examples === undefined || (object(examples) && Object.keys(examples).every((ref) => said.includes(ref)));
 
 function checked(input: unknown): JudgeRequest {
   const r = (object(input) ? input : {}) as Record<string, unknown>;
   const count = (Array.isArray(r.images) ? r.images.length : 0) + (Array.isArray(r.paths) ? r.paths.length : 0);
   const questions = object(r.questions) ? Object.values(r.questions) : [];
   const said = JSON.stringify(r.questions ?? null);
-  // A text judgment: no path, image, fragment or example, no box question, and a state that carries the text.
-  const bare = [r.images, r.paths, r.fragments].every((v) => v === undefined || (Array.isArray(v) && v.length === 0)) && (r.examples === undefined || (object(r.examples) && Object.keys(r.examples).length === 0));
-  const text = bare && object(r.state) && Object.keys(r.state).length > 0 && questions.every((q) => object(q) && q.type !== "box" && q.image === undefined);
-  if (!(namesMedia(r) || text) || !questions.length || !questions.every((q) => object(q) && TYPES.includes(q.type as string) && (q.image === undefined || (Number.isInteger(q.image) && (q.image as number) >= 0 && (q.image as number) < count)))
-    || !(r.state === undefined || (object(r.state) && !("images" in r.state))) || !(r.examples === undefined || (object(r.examples) && Object.keys(r.examples).every((ref) => said.includes(ref))))) {
+  if (!((namesMedia(r) || textJudgment(r, questions)) && questions.length > 0 && questions.every((q) => questionOk(q, count)) && stateOk(r.state) && examplesOk(r.examples, said))) {
     throw new TypeError("vision.judge takes { questions: { [name]: { type: \"choice\" | \"noul\" | \"score\" | \"box\", instructions?, criteria?, image? } }, paths?, images?, fragments?, examples?: { [reference written in a question]: path or image block }, state?: an object without `images` } with at least one path or image, or, for a text judgment with none, a non-empty state and no box question");
   }
   return r as JudgeRequest;
@@ -130,7 +136,7 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
   }));
   // When this call's request to Jev began; none when the answer is read back.
   let startedAt: number | undefined;
-  const ask = async (): Promise<JevResult> => {
+  const sendRequest = async (): Promise<JevResult> => {
     const questions = Object.fromEntries(Object.entries(request.questions).map(([name, { image: _image, ...question }]) => [name, question]));
     const state = items.length ? { ...request.state, images: items.map((item, i) => ({ source: item.fragment, image: reference(i) })) } : { ...request.state };
     const assets = Object.fromEntries([...items.map((item, i) => [reference(i), item] as const), ...examples].map(([ref, item]) => [ref, { bytes: item.bytes, mime: item.mime }]));
@@ -138,19 +144,23 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
     const result = await jev.judge({ label: VISION_JUDGE.name, kind: "judge", state, questions, assets, model, ...(call.signal ? { signal: call.signal } : {}) });
     return { answers: result.answers, model: result.model ?? null, usage: result.usage ?? null, cost_usd: result.cost_usd ?? null };
   };
-  const { value: { result, readBack, receipt, costUsd }, shared } = await once(call, at.facts.key, async () => {
+  const { value: { result, readBack, receipt, costUsd }, shared } = await singleFlight(call, at.facts.key, async () => {
     let result: JevResult, readBack: boolean;
     try {
-      ({ answer: result, readBack } = await keptAnswer<JevResult>(call.memo, at.facts.key, ask));
+      ({ answer: result, readBack } = await keptAnswer<JevResult>(call.memo, at.facts.key, sendRequest));
     } catch (error) {
       if (call.signal?.aborted) throw error;
       // A request that threw may still have been billed: its price is not known, so none is filed. A request the port
       // refused before it sent anything (a box asked of a model that has none, a state over the host's limit, an image it
-      // does not take) is marked by its request diagnostic: it cost nothing and began no call.
-      const { status, requestDiagnostic } = (error ?? {}) as { status?: unknown; requestDiagnostic?: { reason?: unknown } };
-      const refused = typeof requestDiagnostic?.reason === "string";
+      // does not take) is marked by its request diagnostic: it cost nothing and began no call. A request TypeSafe rate-limited
+      // to the end of the runner's retries (`http`, HTTP 429) was answered with no work done: it cost nothing too.
+      const { code: jevCode, status, requestDiagnostic } = (error ?? {}) as { code?: unknown; status?: unknown; requestDiagnostic?: { reason?: unknown } };
+      const limited = jevCode === "http" && status === 429;
+      const refused = typeof requestDiagnostic?.reason === "string" || limited;
       const code = requestDiagnostic?.reason === "unsupported_model" ? "unsupported" : status === 413 ? "over_budget" : "look_failed";
-      return fail({ code, reason: `Jev failed: ${firstLine(error)}`, model }, code === "unsupported" || refused ? undefined : lookTiming(call, startedAt));
+      // A rate-limited request was sent and waited: it keeps its timing, at no cost.
+      const spent = limited ? { tokens_in: 0, tokens_out: 0, cost_usd: 0, ...lookTiming(call, startedAt) } : code === "unsupported" || refused ? undefined : lookTiming(call, startedAt);
+      return fail({ code, reason: `Jev failed: ${limited ? "rate limited, " : ""}${firstLine(error)}`, model }, spent);
     }
     const costUsd = result.cost_usd ?? null;
     const usage: Usage | null = result.usage ? { input: result.usage.input_tokens, output: result.usage.output_tokens, cacheRead: 0, cacheWrite: 0, totalTokens: result.usage.input_tokens + result.usage.output_tokens, cost: { input: costUsd ?? 0, output: 0, cacheRead: 0, cacheWrite: 0, total: costUsd ?? 0 } } : null;

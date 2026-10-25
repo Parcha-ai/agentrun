@@ -1,6 +1,6 @@
 // A price the host does not know (`unpriced`) or cannot read (`invalid`) records seconds and charges nothing: a missing
 // price never reads as free and never aborts a run.
-import { LIST_PRICES, type PiUsage, type PriceState, type PriceTable, type SessionRecord, type ToolUsage } from "./host.js";
+import { LIST_PRICES, type PriceState, type PriceTable, type SessionRecord, type ToolUsage } from "./host.js";
 
 const DECIMAL = /^(\d+(\.\d*)?|\.\d+)(e[+-]?\d+)?$/i;
 
@@ -29,6 +29,13 @@ type Spent = SessionRecord["spent"];
 const PICO = 1e12;
 const HOUR_MS = 3_600_000n;
 export const startSpent = (createdAt: string): Spent => ({ seconds: 0, usd: 0, chargedThrough: createdAt });
+
+/** The record after a charge, with its list-priced dollars: the ones it already held plus this charge's when the price was the list's. `after` is what `sessionCharge` returned. */
+export function withEstimate(before: Spent, after: Spent, listPriced: boolean): Spent {
+  const added = Math.max(0, Math.round((after.usd - before.usd) * PICO)) / PICO;
+  const estimated = Math.round(((before.estimatedUsd ?? 0) + (listPriced ? added : 0)) * PICO) / PICO;
+  return estimated > 0 ? { ...after, estimatedUsd: estimated } : after;
+}
 
 /** `final` (the release) tops up to the provider's minimum and marks the record, so a retried release adds nothing. */
 export function sessionCharge(spent: Spent, at: string, prices: PriceTable, state: PriceState = "priced", final = false): { spent: Spent; usage: ToolUsage } {

@@ -12,11 +12,12 @@ import type { Repo } from "@parcha/pi-git-remote";
 import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { LearnError } from "./errors.js";
-import { CAPS, LAYOUT, RUN_ID } from "./layout.js";
+import { CAPS, LAYOUT, RUN_ID, WORKFLOW_NAME } from "./layout.js";
 import { type Admission, admitRevision, type Decision, foldUses, type IgnoredUse, promotionDecision, type Thresholds } from "./promotion.js";
 import type { UsesSource } from "./propose.js";
 import { MAX_WORKFLOW_HINTS, type WorkflowHint } from "./section.js";
 import { readSeed } from "./seed.js";
+import { type ServedRun, servedUse } from "./serving.js";
 import type { AdmitWorkflow, AdmitWorkflowInput, AdmitWorkflowResult, RepoRead, SettleUses, SettleUsesInput, SettleUsesResult, WorkflowUse } from "./types.js";
 import {
   checkPreconditions, currentRevision, deriveWhen, fitTrial, matches, MAX_NAME, parseTrial, type Precondition, readTrial, renderTrial, skillName, skillPath, type Trial, trialPath,
@@ -235,6 +236,10 @@ export function parseRunUses(text: string, run?: string): RunUses {
   } catch {
     throw new LearnError("format", "the uses file is not JSON");
   }
+  return checkRunUses(parsed, run);
+}
+
+function checkRunUses(parsed: unknown, run?: string): RunUses {
   if (!usesChecker.Check(parsed)) throw new LearnError("format", "the uses file does not match its schema");
   const uses = parsed as RunUses;
   if (run !== undefined && uses.run !== run) throw new LearnError("format", "the uses file names another run");
@@ -246,6 +251,8 @@ export type ReadUsesOptions = {
   /** The run's working directory: the project directory of its workflow store, which names what a digest was saved as. */
   readonly workDir: string;
   readonly run: string;
+  /** What the host served the run (`serve`): each is a use of its own revision under its name, with the host's verdict. */
+  readonly served?: readonly ServedRun[];
 } & (
   /** The run's pi-durable store file, read only: once the run's Harness has closed it, or while it is open. */
   | { readonly store: string }
@@ -352,6 +359,7 @@ export async function readUses(options: ReadUsesOptions): Promise<ReadUses> {
     if (!held || Number(task.id) > Number(held.id)) last.set(key, task);
   }
   const uses: RunUse[] = [];
+  const served = new Map((options.served ?? []).filter((run) => run.key !== null).map((run) => [run.key!, run]));
   for (const [key, task] of [...last].sort(([a], [b]) => (a < b ? -1 : 1))) {
     let digest: string;
     try {
@@ -360,9 +368,12 @@ export async function readUses(options: ReadUsesOptions): Promise<ReadUses> {
       skipped.push({ reason: `run ${key} holds a workflow document that does not hash` });
       continue;
     }
-    const names = saved.byDigest.get(digest);
+    const host = served.get(key);
+    // A served run's revision need not be in the run's store (a canary is read from the repository): the host names it,
+    // and its verdict stands for the task's, since it also checked the output.
+    const names = host && host.sha256 === digest ? [host.name] : saved.byDigest.get(digest);
     if (!names) continue;
-    const how = outcomeOf(task);
+    const how = host && host.sha256 === digest ? (servedUse(host) ?? { skip: `the host's run ended ${host.outcome}, which says nothing about the workflow` }) : outcomeOf(task);
     if (typeof how !== "string") {
       skipped.push({ name: names[0]!, reason: `run ${key}: ${how.skip}` });
       continue;
@@ -454,8 +465,9 @@ export type AdmitInDirInput = {
   readonly dir: string;
   readonly runId: string;
   readonly name: string;
-  /** The `workflow` learning's text: when to use it. Without one the revision is admitted but stays out of `<learned>`. */
-  readonly description?: string;
+  /** When to use it: text, or a function of the revision's document (`schemaDescription` is one), which describes only a
+   *  revision this call admits. Without one the revision is admitted but stays out of `<learned>`. */
+  readonly description?: string | ((workflow: unknown) => string);
   /** The run's files for this name, as `collectWorkflows` made them: `<sha256>.json` and `latest`. Absent or empty: only the description is new. */
   readonly records?: Readonly<Record<string, string>>;
   /** The preconditions to try it under, a check on the run's input each, or a function of the workflow document. Default: none,
@@ -479,6 +491,117 @@ const refuse = (name: string, reason: AdmitRefusal, detail: string): AdmitInDirR
  *  input fields as its runs' inputs do. */
 export const schemaWhen = (workflow: unknown): Precondition[] => deriveWhen(workflow, (schema) => resolveSchemaForWorkflow(workflow as never, schema));
 
+/** A field name a skill's description may carry: an identifier, so no sentence can ride in one. */
+const FIELD_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const FIELD_TYPES = new Set(["string", "number", "integer", "boolean", "array", "object"]);
+
+/** The top-level fields of one of the document's schemas, resolved: identifier names only, each with its JSON type. */
+function schemaFields(workflow: unknown, schemaId: unknown): { required: string[]; optional: string[] } {
+  const doc = workflow as { schemas?: Record<string, unknown> } | null;
+  const raw = typeof schemaId === "string" && doc?.schemas && Object.hasOwn(doc.schemas, schemaId) ? doc.schemas[schemaId] : undefined;
+  let schema: Record<string, unknown> = raw !== null && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  try {
+    schema = resolveSchemaForWorkflow(workflow as never, schema);
+  } catch {
+    return { required: [], optional: [] };
+  }
+  const properties = schema.properties !== null && typeof schema.properties === "object" ? (schema.properties as Record<string, unknown>) : {};
+  const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+  const field = (name: string) => {
+    const type = (properties[name] as { type?: unknown } | null)?.type;
+    return FIELD_TYPES.has(type as string) ? `${name} (${type as string})` : name;
+  };
+  const names = Object.keys(properties).filter((name) => FIELD_NAME.test(name)).sort();
+  return { required: names.filter((n) => required.has(n)).map(field), optional: names.filter((n) => !required.has(n)).map(field) };
+}
+
+/** The first `limit` items, then how many more there are. */
+const listed = (items: readonly string[], limit = Infinity) => {
+  if (items.length <= limit) return items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+  if (limit === 0) return `${items.length} field${items.length === 1 ? "" : "s"}`;
+  return `${items.slice(0, limit).join(", ")} and ${items.length - limit} more`;
+};
+
+/**
+ * A skill description written from the workflow's own schemas, with no text the agent wrote: the fields of its input and
+ * of its output, by name and type. What `workflowAdmitter` writes by default, so a run that read untrusted content puts
+ * no words of its own into a later prompt. A schema with too many fields to name within `CAPS.text` names the first ones
+ * and counts the rest, so a wide schema never makes the description refuse the workflow.
+ */
+export function schemaDescription(workflow: unknown): string {
+  const doc = workflow as { input?: { schemaId?: unknown }; output?: { schemaId?: unknown } } | null;
+  const input = schemaFields(workflow, doc?.input?.schemaId);
+  const output = schemaFields(workflow, doc?.output?.schemaId);
+  const outputs = [...output.required, ...output.optional].map((f) => f.split(" ")[0]!);
+  const within = (limit: number) => {
+    const takes = input.required.length || input.optional.length
+      ? `For an input with ${listed(input.required, limit) || "no required field"}${input.optional.length ? ` (optionally ${listed(input.optional, limit)})` : ""}.`
+      : "For any input.";
+    return `${takes}${outputs.length ? ` It returns ${listed(outputs, limit)}.` : ""}`;
+  };
+  for (let limit = Math.max(input.required.length, input.optional.length, outputs.length); limit > 0; limit -= 1) {
+    const text = within(limit);
+    if (bytes(text) <= CAPS.text) return text;
+  }
+  return within(0);
+}
+
+/** How long a run of a workflow's text must be, found in what the run read, to count as copied from it. */
+export const COPIED_TEXT = 40;
+
+const folded = (text: string) => text.toLowerCase().replace(/\s+/g, " ").trim();
+
+/** Every string in a document: values only, keys left out. */
+function stringsOf(value: unknown, out: string[] = []): string[] {
+  if (typeof value === "string") out.push(value);
+  else if (Array.isArray(value)) for (const item of value) stringsOf(item, out);
+  else if (value !== null && typeof value === "object") for (const item of Object.values(value)) stringsOf(item, out);
+  return out;
+}
+
+/** Whether any `COPIED_TEXT` characters of the document's strings (case and whitespace folded) appear in a text the run read. */
+export function copiesRead(workflow: unknown, read: Iterable<string>): boolean {
+  // The windows come from the workflow, whose record is bounded; the pages are only scanned.
+  const windows = new Set<string>();
+  for (const value of stringsOf(workflow)) {
+    const text = folded(value);
+    for (let at = 0; at + COPIED_TEXT <= text.length; at += 1) windows.add(text.slice(at, at + COPIED_TEXT));
+  }
+  if (!windows.size) return false;
+  for (const raw of read) {
+    const page = folded(String(raw));
+    for (let at = 0; at + COPIED_TEXT <= page.length; at += 1) if (windows.has(page.slice(at, at + COPIED_TEXT))) return true;
+  }
+  return false;
+}
+
+/** The revision a run's records end on (`latest`), read back through the DSL's store in a scratch directory; undefined when
+ *  the records are not the store's. */
+export async function revisionOf(name: string, records: Readonly<Record<string, string>>): Promise<{ readonly workflow: unknown; readonly sha256: string } | undefined> {
+  const latest = records.latest;
+  if (typeof latest !== "string" || !/^[0-9a-f]{64}\n$/.test(latest)) return undefined;
+  const sha256 = latest.slice(0, 64);
+  const record = records[`${sha256}.json`];
+  if (typeof record !== "string" || !WORKFLOW_NAME.test(name)) return undefined;
+  try {
+    return await scratch(async (tmp) => {
+      await writeRegular(tmp, `${workflowDir(name)}/${sha256}.json`, record);
+      const stored = await new WorkflowStore(tmp).load(name, sha256);
+      return { workflow: stored.workflow, sha256 };
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+/** A revision's workflow from its record in the agent repository at `ref`, read back through the DSL's store, which checks
+ *  the document against its digest; undefined when the record is missing or is not that revision. */
+export async function readRevision(repo: Pick<Repo, "read">, name: string, sha256: string, ref: string): Promise<unknown | undefined> {
+  if (!WORKFLOW_NAME.test(name) || !/^[0-9a-f]{64}$/.test(sha256)) return undefined;
+  const record = await repo.read(`${workflowDir(name)}/${sha256}.json`, ref);
+  return record === undefined ? undefined : (await revisionOf(name, { latest: `${sha256}\n`, [`${sha256}.json`]: record }))?.workflow;
+}
+
 export async function readTrialIn(dir: string, name: string): Promise<Trial | undefined> {
   const text = await readRegular(path.join(absolute(dir, "dir"), trialPath(name)));
   return text === undefined ? undefined : parseTrial(text, name);
@@ -499,8 +622,9 @@ export async function admitInDir(input: AdmitInDirInput): Promise<AdmitInDirResu
   if (typeof name !== "string" || !WORKFLOW_SKILL_NAME.test(name) || name.length > 64) {
     return refuse(String(name).slice(0, 64), "name", "a workflow name is lowercase letters and digits in words joined by single hyphens, at most 64 characters, so pi can load it as a skill");
   }
-  const description = typeof input.description === "string" ? input.description.trim() : undefined;
-  if (input.description !== undefined && (description === undefined || description === "" || bytes(description) > CAPS.text)) {
+  const describe = typeof input.description === "function" ? input.description : undefined;
+  let description = typeof input.description === "string" ? input.description.trim() : undefined;
+  if (input.description !== undefined && !describe && (description === undefined || description === "" || bytes(description) > CAPS.text)) {
     return refuse(name, "description", `a description is text of 1 to ${CAPS.text} bytes`);
   }
   const at = (input.now?.() ?? new Date()).toISOString();
@@ -533,6 +657,10 @@ export async function admitInDir(input: AdmitInDirInput): Promise<AdmitInDirResu
     }
     if (!input.allowExecutableCode && inspectWorkflow(stored.workflow).requires.executableCode) {
       return refuse(name, "code", "the workflow runs code (a code node, or a shell or executor call), and nothing a person reviewed admits it");
+    }
+    if (describe) {
+      description = describe(stored.workflow).trim();
+      if (description === "" || bytes(description) > CAPS.text) return refuse(name, "description", `a description is text of 1 to ${CAPS.text} bytes`);
     }
     const when = typeof input.when === "function" ? input.when(stored.workflow) : input.when ?? [];
     try {
@@ -791,16 +919,70 @@ export type WorkflowAdmitterOptions = {
   readonly when?: (workflow: unknown) => readonly Precondition[];
   /** Admit a workflow with a code node or a shell or executor call. Default: hold it. */
   readonly allowExecutableCode?: boolean;
+  /** The skill's description, from the revision's document, when the call hands over none (curate never does). Default:
+   *  `schemaDescription`, so no text from the run reaches a later prompt. */
+  readonly describe?: (workflow: unknown) => string;
   readonly now?: () => Date;
+  /** A live trial's tenure while runs are in flight (`TrialTenure`). Opt-in: absent, a newcomer replaces a trial at once, as
+   *  before. */
+  readonly tenure?: TrialTenure;
 };
+
+/**
+ * Where the host's runs started, for a trial's tenure: with runs in flight side by side, a run that saves a new revision
+ * may report back before the runs that ran the live trial do, and its revision would retire the trial before their uses
+ * count. With a tenure, a new revision does not replace the live TRIAL when the run that saved it started before the trial
+ * was live (it never saw the trial), or while a run that started with the trial live, and before it, is still in flight.
+ * A champion is never held. Each hold ends as the runs that started before the saving run report back, so a trial no run
+ * uses cannot keep its name; with no run in flight nothing is held.
+ */
+export type TrialTenure = {
+  /** The main commit `run` was prepared from and its place in the order the host started runs, or undefined for a run the
+   *  host does not know (no tenure applies to its revision). */
+  readonly started: (run: string) => { readonly sha: string; readonly order: number } | undefined;
+  /** The runs the host has started whose curation has not committed. A run that reports stays in it until the `curate`
+   *  call that takes it has returned: curate takes reported runs in the order of their branch names, not the order they
+   *  started, so a run still queued for curation keeps the trial's tenure. Every run that ENDED without reaching curate,
+   *  however it ended (crashed, aborted, deadline-killed, infra-failed), leaves it at its end, so a dead run cannot pin a
+   *  hold. The package cannot see either; this is the host's contract. */
+  readonly inFlight: () => readonly string[];
+};
+
+/** Why `tenure` holds the revision `run` saved for `name` against main's live trial, or undefined. */
+async function tenureHold(tenure: TrialTenure, input: AdmitWorkflowInput, name: string, trialText: string, run: string): Promise<string | undefined> {
+  const live = currentRevision(parseTrial(trialText, name));
+  const latest = input.workflow.records?.latest;
+  const incoming = typeof latest === "string" && /^[0-9a-f]{64}\n$/.test(latest) ? latest.slice(0, 64) : undefined;
+  if (live?.status !== "trial" || incoming === undefined || incoming === live.sha256) return undefined;
+  const self = tenure.started(run);
+  if (!self) return undefined;
+  // A read that fails is no tenure decision: it throws, curate stops, and the run is curated again later.
+  const liveAt = async (sha: string) => {
+    const text = await input.read(trialPath(name), sha);
+    if (text === undefined) return false;
+    try {
+      return currentRevision(parseTrial(text, name))?.sha256 === live.sha256;
+    } catch (error) {
+      if (error instanceof LearnError) return false;
+      throw error;
+    }
+  };
+  const short = live.sha256.slice(0, 12);
+  if (!(await liveAt(self.sha))) return `the run that saved it started before the live trial ${short} was, so it does not replace that trial`;
+  for (const other of tenure.inFlight()) {
+    const at = other === run ? undefined : tenure.started(other);
+    if (at && at.order < self.order && (await liveAt(at.sha))) return `the live trial ${short} keeps its tenure: a run that started with it, before the run that saved this one, is still in flight`;
+  }
+  return undefined;
+}
 
 /**
  * The curator's `admitWorkflow` port, over `admitInDir`: it copies main's `trial.json` and skill for the name into a scratch
  * directory, validates the run's records through the DSL's store there, saves the revision the run ended on, and writes the
- * skill (from `description`, the agent's when-to-use text) and `trial.json`. `admitted` carries every path changed, text or
- * null, for the one commit. A workflow with code in it, or one with no trial to describe, is `held`; a name pi cannot load, a
- * record the store refuses, a demoted revision and the limits are `refused`. The curator's judgments of the `untrusted` text
- * have already been made when the port is called, so the flag changes nothing here.
+ * skill (from `describe` of its document, unless the caller hands over a `description`) and `trial.json`. `admitted` carries every path changed, text or
+ * null, for the one commit. A workflow with code in it, one with no trial to describe, and one whose trial.json on main does not
+ * parse are `held`, as is one a `tenure` holds; a name pi cannot load, a record the store refuses, a demoted revision and the limits are `refused`. The
+ * curator's judgments of the `untrusted` text have already been made when the port is called, so the flag changes nothing here.
  */
 export function workflowAdmitter(options: WorkflowAdmitterOptions = {}): AdmitWorkflow {
   return async (input: AdmitWorkflowInput): Promise<AdmitWorkflowResult> => {
@@ -809,9 +991,20 @@ export function workflowAdmitter(options: WorkflowAdmitterOptions = {}): AdmitWo
       return { status: "refused", reason: "a workflow name is lowercase letters and digits in words joined by single hyphens, so pi can load it as a skill" };
     }
     const name = workflow.name;
+    const held = await input.read(trialPath(name), input.main);
+    if (held !== undefined) {
+      try {
+        parseTrial(held, name);
+      } catch (error) {
+        if (!(error instanceof LearnError)) throw error;
+        return { status: "held", reason: `its trial.json on main does not parse (${error.code}), so the workflow was held` };
+      }
+      const tenure = options.tenure && await tenureHold(options.tenure, input, name, held, workflow.run);
+      if (tenure) return { status: "held", reason: tenure };
+    }
     const result = await staged(options.tmpRoot, input, async () => [trialPath(name), skillPath(name)], (dir) => admitInDir({
       dir, runId: workflow.run, name, records: workflow.records,
-      ...(workflow.description === undefined ? {} : { description: workflow.description }),
+      description: workflow.description ?? options.describe ?? schemaDescription,
       ...(options.when ? { when: options.when } : {}), ...(options.allowExecutableCode ? { allowExecutableCode: true } : {}), ...(options.now ? { now: options.now } : {}),
     }));
     if (result.status === "refused") return { status: result.reason === "code" || result.reason === "unknown" ? "held" : "refused", reason: `${result.reason}: ${result.detail}` };
@@ -837,7 +1030,7 @@ export function usesSettler(options: UsesSettlerOptions = {}): SettleUses {
     const decisions: { name: string; action: "promote" | "demote" | "hold"; reason: string; rollbackTo?: string }[] = [];
     let uses: RunUses;
     try {
-      uses = parseRunUses(JSON.stringify({ version: 1, run: input.run, uses: input.uses }), input.run);
+      uses = checkRunUses({ version: 1, run: input.run, uses: input.uses }, input.run);
     } catch {
       return { files: {}, decisions: [{ name: "uses", action: "hold", reason: "the uses file is not well formed, so none were folded" }] };
     }

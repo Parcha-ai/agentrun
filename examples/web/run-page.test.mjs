@@ -9,7 +9,7 @@ import { after, before, test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { startRun } from "@parcha/pi-durable-agent";
-import { renderText, timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { renderText, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { buildSignedInHome, signedInHomeSkip } from "../../packages/pi-durable-agent/test/fixtures/signed-in-home.mjs";
 import { ensureAgentHome } from "./agent/home.mjs";
 import { byId, byTag, fakeDom, settle, shown } from "./fake-dom.mjs";
@@ -113,6 +113,34 @@ test("a live source: the message box, stop, new run and the Browser tab, each ac
   await settle();
   assert.ok(calls.includes("stop r1"));
   assert.deepEqual([...view.fetched, ...view.window.fetched], []);
+});
+
+test("pi's run phases read as the agent's turns: a run waiting for the person never says it finished", async (t) => {
+  // What a live run's door gives while the person signs in: a turn that started and ended, then the wait.
+  const reducer = timelineReducer();
+  reducer.apply([{ type: "run_start", conversationId: "c1" }, { type: "run_end", conversationId: "c1" }]);
+  const live = [...rows.slice(0, 8), ...reducer.rows()];
+  const source = { ...liveSource(), timeline: (id, { signal } = {}) => (async function* () {
+    yield { rows: live, state: "waiting", costUsd: 0.03 };
+    await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+  })() };
+  const view = await mount(t, source, "#/run/r1");
+  const steps = view.find("steps").textContent;
+  assert.match(steps, /Turn started/);
+  assert.match(steps, /Turn ended/);
+  assert.doesNotMatch(steps, /Run finished|Run started/, "the page's run is the whole job; pi's run is one turn of it");
+});
+
+test("the history shows a live run in the state its page shows: a door busy with no turn running is idle, not running", async (t) => {
+  // The server's summary: the run is live, its door says busy (letting go of its browser), its rows end on the answer.
+  const releasing = summary({ id: "r1", status: "running", live: true, busy: "busy", state: "idle", endedAt: null });
+  const source = { ...liveSource(), list: async () => [releasing], run: async () => releasing, timeline: (id, { signal } = {}) => (async function* () {
+    yield { rows, state: "idle", costUsd: 0.05 };
+    await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+  })() };
+  const view = await mount(t, source, "#/run/r1");
+  assert.match(view.find("runs").textContent, /Idle/);
+  assert.doesNotMatch(view.find("runs").textContent, /Running/, "the history row agrees with the run's own header");
 });
 
 test("a replay whose run has no cost shows no dollar figure anywhere, though its rows carry one", async (t) => {
@@ -288,7 +316,7 @@ test("a page unmounted while a run's timeline is still loading does no more work
 });
 
 test("writeReplay writes the static layout staticSource reads under any path: the reference job's rows, its files, and search", async (t) => {
-  const recording = (await readFile(new URL("../../apps/viewer/recordings/reference-job/events.jsonl", import.meta.url), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const recording = (await readFile(new URL("../../apps/viewer/test/fixtures/reference-job/events.jsonl", import.meta.url), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
   const entries = recording.filter((l) => l.channel === "durable" && l.source === "pi" && Array.isArray(l.data?.model)).map((l) => l.data);
   const reference = timelineOf(entries, { settled: true });
   const out = join(tmp, "site", "data");
@@ -610,7 +638,7 @@ test("a replay never carries a sign-in or a frame: writeReplay drops what a run 
   assert.ok(!(await readdir(bundle, { recursive: true })).some((f) => /frames|\.jpg$/.test(f)), "the packed page holds no frame");
 });
 
-const RECORDING = new URL("../../apps/viewer/recordings/reference-job/", import.meta.url);
+const RECORDING = new URL("../../apps/viewer/test/fixtures/reference-job/", import.meta.url);
 const GOLDEN = new URL("../../packages/pi-durable-agent/test/fixtures/timeline-reference-job.txt", import.meta.url);
 
 /** A run store holding the reference-job recording's entries. The recording keeps no store blob, so its store is made
@@ -650,7 +678,8 @@ test("a recorded run through writeReplay: its store gives the golden rows, its m
   assert.deepEqual(JSON.parse(await readFile(join(out, "runs", "reference-job", "files.json"), "utf8")).map((f) => f.path), ["result.json"], "the result blob, and no frame, screenshot or evidence");
   assert.deepEqual(await readFile(join(out, "runs", "reference-job", "files", "result.json")), await readFile(new URL(`blobs/${result}.json`, RECORDING)));
   const [listed] = JSON.parse(await readFile(join(out, "runs.json"), "utf8")).runs;
-  assert.deepEqual([listed.title, listed.startedAt, listed.costUsd, listed.live], ["The reference job, no key", "2026-10-14T23:01:10.811Z", null, false], "a scripted recording has no cost");
+  const started = JSON.parse(await readFile(new URL("manifest.json", RECORDING), "utf8")).recorded.started;
+  assert.deepEqual([listed.title, listed.startedAt, listed.costUsd, listed.live], ["The reference job, no key", started, null, false], "the run's start as its manifest says it; a scripted recording has no cost");
   assert.equal(JSON.parse(await readFile(join(out, "runs", "reference-job.json"), "utf8")).costUsd, null);
 });
 

@@ -3,7 +3,7 @@
 //   tools.bash({ command })   a shell command through the call's own environment (`api.env.exec`), in the run's `work/`: the claim's confined environment, the same one the agent's own bash tool uses.
 //   vision.see(...)           the vision handle's global for this call, built from the composed handles, so a demo hands the agent `vision.see` without any wiring of its own.
 //   vision.transcribe(...)    what is said in an audio or video file, as words with times, by the host's speech-to-text model (chosen by the host's config; its key lives in the host's adapter, never in the sandbox), priced and receipted.
-//   vision.judge(...)         Jev's typed answers about images, through the host's judge seam (capped, priced, with its crossings), built the same way; the agent never holds a key.
+//   vision.judge(...)         Jev's typed answers about images, through the host's judge seam (priced, with its crossings), built the same way; the agent never holds a key.
 // The sandbox has no network, no `fetch`, no `process`, no `require`, no timers and no file access of its own: whatever reaches the outside goes through `tools.bash` and the environment's confinement. A command `tools.bash`
 // runs can do what the environment lets a shell do, so turn code mode on only where the agent's own bash is allowed. The tool is `replay: 'unsafe'` (its default): a call a crash interrupted is not rerun, because the commands
 // it ran may have had effects.
@@ -13,6 +13,7 @@ import { callContext, piResult, type VisionHandle } from '@parcha/pi-vision/dura
 import { Type } from 'typebox';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { commandEnv } from './command-env.ts';
 
 /** Where a code-mode look's picture is noted (looks.ts `note`), and the directory the script's relative image paths are read from. */
 export type CodeModeImages = { note(conversationId: string, tool: string, path: string | undefined, bytes: Buffer, mimeType: string): void; workDir: string };
@@ -46,7 +47,8 @@ export function codeModeExtension(vision: VisionHandle, options: CodeModeOptions
             const keep = (chunk: string) => { const room = Math.max(0, outputChars - output.length); output += chunk.slice(0, room); dropped += chunk.length - Math.min(chunk.length, room); };
             // The command stops with the script: its deadline, a caller's abort and the sandbox closing end the command as they end the script, beside the tool call's own abort.
             const abortSignal = scripted.signal && context.abortSignal ? AbortSignal.any([scripted.signal, context.abortSignal]) : scripted.signal ?? context.abortSignal;
-            const ran = await api.env.exec(command, { onOutput: keep }, { ...context, abortSignal });
+            // The command gets only `commandEnv()`, never this process's keys (command-env.ts): the bash tool and this global run alike.
+            const ran = await api.env.exec(command, { onOutput: keep, inheritEnv: false, env: commandEnv() }, { ...context, abortSignal });
             if (!ran.ok) throw new Error(`the command could not run: ${ran.error.message}`);
             const shown = dropped ? `${output}\n[${dropped} more characters not shown]` : output;
             // The skills' contract: a command that exits 0 resolves its output (stdout and stderr together, clipped); one that exits non-zero rejects with an Error that carries its exitCode and its output, so nothing is lost. The sandbox hands a script a thrown error's message only, so the message names the exit code and holds the output (the Error also has `exitCode` and `output` for the host).

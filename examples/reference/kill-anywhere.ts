@@ -20,7 +20,7 @@ import { join, relative } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/testing';
-import { placeAt, run } from '@parcha/agentrun-harness';
+import { handedOut, placeAt, processText, run } from '@parcha/agentrun-harness';
 import { localHost, type LedgerRow, type StatusEvent } from '@parcha/agentrun-harness';
 import { gates } from './gates.ts';
 import { fakes, job, lead } from './job.ts';
@@ -135,9 +135,9 @@ async function child() {
   try {
     const result = await run(place, local.host, job);
     await recorder?.detach();
-    console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}) }, view: summary(place, result, local) }));
+    console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: processText(result.message).slice(0, 240) } : {}) }, view: handedOut(summary(place, result, local)) }));
   } catch (error) {
-    console.log(JSON.stringify({ outcome: { status: 'error', code: (error as { code?: string }).code ?? null, message: String((error as Error).message).slice(0, 200) } }));
+    console.log(JSON.stringify({ outcome: { status: 'error', code: (error as { code?: string }).code ?? null, message: processText(String((error as Error).message)).slice(0, 200) } }));
   }
 }
 
@@ -333,6 +333,14 @@ export async function cutBrowserAction(when: 'applying' | 'applied') {
   } finally { await served.close(); await rm(scratch, { recursive: true, force: true }); }
 }
 
+/** One created session is released once. A scan-only answer may use no session or page operations. */
+export function balancedBrowserSession(browser: Record<string, number>, reducedRecord: boolean): boolean {
+  const created = browser.create ?? 0;
+  const released = browser.release ?? 0;
+  return (created === 1 && released === 1) ||
+    (reducedRecord && created === 0 && released === 0 && Object.entries(browser).every(([op, count]) => !op.startsWith('page.') || count === 0));
+}
+
 /** The answers a lead gives when it cites the scan alone (the reference job's own wording). */
 const REDUCED_ANSWERS = ['Whether the registry page was opened is not known, so the filing scan is cited alone.', 'The registry page could not be opened, so the filing scan is cited alone.'];
 
@@ -345,6 +353,15 @@ export function isReduced(record: unknown, wanted: unknown): boolean {
   return REDUCED_ANSWERS.includes(got.answer as string) && JSON.stringify(got) === JSON.stringify(expected);
 }
 
+/** K5: the uncut run that did not complete, named by its outcome or its stderr, with a key in either never carried: the harness's processText on each line. */
+export function uncutRefusal(result: { outcome?: unknown; stderr?: string }): Error {
+  return new Error(`the uncut job did not complete: ${JSON.stringify(handedOut(result.outcome ?? result.stderr))}`);
+}
+/** K6: the ledger as it is returned and printed (JSON or rendered): every string through processText (a check's detail holds a process's outcome or stderr). */
+export function ledgerOut(ledger: Ledger): Ledger {
+  return handedOut(ledger);
+}
+
 export async function killAnywhere(options: { seed: number; kills: number; keep?: boolean; record?: string }): Promise<Ledger> {
   if (!Number.isSafeInteger(options.kills) || options.kills < 0) throw new Error(`--kills must be a whole number, not ${options.kills}`);
   if (!Number.isSafeInteger(options.seed)) throw new Error(`--seed must be a whole number, not ${options.seed}`);
@@ -355,7 +372,7 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
   try {
     // The reference: the job uncut. It also counts the crossings a whole run takes, which the plan draws from.
     const reference = await whole(scratch, 'reference');
-    if (reference.result.outcome?.status !== 'complete') throw new Error(`the uncut job did not complete: ${JSON.stringify(reference.result.outcome ?? reference.result.stderr)}`);
+    if (reference.result.outcome?.status !== 'complete') throw uncutRefusal(reference.result);
     
     const dir = join(scratch, 'cut');
     const { backend, state } = watchedBackend();
@@ -430,7 +447,6 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
         { what: 'browser read', times: times(counted.browser, 'page.read'), allowed: 1, causes: cutAt(/^(child receipt\.(filing|filed) browser_read|supervisor browser\.applied driver\.page)$/), pids: [] },
         { what: 'vision look', times: counted.looks, allowed: 1, causes: cutAt(/^(child receipt\.(filing|filed) look|child event vision\.look)$/), pids: [] },
       ]);
-    const eq1 = (n: number) => n === 1;
     // After a cut page action the lead takes a snapshot and decides from what the browser says. A lead that cannot tell whether
     // the action happened does not ask again: its record cites the scan alone and says the page's outcome is unknown. That
     // reduced record is accepted exactly when a page action was cut and the record cites no browser read, whether or not the
@@ -445,7 +461,7 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
       { name: 'the last process completed the run', ok: last?.outcome?.status === 'complete', detail: last?.outcome ?? last?.stderr },
       { name: 'the delivered record equals the uninterrupted run\'s', ok: record !== null && (eq(record, wanted) || reduced), detail: reduced ? 'the reduced record: the scan alone, the page action cut' : undefined },
       { name: 'every effect (the search) was made exactly once', ok: eq(counted.effects, ref.effects), detail: counted.effects },
-      { name: 'the browser session was created once and released once', ok: eq1(times(counted.browser, 'create')) && eq1(times(counted.browser, 'release')), detail: counted.browser },
+      { name: 'every created browser session was released once; no session only for a scan-only answer', ok: balancedBrowserSession(counted.browser, reduced), detail: counted.browser },
       { name: 'the browser\'s page action ran at most once; not at all only where a kill cut it before it was applied and the lead went on without it', ok: times(counted.browser, 'page.run') === 1 || (times(counted.browser, 'page.run') === 0 && erroredRuns > 0), detail: { 'page.run': times(counted.browser, 'page.run'), 'errored run results': erroredRuns, pageRuns } },
       { name: 'every committed model turn exactly once, in order; after a cut page action the lead takes one snapshot, and nothing else is added', ok: eq(turnsSeen, turnsWanted) && snapshots === (erroredRuns > 0 ? 1 : 0), detail: counted.committedTurns },
       { name: 'the same receipts, each filed once', ok: eq(counted.receipts, reduced ? without(['browser_read'], ref.receipts) : ref.receipts), detail: counted.receipts },
@@ -459,7 +475,7 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
     const runInterrupted = landed.filter((kill) => inRun.has(`${kill.landed!.side} ${kill.landed!.point}`)).map((kill) => kill.process);
     const browserCalls = backend.ledger.map((row) => row.op);
     for (const { id, ok, detail } of gated) checks.push({ name: `gate ${id}`, ok, detail: ok ? undefined : detail });
-    return { seed: options.seed, kills, processes, browserCalls, runInterrupted, pageRuns, trail, ...(options.keep ? { scratch } : {}), gates: gated, covered: classesOf(kills), final: { status: last?.outcome?.status ?? 'unknown', generation: last?.outcome?.generation ?? null, record }, counted, reference: ref, checks, ms: Date.now() - started };
+    return ledgerOut({ seed: options.seed, kills, processes, browserCalls, runInterrupted, pageRuns, trail, ...(options.keep ? { scratch } : {}), gates: gated, covered: classesOf(kills), final: { status: last?.outcome?.status ?? 'unknown', generation: last?.outcome?.generation ?? null, record }, counted, reference: ref, checks, ms: Date.now() - started });
   } finally {
     if (!options.keep) await rm(scratch, { recursive: true, force: true });
   }

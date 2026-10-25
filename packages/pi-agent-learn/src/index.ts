@@ -5,7 +5,7 @@ export {
   assertNotRulesLocked, CAPS, COMMIT_SHA, inboxPath, inboxWorkflowDir, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RULES_LOCKED, RUN_ID, runBranch, type Tier,
   tierOf, usesPath, WORKFLOW_NAME,
 } from "./layout.js";
-export { byUse, deriveSeed, indexLine, MAX_WORKFLOW_HINTS, renderSection, type SeedRecord, seededIds, type WorkflowHint } from "./section.js";
+export { byUse, deriveSeed, indexLine, MAX_WORKFLOW_HINTS, renderSection, type SeedRecord, seededIds, trialFirstText, type WorkflowHint } from "./section.js";
 export { readSeed, SeedDoc, type Seeded, seedLearning, type SeedOptions, type Skipped } from "./seed.js";
 export { CandidatesDoc, collectCandidates, LEARN_PARAMETERS, learnTool, type LearnToolOptions } from "./tool.js";
 export {
@@ -15,14 +15,14 @@ export {
 } from "./types.js";
 export { type Caps, createGuard, guard } from "./guard.js";
 export { type Inbox, type InboxCandidate, InboxFormatError, type InboxOptions, parseInbox, renderInbox } from "./inbox.js";
-export { type ProposeFilesOptions, type ProposeOptions, type ProposeResult, type ProposeTarget, proposeFiles, proposeLearning, type UsesSource, type WorkflowRecords } from "./propose.js";
+export { type ProposeFilesOptions, type ProposeOptions, type ProposeResult, type ProposeTarget, proposeFiles, proposeLearning, type UsesSource, type Withheld, type WorkflowRecords } from "./propose.js";
 export {
   curate, CURATE_CAPS, type CurateCaps, type CurateItem, type CurateOptions, type CurateReport, type CurateRepo, type Cut, DEFAULT_THRESHOLDS, type Judge,
   type Question, QUESTIONS, type RetireOptions, type RetireResult, retireLearning, type RunReport, type RunsRepo, type Thresholds,
 } from "./curate.js";
 export {
   type Admission, type AdmitRevision, admitRevision, applyDecision, type Applied, type Decision, type DecisionOptions, type Folded, foldUses,
-  type IgnoredUse, periodUses, PROMOTION_DEFAULTS, promotionDecision, type Thresholds as PromotionThresholds, thresholdsOf,
+  type IgnoredUse, periodUses, PROMOTION_DEFAULTS, promotionDecision, type Serving, servingRevision, type Thresholds as PromotionThresholds, thresholdsOf,
 } from "./promotion.js";
 export {
   checkPreconditions, checkTrial, currentRevision, deriveWhen, fitTrial, type Json, LIMITS as TRIAL_LIMITS, matches, parseTrial, type Precondition, PRECONDITION_OPS, PreconditionSchema, pruneUses,
@@ -30,9 +30,10 @@ export {
   type TrialStatus, type Use, USE_OUTCOMES, type UseOutcome, whenSize, workflowDir, WORKFLOW_SKILL_NAME,
 } from "./trial.js";
 export {
-  type AdmitRefusal, collectUses, collectWorkflows, type CollectedWorkflows,
+  type AdmitRefusal, collectUses, collectWorkflows, type CollectedWorkflows, COPIED_TEXT, copiesRead,
   type CollectWorkflowsOptions, type Files, type FoundWorkflow, inboxWorkflowFiles, MAX_RUN_USES, MAX_RUN_WORKFLOWS, parseRunUses, readTrialIn, readSessionUses, readUses,
-  type ReadSessionUsesOptions, type ReadUses, type ReadUsesOptions, renderSkill, type RepoAt, type RunUse, type RunUses, seedWorkflows, type SeededWorkflows, sessionEntries, type SeedWorkflowsOptions,
-  schemaWhen, settleWorkflowUses, type Settled, type SettledDecision, type SettleOptions, type SkippedWorkflow, usesSettler, type UsesSettlerOptions, usesSource,
-  workflowAdmitter, type WorkflowAdmitterOptions, workflowsToTry,
+  type ReadSessionUsesOptions, type ReadUses, type ReadUsesOptions, readRevision, renderSkill, type RepoAt, type RunUse, type RunUses, seedWorkflows, type SeededWorkflows, sessionEntries, type SeedWorkflowsOptions,
+  schemaDescription, schemaWhen, settleWorkflowUses, type Settled, type SettledDecision, type SettleOptions, type SkippedWorkflow, usesSettler, type UsesSettlerOptions, usesSource,
+  type TrialTenure, workflowAdmitter, type WorkflowAdmitterOptions, workflowsToTry,
 } from "./workflows.js";
+export { hostKey, hostRunName, planServing, type PlanServingOptions, serve, SERVE_LIMITS, type ServedRun, servedUse, type ServeOptions, type ServingPlan, type WorkflowStarter } from "./serving.js";

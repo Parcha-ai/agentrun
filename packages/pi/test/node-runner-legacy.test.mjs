@@ -34,7 +34,7 @@ for (const [point, before, total] of [['after-conversation', ['legacy-open'], 1]
     const request = second.rows.find((row) => row.event === 'request');
     assert.equal(request.sections.task, OLD_SYSTEM, 'the system text the older build kept, byte for byte');
     assert.equal(request.submit, 'Deliver the Verdict record. Submit it inline as the tool arguments. It ends the run. These parameters are the output schema: submit validates the record against it and returns the violations to fix, up to 8 per call.');
-    assert.deepEqual(second.end, { event: 'end', record: { verdict: 'buy' }, stored: { record: { verdict: 'buy' }, attempts: 1 } });
+    assert.deepEqual(second.end, { event: 'end', record: { verdict: 'buy' }, stored: { record: { verdict: 'buy' }, attempts: 1 }, input: { claim: 'x' } }, 'the document the runner writes for it carries the node\'s input');
     assert.equal(requests(dir), total);
   });
 }

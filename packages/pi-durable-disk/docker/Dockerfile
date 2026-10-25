@@ -11,14 +11,14 @@
 # The package inside an image is always one version: the tarball's must be this checkout's (or PDA_VERSION). A release
 # that predates the Docker path is refused: between releases, build from the checkout (docker/package/README.md).
 #
-# Pinned: the Node base by digest (a multi-arch index), the archil client 0.8.42 by sha256 per architecture, the
+# Pinned: the Node base by digest (a multi-arch index), the archil client 0.10.0 by sha256 per architecture, the
 # runtime dependencies by docker/runtime/package-lock.json. No secret is in any layer: the mount token reaches a
 # container only after `docker create`, as a file the entrypoint removes before the instance starts.
 FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
 
-ARG ARCHIL_VERSION=0.8.42-1790378297
-ARG ARCHIL_SHA256_AMD64=ee593dde01f1c2cbd4ff9cba7852aa87b45f58b97dc328e66e03ced98d9c60d3
-ARG ARCHIL_SHA256_ARM64=2219d6e84decf37041e7a299d0477edda8770fb960b2a0ba349059ad3a3bc1f3
+ARG ARCHIL_VERSION=0.10.0-1792692895
+ARG ARCHIL_SHA256_AMD64=7d75f7b94d64952a939570dc79d0996c914696be176b45e9fed51a45c15ad0ba
+ARG ARCHIL_SHA256_ARM64=900e5aa26f63b1e98c697e0de010e34a58802baeb7ec23f539d9d9ba0d137fea
 
 # FUSE (libfuse2 for the client, fuse3 for fusermount), tini as PID 1, the archil client checked by hash, the run user.
 # Node's own fetch downloads the client, so no curl stays in the image.

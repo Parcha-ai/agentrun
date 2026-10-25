@@ -19,7 +19,7 @@ Here the run starts on this machine (host A, a systemd unit) and moves to a Dayt
 - **This machine, run as an ordinary user with passwordless `sudo`:** Linux, systemd and the archil client. `localHost`
   starts the instance as a systemd unit through `sudo`, and the instance mounts through the package's own
   `bin/archil-scoped` under `sudo`. The example refuses to start as root or without passwordless `sudo`. A host locked
-  down as in [Setting up a host for production](../../README.md#setting-up-a-host-for-production) (a root supervisor, a
+  down as in [Setting up a host for production](../../docs/reference.md#setting-up-a-host-for-production) (a root supervisor, a
   dedicated run user, only the installed wrapper in sudoers) runs production runs, not this example, which runs as you
   so that both hosts share your uid.
 - **The same run user uid on both hosts.** Both incarnations write the same store and workspace, and the disk enforces
@@ -42,10 +42,12 @@ at the tag of the version you installed, for example
 
 ```sh
 npm init -y && npm pkg set type=module
-npm install @parcha/pi-durable-disk@0.1.0-beta.14 @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
+npm install @parcha/pi-durable-disk@0.1.0-beta.14 @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 # put main.ts, app.ts, box.ts and pause.ts in this directory, beside node_modules, from the tag of that version
 node main.ts
 ```
+
+pi 1.4 is not supported yet; a later release widens the range.
 
 The box installs the same package version and peers that this directory has, so the two hosts run the same code.
 

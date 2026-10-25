@@ -4,8 +4,10 @@
 // readers take the store file itself (pi-durable's SQLite file, wherever the host keeps it), never a directory.
 import fs from "node:fs";
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { apply } from "@earendil-works/chord/delta";
 import type { RecoveryEffect, RecoveryNote } from "@parcha/agentrun-dsl/recovery";
+import { decisionKey } from "./decisions.js";
 import { effectKey } from "./store.js";
 
 type Database = import("node:sqlite").DatabaseSync;
@@ -18,12 +20,16 @@ export type JournalView = {
 };
 type DriverRecord = { binding: string | null; inputs: Record<string, string> | null; generation: number; revision: number; state: Json; notes: RecoveryNote[]; effects: string[] };
 
+/** How a reader opens the store file. `immutable` opens it as SQLite's immutable file, for a store no process writes any
+ *  more and with no write-ahead log beside it (an ended run's): nothing beside it is read or made. */
+export type DurableReadOptions = { immutable?: boolean };
+
 /** The run's store `file`, opened read-only for `read`; null when there is no such file. Every query of one `read` runs
  *  in one read transaction, so what it returns is one commit's view, whatever a writer commits meanwhile. */
-export function withDurableFile<T>(file: string, read: (db: Database) => T): T | null {
+export function withDurableFile<T>(file: string, read: (db: Database) => T, options: DurableReadOptions = {}): T | null {
   if (!fs.existsSync(file)) return null;
   const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
-  const db = new DatabaseSync(file, { readOnly: true, timeout: 5000 });
+  const db = new DatabaseSync(options.immutable ? `${pathToFileURL(file).href}?immutable=1` : file, { readOnly: true, timeout: 5000 });
   try { db.exec("BEGIN"); return read(db); } finally { db.close(); }
 }
 
@@ -69,8 +75,22 @@ function itemEffects(db: Database, key: string, table: unknown, into: string[]):
 }
 
 /** A Session document of the run's store `file`, read-only; undefined when the file or the document is absent. */
-export function durableDoc<T = Record<string, unknown>>(file: string, kind: string, key?: string): T | undefined {
-  return (withDurableFile(file, (db) => sessionDoc(db, kind, key)) ?? undefined) as T | undefined;
+export function durableDoc<T = Record<string, unknown>>(file: string, kind: string, key?: string, options: DurableReadOptions = {}): T | undefined {
+  return (withDurableFile(file, (db) => sessionDoc(db, kind, key), options) ?? undefined) as T | undefined;
+}
+
+/** The decision rows (`agentrun.decisions`) of the run's store `file`, in commit order, in whichever form the store holds: the single
+ *  document's `receipts` list, or the keyed documents (one row each, in the order of their keys). A reader that folds decisions from the
+ *  store uses this and not `durableDoc(file, "agentrun.decisions").receipts`, which is nothing in the keyed form. */
+export function durableDecisions(file: string): Array<Record<string, unknown>> {
+  return withDurableFile(file, (db) => {
+    const single = sessionDoc(db, "agentrun.decisions") as { receipts?: unknown } | undefined;
+    if (single) return Array.isArray(single.receipts) ? (single.receipts as Array<Record<string, unknown>>) : [];
+    const count = (sessionDoc(db, "agentrun.decisions.count") as { count?: unknown } | undefined)?.count;
+    const rows: Array<Record<string, unknown>> = [];
+    if (typeof count === "number") for (let place = 0; place < count; place += 1) { const row = sessionDoc(db, "agentrun.decisions", decisionKey(place)); if (row) rows.push(row as Record<string, unknown>); }
+    return rows;
+  }) ?? [];
 }
 
 /** The journal `key` holds in the run's store `file`, as the last commit left it; undefined when the file holds no
@@ -78,7 +98,7 @@ export function durableDoc<T = Record<string, unknown>>(file: string, kind: stri
  *  admitted, in either layout: in the keyed one (`agentrun.frozen_run.v4`) the effects a map item owns, nested maps
  *  included, are listed by that item's record, not the driver's, and are read from there. `state` is the driver's own
  *  record: in the keyed layout what lies in each map item stays in the item's record. */
-export function readJournal(file: string, key: string): JournalView | undefined {
+export function readJournal(file: string, key: string, options: DurableReadOptions = {}): JournalView | undefined {
   return withDurableFile(file, (db): JournalView | undefined => {
     const doc = sessionDoc(db, "agentrun.driver", key) as DriverRecord | undefined;
     if (!doc || doc.binding === null) return undefined;
@@ -95,7 +115,7 @@ export function readJournal(file: string, key: string): JournalView | undefined 
       return { id, name: e?.name ?? "", argsHash: e?.argsHash ?? "", status: e?.status ?? "unknown", session: e?.session ?? null, result: e?.result ?? null, ...(e?.intent ? { intent: e.intent } : {}), ...(e?.args !== undefined ? { args: e.args } : {}), ...(Array.isArray((e as { calls?: unknown })?.calls) ? { calls: (e as { calls: unknown[] }).calls } : {}) } as RecoveryEffect;
     });
     return { binding: doc.binding, inputs: doc.inputs, generation: doc.generation, revision: doc.revision, state: doc.state, notes: doc.notes, effects };
-  }) ?? undefined;
+  }, options) ?? undefined;
 }
 
 /** Every committed route decision a frozen snapshot holds (each judge's answer, whole), by execution path. Empty for a

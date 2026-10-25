@@ -67,7 +67,7 @@ It takes about ten seconds and prints the story (the shas differ on every run; s
 
 7. Run 3 starts at main 5bce08b. Its first model request carries:
      Nothing learned yet (your repo at 5bce08befafb).
-     Workflows to try first for this input: triage-crash (trial). Run one with the agentrun tool; if it escalates, continue yourself.
+     Workflows to try first for this input: triage-crash (trial). Run one with the agentrun tool; if it escalates, continue yourself. A workflow on trial earns trust only from its own clean runs: run it before doing the job yourself, and change it only after it escalates or fails.
    triage-crash 2bfc0cd79680 is in the run's own workflow store for the agentrun tool to load
    same issue as run 2; this scripted run does not try the workflow; answer: bug: the body is a crash trace.
 
@@ -116,8 +116,9 @@ good: it counts how each run that used it ended, as the `agentrun` tool recorded
 - **A run is one use of a revision.** However many cases a run gave the workflow, curation counts it once, and the worst
   outcome wins (`failed` over `escalated` over `frozen`); the other cases are named as `same_run` in the report. So promotion
   and demotion rest on distinct runs, and one run cannot promote a trial alone.
-- **Three clean runs promote.** A trial whose last three uses, three distinct runs, all ended `frozen` becomes `active`. The
-  run that wrote a revision is no evidence for it.
+- **Three clean runs promote.** A trial whose last three uses, three distinct runs, all ended `frozen` becomes `active`:
+  this host sets three (`usesSettler({ thresholds: { promoteAfter: 3 } })`), over the package's default of two. The run
+  that wrote a revision is no evidence for it.
 - **Two failed or escalated runs in a row demote and roll back.** The live revision is marked `demoted`, and the revision it
   replaced, kept as `superseded` with its preconditions and the description of its skill, is active again. With none to
   restore, the name is demoted whole and its skill is removed, so no run is offered it.
@@ -165,7 +166,7 @@ each get an issue with no body, so the tool's run ends `escalated` at the gate b
      ...
      uses/run-10.json: triage-crash 5046cece45f8 escalated at 2026-10-16T11:22:16.560Z
      curate: run-10: triage-crash demote, back to 2bfc0cd79680: its last 2 uses ended escalated, escalated
-     main e2f1da0 changes .agents/skills/triage-crash/SKILL.md, .agents/skills/triage-crash/trial.json, .pi/agentrun/workflows/triage-crash/latest
+     main e2f1da0 changes .agents/skills/triage-crash/trial.json, .pi/agentrun/workflows/triage-crash/latest
      trial.json: trial -> active; 2bfc0cd79680 active, 5046cece45f8 demoted; uses run-5 frozen, run-6 frozen, run-7 frozen, run-9 escalated, run-10 escalated
 ```
 

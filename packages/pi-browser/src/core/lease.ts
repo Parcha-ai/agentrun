@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export type LeaseState = "creating" | "live" | "releasing" | "released" | "lost";
+export type LeaseState = "creating" | "live" | "held" | "releasing" | "released" | "lost";
 
 /** `gone`: the provider no longer knows the session, which counts as released. */
 export type ResourceStatus = "pending" | "running" | "stopped" | "gone";
@@ -14,7 +14,8 @@ export type LeaseRef = { readonly id: string; readonly tag: string };
 export const LEASE_TRANSITIONS: Readonly<Record<LeaseState | "none", readonly LeaseState[]>> = Object.freeze({
   none: ["creating"],
   creating: ["live", "released", "releasing"],
-  live: ["releasing", "released", "lost"],
+  live: ["held", "releasing", "released", "lost"],
+  held: ["live", "releasing", "released", "lost"],
   releasing: ["released", "lost"],
   released: [],
   lost: [],

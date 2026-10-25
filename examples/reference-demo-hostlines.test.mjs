@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
 import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
+import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, tapBox, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 // ---- run.json host lines from place.status() --------------------------------------------------------------------------------------------------
@@ -249,9 +249,19 @@ test('recording.carry.failed: a tick that fails is retried, a final failure refu
   writeFileSync(file, JSON.stringify({ name: 'reference' }));
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
   const failed = (recording) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === 'recording.carry.failed');
-  // A tick that fails once: a line, no refusal, and the final call brings everything home.
+  // A tick that fails once: a line, no refusal, and the final call brings everything home. Ticks are the only non-final carries, so the child is held
+  // (a step that waits on a file) until the first one has happened: a child that finishes inside one tick would have no tick to fail.
   const tick = join(tmp, 'tick');
-  const retried = await demo({ ...options, argv: ['--json', '--record', tick], place: boxed(join(tmp, 'b1'), { failOn: ({ final, calls }) => (!final && calls === 1 ? 'CARRY_FAILED' : undefined) }) });
+  const released = join(tmp, 'tick-released');
+  let retried;
+  process.env.DEMO_LINGER_UNTIL = released;
+  try {
+    const { options: held } = await import(`${FIXTURE}?options=held-${Date.now()}`);
+    let ticked = false;
+    retried = await demo({ ...held, argv: ['--json', '--record', tick], place: boxed(join(tmp, 'b1'), { failOn: ({ final }) => { if (final || ticked) return undefined; ticked = true; writeFileSync(released, ''); return 'CARRY_FAILED'; } }) });
+  } finally {
+    delete process.env.DEMO_LINGER_UNTIL;
+  }
   assert.equal(retried.processes.at(-1).outcome.status, 'complete');
   assert.deepEqual(failed(tick).map((line) => [line.data.gen, line.data.code, 'lost' in line.data]), [[1, 'CARRY_FAILED', false]]);
   assert.ok(!failed(tick)[0].data.message.includes(tmp) && failed(tick)[0].data.message.includes('<path>'), 'paths in the message are <path>');
@@ -300,7 +310,10 @@ test('RECORD_STARTED gives a fresh recording directory its clock (an existing on
   const lines = names.flatMap((name) => readFileSync(join(dir, '.spool', name), 'utf8').split('\n').filter(Boolean)).map((entry) => JSON.parse(entry));
   assert.deepEqual(lines.map((line) => line.data.index).sort(), [0, 1, 2, 3, 4, 5, 6, 7]);
   assert.ok(names.every((name) => statSync(join(dir, '.spool', name)).size <= 600), 'each segment is small');
-  // A second process counts the first as one process, not one per segment.
+  // A second process counts the first as one process, not one per segment. A stream is named for its process's pid and the
+  // millisecond it opened; a second process never shares both, so this one, in the same process, opens in a later millisecond.
+  const firstOpened = Number(/^live-\d+-(\d+)\./.exec(names[0])[1]);
+  while (Date.now() <= firstOpened) await new Promise((resolve) => setTimeout(resolve, 1));
   const second = openRecorder({ dir, segmentBytes: 300 });
   second.live('workflow', 'x', { index: 'second' });
   await second.detach();
@@ -385,16 +398,35 @@ test('the slow tick does not queue a carry behind one still running: a place who
 test('a box charge that first appears in the last status read counts against the cap: the run is over budget', { timeout: 300_000 }, async (t) => {
   const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05 });
   const recording = join(tmp, 'recording');
-  let reads = 0;
+  let exited = false;
   const result = await demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
     const inner = localPlace({ self, paths, destroyBoxes, requestFile });
     const box = { provider: 'prov', kind: 'sandbox', from: '2026-10-16T10:00:00.000Z', usdPerSecond: 1, source: 'list', priced: true };
-    // The box's end is first reported by the third read, the last one the supervisor makes (start, exit, end): $60 against a cap of $0.10.
-    return { ...inner, status: async () => { reads += 1; return { record: null, boxes: [reads >= 3 ? { ...box, to: '2026-10-16T10:01:00.000Z' } : box] }; } };
+    // The box's end is first reported by a read made after the runner has exited (the supervisor's last), never by how many reads came before: the slow tick reads too, so a count can land mid-run. $60 against a cap of $0.10.
+    return { ...inner,
+      start: async (order) => { const runner = await inner.start(order); runner.exited.then(() => { exited = true; }, () => { exited = true; }); return runner; },
+      status: async () => ({ record: null, boxes: [exited ? { ...box, to: '2026-10-16T10:01:00.000Z' } : box] }) };
   } });
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
   assert.equal(result.overBudget, true, 'the charge that arrived with the last read is over the cap');
 });
+test('a box charge that first appears in the very last status read the supervisor makes (the second after the runner exits) counts against the cap: the run is over budget, which only the final budget check can see', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05 });
+  const recording = join(tmp, 'recording');
+  let exited = false;
+  let afterExit = 0;
+  const result = await demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    const box = { provider: 'prov', kind: 'sandbox', from: '2026-10-16T10:00:00.000Z', usdPerSecond: 1, source: 'list', priced: true };
+    // The box's end is first reported by the second read after the runner has exited: the first is the exit read, the second the last one the supervisor makes, before its final budget check. A charge that arrived at the exit read could be counted by the meter before that check; the slow tick reads too, so a count can land mid-run. $60 against a cap of $0.10.
+    return { ...inner,
+      start: async (order) => { const runner = await inner.start(order); runner.exited.then(() => { exited = true; }, () => { exited = true; }); return runner; },
+      status: async () => { if (exited) afterExit += 1; return { record: null, boxes: [afterExit >= 2 ? { ...box, to: '2026-10-16T10:01:00.000Z' } : box] }; } };
+  } });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.equal(result.overBudget, true, 'the charge that arrived with the last read is over the cap');
+});
+
 test('a delegation without a path (the package finds it by its inode) is kept: a delegation line and a revoke entry are written without one', { timeout: 300_000 }, async (t) => {
   const { tmp, options } = await specWith(t, { name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] });
   const recording = join(tmp, 'recording');

@@ -65,7 +65,7 @@ A workflow is {"v":2,"name","schemas","input"?,"output","root"}.
 - The input contract: the run starts from the input object and nothing else. ${code("input.schemaId")}, when present, is enforced before the first node. A node may read only input keys and keys an earlier node wrote.
 - ${code("output.schemaId")} validates the final value; ${code("output.path")} selects it from state and must name an input key or a key an earlier node wrote.
 - State is one object. Each step writes its result under one key: its ${code("as")}, or, for an agent, decide, extract or code node without ${code("as")}, its label. A report writes ${code("report_markdown")}. A code node without ${code("as")} that returns an object merges that object's top-level fields instead.
-- Keys that begin with ${code("$")} are engine-owned: ${code("$host")} (host state), ${code("<as>$answers")} (raw judge answers and confidences) and ${code("<as>$verify")} (verifier results). Read them; never write one. No ${code("as")} may begin with ${code("$")}, and neither may the label of an agent, decide, extract or code node without ${code("as")}.
+- Keys that hold a ${code("$")} are engine-owned: ${code("$host")} (host state), ${code("<as>$answers")} (raw judge answers and confidences) and ${code("<as>$verify")} (verifier results). Read them; never write one. No ${code("as")} may hold a ${code("$")}, and neither may the label of an agent, decide, extract or code node without ${code("as")}.
 - ${code("{dot.path}")} placeholders are replaced from state in ${code("state")} maps (including ${code("verify.state")} and ${code("ask.state")}), call ${code("args")}, ${code("input")}, ${code("env")} and ${code("produces")}, a child workflow's ${code("input")}, and ${code("escalate.summary")}; ${code("pick")} and ${code("sift")} ${code("describe")} templates also see ${code("{item...}")}. A placeholder that is the whole string keeps its value's type. Every key a state map, call or child input interpolates must be produced upstream. ${code("instructions")}, ${code("code")} and ${code("command")} are literal and never interpolated.
 
 ## Node kinds
@@ -88,7 +88,7 @@ Their fields:
 - ${code("out")} names the schema the submission must satisfy; the value lands at ${code("as")}.
 - ${code("requires")} lists state paths that must hold evidence before the node runs, each produced upstream: missing values, null, blank strings, empty arrays and empty objects stop the run; ${code("false")} and ${code("0")} pass.
 - ${code("tools")} names tools the host offers. ${code("[]")} means no tools; omitting ${code("tools")} offers every tool the host allows. Never name a tool the host did not offer.
-- ${code("effort")} is ${alternatives(EFFORT_LEVELS)}; ${code("thinking")} is ${alternatives(THINKING_LEVELS)} (never off); ${code("tier")} is ${alternatives(MODEL_TIERS)}. They are requests to the host: resource ceilings are the host's.
+- ${code("effort")} is ${alternatives(EFFORT_LEVELS)}; ${code("thinking")} is ${alternatives(THINKING_LEVELS)} (never off); ${code("tier")} is ${alternatives(MODEL_TIERS)}. They are requests to the host: resource ceilings are the host's. A node that names no ${code("thinking")} thinks at medium, unless its host sets another level.
 - An ${code("agent")} node may carry ${code("budget_usd")}, the most it asks to spend in dollars (above 0), which the host caps by what it has left, and ${code("context")}, ${alternatives(AGENT_CONTEXTS)}: ${code("fresh")} (the default) sees only its instructions and state; ${code("fork")} asks the host to start it from the caller's transcript, which a host refuses where it has none.
 - ${code("sopSection")} names one heading of the host's SOP, or a list of them, as the exact text after "## ". The node receives those sections verbatim.
 - ${code("verify")} reviews a submission before it is accepted: {"out": a question schema with at least one boolean question, "state"?, "maxDrives"?: an integer >= 1 (default 2, no maximum), "override"?: {"below": a number in (0, 1), default 0.3}}. A boolean question named after a submission field doubts that field when its yes-probability is below ${code("override.below")}; any other boolean question is a requirement met at 0.5. A rejected submission returns to the same session with the reasons.
@@ -113,7 +113,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 ### Control nodes
 
 - ${code("chain")}: non-empty ${code("steps")}, run in order.
-- ${code("map")}: ${code("itemsPath")} (an upstream list), ${code("body")} and ${code("as")}. The body sees ${code("item")} and ${code("item_index")}; ${code("maxConcurrency")} is a positive integer (default 4); ${code("resultPath")} selects one path from each completed item's state. Without ${code("resultPath")}, and with no ${code("as")} in the body, each item's result is its whole state, the mapped list included: set ${code("resultPath")} (or an ${code("as")} in the body) for a large map; the validator warns.
+- ${code("map")}: ${code("itemsPath")} (an upstream list), ${code("body")} and ${code("as")}. The body sees ${code("item")} and ${code("item_index")}; ${code("maxConcurrency")} is a positive integer (default 4); ${code("resultPath")} selects one path from each completed item's state. Without ${code("resultPath")}, and with no ${code("as")} in the body, each item's result is its whole state, the mapped list included: set ${code("resultPath")} (or an ${code("as")} in the body) for a large map; the validator warns. ${code("onItemFailure")} is ${code("stop")} (default: the first failing item stops the map and the run) or ${code("collect")}. With ${code("collect")}, an item whose node fails (a call that failed after its retries, an agent that delivered no record, output that does not match its schema, a failed check) ends as {item_index, label, code, message} in the list at ${code("failedAs")}, the other items finish, and ${code("as")} stays aligned with the items: ${code("as[i]")} is item i's result, or ${code("null")} when item i failed. Filter the nulls explicitly if only successes are wanted. Gate on ${code("failedAs")} with ${code("escalate")} or a code node; never let failures pass silently. A crash, a cancel, an ${code("escalate")} inside the item or an effect whose outcome is unknown is never collected.
 - ${code("parallel")}: at least two ${code("branches")}, each starting from the state before the parallel node. Branches write disjoint keys and never read a sibling's writes.
 - ${code("loop")}: ${code("body")}, ${code("until")} (a predicate) and an integer ${code("maxIters")} of at least 1 (no maximum), optionally an integer ${code("expect_iters")} of at least 1 (priced passes). At the bound the state passes through with ${code("until")} unmet; follow the loop with an escalate or gate on that condition.
 - ${code("escalate")}: ${code("when")} (a predicate), and non-empty ${code("kind")}, ${code("stage")} and ${code("summary")}. When the predicate holds the run stops without output and returns the escalation with its interpolated summary.
@@ -181,7 +181,8 @@ export function authorContract(options: { host?: AuthorHostAddendum } = {}): str
 export interface CandidatePolicyOptions {
   /** Authoritative rubric text by section name. Every generative node must name every section. */
   rubricSections?: Record<string, string>;
-  /** Admits code, call and artifact nodes. */
+  /** Admits code, call and artifact nodes. A candidate's code is syntax-checked before acceptance and run only after
+   *  its host accepts it; in-process code is not a sandbox (see the README's `code` node note). */
   allowExecutableCandidates?: boolean;
   /** Direct tool calls admitted without executable authorization. */
   allowedEffectTools?: readonly string[];
@@ -256,6 +257,8 @@ export function applyHostOutputTypes(candidate: Workflow, host: AuthorHostAddend
     if (node.node === "parallel") return { ...node, branches: (node.branches || []).map(visit) };
     if (node.node === "map" || node.node === "loop") return { ...node, body: visit(node.body) };
     if (node.node === "route") return { ...node, branches: Object.fromEntries(Object.entries(node.branches || {}).map(([name, branch]) => [name, { ...branch, body: visit(branch?.body) }])) };
+    // Unlike desugarWorkflow, this does not descend into a child workflow: a child may not hold an artifact node
+    // (validateWorkflow rejects it, see containsReportNode), so there is nothing for the prose-type rewrite to reach there.
     return node;
   };
   return { ...candidate, root: visit(candidate.root) };
@@ -270,6 +273,8 @@ export interface AuthorWorkflowOptions {
   /** Keys available to a candidate without an input schema; defaults to the host's initial state keys. */
   inputKeys?: string[];
   rubricSections?: Record<string, string>;
+  /** Admits code, call and artifact nodes. A candidate's code is syntax-checked before acceptance and run only after
+   *  its host accepts it; in-process code is not a sandbox (see the README's `code` node note). */
   allowExecutableCandidates?: boolean;
   maxCandidates?: number;
   /** Host acceptance over a structurally valid candidate, in the interpreter's view (`applyHostOutputTypes`):
@@ -319,7 +324,9 @@ export async function authorWorkflow(options: AuthorWorkflowOptions): Promise<Au
         const errors = candidatePolicyErrors(value, options);
         if (!errors.length) {
           try {
-            const verdict = validateWorkflow(applyHostOutputTypes(value as Workflow, options.host), { inputKeys });
+            // executeCode: false — a candidate's code is syntax-checked here, never run, so a candidate runs nothing
+            // until its host accepts it. Runs and dry runs after acceptance still probe the code.
+            const verdict = validateWorkflow(applyHostOutputTypes(value as Workflow, options.host), { inputKeys, executeCode: false });
             if (!verdict.ok) errors.push(...verdict.errors);
           } catch (error) { errors.push(`Invalid workflow: ${error instanceof Error ? error.message : String(error)}`); }
         }

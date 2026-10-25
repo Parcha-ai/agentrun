@@ -2,12 +2,20 @@
 
 These serve the tests only and are never bundled into the gallery: a hand-cut fixture is not a recording of a run.
 
+## reference-job
+
+A recording of a run, not cut by hand: the reference job (`examples/reference`) with scripted providers, no key, $0, one
+process. Recorded at `79868e54` with `npm run demo:reference -- --record <dir>`, and nothing in it is edited: one paid
+call, one judge ask, four model turns, nothing repeated or asked twice, cost $0. It left the gallery, which shows agent
+runs only; the tests read it as a clean run (the chat view's, the gate's and the Pages step's tests, the timeline's
+golden test, the cost comparison).
+
 ## ten-kills-seed21
 
 A recording of a run, not cut by hand, kept for the tests that read a killed run beside the clean `reference-job`
 (the timeline's golden test, the gallery gate's tests): the reference job killed ten times, at the points seed 21 picks
 (a model turn, the judge, a browser read, receipt filings, the supervisor before and after an outside call applied),
-and resumed each time. Eleven processes. Recorded at `79868e54` with `npm run demo:kill -- --seed 21 --json --record
+and resumed each time. Eleven processes. Recorded at `51c178bc` (after the recorder stopped keeping a browser session's live-view URL) with `npm run demo:kill -- --seed 21 --json --record
 <dir>`, and nothing in it is edited.
 
 Its counters agree with `reference-job`'s: one paid call, one judge ask, four model turns, nothing repeated or asked

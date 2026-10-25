@@ -776,3 +776,310 @@ test("lines made while a write is stuck wait in a bounded queue: past 32 they ar
   for (let i = 0; i < 40; i += 1) { frames.resume(ref.id); frames.pause(ref.id); } // each pause writes one gap line
   assert.ok(frames.stats().dropped >= 8, `${frames.stats().dropped} dropped at once`);
 });
+
+// The host's hold: `hold(ref)` is asked wherever the capture asks whether it is paused. True: no frame is stored and one gap line (credential_on_page, detail "host") marks the span;
+// false: frames resume. A hold the host cannot answer is a hold.
+const framesOf = (r) => r.lines.filter((l) => l.kind === "frame");
+const gapsOf = (r) => r.lines.filter((l) => l.kind === "frame.gap");
+
+test("hold(ref) true stores no frame and writes ONE host gap for the whole span, not one per skipped frame; false resumes", async (t) => {
+  const state = { held: false, asked: [] };
+  const r = await rig(t, { hold: (ref) => { state.asked.push(ref); return state.held; } });
+  const ref = await open(r);
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 1) });
+  await until(() => framesOf(r).length === 1);
+  const before = framesOf(r)[0];
+  state.held = true;
+  for (let i = 0; i < 6; i += 1) { r.cdp.frame({ bytes: jpeg(800, 500, 10, 10 + i) }); await sleep(120); }
+  assert.equal(framesOf(r).length, 1, "no frame is stored while it is held");
+  assert.equal(gapsOf(r).length, 1, "one gap for the span, however many frames it skipped");
+  assert.deepEqual(gapsOf(r)[0].data, { session: ref.id, from: before.t, reason: "credential_on_page", detail: "host" });
+  state.held = false;
+  const after = jpeg(800, 500, 10, 30);
+  r.cdp.frame({ bytes: after });
+  await until(() => framesOf(r).length === 2);
+  assert.equal(framesOf(r)[1].blobs[0], sha(after), "the frame after the hold is stored");
+  assert.equal(gapsOf(r).length, 1);
+  assert.ok(state.asked.every((x) => x.id === ref.id && x.tag === "ar-run-7-1"), "hold is given the lease the capture belongs to");
+});
+
+test("each held span gets its own gap: a second hold after a resume is a second gap, from the last frame stored", async (t) => {
+  const state = { held: false };
+  const r = await rig(t, { hold: () => state.held });
+  await open(r);
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 1) });
+  await until(() => framesOf(r).length === 1);
+  for (const round of [1, 2]) {
+    state.held = true;
+    for (let i = 0; i < 3; i += 1) { r.cdp.frame({ bytes: jpeg(800, 500, 10, 100 * round + i) }); await sleep(120); }
+    await until(() => gapsOf(r).length === round);
+    state.held = false;
+    r.cdp.frame({ bytes: jpeg(800, 500, 10, 100 * round + 50) });
+    await until(() => framesOf(r).length === round + 1);
+  }
+  assert.deepEqual(r.kinds(), ["frame", "frame.gap", "frame", "frame.gap", "frame"]);
+  assert.equal(gapsOf(r)[1].data.from, framesOf(r)[1].t, "the second gap starts where the frame before it was stored");
+});
+
+test("a hold that begins after a frame was judged and before its turn drops that frame: the check at delivery asks too", async (t) => {
+  const state = { held: false, probes: 0 };
+  const r = await rig(t, { hold: () => state.held, onProbe: () => { state.probes += 1; if (state.probes === 2) state.held = true; } });
+  await open(r);
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 1) });
+  await until(() => gapsOf(r).length === 1);
+  await sleep(150);
+  assert.equal(framesOf(r).length, 0, "the frame that was waiting for its turn when the hold began is not stored");
+  assert.equal(gapsOf(r)[0].data.detail, "host");
+});
+
+test("a hold that throws is a hold: nothing is stored, and one gap says so", async (t) => {
+  const r = await rig(t, { hold: () => { throw new Error("the host cannot say"); } });
+  await open(r);
+  for (let i = 0; i < 4; i += 1) { r.cdp.frame({ bytes: jpeg(800, 500, 10, i + 1) }); await sleep(120); }
+  assert.equal(framesOf(r).length, 0);
+  assert.equal(gapsOf(r).length, 1);
+});
+
+test("a hold that answers something other than true is no hold", async (t) => {
+  const r = await rig(t, { hold: () => "yes" });
+  await open(r);
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 1) });
+  await until(() => framesOf(r).length === 1);
+  assert.equal(gapsOf(r).length, 0);
+});
+
+test("a hold does not lift a credential pause, and a credential pause is not lifted by the hold ending", async (t) => {
+  const state = { held: false };
+  const r = await rig(t, { hold: () => state.held });
+  const ref = await open(r);
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 1) });
+  await until(() => framesOf(r).length === 1);
+  r.frames.pause(ref.id);
+  state.held = true;
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 2) });
+  await sleep(200);
+  state.held = false;
+  for (let i = 0; i < 3; i += 1) { r.cdp.frame({ bytes: jpeg(800, 500, 10, 5 + i) }); await sleep(120); }
+  assert.equal(framesOf(r).length, 1, "still paused: only a navigation or resume lifts the credential pause");
+  r.cdp.navigate("PAGE1", "https://example.test/next");
+  await sleep(50);
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 30) });
+  await until(() => framesOf(r).length === 2);
+});
+
+test("a person driving through a live view (a driving gate asked by session tag) yields zero stored frames while input arrives, and frames resume when it stops", async (t) => {
+  // The shape of the live view host's gate: driving(tag) is true from a viewer's input until a quiet period has passed.
+  const gate = { until: 0, driving: (tag) => tag === "ar-run-7-1" && Date.now() < gate.until, touch: (ms) => { gate.until = Date.now() + ms; } };
+  const r = await rig(t, { hold: (ref) => gate.driving(ref.tag) });
+  await open(r);
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 1) });
+  await until(() => framesOf(r).length === 1);
+  const stored = framesOf(r).length;
+  for (let i = 0; i < 12; i += 1) { gate.touch(400); r.cdp.frame({ bytes: jpeg(800, 500, 10, 200 + i) }); await sleep(100); }
+  assert.equal(framesOf(r).length, stored, "no frame of the person's session is stored while they drive");
+  assert.equal(gapsOf(r).length, 1);
+  await sleep(500);
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 300) });
+  await until(() => framesOf(r).length === stored + 1);
+});
+
+test("while held the page is not checked: frames that arrive in a hold are dropped before the credential probe, not after it", async (t) => {
+  const state = { held: false, probes: 0 };
+  const r = await rig(t, { hold: () => state.held, onProbe: () => { state.probes += 1; } });
+  await open(r);
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 1) });
+  await until(() => framesOf(r).length === 1);
+  await sleep(150);
+  const probes = state.probes;
+  state.held = true;
+  for (let i = 0; i < 5; i += 1) { r.cdp.frame({ bytes: jpeg(800, 500, 10, 20 + i) }); await sleep(100); }
+  assert.equal(state.probes, probes, "no check of the page is sent for a frame that arrives while the host holds the session");
+  assert.equal(gapsOf(r).length, 1);
+});
+
+test("a frame queued behind another session's slow write is not stored when a hold begins before the queue reaches it: the hold is read at the sink, the last step before the write", async (t) => {
+  const [a, b] = await Promise.all([fakeCdp(), fakeCdp()]);
+  t.after(() => Promise.all([a.close(), b.close()]));
+  const held = new Set();
+  const stored = [];
+  let release = () => {};
+  const blocked = new Promise((resolve) => { release = resolve; });
+  let writes = 0;
+  const frames = frameRecorder({
+    sink: async (line) => { writes += 1; if (writes === 1) await blocked; stored.push(line); }, // the first write, session A's, is slow, and the queue is shared
+    clock: () => Date.now() % 1_000_000, gen: () => 1,
+    hold: (ref) => held.has(ref.tag),
+  });
+  t.after(() => frames.close());
+  const endpoints = new Map();
+  const provider = {
+    name: "cdp", caps: {},
+    async create(spec) { const ref = { id: `sess-${spec.tag}`, tag: spec.tag }; endpoints.set(ref.id, spec.tag.endsWith("-1") ? a : b); return ref; },
+    async attach(ref) { return { sdkCdpUrl: endpoints.get(ref.id).url }; },
+    async release() {},
+  };
+  const watched = frames.watch(provider);
+  for (const [tag, e] of [["ar-run-21-1", a], ["ar-run-22-2", b]]) { const ref = await watched.create({ tag }, new AbortController().signal); await watched.attach(ref, new AbortController().signal); await until(() => e.screencasts().length === 1); }
+  a.frame({ bytes: jpeg(800, 500, 10, 1) });
+  await until(() => writes === 1);
+  b.frame({ bytes: jpeg(800, 500, 10, 2) });
+  await sleep(500); // session B's frame is judged, kept, and queued behind session A's blocked write
+  assert.equal(writes, 1, "session B's frame waits in the shared queue");
+  held.add("ar-run-22-2");
+  release();
+  await sleep(400);
+  assert.deepEqual(stored.map((l) => [l.kind, l.data.session]), [["frame", "sess-ar-run-21-1"], ["frame.gap", "sess-ar-run-22-2"]], "session A's frame, then session B's one host gap: B's queued frame is not stored");
+  assert.deepEqual([stored[1].data.reason, stored[1].data.detail], ["credential_on_page", "host"]);
+  assert.equal(frames.stats().dropped, 0, "a frame the hold withheld is not a dropped write");
+});
+
+// When a hold lifts, the screencast may never send another frame (it sends one only when the page repaints, and a person's login has often already left the page): the recorder captures ONE frame on demand,
+// through the usual credential check, so the replay does not end at the hold. A withheld frame never counts as the last frame kept.
+const shots = (r) => r.cdp.calls.filter((c) => c.method === "Page.captureScreenshot");
+
+test("when a hold lifts on a page that does not repaint, the recorder captures one frame on demand, and none without a hold", async (t) => {
+  const state = { held: false };
+  const shot = jpeg(800, 500, 77, 9);
+  const r = await rig(t, { hold: () => state.held });
+  r.cdp.state.screenshot = shot;
+  await open(r);
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 1) });
+  await until(() => framesOf(r).length === 1);
+  await sleep(900);
+  assert.equal(shots(r).length, 0, "no screenshot is asked for while nothing was held");
+  state.held = true;
+  for (let i = 0; i < 3; i += 1) { r.cdp.frame({ bytes: jpeg(800, 500, 10, 20 + i) }); await sleep(120); }
+  await until(() => gapsOf(r).length === 1);
+  state.held = false; // the person is done; the page does not repaint, so no screencast frame follows
+  await until(() => framesOf(r).length === 2, 5000);
+  assert.deepEqual(r.kinds(), ["frame", "frame.gap", "frame"]);
+  assert.equal(framesOf(r)[1].blobs[0], sha(shot), "the frame is a capture of the page as it is after the hold");
+  assert.deepEqual([framesOf(r)[1].data.w, framesOf(r)[1].data.h], [800, 500], "its size is the JPEG's own");
+  await sleep(900);
+  assert.equal(shots(r).length, 1, "one capture for the span, not one per poll");
+  // The capture is sized like a screencast frame: JPEG at the recorder's quality, clipped to the page's CSS viewport and scaled to at most 800 px wide.
+  assert.deepEqual(shots(r)[0].params, { format: "jpeg", quality: 60, clip: { x: 0, y: 0, width: 1280, height: 800, scale: 0.625 } });
+});
+
+test("the frame captured when a hold lifts goes through the credential check: a field still holding a value is the credential gap, not a frame", async (t) => {
+  const state = { held: false };
+  const r = await rig(t, { hold: () => state.held });
+  r.cdp.state.screenshot = jpeg(800, 500, 77, 9);
+  await open(r);
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 1) });
+  await until(() => framesOf(r).length === 1);
+  state.held = true;
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 2) });
+  await until(() => gapsOf(r).length === 1);
+  r.cdp.state.secret = true; // the password field still holds the value the person typed
+  state.held = false;
+  await until(() => gapsOf(r).length === 2, 5000);
+  await sleep(300);
+  assert.equal(framesOf(r).length, 1, "the capture of a page holding a credential is not stored");
+  assert.deepEqual(gapsOf(r).map((g) => [g.data.reason, g.data.detail]), [["credential_on_page", "host"], ["credential_on_page", "field"]]);
+});
+
+test("a withheld frame never moves the last frame kept: the gaps that name a start name the last frame stored before the hold", async (t) => {
+  const state = { held: false };
+  const r = await rig(t, { hold: () => state.held });
+  const ref = await open(r);
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 1) });
+  await until(() => framesOf(r).length === 1);
+  const before = framesOf(r)[0].t;
+  await sleep(300);
+  state.held = true;
+  for (let i = 0; i < 4; i += 1) { r.cdp.frame({ bytes: jpeg(800, 500, 10, 30 + i) }); await sleep(120); }
+  await until(() => gapsOf(r).length === 1);
+  assert.equal(gapsOf(r)[0].data.from, before, "the host gap starts where the last frame stored ended");
+  await r.watched.release(ref, new AbortController().signal);
+  await until(() => gapsOf(r).length === 2);
+  assert.equal(gapsOf(r)[1].data.reason, "session_released");
+  assert.equal(gapsOf(r)[1].data.from, before, "a release inside the hold starts at that frame, not at a time inside the hold");
+});
+
+test("each lifted hold gets its own capture, and a capture that fails costs one frame, not the capture: the next screencast frame is stored", async (t) => {
+  const state = { held: false };
+  const r = await rig(t, { hold: () => state.held });
+  r.cdp.state.screenshot = jpeg(800, 500, 77, 9);
+  await open(r);
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 1) });
+  await until(() => framesOf(r).length === 1);
+  for (const round of [1, 2]) {
+    state.held = true;
+    r.cdp.frame({ bytes: jpeg(800, 500, 10, 40 + round) });
+    await until(() => gapsOf(r).length === round);
+    state.held = false;
+    await until(() => shots(r).length === round, 5000);
+    await until(() => framesOf(r).length === round + 1, 5000);
+  }
+  r.cdp.state.screenshotError = true;
+  state.held = true;
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 50) });
+  await until(() => gapsOf(r).length === 3);
+  state.held = false;
+  await until(() => shots(r).length === 3, 5000);
+  await sleep(400);
+  assert.equal(framesOf(r).length, 3, "a failed capture stores nothing");
+  const later = jpeg(800, 500, 10, 60);
+  r.cdp.frame({ bytes: later });
+  await until(() => framesOf(r).length === 4);
+  assert.equal(framesOf(r)[3].blobs[0], sha(later), "and the recorder goes on");
+});
+
+test("a frame that was queued when the hold began and is withheld at the sink does not move the last frame kept: a release inside the hold starts at the frame stored before it", async (t) => {
+  const [a, b] = await Promise.all([fakeCdp(), fakeCdp()]);
+  t.after(() => Promise.all([a.close(), b.close()]));
+  const held = new Set();
+  const lines = [];
+  let block = false;
+  let release = () => {};
+  const frames = frameRecorder({
+    sink: async (line) => { if (block) { block = false; await new Promise((resolve) => { release = resolve; }); } lines.push(line); },
+    clock: () => Date.now() % 1_000_000, gen: () => 1, hold: (ref) => held.has(ref.tag),
+  });
+  t.after(() => frames.close());
+  const endpoints = new Map();
+  const provider = { name: "cdp", caps: {}, async create(spec) { const ref = { id: `sess-${spec.tag}`, tag: spec.tag }; endpoints.set(ref.id, spec.tag.endsWith("-1") ? a : b); return ref; }, async attach(ref) { return { sdkCdpUrl: endpoints.get(ref.id).url }; }, async release() {} };
+  const watched = frames.watch(provider);
+  const refs = [];
+  for (const [tag, e] of [["ar-run-31-1", a], ["ar-run-32-2", b]]) { const ref = await watched.create({ tag }, new AbortController().signal); await watched.attach(ref, new AbortController().signal); refs.push(ref); await until(() => e.screencasts().length === 1); }
+  b.frame({ bytes: jpeg(800, 500, 10, 1) });
+  await until(() => lines.filter((l) => l.kind === "frame" && l.data.session === refs[1].id).length === 1);
+  const before = lines.find((l) => l.kind === "frame" && l.data.session === refs[1].id).t;
+  await sleep(300);
+  block = true; // the next write, session A's, is slow: the queue is shared
+  a.frame({ bytes: jpeg(800, 500, 10, 2) });
+  await sleep(250);
+  b.frame({ bytes: jpeg(800, 500, 10, 3) }); // session B's second frame is judged, kept, and queued behind A's blocked write
+  await sleep(500);
+  held.add("ar-run-32-2"); // the hold begins while that frame waits
+  release();
+  await sleep(500);
+  assert.equal(lines.filter((l) => l.kind === "frame" && l.data.session === refs[1].id).length, 1, "session B's queued frame was withheld at the sink");
+  await watched.release(refs[1], new AbortController().signal);
+  await until(() => lines.some((l) => l.kind === "frame.gap" && l.data.reason === "session_released"));
+  const released = lines.find((l) => l.kind === "frame.gap" && l.data.reason === "session_released");
+  assert.equal(released.data.from, before, "the release starts at the frame stored before the hold, not at the withheld frame's time");
+});
+
+test("a screencast frame that arrives while the on-demand capture is in flight is newer than it: the late capture is discarded, the replay never jumps back", async (t) => {
+  const state = { held: false };
+  const r = await rig(t, { hold: () => state.held });
+  r.cdp.state.screenshot = jpeg(800, 500, 77, 9); // the capture
+  r.cdp.state.screenshotDelayMs = 1200; // slow: the page repaints meanwhile
+  await open(r);
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 1) });
+  await until(() => framesOf(r).length === 1);
+  state.held = true;
+  r.cdp.frame({ bytes: jpeg(800, 500, 10, 2) });
+  await until(() => gapsOf(r).length === 1);
+  state.held = false;
+  await until(() => shots(r).length === 1, 5000); // the capture was asked for and is in flight
+  const newer = jpeg(800, 500, 10, 3);
+  r.cdp.frame({ bytes: newer }); // the page repainted: a newer picture than the capture will be
+  await until(() => framesOf(r).length === 2, 5000);
+  await sleep(1800); // the capture completes now
+  assert.equal(framesOf(r).length, 2, "the late capture is not stored");
+  assert.equal(framesOf(r)[1].blobs[0], sha(newer), "the last frame kept is the newer screencast frame");
+});
+

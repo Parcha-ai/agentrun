@@ -6,6 +6,7 @@
 import type { Element } from "@xmldom/xmldom";
 import { OFFICE_LIMITS, OfficeMissError, cellText, inflateEntry, readSource, sheetText, zipDirectory, type OfficeCell, type OfficeLimits } from "../core/office.js";
 import type { Cell, Provider, ProviderCall, ProviderSource } from "../core/provider.js";
+import { messageLine, mib, MS_PER_SECOND } from "../core/primitives.js";
 
 /** The reader's output version: it changes whenever the text or the cells it writes change, so a derivation cached
  *  under an older one is never reused. */
@@ -39,7 +40,6 @@ type Archive = {
 };
 
 const unreadable = (why: string) => new OfficeMissError("unreadable", why);
-const mib = (bytes: number) => `${(bytes / 1048576).toFixed(1)} MiB`;
 const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString("hex");
 
 const kids = (el: El): Element[] => {
@@ -250,12 +250,15 @@ function dateStyles(styles: El): Map<number, DateKind> {
     return kind ? [[index, kind]] : [];
   }));
 }
+const SECONDS_PER_DAY = 86_400;
+const EXCEL_SERIAL_END = 2_958_466;
+
 /** A serial date as ISO text, as much of it as its format shows: the date, the time of day, or both; nothing for a serial no date has.
  *  Excel counts a 29 February 1900 that never was, so its serials before 60 are one day past the 30 December 1899 epoch. */
 function isoDate(serial: number, kind: DateKind, from1904: boolean): string | undefined {
-  if (!(serial >= 0 && serial < 2_958_466)) return undefined;
-  if (kind === "time") return new Date(Math.round((serial % 1) * 86_400) * 1000).toISOString().slice(11, 19);
-  const iso = new Date((from1904 ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, serial < 60 ? 31 : 30)) + Math.round(serial * 86_400) * 1000).toISOString();
+  if (!(serial >= 0 && serial < EXCEL_SERIAL_END)) return undefined;
+  if (kind === "time") return new Date(Math.round((serial % 1) * SECONDS_PER_DAY) * MS_PER_SECOND).toISOString().slice(11, 19);
+  const iso = new Date((from1904 ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, serial < 60 ? 31 : 30)) + Math.round(serial * SECONDS_PER_DAY) * MS_PER_SECOND).toISOString();
   return kind === "date" ? iso.slice(0, 10) : iso.slice(0, 19);
 }
 
@@ -419,7 +422,7 @@ const OPEN_DOCUMENT_TYPE = "application/vnd.oasis.opendocument.";
 const FORMATS = "docx, pptx, xlsx, odt, odp, ods and rtf";
 const ARCHIVE_FORMATS = "docx, pptx, xlsx, odt, odp or ods";
 
-type Source = { readonly format: Format; readonly archive?: Archive; readonly rtf?: string };
+type Source = { readonly format: "rtf"; readonly rtf: string } | { readonly format: Exclude<Format, "rtf">; readonly archive: Archive };
 async function openSource(source: ProviderSource, call: ProviderCall, limits: OfficeLimits): Promise<Source> {
   const data = await readSource(source, call);
   if (Buffer.from(data.subarray(0, 5)).toString("latin1") === "{\\rtf") {
@@ -446,7 +449,7 @@ async function guarded<T>(call: ProviderCall, run: () => Promise<T>): Promise<T>
   } catch (error) {
     if (call.signal?.aborted) throw call.signal.reason ?? error;
     if (error instanceof OfficeMissError) throw error;
-    throw unreadable(`the file could not be read: ${String((error as Error)?.message ?? error).split("\n")[0]}`);
+    throw unreadable(`the file could not be read: ${messageLine(error)}`);
   }
 }
 
@@ -468,25 +471,25 @@ export function officeJsProvider(options: OfficeJsOptions = {}): Provider {
         return { available: true, version: READER_VERSION };
       } catch (error) {
         xmldom = undefined;
-        return { available: false, needs: "fflate and @xmldom/xmldom", reason: `they did not load: ${String((error as Error)?.message ?? error).split("\n")[0]}` };
+        return { available: false, needs: "fflate and @xmldom/xmldom", reason: `they did not load: ${messageLine(error)}` };
       }
     },
     text: (source, request, call) => guarded(call, async () => {
-      const { format, archive, rtf } = await openSource(source, call, limits);
+      const opened = await openSource(source, call, limits);
       const wanted: Wanted = (index) => within(index + 1, request.pages);
       const sheetPages = (sheets: Sheet[]) => sheets.map((s) => ({ page: s.index + 1, text: sheetText(s.name, s.cells, s.hidden) }));
-      const pages = format === "rtf" ? [{ page: 1, text: rtf! }]
-        : format === "docx" ? await docx(archive!, limits)
-        : format === "pptx" ? await pptx(archive!, request.pages)
-        : format === "xlsx" ? sheetPages(await xlsx(archive!, limits, wanted))
-        : format === "ods" ? sheetPages(await ods(archive!, limits, wanted))
-        : await odf(archive!, format, limits);
+      const pages = opened.format === "rtf" ? [{ page: 1, text: opened.rtf }]
+        : opened.format === "docx" ? await docx(opened.archive, limits)
+        : opened.format === "pptx" ? await pptx(opened.archive, request.pages)
+        : opened.format === "xlsx" ? sheetPages(await xlsx(opened.archive, limits, wanted))
+        : opened.format === "ods" ? sheetPages(await ods(opened.archive, limits, wanted))
+        : await odf(opened.archive, opened.format, limits);
       return { madeBy, pages: pages.filter((p) => within(p.page, request.pages)) };
     }),
     cells: (source, request, call) => guarded(call, async () => {
-      const { format, archive } = await openSource(source, call, limits);
-      if (format !== "xlsx" && format !== "ods") throw new OfficeMissError("unsupported", `cells are read from a spreadsheet, and this is ${format === "rtf" ? "an rtf" : `a ${format}`} file`);
-      const sheets = await (format === "xlsx" ? xlsx : ods)(archive!, limits, (_, name) => request.sheet === undefined || request.sheet === name);
+      const opened = await openSource(source, call, limits);
+      if (opened.format !== "xlsx" && opened.format !== "ods") throw new OfficeMissError("unsupported", `cells are read from a spreadsheet, and this is ${opened.format === "rtf" ? "an rtf" : `a ${opened.format}`} file`);
+      const sheets = await (opened.format === "xlsx" ? xlsx : ods)(opened.archive, limits, (_, name) => request.sheet === undefined || request.sheet === name);
       if (request.sheet !== undefined && !sheets.length) throw new OfficeMissError("unsupported", `the workbook has no sheet named ${request.sheet}`);
       return { madeBy, sheets: sheets.map(({ name, cells }) => ({ name, cells })) };
     }),

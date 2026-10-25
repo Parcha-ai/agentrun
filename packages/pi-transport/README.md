@@ -2,15 +2,66 @@
 
 **Experimental.** The API changes without notice between releases.
 
-Run a [pi-durable](https://github.com/earendil-works/pi) session's tools in another machine, or move the session
-there. This release holds the first layers: the `Box` interface with two providers and a conformance suite, `boxEnv`,
-which runs a session's tools in a box, and `transport()`, which sends each conversation's tools to the box its
-config names.
+A pi agent's tool calls go to Daytona and Modal sandboxes, and Jev places each one on the sandbox that fits it. [Jev](https://docs.typesafe.ai/) is TypeSafe's typed-decision model: it answers a question about a step with a choice and a probability, and writes no prose.
+
+Tool calls can also run as serverless calls on an Archil disk (`archilExecBoxes`).
+
+`boxEnv(box)` gives a [pi](https://github.com/earendil-works/pi) agent's `read`, `write`, `edit` and `bash` a box: it
+is pi's `ExecutionEnv` over the box, for a pi-durable Harness. `transport(config, host)` does it for each conversation,
+from a config that names the environments. The session, its store and its model calls stay with the host; only the
+tool calls go to the box. Every provider is behind one `Box` interface:
+
+| Where | Provider | Isolation |
+| --- | --- | --- |
+| This machine | `localBoxes`, from `@parcha/pi-transport/box/local` | none: for development and tests |
+| Docker | `dockerBoxes`, from `@parcha/pi-transport/box/docker` | a container per box |
+| Daytona | `daytonaBoxes`, from `@parcha/pi-transport/box/daytona` | a container per box on the host kernel; a `linux-vm` snapshot is a VM |
+| Modal | `modalBoxes`, from `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
+| Archil exec | `archilExecBoxes`, from `@parcha/pi-transport/box/archil-exec` | a directory of the agent's work disk; each `exec` is one serverless call in a fresh VM container, and boxes on one disk share it |
+
+Jev places a call from each environment's one-line `purpose`: the host asks `jevPlacer`, Jev reads the step and those
+lines and says where it should run, and the host points its tools there.
+
+The reference below takes each part in turn: [a box](#a-box), [tools in a box](#hands-tools-run-in-a-box),
+[where tools run](#where-tools-run-is-a-line-of-config),
+[a store and a workspace](#moving-a-home-a-store-and-a-workspace),
+[a home](#a-home-the-session-runs-somewhere-and-can-stop-without-a-cut), [Jev's placement](#where-a-session-runs-the-placer),
+[ownership](#ownership-one-writer-per-session), [the box place](#a-sessions-place-in-a-box-place),
+[receipts](#what-a-box-cost-receipts), [a program kept alive in a box](#home-a-program-kept-alive-in-a-box) and
+[writing a provider](#writing-a-provider).
 
 ## A box
 
 A `Box` is one running machine: a directory on this machine, a container, a sandbox, a VM. A `BoxProvider` creates
 boxes, finds them again by id and lists them by label.
+
+Install the package with its pi peers, pinned. pi 1.4 is not supported yet; a later release widens the range.
+
+```sh
+npm install @parcha/pi-transport@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+```
+
+The example below needs Docker; `localBoxes({ root: "./boxes" })` from `@parcha/pi-transport/box/local` runs it with
+no Docker, in a directory on this machine.
+
+```ts
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { finish } from "@parcha/pi-transport";
+import { localBoxes } from "@parcha/pi-transport/box/local";
+
+const provider = localBoxes({ root: "./boxes" });
+const created = await provider.create({ maxLifetimeMs: 10 * 60_000 }, BACKGROUND_CONTEXT);
+if (!created.ok) throw created.error;
+const box = created.value;
+
+const started = await box.exec(["uname", "-a"], undefined, BACKGROUND_CONTEXT);
+if (!started.ok) throw started.error;
+const done = await finish(started.value);
+if (done.ok) console.log(done.value.exitCode, new TextDecoder().decode(done.value.stdout));
+await box.destroy(BACKGROUND_CONTEXT);
+```
+
+That needs no key and no daemon: a box here is a directory under `./boxes`. The same calls on Docker, which runs a container per box and needs a Docker daemon:
 
 ```ts
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -23,21 +74,18 @@ if (!created.ok) throw created.error;
 const box = created.value;
 
 const started = await box.exec(["uname", "-a"], undefined, BACKGROUND_CONTEXT);
-if (started.ok) console.log(await finish(started.value));
+if (!started.ok) throw started.error;
+const done = await finish(started.value);
+if (done.ok) console.log(done.value.exitCode, new TextDecoder().decode(done.value.stdout));
 await box.destroy(BACKGROUND_CONTEXT);
 ```
+
+The examples are ES modules: save them as `.mjs` (or set `"type": "module"`); the `transport()` example below has TypeScript types, so save that one as `.mts` (Node runs it as it is). Install the peers, `@earendil-works/chord` and `@earendil-works/pi-durable`, beside `@parcha/pi-transport`. Node 22.19 or later.
 
 Expected failures are returned as `Result` values with a `BoxError` and a code. Every box has a maximum lifetime
 that its provider enforces with no call from the host, so a host that dies does not leave boxes behind. A program in
 a box never receives the host process's environment. A provider refuses a spec field it cannot honour instead of
-ignoring it.
-
-| Provider | Import | Isolation |
-| --- | --- | --- |
-| This machine | `@parcha/pi-transport/box/local` | none: for development and tests |
-| Docker | `@parcha/pi-transport/box/docker` | a container per box |
-| Daytona | `@parcha/pi-transport/box/daytona` | a container per box on the host kernel; a `linux-vm` snapshot is a VM |
-| Modal | `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
+ignoring it. The table above lists the providers; the sections below say what each one does with a spec.
 
 ### Daytona
 
@@ -58,6 +106,7 @@ snapshot could not be created in the test organization), so treat it as untested
 client is typed structurally (`ModalSdk`); the `ModalClient` of the `modal` package, version 0.11.0, fits it.
 
 ```ts
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ModalClient } from "modal";
 import { modalBoxes } from "@parcha/pi-transport/box/modal";
 
@@ -89,14 +138,92 @@ It refuses `image`, `snapshot`, `cpus`, `memoryMb`, `gpu`, `region` and any `iso
 `snapshot`, `region` and any `isolation` but `container`. Docker cannot choose a GPU model: any `gpu` gives the
 container every GPU of the host.
 
+### Archil exec
+
+`archilExecBoxes({ client, disk })` makes a box of a directory of an agent's Archil WORK disk (never the disk of its
+store), and runs each `exec` as one Archil serverless `exec`: a fresh container with the disk mounted, one request that
+answers when the command ends. It takes the host's own SDK, so this package depends on none: `client` is `new Archil({
+apiKey, region })` and `disk` is a disk of it, from the `disk` package (version 1.9.0 was measured; `npm install
+--no-save disk@1.9.0`).
+
+```ts
+import * as archil from "disk";
+import { archilExecBoxes } from "@parcha/pi-transport/box/archil-exec";
+
+const client = new archil.Archil({ apiKey, region: "aws-us-east-1" });
+const { disk } = await client.disks.create({ name: "agent-work" });
+const provider = archilExecBoxes({ client, disk });
+```
+
+The box is the directory `boxes/<id>/` of the disk. Its labels, facts and end time are the file
+`boxes.records/<id>.json`, outside every directory a command can hold, so `attach` and `list` find the box after a
+restart and a box can be ended while a command runs in it. These are the limits, each one in the facts or refused with
+a typed error:
+
+- **One request per command.** `facts().liveProcesses` is `false`: no program keeps running between calls, and a
+  command's output arrives after it ended. A box like this never serves as a home: the box place refuses it with
+  `MoveError` code `no_live_processes`. Use it for tools.
+- **A 300 s limit.** `facts().maxExecMs` is 300 000. A `timeoutMs` above it is refused with `invalid`; a command with
+  none still gets a deadline of 295 s of its own inside the container, so nothing runs past the point where the
+  platform cuts a call and loses its later writes. A command ended by its deadline is a `timeout` error; an exit code
+  of 124, which is what ends a command at its deadline, is read that way too.
+- **No stdin.** `stdin.write` rejects with `unsupported`. Output is text: bytes that are not UTF-8 come back as U+FFFD,
+  so move bytes with `upload` and `download`, which use the disk's object API and carry every byte value (8 MiB measured
+  in about 0.3 s each way).
+- **Aborting the context ends the wait at once.** The SDK has no signal to stop the command in the container, so the
+  command ends at its own deadline (an abort of the raw HTTP request was measured to stop a command at the platform, but
+  not through this SDK).
+- **Through `boxEnv` (the file and bash tools).** An environment on such a box reads and writes files through `upload` and
+  `download`, so a write keeps every byte and a binary read is exact. Each transfer runs under the operation deadline and is
+  cancelled with its call, so one still queued behind a command is not run after a timeout or an abort. An append is the bytes
+  uploaded to a file of their own and one command that appends it, so a command queued beside it keeps its change. A binary
+  reader refuses a file over its limit before moving a byte. A path outside the box's workspace can be read as text only, and
+  not written. A command's own deadline is the caller's `timeout`, and a caller that gives up never has its command run later.
+  A command stopped by a timeout or an abort cannot be killed: nothing reaches a running call, so it ends at its own deadline
+  and the next call to the box waits for it. Temporary and spill files go under the workspace. A watcher bills one call per
+  interval.
+- **One command at a time per box, across processes.** Every `exec` checks out the box's directory with a queue
+  (`queueMs`, default 60 s), so a second process that attached the same box (a restore, another host) waits for the
+  first instead of being refused (a plain write without a checkout loses writes: 3 of 5 parallel appends were refused),
+  and this process also runs a box's execs in the order they were asked. Boxes do not wait for each other. A file
+  written through `upload` takes no checkout: it waits for this process's own commands and retries while another process
+  holds the directory, up to `queueMs`.
+- **`destroy` ends the box for every client at once**, whatever still runs in it, by deleting its record; the directory
+  is removed through its parent (`destroyWaitMs`, default 5 s) and a directory a running command held is removed by the
+  next `list`, which sweeps every directory with no record.
+- **A lifetime is checked, not enforced by a timer.** Archil has no timer that ends a directory: a box past its
+  `maxLifetimeMs` is ended, and its directory removed, by the first call that looks at it (`attach`, `list`, `exec`,
+  `status`, `upload`, `download`). A box nobody calls again stays on the disk until a `list` finds it.
+- **The isolation is one VM per call, and the disk is shared.** Each call runs in its own fresh VM container, but boxes on one
+  disk share it: a command can read and write every box's directory, and the records, on that disk. Give each agent its own
+  work disk, never one disk to two agents.
+- **A box has no env.** Archil's exec carries only the command, so a value could only ride in the command or in the box's
+  record on the disk, where any command on that disk can read it. A spec with an env (any name, any value) is refused with
+  `unsupported`, a per-call env of a `boxEnv` environment on such a box (any name, and `PATH`) is refused with a
+  `spawn_error`, and the record and every call's command carry none. A program gets what it is given as arguments or as
+  files. Each exec container's own environment holds the platform's `ARCHIL_CONTAINER_ID`, `ARCHIL_DISK_ID` and
+  `ARCHIL_REGION` (measured; no key).
+- Refused before any call: a GPU, a snapshot, a `workspace`, an isolation other than `vm`, more than 2 vCPU or 3938 MiB
+  (`unsupported`); a label in the providers' namespace, an env of any kind, a lifetime that is not
+  positive (`invalid`).
+- A box billed per call gets its receipt with `calls` in place of seconds (see
+  [receipts](#what-a-box-cost-receipts)).
+
+The live suite spends money and runs only when asked. It needs the key in `ARCHIL_API_KEY` and the SDK:
+`PI_TRANSPORT_LIVE_ARCHIL=1 npm run test:live -w @parcha/pi-transport` (`PI_TRANSPORT_LIVE_ARCHIL_SDK` names the SDK's
+entry file when `disk` here is another version). It makes its own new disk in `aws-us-east-1`, deletes it at the end and
+checks that none is left.
+
 ## Hands: tools run in a box
 
 `boxEnv(box)` is pi's `ExecutionEnv` over a box. Hand it to a pi-durable Harness and the session's `read`, `write`,
 `edit` and `bash` tools run in the box, while the session, its store and its model calls stay with the host.
 
 ```ts
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { boxEnv } from "@parcha/pi-transport/hands";
 
+// `box` is a box made as in "A box" above, before its destroy.
 const env = boxEnv(box);
 const written = await env.writeFile("notes/a.txt", "hello", BACKGROUND_CONTEXT);
 const ran = await env.exec("wc -c notes/a.txt", { timeout: 10 }, BACKGROUND_CONTEXT);
@@ -141,6 +268,110 @@ Where it differs from `NodeExecutionEnv`, on purpose:
   Node reads the ranges it is asked for. `readTextLines` with `maxLines` brings only those lines out of the box.
 
 Not covered by hands: MCP servers, code mode and model calls stay with the Harness.
+
+### Where tools run is a line of config
+
+`transport(config, host)` is a Harness's `env`. It reads the `transport` block of an agent's config and runs each
+conversation's tools in the environment the block's `hands` names.
+
+```ts
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { TranscriptContext } from "@earendil-works/pi-ai";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { parseTransportConfig } from "@parcha/pi-transport";
+import { localBoxes } from "@parcha/pi-transport/box/local";
+import { transport } from "@parcha/pi-transport/hands";
+
+// The model is scripted, so this costs nothing: it runs `hostname` with pi's bash tool, then prints the result.
+const faux = fauxProvider();
+const models = createModels();
+models.setProvider(faux.provider);
+faux.setResponses([
+	fauxAssistantMessage(fauxToolCall("bash", { command: "hostname" }), { stopReason: "toolUse" }),
+	(transcript: TranscriptContext) => {
+		const result = transcript.messages.at(-1);
+		if (result?.role === "toolResult") {
+			console.log(result.content.map((part) => (part.type === "text" ? part.text : "")).join("").trim());
+		}
+		return fauxAssistantMessage("Done.");
+	},
+]);
+const registry = createRegistry();
+registry.install(CodingTools);
+const storage = new MemoryStorage();
+
+const config = parseTransportConfig({
+	environments: { sandbox: { provider: "local", maxLifetime: "6h" } },
+	hands: "sandbox",
+});
+if (!config.ok) throw config.error;
+
+// The transport is the Harness's `env`, so it is built first and reaches the Harness through this binding.
+let harness: Harness;
+const hands = transport(config.value, {
+	// For Docker: `provider: "docker"` above, and `docker: dockerBoxes()` here.
+	providers: { local: localBoxes({ root: join(mkdtempSync(join(tmpdir(), "pi-transport-")), "boxes") }) },
+	commit: (change, context) => harness.commit(change, context),
+});
+harness = await Harness.open(storage, { models, registry, env: hands.env }, BACKGROUND_CONTEXT);
+
+const model = { provider: "faux", modelId: faux.getModel().id };
+const conversation = await harness.createConversation(
+	{ ownership: { kind: "ownerless" }, agent: { model } },
+	BACKGROUND_CONTEXT,
+);
+await (await conversation.submit({ type: "input", content: "run hostname" }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+
+// The session is over: end its boxes (`release()` leaves them running for a host that opens the session again).
+await hands.destroy(BACKGROUND_CONTEXT);
+await harness.close(BACKGROUND_CONTEXT);
+```
+
+- **A box is created at the first file operation or command, not before.** pi asks for a conversation's environment
+  at every prompt it prepares as well as at every tool call, so `env` returns a lazy environment. Until its box
+  exists its `cwd` is `.` and its id ends in `:unopened`. A run that calls no tool creates no box.
+- **A host that opens the session again finds its boxes.** A box's id is written to a session document
+  (`transport.boxes`) before a tool runs in it, and the next `transport()` on the same store asks the provider for
+  that box. Concurrent first uses share one creation.
+- **One box for the session, or one for each conversation.** `scope: "session"` is the default; with
+  `scope: "conversation"` every conversation gets its own.
+- **Roles.** `hands: { default: "sandbox", build: "gpu" }` names a role. `hands.assign(conversation, "build", context)`
+  points a conversation's tools at it, or at any declared environment, from its next tool call. The assignment is a
+  conversation document (`transport.hands`). A fork starts without one, on the default.
+- **A box that is gone is one failed tool call.** A box that cannot be created, or that ended behind the session's
+  back, is that call's error result with the provider's code in the message. The next call asks for a box again.
+  A box the environment found lost answers `exec` with code `unknown` (pi's execution codes have no `gone`) and, as
+  `error.cause`, the provider's `BoxError` with code `gone`; `onLost` fires once, however many calls find it out.
+- **Two ways to let boxes go.** `release()` forgets them and leaves them running, for a host that will open the
+  session again; a box nobody comes back to ends at its lifetime. `destroy()` ends every box of the session,
+  including those only the session's documents still name.
+- **Labels are the host's.** `labels` in the host go on every box the transport creates, for example a session
+  id, so the host can list what it left behind. The transport adds none of its own: `pi-transport` and the keys
+  under it belong to providers, which mark their own boxes.
+- **`undefined` means the host's own environment.** `env` returns `undefined` when the config names no `hands`, or
+  names a `local` environment and the host passed no `local` provider. A host puts its own environment behind it:
+  `(await hands.env(target, context)) ?? new NodeExecutionEnv({ cwd })`.
+
+`transport()` throws a `TransportError` at start for a config it cannot serve: an environment whose provider the
+host did not pass, `hands: "auto"`, and `expose`.
+
+`expose` is not available yet: no secret is passed into a box. When it is, a secret will travel with each command
+over the exec's input and be set in the box by the environment's launcher. It will never be in `BoxSpec.env`, which
+a provider may store and return, and never in a command line.
+
+The repository's `examples/01-hands.ts` runs one scripted session whose tools go where a config file says. It is not in the
+npm package; from a checkout, in `packages/pi-transport`:
+
+```sh
+node --experimental-strip-types examples/01-hands.ts examples/hands.local.json 'hostname; pwd'
+```
+
 ## Moving a home: a store and a workspace
 
 `@parcha/pi-transport/home` holds the two movers a session needs when there is no disk the boxes share. They know
@@ -179,76 +410,15 @@ short or flipped is `mismatch`; the directories are removed on success, on failu
 archive next to the tree it is packing (about the size of the files), and the target box for the archive next to the
 tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
 
-### Where tools run is a line of config
-
-`transport(config, host)` is a Harness's `env`. It reads the `transport` block of an agent's config and runs each
-conversation's tools in the environment the block's `hands` names.
-
-```ts
-import { Harness } from "@earendil-works/pi-durable";
-import { parseTransportConfig } from "@parcha/pi-transport";
-import { dockerBoxes } from "@parcha/pi-transport/box/docker";
-import { transport } from "@parcha/pi-transport/hands";
-
-const config = parseTransportConfig({
-	environments: { sandbox: { provider: "docker", maxLifetime: "6h" } },
-	hands: "sandbox",
-});
-if (!config.ok) throw config.error;
-
-// The transport is the Harness's `env`, so it is built first and reaches the Harness through this binding.
-let harness: Harness;
-const hands = transport(config.value, {
-	providers: { docker: dockerBoxes() },
-	commit: (change, context) => harness.commit(change, context),
-});
-harness = await Harness.open(storage, { models, registry, env: hands.env }, BACKGROUND_CONTEXT);
-```
-
-- **A box is created at the first file operation or command, not before.** pi asks for a conversation's environment
-  at every prompt it prepares as well as at every tool call, so `env` returns a lazy environment. Until its box
-  exists its `cwd` is `.` and its id ends in `:unopened`. A run that calls no tool creates no box.
-- **A host that opens the session again finds its boxes.** A box's id is written to a session document
-  (`transport.boxes`) before a tool runs in it, and the next `transport()` on the same store asks the provider for
-  that box. Concurrent first uses share one creation.
-- **One box for the session, or one for each conversation.** `scope: "session"` is the default; with
-  `scope: "conversation"` every conversation gets its own.
-- **Roles.** `hands: { default: "sandbox", build: "gpu" }` names a role. `hands.assign(conversation, "build", context)`
-  points a conversation's tools at it, or at any declared environment, from its next tool call. The assignment is a
-  conversation document (`transport.hands`). A fork starts without one, on the default.
-- **A box that is gone is one failed tool call.** A box that cannot be created, or that ended behind the session's
-  back, is that call's error result with the provider's code in the message. The next call asks for a box again.
-  A box the environment found lost answers `exec` with code `unknown` (pi's execution codes have no `gone`) and, as
-  `error.cause`, the provider's `BoxError` with code `gone`; `onLost` fires once, however many calls find it out.
-- **Two ways to let boxes go.** `release()` forgets them and leaves them running, for a host that will open the
-  session again; a box nobody comes back to ends at its lifetime. `destroy()` ends every box of the session,
-  including those only the session's documents still name.
-- **Labels are the host's.** `labels` in the host go on every box the transport creates, for example a session
-  id, so the host can list what it left behind. The transport adds none of its own: `pi-transport` and the keys
-  under it belong to providers, which mark their own boxes.
-- **`undefined` means the host's own environment.** `env` returns `undefined` when the config names no `hands`, or
-  names a `local` environment and the host passed no `local` provider. A host puts its own environment behind it:
-  `(await hands.env(target, context)) ?? new NodeExecutionEnv({ cwd })`.
-
-`transport()` throws a `TransportError` at start for a config it cannot serve: an environment whose provider the
-host did not pass, `hands: "auto"`, and `expose`.
-
-`expose` is not available yet: no secret is passed into a box. When it is, a secret will travel with each command
-over the exec's input and be set in the box by the environment's launcher. It will never be in `BoxSpec.env`, which
-a provider may store and return, and never in a command line.
-
-`examples/01-hands.ts` runs one scripted session whose tools go where a config file says:
-
-```sh
-node --experimental-strip-types examples/01-hands.ts examples/hands.docker.json 'hostname; pwd'
-```
-
 ## A home: the session runs somewhere, and can stop without a cut
+
+A session can live in a box too: it moves between boxes, and comes back from a killed process or a lost box.
 
 `openHome(options)` is one place a session can run: its store, its workspace and pi's Harness over them. It does
 nothing by itself. A host gives it orders, in its own process today and over a link later:
 
 ```ts
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openHome } from "@parcha/pi-transport/home";
 
 const home = await openHome({ app, session, store, workspace, where, models });
@@ -559,9 +729,14 @@ against Jev, replays in its tests offline.
 timer: the epoch changes only when a host takes, so a slow home is never taken over because a clock ran out.
 
 ```ts
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { dirStore, leaseIn } from "@parcha/pi-transport/home";
 
-const lease = leaseIn(dirStore("/shared/leases"));
+// Any directory on a file system with hard links; hosts that share leases share this directory.
+const lease = leaseIn(dirStore(mkdtempSync(join(tmpdir(), "leases-"))));
 const taken = await lease.take("session-1", { environment: "gpu", provider: "modal", box: "sb-1", host: "h1" }, 0, undefined, BACKGROUND_CONTEXT);
 ```
 
@@ -629,10 +804,16 @@ It makes the box, and
 
 ## What a box cost: receipts
 
+`boxReceipts` names each box by a label (`box-1`, `box-2`, never the provider's id) and writes its receipt when it
+ends: the provider, the kind of box, when it started and ended, and its cost at the rates the host passes. This
+package holds no price table; a box the host gives no rate gets no receipt.
+
 `boxReceipts({ prices, write })` keeps a ledger of the boxes its providers make: `ledger.wrap(provider)` is the same
 provider, and each box it makes gets one receipt when it ends, destroyed through it, found ended by `status`, or found
 gone by `attach` (a lifetime that ran out, or a sweep). The host writes each receipt as a live line, source
-`transport`, kind `box.receipt`: `{ box, provider, kind, from, to, seconds, usd_per_second, cost_usd, source, priced }`.
+`transport`, kind `box.receipt`: `{ box, provider, kind, from, to, seconds, usd_per_second, cost_usd, source, priced }`;
+a box its provider bills per call instead (`archil-exec`) carries `calls` and `usd_per_call` in place of `usd_per_second`,
+which is then absent, never 0 (RECORDING.md draft 40).
 `box` is a label, `box-1`, `box-2` as the boxes are made, never the provider's id. Hand the wrapped providers to
 everything that makes boxes: a box place, and the transport's hands pools (`TransportHost.providers`).
 
@@ -647,8 +828,10 @@ The prices are the host's (`prices: [{ provider, kind, usdPerSecond, source, pri
 was read from and `priced` the date it was read): this package holds no price table. A box's `kind` is found from its
 facts (`gpu:<gpu>` for a box with a GPU, else its isolation), or by the host's `kindOf`. A box with no price writes no
 receipt, so its cost stays unknown, never 0. `cost_usd` is an estimate at list price, `seconds` times the price per
-second: not the provider's invoice, which bills by its own rounding, minimums and discounts. A box another process or
-host made is its maker's to receipt.
+second: not the provider's invoice, which bills by its own rounding, minimums and discounts. A price with `usdPerCall`
+(and no `usdPerSecond`) is for a box billed per call: its receipt counts the `exec` calls the box started, one aborted or
+given up on included, and `cost_usd` is `calls` times `usd_per_call` rounded to 9 decimals; `seconds` stays its lifetime,
+for display only. A call refused before it is made is not counted. A box another process or host made is its maker's to receipt.
 
 ## Home: a program kept alive in a box
 
@@ -657,7 +840,10 @@ whatever happens to the host. It uploads a small `sh` supervisor and starts it i
 outlives the call, the `exec` and the host process.
 
 ```ts
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { launch, launchStatus, stopLaunch } from "@parcha/pi-transport/home";
+
+// `box` is a box made as in "A box" above.
 
 const started = await launch(box, "runner", { argv: ["node", "runner.js"], env: { MODE: "home" } }, BACKGROUND_CONTEXT);
 const state = await launchStatus(box, "runner", BACKGROUND_CONTEXT); // read from a file in the box
@@ -708,3 +894,9 @@ registerBoxConformance({ describe, expect, it }, "my boxes", (use) => use(myBoxe
 ```
 
 A box whose `exec` carries input and streams output can take `uploadByExec` and `downloadByExec` as its file calls.
+
+A provider whose boxes keep no program running between calls and take no input (`facts().liveProcesses` is false) passes
+`withoutLiveProcesses: "<why>"`: the suite then leaves out the cases that need a live program or stdin, and one case in
+their place requires the facts to say so and stdin to be refused with `unsupported`; the reason is in its name.
+A provider whose boxes have no env passes `withoutEnv: "<why>"`: the suite creates its boxes with no env, leaves out the case that
+reads the spec's env, and adds one that requires a spec with an env to be refused with `unsupported`; the reason is in its name.

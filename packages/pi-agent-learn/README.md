@@ -5,18 +5,38 @@ tool, `learn`, which costs nothing. The host proposes those notes on the run's b
 `main`, and every later run reads them in a short `<learned>` section of its prompt, taken from the commit it was seeded
 from. A bad lesson is undone with `git revert`, and history keeps it.
 
-It builds on [`@parcha/pi-git-remote`](../pi-git-remote), which owns git, and on pi-durable, which owns the run. The
-host owns git: no model tool commits or pushes, and the repository's `.git` is never in the agent's working directory.
+It builds on [`@parcha/pi-git-remote`](https://github.com/Parcha-ai/agentrun/tree/main/packages/pi-git-remote), which
+owns git, and on pi-durable, which owns the run. The host owns git: no model tool commits or pushes, and the
+repository's `.git` is never in the agent's working directory.
 
-This package is held: it is built and tested in this repository and not published yet. This release has the contract
-the model sees, the host step that seeds a run, the guard every write goes through, the host step that proposes a
-run's notes, the curator that merges them to `main`, and saved workflows that are tried and promoted on receipts.
+This release has the contract the model sees, the host step that seeds a run, the guard every write goes through, the
+host step that proposes a run's notes, the curator that merges them to `main`, and saved workflows that are tried and
+promoted on receipts.
+
+> **What this first version is**
+>
+> - A pi-durable SDK extension that a host program installs in its `Harness`, not a `pi install` package.
+> - Installing it also installs `@parcha/pi-git-remote`, `@parcha/agentrun-dsl` and `@parcha/agentrun-pi`, and, through
+>   `@parcha/agentrun-pi`, `@parcha/agentrun-jev`.
+> - The notes loop is the core: `learn`, seeding, proposing and curating. Workflow trials, serving and promotion are
+>   experimental.
+> - Curating needs a judge: Jev (`createJevRunner` from `@parcha/agentrun-jev`) with a TypeSafe key in
+>   `TYPESAFE_API_KEY`, or your own function on any model ([A judge on any model](#a-judge-on-any-model)).
+> - The whole loop, host included, is
+>   [`examples/agent-learn`](https://github.com/Parcha-ai/agentrun/tree/main/examples/agent-learn): run
+>   `npm run demo:learn` in a clone of this repository, with no key and no network.
 
 ## Quickstart (no key, no network)
 
-Node 22.19 or later and git 2.40 or later. In a checkout of this repository, run `npm ci --ignore-scripts` and
-`npm run build -w @parcha/pi-agent-learn`, save this as `quickstart.mjs` at the repository root, and run
-`node quickstart.mjs`. The model is pi-ai's scripted faux provider.
+Node 22.19 or later and git 2.40 or later. In an empty directory:
+
+```sh
+npm install @parcha/pi-agent-learn@beta @parcha/pi-git-remote@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+```
+
+pi 1.4 is not supported yet; a later release widens the range.
+
+Save this as `quickstart.mjs` and run `node quickstart.mjs`. The model is pi-ai's scripted faux provider.
 
 ```js
 import { execFileSync } from "node:child_process";
@@ -96,7 +116,6 @@ repo/
   inbox/<run id>.md                a run's candidates, on runs/<run id> only
   inbox/<run id>/workflows/<name>/ a workflow the run saved, the DSL's records byte for byte, on runs/<run id> only
   uses/<run id>.json               a run's workflow uses, on runs/<run id> only
-  inbox/<run id>/workflows/<name>/ a run's saved workflow records, as the DSL wrote them, on runs/<run id> only
 ```
 
 `RULES_LOCKED` is the frozen list `["agent.json", "AGENTS.md"]`. `isRulesLocked(path)` is true for either name in any
@@ -142,22 +161,27 @@ call id, inside the tool's commit. It is replay-safe: a call rerun after a crash
 new. It makes no model call. A `used` mark names the learning that helped by its id, which must be a learning this run
 was given (listed in its section, or over the cap), or the mark is refused at the call. A `workflow` note names a workflow
 the run saved (its name, by the DSL's rule: 1 to 64 lowercase letters, digits, dashes or underscores) and says in its
-text when to use it. A lesson, fact or correction keeps an id only when it names a learning this run was given; any other
-id, a blank one included, is dropped and the note kept without it. Text is at most 1,000 bytes and
-evidence 1,000 bytes in all; a run makes at most 8 notes of every type but `used`, and 32 `used` marks. Evidence stays with the run and is
+text when to use it; curation judges the workflow itself and writes the note's text nowhere (below). A lesson, fact or correction keeps an id only when it names a learning this run was given; any other
+id, a blank one included, is dropped and the note kept without it. Text is at most 1,000 bytes, and
+evidence at most 8 items and 1,000 bytes in all; a run makes at most 8 notes of every type but `used`, and 32 `used` marks. Evidence stays with the run and is
 never part of a learning. `agentLearn({ guard, secrets, caseValues })` checks every call with the host's guard first,
 with the host's secrets and this run's input values; a refused call stores nothing and its result names the reason,
 never the value, so the model can restate it as a general rule at once. The result carries its text under both `content` and
 `output`, so pi-durable 1.1, 1.2 and 1.3 all show it to the model.
 
 The `<learned>` section says that the rules win, lists the active learnings at the seeded commit (most used first, the
-first line of each), names the workflows to try for this input, and tells the agent when to call `learn`. It renders
+first line of each), names the workflows to try for this input (when one is on trial, it says to run it before doing the
+job by hand and to change it only after it escalates or fails: only its own clean runs earn it trust), and tells the
+agent when to call `learn`. It renders
 from the run's `learn.seed` record, so it is the same on every request of a run and the same for every run seeded from
 one commit. It holds at most 4,096 bytes: learnings that do not fit are not loaded, the section says how many, and their
 ids are in the record. A learning whose first line holds the section's tag is never loaded. Without `learn` among the
 agent's tools, the lines that ask it to call `learn` are left out.
 
 ## Host steps
+
+The blocks from here on are a host's lines, not programs to run: `repo` is an `openRepo` result and `harness` a
+pi-durable Harness, as in the quickstart; `run` is the host's record of the run, and `vault.values()` its secret values.
 
 ```ts
 const seeded = await seedLearning({ repo, ref: "main", target: harness, into: run.workspace, workflows });
@@ -176,7 +200,8 @@ when its store already holds a seed, that commit is used again and the record is
 run to a newer commit. `readSeed` returns the record; `collectCandidates` returns the run's candidates in order.
 `workflows` is a list of `{ name, status: "trial" | "active" }`, at most 8: what `workflowsToTry` returns (below).
 
-With [`@parcha/pi-durable-agent`](../pi-durable-agent), the run starts at the same commit: the host reads `agent.json` and
+With [`@parcha/pi-durable-agent`](https://github.com/Parcha-ai/agentrun/tree/main/packages/pi-durable-agent), the run
+starts at the same commit: the host reads `agent.json` and
 `.agents/skills/` at the sha with `repo.read` and `repo.list`, keeps the agent home on it (`createAgentHome(dir, {
 definition, skills, sha })`, then `refreshAgentHome(home, { sha, from, definition, skills })` when main moves), starts the
 run with `startRun(home, { host, sha })`, and seeds it with `seedLearning({ repo, ref: started.sha, target, into:
@@ -224,7 +249,8 @@ const result = await proposeLearning({ repo, runId, target: harness, secrets: va
 ```
 
 `proposeLearning` is the host step at a run's terminal. It collects the run's candidates, renders `inbox/<run id>.md`
-(and `uses/<run id>.json` from the optional `uses` hook, which a later part supplies), adds the workflow records the
+(and `uses/<run id>.json` from the run's workflow uses: the `uses` option, or, with `workDir`, what the run's store
+holds; see [Workflows](#workflows)), adds the workflow records the
 host collected from the run's DSL store (`workflows`: per name, `{ files: { "<sha256>.json": text, latest: text } }`,
 committed byte for byte under `inbox/<run id>/workflows/<name>/`; a name or file name of any other shape refuses the
 proposal), guards the whole proposal as the
@@ -237,6 +263,11 @@ sha. The result is one of:
 - `{ status: "empty" }`: the run noted nothing.
 - `{ status: "refused", refusals }`: any guard hit refuses all of it, and nothing is committed or pushed, so no ref or
   object holds the refused value.
+
+`read` is the untrusted text the run read (the pages its tools fetched, say). A saved workflow any `COPIED_TEXT` (40)
+characters of whose strings, case and whitespace folded, appear in one is withheld: its records stay out of the proposal,
+the rest is proposed as usual, and a `proposed`, `already` or `empty` result names it in `withheld: [{ name, reason }]`,
+with a reason that names nothing the run read. `copiesRead(workflow, read)` is that check.
 
 A push the remote refuses throws a `GitRemoteError`. `proposeFiles` is the same guard-commit-push for files the caller
 has already rendered. `renderInbox` and `parseInbox` are the inbox's format: front matter (the run, and `seed`, the commit the run was seeded from,
@@ -262,27 +293,58 @@ it reaches the judge. Then it judges each candidate, writes the result, and make
 that commit's message, so a run that only held still gets its commit and is curated once.
 
 The judge is the DSL's System One port, `WorkflowDeps["runJudge"]` from `@parcha/agentrun-dsl`: `createJevRunner` from
-`@parcha/agentrun-jev` is one, and a test passes a scripted function. Each question is asked on its own, as a yes-or-no
+`@parcha/agentrun-jev` is one (it comes with this package through `@parcha/agentrun-pi`; add it to your own dependencies
+to import it, and it reads its key, `TYPESAFE_API_KEY`, from the environment as its README says), and a test passes a
+scripted function. Each question is asked on its own, as a yes-or-no
 probability, over the candidate's own text, never a paraphrase (`QUESTIONS` holds the wording):
 
 | Question | Asked of | Yes at or above, no at or below | A yes |
 | --- | --- | --- | --- |
-| `general` | every new lesson, fact, correction and workflow "when" | 0.8, 0.2 | passes; a no refuses it as about this case |
+| `general` | every new lesson, fact and correction | 0.8, 0.2 | passes; a no refuses it as about this case |
 | `narrowsRules` | the same, with `rules` (AGENTS.md at main, or the `rules` option) | 0.5, 0.1 | refuses it |
 | `fromContent` | the same, when the candidate is marked `untrusted` | 0.5, 0.1 | refuses it |
 | `duplicate` | it and each active learning of its type, and the one a correction names | 0.8, 0.2 | the existing one counts a use and the run joins its provenance |
 | `supersedes` | the same pairs | 0.8, 0.2 | it is written and the existing one becomes `superseded`, naming it in `supersededBy` |
 | `contradicts` | the same pairs | 0.5, 0.2 | it is held |
+| `workflowCase` | each saved workflow a run proposes, its document as the DSL's store reads it, with `rules` | 0.5, 0.2 | refuses it |
+
+### A judge on any model
 
 A judge on a general model rather than Jev does best asking it for `{ answer: "yes" | "no", confidence }`, with
 `confidence` from 0.5 to 1, and deriving the yes-probability itself: `{ type: "noul", noul }`, where `noul` is the
 confidence for a yes and 1 minus it for a no. Asked for a bare probability, a model reads it as how sure it is of its
-answer, so a sure no comes back as a likely yes.
+answer, so a sure no comes back as a likely yes. With pi-ai, where `models` is your `createModels()` registry with a
+provider set and `model` one of its chat models:
+
+```js
+const judge = async ({ state, questions }) => {
+  const answers = {};
+  for (const [name, { instructions }] of Object.entries(questions)) {
+    const reply = await models.completeSimple(model, {
+      systemPrompt: `${instructions}\nReply with JSON only: {"answer": "yes" or "no", "confidence": 0.5 to 1}.`,
+      messages: [{ role: "user", content: JSON.stringify(state), timestamp: Date.now() }],
+    });
+    if (reply.stopReason === "error") throw new Error(reply.errorMessage);
+    const { answer, confidence } = JSON.parse(reply.content.find((part) => part.type === "text").text);
+    if (!["yes", "no"].includes(answer) || !Number.isFinite(confidence) || confidence < 0.5 || confidence > 1) {
+      throw new Error(`the model answered out of shape: ${JSON.stringify({ answer, confidence })}`);
+    }
+    answers[name] = { type: "noul", noul: answer === "yes" ? confidence : 1 - confidence };
+  }
+  return { answers };
+};
+const report = await curate({ repo, judge });
+```
 
 An answer between the two cuts holds the candidate; nothing uncertain is accepted. `thresholds` overrides any cut,
 `DEFAULT_THRESHOLDS` are the defaults above. A `used` mark counts one use per run for an active learning and needs no
-judgment. A workflow (its records under `inbox/<run id>/workflows/<name>/` and the `description`, the agent's
-when-to-use text from a `learn` call of type `workflow`) goes to the `admitWorkflow` hook, which answers `admitted`
+judgment. A workflow is judged on itself, never on the agent's note: a `learn` call of type `workflow` is asked no
+question and its text reaches no file, so a run that read untrusted content puts none of its own words into a later
+prompt. `narrowsRules` is not asked of a workflow either: a workflow is by design a slice of the job (it reads what it
+reads and hands the rest back), so measured against rules written for the agent it always looks narrower, and it cannot
+change the rules that bind the agent that runs it. Its records under `inbox/<run id>/workflows/<name>/` are read through the DSL's store, `workflowCase` is asked of
+the document (one the store refuses, or one that runs code, goes straight to the hook, which refuses or holds it), and
+then the records go to the `admitWorkflow` hook, with no description, which answers `admitted`
 with the files to write under `.pi/agentrun/workflows/<name>/` and `.agents/skills/<name>/`, `unchanged`, `held` or
 `refused`. A run's `uses/<run id>.json` goes to the `settleUses` hook, which folds the uses into the workflows' trials
 and answers the files to write and one decision per workflow (`promote`, `demote` or `hold`). Curation guards what
@@ -327,11 +389,16 @@ record itself.
 // At run start: what to try for this input, put in the run's own store so the agentrun tool finds it by name.
 const hints = await workflowsToTry({ repo, sha }, input);
 const seeded = await seedLearning({ repo, ref: sha, target: harness, into: workDir, workflows: hints });
-await seedWorkflows({ repo, sha: seeded.sha, into: workDir, workflows: seeded.workflows });
+const tried = await seedWorkflows({ repo, sha: seeded.sha, into: workDir, workflows: seeded.workflows });
+
+// Before the agent says anything: serve what was proven, when it takes the job. `takes` and `check` are the host's.
+const plan = await planServing({ repo, sha: seeded.sha, workDir, workflows: tried.loaded, takes });
+const served = plan ? await serve({ harness, workflows: flow, context, plan, input, tools, check }) : undefined;
 
 // At the run's terminal: with the working directory, the step collects what the run saved that the repository did not
 // hold, and how it used what it had, and proposes them with the run's candidates. Explicit `workflows` or `uses` win.
-await proposeLearning({ repo, runId, target: harness, workDir });
+// `read`, the untrusted text the run read, withholds a saved workflow that copies any of it.
+await proposeLearning({ repo, runId, target: harness, workDir, untrusted: true, read: pages, served: served ? [served] : [] });
 
 // In curate: the two ports are the defaults, so there is nothing to pass.
 await curate({ repo, judge });
@@ -348,8 +415,10 @@ main.
 **Admitting.** `workflowAdmitter` is the curator's `AdmitWorkflow` port. It copies main's `trial.json` and skill for the name
 into a scratch directory, loads the run's records through the DSL's store there, which refuses a record whose name, metadata
 or SHA-256 does not match, then saves the revision the run ended on (what `latest` names) through the store. It writes
-`.agents/skills/<name>/SKILL.md` (the `description`, the agent's when-to-use text, is its description; the body says to run
-the workflow with the agentrun tool and to continue the task itself if it escalates) and `trial.json`, and returns every
+`.agents/skills/<name>/SKILL.md` (its description is `describe` of the revision's document, by default `schemaDescription`:
+the fields of its input and output, by name and type, with no text the agent wrote; a caller that hands over a
+`description` gets that instead, and curate never does; the body says to run the workflow with the agentrun tool and to
+continue the task itself if it escalates) and `trial.json`, and returns every
 path changed, as text, or `null` where one was deleted, for the curator's one commit. The name must be a skill name:
 lowercase letters and digits in words joined by single hyphens, because the skill folder carries it and pi refuses other
 names (`refused`). A workflow with a code node, or a shell or executor call, is `held` unless the host passes
@@ -358,18 +427,59 @@ names (`refused`). A workflow with a code node, or a shell or executor call, is 
 offered to no run until one arrives, and the skill that described the revision before it is withheld, not offered for the
 new one (a call with no records describes an existing name).
 
-**Standing.** `trial.json` holds `{ name, status, when, revisions, uses }`. The new revision is the live trial under its
+**Standing.** `trial.json` holds `{ name, status, when, revisions, uses }`, and `refused` once it needs one (below). The new revision is the live trial under its
 name. The revision it replaces is `superseded` if it was active, keeping its preconditions and the description of its skill
 so a demotion can restore both, or `retired` if it never proved itself; only the 3 newest superseded revisions keep that. A
-demoted revision stays in the list so it is never tried again. `status` is that of the live revision, or `demoted` when there
+demoted revision stays in the list so it is never tried again. Only the live and restorable revisions count toward the
+limit of 32: when admitting a new one would take the list past it, its retired and demoted revisions leave the list and
+keep only their digests in `refused`, which are not admitted again either. `refused` keeps the newest 128: when it is full the
+oldest leaves, with any kept use that names it, and may be tried again, so a full list never refuses an admission. A trial that keeps refusals
+holds only its live and restorable revisions from then on. A name that churns through many revisions in a long stream so
+keeps admitting new ones. `status` is that of the live revision, or `demoted` when there
 is none. `when` is a list of typed checks on the run's input, each a JSON pointer and one of `eq`, `in`, `exists`, `gte`,
 `lte` (numbers only: a string is never coerced), never a pattern over prose. The default is none, and the model decides from
 the description; `workflowAdmitter({ when })` takes a function of the workflow document, and `schemaWhen` is one: what the
 workflow's own input schema says about the top level of its input (each required property must exist, a constant must be
 equal, an enumeration of scalars must contain the value, a number's bounds hold). `workflowsToTry` offers a name whose skill
 and `trial.json` are at the commit, whose live revision is a trial or active and whose record is there, and whose checks hold
-on the input: active first, then by name, at most 8. The file stays under the curator's cap at every limit: 32 revisions, 30
-uses, 16 checks of at most 1,536 characters printed.
+on the input: active first, then by name, at most 8. The file stays under the curator's cap at every limit: 32 revisions (or
+the live and restorable ones beside 128 refused digests), 30 uses, 16 checks of at most 1,536 characters printed.
+
+**Tenure.** With runs in flight side by side, a run that saves a new revision can report back before the runs that ran the
+live trial do, and its revision would retire the trial before their uses count. `workflowAdmitter({ tenure })` takes where
+the host's runs started (`started(run)`: the main commit each was prepared from and its place in the start order) and which
+are still in flight (`inFlight()`: every run started whose curation has not committed; a run that reports stays in it until
+the `curate` call that takes it returns, since curate takes reported runs by branch name, not start order, and a run that
+crashed, was aborted or deadline-killed, or failed on its infrastructure leaves it at its end without reaching curate).
+A history read that fails throws, so curate stops and the run is curated again later. The option is
+opt-in: without it nothing changes. A new revision is then `held`, and the live trial kept, when the run that saved it
+started before the trial was live (it never saw the trial), or while a run that started with the trial live, and before
+it, is still in flight. A champion is never held. Each hold ends as the runs that started before the saving run report
+back, so a trial no run uses cannot keep its name, and with no run in flight nothing is held. A held revision is not kept:
+a later run may save it again.
+
+**Serving.** The host can run a saved workflow itself, before the agent says anything, so a run a proven workflow finishes
+costs no agent turn. `planServing` picks what to serve for the run: the live revision when it is active; while it is on
+trial, the revision it superseded, the last one proven (a canary), read from the repository at `sha` and checked against its
+digest, so the trial still earns its place through the agent; nothing for a first revision on trial. `takes(workflow)` is
+the host's: whether the workflow takes this job, its input and the shape of its output. `serve` runs the plan as a durable
+workflow task of the run, under the key `host:<name>:<sha256>:<input hash>` (`hostKey`, `hostRunName`), after the checks the
+`agentrun` tool makes: no code node, no SOP text, only the host's `tools`, an input the workflow takes and no node that reads
+a key the input lacks; a refusal writes no task. `check(output)` is the host's too: the problems with an output as the job's
+answer, none when it is valid. A complete run `check` accepts is the run's answer; one it refuses is `escalated` with the
+problems, so a workflow that returns what the job cannot use counts against itself. Anything else hands the job to the
+agent; when the served revision was a canary, `trialFirstText({ name, served, trial })` is what to tell it: the trial is
+named and asked to run first, the job done by hand only if it escalates too. Pass what was served to
+`proposeLearning({ served })` (or `usesSource({ store, workDir, run, served })`): each served run is a use of its own
+revision under its name, with the host's verdict, though the run's own store need not hold that revision. A canary's uses
+never count toward the trial.
+
+`planServing` stands on two pieces a host can use alone. `servingRevision(trial, { unrunnable })` says which revision to
+run: the live revision when it is active; while the live revision is on trial, the most recent superseded revision that can
+still run (`unrunnable` names those the host cannot load), with the trial named and `canary` true. A first trial, with
+nothing proven before it, gives none, and a retired or demoted revision is never served. `readRevision(repo, name, sha256,
+ref)` returns a revision's workflow from its record at a commit, through the DSL's store, undefined when the record is missing
+or is not that revision; `planServing` passes over a superseded revision whose record does not read, for the one before it.
 
 **Uses.** A use is one `agentrun.workflow` task in the run's store (`@parcha/agentrun-pi/durable`'s `createWorkflowExtension`),
 read from the store file with `recordingLines` (one read transaction, never written; open or closed) or from the open Session. It counts when the
@@ -388,8 +498,8 @@ that digest under it.
 records of its superseded revisions, into a scratch directory, and folds the run's uses in, appending each to its workflow's
 `trial.json` and settling after each one (`settleWorkflowUses`, `foldUses`, `promotionDecision`). Promotion rests on
 independent evidence: a run's uses of one revision are one use, the worst outcome winning (failed over escalated over frozen,
-so one bad case in a run counts against the run), however many inputs the run gave it. A trial is promoted when its last 3
-uses, which are 3 distinct runs, all finished `frozen`; the live revision is demoted when its last 2 uses, the last 2 runs that
+so one bad case in a run counts against the run), however many inputs the run gave it. A trial is promoted when its last 2
+uses, which are 2 distinct runs, all finished `frozen`; the live revision is demoted when its last 2 uses, the last 2 runs that
 used it, both failed or escalated, and the most recent superseded revision that the store can still load comes back, with `latest`, its preconditions and its skill's
 description. With none to restore the name is demoted whole, its skill is deleted so the agent is no longer told about it, and
 `trial.json` stays, so a demoted revision is never promoted or tried again; only a changed document, with a new digest, is
@@ -400,7 +510,10 @@ revision's own newest uses. The run that wrote a revision is no evidence for it,
 revision is not folded again. The thresholds are the host's: `usesSettler({ thresholds: { promoteAfter, demoteAfter } })`,
 1 to 15. A frozen workflow never fails a case: the agent is the fallback, and a use only moves the workflow's own standing.
 The decisions come back one per promotion, demotion or name held, each with a reason that names no value from the case; a
-`trial.json` that does not parse holds its name and never stops curation.
+`trial.json` that does not parse holds its name and never stops curation. Curation settles a run's uses BEFORE it admits the
+workflows the run saved, and the admitter reads `trial.json` as the uses left it: a run that ran a trial cleanly and saved a
+new revision of the same name has its use counted on the trial it ran (which a promotion then keeps restorable, superseded
+under the new trial), never dropped.
 
 ## Versions
 

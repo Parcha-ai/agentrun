@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
 import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
+import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, tapBox, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 test('the spec\'s kills are a list: a named crossing and a storm, in order, each ending one process, and the run finishes with nothing paid twice', { timeout: 300_000 }, async (t) => {
@@ -346,4 +346,16 @@ test('browser:false creates no browser, live or on fakes: --live needs no Browse
   const fakes = await run(t, { browser: false }, ['--json'], { DEMO_LIVE_PROBE: '' });
   assert.ok(said(fakes.recording));
   assert.ok(!said((await run(t, {}, ['--json'], { DEMO_LIVE_PROBE: '' })).recording), 'the default still has its fake browser');
+});
+test('a required program the demo declares and this machine lacks refuses the run before anything starts, naming it and what it is for', { timeout: 300_000 }, async (t) => {
+  const missing = [{ cmd: 'agentrun-no-such-program', why: 'the test asks for it', required: true }];
+  await assert.rejects(() => run(t, { programs: missing }, ['--json']), /needs these programs on PATH, so nothing started:\n {2}agentrun-no-such-program: the test asks for it \(install agentrun-no-such-program; it is not on PATH\)/);
+  // A program on PATH, an optional one that is missing and one needed only for --live: the run on fakes goes on.
+  const fine = [{ cmd: 'node', why: 'the runtime', required: true }, { cmd: 'agentrun-no-such-program', why: 'optional', required: false }, { cmd: 'agentrun-no-such-program', why: 'live only', required: true, for: 'live' }];
+  const { result } = await run(t, { programs: fine }, ['--json']);
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  // An entry without a command (an environment name the fixture declares) is not a program to look for.
+  const { checkPrograms } = await import('../packages/harness/dist/demo-spec.js');
+  assert.doesNotThrow(() => checkPrograms({ name: 'x', programs: [{ name: 'fixture spec', env: 'DEMO_SPEC' }] }, false, { PATH: '' }));
+  assert.throws(() => checkPrograms({ name: 'x', programs: [{ oneOf: [{ cmd: 'agentrun-no-such-a', why: 'a', required: true }, { cmd: 'agentrun-no-such-b', why: 'b', required: true }], why: 'one of two' }] }, false, { PATH: '' }), /x needs these programs on PATH/);
 });
