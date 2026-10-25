@@ -280,7 +280,8 @@ export class WorkflowExtensionService {
       if (node.node === 'call' && (node.via !== 'tool' || !this.allowedTools.has(node.tool))) errors.push('Effects must use a registered host tool; shell and executor calls are unavailable.');
       if (node.node === 'map' && (node.maxConcurrency ?? 4) > extensionStructuralLimits.maxMapConcurrency) errors.push('Map concurrency must not exceed 8.');
       if (node.node === 'parallel' && node.branches.length > extensionStructuralLimits.maxParallelBranches) errors.push('Parallel nodes must not exceed 8 branches.');
-      if (Array.isArray(node.tools) && node.tools.some((name: string) => !this.allowedTools.has(name))) errors.push('Agent tools must be explicitly registered by the host.');
+      const unregistered = Array.isArray(node.tools) ? [...new Set<string>(node.tools.filter((name: string) => !this.allowedTools.has(name)).map((name: string) => String(name).slice(0, 200)))] : [];
+      if (unregistered.length) errors.push(`Agent tools must be explicitly registered by the host. Not registered: ${unregistered.join(', ')}.`);
     }
     if (errors.length) throw new ExtensionServiceError('admission', errors.slice(0, 8).join(' '));
 
