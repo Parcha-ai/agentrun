@@ -1461,3 +1461,28 @@ test('/agentrun limits says what a node that names no tools gets in a trusted ru
     assert.equal(app.calls.length, 0);
   } finally { await app.shutdown(); }
 });
+
+// The introduction states what a node with no max_turns gets under this host's cap, as the per-node rows do.
+const limitsIntro = (app) => app.messages.at(-1).content.split('\n').find(text => text.startsWith('Node turns:'));
+const limitsRow = (app) => app.messages.at(-1).content.split('\n').find(text => text.startsWith('- '));
+test('/agentrun limits says a node with no max_turns has no turn limit when the host sets no cap', async () => {
+  const app = await harness({ extensionOptions: { runtimeLimits: { nodeMaxTurns: null } } });
+  try {
+    await app.tool({ action: 'inspect', workflow: workflow() });
+    await app.command('limits');
+    assert.match(limitsIntro(app), /a node that names no max_turns has no turn limit/);
+    assert.doesNotMatch(limitsIntro(app), /\b(20|8)\b/);
+    assert.match(limitsRow(app), /no turn limit/);
+  } finally { await app.shutdown(); }
+});
+
+test('/agentrun limits says a node with no max_turns gets the host cap when the cap is below the defaults', async () => {
+  const app = await harness({ extensionOptions: { runtimeLimits: { nodeMaxTurns: 4 } } });
+  try {
+    await app.tool({ action: 'inspect', workflow: workflow() });
+    await app.command('limits');
+    assert.match(limitsIntro(app), /a node that names no max_turns gets 4\b/);
+    assert.doesNotMatch(limitsIntro(app), /\b(20|8)\b/);
+    assert.match(limitsRow(app), /: 4 turns /);
+  } finally { await app.shutdown(); }
+});
